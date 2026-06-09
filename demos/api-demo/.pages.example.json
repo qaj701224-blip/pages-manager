@@ -1,0 +1,6 @@
+{
+  "name": "api-demo",
+  "url": "https://api-demo.example.com",
+  "preset": "worker",
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}

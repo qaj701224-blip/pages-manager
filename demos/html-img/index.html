@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HTML + Image Demo</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        max-width: 640px;
+        margin: 80px auto;
+        padding: 0 24px;
+        color: #1a1a1a;
+        background: #f9f9f9;
+      }
+      h1 {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+        color: #0057ff;
+      }
+      p {
+        font-size: 1.1rem;
+        line-height: 1.7;
+        color: #444;
+      }
+      .logo-wrap {
+        margin: 40px 0;
+        text-align: center;
+      }
+      img {
+        width: 120px;
+        height: 120px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>HTML + Image Demo</h1>
+    <p>
+      This is a minimal demo page served by Cloudflare Workers, showing that static HTML and SVG assets are handled correctly
+      end-to-end.
+    </p>
+    <div class="logo-wrap">
+      <img src="logo.svg" alt="XD Logo" />
+    </div>
+    <p>The image above is an inline SVG file served as a separate asset request.</p>
+  </body>
+</html>

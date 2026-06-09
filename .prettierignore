@@ -1,0 +1,10 @@
+node_modules
+dist
+.nuxt
+.output
+*.min.js
+.wrangler
+coverage
+test-results
+archive
+pnpm-lock.yaml

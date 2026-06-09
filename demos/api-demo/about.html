@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>关于 - SSR Demo</title>
+    <style>
+      body {
+        font-family: system-ui;
+        max-width: 600px;
+        margin: 40px auto;
+        padding: 0 20px;
+        color: #333;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>关于本 Demo</h1>
+    <p>这个页面是<strong>静态资源</strong>，通过 <code>env.ASSETS.fetch()</code> 直接从 Worker Assets 返回。</p>
+    <p>而首页 <a href="/">/ </a> 是 Worker 在服务端调用外部 API 后动态渲染的。</p>
+    <p>两种模式共存于同一个 Worker 中。</p>
+  </body>
+</html>

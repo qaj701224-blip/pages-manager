@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { buildOpenAPISpec, handleOpenAPI } from './openapi.js';
+
+test('ip-guard helper reads allowlist from worker env', async () => {
+  const response = handleOpenAPI();
+  const spec = await response.json();
+  const ipGuard = spec['x-libs']['ip-guard'];
+
+  assert.equal(ipGuard.usage, 'const blocked = checkIP(request, env); if (blocked) return blocked;');
+  assert.match(ipGuard.source, /env\.IP_ALLOWLIST/);
+  assert.doesNotMatch(ipGuard.source, /const ALLOWED/);
+  assert.doesNotMatch(ipGuard.source, /替换为真实 IP 白名单/);
+});
+
+test('staging openapi spec uses staging API and site URLs', () => {
+  const spec = buildOpenAPISpec(new Request('https://api-staging.workers.xd.team/openapi.json'), {
+    DOMAIN_BASE: 'workers.xd.team',
+    DOMAIN_LABEL: '-staging',
+    WORKER_PREFIX: 'pages-staging-',
+    WORKERS_DEV_SUBDOMAIN: 'xd-cf-2022',
+    PAGES_MANAGER_WORKER_NAME: 'pages-manager-staging',
+    PUBLIC_API_BASE: 'https://api-staging.workers.xd.team',
+    PUBLIC_ENVIRONMENT: 'staging',
+  });
+  const body = JSON.stringify(spec);
+  const deployScript = spec['x-scripts'].deploy.source;
+
+  assert.equal(spec.servers[0].url, 'https://api-staging.workers.xd.team');
+  assert.match(body, /https:\/\/q2-report-staging\.workers\.xd\.team/);
+  assert.match(body, /https:\/\/pages-staging-q2-report\.xd-cf-2022\.workers\.dev/);
+  assert.match(deployScript, /API="\$\{PAGES_API:-https:\/\/api-staging\.workers\.xd\.team\}"/);
+  assert.doesNotMatch(body, /https:\/\/api\.workers\.xd\.team/);
+  assert.doesNotMatch(body, /https:\/\/q2-report\.workers\.xd\.team/);
+});

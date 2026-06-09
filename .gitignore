@@ -1,0 +1,33 @@
+### Dependencies
+node_modules/
+
+### Build output
+dist
+dist/
+.nuxt/
+.output/
+
+### Secrets & local env
+.env
+.staging.env
+.dev.vars
+.pages.json
+**/.pages.json
+
+### Cloudflare / Wrangler
+.wrangler/
+.mf/
+server/wrangler.toml
+xdads-302/wrangler.toml
+
+### Claude Code (local settings, not shared)
+.claude/settings.local.json
+
+### OS
+.DS_Store
+Thumbs.db
+
+### Editor
+*.swp
+*.swo
+*~
