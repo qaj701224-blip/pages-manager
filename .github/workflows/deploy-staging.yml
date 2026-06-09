@@ -97,6 +97,6 @@ jobs:
           workingDirectory: server
           command: deploy
           packageManager: pnpm
-          secrets: |
-            CF_ZONE_ID_NEW
-            CF_API_TOKEN
+          postCommands: |
+            printf '%s' "$CF_ZONE_ID_NEW" | wrangler secret put CF_ZONE_ID_NEW
+            printf '%s' "$CF_API_TOKEN" | wrangler secret put CF_API_TOKEN
