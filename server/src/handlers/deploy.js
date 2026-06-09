@@ -86,14 +86,15 @@ export async function handleDeploy(request, env) {
   }
 
   const existing = await env.SITES.get(name, 'json');
-  if (existing && existing.token && userToken && existing.token !== userToken) {
+  const forceOverwrite = form.get('force') === 'true';
+  if (existing && existing.token && userToken && existing.token !== userToken && !forceOverwrite) {
     return json(
       {
         error: '站点名称已被占用',
         field: 'name',
         name,
         owner: existing.token,
-        hint: `该名称已被 ${existing.token} 使用，请换一个名称`,
+        hint: `该名称已被 ${existing.token} 使用，请换一个名称，或传 force=true 强制覆盖`,
       },
       409
     );
