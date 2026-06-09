@@ -11,19 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Generate Wrangler config
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
         run: |
           set -euo pipefail
           : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
-          : "${CF_ZONE_ID_NEW:?CF_ZONE_ID_NEW is required}"
           : "${SITES_KV_NAMESPACE_ID:?SITES_KV_NAMESPACE_ID is required}"
           : "${IP_ALLOWLIST:?IP_ALLOWLIST is required}"
           cat > server/wrangler.toml <<EOF
@@ -43,7 +41,6 @@ jobs:
           DOMAIN_LABEL = ""
           WORKER_PREFIX = "pages-"
           WORKERS_DEV_SUBDOMAIN = "xd-cf-2022"
-          CF_ZONE_ID_NEW = "${CF_ZONE_ID_NEW}"
           IP_ALLOWLIST = "${IP_ALLOWLIST}"
 
           [[rules]]
@@ -60,10 +57,27 @@ jobs:
           custom_domain = true
           EOF
 
+      - name: Validate Worker secrets
+        shell: bash
+        env:
+          CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${CF_ZONE_ID_NEW:?CF_ZONE_ID_NEW is required}"
+          : "${CF_API_TOKEN:?CF_API_TOKEN is required}"
+
       - name: Deploy Worker
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
+        env:
+          CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: server
           command: deploy
+          packageManager: pnpm
+          secrets: |
+            CF_ZONE_ID_NEW
+            CF_API_TOKEN
