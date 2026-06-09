@@ -692,7 +692,7 @@ export function handleOpenAPI(request, env) {
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=300',
+      'Cache-Control': 'no-store',
     },
   });
 }

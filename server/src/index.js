@@ -35,7 +35,7 @@ router.get(
       headers: {
         'Content-Type': 'text/markdown; charset=utf-8',
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300',
+        'Cache-Control': 'no-store',
       },
     })
 );

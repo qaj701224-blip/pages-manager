@@ -33,3 +33,12 @@ test('staging openapi spec uses staging API and site URLs', () => {
   assert.doesNotMatch(body, /https:\/\/api\.workers\.xd\.team/);
   assert.doesNotMatch(body, /https:\/\/q2-report\.workers\.xd\.team/);
 });
+
+test('openapi response is not cached because it contains environment-specific scripts', () => {
+  const response = handleOpenAPI(new Request('https://api-staging.workers.xd.team/openapi.json'), {
+    PUBLIC_API_BASE: 'https://api-staging.workers.xd.team',
+    PUBLIC_ENVIRONMENT: 'staging',
+  });
+
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+});
