@@ -42,3 +42,13 @@ test('openapi response is not cached because it contains environment-specific sc
 
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
 });
+
+test('manage list script requires token and fails on non-200 responses', () => {
+  const spec = buildOpenAPISpec(new Request('https://api.workers.xd.team/openapi.json'), {});
+  const manageScript = spec['x-scripts'].manage.source;
+
+  assert.match(manageScript, /if \[ -z "\$\{PAGES_TOKEN:-\}" \]; then/);
+  assert.match(manageScript, /RESPONSE=\$\(curl -s "\$\{TOKEN_HEADER\[@\]\}" -w "\\n%\{http_code\}" "\$\{API\}\/list"\)/);
+  assert.match(manageScript, /HTTP_CODE=\$\(echo "\$RESPONSE" \| tail -1\)/);
+  assert.match(manageScript, /查询失败/);
+});

@@ -136,7 +136,7 @@ AI:   ✅ 已发布: https://q2-report.workers.xd.team
 ## 安全
 
 - **IP 白名单**: 管理 API（除 `/openapi.json`、`/skill.md`、`/readme.md` 公开端点外）限制公司内网 IP 访问（CF-Connecting-IP），真实白名单由 `IP_ALLOWLIST` 在部署环境中配置；static/spa 子站会自动注入限制，worker 子站会注入 `env.IP_ALLOWLIST`，需在 `_worker.js` 中调用检查逻辑
-- **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证
+- **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证；`/list` 必须携带 token，且不会返回 token 字段
 - **Secret**: `CF_API_TOKEN` 是运行时高权限 token，必须通过 `wrangler secret put CF_API_TOKEN` 设置，不提交到 Git
 - **后续**: 可叠加 Cloudflare Access (SSO) 实现身份认证
 
