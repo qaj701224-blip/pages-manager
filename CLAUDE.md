@@ -152,8 +152,6 @@ Bugfix PR 应额外说明：
 - 修复思路
 - 回归测试
 
-一个 PR 只做一个目的。超过约 500 行 diff 时，Description 顶部说明为什么不能拆。
-
 ## Review guidelines
 
 代码审查优先找 P0/P1 问题，少报风格偏好。
