@@ -99,13 +99,13 @@ pages-kv-gateway-staging
 production gateway:
   XD_PAGES_ENV = production
   SITE_DATA = PAGES_SITE_DATA_PROD
-  PAGES_CAP_JWT_SECRET = production secret
+  PAGES_CAP_JWT_ACTIVE_KID / PAGES_CAP_JWT_KEYS = production key registry
   service name = pages-kv-gateway
 
 staging gateway:
   XD_PAGES_ENV = staging
   SITE_DATA = PAGES_SITE_DATA_STAGING
-  PAGES_CAP_JWT_SECRET = staging secret
+  PAGES_CAP_JWT_ACTIVE_KID / PAGES_CAP_JWT_KEYS = staging key registry
   service name = pages-kv-gateway-staging
 ```
 
@@ -126,7 +126,7 @@ gateway 代码只访问 `env.SITE_DATA`，不在运行时选择 production/stagi
 s/{siteSlug}--{siteUuid}/k/{encodedUserKey}
 ```
 
-`siteSlug` 仅用于可读性，不参与安全边界；`siteUuid` 才是隔离锚点。`siteUuid` 在 storage key 中使用无连字符 UUID，例如 `4b4c8e8361ef4b47b64f5c20a7db7c47`，减少 key 长度。
+`siteSlug` 仅用于可读性，不参与安全边界；它使用现有站点名规则，最大 50 字符。`siteUuid` 才是隔离锚点。`siteUuid` 在 storage key 中使用无连字符 UUID，例如 `4b4c8e8361ef4b47b64f5c20a7db7c47`，减少 key 长度。
 
 ## Runtime Endpoint
 
@@ -256,7 +256,21 @@ kv=true 且 ip_restrict=false:
   页面公开可访问，但 runtime KV endpoint 仍走平台 IP allowlist，不随 public 站点自动公开。
 ```
 
+`kv=true` 解析语义必须 fail-closed：
+
+```text
+缺失: disabled
+"false": disabled
+false: disabled
+"true": enabled
+true: enabled
+其它值: 请求 400，拒绝部署
+历史站点 metadata 无 kv 字段: disabled
+```
+
 因此，只要开启 `kv=true`，generated SPA Worker 必须始终内联或绑定平台 IP allowlist 给 runtime endpoint 使用。站点 assets 是否公开只影响普通页面访问，不能影响 `/.xd-pages/runtime/v1/kv/*` 的访问控制。
+
+runtime allowlist 来源必须具体且 fail-closed。第一版沿用现有 static/spa 子 Worker 的 baked allowlist 模型：pages-manager 在生成 SPA Worker 时，将当前 `env.IP_ALLOWLIST` 编译进 runtime access guard。该 guard 专用于 `/.xd-pages/runtime/v1/*`，即使站点 `ip_restrict=false` 也必须存在。若 allowlist 缺失、为空、格式非法或 access guard 未被注入，runtime endpoint 返回 `FORBIDDEN`，不能默认放行。
 
 第一版 browser KV 是站点级能力，不是用户级权限模型；任何通过 runtime endpoint 访问控制的调用者都可以读写该站点 KV。后续 `kv=off | worker | browser-read | browser-readwrite` 能力分级上线后，再允许站点显式声明更细粒度的浏览器读写能力。
 
@@ -301,10 +315,10 @@ v1 使用 JWT + HS256 对称签名：
 
 ```text
 pages-manager:
-  持有 PAGES_CAP_JWT_SECRET，用 HS256 签发 JWT。
+  持有当前 active kid 对应的 HS256 secret，用它签发 JWT。
 
 pages-kv-gateway:
-  持有同一个 PAGES_CAP_JWT_SECRET，用 HS256 验签。
+  持有允许 kid 对应的 HS256 secret，用它们验签。
 
 子 Worker:
   只持有已签好的 JWT。
@@ -321,13 +335,31 @@ secret 使用高熵随机值生成，不人工编写，不提交到 Git，不放
 openssl rand -base64 32
 ```
 
-secret 需要分别作为 Worker secret 注入 `apps/server` 和 `apps/kv-gateway` 对应环境：
+secret 需要分别作为 Worker secret 注入 `apps/server` 和 `apps/kv-gateway` 对应环境。production 与 staging 注入不同值。
+
+为支持无中断轮换，v1 需要显式 key registry，而不是单 secret 写死在验签逻辑中。推荐使用非敏感 `vars` 配置 kid 到 secret 变量名的映射，真实 secret 只存在于 Worker secrets：
 
 ```text
-PAGES_CAP_JWT_SECRET
+PAGES_CAP_JWT_ACTIVE_KID = prod-hs-2026-06
+PAGES_CAP_JWT_KEYS = prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606,prod-hs-2026-09:HS256:PAGES_CAP_JWT_SECRET_202609
+
+Worker secrets:
+PAGES_CAP_JWT_SECRET_202606 = <secret>
+PAGES_CAP_JWT_SECRET_202609 = <secret>
 ```
 
-production 与 staging 注入不同值。
+上面的 registry 是结构示例，不能把真实 secret 写进 Git、`vars` 或公开文档。无论采用哪种具体载体，语义必须一致：
+
+```text
+manager:
+  只用 PAGES_CAP_JWT_ACTIVE_KID 对应 key 签发新 capability。
+
+gateway:
+  可验 registry 中所有允许 kid。
+  header.kid 必须存在于 registry。
+  header.alg 必须等于 registry[kid].alg。
+  registry entry 的 key type 必须与 alg 匹配。
+```
 
 JWT header 必须包含 `alg` 和 `kid`，为后续非对称签名升级预留空间：
 
@@ -370,6 +402,12 @@ claims.siteUuid 合法
 claims.scope 包含当前操作
 claims.nbf <= now
 claims.iat 不在未来太多
+```
+
+`siteId` 使用现有站点名规则。`siteUuid` 使用 32 位小写十六进制无连字符 UUID 字符串，正则：
+
+```text
+^[0-9a-f]{32}$
 ```
 
 v1 不在线检查 `siteGeneration`。该字段仅用于日志、审计和后续主动吊销能力预留。
@@ -614,7 +652,8 @@ export async function handlePagesRuntimeRequest(
 - 必须带 `X-XD-Pages-Runtime: 1`。
 - 默认不返回 CORS header，仅支持 same-origin 调用。
 - 检查 `Origin`、`Sec-Fetch-Site` 等浏览器来源信号；跨站请求返回 `FORBIDDEN`。
-- 对 public 站点的 runtime path，仍使用平台 IP allowlist 做访问控制；该 allowlist 必须由 generated Worker 内联或绑定提供，不能依赖站点 assets 是否公开。
+- 对 public 站点的 runtime path，仍使用平台 IP allowlist 做访问控制；该 allowlist 必须由 generated Worker 内联提供，不能依赖站点 assets 是否公开。
+- generated SPA Worker 调用 adapter 时必须提供 `checkAccess`。adapter 如果命中 runtime path 且缺少 `checkAccess`，必须 fail closed 返回 `FORBIDDEN`，不能默认放行。
 - parse JSON body。
 - 校验 key、type、ttl。
 - 调 `createPagesRuntime({ env }).kv.get/put/delete`。
@@ -690,7 +729,7 @@ userKey UTF-8 后不超过 256 bytes
 允许 slash、中文、空格，由 storage key builder 编码
 ```
 
-`encodedUserKey` 使用 UTF-8 bytes 的 base64url 编码，保证可逆、无路径分隔符冲突，并避免 `%`、`/`、Unicode、空格等字符造成二义性。base64url 会膨胀 key 长度，因此 v1 将业务 `userKey` 限制为 256 bytes，并在 gateway 构造 storage key 后再次校验最终 key 不超过 Cloudflare KV 的 512 bytes 限制。需要覆盖 slash、percent、Unicode、空格和接近长度上限的编码测试。
+`encodedUserKey` 使用 UTF-8 bytes 的无 padding base64url 编码，保证可逆、无路径分隔符冲突，并避免 `%`、`/`、Unicode、空格等字符造成二义性。base64url 会膨胀 key 长度，因此 v1 将业务 `userKey` 限制为 256 bytes，并在 gateway 构造 storage key 后再次校验最终 key 不超过 Cloudflare KV 的 512 bytes 限制。需要覆盖 slash、percent、Unicode、空格和接近长度上限的编码测试。
 
 `expirationTtl` 规则：
 
@@ -709,7 +748,7 @@ value 不做额外平台大小限制，遵循 Cloudflare KV 最大 value 25 MiB�
 
 平台承诺：
 
-- 一个站点不能读写另一个站点的 KV 数据。
+- 没有另一个站点的有效 signed capability 时，一个站点不能读写另一个站点的 KV 数据。
 - 浏览器拿不到 gateway、KV namespace、Cloudflare token 或 signed capability。
 - 子 Worker 拿不到真实 KV namespace binding。
 - gateway 强制 prefix，不信任业务传入的 `siteId`、`env`、`prefix`。
@@ -735,6 +774,8 @@ if (url.pathname === "/set") {
 ```
 
 gateway 能保证这个接口只能写该站点自己的 prefix，不能写其它站点；但无法判断 owner 是否有意公开了自己的写能力。
+
+Signed capability 是 bearer token。任何拥有 `XD_PAGES_KV_GATEWAY` service binding 的 `kv=true` 子 Worker 如果拿到另一个站点仍有效的 capability，就可以访问该 capability 对应的 `siteUuid` prefix，直到对应 `kid` 被移除或后续主动吊销机制上线。因此 capability 不得记录到日志、响应、公开配置或业务可读存储中。
 
 Browser KV threat model:
 
@@ -807,15 +848,22 @@ deployment token
 - runtime adapter 对非 runtime path 返回 `null`。
 - runtime adapter 对 runtime path 不 fallback 到 `index.html`。
 - runtime adapter 校验 method、content-type、runtime header、body、key、ttl。
+- runtime adapter 命中 runtime path 但缺少 `checkAccess` 时 fail closed。
+- browser cross-origin 调用被拒绝：缺失/外部 `Origin`、`Sec-Fetch-Site: cross-site`、preflight/no CORS 都不能访问；same-origin 成功。
 - `kv` 未开启时不注入 gateway binding、capability 或 browser runtime endpoint。
 - `kv=true` 时才注入 gateway binding、capability 和 browser runtime endpoint。
+- `kv` 参数解析 fail-closed：缺失、`false`、`"false"`、历史 metadata 无字段均 disabled；非法值拒绝部署。
 - public SPA 的普通 assets 可访问，但 KV endpoint 仍受平台 IP allowlist 保护。
 - gateway 验 JWT 的 `alg`、`kid`、`iss`、`aud`、`env`、`scope`。
+- gateway 验 JWT 的 `siteUuid` 必填且符合 `^[0-9a-f]{32}$`。
 - gateway 拒绝 header `alg` 与 key registry entry 不一致的 token。
 - gateway 不信任请求 body 中的 `siteId`。
+- gateway 不信任请求 body/header/env 中的 `siteUuid`，只使用 JWT claims。
 - gateway 拼出的 storage key 使用 `s/{siteSlug}--{siteUuid}/k/{encodedUserKey}` 结构。
+- 同 slug + 不同 UUID 生成不同 prefix；同 token 覆盖部署保留 UUID。
 - 删除后同名重建站点生成新的 `siteUuid`，不能读取旧站点 KV prefix。
 - user key 编码对 slash、percent、Unicode 和空格无冲突。
+- key 长度测试覆盖最大允许站点名、无连字符 UUID、base64url 编码后接近 512 bytes 的最终 storage key。
 - staging 子 Worker 绑定 `pages-kv-gateway-staging`，production 子 Worker 绑定 `pages-kv-gateway`。
 - 生成的 SPA Worker source 不包含未解析的 `@xd/*` 裸 import。
 - metadata、响应和日志不泄露 token、JWT、namespace id 或真实 secret。
