@@ -1,5 +1,5 @@
+import { jsonResponse } from '@xd/worker-kit';
+
 export async function handleHealth() {
-  return new Response(JSON.stringify({ status: 'ok' }), {
-    headers: { 'Content-Type': 'application/json' },
-  });
+  return jsonResponse({ status: 'ok' });
 }

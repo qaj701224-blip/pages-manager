@@ -1,3 +1,4 @@
+import { jsonResponse } from '@xd/worker-kit';
 import { Router } from './router.js';
 import { isAllowedIP } from './lib/ip.js';
 import { handleDeploy } from './handlers/deploy.js';
@@ -40,13 +41,6 @@ router.get(
     })
 );
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
 const PUBLIC_PATHS = new Set(['/openapi.json', '/skill.md', '/readme.md']);
 
 export default {
@@ -55,7 +49,7 @@ export default {
     const clientIP = request.headers.get('CF-Connecting-IP');
 
     if (!PUBLIC_PATHS.has(url.pathname) && !isAllowedIP(clientIP, env.IP_ALLOWLIST)) {
-      return json(
+      return jsonResponse(
         {
           error: 'IP 未授权',
           ip: clientIP,
@@ -68,7 +62,7 @@ export default {
     const match = router.match(request.method, url.pathname);
 
     if (!match) {
-      return json(
+      return jsonResponse(
         { error: '端点不存在', method: request.method, path: url.pathname, hint: 'GET /openapi.json 查看可用端点' },
         404
       );
@@ -78,7 +72,7 @@ export default {
       return await match.handler(request, env, match.params);
     } catch (err) {
       const status = err.status || 500;
-      return json({ error: err.message, errors: err.errors }, status);
+      return jsonResponse({ error: err.message, errors: err.errors }, status);
     }
   },
 };

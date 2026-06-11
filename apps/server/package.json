@@ -7,6 +7,9 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
+  "dependencies": {
+    "@xd/worker-kit": "workspace:*"
+  },
   "devDependencies": {
     "wrangler": "catalog:"
   }

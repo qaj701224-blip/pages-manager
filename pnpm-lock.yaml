@@ -28,6 +28,10 @@ importers:
         version: 3.8.3
 
   apps/server:
+    dependencies:
+      '@xd/worker-kit':
+        specifier: workspace:*
+        version: link:../../packages/worker-kit
     devDependencies:
       wrangler:
         specifier: 'catalog:'
@@ -38,6 +42,8 @@ importers:
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
+
+  packages/worker-kit: {}
 
 packages:
 
