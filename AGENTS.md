@@ -8,9 +8,9 @@
 
 核心目录：
 
-- `server/src/`：管理 API Worker 源码
-- `server/src/handlers/`：路由处理器
-- `server/src/lib/`：Cloudflare API、IP 白名单、公开配置等共享逻辑
+- `apps/server/src/`：管理 API Worker 源码
+- `apps/server/src/handlers/`：路由处理器
+- `apps/server/src/lib/`：Cloudflare API、IP 白名单、公开配置等共享逻辑
 - `.github/workflows/`：CI、staging 和 production 部署流程
 - `pages-deploy.skill.md`、`API.md`、`README.md`：供用户和 agent 使用的公开说明
 
@@ -29,7 +29,7 @@ pnpm test
 - Node.js `>=22.12.0`
 - pnpm `>=9.15.0`
 
-不要把 `.env`、`.staging.env`、`server/wrangler.toml`、`xdads-302/wrangler.toml`、demo 目录里的 `.pages.json` 提交到 Git。
+不要把 `.env`、`.staging.env`、`apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、demo 目录里的 `.pages.json` 提交到 Git。
 
 ## 分支与部署
 
