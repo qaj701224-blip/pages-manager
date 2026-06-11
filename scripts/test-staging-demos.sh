@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO_ROOT/.env"
 DRY_RUN="false"
 ONLY_DEMO=""
+TARGET_ARG=""
 
 usage() {
   cat <<'EOF'
@@ -15,14 +16,18 @@ Deploy demo projects through the staging Pages Manager API and verify the return
 Options:
   --dry-run          Print the plan without installing, building, deploying, or fetching URLs.
   --env-file <path> Load environment variables from a specific file. Defaults to .env.
+  --target <env>    Target environment: staging or production. Defaults to staging.
   --demo <id>       Run one demo: html-img, vue-app, nuxt-app, api-demo.
   -h, --help        Show this help.
 
 Environment:
   PAGES_TOKEN              Required. Deployment owner token, usually stored in .env.
-  PAGES_API                Optional. Defaults to https://api-staging.workers.xd.team.
+  PAGES_DEMO_TARGET        Optional. Defaults to staging. Overridden by --target.
+  PAGES_API                Optional. Defaults from target.
   PAGES_DEMO_PREFIX        Optional. Defaults to demo.
   PAGES_DEMO_IP_RESTRICT   Optional. Defaults to true. Set false only for troubleshooting.
+  PAGES_DEMO_ALLOW_NON_STAGING
+                           Optional. Set true only for a nonstandard PAGES_API.
 EOF
 }
 
@@ -40,6 +45,11 @@ while [[ $# -gt 0 ]]; do
     --env-file)
       ENV_FILE="${2:-}"
       [[ -n "$ENV_FILE" ]] || die "--env-file requires a path"
+      shift 2
+      ;;
+    --target)
+      TARGET_ARG="${2:-}"
+      [[ -n "$TARGET_ARG" ]] || die "--target requires staging or production"
       shift 2
       ;;
     --demo)
@@ -64,7 +74,20 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-PAGES_API="${PAGES_API:-https://api-staging.workers.xd.team}"
+PAGES_DEMO_TARGET="${TARGET_ARG:-${PAGES_DEMO_TARGET:-staging}}"
+case "$PAGES_DEMO_TARGET" in
+  staging)
+    EXPECTED_PAGES_API="https://api-staging.workers.xd.team"
+    ;;
+  production)
+    EXPECTED_PAGES_API="https://api.workers.xd.team"
+    ;;
+  *)
+    die "PAGES_DEMO_TARGET must be staging or production"
+    ;;
+esac
+
+PAGES_API="${PAGES_API:-$EXPECTED_PAGES_API}"
 PAGES_API="${PAGES_API%/}"
 PAGES_DEMO_PREFIX="${PAGES_DEMO_PREFIX:-demo}"
 PAGES_DEMO_IP_RESTRICT="${PAGES_DEMO_IP_RESTRICT:-true}"
@@ -72,8 +95,8 @@ PAGES_DEMO_ALLOW_NON_STAGING="${PAGES_DEMO_ALLOW_NON_STAGING:-false}"
 
 [[ -n "${PAGES_TOKEN:-}" ]] || die "PAGES_TOKEN is required. Put it in .env or pass --env-file."
 
-if [[ "$PAGES_DEMO_ALLOW_NON_STAGING" != "true" && "$PAGES_API" != *"api-staging.workers.xd.team"* ]]; then
-  die "refusing non-staging PAGES_API: $PAGES_API. Set PAGES_DEMO_ALLOW_NON_STAGING=true to override."
+if [[ "$PAGES_DEMO_ALLOW_NON_STAGING" != "true" && "$PAGES_API" != "$EXPECTED_PAGES_API" ]]; then
+  die "PAGES_API does not match target $PAGES_DEMO_TARGET: got $PAGES_API, expected $EXPECTED_PAGES_API. Set PAGES_DEMO_ALLOW_NON_STAGING=true only for a nonstandard API."
 fi
 
 case "$PAGES_DEMO_IP_RESTRICT" in
@@ -138,6 +161,7 @@ validate_site_name() {
 }
 
 print_plan() {
+  printf 'PAGES_DEMO_TARGET=%s\n' "$PAGES_DEMO_TARGET"
   printf 'PAGES_API=%s\n' "$PAGES_API"
   printf 'PAGES_DEMO_PREFIX=%s\n' "$PAGES_DEMO_PREFIX"
   printf 'PAGES_DEMO_IP_RESTRICT=%s\n' "$PAGES_DEMO_IP_RESTRICT"

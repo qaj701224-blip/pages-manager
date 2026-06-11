@@ -33,15 +33,27 @@ Deploy and verify all demos through staging:
 scripts/test-staging-demos.sh
 ```
 
+The script targets staging by default. To run the same smoke test against production, pass an explicit target and use a production-safe prefix:
+
+```bash
+PAGES_DEMO_PREFIX=prod-demo scripts/test-staging-demos.sh --target production
+```
+
 The script defaults to:
 
 ```bash
+PAGES_DEMO_TARGET=staging
 PAGES_API=https://api-staging.workers.xd.team
 PAGES_DEMO_PREFIX=demo
 PAGES_DEMO_IP_RESTRICT=true
 ```
 
-For safety, the script refuses non-staging `PAGES_API` values by default. To target another API intentionally, set:
+For safety, `PAGES_API` must match the selected target by default:
+
+- `staging` -> `https://api-staging.workers.xd.team`
+- `production` -> `https://api.workers.xd.team`
+
+To target a nonstandard API intentionally, set:
 
 ```bash
 PAGES_DEMO_ALLOW_NON_STAGING=true

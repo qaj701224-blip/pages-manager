@@ -46,6 +46,7 @@ test('dry-run uses staging api fixed names and hides token', () => {
   const result = run(['--dry-run', '--env-file', envFile]);
 
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PAGES_DEMO_TARGET=staging/);
   assert.match(result.stdout, /PAGES_API=https:\/\/api-staging\.workers\.xd\.team/);
   assert.match(result.stdout, /demo-html-img\s+static\s+demos\/html-img/);
   assert.match(result.stdout, /demo-vue-app\s+spa\s+demos\/vue-app/);
@@ -53,6 +54,25 @@ test('dry-run uses staging api fixed names and hides token', () => {
   assert.match(result.stdout, /demo-api\s+worker\s+demos\/api-demo/);
   assert.doesNotMatch(result.stdout, /pages_demo@xd\.com/);
   assert.doesNotMatch(result.stderr, /pages_demo@xd\.com/);
+});
+
+test('dry-run production target uses production api without non-staging override', () => {
+  const envFile = tempEnv('PAGES_TOKEN=pages_demo@xd.com\n');
+  const result = run(['--dry-run', '--env-file', envFile, '--target', 'production']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PAGES_DEMO_TARGET=production/);
+  assert.match(result.stdout, /PAGES_API=https:\/\/api\.workers\.xd\.team/);
+  assert.match(result.stdout, /demo-html-img\s+static\s+demos\/html-img/);
+});
+
+test('dry-run supports production target from env file', () => {
+  const envFile = tempEnv('PAGES_TOKEN=pages_demo@xd.com\nPAGES_DEMO_TARGET=production\n');
+  const result = run(['--dry-run', '--env-file', envFile]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PAGES_DEMO_TARGET=production/);
+  assert.match(result.stdout, /PAGES_API=https:\/\/api\.workers\.xd\.team/);
 });
 
 test('dry-run supports custom fixed prefix from env file', () => {
@@ -83,10 +103,18 @@ test('script requires PAGES_TOKEN from env file or environment', () => {
   assert.match(`${result.stderr}${result.stdout}`, /PAGES_TOKEN is required/);
 });
 
-test('script rejects production api unless explicitly allowed', () => {
+test('script rejects api values that do not match the selected target', () => {
   const envFile = tempEnv('PAGES_TOKEN=pages_demo@xd.com\nPAGES_API=https://api.workers.xd.team\n');
   const result = run(['--dry-run', '--env-file', envFile]);
 
   assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /refusing non-staging PAGES_API/);
+  assert.match(`${result.stderr}${result.stdout}`, /PAGES_API does not match target staging/);
+});
+
+test('script rejects unknown target values', () => {
+  const envFile = tempEnv('PAGES_TOKEN=pages_demo@xd.com\n');
+  const result = run(['--dry-run', '--env-file', envFile, '--target', 'preview']);
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /PAGES_DEMO_TARGET must be staging or production/);
 });
