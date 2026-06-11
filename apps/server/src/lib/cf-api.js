@@ -1,4 +1,4 @@
-import { parseAllowlist } from './ip.js';
+import { buildBakedGuardSource } from '@xd/ip-guard';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
@@ -19,20 +19,6 @@ const ct=mime(p);const h=new Headers(res.headers);h.set("content-type",
 ct.startsWith("text/")?ct+"; charset=utf-8":ct);
 return new Response(res.body,{status:res.status,headers:h})}`;
 
-function buildIpGuard(allowlist) {
-  const entries = JSON.stringify(parseAllowlist(allowlist));
-  return `
-const A=${entries};
-function n2i(ip){return ip.split(".").reduce((a,o)=>(a<<8)+Number(o),0)>>>0}
-const R=A.map(e=>{if(e.includes(":"))return{t:6,v:e};
-if(e.includes("/")){const[b,s]=e.split("/");const m=~((1<<(32-Number(s)))-1)>>>0;return{t:4,n:n2i(b)&m,m};}
-return{t:4,v:n2i(e)};});
-function checkIP(req){const ip=req.headers.get("CF-Connecting-IP");if(!ip)return null;
-if(ip.includes(":"))return R.some(r=>r.t===6&&r.v===ip)?null:new Response("IP not allowed",{status:403});
-const n=n2i(ip);const ok=R.some(r=>{if(r.t===6)return false;if(r.v!==undefined)return r.v===n;return(n&r.m)===r.n;});
-return ok?null:new Response("IP not allowed",{status:403});}`;
-}
-
 const STATIC_WORKER = `${MIME_WORKER_HELPER}
 export default {
   async fetch(request, env) {
@@ -42,7 +28,7 @@ export default {
 
 function buildStaticWorkerIp(allowlist) {
   return `${MIME_WORKER_HELPER}
-${buildIpGuard(allowlist)}
+${buildBakedGuardSource(allowlist)}
 export default {
   async fetch(request, env) {
     const b=checkIP(request);if(b)return b;
@@ -60,7 +46,7 @@ export default {
 
 function buildSpaWorkerIp(allowlist) {
   return `${MIME_WORKER_HELPER}
-${buildIpGuard(allowlist)}
+${buildBakedGuardSource(allowlist)}
 export default {
   async fetch(request, env) {
     const b=checkIP(request);if(b)return b;

@@ -29,6 +29,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@xd/ip-guard':
+        specifier: workspace:*
+        version: link:../../packages/ip-guard
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
@@ -42,6 +45,8 @@ importers:
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
+
+  packages/ip-guard: {}
 
   packages/worker-kit: {}
 

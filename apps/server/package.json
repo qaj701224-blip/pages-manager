@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@xd/ip-guard": "workspace:*",
     "@xd/worker-kit": "workspace:*"
   },
   "devDependencies": {

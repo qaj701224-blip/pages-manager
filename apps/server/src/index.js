@@ -1,6 +1,6 @@
 import { jsonResponse } from '@xd/worker-kit';
+import { isAllowedIP } from '@xd/ip-guard';
 import { Router } from './router.js';
-import { isAllowedIP } from './lib/ip.js';
 import { handleDeploy } from './handlers/deploy.js';
 import { handleGetSite, handleDeleteSite } from './handlers/site.js';
 import { handleList } from './handlers/list.js';
