@@ -57,7 +57,7 @@ packages:
   - packages/*
 
 catalog:
-  wrangler: ^4.91.0
+  wrangler: 4.91.0
 ```
 
 Update root `package.json` scripts to:

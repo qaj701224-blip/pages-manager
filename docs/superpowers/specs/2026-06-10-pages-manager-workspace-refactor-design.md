@@ -72,7 +72,7 @@ packages:
   - packages/*
 
 catalog:
-  wrangler: ^4.91.0
+  wrangler: 4.91.0
 ```
 
 包命名：
