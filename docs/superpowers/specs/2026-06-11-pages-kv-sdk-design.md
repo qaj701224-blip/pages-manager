@@ -12,6 +12,7 @@
 - 支持业务浏览器代码通过 `@xd/pages-sdk/browser` 执行 KV `get`、`put`、`delete`。
 - 支持自定义 `_worker.js` 通过 `@xd/pages-sdk/worker` 使用同一套 KV 能力。
 - pages-manager 生成的 SPA Worker 内置平台 runtime endpoint，并复用 SDK worker adapter 逻辑。
+- KV 能力第一版必须显式 opt-in，例如部署参数 `kv=true`；未开启的站点不注入 gateway binding、capability 或 browser runtime endpoint。
 - 通过独立 `pages-kv-gateway` Worker 持有真实 KV namespace binding。
 - 使用共享 namespace + gateway 强制 prefix，实现同环境内多站点数据隔离。
 - production 和 staging 使用独立 gateway、独立 KV namespace、独立 JWT secret。
@@ -24,7 +25,7 @@
 - 不把真实 KV namespace binding 暴露给业务 Worker。
 - 不提供强一致事务、锁、自增计数器或复杂查询能力。
 - 不提供 `list`、批量读写、binary value 或业务 metadata。
-- 不做 `kv=off | worker | browser-read | browser-readwrite` 能力分级开关；该能力作为后续优化记录。
+- 不做 `kv=off | worker | browser-read | browser-readwrite` 细粒度能力分级；第一版只做 `kv=true` 显式开启，细粒度读写模式作为后续优化记录。
 - 不引入短期 `exp` 或自动续签机制。
 - 不在第一版实现 `siteGeneration` 在线校验、capability denylist 或 active token list。
 - 不把 `packages/pages-runtime-protocol` 发布给业务侧；业务只安装 `@xd/pages-sdk`。
@@ -117,11 +118,13 @@ gateway 代码只访问 `env.SITE_DATA`，不在运行时选择 production/stagi
 4. gateway 校验 claims.env === env.XD_PAGES_ENV
 ```
 
+真实 KV key 使用不可变站点 UUID，而不是站点名。站点名可以被删除后重新注册，不能作为数据隔离的唯一前缀。`siteUuid` 在站点首次创建时生成并写入站点 metadata；同 token 覆盖部署保留原 `siteUuid`；删除后同名重建必须生成新的 `siteUuid`。旧数据清理可以 best-effort，但新站点隔离不能依赖清理成功。
+
 真实 KV key 仍保留环境前缀，作为导出、排障和误绑定检测的辅助信息：
 
 ```text
-production/sites/{siteId}/kv/{encodedUserKey}
-staging/sites/{siteId}/kv/{encodedUserKey}
+production/sites/{siteUuid}/kv/{encodedUserKey}
+staging/sites/{siteUuid}/kv/{encodedUserKey}
 ```
 
 ## Runtime Endpoint
@@ -242,32 +245,38 @@ flowchart TD
 v1 安全默认：
 
 ```text
-ip_restrict=true:
-  browser SDK 的 get/put/delete 可用。
+kv 未开启:
+  不注入 gateway binding、capability 或 browser runtime endpoint。
 
-ip_restrict=false:
-  页面公开可访问，但 runtime KV endpoint 仍走 IP allowlist，不随 public 站点自动公开。
+kv=true 且 ip_restrict=true:
+  browser SDK 的 get/put/delete 可用，访问者仍必须在站点 IP allowlist 内。
+
+kv=true 且 ip_restrict=false:
+  页面公开可访问，但 runtime KV endpoint 仍走平台 IP allowlist，不随 public 站点自动公开。
 ```
 
-后续 `kv=off | worker | browser-read | browser-readwrite` 能力分级上线后，再允许站点显式声明浏览器读写能力。
+因此，只要开启 `kv=true`，generated SPA Worker 必须始终内联或绑定平台 IP allowlist 给 runtime endpoint 使用。站点 assets 是否公开只影响普通页面访问，不能影响 `/.xd-pages/runtime/v1/kv/*` 的访问控制。
+
+第一版 browser KV 是站点级能力，不是用户级权限模型；任何通过 runtime endpoint 访问控制的调用者都可以读写该站点 KV。后续 `kv=off | worker | browser-read | browser-readwrite` 能力分级上线后，再允许站点显式声明更细粒度的浏览器读写能力。
 
 ## 子 Worker Bindings
 
-SPA 子 Worker metadata 注入：
+开启 `kv=true` 后，SPA 子 Worker metadata 注入：
 
 ```js
 [
   { type: "assets", name: "ASSETS" },
   { type: "service", name: "XD_PAGES_KV_GATEWAY", service: env.KV_GATEWAY_SERVICE },
   { type: "plain_text", name: "XD_PAGES_SITE_ID", text: name },
+  { type: "plain_text", name: "XD_PAGES_SITE_UUID", text: siteUuid },
   { type: "plain_text", name: "XD_PAGES_ENV", text: env.PUBLIC_ENVIRONMENT },
   { type: "plain_text", name: "XD_PAGES_KV_CAPABILITY", text: signedCapability }
 ]
 ```
 
-`XD_PAGES_SITE_ID` 和 `XD_PAGES_ENV` 只供日志、调试和 SDK 使用。gateway 不信任这两个普通 env，真正授权只看 signed capability。
+`XD_PAGES_SITE_ID`、`XD_PAGES_SITE_UUID` 和 `XD_PAGES_ENV` 只供日志、调试和 SDK 使用。gateway 不信任这些普通 env，真正授权只看 signed capability。
 
-worker preset 也注入 gateway binding 和 capability，但不改写用户上传的 `_worker.js`。业务需要显式使用：
+worker preset 在 `kv=true` 时也注入 gateway binding 和 capability，但不改写用户上传的 `_worker.js`。业务需要显式使用：
 
 ```js
 import { createPagesRuntime } from "@xd/pages-sdk/worker";
@@ -280,6 +289,10 @@ export default {
   },
 };
 ```
+
+pages-manager 当前直接上传用户提供的 `_worker.js`，不会解析或打包 npm 依赖。因此 worker preset 使用 `@xd/pages-sdk/worker` 时，业务需要先在自己的构建流程中把 `_worker.js` 打包成无裸 npm import 的 Worker module，再交给 pages-manager 部署。OpenAPI、README 和 skill 需要明确说明这一点。
+
+worker preset 代码被视为站点 owner 自己的受信代码。开启 `kv=true` 后，它可以读取 env 中的站点 KV capability，也可以把本站 KV 能力暴露给公网路由；平台只保证它不能跨站读写。部署响应和 OpenAPI 需要类似现有 IP allowlist warning 一样提示该边界。
 
 ## Signed Capability
 
@@ -333,6 +346,7 @@ payload 第一版不加 `exp`，避免引入续签机制：
   "aud": "pages-kv-gateway",
   "env": "production",
   "siteId": "q2-report",
+  "siteUuid": "4b4c8e83-61ef-4b47-b64f-5c20a7db7c47",
   "siteGeneration": 1,
   "scope": ["kv:get", "kv:put", "kv:delete"],
   "iat": 1781111111,
@@ -351,6 +365,7 @@ claims.iss === "pages-manager"
 claims.aud === "pages-kv-gateway"
 claims.env === env.XD_PAGES_ENV
 claims.siteId 合法
+claims.siteUuid 合法
 claims.scope 包含当前操作
 claims.nbf <= now
 claims.iat 不在未来太多
@@ -358,12 +373,32 @@ claims.iat 不在未来太多
 
 v1 不在线检查 `siteGeneration`。该字段仅用于日志、审计和后续主动吊销能力预留。
 
+因为 v1 不加 `exp` 且不在线检查 `siteGeneration`，key rotation 必须有明确运维流程：
+
+```text
+常规轮换:
+  1. gateway key registry 同时接受旧 kid 和新 kid
+  2. pages-manager 使用新 kid 签发新 capability
+  3. 已有站点随重新部署自然刷新 capability
+  4. 只有确认旧 capability 已不再需要，才能移除旧 kid
+
+紧急泄漏:
+  1. 生成新 secret/kid
+  2. 更新 pages-manager 和 gateway secret
+  3. 重新部署所有 kv=true 子 Worker，刷新 capability
+  4. 从 gateway key registry 移除泄漏 kid
+```
+
+在旧 kid 被 gateway 接受期间，旧 capability 对其原 `siteUuid` 前缀仍有效；删除同名站点后新建站点会使用新的 `siteUuid`，不会继承旧数据前缀。由于 v1 gateway 不在线查询 active capability，泄漏的旧 capability 如果被其它仍拥有 `XD_PAGES_KV_GATEWAY` service binding 的子 Worker 使用，在旧 kid 未移除前仍可能访问旧 `siteUuid` 前缀。该风险通过 gateway 不公网暴露、KV capability 显式 opt-in、key rotation runbook 和“不存高敏数据”的文档边界控制；强 per-site 主动吊销留作后续 `siteGeneration` 在线检查。
+
 后续升级非对称签名时，gateway 的 key registry 可同时接受旧 HS256 和新 RS256/EdDSA：
 
 ```text
 旧 token: alg=HS256, kid=prod-hs-2026-06
 新 token: alg=RS256, kid=prod-rs-2026-09
 ```
+
+key registry 必须将 `kid` 绑定到预期 `alg` 和 key type。gateway 需要拒绝 header `alg` 与 registry entry 不一致的 token，避免算法混淆。
 
 ## KV Gateway
 
@@ -407,7 +442,7 @@ gateway 根据 claims 和 user key 拼真实 key：
 ```js
 buildStorageKey({
   environment: env.XD_PAGES_ENV,
-  siteId: claims.siteId,
+  siteUuid: claims.siteUuid,
   userKey: body.key,
 });
 ```
@@ -484,6 +519,8 @@ apps/pages-sdk/
 
 `./internal/runtime-source` 只给 `apps/server` 内部生成 SPA Worker 使用，业务文档不公开。
 
+`./internal/runtime-source` 必须是自包含的 generated source string，不允许包含裸 npm import 或 workspace import。实现时需要测试生成的 SPA Worker source 不包含未解析的 `@xd/*` import，避免子 Worker 部署后运行时模块解析失败。
+
 ### Browser SDK
 
 业务使用：
@@ -542,6 +579,7 @@ type PagesRuntimeEnv = {
   XD_PAGES_KV_GATEWAY: Fetcher;
   XD_PAGES_KV_CAPABILITY: string;
   XD_PAGES_SITE_ID?: string;
+  XD_PAGES_SITE_UUID?: string;
   XD_PAGES_ENV?: string;
 };
 ```
@@ -575,6 +613,7 @@ export async function handlePagesRuntimeRequest(
 - 必须带 `X-XD-Pages-Runtime: 1`。
 - 默认不返回 CORS header，仅支持 same-origin 调用。
 - 检查 `Origin`、`Sec-Fetch-Site` 等浏览器来源信号；跨站请求返回 `FORBIDDEN`。
+- 对 public 站点的 runtime path，仍使用平台 IP allowlist 做访问控制；该 allowlist 必须由 generated Worker 内联或绑定提供，不能依赖站点 assets 是否公开。
 - parse JSON body。
 - 校验 key、type、ttl。
 - 调 `createPagesRuntime({ env }).kv.get/put/delete`。
@@ -613,6 +652,7 @@ export const BINDINGS = {
   ASSETS: "ASSETS",
   KV_GATEWAY: "XD_PAGES_KV_GATEWAY",
   SITE_ID: "XD_PAGES_SITE_ID",
+  SITE_UUID: "XD_PAGES_SITE_UUID",
   ENV: "XD_PAGES_ENV",
   KV_CAPABILITY: "XD_PAGES_KV_CAPABILITY",
 };
@@ -648,6 +688,8 @@ UTF-8 后不超过 512 bytes
 允许 slash、中文、空格，由 storage key builder 编码
 ```
 
+`encodedUserKey` 使用 UTF-8 bytes 的 base64url 编码，保证可逆、无路径分隔符冲突，并避免 `%`、`/`、Unicode、空格等字符造成二义性。需要覆盖 slash、percent、Unicode、空格的编码测试。
+
 `expirationTtl` 规则：
 
 ```text
@@ -659,6 +701,8 @@ UTF-8 后不超过 512 bytes
 
 value 不做额外平台大小限制，遵循 Cloudflare KV 最大 value 25 MiB。超出底层限制时，gateway 将 Cloudflare 错误标准化为 `KV_VALUE_TOO_LARGE` 或 `KV_FAILED`。
 
+第一版不人为设置低于 Cloudflare KV 上限的 value size，但仍需要标准化底层超限错误。共享 namespace 容量、写入限流和 per-site quota 属于后续治理能力；在细粒度能力分级完成前，`kv=true` 必须显式开启，降低无意暴露写入面的风险。
+
 ## 安全边界
 
 平台承诺：
@@ -668,7 +712,8 @@ value 不做额外平台大小限制，遵循 Cloudflare KV 最大 value 25 MiB�
 - 子 Worker 拿不到真实 KV namespace binding。
 - gateway 强制 prefix，不信任业务传入的 `siteId`、`env`、`prefix`。
 - production/staging gateway、KV namespace 和 JWT secret 物理隔离。
-- public 站点页面可公开，但 v1 runtime KV endpoint 仍默认受 IP allowlist 保护。
+- public 站点页面可公开，但 v1 runtime KV endpoint 仍默认受平台 IP allowlist 保护。
+- 删除后同名重建站点会获得新的 `siteUuid` 和新的 KV prefix，不继承旧站点数据。
 
 平台不承诺：
 
@@ -688,6 +733,25 @@ if (url.pathname === "/set") {
 ```
 
 gateway 能保证这个接口只能写该站点自己的 prefix，不能写其它站点；但无法判断 owner 是否有意公开了自己的写能力。
+
+Browser KV threat model:
+
+```text
+same-origin:
+  SDK 默认只请求当前站点 origin 下的 runtime endpoint。
+
+CORS:
+  runtime endpoint 默认不返回 CORS header。
+
+CSRF:
+  runtime endpoint 要求 POST、JSON Content-Type、X-XD-Pages-Runtime header，并检查 Origin / Sec-Fetch-Site。
+
+XSS:
+  如果业务 SPA 出现 XSS，攻击脚本可调用 browser SDK 读写本站 KV。平台不承诺防止业务前端 XSS 后的本站数据滥用。
+
+用户权限:
+  v1 browser KV 是站点级能力，不是用户级能力；SDK 不提供登录态或 per-user 隔离。
+```
 
 ## 日志与敏感信息
 
@@ -725,6 +789,8 @@ deployment token
 - `API.md`：说明部署后 SPA runtime endpoint 行为和安全默认。
 - `pages-deploy.skill.md`：说明业务 SPA 如需 KV，需要安装 `@xd/pages-sdk`。
 - `apps/server/src/handlers/openapi.js`：更新 OpenAPI / x-libs / x-scripts 中与 KV 能力相关的说明。
+- worker preset 文档必须说明 `_worker.js` 需要自行 bundle，不能直接上传带裸 npm import 的源码。
+- 部署响应和 OpenAPI 需要提示：开启 `kv=true` 会让站点 Worker 持有本站 KV capability，worker preset 代码可滥用或泄漏本站能力。
 
 文档中不得出现真实 secret、真实 namespace id、Cloudflare account id 或内部 token。
 
@@ -739,16 +805,22 @@ deployment token
 - runtime adapter 对非 runtime path 返回 `null`。
 - runtime adapter 对 runtime path 不 fallback 到 `index.html`。
 - runtime adapter 校验 method、content-type、runtime header、body、key、ttl。
-- public SPA 的普通 assets 可访问，但 KV endpoint 仍受 IP allowlist 保护。
+- `kv` 未开启时不注入 gateway binding、capability 或 browser runtime endpoint。
+- `kv=true` 时才注入 gateway binding、capability 和 browser runtime endpoint。
+- public SPA 的普通 assets 可访问，但 KV endpoint 仍受平台 IP allowlist 保护。
 - gateway 验 JWT 的 `alg`、`kid`、`iss`、`aud`、`env`、`scope`。
+- gateway 拒绝 header `alg` 与 key registry entry 不一致的 token。
 - gateway 不信任请求 body 中的 `siteId`。
-- gateway 拼出的 storage key 包含 environment、siteId 和 encoded user key。
+- gateway 拼出的 storage key 包含 environment、siteUuid 和 encoded user key。
+- 删除后同名重建站点生成新的 `siteUuid`，不能读取旧站点 KV prefix。
+- user key 编码对 slash、percent、Unicode 和空格无冲突。
 - staging 子 Worker 绑定 `pages-kv-gateway-staging`，production 子 Worker 绑定 `pages-kv-gateway`。
+- 生成的 SPA Worker source 不包含未解析的 `@xd/*` 裸 import。
 - metadata、响应和日志不泄露 token、JWT、namespace id 或真实 secret。
 
 ## 后续迭代
 
-- `kv=off | worker | browser-read | browser-readwrite` 能力分级。
+- `kv=off | worker | browser-read | browser-readwrite` 细粒度能力分级。
 - gateway 在线检查 `siteGeneration`，支持主动吊销。
 - capability denylist / active list。
 - JWT 非对称签名升级。
