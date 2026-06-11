@@ -109,7 +109,7 @@ curl -X POST https://api.workers.xd.team/deploy \
 
 ### GET /list
 
-列出所有已部署站点。
+列出当前 token 名下的已部署站点。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；响应不会返回站点 token。
 
 **成功响应** `200`:
 
@@ -122,7 +122,8 @@ curl -X POST https://api.workers.xd.team/deploy \
       "preset": "static",
       "updatedAt": "2026-05-13T10:00:00.000Z"
     }
-  ]
+  ],
+  "filtered": true
 }
 ```
 

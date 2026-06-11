@@ -1,3 +1,5 @@
+import { jsonResponse } from '@xd/worker-kit';
+
 import {
   buildManifest,
   registerUploadSession,
@@ -10,19 +12,12 @@ import {
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 const VALID_PRESETS = ['static', 'spa', 'worker'];
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
 export async function handleDeploy(request, env) {
   const form = await request.formData();
 
   const name = form.get('name');
   if (!name || !NAME_RE.test(name)) {
-    return json(
+    return jsonResponse(
       {
         error: '无效的站点名称',
         field: 'name',
@@ -39,7 +34,7 @@ export async function handleDeploy(request, env) {
 
   const preset = form.get('preset') || 'static';
   if (!VALID_PRESETS.includes(preset)) {
-    return json(
+    return jsonResponse(
       {
         error: '无效的 preset',
         field: 'preset',
@@ -65,7 +60,7 @@ export async function handleDeploy(request, env) {
   }
 
   if (preset === 'worker' && !workerCode) {
-    return json(
+    return jsonResponse(
       {
         error: '缺少 _worker.js',
         field: 'files',
@@ -75,7 +70,7 @@ export async function handleDeploy(request, env) {
     );
   }
   if (fileEntries.length === 0 && preset !== 'worker') {
-    return json(
+    return jsonResponse(
       {
         error: '未收到文件',
         field: 'files',
@@ -86,14 +81,13 @@ export async function handleDeploy(request, env) {
   }
 
   const existing = await env.SITES.get(name, 'json');
-  if (existing && existing.token && userToken && existing.token !== userToken) {
-    return json(
+  if (existing && existing.token && existing.token !== userToken) {
+    return jsonResponse(
       {
         error: '站点名称已被占用',
         field: 'name',
         name,
-        owner: existing.token,
-        hint: `该名称已被 ${existing.token} 使用，请换一个名称`,
+        hint: '该名称已被其他部署者使用，请换一个名称或使用原 token',
       },
       409
     );
@@ -177,5 +171,5 @@ export async function handleDeploy(request, env) {
     );
   }
   if (warnings.length) result.warning = warnings.join(' ');
-  return json(result);
+  return jsonResponse(result);
 }

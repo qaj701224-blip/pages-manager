@@ -13,6 +13,11 @@ function requestOrigin(request) {
   return new URL(request.url).origin;
 }
 
+function urlHost(value) {
+  if (!value) return '';
+  return new URL(value).host;
+}
+
 export function getPublicConfig(request, env = {}) {
   const domainBase = env.DOMAIN_BASE || DEFAULT_DOMAIN_BASE;
   const domainLabel = env.DOMAIN_LABEL || '';
@@ -53,6 +58,8 @@ export function replacePublicText(value, config) {
   const replacements = [
     ['https://pages-manager.xd-cf-2022.workers.dev', config.managerDevBase || config.apiBase],
     ['https://api.workers.xd.team', config.apiBase],
+    ['`pages-manager`，绑定', `\`${config.managerWorkerName}\`，绑定`],
+    ['api.workers.xd.team', urlHost(config.apiBase)],
     ['https://pages-q2-report.xd-cf-2022.workers.dev', config.devUrl('q2-report') || ''],
     ['https://q2-report.workers.xd.team', config.siteUrl('q2-report')],
     ['https://my-app.workers.xd.team', config.siteUrl('my-app')],

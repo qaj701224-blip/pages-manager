@@ -136,7 +136,7 @@ AI:   ✅ 已发布: https://q2-report.workers.xd.team
 ## 安全
 
 - **IP 白名单**: 管理 API（除 `/openapi.json`、`/skill.md`、`/readme.md` 公开端点外）限制公司内网 IP 访问（CF-Connecting-IP），真实白名单由 `IP_ALLOWLIST` 在部署环境中配置；static/spa 子站会自动注入限制，worker 子站会注入 `env.IP_ALLOWLIST`，需在 `_worker.js` 中调用检查逻辑
-- **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证
+- **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证；`/list` 必须携带 token，且不会返回 token 字段
 - **Secret**: `CF_API_TOKEN` 是运行时高权限 token，必须通过 `wrangler secret put CF_API_TOKEN` 设置，不提交到 Git
 - **后续**: 可叠加 Cloudflare Access (SSO) 实现身份认证
 
@@ -166,57 +166,57 @@ AI:   ✅ 已发布: https://q2-report.workers.xd.team
 
 ```
 pages-manager/
-├── README.md              ← 本文档
-├── API.md                 ← HTTP API 接口文档
-├── pages-deploy.skill.md  ← AI Skill 定义
-├── .env                   ← 本地真实配置清单（不提交）
-├── docs/                  ← 技术文档
-│   ├── changelog/         ← 变更日志
-│   └── cloudflare-partial-zone-cname.md
+├── README.md
+├── API.md
+├── pages-deploy.skill.md
+├── pnpm-workspace.yaml
+├── apps/
+│   ├── server/
+│   │   ├── wrangler.template.toml
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── index.js
+│   │       ├── router.js
+│   │       ├── lib/
+│   │       │   ├── cf-api.js
+│   │       │   └── public-config.js
+│   │       └── handlers/
+│   │           ├── deploy.js
+│   │           ├── site.js
+│   │           ├── list.js
+│   │           └── health.js
+│   └── xdads-302/
+│       ├── wrangler.template.toml
+│       ├── package.json
+│       └── index.js
+├── packages/
+│   ├── ip-guard/
+│   └── worker-kit/
 ├── scripts/
-│   ├── deploy.sh          ← CLI 部署脚本
-│   ├── manage.sh          ← CLI 管理脚本（list / info / delete）
-│   └── migrate-domain.sh  ← 域名迁移脚本（一次性，从 .env 读取配置）
-├── server/                ← 管理 Worker 源码
-│   ├── wrangler.example.toml ← Worker 配置模板，真实 wrangler.toml 不提交
-│   ├── package.json
-│   └── src/
-│       ├── index.js       ← 入口，路由分发 + IP 白名单
-│       ├── router.js      ← 轻量路由器
-│       ├── lib/
-│       │   ├── cf-api.js  ← CF API 客户端（资产上传 + 脚本部署 + Route 绑定）
-│       │   └── ip.js      ← IP 白名单规则
-│       └── handlers/
-│           ├── deploy.js  ← POST /deploy
-│           ├── site.js    ← GET/DELETE /site/:name
-│           ├── list.js    ← GET /list
-│           └── health.js  ← GET /health
-├── xdads-302/             ← 旧域名 308 跳转 Worker
-│   ├── wrangler.example.toml
-│   └── index.js
-└── demos/                 ← 示例项目
-    ├── html-img/          ← 纯 HTML + SVG 图片
-    ├── vue-app/           ← Vue 3 + Vite 构建
-    ├── nuxt-app/          ← Nuxt 3 静态生成
-    └── api-demo/          ← 自定义 Worker（SSR 天气页面）
+│   ├── gen-wrangler.sh
+│   ├── deploy.sh
+│   ├── manage.sh
+│   └── migrate-domain.sh
+└── demos/
 ```
 
 ## 开发与部署
 
 ```bash
-cd server
+pnpm install
 
-# 本地开发
-npx wrangler dev
+# 本地开发管理 Worker
+pnpm --dir apps/server dev
 
-# 部署管理 Worker
-npx wrangler deploy
-
-# 管理 secrets
-npx wrangler secret put CF_API_TOKEN
+# 生成本地 Wrangler 配置后部署管理 Worker
+CLOUDFLARE_ACCOUNT_ID=example-account-id \
+SITES_KV_NAMESPACE_ID=example-kv-namespace-id \
+IP_ALLOWLIST=127.0.0.1,::1 \
+scripts/gen-wrangler.sh apps/server production
+pnpm --dir apps/server deploy
 ```
 
-真实 `server/wrangler.toml`、`xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets 生成 `server/wrangler.toml`。
+真实 `apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets 生成 `apps/server/wrangler.toml`。
 
 ## 路线图
 

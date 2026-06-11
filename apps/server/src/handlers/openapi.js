@@ -1,3 +1,4 @@
+import { ENV_GUARD_SOURCE } from '@xd/ip-guard';
 import { applyPublicConfig, getPublicConfig } from '../lib/public-config.js';
 
 const BASE_SPEC = {
@@ -15,7 +16,7 @@ const BASE_SPEC = {
       '格式: `pages_你的邮箱`（如 `pages_zhangsan@xd.com`）。' +
       '\n\nToken 用途:' +
       '\n- 标记站点归属，方便追溯谁部署了哪些站点' +
-      '\n- 通过 `GET /list?token=xxx` 或 `X-Pages-Token` 头筛选自己的站点' +
+      '\n- 通过 `GET /list?token=xxx` 或 `X-Pages-Token` 头查询自己的站点；`/list` 必须携带 token' +
       '\n- 如果未提供 token，部署仍会成功，但响应会包含 warning 提醒设置' +
       '\n\n**重要**: AI 助手应在首次使用时引导用户生成 token（基于邮箱），并将 token 持久化到本地记忆中，后续所有请求自动携带。' +
       '\n\n**域名说明**: 站点域名为 `workers.xd.team`，请以本 spec 中 `servers[0].url` 和实际返回的 URL 为准，不要硬编码域名。',
@@ -31,7 +32,7 @@ const BASE_SPEC = {
           '\n\n使用 worker preset 时，上传文件中必须包含一个 filename=_worker.js 的文件作为 Worker 入口脚本。' +
           '该脚本可通过 env.ASSETS.fetch(request) 访问同时上传的其他静态文件。' +
           '\n\n站点名即 URL 前缀（如 name=my-app → https://my-app.workers.xd.team）。部署前应询问用户想要的站点名。' +
-          '\n\n**归属保护**: 同名站点已被其他用户（不同 token）占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
+          '\n\n**归属保护**: 同名站点已被其他用户（未携带 token 或不同 token）占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
           '\n\n**部署记录**: 部署成功后，AI 应在项目目录写入 `.pages.json` 文件记录部署信息（name、url、devUrl、preset、token、updatedAt），' +
           '下次部署同一项目时先读取此文件，自动使用已有的站点名，无需再次询问。文件示例: `{"name":"my-app","url":"https://my-app.workers.xd.team","preset":"static"}`' +
           '\n\n建议携带 X-Pages-Token 头标记部署者身份，否则响应会包含 warning 字段提醒设置。',
@@ -176,8 +177,7 @@ const BASE_SPEC = {
                   error: '站点名称已被占用',
                   field: 'name',
                   name: 'my-app',
-                  owner: 'pages_other@xd.com',
-                  hint: '该名称已被 pages_other@xd.com 使用，请换一个名称',
+                  hint: '该名称已被其他部署者使用，请换一个名称或使用原 token',
                 },
               },
             },
@@ -190,14 +190,14 @@ const BASE_SPEC = {
       get: {
         summary: '列出已部署站点',
         description:
-          '返回站点列表。支持通过 token 参数或 X-Pages-Token 头筛选特定用户的站点。' +
-          '\n\n不传 token 时返回所有站点；传 token 时只返回该 token 部署的站点。',
+          '返回当前 token 名下的站点列表。必须通过 token 参数或 X-Pages-Token 头提供部署者 token。' +
+          '\n\n响应不会返回站点 metadata 中保存的 token。',
         parameters: [
           { $ref: '#/components/parameters/PagesToken' },
           {
             name: 'token',
             in: 'query',
-            description: '按部署者 token 筛选站点（备选方式，也可用 X-Pages-Token 头）',
+            description: '部署者 token（备选方式，也可用 X-Pages-Token 头）。未提供时返回 400。',
             schema: { type: 'string' },
             example: 'pages_zhangsan@xd.com',
           },
@@ -216,7 +216,7 @@ const BASE_SPEC = {
                     },
                     filtered: {
                       type: 'boolean',
-                      description: '是否按 token 筛选了结果',
+                      description: '是否按 token 筛选了结果。当前接口要求 token，因此成功响应恒为 true。',
                     },
                   },
                 },
@@ -226,7 +226,6 @@ const BASE_SPEC = {
                       name: 'q2-report',
                       url: 'https://q2-report.workers.xd.team',
                       preset: 'static',
-                      token: 'pages_zhangsan@xd.com',
                       updatedAt: '2026-05-13T10:00:00.000Z',
                     },
                   ],
@@ -235,6 +234,7 @@ const BASE_SPEC = {
               },
             },
           },
+          400: { $ref: '#/components/responses/ValidationError' },
           403: { $ref: '#/components/responses/Forbidden' },
         },
       },
@@ -382,7 +382,6 @@ const BASE_SPEC = {
           name: { type: 'string' },
           url: { type: 'string', format: 'uri' },
           preset: { type: 'string', enum: ['static', 'spa', 'worker'] },
-          token: { type: 'string', description: '部署者 token（可能为 null）' },
           updatedAt: { type: 'string', format: 'date-time' },
         },
       },
@@ -486,48 +485,7 @@ const BASE_SPEC = {
         '在 Worker fetch handler 开头调用 checkIP(request, env)，' +
         '返回非 null 则直接 return（403）。',
       usage: 'const blocked = checkIP(request, env); if (blocked) return blocked;',
-      source: [
-        'function getAllowed(env) {',
-        '  return String(env.IP_ALLOWLIST || "")',
-        '    .split(",")',
-        '    .map((entry) => entry.trim())',
-        '    .filter(Boolean);',
-        '}',
-        '',
-        'function ipToInt(ip) {',
-        '  return ip.split(".").reduce((acc, oct) => (acc << 8) + Number(oct), 0) >>> 0;',
-        '}',
-        '',
-        'function toRules(allowed) {',
-        '  return allowed.map((entry) => {',
-        '  if (entry.includes(":")) return { type: "exact6", value: entry };',
-        '  if (entry.includes("/")) {',
-        '    const [base, bits] = entry.split("/");',
-        '    const mask = ~((1 << (32 - Number(bits))) - 1) >>> 0;',
-        '    return { type: "cidr", network: ipToInt(base) & mask, mask };',
-        '  }',
-        '  return { type: "exact4", value: ipToInt(entry) };',
-        '  });',
-        '}',
-        '',
-        'function checkIP(request, env) {',
-        '  const rules = toRules(getAllowed(env));',
-        '  const ip = request.headers.get("CF-Connecting-IP");',
-        '  if (!ip) return null;',
-        '  if (ip.includes(":")) {',
-        '    return rules.some((r) => r.type === "exact6" && r.value === ip)',
-        '      ? null',
-        '      : new Response("IP not allowed", { status: 403 });',
-        '  }',
-        '  const n = ipToInt(ip);',
-        '  const ok = rules.some((r) => {',
-        '    if (r.type === "exact4") return r.value === n;',
-        '    if (r.type === "cidr") return (n & r.mask) === r.network;',
-        '    return false;',
-        '  });',
-        '  return ok ? null : new Response("IP not allowed", { status: 403 });',
-        '}',
-      ].join('\n'),
+      source: ENV_GUARD_SOURCE,
     },
   },
   'x-scripts': {
@@ -626,8 +584,20 @@ const BASE_SPEC = {
         '',
         'case "$CMD" in',
         '  list)',
-        '    curl -s "${TOKEN_HEADER[@]}" "${API}/list" | python3 -m json.tool 2>/dev/null \\',
-        '      || curl -s "${TOKEN_HEADER[@]}" "${API}/list"',
+        '    if [ -z "${PAGES_TOKEN:-}" ]; then',
+        '      echo "错误: 请先设置 PAGES_TOKEN=pages_你的邮箱"',
+        '      exit 1',
+        '    fi',
+        '    RESPONSE=$(curl -s "${TOKEN_HEADER[@]}" -w "\\n%{http_code}" "${API}/list")',
+        '    HTTP_CODE=$(echo "$RESPONSE" | tail -1)',
+        '    BODY=$(echo "$RESPONSE" | sed \'$d\')',
+        '    if [ "$HTTP_CODE" = "200" ]; then',
+        '      echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"',
+        '    else',
+        '      echo "❌ 查询失败 (HTTP ${HTTP_CODE})"',
+        '      echo "$BODY"',
+        '      exit 1',
+        '    fi',
         '    ;;',
         '  info)',
         '    NAME="${2:-}"',
