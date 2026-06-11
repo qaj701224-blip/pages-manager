@@ -118,14 +118,15 @@ gateway 代码只访问 `env.SITE_DATA`，不在运行时选择 production/stagi
 4. gateway 校验 claims.env === env.XD_PAGES_ENV
 ```
 
-真实 KV key 使用不可变站点 UUID，而不是站点名。站点名可以被删除后重新注册，不能作为数据隔离的唯一前缀。`siteUuid` 在站点首次创建时生成并写入站点 metadata；同 token 覆盖部署保留原 `siteUuid`；删除后同名重建必须生成新的 `siteUuid`。旧数据清理可以 best-effort，但新站点隔离不能依赖清理成功。
+真实 KV key 使用不可变站点 UUID，而不是只使用站点名。站点名可以被删除后重新注册，不能作为数据隔离的唯一前缀。`siteUuid` 在站点首次创建时生成并写入站点 metadata；同 token 覆盖部署保留原 `siteUuid`；删除后同名重建必须生成新的 `siteUuid`。旧数据清理可以 best-effort，但新站点隔离不能依赖清理成功。
 
-真实 KV key 仍保留环境前缀，作为导出、排障和误绑定检测的辅助信息：
+由于 production 和 staging 使用物理不同的 KV namespace，真实 KV key 不再带 `production/` 或 `staging/` 环境前缀。为兼顾排障可读性和 key 长度，真实 key 使用短路径段，并同时包含可读站点 slug 和不可变 UUID：
 
 ```text
-production/sites/{siteUuid}/kv/{encodedUserKey}
-staging/sites/{siteUuid}/kv/{encodedUserKey}
+s/{siteSlug}--{siteUuid}/k/{encodedUserKey}
 ```
+
+`siteSlug` 仅用于可读性，不参与安全边界；`siteUuid` 才是隔离锚点。`siteUuid` 在 storage key 中使用无连字符 UUID，例如 `4b4c8e8361ef4b47b64f5c20a7db7c47`，减少 key 长度。
 
 ## Runtime Endpoint
 
@@ -346,7 +347,7 @@ payload 第一版不加 `exp`，避免引入续签机制：
   "aud": "pages-kv-gateway",
   "env": "production",
   "siteId": "q2-report",
-  "siteUuid": "4b4c8e83-61ef-4b47-b64f-5c20a7db7c47",
+  "siteUuid": "4b4c8e8361ef4b47b64f5c20a7db7c47",
   "siteGeneration": 1,
   "scope": ["kv:get", "kv:put", "kv:delete"],
   "iat": 1781111111,
@@ -441,7 +442,7 @@ gateway 根据 claims 和 user key 拼真实 key：
 
 ```js
 buildStorageKey({
-  environment: env.XD_PAGES_ENV,
+  siteSlug: claims.siteId,
   siteUuid: claims.siteUuid,
   userKey: body.key,
 });
@@ -681,14 +682,15 @@ key 规则：
 
 ```text
 类型: string
-UTF-8 后不超过 512 bytes
+userKey UTF-8 后不超过 256 bytes
+最终 storageKey UTF-8 后不超过 512 bytes
 禁止空字符串
 禁止 "." 和 ".."
 禁止平台保留前缀 ".xd-pages/"、"__xd_pages/"
 允许 slash、中文、空格，由 storage key builder 编码
 ```
 
-`encodedUserKey` 使用 UTF-8 bytes 的 base64url 编码，保证可逆、无路径分隔符冲突，并避免 `%`、`/`、Unicode、空格等字符造成二义性。需要覆盖 slash、percent、Unicode、空格的编码测试。
+`encodedUserKey` 使用 UTF-8 bytes 的 base64url 编码，保证可逆、无路径分隔符冲突，并避免 `%`、`/`、Unicode、空格等字符造成二义性。base64url 会膨胀 key 长度，因此 v1 将业务 `userKey` 限制为 256 bytes，并在 gateway 构造 storage key 后再次校验最终 key 不超过 Cloudflare KV 的 512 bytes 限制。需要覆盖 slash、percent、Unicode、空格和接近长度上限的编码测试。
 
 `expirationTtl` 规则：
 
@@ -811,7 +813,7 @@ deployment token
 - gateway 验 JWT 的 `alg`、`kid`、`iss`、`aud`、`env`、`scope`。
 - gateway 拒绝 header `alg` 与 key registry entry 不一致的 token。
 - gateway 不信任请求 body 中的 `siteId`。
-- gateway 拼出的 storage key 包含 environment、siteUuid 和 encoded user key。
+- gateway 拼出的 storage key 使用 `s/{siteSlug}--{siteUuid}/k/{encodedUserKey}` 结构。
 - 删除后同名重建站点生成新的 `siteUuid`，不能读取旧站点 KV prefix。
 - user key 编码对 slash、percent、Unicode 和空格无冲突。
 - staging 子 Worker 绑定 `pages-kv-gateway-staging`，production 子 Worker 绑定 `pages-kv-gateway`。
