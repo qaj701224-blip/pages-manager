@@ -7,8 +7,8 @@ import { handleHealth } from './handlers/health.js';
 import { handleOpenAPI } from './handlers/openapi.js';
 import { renderSkill } from './handlers/skill.js';
 import { getPublicConfig } from './lib/public-config.js';
-import README from '../../README.md';
-import SKILL from '../../pages-deploy.skill.md';
+import README from '../../../README.md';
+import SKILL from '../../../pages-deploy.skill.md';
 
 const router = new Router();
 router.post('/deploy', handleDeploy);

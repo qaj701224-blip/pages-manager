@@ -1,0 +1,6 @@
+packages:
+  - apps/*
+  - packages/*
+
+catalog:
+  wrangler: ^4.91.0

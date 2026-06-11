@@ -9,7 +9,7 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
-    "test": "node --test server/src/**/*.test.js",
+    "test": "node --test \"apps/server/src/**/*.test.js\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "fix": "eslint --fix . && prettier --write ."
