@@ -39,10 +39,12 @@ fi
 
 DIR="$(cd "$DIR" && pwd)"
 
-CURL_ARGS=(-s -w "\n%{http_code}" -X POST)
-if [ -n "${PAGES_TOKEN:-}" ]; then
-  CURL_ARGS+=(-H "X-Pages-Token: ${PAGES_TOKEN}")
+if [ -z "${PAGES_TOKEN:-}" ]; then
+  echo "错误: 请先设置 PAGES_TOKEN=pages_你的邮箱"
+  exit 1
 fi
+
+CURL_ARGS=(-s -w "\n%{http_code}" -X POST -H "X-Pages-Token: ${PAGES_TOKEN}")
 CURL_ARGS+=(-F "name=${NAME}")
 CURL_ARGS+=(-F "preset=${PRESET}")
 

@@ -1,9 +1,4 @@
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
+import { jsonResponse } from '@xd/worker-kit';
 
 function withoutToken(site) {
   const visibleSite = { ...site };
@@ -16,7 +11,7 @@ export async function handleList(request, env) {
   const filterToken = (url.searchParams.get('token') || request.headers.get('X-Pages-Token') || '').trim();
 
   if (!filterToken) {
-    return json(
+    return jsonResponse(
       {
         error: '缺少 token',
         hint: '请通过 X-Pages-Token 请求头或 token 查询参数提供部署者 token',
@@ -34,5 +29,5 @@ export async function handleList(request, env) {
     .filter((site) => site.token === filterToken)
     .map(withoutToken);
 
-  return json({ sites, filtered: true });
+  return jsonResponse({ sites, filtered: true });
 }

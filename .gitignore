@@ -17,8 +17,8 @@ dist/
 ### Cloudflare / Wrangler
 .wrangler/
 .mf/
-server/wrangler.toml
-xdads-302/wrangler.toml
+apps/server/wrangler.toml
+apps/xdads-302/wrangler.toml
 
 ### Claude Code (local settings, not shared)
 .claude/settings.local.json

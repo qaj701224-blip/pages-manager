@@ -23,12 +23,9 @@ jobs:
         with:
           node-version: 22.12.0
           cache: pnpm
-          cache-dependency-path: |
-            pnpm-lock.yaml
-            server/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --dir server install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm test
 
@@ -38,43 +35,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
-        run: |
-          set -euo pipefail
-          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
-          : "${SITES_KV_NAMESPACE_ID:?SITES_KV_NAMESPACE_ID is required}"
-          : "${IP_ALLOWLIST:?IP_ALLOWLIST is required}"
-          cat > server/wrangler.toml <<EOF
-          name = "pages-manager-staging"
-          main = "src/index.js"
-          compatibility_date = "2025-05-01"
-          account_id = "${CLOUDFLARE_ACCOUNT_ID}"
-          workers_dev = true
-
-          [vars]
-          CF_ACCOUNT_ID = "${CLOUDFLARE_ACCOUNT_ID}"
-          PAGES_MANAGER_WORKER_NAME = "pages-manager-staging"
-          PUBLIC_ENVIRONMENT = "staging"
-          PUBLIC_API_BASE = "https://api-staging.workers.xd.team"
-          PUBLIC_MANAGER_DEV_BASE = "https://pages-manager-staging.xd-cf-2022.workers.dev"
-          DOMAIN_BASE = "workers.xd.team"
-          DOMAIN_LABEL = "-staging"
-          WORKER_PREFIX = "pages-staging-"
-          WORKERS_DEV_SUBDOMAIN = "xd-cf-2022"
-          IP_ALLOWLIST = "${IP_ALLOWLIST}"
-
-          [[rules]]
-          type = "Text"
-          globs = ["**/*.md"]
-          fallthrough = true
-
-          [[kv_namespaces]]
-          binding = "SITES"
-          id = "${SITES_KV_NAMESPACE_ID}"
-
-          [[routes]]
-          pattern = "api-staging.workers.xd.team"
-          custom_domain = true
-          EOF
+        run: scripts/gen-wrangler.sh apps/server staging
 
       - name: Validate Worker secrets
         shell: bash
@@ -91,7 +52,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir server exec wrangler deploy
+        run: pnpm --dir apps/server exec wrangler deploy
 
       - name: Inject Worker secrets
         shell: bash
@@ -102,5 +63,5 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s' "$CF_ZONE_ID_NEW" | pnpm --dir server exec wrangler secret put CF_ZONE_ID_NEW
-          printf '%s' "$CF_API_TOKEN" | pnpm --dir server exec wrangler secret put CF_API_TOKEN
+          printf '%s' "$CF_ZONE_ID_NEW" | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
+          printf '%s' "$CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
