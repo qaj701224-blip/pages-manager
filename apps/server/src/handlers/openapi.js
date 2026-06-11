@@ -12,7 +12,7 @@ const BASE_SPEC = {
       '\n\n域名格式: `https://{name}.workers.xd.team`' +
       '\n\n部署必须携带 `X-Pages-Token` 请求头或 `token` 表单字段。同一 token 可覆盖自己创建的同名站点，无需先删除；不同 token 不能互相覆盖。' +
       '\n\n## Token 身份标记' +
-      '\n\n所有部署和管理请求都必须携带 `X-Pages-Token` 请求头或等价 token 参数，用于标记部署者身份。' +
+      '\n\n部署、列表、站点详情和删除请求都必须携带 `X-Pages-Token` 请求头或等价 token 参数，用于标记部署者身份。' +
       '格式: `pages_你的邮箱`（如 `pages_zhangsan@xd.com`）。' +
       '\n\nToken 用途:' +
       '\n- 标记站点归属，方便追溯谁部署了哪些站点' +
@@ -190,13 +190,7 @@ const BASE_SPEC = {
           '\n\n响应不会返回站点 metadata 中保存的 token。',
         parameters: [
           { $ref: '#/components/parameters/PagesToken' },
-          {
-            name: 'token',
-            in: 'query',
-            description: '部署者 token（备选方式，也可用 X-Pages-Token 头）。未提供时返回 400。',
-            schema: { type: 'string' },
-            example: 'pages_zhangsan@xd.com',
-          },
+          { $ref: '#/components/parameters/PagesTokenQuery' },
         ],
         responses: {
           200: {
@@ -238,8 +232,12 @@ const BASE_SPEC = {
     '/site/{name}': {
       get: {
         summary: '查询站点详情',
-        description: '返回指定站点的完整元数据，包含部署者 token、Worker 名称、文件数、创建和更新时间。',
-        parameters: [{ $ref: '#/components/parameters/SiteName' }],
+        description: '返回当前 token 名下指定站点的完整元数据，包含部署者 token、Worker 名称、文件数、创建和更新时间。缺少 token 时返回 400；token 不匹配时返回 403。',
+        parameters: [
+          { $ref: '#/components/parameters/SiteName' },
+          { $ref: '#/components/parameters/PagesToken' },
+          { $ref: '#/components/parameters/PagesTokenQuery' },
+        ],
         responses: {
           200: {
             description: '站点详情',
@@ -260,6 +258,7 @@ const BASE_SPEC = {
               },
             },
           },
+          400: { $ref: '#/components/responses/ValidationError' },
           403: { $ref: '#/components/responses/Forbidden' },
           404: {
             description: '站点不存在',
@@ -278,8 +277,12 @@ const BASE_SPEC = {
       },
       delete: {
         summary: '删除站点',
-        description: '删除指定站点的 Worker 和域名绑定，同时清除 KV 中的元数据。此操作不可逆。',
-        parameters: [{ $ref: '#/components/parameters/SiteName' }],
+        description: '删除当前 token 名下指定站点的 Worker 和域名绑定，同时清除 KV 中的元数据。缺少 token 时返回 400；token 不匹配时返回 403。此操作不可逆。',
+        parameters: [
+          { $ref: '#/components/parameters/SiteName' },
+          { $ref: '#/components/parameters/PagesToken' },
+          { $ref: '#/components/parameters/PagesTokenQuery' },
+        ],
         responses: {
           200: {
             description: '删除成功',
@@ -296,6 +299,7 @@ const BASE_SPEC = {
               },
             },
           },
+          400: { $ref: '#/components/responses/ValidationError' },
           403: { $ref: '#/components/responses/Forbidden' },
           404: {
             description: '站点不存在',
@@ -355,6 +359,14 @@ const BASE_SPEC = {
         description:
           '部署者身份标记。格式: pages_你的邮箱（如 pages_zhangsan@xd.com）。' +
           '首次使用时，AI 应引导用户提供邮箱，生成 token 并持久化到本地记忆中，后续所有请求自动携带。',
+        schema: { type: 'string' },
+        example: 'pages_zhangsan@xd.com',
+      },
+      PagesTokenQuery: {
+        name: 'token',
+        in: 'query',
+        required: false,
+        description: '部署者 token 查询参数（备选方式，优先使用 X-Pages-Token 头）。未提供 token 时返回 400。',
         schema: { type: 'string' },
         example: 'pages_zhangsan@xd.com',
       },
@@ -576,17 +588,16 @@ const BASE_SPEC = {
         '',
         'CMD="${1:-}"',
         'API="${PAGES_API:-https://api.workers.xd.team}"',
-        'TOKEN_HEADER=()',
-        'if [ -n "${PAGES_TOKEN:-}" ]; then',
-        '  TOKEN_HEADER=(-H "X-Pages-Token: ${PAGES_TOKEN}")',
+        '',
+        'if [ -z "${PAGES_TOKEN:-}" ]; then',
+        '  echo "错误: 请先设置 PAGES_TOKEN=pages_你的邮箱"',
+        '  exit 1',
         'fi',
+        '',
+        'TOKEN_HEADER=(-H "X-Pages-Token: ${PAGES_TOKEN}")',
         '',
         'case "$CMD" in',
         '  list)',
-        '    if [ -z "${PAGES_TOKEN:-}" ]; then',
-        '      echo "错误: 请先设置 PAGES_TOKEN=pages_你的邮箱"',
-        '      exit 1',
-        '    fi',
         '    RESPONSE=$(curl -s "${TOKEN_HEADER[@]}" -w "\\n%{http_code}" "${API}/list")',
         '    HTTP_CODE=$(echo "$RESPONSE" | tail -1)',
         '    BODY=$(echo "$RESPONSE" | sed \'$d\')',
@@ -607,7 +618,8 @@ const BASE_SPEC = {
         '    if [ "$HTTP_CODE" = "200" ]; then',
         '      echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"',
         '    else',
-        '      echo "站点 \'${NAME}\' 不存在"',
+        '      echo "❌ 查询失败 (HTTP ${HTTP_CODE})"',
+        '      echo "$BODY"',
         '      exit 1',
         '    fi',
         '    ;;',

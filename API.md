@@ -12,11 +12,12 @@ https://api.workers.xd.team
 
 管理 API 仅限公司内网 IP 访问（基于 `CF-Connecting-IP` 白名单）。
 
-`X-Pages-Token` / `PAGES_TOKEN` 是站点归属标记，不是强认证。`/deploy` 和 `/list` 都必须携带 token。
+`X-Pages-Token` / `PAGES_TOKEN` 是站点归属标记，不是强认证。`/deploy`、`/list`、`/site/:name` 查询和删除都必须携带 token。
 
 - `/deploy` 必须携带 `X-Pages-Token: pages_你的邮箱` 请求头，或使用 `token` 表单字段作为备选方式；未携带 token 会返回 `400`。
 - 同名站点已有 owner token 时，只有携带原 token 的请求可以覆盖部署；携带不同 token 会返回 `409`。
 - `/list` 必须携带 token，只返回当前 token 名下站点，且不会返回 token 字段。
+- `/site/:name` 查询和删除必须携带 token，只允许操作当前 token 名下站点；token 不匹配会返回 `403`。
 
 ---
 
@@ -168,7 +169,7 @@ curl -X POST https://api.workers.xd.team/deploy \
 
 ### GET /site/:name
 
-查询单个站点详情。
+查询当前 token 名下的单个站点详情。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；token 不匹配时返回 `403`。
 
 **成功响应** `200`:
 
@@ -194,7 +195,7 @@ curl -X POST https://api.workers.xd.team/deploy \
 
 ### DELETE /site/:name
 
-删除站点及其 Worker。
+删除当前 token 名下的站点及其 Worker。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；token 不匹配时返回 `403`。
 
 **成功响应** `200`:
 

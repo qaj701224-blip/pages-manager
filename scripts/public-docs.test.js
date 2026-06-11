@@ -35,10 +35,14 @@ test('public deploy curl examples include X-Pages-Token', () => {
 test('README deploy script examples include PAGES_TOKEN', () => {
   const readme = readDoc('README.md');
   const deployScriptCommands = readme.match(/(?:PAGES_TOKEN=[^\s]+ )?bash scripts\/deploy\.sh [^\n]+/g) || [];
+  const manageScriptCommands = readme.match(/(?:PAGES_TOKEN=[^\s]+ )?bash scripts\/manage\.sh (?:list|info|delete)[^\n]*/g) || [];
 
   assert.equal(deployScriptCommands.length, 3);
   for (const command of deployScriptCommands) {
     assert.match(command, /^PAGES_TOKEN=pages_[^\s]+ bash scripts\/deploy\.sh /);
   }
-  assert.match(readme, /PAGES_TOKEN=pages_[^\s]+ bash scripts\/manage\.sh list/);
+  assert.equal(manageScriptCommands.length, 3);
+  for (const command of manageScriptCommands) {
+    assert.match(command, /^PAGES_TOKEN=pages_[^\s]+ bash scripts\/manage\.sh /);
+  }
 });

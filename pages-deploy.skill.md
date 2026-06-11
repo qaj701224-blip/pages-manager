@@ -60,10 +60,10 @@ PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-deploy.sh <name> <dir> [--pr
 PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh list
 
 # 查看站点详情
-bash ~/.xd-pages/pages-manage.sh info <name>
+PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh info <name>
 
 # 删除站点
-bash ~/.xd-pages/pages-manage.sh delete <name>
+PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh delete <name>
 ```
 
 ## 判断 preset（自动完成，不要问用户）

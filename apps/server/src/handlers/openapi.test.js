@@ -75,3 +75,22 @@ test('manage list script requires token and fails on non-200 responses', () => {
   assert.match(manageScript, /HTTP_CODE=\$\(echo "\$RESPONSE" \| tail -1\)/);
   assert.match(manageScript, /查询失败/);
 });
+
+test('openapi documents site detail and delete as owner-token protected', () => {
+  const spec = buildOpenAPISpec(new Request('https://api.workers.xd.team/openapi.json'), {});
+  const site = spec.paths['/site/{name}'];
+  const getParameterRefs = site.get.parameters.map((parameter) => parameter.$ref || parameter.name);
+  const deleteParameterRefs = site.delete.parameters.map((parameter) => parameter.$ref || parameter.name);
+  const manageScript = spec['x-scripts'].manage.source;
+
+  assert.ok(getParameterRefs.includes('#/components/parameters/PagesToken'));
+  assert.ok(deleteParameterRefs.includes('#/components/parameters/PagesToken'));
+  assert.ok(getParameterRefs.includes('#/components/parameters/PagesTokenQuery'));
+  assert.ok(deleteParameterRefs.includes('#/components/parameters/PagesTokenQuery'));
+  assert.match(site.get.description, /当前 token/);
+  assert.match(site.delete.description, /当前 token/);
+  assert.match(manageScript, /if \[ -z "\$\{PAGES_TOKEN:-\}" \]; then/);
+  assert.match(manageScript, /查询失败/);
+  assert.doesNotMatch(manageScript, /站点 .* 不存在/);
+  assert.doesNotMatch(manageScript, /if \[ -n "\$\{PAGES_TOKEN:-\}" \]; then/);
+});

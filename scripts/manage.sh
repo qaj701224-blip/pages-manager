@@ -3,10 +3,13 @@ set -euo pipefail
 
 CMD="${1:-}"
 API="${PAGES_API:-https://api.workers.xd.team}"
-TOKEN_HEADER=()
-if [ -n "${PAGES_TOKEN:-}" ]; then
-  TOKEN_HEADER=(-H "X-Pages-Token: ${PAGES_TOKEN}")
+
+if [ -z "${PAGES_TOKEN:-}" ]; then
+  echo "错误: 请先设置 PAGES_TOKEN=pages_你的邮箱"
+  exit 1
 fi
+
+TOKEN_HEADER=(-H "X-Pages-Token: ${PAGES_TOKEN}")
 
 case "$CMD" in
   list)
@@ -25,7 +28,8 @@ case "$CMD" in
     if [ "$HTTP_CODE" = "200" ]; then
       echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
     else
-      echo "站点 '${NAME}' 不存在"
+      echo "❌ 查询失败 (HTTP ${HTTP_CODE})"
+      echo "$BODY"
       exit 1
     fi
     ;;
