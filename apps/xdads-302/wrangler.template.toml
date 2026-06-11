@@ -1,7 +1,7 @@
 name = "xdads-302"
 main = "index.js"
 compatibility_date = "2025-05-01"
-account_id = "<CLOUDFLARE_ACCOUNT_ID>"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
 
 [[routes]]
 pattern = "*-page.xd-ads.com/*"

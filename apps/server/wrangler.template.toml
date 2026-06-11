@@ -1,0 +1,34 @@
+name = "__WORKER_NAME__"
+main = "src/index.js"
+compatibility_date = "2025-05-01"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = true
+
+[vars]
+CF_ACCOUNT_ID = "__CLOUDFLARE_ACCOUNT_ID__"
+PAGES_MANAGER_WORKER_NAME = "__WORKER_NAME__"
+PUBLIC_ENVIRONMENT = "__PUBLIC_ENVIRONMENT__"
+PUBLIC_API_BASE = "__PUBLIC_API_BASE__"
+PUBLIC_MANAGER_DEV_BASE = "__PUBLIC_MANAGER_DEV_BASE__"
+DOMAIN_BASE = "__DOMAIN_BASE__"
+DOMAIN_LABEL = "__DOMAIN_LABEL__"
+WORKER_PREFIX = "__WORKER_PREFIX__"
+WORKERS_DEV_SUBDOMAIN = "__WORKERS_DEV_SUBDOMAIN__"
+IP_ALLOWLIST = "__IP_ALLOWLIST__"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.md"]
+fallthrough = true
+
+[[kv_namespaces]]
+binding = "SITES"
+id = "__SITES_KV_NAMESPACE_ID__"
+
+[[routes]]
+pattern = "__API_ROUTE__"
+custom_domain = true
+
+# Runtime secrets, set outside the repository:
+# npx wrangler secret put CF_ZONE_ID_NEW
+# npx wrangler secret put CF_API_TOKEN

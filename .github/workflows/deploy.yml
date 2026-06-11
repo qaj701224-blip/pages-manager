@@ -24,6 +24,8 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
 
       - name: Generate Wrangler config
         shell: bash
@@ -31,43 +33,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
-        run: |
-          set -euo pipefail
-          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
-          : "${SITES_KV_NAMESPACE_ID:?SITES_KV_NAMESPACE_ID is required}"
-          : "${IP_ALLOWLIST:?IP_ALLOWLIST is required}"
-          cat > apps/server/wrangler.toml <<EOF
-          name = "pages-manager"
-          main = "src/index.js"
-          compatibility_date = "2025-05-01"
-          account_id = "${CLOUDFLARE_ACCOUNT_ID}"
-          workers_dev = true
-
-          [vars]
-          CF_ACCOUNT_ID = "${CLOUDFLARE_ACCOUNT_ID}"
-          PAGES_MANAGER_WORKER_NAME = "pages-manager"
-          PUBLIC_ENVIRONMENT = "production"
-          PUBLIC_API_BASE = "https://api.workers.xd.team"
-          PUBLIC_MANAGER_DEV_BASE = "https://pages-manager.xd-cf-2022.workers.dev"
-          DOMAIN_BASE = "workers.xd.team"
-          DOMAIN_LABEL = ""
-          WORKER_PREFIX = "pages-"
-          WORKERS_DEV_SUBDOMAIN = "xd-cf-2022"
-          IP_ALLOWLIST = "${IP_ALLOWLIST}"
-
-          [[rules]]
-          type = "Text"
-          globs = ["**/*.md"]
-          fallthrough = true
-
-          [[kv_namespaces]]
-          binding = "SITES"
-          id = "${SITES_KV_NAMESPACE_ID}"
-
-          [[routes]]
-          pattern = "api.workers.xd.team"
-          custom_domain = true
-          EOF
+        run: scripts/gen-wrangler.sh apps/server production
 
       - name: Validate Worker secrets
         shell: bash
