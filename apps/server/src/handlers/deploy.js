@@ -29,7 +29,19 @@ export async function handleDeploy(request, env) {
     );
   }
 
-  const userToken = request.headers.get('X-Pages-Token') || form.get('token') || null;
+  const tokenValue = request.headers.get('X-Pages-Token') || form.get('token') || '';
+  const userToken = typeof tokenValue === 'string' ? tokenValue.trim() : '';
+  if (!userToken) {
+    return jsonResponse(
+      {
+        error: '缺少部署者 token',
+        field: 'token',
+        hint: '请通过 X-Pages-Token 请求头或 token 表单字段提供部署者 token',
+      },
+      400
+    );
+  }
+
   const ipRestrict = form.get('ip_restrict') !== 'false';
 
   const preset = form.get('preset') || 'static';
@@ -159,11 +171,6 @@ export async function handleDeploy(request, env) {
     ipRestrict,
   };
   const warnings = [];
-  if (!userToken) {
-    warnings.push(
-      '未提供 token。建议设置 X-Pages-Token 请求头（格式: pages_你的邮箱），用于追溯部署记录和查询自己的站点。请让 AI 在本地记住你的 token。'
-    );
-  }
   if (ipRestrict && preset === 'worker') {
     warnings.push(
       'worker preset 已注入 env.IP_ALLOWLIST，但不会改写 _worker.js。' +

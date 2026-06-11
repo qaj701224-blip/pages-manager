@@ -10,14 +10,14 @@ const BASE_SPEC = {
       '支持三种 preset: static（纯静态）、spa（单页应用，404 回退 index.html）、worker（自定义 Worker 入口，可做 SSR/API 代理）。' +
       '\n\n站点名称规则: 小写字母、数字、连字符，2-50 字符，首尾不能是连字符。正则: `^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$`' +
       '\n\n域名格式: `https://{name}.workers.xd.team`' +
-      '\n\n同名站点可直接覆盖部署，无需先删除。' +
+      '\n\n部署必须携带 `X-Pages-Token` 请求头或 `token` 表单字段。同一 token 可覆盖自己创建的同名站点，无需先删除；不同 token 不能互相覆盖。' +
       '\n\n## Token 身份标记' +
-      '\n\n所有请求建议携带 `X-Pages-Token` 请求头，用于标记部署者身份。' +
+      '\n\n所有部署和管理请求都必须携带 `X-Pages-Token` 请求头或等价 token 参数，用于标记部署者身份。' +
       '格式: `pages_你的邮箱`（如 `pages_zhangsan@xd.com`）。' +
       '\n\nToken 用途:' +
       '\n- 标记站点归属，方便追溯谁部署了哪些站点' +
       '\n- 通过 `GET /list?token=xxx` 或 `X-Pages-Token` 头查询自己的站点；`/list` 必须携带 token' +
-      '\n- 如果未提供 token，部署仍会成功，但响应会包含 warning 提醒设置' +
+      '\n- `POST /deploy` 必须携带 token；未携带时返回 400，携带不同 token 覆盖已有归属站点时返回 409' +
       '\n\n**重要**: AI 助手应在首次使用时引导用户生成 token（基于邮箱），并将 token 持久化到本地记忆中，后续所有请求自动携带。' +
       '\n\n**域名说明**: 站点域名为 `workers.xd.team`，请以本 spec 中 `servers[0].url` 和实际返回的 URL 为准，不要硬编码域名。',
     version: '1.1.0',
@@ -32,10 +32,11 @@ const BASE_SPEC = {
           '\n\n使用 worker preset 时，上传文件中必须包含一个 filename=_worker.js 的文件作为 Worker 入口脚本。' +
           '该脚本可通过 env.ASSETS.fetch(request) 访问同时上传的其他静态文件。' +
           '\n\n站点名即 URL 前缀（如 name=my-app → https://my-app.workers.xd.team）。部署前应询问用户想要的站点名。' +
-          '\n\n**归属保护**: 同名站点已被其他用户（未携带 token 或不同 token）占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
+          '\n\n**Token 必填**: 部署必须携带 X-Pages-Token 请求头，或在表单字段 token 中提供部署者 token。未携带 token 时返回 400。' +
+          '\n\n**归属保护**: 同名站点已被其他 token 占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
           '\n\n**部署记录**: 部署成功后，AI 应在项目目录写入 `.pages.json` 文件记录部署信息（name、url、devUrl、preset、token、updatedAt），' +
           '下次部署同一项目时先读取此文件，自动使用已有的站点名，无需再次询问。文件示例: `{"name":"my-app","url":"https://my-app.workers.xd.team","preset":"static"}`' +
-          '\n\n建议携带 X-Pages-Token 头标记部署者身份，否则响应会包含 warning 字段提醒设置。',
+          '\n\n应始终携带 X-Pages-Token 头标记部署者身份。',
         parameters: [{ $ref: '#/components/parameters/PagesToken' }],
         requestBody: {
           required: true,
@@ -90,13 +91,13 @@ const BASE_SPEC = {
         },
         responses: {
           200: {
-            description: '部署成功。如果未提供 token，响应会包含 warning 字段提醒设置。',
+            description: '部署成功。',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/DeployResult' },
                 examples: {
-                  withToken: {
-                    summary: '携带 token 的部署',
+                  success: {
+                    summary: '部署成功',
                     value: {
                       status: 'ok',
                       name: 'q2-report',
@@ -104,19 +105,6 @@ const BASE_SPEC = {
                       devUrl: 'https://pages-q2-report.xd-cf-2022.workers.dev',
                       fileCount: 42,
                       preset: 'static',
-                    },
-                  },
-                  withoutToken: {
-                    summary: '未携带 token 的部署（含 warning）',
-                    value: {
-                      status: 'ok',
-                      name: 'q2-report',
-                      url: 'https://q2-report.workers.xd.team',
-                      devUrl: 'https://pages-q2-report.xd-cf-2022.workers.dev',
-                      fileCount: 42,
-                      preset: 'static',
-                      warning:
-                        '未提供 token。建议设置 X-Pages-Token 请求头（格式: pages_你的邮箱），用于追溯部署记录和查询自己的站点。请让 AI 在本地记住你的 token。',
                     },
                   },
                 },
@@ -136,6 +124,14 @@ const BASE_SPEC = {
                       field: 'name',
                       constraint: '^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$',
                       hint: '仅限小写字母、数字、连字符，2-50 字符，首尾不能是连字符',
+                    },
+                  },
+                  missingToken: {
+                    summary: '缺少部署者 token',
+                    value: {
+                      error: '缺少部署者 token',
+                      field: 'token',
+                      hint: '请通过 X-Pages-Token 请求头或 token 表单字段提供部署者 token',
                     },
                   },
                   invalidPreset: {
@@ -355,6 +351,7 @@ const BASE_SPEC = {
       PagesToken: {
         name: 'X-Pages-Token',
         in: 'header',
+        required: true,
         description:
           '部署者身份标记。格式: pages_你的邮箱（如 pages_zhangsan@xd.com）。' +
           '首次使用时，AI 应引导用户提供邮箱，生成 token 并持久化到本地记忆中，后续所有请求自动携带。',
@@ -373,7 +370,7 @@ const BASE_SPEC = {
           fileCount: { type: 'integer', description: '部署的文件数量（不含 _worker.js）' },
           preset: { type: 'string', enum: ['static', 'spa', 'worker'] },
           ipRestrict: { type: 'boolean', description: '是否已开启 IP 内网限制' },
-          warning: { type: 'string', description: '提醒信息（未提供 token、worker preset 需调用 IP 限制 helper 等）' },
+          warning: { type: 'string', description: '提醒信息（例如 worker preset 需调用 IP 限制 helper）' },
         },
       },
       SiteSummary: {
@@ -527,10 +524,12 @@ const BASE_SPEC = {
         '',
         'DIR="$(cd "$DIR" && pwd)"',
         '',
-        'CURL_ARGS=(-s -w "\\n%{http_code}" -X POST)',
-        'if [ -n "${PAGES_TOKEN:-}" ]; then',
-        '  CURL_ARGS+=(-H "X-Pages-Token: ${PAGES_TOKEN}")',
+        'if [ -z "${PAGES_TOKEN:-}" ]; then',
+        '  echo "错误: 请先设置 PAGES_TOKEN=pages_你的邮箱"',
+        '  exit 1',
         'fi',
+        '',
+        'CURL_ARGS=(-s -w "\\n%{http_code}" -X POST -H "X-Pages-Token: ${PAGES_TOKEN}")',
         'CURL_ARGS+=(-F "name=${NAME}")',
         'CURL_ARGS+=(-F "preset=${PRESET}")',
         'CURL_ARGS+=(-F "ip_restrict=${IP_RESTRICT}")',

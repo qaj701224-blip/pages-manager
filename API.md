@@ -12,10 +12,10 @@ https://api.workers.xd.team
 
 管理 API 仅限公司内网 IP 访问（基于 `CF-Connecting-IP` 白名单）。
 
-`X-Pages-Token` / `PAGES_TOKEN` 是站点归属标记，不是强认证。建议所有 `/deploy` 请求携带 `X-Pages-Token: pages_你的邮箱`：
+`X-Pages-Token` / `PAGES_TOKEN` 是站点归属标记，不是强认证。`/deploy` 和 `/list` 都必须携带 token。
 
-- 新站点可不携带 token 部署，但响应会包含 warning，提醒设置 token。
-- 同名站点已有 owner token 时，只有携带原 token 的请求可以覆盖部署；未携带 token 或携带不同 token 会返回 `409`。
+- `/deploy` 必须携带 `X-Pages-Token: pages_你的邮箱` 请求头，或使用 `token` 表单字段作为备选方式；未携带 token 会返回 `400`。
+- 同名站点已有 owner token 时，只有携带原 token 的请求可以覆盖部署；携带不同 token 会返回 `409`。
 - `/list` 必须携带 token，只返回当前 token 名下站点，且不会返回 token 字段。
 
 ---
@@ -30,7 +30,7 @@ https://api.workers.xd.team
 
 **Token 归属**:
 
-建议通过 `X-Pages-Token` 请求头携带部署者 token，例如 `pages_zhangsan@xd.com`。也可用表单字段 `token` 作为备选方式。同一 token 可重复覆盖自己的同名站点；如果同名站点已由其他 token 创建，未携带 token 或使用不同 token 会返回 `409`。
+部署必须携带部署者 token，优先通过 `X-Pages-Token` 请求头传递，例如 `pages_zhangsan@xd.com`。也可用表单字段 `token` 作为备选方式。同一 token 可重复覆盖自己的同名站点；如果同名站点已由其他 token 创建，使用不同 token 会返回 `409`。
 
 **表单字段**:
 
@@ -38,7 +38,7 @@ https://api.workers.xd.team
 | -------- | ------ | ---- | ----------------------------------------------------- |
 | `name`   | string | 是   | 站点名称，规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/` |
 | `preset` | string | 否   | `static`（默认）/ `spa` / `worker`                    |
-| `token`  | string | 否   | 部署者 token，备选方式；优先使用 `X-Pages-Token` 请求头 |
+| `token`  | string | 否   | 部署者 token，备选方式；优先使用必填的 `X-Pages-Token` 请求头 |
 | `file-*` | file   | 是   | 要部署的文件，`filename` 为相对路径                   |
 
 **preset 说明**:
@@ -90,9 +90,19 @@ export default {
 { "error": "无效的站点名称。要求: 小写字母、数字、连字符，2-50 字符" }
 ```
 
+缺少部署者 token 时：
+
+```json
+{
+  "error": "缺少部署者 token",
+  "field": "token",
+  "hint": "请通过 X-Pages-Token 请求头或 token 表单字段提供部署者 token"
+}
+```
+
 **错误响应** `409`:
 
-同名站点已归属于其他 token，当前请求未携带 token 或 token 不匹配。
+同名站点已归属于其他 token，当前请求 token 不匹配。
 
 ```json
 {
@@ -234,4 +244,4 @@ curl -X POST https://api.workers.xd.team/deploy \
 - **站点名称**: 小写字母、数字、连字符，2-50 字符，首尾不能是连字符
 - **部署 URL**: `https://{name}.workers.xd.team`
 - **Worker 名称**: `pages-{name}`（内部使用，用户不需要关心）
-- **重复部署**: 同一 token 可直接覆盖自己的同名站点，无需先删除；已有 owner token 的站点不允许 tokenless 或不同 token 覆盖
+- **重复部署**: 同一 token 可直接覆盖自己的同名站点，无需先删除；已有 owner token 的站点不允许不同 token 覆盖

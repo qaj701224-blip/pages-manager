@@ -35,7 +35,7 @@ function envWithExistingSite(existing) {
   };
 }
 
-test('deploy rejects existing site when request omits token', async () => {
+test('deploy rejects requests without a token before touching storage or Cloudflare', async () => {
   const calls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -44,17 +44,19 @@ test('deploy rejects existing site when request omits token', async () => {
   };
 
   try {
-    const response = await handleDeploy(
-      deployRequest(),
-      envWithExistingSite({ token: 'pages_owner@xd.com', createdAt: '2026-01-01T00:00:00.000Z' })
-    );
+    const response = await handleDeploy(deployRequest(), {
+      SITES: {
+        async get() {
+          throw new Error('missing token requests must not read metadata');
+        },
+      },
+    });
 
     const body = await response.json();
-    assert.equal(response.status, 409);
-    assert.equal(body.error, '站点名称已被占用');
-    assert.equal(body.name, 'demo');
+    assert.equal(response.status, 400);
+    assert.equal(body.error, '缺少部署者 token');
+    assert.equal(body.field, 'token');
     assert.equal(calls.length, 0);
-    assert.doesNotMatch(JSON.stringify(body), /pages_owner@xd\.com/);
   } finally {
     globalThis.fetch = originalFetch;
   }

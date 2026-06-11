@@ -43,6 +43,29 @@ test('openapi response is not cached because it contains environment-specific sc
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
 });
 
+test('openapi documents deploy token as required', () => {
+  const spec = buildOpenAPISpec(new Request('https://api.workers.xd.team/openapi.json'), {});
+  const body = JSON.stringify(spec);
+  const deploy = spec.paths['/deploy'].post;
+  const formSchema = deploy.requestBody.content['multipart/form-data'].schema;
+  const tokenParameter = deploy.parameters.find((parameter) => parameter.$ref === '#/components/parameters/PagesToken');
+  const deployScript = String(spec['x-scripts'].deploy.source);
+
+  assert.ok(tokenParameter);
+  assert.equal(spec.components.parameters.PagesToken.required, true);
+  assert.match(formSchema.properties.token.description, /备选方式/);
+  assert.match(deployScript, /if \[ -z "\$\{PAGES_TOKEN:-\}" \]; then/);
+  assert.match(deployScript, /-H "X-Pages-Token: \$\{PAGES_TOKEN\}"/);
+  assert.doesNotMatch(deployScript, /if \[ -n "\$\{PAGES_TOKEN:-\}" \]; then/);
+  assert.match(body, /部署必须携带/);
+  assert.match(body, /同一 token 可覆盖/);
+  assert.match(body, /409/);
+  assert.doesNotMatch(body, /同名站点可直接覆盖部署/);
+  assert.doesNotMatch(body, /未提供 token.*部署仍会成功/);
+  assert.equal(deploy.responses[200].content['application/json'].schema.$ref, '#/components/schemas/DeployResult');
+  assert.equal(deploy.responses[200].content['application/json'].examples.withoutToken, undefined);
+});
+
 test('manage list script requires token and fails on non-200 responses', () => {
   const spec = buildOpenAPISpec(new Request('https://api.workers.xd.team/openapi.json'), {});
   const manageScript = spec['x-scripts'].manage.source;
