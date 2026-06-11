@@ -32,7 +32,7 @@ const BASE_SPEC = {
           '\n\n使用 worker preset 时，上传文件中必须包含一个 filename=_worker.js 的文件作为 Worker 入口脚本。' +
           '该脚本可通过 env.ASSETS.fetch(request) 访问同时上传的其他静态文件。' +
           '\n\n站点名即 URL 前缀（如 name=my-app → https://my-app.workers.xd.team）。部署前应询问用户想要的站点名。' +
-          '\n\n**归属保护**: 同名站点已被其他用户（不同 token）占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
+          '\n\n**归属保护**: 同名站点已被其他用户（未携带 token 或不同 token）占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
           '\n\n**部署记录**: 部署成功后，AI 应在项目目录写入 `.pages.json` 文件记录部署信息（name、url、devUrl、preset、token、updatedAt），' +
           '下次部署同一项目时先读取此文件，自动使用已有的站点名，无需再次询问。文件示例: `{"name":"my-app","url":"https://my-app.workers.xd.team","preset":"static"}`' +
           '\n\n建议携带 X-Pages-Token 头标记部署者身份，否则响应会包含 warning 字段提醒设置。',
@@ -177,8 +177,7 @@ const BASE_SPEC = {
                   error: '站点名称已被占用',
                   field: 'name',
                   name: 'my-app',
-                  owner: 'pages_other@xd.com',
-                  hint: '该名称已被 pages_other@xd.com 使用，请换一个名称',
+                  hint: '该名称已被其他部署者使用，请换一个名称或使用原 token',
                 },
               },
             },

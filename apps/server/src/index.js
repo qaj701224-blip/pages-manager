@@ -6,6 +6,7 @@ import { handleGetSite, handleDeleteSite } from './handlers/site.js';
 import { handleList } from './handlers/list.js';
 import { handleHealth } from './handlers/health.js';
 import { handleOpenAPI } from './handlers/openapi.js';
+import { handleReadme } from './handlers/readme.js';
 import { renderSkill } from './handlers/skill.js';
 import { getPublicConfig } from './lib/public-config.js';
 import README from '../../../README.md';
@@ -20,14 +21,7 @@ router.get('/health', handleHealth);
 router.get('/openapi.json', handleOpenAPI);
 router.get(
   '/readme.md',
-  () =>
-    new Response(README, {
-      headers: {
-        'Content-Type': 'text/markdown; charset=utf-8',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300',
-      },
-    })
+  (request, env) => handleReadme(README, request, env)
 );
 router.get(
   '/skill.md',

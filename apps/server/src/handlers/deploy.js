@@ -81,14 +81,13 @@ export async function handleDeploy(request, env) {
   }
 
   const existing = await env.SITES.get(name, 'json');
-  if (existing && existing.token && userToken && existing.token !== userToken) {
+  if (existing && existing.token && existing.token !== userToken) {
     return jsonResponse(
       {
         error: '站点名称已被占用',
         field: 'name',
         name,
-        owner: existing.token,
-        hint: `该名称已被 ${existing.token} 使用，请换一个名称`,
+        hint: '该名称已被其他部署者使用，请换一个名称或使用原 token',
       },
       409
     );
