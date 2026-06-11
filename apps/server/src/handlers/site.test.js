@@ -69,6 +69,28 @@ test('site detail accepts token query parameter', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(body.name, 'demo');
+  assert.equal(body.token, undefined);
+  assert.doesNotMatch(JSON.stringify(body), /pages_owner@xd\.com/);
+});
+
+test('site detail strips owner token from successful response', async () => {
+  const response = await handleGetSite(
+    siteRequest('/site/demo', 'pages_owner@xd.com'),
+    envWithSite({
+      name: 'demo',
+      preset: 'static',
+      token: 'pages_owner@xd.com',
+      scriptName: 'pages-demo',
+      url: 'https://demo.workers.xd.team',
+    }),
+    { name: 'demo' }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.name, 'demo');
+  assert.equal(body.token, undefined);
+  assert.doesNotMatch(JSON.stringify(body), /pages_owner@xd\.com/);
 });
 
 test('site delete rejects a token that does not own the site before deleting Cloudflare resources', async () => {

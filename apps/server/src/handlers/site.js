@@ -32,6 +32,12 @@ function canAccessSite(site, token) {
   return Boolean(site?.token && site.token === token);
 }
 
+function withoutToken(site) {
+  const visibleSite = { ...site };
+  delete visibleSite.token;
+  return visibleSite;
+}
+
 export async function handleGetSite(request, env, params) {
   const token = getRequestToken(request);
   if (!token) return missingTokenResponse();
@@ -42,7 +48,7 @@ export async function handleGetSite(request, env, params) {
   }
   if (!canAccessSite(data, token)) return forbiddenSiteResponse(params.name);
 
-  return jsonResponse(data);
+  return jsonResponse(withoutToken(data));
 }
 
 export async function handleDeleteSite(request, env, params) {

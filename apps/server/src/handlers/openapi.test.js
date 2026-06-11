@@ -82,13 +82,18 @@ test('openapi documents site detail and delete as owner-token protected', () => 
   const getParameterRefs = site.get.parameters.map((parameter) => parameter.$ref || parameter.name);
   const deleteParameterRefs = site.delete.parameters.map((parameter) => parameter.$ref || parameter.name);
   const manageScript = spec['x-scripts'].manage.source;
+  const siteDetailProperties = spec.components.schemas.SiteDetail.properties;
+  const getExample = site.get.responses[200].content['application/json'].example;
 
   assert.ok(getParameterRefs.includes('#/components/parameters/PagesToken'));
   assert.ok(deleteParameterRefs.includes('#/components/parameters/PagesToken'));
   assert.ok(getParameterRefs.includes('#/components/parameters/PagesTokenQuery'));
   assert.ok(deleteParameterRefs.includes('#/components/parameters/PagesTokenQuery'));
   assert.match(site.get.description, /当前 token/);
+  assert.match(site.get.description, /不会返回站点 token/);
   assert.match(site.delete.description, /当前 token/);
+  assert.equal(siteDetailProperties.token, undefined);
+  assert.equal(getExample.token, undefined);
   assert.match(manageScript, /if \[ -z "\$\{PAGES_TOKEN:-\}" \]; then/);
   assert.match(manageScript, /查询失败/);
   assert.doesNotMatch(manageScript, /站点 .* 不存在/);

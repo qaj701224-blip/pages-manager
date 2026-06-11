@@ -19,6 +19,8 @@ test('API.md documents deploy token ownership and 409 conflicts', () => {
   assert.match(api, /同名站点/);
   assert.match(api, /409/);
   assert.match(api, /使用原 token/);
+  assert.match(api, /查询响应不会返回站点 token/);
+  assert.match(api, /成功响应不会返回站点 token/);
   assert.doesNotMatch(api, /新站点可不携带 token/);
   assert.doesNotMatch(api, /无需额外认证/);
 });

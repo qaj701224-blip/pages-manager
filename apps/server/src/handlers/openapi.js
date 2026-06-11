@@ -232,7 +232,7 @@ const BASE_SPEC = {
     '/site/{name}': {
       get: {
         summary: '查询站点详情',
-        description: '返回当前 token 名下指定站点的完整元数据，包含部署者 token、Worker 名称、文件数、创建和更新时间。缺少 token 时返回 400；token 不匹配时返回 403。',
+        description: '返回当前 token 名下指定站点的详情，包含 Worker 名称、文件数、创建和更新时间；响应不会返回站点 token。缺少 token 时返回 400；token 不匹配时返回 403。',
         parameters: [
           { $ref: '#/components/parameters/SiteName' },
           { $ref: '#/components/parameters/PagesToken' },
@@ -251,7 +251,6 @@ const BASE_SPEC = {
                   url: 'https://q2-report.workers.xd.team',
                   devUrl: 'https://pages-q2-report.xd-cf-2022.workers.dev',
                   fileCount: 42,
-                  token: 'pages_zhangsan@xd.com',
                   createdAt: '2026-05-13T10:00:00.000Z',
                   updatedAt: '2026-05-13T12:00:00.000Z',
                 },
@@ -403,7 +402,6 @@ const BASE_SPEC = {
           url: { type: 'string', format: 'uri' },
           devUrl: { type: 'string', format: 'uri', description: 'workers.dev 备用地址' },
           fileCount: { type: 'integer' },
-          token: { type: 'string', description: '部署者 token（可能为 null）' },
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
         },
