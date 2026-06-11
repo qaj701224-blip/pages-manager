@@ -151,9 +151,14 @@ if [[ "$app" == "apps/server" ]]; then
       die "staging config is missing expected staging values"
     fi
   fi
+elif [[ "$app" == "apps/xdads-302" ]]; then
+  require_env OLD_ZONE_ID
+  replace_token "__OLD_ZONE_ID__" "$OLD_ZONE_ID"
 fi
 
-if [[ "$rendered" == *"__"* ]]; then
+token_placeholder_regex='__[A-Za-z0-9_]+__'
+legacy_placeholder_regex='<[^>]+>'
+if [[ "$rendered" =~ $token_placeholder_regex || "$rendered" =~ $legacy_placeholder_regex ]]; then
   die "unresolved template placeholders remain in $app/wrangler.template.toml"
 fi
 

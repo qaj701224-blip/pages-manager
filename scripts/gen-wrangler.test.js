@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scriptPath = join(repoRoot, 'scripts/gen-wrangler.sh');
 const serverWranglerPath = join(repoRoot, 'apps/server/wrangler.toml');
+const xdadsWranglerPath = join(repoRoot, 'apps/xdads-302/wrangler.toml');
 
 const baseEnv = {
   ...process.env,
@@ -18,16 +19,25 @@ const baseEnv = {
 
 afterEach(() => {
   rmSync(serverWranglerPath, { force: true });
+  rmSync(xdadsWranglerPath, { force: true });
 });
 
-function renderServer(envName, env = baseEnv) {
-  execFileSync(scriptPath, ['apps/server', envName], {
+function renderApp(app, envName, env = baseEnv) {
+  execFileSync(scriptPath, [app, envName], {
     cwd: repoRoot,
     env,
     encoding: 'utf8',
   });
+}
 
+function renderServer(envName, env = baseEnv) {
+  renderApp('apps/server', envName, env);
   return readFileSync(serverWranglerPath, 'utf8');
+}
+
+function renderXdads(envName, env = { ...baseEnv, OLD_ZONE_ID: 'dummy-old-zone' }) {
+  renderApp('apps/xdads-302', envName, env);
+  return readFileSync(xdadsWranglerPath, 'utf8');
 }
 
 function runGenerator(args, env = baseEnv) {
@@ -78,4 +88,32 @@ test('rejects unsafe IP_ALLOWLIST values', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /IP_ALLOWLIST/);
+});
+
+test('xdads production config renders account id and old zone id', () => {
+  const config = renderXdads('production');
+  const zoneMatches = [...config.matchAll(/zone_id = "dummy-old-zone"/g)];
+
+  assert.match(config, /account_id = "dummy-account"/);
+  assert.equal(zoneMatches.length, 2);
+  assert.doesNotMatch(config, /<OLD_ZONE_ID>/);
+  assert.doesNotMatch(config, /__[A-Z0-9_]+__/);
+  assert.doesNotMatch(config, /<[^>]+>/);
+});
+
+test('xdads production config requires OLD_ZONE_ID', () => {
+  const result = runGenerator(['apps/xdads-302', 'production']);
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /OLD_ZONE_ID/);
+});
+
+test('xdads staging config is rejected', () => {
+  const result = runGenerator(['apps/xdads-302', 'staging'], {
+    ...baseEnv,
+    OLD_ZONE_ID: 'dummy-old-zone',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /only supports production/);
 });
