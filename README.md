@@ -105,6 +105,7 @@ bash scripts/manage.sh delete my-report
 
 ```bash
 curl -X POST https://api.workers.xd.team/deploy \
+  -H "X-Pages-Token: pages_zhangsan@xd.com" \
   -F "name=my-report" \
   -F "preset=static" \
   -F "file-0=@dist/index.html;filename=index.html"
