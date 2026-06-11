@@ -50,6 +50,15 @@ test('buildBakedGuardSource checks IP without env binding', () => {
   assert.doesNotMatch(source, /env\.IP_ALLOWLIST/);
 });
 
+test('buildBakedGuardSource checkIP allows and blocks without env binding', () => {
+  const checkIP = new Function(`${buildBakedGuardSource('127.0.0.1,10.0.0.0/8,::1')}; return checkIP;`)();
+
+  assert.equal(checkIP(requestWithIP('127.0.0.1')), null);
+  assert.equal(checkIP(requestWithIP('10.1.2.3')), null);
+  assert.equal(checkIP(requestWithIP('::1')), null);
+  assert.equal(checkIP(requestWithIP('198.51.100.10')).status, 403);
+});
+
 test('ENV_GUARD_SOURCE reads env.IP_ALLOWLIST and exposes checkIP(request, env)', () => {
   assert.match(ENV_GUARD_SOURCE, /env\.IP_ALLOWLIST/);
   assert.match(ENV_GUARD_SOURCE, /function checkIP\(request, env\)/);
