@@ -16,8 +16,10 @@
 Create a local `.env` at the repository root:
 
 ```bash
-PAGES_TOKEN=pages_yourname@xd.com
+cp .env.example .env
 ```
+
+Then replace `PAGES_TOKEN=pages_yourname@xd.com` with your own token.
 
 Run a dry run:
 
