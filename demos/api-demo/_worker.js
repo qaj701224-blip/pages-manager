@@ -1,5 +1,49 @@
+function getAllowed(env) {
+  return String(env.IP_ALLOWLIST || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function ipToInt(ip) {
+  return ip.split(".").reduce((acc, oct) => (acc << 8) + Number(oct), 0) >>> 0;
+}
+
+function toRules(allowed) {
+  return allowed.map((entry) => {
+  if (entry.includes(":")) return { type: "exact6", value: entry };
+  if (entry.includes("/")) {
+    const [base, bits] = entry.split("/");
+    const mask = ~((1 << (32 - Number(bits))) - 1) >>> 0;
+    return { type: "cidr", network: ipToInt(base) & mask, mask };
+  }
+  return { type: "exact4", value: ipToInt(entry) };
+  });
+}
+
+function checkIP(request, env) {
+  const rules = toRules(getAllowed(env));
+  const ip = request.headers.get("CF-Connecting-IP");
+  if (!ip) return null;
+  if (ip.includes(":")) {
+    return rules.some((r) => r.type === "exact6" && r.value === ip)
+      ? null
+      : new Response("IP not allowed", { status: 403 });
+  }
+  const n = ipToInt(ip);
+  const ok = rules.some((r) => {
+    if (r.type === "exact4") return r.value === n;
+    if (r.type === "cidr") return (n & r.mask) === r.network;
+    return false;
+  });
+  return ok ? null : new Response("IP not allowed", { status: 403 });
+}
+
 export default {
   async fetch(request, env) {
+    const blocked = checkIP(request, env);
+    if (blocked) return blocked;
+
     const url = new URL(request.url);
 
     if (url.pathname === '/' || url.pathname === '/index.html') {

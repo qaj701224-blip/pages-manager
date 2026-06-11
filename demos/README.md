@@ -9,7 +9,7 @@
 | `html-img` | `static` | Plain HTML plus SVG asset serving | `demos/html-img` |
 | `vue-app` | `spa` | Vue Router fallback for client-side routes | `demos/vue-app/dist` after build |
 | `nuxt-app` | `spa` | Nuxt 3 generated static output | `demos/nuxt-app/.output/public` after generate |
-| `api-demo` | `worker` | Custom `_worker.js` plus static assets through `env.ASSETS` | `demos/api-demo` |
+| `api-demo` | `worker` | Custom `_worker.js`, explicit IP guard, and static assets through `env.ASSETS` | `demos/api-demo` |
 
 ## Staging Test Script
 
@@ -87,3 +87,14 @@ Demo dependencies are installed only by `scripts/test-staging-demos.sh` when a f
 - no lockfile -> `pnpm --dir <demo> install`
 
 This keeps production deployment fast while still allowing demos to validate real framework output.
+
+## Worker Preset IP Guard
+
+`api-demo/_worker.js` includes the same `checkIP(request, env)` pattern exposed by `/openapi.json` under `x-libs.ip-guard`.
+
+This matters because `worker` preset deployments receive `env.IP_ALLOWLIST`, but Pages Manager does not rewrite user `_worker.js` files. A custom Worker must call the guard explicitly near the start of `fetch()`:
+
+```js
+const blocked = checkIP(request, env);
+if (blocked) return blocked;
+```
