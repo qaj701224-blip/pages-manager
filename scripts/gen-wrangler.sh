@@ -190,8 +190,10 @@ elif [[ "$app" == "apps/kv-gateway" ]]; then
   replace_token "__PAGES_CAP_JWT_KEYS__" "$PAGES_CAP_JWT_KEYS"
 
   if [[ "$environment" == "production" ]]; then
-    if [[ "$rendered" == *"pages-kv-gateway-staging"* ||
-      "$rendered" == *"staging"* ]]; then
+    if [[ "$rendered" == *'name = "pages-kv-gateway-staging"'* ||
+      "$rendered" == *'XD_PAGES_ENV = "staging"'* ||
+      "$rendered" != *'name = "pages-kv-gateway"'* ||
+      "$rendered" != *'XD_PAGES_ENV = "production"'* ]]; then
       die "production kv-gateway config contains staging values"
     fi
   else

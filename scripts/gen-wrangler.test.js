@@ -110,7 +110,25 @@ test('production kv-gateway config renders private production gateway', () => {
   assert.match(config, /binding = "SITE_DATA"/);
   assert.match(config, /id = "dummy-site-data-kv"/);
   assert.doesNotMatch(config, /pages-kv-gateway-staging/);
-  assert.doesNotMatch(config, /staging/);
+  assert.doesNotMatch(config, /XD_PAGES_ENV = "staging"/);
+});
+
+test('production kv-gateway config allows staging text in non-environment key metadata', () => {
+  const config = renderKvGateway('production', {
+    ...kvEnv,
+    PAGES_CAP_JWT_ACTIVE_KID: 'prod-staging-rollover',
+    PAGES_CAP_JWT_KEYS: 'prod-staging-rollover:HS256:PAGES_CAP_JWT_SECRET_202606',
+  });
+
+  assert.match(config, /name = "pages-kv-gateway"/);
+  assert.match(config, /XD_PAGES_ENV = "production"/);
+  assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "prod-staging-rollover"/);
+  assert.match(
+    config,
+    /PAGES_CAP_JWT_KEYS = "prod-staging-rollover:HS256:PAGES_CAP_JWT_SECRET_202606"/,
+  );
+  assert.doesNotMatch(config, /name = "pages-kv-gateway-staging"/);
+  assert.doesNotMatch(config, /XD_PAGES_ENV = "staging"/);
 });
 
 test('staging kv-gateway config renders staging gateway only', () => {
@@ -134,6 +152,16 @@ test('rejects unknown environment', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /environment/i);
+});
+
+test('generated kv-gateway wrangler config is ignored', () => {
+  const result = spawnSync('git', ['check-ignore', 'apps/kv-gateway/wrangler.toml'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /apps\/kv-gateway\/wrangler\.toml/);
 });
 
 test('rejects unsafe IP_ALLOWLIST values', () => {

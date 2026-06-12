@@ -35,17 +35,47 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
         run: scripts/gen-wrangler.sh apps/server staging
+
+      - name: Generate KV Gateway Wrangler config
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SITE_DATA_KV_NAMESPACE_ID: ${{ secrets.SITE_DATA_KV_NAMESPACE_ID }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+        run: scripts/gen-wrangler.sh apps/kv-gateway staging
 
       - name: Validate Worker secrets
         shell: bash
         env:
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           : "${CF_ZONE_ID_NEW:?CF_ZONE_ID_NEW is required}"
           : "${CF_API_TOKEN:?CF_API_TOKEN is required}"
+          : "${PAGES_CAP_JWT_SECRET_202606:?PAGES_CAP_JWT_SECRET_202606 is required}"
+
+      - name: Deploy KV Gateway
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/kv-gateway exec wrangler deploy
+
+      - name: Inject KV Gateway secrets
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PAGES_CAP_JWT_SECRET_202606" | pnpm --dir apps/kv-gateway exec wrangler secret put PAGES_CAP_JWT_SECRET_202606
 
       - name: Deploy Worker
         shell: bash
@@ -61,7 +91,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           printf '%s' "$CF_ZONE_ID_NEW" | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
           printf '%s' "$CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
+          printf '%s' "$PAGES_CAP_JWT_SECRET_202606" | pnpm --dir apps/server exec wrangler secret put PAGES_CAP_JWT_SECRET_202606
