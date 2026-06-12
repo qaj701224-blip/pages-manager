@@ -76,7 +76,10 @@ test('PAGES_RUNTIME_SOURCE returns KV_FAILED envelope when gateway fetch throws'
 });
 
 function loadInlineRuntime() {
-  const source = PAGES_RUNTIME_SOURCE.replace('export async function handlePagesRuntimeRequest', 'async function handlePagesRuntimeRequest');
+  const source = PAGES_RUNTIME_SOURCE.replace(
+    'export async function handlePagesRuntimeRequest',
+    'async function handlePagesRuntimeRequest'
+  );
   return new Function(`${source}; return { handlePagesRuntimeRequest };`)();
 }
 
