@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { afterEach } from 'node:test';
 
-import { postExecutorCallback, readCallbackPayload } from './post-executor-callback.js';
+import { parseAllowedOrigins, postExecutorCallback, readCallbackPayload, validateCallbackUrl } from './post-executor-callback.js';
 
 const tempDirs = [];
 
@@ -35,6 +35,7 @@ test('postExecutorCallback posts JSON with optional callback token', async () =>
     {
       callbackUrl: 'https://gateway.test/internal/executor-callback',
       callbackToken: 'callback-secret',
+      allowedOrigins: 'https://gateway.test',
       async fetchImpl(url, request) {
         assert.equal(url, 'https://gateway.test/internal/executor-callback');
         assert.equal(request.method, 'POST');
@@ -51,6 +52,60 @@ test('postExecutorCallback posts JSON with optional callback token', async () =>
   assert.deepEqual(result, { skipped: false, status: 200, body: { ok: true } });
 });
 
+test('parseAllowedOrigins normalizes comma and whitespace separated origins', () => {
+  assert.deepEqual(parseAllowedOrigins('https://gateway.test/path, https://other.test\nhttps://third.test'), [
+    'https://gateway.test',
+    'https://other.test',
+    'https://third.test',
+  ]);
+});
+
+test('validateCallbackUrl rejects unsafe callback targets before token use', () => {
+  assert.equal(
+    validateCallbackUrl('https://gateway.test/internal/executor-callback', {
+      allowedOrigins: 'https://gateway.test',
+      hasToken: true,
+    }),
+    'https://gateway.test/internal/executor-callback'
+  );
+
+  assert.throws(
+    () =>
+      validateCallbackUrl('https://attacker.test/internal/executor-callback', {
+        allowedOrigins: 'https://gateway.test',
+        hasToken: true,
+      }),
+    /origin is not allowed/
+  );
+
+  assert.throws(
+    () =>
+      validateCallbackUrl('http://gateway.test/internal/executor-callback', {
+        allowedOrigins: 'http://gateway.test',
+        hasToken: true,
+      }),
+    /must use https/
+  );
+
+  assert.throws(
+    () =>
+      validateCallbackUrl('https://gateway.test/other', {
+        allowedOrigins: 'https://gateway.test',
+        hasToken: true,
+      }),
+    /must point to/
+  );
+
+  assert.throws(
+    () =>
+      validateCallbackUrl('https://gateway.test/internal/executor-callback', {
+        allowedOrigins: '',
+        hasToken: true,
+      }),
+    /ALLOWED_ORIGINS is required/
+  );
+});
+
 test('postExecutorCallback rejects gateway failures', async () => {
   await assert.rejects(
     () =>
@@ -58,6 +113,7 @@ test('postExecutorCallback rejects gateway failures', async () => {
         { publishingJobId: 'job_123' },
         {
           callbackUrl: 'https://gateway.test/internal/executor-callback',
+          allowedOrigins: 'https://gateway.test',
           async fetchImpl() {
             return new Response(JSON.stringify({ error: 'bad callback' }), { status: 400 });
           },

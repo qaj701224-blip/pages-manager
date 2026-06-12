@@ -2,6 +2,40 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
+export function parseAllowedOrigins(value = '') {
+  return String(value)
+    .split(/[,\s]+/)
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => new URL(origin).origin);
+}
+
+export function validateCallbackUrl(callbackUrl, options = {}) {
+  const url = new URL(callbackUrl);
+  const allowedOrigins = parseAllowedOrigins(
+    Object.hasOwn(options, 'allowedOrigins') ? options.allowedOrigins : process.env.PAGES_CALLBACK_ALLOWED_ORIGINS || ''
+  );
+  const hasToken = Boolean(options.hasToken);
+
+  if (url.protocol !== 'https:') {
+    throw new Error('PAGES_CALLBACK_URL must use https');
+  }
+
+  if (hasToken && allowedOrigins.length === 0) {
+    throw new Error('PAGES_CALLBACK_ALLOWED_ORIGINS is required when PAGES_CALLBACK_TOKEN is configured');
+  }
+
+  if (allowedOrigins.length > 0 && !allowedOrigins.includes(url.origin)) {
+    throw new Error(`PAGES_CALLBACK_URL origin is not allowed: ${url.origin}`);
+  }
+
+  if (url.pathname !== '/internal/executor-callback') {
+    throw new Error('PAGES_CALLBACK_URL must point to /internal/executor-callback');
+  }
+
+  return url.toString();
+}
+
 export async function readCallbackPayload(path) {
   if (!path) {
     throw new Error('payload file path is required');
@@ -20,6 +54,12 @@ export async function postExecutorCallback(payload, options = {}) {
   }
 
   const token = options.callbackToken || process.env.PAGES_CALLBACK_TOKEN || '';
+  const safeCallbackUrl = validateCallbackUrl(callbackUrl, {
+    allowedOrigins: Object.hasOwn(options, 'allowedOrigins')
+      ? options.allowedOrigins
+      : process.env.PAGES_CALLBACK_ALLOWED_ORIGINS || '',
+    hasToken: Boolean(token),
+  });
   const headers = {
     'Content-Type': 'application/json',
   };
@@ -29,7 +69,7 @@ export async function postExecutorCallback(payload, options = {}) {
   }
 
   const fetchImpl = options.fetchImpl || fetch;
-  const response = await fetchImpl(callbackUrl, {
+  const response = await fetchImpl(safeCallbackUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),

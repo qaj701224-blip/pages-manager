@@ -51,15 +51,38 @@ concurrency:
 jobs:
   pages-agent:
     runs-on: ubuntu-latest
+    env:
+      PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
+      AGENT_MODE: ${{ inputs.mode }}
+      EMPLOYEE_SLUG: ${{ inputs.employeeSlug }}
+      SITE_SLUG: ${{ inputs.siteSlug }}
+      ALLOWED_PATH: ${{ inputs.allowedPath }}
+      INDEX_SNAPSHOT_ID: ${{ inputs.indexSnapshotId }}
+      ISSUE_NUMBER: ${{ inputs.issueNumber }}
+      BASE_REF: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Validate allowed path
+      - name: Validate inputs
         shell: bash
         run: |
           set -euo pipefail
-          expected="sites/${{ inputs.employeeSlug }}/${{ inputs.siteSlug }}"
-          if [[ "${{ inputs.allowedPath }}" != "$expected" ]]; then
+
+          if [[ ! "$PUBLISHING_JOB_ID" =~ ^job_[A-Za-z0-9_]{1,80}$ ]]; then
+            echo "publishingJobId must be a job_ id" >&2
+            exit 1
+          fi
+          if [[ ! "$EMPLOYEE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "employeeSlug contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ ! "$SITE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "siteSlug contains unsupported characters" >&2
+            exit 1
+          fi
+
+          expected="sites/$EMPLOYEE_SLUG/$SITE_SLUG"
+          if [[ "$ALLOWED_PATH" != "$expected" ]]; then
             echo "allowedPath must be $expected" >&2
             exit 1
           fi
@@ -68,23 +91,50 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${{ inputs.allowedPath }}/src" .pages-artifacts
-          cat > "${{ inputs.allowedPath }}/site.json" <<JSON
-          {
-            "employeeSlug": "${{ inputs.employeeSlug }}",
-            "siteSlug": "${{ inputs.siteSlug }}",
-            "title": "${{ inputs.employeeSlug }} / ${{ inputs.siteSlug }}",
-            "generatedBy": "pages-agent-placeholder"
+          mkdir -p .pages-artifacts
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+
+          function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, (char) => {
+              const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+              return entities[char];
+            });
           }
-          JSON
-          cat > "${{ inputs.allowedPath }}/src/index.html" <<HTML
-          <!doctype html>
-          <html>
-            <head><meta charset="utf-8"><title>${{ inputs.employeeSlug }} / ${{ inputs.siteSlug }}</title></head>
-            <body><h1>${{ inputs.employeeSlug }} / ${{ inputs.siteSlug }}</h1></body>
-          </html>
-          HTML
-          git diff -- "${{ inputs.allowedPath }}" > .pages-artifacts/site.patch
+
+          const allowedPath = process.env.ALLOWED_PATH;
+          const employeeSlug = process.env.EMPLOYEE_SLUG;
+          const siteSlug = process.env.SITE_SLUG;
+          const title = `${employeeSlug} / ${siteSlug}`;
+
+          mkdirSync(`${allowedPath}/src`, { recursive: true });
+          writeFileSync(
+            `${allowedPath}/site.json`,
+            `${JSON.stringify(
+              {
+                employeeSlug,
+                siteSlug,
+                title,
+                publishingJobId: process.env.PUBLISHING_JOB_ID,
+                generatedBy: 'pages-agent-placeholder',
+              },
+              null,
+              2
+            )}\n`
+          );
+          writeFileSync(
+            `${allowedPath}/src/index.html`,
+            [
+              '<!doctype html>',
+              '<html>',
+              '  <head><meta charset="utf-8"><title>' + escapeHtml(title) + '</title></head>',
+              '  <body><h1>' + escapeHtml(title) + '</h1></body>',
+              '</html>',
+              '',
+            ].join('\n')
+          );
+          NODE
+          git diff -- "$ALLOWED_PATH" > .pages-artifacts/site.patch
 
       - name: Validate generated diff boundary
         shell: bash
@@ -92,11 +142,17 @@ jobs:
           set -euo pipefail
           changed="$(git diff --name-only)"
           echo "$changed"
-          if echo "$changed" | grep -Ev "^${{ inputs.allowedPath }}/|^$" >/tmp/pages-agent-non-site-paths; then
-            echo "Generated patch touched paths outside ${{ inputs.allowedPath }}:" >&2
-            cat /tmp/pages-agent-non-site-paths >&2
-            exit 1
-          fi
+
+          while IFS= read -r path; do
+            case "$path" in
+              "" | "$ALLOWED_PATH"/*) ;;
+              *)
+                echo "Generated patch touched paths outside $ALLOWED_PATH:" >&2
+                echo "$path" >&2
+                exit 1
+                ;;
+            esac
+          done <<< "$changed"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -110,30 +166,28 @@ jobs:
           GH_TOKEN: ${{ secrets.PAGES_GITHUB_APP_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          branch="sites/job-${{ inputs.publishingJobId }}-${{ inputs.employeeSlug }}-${{ inputs.siteSlug }}"
-          title="[pages] ${{ inputs.employeeSlug }}/${{ inputs.siteSlug }} from ${{ inputs.publishingJobId }}"
+          branch="sites/job-$PUBLISHING_JOB_ID-$EMPLOYEE_SLUG-$SITE_SLUG"
+          title="[pages] $EMPLOYEE_SLUG/$SITE_SLUG from $PUBLISHING_JOB_ID"
 
           git config user.name "pages-manager-bot"
           git config user.email "pages-manager-bot@users.noreply.github.com"
           git switch -C "$branch"
-          git add "${{ inputs.allowedPath }}"
-          git commit -m "chore: update ${{ inputs.employeeSlug }}/${{ inputs.siteSlug }}" || true
+          git add "$ALLOWED_PATH"
+          git commit -m "chore: update $EMPLOYEE_SLUG/$SITE_SLUG" || true
           git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" || true
           git push --force-with-lease origin "HEAD:$branch"
 
-          cat > .pages-artifacts/pr-body.md <<MD
-          PublishingJob: ${{ inputs.publishingJobId }}
-
-          Related issue: #${{ inputs.issueNumber }}
-
-          Target: ${{ inputs.employeeSlug }}/${{ inputs.siteSlug }}
-          Allowed path: ${{ inputs.allowedPath }}
-          Agent mode: ${{ inputs.mode }}
-          Index snapshot: ${{ inputs.indexSnapshotId }}
-          MD
+          {
+            printf 'PublishingJob: %s\n\n' "$PUBLISHING_JOB_ID"
+            printf 'Related issue: #%s\n\n' "$ISSUE_NUMBER"
+            printf 'Target: %s/%s\n' "$EMPLOYEE_SLUG" "$SITE_SLUG"
+            printf 'Allowed path: %s\n' "$ALLOWED_PATH"
+            printf 'Agent mode: %s\n' "$AGENT_MODE"
+            printf 'Index snapshot: %s\n' "$INDEX_SNAPSHOT_ID"
+          } > .pages-artifacts/pr-body.md
 
           if ! gh pr view "$branch" --json number --jq .number >/tmp/pages-pr-number 2>/dev/null; then
-            gh pr create --head "$branch" --base "${{ github.ref_name }}" --title "$title" --body-file .pages-artifacts/pr-body.md
+            gh pr create --head "$branch" --base "$BASE_REF" --title "$title" --body-file .pages-artifacts/pr-body.md
             gh pr view "$branch" --json number --jq .number >/tmp/pages-pr-number
           fi
 
@@ -146,22 +200,32 @@ jobs:
 
       - name: Print callback payload
         shell: bash
+        env:
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          BRANCH_NAME: ${{ steps.pr.outputs.branchName }}
+          PR_NUMBER: ${{ steps.pr.outputs.prNumber }}
+          PR_URL: ${{ steps.pr.outputs.prUrl }}
         run: |
+          set -euo pipefail
           mkdir -p .pages-artifacts
-          cat > .pages-artifacts/callback.json <<JSON
-          {
-            "publishingJobId": "${{ inputs.publishingJobId }}",
-            "workflowName": "pages-agent.yml",
-            "workflowRunId": "${{ github.run_id }}",
-            "status": "succeeded",
-            "stageResult": "pr_created",
-            "branchName": "${{ steps.pr.outputs.branchName }}",
-            "prNumber": "${{ steps.pr.outputs.prNumber }}",
-            "prUrl": "${{ steps.pr.outputs.prUrl }}",
-            "issueNumber": "${{ inputs.issueNumber }}",
-            "indexSnapshotId": "${{ inputs.indexSnapshotId }}"
-          }
-          JSON
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'pages-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'succeeded',
+            stageResult: 'pr_created',
+            branchName: process.env.BRANCH_NAME,
+            prNumber: process.env.PR_NUMBER,
+            prUrl: process.env.PR_URL,
+            issueNumber: process.env.ISSUE_NUMBER,
+            indexSnapshotId: process.env.INDEX_SNAPSHOT_ID,
+          };
+
+          writeFileSync('.pages-artifacts/callback.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
           cat .pages-artifacts/callback.json
 
       - name: Callback gateway
@@ -169,27 +233,32 @@ jobs:
         env:
           PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
           PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
         run: node scripts/post-executor-callback.js .pages-artifacts/callback.json
 
       - name: Callback gateway on failure
         if: ${{ failure() }}
         shell: bash
         env:
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
           PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
           PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
         run: |
           set -euo pipefail
-          headers=(-H 'Content-Type: application/json')
-          if [[ -n "${PAGES_CALLBACK_TOKEN:-}" ]]; then
-            headers+=(-H "X-Pages-Callback-Token: $PAGES_CALLBACK_TOKEN")
-          fi
-          curl -fsS -X POST "$PAGES_CALLBACK_URL" "${headers[@]}" -d @- <<JSON
-          {
-            "publishingJobId": "${{ inputs.publishingJobId }}",
-            "workflowName": "pages-agent.yml",
-            "workflowRunId": "${{ github.run_id }}",
-            "status": "failed",
-            "errorCode": "AGENT_FAILED",
-            "errorMessage": "pages-agent.yml failed before creating or updating a PR"
-          }
-          JSON
+          mkdir -p .pages-artifacts
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'pages-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'failed',
+            errorCode: 'AGENT_FAILED',
+            errorMessage: 'pages-agent.yml failed before creating or updating a PR',
+          };
+
+          writeFileSync('.pages-artifacts/callback-failed.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+          node scripts/post-executor-callback.js .pages-artifacts/callback-failed.json
