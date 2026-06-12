@@ -96,7 +96,7 @@ test('deploy workflows guard server steps and keep kv-gateway in lockstep with s
   }
 });
 
-test('deploy workflows keep production manual and reuse wrangler token for runtime CF secret', () => {
+test('deploy workflows keep production manual and separate wrangler token from runtime CF secret', () => {
   const production = readWorkflow('.github/workflows/deploy.yml');
   const staging = readWorkflow('.github/workflows/deploy-staging.yml');
   const combined = `${production}\n${staging}`;
@@ -109,9 +109,12 @@ test('deploy workflows keep production manual and reuse wrangler token for runti
     'production deploy has no non-manual trigger',
   );
   assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]/, 'staging deploy keeps staging push trigger');
-  assert.doesNotMatch(combined, /secrets\.CF_API_TOKEN/, 'no new CF_API_TOKEN GitHub secret is required');
-  assert.match(combined, /RUNTIME_CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
-  assert.match(combined, /secret put CF_API_TOKEN/);
+  assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
+  assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);
+  assert.match(combined, /: "\$\{CF_API_TOKEN:\?CF_API_TOKEN is required\}"/);
+  assert.match(combined, /printf '%s' "\$CF_API_TOKEN" \| pnpm --dir apps\/server exec wrangler secret put CF_API_TOKEN/);
+  assert.doesNotMatch(combined, /RUNTIME_CF_API_TOKEN/);
+  assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
 });
 
 test('deploy workflows inject all capability secrets from the key registry', () => {

@@ -180,7 +180,7 @@ AI:   ✅ 已发布: https://q2-report.workers.xd.team
 
 - **IP 白名单**: 管理 API（除 `/openapi.json`、`/skill.md`、`/readme.md` 公开端点外）限制公司内网 IP 访问（CF-Connecting-IP），真实白名单由 `IP_ALLOWLIST` 在部署环境中配置；static/spa 子站会自动注入限制，worker 子站会注入 `env.IP_ALLOWLIST`，需在 `_worker.js` 中调用检查逻辑
 - **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证；`/deploy`、`/list`、`/site/:name` 查询和删除必须携带 token，`/list` 和 `/site/:name` 查询不会返回 token 字段
-- **Worker Secret**: `CF_API_TOKEN` 是运行时高权限 token 绑定名，必须通过 `wrangler secret put CF_API_TOKEN` 设置，不提交到 Git；GitHub Actions 不新增同名 GitHub Secret，部署时复用现有 `CLOUDFLARE_API_TOKEN` 写入该 Worker Secret
+- **Worker Secret**: `CF_API_TOKEN` 是运行时高权限 token 绑定名，必须通过 `wrangler secret put CF_API_TOKEN` 设置，不提交到 Git；GitHub Actions 中使用同名 Environment Secret `CF_API_TOKEN` 写入该 Worker Secret，`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 调用 Cloudflare
 - **后续**: 可叠加 Cloudflare Access (SSO) 实现身份认证
 
 ## 基础设施

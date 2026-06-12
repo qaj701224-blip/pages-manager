@@ -68,7 +68,7 @@ jobs:
         shell: bash
         env:
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
@@ -76,7 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${CF_ZONE_ID_NEW:?CF_ZONE_ID_NEW is required}"
-          : "${RUNTIME_CF_API_TOKEN:?RUNTIME_CF_API_TOKEN is required}"
+          : "${CF_API_TOKEN:?CF_API_TOKEN is required}"
           DRY_RUN=1 scripts/put-capability-secrets.sh apps/server
 
       - name: Validate KV Gateway secrets
@@ -128,7 +128,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
@@ -136,5 +136,5 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$CF_ZONE_ID_NEW" | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
-          printf '%s' "$RUNTIME_CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
+          printf '%s' "$CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
           scripts/put-capability-secrets.sh apps/server
