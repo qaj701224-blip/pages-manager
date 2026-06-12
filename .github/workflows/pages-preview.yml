@@ -25,7 +25,7 @@ on:
         type: string
       callbackUrl:
         description: Gateway callback URL
-        required: false
+        required: true
         type: string
 
 permissions:
@@ -86,3 +86,26 @@ jobs:
           PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
           PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
         run: node scripts/post-executor-callback.js .pages-artifacts/callback.json
+
+      - name: Callback gateway on failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+        run: |
+          set -euo pipefail
+          headers=(-H 'Content-Type: application/json')
+          if [[ -n "${PAGES_CALLBACK_TOKEN:-}" ]]; then
+            headers+=(-H "X-Pages-Callback-Token: $PAGES_CALLBACK_TOKEN")
+          fi
+          curl -fsS -X POST "$PAGES_CALLBACK_URL" "${headers[@]}" -d @- <<JSON
+          {
+            "publishingJobId": "${{ inputs.publishingJobId }}",
+            "workflowName": "pages-preview.yml",
+            "workflowRunId": "${{ github.run_id }}",
+            "status": "failed",
+            "errorCode": "PREVIEW_DEPLOY_FAILED",
+            "errorMessage": "pages-preview.yml failed before producing a preview URL"
+          }
+          JSON
