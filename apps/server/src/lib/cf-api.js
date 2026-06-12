@@ -98,13 +98,37 @@ async function cfFetch(path, token, options = {}) {
   if (options.rawResponse) return res;
   const json = await res.json();
   if (!json.success) {
-    const msg = json.errors?.map((e) => e.message).join('; ') || 'CF API error';
+    const errors = sanitizeCloudflareErrors(json.errors);
+    const msg = errors?.map((e) => e.message).join('; ') || 'CF API error';
     const err = new Error(msg);
     err.status = res.status;
-    err.errors = json.errors;
+    err.errors = errors;
     throw err;
   }
   return json.result;
+}
+
+function sanitizeCloudflareErrors(errors) {
+  if (!Array.isArray(errors)) return undefined;
+
+  return errors.map((error) => {
+    if (!error || typeof error !== 'object') return error;
+    return {
+      ...error,
+      message: sanitizeCloudflareErrorText(error.message),
+    };
+  });
+}
+
+function sanitizeCloudflareErrorText(value) {
+  if (typeof value !== 'string') return value;
+
+  return value
+    .replace(/Bearer\s+[^\s"']+/gi, '[REDACTED_BEARER]')
+    .replace(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[REDACTED_JWT]')
+    .replace(/capability\.jwt/gi, '[REDACTED_CAPABILITY]')
+    .replace(/PAGES_CAP_JWT_SECRET[A-Z0-9_]*/g, '[REDACTED_SECRET_ENV]')
+    .replace(/XD_PAGES_KV_CAPABILITY/g, '[REDACTED_KV_CAPABILITY]');
 }
 
 const MIME_TYPES = {

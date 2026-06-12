@@ -58,6 +58,22 @@ test('static preset still compiles the allowlist into the generated guard', () =
   assert.match(code, /checkIP\(request\)/);
 });
 
+test('static preset with kv options does not generate runtime support', () => {
+  const code = buildWorkerCode('static', null, false, '127.0.0.1', {
+    kv: {
+      enabled: true,
+      gatewayService: 'pages-kv-gateway',
+      siteId: 'demo',
+      siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
+      envName: 'staging',
+      capability: 'capability.jwt',
+    },
+  });
+
+  assert.doesNotMatch(code, /handlePagesRuntimeRequest/);
+  assert.doesNotMatch(code, /\/\.xd-pages\/runtime\/v1/);
+});
+
 test('spa kv worker checks runtime path before assets with guard and inline runtime', () => {
   const code = buildWorkerCode('spa', null, false, '127.0.0.1', {
     kv: {

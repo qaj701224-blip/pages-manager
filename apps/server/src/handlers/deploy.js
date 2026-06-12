@@ -72,6 +72,17 @@ export async function handleDeploy(request, env) {
       400
     );
   }
+  if (kv.enabled && preset === 'static') {
+    return jsonResponse(
+      {
+        error: 'static preset 暂不支持 kv',
+        field: 'preset',
+        value: preset,
+        hint: 'kv=true 目前仅支持 spa 或 worker preset',
+      },
+      400
+    );
+  }
 
   let workerCode = null;
   const fileEntries = [];
