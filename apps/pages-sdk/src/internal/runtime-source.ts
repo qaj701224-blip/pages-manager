@@ -72,25 +72,29 @@ export async function handlePagesRuntimeRequest(request, env, options = {}) {
   const key = validateUserKey(body.value.key);
   if (!key.ok) return errorResponse(key.error.code, key.error.message, 400);
 
-  if (action === 'delete') {
-    const gatewayResponse = await callGateway(env, GATEWAY.KV_DELETE_PATH, { key: key.value });
+  try {
+    if (action === 'delete') {
+      const gatewayResponse = await callGateway(env, GATEWAY.KV_DELETE_PATH, { key: key.value });
+      return envelopeResponse(gatewayResponse, action);
+    }
+
+    const type = validateKvType(body.value.type);
+    if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
+
+    if (action === 'put') {
+      const ttl = validateTtl(body.value.expirationTtl);
+      if (!ttl.ok) return errorResponse(ttl.error.code, ttl.error.message, 400);
+      const payload = { key: key.value, value: body.value.value, type: type.value };
+      if (ttl.value !== undefined) payload.expirationTtl = ttl.value;
+      const gatewayResponse = await callGateway(env, GATEWAY.KV_PUT_PATH, payload);
+      return envelopeResponse(gatewayResponse, action);
+    }
+
+    const gatewayResponse = await callGateway(env, GATEWAY.KV_GET_PATH, { key: key.value, type: type.value });
     return envelopeResponse(gatewayResponse, action);
+  } catch {
+    return errorResponse(ERROR_CODES.KV_FAILED, 'KV failed', 500);
   }
-
-  const type = validateKvType(body.value.type);
-  if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
-
-  if (action === 'put') {
-    const ttl = validateTtl(body.value.expirationTtl);
-    if (!ttl.ok) return errorResponse(ttl.error.code, ttl.error.message, 400);
-    const payload = { key: key.value, value: body.value.value, type: type.value };
-    if (ttl.value !== undefined) payload.expirationTtl = ttl.value;
-    const gatewayResponse = await callGateway(env, GATEWAY.KV_PUT_PATH, payload);
-    return envelopeResponse(gatewayResponse, action);
-  }
-
-  const gatewayResponse = await callGateway(env, GATEWAY.KV_GET_PATH, { key: key.value, type: type.value });
-  return envelopeResponse(gatewayResponse, action);
 }
 
 function getRuntimeAction(pathname) {

@@ -13,7 +13,8 @@ export interface PagesRuntimeEnv {
 }
 
 export interface PagesKV {
-  get<T = unknown>(key: string, options?: { type?: KVType }): Promise<T | string | null>;
+  get<T = unknown>(key: string, options?: { type?: 'json' }): Promise<T | null>;
+  get(key: string, options: { type: 'text' }): Promise<string | null>;
   put(key: string, value: unknown, options?: { type?: KVType; expirationTtl?: number }): Promise<void>;
   delete(key: string): Promise<void>;
 }

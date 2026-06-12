@@ -28,10 +28,6 @@ importers:
         version: 3.8.3
 
   apps/pages-sdk:
-    dependencies:
-      '@xd/pages-runtime-protocol':
-        specifier: workspace:*
-        version: link:../../packages/pages-runtime-protocol
     devDependencies:
       typescript:
         specifier: ^5.8.0

@@ -56,6 +56,25 @@ test('PAGES_RUNTIME_SOURCE validates runtime request type', async () => {
   assert.equal((await response.json()).error.code, 'INVALID_TYPE');
 });
 
+test('PAGES_RUNTIME_SOURCE returns KV_FAILED envelope when gateway fetch throws', async () => {
+  const { handlePagesRuntimeRequest } = loadInlineRuntime();
+  const response = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/kv/get'),
+    {
+      XD_PAGES_KV_CAPABILITY: 'capability-token',
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async () => {
+          throw new Error('gateway unavailable');
+        },
+      },
+    },
+    { checkAccess: async () => null }
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal((await response.json()).error.code, 'KV_FAILED');
+});
+
 function loadInlineRuntime() {
   const source = PAGES_RUNTIME_SOURCE.replace('export async function handlePagesRuntimeRequest', 'async function handlePagesRuntimeRequest');
   return new Function(`${source}; return { handlePagesRuntimeRequest };`)();

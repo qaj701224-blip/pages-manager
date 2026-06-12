@@ -7,7 +7,7 @@ import {
   validateKvType,
   validateTtl,
   validateUserKey,
-} from '@xd/pages-runtime-protocol';
+} from './protocol.js';
 import { PagesSDKError } from './errors.js';
 import type { KVType, PagesRuntimeEnv } from './types.js';
 
@@ -64,7 +64,10 @@ export function createHandlePagesRuntimeRequest(createPagesRuntime: RuntimeFacto
       if (action === 'get') {
         const type = validateKvType(body.value.type);
         if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
-        const value = await runtime.kv.get(key.value, { type: type.value as KVType });
+        const value =
+          type.value === 'text'
+            ? await runtime.kv.get(key.value, { type: 'text' })
+            : await runtime.kv.get(key.value, { type: 'json' });
         return jsonResponse(buildOkEnvelope(value === null ? { found: false } : { found: true, value }));
       }
 

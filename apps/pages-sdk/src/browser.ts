@@ -1,4 +1,4 @@
-import { ERROR_CODES, HEADERS, RUNTIME } from '@xd/pages-runtime-protocol';
+import { ERROR_CODES, HEADERS, RUNTIME } from './protocol.js';
 import { PagesSDKError } from './errors.js';
 import type { KVType, PagesKV } from './types.js';
 
@@ -22,30 +22,36 @@ export function createPagesClient(options: { basePath?: string; fetch?: typeof f
     return readEnvelope(response);
   }
 
-  return {
-    kv: {
-      async get<T = unknown>(key: string, getOptions: { type?: KVType } = {}): Promise<T | string | null> {
-        const envelope = await post('/kv/get', { key, type: getOptions.type ?? 'json' });
-        if (typeof envelope.found !== 'boolean') {
-          throw new PagesSDKError(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'Invalid runtime response');
-        }
-        if (envelope.found === false) return null;
-        return envelope.value as T | string;
-      },
-      async put(key: string, value: unknown, putOptions: { type?: KVType; expirationTtl?: number } = {}): Promise<void> {
-        const body: { key: string; value: unknown; type: KVType; expirationTtl?: number } = {
-          key,
-          value,
-          type: putOptions.type ?? 'json',
-        };
-        if (putOptions.expirationTtl !== undefined) body.expirationTtl = putOptions.expirationTtl;
-        await post('/kv/put', body);
-      },
-      async delete(key: string): Promise<void> {
-        await post('/kv/delete', { key });
-      },
-    },
-  };
+  async function get<T = unknown>(key: string, getOptions?: { type?: 'json' }): Promise<T | null>;
+  async function get(key: string, getOptions: { type: 'text' }): Promise<string | null>;
+  async function get<T = unknown>(key: string, getOptions: { type?: KVType } = {}): Promise<T | string | null> {
+    const envelope = await post('/kv/get', { key, type: getOptions.type ?? 'json' });
+    if (typeof envelope.found !== 'boolean') {
+      throw new PagesSDKError(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'Invalid runtime response');
+    }
+    if (envelope.found === false) return null;
+    return envelope.value as T | string;
+  }
+
+  async function put(
+    key: string,
+    value: unknown,
+    putOptions: { type?: KVType; expirationTtl?: number } = {}
+  ): Promise<void> {
+    const body: { key: string; value: unknown; type: KVType; expirationTtl?: number } = {
+      key,
+      value,
+      type: putOptions.type ?? 'json',
+    };
+    if (putOptions.expirationTtl !== undefined) body.expirationTtl = putOptions.expirationTtl;
+    await post('/kv/put', body);
+  }
+
+  async function deleteKey(key: string): Promise<void> {
+    await post('/kv/delete', { key });
+  }
+
+  return { kv: { get, put, delete: deleteKey } };
 }
 
 async function readEnvelope(response: Response): Promise<Record<string, unknown>> {

@@ -15,14 +15,12 @@
       "import": "./dist/worker.js"
     },
     "./internal/runtime-source": {
+      "types": "./dist/internal/runtime-source.d.ts",
       "import": "./dist/internal/runtime-source.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json"
-  },
-  "dependencies": {
-    "@xd/pages-runtime-protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.8.0"
