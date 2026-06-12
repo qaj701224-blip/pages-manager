@@ -91,7 +91,7 @@ test('static preset with kv options does not generate runtime support', () => {
   assert.doesNotMatch(code, /\/\.xd-pages\/runtime\/v1/);
 });
 
-test('spa kv worker checks runtime path before assets with guard and inline runtime', () => {
+test('public spa kv worker exposes runtime before assets without IP allowlist', () => {
   const code = buildWorkerCode('spa', null, false, '127.0.0.1', {
     kv: {
       enabled: true,
@@ -104,11 +104,30 @@ test('spa kv worker checks runtime path before assets with guard and inline runt
   });
 
   assert.match(code, /handlePagesRuntimeRequest/);
-  assert.match(code, /checkIP\(request\)/);
+  assert.match(code, /CF-Connecting-IP/);
+  assert.doesNotMatch(code, /function checkIP/);
+  assert.doesNotMatch(code, /checkIP\(request\)/);
   assert.doesNotMatch(code, /from\s+['"]@xd\//);
   assert.doesNotMatch(code, /import\(['"]@xd\//);
   assert.ok(code.indexOf('/.xd-pages/runtime/v1') < code.indexOf('env.ASSETS.fetch'));
   assert.ok(code.indexOf('handlePagesRuntimeRequest') < code.indexOf('env.ASSETS.fetch'));
+});
+
+test('restricted spa kv worker applies IP allowlist to runtime and assets', () => {
+  const code = buildWorkerCode('spa', null, true, '127.0.0.1', {
+    kv: {
+      enabled: true,
+      gatewayService: 'pages-kv-gateway',
+      siteId: 'demo',
+      siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
+      envName: 'staging',
+      capability: 'capability.jwt',
+    },
+  });
+
+  assert.match(code, /function checkIP/);
+  assert.match(code, /const denied = checkIP\(request\);if\(denied\)return denied;/);
+  assert.match(code, /const b=checkIP\(request\);if\(b\)return b;/);
 });
 
 test('worker preset with kv keeps user worker code unchanged while metadata has kv bindings', () => {

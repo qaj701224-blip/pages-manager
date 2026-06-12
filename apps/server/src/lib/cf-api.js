@@ -59,10 +59,9 @@ export default {
 function buildSpaWorkerKv(allowlist, ipRestrict) {
   return `${MIME_WORKER_HELPER}
 ${PAGES_RUNTIME_SOURCE}
-${buildBakedGuardSource(allowlist)}
+${ipRestrict ? buildBakedGuardSource(allowlist) : ''}
 function checkRuntimeAccess(request) {
-  const denied = checkIP(request);
-  if (denied) return denied;
+  ${ipRestrict ? 'const denied = checkIP(request);if(denied)return denied;' : ''}
   if (!request.headers.get("CF-Connecting-IP")) return new Response("IP not allowed", { status: 403 });
   return null;
 }
