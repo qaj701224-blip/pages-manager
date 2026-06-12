@@ -25,9 +25,11 @@ Environment:
   PAGES_DEMO_TARGET        Optional. Defaults to staging. Overridden by --target.
   PAGES_API                Optional. Defaults from target.
   PAGES_DEMO_PREFIX        Optional. Defaults to demo.
-  PAGES_DEMO_IP_RESTRICT   Optional. Defaults to true. Set false only for troubleshooting.
   PAGES_DEMO_ALLOW_NON_STAGING
                            Optional. Set true only for a nonstandard PAGES_API.
+
+Note:
+  vue-app is deployed with kv=true to exercise the browser Pages KV SDK.
 EOF
 }
 
@@ -90,7 +92,6 @@ esac
 PAGES_API="${PAGES_API:-$EXPECTED_PAGES_API}"
 PAGES_API="${PAGES_API%/}"
 PAGES_DEMO_PREFIX="${PAGES_DEMO_PREFIX:-demo}"
-PAGES_DEMO_IP_RESTRICT="${PAGES_DEMO_IP_RESTRICT:-true}"
 PAGES_DEMO_ALLOW_NON_STAGING="${PAGES_DEMO_ALLOW_NON_STAGING:-false}"
 
 [[ -n "${PAGES_TOKEN:-}" ]] || die "PAGES_TOKEN is required. Put it in .env or pass --env-file."
@@ -99,11 +100,6 @@ if [[ "$PAGES_DEMO_ALLOW_NON_STAGING" != "true" && "$PAGES_API" != "$EXPECTED_PA
   die "PAGES_API does not match target $PAGES_DEMO_TARGET: got $PAGES_API, expected $EXPECTED_PAGES_API. Set PAGES_DEMO_ALLOW_NON_STAGING=true only for a nonstandard API."
 fi
 
-case "$PAGES_DEMO_IP_RESTRICT" in
-  true | false) ;;
-  *) die "PAGES_DEMO_IP_RESTRICT must be true or false" ;;
-esac
-
 DEMO_IDS=(html-img vue-app nuxt-app api-demo)
 
 demo_preset() {
@@ -111,6 +107,14 @@ demo_preset() {
     html-img) printf 'static' ;;
     vue-app | nuxt-app) printf 'spa' ;;
     api-demo) printf 'worker' ;;
+    *) die "unknown demo id: $1" ;;
+  esac
+}
+
+demo_kv_enabled() {
+  case "$1" in
+    vue-app) printf 'true' ;;
+    html-img | nuxt-app | api-demo) printf 'false' ;;
     *) die "unknown demo id: $1" ;;
   esac
 }
@@ -164,16 +168,16 @@ print_plan() {
   printf 'PAGES_DEMO_TARGET=%s\n' "$PAGES_DEMO_TARGET"
   printf 'PAGES_API=%s\n' "$PAGES_API"
   printf 'PAGES_DEMO_PREFIX=%s\n' "$PAGES_DEMO_PREFIX"
-  printf 'PAGES_DEMO_IP_RESTRICT=%s\n' "$PAGES_DEMO_IP_RESTRICT"
   printf '\n'
-  printf '%-24s %-8s %s\n' 'site' 'preset' 'source'
+  printf '%-24s %-8s %-5s %s\n' 'site' 'preset' 'kv' 'source'
   while IFS= read -r demo; do
-    local name preset source
+    local name preset kv_enabled source
     name="$(demo_site_name "$demo")"
     preset="$(demo_preset "$demo")"
+    kv_enabled="$(demo_kv_enabled "$demo")"
     source="$(demo_dir "$demo")"
     validate_site_name "$name"
-    printf '%-24s %-8s %s\n' "$name" "$preset" "$source"
+    printf '%-24s %-8s %-5s %s\n' "$name" "$preset" "$kv_enabled" "$source"
   done < <(selected_demos)
 }
 
@@ -212,6 +216,7 @@ prepare_demo_dir() {
       printf '%s/demos/html-img' "$REPO_ROOT"
       ;;
     vue-app)
+      run_cmd pnpm --filter @xd/pages-sdk build
       install_and_build "$REPO_ROOT/demos/vue-app" build
       printf '%s/demos/vue-app/dist' "$REPO_ROOT"
       ;;
@@ -254,7 +259,10 @@ deploy_dir() {
   local curl_args=(-sS -w $'\n%{http_code}' -X POST -H "X-Pages-Token: ${PAGES_TOKEN}")
   curl_args+=(-F "name=${site}")
   curl_args+=(-F "preset=${preset}")
-  curl_args+=(-F "ip_restrict=${PAGES_DEMO_IP_RESTRICT}")
+  curl_args+=(-F "ip_restrict=true")
+  if [[ "$(demo_kv_enabled "$demo")" == "true" ]]; then
+    curl_args+=(-F "kv=true")
+  fi
 
   local count=0
   while IFS= read -r -d '' file; do

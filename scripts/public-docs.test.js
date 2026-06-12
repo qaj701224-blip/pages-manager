@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,4 +46,58 @@ test('README deploy script examples include PAGES_TOKEN', () => {
   for (const command of manageScriptCommands) {
     assert.match(command, /^PAGES_TOKEN=pages_[^\s]+ bash scripts\/manage\.sh /);
   }
+});
+
+test('each public doc documents Pages KV SDK usage and avoids private capability text', () => {
+  const docs = [
+    ['README.md', readDoc('README.md')],
+    ['API.md', readDoc('API.md')],
+    ['pages-deploy.skill.md', readDoc('pages-deploy.skill.md')],
+  ];
+
+  for (const [name, doc] of docs) {
+    assert.match(doc, /kv=true/, `${name} documents kv=true opt-in`);
+    assert.match(doc, /spa.*worker|worker.*spa/, `${name} documents spa/worker support`);
+    assert.match(doc, /static \+ kv=true|static.*拒绝/, `${name} documents static kv rejection`);
+    assert.match(doc, /\/\.xd-pages\/runtime\/v1/, `${name} documents runtime path`);
+    assert.match(doc, /@xd\/pages-sdk\/browser/, `${name} documents browser SDK entry`);
+    assert.match(doc, /@xd\/pages-sdk\/worker/, `${name} documents worker SDK entry`);
+    assert.match(doc, /worker preset[\s\S]*(bundle|打包)|(?:bundle|打包)[\s\S]*worker preset/, `${name} documents worker bundling`);
+
+    if (name === 'README.md') {
+      assert.doesNotMatch(
+        doc,
+        /PAGES_CAP_JWT_SECRET_(?!EXAMPLE\b)[A-Z0-9_]+/,
+        `${name} mentions only placeholder capability secret env names`,
+      );
+    } else {
+      assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention internal JWT secret env`);
+    }
+    if (name !== 'README.md') {
+      assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention platform KV namespace env`);
+    }
+    assert.doesNotMatch(doc, /capability\.jwt/, `${name} does not include capability example`);
+  }
+});
+
+test('README local deployment commands use package scripts or wrangler directly', () => {
+  const readme = readDoc('README.md');
+
+  assert.match(readme, /JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE/);
+  assert.doesNotMatch(readme, /JWT_SIGNING_SECRET_ENV=JWT_SIGNING_SECRET_EXAMPLE/);
+  assert.match(readme, /PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example/);
+  assert.match(readme, /export PAGES_CAP_JWT_ACTIVE_KID/);
+  assert.match(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
+  assert.match(readme, /pnpm --dir apps\/server run deploy/);
+  assert.doesNotMatch(readme, /pnpm --dir apps\/server deploy\b/);
+  assert.match(readme, /scripts\/put-capability-secrets\.sh apps\/server/);
+  assert.doesNotMatch(readme, /pnpm --dir apps\/kv-gateway deploy/);
+});
+
+test('published SDK README does not demonstrate bypassing runtime access checks', () => {
+  const sdkReadme = readDoc('apps/pages-sdk/README.md');
+
+  assert.doesNotMatch(sdkReadme, /checkAccess:\s*\(\)\s*=>\s*null/);
+  assert.match(sdkReadme, /checkAccess/);
+  assert.match(sdkReadme, /allowlist|auth|IP/i);
 });

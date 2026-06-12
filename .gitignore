@@ -17,7 +17,9 @@ dist/
 ### Cloudflare / Wrangler
 .wrangler/
 .mf/
+/.toml-config/
 apps/server/wrangler.toml
+apps/kv-gateway/wrangler.toml
 apps/xdads-302/wrangler.toml
 
 ### Claude Code (local settings, not shared)

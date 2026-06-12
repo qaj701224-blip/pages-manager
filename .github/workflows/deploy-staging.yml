@@ -2,6 +2,16 @@ name: Deploy Staging
 
 on:
   workflow_dispatch:
+    inputs:
+      component:
+        description: Deploy component
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - server
+          - kv-gateway
   push:
     branches: [staging]
 
@@ -12,6 +22,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: staging
+    env:
+      DEPLOY_COMPONENT: ${{ github.event_name == 'workflow_dispatch' && inputs.component || 'all' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -29,39 +41,100 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
 
-      - name: Generate Wrangler config
+      - name: Generate Server Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
         run: scripts/gen-wrangler.sh apps/server staging
 
-      - name: Validate Worker secrets
+      # Server signs KV capabilities; keep the gateway registry in lockstep with server deploys.
+      - name: Generate KV Gateway Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SITE_DATA_KV_NAMESPACE_ID: ${{ secrets.SITE_DATA_KV_NAMESPACE_ID }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+        run: scripts/gen-wrangler.sh apps/kv-gateway staging
+
+      - name: Validate Server secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           : "${CF_ZONE_ID_NEW:?CF_ZONE_ID_NEW is required}"
           : "${CF_API_TOKEN:?CF_API_TOKEN is required}"
+          DRY_RUN=1 scripts/put-capability-secrets.sh apps/server
 
-      - name: Deploy Worker
+      - name: Validate KV Gateway secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        shell: bash
+        env:
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: |
+          set -euo pipefail
+          DRY_RUN=1 scripts/put-capability-secrets.sh apps/kv-gateway
+
+      - name: Deploy KV Gateway
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir apps/server exec wrangler deploy
+        run: pnpm --dir apps/kv-gateway exec wrangler deploy
+
+      - name: Inject KV Gateway secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: |
+          set -euo pipefail
+          scripts/put-capability-secrets.sh apps/kv-gateway
+
+      - name: Deploy Worker
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/server run deploy
 
       - name: Inject Worker secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           printf '%s' "$CF_ZONE_ID_NEW" | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
           printf '%s' "$CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
+          scripts/put-capability-secrets.sh apps/server

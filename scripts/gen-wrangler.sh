@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: scripts/gen-wrangler.sh <app> <production|staging>" >&2
-  echo "Supported apps: apps/server, apps/xdads-302" >&2
+  echo "Supported apps: apps/server, apps/kv-gateway, apps/xdads-302" >&2
 }
 
 die() {
@@ -47,7 +47,7 @@ app="$1"
 environment="$2"
 
 case "$app" in
-  apps/server | apps/xdads-302) ;;
+  apps/server | apps/kv-gateway | apps/xdads-302) ;;
   *)
     usage
     die "unsupported app: $app"
@@ -81,6 +81,8 @@ replace_token "__CLOUDFLARE_ACCOUNT_ID__" "$CLOUDFLARE_ACCOUNT_ID"
 if [[ "$app" == "apps/server" ]]; then
   require_env SITES_KV_NAMESPACE_ID
   require_env IP_ALLOWLIST
+  require_env PAGES_CAP_JWT_ACTIVE_KID
+  require_env PAGES_CAP_JWT_KEYS
 
   ip_allowlist_pattern='^[0-9A-Fa-f:\.,/ _-]+$'
   if [[ ! "$IP_ALLOWLIST" =~ $ip_allowlist_pattern ]]; then
@@ -98,6 +100,7 @@ if [[ "$app" == "apps/server" ]]; then
       public_manager_dev_base="https://pages-manager.xd-cf-2022.workers.dev"
       domain_label=""
       worker_prefix="pages-"
+      kv_gateway_service="pages-kv-gateway"
       api_route="api.workers.xd.team"
       ;;
     staging)
@@ -107,6 +110,7 @@ if [[ "$app" == "apps/server" ]]; then
       public_manager_dev_base="https://pages-manager-staging.xd-cf-2022.workers.dev"
       domain_label="-staging"
       worker_prefix="pages-staging-"
+      kv_gateway_service="pages-kv-gateway-staging"
       api_route="api-staging.workers.xd.team"
       ;;
   esac
@@ -119,6 +123,7 @@ if [[ "$app" == "apps/server" ]]; then
     domain_base \
     domain_label \
     worker_prefix \
+    kv_gateway_service \
     workers_dev_subdomain \
     api_route; do
     require_toml_safe "$name" "${!name}"
@@ -131,15 +136,19 @@ if [[ "$app" == "apps/server" ]]; then
   replace_token "__DOMAIN_BASE__" "$domain_base"
   replace_token "__DOMAIN_LABEL__" "$domain_label"
   replace_token "__WORKER_PREFIX__" "$worker_prefix"
+  replace_token "__KV_GATEWAY_SERVICE__" "$kv_gateway_service"
   replace_token "__WORKERS_DEV_SUBDOMAIN__" "$workers_dev_subdomain"
   replace_token "__IP_ALLOWLIST__" "$IP_ALLOWLIST"
   replace_token "__SITES_KV_NAMESPACE_ID__" "$SITES_KV_NAMESPACE_ID"
+  replace_token "__PAGES_CAP_JWT_ACTIVE_KID__" "$PAGES_CAP_JWT_ACTIVE_KID"
+  replace_token "__PAGES_CAP_JWT_KEYS__" "$PAGES_CAP_JWT_KEYS"
   replace_token "__API_ROUTE__" "$api_route"
 
   if [[ "$environment" == "production" ]]; then
     if [[ "$rendered" == *"pages-manager-staging"* ||
       "$rendered" == *"api-staging.workers.xd.team"* ||
-      "$rendered" == *"pages-staging-"* ]]; then
+      "$rendered" == *"pages-staging-"* ||
+      "$rendered" == *"pages-kv-gateway-staging"* ]]; then
       die "production config contains staging values"
     fi
   else
@@ -147,8 +156,50 @@ if [[ "$app" == "apps/server" ]]; then
       "$rendered" != *'PUBLIC_API_BASE = "https://api-staging.workers.xd.team"'* ||
       "$rendered" != *'DOMAIN_LABEL = "-staging"'* ||
       "$rendered" != *'WORKER_PREFIX = "pages-staging-"'* ||
+      "$rendered" != *'KV_GATEWAY_SERVICE = "pages-kv-gateway-staging"'* ||
       "$rendered" != *'pattern = "api-staging.workers.xd.team"'* ]]; then
       die "staging config is missing expected staging values"
+    fi
+  fi
+elif [[ "$app" == "apps/kv-gateway" ]]; then
+  require_env SITE_DATA_KV_NAMESPACE_ID
+  require_env PAGES_CAP_JWT_ACTIVE_KID
+  require_env PAGES_CAP_JWT_KEYS
+
+  case "$environment" in
+    production)
+      worker_name="pages-kv-gateway"
+      public_environment="production"
+      ;;
+    staging)
+      worker_name="pages-kv-gateway-staging"
+      public_environment="staging"
+      ;;
+  esac
+
+  for name in \
+    worker_name \
+    public_environment; do
+    require_toml_safe "$name" "${!name}"
+  done
+
+  replace_token "__WORKER_NAME__" "$worker_name"
+  replace_token "__PUBLIC_ENVIRONMENT__" "$public_environment"
+  replace_token "__SITE_DATA_KV_NAMESPACE_ID__" "$SITE_DATA_KV_NAMESPACE_ID"
+  replace_token "__PAGES_CAP_JWT_ACTIVE_KID__" "$PAGES_CAP_JWT_ACTIVE_KID"
+  replace_token "__PAGES_CAP_JWT_KEYS__" "$PAGES_CAP_JWT_KEYS"
+
+  if [[ "$environment" == "production" ]]; then
+    if [[ "$rendered" == *'name = "pages-kv-gateway-staging"'* ||
+      "$rendered" == *'XD_PAGES_ENV = "staging"'* ||
+      "$rendered" != *'name = "pages-kv-gateway"'* ||
+      "$rendered" != *'XD_PAGES_ENV = "production"'* ]]; then
+      die "production kv-gateway config contains staging values"
+    fi
+  else
+    if [[ "$rendered" != *'name = "pages-kv-gateway-staging"'* ||
+      "$rendered" != *'XD_PAGES_ENV = "staging"'* ]]; then
+      die "staging kv-gateway config is missing expected staging values"
     fi
   fi
 elif [[ "$app" == "apps/xdads-302" ]]; then

@@ -58,3 +58,42 @@ test('list filters by token and does not expose tokens', async () => {
     filtered: true,
   });
 });
+
+test('list exposes only public site summary fields', async () => {
+  const response = await handleList(
+    new Request('https://api.workers.xd.team/list', {
+      headers: { 'X-Pages-Token': 'pages_user@xd.com' },
+    }),
+    envWithSites([
+      {
+        name: 'owned',
+        metadata: {
+          url: 'https://owned.workers.xd.team',
+          preset: 'spa',
+          ipRestrict: true,
+          kvEnabled: true,
+          siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
+          siteGeneration: 3,
+          updatedAt: '2026-06-12T00:00:00.000Z',
+          token: 'pages_user@xd.com',
+        },
+      },
+    ])
+  );
+  const body = await response.json();
+
+  assert.deepEqual(body, {
+    sites: [
+      {
+        name: 'owned',
+        url: 'https://owned.workers.xd.team',
+        preset: 'spa',
+        ipRestrict: true,
+        kvEnabled: true,
+        updatedAt: '2026-06-12T00:00:00.000Z',
+      },
+    ],
+    filtered: true,
+  });
+  assert.doesNotMatch(JSON.stringify(body), /siteUuid|siteGeneration|pages_user@xd\.com/);
+});
