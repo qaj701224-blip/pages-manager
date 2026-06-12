@@ -134,6 +134,7 @@ jobs:
             ].join('\n')
           );
           NODE
+          git add -N "$ALLOWED_PATH"
           git diff -- "$ALLOWED_PATH" > .pages-artifacts/site.patch
 
       - name: Validate generated diff boundary

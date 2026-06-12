@@ -30,7 +30,7 @@ jobs:
             cat /tmp/non-site-paths >&2
             exit 1
           fi
-          site_roots="$(echo "$changed" | awk -F/ '/^sites\\// { print $1 \"/\" $2 \"/\" $3 }' | sort -u)"
+          site_roots="$(echo "$changed" | awk -F/ '$1 == "sites" { print $1 "/" $2 "/" $3 }' | sort -u)"
           count="$(echo "$site_roots" | sed '/^$/d' | wc -l | tr -d ' ')"
           if [[ "$count" != "1" ]]; then
             echo "PR must modify exactly one site root" >&2
