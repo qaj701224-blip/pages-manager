@@ -126,7 +126,7 @@ export function validateKvType(type = 'json') {
 }
 
 export function validateTtl(expirationTtl) {
-  if (expirationTtl === undefined) return { ok: true, value: undefined };
+  if (expirationTtl === undefined || expirationTtl === null) return { ok: true, value: undefined };
   if (
     Number.isInteger(expirationTtl) &&
     expirationTtl >= MIN_TTL_SECONDS &&

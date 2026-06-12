@@ -101,6 +101,8 @@ test('type and ttl validation match runtime contract', () => {
   assert.equal(validateKvType('text').value, 'text');
   assert.equal(validateKvType('binary').error.code, 'INVALID_TYPE');
   assert.equal(validateTtl(undefined).value, undefined);
+  assert.equal(validateTtl(null).value, undefined);
+  assert.equal(validateTtl(null).ok, true);
   assert.equal(validateTtl(60).value, 60);
   assert.equal(validateTtl(31536000).value, 31536000);
   assert.equal(validateTtl(59).error.code, 'INVALID_TTL');
