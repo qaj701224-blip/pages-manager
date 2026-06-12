@@ -37,7 +37,7 @@ function envWithExistingSite(existing) {
     WORKERS_DEV_SUBDOMAIN: 'xd-cf-2022',
     IP_ALLOWLIST: '127.0.0.1',
     PUBLIC_ENVIRONMENT: 'production',
-    KV_GATEWAY_SERVICE: 'xd-pages-kv-gateway',
+    KV_GATEWAY_SERVICE: 'pages-kv-gateway',
     PAGES_CAP_JWT_ACTIVE_KID: 'prod-hs-2026-06',
     PAGES_CAP_JWT_KEYS: 'prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
     PAGES_CAP_JWT_SECRET_202606: 'test-secret',

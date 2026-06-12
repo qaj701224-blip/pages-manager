@@ -33,7 +33,7 @@ test('kv enabled binds gateway, site identifiers, env and capability', () => {
   const metadata = buildWorkerMetadata('completion-jwt', 'spa', false, '127.0.0.1', {
     kv: {
       enabled: true,
-      gatewayService: 'xd-pages-kv-gateway',
+      gatewayService: 'pages-kv-gateway',
       siteId: 'demo',
       siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
       envName: 'staging',
@@ -43,7 +43,7 @@ test('kv enabled binds gateway, site identifiers, env and capability', () => {
 
   assert.deepEqual(metadata.bindings, [
     { type: 'assets', name: 'ASSETS' },
-    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'xd-pages-kv-gateway' },
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
     { type: 'plain_text', name: 'XD_PAGES_SITE_ID', text: 'demo' },
     { type: 'plain_text', name: 'XD_PAGES_SITE_UUID', text: '4b4c8e8361ef4b47b64f5c20a7db7c47' },
     { type: 'plain_text', name: 'XD_PAGES_ENV', text: 'staging' },
@@ -55,7 +55,7 @@ test('kv capability binding is not plain text metadata', () => {
   const metadata = buildWorkerMetadata('completion-jwt', 'spa', false, '127.0.0.1', {
     kv: {
       enabled: true,
-      gatewayService: 'xd-pages-kv-gateway',
+      gatewayService: 'pages-kv-gateway',
       siteId: 'demo',
       siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
       envName: 'staging',
@@ -79,7 +79,7 @@ test('static preset with kv options does not generate runtime support', () => {
   const code = buildWorkerCode('static', null, false, '127.0.0.1', {
     kv: {
       enabled: true,
-      gatewayService: 'xd-pages-kv-gateway',
+      gatewayService: 'pages-kv-gateway',
       siteId: 'demo',
       siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
       envName: 'staging',
@@ -95,7 +95,7 @@ test('spa kv worker checks runtime path before assets with guard and inline runt
   const code = buildWorkerCode('spa', null, false, '127.0.0.1', {
     kv: {
       enabled: true,
-      gatewayService: 'xd-pages-kv-gateway',
+      gatewayService: 'pages-kv-gateway',
       siteId: 'demo',
       siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
       envName: 'staging',
@@ -116,7 +116,7 @@ test('worker preset with kv keeps user worker code unchanged while metadata has 
   const options = {
     kv: {
       enabled: true,
-      gatewayService: 'xd-pages-kv-gateway',
+      gatewayService: 'pages-kv-gateway',
       siteId: 'demo',
       siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
       envName: 'staging',

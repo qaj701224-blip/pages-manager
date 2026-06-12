@@ -100,7 +100,7 @@ if [[ "$app" == "apps/server" ]]; then
       public_manager_dev_base="https://pages-manager.xd-cf-2022.workers.dev"
       domain_label=""
       worker_prefix="pages-"
-      kv_gateway_service="xd-pages-kv-gateway"
+      kv_gateway_service="pages-kv-gateway"
       api_route="api.workers.xd.team"
       ;;
     staging)
@@ -110,7 +110,7 @@ if [[ "$app" == "apps/server" ]]; then
       public_manager_dev_base="https://pages-manager-staging.xd-cf-2022.workers.dev"
       domain_label="-staging"
       worker_prefix="pages-staging-"
-      kv_gateway_service="xd-pages-kv-gateway-staging"
+      kv_gateway_service="pages-kv-gateway-staging"
       api_route="api-staging.workers.xd.team"
       ;;
   esac
@@ -148,8 +148,7 @@ if [[ "$app" == "apps/server" ]]; then
     if [[ "$rendered" == *"pages-manager-staging"* ||
       "$rendered" == *"api-staging.workers.xd.team"* ||
       "$rendered" == *"pages-staging-"* ||
-      "$rendered" == *"pages-kv-gateway-staging"* ||
-      "$rendered" == *"xd-pages-kv-gateway-staging"* ]]; then
+      "$rendered" == *"pages-kv-gateway-staging"* ]]; then
       die "production config contains staging values"
     fi
   else
@@ -157,7 +156,7 @@ if [[ "$app" == "apps/server" ]]; then
       "$rendered" != *'PUBLIC_API_BASE = "https://api-staging.workers.xd.team"'* ||
       "$rendered" != *'DOMAIN_LABEL = "-staging"'* ||
       "$rendered" != *'WORKER_PREFIX = "pages-staging-"'* ||
-      "$rendered" != *'KV_GATEWAY_SERVICE = "xd-pages-kv-gateway-staging"'* ||
+      "$rendered" != *'KV_GATEWAY_SERVICE = "pages-kv-gateway-staging"'* ||
       "$rendered" != *'pattern = "api-staging.workers.xd.team"'* ]]; then
       die "staging config is missing expected staging values"
     fi
@@ -169,11 +168,11 @@ elif [[ "$app" == "apps/kv-gateway" ]]; then
 
   case "$environment" in
     production)
-      worker_name="xd-pages-kv-gateway"
+      worker_name="pages-kv-gateway"
       public_environment="production"
       ;;
     staging)
-      worker_name="xd-pages-kv-gateway-staging"
+      worker_name="pages-kv-gateway-staging"
       public_environment="staging"
       ;;
   esac
@@ -192,14 +191,13 @@ elif [[ "$app" == "apps/kv-gateway" ]]; then
 
   if [[ "$environment" == "production" ]]; then
     if [[ "$rendered" == *'name = "pages-kv-gateway-staging"'* ||
-      "$rendered" == *'name = "xd-pages-kv-gateway-staging"'* ||
       "$rendered" == *'XD_PAGES_ENV = "staging"'* ||
-      "$rendered" != *'name = "xd-pages-kv-gateway"'* ||
+      "$rendered" != *'name = "pages-kv-gateway"'* ||
       "$rendered" != *'XD_PAGES_ENV = "production"'* ]]; then
       die "production kv-gateway config contains staging values"
     fi
   else
-    if [[ "$rendered" != *'name = "xd-pages-kv-gateway-staging"'* ||
+    if [[ "$rendered" != *'name = "pages-kv-gateway-staging"'* ||
       "$rendered" != *'XD_PAGES_ENV = "staging"'* ]]; then
       die "staging kv-gateway config is missing expected staging values"
     fi
