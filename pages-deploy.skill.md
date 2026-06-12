@@ -1,7 +1,7 @@
 ---
 name: pages-deploy
 description: Deploy static sites, SPA apps, or custom Workers to internal hosting at *.workers.xd.team. 将静态站点、SPA 应用或自定义 Worker 发布到内部托管服务。
-version: 1.5.0
+version: 1.6.0
 ---
 
 # Pages — 内部站点托管
@@ -31,7 +31,7 @@ curl -s https://pages-manager.xd-cf-2022.workers.dev/openapi.json
 
 **同步脚本**：从 `x-scripts.deploy.source` 和 `x-scripts.manage.source` 提取内容，覆盖写入 `~/.xd-pages/` 并 `chmod +x`。
 
-**自动更新 skill**：比对 `x-skill-version` 与本文件头部 `version`（当前 1.5.0）。如果服务端更高：
+**自动更新 skill**：比对 `x-skill-version` 与本文件头部 `version`（当前 1.6.0）。如果服务端更高：
 
 ```bash
 curl -s https://pages-manager.xd-cf-2022.workers.dev/skill.md -o <本文件路径>
@@ -54,16 +54,16 @@ curl -s https://pages-manager.xd-cf-2022.workers.dev/skill.md -o <本文件路�
 
 ```bash
 # 部署
-PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--public]
+PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--kv]
 
 # 列出自己的站点
 PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh list
 
 # 查看站点详情
-bash ~/.xd-pages/pages-manage.sh info <name>
+PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh info <name>
 
 # 删除站点
-bash ~/.xd-pages/pages-manage.sh delete <name>
+PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh delete <name>
 ```
 
 ## 判断 preset（自动完成，不要问用户）
@@ -77,13 +77,54 @@ bash ~/.xd-pages/pages-manage.sh delete <name>
 
 **自定义 Worker 模式**：如果 static/spa 内置模板无法满足需求（如 SSR、API 代理、复杂路由），可以自行编写 `_worker.js` 放入部署目录，使用 `worker` preset。参考 openapi.json 中 `x-libs` 提供的代码片段（MIME 处理、IP 限制等）组装你需要的逻辑；部署时服务端会注入 `env.IP_ALLOWLIST`，不要在代码里写死 IP。
 
+## Pages KV（用户明确需要站点级读写数据时才开启）
+
+- 只有用户明确需要站点级 KV 存储时才部署 `kv=true`；未传、`false` 或 `kv=false` 都是关闭。
+- `kv=true` 只支持 `spa` 和 `worker` preset；`static + kv=true` 会被拒绝。
+- v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。
+- 公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。
+
+SPA 浏览器代码使用 `@xd/pages-sdk/browser`：
+
+```ts
+import { createPagesClient } from '@xd/pages-sdk/browser';
+
+const pages = createPagesClient();
+const config = await pages.kv.get('app/config', { type: 'json' });
+await pages.kv.put('drafts/123', { title: 'hello' });
+await pages.kv.delete('drafts/123');
+```
+
+浏览器 SDK 只访问同源 POST endpoint：
+
+- `POST /.xd-pages/runtime/v1/kv/get`
+- `POST /.xd-pages/runtime/v1/kv/put`
+- `POST /.xd-pages/runtime/v1/kv/delete`
+
+worker preset 使用 `@xd/pages-sdk/worker`：
+
+```js
+import { createPagesRuntime } from '@xd/pages-sdk/worker';
+
+export default {
+  async fetch(request, env) {
+    const pages = createPagesRuntime({ env });
+    return Response.json(await pages.kv.get('app/config'));
+  },
+};
+```
+
+`worker preset` 的 `_worker.js` 如果 import npm 包（包括 `@xd/pages-sdk/worker`），业务构建必须先 bundle/打包成可直接运行的 Worker module，再上传给 pages-manager；pages-manager 不会打包 `_worker.js`。
+
+worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能力；owner 代码可以误用或泄露自己的能力，平台只强制跨站前缀隔离。部署前用大白话提醒用户这个边界。
+
 ## IP 限制（默认开启）
 
 所有站点默认仅公司内网 IP 可访问。
 
 - static/spa：自动注入 IP 检查，无需额外操作
 - worker：服务端会注入 `env.IP_ALLOWLIST`，但需在 `_worker.js` 中自行调用 IP 检查代码（参考 openapi.json 中 `x-libs.ip-guard`），部署时提醒用户
-- 如需公网访问，部署时加 `--public`
+- 当前版本不支持关闭 IP 限制；不要传 `ip_restrict=false`
 
 ## 硬性规则
 
@@ -96,6 +137,8 @@ bash ~/.xd-pages/pages-manage.sh delete <name>
 7. 部署前确认目录存在且非空
 8. 如果 API 返回错误，按响应中的 `hint` 字段提示用户修正
 9. worker preset 部署时，提醒用户需在 `_worker.js` 中调用 IP 检查代码，白名单从 `env.IP_ALLOWLIST` 读取
+10. 用户要求 Pages KV 时，只能对 spa/worker 使用 `kv=true`；static 站点不要加 `kv=true`
+11. worker preset 如果 import npm 包，必须确认业务侧已 bundle/打包 `_worker.js`
 
 ## 错误恢复
 

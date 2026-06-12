@@ -79,24 +79,66 @@
 | `spa`    | 路径未匹配时回退到 `index.html`        | Vue / React / Angular 等 SPA |
 | `worker` | 使用上传的 `_worker.js` 作为自定义入口 | SSR、API 代理、动态渲染      |
 
+## Pages KV
+
+Pages KV 是 v1 站点级 KV 能力，部署时必须显式传 `kv=true` 才会开启；未传、`false` 或 `kv=false` 都是关闭，非法 `kv` 值会被拒绝。`kv=true` 仅支持 `spa` 和 `worker` preset，`static + kv=true` 会被拒绝。
+
+SPA 浏览器代码使用 `@xd/pages-sdk/browser`：
+
+```ts
+import { createPagesClient } from '@xd/pages-sdk/browser';
+
+const pages = createPagesClient();
+const config = await pages.kv.get('app/config', { type: 'json' });
+await pages.kv.put('drafts/123', { title: 'hello' });
+await pages.kv.delete('drafts/123');
+```
+
+浏览器 SDK 只访问同源 POST runtime endpoint：
+
+- `POST /.xd-pages/runtime/v1/kv/get`
+- `POST /.xd-pages/runtime/v1/kv/put`
+- `POST /.xd-pages/runtime/v1/kv/delete`
+
+自定义 Worker 使用 `@xd/pages-sdk/worker`：
+
+```js
+import { createPagesRuntime } from '@xd/pages-sdk/worker';
+
+export default {
+  async fetch(request, env) {
+    const pages = createPagesRuntime({ env });
+    return Response.json(await pages.kv.get('app/config'));
+  },
+};
+```
+
+worker preset 的 `_worker.js` 如果 import npm 包（包括 `@xd/pages-sdk/worker`），业务构建必须先 bundle/打包成可直接运行的 Worker module，再上传给 pages-manager；pages-manager 不会打包 `_worker.js`。
+
+安全边界：
+
+- 公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。
+- v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。
+- worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能力；owner 代码可以误用或泄露自己的能力，平台只强制跨站前缀隔离。
+
 ## 使用方式
 
 ### CLI 脚本
 
 ```bash
 # 部署静态站点
-bash scripts/deploy.sh my-report ./dist
+PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/deploy.sh my-report ./dist
 
 # 部署 SPA
-bash scripts/deploy.sh my-app ./dist --preset spa
+PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/deploy.sh my-app ./dist --preset spa
 
 # 部署自定义 Worker（目录需包含 _worker.js）
-bash scripts/deploy.sh my-ssr ./project --preset worker
+PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/deploy.sh my-ssr ./project --preset worker
 
 # 管理
-bash scripts/manage.sh list
-bash scripts/manage.sh info my-report
-bash scripts/manage.sh delete my-report
+PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/manage.sh list
+PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/manage.sh info my-report
+PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/manage.sh delete my-report
 ```
 
 ### HTTP API
@@ -105,6 +147,7 @@ bash scripts/manage.sh delete my-report
 
 ```bash
 curl -X POST https://api.workers.xd.team/deploy \
+  -H "X-Pages-Token: pages_zhangsan@xd.com" \
   -F "name=my-report" \
   -F "preset=static" \
   -F "file-0=@dist/index.html;filename=index.html"
@@ -131,13 +174,13 @@ AI:   ✅ 已发布: https://q2-report.workers.xd.team
 | `my-app`    | `https://my-app.workers.xd.team`     |
 | `demo-api`  | `https://demo-api.workers.xd.team`   |
 
-站点名规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/`
+站点名规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/`；`api`、`api-staging`、`manager`、`manager-staging`、`kv-gateway`、`kv-gateway-staging` 为平台保留名称，不能作为用户站点名。
 
 ## 安全
 
-- **IP 白名单**: 管理 API（除 `/openapi.json`、`/skill.md`、`/readme.md` 公开端点外）限制公司内网 IP 访问（CF-Connecting-IP），真实白名单由 `IP_ALLOWLIST` 在部署环境中配置；static/spa 子站会自动注入限制，worker 子站会注入 `env.IP_ALLOWLIST`，需在 `_worker.js` 中调用检查逻辑
-- **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证；`/list` 必须携带 token，且不会返回 token 字段
-- **Secret**: `CF_API_TOKEN` 是运行时高权限 token，必须通过 `wrangler secret put CF_API_TOKEN` 设置，不提交到 Git
+- **IP 白名单**: 管理 API（除 `/openapi.json`、`/skill.md`、`/readme.md` 公开端点外）限制公司内网 IP 访问（CF-Connecting-IP），真实白名单由 `IP_ALLOWLIST` 在部署环境中配置；当前版本所有子站请求也必须限制 IP，`ip_restrict=false` 会被拒绝；static/spa 子站会自动注入限制，worker 子站会注入 `env.IP_ALLOWLIST`，需在 `_worker.js` 中调用检查逻辑
+- **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证；`/deploy`、`/list`、`/site/:name` 查询和删除必须携带 token，`/list` 和 `/site/:name` 查询不会返回 token 字段
+- **Worker Secret**: `CF_API_TOKEN` 是运行时高权限 token 绑定名，必须通过 `wrangler secret put CF_API_TOKEN` 设置，不提交到 Git；GitHub Actions 中使用同名 Environment Secret `CF_API_TOKEN` 写入该 Worker Secret，`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 调用 Cloudflare
 - **后续**: 可叠加 Cloudflare Access (SSO) 实现身份认证
 
 ## 基础设施
@@ -185,13 +228,21 @@ pages-manager/
 │   │           ├── site.js
 │   │           ├── list.js
 │   │           └── health.js
+│   ├── kv-gateway/
+│   │   ├── wrangler.template.toml
+│   │   ├── package.json
+│   │   └── src/
+│   ├── pages-sdk/
+│   │   ├── package.json
+│   │   └── src/
 │   └── xdads-302/
 │       ├── wrangler.template.toml
 │       ├── package.json
 │       └── index.js
 ├── packages/
 │   ├── ip-guard/
-│   └── worker-kit/
+│   ├── worker-kit/
+│   └── pages-runtime-protocol/
 ├── scripts/
 │   ├── gen-wrangler.sh
 │   ├── deploy.sh
@@ -208,15 +259,36 @@ pnpm install
 # 本地开发管理 Worker
 pnpm --dir apps/server dev
 
-# 生成本地 Wrangler 配置后部署管理 Worker
+# 生成本地 Wrangler 配置后，先部署 KV gateway，再部署管理 Worker
+# 下方全部是占位示例；真实值放本地 shell、GitHub Environment Secrets/Vars 或 Wrangler secrets。
+# PAGES_CAP_JWT_SECRET_EXAMPLE 是示例 secret 变量名；同一个签名 secret 要注入 gateway 和 server。
+JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE
+JWT_SIGNING_SECRET="$(openssl rand -base64 32)"
+PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example
+PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV}
+export PAGES_CAP_JWT_ACTIVE_KID
+export PAGES_CAP_JWT_KEYS
+export "$JWT_SIGNING_SECRET_ENV=$JWT_SIGNING_SECRET"
+
+CLOUDFLARE_ACCOUNT_ID=example-account-id \
+SITE_DATA_KV_NAMESPACE_ID=example-site-data-kv-namespace-id \
+scripts/gen-wrangler.sh apps/kv-gateway production
+pnpm --dir apps/kv-gateway exec wrangler deploy
+scripts/put-capability-secrets.sh apps/kv-gateway
+
 CLOUDFLARE_ACCOUNT_ID=example-account-id \
 SITES_KV_NAMESPACE_ID=example-kv-namespace-id \
 IP_ALLOWLIST=127.0.0.1,::1 \
 scripts/gen-wrangler.sh apps/server production
-pnpm --dir apps/server deploy
+pnpm --dir apps/server run deploy
+scripts/put-capability-secrets.sh apps/server
+printf '%s' '<runtime-cloudflare-api-token>' | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
+printf '%s' '<zone-id>' | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
 ```
 
-真实 `apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets 生成 `apps/server/wrangler.toml`。
+staging 使用同一套命令，把最后一个参数改为 `staging`，并使用 staging 的 KV namespace、gateway、kid 和 secret。production GitHub Actions 只允许手动触发；staging push 到 `staging` 分支会按 `component=all` 全量自动部署 staging。手动触发 `Deploy Staging` / `Deploy Production` 时可用 `component=all | server | kv-gateway` 选择部署入口；选择 `server` 或 `kv-gateway` 时都会同步部署另一侧，以保持共享的 capability key registry 锁步。
+
+真实 `apps/server/wrangler.toml`、`apps/kv-gateway/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets/Vars 分别生成 `apps/kv-gateway/wrangler.toml` 和 `apps/server/wrangler.toml`。
 
 ## 路线图
 

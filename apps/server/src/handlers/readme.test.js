@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { getPublicConfig } from '../lib/public-config.js';
 import { handleReadme, renderReadme } from './readme.js';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 test('renderReadme rewrites production defaults for staging', () => {
   const config = getPublicConfig(new Request('https://api-staging.workers.xd.team/readme.md'), {
@@ -68,4 +73,27 @@ test('renderReadme rewrites README infrastructure table for staging', () => {
 
   assert.match(rendered, /`pages-manager-staging`，绑定 `api-staging\.workers\.xd\.team`/);
   assert.doesNotMatch(rendered, /`pages-manager`，绑定 `api\.workers\.xd\.team`/);
+});
+
+test('README public output documents Pages KV SDK usage and boundaries', () => {
+  const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8');
+  const rendered = renderReadme(readme, getPublicConfig(new Request('https://api.workers.xd.team/readme.md'), {}));
+
+  assert.match(rendered, /kv=true/);
+  assert.match(rendered, /static \+ kv=true|static.*拒绝/);
+  assert.match(rendered, /@xd\/pages-sdk\/browser/);
+  assert.match(rendered, /@xd\/pages-sdk\/worker/);
+  assert.match(rendered, /createPagesClient/);
+  assert.match(rendered, /createPagesRuntime/);
+  assert.match(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/get/);
+  assert.match(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/put/);
+  assert.match(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/delete/);
+  assert.match(rendered, /worker preset/);
+  assert.match(rendered, /bundle|打包/);
+  assert.match(rendered, /IP 白名单/);
+  assert.match(rendered, /前缀隔离|prefix isolation/);
+  assert.match(rendered, /高度敏感|highly sensitive/);
+
+  assert.doesNotMatch(rendered, /PAGES_CAP_JWT_SECRET_(?!EXAMPLE\b)[A-Z0-9_]+/);
+  assert.doesNotMatch(rendered, /capability\.jwt/);
 });
