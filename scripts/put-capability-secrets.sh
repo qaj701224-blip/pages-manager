@@ -48,6 +48,7 @@ require_capability_registry
 
 active_kid="$(trim "$PAGES_CAP_JWT_ACTIVE_KID")"
 seen_secret_names="|"
+seen_kids="|"
 active_kid_found=0
 secret_names=()
 IFS=',' read -r -a entries <<<"$PAGES_CAP_JWT_KEYS"
@@ -55,6 +56,14 @@ IFS=',' read -r -a entries <<<"$PAGES_CAP_JWT_KEYS"
 has_seen_secret_name() {
   local needle="$1"
   case "$seen_secret_names" in
+    *"|$needle|"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+has_seen_kid() {
+  local needle="$1"
+  case "$seen_kids" in
     *"|$needle|"*) return 0 ;;
     *) return 1 ;;
   esac
@@ -80,6 +89,12 @@ for raw_entry in "${entries[@]}"; do
     echo "::error::Unsupported capability key alg: $alg" >&2
     exit 1
   fi
+
+  if has_seen_kid "$kid"; then
+    echo "::error::Duplicate capability key kid: $kid" >&2
+    exit 1
+  fi
+  seen_kids="${seen_kids}${kid}|"
 
   if [ "$kid" = "$active_kid" ]; then
     active_kid_found=1

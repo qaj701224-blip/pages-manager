@@ -22,6 +22,14 @@ function workflowStepPattern(stepName, commandPattern) {
   return new RegExp([`name: ${stepName}`, capabilityActiveKidEnvPattern, commandPattern].join(String.raw`[\s\S]*`));
 }
 
+const lockstepComponentGuard =
+  "env\\.DEPLOY_COMPONENT == 'all' \\|\\| env\\.DEPLOY_COMPONENT == 'server' " +
+  "\\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'";
+
+function guardedLockstepStepPattern(stepName) {
+  return new RegExp(`name: ${stepName}\\n {8}if: ${lockstepComponentGuard}`);
+}
+
 test('deploy workflows expose component choice for manual deploys', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
@@ -35,32 +43,32 @@ test('deploy workflows expose component choice for manual deploys', () => {
   }
 });
 
-test('deploy workflows guard server steps and keep kv-gateway in lockstep with server deploys', () => {
+test('deploy workflows keep server and kv-gateway in lockstep for component deploys', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
 
     assert.match(workflow, /DEPLOY_COMPONENT: .+inputs\.component.+all/, `${name} has component default env`);
     assert.match(
       workflow,
-      /name: Generate Server Wrangler config\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
-      `${name} guards server config generation`,
+      guardedLockstepStepPattern('Generate Server Wrangler config'),
+      `${name} generates server config when gateway deploys`,
     );
     assert.match(
       workflow,
-      /name: Validate Server secrets\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
-      `${name} guards server secret validation`,
+      guardedLockstepStepPattern('Validate Server secrets'),
+      `${name} validates server secrets when gateway deploys`,
     );
     assert.match(
       workflow,
-      /name: Deploy Worker\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
-      `${name} guards server deployment`,
+      guardedLockstepStepPattern('Deploy Worker'),
+      `${name} deploys server when gateway deploys`,
     );
     assert.match(workflow, /run: pnpm --dir apps\/server run deploy/, `${name} builds SDK before server deploy`);
     assert.doesNotMatch(workflow, /run: pnpm --dir apps\/server deploy\b/, `${name} uses the deploy script explicitly`);
     assert.match(
       workflow,
-      /name: Inject Worker secrets\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
-      `${name} guards server secret injection`,
+      guardedLockstepStepPattern('Inject Worker secrets'),
+      `${name} injects server secrets when gateway deploys`,
     );
     assert.match(
       workflow,
