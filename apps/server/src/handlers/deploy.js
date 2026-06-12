@@ -10,22 +10,34 @@ import {
   enableSubdomain,
 } from '../lib/cf-api.js';
 import { signKvCapability } from '../lib/kv-capability.js';
+import { isReservedSiteName, RESERVED_SITE_NAMES, SITE_NAME_PATTERN, SITE_NAME_RE } from '../lib/site-names.js';
 
-const NAME_RE = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 const VALID_PRESETS = ['static', 'spa', 'worker'];
 
 export async function handleDeploy(request, env) {
   const form = await request.formData();
 
   const name = form.get('name');
-  if (!name || !NAME_RE.test(name)) {
+  if (!name || !SITE_NAME_RE.test(name)) {
     return jsonResponse(
       {
         error: '无效的站点名称',
         field: 'name',
         value: name || null,
-        constraint: '^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$',
+        constraint: SITE_NAME_PATTERN,
         hint: '仅限小写字母、数字、连字符，2-50 字符，首尾不能是连字符',
+      },
+      400
+    );
+  }
+  if (isReservedSiteName(name)) {
+    return jsonResponse(
+      {
+        error: '站点名称为平台保留名称',
+        field: 'name',
+        name,
+        reserved: RESERVED_SITE_NAMES,
+        hint: '请换一个非平台保留名称',
       },
       400
     );

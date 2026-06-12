@@ -76,7 +76,7 @@ test('production server config renders production values only', () => {
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.workers\.xd\.team"/);
   assert.match(config, /PUBLIC_MANAGER_DEV_BASE = "https:\/\/pages-manager\.xd-cf-2022\.workers\.dev"/);
   assert.match(config, /WORKER_PREFIX = "pages-"/);
-  assert.match(config, /KV_GATEWAY_SERVICE = "pages-kv-gateway"/);
+  assert.match(config, /KV_GATEWAY_SERVICE = "xd-pages-kv-gateway"/);
   assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "prod-hs-2026-06"/);
   assert.match(
     config,
@@ -86,6 +86,7 @@ test('production server config renders production values only', () => {
   assert.doesNotMatch(config, /api-staging/);
   assert.doesNotMatch(config, /pages-staging-/);
   assert.doesNotMatch(config, /pages-kv-gateway-staging/);
+  assert.doesNotMatch(config, /xd-pages-kv-gateway-staging/);
 });
 
 test('staging server config renders staging values', () => {
@@ -97,19 +98,21 @@ test('staging server config renders staging values', () => {
   assert.match(config, /PUBLIC_MANAGER_DEV_BASE = "https:\/\/pages-manager-staging\.xd-cf-2022\.workers\.dev"/);
   assert.match(config, /DOMAIN_LABEL = "-staging"/);
   assert.match(config, /WORKER_PREFIX = "pages-staging-"/);
-  assert.match(config, /KV_GATEWAY_SERVICE = "pages-kv-gateway-staging"/);
+  assert.match(config, /KV_GATEWAY_SERVICE = "xd-pages-kv-gateway-staging"/);
   assert.match(config, /pattern = "api-staging\.workers\.xd\.team"/);
 });
 
 test('production kv-gateway config renders private production gateway', () => {
   const config = renderKvGateway('production');
 
-  assert.match(config, /name = "pages-kv-gateway"/);
+  assert.match(config, /name = "xd-pages-kv-gateway"/);
+  assert.doesNotMatch(config, /name = "pages-kv-gateway"/);
   assert.match(config, /workers_dev = false/);
   assert.match(config, /XD_PAGES_ENV = "production"/);
   assert.match(config, /binding = "SITE_DATA"/);
   assert.match(config, /id = "dummy-site-data-kv"/);
-  assert.doesNotMatch(config, /pages-kv-gateway-staging/);
+  assert.doesNotMatch(config, /name = "pages-kv-gateway-staging"/);
+  assert.doesNotMatch(config, /xd-pages-kv-gateway-staging/);
   assert.doesNotMatch(config, /XD_PAGES_ENV = "staging"/);
 });
 
@@ -120,7 +123,7 @@ test('production kv-gateway config allows staging text in non-environment key me
     PAGES_CAP_JWT_KEYS: 'prod-staging-rollover:HS256:PAGES_CAP_JWT_SECRET_202606',
   });
 
-  assert.match(config, /name = "pages-kv-gateway"/);
+  assert.match(config, /name = "xd-pages-kv-gateway"/);
   assert.match(config, /XD_PAGES_ENV = "production"/);
   assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "prod-staging-rollover"/);
   assert.match(
@@ -128,23 +131,26 @@ test('production kv-gateway config allows staging text in non-environment key me
     /PAGES_CAP_JWT_KEYS = "prod-staging-rollover:HS256:PAGES_CAP_JWT_SECRET_202606"/,
   );
   assert.doesNotMatch(config, /name = "pages-kv-gateway-staging"/);
+  assert.doesNotMatch(config, /name = "xd-pages-kv-gateway-staging"/);
   assert.doesNotMatch(config, /XD_PAGES_ENV = "staging"/);
 });
 
 test('staging kv-gateway config renders staging gateway only', () => {
   const config = renderKvGateway('staging');
 
-  assert.match(config, /name = "pages-kv-gateway-staging"/);
+  assert.match(config, /name = "xd-pages-kv-gateway-staging"/);
   assert.match(config, /XD_PAGES_ENV = "staging"/);
   assert.doesNotMatch(config, /name = "pages-kv-gateway"/);
+  assert.doesNotMatch(config, /name = "pages-kv-gateway-staging"/);
+  assert.doesNotMatch(config, /name = "xd-pages-kv-gateway"/);
 });
 
 test('server config renders environment-specific kv gateway service name', () => {
   const production = renderServer('production', kvEnv);
-  assert.match(production, /KV_GATEWAY_SERVICE = "pages-kv-gateway"/);
+  assert.match(production, /KV_GATEWAY_SERVICE = "xd-pages-kv-gateway"/);
 
   const staging = renderServer('staging', kvEnv);
-  assert.match(staging, /KV_GATEWAY_SERVICE = "pages-kv-gateway-staging"/);
+  assert.match(staging, /KV_GATEWAY_SERVICE = "xd-pages-kv-gateway-staging"/);
 });
 
 test('rejects unknown environment', () => {

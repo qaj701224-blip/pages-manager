@@ -1,5 +1,6 @@
 import { ENV_GUARD_SOURCE } from '@xd/ip-guard';
 import { applyPublicConfig, getPublicConfig } from '../lib/public-config.js';
+import { RESERVED_SITE_NAMES, SITE_NAME_PATTERN } from '../lib/site-names.js';
 
 const BASE_SPEC = {
   openapi: '3.0.3',
@@ -8,7 +9,8 @@ const BASE_SPEC = {
     description:
       '将静态站点、SPA 应用或自定义 Worker 一键发布到 {name}.workers.xd.team。' +
       '支持三种 preset: static（纯静态）、spa（单页应用，404 回退 index.html）、worker（自定义 Worker 入口，可做 SSR/API 代理）。' +
-      '\n\n站点名称规则: 小写字母、数字、连字符，2-50 字符，首尾不能是连字符。正则: `^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$`' +
+      `\n\n站点名称规则: 小写字母、数字、连字符，2-50 字符，首尾不能是连字符。正则: \`${SITE_NAME_PATTERN}\`` +
+      `。平台保留名称不能作为用户站点名: ${RESERVED_SITE_NAMES.join(', ')}` +
       '\n\n域名格式: `https://{name}.workers.xd.team`' +
       '\n\n部署必须携带 `X-Pages-Token` 请求头或 `token` 表单字段。同一 token 可覆盖自己创建的同名站点，无需先删除；不同 token 不能互相覆盖。' +
       '\n\n## Pages KV v1' +
@@ -43,7 +45,7 @@ const BASE_SPEC = {
           '该脚本可通过 env.ASSETS.fetch(request) 访问同时上传的其他静态文件。' +
           '如果 `_worker.js` import npm 包（例如 `@xd/pages-sdk/worker`），' +
           '业务构建必须先 bundle/打包成可直接运行的 Worker module，pages-manager 不会打包 `_worker.js`。' +
-          '\n\n站点名即 URL 前缀（如 name=my-app → https://my-app.workers.xd.team）。部署前应询问用户想要的站点名。' +
+          '\n\n站点名即 URL 前缀（如 name=my-app → https://my-app.workers.xd.team）。部署前应询问用户想要的站点名，且不能使用平台保留名称。' +
           '\n\n**Pages KV**: 传 `kv=true` 可为 `spa` 和 `worker` preset 显式开启站点级 KV。' +
           '`static + kv=true` 会被拒绝；未传、`false` 或 `kv=false` 均不开启。' +
           'Browser SDK 使用 `@xd/pages-sdk/browser` 访问同源 POST runtime endpoint: ' +
@@ -67,9 +69,10 @@ const BASE_SPEC = {
                 properties: {
                   name: {
                     type: 'string',
-                    pattern: '^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$',
+                    pattern: SITE_NAME_PATTERN,
                     description:
-                      '站点名称。小写字母、数字、连字符，2-50 字符，首尾不能是连字符。部署后的访问地址为 https://{name}.workers.xd.team',
+                      '站点名称。小写字母、数字、连字符，2-50 字符，首尾不能是连字符，且不能使用平台保留名称。' +
+                      '部署后的访问地址为 https://{name}.workers.xd.team',
                     example: 'q2-report',
                   },
                   preset: {
@@ -153,8 +156,18 @@ const BASE_SPEC = {
                     value: {
                       error: '无效的站点名称',
                       field: 'name',
-                      constraint: '^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$',
+                      constraint: SITE_NAME_PATTERN,
                       hint: '仅限小写字母、数字、连字符，2-50 字符，首尾不能是连字符',
+                    },
+                  },
+                  reservedName: {
+                    summary: '站点名称为平台保留名称',
+                    value: {
+                      error: '站点名称为平台保留名称',
+                      field: 'name',
+                      name: 'kv-gateway',
+                      reserved: RESERVED_SITE_NAMES,
+                      hint: '请换一个非平台保留名称',
                     },
                   },
                   missingToken: {
@@ -402,7 +415,7 @@ const BASE_SPEC = {
         description: '站点名称，与部署时使用的 name 一致',
         schema: {
           type: 'string',
-          pattern: '^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$',
+          pattern: SITE_NAME_PATTERN,
         },
         example: 'q2-report',
       },

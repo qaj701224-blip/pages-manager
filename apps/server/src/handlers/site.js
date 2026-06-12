@@ -1,6 +1,7 @@
 import { jsonResponse } from '@xd/worker-kit';
 
 import { deleteScript } from '../lib/cf-api.js';
+import { isReservedSiteName, RESERVED_SITE_NAMES } from '../lib/site-names.js';
 
 function getRequestToken(request) {
   const url = new URL(request.url);
@@ -23,6 +24,19 @@ function forbiddenSiteResponse(name) {
       error: '无权访问该站点',
       name,
       hint: '请使用该站点部署时的原 token，或通过 GET /list 查看当前 token 名下站点',
+    },
+    403
+  );
+}
+
+function reservedSiteResponse(name) {
+  return jsonResponse(
+    {
+      error: '站点名称为平台保留名称',
+      field: 'name',
+      name,
+      reserved: RESERVED_SITE_NAMES,
+      hint: '平台保留名称不能作为用户站点操作',
     },
     403
   );
@@ -69,6 +83,8 @@ export async function handleDeleteSite(request, env, params) {
   if (!token) return missingTokenResponse();
 
   const { name } = params;
+  if (isReservedSiteName(name)) return reservedSiteResponse(name);
+
   const data = await env.SITES.get(name, 'json');
   if (!data) {
     return jsonResponse({ error: '站点不存在', name: params.name, hint: '使用 GET /list 查看所有已部署站点' }, 404);

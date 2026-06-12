@@ -294,7 +294,7 @@ curl -X POST https://api.workers.xd.team/deploy \
 
 ## 约束
 
-- **站点名称**: 小写字母、数字、连字符，2-50 字符，首尾不能是连字符
+- **站点名称**: 小写字母、数字、连字符，2-50 字符，首尾不能是连字符；`api`、`api-staging`、`manager`、`manager-staging`、`kv-gateway`、`kv-gateway-staging` 为平台保留名称
 - **部署 URL**: `https://{name}.workers.xd.team`
 - **Worker 名称**: `pages-{name}`（内部使用，用户不需要关心）
 - **重复部署**: 同一 token 可直接覆盖自己的同名站点，无需先删除；已有 owner token 的站点不允许不同 token 覆盖

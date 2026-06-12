@@ -174,7 +174,7 @@ AI:   ✅ 已发布: https://q2-report.workers.xd.team
 | `my-app`    | `https://my-app.workers.xd.team`     |
 | `demo-api`  | `https://demo-api.workers.xd.team`   |
 
-站点名规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/`
+站点名规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/`；`api`、`api-staging`、`manager`、`manager-staging`、`kv-gateway`、`kv-gateway-staging` 为平台保留名称，不能作为用户站点名。
 
 ## 安全
 

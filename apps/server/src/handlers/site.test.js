@@ -153,6 +153,37 @@ test('site delete rejects a token that does not own the site before deleting Clo
   }
 });
 
+test('site delete rejects platform reserved names before deleting Cloudflare resources', async () => {
+  const fetchCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(String(url));
+    return new Response(JSON.stringify({ success: true, result: {} }));
+  };
+
+  try {
+    const response = await handleDeleteSite(
+      siteRequest('/site/kv-gateway', 'pages_owner@xd.com'),
+      {
+        SITES: {
+          async get() {
+            throw new Error('reserved names must not read metadata');
+          },
+        },
+      },
+      { name: 'kv-gateway' }
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 403);
+    assert.equal(body.error, '站点名称为平台保留名称');
+    assert.equal(body.name, 'kv-gateway');
+    assert.equal(fetchCalls.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('site delete allows the owning token', async () => {
   const fetchCalls = [];
   const originalFetch = globalThis.fetch;

@@ -312,6 +312,15 @@ export async function deleteScript(token, accountId, scriptName) {
   if (!scriptName || !scriptName.startsWith('pages-')) {
     throw new Error(`安全拦截：拒绝删除非 pages- 前缀的 Worker "${scriptName}"`);
   }
+  const protectedScriptNames = new Set([
+    'pages-manager',
+    'pages-manager-staging',
+    'pages-kv-gateway',
+    'pages-kv-gateway-staging',
+  ]);
+  if (protectedScriptNames.has(scriptName)) {
+    throw new Error(`安全拦截：拒绝删除平台保留 Worker "${scriptName}"`);
+  }
   return cfFetch(`/accounts/${accountId}/workers/scripts/${scriptName}?force=true`, token, {
     method: 'DELETE',
   });

@@ -4,9 +4,15 @@ import { handleDeploy } from './deploy.js';
 
 const existingUuid = '4b4c8e8361ef4b47b64f5c20a7db7c47';
 
-function deployRequest({ token, kv, preset = 'static', files = [{ field: 'index', body: 'ok', name: 'index.html' }] } = {}) {
+function deployRequest({
+  name = 'demo',
+  token,
+  kv,
+  preset = 'static',
+  files = [{ field: 'index', body: 'ok', name: 'index.html' }],
+} = {}) {
   const form = new FormData();
-  form.set('name', 'demo');
+  form.set('name', name);
   form.set('preset', preset);
   if (kv !== undefined) form.set('kv', kv);
   for (const file of files) {
@@ -31,7 +37,7 @@ function envWithExistingSite(existing) {
     WORKERS_DEV_SUBDOMAIN: 'xd-cf-2022',
     IP_ALLOWLIST: '127.0.0.1',
     PUBLIC_ENVIRONMENT: 'production',
-    KV_GATEWAY_SERVICE: 'pages-kv-gateway',
+    KV_GATEWAY_SERVICE: 'xd-pages-kv-gateway',
     PAGES_CAP_JWT_ACTIVE_KID: 'prod-hs-2026-06',
     PAGES_CAP_JWT_KEYS: 'prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
     PAGES_CAP_JWT_SECRET_202606: 'test-secret',
@@ -85,6 +91,38 @@ test('deploy conflict response does not expose existing owner token', async () =
   assert.equal(body.name, 'demo');
   assert.equal(body.owner, undefined);
   assert.doesNotMatch(JSON.stringify(body), /pages_owner@xd\.com/);
+});
+
+test('deploy rejects platform reserved site names before touching storage or Cloudflare', async () => {
+  const reservedNames = ['api', 'api-staging', 'manager', 'manager-staging', 'kv-gateway', 'kv-gateway-staging'];
+  const fetchCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(String(url));
+    return Response.json({ success: true, result: {} });
+  };
+
+  try {
+    for (const name of reservedNames) {
+      const response = await handleDeploy(deployRequest({ name, token: 'pages_owner@xd.com' }), {
+        SITES: {
+          async get() {
+            throw new Error('reserved names must not read metadata');
+          },
+        },
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 400);
+      assert.equal(body.error, '站点名称为平台保留名称');
+      assert.equal(body.name, name);
+      assert.match(body.hint, /平台保留|保留名称/);
+    }
+
+    assert.equal(fetchCalls.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 function installCloudflareMock({ deployResult = { ok: true }, deployFailure = null } = {}) {
