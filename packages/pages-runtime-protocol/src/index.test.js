@@ -69,6 +69,16 @@ test('user key validation rejects empty, reserved and oversized keys', () => {
   assert.equal(validateUserKey('a'.repeat(257)).error.code, 'INVALID_KEY');
 });
 
+test('user key validation rejects unpaired surrogate code units', () => {
+  assert.equal(validateUserKey('\uD800prefix').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('suffix\uD800').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('\uDC00suffix').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('prefix\uDC00').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('emoji-\uD83D\uDE00').ok, true);
+  assert.equal(validateUserKey('\uD800').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('\uFFFD').ok, true);
+});
+
 test('user key encoding is base64url and reversible at storage-key boundary', () => {
   assert.equal(encodeUserKey('a/b c%中文'), 'YS9iIGMl5Lit5paH');
   const key = buildStorageKey({
@@ -112,6 +122,7 @@ test('type and ttl validation match runtime contract', () => {
 
 test('JSON envelopes are stable', () => {
   assert.deepEqual(buildOkEnvelope({ key: 'x' }), { ok: true, key: 'x' });
+  assert.deepEqual(buildOkEnvelope({ ok: false, key: 'x' }), { ok: true, key: 'x' });
   assert.deepEqual(buildErrorEnvelope('INVALID_KEY', 'Invalid KV key'), {
     ok: false,
     error: { code: 'INVALID_KEY', message: 'Invalid KV key' },

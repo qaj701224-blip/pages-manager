@@ -52,7 +52,7 @@ const MIN_TTL_SECONDS = 60;
 const MAX_TTL_SECONDS = 31_536_000;
 
 export function buildOkEnvelope(payload = {}) {
-  return { ok: true, ...payload };
+  return { ...payload, ok: true };
 }
 
 export function buildErrorEnvelope(code, message) {
@@ -85,6 +85,7 @@ export function validateUserKey(key) {
     key === '..' ||
     key.startsWith('.xd-pages/') ||
     key.startsWith('__xd_pages/') ||
+    hasUnpairedSurrogate(key) ||
     utf8ByteLength(key) > MAX_USER_KEY_BYTES
   ) {
     return invalidKey();
@@ -146,6 +147,23 @@ function invalidKey() {
     ok: false,
     error: { code: ERROR_CODES.INVALID_KEY, message: 'Invalid KV key' },
   };
+}
+
+function hasUnpairedSurrogate(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return true;
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit < 0xdc00 || nextCodeUnit > 0xdfff) return true;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function utf8ByteLength(value) {
