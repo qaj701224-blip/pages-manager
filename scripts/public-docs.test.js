@@ -76,8 +76,9 @@ test('README local deployment commands use package scripts or wrangler directly'
   const readme = readDoc('README.md');
 
   assert.match(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
-  assert.match(readme, /pnpm --dir apps\/server exec wrangler deploy/);
-  assert.doesNotMatch(readme, /pnpm --dir apps\/(?:kv-gateway|server) deploy/);
+  assert.match(readme, /pnpm --dir apps\/server deploy/);
+  assert.match(readme, /scripts\/put-capability-secrets\.sh apps\/server/);
+  assert.doesNotMatch(readme, /pnpm --dir apps\/kv-gateway deploy/);
 });
 
 test('published SDK README does not demonstrate bypassing runtime access checks', () => {

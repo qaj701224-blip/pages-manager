@@ -264,23 +264,24 @@ pnpm --dir apps/server dev
 # JWT_SIGNING_SECRET_EXAMPLE 是示例 secret 变量名；同一个签名 secret 要注入 gateway 和 server。
 JWT_SIGNING_SECRET_ENV=JWT_SIGNING_SECRET_EXAMPLE
 JWT_SIGNING_SECRET="$(openssl rand -base64 32)"
+PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV}
+export PAGES_CAP_JWT_KEYS
+export "$JWT_SIGNING_SECRET_ENV=$JWT_SIGNING_SECRET"
 
 CLOUDFLARE_ACCOUNT_ID=example-account-id \
 SITE_DATA_KV_NAMESPACE_ID=example-site-data-kv-namespace-id \
 PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example \
-PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV} \
 scripts/gen-wrangler.sh apps/kv-gateway production
 pnpm --dir apps/kv-gateway exec wrangler deploy
-printf '%s' "$JWT_SIGNING_SECRET" | pnpm --dir apps/kv-gateway exec wrangler secret put "$JWT_SIGNING_SECRET_ENV"
+scripts/put-capability-secrets.sh apps/kv-gateway
 
 CLOUDFLARE_ACCOUNT_ID=example-account-id \
 SITES_KV_NAMESPACE_ID=example-kv-namespace-id \
 IP_ALLOWLIST=127.0.0.1,::1 \
 PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example \
-PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV} \
 scripts/gen-wrangler.sh apps/server production
-pnpm --dir apps/server exec wrangler deploy
-printf '%s' "$JWT_SIGNING_SECRET" | pnpm --dir apps/server exec wrangler secret put "$JWT_SIGNING_SECRET_ENV"
+pnpm --dir apps/server deploy
+scripts/put-capability-secrets.sh apps/server
 printf '%s' '<runtime-cloudflare-api-token>' | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
 printf '%s' '<zone-id>' | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
 ```

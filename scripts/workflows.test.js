@@ -48,6 +48,7 @@ test('deploy workflows can skip server or kv-gateway deploy steps independently'
       /name: Deploy Worker\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
       `${name} guards server deployment`,
     );
+    assert.match(workflow, /run: pnpm --dir apps\/server deploy/, `${name} builds SDK before server deploy`);
     assert.match(
       workflow,
       /name: Inject Worker secrets\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
@@ -95,4 +96,21 @@ test('deploy workflows keep production manual and reuse wrangler token for runti
   assert.doesNotMatch(combined, /secrets\.CF_API_TOKEN/, 'no new CF_API_TOKEN GitHub secret is required');
   assert.match(combined, /RUNTIME_CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(combined, /secret put CF_API_TOKEN/);
+});
+
+test('deploy workflows inject all capability secrets from the key registry', () => {
+  for (const [name, path] of deployWorkflows) {
+    const workflow = readWorkflow(path);
+
+    assert.match(workflow, /PAGES_CAP_JWT_KEYS: \$\{\{ vars\.PAGES_CAP_JWT_KEYS \}\}/);
+    assert.match(workflow, /DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/server/);
+    assert.match(workflow, /DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/kv-gateway/);
+    assert.match(workflow, /scripts\/put-capability-secrets\.sh apps\/server/);
+    assert.match(workflow, /scripts\/put-capability-secrets\.sh apps\/kv-gateway/);
+    assert.doesNotMatch(
+      workflow,
+      /secret put PAGES_CAP_JWT_SECRET_202606/,
+      `${name} does not hard-code one capability secret injection`,
+    );
+  }
 });

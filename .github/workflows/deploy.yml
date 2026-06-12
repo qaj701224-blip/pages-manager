@@ -66,21 +66,25 @@ jobs:
         env:
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           : "${CF_ZONE_ID_NEW:?CF_ZONE_ID_NEW is required}"
           : "${RUNTIME_CF_API_TOKEN:?RUNTIME_CF_API_TOKEN is required}"
-          : "${PAGES_CAP_JWT_SECRET_202606:?PAGES_CAP_JWT_SECRET_202606 is required}"
+          DRY_RUN=1 scripts/put-capability-secrets.sh apps/server
 
       - name: Validate KV Gateway secrets
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
-          : "${PAGES_CAP_JWT_SECRET_202606:?PAGES_CAP_JWT_SECRET_202606 is required}"
+          DRY_RUN=1 scripts/put-capability-secrets.sh apps/kv-gateway
 
       - name: Deploy KV Gateway
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
@@ -96,10 +100,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
-          printf '%s' "$PAGES_CAP_JWT_SECRET_202606" | pnpm --dir apps/kv-gateway exec wrangler secret put PAGES_CAP_JWT_SECRET_202606
+          scripts/put-capability-secrets.sh apps/kv-gateway
 
       - name: Deploy Worker
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server'
@@ -107,7 +113,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir apps/server exec wrangler deploy
+        run: pnpm --dir apps/server deploy
 
       - name: Inject Worker secrets
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server'
@@ -117,9 +123,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           printf '%s' "$CF_ZONE_ID_NEW" | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
           printf '%s' "$RUNTIME_CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
-          printf '%s' "$PAGES_CAP_JWT_SECRET_202606" | pnpm --dir apps/server exec wrangler secret put PAGES_CAP_JWT_SECRET_202606
+          scripts/put-capability-secrets.sh apps/server
