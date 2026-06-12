@@ -87,7 +87,7 @@ test('deploy conflict response does not expose existing owner token', async () =
   assert.doesNotMatch(JSON.stringify(body), /pages_owner@xd\.com/);
 });
 
-function installCloudflareMock() {
+function installCloudflareMock({ deployResult = { ok: true } } = {}) {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
@@ -99,6 +99,9 @@ function installCloudflareMock() {
     }
     if (call.url.includes('/workers/routes') && options.method !== 'POST' && options.method !== 'PUT') {
       return Response.json({ success: true, result: [] });
+    }
+    if (call.url.includes('/workers/scripts/pages-demo') && options.method === 'PUT') {
+      return Response.json({ success: true, result: deployResult });
     }
     return Response.json({ success: true, result: { ok: true } });
   };
@@ -185,6 +188,45 @@ test('kv=true deploy preserves existing siteUuid and returns kv flag without lea
     assert.doesNotMatch(JSON.stringify(body), /capability|jwt|test-secret/i);
     assert.doesNotMatch(JSON.stringify(putCalls), /capability|jwt|test-secret/i);
   } finally {
+    mock.restore();
+  }
+});
+
+test('kv=true deploy logs do not leak capability, jwt or secrets echoed by Cloudflare', async () => {
+  const mock = installCloudflareMock({
+    deployResult: {
+      id: 'pages-demo',
+      metadata: {
+        bindings: [{ name: 'XD_PAGES_KV_CAPABILITY', text: 'capability.jwt' }],
+      },
+      secret: 'test-secret',
+      jwt: 'upload-jwt',
+    },
+  });
+  const originalLog = console.log;
+  const logs = [];
+  console.log = (...args) => logs.push(args.map(String).join(' '));
+
+  try {
+    const response = await handleDeploy(
+      deployRequest({ token: 'pages_owner@xd.com', kv: 'true' }),
+      envForDeploy({
+        token: 'pages_owner@xd.com',
+        siteUuid: existingUuid,
+        siteGeneration: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      })
+    );
+    await response.json();
+
+    const text = logs.join('\n');
+    assert.doesNotMatch(text, /XD_PAGES_KV_CAPABILITY/);
+    assert.doesNotMatch(text, /capability\.jwt/);
+    assert.doesNotMatch(text, /test-secret/);
+    assert.doesNotMatch(text, /upload-jwt/);
+    assert.doesNotMatch(text, /jwt/i);
+  } finally {
+    console.log = originalLog;
     mock.restore();
   }
 });

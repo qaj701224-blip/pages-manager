@@ -154,15 +154,15 @@ export async function handleDeploy(request, env) {
   const { manifest, fileMap } = await buildManifest(fileEntries);
 
   const session = await registerUploadSession(token, accountId, scriptName, manifest);
-  console.log('session:', JSON.stringify({ jwt: session.jwt?.slice(0, 20), buckets: session.buckets?.length }));
+  console.log('upload session:', JSON.stringify({ buckets: session.buckets?.length || 0 }));
 
   let completionJwt;
   if (session.buckets && session.buckets.length > 0) {
     completionJwt = await uploadAssetBuckets(session.jwt, accountId, session.buckets, fileMap);
-    console.log('upload completionJwt:', completionJwt?.slice(0, 20));
+    console.log('asset buckets uploaded:', JSON.stringify({ buckets: session.buckets.length }));
   } else {
     completionJwt = session.jwt;
-    console.log('no buckets, using session jwt');
+    console.log('asset buckets skipped:', JSON.stringify({ buckets: 0 }));
   }
 
   const deployResult = await deployScript(
@@ -176,7 +176,7 @@ export async function handleDeploy(request, env) {
     env.IP_ALLOWLIST,
     kvOptions
   );
-  console.log('deploy result:', JSON.stringify(deployResult)?.slice(0, 200));
+  console.log('deploy result:', JSON.stringify({ ok: Boolean(deployResult) }));
 
   await bindRoute(token, zoneId, `${hostname}/*`, scriptName);
 

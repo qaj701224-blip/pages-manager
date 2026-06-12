@@ -4,8 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "dev": "pnpm --filter @xd/pages-sdk build && wrangler dev",
+    "deploy": "pnpm --filter @xd/pages-sdk build && wrangler deploy"
   },
   "dependencies": {
     "@xd/ip-guard": "workspace:*",

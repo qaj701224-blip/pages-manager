@@ -70,6 +70,35 @@ test('parseCapabilitySigningKey rejects missing active registry entry', () => {
   assert.throws(() => parseCapabilitySigningKey(testEnv({ PAGES_CAP_JWT_ACTIVE_KID: 'missing' })), /active kid/i);
 });
 
+test('parseCapabilitySigningKey rejects empty registry', () => {
+  assert.throws(() => parseCapabilitySigningKey(testEnv({ PAGES_CAP_JWT_KEYS: ' , ' })), /empty/i);
+});
+
+test('parseCapabilitySigningKey rejects duplicate kids', () => {
+  assert.throws(
+    () =>
+      parseCapabilitySigningKey(
+        testEnv({
+          PAGES_CAP_JWT_KEYS:
+            'prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606, prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_OLD',
+        })
+      ),
+    /duplicate/i
+  );
+});
+
+test('parseCapabilitySigningKey rejects malformed inactive entries', () => {
+  assert.throws(
+    () =>
+      parseCapabilitySigningKey(
+        testEnv({
+          PAGES_CAP_JWT_KEYS: 'inactive:HS256, prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
+        })
+      ),
+    /malformed/i
+  );
+});
+
 test('parseCapabilitySigningKey rejects unsupported alg', () => {
   assert.throws(
     () =>
@@ -82,9 +111,33 @@ test('parseCapabilitySigningKey rejects unsupported alg', () => {
   );
 });
 
+test('parseCapabilitySigningKey rejects unsupported inactive alg', () => {
+  assert.throws(
+    () =>
+      parseCapabilitySigningKey(
+        testEnv({
+          PAGES_CAP_JWT_KEYS: 'inactive:RS256:PAGES_CAP_JWT_SECRET_OLD, prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
+        })
+      ),
+    /unsupported/i
+  );
+});
+
 test('parseCapabilitySigningKey rejects missing secret', () => {
   assert.throws(
     () => parseCapabilitySigningKey(testEnv({ PAGES_CAP_JWT_SECRET_202606: '' })),
+    /missing capability secret/i
+  );
+});
+
+test('parseCapabilitySigningKey rejects missing inactive secret', () => {
+  assert.throws(
+    () =>
+      parseCapabilitySigningKey(
+        testEnv({
+          PAGES_CAP_JWT_KEYS: 'inactive:HS256:PAGES_CAP_JWT_SECRET_MISSING, prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
+        })
+      ),
     /missing capability secret/i
   );
 });
