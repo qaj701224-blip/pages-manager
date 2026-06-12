@@ -1,0 +1,102 @@
+/* global TextEncoder */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  BINDINGS,
+  ERROR_CODES,
+  GATEWAY,
+  HEADERS,
+  RUNTIME,
+  buildErrorEnvelope,
+  buildOkEnvelope,
+  buildStorageKey,
+  encodeUserKey,
+  isValidSiteUuid,
+  parseKvEnabled,
+  validateKvType,
+  validateTtl,
+  validateUserKey,
+} from './index.js';
+
+test('exports stable runtime, gateway, header, binding and error constants', () => {
+  assert.equal(RUNTIME.BASE_PATH, '/.xd-pages/runtime/v1');
+  assert.equal(RUNTIME.KV_GET_PATH, '/.xd-pages/runtime/v1/kv/get');
+  assert.equal(GATEWAY.KV_PUT_PATH, '/v1/kv/put');
+  assert.equal(HEADERS.RUNTIME_REQUEST, 'X-XD-Pages-Runtime');
+  assert.equal(BINDINGS.KV_GATEWAY, 'XD_PAGES_KV_GATEWAY');
+  assert.equal(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'INVALID_RUNTIME_RESPONSE');
+});
+
+test('parseKvEnabled is explicit and fail closed', () => {
+  assert.equal(parseKvEnabled(undefined).enabled, false);
+  assert.equal(parseKvEnabled(null).enabled, false);
+  assert.equal(parseKvEnabled(false).enabled, false);
+  assert.equal(parseKvEnabled('false').enabled, false);
+  assert.equal(parseKvEnabled(true).enabled, true);
+  assert.equal(parseKvEnabled('true').enabled, true);
+  assert.deepEqual(parseKvEnabled('worker'), {
+    enabled: false,
+    error: { code: 'INVALID_KV_OPTION', message: 'kv must be true or false' },
+  });
+});
+
+test('siteUuid must be 32 lowercase hex characters', () => {
+  assert.equal(isValidSiteUuid('4b4c8e8361ef4b47b64f5c20a7db7c47'), true);
+  assert.equal(isValidSiteUuid('4B4C8E8361EF4B47B64F5C20A7DB7C47'), false);
+  assert.equal(isValidSiteUuid('4b4c8e83-61ef-4b47-b64f-5c20a7db7c47'), false);
+});
+
+test('user key validation rejects empty, reserved and oversized keys', () => {
+  assert.equal(validateUserKey('app/config').ok, true);
+  assert.equal(validateUserKey('').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('.').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('..').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('.xd-pages/runtime').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('__xd_pages/runtime').error.code, 'INVALID_KEY');
+  assert.equal(validateUserKey('a'.repeat(257)).error.code, 'INVALID_KEY');
+});
+
+test('user key encoding is base64url and reversible at storage-key boundary', () => {
+  assert.equal(encodeUserKey('a/b c%中文'), 'YS9iIGMl5Lit5paH');
+  const key = buildStorageKey({
+    siteSlug: 'q2-report',
+    siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
+    userKey: 'a/b c%中文',
+  });
+  assert.equal(key, 's/q2-report--4b4c8e8361ef4b47b64f5c20a7db7c47/k/YS9iIGMl5Lit5paH');
+});
+
+test('storage key validates slug, UUID and final Cloudflare KV key length', () => {
+  assert.throws(
+    () => buildStorageKey({ siteSlug: 'Bad', siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47', userKey: 'ok' }),
+    /Invalid site slug/
+  );
+  assert.throws(
+    () => buildStorageKey({ siteSlug: 'q2-report', siteUuid: 'bad', userKey: 'ok' }),
+    /Invalid site UUID/
+  );
+  const nearLimit = buildStorageKey({
+    siteSlug: 'a'.repeat(50),
+    siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
+    userKey: '中'.repeat(80),
+  });
+  assert.ok(new TextEncoder().encode(nearLimit).byteLength <= 512);
+});
+
+test('type and ttl validation match runtime contract', () => {
+  assert.equal(validateKvType(undefined).value, 'json');
+  assert.equal(validateKvType('text').value, 'text');
+  assert.equal(validateKvType('binary').error.code, 'INVALID_TYPE');
+  assert.equal(validateTtl(undefined).value, undefined);
+  assert.equal(validateTtl(60).value, 60);
+  assert.equal(validateTtl(59).error.code, 'INVALID_TTL');
+  assert.equal(validateTtl(31536001).error.code, 'INVALID_TTL');
+});
+
+test('JSON envelopes are stable', () => {
+  assert.deepEqual(buildOkEnvelope({ key: 'x' }), { ok: true, key: 'x' });
+  assert.deepEqual(buildErrorEnvelope('INVALID_KEY', 'Invalid KV key'), {
+    ok: false,
+    error: { code: 'INVALID_KEY', message: 'Invalid KV key' },
+  });
+});

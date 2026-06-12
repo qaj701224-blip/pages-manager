@@ -1,0 +1,9 @@
+{
+  "name": "@xd/pages-runtime-protocol",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.js"
+  }
+}
