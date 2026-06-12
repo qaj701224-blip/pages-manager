@@ -1,0 +1,127 @@
+name: Project Index
+
+on:
+  workflow_dispatch:
+    inputs:
+      publishingJobId:
+        description: PublishingJob id
+        required: true
+        type: string
+      siteProjectId:
+        description: SiteProject id
+        required: false
+        type: string
+      allowedPath:
+        description: Allowed site path
+        required: true
+        type: string
+      callbackUrl:
+        description: Gateway callback URL
+        required: true
+        type: string
+      issueNumber:
+        description: GitHub issue number
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  project-index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build placeholder project index
+        shell: bash
+        env:
+          PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
+          SITE_PROJECT_ID: ${{ inputs.siteProjectId }}
+          ALLOWED_PATH: ${{ inputs.allowedPath }}
+          ISSUE_NUMBER: ${{ inputs.issueNumber }}
+          HEAD_SHA: ${{ github.sha }}
+          INDEX_SNAPSHOT_ID: idxsnap_${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            siteProjectId: process.env.SITE_PROJECT_ID || '',
+            allowedPath: process.env.ALLOWED_PATH,
+            issueNumber: process.env.ISSUE_NUMBER || '',
+            headSha: process.env.HEAD_SHA,
+            indexSnapshotId: process.env.INDEX_SNAPSHOT_ID,
+          };
+
+          writeFileSync('.pages-artifacts/project-index.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project-index
+          path: .pages-artifacts/project-index.json
+
+      - name: Print callback payload
+        shell: bash
+        env:
+          PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          INDEX_SNAPSHOT_ID: idxsnap_${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cat .pages-artifacts/project-index.json
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'project-index.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'succeeded',
+            stageResult: 'index_ready',
+            indexSnapshotId: process.env.INDEX_SNAPSHOT_ID,
+          };
+
+          writeFileSync('.pages-artifacts/callback.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+          cat .pages-artifacts/callback.json
+
+      - name: Callback gateway
+        shell: bash
+        env:
+          PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
+        run: node scripts/post-executor-callback.js .pages-artifacts/callback.json
+
+      - name: Callback gateway on failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'project-index.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'failed',
+            errorCode: 'PROJECT_INDEX_FAILED',
+            errorMessage: 'project-index.yml failed before producing an index snapshot',
+          };
+
+          writeFileSync('.pages-artifacts/callback-failed.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+          node scripts/post-executor-callback.js .pages-artifacts/callback-failed.json
