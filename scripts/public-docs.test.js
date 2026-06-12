@@ -85,8 +85,11 @@ test('README local deployment commands use package scripts or wrangler directly'
 
   assert.match(readme, /JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE/);
   assert.doesNotMatch(readme, /JWT_SIGNING_SECRET_ENV=JWT_SIGNING_SECRET_EXAMPLE/);
+  assert.match(readme, /PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example/);
+  assert.match(readme, /export PAGES_CAP_JWT_ACTIVE_KID/);
   assert.match(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
-  assert.match(readme, /pnpm --dir apps\/server deploy/);
+  assert.match(readme, /pnpm --dir apps\/server run deploy/);
+  assert.doesNotMatch(readme, /pnpm --dir apps\/server deploy\b/);
   assert.match(readme, /scripts\/put-capability-secrets\.sh apps\/server/);
   assert.doesNotMatch(readme, /pnpm --dir apps\/kv-gateway deploy/);
 });

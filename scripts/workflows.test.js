@@ -55,7 +55,8 @@ test('deploy workflows guard server steps and keep kv-gateway in lockstep with s
       /name: Deploy Worker\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
       `${name} guards server deployment`,
     );
-    assert.match(workflow, /run: pnpm --dir apps\/server deploy/, `${name} builds SDK before server deploy`);
+    assert.match(workflow, /run: pnpm --dir apps\/server run deploy/, `${name} builds SDK before server deploy`);
+    assert.doesNotMatch(workflow, /run: pnpm --dir apps\/server deploy\b/, `${name} uses the deploy script explicitly`);
     assert.match(
       workflow,
       /name: Inject Worker secrets\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'/,
