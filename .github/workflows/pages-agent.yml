@@ -163,9 +163,14 @@ jobs:
         id: pr
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.PAGES_GITHUB_APP_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.PAGES_GITHUB_APP_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "PAGES_GITHUB_APP_TOKEN is required to create generated site PRs" >&2
+            exit 1
+          fi
+
           branch="sites/job-$PUBLISHING_JOB_ID-$EMPLOYEE_SLUG-$SITE_SLUG"
           title="[pages] $EMPLOYEE_SLUG/$SITE_SLUG from $PUBLISHING_JOB_ID"
 
