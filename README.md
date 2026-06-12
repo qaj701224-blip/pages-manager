@@ -286,7 +286,7 @@ printf '%s' '<runtime-cloudflare-api-token>' | pnpm --dir apps/server exec wrang
 printf '%s' '<zone-id>' | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
 ```
 
-staging 使用同一套命令，把最后一个参数改为 `staging`，并使用 staging 的 KV namespace、gateway、kid 和 secret。production GitHub Actions 只允许手动触发；staging push 到 `staging` 分支会按 `component=all` 全量自动部署 staging。手动触发 `Deploy Staging` / `Deploy Production` 时可用 `component=all | server | kv-gateway` 选择全量、仅管理 Worker 或仅 KV gateway 部署。
+staging 使用同一套命令，把最后一个参数改为 `staging`，并使用 staging 的 KV namespace、gateway、kid 和 secret。production GitHub Actions 只允许手动触发；staging push 到 `staging` 分支会按 `component=all` 全量自动部署 staging。手动触发 `Deploy Staging` / `Deploy Production` 时可用 `component=all | server | kv-gateway` 选择部署范围；选择 `server` 时也会同步部署 KV gateway，以保持共享的 capability key registry 锁步。
 
 真实 `apps/server/wrangler.toml`、`apps/kv-gateway/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets/Vars 分别生成 `apps/kv-gateway/wrangler.toml` 和 `apps/server/wrangler.toml`。
 

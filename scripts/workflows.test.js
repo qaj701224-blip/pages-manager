@@ -28,7 +28,7 @@ test('deploy workflows expose component choice for manual deploys', () => {
   }
 });
 
-test('deploy workflows can skip server or kv-gateway deploy steps independently', () => {
+test('deploy workflows guard server steps and keep kv-gateway in lockstep with server deploys', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
 
@@ -57,25 +57,34 @@ test('deploy workflows can skip server or kv-gateway deploy steps independently'
     assert.match(
       workflow,
       new RegExp(
-        "name: Generate KV Gateway Wrangler config\\n {8}if: env\\.DEPLOY_COMPONENT == " +
-          "'all' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
+        "name: Generate KV Gateway Wrangler config\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
+          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
       ),
-      `${name} guards kv-gateway config generation`,
+      `${name} deploys kv-gateway when server deploys`,
     );
     assert.match(
       workflow,
-      /name: Validate KV Gateway secrets\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'kv-gateway'/,
-      `${name} guards kv-gateway secret validation`,
+      new RegExp(
+        "name: Validate KV Gateway secrets\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
+          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
+      ),
+      `${name} validates kv-gateway secrets when server deploys`,
     );
     assert.match(
       workflow,
-      /name: Deploy KV Gateway\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'kv-gateway'/,
-      `${name} guards kv-gateway deployment`,
+      new RegExp(
+        "name: Deploy KV Gateway\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
+          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
+      ),
+      `${name} deploys kv-gateway when server deploys`,
     );
     assert.match(
       workflow,
-      /name: Inject KV Gateway secrets\n {8}if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'kv-gateway'/,
-      `${name} guards kv-gateway secret injection`,
+      new RegExp(
+        "name: Inject KV Gateway secrets\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
+          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
+      ),
+      `${name} injects kv-gateway secrets when server deploys`,
     );
   }
 });

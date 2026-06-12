@@ -52,8 +52,9 @@ jobs:
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
         run: scripts/gen-wrangler.sh apps/server staging
 
+      # Server signs KV capabilities; keep the gateway registry in lockstep with server deploys.
       - name: Generate KV Gateway Wrangler config
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -78,7 +79,7 @@ jobs:
           DRY_RUN=1 scripts/put-capability-secrets.sh apps/server
 
       - name: Validate KV Gateway secrets
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
@@ -89,7 +90,7 @@ jobs:
           DRY_RUN=1 scripts/put-capability-secrets.sh apps/kv-gateway
 
       - name: Deploy KV Gateway
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -97,7 +98,7 @@ jobs:
         run: pnpm --dir apps/kv-gateway exec wrangler deploy
 
       - name: Inject KV Gateway secrets
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
