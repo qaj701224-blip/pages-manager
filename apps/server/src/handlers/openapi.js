@@ -236,7 +236,7 @@ const BASE_SPEC = {
         summary: '列出已部署站点',
         description:
           '返回当前 token 名下的站点列表。必须通过 token 参数或 X-Pages-Token 头提供部署者 token。' +
-          '\n\n响应不会返回站点 metadata 中保存的 token。',
+          '\n\n响应不会返回站点 metadata 中保存的 token、siteUuid、siteGeneration 等内部字段。',
         parameters: [
           { $ref: '#/components/parameters/PagesToken' },
           { $ref: '#/components/parameters/PagesTokenQuery' },
@@ -265,6 +265,8 @@ const BASE_SPEC = {
                       name: 'q2-report',
                       url: 'https://q2-report.workers.xd.team',
                       preset: 'static',
+                      ipRestrict: true,
+                      kvEnabled: false,
                       updatedAt: '2026-05-13T10:00:00.000Z',
                     },
                   ],
@@ -281,7 +283,9 @@ const BASE_SPEC = {
     '/site/{name}': {
       get: {
         summary: '查询站点详情',
-        description: '返回当前 token 名下指定站点的详情，包含 Worker 名称、文件数、创建和更新时间；响应不会返回站点 token。缺少 token 时返回 400；token 不匹配时返回 403。',
+        description:
+          '返回当前 token 名下指定站点的详情，包含 Worker 名称、文件数、创建和更新时间；' +
+          '响应不会返回站点 token、siteUuid、siteGeneration 等内部字段。缺少 token 时返回 400；token 不匹配时返回 403。',
         parameters: [
           { $ref: '#/components/parameters/SiteName' },
           { $ref: '#/components/parameters/PagesToken' },
@@ -300,6 +304,8 @@ const BASE_SPEC = {
                   url: 'https://q2-report.workers.xd.team',
                   devUrl: 'https://pages-q2-report.xd-cf-2022.workers.dev',
                   fileCount: 42,
+                  ipRestrict: true,
+                  kvEnabled: false,
                   createdAt: '2026-05-13T10:00:00.000Z',
                   updatedAt: '2026-05-13T12:00:00.000Z',
                 },
@@ -456,6 +462,8 @@ const BASE_SPEC = {
           name: { type: 'string' },
           url: { type: 'string', format: 'uri' },
           preset: { type: 'string', enum: ['static', 'spa', 'worker'] },
+          ipRestrict: { type: 'boolean', description: '是否开启 IP 内网限制' },
+          kvEnabled: { type: 'boolean', description: '是否已为本站开启 Pages KV' },
           updatedAt: { type: 'string', format: 'date-time' },
         },
       },
@@ -468,6 +476,8 @@ const BASE_SPEC = {
           url: { type: 'string', format: 'uri' },
           devUrl: { type: 'string', format: 'uri', description: 'workers.dev 备用地址' },
           fileCount: { type: 'integer' },
+          ipRestrict: { type: 'boolean', description: '是否开启 IP 内网限制' },
+          kvEnabled: { type: 'boolean', description: '是否已为本站开启 Pages KV' },
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
         },

@@ -194,7 +194,7 @@ curl -X POST https://api.workers.xd.team/deploy \
 
 ### GET /list
 
-列出当前 token 名下的已部署站点。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；响应不会返回站点 token。
+列出当前 token 名下的已部署站点。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；响应不会返回站点 token、`siteUuid`、`siteGeneration` 等内部字段。
 
 **成功响应** `200`:
 
@@ -205,6 +205,8 @@ curl -X POST https://api.workers.xd.team/deploy \
       "name": "q2-report",
       "url": "https://q2-report.workers.xd.team",
       "preset": "static",
+      "ipRestrict": true,
+      "kvEnabled": false,
       "updatedAt": "2026-05-13T10:00:00.000Z"
     }
   ],
@@ -217,6 +219,7 @@ curl -X POST https://api.workers.xd.team/deploy \
 ### GET /site/:name
 
 查询当前 token 名下的单个站点详情。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；token 不匹配时返回 `403`。成功响应不会返回站点 token。
+响应只返回公开字段，不返回 `siteUuid`、`siteGeneration` 等内部 KV 隔离字段。
 
 **成功响应** `200`:
 
@@ -227,6 +230,8 @@ curl -X POST https://api.workers.xd.team/deploy \
   "scriptName": "pages-q2-report",
   "url": "https://q2-report.workers.xd.team",
   "fileCount": 42,
+  "ipRestrict": true,
+  "kvEnabled": false,
   "createdAt": "2026-05-13T10:00:00.000Z",
   "updatedAt": "2026-05-13T12:00:00.000Z"
 }

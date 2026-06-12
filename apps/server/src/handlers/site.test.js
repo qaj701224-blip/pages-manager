@@ -93,6 +93,43 @@ test('site detail strips owner token from successful response', async () => {
   assert.doesNotMatch(JSON.stringify(body), /pages_owner@xd\.com/);
 });
 
+test('site detail exposes only public fields', async () => {
+  const response = await handleGetSite(
+    siteRequest('/site/demo', 'pages_owner@xd.com'),
+    envWithSite({
+      name: 'demo',
+      preset: 'spa',
+      token: 'pages_owner@xd.com',
+      scriptName: 'pages-demo',
+      url: 'https://demo.workers.xd.team',
+      devUrl: 'https://pages-demo.xd-cf-2022.workers.dev',
+      fileCount: 12,
+      ipRestrict: true,
+      kvEnabled: true,
+      siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
+      siteGeneration: 3,
+      createdAt: '2026-06-11T00:00:00.000Z',
+      updatedAt: '2026-06-12T00:00:00.000Z',
+    }),
+    { name: 'demo' }
+  );
+  const body = await response.json();
+
+  assert.deepEqual(body, {
+    name: 'demo',
+    preset: 'spa',
+    scriptName: 'pages-demo',
+    url: 'https://demo.workers.xd.team',
+    devUrl: 'https://pages-demo.xd-cf-2022.workers.dev',
+    fileCount: 12,
+    ipRestrict: true,
+    kvEnabled: true,
+    createdAt: '2026-06-11T00:00:00.000Z',
+    updatedAt: '2026-06-12T00:00:00.000Z',
+  });
+  assert.doesNotMatch(JSON.stringify(body), /token|siteUuid|siteGeneration|pages_owner@xd\.com/);
+});
+
 test('site delete rejects a token that does not own the site before deleting Cloudflare resources', async () => {
   const fetchCalls = [];
   const originalFetch = globalThis.fetch;

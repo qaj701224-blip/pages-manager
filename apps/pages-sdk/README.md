@@ -17,15 +17,10 @@ await pages.kv.delete('app/config');
 ## Worker
 
 ```js
-import { createPagesRuntime, handlePagesRuntimeRequest } from '@xd/pages-sdk/worker';
+import { createPagesRuntime } from '@xd/pages-sdk/worker';
 
 export default {
   async fetch(request, env) {
-    const runtimeResponse = await handlePagesRuntimeRequest(request, env, {
-      checkAccess: () => null,
-    });
-    if (runtimeResponse) return runtimeResponse;
-
     const pages = createPagesRuntime({ env });
     const config = await pages.kv.get('app/config');
 
@@ -34,4 +29,27 @@ export default {
 };
 ```
 
-`handlePagesRuntimeRequest` fails closed unless `checkAccess` is provided. Runtime service binding credentials should be provided through Worker bindings and secrets, not source files.
+## Runtime Adapter
+
+Use `handlePagesRuntimeRequest` only when your Worker intentionally exposes the browser runtime endpoints. It fails closed unless `checkAccess` is provided; `checkAccess` should enforce your site allowlist or auth policy.
+
+```js
+import { handlePagesRuntimeRequest } from '@xd/pages-sdk/adapter';
+
+function checkAccess(request, env) {
+  const ip = request.headers.get('CF-Connecting-IP');
+  const allowlist = new Set((env.IP_ALLOWLIST || '').split(',').map((item) => item.trim()).filter(Boolean));
+  return ip && allowlist.has(ip) ? null : new Response('IP not allowed', { status: 403 });
+}
+
+export default {
+  async fetch(request, env) {
+    const runtimeResponse = await handlePagesRuntimeRequest(request, env, { checkAccess });
+    if (runtimeResponse) return runtimeResponse;
+
+    return env.ASSETS.fetch(request);
+  },
+};
+```
+
+Runtime service binding credentials should be provided through Worker bindings and secrets, not source files.

@@ -95,7 +95,12 @@ test('openapi documents site detail and delete as owner-token protected', () => 
   assert.match(site.get.description, /不会返回站点 token/);
   assert.match(site.delete.description, /当前 token/);
   assert.equal(siteDetailProperties.token, undefined);
+  assert.equal(siteDetailProperties.siteUuid, undefined);
+  assert.equal(siteDetailProperties.siteGeneration, undefined);
+  assert.equal(siteDetailProperties.kvEnabled.type, 'boolean');
   assert.equal(getExample.token, undefined);
+  assert.equal(getExample.siteUuid, undefined);
+  assert.equal(getExample.siteGeneration, undefined);
   assert.match(manageScript, /if \[ -z "\$\{PAGES_TOKEN:-\}" \]; then/);
   assert.match(manageScript, /查询失败/);
   assert.doesNotMatch(manageScript, /站点 .* 不存在/);

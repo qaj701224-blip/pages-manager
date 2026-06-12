@@ -2,6 +2,16 @@ name: Deploy Production
 
 on:
   workflow_dispatch:
+    inputs:
+      component:
+        description: Deploy component
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - server
+          - kv-gateway
 
 permissions:
   contents: read
@@ -10,6 +20,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    env:
+      DEPLOY_COMPONENT: ${{ github.event_name == 'workflow_dispatch' && inputs.component || 'all' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -27,7 +39,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
 
-      - name: Generate Wrangler config
+      - name: Generate Server Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server'
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -38,6 +51,7 @@ jobs:
         run: scripts/gen-wrangler.sh apps/server production
 
       - name: Generate KV Gateway Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -46,19 +60,30 @@ jobs:
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
         run: scripts/gen-wrangler.sh apps/kv-gateway production
 
-      - name: Validate Worker secrets
+      - name: Validate Server secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server'
         shell: bash
         env:
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           : "${CF_ZONE_ID_NEW:?CF_ZONE_ID_NEW is required}"
-          : "${CF_API_TOKEN:?CF_API_TOKEN is required}"
+          : "${RUNTIME_CF_API_TOKEN:?RUNTIME_CF_API_TOKEN is required}"
+          : "${PAGES_CAP_JWT_SECRET_202606:?PAGES_CAP_JWT_SECRET_202606 is required}"
+
+      - name: Validate KV Gateway secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
+        shell: bash
+        env:
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: |
+          set -euo pipefail
           : "${PAGES_CAP_JWT_SECRET_202606:?PAGES_CAP_JWT_SECRET_202606 is required}"
 
       - name: Deploy KV Gateway
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -66,6 +91,7 @@ jobs:
         run: pnpm --dir apps/kv-gateway exec wrangler deploy
 
       - name: Inject KV Gateway secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -76,6 +102,7 @@ jobs:
           printf '%s' "$PAGES_CAP_JWT_SECRET_202606" | pnpm --dir apps/kv-gateway exec wrangler secret put PAGES_CAP_JWT_SECRET_202606
 
       - name: Deploy Worker
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -83,15 +110,16 @@ jobs:
         run: pnpm --dir apps/server exec wrangler deploy
 
       - name: Inject Worker secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
           printf '%s' "$CF_ZONE_ID_NEW" | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
-          printf '%s' "$CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
+          printf '%s' "$RUNTIME_CF_API_TOKEN" | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
           printf '%s' "$PAGES_CAP_JWT_SECRET_202606" | pnpm --dir apps/server exec wrangler secret put PAGES_CAP_JWT_SECRET_202606

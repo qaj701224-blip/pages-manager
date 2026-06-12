@@ -244,7 +244,7 @@ export function buildWorkerMetadata(completionJwt, preset, ipRestrict, allowlist
       { type: 'plain_text', name: 'XD_PAGES_SITE_ID', text: options.kv.siteId },
       { type: 'plain_text', name: 'XD_PAGES_SITE_UUID', text: options.kv.siteUuid },
       { type: 'plain_text', name: 'XD_PAGES_ENV', text: options.kv.envName },
-      { type: 'plain_text', name: 'XD_PAGES_KV_CAPABILITY', text: options.kv.capability }
+      { type: 'secret_text', name: 'XD_PAGES_KV_CAPABILITY', text: options.kv.capability }
     );
   }
 

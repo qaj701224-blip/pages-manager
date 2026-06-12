@@ -6,6 +6,21 @@ function withoutToken(site) {
   return visibleSite;
 }
 
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined));
+}
+
+function toSiteSummary(site) {
+  return compactObject({
+    name: site.name,
+    url: site.url,
+    preset: site.preset,
+    ipRestrict: site.ipRestrict,
+    kvEnabled: site.kvEnabled,
+    updatedAt: site.updatedAt,
+  });
+}
+
 export async function handleList(request, env) {
   const url = new URL(request.url);
   const filterToken = (url.searchParams.get('token') || request.headers.get('X-Pages-Token') || '').trim();
@@ -27,7 +42,8 @@ export async function handleList(request, env) {
       ...(key.metadata || {}),
     }))
     .filter((site) => site.token === filterToken)
-    .map(withoutToken);
+    .map(withoutToken)
+    .map(toSiteSummary);
 
   return jsonResponse({ sites, filtered: true });
 }

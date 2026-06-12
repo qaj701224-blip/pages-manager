@@ -47,8 +47,25 @@ test('kv enabled binds gateway, site identifiers, env and capability', () => {
     { type: 'plain_text', name: 'XD_PAGES_SITE_ID', text: 'demo' },
     { type: 'plain_text', name: 'XD_PAGES_SITE_UUID', text: '4b4c8e8361ef4b47b64f5c20a7db7c47' },
     { type: 'plain_text', name: 'XD_PAGES_ENV', text: 'staging' },
-    { type: 'plain_text', name: 'XD_PAGES_KV_CAPABILITY', text: 'capability.jwt' },
+    { type: 'secret_text', name: 'XD_PAGES_KV_CAPABILITY', text: 'capability.jwt' },
   ]);
+});
+
+test('kv capability binding is not plain text metadata', () => {
+  const metadata = buildWorkerMetadata('completion-jwt', 'spa', false, '127.0.0.1', {
+    kv: {
+      enabled: true,
+      gatewayService: 'pages-kv-gateway',
+      siteId: 'demo',
+      siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
+      envName: 'staging',
+      capability: 'capability.jwt',
+    },
+  });
+
+  const capabilityBinding = metadata.bindings.find((binding) => binding.name === 'XD_PAGES_KV_CAPABILITY');
+
+  assert.equal(capabilityBinding?.type, 'secret_text');
 });
 
 test('static preset still compiles the allowlist into the generated guard', () => {

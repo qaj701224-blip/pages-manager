@@ -71,3 +71,19 @@ test('each public doc documents Pages KV SDK usage and avoids private capability
     assert.doesNotMatch(doc, /capability\.jwt/, `${name} does not include capability example`);
   }
 });
+
+test('README local deployment commands use package scripts or wrangler directly', () => {
+  const readme = readDoc('README.md');
+
+  assert.match(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
+  assert.match(readme, /pnpm --dir apps\/server exec wrangler deploy/);
+  assert.doesNotMatch(readme, /pnpm --dir apps\/(?:kv-gateway|server) deploy/);
+});
+
+test('published SDK README does not demonstrate bypassing runtime access checks', () => {
+  const sdkReadme = readDoc('apps/pages-sdk/README.md');
+
+  assert.doesNotMatch(sdkReadme, /checkAccess:\s*\(\)\s*=>\s*null/);
+  assert.match(sdkReadme, /checkAccess/);
+  assert.match(sdkReadme, /allowlist|auth|IP/i);
+});

@@ -7,7 +7,7 @@
 | Demo | Preset | Purpose | Deploy source |
 | --- | --- | --- | --- |
 | `html-img` | `static` | Plain HTML plus SVG asset serving | `demos/html-img` |
-| `vue-app` | `spa` | Vue Router fallback for client-side routes | `demos/vue-app/dist` after build |
+| `vue-app` | `spa` | Vue Router fallback plus browser Pages KV SDK read/write test panel | `demos/vue-app/dist` after build |
 | `nuxt-app` | `spa` | Nuxt 3 generated static output | `demos/nuxt-app/.output/public` after generate |
 | `api-demo` | `worker` | Custom `_worker.js`, explicit IP guard, and static assets through `env.ASSETS` | `demos/api-demo` |
 
@@ -48,6 +48,10 @@ PAGES_DEMO_PREFIX=demo
 PAGES_DEMO_IP_RESTRICT=true
 ```
 
+`vue-app` is deployed with `kv=true` so the home page can exercise `@xd/pages-sdk/browser`.
+Because `@xd/pages-sdk` may not be published yet, the demo imports the local built browser entry from `apps/pages-sdk/dist`.
+The test script builds `@xd/pages-sdk` before building `vue-app`.
+
 For safety, `PAGES_API` must match the selected target by default:
 
 - `staging` -> `https://api-staging.workers.xd.team`
@@ -81,6 +85,9 @@ To run one demo:
 ```bash
 scripts/test-staging-demos.sh --demo vue-app
 ```
+
+After deploying `vue-app`, open the published home page and use the Pages KV panel to write, read, and delete a test key.
+The runtime endpoint remains protected by the staging IP allowlist.
 
 ## Package Manager Relationship
 

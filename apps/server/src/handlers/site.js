@@ -32,10 +32,23 @@ function canAccessSite(site, token) {
   return Boolean(site?.token && site.token === token);
 }
 
-function withoutToken(site) {
-  const visibleSite = { ...site };
-  delete visibleSite.token;
-  return visibleSite;
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined));
+}
+
+function toSiteDetail(site) {
+  return compactObject({
+    name: site.name,
+    preset: site.preset,
+    scriptName: site.scriptName,
+    url: site.url,
+    devUrl: site.devUrl,
+    fileCount: site.fileCount,
+    ipRestrict: site.ipRestrict,
+    kvEnabled: site.kvEnabled,
+    createdAt: site.createdAt,
+    updatedAt: site.updatedAt,
+  });
 }
 
 export async function handleGetSite(request, env, params) {
@@ -48,7 +61,7 @@ export async function handleGetSite(request, env, params) {
   }
   if (!canAccessSite(data, token)) return forbiddenSiteResponse(params.name);
 
-  return jsonResponse(withoutToken(data));
+  return jsonResponse(toSiteDetail(data));
 }
 
 export async function handleDeleteSite(request, env, params) {
