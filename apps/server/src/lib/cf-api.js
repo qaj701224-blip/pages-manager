@@ -114,7 +114,7 @@ function sanitizeCloudflareErrors(errors) {
   return errors.map((error) => {
     if (!error || typeof error !== 'object') return error;
     return {
-      ...error,
+      code: error.code,
       message: sanitizeCloudflareErrorText(error.message),
     };
   });

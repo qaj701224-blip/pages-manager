@@ -274,6 +274,10 @@ test('deploy failure response redacts Cloudflare capability and JWT echo', async
               'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature',
               'PAGES_CAP_JWT_SECRET_202606',
             ].join(' '),
+            source: {
+              pointer: '/bindings/XD_PAGES_KV_CAPABILITY/capability.jwt',
+              nested: ['Bearer nested.token.value', { env: 'PAGES_CAP_JWT_SECRET_202606' }],
+            },
           },
         ],
       },
