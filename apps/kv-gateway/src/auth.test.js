@@ -54,6 +54,16 @@ test('parseKeyRegistry returns configured HS256 key entries', () => {
   assert.deepEqual(registry.get('prod-hs-2026-06'), { alg: 'HS256', secret: 'test-secret' });
 });
 
+test('parseKeyRegistry trims key registry fields', () => {
+  const registry = parseKeyRegistry(
+    testEnv({
+      PAGES_CAP_JWT_KEYS: ' prod-hs-2026-06 : HS256 : PAGES_CAP_JWT_SECRET_202606 ',
+    })
+  );
+
+  assert.deepEqual(registry.get('prod-hs-2026-06'), { alg: 'HS256', secret: 'test-secret' });
+});
+
 test('valid HS256 token verifies and returns claims', async () => {
   const jwt = await token();
 

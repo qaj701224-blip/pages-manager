@@ -94,6 +94,6 @@ test('README public output documents Pages KV SDK usage and boundaries', () => {
   assert.match(rendered, /前缀隔离|prefix isolation/);
   assert.match(rendered, /高度敏感|highly sensitive/);
 
-  assert.doesNotMatch(rendered, /PAGES_CAP_JWT_SECRET/);
+  assert.doesNotMatch(rendered, /PAGES_CAP_JWT_SECRET_(?!EXAMPLE\b)[A-Z0-9_]+/);
   assert.doesNotMatch(rendered, /capability\.jwt/);
 });

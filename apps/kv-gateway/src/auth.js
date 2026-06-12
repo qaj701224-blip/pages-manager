@@ -17,7 +17,7 @@ export function parseKeyRegistry(env) {
     .filter(Boolean);
 
   for (const entry of entries) {
-    const parts = entry.split(':');
+    const parts = entry.split(':').map((part) => part.trim());
     if (parts.length !== 3 || parts.some((part) => part === '')) {
       throw new Error('Malformed capability key registry entry');
     }

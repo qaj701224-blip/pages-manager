@@ -64,7 +64,15 @@ test('each public doc documents Pages KV SDK usage and avoids private capability
     assert.match(doc, /@xd\/pages-sdk\/worker/, `${name} documents worker SDK entry`);
     assert.match(doc, /worker preset[\s\S]*(bundle|打包)|(?:bundle|打包)[\s\S]*worker preset/, `${name} documents worker bundling`);
 
-    assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention internal JWT secret env`);
+    if (name === 'README.md') {
+      assert.doesNotMatch(
+        doc,
+        /PAGES_CAP_JWT_SECRET_(?!EXAMPLE\b)[A-Z0-9_]+/,
+        `${name} mentions only placeholder capability secret env names`,
+      );
+    } else {
+      assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention internal JWT secret env`);
+    }
     if (name !== 'README.md') {
       assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention platform KV namespace env`);
     }
@@ -75,6 +83,8 @@ test('each public doc documents Pages KV SDK usage and avoids private capability
 test('README local deployment commands use package scripts or wrangler directly', () => {
   const readme = readDoc('README.md');
 
+  assert.match(readme, /JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE/);
+  assert.doesNotMatch(readme, /JWT_SIGNING_SECRET_ENV=JWT_SIGNING_SECRET_EXAMPLE/);
   assert.match(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
   assert.match(readme, /pnpm --dir apps\/server deploy/);
   assert.match(readme, /scripts\/put-capability-secrets\.sh apps\/server/);

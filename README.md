@@ -261,8 +261,8 @@ pnpm --dir apps/server dev
 
 # 生成本地 Wrangler 配置后，先部署 KV gateway，再部署管理 Worker
 # 下方全部是占位示例；真实值放本地 shell、GitHub Environment Secrets/Vars 或 Wrangler secrets。
-# JWT_SIGNING_SECRET_EXAMPLE 是示例 secret 变量名；同一个签名 secret 要注入 gateway 和 server。
-JWT_SIGNING_SECRET_ENV=JWT_SIGNING_SECRET_EXAMPLE
+# PAGES_CAP_JWT_SECRET_EXAMPLE 是示例 secret 变量名；同一个签名 secret 要注入 gateway 和 server。
+JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE
 JWT_SIGNING_SECRET="$(openssl rand -base64 32)"
 PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV}
 export PAGES_CAP_JWT_KEYS
