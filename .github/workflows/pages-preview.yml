@@ -1,0 +1,88 @@
+name: Pages Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      publishingJobId:
+        description: PublishingJob id
+        required: true
+        type: string
+      prNumber:
+        description: Pull request number
+        required: true
+        type: string
+      headSha:
+        description: PR head SHA
+        required: true
+        type: string
+      siteProjectId:
+        description: SiteProject id
+        required: false
+        type: string
+      previewHostname:
+        description: Preview hostname
+        required: false
+        type: string
+      callbackUrl:
+        description: Gateway callback URL
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pages-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.headSha }}
+
+      - name: Build placeholder preview report
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          preview_url="https://${{ inputs.previewHostname }}"
+          if [[ "$preview_url" == "https://" ]]; then
+            preview_url="https://preview-pr-${{ inputs.prNumber }}.example.invalid"
+          fi
+          cat > .pages-artifacts/preview-report.json <<JSON
+          {
+            "publishingJobId": "${{ inputs.publishingJobId }}",
+            "prNumber": "${{ inputs.prNumber }}",
+            "headSha": "${{ inputs.headSha }}",
+            "siteProjectId": "${{ inputs.siteProjectId }}",
+            "previewUrl": "$preview_url"
+          }
+          JSON
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-report
+          path: .pages-artifacts/preview-report.json
+
+      - name: Print callback payload
+        shell: bash
+        run: |
+          cat .pages-artifacts/preview-report.json
+          cat > .pages-artifacts/callback.json <<JSON
+          {
+            "publishingJobId": "${{ inputs.publishingJobId }}",
+            "workflowName": "pages-preview.yml",
+            "workflowRunId": "${{ github.run_id }}",
+            "status": "succeeded",
+            "stageResult": "preview_deployed",
+            "previewUrl": "$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(".pages-artifacts/preview-report.json","utf8")); process.stdout.write(p.previewUrl)')"
+          }
+          JSON
+          cat .pages-artifacts/callback.json
+
+      - name: Callback gateway
+        shell: bash
+        env:
+          PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+        run: node scripts/post-executor-callback.js .pages-artifacts/callback.json
