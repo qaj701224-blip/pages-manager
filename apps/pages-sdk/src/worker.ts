@@ -1,5 +1,5 @@
 import { ERROR_CODES, GATEWAY } from './protocol.js';
-import { createHandlePagesRuntimeRequest } from './adapter.js';
+import { createHandlePagesRuntimeRequest } from './adapter-core.js';
 import { PagesSDKError } from './errors.js';
 import type { KVType, PagesKV, PagesRuntimeEnv } from './types.js';
 

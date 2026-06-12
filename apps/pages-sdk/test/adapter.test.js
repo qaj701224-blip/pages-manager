@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { handlePagesRuntimeRequest } from '../dist/worker.js';
+import { handlePagesRuntimeRequest } from '../dist/adapter.js';
 
 const env = {
   XD_PAGES_KV_CAPABILITY: 'capability-token',

@@ -14,6 +14,10 @@
       "types": "./dist/worker.d.ts",
       "import": "./dist/worker.js"
     },
+    "./adapter": {
+      "types": "./dist/adapter.d.ts",
+      "import": "./dist/adapter.js"
+    },
     "./internal/runtime-source": {
       "types": "./dist/internal/runtime-source.d.ts",
       "import": "./dist/internal/runtime-source.js"

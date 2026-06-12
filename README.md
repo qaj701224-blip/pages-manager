@@ -228,13 +228,21 @@ pages-manager/
 │   │           ├── site.js
 │   │           ├── list.js
 │   │           └── health.js
+│   ├── kv-gateway/
+│   │   ├── wrangler.template.toml
+│   │   ├── package.json
+│   │   └── src/
+│   ├── pages-sdk/
+│   │   ├── package.json
+│   │   └── src/
 │   └── xdads-302/
 │       ├── wrangler.template.toml
 │       ├── package.json
 │       └── index.js
 ├── packages/
 │   ├── ip-guard/
-│   └── worker-kit/
+│   ├── worker-kit/
+│   └── pages-runtime-protocol/
 ├── scripts/
 │   ├── gen-wrangler.sh
 │   ├── deploy.sh
@@ -251,15 +259,34 @@ pnpm install
 # 本地开发管理 Worker
 pnpm --dir apps/server dev
 
-# 生成本地 Wrangler 配置后部署管理 Worker
+# 生成本地 Wrangler 配置后，先部署 KV gateway，再部署管理 Worker
+# 下方全部是占位示例；真实值放本地 shell、GitHub Environment Secrets/Vars 或 Wrangler secrets。
+# JWT_SIGNING_SECRET_EXAMPLE 是示例 secret 变量名；同一个签名 secret 要注入 gateway 和 server。
+JWT_SIGNING_SECRET_ENV=JWT_SIGNING_SECRET_EXAMPLE
+
+CLOUDFLARE_ACCOUNT_ID=example-account-id \
+SITE_DATA_KV_NAMESPACE_ID=example-site-data-kv-namespace-id \
+PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example \
+PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV} \
+scripts/gen-wrangler.sh apps/kv-gateway production
+pnpm --dir apps/kv-gateway deploy
+printf '%s' '<generated-random-signing-secret>' | pnpm --dir apps/kv-gateway exec wrangler secret put "$JWT_SIGNING_SECRET_ENV"
+
 CLOUDFLARE_ACCOUNT_ID=example-account-id \
 SITES_KV_NAMESPACE_ID=example-kv-namespace-id \
 IP_ALLOWLIST=127.0.0.1,::1 \
+PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example \
+PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV} \
 scripts/gen-wrangler.sh apps/server production
 pnpm --dir apps/server deploy
+printf '%s' '<generated-random-signing-secret>' | pnpm --dir apps/server exec wrangler secret put "$JWT_SIGNING_SECRET_ENV"
+printf '%s' '<runtime-cloudflare-api-token>' | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
+printf '%s' '<zone-id>' | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
 ```
 
-真实 `apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets 生成 `apps/server/wrangler.toml`。
+staging 使用同一套命令，把最后一个参数改为 `staging`，并使用 staging 的 KV namespace、gateway、kid 和 secret。production GitHub Actions 只允许手动触发；staging push 到 `staging` 分支会自动部署 staging。
+
+真实 `apps/server/wrangler.toml`、`apps/kv-gateway/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets/Vars 分别生成 `apps/kv-gateway/wrangler.toml` 和 `apps/server/wrangler.toml`。
 
 ## 路线图
 

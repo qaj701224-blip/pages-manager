@@ -4,6 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
+test('published adapter subpath is importable at runtime', async () => {
+  const adapter = await import('@xd/pages-sdk/adapter');
+
+  assert.equal(typeof adapter.handlePagesRuntimeRequest, 'function');
+});
+
 test('published subpaths expose TypeScript declarations', () => {
   const dir = mkdtempSync(join(process.cwd(), 'apps/pages-sdk/test/.tmp-types-'));
   const file = join(dir, 'smoke.ts');
@@ -13,9 +19,9 @@ test('published subpaths expose TypeScript declarations', () => {
 import { createPagesClient, type KVType } from '@xd/pages-sdk/browser';
 import {
   createPagesRuntime,
-  handlePagesRuntimeRequest,
   type PagesRuntimeEnv,
 } from '@xd/pages-sdk/worker';
+import { handlePagesRuntimeRequest } from '@xd/pages-sdk/adapter';
 import { PAGES_RUNTIME_SOURCE } from '@xd/pages-sdk/internal/runtime-source';
 
 const kvType: KVType = 'json';

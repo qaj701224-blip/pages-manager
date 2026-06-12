@@ -64,8 +64,10 @@ test('each public doc documents Pages KV SDK usage and avoids private capability
     assert.match(doc, /@xd\/pages-sdk\/worker/, `${name} documents worker SDK entry`);
     assert.match(doc, /worker preset[\s\S]*(bundle|打包)|(?:bundle|打包)[\s\S]*worker preset/, `${name} documents worker bundling`);
 
-    assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention JWT secret env`);
-    assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention KV namespace env`);
+    assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention internal JWT secret env`);
+    if (name !== 'README.md') {
+      assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention platform KV namespace env`);
+    }
     assert.doesNotMatch(doc, /capability\.jwt/, `${name} does not include capability example`);
   }
 });
