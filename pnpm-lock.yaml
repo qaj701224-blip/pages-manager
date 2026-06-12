@@ -27,6 +27,19 @@ importers:
         specifier: ^3.0.0
         version: 3.8.3
 
+  apps/kv-gateway:
+    dependencies:
+      '@xd/pages-runtime-protocol':
+        specifier: workspace:*
+        version: link:../../packages/pages-runtime-protocol
+      '@xd/worker-kit':
+        specifier: workspace:*
+        version: link:../../packages/worker-kit
+    devDependencies:
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.91.0
+
   apps/pages-sdk:
     devDependencies:
       typescript:

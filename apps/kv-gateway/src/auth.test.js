@@ -39,6 +39,14 @@ async function token(payload = claims(), options = {}) {
   });
 }
 
+function decodeBase64UrlJson(value) {
+  return JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+}
+
+function encodeBase64UrlJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
+
 test('parseKeyRegistry returns configured HS256 key entries', () => {
   const registry = parseKeyRegistry(testEnv());
 
@@ -54,6 +62,30 @@ test('valid HS256 token verifies and returns claims', async () => {
   assert.equal(verified.siteId, 'q2-report');
   assert.equal(verified.siteUuid, siteUuid);
   assert.equal(verified.jti, 'capability-1');
+});
+
+test('rejects token when payload is mutated without resigning', async () => {
+  const jwt = await token();
+  const [header, payload, signature] = jwt.split('.');
+  const decodedPayload = decodeBase64UrlJson(payload);
+  const mutated = [header, encodeBase64UrlJson({ ...decodedPayload, siteId: 'evil' }), signature].join('.');
+
+  await assert.rejects(
+    verifyCapability(`Bearer ${mutated}`, testEnv(), { requiredScope: 'kv:get', now }),
+    /signature/i
+  );
+});
+
+test('rejects token when signature is mutated', async () => {
+  const jwt = await token();
+  const [header, payload, signature] = jwt.split('.');
+  const replacement = signature[0] === 'A' ? 'B' : 'A';
+  const mutated = [header, payload, `${replacement}${signature.slice(1)}`].join('.');
+
+  await assert.rejects(
+    verifyCapability(`Bearer ${mutated}`, testEnv(), { requiredScope: 'kv:get', now }),
+    /signature/i
+  );
 });
 
 test('rejects alg mismatch', async () => {
@@ -92,6 +124,24 @@ test('rejects missing scope with distinguishable scope message', async () => {
   await assert.rejects(
     verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:delete', now }),
     /scope/i
+  );
+});
+
+test('rejects nbf greater than now', async () => {
+  const jwt = await token(claims({ nbf: now + 1 }));
+
+  await assert.rejects(
+    verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:get', now }),
+    /nbf/i
+  );
+});
+
+test('rejects iat more than 60 seconds in the future', async () => {
+  const jwt = await token(claims({ iat: now + 61 }));
+
+  await assert.rejects(
+    verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:get', now }),
+    /iat/i
   );
 });
 

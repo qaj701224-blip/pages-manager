@@ -81,8 +81,11 @@ async function handlePut(body, claims, env) {
   if (validation.response) return validation.response;
 
   const { key, type, expirationTtl } = validation;
+  const valueValidation = validatePutValue(body, type);
+  if (valueValidation.response) return valueValidation.response;
+
   const storageKey = buildStorageKey({ siteSlug: claims.siteId, siteUuid: claims.siteUuid, userKey: key });
-  const value = type === 'json' ? JSON.stringify(body.value) : String(body.value ?? '');
+  const value = valueValidation.value;
   const options = {
     metadata: {
       siteId: claims.siteId,
@@ -118,6 +121,22 @@ async function handleDelete(body, claims, env) {
   return jsonResponse(buildOkEnvelope({ key }));
 }
 
+function validatePutValue(body, type) {
+  if (!Object.hasOwn(body, 'value')) {
+    return { response: error(ERROR_CODES.INVALID_JSON, 'Missing KV value', 400) };
+  }
+
+  if (type === 'text') {
+    if (body.value === null) return { response: error(ERROR_CODES.INVALID_JSON, 'Invalid text KV value', 400) };
+    return { value: String(body.value) };
+  }
+
+  const value = JSON.stringify(body.value);
+  if (value === undefined) return { response: error(ERROR_CODES.INVALID_JSON, 'Invalid JSON KV value', 400) };
+
+  return { value };
+}
+
 function validateBody(body, { requireTtl = false } = {}) {
   const key = validateUserKey(body.key);
   if (!key.ok) return { response: error(key.error.code, key.error.message, 400) };
@@ -135,7 +154,7 @@ function validateBody(body, { requireTtl = false } = {}) {
 
 function mapProviderError(err) {
   const message = err instanceof Error ? err.message : String(err);
-  if (/(value|size|too large|limit)/i.test(message)) {
+  if (/(size|too large|limit|exceeds)/i.test(message)) {
     return error(ERROR_CODES.KV_VALUE_TOO_LARGE, 'KV value is too large', 413);
   }
 

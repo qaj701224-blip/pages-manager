@@ -120,6 +120,45 @@ test('put stores text and ttl metadata under prefixed key', async () => {
   assert.match(gatewayEnv.SITE_DATA.puts[0].options.metadata.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+test('put rejects missing json value before writing', async () => {
+  const gatewayEnv = env();
+
+  const response = await worker.fetch(
+    await request('/v1/kv/put', { key: 'app/config', type: 'json' }, { authorization: await authHeader() }),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await json(response)).error.code, 'INVALID_JSON');
+  assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
+});
+
+test('put rejects missing text value before writing', async () => {
+  const gatewayEnv = env();
+
+  const response = await worker.fetch(
+    await request('/v1/kv/put', { key: 'app/config', type: 'text' }, { authorization: await authHeader() }),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await json(response)).error.code, 'INVALID_JSON');
+  assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
+});
+
+test('put rejects null text value before writing', async () => {
+  const gatewayEnv = env();
+
+  const response = await worker.fetch(
+    await request('/v1/kv/put', { key: 'app/config', value: null, type: 'text' }, { authorization: await authHeader() }),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await json(response)).error.code, 'INVALID_JSON');
+  assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
+});
+
 test('delete requires kv:delete scope', async () => {
   const gatewayEnv = env();
 
@@ -143,6 +182,19 @@ test('provider value-too-large errors are standardized', async () => {
 
   assert.equal(response.status, 413);
   assert.equal((await json(response)).error.code, 'KV_VALUE_TOO_LARGE');
+});
+
+test('generic provider value errors are not mapped to too-large responses', async () => {
+  const gatewayEnv = env();
+  gatewayEnv.SITE_DATA.failPut = new Error('value must be a string');
+
+  const response = await worker.fetch(
+    await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal((await json(response)).error.code, 'KV_FAILED');
 });
 
 test('invalid JSON returns INVALID_JSON', async () => {
