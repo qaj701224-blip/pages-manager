@@ -55,8 +55,8 @@ const BASE_SPEC = {
           '\n\n**归属保护**: 同名站点已被其他 token 占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
           '\n\n**部署记录**: 部署成功后，AI 应在项目目录写入 `.pages.json` 文件记录部署信息（name、url、devUrl、preset、token、updatedAt），' +
           '下次部署同一项目时先读取此文件，自动使用已有的站点名，无需再次询问。文件示例: `{"name":"my-app","url":"https://my-app.workers.xd.team","preset":"static"}`' +
-          '\n\n应始终携带 X-Pages-Token 头标记部署者身份。',
-        parameters: [{ $ref: '#/components/parameters/PagesToken' }],
+          '\n\n应始终携带 X-Pages-Token 请求头或 token 表单字段标记部署者身份。',
+        parameters: [{ $ref: '#/components/parameters/DeployPagesToken' }],
         requestBody: {
           required: true,
           content: {
@@ -187,8 +187,8 @@ const BASE_SPEC = {
                     summary: 'static preset 不支持 KV',
                     value: {
                       error: 'static preset 暂不支持 kv',
-                      field: 'kv',
-                      preset: 'static',
+                      field: 'preset',
+                      value: 'static',
                       hint: 'kv=true 目前仅支持 spa 或 worker preset',
                     },
                   },
@@ -407,6 +407,16 @@ const BASE_SPEC = {
         description:
           '部署者身份标记。格式: pages_你的邮箱（如 pages_zhangsan@xd.com）。' +
           '首次使用时，AI 应引导用户提供邮箱，生成 token 并持久化到本地记忆中，后续所有请求自动携带。',
+        schema: { type: 'string' },
+        example: 'pages_zhangsan@xd.com',
+      },
+      DeployPagesToken: {
+        name: 'X-Pages-Token',
+        in: 'header',
+        required: false,
+        description:
+          '部署者身份标记。POST /deploy 必须提供 X-Pages-Token 请求头或 multipart/form-data 的 token 表单字段。' +
+          '格式: pages_你的邮箱（如 pages_zhangsan@xd.com）。',
         schema: { type: 'string' },
         example: 'pages_zhangsan@xd.com',
       },

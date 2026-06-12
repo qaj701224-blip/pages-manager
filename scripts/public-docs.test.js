@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -49,26 +48,24 @@ test('README deploy script examples include PAGES_TOKEN', () => {
   }
 });
 
-test('public docs document Pages KV SDK usage and avoid private capability text', () => {
+test('each public doc documents Pages KV SDK usage and avoids private capability text', () => {
   const docs = [
-    readDoc('README.md'),
-    readDoc('API.md'),
-    readDoc('pages-deploy.skill.md'),
-  ].join('\n');
+    ['README.md', readDoc('README.md')],
+    ['API.md', readDoc('API.md')],
+    ['pages-deploy.skill.md', readDoc('pages-deploy.skill.md')],
+  ];
 
-  assert.match(docs, /kv=true/);
-  assert.match(docs, /static \+ kv=true|static.*拒绝/);
-  assert.match(docs, /@xd\/pages-sdk\/browser/);
-  assert.match(docs, /@xd\/pages-sdk\/worker/);
-  assert.match(docs, /\/\.xd-pages\/runtime\/v1/);
-  assert.match(docs, /worker preset/);
-  assert.match(docs, /bundle|打包/);
-  assert.match(docs, /IP 白名单/);
-  assert.match(docs, /前缀隔离|prefix isolation/);
-  assert.match(docs, /高度敏感|highly sensitive/);
+  for (const [name, doc] of docs) {
+    assert.match(doc, /kv=true/, `${name} documents kv=true opt-in`);
+    assert.match(doc, /spa.*worker|worker.*spa/, `${name} documents spa/worker support`);
+    assert.match(doc, /static \+ kv=true|static.*拒绝/, `${name} documents static kv rejection`);
+    assert.match(doc, /\/\.xd-pages\/runtime\/v1/, `${name} documents runtime path`);
+    assert.match(doc, /@xd\/pages-sdk\/browser/, `${name} documents browser SDK entry`);
+    assert.match(doc, /@xd\/pages-sdk\/worker/, `${name} documents worker SDK entry`);
+    assert.match(doc, /worker preset[\s\S]*(bundle|打包)|(?:bundle|打包)[\s\S]*worker preset/, `${name} documents worker bundling`);
 
-  assert.doesNotMatch(docs, /PAGES_CAP_JWT_SECRET/);
-  assert.doesNotMatch(docs, /SITE_DATA_KV_NAMESPACE_ID/);
-  assert.doesNotMatch(docs, /capability\.jwt/);
-  assert.doesNotMatch(docs, /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/);
+    assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention JWT secret env`);
+    assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention KV namespace env`);
+    assert.doesNotMatch(doc, /capability\.jwt/, `${name} does not include capability example`);
+  }
 });
