@@ -67,6 +67,7 @@ jobs:
         env:
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
@@ -80,6 +81,7 @@ jobs:
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'server' || env.DEPLOY_COMPONENT == 'kv-gateway'
         shell: bash
         env:
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
@@ -101,6 +103,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
@@ -124,6 +127,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
           RUNTIME_CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
           PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}

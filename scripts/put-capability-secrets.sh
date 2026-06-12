@@ -16,6 +16,11 @@ trim() {
 }
 
 require_capability_registry() {
+  if [ -z "${PAGES_CAP_JWT_ACTIVE_KID:-}" ]; then
+    echo "::error::PAGES_CAP_JWT_ACTIVE_KID is required" >&2
+    exit 1
+  fi
+
   if [ -z "${PAGES_CAP_JWT_KEYS:-}" ]; then
     echo "::error::PAGES_CAP_JWT_KEYS is required" >&2
     exit 1
@@ -41,8 +46,10 @@ put_secret() {
 
 require_capability_registry
 
+active_kid="$(trim "$PAGES_CAP_JWT_ACTIVE_KID")"
 seen_secret_names="|"
-injected_count=0
+active_kid_found=0
+secret_names=()
 IFS=',' read -r -a entries <<<"$PAGES_CAP_JWT_KEYS"
 
 has_seen_secret_name() {
@@ -74,6 +81,10 @@ for raw_entry in "${entries[@]}"; do
     exit 1
   fi
 
+  if [ "$kid" = "$active_kid" ]; then
+    active_kid_found=1
+  fi
+
   if [[ ! "$secret_name" =~ ^PAGES_CAP_JWT_SECRET_[A-Z0-9_]+$ ]]; then
     echo "::error::Unsupported capability secret env var name: $secret_name" >&2
     exit 1
@@ -84,11 +95,19 @@ for raw_entry in "${entries[@]}"; do
   fi
 
   seen_secret_names="${seen_secret_names}${secret_name}|"
-  put_secret "$secret_name"
-  injected_count=$((injected_count + 1))
+  secret_names+=("$secret_name")
 done
 
-if [ "$injected_count" -eq 0 ]; then
+if [ "${#secret_names[@]}" -eq 0 ]; then
   echo "::error::PAGES_CAP_JWT_KEYS does not contain any capability secret" >&2
   exit 1
 fi
+
+if [ "$active_kid_found" -ne 1 ]; then
+  echo "::error::PAGES_CAP_JWT_ACTIVE_KID is not present in PAGES_CAP_JWT_KEYS: $active_kid" >&2
+  exit 1
+fi
+
+for secret_name in "${secret_names[@]}"; do
+  put_secret "$secret_name"
+done

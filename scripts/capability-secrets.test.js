@@ -21,6 +21,7 @@ function runScript(env = {}) {
 
 test('capability secret injection follows every unique secret named by the registry', () => {
   const result = runScript({
+    PAGES_CAP_JWT_ACTIVE_KID: 'active',
     PAGES_CAP_JWT_KEYS:
       'old:HS256:PAGES_CAP_JWT_SECRET_OLD, active:HS256:PAGES_CAP_JWT_SECRET_202606, duplicate:HS256:PAGES_CAP_JWT_SECRET_OLD',
     PAGES_CAP_JWT_SECRET_OLD: 'old-secret',
@@ -36,9 +37,32 @@ test('capability secret injection follows every unique secret named by the regis
 
 test('capability secret injection fails before deploy when a registry secret is missing', () => {
   const result = runScript({
+    PAGES_CAP_JWT_ACTIVE_KID: 'active',
     PAGES_CAP_JWT_KEYS: 'active:HS256:PAGES_CAP_JWT_SECRET_MISSING',
   });
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /PAGES_CAP_JWT_SECRET_MISSING/);
+});
+
+test('capability secret injection requires an active kid before deploy', () => {
+  const result = runScript({
+    PAGES_CAP_JWT_KEYS: 'active:HS256:PAGES_CAP_JWT_SECRET_202606',
+    PAGES_CAP_JWT_SECRET_202606: 'active-secret',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /PAGES_CAP_JWT_ACTIVE_KID/);
+});
+
+test('capability secret injection fails before deploy when active kid is not in the registry', () => {
+  const result = runScript({
+    PAGES_CAP_JWT_ACTIVE_KID: 'missing',
+    PAGES_CAP_JWT_KEYS: 'active:HS256:PAGES_CAP_JWT_SECRET_202606',
+    PAGES_CAP_JWT_SECRET_202606: 'active-secret',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /active kid|PAGES_CAP_JWT_ACTIVE_KID/i);
+  assert.doesNotMatch(result.stdout, /PAGES_CAP_JWT_SECRET_202606/);
 });

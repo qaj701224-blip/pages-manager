@@ -15,6 +15,13 @@ const deployWorkflows = [
   ['staging', '.github/workflows/deploy-staging.yml'],
 ];
 
+const capabilityActiveKidEnvPattern =
+  String.raw`PAGES_CAP_JWT_ACTIVE_KID: \$\{\{ vars\.PAGES_CAP_JWT_ACTIVE_KID \}\}`;
+
+function workflowStepPattern(stepName, commandPattern) {
+  return new RegExp([`name: ${stepName}`, capabilityActiveKidEnvPattern, commandPattern].join(String.raw`[\s\S]*`));
+}
+
 test('deploy workflows expose component choice for manual deploys', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
@@ -112,6 +119,35 @@ test('deploy workflows inject all capability secrets from the key registry', () 
     const workflow = readWorkflow(path);
 
     assert.match(workflow, /PAGES_CAP_JWT_KEYS: \$\{\{ vars\.PAGES_CAP_JWT_KEYS \}\}/);
+    assert.match(
+      workflow,
+      workflowStepPattern(
+        'Validate Server secrets',
+        String.raw`DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/server`,
+      ),
+      `${name} validates server active capability kid before deploy`,
+    );
+    assert.match(
+      workflow,
+      workflowStepPattern(
+        'Validate KV Gateway secrets',
+        String.raw`DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/kv-gateway`,
+      ),
+      `${name} validates kv-gateway active capability kid before deploy`,
+    );
+    assert.match(
+      workflow,
+      workflowStepPattern(
+        'Inject KV Gateway secrets',
+        String.raw`scripts\/put-capability-secrets\.sh apps\/kv-gateway`,
+      ),
+      `${name} injects kv-gateway secrets with active capability kid validation`,
+    );
+    assert.match(
+      workflow,
+      workflowStepPattern('Inject Worker secrets', String.raw`scripts\/put-capability-secrets\.sh apps\/server`),
+      `${name} injects server secrets with active capability kid validation`,
+    );
     assert.match(workflow, /DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/server/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/kv-gateway/);
     assert.match(workflow, /scripts\/put-capability-secrets\.sh apps\/server/);
