@@ -154,11 +154,18 @@ function validateBody(body, { requireTtl = false } = {}) {
 
 function mapProviderError(err) {
   const message = err instanceof Error ? err.message : String(err);
-  if (/(size|too large|limit|exceeds)/i.test(message)) {
+  if (isValueTooLargeError(message)) {
     return error(ERROR_CODES.KV_VALUE_TOO_LARGE, 'KV value is too large', 413);
   }
 
   return error(ERROR_CODES.KV_FAILED, 'KV operation failed', 500);
+}
+
+function isValueTooLargeError(message) {
+  return (
+    /\b(value|body|payload)\b.*\b(too large|exceeds?|size|length|limit|max(?:imum)?)\b/i.test(message) ||
+    /\b(too large|exceeds?|size|length|limit|max(?:imum)?)\b.*\b(value|body|payload)\b/i.test(message)
+  );
 }
 
 function error(code, message, status) {

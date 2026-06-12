@@ -184,9 +184,35 @@ test('provider value-too-large errors are standardized', async () => {
   assert.equal((await json(response)).error.code, 'KV_VALUE_TOO_LARGE');
 });
 
+test('provider value-size errors are standardized', async () => {
+  const gatewayEnv = env();
+  gatewayEnv.SITE_DATA.failPut = new Error('Value length exceeds maximum allowed size');
+
+  const response = await worker.fetch(
+    await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await json(response)).error.code, 'KV_VALUE_TOO_LARGE');
+});
+
 test('generic provider value errors are not mapped to too-large responses', async () => {
   const gatewayEnv = env();
   gatewayEnv.SITE_DATA.failPut = new Error('value must be a string');
+
+  const response = await worker.fetch(
+    await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal((await json(response)).error.code, 'KV_FAILED');
+});
+
+test('provider rate limit errors are not mapped to too-large responses', async () => {
+  const gatewayEnv = env();
+  gatewayEnv.SITE_DATA.failPut = new Error('Rate limit exceeded');
 
   const response = await worker.fetch(
     await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
