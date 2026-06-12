@@ -30,6 +30,9 @@ export function createPagesRuntime(options: { env: PagesRuntimeEnv }): { kv: Pag
     kv: {
       async get<T = unknown>(key: string, getOptions: { type?: KVType } = {}): Promise<T | string | null> {
         const envelope = await post(GATEWAY.KV_GET_PATH, { key, type: getOptions.type ?? 'json' });
+        if (typeof envelope.found !== 'boolean') {
+          throw new PagesSDKError(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'Invalid runtime response');
+        }
         if (envelope.found === false) return null;
         return envelope.value as T | string;
       },

@@ -26,6 +26,9 @@ export function createPagesClient(options: { basePath?: string; fetch?: typeof f
     kv: {
       async get<T = unknown>(key: string, getOptions: { type?: KVType } = {}): Promise<T | string | null> {
         const envelope = await post('/kv/get', { key, type: getOptions.type ?? 'json' });
+        if (typeof envelope.found !== 'boolean') {
+          throw new PagesSDKError(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'Invalid runtime response');
+        }
         if (envelope.found === false) return null;
         return envelope.value as T | string;
       },

@@ -82,3 +82,27 @@ test('createPagesClient throws PagesSDKError for non-JSON runtime response', asy
     return true;
   });
 });
+
+test('createPagesClient throws runtime error envelopes with code and message', async () => {
+  const client = createPagesClient({
+    fetch: async () => Response.json({ ok: false, error: { code: 'KV_FAILED', message: 'KV failed' } }, { status: 502 }),
+  });
+
+  await assert.rejects(() => client.kv.get('app/config'), (error) => {
+    assert.ok(error instanceof PagesSDKError);
+    assert.equal(error.code, 'KV_FAILED');
+    assert.equal(error.message, 'KV failed');
+    assert.equal(error.status, 502);
+    return true;
+  });
+});
+
+test('createPagesClient throws invalid runtime response for get envelopes without found', async () => {
+  const client = createPagesClient({
+    fetch: async () => Response.json({ ok: true }),
+  });
+
+  await assert.rejects(() => client.kv.get('app/config'), {
+    code: 'INVALID_RUNTIME_RESPONSE',
+  });
+});
