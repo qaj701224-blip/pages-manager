@@ -27,6 +27,16 @@ importers:
         specifier: ^3.0.0
         version: 3.8.3
 
+  apps/pages-sdk:
+    dependencies:
+      '@xd/pages-runtime-protocol':
+        specifier: workspace:*
+        version: link:../../packages/pages-runtime-protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+
   apps/server:
     dependencies:
       '@xd/ip-guard':
@@ -47,6 +57,8 @@ importers:
         version: 4.91.0
 
   packages/ip-guard: {}
+
+  packages/pages-runtime-protocol: {}
 
   packages/worker-kit: {}
 
@@ -824,6 +836,11 @@ packages:
     resolution: {integrity: sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==}
     engines: {node: '>= 0.8.0'}
 
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
   undici@7.24.8:
     resolution: {integrity: sha512-6KQ/+QxK49Z/p3HO6E5ZCZWNnCasyZLa5ExaVYyvPxUwKtbCPMKELJOqh7EqOle0t9cH/7d2TaaTRRa6Nhs4YQ==}
     engines: {node: '>=20.18.1'}
@@ -1528,6 +1545,8 @@ snapshots:
   type-check@0.4.0:
     dependencies:
       prelude-ls: 1.2.1
+
+  typescript@5.9.3: {}
 
   undici@7.24.8: {}
 
