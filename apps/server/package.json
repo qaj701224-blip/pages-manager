@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "@xd/ip-guard": "workspace:*",
+    "@xd/pages-runtime-protocol": "workspace:*",
+    "@xd/pages-sdk": "workspace:*",
     "@xd/worker-kit": "workspace:*"
   },
   "devDependencies": {

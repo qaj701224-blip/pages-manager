@@ -1,3 +1,4 @@
+import { parseKvEnabled } from '@xd/pages-runtime-protocol';
 import { jsonResponse } from '@xd/worker-kit';
 
 import {
@@ -8,6 +9,7 @@ import {
   bindRoute,
   enableSubdomain,
 } from '../lib/cf-api.js';
+import { signKvCapability } from '../lib/kv-capability.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 const VALID_PRESETS = ['static', 'spa', 'worker'];
@@ -57,10 +59,24 @@ export async function handleDeploy(request, env) {
     );
   }
 
+  const kvValue = form.get('kv');
+  const kv = parseKvEnabled(kvValue);
+  if (kv.error) {
+    return jsonResponse(
+      {
+        error: '无效的 kv 参数',
+        field: 'kv',
+        value: kvValue,
+        hint: 'kv 仅支持 true 或 false',
+      },
+      400
+    );
+  }
+
   let workerCode = null;
   const fileEntries = [];
   for (const [key, value] of form.entries()) {
-    if (key === 'name' || key === 'preset' || key === 'ip_restrict' || key === 'token') continue;
+    if (key === 'name' || key === 'preset' || key === 'ip_restrict' || key === 'token' || key === 'kv') continue;
     if (!(value instanceof File)) continue;
     const bytes = new Uint8Array(await value.arrayBuffer());
     const path = value.name || key;
@@ -110,6 +126,30 @@ export async function handleDeploy(request, env) {
   const zoneId = env.CF_ZONE_ID_NEW;
   const scriptName = `${env.WORKER_PREFIX}${name}`;
   const hostname = `${name}${env.DOMAIN_LABEL}.${env.DOMAIN_BASE}`;
+  const siteUuid = existing?.siteUuid || crypto.randomUUID().replaceAll('-', '');
+  const siteGeneration = Number(existing?.siteGeneration || 0) + 1;
+  const kvOptions = {};
+
+  if (kv.enabled) {
+    kvOptions.kv = {
+      enabled: true,
+      gatewayService: env.KV_GATEWAY_SERVICE,
+      siteId: name,
+      siteUuid,
+      envName: env.PUBLIC_ENVIRONMENT,
+      capability: await signKvCapability(
+        {
+          siteId: name,
+          siteUuid,
+          siteGeneration,
+          envName: env.PUBLIC_ENVIRONMENT,
+          now: Math.floor(Date.now() / 1000),
+          jti: `cap_${crypto.randomUUID().replaceAll('-', '')}`,
+        },
+        env
+      ),
+    };
+  }
 
   const { manifest, fileMap } = await buildManifest(fileEntries);
 
@@ -133,7 +173,8 @@ export async function handleDeploy(request, env) {
     preset,
     workerCode,
     ipRestrict,
-    env.IP_ALLOWLIST
+    env.IP_ALLOWLIST,
+    kvOptions
   );
   console.log('deploy result:', JSON.stringify(deployResult)?.slice(0, 200));
 
@@ -153,12 +194,24 @@ export async function handleDeploy(request, env) {
     devUrl,
     fileCount: fileEntries.length,
     ipRestrict,
+    kvEnabled: kv.enabled,
+    siteUuid,
+    siteGeneration,
     token: userToken,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
   await env.SITES.put(name, JSON.stringify(metadata), {
-    metadata: { url: metadata.url, preset, ipRestrict, updatedAt: now, token: userToken },
+    metadata: {
+      url: metadata.url,
+      preset,
+      ipRestrict,
+      kvEnabled: kv.enabled,
+      siteUuid,
+      siteGeneration,
+      updatedAt: now,
+      token: userToken,
+    },
   });
 
   const result = {
@@ -169,12 +222,20 @@ export async function handleDeploy(request, env) {
     fileCount: fileEntries.length,
     preset,
     ipRestrict,
+    kv: kv.enabled,
   };
   const warnings = [];
   if (ipRestrict && preset === 'worker') {
     warnings.push(
       'worker preset 已注入 env.IP_ALLOWLIST，但不会改写 _worker.js。' +
         '请在 _worker.js 中调用 GET /openapi.json 中 x-libs.ip-guard 的 checkIP(request, env)。'
+    );
+  }
+  if (kv.enabled && preset === 'worker') {
+    warnings.push(
+      'worker preset 开启 kv=true 后，_worker.js 会收到本站 KV capability。' +
+        '如果代码 import @xd/pages-sdk/worker，必须在上传前完成打包；' +
+        '平台无法阻止站点 owner 代码暴露自己的 KV capability。'
     );
   }
   if (warnings.length) result.warning = warnings.join(' ');

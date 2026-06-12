@@ -51,6 +51,12 @@ importers:
       '@xd/ip-guard':
         specifier: workspace:*
         version: link:../../packages/ip-guard
+      '@xd/pages-runtime-protocol':
+        specifier: workspace:*
+        version: link:../../packages/pages-runtime-protocol
+      '@xd/pages-sdk':
+        specifier: workspace:*
+        version: link:../pages-sdk
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
