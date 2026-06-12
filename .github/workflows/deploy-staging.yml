@@ -52,7 +52,7 @@ jobs:
         shell: bash
         env:
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
@@ -90,7 +90,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID_NEW: ${{ secrets.CF_ZONE_ID_NEW }}
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: |
           set -euo pipefail
