@@ -48,3 +48,27 @@ test('README deploy script examples include PAGES_TOKEN', () => {
     assert.match(command, /^PAGES_TOKEN=pages_[^\s]+ bash scripts\/manage\.sh /);
   }
 });
+
+test('public docs document Pages KV SDK usage and avoid private capability text', () => {
+  const docs = [
+    readDoc('README.md'),
+    readDoc('API.md'),
+    readDoc('pages-deploy.skill.md'),
+  ].join('\n');
+
+  assert.match(docs, /kv=true/);
+  assert.match(docs, /static \+ kv=true|static.*拒绝/);
+  assert.match(docs, /@xd\/pages-sdk\/browser/);
+  assert.match(docs, /@xd\/pages-sdk\/worker/);
+  assert.match(docs, /\/\.xd-pages\/runtime\/v1/);
+  assert.match(docs, /worker preset/);
+  assert.match(docs, /bundle|打包/);
+  assert.match(docs, /IP 白名单/);
+  assert.match(docs, /前缀隔离|prefix isolation/);
+  assert.match(docs, /高度敏感|highly sensitive/);
+
+  assert.doesNotMatch(docs, /PAGES_CAP_JWT_SECRET/);
+  assert.doesNotMatch(docs, /SITE_DATA_KV_NAMESPACE_ID/);
+  assert.doesNotMatch(docs, /capability\.jwt/);
+  assert.doesNotMatch(docs, /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/);
+});

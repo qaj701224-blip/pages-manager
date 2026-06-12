@@ -79,6 +79,48 @@
 | `spa`    | 路径未匹配时回退到 `index.html`        | Vue / React / Angular 等 SPA |
 | `worker` | 使用上传的 `_worker.js` 作为自定义入口 | SSR、API 代理、动态渲染      |
 
+## Pages KV
+
+Pages KV 是 v1 站点级 KV 能力，部署时必须显式传 `kv=true` 才会开启；未传、`false` 或 `kv=false` 都是关闭，非法 `kv` 值会被拒绝。`kv=true` 仅支持 `spa` 和 `worker` preset，`static + kv=true` 会被拒绝。
+
+SPA 浏览器代码使用 `@xd/pages-sdk/browser`：
+
+```ts
+import { createPagesClient } from '@xd/pages-sdk/browser';
+
+const pages = createPagesClient();
+const config = await pages.kv.get('app/config', { type: 'json' });
+await pages.kv.put('drafts/123', { title: 'hello' });
+await pages.kv.delete('drafts/123');
+```
+
+浏览器 SDK 只访问同源 POST runtime endpoint：
+
+- `POST /.xd-pages/runtime/v1/kv/get`
+- `POST /.xd-pages/runtime/v1/kv/put`
+- `POST /.xd-pages/runtime/v1/kv/delete`
+
+自定义 Worker 使用 `@xd/pages-sdk/worker`：
+
+```js
+import { createPagesRuntime } from '@xd/pages-sdk/worker';
+
+export default {
+  async fetch(request, env) {
+    const pages = createPagesRuntime({ env });
+    return Response.json(await pages.kv.get('app/config'));
+  },
+};
+```
+
+worker preset 的 `_worker.js` 如果 import npm 包（包括 `@xd/pages-sdk/worker`），业务构建必须先 bundle/打包成可直接运行的 Worker module，再上传给 pages-manager；pages-manager 不会打包 `_worker.js`。
+
+安全边界：
+
+- 公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。
+- v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。
+- worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能力；owner 代码可以误用或泄露自己的能力，平台只强制跨站前缀隔离。
+
 ## 使用方式
 
 ### CLI 脚本
