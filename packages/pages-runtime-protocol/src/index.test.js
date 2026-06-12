@@ -11,6 +11,7 @@ import {
   buildOkEnvelope,
   buildStorageKey,
   encodeUserKey,
+  isValidSiteSlug,
   isValidSiteUuid,
   parseKvEnabled,
   validateKvType,
@@ -44,6 +45,18 @@ test('siteUuid must be 32 lowercase hex characters', () => {
   assert.equal(isValidSiteUuid('4b4c8e8361ef4b47b64f5c20a7db7c47'), true);
   assert.equal(isValidSiteUuid('4B4C8E8361EF4B47B64F5C20A7DB7C47'), false);
   assert.equal(isValidSiteUuid('4b4c8e83-61ef-4b47-b64f-5c20a7db7c47'), false);
+});
+
+test('siteSlug matches deploy handler name semantics', () => {
+  assert.equal(isValidSiteSlug('ab'), true);
+  assert.equal(isValidSiteSlug('q2-report'), true);
+  assert.equal(isValidSiteSlug(`a${'b'.repeat(48)}1`), true);
+  assert.equal(isValidSiteSlug('a'), false);
+  assert.equal(isValidSiteSlug(`a${'b'.repeat(49)}1`), false);
+  assert.equal(isValidSiteSlug('Q2-report'), false);
+  assert.equal(isValidSiteSlug('-q2-report'), false);
+  assert.equal(isValidSiteSlug('q2-report-'), false);
+  assert.equal(isValidSiteSlug('q2_report'), false);
 });
 
 test('user key validation rejects empty, reserved and oversized keys', () => {
@@ -89,7 +102,9 @@ test('type and ttl validation match runtime contract', () => {
   assert.equal(validateKvType('binary').error.code, 'INVALID_TYPE');
   assert.equal(validateTtl(undefined).value, undefined);
   assert.equal(validateTtl(60).value, 60);
+  assert.equal(validateTtl(31536000).value, 31536000);
   assert.equal(validateTtl(59).error.code, 'INVALID_TTL');
+  assert.equal(validateTtl(60.5).error.code, 'INVALID_TTL');
   assert.equal(validateTtl(31536001).error.code, 'INVALID_TTL');
 });
 
