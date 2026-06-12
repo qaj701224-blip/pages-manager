@@ -16,10 +16,13 @@ test('worker preset binds IP_ALLOWLIST without rewriting user worker code', () =
   assert.equal(code, userWorkerCode);
 });
 
-test('public worker preset does not bind IP_ALLOWLIST', () => {
+test('worker preset binds IP_ALLOWLIST even when ipRestrict is false', () => {
   const metadata = buildWorkerMetadata('completion-jwt', 'worker', false, '127.0.0.1');
 
-  assert.deepEqual(metadata.bindings, [{ type: 'assets', name: 'ASSETS' }]);
+  assert.deepEqual(metadata.bindings, [
+    { type: 'assets', name: 'ASSETS' },
+    { type: 'plain_text', name: 'IP_ALLOWLIST', text: '127.0.0.1' },
+  ]);
 });
 
 test('kv disabled does not bind gateway or capability', () => {
@@ -91,7 +94,7 @@ test('static preset with kv options does not generate runtime support', () => {
   assert.doesNotMatch(code, /\/\.xd-pages\/runtime\/v1/);
 });
 
-test('public spa kv worker exposes runtime before assets without IP allowlist', () => {
+test('spa kv worker applies IP allowlist even when ipRestrict is false', () => {
   const code = buildWorkerCode('spa', null, false, '127.0.0.1', {
     kv: {
       enabled: true,
@@ -104,9 +107,9 @@ test('public spa kv worker exposes runtime before assets without IP allowlist', 
   });
 
   assert.match(code, /handlePagesRuntimeRequest/);
-  assert.match(code, /CF-Connecting-IP/);
-  assert.doesNotMatch(code, /function checkIP/);
-  assert.doesNotMatch(code, /checkIP\(request\)/);
+  assert.match(code, /function checkIP/);
+  assert.match(code, /const denied = checkIP\(request\);if\(denied\)return denied;/);
+  assert.match(code, /const b=checkIP\(request\);if\(b\)return b;/);
   assert.doesNotMatch(code, /from\s+['"]@xd\//);
   assert.doesNotMatch(code, /import\(['"]@xd\//);
   assert.ok(code.indexOf('/.xd-pages/runtime/v1') < code.indexOf('env.ASSETS.fetch'));

@@ -91,13 +91,13 @@ const BASE_SPEC = {
                   },
                   ip_restrict: {
                     type: 'string',
-                    enum: ['true', 'false'],
+                    enum: ['true'],
                     default: 'true',
                     description:
-                      'IP 内网限制，默认开启。站点仅允许 IP_ALLOWLIST 中配置的来源访问。' +
+                      'IP 内网限制，当前版本固定开启。站点仅允许 IP_ALLOWLIST 中配置的来源访问。' +
                       'static/spa preset 自动注入 IP 检查代码；worker preset 会注入 env.IP_ALLOWLIST，' +
                       '但需在 _worker.js 中自行调用 x-libs.ip-guard。' +
-                      '设为 false 可关闭限制，允许公网访问。',
+                      '传 false 会被拒绝。',
                   },
                   kv: {
                     type: 'string',
@@ -619,7 +619,7 @@ const BASE_SPEC = {
       '脚本通过环境变量 PAGES_TOKEN 传递身份 token，PAGES_API 可覆盖 API 地址。',
     deploy: {
       filename: 'pages-deploy.sh',
-      description: '部署脚本: pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--public] [--kv]',
+      description: '部署脚本: pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--kv]',
       usage: 'PAGES_TOKEN=pages_xxx@xd.com bash pages-deploy.sh my-site ./dist --preset static',
       source: [
         '#!/usr/bin/env bash',
@@ -628,7 +628,6 @@ const BASE_SPEC = {
         'NAME="${1:-}"',
         'DIR="${2:-}"',
         'PRESET="static"',
-        'IP_RESTRICT="true"',
         'KV="false"',
         'API="${PAGES_API:-https://api.workers.xd.team}"',
         '',
@@ -636,14 +635,13 @@ const BASE_SPEC = {
         'while [[ $# -gt 0 ]]; do',
         '  case "$1" in',
         '    --preset) PRESET="${2:-static}"; shift 2 ;;',
-        '    --public) IP_RESTRICT="false"; shift ;;',
         '    --kv) KV="true"; shift ;;',
         '    *) shift ;;',
         '  esac',
         'done',
         '',
         'if [ -z "$NAME" ] || [ -z "$DIR" ]; then',
-        '  echo "用法: pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--public] [--kv]"',
+        '  echo "用法: pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--kv]"',
         '  exit 1',
         'fi',
         '',
@@ -662,7 +660,7 @@ const BASE_SPEC = {
         'CURL_ARGS=(-s -w "\\n%{http_code}" -X POST -H "X-Pages-Token: ${PAGES_TOKEN}")',
         'CURL_ARGS+=(-F "name=${NAME}")',
         'CURL_ARGS+=(-F "preset=${PRESET}")',
-        'CURL_ARGS+=(-F "ip_restrict=${IP_RESTRICT}")',
+        'CURL_ARGS+=(-F "ip_restrict=true")',
         'CURL_ARGS+=(-F "kv=${KV}")',
         '',
         'COUNT=0',

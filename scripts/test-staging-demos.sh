@@ -25,7 +25,6 @@ Environment:
   PAGES_DEMO_TARGET        Optional. Defaults to staging. Overridden by --target.
   PAGES_API                Optional. Defaults from target.
   PAGES_DEMO_PREFIX        Optional. Defaults to demo.
-  PAGES_DEMO_IP_RESTRICT   Optional. Defaults to true. Set false only for troubleshooting.
   PAGES_DEMO_ALLOW_NON_STAGING
                            Optional. Set true only for a nonstandard PAGES_API.
 
@@ -93,7 +92,6 @@ esac
 PAGES_API="${PAGES_API:-$EXPECTED_PAGES_API}"
 PAGES_API="${PAGES_API%/}"
 PAGES_DEMO_PREFIX="${PAGES_DEMO_PREFIX:-demo}"
-PAGES_DEMO_IP_RESTRICT="${PAGES_DEMO_IP_RESTRICT:-true}"
 PAGES_DEMO_ALLOW_NON_STAGING="${PAGES_DEMO_ALLOW_NON_STAGING:-false}"
 
 [[ -n "${PAGES_TOKEN:-}" ]] || die "PAGES_TOKEN is required. Put it in .env or pass --env-file."
@@ -101,11 +99,6 @@ PAGES_DEMO_ALLOW_NON_STAGING="${PAGES_DEMO_ALLOW_NON_STAGING:-false}"
 if [[ "$PAGES_DEMO_ALLOW_NON_STAGING" != "true" && "$PAGES_API" != "$EXPECTED_PAGES_API" ]]; then
   die "PAGES_API does not match target $PAGES_DEMO_TARGET: got $PAGES_API, expected $EXPECTED_PAGES_API. Set PAGES_DEMO_ALLOW_NON_STAGING=true only for a nonstandard API."
 fi
-
-case "$PAGES_DEMO_IP_RESTRICT" in
-  true | false) ;;
-  *) die "PAGES_DEMO_IP_RESTRICT must be true or false" ;;
-esac
 
 DEMO_IDS=(html-img vue-app nuxt-app api-demo)
 
@@ -175,7 +168,6 @@ print_plan() {
   printf 'PAGES_DEMO_TARGET=%s\n' "$PAGES_DEMO_TARGET"
   printf 'PAGES_API=%s\n' "$PAGES_API"
   printf 'PAGES_DEMO_PREFIX=%s\n' "$PAGES_DEMO_PREFIX"
-  printf 'PAGES_DEMO_IP_RESTRICT=%s\n' "$PAGES_DEMO_IP_RESTRICT"
   printf '\n'
   printf '%-24s %-8s %-5s %s\n' 'site' 'preset' 'kv' 'source'
   while IFS= read -r demo; do
@@ -267,7 +259,7 @@ deploy_dir() {
   local curl_args=(-sS -w $'\n%{http_code}' -X POST -H "X-Pages-Token: ${PAGES_TOKEN}")
   curl_args+=(-F "name=${site}")
   curl_args+=(-F "preset=${preset}")
-  curl_args+=(-F "ip_restrict=${PAGES_DEMO_IP_RESTRICT}")
+  curl_args+=(-F "ip_restrict=true")
   if [[ "$(demo_kv_enabled "$demo")" == "true" ]]; then
     curl_args+=(-F "kv=true")
   fi

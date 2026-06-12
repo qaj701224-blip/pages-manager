@@ -56,7 +56,19 @@ export async function handleDeploy(request, env) {
     );
   }
 
-  const ipRestrict = form.get('ip_restrict') !== 'false';
+  const ipRestrictValue = form.get('ip_restrict');
+  if (ipRestrictValue !== null && ipRestrictValue !== 'true') {
+    return jsonResponse(
+      {
+        error: '当前版本不支持关闭 IP 限制',
+        field: 'ip_restrict',
+        value: ipRestrictValue,
+        hint: '当前版本所有站点请求都必须经过平台 IP 白名单',
+      },
+      400
+    );
+  }
+  const ipRestrict = true;
 
   const preset = form.get('preset') || 'static';
   if (!VALID_PRESETS.includes(preset)) {

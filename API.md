@@ -40,6 +40,7 @@ https://api.workers.xd.team
 | `name`   | string | 是   | 站点名称，规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/` |
 | `preset` | string | 否   | `static`（默认）/ `spa` / `worker`                    |
 | `token`  | string | 否   | 部署者 token，备选方式；优先使用必填的 `X-Pages-Token` 请求头 |
+| `ip_restrict` | string | 否 | 当前版本固定开启；只能不传或传 `true`，传 `false` 会返回 `400` |
 | `kv`     | string | 否   | Pages KV 开关，仅支持 `true` / `false`；`kv=true` 只支持 `spa` 和 `worker` |
 | `file-*` | file   | 是   | 要部署的文件，`filename` 为相对路径                   |
 

@@ -54,7 +54,7 @@ curl -s https://pages-manager.xd-cf-2022.workers.dev/skill.md -o <本文件路�
 
 ```bash
 # 部署
-PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--public] [--kv]
+PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--kv]
 
 # 列出自己的站点
 PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh list
@@ -124,7 +124,7 @@ worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能�
 
 - static/spa：自动注入 IP 检查，无需额外操作
 - worker：服务端会注入 `env.IP_ALLOWLIST`，但需在 `_worker.js` 中自行调用 IP 检查代码（参考 openapi.json 中 `x-libs.ip-guard`），部署时提醒用户
-- 如需公网访问，部署时加 `--public`
+- 当前版本不支持关闭 IP 限制；不要传 `ip_restrict=false`
 
 ## 硬性规则
 

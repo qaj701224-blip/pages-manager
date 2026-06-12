@@ -56,12 +56,12 @@ export default {
 }`;
 }
 
-function buildSpaWorkerKv(allowlist, ipRestrict) {
+function buildSpaWorkerKv(allowlist) {
   return `${MIME_WORKER_HELPER}
 ${PAGES_RUNTIME_SOURCE}
-${ipRestrict ? buildBakedGuardSource(allowlist) : ''}
+${buildBakedGuardSource(allowlist)}
 function checkRuntimeAccess(request) {
-  ${ipRestrict ? 'const denied = checkIP(request);if(denied)return denied;' : ''}
+  const denied = checkIP(request);if(denied)return denied;
   if (!request.headers.get("CF-Connecting-IP")) return new Response("IP not allowed", { status: 403 });
   return null;
 }
@@ -72,7 +72,7 @@ export default {
       const runtimeResponse = await handlePagesRuntimeRequest(request, env, { checkAccess: checkRuntimeAccess });
       if (runtimeResponse) return runtimeResponse;
     }
-    ${ipRestrict ? 'const b=checkIP(request);if(b)return b;' : ''}
+    const b=checkIP(request);if(b)return b;
     return typed(request, await env.ASSETS.fetch(request));
   },
 }`;
@@ -247,7 +247,7 @@ export function buildWorkerMetadata(completionJwt, preset, ipRestrict, allowlist
     );
   }
 
-  if (preset === 'worker' && ipRestrict) {
+  if (preset === 'worker') {
     bindings.push({ type: 'plain_text', name: 'IP_ALLOWLIST', text: allowlist || '' });
   }
 
@@ -264,14 +264,14 @@ export function buildWorkerMetadata(completionJwt, preset, ipRestrict, allowlist
 
 export function buildWorkerCode(preset, workerCode, ipRestrict, allowlist, options = {}) {
   if (!workerCode && preset === 'spa' && options.kv?.enabled) {
-    return buildSpaWorkerKv(allowlist, ipRestrict);
+    return buildSpaWorkerKv(allowlist);
   }
 
   const ipScripts = {
     static: buildStaticWorkerIp(allowlist),
     spa: buildSpaWorkerIp(allowlist),
   };
-  const scripts = ipRestrict && preset !== 'worker' ? ipScripts : WORKER_SCRIPTS;
+  const scripts = preset !== 'worker' ? ipScripts : WORKER_SCRIPTS;
   return workerCode || scripts[preset] || WORKER_SCRIPTS.static;
 }
 

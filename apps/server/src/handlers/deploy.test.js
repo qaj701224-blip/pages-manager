@@ -8,6 +8,7 @@ function deployRequest({
   name = 'demo',
   token,
   kv,
+  ipRestrict,
   preset = 'static',
   files = [{ field: 'index', body: 'ok', name: 'index.html' }],
 } = {}) {
@@ -15,6 +16,7 @@ function deployRequest({
   form.set('name', name);
   form.set('preset', preset);
   if (kv !== undefined) form.set('kv', kv);
+  if (ipRestrict !== undefined) form.set('ip_restrict', ipRestrict);
   for (const file of files) {
     form.append(file.field, new Blob([file.body], { type: file.type || 'text/html' }), file.name);
   }
@@ -217,6 +219,26 @@ test('deploy rejects static kv before touching Cloudflare', async () => {
     assert.equal(body.field, 'preset');
     assert.equal(body.value, 'static');
     assert.match(body.hint, /spa|worker/);
+    assert.equal(mock.calls.length, 0);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy rejects ip_restrict=false before touching Cloudflare', async () => {
+  const mock = installCloudflareMock();
+
+  try {
+    const response = await handleDeploy(
+      deployRequest({ token: 'pages_owner@xd.com', ipRestrict: 'false' }),
+      envForDeploy(null)
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(body.error, '当前版本不支持关闭 IP 限制');
+    assert.equal(body.field, 'ip_restrict');
+    assert.equal(body.value, 'false');
     assert.equal(mock.calls.length, 0);
   } finally {
     mock.restore();

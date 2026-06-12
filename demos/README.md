@@ -45,7 +45,6 @@ The script defaults to:
 PAGES_DEMO_TARGET=staging
 PAGES_API=https://api-staging.workers.xd.team
 PAGES_DEMO_PREFIX=demo
-PAGES_DEMO_IP_RESTRICT=true
 ```
 
 `vue-app` is deployed with `kv=true` so the home page can exercise `@xd/pages-sdk/browser`.
