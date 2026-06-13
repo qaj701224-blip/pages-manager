@@ -4,7 +4,7 @@
 
 worker 是自动化助手，不是 K8s worker node，也不是最终运行员工网站的容器。
 
-MVP 可以先实现一个 `pages-worker`，后续拆分：
+当前可以先实现一个 `pages-worker`，后续拆分：
 
 ```text
 pages-worker
@@ -25,7 +25,7 @@ browser-worker
 
 worker 适合执行短调度任务和调用外部 API。耗时、隔离要求高或需要完整 workspace 的任务交给独立 executor。
 
-MVP 运行时采用两层：
+当前运行时采用两层：
 
 ```text
 pages-system namespace
@@ -35,7 +35,7 @@ GitHub Actions runner
   跑 project-index / pages-agent / site-check / pages-preview 等一次性 executor
 ```
 
-这个模式见 [local-k8s-control-plane.md](./local-k8s-control-plane.md) 和 [github-actions-first-runtime.md](./github-actions-first-runtime.md)。后续迁移到 K8s Job executor 时，上层状态机保持一致，只是 executor adapter 不同。
+这个模式见 [local-k8s-control-plane.md](./local-k8s-control-plane.md)、[github-actions-first-runtime.md](./github-actions-first-runtime.md) 和 [k8s-runtime-contract.md](./k8s-runtime-contract.md)。后续迁移到 K8s Job executor 时，上层状态机保持一致，只是 executor adapter 不同。
 
 ## Executor 职责
 
@@ -56,7 +56,7 @@ executor 负责真正运行一次性的发布任务：
 - Review gate 通过后部署 Preview
 - 后续 production 阶段从 merge_commit_sha 部署
 
-MVP 默认常驻控制面跑在本地 K8s，默认 executor 是 GitHub Actions runner。后续需要更强隔离时，executor 可以替换为 K8s Job container。
+默认常驻控制面跑在 K8s，当前默认 executor 是 GitHub Actions runner。后续需要更强隔离时，executor 可以替换为 K8s Job container。无论 executor 在 GitHub Actions 还是 K8s Job，Review Agent comment、check run 和 executor 结果都必须回到 K8s gateway / worker，不能依赖本机 `gh` 轮询。
 
 最终网站不跑在 GitHub Actions 或 K8s，最终网站跑在 Cloudflare Workers / assets。
 
@@ -64,7 +64,7 @@ MVP 默认常驻控制面跑在本地 K8s，默认 executor 是 GitHub Actions r
 
 coding agent 不跑在 gateway、worker、Slack bot、GitHub Review Agent 或员工最终网站里。
 
-MVP 前期不使用 K8s Job executor 时，coding agent 跑在 GitHub Actions runner：
+当前不使用 K8s Job executor 时，coding agent 跑在 GitHub Actions runner：
 
 ```text
 pages-gateway
@@ -133,7 +133,7 @@ workspace/report.json
 
 代码更新和编译分三段：
 
-Actions-first MVP：
+Actions executor 形态：
 
 ```text
 pages-agent workflow
@@ -178,7 +178,7 @@ page-deployer
 
 coding agent 生成 patch 后，先由当前 executor 编译候选代码。
 
-Actions-first MVP 中，这一步在 `pages-agent.yml` workflow 内完成。
+Actions executor 形态中，这一步在 `pages-agent.yml` workflow 内完成。
 
 K8s executor 中，这一步由 builder / site-check job 在同一个 job workspace 中完成：
 
@@ -255,7 +255,7 @@ production 只能从已记录的 `merge_commit_sha` 构建，不能从 agent wor
 
 ## K8s Namespace 拓扑
 
-MVP 先启用系统 namespace 跑常驻控制面。Actions-first executor 不需要 `pages-jobs`，但状态模型和权限边界要按同样方式预留。
+当前先启用系统 namespace 跑常驻控制面。Actions executor 不需要 `pages-jobs`，但状态模型和权限边界要按同样方式预留。
 
 系统 namespace：
 

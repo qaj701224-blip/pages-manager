@@ -2,12 +2,12 @@
 
 ## 定位
 
-Actions-first MVP 用 GitHub Actions runner 承担一次性 executor 职责：
+当前用 GitHub Actions runner 承担一次性 executor 职责，但控制面必须跑在 K8s，详见 [k8s-runtime-contract.md](./k8s-runtime-contract.md)：
 
 ```text
-pages-gateway
+K8s pages-gateway
   ↓ PAGES_WORKER_START_URL
-apps/worker
+K8s apps/worker
   ↓ create GitHub issue
 GitHub issues webhook
   ↓ pages-gateway validates job / issue / delivery
@@ -15,10 +15,12 @@ apps/worker
   ↓ workflow_dispatch
 GitHub Actions runner
   ↓ callback
-pages-gateway
+K8s pages-gateway
 ```
 
 这个合同定义 gateway 和 workflows 之间传什么、怎么验签、怎么幂等、失败怎么回写。
+
+GitHub Actions runner 不能承担 Review Agent comment 监听、required check 归一化、preview gate 或 Slack 回写；这些状态推进必须通过 GitHub webhook / executor callback 回到 K8s gateway / worker。开发者本机 `gh run watch`、`gh pr view` 或 `gh api` 只能排障，不能作为平台机制。
 
 ## Workflows
 
@@ -36,7 +38,7 @@ pages-gateway
 
 第一优先级只要求 `project-index.yml`、`pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 跑通。`pages-production-deploy.yml` 可以后置。
 
-MVP workflow 默认使用 GitHub-hosted runner：
+当前 workflow 默认使用 GitHub-hosted runner：
 
 ```text
 runs-on: ubuntu-latest
@@ -75,14 +77,14 @@ Rules:
 - workflow 不自行相信 actor 权限；权限结论由 gateway 在创建 attempt 前写入。
 - workflow callback 时必须原样带回 `publishingJobId`、`jobStageId`、`attemptId`。
 - `allowedPath` 必须是单个站点目录，不能是 `sites/zhangsan` 或 `sites/**`。
-- `baseRef` 是 Project Index / Pages Agent 的 checkout 和 PR base，MVP 默认 `staging`；它不同于 workflow dispatch 的 `ref`。
+- `baseRef` 是 Project Index / Pages Agent 的 checkout 和 PR base，当前默认 `staging`；它不同于 workflow dispatch 的 `ref`。
 - `issueNumber` 由 `apps/worker` 创建或复用 issue 后传入，coding agent 不自行创建 issue。
 
 ## Callback Signing
 
 workflow callback 使用短期 callback nonce 或 GitHub OIDC 换取短期 token。
 
-MVP 推荐先用 HMAC nonce：
+当前推荐先用 HMAC nonce：
 
 ```text
 X-Pages-Callback-Timestamp: 2026-06-12T10:00:00Z
@@ -104,7 +106,7 @@ gateway 校验：
 - stage type 和当前 job status 允许接收该 callback。
 - 旧 attempt callback 只能写 `AuditLog`，不能改当前状态。
 
-本地 MVP 使用 `scripts/post-executor-callback.js` 发送 callback。该 helper 会在网络错误或 `408 / 425 / 429 / 5xx` 响应时重试，避免 tunnel 或 `kubectl port-forward` 瞬时 502 直接丢掉 workflow 结果；`401`、`400` 这类确定性配置错误不会重试，应直接修 token、origin 或 payload。
+当前使用 `scripts/post-executor-callback.js` 发送 callback。该 helper 会在网络错误或 `408 / 425 / 429 / 5xx` 响应时重试，避免 tunnel 或 Ingress 瞬时 502 直接丢掉 workflow 结果；`401`、`400` 这类确定性配置错误不会重试，应直接修 token、origin 或 payload。callback 目标必须是 K8s gateway 对外暴露的 `/internal/executor-callback`。
 
 ## Callback Body
 
@@ -173,7 +175,7 @@ Rules:
 - index artifact 不得包含 secret 明文。
 - `pages-agent.yml` 只能读取 gateway 绑定到当前 job 的 `index_snapshot_id`。
 
-Current MVP dispatch owner:
+Current dispatch owner:
 
 ```text
 apps/worker
@@ -226,7 +228,7 @@ create or update PR against `baseRef`
 callback gateway
 ```
 
-MVP contract:
+Current contract:
 
 - `initial` 成功 callback `stageResult=pr_created`。
 - `fix` 成功 callback `stageResult=reviewing`，因为同一个 PR 已存在，gateway 只需要更新 branch / PR / head SHA 并把 job 从 `fixing` 推回 `reviewing`。
@@ -336,7 +338,7 @@ Inputs:
 Rules:
 
 - preview token and production token are separate.
-- MVP preview reuses the existing `pages-manager` deploy API: `POST ${PAGES_API}/deploy`.
+- 当前 preview 复用现有 `pages-manager` deploy API: `POST ${PAGES_API}/deploy`.
 - workflow secret `PAGES_PREVIEW_TOKEN` or `PAGES_TOKEN` is passed as `X-Pages-Token` only as a compatibility marker for the legacy `/deploy` API.
 - This compatibility marker is a platform preview deploy identity, not an employee-owned Cloudflare token.
 - Long-term preview deploy auth should be gateway/deployer service auth or a short-lived identity scoped to `ownerScopeId` / `siteProjectId` / `publishingJobId`.
