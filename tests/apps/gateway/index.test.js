@@ -1732,6 +1732,109 @@ test('GitHub Review Agent issue comment summary dispatches staging preview', asy
   assert.equal(workerStarts.length, 1);
 });
 
+test('pr_created callback replays existing Review Agent summary and dispatches preview', async () => {
+  const app = createGatewayApp();
+  const headSha = '3'.repeat(40);
+  const workerStarts = [];
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-review-before-pr-created',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({ employeeSlug: 'zhangsan', siteSlug: 'profile' }),
+      })
+    )
+  );
+
+  for (const stageResult of ['issue_created', 'index_ready']) {
+    const response = await app.fetch(
+      new Request('http://gateway.test/internal/executor-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishingJobId: createBody.job.id,
+          stageResult,
+          issueNumber: 33,
+          issueUrl: 'https://github.example/org/pages-manager/issues/33',
+          indexSnapshotId: 'idxsnap_1',
+        }),
+      })
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const reviewResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-before-pr-created',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 34, pull_request: { url: 'https://github.example/org/pages-manager/pulls/34' } },
+        comment: {
+          id: 110,
+          node_id: 'IC_110',
+          body: `Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`${headSha.slice(0, 10)}\``,
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    })
+  );
+  const reviewBody = await json(reviewResponse);
+
+  assert.equal(reviewResponse.status, 200);
+  assert.equal(reviewBody.reviewAction, 'recorded');
+  assert.equal(reviewBody.job, undefined);
+
+  const prResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: createBody.job.id,
+        stageResult: 'pr_created',
+        branchName: `sites/job-${createBody.job.id}-zhangsan-profile`,
+        prNumber: 34,
+        prUrl: 'https://github.example/org/pages-manager/pull/34',
+        baseRef: 'staging',
+        headSha,
+      }),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, createBody.job.id);
+        assert.equal(body.job.status, 'previewing');
+        assert.equal(body.job.prNumber, 34);
+        assert.equal(body.job.headSha, headSha);
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_preview_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const prBody = await json(prResponse);
+
+  assert.equal(prResponse.status, 200);
+  assert.equal(prBody.job.status, 'previewing');
+  assert.equal(prBody.reviewReplay.reviewAction, 'preview_dispatched');
+  assert.equal(prBody.reviewReplay.gate.canPreview, true);
+  assert.equal(prBody.workerStart.started, true);
+  assert.equal(workerStarts.length, 1);
+});
+
 test('GitHub Review Agent issue comment retries preview worker when job is already previewing', async () => {
   const app = createGatewayApp();
   const headSha = '6'.repeat(40);
