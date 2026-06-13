@@ -1,0 +1,329 @@
+name: Pages Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      publishingJobId:
+        description: PublishingJob id
+        required: true
+        type: string
+      mode:
+        description: Agent mode
+        required: true
+        default: initial
+        type: choice
+        options:
+          - initial
+          - fix
+      employeeSlug:
+        description: Employee slug
+        required: true
+        type: string
+      siteSlug:
+        description: Site slug
+        required: true
+        type: string
+      allowedPath:
+        description: Allowed site path
+        required: true
+        type: string
+      baseRef:
+        description: Pull request base branch
+        required: false
+        type: string
+      indexSnapshotId:
+        description: ProjectIndexSnapshot id
+        required: false
+        type: string
+      issueNumber:
+        description: GitHub issue number
+        required: false
+        type: string
+      requestTitle:
+        description: Request title
+        required: false
+        type: string
+      requestSummary:
+        description: Request summary
+        required: false
+        type: string
+      callbackUrl:
+        description: Gateway callback URL
+        required: true
+        type: string
+      branchName:
+        description: Optional controlled branch override for smoke reuse
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pages-agent-${{ inputs.publishingJobId }}
+  cancel-in-progress: false
+
+jobs:
+  pages-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.baseRef || vars.PAGES_BASE_REF || 'staging' }}
+
+      - name: Checkout trusted callback helper
+        uses: actions/checkout@v6
+        with:
+          path: .pages-trusted
+
+      - name: Copy trusted runner helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .pages-trusted/scripts/post-executor-callback.js "$RUNNER_TEMP/post-executor-callback.js"
+          cp .pages-trusted/scripts/pages-agent-context.mjs "$RUNNER_TEMP/pages-agent-context.mjs"
+          cp .pages-trusted/scripts/pages-agent-coding.mjs "$RUNNER_TEMP/pages-agent-coding.mjs"
+
+      - name: Resolve publishing job context
+        shell: bash
+        env:
+          INPUT_PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
+          INPUT_AGENT_MODE: ${{ inputs.mode }}
+          INPUT_EMPLOYEE_SLUG: ${{ inputs.employeeSlug }}
+          INPUT_SITE_SLUG: ${{ inputs.siteSlug }}
+          INPUT_ALLOWED_PATH: ${{ inputs.allowedPath }}
+          INPUT_BASE_REF: ${{ inputs.baseRef }}
+          INPUT_INDEX_SNAPSHOT_ID: ${{ inputs.indexSnapshotId }}
+          INPUT_ISSUE_NUMBER: ${{ inputs.issueNumber }}
+          INPUT_REQUEST_TITLE: ${{ inputs.requestTitle }}
+          INPUT_REQUEST_SUMMARY: ${{ inputs.requestSummary }}
+          INPUT_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          INPUT_BRANCH_NAME: ${{ inputs.branchName }}
+          DEFAULT_BASE_REF: ${{ vars.PAGES_BASE_REF || 'staging' }}
+          DEFAULT_CALLBACK_URL: ${{ vars.PAGES_GATEWAY_CALLBACK_URL }}
+        run: node "$RUNNER_TEMP/pages-agent-context.mjs"
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$PUBLISHING_JOB_ID" =~ ^job_[A-Za-z0-9_]{1,80}$ ]]; then
+            echo "publishingJobId must be a job_ id" >&2
+            exit 1
+          fi
+          if [[ ! "$EMPLOYEE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "employeeSlug contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ ! "$SITE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "siteSlug contains unsupported characters" >&2
+            exit 1
+          fi
+
+          expected="sites/$EMPLOYEE_SLUG/$SITE_SLUG"
+          if [[ "$ALLOWED_PATH" != "$expected" ]]; then
+            echo "allowedPath must be $expected" >&2
+            exit 1
+          fi
+          if [[ ! "$BASE_REF" =~ ^[A-Za-z0-9._/-]{1,120}$ || "$BASE_REF" == *..* || "$BASE_REF" == /* || "$BASE_REF" == */ ]]; then
+            echo "baseRef contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ -n "$BRANCH_NAME_OVERRIDE" && ( ! "$BRANCH_NAME_OVERRIDE" =~ ^[A-Za-z0-9._/-]{1,160}$ || "$BRANCH_NAME_OVERRIDE" == *..* || "$BRANCH_NAME_OVERRIDE" == /* || "$BRANCH_NAME_OVERRIDE" == */ ) ]]; then
+            echo "branchName contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ -n "$BRANCH_NAME_OVERRIDE" && "$BRANCH_NAME_OVERRIDE" != sites/* ]]; then
+            echo "branchName must use the sites/ agent branch prefix" >&2
+            exit 1
+          fi
+          if [[ -z "$PAGES_CALLBACK_URL" ]]; then
+            echo "callbackUrl is required from workflow input, issue body, or PAGES_GATEWAY_CALLBACK_URL variable" >&2
+            exit 1
+          fi
+
+      - name: Prepare agent branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          branch="${BRANCH_NAME_OVERRIDE:-sites/job-$PUBLISHING_JOB_ID-$EMPLOYEE_SLUG-$SITE_SLUG}"
+          if [[ "$branch" != sites/* ]]; then
+            echo "agent branch must use the sites/ prefix" >&2
+            exit 1
+          fi
+          echo "AGENT_BRANCH_NAME=$branch" >> "$GITHUB_ENV"
+
+          if [[ "$AGENT_MODE" == "fix" ]]; then
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+            git switch -C "$branch" "origin/$branch"
+          fi
+
+      - name: Run Coding Agent
+        shell: bash
+        env:
+          AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
+          AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+          AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          node "$RUNNER_TEMP/pages-agent-coding.mjs"
+          git add -N "$ALLOWED_PATH"
+          git diff -- "$ALLOWED_PATH" > .pages-artifacts/site.patch
+
+      - name: Validate generated diff boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          echo "$changed"
+
+          while IFS= read -r path; do
+            case "$path" in
+              "" | "$ALLOWED_PATH"/*) ;;
+              *)
+                echo "Generated patch touched paths outside $ALLOWED_PATH:" >&2
+                echo "$path" >&2
+                exit 1
+                ;;
+            esac
+          done <<< "$changed"
+
+          if grep -REn 'xoxb-|xapp-|ghp_|github_pat_|ghs_|sk-[A-Za-z0-9]|CF_API_TOKEN|SLACK_AGENT_API_KEY|AGENT_CODE_API_KEY' "$ALLOWED_PATH"; then
+            echo "Generated files contain secret-looking content" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-patch
+          path: .pages-artifacts/site.patch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-report
+          path: .pages-artifacts/agent-report.json
+
+      - name: Controlled commit and PR
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAGES_GITHUB_APP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "PAGES_GITHUB_APP_TOKEN is required to create generated site PRs" >&2
+            exit 1
+          fi
+
+          branch="$AGENT_BRANCH_NAME"
+          title="[pages] $EMPLOYEE_SLUG/$SITE_SLUG from $PUBLISHING_JOB_ID"
+
+          git config user.name "pages-manager-bot"
+          git config user.email "pages-manager-bot@users.noreply.github.com"
+          git switch -C "$branch"
+          git add "$ALLOWED_PATH"
+          git commit -m "chore: update $EMPLOYEE_SLUG/$SITE_SLUG" || true
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" || true
+          git push --force-with-lease origin "HEAD:$branch"
+
+          {
+            printf 'PublishingJob: %s\n\n' "$PUBLISHING_JOB_ID"
+            printf 'Related issue: #%s\n\n' "$ISSUE_NUMBER"
+            printf 'Target: %s/%s\n' "$EMPLOYEE_SLUG" "$SITE_SLUG"
+            printf 'Allowed path: %s\n' "$ALLOWED_PATH"
+            printf 'Base ref: %s\n' "$BASE_REF"
+            printf 'Agent mode: %s\n' "$AGENT_MODE"
+            printf 'Index snapshot: %s\n' "$INDEX_SNAPSHOT_ID"
+          } > .pages-artifacts/pr-body.md
+
+          if ! gh pr view "$branch" --json number --jq .number >/tmp/pages-pr-number 2>/dev/null; then
+            gh pr create --head "$branch" --base "$BASE_REF" --title "$title" --body-file .pages-artifacts/pr-body.md
+            gh pr view "$branch" --json number --jq .number >/tmp/pages-pr-number
+          else
+            gh pr edit "$branch" --title "$title" --body-file .pages-artifacts/pr-body.md
+          fi
+
+          gh pr comment "$branch" --body "@codex review"
+
+          gh pr view "$branch" --json url --jq .url >/tmp/pages-pr-url
+          pr_number="$(cat /tmp/pages-pr-number)"
+          pr_url="$(cat /tmp/pages-pr-url)"
+          head_sha="$(git rev-parse HEAD)"
+          echo "branchName=$branch" >> "$GITHUB_OUTPUT"
+          echo "prNumber=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "prUrl=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "headSha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Print callback payload
+        shell: bash
+        env:
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          BRANCH_NAME: ${{ steps.pr.outputs.branchName }}
+          PR_NUMBER: ${{ steps.pr.outputs.prNumber }}
+          PR_URL: ${{ steps.pr.outputs.prUrl }}
+          HEAD_SHA: ${{ steps.pr.outputs.headSha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'pages-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'succeeded',
+            stageResult: process.env.AGENT_MODE === 'fix' ? 'reviewing' : 'pr_created',
+            agentMode: process.env.AGENT_MODE,
+            branchName: process.env.BRANCH_NAME,
+            prNumber: process.env.PR_NUMBER,
+            prUrl: process.env.PR_URL,
+            baseRef: process.env.BASE_REF,
+            headSha: process.env.HEAD_SHA,
+            issueNumber: process.env.ISSUE_NUMBER,
+            indexSnapshotId: process.env.INDEX_SNAPSHOT_ID,
+          };
+
+          writeFileSync('.pages-artifacts/callback.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+          cat .pages-artifacts/callback.json
+
+      - name: Callback gateway
+        shell: bash
+        env:
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
+        run: node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/callback.json
+
+      - name: Callback gateway on failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'pages-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'failed',
+            errorCode: 'AGENT_FAILED',
+            errorMessage: 'pages-agent.yml failed before creating or updating a PR',
+            callbackUrl: process.env.PAGES_CALLBACK_URL,
+          };
+
+          writeFileSync('.pages-artifacts/callback-failed.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+          node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/callback-failed.json

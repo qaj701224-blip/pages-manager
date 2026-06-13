@@ -1,0 +1,265 @@
+name: Pages Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      publishingJobId:
+        description: PublishingJob id
+        required: true
+        type: string
+      prNumber:
+        description: Pull request number
+        required: true
+        type: string
+      headSha:
+        description: PR head SHA
+        required: true
+        type: string
+      siteProjectId:
+        description: SiteProject id
+        required: false
+        type: string
+      employeeSlug:
+        description: Employee slug
+        required: true
+        type: string
+      siteSlug:
+        description: Site slug
+        required: true
+        type: string
+      allowedPath:
+        description: Allowed site path
+        required: true
+        type: string
+      previewSiteName:
+        description: pages-manager preview site name
+        required: true
+        type: string
+      previewHostname:
+        description: Preview hostname
+        required: false
+        type: string
+      callbackUrl:
+        description: Gateway callback URL
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pages-preview:
+    runs-on: ubuntu-latest
+    env:
+      PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
+      PR_NUMBER: ${{ inputs.prNumber }}
+      HEAD_SHA: ${{ inputs.headSha }}
+      SITE_PROJECT_ID: ${{ inputs.siteProjectId }}
+      EMPLOYEE_SLUG: ${{ inputs.employeeSlug }}
+      SITE_SLUG: ${{ inputs.siteSlug }}
+      ALLOWED_PATH: ${{ inputs.allowedPath }}
+      PREVIEW_SITE_NAME: ${{ inputs.previewSiteName }}
+      PREVIEW_HOSTNAME: ${{ inputs.previewHostname }}
+    steps:
+      - name: Checkout trusted callback helper
+        uses: actions/checkout@v6
+        with:
+          path: .pages-trusted
+
+      - name: Copy trusted callback helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .pages-trusted/scripts/post-executor-callback.js "$RUNNER_TEMP/post-executor-callback.js"
+
+      - name: Validate preview inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$PUBLISHING_JOB_ID" =~ ^job_[A-Za-z0-9_]{1,80}$ ]]; then
+            echo "publishingJobId must be a job_ id" >&2
+            exit 1
+          fi
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "prNumber must be numeric" >&2
+            exit 1
+          fi
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "headSha must be a full commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$EMPLOYEE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "employeeSlug contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ ! "$SITE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "siteSlug contains unsupported characters" >&2
+            exit 1
+          fi
+          expected="sites/$EMPLOYEE_SLUG/$SITE_SLUG"
+          if [[ "$ALLOWED_PATH" != "$expected" ]]; then
+            echo "allowedPath must be $expected" >&2
+            exit 1
+          fi
+          if [[ ! "$PREVIEW_SITE_NAME" =~ ^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$ ]]; then
+            echo "previewSiteName must be a valid pages site name" >&2
+            exit 1
+          fi
+          if [[ -n "$PREVIEW_HOSTNAME" && ! "$PREVIEW_HOSTNAME" =~ ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$ ]]; then
+            echo "previewHostname contains unsupported characters" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.headSha }}
+          path: preview-worktree
+
+      - name: Deploy preview through pages-manager
+        shell: bash
+        working-directory: preview-worktree
+        env:
+          PAGES_API: ${{ vars.PAGES_API || 'https://api-staging.workers.xd.team' }}
+          PAGES_DEPLOY_TOKEN: ${{ secrets.PAGES_PREVIEW_TOKEN || secrets.PAGES_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          if [[ -z "${PAGES_DEPLOY_TOKEN:-}" ]]; then
+            echo "PAGES_PREVIEW_TOKEN or PAGES_TOKEN secret is required for preview deploy" >&2
+            exit 1
+          fi
+          if [[ -z "${PAGES_API:-}" ]]; then
+            echo "PAGES_API is required for preview deploy" >&2
+            exit 1
+          fi
+
+          source_dir="$ALLOWED_PATH/src"
+          if [[ ! -d "$source_dir" ]]; then
+            source_dir="$ALLOWED_PATH"
+          fi
+          if [[ ! -d "$source_dir" ]]; then
+            echo "preview source directory not found: $source_dir" >&2
+            exit 1
+          fi
+
+          mapfile -d '' files < <(find "$source_dir" -type f -print0 | sort -z)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "preview source directory has no files: $source_dir" >&2
+            exit 1
+          fi
+
+          api="${PAGES_API%/}"
+          response_file="$(pwd)/.pages-artifacts/deploy-response.json"
+          curl_args=(-sS -X POST -H "X-Pages-Token: ${PAGES_DEPLOY_TOKEN}")
+          curl_args+=(-F "name=${PREVIEW_SITE_NAME}")
+          curl_args+=(-F "preset=static")
+          curl_args+=(-F "ip_restrict=true")
+
+          i=0
+          for file in "${files[@]}"; do
+            rel="${file#"$source_dir"/}"
+            curl_args+=(-F "file-${i}=@${file};filename=${rel}")
+            i=$((i + 1))
+          done
+
+          http_code="$(curl "${curl_args[@]}" -o "$response_file" -w "%{http_code}" "$api/deploy")"
+          if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+            echo "preview deploy failed with HTTP $http_code" >&2
+            cat "$response_file" >&2
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const deploy = JSON.parse(readFileSync('.pages-artifacts/deploy-response.json', 'utf8'));
+          if (!deploy.url) {
+            throw new Error('pages-manager deploy response did not include url');
+          }
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            prNumber: process.env.PR_NUMBER,
+            headSha: process.env.HEAD_SHA,
+            siteProjectId: process.env.SITE_PROJECT_ID || '',
+            employeeSlug: process.env.EMPLOYEE_SLUG,
+            siteSlug: process.env.SITE_SLUG,
+            allowedPath: process.env.ALLOWED_PATH,
+            previewSiteName: process.env.PREVIEW_SITE_NAME,
+            previewUrl: deploy.url,
+            deployResult: {
+              name: deploy.name,
+              url: deploy.url,
+              devUrl: deploy.devUrl || null,
+              preset: deploy.preset,
+              fileCount: deploy.fileCount,
+              ipRestrict: deploy.ipRestrict,
+            },
+          };
+
+          writeFileSync('.pages-artifacts/preview-report.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-report
+          path: preview-worktree/.pages-artifacts/preview-report.json
+
+      - name: Print callback payload
+        shell: bash
+        env:
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cat preview-worktree/.pages-artifacts/preview-report.json
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const report = JSON.parse(readFileSync('preview-worktree/.pages-artifacts/preview-report.json', 'utf8'));
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'pages-preview.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'succeeded',
+            stageResult: 'preview_deployed',
+            previewUrl: report.previewUrl,
+          };
+
+          writeFileSync('preview-worktree/.pages-artifacts/callback.json', `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+          cat preview-worktree/.pages-artifacts/callback.json
+
+      - name: Callback gateway
+        shell: bash
+        env:
+          PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
+        run: node "$RUNNER_TEMP/post-executor-callback.js" preview-worktree/.pages-artifacts/callback.json
+
+      - name: Callback gateway on failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+          PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+
+          const data = {
+            publishingJobId: process.env.PUBLISHING_JOB_ID,
+            workflowName: 'pages-preview.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            status: 'failed',
+            errorCode: 'PREVIEW_DEPLOY_FAILED',
+            errorMessage: 'pages-preview.yml failed before producing a preview URL',
+          };
+
+          writeFileSync(`${process.env.RUNNER_TEMP}/pages-preview-failed.json`, `${JSON.stringify(data, null, 2)}\n`);
+          NODE
+          node "$RUNNER_TEMP/post-executor-callback.js" "$RUNNER_TEMP/pages-preview-failed.json"

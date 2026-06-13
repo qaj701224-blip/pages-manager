@@ -1,0 +1,45 @@
+name: Site Check
+
+on:
+  pull_request:
+    paths:
+      - sites/**
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  site-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate site-only change
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          changed="$(git diff --name-only "$base" "$head")"
+          echo "$changed"
+          if echo "$changed" | grep -Ev '^(sites/[^/]+/[^/]+/|$)' >/tmp/non-site-paths; then
+            echo "PR touched paths outside a single site:" >&2
+            cat /tmp/non-site-paths >&2
+            exit 1
+          fi
+          site_roots="$(echo "$changed" | awk -F/ '$1 == "sites" { print $1 "/" $2 "/" $3 }' | sort -u)"
+          count="$(echo "$site_roots" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [[ "$count" != "1" ]]; then
+            echo "PR must modify exactly one site root" >&2
+            echo "$site_roots" >&2
+            exit 1
+          fi
+
+      - name: Placeholder schema check
+        shell: bash
+        run: |
+          set -euo pipefail
+          find sites -maxdepth 4 -path '*/site.json' -type f -print -exec node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' {} \;
