@@ -47,6 +47,8 @@ apps/gateway
 
 模型能力统一来自公司 Agent Gateway；底层模型切换由公司网关负责，`pages-manager` 不直接接入外部模型供应商协议。Slack Agent 只能起草需求摘要、issue 内容、澄清问题、续接判断和工具调用请求；issue 创建、PR 创建、preview deploy 仍由 gateway / worker / controlled committer 这些平台组件执行。
 
+Slack Agent 每次调用模型都会输出一条 `slack_agent_model_call` 审计日志，字段包括 provider、model、status、durationMs、Slack team/channel/user/thread metadata、intent、needsClarification、脱敏后的 `userText` 和脱敏后的完整 prompt messages。日志不能记录 Authorization header、API key、Slack token、GitHub token、cookie、password 等 secret；如果用户原文或 prompt 中出现 token-like 内容，必须先替换为 `[REDACTED_*]` 再写入日志。
+
 当前 MVP 已支持 active session 续接：用户拿到 preview 后在同一 DM 或 mention thread 里继续说“这个 preview 不满意 / 继续改 / 调整设计”，gateway 会先用 `SlackSession` 和 `IssueLink` 定位当前 job / issue / PR，把反馈写入 `SessionMemory`，再由 worker 追加原 issue comment 并 dispatch `pages-agent.yml(mode=fix)`。active 默认只保留 2 小时；如果同一用户有多个 active / recent session，gateway 必须要求用户选择，不能猜测要改哪个 preview。
 
 推荐生产拓扑：
