@@ -1603,6 +1603,80 @@ test('GitHub Review Agent nonblocking summary dispatches staging preview', async
   assert.equal(workerStarts.length, 1);
 });
 
+test('GitHub Review gate reclassifies stored Codex P2 comments after rules change', async () => {
+  const app = createGatewayApp();
+  const headSha = '5'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 25,
+    headSha,
+    idempotencyKey: 'api-review-reclassify-stored',
+  });
+  const workerStarts = [];
+
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 25,
+    githubReviewId: 'legacy-review',
+    githubCommentId: 'legacy-comment',
+    githubCommentNodeId: 'PRRC_LEGACY_P2',
+    sourceType: 'inline_comment',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    reviewState: '',
+    body: '**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> Limit contact row styles**',
+    path: 'sites/zhangsan/profile/src/index.html',
+    line: 404,
+    diffHunk: null,
+    status: 'open',
+    classification: 'unknown',
+    firstSeenDeliveryId: 'legacy-delivery',
+    lastSeenDeliveryId: 'legacy-delivery',
+    headSha,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-reclassify-p2',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 25, pull_request: { url: 'https://github.example/org/pages-manager/pulls/25' } },
+        comment: {
+          id: 104,
+          node_id: 'IC_104',
+          body: `Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`${headSha.slice(0, 10)}\``,
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, jobId);
+        assert.equal(body.job.status, 'previewing');
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_preview_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'preview_dispatched');
+  assert.equal(body.gate.unknownCount, 0);
+  assert.equal(body.gate.suggestionCount, 1);
+  assert.equal(body.job.status, 'previewing');
+  assert.equal(workerStarts.length, 1);
+});
+
 test('GitHub Review Agent issue comment summary dispatches staging preview', async () => {
   const app = createGatewayApp();
   const headSha = '2'.repeat(40);

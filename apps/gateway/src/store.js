@@ -8,6 +8,8 @@ import {
   transitionJob,
 } from '@xd/workflow-core';
 
+import { classifyReviewAgentComment } from './github-review.js';
+
 const CALLBACK_BRIDGES = {
   issue_created: {
     received: ['issue_creating', 'issue_created'],
@@ -228,9 +230,12 @@ export class MemoryGatewayStore {
   }
 
   reviewGateForPr(repoFullName, prNumber, options = {}) {
-    const openComments = this.listReviewAgentComments(repoFullName, prNumber, options).filter(
-      (comment) => comment.status === 'open'
-    );
+    const openComments = this.listReviewAgentComments(repoFullName, prNumber, options)
+      .filter((comment) => comment.status === 'open')
+      .map((comment) => ({
+        ...comment,
+        classification: classifyReviewAgentComment(comment),
+      }));
     const blocking = openComments.filter((comment) => comment.classification === 'blocking');
     const unknown = openComments.filter((comment) => comment.classification === 'unknown');
 
