@@ -36,6 +36,7 @@ GitHub Actions 跑一次性 coding / site-check / preview executor
 local cluster
   └─ namespace: pages-system
        ├─ Deployment pages-gateway
+       │   └─ PVC pages-gateway-data (/data/pages-gateway-store.json)
        ├─ Deployment slack-connector
        ├─ Deployment slack-agent
        ├─ Deployment pages-worker
@@ -93,6 +94,12 @@ K8s Secret 只保存引用和运行时注入，不写进 Git。
 | `cloudflare-preview-secret` | legacy `/deploy` preview owner marker；仅用于本地 smoke / 兼容旧 API | `pages-worker` 或 preview deploy executor |
 | `database-secret` | MySQL 连接 | `pages-gateway`、`slack-agent`、`pages-worker` |
 | `redis-secret` | Redis 连接 | `pages-gateway`、`slack-agent`、`pages-worker` |
+
+Gateway 本地持久化：
+
+- MVP 本地 K8s 使用 `PAGES_GATEWAY_STORE_FILE=/data/pages-gateway-store.json`，并通过 `pages-gateway-data` PVC 保存 `PublishingJob`、`SlackSession`、`SessionMemory`、`IssueLink`、GitHub webhook delivery 和 Review Agent comment 的 JSON snapshot。
+- 这不是长期数据库方案；它只用于本地和早期服务器验证，避免 gateway pod 重启后 Slack 多轮会话、issue/PR 关联和 webhook 幂等全部丢失。
+- 正式平台仍按 [db-schema-v0.md](./db-schema-v0.md) 迁移到 MySQL 真相源。
 
 禁止：
 
@@ -257,7 +264,7 @@ pnpm k8s:port-forward
 
 `pnpm k8s:port-forward` 是给本地 tunnel 长期使用的 gateway 转发入口。`kubectl port-forward` 在 pod 重启或连接 broken pipe 时可能退出，所以脚本默认会自动重连；只有设置 `PAGES_K8S_PORT_FORWARD_ONCE=true` 时才会按一次性命令退出。GitHub Actions callback 和 GitHub webhook 都依赖这条转发链路，测试前要确认公网 tunnel 的 `/health` 能打到当前 gateway pod。
 
-`PAGES_GATEWAY_PUBLIC_URL` 必须是公网 HTTPS tunnel URL，用于 GitHub webhook 和 GitHub Actions callback；Slack Socket Mode 本身不需要 Slack 访问本地 gateway。
+`PAGES_GATEWAY_PUBLIC_URL` 必须是公网 HTTPS tunnel URL，用于 GitHub webhook 和 GitHub Actions callback；Slack Socket Mode 本身不需要 Slack 访问本地 gateway。`PAGES_GATEWAY_CALLBACK_URL` 应显式设置为 `${PAGES_GATEWAY_PUBLIC_URL}/internal/executor-callback`，本地 `k8s:up` 会在未单独配置时自动从 `PAGES_GATEWAY_PUBLIC_URL` 派生并写入 ConfigMap。
 
 ## 本地验证分层
 

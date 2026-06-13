@@ -1,9 +1,27 @@
 import http from 'node:http';
 
+import { FileBackedGatewayStore } from './file-store.js';
 import { createGatewayApp } from './index.js';
 
-const app = createGatewayApp();
+const store = process.env.PAGES_GATEWAY_STORE_FILE ? new FileBackedGatewayStore(process.env.PAGES_GATEWAY_STORE_FILE) : undefined;
+const app = createGatewayApp({ store });
 const port = Number(process.env.PORT || 8788);
+
+const SESSION_ENV_KEYS = [
+  'SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS',
+  'SLACK_AGENT_ACTIVE_CONTEXT_TTL_DAYS',
+  'SLACK_AGENT_WAITING_CLARIFICATION_TTL_DAYS',
+  'SLACK_AGENT_RECENT_SESSION_DAYS',
+  'SLACK_AGENT_ARCHIVE_AFTER_DAYS',
+  'SLACK_AGENT_TURN_TIMEOUT_SECONDS',
+  'SLACK_AGENT_SESSION_LEASE_SECONDS',
+  'SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS',
+  'CODING_AGENT_RUN_TIMEOUT_MINUTES',
+];
+
+function sessionEnv() {
+  return Object.fromEntries(SESSION_ENV_KEYS.map((key) => [key, process.env[key]]).filter(([, value]) => value));
+}
 
 const server = http.createServer(async (nodeRequest, nodeResponse) => {
   const origin = `http://${nodeRequest.headers.host || `localhost:${port}`}`;
@@ -21,6 +39,7 @@ const server = http.createServer(async (nodeRequest, nodeResponse) => {
   });
 
   const response = await app.fetch(request, {
+    ...sessionEnv(),
     INTERNAL_CALLBACK_TOKEN: process.env.INTERNAL_CALLBACK_TOKEN,
     SLACK_CONNECTOR_SHARED_SECRET: process.env.SLACK_CONNECTOR_SHARED_SECRET,
     SLACK_AGENT_ANALYZE_URL: process.env.SLACK_AGENT_ANALYZE_URL,

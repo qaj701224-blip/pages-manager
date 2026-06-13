@@ -820,6 +820,80 @@ test('GitHub issue webhook routes platform issue through gateway before starting
   assert.equal(workerBody.job.issueNumber, 31);
 });
 
+test('late issue_created callback is idempotent after GitHub issue webhook started pages-agent', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-issue-webhook-callback-race',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+
+  const issueBody = [
+    `PublishingJob: ${createBody.job.id}`,
+    '',
+    'Target: zhangsan/profile',
+    'Allowed path: sites/zhangsan/profile',
+  ].join('\n');
+
+  await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-race-1',
+        'X-GitHub-Event': 'issues',
+      },
+      body: JSON.stringify({
+        action: 'opened',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 32,
+          html_url: 'https://github.example/org/pages-manager/issues/32',
+          body: issueBody,
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: createBody.job.id,
+        stageResult: 'issue_created',
+        issueNumber: 32,
+        issueUrl: 'https://github.example/org/pages-manager/issues/32',
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.job.status, 'generating_page');
+  assert.equal(body.job.issueNumber, 32);
+});
+
 test('GitHub Review Agent approval dispatches staging preview', async () => {
   const app = createGatewayApp();
   const headSha = 'b'.repeat(40);

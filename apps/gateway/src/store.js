@@ -259,7 +259,7 @@ export class MemoryGatewayStore {
       status: input.status || existing?.status || 'active',
       lastIntent: input.lastIntent || existing?.lastIntent || null,
       lastActiveAt: input.lastActiveAt || nowIso,
-      closedAt: input.closedAt ?? existing?.closedAt ?? null,
+      closedAt: Object.hasOwn(input, 'closedAt') ? input.closedAt : (existing?.closedAt ?? null),
       createdAt: existing?.createdAt || nowIso,
       updatedAt: nowIso,
     };
@@ -323,6 +323,27 @@ export class MemoryGatewayStore {
     return memory;
   }
 
+  closeSlackSession(sessionId, now = new Date()) {
+    const existing = this.getSlackSession(sessionId);
+    if (!existing) return null;
+
+    const closedAt = now.toISOString();
+    const session = {
+      ...existing,
+      status: 'closed',
+      activeJobId: null,
+      activeIssueNumber: null,
+      activePrNumber: null,
+      activePreviewUrl: null,
+      activeContextExpiresAt: null,
+      closedAt,
+      lastActiveAt: closedAt,
+      updatedAt: closedAt,
+    };
+    this.slackSessions.set(sessionId, session);
+    return session;
+  }
+
   linkJobToSlackSession(job, session, now = new Date()) {
     if (!job?.id) return null;
     const slackSessionId = session?.id || job.slackSessionId || this.issueLinkByJobId.get(job.id)?.slackSessionId;
@@ -354,6 +375,8 @@ export class MemoryGatewayStore {
       this.upsertSlackSession(
         {
           ...currentSession,
+          status: 'active',
+          closedAt: null,
           activeJobId: job.id,
           activeIssueNumber: link.issueNumber,
           activePrNumber: link.prNumber,
