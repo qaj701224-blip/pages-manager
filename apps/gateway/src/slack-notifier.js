@@ -1,5 +1,12 @@
-function slackApiUrl(env = {}) {
-  return env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage';
+function slackApiUrl(env = {}, method = 'chat.postMessage') {
+  if (method === 'chat.update') {
+    return (
+      env.SLACK_UPDATE_API_URL ||
+      String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, '/chat.update')
+    );
+  }
+
+  return env.SLACK_POST_API_URL || env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage';
 }
 
 function slackTargetForJob(job) {
@@ -32,6 +39,171 @@ async function readSlackResponse(response) {
   } catch {
     return null;
   }
+}
+
+function truncateText(value = '', max = 1800) {
+  const text = String(value || '').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}...`;
+}
+
+function slackText(text, emoji = true) {
+  return {
+    type: 'mrkdwn',
+    text: emoji ? String(text || '') : String(text || '').replaceAll(/:[a-z0-9_+-]+:/gi, '').trim(),
+  };
+}
+
+function stageLabel(stage, job = {}) {
+  const normalized = stage || job.status;
+  const labels = {
+    received: '整理需求',
+    issue_creating: '创建 issue',
+    issue_created: 'Issue 已创建',
+    indexing: '固定项目索引',
+    index_ready: '项目索引已固定',
+    generating_page: '生成页面',
+    patch_generated: '生成代码变更',
+    branch_committed: '提交分支',
+    pr_created: 'PR 已创建',
+    reviewing: '等待 Agent Review',
+    changes_requested: '等待修复 Review 意见',
+    fixing: '修复中',
+    previewing: '生成 Preview',
+    preview_deployed: 'Preview 已生成',
+    failed: '失败',
+  };
+  return labels[normalized] || normalized || '处理中';
+}
+
+function jobLinkFields(job = {}) {
+  const fields = [];
+  if (job.issueNumber || job.issueUrl) {
+    const value = job.issueUrl ? `<${job.issueUrl}|#${job.issueNumber || 'issue'}>` : `#${job.issueNumber}`;
+    fields.push(slackText(`*Issue*\n${value}`));
+  }
+  if (job.prNumber || job.prUrl) {
+    const value = job.prUrl ? `<${job.prUrl}|#${job.prNumber || 'PR'}>` : `#${job.prNumber}`;
+    fields.push(slackText(`*PR*\n${value}`));
+  }
+  if (job.previewUrl) {
+    fields.push(slackText(`*Preview*\n<${job.previewUrl}|打开 Preview>`));
+  }
+  if (job.errorMessage || job.errorCode) {
+    fields.push(slackText(`*错误*\n${truncateText(job.errorMessage || job.errorCode, 280)}`));
+  }
+  return fields;
+}
+
+function jobActionElements(job = {}) {
+  return [
+    job.issueUrl
+      ? {
+          type: 'button',
+          text: { type: 'plain_text', text: '查看 Issue' },
+          url: job.issueUrl,
+          action_id: 'open_issue',
+        }
+      : null,
+    job.prUrl
+      ? {
+          type: 'button',
+          text: { type: 'plain_text', text: '查看 PR' },
+          url: job.prUrl,
+          action_id: 'open_pr',
+        }
+      : null,
+    job.previewUrl
+      ? {
+          type: 'button',
+          text: { type: 'plain_text', text: '打开 Preview' },
+          url: job.previewUrl,
+          action_id: 'open_preview',
+        }
+      : null,
+  ].filter(Boolean);
+}
+
+export function buildJobStatusBlocks(job = {}, options = {}) {
+  const stage = options.stage || job.status;
+  const label = stageLabel(stage, job);
+  const statusLine = job.status === 'failed' ? ':x: 失败' : options.statusText || ':hourglass_flowing_sand: 处理中';
+  const summary = truncateText(job.summary || job.brief || job.title || '暂无摘要', 900);
+  const fields = [
+    slackText(`*当前阶段*\n${label}`),
+    slackText(`*目标*\n${job.employeeSlug || '-'}/${job.siteSlug || '-'}`),
+    slackText(`*Job*\n${job.id || '-'}`),
+    slackText(`*状态*\n${job.status || '-'}`),
+    ...jobLinkFields(job),
+  ];
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: 'Pages 发布任务' },
+    },
+    {
+      type: 'section',
+      text: slackText(`*${label}*\n${summary}`),
+    },
+    {
+      type: 'section',
+      fields: fields.slice(0, 10),
+    },
+    {
+      type: 'context',
+      elements: [
+        slackText(`${statusLine} · 继续修改可以直接在这个 thread 里回复。`),
+      ],
+    },
+  ];
+  const actions = jobActionElements(job);
+  if (actions.length) {
+    blocks.push({ type: 'actions', elements: actions });
+  }
+  return blocks;
+}
+
+export function buildAgentProgressBlocks(job = {}, options = {}) {
+  return buildJobStatusBlocks(job, options);
+}
+
+async function callSlackApi(env, method, payload) {
+  if (!env.SLACK_BOT_TOKEN) return null;
+  const fetchImpl = env.SLACK_FETCH || fetch;
+  const response = await fetchImpl(slackApiUrl(env, method), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify(payload),
+  });
+  const body = await readSlackResponse(response);
+
+  if (!response.ok || body?.ok === false) {
+    return {
+      ok: false,
+      error: body?.error || response.statusText || `HTTP ${response.status}`,
+    };
+  }
+
+  return {
+    ok: true,
+    channel: body?.channel || payload.channel,
+    ts: body?.ts || payload.ts || null,
+  };
+}
+
+export function buildSlackStatusText(job = {}, stage) {
+  return mentionSlackUser(`Pages 发布任务 ${job.id || ''}：${stageLabel(stage, job)}`, job.slackThread?.userId);
+}
+
+export async function postSlackMessage(env, payload) {
+  return callSlackApi(env, 'chat.postMessage', payload);
+}
+
+export async function updateSlackMessage(env, payload) {
+  return callSlackApi(env, 'chat.update', payload);
 }
 
 function formatReviewLocation(comment = {}) {
@@ -107,24 +279,20 @@ export async function notifySlackJob(env, store, job, text, key) {
   }
 
   const fetchImpl = env.SLACK_FETCH || fetch;
-  const response = await fetchImpl(slackApiUrl(env), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
-      'Content-Type': 'application/json; charset=utf-8',
-    },
-    body: JSON.stringify({
+  const result = await callSlackApi(
+    { ...env, SLACK_FETCH: fetchImpl },
+    'chat.postMessage',
+    {
       ...target,
       text: mentionSlackUser(text, job.slackThread?.userId),
-    }),
-  });
-  const body = await readSlackResponse(response);
+    }
+  );
 
-  if (!response.ok || body?.ok === false) {
+  if (!result?.ok) {
     return {
       ok: false,
       key,
-      error: body?.error || response.statusText || `HTTP ${response.status}`,
+      error: result?.error || 'Slack request failed',
     };
   }
 
@@ -132,7 +300,81 @@ export async function notifySlackJob(env, store, job, text, key) {
   return {
     ok: true,
     key,
-    channel: body?.channel || target.channel,
-    ts: body?.ts || null,
+    channel: result.channel || target.channel,
+    ts: result.ts || null,
+  };
+}
+
+export async function notifySlackJobStatus(env, store, job, options = {}) {
+  if (!job?.id) return null;
+  const target = slackTargetForJob(job);
+  if (!target || !env.SLACK_BOT_TOKEN) return null;
+
+  const stage = options.stage || job.status;
+  const dedupeKey = options.dedupeKey || `job-status:${job.id}:${stage}`;
+  const existing = store?.getSlackJobStatusMessage?.(job.id);
+  if (existing?.messageTs && existing.stage === stage && options.skipDuplicate !== false) {
+    return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existing };
+  }
+
+  const progress = store?.recordAgentRunEvent?.({
+    publishingJobId: job.id,
+    slackSessionId: job.slackSessionId || null,
+    agentRunId: options.agentRunId || null,
+    type: options.type || 'job_progress',
+    stage,
+    text: options.text || stageLabel(stage, job),
+    status: options.status || job.status || 'running',
+    dedupeKey,
+    slackChannelId: target.channel,
+    slackThreadTs: target.thread_ts || null,
+  });
+
+  const blocks = buildJobStatusBlocks(job, {
+    stage,
+    statusText: options.statusText,
+  });
+  const text = buildSlackStatusText(job, stage);
+  let result;
+
+  if (existing?.messageTs) {
+    result = await updateSlackMessage(env, {
+      channel: existing.channel || target.channel,
+      ts: existing.messageTs,
+      text,
+      blocks,
+    });
+  } else {
+    result = await postSlackMessage(env, {
+      ...target,
+      text,
+      blocks,
+    });
+  }
+
+  if (!result?.ok) {
+    return {
+      ok: false,
+      key: dedupeKey,
+      error: result?.error || 'Slack request failed',
+      event: progress?.event || null,
+    };
+  }
+
+  const message = store?.recordSlackJobStatusMessage?.(job.id, {
+    channel: result.channel || target.channel,
+    threadTs: target.thread_ts || null,
+    messageTs: result.ts || existing?.messageTs || null,
+    stage,
+    status: job.status,
+  });
+  return {
+    ok: true,
+    key: dedupeKey,
+    action: existing?.messageTs ? 'updated' : 'posted',
+    channel: result.channel || target.channel,
+    ts: result.ts || existing?.messageTs || null,
+    message,
+    event: progress?.event || null,
   };
 }
