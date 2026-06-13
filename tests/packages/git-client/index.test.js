@@ -1,0 +1,290 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  allowedPathForJob,
+  appendFollowupIssueComment,
+  branchNameForJob,
+  buildFollowupIssueComment,
+  buildPagesAgentInputs,
+  buildPagesPreviewInputs,
+  buildProjectIndexInputs,
+  buildPublishingIssue,
+  buildSmokeIssue,
+  buildSmokeIssueComment,
+  dispatchWorkflow,
+  ensureSmokeIssue,
+  ensurePublishingIssue,
+  githubApiUrl,
+  parseRepoFullName,
+  publishingJobMarker,
+  smokeIssueMarker,
+} from '../../../packages/git-client/src/index.js';
+
+const job = {
+  id: 'job_123',
+  source: 'slack',
+  requestedByType: 'user',
+  requestedById: 'slack:T1:U1',
+  employeeSlug: 'zhangsan',
+  siteSlug: 'profile',
+  siteProjectId: 'site_1',
+  approvalMode: 'manual_required',
+  title: 'Profile page',
+  summary: 'Create a personal profile page.',
+  issueNumber: 7,
+  indexSnapshotId: 'idxsnap_1',
+  prNumber: 12,
+  headSha: 'a'.repeat(40),
+};
+
+test('parses GitHub repo full name and API URLs', () => {
+  assert.deepEqual(parseRepoFullName('org/pages-manager'), { owner: 'org', repo: 'pages-manager' });
+  assert.throws(() => parseRepoFullName('bad'), /owner\/repo/);
+  assert.equal(
+    githubApiUrl({ apiBaseUrl: 'https://github.example/api/v3/' }, '/repos/org/repo').toString(),
+    'https://github.example/api/v3/repos/org/repo'
+  );
+});
+
+test('builds publishing issue with stable job marker and path boundary', () => {
+  const issue = buildPublishingIssue(job, {
+    baseRef: 'staging',
+    callbackUrl: 'https://gateway.example/internal/executor-callback',
+  });
+  assert.equal(issue.title, '[pages] zhangsan/profile: Profile page');
+  assert.ok(issue.body.includes(publishingJobMarker('job_123')));
+  assert.ok(issue.body.includes('Allowed path: sites/zhangsan/profile'));
+  assert.ok(issue.body.includes('Base ref: staging'));
+  assert.deepEqual(issue.labels, ['pages-publishing-job', 'site-change']);
+});
+
+test('builds smoke issue with reusable marker', () => {
+  const issue = buildSmokeIssue(job, { scope: 'slack-local' });
+  const comment = buildSmokeIssueComment(job);
+  const followup = buildFollowupIssueComment(job);
+
+  assert.equal(issue.title, '[pages-smoke] Slack issue intake (slack-local)');
+  assert.ok(issue.body.includes(smokeIssueMarker('slack-local')));
+  assert.match(comment, /PublishingJob: job_123/);
+  assert.match(comment, /Allowed path: sites\/zhangsan\/profile/);
+  assert.match(followup, /## Slack Follow-up/);
+  assert.match(followup, /Agent mode: fix/);
+});
+
+test('builds workflow inputs from job fields', () => {
+  assert.equal(allowedPathForJob(job), 'sites/zhangsan/profile');
+  assert.equal(branchNameForJob(job), 'sites/job-job_123-zhangsan-profile');
+  assert.deepEqual(buildProjectIndexInputs(job, { callbackUrl: 'https://gateway.test/callback' }), {
+    publishingJobId: 'job_123',
+    siteProjectId: 'site_1',
+    allowedPath: 'sites/zhangsan/profile',
+    baseRef: '',
+    callbackUrl: 'https://gateway.test/callback',
+    issueNumber: '7',
+  });
+  assert.deepEqual(buildPagesAgentInputs(job, { baseRef: 'staging' }), {
+    publishingJobId: 'job_123',
+    mode: 'initial',
+    employeeSlug: 'zhangsan',
+    siteSlug: 'profile',
+    allowedPath: 'sites/zhangsan/profile',
+    baseRef: 'staging',
+    indexSnapshotId: 'idxsnap_1',
+    issueNumber: '7',
+    requestTitle: 'Profile page',
+    requestSummary: 'Create a personal profile page.',
+    callbackUrl: '',
+    branchName: '',
+  });
+  assert.deepEqual(buildPagesPreviewInputs(job, { callbackUrl: 'https://gateway.test/callback' }), {
+    publishingJobId: 'job_123',
+    prNumber: '12',
+    headSha: 'a'.repeat(40),
+    siteProjectId: 'site_1',
+    employeeSlug: 'zhangsan',
+    siteSlug: 'profile',
+    allowedPath: 'sites/zhangsan/profile',
+    previewSiteName: '',
+    previewHostname: '',
+    callbackUrl: 'https://gateway.test/callback',
+  });
+});
+
+test('ensurePublishingIssue reuses existing issue by PublishingJob marker', async () => {
+  const requests = [];
+  const result = await ensurePublishingIssue(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      return new Response(
+        JSON.stringify({
+          items: [{ number: 3, body: `hello\n${publishingJobMarker('job_123')}` }],
+        }),
+        { status: 200 }
+      );
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    job
+  );
+
+  assert.equal(result.created, false);
+  assert.equal(result.issue.number, 3);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].request.method, 'GET');
+});
+
+test('ensurePublishingIssue creates issue when no marker exists', async () => {
+  const requests = [];
+  const result = await ensurePublishingIssue(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      if (request.method === 'GET') {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      assert.equal(request.method, 'POST');
+      assert.match(JSON.parse(request.body).body, /PublishingJob: job_123/);
+      return new Response(JSON.stringify({ number: 4, html_url: 'https://github.example/org/repo/issues/4' }), {
+        status: 201,
+      });
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    job
+  );
+
+  assert.equal(result.created, true);
+  assert.equal(result.issue.number, 4);
+  assert.equal(requests.length, 2);
+});
+
+test('ensurePublishingIssue retries without labels when label permission fails', async () => {
+  const requests = [];
+  const result = await ensurePublishingIssue(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      if (request.method === 'GET') {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+
+      const body = JSON.parse(request.body);
+      if (body.labels?.length) {
+        return new Response(JSON.stringify({ message: 'You do not have permission to create labels on this repository.' }), {
+          status: 403,
+        });
+      }
+
+      assert.deepEqual(body.labels, []);
+      return new Response(JSON.stringify({ number: 5, html_url: 'https://github.example/org/repo/issues/5' }), {
+        status: 201,
+      });
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    job
+  );
+
+  assert.equal(result.created, true);
+  assert.equal(result.issue.number, 5);
+  assert.equal(requests.length, 3);
+});
+
+test('ensureSmokeIssue reuses one issue and appends a comment', async () => {
+  const requests = [];
+  const result = await ensureSmokeIssue(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      if (String(url).includes('/search/issues')) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 8,
+                body: `hello\n${smokeIssueMarker('slack-local')}`,
+                html_url: 'https://github.example/issues/8',
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (String(url).endsWith('/issues/8/comments')) {
+        assert.equal(request.method, 'POST');
+        assert.match(JSON.parse(request.body).body, /PublishingJob: job_123/);
+        return new Response(JSON.stringify({ id: 99, html_url: 'https://github.example/issues/8#issuecomment-99' }), {
+          status: 201,
+        });
+      }
+
+      throw new Error(`Unexpected request ${request.method} ${url}`);
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    job,
+    { scope: 'slack-local' }
+  );
+
+  assert.equal(result.created, false);
+  assert.equal(result.issue.number, 8);
+  assert.equal(result.comment.id, 99);
+  assert.equal(requests.length, 2);
+});
+
+test('appendFollowupIssueComment posts to the existing publishing issue', async () => {
+  const requests = [];
+  const result = await appendFollowupIssueComment(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      assert.equal(String(url), 'https://api.github.com/repos/org/pages-manager/issues/7/comments');
+      assert.equal(request.method, 'POST');
+      const body = JSON.parse(request.body).body;
+      assert.match(body, /PublishingJob: job_123/);
+      assert.match(body, /## Slack Follow-up/);
+      return new Response(JSON.stringify({ id: 100, html_url: 'https://github.example/issues/7#issuecomment-100' }), {
+        status: 201,
+      });
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    job
+  );
+
+  assert.equal(result.id, 100);
+  assert.equal(requests.length, 1);
+});
+
+test('dispatchWorkflow posts workflow_dispatch payload', async () => {
+  const result = await dispatchWorkflow(
+    async (url, request) => {
+      assert.equal(String(url), 'https://api.github.com/repos/org/pages-manager/actions/workflows/project-index.yml/dispatches');
+      assert.equal(request.method, 'POST');
+      assert.deepEqual(JSON.parse(request.body), {
+        ref: 'master',
+        inputs: { publishingJobId: 'job_123' },
+      });
+      return new Response(null, { status: 204 });
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    {
+      workflowId: 'project-index.yml',
+      ref: 'master',
+      inputs: { publishingJobId: 'job_123' },
+    }
+  );
+
+  assert.deepEqual(result, { workflowId: 'project-index.yml', ref: 'master', dispatched: true });
+});
