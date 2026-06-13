@@ -15,6 +15,7 @@ import {
 
 test('targets direct messages and app mentions', () => {
   assert.equal(isTargetSlackEvent({ type: 'message', channel_type: 'im', user: 'U1' }), true);
+  assert.equal(isTargetSlackEvent({ type: 'message', channel: 'D1', user: 'U1' }), true);
   assert.equal(isTargetSlackEvent({ type: 'app_mention', user: 'U1' }), true);
   assert.equal(isTargetSlackEvent({ type: 'message', channel_type: 'channel', user: 'U1' }), false);
   assert.equal(
@@ -53,6 +54,10 @@ test('classifies Slack event filter decisions for logs', () => {
     target: true,
     reason: 'direct_message',
   });
+  assert.deepEqual(classifySlackEvent({ type: 'message', channel: 'D1', user: 'U1' }), {
+    target: true,
+    reason: 'direct_message',
+  });
 });
 
 test('normalizes app mention text before forwarding to gateway', () => {
@@ -88,6 +93,26 @@ test('builds gateway payload from Socket Mode event body', () => {
   assert.equal(payload.text, '生成个人站');
   assert.equal(payload.event.text, '生成个人站');
   assert.equal(payload.connector.transport, 'socket_mode');
+});
+
+test('normalizes direct message channel type when Slack omits channel_type', () => {
+  const payload = buildGatewayPayload(
+    {
+      type: 'event_callback',
+      team_id: 'T1',
+      event_id: 'Ev1',
+    },
+    {
+      type: 'message',
+      channel: 'D1',
+      user: 'U1',
+      ts: '1000.000',
+      text: '继续',
+    },
+    {}
+  );
+
+  assert.equal(payload.event.channel_type, 'im');
 });
 
 test('builds Slack reply text and replies in Slack threads', () => {

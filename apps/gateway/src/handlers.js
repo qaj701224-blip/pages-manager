@@ -151,7 +151,8 @@ function required(value, name) {
 
 function isUnaddressedChannelThreadMessage(body = {}) {
   const event = body.event || {};
-  return event.type === 'message' && event.channel_type !== 'im' && Boolean(event.thread_ts);
+  const surface = surfaceForSlackBody(body);
+  return event.type === 'message' && surface.channelType !== 'im' && Boolean(event.thread_ts);
 }
 
 function existingSlackThreadSession(store, body = {}) {

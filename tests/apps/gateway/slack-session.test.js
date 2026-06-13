@@ -156,6 +156,42 @@ test('DM thread replies continue the same Slack session', async () => {
   assert.equal(session.threadTs, '1710000000.000100');
 });
 
+test('DM events without channel_type are inferred from the D channel id', async () => {
+  const app = createGatewayApp();
+
+  const first = await postSlack(app, {
+    team_id: 'T1',
+    event_id: 'Ev-dm-infer-1',
+    event: {
+      type: 'message',
+      user: 'U1',
+      channel: 'D1',
+      ts: '1710000000.000100',
+      text: '我想先聊聊个人网站',
+    },
+  });
+  const second = await postSlack(app, {
+    team_id: 'T1',
+    event_id: 'Ev-dm-infer-2',
+    event: {
+      type: 'message',
+      user: 'U1',
+      channel: 'D1',
+      ts: '1710000001.000100',
+      thread_ts: '1710000000.000100',
+      text: '继续补充项目经历',
+    },
+  });
+
+  const session = app.store.getSlackSession(first.slackSessionId);
+
+  assert.equal(second.slackSessionId, first.slackSessionId);
+  assert.equal(session.sessionKey, 'dm-thread:D1:1710000000.000100');
+  assert.equal(session.channelId, 'D1');
+  assert.equal(session.surfaceContext.channelType, 'im');
+  assert.equal(session.dmChannelId, 'D1');
+});
+
 test('Slack users cannot select another user session explicitly', async () => {
   const app = createGatewayApp();
 
