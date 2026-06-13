@@ -160,18 +160,41 @@ function previewSiteNameForJob(job, config) {
   );
 }
 
+function previewTokenForJob(job, config) {
+  if (!config.previewTokenPattern) return config.pagesToken || '';
+
+  return config.previewTokenPattern
+    .replaceAll('{prNumber}', String(job.prNumber || ''))
+    .replaceAll('{employeeSlug}', job.employeeSlug || '')
+    .replaceAll('{siteSlug}', job.siteSlug || '')
+    .replaceAll('{publishingJobId}', job.id || '');
+}
+
 function pagesApiDeployUrl(config) {
   return `${String(config.pagesApi || 'https://api-staging.workers.xd.team').replace(/\/+$/, '')}/deploy`;
 }
 
-async function githubTreeFiles(fetchImpl, github, headSha, sourcePrefix) {
+async function githubTreeFiles(fetchImpl, github, headSha) {
   const { owner, repo } = parseRepoFullName(github.repoFullName);
   const result = await githubRequest(fetchImpl, github, {
     url: githubApiUrl(github, `/repos/${owner}/${repo}/git/trees/${headSha}`, { recursive: 1 }),
   });
   return (result.body?.tree || [])
-    .filter((item) => item.type === 'blob' && item.path?.startsWith(sourcePrefix))
+    .filter((item) => item.type === 'blob')
     .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function previewFilesFromTree(tree, allowedPath) {
+  const sourcePrefixes = [`${allowedPath}/src/`, `${allowedPath}/`];
+
+  for (const sourcePrefix of sourcePrefixes) {
+    const files = tree.filter((item) => item.path?.startsWith(sourcePrefix));
+    if (files.length) {
+      return { files, sourcePrefix };
+    }
+  }
+
+  return { files: [], sourcePrefix: sourcePrefixes[0] };
 }
 
 async function githubBlobBytes(fetchImpl, github, sha) {
@@ -187,19 +210,20 @@ async function githubBlobBytes(fetchImpl, github, sha) {
 }
 
 async function deployPreviewLocally(job, config, adapters = {}) {
-  if (!config.pagesToken) {
-    throw new Error('PAGES_PREVIEW_TOKEN or PAGES_TOKEN is required for local preview deploy');
+  const pagesToken = previewTokenForJob(job, config);
+  if (!pagesToken) {
+    throw new Error('PAGES_PREVIEW_TOKEN_PATTERN, PAGES_PREVIEW_TOKEN, or PAGES_TOKEN is required for local preview deploy');
   }
 
   const fetchImpl = adapters.fetchImpl || fetch;
   const callback = adapters.postExecutorCallback || postExecutorCallback;
   const github = config.github;
   const allowedPath = allowedPathForJob(job);
-  const sourcePrefix = `${allowedPath}/src/`;
-  const files = await githubTreeFiles(fetchImpl, github, job.headSha, sourcePrefix);
+  const tree = await githubTreeFiles(fetchImpl, github, job.headSha);
+  const { files, sourcePrefix } = previewFilesFromTree(tree, allowedPath);
 
   if (!files.length) {
-    throw new Error(`No preview files found under ${sourcePrefix}`);
+    throw new Error(`No preview files found under ${allowedPath}/src/ or ${allowedPath}/`);
   }
 
   const form = new FormData();
@@ -219,7 +243,7 @@ async function deployPreviewLocally(job, config, adapters = {}) {
   const response = await fetchImpl(pagesApiDeployUrl(config), {
     method: 'POST',
     headers: {
-      'X-Pages-Token': config.pagesToken,
+      'X-Pages-Token': pagesToken,
     },
     body: form,
   });

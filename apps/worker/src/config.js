@@ -21,6 +21,7 @@ export function readWorkerConfig(env = process.env) {
     previewMode: env.PAGES_PREVIEW_MODE || 'actions',
     previewHostnamePattern: env.PAGES_PREVIEW_HOSTNAME_PATTERN || '',
     previewSiteNamePattern: env.PAGES_PREVIEW_SITE_NAME_PATTERN || 'pm-pr-{prNumber}-{employeeSlug}-{siteSlug}',
+    previewTokenPattern: env.PAGES_PREVIEW_TOKEN_PATTERN || '',
     pagesApi: env.PAGES_API || 'https://api-staging.workers.xd.team',
     pagesToken: env.PAGES_PREVIEW_TOKEN || env.PAGES_TOKEN || '',
     previewIpRestrict: true,

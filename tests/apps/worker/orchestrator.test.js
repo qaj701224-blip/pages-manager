@@ -46,6 +46,7 @@ test('worker config defaults generated work to staging base ref', () => {
   assert.equal(workerConfig.prMode, 'per_job');
   assert.equal(workerConfig.previewMode, 'actions');
   assert.equal(workerConfig.previewSiteNamePattern, 'pm-pr-{prNumber}-{employeeSlug}-{siteSlug}');
+  assert.equal(workerConfig.previewTokenPattern, '');
   assert.equal(workerConfig.previewIpRestrict, true);
   assert.equal(workerConfig.callbackUrl, 'http://localhost:8788/internal/executor-callback');
   assert.equal(workerConfig.workerCallbackUrl, 'http://localhost:8788/internal/executor-callback');
@@ -416,7 +417,7 @@ test('previewing job can deploy through local pages-manager API', async () => {
       ...config(),
       previewMode: 'local_deploy',
       pagesApi: 'https://api-staging.workers.xd.team',
-      pagesToken: 'pages-preview@xd.com',
+      previewTokenPattern: 'pages_{employeeSlug}@xd.com',
       previewIpRestrict: true,
       callbackUrl: 'https://gateway.example/internal/executor-callback',
       workerCallbackUrl: 'http://pages-gateway:8788/internal/executor-callback',
@@ -446,7 +447,7 @@ test('previewing job can deploy through local pages-manager API', async () => {
 
         if (String(url) === 'https://api-staging.workers.xd.team/deploy') {
           assert.equal(request.method, 'POST');
-          assert.equal(request.headers['X-Pages-Token'], 'pages-preview@xd.com');
+          assert.equal(request.headers['X-Pages-Token'], 'pages_zhangsan@xd.com');
           assert.equal(request.body.get('name'), 'pm-pr-19-zhangsan-profile');
           assert.equal(request.body.get('preset'), 'static');
           assert.equal(request.body.get('ip_restrict'), 'true');
@@ -480,5 +481,76 @@ test('previewing job can deploy through local pages-manager API', async () => {
 
   assert.equal(result.action, 'pages_preview_deployed');
   assert.equal(result.previewUrl, 'https://pm-pr-19-zhangsan-profile.staging.workers.xd.team');
+  assert.equal(requests.length, 4);
+});
+
+test('previewing job local deploy falls back to site root when src is missing', async () => {
+  const headSha = 'c'.repeat(40);
+  const requests = [];
+  const result = await runWorkerForJob(
+    {
+      ...baseJob,
+      status: 'previewing',
+      prNumber: 20,
+      headSha,
+    },
+    {
+      ...config(),
+      previewMode: 'local_deploy',
+      pagesApi: 'https://api-staging.workers.xd.team',
+      pagesToken: 'pages-preview@xd.com',
+    },
+    {
+      async fetchImpl(url, request = {}) {
+        requests.push({ url: String(url), request });
+
+        if (String(url).includes(`/git/trees/${headSha}`)) {
+          return new Response(
+            JSON.stringify({
+              tree: [{ type: 'blob', path: 'sites/zhangsan/profile/index.html', sha: 'blob_root_html' }],
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (String(url).endsWith('/git/blobs/blob_root_html')) {
+          return new Response(
+            JSON.stringify({ encoding: 'base64', content: Buffer.from('<h1>root</h1>').toString('base64') }),
+            { status: 200 }
+          );
+        }
+
+        if (String(url) === 'https://api-staging.workers.xd.team/deploy') {
+          assert.equal(request.method, 'POST');
+          assert.equal(request.headers['X-Pages-Token'], 'pages-preview@xd.com');
+          assert.equal(request.body.get('file-0').name, 'index.html');
+          return new Response(
+            JSON.stringify({
+              status: 'ok',
+              name: 'pm-pr-20-zhangsan-profile',
+              url: 'https://pm-pr-20-zhangsan-profile.staging.workers.xd.team',
+              preset: 'static',
+              fileCount: 1,
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (String(url) === 'http://gateway.test/internal/executor-callback') {
+          const body = JSON.parse(request.body);
+          assert.equal(body.stageResult, 'preview_deployed');
+          assert.equal(body.previewUrl, 'https://pm-pr-20-zhangsan-profile.staging.workers.xd.team');
+          return new Response(JSON.stringify({ ok: true, job: { ...baseJob, status: 'preview_deployed' } }), {
+            status: 200,
+          });
+        }
+
+        throw new Error(`Unexpected request ${request.method || 'GET'} ${url}`);
+      },
+    }
+  );
+
+  assert.equal(result.action, 'pages_preview_deployed');
+  assert.equal(result.previewUrl, 'https://pm-pr-20-zhangsan-profile.staging.workers.xd.team');
   assert.equal(requests.length, 4);
 });
