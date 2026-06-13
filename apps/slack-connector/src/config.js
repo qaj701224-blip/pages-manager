@@ -10,6 +10,12 @@ function flag(value, defaultValue = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function numberFromEnv(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export function readConfig(env = process.env) {
   return {
     botToken: required(env.SLACK_BOT_TOKEN, 'SLACK_BOT_TOKEN'),
@@ -25,5 +31,9 @@ export function readConfig(env = process.env) {
     workingReaction: env.SLACK_CONNECTOR_WORKING_REACTION || 'eyes',
     logIgnoredEvents: flag(env.SLACK_CONNECTOR_LOG_IGNORED_EVENTS, true),
     botUserId: env.SLACK_BOT_USER_ID || null,
+    dmPollEnabled: flag(env.SLACK_CONNECTOR_DM_POLL_ENABLED, false),
+    dmPollIntervalMs: numberFromEnv(env.SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS, 10) * 1000,
+    dmPollChannelLimit: numberFromEnv(env.SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT, 20),
+    dmPollBatchSize: numberFromEnv(env.SLACK_CONNECTOR_DM_POLL_BATCH_SIZE, 5),
   };
 }

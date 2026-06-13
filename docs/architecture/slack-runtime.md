@@ -224,6 +224,7 @@ DM 也按 thread 管会话：用户在私聊里发起一条新需求后，connec
 
 - 同一个 Slack App 的 `SLACK_APP_TOKEN` 只能由一个 `slack-connector` Deployment 持有；Socket Mode 多进程连接同一个 `xapp` token 会导致事件被其它连接消费，表现为 Slack 里有消息但当前 connector 没有 `slack_event_received`。
 - `slack-connector` 在 Socket Mode MVP 中保持 `replicas: 1`。需要高可用时优先切 HTTP Events + gateway signature 校验，再在 gateway 后面横向扩容。
+- 本地 MVP 可以开启 `SLACK_CONNECTOR_DM_POLL_ENABLED=true` 作为 DM 漏投补偿：connector 仍优先消费 Socket Mode，但会周期性读取 bot 可见的 IM history，把新用户消息补送 gateway。这个 fallback 只用于早期验证和排障，不能替代长期的“唯一 Socket Mode consumer”治理；开启时要控制 polling interval、channel limit 和 batch size，避免触发 Slack Web API rate limit。
 - `pages-gateway` 负责用户隔离，所有 Slack session、memory、issue link、job status 查询都必须以 `(team_id, slack_user_id)` 为访问边界。
 - `slack-agent` 不持有 GitHub / Cloudflare / Slack connector token，只处理当前用户当前 session 的上下文；prompt 和审计日志里的用户文本可以记录，但 secret-like 内容必须先脱敏。
 - GitHub Actions / Coding Agent 不接收 Slack token，也不能直接读 gateway 的全量 session store；它们只处理 gateway 派发的单个 job context。
@@ -400,6 +401,10 @@ SLACK_CONNECTOR_WORKING_REACTION
 SLACK_CONNECTOR_LOG_IGNORED_EVENTS
 SLACK_CONNECTOR_ACCEPT_BOT_EVENTS
 SLACK_CONNECTOR_ACCEPT_THREAD_MESSAGES
+SLACK_CONNECTOR_DM_POLL_ENABLED
+SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS
+SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT
+SLACK_CONNECTOR_DM_POLL_BATCH_SIZE
 ```
 
 gateway 内置 Slack 回通 adapter 额外使用：
