@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import { readSlackAgentConfig } from '../../../apps/slack-agent/src/config.js';
 import { analyzeSlackRequirement, createSlackAgentApp } from '../../../apps/slack-agent/src/index.js';
+import { redactSlackAgentLogValue } from '../../../apps/slack-agent/src/model-provider.js';
 
 describe('slack agent', () => {
   it('summarizes create or update site requests', () => {
@@ -217,5 +218,84 @@ describe('slack agent', () => {
     assert.equal(response.status, 200);
     assert.equal(body.analysis.needsClarification, true);
     assert.equal(body.analysis.clarifyingQuestion, '你希望页面重点展示项目、履历还是联系方式？');
+  });
+
+  it('redacts token-like values from Slack Agent audit logs', () => {
+    const redacted = redactSlackAgentLogValue(
+      {
+        text: '请不要记录 xoxb-1234567890-secret 或 ghp_1234567890abcdefghij1234567890',
+        token: 'plain-token-value',
+      },
+      ['exact-secret']
+    );
+
+    assert.match(redacted.text, /\[REDACTED_SLACK_TOKEN\]/);
+    assert.match(redacted.text, /\[REDACTED_GITHUB_TOKEN\]/);
+    assert.equal(redacted.token, '[REDACTED_SECRET]');
+  });
+
+  it('logs model calls with redacted prompt and user text', async () => {
+    const logs = [];
+    const originalLog = console.log;
+    console.log = (line) => logs.push(line);
+
+    try {
+      const app = createSlackAgentApp({
+        config: {
+          modelProvider: 'company-agent',
+          gatewayUrl: 'https://agent-gateway.example',
+          apiKey: 'exact-agent-secret',
+          modelName: 'codex/gpt-5.5',
+          requestTimeoutMs: 1000,
+        },
+        async fetchImpl() {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      intent: 'clarify',
+                      summary: '需要补充信息',
+                      needsClarification: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        },
+      });
+
+      const response = await app.fetch(
+        new Request('http://localhost/internal/slack-agent/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: '你好 token=abc123 xoxb-1234567890-secret',
+            event: {
+              channel: 'D1',
+              channel_type: 'im',
+              user: 'U1',
+              thread_ts: '1000.000',
+            },
+          }),
+        })
+      );
+
+      assert.equal(response.status, 200);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const auditLog = logs.map((line) => JSON.parse(line)).find((line) => line.message === 'slack_agent_model_call');
+    assert.equal(auditLog.provider, 'company-agent');
+    assert.equal(auditLog.model, 'codex/gpt-5.5');
+    assert.equal(auditLog.status, 'ok');
+    assert.equal(auditLog.channel, 'D1');
+    assert.match(auditLog.userText, /\[REDACTED/);
+    assert.match(auditLog.prompt[1].content, /\[REDACTED/);
+    assert.doesNotMatch(JSON.stringify(auditLog), /exact-agent-secret|xoxb-1234567890-secret|token=abc123/);
   });
 });
