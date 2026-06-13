@@ -61,6 +61,21 @@ const CALLBACK_STAGE_RESULTS = {
   },
 };
 
+const STALE_CALLBACK_PATCH_STATUSES = {
+  issue_created: new Set([
+    'indexing',
+    'generating_page',
+    'patch_generated',
+    'branch_committed',
+    'pr_created',
+    'reviewing',
+    'changes_requested',
+    'fixing',
+    'previewing',
+    'preview_deployed',
+  ]),
+};
+
 async function readJson(request) {
   const text = await request.text();
   return parseJsonText(text);
@@ -136,6 +151,17 @@ function publishingJobIdFromIssueBody(body) {
 
 function issueUrl(issue = {}) {
   return issue.html_url || issue.url || null;
+}
+
+function applyExecutorCallback(store, jobId, stageResult, status, patch) {
+  const existing = store.getJob(jobId);
+  if (!existing) return null;
+
+  if (STALE_CALLBACK_PATCH_STATUSES[stageResult]?.has(existing.status)) {
+    return store.patchJob(jobId, patch);
+  }
+
+  return store.updateJob(jobId, status, patch);
 }
 
 async function handleGithubIssueWebhook({ body, action, store, env, result }) {
@@ -214,12 +240,7 @@ function getStore(env) {
 }
 
 function shouldStartWorkerForJob(job) {
-  return (
-    job.status === 'received' ||
-    job.status === 'generating_page' ||
-    job.status === 'fixing' ||
-    job.status === 'previewing'
-  );
+  return job.status === 'received' || job.status === 'generating_page' || job.status === 'fixing' || job.status === 'previewing';
 }
 
 async function startWorkerForJobIfConfigured(job, env) {
@@ -366,14 +387,11 @@ function slackJobInput(body) {
 }
 
 const FOLLOWUP_INTENTS = new Set(['modify_existing_preview', 'append_requirement']);
-const NON_FOLLOWUP_ACTIONS = new Set(['help', 'ping', 'status', 'cancel', 'empty', 'missing_requirement']);
+const NON_FOLLOWUP_ACTIONS = new Set(['help', 'ping', 'status', 'cancel', 'close_session', 'empty', 'missing_requirement']);
 
 function hasActiveSlackTarget(slackSession) {
   return Boolean(
-    slackSession?.activeJobId ||
-      slackSession?.activeIssueNumber ||
-      slackSession?.activePrNumber ||
-      slackSession?.activePreviewUrl
+    slackSession?.activeJobId || slackSession?.activeIssueNumber || slackSession?.activePrNumber || slackSession?.activePreviewUrl
   );
 }
 
@@ -385,9 +403,7 @@ function shouldTrySlackFollowup(intake, slackSession) {
 }
 
 function looksLikeSlackFollowupText(text = '') {
-  return /(preview|预览|不满意|继续|调整|修改|改成|换成|加|增加|删除|删掉|标题|文案|颜色|布局|风格|重新|再来)/i.test(
-    text
-  );
+  return /(preview|预览|不满意|继续|调整|修改|改成|换成|加|增加|删除|删掉|标题|文案|颜色|布局|风格|重新|再来)/i.test(text);
 }
 
 function isSlackFollowupIntent(analysis, intake) {
@@ -417,6 +433,36 @@ function followupSummary(existingSummary, text) {
 
 function canDispatchFixForJob(job) {
   return ['pr_created', 'reviewing', 'changes_requested', 'fixing', 'preview_deployed'].includes(job.status);
+}
+
+function shouldCloseSlackSession(intake, slackAgentAnalysis) {
+  return intake.action === 'close_session' || slackAgentAnalysis?.intent === 'close_session';
+}
+
+function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+  const closedSession = store.closeSlackSession(slackSession.id);
+  store.updateSessionMemory(slackSession.id, {
+    summary: sessionMemory.summary || intake.text,
+    lastAgentResponse: '会话已关闭。',
+    pendingQuestions: [],
+  });
+  completeSlackAgentRun(store, agentRun, {
+    report: {
+      action: 'close_session',
+      accepted: true,
+      intent: slackAgentAnalysis?.intent || null,
+    },
+  });
+
+  return jsonResponse({
+    ok: true,
+    action: 'close_session',
+    accepted: true,
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    replyText: '已关闭当前会话。后续你可以用 `issue: ...` 开一个新任务，或者带上 job id 查询旧任务。',
+    session: closedSession,
+  });
 }
 
 async function handleSlackFollowup({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
@@ -603,6 +649,17 @@ export async function handleSlackEvents(request, env) {
 
   try {
     let slackAgentAnalysis = null;
+    if (intake.action === 'close_session') {
+      return handleCloseSlackSession({
+        store,
+        intake,
+        slackSession,
+        sessionMemory,
+        agentRun,
+        slackAgentAnalysis,
+      });
+    }
+
     if (shouldTrySlackFollowup(intake, slackSession)) {
       slackAgentAnalysis = await analyzeSlackEventIfConfigured(body, intake, env, {
         slackSession,
@@ -610,6 +667,17 @@ export async function handleSlackEvents(request, env) {
         issueLinks: store.findIssueLinksForSlackSession(slackSession.id),
         agentRun,
       });
+
+      if (shouldCloseSlackSession(intake, slackAgentAnalysis)) {
+        return handleCloseSlackSession({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+        });
+      }
 
       if (isSlackFollowupIntent(slackAgentAnalysis, intake)) {
         return handleSlackFollowup({
@@ -744,7 +812,7 @@ export async function handleExecutorCallback(request, env) {
 
   const patch = rule.patch ? rule.patch(body) : {};
   const store = getStore(env);
-  const job = store.updateJob(jobId, rule.status, patch);
+  const job = applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   store.linkJobToSlackSession(job);
   const workerStart = await startWorkerForJobIfConfigured(job, env);

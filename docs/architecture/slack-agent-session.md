@@ -159,7 +159,7 @@ Slack Agent 复用 IssueLink，追加 issue comment，触发 fix round
 
 | 项 | 默认值 | 行为 |
 | --- | --- | --- |
-| active context TTL | 12 小时 | session 12 小时无消息后，`active_job_id` / `active_issue_number` 不再默认续接；用户明确引用 session / job / issue / PR / preview 时可恢复 |
+| active context TTL | 2 小时 | session 2 小时无消息后，`active_job_id` / `active_issue_number` 不再默认续接；用户明确引用 session / job / issue / PR / preview 时可恢复 |
 | waiting clarification TTL | 1 天 | Agent 问了澄清问题但用户 1 天未答，状态改为 `paused`，再次收到消息时先确认是否继续 |
 | recent selectable window | 14 天 | 过期但未归档的 session 可作为“最近任务”候选展示给用户选择 |
 | archive after inactive | 90 天 | session 进入 `archived` 或压缩 memory；IssueLink 和审计记录继续保留 |

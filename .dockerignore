@@ -1,0 +1,16 @@
+.git
+.github
+.wrangler
+**/.workerd
+**/node_modules
+**/dist
+coverage
+test-results
+archive
+.DS_Store
+.env
+.env.*
+!.env.example
+apps/server/wrangler.toml
+apps/xdads-302/wrangler.toml
+demos/**/.pages.json

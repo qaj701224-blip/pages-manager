@@ -17,8 +17,8 @@ function addMs(now, durationMs) {
 export function readSlackSessionConfig(env = {}) {
   const activeContextTtlHours =
     env.SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS !== undefined
-      ? numberFromEnv(env.SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS, 12)
-      : numberFromEnv(env.SLACK_AGENT_ACTIVE_CONTEXT_TTL_DAYS, 0) * 24 || 12;
+      ? numberFromEnv(env.SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS, 2)
+      : numberFromEnv(env.SLACK_AGENT_ACTIVE_CONTEXT_TTL_DAYS, 0) * 24 || 2;
 
   return {
     activeContextTtlMs: activeContextTtlHours * HOUR_MS,
@@ -121,6 +121,8 @@ function sessionInputFrom(body, intake, sessionKey, config, now) {
     surfaceContext: surface.surfaceContext,
     lastIntent: intake?.action || 'unknown',
     activeContextExpiresAt: addMs(now, config.activeContextTtlMs),
+    status: 'active',
+    closedAt: null,
   };
 }
 
@@ -138,6 +140,8 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
         session: store.upsertSlackSession(
           {
             ...byId,
+            status: 'active',
+            closedAt: null,
             lastIntent: intake.action || byId.lastIntent,
             activeContextExpiresAt: addMs(now, config.activeContextTtlMs),
           },
@@ -157,6 +161,8 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
       const session = store.upsertSlackSession(
         {
           ...linkedSession,
+          status: 'active',
+          closedAt: null,
           lastIntent: intake.action || linkedSession.lastIntent,
           activeContextExpiresAt: addMs(now, config.activeContextTtlMs),
         },
