@@ -47,12 +47,20 @@ function reviewedCommitShaFromBody(body = '') {
   return match ? match[1] : null;
 }
 
+function reviewPriorityFromBody(body = '') {
+  const match = String(body).match(/\bP([0-3])\s+Badge\b/i) || String(body).match(/badge\/P([0-3])-/i);
+  return match ? Number(match[1]) : null;
+}
+
 export function classifyReviewAgentComment(input) {
   const body = String(input.body || '');
   const state = String(input.reviewState || '').toLowerCase();
+  const priority = reviewPriorityFromBody(body);
 
   if (state === 'changes_requested') return 'blocking';
   if (state === 'approved') return 'note';
+  if (priority === 0 || priority === 1) return 'blocking';
+  if (priority === 2 || priority === 3) return 'suggestion';
   if (/\b(blocking|must fix|required|failing|failed|failure|security|critical|error)\b/i.test(body)) return 'blocking';
   if (/(必须|阻塞|失败|需要修复|安全风险|严重)/.test(body)) return 'blocking';
   if (/\b(suggestions?|nit|optional|consider)\b/i.test(body) || /(建议|可以考虑|优化建议)/.test(body)) {
