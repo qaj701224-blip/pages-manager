@@ -221,10 +221,17 @@ export async function searchIssues(fetchImpl, config, query) {
   return result.body?.items || [];
 }
 
-export async function findIssueByBodyMarker(fetchImpl, config, marker) {
-  const query = `repo:${config.repoFullName} "${marker}" in:body type:issue`;
+export async function findIssueByBodyMarker(fetchImpl, config, marker, options = {}) {
+  const state = options.state ? String(options.state).toLowerCase() : '';
+  const stateQualifier = state ? ` state:${state}` : '';
+  const query = `repo:${config.repoFullName} "${marker}" in:body type:issue${stateQualifier}`;
   const issues = await searchIssues(fetchImpl, config, query);
-  return issues.find((issue) => issue.body?.includes(marker)) || null;
+  return (
+    issues.find((issue) => {
+      if (!issue.body?.includes(marker)) return false;
+      return !state || !issue.state || String(issue.state).toLowerCase() === state;
+    }) || null
+  );
 }
 
 export async function findIssueByPublishingJob(fetchImpl, config, jobId) {
@@ -284,7 +291,7 @@ export async function ensurePublishingIssue(fetchImpl, config, job, options = {}
 
 export async function ensureSmokeIssue(fetchImpl, config, job, options = {}) {
   const scope = options.scope || 'local-slack-smoke';
-  const existing = await findIssueByBodyMarker(fetchImpl, config, smokeIssueMarker(scope));
+  const existing = await findIssueByBodyMarker(fetchImpl, config, smokeIssueMarker(scope), { state: 'open' });
 
   if (existing) {
     const comment = await createIssueComment(fetchImpl, config, existing.number, buildSmokeIssueComment(job, options));
