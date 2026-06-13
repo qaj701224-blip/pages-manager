@@ -7,6 +7,7 @@ import {
   buildSlackReplyMessage,
   isTargetSlackEvent,
   postGatewayEvent,
+  shouldReplyToGatewayResult,
 } from './slack-event.js';
 
 const { App } = slackBolt;
@@ -41,7 +42,7 @@ async function handleSlackEvent({ body, event, client, logger }, config, fetchIm
       })
     );
 
-    if (config.replyOnReceive) {
+    if (config.replyOnReceive && shouldReplyToGatewayResult(result)) {
       await client.chat.postMessage(buildSlackReplyMessage(event, buildSlackAckText(result)));
     }
   } catch (err) {

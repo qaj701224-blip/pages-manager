@@ -14,10 +14,16 @@ function isAppMention(event) {
   return event.type === 'app_mention';
 }
 
+function isChannelThreadMessage(event) {
+  return event.type === 'message' && event.channel_type !== 'im' && Boolean(event.thread_ts);
+}
+
 export function isTargetSlackEvent(event, options = {}) {
   if (!event || isIgnoredSubtype(event)) return false;
   if (isBotEvent(event) && !options.acceptBotEvents) return false;
-  return isDirectMessage(event) || isAppMention(event);
+  return Boolean(
+    isDirectMessage(event) || isAppMention(event) || (options.acceptThreadMessages && isChannelThreadMessage(event))
+  );
 }
 
 export function normalizeSlackText(text = '', options = {}) {
@@ -69,6 +75,12 @@ export function buildSlackAckText(result) {
       : `收到，这条 Slack 消息已经关联到发布任务 ${jobId}。`;
   }
   return issueUrl ? `收到，已创建发布任务 ${jobId}。\nIssue: ${issueUrl}` : `收到，已创建发布任务 ${jobId}。`;
+}
+
+export function shouldReplyToGatewayResult(result = {}) {
+  if (result.reply === false || result.noReply) return false;
+  if (result.replyText === null) return false;
+  return result.action !== 'ignored_untracked_thread_message';
 }
 
 function slackUserMention(userId) {
