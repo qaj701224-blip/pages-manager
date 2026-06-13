@@ -64,7 +64,7 @@ Webhook 用途：
 本地 K8s smoke 当前推荐：
 
 ```text
-PAGES_WORKFLOW_REF=feat/slack-preview-gateway-mvp
+PAGES_WORKFLOW_REF=staging
 PAGES_BASE_REF=staging
 PAGES_PREVIEW_MODE=local_deploy
 PAGES_PREVIEW_SITE_NAME_PATTERN=pm-{publishingJobId}
@@ -72,7 +72,7 @@ PAGES_PREVIEW_SITE_NAME_PATTERN=pm-{publishingJobId}
 
 说明：
 
-- `PAGES_WORKFLOW_REF` 指 workflow 文件读取分支。
+- `PAGES_WORKFLOW_REF` 指 workflow 文件读取分支。当前 workflow 合同已先合入 `staging`，本地 MVP 应使用 `staging` 验证。
 - `PAGES_BASE_REF` 指生成 PR 的目标分支。
 - `local_deploy` 用本地 K8s `pages-worker` 从 PR head 读取站点文件并调用 `PAGES_API/deploy`，避免 GitHub-hosted runner 出口 IP 被 staging API 白名单挡住。
 - preview site name 必须包含 `publishingJobId`，否则 smoke 模式复用同一个 PR 时会撞站点名。
@@ -184,3 +184,38 @@ Slack / API
   -> controlled branch
   -> PR
 ```
+
+### 2026-06-13 staging workflow 合同与 ruleset 对齐
+
+更新方式：
+
+```text
+gh pr merge 27 --repo xindong/pages-manager --squash
+gh api -X PUT repos/xindong/pages-manager/rulesets/17448588
+```
+
+更新项：
+
+- 将 `ci/pages-agent-workflow-contract` 先合入 `staging`，让 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml` 和相关 runner helper 具备 gateway 当前派发的新版 inputs。
+- 将 `Protect staging` ruleset 的 required status check 从旧的 `CI` 改为实际 GitHub Actions job check 名 `check`。
+- `Protect master` 已经要求 `check`，本次没有修改 `master` ruleset。
+
+原因：
+
+- GitHub Actions required status check 匹配的是 check run context / job 名，本仓库 CI workflow 产生的 required check 是 `check`，不是 workflow 名 `CI`。
+- `staging` 原先要求 `CI` 会让 PR 出现 `mergeable=MERGEABLE` 但 `mergeStateStatus=BLOCKED`。
+- KV 相关 `#20` 能合入 `staging` 大概率依赖了 ruleset bypass；本次选择修正 ruleset，而不是继续绕过。
+
+验证路径：
+
+```text
+gh pr checks 27 --repo xindong/pages-manager
+gh pr view 27 --repo xindong/pages-manager --json mergeable,mergeStateStatus
+gh api repos/xindong/pages-manager/rulesets/17448588
+```
+
+验证结果：
+
+- `#27` 的 `check` 通过。
+- ruleset 更新后 `#27` 从 `BLOCKED` 变为 `CLEAN`。
+- `#27` 已 squash merge 到 `staging`。

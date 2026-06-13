@@ -213,11 +213,11 @@ smoke control plane
 本地 MVP 推荐：
 
 ```text
-PAGES_WORKFLOW_REF=master
+PAGES_WORKFLOW_REF=staging
 PAGES_BASE_REF=staging
 ```
 
-`PAGES_WORKFLOW_REF` 表示从哪个分支读取 GitHub Actions workflow 文件；`PAGES_BASE_REF` 表示生成代码和 PR 的目标业务分支。当前远端 `master` 有 `project-index.yml`、`pages-agent.yml`、`site-check.yml`、`pages-preview.yml`，而 `staging` 可继续作为生成 PR 的 base。
+`PAGES_WORKFLOW_REF` 表示从哪个分支读取 GitHub Actions workflow 文件；`PAGES_BASE_REF` 表示生成代码和 PR 的目标业务分支。当前新版 `project-index.yml`、`pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 合同已先合入 `staging`，本地 MVP 用 `staging` 同时作为 workflow ref 和生成 PR 的 base。
 
 Preview token 边界：
 
