@@ -70,6 +70,7 @@ prompts/
 Slack Agent 负责“人和需求”：
 
 - 与用户在同一 Slack DM 或 thread 中持续多轮对话。
+- 支持完全自然语言输入；`/issue`、`issue:`、`page:` 只能作为兼容入口，不能作为必要入口。
 - 判断是否建议新建 issue。
 - 判断是否续接已有 issue / PR / preview。
 - 整理 Slack thread 成结构化需求。
@@ -106,7 +107,7 @@ Slack Agent 输出建议是结构化 JSON：
 
 ```json
 {
-  "intent": "new_site_request | modify_existing_preview | status_query | append_requirement | cancel_request | unknown",
+  "intent": "create_or_update_site | new_site_request | modify_existing_preview | status_query | append_requirement | cancel_request | close_session | clarify | unknown",
   "confidence": 0.0,
   "employeeSlug": "smoke",
   "siteSlug": "profile",
@@ -115,7 +116,7 @@ Slack Agent 输出建议是结构化 JSON：
   "issueAction": "create | append_comment | none",
   "targetJobId": "job_xxx",
   "targetIssueNumber": 123,
-  "requiresClarification": false,
+  "needsClarification": false,
   "clarifyingQuestion": "",
   "toolRequest": {
     "name": "createPublishingJob | appendIssueComment | getJobStatus | askClarification | none",
@@ -124,6 +125,8 @@ Slack Agent 输出建议是结构化 JSON：
   "safetyNotes": []
 }
 ```
+
+gateway 只在 `intent` 属于 `create_or_update_site` / `new_site_request` / `create_site` / `update_site` 且 `needsClarification=false` 时创建 `PublishingJob`。如果 Slack Agent 返回 `clarify`、`unknown` 或 `needsClarification=true`，gateway 只回 Slack 澄清问题并保存 `SessionMemory`。
 
 ## Coding Agent Prompt
 

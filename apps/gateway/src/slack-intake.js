@@ -12,32 +12,26 @@ export function normalizeSlackIntakeText(text = '') {
 
 function helpText() {
   return [
-    '我可以帮你把 Slack 里的需求转成 pages-manager 发布任务。',
+    '你可以直接用自然语言和我聊个人网站需求，我会先整理清楚，再决定是追问、创建 issue，还是继续修改已有 preview。',
     '',
-    '推荐用消息命令写法：',
+    '可以这样说：',
+    '- `我想做一个个人主页，突出项目经历和技术风格`',
+    '- `这个 preview 不满意，把标题改成中文，再加一个项目经历区域`',
+    '- `帮我看一下 job_xxx 的状态`',
+    '',
+    '命令写法仍然支持：',
     '- `issue: 给 smoke/profile 做一个个人主页`',
-    '- `page: 帮我生成一个个人网页`',
     '- `status: job_xxx`',
-    '- `help`',
-    '- `ping`',
     '',
-    '中文兜底也支持：',
-    '- `创建 issue：给 smoke/profile 做一个个人主页`',
-    '- `状态 job_xxx`',
-    '',
-    '本地 smoke 模式下会复用同一个 GitHub issue，并把每次测试追加成 comment。',
+    '如果信息不够，我会继续问你，不会立刻创建 issue。',
   ].join('\n');
 }
 
 function unknownText() {
   return [
-    '我先不创建 issue，因为这句话不像一个明确的发布需求。',
+    '我收到了，但当前没有可用的 Slack Agent 来理解这轮自然语言，所以先不创建 issue。',
     '',
-    '可以试试：',
-    '- `issue: 给 smoke/profile 做一个个人主页`',
-    '- `page: 帮我生成一个个人网页`',
-    '- `status: job_xxx`',
-    '- `help`',
+    '你可以稍后重试，或临时用明确命令：`issue: 给 smoke/profile 做一个个人主页`。',
   ].join('\n');
 }
 
@@ -75,7 +69,7 @@ export function classifySlackIntake(body) {
     };
   }
 
-  if (command?.command === 'ping' || /^(ping|pong|test|测试|1)$/.test(compact) || /连通性|在吗|你好|hello|hi/i.test(text)) {
+  if (command?.command === 'ping' || /^(ping|pong|test|测试|1)$/.test(compact) || /连通性/i.test(text)) {
     return {
       action: 'ping',
       shouldCreateJob: false,
@@ -159,8 +153,9 @@ export function classifySlackIntake(body) {
   }
 
   return {
-    action: 'unknown',
+    action: 'agent_turn',
     shouldCreateJob: false,
+    shouldAnalyze: true,
     text,
     replyText: unknownText(),
   };
