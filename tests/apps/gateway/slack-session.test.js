@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
 
+import { FileBackedGatewayStore } from '../../../apps/gateway/src/file-store.js';
 import { createGatewayApp } from '../../../apps/gateway/src/index.js';
 import { readSlackSessionConfig } from '../../../apps/gateway/src/slack-session.js';
 import { MemoryGatewayStore } from '../../../apps/gateway/src/store.js';
@@ -81,10 +85,10 @@ test('Slack sessions are isolated by user and channel thread', async () => {
   const userTwoSessions = app.store.findSlackSessionsForUser('T1', 'U2');
   assert.equal(userOneSessions.length, 2);
   assert.equal(userTwoSessions.length, 1);
-  assert.deepEqual(
-    userOneSessions.map((session) => session.sessionKey).sort(),
-    ['thread:C1:1710000000.000100', 'thread:C1:1710000001.000100']
-  );
+  assert.deepEqual(userOneSessions.map((session) => session.sessionKey).sort(), [
+    'thread:C1:1710000000.000100',
+    'thread:C1:1710000001.000100',
+  ]);
   assert.equal(userTwoSessions[0].sessionKey, 'thread:C1:1710000000.000100');
 });
 
@@ -208,4 +212,120 @@ test('executor callbacks keep IssueLink and SlackSession active target in sync',
   assert.equal(link.issueNumber, 42);
   assert.equal(session.activeJobId, created.jobId);
   assert.equal(session.activeIssueNumber, 42);
+});
+
+test('Slack close command closes the selected session and clears active context', async () => {
+  const app = createGatewayApp();
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个个人主页',
+    })
+  );
+
+  const response = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-2',
+      ts: '1710000001.000100',
+      text: `close: ${created.slackSessionId}`,
+    })
+  );
+  const session = app.store.getSlackSession(created.slackSessionId);
+
+  assert.equal(response.action, 'close_session');
+  assert.equal(response.accepted, true);
+  assert.equal(session.status, 'closed');
+  assert.equal(session.activeJobId, null);
+  assert.equal(session.activeIssueNumber, null);
+  assert.equal(session.activePrNumber, null);
+  assert.equal(session.activePreviewUrl, null);
+});
+
+test('closed Slack session is reactivated when the same thread starts a new job', async () => {
+  const app = createGatewayApp();
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-thread-1',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个个人主页',
+    })
+  );
+
+  await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-thread-2',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000001.000100',
+      threadTs: '1710000000.000100',
+      text: `close: ${created.slackSessionId}`,
+    })
+  );
+
+  const reopened = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-thread-3',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000002.000100',
+      threadTs: '1710000000.000100',
+      text: 'issue: 重新做一个活动页',
+    })
+  );
+  const session = app.store.getSlackSession(created.slackSessionId);
+
+  assert.equal(reopened.accepted, true);
+  assert.equal(reopened.slackSessionId, created.slackSessionId);
+  assert.equal(session.status, 'active');
+  assert.equal(session.closedAt, null);
+  assert.equal(session.activeJobId, reopened.jobId);
+});
+
+test('file-backed gateway store restores jobs sessions and issue links after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pages-gateway-store-'));
+  const filePath = join(dir, 'store.json');
+
+  try {
+    const app = createGatewayApp({ store: new FileBackedGatewayStore(filePath) });
+    const created = await postSlack(
+      app,
+      slackEvent({
+        eventId: 'Ev-file-store-1',
+        ts: '1710000000.000100',
+        text: 'issue: 做一个个人主页',
+      })
+    );
+
+    await app.fetch(
+      new Request('http://gateway.test/internal/executor-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishingJobId: created.jobId,
+          stageResult: 'issue_created',
+          issueNumber: 43,
+          issueUrl: 'https://github.example/org/pages-manager/issues/43',
+        }),
+      })
+    );
+
+    const restored = new FileBackedGatewayStore(filePath);
+    const job = restored.getJob(created.jobId);
+    const session = restored.getSlackSession(created.slackSessionId);
+    const link = restored.findIssueLinkByJobId(created.jobId);
+
+    assert.equal(job.status, 'issue_created');
+    assert.equal(session.activeJobId, created.jobId);
+    assert.equal(link.issueNumber, 43);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

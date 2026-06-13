@@ -1,6 +1,6 @@
 const JOB_ID_RE = /\bjob_[A-Za-z0-9_]+\b/;
 const SLASH_COMMAND_RE = /^\/([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i;
-const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel)(?::|\s+)?([\s\S]*)?$/i;
+const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close)(?::|\s+)?([\s\S]*)?$/i;
 
 export function normalizeSlackIntakeText(text = '') {
   return String(text)
@@ -93,6 +93,20 @@ export function classifySlackIntake(body) {
     };
   }
 
+  if (
+    command?.command === 'close' ||
+    /^(close|关闭|结束|归档)(\s|:|：|$)/i.test(text) ||
+    /^(关闭|结束).*(会话|对话|session|任务|preview|预览)/i.test(text) ||
+    /^(先到这里|到这里就好|这个任务不用了|这个 preview 不用了)$/i.test(text)
+  ) {
+    return {
+      action: 'close_session',
+      shouldCreateJob: false,
+      text,
+      replyText: '收到，准备关闭当前会话。',
+    };
+  }
+
   if (command?.command === 'status') {
     const commandJobId = command.args.match(JOB_ID_RE)?.[0] || null;
     return {
@@ -157,11 +171,7 @@ export function slackStatusReply(jobId, job) {
     return `没有找到发布任务 ${jobId}。`;
   }
 
-  const lines = [
-    `发布任务 ${job.id}`,
-    `状态：${job.status}`,
-    `目标：${job.employeeSlug}/${job.siteSlug}`,
-  ];
+  const lines = [`发布任务 ${job.id}`, `状态：${job.status}`, `目标：${job.employeeSlug}/${job.siteSlug}`];
 
   if (job.issueNumber) lines.push(`Issue：#${job.issueNumber}`);
   if (job.prNumber) lines.push(`PR：#${job.prNumber}`);
