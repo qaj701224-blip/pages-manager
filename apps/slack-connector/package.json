@@ -1,0 +1,12 @@
+{
+  "name": "@xd/slack-connector",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "node src/index.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.7.3"
+  }
+}

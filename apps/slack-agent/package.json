@@ -1,0 +1,12 @@
+{
+  "name": "@xd/slack-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "node src/dev.js"
+  },
+  "dependencies": {
+    "@xd/worker-kit": "workspace:*"
+  }
+}
