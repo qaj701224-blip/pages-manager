@@ -239,6 +239,53 @@ test('ensureSmokeIssue reuses one issue and appends a comment', async () => {
   assert.equal(requests.length, 2);
 });
 
+test('ensureSmokeIssue ignores closed smoke issues and creates a new one', async () => {
+  const requests = [];
+  const result = await ensureSmokeIssue(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      if (String(url).includes('/search/issues')) {
+        assert.match(decodeURIComponent(String(url)), /state:open/);
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 8,
+                state: 'closed',
+                body: `hello\n${smokeIssueMarker('slack-local')}`,
+                html_url: 'https://github.example/issues/8',
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (String(url).endsWith('/repos/org/pages-manager/issues')) {
+        assert.equal(request.method, 'POST');
+        const body = JSON.parse(request.body);
+        assert.match(body.body, /PagesSmokeIssue: slack-local/);
+        return new Response(JSON.stringify({ number: 9, html_url: 'https://github.example/issues/9' }), {
+          status: 201,
+        });
+      }
+
+      throw new Error(`Unexpected request ${request.method} ${url}`);
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    job,
+    { scope: 'slack-local' }
+  );
+
+  assert.equal(result.created, true);
+  assert.equal(result.issue.number, 9);
+  assert.equal(result.comment, null);
+  assert.equal(requests.length, 2);
+});
+
 test('appendFollowupIssueComment posts to the existing publishing issue', async () => {
   const requests = [];
   const result = await appendFollowupIssueComment(
