@@ -177,6 +177,13 @@ pnpm k8s:smoke
 
 `pnpm k8s:check-env` 会检查本地 Slack / GitHub / callback 必需变量是否齐全，但不会打印 secret 值。`pnpm k8s:cluster` 会创建或复用名为 `pages-manager` 的本地 kind/k3d cluster，并把 kubectl context 切到专用 context。`pnpm k8s:up` 会先确认当前操作目标是这个 cluster，避免误把 `pages-system` 部署到其它项目的 K8s 集群。
 
+共享开发机隔离要求：
+
+- 默认 `pages-manager` cluster / `pages-system` namespace 只适合一个本地控制面长期持有 Slack Socket Mode 连接。
+- 多个开发者同时跑本地控制面时，必须分别设置独立的 cluster 名、API port、storage 目录、Cloudflare tunnel、公网 callback URL 和 Slack App token；不要让两套 connector 使用同一个 `SLACK_APP_TOKEN`。
+- `.env`、K8s Secret、PVC 数据和 gateway store 都按控制面实例隔离；不要把个人 `.env` 放到共享路径，也不要复用别人的 `PAGES_GATEWAY_PUBLIC_URL`。
+- 如果只是多人从 Slack 使用同一个 bot，不需要启动多套 connector；所有用户都走同一个 `pages-gateway`，再由 gateway 按 Slack user/session 隔离。
+
 如果要按 `xdclaw` 的本地验证方式一次跑完整个非破坏性链路，使用：
 
 ```bash
