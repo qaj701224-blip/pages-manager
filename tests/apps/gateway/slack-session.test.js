@@ -92,10 +92,10 @@ test('Slack sessions are isolated by user and channel thread', async () => {
   assert.equal(userTwoSessions[0].sessionKey, 'thread:C1:1710000000.000100');
 });
 
-test('DM messages with multiple active sessions ask the user to choose', async () => {
+test('top-level DM messages start isolated Slack thread sessions', async () => {
   const app = createGatewayApp();
 
-  await postSlack(
+  const first = await postSlack(
     app,
     slackEvent({
       eventId: 'Ev-dm-1',
@@ -103,7 +103,7 @@ test('DM messages with multiple active sessions ask the user to choose', async (
       text: 'issue: 做一个项目展示页',
     })
   );
-  await postSlack(
+  const second = await postSlack(
     app,
     slackEvent({
       eventId: 'Ev-dm-2',
@@ -111,8 +111,7 @@ test('DM messages with multiple active sessions ask the user to choose', async (
       text: 'issue: 做一个招聘落地页',
     })
   );
-
-  const ambiguous = await postSlack(
+  const third = await postSlack(
     app,
     slackEvent({
       eventId: 'Ev-dm-3',
@@ -121,10 +120,40 @@ test('DM messages with multiple active sessions ask the user to choose', async (
     })
   );
 
-  assert.equal(ambiguous.accepted, false);
-  assert.equal(ambiguous.action, 'ambiguous_active_dm_sessions');
-  assert.match(ambiguous.replyText, /多个最近的会话/);
-  assert.equal(ambiguous.sessions.length, 2);
+  assert.notEqual(first.slackSessionId, second.slackSessionId);
+  assert.notEqual(first.slackSessionId, third.slackSessionId);
+  assert.notEqual(second.slackSessionId, third.slackSessionId);
+  assert.equal(app.store.getSlackSession(first.slackSessionId).sessionKey, 'dm-thread:D1:1710000000.000100');
+  assert.equal(app.store.getSlackSession(second.slackSessionId).sessionKey, 'dm-thread:D1:1710000001.000100');
+  assert.equal(app.store.getSlackSession(third.slackSessionId).sessionKey, 'dm-thread:D1:1710000002.000100');
+});
+
+test('DM thread replies continue the same Slack session', async () => {
+  const app = createGatewayApp();
+
+  const first = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-dm-thread-1',
+      ts: '1710000000.000100',
+      text: '我想先聊聊个人网站',
+    })
+  );
+  const second = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-dm-thread-2',
+      ts: '1710000001.000100',
+      threadTs: '1710000000.000100',
+      text: '按你推荐的来，一个包含我个人特色的网站即可',
+    })
+  );
+
+  const session = app.store.getSlackSession(first.slackSessionId);
+
+  assert.equal(second.slackSessionId, first.slackSessionId);
+  assert.equal(session.sessionKey, 'dm-thread:D1:1710000000.000100');
+  assert.equal(session.threadTs, '1710000000.000100');
 });
 
 test('Slack users cannot select another user session explicitly', async () => {
@@ -183,7 +212,7 @@ test('Slack users cannot query another user job status', async () => {
   assert.match(forbidden.replyText, /不属于当前 Slack 用户/);
 });
 
-test('expired active context is not selected by default even when it is recent', async () => {
+test('top-level DM after expired active context starts a new thread session', async () => {
   const app = createGatewayApp();
   const created = await postSlack(
     app,
@@ -216,8 +245,9 @@ test('expired active context is not selected by default even when it is recent',
   );
 
   assert.equal(response.accepted, false);
-  assert.equal(response.action, 'ambiguous_recent_dm_sessions');
-  assert.match(response.replyText, /session: sess_xxx/);
+  assert.equal(response.action, 'agent_turn');
+  assert.notEqual(response.slackSessionId, created.slackSessionId);
+  assert.equal(app.store.getSlackSession(response.slackSessionId).sessionKey, 'dm-thread:D1:1710000001.000100');
 });
 
 test('Slack Agent lease prevents concurrent runs in the same session', () => {
