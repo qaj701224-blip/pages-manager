@@ -300,7 +300,7 @@ jobs:
         run: node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/callback.json
 
       - name: Callback gateway on failure
-        if: ${{ failure() }}
+        if: ${{ failure() && hashFiles('.pages-artifacts/callback.json') == '' }}
         shell: bash
         env:
           PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}

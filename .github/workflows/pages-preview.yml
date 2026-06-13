@@ -239,7 +239,7 @@ jobs:
         run: node "$RUNNER_TEMP/post-executor-callback.js" preview-worktree/.pages-artifacts/callback.json
 
       - name: Callback gateway on failure
-        if: ${{ failure() }}
+        if: ${{ failure() && hashFiles('preview-worktree/.pages-artifacts/callback.json') == '' }}
         shell: bash
         env:
           WORKFLOW_RUN_ID: ${{ github.run_id }}

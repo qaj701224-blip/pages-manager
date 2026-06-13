@@ -45,6 +45,30 @@ export async function readCallbackPayload(path) {
   return JSON.parse(raw);
 }
 
+function retryConfig(options = {}) {
+  const attempts = Number(
+    Object.hasOwn(options, 'maxAttempts') ? options.maxAttempts : process.env.PAGES_CALLBACK_MAX_ATTEMPTS || 4
+  );
+  const delayMs = Number(
+    Object.hasOwn(options, 'retryDelayMs') ? options.retryDelayMs : process.env.PAGES_CALLBACK_RETRY_DELAY_MS || 1000
+  );
+
+  return {
+    maxAttempts: Number.isFinite(attempts) && attempts > 0 ? Math.floor(attempts) : 4,
+    retryDelayMs: Number.isFinite(delayMs) && delayMs >= 0 ? Math.floor(delayMs) : 1000,
+  };
+}
+
+function isRetryableStatus(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+async function wait(ms, options = {}) {
+  if (ms <= 0) return;
+  const sleep = options.sleep || ((delay) => new Promise((resolve) => setTimeout(resolve, delay)));
+  await sleep(ms);
+}
+
 export async function postExecutorCallback(payload, options = {}) {
   const callbackUrl = Object.hasOwn(options, 'callbackUrl')
     ? options.callbackUrl
@@ -69,19 +93,44 @@ export async function postExecutorCallback(payload, options = {}) {
   }
 
   const fetchImpl = options.fetchImpl || fetch;
-  const response = await fetchImpl(safeCallbackUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
-  const body = await response.json().catch(() => null);
+  const { maxAttempts, retryDelayMs } = retryConfig(options);
+  let lastError = null;
 
-  if (!response.ok) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response;
+    let body;
+
+    try {
+      response = await fetchImpl(safeCallbackUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      body = await response.json().catch(() => null);
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts) {
+        await wait(retryDelayMs * attempt, options);
+        continue;
+      }
+      throw new Error(`Executor callback failed: ${err.message}`);
+    }
+
+    if (response.ok) {
+      return { skipped: false, status: response.status, body, attempts: attempt };
+    }
+
     const message = body?.error || response.statusText || `HTTP ${response.status}`;
+    lastError = new Error(message);
+    if (isRetryableStatus(response.status) && attempt < maxAttempts) {
+      await wait(retryDelayMs * attempt, options);
+      continue;
+    }
+
     throw new Error(`Executor callback failed: ${message}`);
   }
 
-  return { skipped: false, status: response.status, body };
+  throw new Error(`Executor callback failed: ${lastError?.message || 'unknown error'}`);
 }
 
 async function main(argv) {
