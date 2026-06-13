@@ -211,7 +211,22 @@ User / Employee
 - Thread 只用于单次需求/任务上下文、消息聚合和进度回写，不能把 thread 视为登录主体，也不能成为共享会话主体。
 - Slack Agent 必须按 `(team_id, slack_user_id)` 隔离用户；同一个用户可以有多个 `SlackSession`，session key 只能来自 thread、显式 session id 或 DM selector；job / issue / PR / preview 通过 `IssueLink` 作为 lookup alias，不反向改写 session key。
 - 同一个 thread 中多个用户发消息时，每个用户只进入自己名下的 `SlackSession`。
+- 用户只能显式续接自己名下的 `SlackSession` / `PublishingJob`。如果用户把别人的 `session: sess_xxx` 或 `job_xxx` 贴到 Slack，gateway 必须拒绝续接和状态查询，不能把对方的 issue、PR、preview、session memory 暴露出来。
 - 未绑定 SSO 的 Slack actor 只能收到登录/绑定链接，不能创建 `PublishingJob`。
+
+## 多人共享运行隔离
+
+多人使用同一台服务器时，运行时边界是“一个平台控制面 + 多个 Slack 用户会话”，不是每个用户各自启动一套 listener。
+
+隔离规则：
+
+- 同一个 Slack App 的 `SLACK_APP_TOKEN` 只能由一个 `slack-connector` Deployment 持有；Socket Mode 多进程连接同一个 `xapp` token 会导致事件被其它连接消费，表现为 Slack 里有消息但当前 connector 没有 `slack_event_received`。
+- `slack-connector` 在 Socket Mode MVP 中保持 `replicas: 1`。需要高可用时优先切 HTTP Events + gateway signature 校验，再在 gateway 后面横向扩容。
+- `pages-gateway` 负责用户隔离，所有 Slack session、memory、issue link、job status 查询都必须以 `(team_id, slack_user_id)` 为访问边界。
+- `slack-agent` 不持有 GitHub / Cloudflare / Slack connector token，只处理当前用户当前 session 的上下文；prompt 和审计日志里的用户文本可以记录，但 secret-like 内容必须先脱敏。
+- GitHub Actions / Coding Agent 不接收 Slack token，也不能直接读 gateway 的全量 session store；它们只处理 gateway 派发的单个 job context。
+
+本地多人共用开发机时，如果多个开发者都要跑自己的控制面，必须使用不同的 k3d/kind cluster 名、namespace、端口、PVC storage 目录、公网 tunnel 和 Slack App token。不要共用同一个 `SLACK_APP_TOKEN` 启动多套 Socket Mode connector。
 
 如果消息来自另一个 SlackBot：
 

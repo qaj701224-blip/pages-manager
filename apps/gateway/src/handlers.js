@@ -407,6 +407,12 @@ function slackJobInput(body) {
   };
 }
 
+function slackJobVisibleToActor(job, body) {
+  if (!job) return true;
+  const actor = slackActorFromBody(body);
+  return job.source === 'slack' && job.requestedById === actor.requestedById;
+}
+
 const CREATE_JOB_INTENTS = new Set(['create_or_update_site', 'new_site_request', 'create_site', 'update_site']);
 const FOLLOWUP_INTENTS = new Set(['modify_existing_preview', 'append_requirement']);
 const NON_FOLLOWUP_ACTIONS = new Set(['help', 'ping', 'status', 'cancel', 'close_session', 'empty', 'missing_requirement']);
@@ -730,6 +736,15 @@ export async function handleSlackEvents(request, env) {
 
   const sessionSelection = selectSlackSession(store, body, intake, env);
 
+  if (sessionSelection.forbidden) {
+    return jsonResponse({
+      ok: true,
+      action: sessionSelection.action,
+      accepted: false,
+      replyText: sessionSelection.replyText,
+    });
+  }
+
   if (sessionSelection.ambiguous) {
     return jsonResponse({
       ok: true,
@@ -765,6 +780,21 @@ export async function handleSlackEvents(request, env) {
   const agentRun = lease?.agentRun || null;
 
   if (intake.action === 'status') {
+    const statusJob = intake.jobId ? store.getJob(intake.jobId) : null;
+    if (statusJob && !slackJobVisibleToActor(statusJob, body)) {
+      completeSlackAgentRun(store, agentRun, {
+        report: { action: intake.action, jobId: intake.jobId, forbidden: true },
+      });
+      return jsonResponse({
+        ok: true,
+        action: 'forbidden_cross_user_job',
+        accepted: false,
+        replyText: '这个发布任务不属于当前 Slack 用户，不能查看状态。',
+        ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+        ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      });
+    }
+
     completeSlackAgentRun(store, agentRun, {
       report: { action: intake.action, jobId: intake.jobId || null },
     });
@@ -772,7 +802,7 @@ export async function handleSlackEvents(request, env) {
       ok: true,
       action: intake.action,
       accepted: false,
-      replyText: intake.jobId ? slackStatusReply(intake.jobId, store.getJob(intake.jobId)) : intake.replyText,
+      replyText: intake.jobId ? slackStatusReply(intake.jobId, statusJob) : intake.replyText,
       ...(slackSession ? { slackSessionId: slackSession.id } : {}),
       ...(agentRun ? { agentRunId: agentRun.id } : {}),
     });

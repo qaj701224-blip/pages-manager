@@ -127,6 +127,62 @@ test('DM messages with multiple active sessions ask the user to choose', async (
   assert.equal(ambiguous.sessions.length, 2);
 });
 
+test('Slack users cannot select another user session explicitly', async () => {
+  const app = createGatewayApp();
+
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-forbidden-session-1',
+      user: 'U1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个项目展示页',
+    })
+  );
+
+  const forbidden = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-forbidden-session-2',
+      user: 'U2',
+      ts: '1710000001.000100',
+      text: `session: ${created.slackSessionId} 继续修改`,
+    })
+  );
+
+  assert.equal(forbidden.accepted, false);
+  assert.equal(forbidden.action, 'forbidden_cross_user_session');
+  assert.match(forbidden.replyText, /不属于当前 Slack 用户/);
+});
+
+test('Slack users cannot query another user job status', async () => {
+  const app = createGatewayApp();
+
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-forbidden-job-1',
+      user: 'U1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个项目展示页',
+    })
+  );
+
+  const forbidden = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-forbidden-job-2',
+      user: 'U2',
+      ts: '1710000001.000100',
+      text: `状态 ${created.jobId}`,
+    })
+  );
+
+  assert.equal(forbidden.accepted, false);
+  assert.equal(forbidden.action, 'forbidden_cross_user_job');
+  assert.match(forbidden.replyText, /不属于当前 Slack 用户/);
+});
+
 test('expired active context is not selected by default even when it is recent', async () => {
   const app = createGatewayApp();
   const created = await postSlack(

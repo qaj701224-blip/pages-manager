@@ -106,6 +106,12 @@ function selectionReply(sessions) {
   return lines.join('\n');
 }
 
+function forbiddenReferenceReply(kind) {
+  return kind === 'job'
+    ? '这个发布任务不属于当前 Slack 用户，不能查看或继续操作。'
+    : '这个会话不属于当前 Slack 用户，不能查看或继续操作。';
+}
+
 function sessionInputFrom(body, intake, sessionKey, config, now) {
   const actor = slackActorFromBody(body);
   const surface = surfaceForSlackBody(body);
@@ -135,7 +141,16 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
 
   if (references.sessionId) {
     const byId = store.getSlackSession(references.sessionId);
-    if (byId && byId.teamId === actor.teamId && byId.primarySlackUserId === actor.slackUserId) {
+    if (byId && (byId.teamId !== actor.teamId || byId.primarySlackUserId !== actor.slackUserId)) {
+      return {
+        forbidden: true,
+        replyText: forbiddenReferenceReply('session'),
+        config,
+        action: 'forbidden_cross_user_session',
+      };
+    }
+
+    if (byId) {
       return {
         session: store.upsertSlackSession(
           {
@@ -157,7 +172,16 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
   if (references.jobId) {
     const linked = store.findIssueLinkByJobId(references.jobId);
     const linkedSession = linked ? store.getSlackSession(linked.slackSessionId) : null;
-    if (linkedSession && linkedSession.teamId === actor.teamId && linkedSession.primarySlackUserId === actor.slackUserId) {
+    if (linkedSession && (linkedSession.teamId !== actor.teamId || linkedSession.primarySlackUserId !== actor.slackUserId)) {
+      return {
+        forbidden: true,
+        replyText: forbiddenReferenceReply('job'),
+        config,
+        action: 'forbidden_cross_user_job',
+      };
+    }
+
+    if (linkedSession) {
       const session = store.upsertSlackSession(
         {
           ...linkedSession,
