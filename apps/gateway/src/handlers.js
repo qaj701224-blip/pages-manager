@@ -8,7 +8,7 @@ import {
   notifySlackJob,
   notifySlackJobStatus,
 } from './slack-notifier.js';
-import { selectSlackSession } from './slack-session.js';
+import { selectSlackSession, slackActorFromBody, surfaceForSlackBody } from './slack-session.js';
 
 const CALLBACK_STAGE_RESULTS = {
   index_ready: {
@@ -147,6 +147,18 @@ function required(value, name) {
     throw error;
   }
   return value;
+}
+
+function isUnaddressedChannelThreadMessage(body = {}) {
+  const event = body.event || {};
+  return event.type === 'message' && event.channel_type !== 'im' && Boolean(event.thread_ts);
+}
+
+function existingSlackThreadSession(store, body = {}) {
+  const actor = slackActorFromBody(body);
+  const surface = surfaceForSlackBody(body);
+  const sessionKey = `thread:${surface.channelId || 'unknown'}:${surface.threadTs || surface.messageTs || 'unknown'}`;
+  return store.findSlackSessionByScope?.(actor.teamId, actor.slackUserId, sessionKey) || null;
 }
 
 function publishingJobIdFromIssueBody(body) {
@@ -707,6 +719,15 @@ export async function handleSlackEvents(request, env) {
   }
 
   const intake = classifySlackIntake(body);
+  if (isUnaddressedChannelThreadMessage(body) && !existingSlackThreadSession(store, body)) {
+    return jsonResponse({
+      ok: true,
+      action: 'ignored_untracked_thread_message',
+      accepted: false,
+      reply: false,
+    });
+  }
+
   const sessionSelection = selectSlackSession(store, body, intake, env);
 
   if (sessionSelection.ambiguous) {
