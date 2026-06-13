@@ -40,6 +40,7 @@ export class MemoryGatewayStore {
     this.idempotency = new Map();
     this.events = new Map();
     this.githubDeliveries = new Map();
+    this.slackDeliveries = new Map();
     this.reviewAgentComments = new Map();
     this.slackNotifications = new Set();
     this.slackJobStatusMessages = new Map();
@@ -167,6 +168,24 @@ export class MemoryGatewayStore {
       createdAt: new Date().toISOString(),
     };
     this.githubDeliveries.set(key, delivery);
+    return { delivery, created: true };
+  }
+
+  recordSlackDelivery({ teamId, eventId, eventType, action }) {
+    const key = `${teamId || 'unknown-team'}:${eventId}`;
+    if (this.slackDeliveries.has(key)) {
+      return { delivery: this.slackDeliveries.get(key), created: false };
+    }
+
+    const delivery = {
+      teamId: teamId || 'unknown-team',
+      eventId,
+      eventType: eventType || null,
+      action: action || null,
+      status: 'received',
+      createdAt: new Date().toISOString(),
+    };
+    this.slackDeliveries.set(key, delivery);
     return { delivery, created: true };
   }
 

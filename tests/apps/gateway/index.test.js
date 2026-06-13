@@ -20,6 +20,19 @@ async function githubSignature(secret, body) {
   return `sha256=${hex}`;
 }
 
+async function slackSignature(secret, timestamp, body) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new globalThis.TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const digest = await crypto.subtle.sign('HMAC', key, new globalThis.TextEncoder().encode(`v0:${timestamp}:${body}`));
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `v0=${hex}`;
+}
+
 async function moveJobToPrCreated(app, options = {}) {
   const createBody = await json(
     await app.fetch(
@@ -347,6 +360,35 @@ test('Slack free-form turn stays conversational when Slack Agent is not configur
   assert.equal(body.jobId, undefined);
   assert.match(body.replyText, /没有可用的 Slack Agent/);
   assert.equal(app.store.jobs.size, 0);
+});
+
+test('Slack free-form turn redacts token-like content from gateway session memory', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-redact-memory-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000105',
+          text: '先聊聊 sk-123456789012345678901234',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const memory = app.store.getSessionMemory(body.slackSessionId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.accepted, false);
+  assert.doesNotMatch(JSON.stringify(memory), /sk-123456789012345678901234/);
+  assert.match(JSON.stringify(memory), /\[REDACTED_API_KEY\]/);
 });
 
 test('executor callbacks notify the source Slack thread', async () => {
@@ -775,32 +817,143 @@ test('index_ready callback can start worker to dispatch pages-agent', async () =
   assert.equal(workerStarts.length, 1);
 });
 
-test('Slack connector token is enforced when configured', async () => {
+test('Slack HTTP events require a valid Slack signature when configured', async () => {
   const app = createGatewayApp();
-  const request = (token) =>
+  const secret = 'slack-signing-secret';
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const body = JSON.stringify({
+    team_id: 'T1',
+    event_id: 'Ev-secure-1',
+    event: {
+      type: 'message',
+      user: 'U1',
+      channel: 'D1',
+      channel_type: 'im',
+      text: 'secure request',
+    },
+  });
+  const request = (signature) =>
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { 'X-Pages-Slack-Connector-Token': token } : {}),
+        'X-Slack-Request-Timestamp': timestamp,
+        ...(signature ? { 'X-Slack-Signature': signature } : {}),
       },
+      body,
+    });
+
+  const rejected = await app.fetch(request('v0=bad'), { SLACK_SIGNING_SECRET: secret, SLACK_EVENTS_PROCESSING_MODE: 'sync' });
+  assert.equal(rejected.status, 401);
+
+  const accepted = await app.fetch(request(await slackSignature(secret, timestamp, body)), {
+    SLACK_SIGNING_SECRET: secret,
+    SLACK_EVENTS_PROCESSING_MODE: 'sync',
+  });
+  assert.equal(accepted.status, 200);
+});
+
+test('Slack HTTP events fail closed when production signature config is missing', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         team_id: 'T1',
-        event_id: 'Ev-secure-1',
+        event_id: 'Ev-missing-signing-secret',
         event: {
           type: 'message',
           user: 'U1',
+          channel: 'D1',
           channel_type: 'im',
           text: 'secure request',
         },
       }),
-    });
+    }),
+    {
+      NODE_ENV: 'production',
+      SLACK_EVENTS_PROCESSING_MODE: 'async',
+    }
+  );
+  const body = await json(response);
 
-  const rejected = await app.fetch(request('wrong'), { SLACK_CONNECTOR_SHARED_SECRET: 'secret' });
-  assert.equal(rejected.status, 401);
+  assert.equal(response.status, 401);
+  assert.equal(body.error, 'Slack signing secret is not configured');
+});
 
-  const accepted = await app.fetch(request('secret'), { SLACK_CONNECTOR_SHARED_SECRET: 'secret' });
-  assert.equal(accepted.status, 200);
+test('Slack HTTP url verification echoes the challenge as plain text', async () => {
+  const app = createGatewayApp();
+  const secret = 'slack-signing-secret';
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const body = JSON.stringify({ type: 'url_verification', challenge: 'challenge-value' });
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Slack-Request-Timestamp': timestamp,
+        'X-Slack-Signature': await slackSignature(secret, timestamp, body),
+      },
+      body,
+    }),
+    { SLACK_SIGNING_SECRET: secret }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Content-Type'), 'text/plain; charset=utf-8');
+  assert.equal(await response.text(), 'challenge-value');
+});
+
+test('Slack interaction can close only the caller owned session', async () => {
+  const app = createGatewayApp();
+  const created = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-interaction-close-1',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.000310',
+            text: 'issue: 做一个个人主页',
+          },
+        }),
+      })
+    )
+  );
+  const secret = 'slack-signing-secret';
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const payload = JSON.stringify({
+    type: 'block_actions',
+    team: { id: 'T1' },
+    user: { id: 'U1' },
+    actions: [{ action_id: 'pages_close_session', value: created.slackSessionId }],
+  });
+  const formBody = new URLSearchParams({ payload }).toString();
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Slack-Request-Timestamp': timestamp,
+        'X-Slack-Signature': await slackSignature(secret, timestamp, formBody),
+      },
+      body: formBody,
+    }),
+    { SLACK_SIGNING_SECRET: secret }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.match(body.text, /已关闭/);
+  assert.equal(app.store.getSlackSession(created.slackSessionId).status, 'closed');
 });
 
 test('executor callback advances the preview loop', async () => {

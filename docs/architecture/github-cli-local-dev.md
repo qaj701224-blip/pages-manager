@@ -115,7 +115,7 @@ https://<public-tunnel>/internal/executor-callback
 http://localhost:8788/internal/executor-callback
 ```
 
-Slack Socket Mode 不需要公网 tunnel，因为它是本机主动连 Slack。当前 tunnel 只给 GitHub Actions callback 用；后续接 GitHub webhook 监听 Review Agent comment 时，也可以先复用同一个 gateway tunnel。
+Slack Events / Interactivity、GitHub Actions callback 和 GitHub webhook 都需要公网 tunnel 指到本地 K8s gateway。当前 tunnel 应同时配置到 Slack Request URL、GitHub webhook payload URL 和 Actions callback URL。
 
 推荐本地临时调试用 Cloudflare quick tunnel：
 
