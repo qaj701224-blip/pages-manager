@@ -61,6 +61,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  statuses: write
 
 concurrency:
   group: pages-agent-${{ inputs.publishingJobId }}
@@ -267,12 +268,103 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.headSha }}
         run: |
           set -euo pipefail
+
+          post_status() {
+            local state="$1"
+            local context="$2"
+            local description="$3"
+            local target_url="${4:-https://github.com/$GITHUB_REPOSITORY/actions?query=branch%3A$BRANCH_NAME}"
+
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+              -f state="$state" \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="$target_url" >/dev/null
+          }
+
+          wait_for_run() {
+            local workflow_file="$1"
+            local context="$2"
+            local run_id=""
+            local run_url=""
+            local status=""
+            local conclusion=""
+
+            for _ in {1..60}; do
+              run_id="$(
+                gh run list \
+                  --workflow "$workflow_file" \
+                  --branch "$BRANCH_NAME" \
+                  --event workflow_dispatch \
+                  --limit 20 \
+                  --json databaseId,headSha,createdAt \
+                  --jq 'map(select(.headSha == env.HEAD_SHA)) | sort_by(.createdAt) | reverse | .[0].databaseId // ""'
+              )"
+
+              if [[ -n "$run_id" ]]; then
+                break
+              fi
+              sleep 5
+            done
+
+            if [[ -z "$run_id" ]]; then
+              post_status "error" "$context" "$workflow_file dispatch run was not found"
+              echo "$workflow_file dispatch run was not found for $HEAD_SHA" >&2
+              return 1
+            fi
+
+            for _ in {1..90}; do
+              read -r status conclusion run_url < <(
+                gh run view "$run_id" \
+                  --json status,conclusion,url \
+                  --jq '[.status, (.conclusion // ""), .url] | @tsv'
+              )
+
+              if [[ "$status" == "completed" ]]; then
+                break
+              fi
+              sleep 10
+            done
+
+            if [[ "$status" != "completed" ]]; then
+              post_status "error" "$context" "$workflow_file timed out" "$run_url"
+              echo "$workflow_file did not complete in time: $run_url" >&2
+              return 1
+            fi
+
+            if [[ "$conclusion" == "success" ]]; then
+              post_status "success" "$context" "$workflow_file passed" "$run_url"
+              return 0
+            fi
+
+            post_status "failure" "$context" "$workflow_file concluded $conclusion" "$run_url"
+            echo "$workflow_file concluded $conclusion: $run_url" >&2
+            return 1
+          }
+
+          post_status "pending" "check" "Project CI dispatched by Pages Agent"
+          post_status "pending" "pages-generated-site-check" "Generated site validation dispatched"
+          post_status "pending" "pages-user-flow" "Generated site publishing checks are running"
+
           gh workflow run ci.yml --ref "$BRANCH_NAME"
           gh workflow run site-check.yml \
             --ref "$BRANCH_NAME" \
             -f baseRef="$BASE_REF" \
             -f headSha="$HEAD_SHA" \
             -f allowedPath="$ALLOWED_PATH"
+
+          checks_failed=0
+          wait_for_run ci.yml check || checks_failed=1
+          wait_for_run site-check.yml pages-generated-site-check || checks_failed=1
+
+          if [[ "$checks_failed" == "0" ]]; then
+            post_status "success" "pages-user-flow" "Generated site publishing checks passed"
+          else
+            post_status "failure" "pages-user-flow" "Generated site publishing checks failed"
+            exit 1
+          fi
 
       - name: Print callback payload
         shell: bash
