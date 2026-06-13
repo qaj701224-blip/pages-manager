@@ -14,6 +14,13 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /pages-agent-coding\.mjs/);
   assert.match(workflow, /AGENT_MODE" == "fix"/);
   assert.match(workflow, /stageResult: process\.env\.AGENT_MODE === 'fix' \? 'reviewing' : 'pr_created'/);
+  assert.match(workflow, /Pipeline: user-site publishing/);
+  assert.match(workflow, /Platform deployment: out of scope/);
+  assert.match(workflow, /Boundary: only %s\/\*\*/);
+  assert.match(
+    workflow,
+    /Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets/
+  );
   assert.match(workflow, /AGENT_GATEWAY_URL: \$\{\{ vars\.AGENT_GATEWAY_URL \}\}/);
   assert.match(workflow, /AGENT_MODEL_NAME: \$\{\{ vars\.AGENT_MODEL_NAME \}\}/);
   assert.match(workflow, /AGENT_CODE_API_KEY: \$\{\{ secrets\.AGENT_CODE_API_KEY \}\}/);
