@@ -269,6 +269,13 @@ function shouldStartWorkerForJob(job) {
   return job.status === 'received' || job.status === 'generating_page' || job.status === 'fixing' || job.status === 'previewing';
 }
 
+function shouldDispatchPreviewForReview(updatedJob, normalized, gate) {
+  if (!updatedJob || updatedJob.previewUrl || !gate.canPreview) return false;
+  if (!['review_summary', 'issue_comment'].includes(normalized.sourceType)) return false;
+  if (!['note', 'suggestion'].includes(normalized.classification)) return false;
+  return ['pr_created', 'reviewing', 'previewing'].includes(updatedJob.status);
+}
+
 async function startWorkerForJobIfConfigured(job, env) {
   if (!env.PAGES_WORKER_START_URL || !shouldStartWorkerForJob(job)) return null;
 
@@ -1302,14 +1309,10 @@ export async function handleGithubWebhook(request, env) {
         ? updatedJob
         : store.updateJob(updatedJob.id, 'changes_requested', fullHeadSha ? { headSha: fullHeadSha } : {});
     reviewAction = 'changes_requested';
-  } else if (
-    updatedJob &&
-    gate.canPreview &&
-    ['review_summary', 'issue_comment'].includes(normalized.sourceType) &&
-    ['note', 'suggestion'].includes(normalized.classification) &&
-    ['pr_created', 'reviewing'].includes(updatedJob.status)
-  ) {
-    updatedJob = store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});
+  } else if (shouldDispatchPreviewForReview(updatedJob, normalized, gate)) {
+    if (updatedJob.status !== 'previewing') {
+      updatedJob = store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});
+    }
     workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
     reviewAction = 'preview_dispatched';
   }
