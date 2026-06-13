@@ -41,6 +41,24 @@ test('review agent allowlist supports csv and json metadata', () => {
 test('classifies review agent comments conservatively', () => {
   assert.equal(classifyReviewAgentComment({ reviewState: 'changes_requested', body: 'Looks close' }), 'blocking');
   assert.equal(classifyReviewAgentComment({ body: 'Must fix this failing check.' }), 'blocking');
+  assert.equal(
+    classifyReviewAgentComment({
+      body: '**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-red?style=flat)</sub></sub> Security issue**',
+    }),
+    'blocking'
+  );
+  assert.equal(
+    classifyReviewAgentComment({
+      body: '**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> Limit contact row styles**',
+    }),
+    'suggestion'
+  );
+  assert.equal(
+    classifyReviewAgentComment({
+      body: '**<sub><sub>![P3 Badge](https://img.shields.io/badge/P3-blue?style=flat)</sub></sub> Optional polish**',
+    }),
+    'suggestion'
+  );
   assert.equal(classifyReviewAgentComment({ body: 'Here are some automated review suggestions.' }), 'suggestion');
   assert.equal(classifyReviewAgentComment({ body: '建议优化一下视觉层级。' }), 'suggestion');
   assert.equal(classifyReviewAgentComment({ reviewState: 'approved', body: 'LGTM' }), 'note');
