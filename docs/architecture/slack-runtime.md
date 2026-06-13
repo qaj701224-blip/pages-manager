@@ -39,6 +39,10 @@ apps/gateway
 
 `slack-connector` 是长期运行组件，不是本地测试脚本。它和 gateway 分进程部署，后续可以分别容器化、扩容、重启和注入不同 secret。
 
+`slack-connector` 收到目标消息后会先对用户原消息添加 `SLACK_CONNECTOR_WORKING_REACTION`，默认是 `eyes`，让用户立刻知道 Agent 已开始处理。这个 feedback 不参与任务状态机，失败时只记日志，不阻塞 gateway / Slack Agent / worker 流程。Slack App 需要授予 `reactions:write` 后重新安装 / 审批，否则日志会出现 `slack_reaction_failed`，但消息仍会继续转发给 gateway。
+
+为了排查 DM / thread 里“用户发了消息但平台没回复”的问题，connector 会记录被忽略事件的原因，例如 `ignored_subtype:message_replied`、`ignored_bot_event`、`unsupported_event`。被忽略事件只记录 channel、user、timestamp、text length 等 metadata，不记录消息原文，避免把其它 bot 或用户消息里的内部信息写入平台日志。如果某条用户消息完全没有 `slack_event_received` 或 `slack_event_ignored` 日志，说明 Slack 没有把该事件投递给当前 Socket Mode 连接，优先检查 Slack App 的 Event Subscriptions、Bot scopes、App Home Messages Tab 和 reinstall / approve 状态。
+
 当前代码中的 `apps/slack-agent` 是确定性 MVP adapter，用规则输出结构化字段。长期目标是把它升级为服务器常驻的模型 Agent runtime：服务本身跑在 K8s / 服务器上，持续处理同一 Slack DM 或 thread 的多轮消息，并在每轮消息到达时加载持久 session、调用配置的模型供应商、输出结构化 intent 和工具调用请求。
 
 模型能力统一来自公司 Agent Gateway；底层模型切换由公司网关负责，`pages-manager` 不直接接入外部模型供应商协议。Slack Agent 只能起草需求摘要、issue 内容、澄清问题、续接判断和工具调用请求；issue 创建、PR 创建、preview deploy 仍由 gateway / worker / controlled committer 这些平台组件执行。
@@ -372,7 +376,11 @@ PAGES_EMPLOYEE_SLUG
 PAGES_SITE_SLUG
 SLACK_BOT_USER_ID
 SLACK_CONNECTOR_REPLY_ON_RECEIVE
+SLACK_CONNECTOR_REACTION_ON_RECEIVE
+SLACK_CONNECTOR_WORKING_REACTION
+SLACK_CONNECTOR_LOG_IGNORED_EVENTS
 SLACK_CONNECTOR_ACCEPT_BOT_EVENTS
+SLACK_CONNECTOR_ACCEPT_THREAD_MESSAGES
 ```
 
 gateway 内置 Slack 回通 adapter 额外使用：

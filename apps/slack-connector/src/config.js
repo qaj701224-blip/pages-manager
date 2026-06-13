@@ -21,6 +21,9 @@ export function readConfig(env = process.env) {
     acceptBotEvents: flag(env.SLACK_CONNECTOR_ACCEPT_BOT_EVENTS, false),
     acceptThreadMessages: flag(env.SLACK_CONNECTOR_ACCEPT_THREAD_MESSAGES, false),
     replyOnReceive: flag(env.SLACK_CONNECTOR_REPLY_ON_RECEIVE, true),
+    reactionOnReceive: flag(env.SLACK_CONNECTOR_REACTION_ON_RECEIVE, true),
+    workingReaction: env.SLACK_CONNECTOR_WORKING_REACTION || 'eyes',
+    logIgnoredEvents: flag(env.SLACK_CONNECTOR_LOG_IGNORED_EVENTS, true),
     botUserId: env.SLACK_BOT_USER_ID || null,
   };
 }

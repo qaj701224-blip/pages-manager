@@ -19,11 +19,19 @@ function isChannelThreadMessage(event) {
 }
 
 export function isTargetSlackEvent(event, options = {}) {
-  if (!event || isIgnoredSubtype(event)) return false;
-  if (isBotEvent(event) && !options.acceptBotEvents) return false;
-  return Boolean(
-    isDirectMessage(event) || isAppMention(event) || (options.acceptThreadMessages && isChannelThreadMessage(event))
-  );
+  return classifySlackEvent(event, options).target;
+}
+
+export function classifySlackEvent(event, options = {}) {
+  if (!event) return { target: false, reason: 'missing_event' };
+  if (isIgnoredSubtype(event)) return { target: false, reason: `ignored_subtype:${event.subtype}` };
+  if (isBotEvent(event) && !options.acceptBotEvents) return { target: false, reason: 'ignored_bot_event' };
+  if (isDirectMessage(event)) return { target: true, reason: 'direct_message' };
+  if (isAppMention(event)) return { target: true, reason: 'app_mention' };
+  if (options.acceptThreadMessages && isChannelThreadMessage(event)) {
+    return { target: true, reason: 'channel_thread_message' };
+  }
+  return { target: false, reason: 'unsupported_event' };
 }
 
 export function normalizeSlackText(text = '', options = {}) {
@@ -107,6 +115,18 @@ export function buildSlackReplyMessage(event, text) {
   }
 
   return message;
+}
+
+export function buildSlackReaction(event, reactionName = 'eyes') {
+  const name = String(reactionName || '')
+    .trim()
+    .replace(/^:+|:+$/g, '');
+  if (!event?.channel || !event?.ts || !name) return null;
+  return {
+    channel: event.channel,
+    timestamp: event.ts,
+    name,
+  };
 }
 
 export async function postGatewayEvent(fetchImpl, gatewaySlackUrl, payload, options = {}) {

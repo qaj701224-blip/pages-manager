@@ -55,6 +55,7 @@ Bot scopes:
 app_mentions:read
 im:history
 chat:write
+reactions:write
 ```
 
 App-Level Token:

@@ -31,10 +31,11 @@ Required Slack settings:
 - Socket Mode: on
 - Event Subscriptions: on
 - Bot events: `app_mention`, `message.im`
-- Bot scopes: `app_mentions:read`, `im:history`, `chat:write`
+- Bot scopes: `app_mentions:read`, `im:history`, `chat:write`, `reactions:write`
 - App-level token scope: `connections:write`
 
 The `xoxb` bot token and `xapp` app token must belong to the same Slack App.
+By default, the connector adds an `eyes` reaction to each accepted user message before forwarding it to gateway. Override it with `SLACK_CONNECTOR_WORKING_REACTION`, or disable it with `SLACK_CONNECTOR_REACTION_ON_RECEIVE=false`.
 
 ## Local Smoke Messages
 
