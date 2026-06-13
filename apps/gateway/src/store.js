@@ -42,6 +42,9 @@ export class MemoryGatewayStore {
     this.githubDeliveries = new Map();
     this.reviewAgentComments = new Map();
     this.slackNotifications = new Set();
+    this.slackJobStatusMessages = new Map();
+    this.agentRunEvents = new Map();
+    this.agentRunEventByDedupeKey = new Map();
     this.slackSessions = new Map();
     this.slackSessionByScopeKey = new Map();
     this.sessionMemories = new Map();
@@ -229,6 +232,55 @@ export class MemoryGatewayStore {
 
   recordSlackNotification(jobId, key) {
     this.slackNotifications.add(`${jobId}:${key}`);
+  }
+
+  getSlackJobStatusMessage(jobId) {
+    return this.slackJobStatusMessages.get(jobId) || null;
+  }
+
+  recordSlackJobStatusMessage(jobId, input = {}, now = new Date()) {
+    const existing = this.getSlackJobStatusMessage(jobId);
+    const nowIso = now.toISOString();
+    const message = {
+      ...(existing || {}),
+      jobId,
+      channel: input.channel ?? existing?.channel ?? null,
+      threadTs: input.threadTs ?? existing?.threadTs ?? null,
+      messageTs: input.messageTs ?? input.ts ?? existing?.messageTs ?? null,
+      stage: input.stage ?? existing?.stage ?? null,
+      status: input.status ?? existing?.status ?? null,
+      updatedAt: nowIso,
+      createdAt: existing?.createdAt || nowIso,
+    };
+    this.slackJobStatusMessages.set(jobId, message);
+    return message;
+  }
+
+  recordAgentRunEvent(input = {}, now = new Date()) {
+    const dedupeKey = input.dedupeKey || input.dedupe_key || null;
+    if (dedupeKey && this.agentRunEventByDedupeKey.has(dedupeKey)) {
+      return { event: this.agentRunEvents.get(this.agentRunEventByDedupeKey.get(dedupeKey)), created: false };
+    }
+
+    const nowIso = now.toISOString();
+    const event = {
+      id: input.id || makeId('agentevent'),
+      publishingJobId: input.publishingJobId || input.publishing_job_id || null,
+      slackSessionId: input.slackSessionId || input.slack_session_id || null,
+      agentRunId: input.agentRunId || input.agent_run_id || null,
+      type: input.type || 'job_progress',
+      stage: input.stage || null,
+      text: input.text || '',
+      status: input.status || 'recorded',
+      dedupeKey,
+      slackChannelId: input.slackChannelId || input.slack_channel_id || null,
+      slackThreadTs: input.slackThreadTs || input.slack_thread_ts || null,
+      slackMessageTs: input.slackMessageTs || input.slack_message_ts || null,
+      createdAt: nowIso,
+    };
+    this.agentRunEvents.set(event.id, event);
+    if (dedupeKey) this.agentRunEventByDedupeKey.set(dedupeKey, event.id);
+    return { event, created: true };
   }
 
   slackSessionScopeKey(input) {
