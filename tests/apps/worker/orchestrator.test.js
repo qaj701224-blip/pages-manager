@@ -46,6 +46,9 @@ test('worker config defaults generated work to staging base ref', () => {
   assert.equal(workerConfig.prMode, 'per_job');
   assert.equal(workerConfig.previewMode, 'actions');
   assert.equal(workerConfig.previewSiteNamePattern, 'pm-pr-{prNumber}-{employeeSlug}-{siteSlug}');
+  assert.equal(workerConfig.previewIpRestrict, true);
+  assert.equal(workerConfig.callbackUrl, 'http://localhost:8788/internal/executor-callback');
+  assert.equal(workerConfig.workerCallbackUrl, 'http://localhost:8788/internal/executor-callback');
 });
 
 test('worker config can enable smoke PR reuse', () => {
@@ -414,7 +417,9 @@ test('previewing job can deploy through local pages-manager API', async () => {
       previewMode: 'local_deploy',
       pagesApi: 'https://api-staging.workers.xd.team',
       pagesToken: 'pages-preview@xd.com',
-      previewIpRestrict: false,
+      previewIpRestrict: true,
+      callbackUrl: 'https://gateway.example/internal/executor-callback',
+      workerCallbackUrl: 'http://pages-gateway:8788/internal/executor-callback',
     },
     {
       async fetchImpl(url, request = {}) {
@@ -444,7 +449,7 @@ test('previewing job can deploy through local pages-manager API', async () => {
           assert.equal(request.headers['X-Pages-Token'], 'pages-preview@xd.com');
           assert.equal(request.body.get('name'), 'pm-pr-19-zhangsan-profile');
           assert.equal(request.body.get('preset'), 'static');
-          assert.equal(request.body.get('ip_restrict'), 'false');
+          assert.equal(request.body.get('ip_restrict'), 'true');
           assert.equal(request.body.get('file-0').name, 'index.html');
           return new Response(
             JSON.stringify({
@@ -458,7 +463,7 @@ test('previewing job can deploy through local pages-manager API', async () => {
           );
         }
 
-        if (String(url) === 'http://gateway.test/internal/executor-callback') {
+        if (String(url) === 'http://pages-gateway:8788/internal/executor-callback') {
           const body = JSON.parse(request.body);
           assert.equal(body.stageResult, 'preview_deployed');
           assert.equal(body.previewUrl, 'https://pm-pr-19-zhangsan-profile.staging.workers.xd.team');
