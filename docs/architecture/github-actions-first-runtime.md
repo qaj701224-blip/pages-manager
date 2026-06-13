@@ -1,8 +1,8 @@
-# GitHub Actions First Runtime
+# GitHub Actions Executor Runtime
 
 ## 定位
 
-前期可以不使用 K8s Job container，而是先用 GitHub Actions 作为自动开发、构建、preview 和 PR 门禁的执行环境。常驻控制面仍然按 [local-k8s-control-plane.md](./local-k8s-control-plane.md) 跑在本地 K8s 的 `pages-system` namespace。
+前期可以不使用 K8s Job container，而是先用 GitHub Actions 作为自动开发、构建、preview 和 PR 门禁的一次性 executor。常驻控制面必须按 [local-k8s-control-plane.md](./local-k8s-control-plane.md) 跑在 K8s 的 `pages-system` namespace；运行态硬约束见 [k8s-runtime-contract.md](./k8s-runtime-contract.md)。
 
 这不是推翻原架构，而是把执行层从：
 
@@ -22,7 +22,7 @@ GitHub Actions workflow_dispatch / repository_dispatch
 GitHub Actions runner container
 ```
 
-gateway、Slack、issue、PR、Review Agent comment 监听、权限、审计仍然保留。
+gateway、Slack、issue、PR、Review Agent comment 监听、权限、审计仍然保留在 K8s 控制面。GitHub Actions runner 只执行单次任务，不能承担状态监听或控制面职责。
 
 ## 和截图中方案的对应关系
 
@@ -43,13 +43,13 @@ Greptile / GitHub Review Agent review PR
 先生成 preview，production 不默认全自动发布
 ```
 
-也就是说，前期不需要单独连本地 GitLab runner，也不需要一开始准备 `pages-jobs` namespace / PVC / Job 镜像。GitHub Actions runner 本身就是一次性云端执行环境，足够支撑 MVP 的自动开发、构建、PR 和 preview。
+也就是说，前期不需要单独连本地 GitLab runner，也不需要一开始准备 `pages-jobs` namespace / PVC / Job 镜像。GitHub Actions runner 本身就是一次性云端执行环境，足够支撑自动开发、构建、PR 和 preview。
 
-但这个方案不能省掉平台控制面：Slack 消息归纳、权限判断、`PublishingJob` 状态机、GitHub webhook、`ReviewAgentComment` 入库、审计和 Slack 回写仍然必须由 `pages-gateway` / worker 层负责。
+但这个方案不能省掉平台控制面：Slack 消息归纳、权限判断、`PublishingJob` 状态机、GitHub webhook、`ReviewAgentComment` 入库、审计和 Slack 回写仍然必须由 K8s 中的 `pages-gateway` / worker 层负责，不能由本机 `gh watch` 或人工轮询补齐。
 
 ## 适用场景
 
-Actions-first executor 适合 MVP：
+Actions executor 适合当前阶段：
 
 - 常驻控制面已经跑本地 K8s，但不想一开始实现 K8s Job executor。
 - 希望快速跑通 Slack 到 issue、agent 编码、PR、review、preview 的闭环。
@@ -64,7 +64,7 @@ Actions-first executor 适合 MVP：
 - 需要跨多个 Git provider 或非 GitHub Enterprise 环境统一调度。
 - 需要平台掌握完整的 job lifecycle、queue、lease、重试和成本控制。
 
-## MVP 主链路
+## 主链路
 
 ```text
 Slack message
@@ -89,12 +89,12 @@ GitHub Actions site-check required check
   ↓
 Greptile / GitHub Review Agent review PR
   ↓
-review-monitor-worker 监听 Review Agent comments
+GitHub webhook 进入 K8s gateway / review-monitor-worker
   ↓
 blocking comment 触发下一轮 workflow_dispatch 修复
 用户在 Slack 里继续调整设计时，也通过 active SlackSession / IssueLink 触发同一条 fix 通路
   ↓
-site-check / pages-site-policy / Review Agent gate 通过
+site-check / pages-site-policy / Review Agent gate 在 K8s gateway 内归一化通过
   ↓
 preview deploy workflow
   ↓
@@ -105,7 +105,7 @@ Slack / issue / PR 回写
 
 ### 常驻组件
 
-仍然跑在 `pages-manager` 平台侧，MVP 用本地 K8s `pages-system` namespace 承载：
+仍然跑在 `pages-manager` 平台侧，由 K8s `pages-system` namespace 承载：
 
 ```text
 pages-gateway
@@ -145,7 +145,7 @@ redis / queue
   后续 production deploy
 ```
 
-MVP 默认使用 GitHub-hosted runner，也就是 workflow 中的：
+当前默认使用 GitHub-hosted runner，也就是 workflow 中的：
 
 ```text
 runs-on: ubuntu-latest
@@ -405,13 +405,13 @@ approvalMode = manual-required
 - 不自动发布 production。
 - production merge / deploy 需要人工确认，或者至少由受控 deploy workflow 从 `merge_commit_sha` 触发。
 
-同事提到“全自动有风险，最好不要自动发布到线上”是对的。MVP 应该先把 preview 做好，再逐步开放 `trusted-auto`。
+同事提到“全自动有风险，最好不要自动发布到线上”是对的。当前应该先把 preview 做好，再逐步开放 `trusted-auto`。
 
 ## 与 K8s 方案的关系
 
-Actions-first 是 MVP 执行层简化：
+Actions executor 是执行层简化，不是控制面简化：
 
-| 能力 | Actions-first MVP | K8s 长期形态 |
+| 能力 | GitHub Actions executor | K8s Job executor |
 | --- | --- | --- |
 | coding agent | GitHub Actions runner | K8s `coding-agent-runner` Job |
 | builder | GitHub Actions / workflow job | K8s `page-builder` Job |
@@ -419,7 +419,7 @@ Actions-first 是 MVP 执行层简化：
 | preview | GitHub Actions workflow | K8s deployer job 或 Actions |
 | production deploy | 受控 GitHub Actions workflow | K8s deployer job |
 | job isolation | GitHub runner isolation | namespace / RBAC / Secret / PVC |
-| queue / lease | gateway + GitHub workflow run status | gateway + Redis/BullMQ + K8s Job |
+| queue / lease | K8s gateway / worker + executor callback / GitHub webhook | gateway + Redis/BullMQ + K8s Job callback |
 | scaling | GitHub Actions concurrency quota | K8s cluster resources |
 
 未来迁移到 K8s 时，保持上层状态机不变：
@@ -446,9 +446,9 @@ Slack + gateway + GitHub issue/PR + GitHub Actions coding workflow + Greptile re
 但是必须保留这些边界：
 
 - issue / PR 仍在 `pages-manager` repo。
-- gateway 仍是权限和状态真相源。
+- K8s gateway / worker 仍是权限和状态真相源。
 - coding workflow 只允许改目标 `sites/<employee>/<site>/`。
 - `site-check` 是 required check。
-- Greptile comments 进入 `ReviewAgentComment`。
+- Greptile / GitHub Review Agent comments 必须通过 GitHub webhook 进入 `ReviewAgentComment`。
 - preview 优先，production 不默认自动发布。
 - 后续能无痛替换为 K8s Job executor。

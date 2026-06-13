@@ -21,7 +21,7 @@
 - instance-manager sidecar。
 - 每个用户长驻容器的运行模型。
 
-`pages-manager` 的核心对象是 `SiteProject` 和 `PublishingJob`。MVP 常驻控制面先跑在本地 K8s 的 `pages-system` namespace；前期一次性发布任务跑在 GitHub Actions runner。后续如果启用 K8s Job executor，也只运行一次性的发布任务。最终网站跑在 Cloudflare resource pool。
+`pages-manager` 的核心对象是 `SiteProject` 和 `PublishingJob`。常驻控制面必须跑在 K8s 的 `pages-system` namespace；当前一次性发布任务可以跑在 GitHub Actions runner。后续如果启用 K8s Job executor，也只运行一次性的发布任务。最终网站跑在 Cloudflare resource pool。
 
 ## 1. Gateway / Worker 边界
 
@@ -45,14 +45,14 @@
 
 ## 2. Local / Remote 双模式
 
-`xdclaw` 本地开发时可以用 `LocalWorkerClient`，生产用独立 worker 服务。这个模式很适合 `pages-manager`。
+`xdclaw` 本地开发时可以用 `LocalWorkerClient`，生产用独立 worker 服务。`pages-manager` 可以借鉴“接口隔离”的代码组织方式，但完整链路验收必须使用 K8s worker；Local client 只能作为单元测试或开发调试替身。
 
 建议：
 
 ```text
 PagesWorkerClient
 ├─ LocalPagesWorkerClient
-│    本地 dev 进程内执行 summarize / workflow dispatch
+│    单元测试 / 调试替身，不能作为完整链路运行态
 │
 └─ RemotePagesWorkerClient
      生产通过 HTTP / queue dispatch 到 worker Deployment
@@ -60,9 +60,9 @@ PagesWorkerClient
 
 好处：
 
-- 本地调试不用先起完整 K8s worker，也不需要真实触发 GitHub Actions。
+- 单元测试可以不用先起完整 K8s worker，也不需要真实触发 GitHub Actions。
 - 业务代码只依赖接口，不关心执行位置。
-- 本地和生产使用同一套 callback / attempt / state transition 逻辑。
+- 本地完整验收和生产使用同一套 K8s callback / attempt / state transition 逻辑。
 
 ## 3. DB / Redis / Secret 分层
 
@@ -114,7 +114,7 @@ retry 必须新建 attempt。旧 attempt 的迟到 callback 只能写审计，�
 namespace: instance-<instanceId>
 ```
 
-MVP 先使用 `pages-system` namespace 跑常驻控制面。后续 K8s executor 不应该一网站一 namespace。它应该是一任务一 namespace，或共享 jobs namespace：
+先使用 `pages-system` namespace 跑常驻控制面。后续 K8s executor 不应该一网站一 namespace。它应该是一任务一 namespace，或共享 jobs namespace：
 
 ```text
 namespace: page-job-<jobId>

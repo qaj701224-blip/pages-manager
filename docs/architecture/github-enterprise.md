@@ -4,7 +4,7 @@
 
 `pages-manager` 仓库位于公司 GitHub Enterprise 组织 / 团队空间内。
 
-MVP 的 Git 闭环明确使用 GitHub Enterprise，不再把 GitHub / GitLab 做成同等候选项。后续如果要支持 GitLab 或其他 Git provider，可以在 `packages/git-client` 内增加适配层，但 MVP 的权限、Webhook、CODEOWNERS、Rulesets 和 Actions Environments 都按 GitHub Enterprise 设计。
+当前 Git 闭环明确使用 GitHub Enterprise，不再把 GitHub / GitLab 做成同等候选项。后续如果要支持 GitLab 或其他 Git provider，可以在 `packages/git-client` 内增加适配层，但当前权限、Webhook、CODEOWNERS、Rulesets 和 Actions Environments 都按 GitHub Enterprise 设计。
 
 ## 平台身份
 
@@ -37,7 +37,7 @@ GITHUB_REVIEW_AGENT_ALLOWLIST
 
 ## GitHub App 权限
 
-MVP 建议权限：
+当前建议权限：
 
 | 权限 | 级别 | 用途 |
 | --- | --- | --- |
@@ -54,15 +54,15 @@ MVP 建议权限：
 - GitHub App 不直接持有 Slack bot token。
 - 普通 coding-agent / builder / site-check job 不拿 Contents write token。
 - controlled-committer 只在校验 patch 后拿短期 installation token 写受控 branch。
-- auto-merge token 和 branch 写 token 逻辑上分离；MVP 默认 `manual-required`，不默认启用自动合并。
+- auto-merge token 和 branch 写 token 逻辑上分离；当前默认 `manual-required`，不默认启用自动合并。
 
 需要特别注意：GitHub App installation token 的 `Contents: write` 是 repository 级能力，不是 path-scoped token。路径隔离不能依赖 GitHub token 本身，只能依赖平台自己的 diff validator、受控 branch prefix、required checks、Rulesets 和 workflow secret 分层。也就是说，controlled-committer 在拿到 token 前必须已经完成 patch 校验；拿到 token 后也只能执行创建受控 branch / commit / PR 这一段短动作。
 
 ## 本地 gh CLI
 
-本地开发可以使用 `gh` CLI 做冒烟测试，例如确认 repo 访问、创建测试 issue、手动触发 workflow、查看 PR 和 workflow run。
+本地开发可以使用 `gh` CLI 做观察和排障，例如确认 repo 访问、创建一次性测试 issue、手动触发 workflow、查看 PR 和 workflow run。
 
-但 `gh` CLI 只属于开发者本地调试工具，不是平台生产身份。正式链路仍然必须使用 GitHub App installation token、gateway dispatch、workflow callback 和 GitHub webhook。
+但 `gh` CLI 只属于开发者本地调试工具，不是平台生产身份，也不是本地完整链路的状态来源。正式链路仍然必须使用 GitHub App installation token、K8s gateway / worker dispatch、workflow callback 和 GitHub webhook；Review Agent comment 和 check 状态不能靠本机 `gh` 轮询推进。
 
 本地验证细节见 [github-cli-local-dev.md](./github-cli-local-dev.md)。
 
@@ -180,7 +180,7 @@ GitHubWebhookDelivery
 unique(repo_full_name, delivery_id)
 ```
 
-MVP 需要处理：
+当前需要处理：
 
 | Event | 用途 |
 | --- | --- |
@@ -248,15 +248,15 @@ controlled-committer 禁止持有：
 
 如果 patch 触碰 `.github/**`、`apps/**`、`packages/**`、`templates/**`、`k8s/**` 或其他非目标路径，controlled-committer 必须直接失败，不创建 PR。
 
-## MVP Worker Dispatch
+## Worker Dispatch
 
-第一版长期链路中，GitHub issue 和 workflow dispatch 不跑在 Slack connector，也不跑在 gateway 主流程里，而是由 `apps/worker` 执行：
+GitHub issue 和 workflow dispatch 不跑在 Slack connector，也不跑在 gateway 主流程里，而是由 K8s 中的 `apps/worker` 执行：
 
 ```text
-apps/gateway
+K8s apps/gateway
   创建 PublishingJob
   ↓
-apps/worker
+K8s apps/worker
   ensure GitHub issue
   dispatch project-index.yml
   等 index_ready callback 后 dispatch pages-agent.yml
@@ -281,10 +281,10 @@ PAGES_SMOKE_ISSUE_SCOPE=local-slack-smoke
 
 `PAGES_EXECUTOR_MODE=issue_only` 只创建 / 复用 GitHub issue 并 callback gateway 到 `issue_created`，不 dispatch `project-index.yml`。这是因为 GitHub workflow dispatch 对 workflow 所在分支有要求；在 workflow 尚未合入可调度分支前，`issue_only` 可以先验证 Slack 到 GitHub issue 的真实链路。
 
-MVP 自动生成站点 PR 时，`workflowRef` 和 `baseRef` 要分开理解：
+自动生成站点 PR 时，`workflowRef` 和 `baseRef` 要分开理解：
 
 - `PAGES_WORKFLOW_REF`：从哪个分支运行 workflow，当前本地 smoke 使用已合入新版 workflow 合同的 `staging`。
-- `PAGES_BASE_REF` / `PAGES_PR_BASE_REF`：Project Index checkout、Pages Agent checkout 和自动 PR 的 base，MVP 默认 `staging`。
+- `PAGES_BASE_REF` / `PAGES_PR_BASE_REF`：Project Index checkout、Pages Agent checkout 和自动 PR 的 base，当前默认 `staging`。
 - `PAGES_PREVIEW_HOSTNAME_PATTERN`：可选的 Preview hostname 模板，例如 `pr-{prNumber}-{employeeSlug}-{siteSlug}-staging.workers.xd.team`；不配置时 `pages-preview.yml` 会生成 placeholder preview URL。
 
 也就是说，当前第一优先级是让 Slack 自动化先合入 / 部署到 `staging` 预发链路，而不是直接进入 `master` / production。
