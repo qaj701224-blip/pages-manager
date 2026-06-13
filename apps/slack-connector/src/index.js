@@ -3,30 +3,106 @@ import slackBolt from '@slack/bolt';
 import { readConfig } from './config.js';
 import {
   buildGatewayPayload,
+  buildSlackReaction,
   buildSlackAckText,
   buildSlackReplyMessage,
-  isTargetSlackEvent,
+  classifySlackEvent,
   postGatewayEvent,
   shouldReplyToGatewayResult,
 } from './slack-event.js';
 
 const { App } = slackBolt;
 
+function summarizeSlackEvent(event, extra = {}, options = {}) {
+  const text = event?.text || '';
+  const summary = {
+    service: 'pages-slack-connector',
+    type: event?.type || null,
+    subtype: event?.subtype || null,
+    channel: event?.channel || null,
+    channelType: event?.channel_type || null,
+    user: event?.user || null,
+    threadTs: event?.thread_ts || null,
+    ts: event?.ts || null,
+    textLength: text.length,
+    ...extra,
+  };
+  if (options.includeText) {
+    summary.text = text;
+  }
+  return summary;
+}
+
+async function addWorkingReaction(client, event, config, logger) {
+  if (!config.reactionOnReceive) return;
+
+  const reaction = buildSlackReaction(event, config.workingReaction);
+  if (!reaction) return;
+
+  try {
+    await client.reactions.add(reaction);
+    console.log(
+      JSON.stringify(
+        summarizeSlackEvent(event, {
+          message: 'slack_reaction_added',
+          reaction: reaction.name,
+        })
+      )
+    );
+  } catch (err) {
+    const error = err?.data?.error || err?.message || 'unknown_error';
+    console.log(
+      JSON.stringify(
+        summarizeSlackEvent(event, {
+          message: 'slack_reaction_failed',
+          reaction: reaction.name,
+          error,
+        })
+      )
+    );
+    if (error !== 'already_reacted') {
+      logger?.warn?.(err);
+    }
+  }
+}
+
 async function handleSlackEvent({ body, event, client, logger }, config, fetchImpl = fetch) {
-  if (!isTargetSlackEvent(event, { acceptBotEvents: config.acceptBotEvents })) return;
+  const classification = classifySlackEvent(event, {
+    acceptBotEvents: config.acceptBotEvents,
+    acceptThreadMessages: config.acceptThreadMessages,
+  });
+
+  if (!classification.target) {
+    if (config.logIgnoredEvents && (event?.channel_type === 'im' || event?.thread_ts || event?.subtype)) {
+      console.log(
+        JSON.stringify(
+          summarizeSlackEvent(event, {
+            message: 'slack_event_ignored',
+            reason: classification.reason,
+          })
+        )
+      );
+    }
+    return;
+  }
 
   try {
     console.log(
       JSON.stringify({
         service: 'pages-slack-connector',
         message: 'slack_event_received',
+        reason: classification.reason,
         type: event.type,
+        subtype: event.subtype || null,
         channel: event.channel,
         channelType: event.channel_type || null,
         user: event.user || null,
+        threadTs: event.thread_ts || null,
+        ts: event.ts || null,
         text: event.text || '',
       })
     );
+    await addWorkingReaction(client, event, config, logger);
     const payload = buildGatewayPayload(body, event, config);
     const result = await postGatewayEvent(fetchImpl, config.gatewaySlackUrl, payload, {
       connectorToken: config.gatewayConnectorToken,
