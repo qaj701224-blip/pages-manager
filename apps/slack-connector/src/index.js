@@ -1,6 +1,7 @@
 import slackBolt from '@slack/bolt';
 
 import { readConfig } from './config.js';
+import { createMessageDedupeCache, markMessageProcessed, startSlackDirectMessagePoller } from './dm-poller.js';
 import {
   buildGatewayPayload,
   buildSlackReaction,
@@ -32,6 +33,13 @@ function summarizeSlackEvent(event, extra = {}, options = {}) {
     summary.text = text;
   }
   return summary;
+}
+
+function ignoredDuplicateSummary(event) {
+  return summarizeSlackEvent(event, {
+    message: 'slack_event_duplicate_ignored',
+    reason: 'duplicate_message_ts',
+  });
 }
 
 async function addWorkingReaction(client, event, config, logger) {
@@ -67,7 +75,7 @@ async function addWorkingReaction(client, event, config, logger) {
   }
 }
 
-async function handleSlackEvent({ body, event, client, logger }, config, fetchImpl = fetch) {
+async function handleSlackEvent({ body, event, client, logger }, config, fetchImpl = fetch, options = {}) {
   const classification = classifySlackEvent(event, {
     acceptBotEvents: config.acceptBotEvents,
     acceptThreadMessages: config.acceptThreadMessages,
@@ -84,6 +92,11 @@ async function handleSlackEvent({ body, event, client, logger }, config, fetchIm
         )
       );
     }
+    return;
+  }
+
+  if (options.processedMessages && markMessageProcessed(options.processedMessages, event)) {
+    console.log(JSON.stringify(ignoredDuplicateSummary(event)));
     return;
   }
 
@@ -140,9 +153,20 @@ export function createSlackConnector(config = readConfig(), options = {}) {
     socketMode: true,
   });
   const fetchImpl = options.fetchImpl || fetch;
+  const processedMessages = options.processedMessages || createMessageDedupeCache();
+  const wrappedHandler = (args) => handleSlackEvent(args, config, fetchImpl, { processedMessages });
 
-  app.event('app_mention', async (args) => handleSlackEvent(args, config, fetchImpl));
-  app.event('message', async (args) => handleSlackEvent(args, config, fetchImpl));
+  app.event('app_mention', wrappedHandler);
+  app.event('message', wrappedHandler);
+
+  startSlackDirectMessagePoller({
+    config,
+    fetchImpl,
+    client: app.client,
+    logger: app.logger,
+    processedMessages,
+    onEvent: handleSlackEvent,
+  });
 
   return app;
 }
