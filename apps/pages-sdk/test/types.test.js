@@ -65,8 +65,9 @@ void context;
 
   try {
     execFileSync(
-      'pnpm',
+      'corepack',
       [
+        'pnpm',
         '--filter',
         '@xd/pages-sdk',
         'exec',
