@@ -1,6 +1,6 @@
 import { jsonResponse } from '@xd/worker-kit';
 
-import { isAllowedReviewAgent, normalizeReviewAgentWebhook } from './github-review.js';
+import { classifyReviewAgentComment, isAllowedReviewAgent, normalizeReviewAgentWebhook } from './github-review.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from './slack-http.js';
 import { classifySlackIntake, slackStatusReply } from './slack-intake.js';
 import {
@@ -274,6 +274,60 @@ function shouldDispatchPreviewForReview(updatedJob, normalized, gate) {
   if (!['review_summary', 'issue_comment'].includes(normalized.sourceType)) return false;
   if (!['note', 'suggestion'].includes(normalized.classification)) return false;
   return ['pr_created', 'reviewing', 'previewing'].includes(updatedJob.status);
+}
+
+function repoFullNameForJob(job, env) {
+  if (env.GITHUB_REPO) return env.GITHUB_REPO;
+
+  for (const value of [job.prUrl, job.issueUrl]) {
+    if (!value) continue;
+    try {
+      const url = new URL(value);
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts.length >= 2) return `${parts[0]}/${parts[1]}`;
+    } catch {
+      // Ignore malformed stored URLs.
+    }
+  }
+
+  return null;
+}
+
+function previewTriggerFromStoredReviews(store, job, env) {
+  if (!job?.prNumber || job.previewUrl) return null;
+  if (!['pr_created', 'reviewing', 'previewing'].includes(job.status)) return null;
+
+  const repoFullName = repoFullNameForJob(job, env);
+  if (!repoFullName) return null;
+
+  const options = job.headSha ? { headSha: job.headSha } : {};
+  const gate = store.reviewGateForPr(repoFullName, job.prNumber, options);
+  if (!gate.canPreview) return null;
+
+  const reviewComment = store.listReviewAgentComments(repoFullName, job.prNumber, options).find((comment) => {
+    if (comment.status !== 'open') return false;
+    if (!['review_summary', 'issue_comment'].includes(comment.sourceType)) return false;
+    return ['note', 'suggestion'].includes(classifyReviewAgentComment(comment));
+  });
+
+  return reviewComment ? { gate, reviewComment } : null;
+}
+
+async function dispatchPreviewFromStoredReviewIfReady(job, store, env) {
+  const trigger = previewTriggerFromStoredReviews(store, job, env);
+  if (!trigger) return null;
+
+  const updatedJob =
+    job.status === 'previewing' ? job : store.updateJob(job.id, 'previewing', job.headSha ? { headSha: job.headSha } : {});
+  const workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
+
+  return {
+    reviewAction: 'preview_dispatched',
+    job: updatedJob,
+    workerStart,
+    gate: trigger.gate,
+    reviewComment: trigger.reviewComment,
+  };
 }
 
 async function startWorkerForJobIfConfigured(job, env) {
@@ -1226,13 +1280,27 @@ export async function handleExecutorCallback(request, env) {
 
   const patch = rule.patch ? rule.patch(body) : {};
   const store = getStore(env);
-  const job = applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
+  let job = applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   store.linkJobToSlackSession(job);
-  const workerStart = await startWorkerForJobIfConfigured(job, env);
+  let workerStart = await startWorkerForJobIfConfigured(job, env);
+  const reviewReplay = stageResult === 'pr_created' ? await dispatchPreviewFromStoredReviewIfReady(job, store, env) : null;
+
+  if (reviewReplay) {
+    job = reviewReplay.job;
+    workerStart = reviewReplay.workerStart;
+    store.linkJobToSlackSession(job);
+  }
+
+  const statusText = reviewReplay
+    ? notificationTextForReviewAction(reviewReplay.reviewAction, {
+        gate: reviewReplay.gate,
+        reviewComment: reviewReplay.reviewComment,
+      })
+    : notificationTextForCallback(stageResult, job) || `PublishingJob moved to ${job.status}`;
   const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
-    stage: stageResult,
-    text: notificationTextForCallback(stageResult, job) || `PublishingJob moved to ${job.status}`,
+    stage: reviewReplay ? job.status : stageResult,
+    text: statusText,
   });
   const slackText = notificationTextForCallback(stageResult, job);
   const slackNotification = await notifySlackJob(env, store, job, slackText, `callback:${stageResult}`);
@@ -1240,6 +1308,15 @@ export async function handleExecutorCallback(request, env) {
   return jsonResponse({
     job,
     ...(workerStart ? { workerStart } : {}),
+    ...(reviewReplay
+      ? {
+          reviewReplay: {
+            reviewAction: reviewReplay.reviewAction,
+            gate: reviewReplay.gate,
+            reviewComment: reviewReplay.reviewComment,
+          },
+        }
+      : {}),
     ...(slackStatusNotification ? { slackStatusNotification } : {}),
     ...(slackNotification ? { slackNotification } : {}),
   });
