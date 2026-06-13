@@ -980,6 +980,127 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(workerStarts.length, 1);
 });
 
+test('Slack channel thread replies can continue an existing session without another mention', async () => {
+  const app = createGatewayApp();
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-thread-followup-create',
+        event: {
+          type: 'app_mention',
+          user: 'U1',
+          channel: 'C1',
+          channel_type: 'channel',
+          ts: '1710000100.000100',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    })
+  );
+  const created = await json(createResponse);
+
+  for (const [stageResult, patch] of [
+    ['issue_created', { issueNumber: 51, issueUrl: 'https://github.example/org/pages-manager/issues/51' }],
+    [
+      'pr_created',
+      {
+        branchName: 'sites/job-thread-followup-smoke-profile',
+        prNumber: 61,
+        prUrl: 'https://github.example/org/pages-manager/pull/61',
+        headSha: '6'.repeat(40),
+      },
+    ],
+    ['preview_deployed', { previewUrl: 'https://preview.example.test/thread' }],
+  ]) {
+    const response = await app.fetch(
+      new Request('http://gateway.test/internal/executor-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishingJobId: created.jobId,
+          stageResult,
+          ...patch,
+        }),
+      })
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const workerStarts = [];
+  const followupResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-thread-followup-plain',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'C1',
+          channel_type: 'channel',
+          ts: '1710000110.000100',
+          thread_ts: '1710000100.000100',
+          text: '这个 preview 不满意，把标题改成中文',
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, created.jobId);
+        assert.equal(body.job.status, 'fixing');
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_fix_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const followup = await json(followupResponse);
+
+  assert.equal(followupResponse.status, 200);
+  assert.equal(followup.action, 'followup_fix_dispatched');
+  assert.equal(followup.jobId, created.jobId);
+  assert.equal(followup.slackSessionId, created.slackSessionId);
+  assert.equal(app.store.jobs.size, 1);
+  assert.equal(workerStarts.length, 1);
+});
+
+test('Slack channel thread replies without an existing session are ignored', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-thread-untracked',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'C1',
+          channel_type: 'channel',
+          ts: '1710000200.000200',
+          thread_ts: '1710000200.000100',
+          text: '这个也帮我改一下',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'ignored_untracked_thread_message');
+  assert.equal(body.accepted, false);
+  assert.equal(body.reply, false);
+  assert.equal(app.store.jobs.size, 0);
+});
+
 test('pages-agent fix callback moves a fixing job back to reviewing', async () => {
   const app = createGatewayApp();
   const jobId = await moveJobToPrCreated(app, {
