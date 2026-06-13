@@ -18,7 +18,7 @@ pages-gateway 接收 Slack HTTP event 并创建任务
 固定项目索引 / agent context
   ↓
 Agent 自运行编码
-  (MVP 可先用 placeholder generator)
+  (当前可用 placeholder generator 或公司 Coding Agent)
   ↓
 site-check / pages-site-policy
   ↓
@@ -30,6 +30,8 @@ Agent 自合并 / 部署到 Preview
 ```
 
 这里的 Preview 不是 production。第一阶段不要求自动合并到 production，也不要求线上正式发布。
+
+运行态不按 MVP 降级：Slack 入口、GitHub webhook、Review Agent comment 监听、executor callback、preview gate 和 Slack 回写必须跑在 K8s 控制面里。本机 `gh watch` / `gh pr view` / `gh api` 只能用于开发排障，不能作为这条链路的状态来源。详见 [k8s-runtime-contract.md](./k8s-runtime-contract.md)。
 
 当前实现以 `staging` 作为自动生成站点 PR 的默认 base 分支。`master` 仍然是仓库默认分支和 workflow bootstrap 的安全落点；Slack 自动化的 Project Index、Pages Agent 和 Preview gate 应以 `PAGES_BASE_REF=staging` 为准。
 
@@ -47,7 +49,7 @@ Agent 自合并 / 部署到 Preview
 - agent 改动只能落到目标 `sites/<employee_slug>/<site_slug>/`。
 - 平台能创建受控 branch / PR。
 - `site-check` 能在 PR head SHA 上作为 required check 跑完，并把 `SiteCheckRun` 写回平台。
-- Actions-first MVP 中 `pages-agent.yml` 先执行 diff allowlist，再创建受控 branch / PR，并以 `stageResult=pr_created` callback gateway。
+- Actions executor 形态中 `pages-agent.yml` 先执行 diff allowlist，再创建受控 branch / PR，并以 `stageResult=pr_created` callback K8s gateway。
 - GitHub Review Agent / Greptile 能对 PR 进行 review。
 - 平台能实时读取 Review Agent comments。
 - blocking comment 能触发 agent 修复，至少支持一轮。
@@ -62,11 +64,11 @@ Agent 自合并 / 部署到 Preview
 - 已跑通 issue 创建、Project Index workflow、Pages Agent workflow、受控 PR 创建。
 - 当前 issue 创建由 `apps/worker` 使用平台 GitHub token 调 GitHub API 完成，不是由 Codex / Claude 直接创建。Codex / Claude 后续可以起草 issue 内容，但创建动作仍归 gateway / worker 控制。
 - 已把自动生成 PR 的 base 对准 `staging`。
-- 已新增 Review Agent webhook MVP：allowed bot -> 归一化 comment / review -> 分类 -> blocking 进入 `changes_requested`，approved note 进入 `previewing` 并 dispatch `pages-preview.yml`。
+- 已新增 Review Agent webhook 处理：allowed bot -> 归一化 comment / review -> 分类 -> blocking 进入 `changes_requested`，approved note 进入 `previewing` 并 dispatch `pages-preview.yml`。
 - 已新增 GitHub webhook signature 可选校验：公网 / staging gateway 必须配置 `GITHUB_WEBHOOK_SECRET`。
-- 已新增 gateway 内置 Slack 回通 MVP：`issue_created`、`index_ready`、`pr_created`、Review Agent blocking / suggestion / unknown / gate pass、`preview_deployed` 和失败回调会写回原 Slack DM 或 mention thread。Actions runner / coding agent 仍然不拿 Slack token。
+- 已新增 gateway 内置 Slack 回通：`issue_created`、`index_ready`、`pr_created`、Review Agent blocking / suggestion / unknown / gate pass、`preview_deployed` 和失败回调会写回原 Slack DM 或 mention thread。Actions runner / coding agent 仍然不拿 Slack token。
 - 当前 GitHub issues webhook 先进入 `pages-gateway` 校验，再由 gateway / worker 通过 `workflow_dispatch` 启动 `pages-agent.yml`。workflow 解析受控 job context，调用 Coding Agent 产出 `sites/<employee>/<site>/src/index.html` 和 `site.json`，再按 controlled committer 规则创建 / 更新 PR。
-- 已新增 Slack follow-up MVP：同一用户在 active session 里说“这个 preview 不满意 / 继续改 / 调整文案”等，不再默认新建任务；gateway 通过 `IssueLink` 找到当前 job，把反馈写入 `SessionMemory` 和 job summary，将 job 推到 `fixing`，worker 追加原 issue comment，并 dispatch `pages-agent.yml(mode=fix)` 更新同一个 PR branch。
+- 已新增 Slack follow-up：同一用户在 active session 里说“这个 preview 不满意 / 继续改 / 调整文案”等，不再默认新建任务；gateway 通过 `IssueLink` 找到当前 job，把反馈写入 `SessionMemory` 和 job summary，将 job 推到 `fixing`，worker 追加原 issue comment，并 dispatch `pages-agent.yml(mode=fix)` 更新同一个 PR branch。
 - `pages-agent.yml(mode=fix)` 会先 checkout 现有 PR branch，再把已有 `src/index.html` 作为上下文交给 Coding Agent；成功后 callback `stageResult=reviewing`，gateway 把 job 从 `fixing` 推回 `reviewing` 等待 Review Agent。
 - 当前还没有把 Codex / Claude 接成真正的 coding agent；`@codex review` 触发的是 GitHub 上的 Review Agent，不是 K8s 里的常驻 Agent。
 - `pages-agent.yml` 创建 / 更新 PR 后会自动评论 `@codex review`，不再需要人工手动触发 Codex Review。
@@ -78,7 +80,7 @@ Agent 自合并 / 部署到 Preview
 - 把 gateway 内置 Slack 回通拆成独立 `slack-notifier`，改为消费 `JobEvent` / queue，并用持久化幂等表替代当前内存去重。
 - required checks / site-check 结果进入 preview gate。
 - blocking comment 自动触发 `pages-agent.yml(mode=fix)` 的修复策略仍需补完整，包括 max fix rounds、Review Agent comment id 输入、失败熔断和人工接管；当前已具备用户 Slack follow-up 触发 fix round 的执行通路。
-- `preview_deployed` 后把 Preview URL 继续回写 issue / PR；Slack 回写已在 gateway MVP 内完成。
+- `preview_deployed` 后把 Preview URL 继续回写 issue / PR；Slack 回写已在 gateway 内完成。
 
 可以暂不做：
 
@@ -116,12 +118,12 @@ publish production
 
 实现上可以有两种方式：
 
-| 方式 | 说明 | MVP 推荐 |
+| 方式 | 说明 | 当前推荐 |
 | --- | --- | --- |
 | PR head preview deploy | 从 PR head SHA 构建 preview，不合并到长期分支 | 推荐 |
 | preview branch auto-merge | 将受控 PR branch 合入 `preview` / `staging` 分支后部署 | 可选 |
 
-MVP 推荐 PR head preview deploy，因为它更简单，不需要额外维护 preview 分支冲突。
+当前推荐 PR head preview deploy，因为它更简单，不需要额外维护 preview 分支冲突。
 
 如果团队坚持“合并”语义，可以把它命名为 `preview merge`，但技术上仍应保证：
 
@@ -180,7 +182,7 @@ deploying
 deployed
 ```
 
-## GitHub Actions-first Workflow
+## GitHub Actions Executor Workflow
 
 第一阶段需要：
 
@@ -238,7 +240,7 @@ Preview 已生成：<preview_url>
 失败：<stage + error_message>
 ```
 
-当前 MVP 先由 `pages-gateway` 内置通知函数完成回写，触发点是 executor callback 和 GitHub Review Agent webhook：
+当前先由 `pages-gateway` 内置通知函数完成回写，触发点是 executor callback 和 GitHub Review Agent webhook。两类触发都必须进入 K8s gateway，不能靠本机 `gh` 轮询后手工回写：
 
 - `issue_created`：回写 issue number 和 issue URL。
 - `index_ready`：回写本次 job 固定的 `ProjectIndexSnapshot`。
@@ -250,7 +252,7 @@ Preview 已生成：<preview_url>
 - `preview_deployed`：回写 Preview URL。
 - `failed` callback：回写失败原因。
 
-长期目标仍是独立 `slack-notifier`：gateway 只写 `JobEvent`，notifier 消费事件并发 Slack 消息。无论 MVP 还是长期形态，Actions runner / coding agent 都不能直接拿 Slack token。
+长期目标仍是独立 `slack-notifier`：gateway 只写 `JobEvent`，notifier 消费事件并发 Slack 消息。无论当前形态还是长期形态，Actions runner / coding agent 都不能直接拿 Slack token。
 
 ## 最小数据要求
 

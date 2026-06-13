@@ -2,7 +2,7 @@
 
 ## 总入口
 
-MVP 有两个正式入口：
+当前有两个正式入口：
 
 ```text
 Slack
@@ -40,7 +40,7 @@ site-check / pages-site-policy / Review Agent gate 通过后自动生成 Preview
 
 这条 Slack-first 主链路的更细合同见 [slack-to-pr-review-agent-flow.md](./slack-to-pr-review-agent-flow.md)。
 
-前期默认使用本地 K8s 跑常驻控制面，但不使用 K8s Job executor。coding agent、builder、preview 和受控 PR 创建可以先跑在 GitHub Actions runner 中；后续需要更强隔离、资源控制和自建运行环境时，再把 executor adapter 换成 K8s Job。详见 [local-k8s-control-plane.md](./local-k8s-control-plane.md) 和 [github-actions-first-runtime.md](./github-actions-first-runtime.md)。
+默认使用 K8s 跑常驻控制面，但当前不要求先实现 K8s Job executor。coding agent、builder、preview 和受控 PR 创建可以先跑在 GitHub Actions runner 中；后续需要更强隔离、资源控制和自建运行环境时，再把 executor adapter 换成 K8s Job。无论 executor 跑在哪，Slack / GitHub webhook / executor callback / preview gate 都必须回到 K8s gateway / worker，本机 `gh watch` 只能排障。详见 [k8s-runtime-contract.md](./k8s-runtime-contract.md)、[local-k8s-control-plane.md](./local-k8s-control-plane.md) 和 [github-actions-first-runtime.md](./github-actions-first-runtime.md)。
 
 ## Slack 主链路
 
@@ -146,7 +146,7 @@ JobStageAttempt
 AuditLog / JobEvent
 ```
 
-MVP 默认：
+当前默认：
 
 ```text
 approvalMode = manual-required
@@ -158,7 +158,7 @@ approvalMode = manual-required
 
 pages-worker 通过 GitHub App installation token 在 GitHub Enterprise 的 `pages-manager` repo 创建 issue。
 
-MVP 代码形态：
+当前代码形态：
 
 ```text
 apps/gateway
@@ -185,7 +185,7 @@ issue 必须包含：
 
 gateway 创建 agent stage 前，先为本次 job 选择或创建 `ProjectIndexSnapshot`。索引快照固定 repo base SHA、目标站点目录、模板、`page-kit` schema、相关 issue / PR / ReviewAgentComment 和构建报告，供 agent 使用。
 
-Actions-first MVP 中，issue 创建后由 `apps/worker` 触发：
+Actions executor 形态中，issue 创建后由 K8s `apps/worker` 触发：
 
 ```text
 project-index.yml
@@ -201,7 +201,7 @@ project-index.yml
 
 ### 7. Coding agent 自动编码
 
-MVP 的默认执行器是 GitHub Actions：
+当前默认执行器是 GitHub Actions：
 
 ```text
 pages-gateway
@@ -242,7 +242,7 @@ workspace/report.json
 
 coding agent 不能持有 repo write token、Slack bot token、Cloudflare token 或 auto-merge token。它只负责生成代码和 patch，不直接 push。
 
-当前 Actions-first MVP 的 `pages-agent.yml` 把 coding-agent、预校验和 controlled-committer 放在同一个 workflow 内，但边界仍按阶段执行：
+当前 Actions executor 形态的 `pages-agent.yml` 把 coding-agent、预校验和 controlled-committer 放在同一个 workflow 内，但边界仍按阶段执行：
 
 ```text
 generate candidate files
@@ -260,7 +260,7 @@ callback gateway with stageResult=pr_created
 
 ### 8. 候选代码编译
 
-coding agent 生成 patch 后，必须先跑候选代码编译。MVP 可直接在 `pages-agent.yml` workflow 内完成：
+coding agent 生成 patch 后，必须先跑候选代码编译。当前可直接在 `pages-agent.yml` workflow 内完成：
 
 ```text
 GitHub Actions runner
