@@ -283,7 +283,7 @@ PAGES_SMOKE_ISSUE_SCOPE=local-slack-smoke
 
 MVP 自动生成站点 PR 时，`workflowRef` 和 `baseRef` 要分开理解：
 
-- `PAGES_WORKFLOW_REF`：从哪个分支运行 workflow，当前本地 smoke 可以继续用默认分支 `master`。
+- `PAGES_WORKFLOW_REF`：从哪个分支运行 workflow，当前本地 smoke 使用已合入新版 workflow 合同的 `staging`。
 - `PAGES_BASE_REF` / `PAGES_PR_BASE_REF`：Project Index checkout、Pages Agent checkout 和自动 PR 的 base，MVP 默认 `staging`。
 - `PAGES_PREVIEW_HOSTNAME_PATTERN`：可选的 Preview hostname 模板，例如 `pr-{prNumber}-{employeeSlug}-{siteSlug}-staging.workers.xd.team`；不配置时 `pages-preview.yml` 会生成 placeholder preview URL。
 
