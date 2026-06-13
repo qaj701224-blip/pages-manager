@@ -50,6 +50,69 @@ function companyChatCompletionsUrl(config) {
   return `${baseUrl}/v1/chat/completions`;
 }
 
+function redactSecretLikeText(text, secrets = []) {
+  let redacted = String(text || '');
+  for (const secret of secrets) {
+    if (!secret) continue;
+    redacted = redacted.split(String(secret)).join('[REDACTED_SECRET]');
+  }
+
+  return redacted
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED_TOKEN]')
+    .replace(/\b(xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_TOKEN]')
+    .replace(/\b(xapp-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_APP_TOKEN]')
+    .replace(/\b(ghp_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
+    .replace(
+      /("(?:api[_-]?key|token|secret|password|passwd|pwd)"\s*:\s*")[^"]+(")/gi,
+      '$1[REDACTED_SECRET]$2'
+    )
+    .replace(
+      /\b(api[_-]?key|token|secret|password|passwd|pwd)\b\s*[:=]\s*["']?[^"',\s}]+/gi,
+      '$1=[REDACTED_SECRET]'
+    );
+}
+
+export function redactSlackAgentLogValue(value, secrets = []) {
+  if (typeof value === 'string') return redactSecretLikeText(value, secrets);
+  return JSON.parse(redactSecretLikeText(JSON.stringify(value ?? null), secrets));
+}
+
+function extractUserText(input = {}) {
+  return input.text || input.event?.text || input.summary || '';
+}
+
+function logSlackAgentModelCall({ input, config, messages, status, durationMs, analysis = null, error = null }) {
+  const secrets = [config.apiKey];
+  const event = input.event || {};
+  const safeLog = {
+    service: 'pages-slack-agent',
+    message: 'slack_agent_model_call',
+    provider: config.modelProvider || 'company-agent',
+    model: config.modelName || null,
+    modelApiStyle: 'company-openai-compatible',
+    status,
+    durationMs,
+    teamId: input.team_id || input.teamId || event.team || null,
+    channel: event.channel || null,
+    channelType: event.channel_type || null,
+    user: event.user || null,
+    threadTs: event.thread_ts || null,
+    eventId: input.event_id || input.eventId || null,
+    intent: analysis?.intent || null,
+    needsClarification: Boolean(analysis?.needsClarification),
+    userText: redactSlackAgentLogValue(extractUserText(input), secrets),
+    prompt: redactSlackAgentLogValue(messages, secrets),
+  };
+
+  if (error) {
+    safeLog.error = error.message;
+  }
+
+  console.log(JSON.stringify(safeLog));
+}
+
 function extractOpenAiCompatibleAnalysis(body) {
   const content = body?.choices?.[0]?.message?.content || body?.choices?.[0]?.text || body?.output_text;
   if (content && typeof content === 'object') return content;
@@ -67,7 +130,7 @@ function extractGatewayAnalysis(body) {
   return null;
 }
 
-async function callCompanyOpenAiGateway({ input, config, fallbackAnalysis, fetchImpl, signal }) {
+async function callCompanyOpenAiGateway({ config, messages, fetchImpl, signal }) {
   const headers = {
     'Content-Type': 'application/json',
   };
@@ -78,7 +141,7 @@ async function callCompanyOpenAiGateway({ input, config, fallbackAnalysis, fetch
     headers,
     body: JSON.stringify({
       model: config.modelName || undefined,
-      messages: buildSlackAgentMessages(input, fallbackAnalysis),
+      messages,
       temperature: 0,
       max_tokens: config.maxOutputTokens,
       response_format: { type: 'json_object' },
@@ -107,12 +170,13 @@ export async function analyzeSlackRequirementWithProvider(input = {}, options = 
   const timeoutMs = config.requestTimeoutMs || 120_000;
   const controller = new globalThis.AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  const messages = buildSlackAgentMessages(input, fallbackAnalysis);
 
   try {
     const rawAnalysis = await callCompanyOpenAiGateway({
-      input,
       config,
-      fallbackAnalysis,
+      messages,
       fetchImpl,
       signal: controller.signal,
     });
@@ -121,12 +185,31 @@ export async function analyzeSlackRequirementWithProvider(input = {}, options = 
       throw modelError('Slack Agent company gateway response did not contain a JSON analysis object', 502);
     }
 
-    return {
+    const analysis = {
       ...normalizeModelAnalysis(rawAnalysis, fallbackAnalysis, input),
       modelProvider: config.modelProvider || 'company-agent',
       modelName: config.modelName || null,
       modelApiStyle: 'company-openai-compatible',
     };
+    logSlackAgentModelCall({
+      input,
+      config,
+      messages,
+      status: 'ok',
+      durationMs: Date.now() - startedAt,
+      analysis,
+    });
+    return analysis;
+  } catch (err) {
+    logSlackAgentModelCall({
+      input,
+      config,
+      messages,
+      status: 'error',
+      durationMs: Date.now() - startedAt,
+      error: err,
+    });
+    throw err;
   } finally {
     clearTimeout(timeout);
   }
