@@ -57,6 +57,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
   issues: write
@@ -257,6 +258,21 @@ jobs:
           echo "prNumber=$pr_number" >> "$GITHUB_OUTPUT"
           echo "prUrl=$pr_url" >> "$GITHUB_OUTPUT"
           echo "headSha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch required PR checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ steps.pr.outputs.branchName }}
+          HEAD_SHA: ${{ steps.pr.outputs.headSha }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci.yml --ref "$BRANCH_NAME"
+          gh workflow run site-check.yml \
+            --ref "$BRANCH_NAME" \
+            -f baseRef="$BASE_REF" \
+            -f headSha="$HEAD_SHA" \
+            -f allowedPath="$ALLOWED_PATH"
 
       - name: Print callback payload
         shell: bash
