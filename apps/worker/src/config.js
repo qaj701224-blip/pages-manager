@@ -7,6 +7,8 @@ function required(value, name) {
 
 export function readWorkerConfig(env = process.env) {
   const gatewayUrl = env.PAGES_GATEWAY_URL || 'http://localhost:8788';
+  const internalCallbackUrl =
+    env.PAGES_WORKER_CALLBACK_URL || `${gatewayUrl.replace(/\/+$/, '')}/internal/executor-callback`;
 
   return {
     executorMode: env.PAGES_EXECUTOR_MODE || 'actions',
@@ -21,8 +23,9 @@ export function readWorkerConfig(env = process.env) {
     previewSiteNamePattern: env.PAGES_PREVIEW_SITE_NAME_PATTERN || 'pm-pr-{prNumber}-{employeeSlug}-{siteSlug}',
     pagesApi: env.PAGES_API || 'https://api-staging.workers.xd.team',
     pagesToken: env.PAGES_PREVIEW_TOKEN || env.PAGES_TOKEN || '',
-    previewIpRestrict: env.PAGES_PREVIEW_IP_RESTRICT === 'true',
+    previewIpRestrict: true,
     callbackUrl: env.PAGES_GATEWAY_CALLBACK_URL || `${gatewayUrl.replace(/\/+$/, '')}/internal/executor-callback`,
+    workerCallbackUrl: internalCallbackUrl,
     callbackToken: env.INTERNAL_CALLBACK_TOKEN || '',
     workerSharedSecret: env.PAGES_WORKER_SHARED_SECRET || '',
     github: {

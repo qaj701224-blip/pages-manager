@@ -67,6 +67,7 @@ Webhook 用途：
 PAGES_WORKFLOW_REF=staging
 PAGES_BASE_REF=staging
 PAGES_PREVIEW_MODE=local_deploy
+PAGES_PREVIEW_IP_RESTRICT=true
 PAGES_PREVIEW_SITE_NAME_PATTERN=pm-{publishingJobId}
 ```
 
@@ -75,7 +76,9 @@ PAGES_PREVIEW_SITE_NAME_PATTERN=pm-{publishingJobId}
 - `PAGES_WORKFLOW_REF` 指 workflow 文件读取分支。当前 workflow 合同已先合入 `staging`，本地 MVP 应使用 `staging` 验证。
 - `PAGES_BASE_REF` 指生成 PR 的目标分支。
 - `local_deploy` 用本地 K8s `pages-worker` 从 PR head 读取站点文件并调用 `PAGES_API/deploy`，避免 GitHub-hosted runner 出口 IP 被 staging API 白名单挡住。
+- `PAGES_PREVIEW_IP_RESTRICT=true` 必须保持开启；现有 `/deploy` API 会拒绝 `ip_restrict=false`。
 - preview site name 必须包含 `publishingJobId`，否则 smoke 模式复用同一个 PR 时会撞站点名。
+- K8s `pages-worker` 自己回调 gateway 时走集群内 `PAGES_GATEWAY_URL/internal/executor-callback`；`PAGES_GATEWAY_CALLBACK_URL` 仍保留给 GitHub Actions runner 使用公网入口。
 
 ## 变更记录
 
@@ -184,6 +187,20 @@ Slack / API
   -> controlled branch
   -> PR
 ```
+
+### 2026-06-13 Preview 回调链路修复
+
+更新项：
+
+- 本地 K8s `pages-config` 对齐 `PAGES_PREVIEW_IP_RESTRICT=true`，避免 `pages-worker` local deploy 调用 `/deploy` 时发送 `ip_restrict=false`。
+- `pages-worker` 增加内部 callback URL 语义：worker 到 gateway 的回调默认走 `PAGES_GATEWAY_URL/internal/executor-callback`，GitHub Actions workflow input 仍使用 `PAGES_GATEWAY_CALLBACK_URL`。
+- `pages-gateway` 对已经处于 `previewing`、但还没有 `previewUrl` 的 job 支持由后续非 blocking Review Agent comment 重试启动 preview worker。
+
+验证结果：
+
+- K8s `pages-gateway`、`pages-worker`、`slack-agent` 均为 `1/1 Running`。
+- Review webhook 可以触发 K8s `pages-worker` local deploy。
+- `pages-worker` 成功通过集群内 callback 把测试 job 推进到 `preview_deployed` 并写入 staging preview URL。
 
 ### 2026-06-13 staging workflow 合同与 ruleset 对齐
 
