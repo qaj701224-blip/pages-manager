@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   buildGatewayPayload,
   buildSlackAckText,
+  buildSlackReaction,
   buildSlackReplyMessage,
+  classifySlackEvent,
   isTargetSlackEvent,
   normalizeSlackText,
   postGatewayEvent,
@@ -35,6 +37,22 @@ test('ignores bot and changed message events by default', () => {
     isTargetSlackEvent({ type: 'message', channel_type: 'im', bot_id: 'B1' }, { acceptBotEvents: true }),
     true
   );
+});
+
+test('classifies Slack event filter decisions for logs', () => {
+  assert.deepEqual(classifySlackEvent(null), { target: false, reason: 'missing_event' });
+  assert.deepEqual(classifySlackEvent({ type: 'message', channel_type: 'im', subtype: 'message_replied' }), {
+    target: false,
+    reason: 'ignored_subtype:message_replied',
+  });
+  assert.deepEqual(classifySlackEvent({ type: 'message', channel_type: 'im', bot_id: 'B1' }), {
+    target: false,
+    reason: 'ignored_bot_event',
+  });
+  assert.deepEqual(classifySlackEvent({ type: 'message', channel_type: 'im', user: 'U1' }), {
+    target: true,
+    reason: 'direct_message',
+  });
 });
 
 test('normalizes app mention text before forwarding to gateway', () => {
@@ -97,6 +115,16 @@ test('builds Slack reply text and keeps direct messages out of threads', () => {
     text: '<@U1> ok',
     thread_ts: '1',
   });
+});
+
+test('builds Slack reaction payload for the source message', () => {
+  assert.deepEqual(buildSlackReaction({ channel: 'D1', ts: '1000.000' }, ':hourglass_flowing_sand:'), {
+    channel: 'D1',
+    timestamp: '1000.000',
+    name: 'hourglass_flowing_sand',
+  });
+  assert.equal(buildSlackReaction({ channel: 'D1' }, 'eyes'), null);
+  assert.equal(buildSlackReaction({ channel: 'D1', ts: '1000.000' }, ''), null);
 });
 
 test('can suppress connector replies for ignored gateway events', () => {
