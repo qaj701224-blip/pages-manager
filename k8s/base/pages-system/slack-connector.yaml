@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-connector
+  namespace: pages-system
+  labels:
+    app.kubernetes.io/name: slack-connector
+    app.kubernetes.io/part-of: pages-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slack-connector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: slack-connector
+        app.kubernetes.io/part-of: pages-manager
+    spec:
+      serviceAccountName: pages-control-plane
+      containers:
+        - name: slack-connector
+          image: pages-manager/slack-connector:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: pages-config
+          env:
+            - name: PAGES_GATEWAY_CONNECTOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-connector-shared-secret
+                  optional: true
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-bot-token
+                  optional: true
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-app-token
+                  optional: true
+            - name: SLACK_BOT_USER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-bot-user-id
+                  optional: true

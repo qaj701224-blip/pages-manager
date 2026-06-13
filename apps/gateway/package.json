@@ -1,0 +1,13 @@
+{
+  "name": "@xd/gateway",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "node src/dev.js"
+  },
+  "dependencies": {
+    "@xd/workflow-core": "workspace:*",
+    "@xd/worker-kit": "workspace:*"
+  }
+}
