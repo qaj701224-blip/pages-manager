@@ -102,6 +102,8 @@ export function buildPublishingIssue(job, options = {}) {
       `Allowed path: ${allowedPath}`,
       `Base ref: ${options.baseRef || ''}`,
       `Approval mode: ${job.approvalMode}`,
+      'Pipeline: user-site publishing',
+      'Platform deployment: out of scope',
       '',
       '## Requirement Summary',
       '',
@@ -110,6 +112,7 @@ export function buildPublishingIssue(job, options = {}) {
       '## Automation Boundary',
       '',
       `Automated changes for this job must stay under \`${allowedPath}/\`.`,
+      'Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets for this job.',
     ].join('\n'),
   };
 }
@@ -133,6 +136,8 @@ export function buildSmokeIssue(job, options = {}) {
       `Requested by: ${job.requestedByType}:${job.requestedById}`,
       `Target: ${job.employeeSlug}/${job.siteSlug}`,
       `Allowed path: ${allowedPath}`,
+      'Pipeline: user-site publishing',
+      'Platform deployment: out of scope',
       '',
       job.summary || job.brief || 'No summary provided.',
     ].join('\n'),
@@ -149,6 +154,8 @@ export function buildSmokeIssueComment(job, options = {}) {
     `Requested by: ${job.requestedByType}:${job.requestedById}`,
     `Target: ${job.employeeSlug}/${job.siteSlug}`,
     `Allowed path: ${allowedPath}`,
+    'Pipeline: user-site publishing',
+    'Platform deployment: out of scope',
     '',
     job.summary || job.brief || 'No summary provided.',
   ].join('\n');
@@ -167,6 +174,8 @@ export function buildFollowupIssueComment(job, options = {}) {
     `Target: ${job.employeeSlug}/${job.siteSlug}`,
     `Allowed path: ${allowedPath}`,
     `Agent mode: ${options.mode || 'fix'}`,
+    'Pipeline: user-site publishing',
+    'Platform deployment: out of scope',
     '',
     job.summary || job.brief || 'No summary provided.',
   ].join('\n');

@@ -56,6 +56,13 @@ test('builds publishing issue with stable job marker and path boundary', () => {
   assert.ok(issue.body.includes(publishingJobMarker('job_123')));
   assert.ok(issue.body.includes('Allowed path: sites/zhangsan/profile'));
   assert.ok(issue.body.includes('Base ref: staging'));
+  assert.ok(issue.body.includes('Pipeline: user-site publishing'));
+  assert.ok(issue.body.includes('Platform deployment: out of scope'));
+  assert.ok(
+    issue.body.includes(
+      'Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets'
+    )
+  );
   assert.deepEqual(issue.labels, ['pages-publishing-job', 'site-change']);
 });
 
@@ -66,10 +73,14 @@ test('builds smoke issue with reusable marker', () => {
 
   assert.equal(issue.title, '[pages-smoke] Slack issue intake (slack-local)');
   assert.ok(issue.body.includes(smokeIssueMarker('slack-local')));
+  assert.match(issue.body, /Pipeline: user-site publishing/);
+  assert.match(issue.body, /Platform deployment: out of scope/);
   assert.match(comment, /PublishingJob: job_123/);
   assert.match(comment, /Allowed path: sites\/zhangsan\/profile/);
+  assert.match(comment, /Platform deployment: out of scope/);
   assert.match(followup, /## Slack Follow-up/);
   assert.match(followup, /Agent mode: fix/);
+  assert.match(followup, /Platform deployment: out of scope/);
 });
 
 test('builds workflow inputs from job fields', () => {
