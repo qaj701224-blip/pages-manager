@@ -150,6 +150,7 @@ test('Slack event creates a slack-sourced job', async () => {
 test('Slack event can use Slack Agent analysis before creating a job', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
+  const slackMessages = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -170,6 +171,7 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
     {
       SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
       SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      SLACK_BOT_TOKEN: 'test-slack-token',
       async SLACK_AGENT_FETCH(url, request) {
         agentCalls.push({ url: String(url), request });
         assert.equal(request.headers['X-Pages-Slack-Agent-Token'], 'agent-secret');
@@ -192,6 +194,12 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
           { status: 200 }
         );
       },
+      async SLACK_FETCH(url, request) {
+        slackMessages.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000101' }), {
+          status: 200,
+        });
+      },
     }
   );
 
@@ -201,6 +209,8 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
   assert.equal(response.status, 200);
   assert.equal(agentCalls.length, 1);
   assert.equal(body.slackAgentAnalysis.summary, 'Agent summary');
+  assert.equal(body.slackStatusNotification.ok, true);
+  assert.match(JSON.stringify(JSON.parse(slackMessages[0].request.body).blocks), /Agent summary/);
   assert.equal(jobBody.job.employeeSlug, 'alice');
   assert.equal(jobBody.job.siteSlug, 'portfolio');
   assert.equal(jobBody.job.intent, 'create_or_update_site');
@@ -374,10 +384,10 @@ test('executor callbacks notify the source Slack thread', async () => {
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_BOT_TOKEN: 'test-slack-token',
       async SLACK_FETCH(url, request) {
         slackMessages.push({ url: String(url), request });
-        assert.equal(request.headers.Authorization, 'Bearer xoxb-test');
+        assert.equal(request.headers.Authorization, 'Bearer test-slack-token');
         return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000100' }), {
           status: 200,
         });
@@ -387,9 +397,19 @@ test('executor callbacks notify the source Slack thread', async () => {
   const body = await json(response);
 
   assert.equal(response.status, 200);
+  assert.equal(body.slackStatusNotification.ok, true);
+  assert.equal(body.slackStatusNotification.action, 'posted');
   assert.equal(body.slackNotification.ok, true);
-  assert.equal(slackMessages.length, 1);
-  assert.deepEqual(JSON.parse(slackMessages[0].request.body), {
+  assert.equal(slackMessages.length, 2);
+  const statusPayload = JSON.parse(slackMessages[0].request.body);
+  assert.equal(slackMessages[0].url, 'https://slack.com/api/chat.postMessage');
+  assert.equal(statusPayload.channel, 'C1');
+  assert.equal(statusPayload.thread_ts, '1710000000.000200');
+  assert.match(statusPayload.text, /^<@U1> Pages 发布任务/);
+  assert.ok(Array.isArray(statusPayload.blocks));
+  assert.match(JSON.stringify(statusPayload.blocks), /Issue 已创建/);
+  assert.match(JSON.stringify(statusPayload.blocks), /查看 Issue/);
+  assert.deepEqual(JSON.parse(slackMessages[1].request.body), {
     channel: 'C1',
     thread_ts: '1710000000.000200',
     text: '<@U1> 已创建 GitHub issue：#8\nhttps://github.example/org/pages-manager/issues/8',
@@ -408,14 +428,164 @@ test('executor callbacks notify the source Slack thread', async () => {
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_BOT_TOKEN: 'test-slack-token',
       async SLACK_FETCH() {
         throw new Error('duplicate callback should not post to Slack');
       },
     }
   );
   const duplicateBody = await json(duplicate);
+  assert.equal(duplicateBody.slackStatusNotification.skipped, true);
   assert.equal(duplicateBody.slackNotification.skipped, true);
+});
+
+test('executor callbacks update the Slack status card in place', async () => {
+  const app = createGatewayApp();
+  const slackMessages = [];
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-slack-card-1',
+        event: {
+          type: 'app_mention',
+          user: 'U1',
+          channel: 'C1',
+          channel_type: 'channel',
+          ts: '1710000000.000210',
+          text: 'issue: 帮我创建 profile 页面，突出项目经历',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackMessages.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000210' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const created = await json(createResponse);
+  assert.equal(created.slackStatusNotification.action, 'posted');
+  assert.equal(slackMessages.length, 1);
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: created.jobId,
+        stageResult: 'issue_created',
+        issueNumber: 18,
+        issueUrl: 'https://github.example/org/pages-manager/issues/18',
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackMessages.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000210' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const updatePayload = JSON.parse(slackMessages[1].request.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.slackStatusNotification.action, 'updated');
+  assert.equal(slackMessages[1].url, 'https://slack.com/api/chat.update');
+  assert.equal(updatePayload.channel, 'C1');
+  assert.equal(updatePayload.ts, '1710000001.000210');
+  assert.ok(Array.isArray(updatePayload.blocks));
+  assert.match(JSON.stringify(updatePayload.blocks), /Issue 已创建/);
+  assert.match(JSON.stringify(updatePayload.blocks), /https:\/\/github.example\/org\/pages-manager\/issues\/18/);
+});
+
+test('preview_deployed status card includes the preview link', async () => {
+  const app = createGatewayApp();
+  const slackMessages = [];
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-slack-preview-card-1',
+        event: {
+          type: 'app_mention',
+          user: 'U1',
+          channel: 'C1',
+          channel_type: 'channel',
+          ts: '1710000000.000220',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    })
+  );
+  const created = await json(createResponse);
+
+  for (const stageResult of ['issue_created', 'index_ready', 'pr_created']) {
+    const stageResponse = await app.fetch(
+      new Request('http://gateway.test/internal/executor-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishingJobId: created.jobId,
+          stageResult,
+          issueNumber: 19,
+          issueUrl: 'https://github.example/org/pages-manager/issues/19',
+          indexSnapshotId: 'idxsnap_19',
+          branchName: 'sites/job-preview-card-smoke-profile',
+          prNumber: 29,
+          prUrl: 'https://github.example/org/pages-manager/pull/29',
+          headSha: 'a'.repeat(40),
+        }),
+      })
+    );
+    assert.equal(stageResponse.status, 200);
+  }
+  app.store.recordSlackJobStatusMessage(created.jobId, {
+    channel: 'C1',
+    threadTs: '1710000000.000220',
+    messageTs: '1710000001.000220',
+    stage: 'pr_created',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: created.jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://preview.example.test',
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackMessages.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000220' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const updatePayload = JSON.parse(slackMessages[0].request.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.slackStatusNotification.action, 'updated');
+  assert.equal(slackMessages[0].url, 'https://slack.com/api/chat.update');
+  assert.match(JSON.stringify(updatePayload.blocks), /Preview 已生成/);
+  assert.match(JSON.stringify(updatePayload.blocks), /https:\/\/preview.example.test/);
+  assert.match(JSON.stringify(updatePayload.blocks), /打开 Preview/);
 });
 
 test('Slack help and ping messages do not create jobs', async () => {
@@ -1395,7 +1565,7 @@ test('GitHub Review Agent blocking comment notifies Slack thread', async () => {
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_BOT_TOKEN: 'test-slack-token',
       async SLACK_FETCH(url, request) {
         slackMessages.push({ url: String(url), request });
         return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000002.000100' }), {
@@ -1408,9 +1578,11 @@ test('GitHub Review Agent blocking comment notifies Slack thread', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'changes_requested');
+  assert.equal(body.slackStatusNotification.ok, true);
   assert.equal(body.slackNotification.ok, true);
-  assert.equal(slackMessages.length, 1);
-  assert.match(JSON.parse(slackMessages[0].request.body).text, /^<@U1> .*blocking comment/s);
+  assert.equal(slackMessages.length, 2);
+  assert.match(JSON.stringify(JSON.parse(slackMessages[0].request.body).blocks), /等待修复 Review 意见/);
+  assert.match(JSON.parse(slackMessages[1].request.body).text, /^<@U1> .*blocking comment/s);
 });
 
 test('GitHub Review Agent suggestion comment notifies Slack thread without blocking preview', async () => {
@@ -1480,7 +1652,7 @@ test('GitHub Review Agent suggestion comment notifies Slack thread without block
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_BOT_TOKEN: 'test-slack-token',
       async SLACK_FETCH(url, request) {
         slackMessages.push({ url: String(url), request });
         return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000003.000100' }), {
@@ -1490,14 +1662,17 @@ test('GitHub Review Agent suggestion comment notifies Slack thread without block
     }
   );
   const body = await json(response);
-  const slackText = JSON.parse(slackMessages[0].request.body).text;
+  const statusPayload = JSON.parse(slackMessages[0].request.body);
+  const slackText = JSON.parse(slackMessages[1].request.body).text;
 
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'reviewing');
   assert.equal(body.reviewComment.classification, 'suggestion');
   assert.equal(body.gate.canPreview, true);
   assert.equal(body.job.status, 'reviewing');
+  assert.equal(body.slackStatusNotification.ok, true);
   assert.equal(body.slackNotification.ok, true);
+  assert.match(JSON.stringify(statusPayload.blocks), /等待 Agent Review/);
   assert.match(slackText, /^<@U1> /);
   assert.match(slackText, /suggestion/);
   assert.match(slackText, /sites\/zhangsan\/profile\/src\/index.html:5/);

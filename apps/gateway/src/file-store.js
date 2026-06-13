@@ -10,6 +10,9 @@ const MAP_FIELDS = [
   'githubDeliveries',
   'reviewAgentComments',
   'slackNotifications',
+  'slackJobStatusMessages',
+  'agentRunEvents',
+  'agentRunEventByDedupeKey',
   'slackSessions',
   'slackSessionByScopeKey',
   'sessionMemories',
@@ -104,6 +107,18 @@ export class FileBackedGatewayStore extends MemoryGatewayStore {
 
   recordSlackNotification(jobId, key) {
     const result = super.recordSlackNotification(jobId, key);
+    this.persist();
+    return result;
+  }
+
+  recordSlackJobStatusMessage(jobId, input = {}, now = new Date()) {
+    const result = super.recordSlackJobStatusMessage(jobId, input, now);
+    this.persist();
+    return result;
+  }
+
+  recordAgentRunEvent(input = {}, now = new Date()) {
+    const result = super.recordAgentRunEvent(input, now);
     this.persist();
     return result;
   }
