@@ -6,8 +6,13 @@ function isBotEvent(event) {
   return Boolean(event.bot_id || event.subtype === 'bot_message');
 }
 
+export function inferSlackChannelType(event = {}) {
+  if (event.channel_type) return event.channel_type;
+  return String(event.channel || '').startsWith('D') ? 'im' : null;
+}
+
 function isDirectMessage(event) {
-  return event.type === 'message' && event.channel_type === 'im';
+  return event.type === 'message' && inferSlackChannelType(event) === 'im';
 }
 
 function isAppMention(event) {
@@ -15,7 +20,7 @@ function isAppMention(event) {
 }
 
 function isChannelThreadMessage(event) {
-  return event.type === 'message' && event.channel_type !== 'im' && Boolean(event.thread_ts);
+  return event.type === 'message' && inferSlackChannelType(event) !== 'im' && Boolean(event.thread_ts);
 }
 
 export function isTargetSlackEvent(event, options = {}) {
@@ -49,6 +54,7 @@ export function buildGatewayPayload(body, event, config) {
   const teamId = body.team_id || body.team?.id || event.team || 'unknown-team';
   const normalizedText = normalizeSlackText(event.text || body.text || '', config);
   const eventId = body.event_id || `${teamId}:${event.channel || 'unknown-channel'}:${event.ts || Date.now()}`;
+  const channelType = inferSlackChannelType(event);
 
   return {
     type: body.type || 'event_callback',
@@ -67,6 +73,7 @@ export function buildGatewayPayload(body, event, config) {
     },
     event: {
       ...event,
+      ...(channelType ? { channel_type: channelType } : {}),
       text: normalizedText,
     },
   };
