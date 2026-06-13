@@ -1732,6 +1732,90 @@ test('GitHub Review Agent issue comment summary dispatches staging preview', asy
   assert.equal(workerStarts.length, 1);
 });
 
+test('GitHub Review Agent issue comment retries preview worker when job is already previewing', async () => {
+  const app = createGatewayApp();
+  const headSha = '6'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 26,
+    headSha,
+    idempotencyKey: 'api-review-codex-preview-retry',
+  });
+
+  const firstResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-codex-previewing-no-worker',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 26, pull_request: { url: 'https://github.example/org/pages-manager/pulls/26' } },
+        comment: {
+          id: 105,
+          node_id: 'IC_105',
+          body: "Codex Review: Didn't find any major issues.",
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    })
+  );
+  const firstBody = await json(firstResponse);
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(firstBody.reviewAction, 'preview_dispatched');
+  assert.equal(firstBody.job.status, 'previewing');
+  assert.equal(firstBody.workerStart, undefined);
+
+  const workerStarts = [];
+  const retryResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-codex-previewing-retry-worker',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 26, pull_request: { url: 'https://github.example/org/pages-manager/pulls/26' } },
+        comment: {
+          id: 106,
+          node_id: 'IC_106',
+          body: `Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`${headSha.slice(0, 10)}\``,
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, jobId);
+        assert.equal(body.job.status, 'previewing');
+        assert.equal(body.job.headSha, headSha);
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_preview_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const retryBody = await json(retryResponse);
+
+  assert.equal(retryResponse.status, 200);
+  assert.equal(retryBody.reviewAction, 'preview_dispatched');
+  assert.equal(retryBody.gate.canPreview, true);
+  assert.equal(retryBody.job.status, 'previewing');
+  assert.equal(retryBody.workerStart.started, true);
+  assert.equal(workerStarts.length, 1);
+});
+
 test('GitHub Review Agent issue comment targets latest reused PR job by reviewed commit', async () => {
   const app = createGatewayApp();
   const oldHeadSha = '3'.repeat(40);

@@ -1,4 +1,5 @@
 export async function postExecutorCallback(fetchImpl, config, body) {
+  const callbackUrl = config.workerCallbackUrl || config.callbackUrl;
   const headers = {
     'Content-Type': 'application/json',
   };
@@ -7,7 +8,7 @@ export async function postExecutorCallback(fetchImpl, config, body) {
     headers['X-Pages-Callback-Token'] = config.callbackToken;
   }
 
-  const response = await fetchImpl(config.callbackUrl, {
+  const response = await fetchImpl(callbackUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
