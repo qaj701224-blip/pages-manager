@@ -177,6 +177,8 @@ pnpm k8s:smoke
 
 `pnpm k8s:check-env` 会检查本地 Slack / GitHub / callback 必需变量是否齐全，但不会打印 secret 值。`pnpm k8s:cluster` 会创建或复用名为 `pages-manager` 的本地 kind/k3d cluster，并把 kubectl context 切到专用 context。`pnpm k8s:up` 会先确认当前操作目标是这个 cluster，避免误把 `pages-system` 部署到其它项目的 K8s 集群。
 
+`.env` 只作为本地 bootstrap 输入，用来生成 K8s Secret / ConfigMap；启动后的运行态真相必须以 K8s 为准。排障、smoke 和 Slack 链路验证不能直接读取宿主机 `.env` 判断服务是否配置正确，必须通过 `kubectl -n pages-system get configmap/secret`、`kubectl exec ... printenv` 或 `pnpm k8s:smoke` 检查 pod 实际注入的配置。这样本地验证和后续服务器部署模型保持一致。
+
 共享开发机隔离要求：
 
 - 默认 `pages-manager` cluster / `pages-system` namespace 只适合一个本地控制面长期持有 Slack Socket Mode 连接。
@@ -206,6 +208,8 @@ smoke control plane
 
 - `pages-gateway`、`pages-worker`、`slack-agent`、`slack-connector` Deployment 已 rollout。
 - `slack-platform-secret`、`github-platform-secret`、`callback-secrets` 中存在必须 key，但不会打印 secret 值。
+- `pages-config` 中的 GitHub repo、workflow ref、base ref、gateway public/callback URL 等运行时值不是占位符。
+- 如果启用 `SLACK_CONNECTOR_DM_POLL_ENABLED`，还会检查 polling interval、channel limit、batch size 等运行时配置已经写入 K8s ConfigMap。
 - 通过临时 `kubectl port-forward` 探测 `pages-gateway`、`pages-worker`、`slack-agent` 的 `/health`。
 - 如果 `PAGES_PREVIEW_MODE=local_deploy`，还会要求 `cloudflare-preview-secret` 中存在 legacy preview owner marker。这个 marker 只用于本地 smoke，不代表长期员工隔离模型。
 

@@ -127,6 +127,37 @@ if [ "${preview_mode}" = "local_deploy" ]; then
   require_any_secret_key cloudflare-preview-secret pages-preview-token pages-token
 fi
 
+config_value() {
+  local key="$1"
+
+  kubectl -n "${NAMESPACE}" get configmap pages-config \
+    -o "go-template={{ index .data \"${key}\" }}" 2>/dev/null || true
+}
+
+require_runtime_config() {
+  local key="$1"
+  local value
+
+  value="$(config_value "${key}")"
+  if [ -z "${value}" ] || is_placeholder_value "${value}"; then
+    echo "[k8s-smoke] invalid runtime config: ${key}" >&2
+    exit 1
+  fi
+}
+
+require_runtime_config GITHUB_REPO
+require_runtime_config PAGES_WORKFLOW_REF
+require_runtime_config PAGES_BASE_REF
+require_runtime_config PAGES_GATEWAY_CALLBACK_URL
+require_runtime_config PAGES_GATEWAY_PUBLIC_URL
+
+dm_poll_enabled="$(config_value SLACK_CONNECTOR_DM_POLL_ENABLED)"
+if [ "${dm_poll_enabled}" = "true" ] || [ "${dm_poll_enabled}" = "1" ]; then
+  require_runtime_config SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS
+  require_runtime_config SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT
+  require_runtime_config SLACK_CONNECTOR_DM_POLL_BATCH_SIZE
+fi
+
 probe_health() {
   local service_name="$1"
   local service_port="$2"

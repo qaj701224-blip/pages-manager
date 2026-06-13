@@ -128,6 +128,10 @@ patch_config_value SLACK_AGENT_TURN_TIMEOUT_SECONDS "${SLACK_AGENT_TURN_TIMEOUT_
 patch_config_value SLACK_AGENT_SESSION_LEASE_SECONDS "${SLACK_AGENT_SESSION_LEASE_SECONDS:-}"
 patch_config_value SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS "${SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS:-}"
 patch_config_value CODING_AGENT_RUN_TIMEOUT_MINUTES "${CODING_AGENT_RUN_TIMEOUT_MINUTES:-}"
+patch_config_value SLACK_CONNECTOR_DM_POLL_ENABLED "${SLACK_CONNECTOR_DM_POLL_ENABLED:-}"
+patch_config_value SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS "${SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS:-}"
+patch_config_value SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT "${SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT:-}"
+patch_config_value SLACK_CONNECTOR_DM_POLL_BATCH_SIZE "${SLACK_CONNECTOR_DM_POLL_BATCH_SIZE:-}"
 
 if [ "${config_patched}" = "true" ]; then
   kubectl -n "${NAMESPACE}" rollout restart \
@@ -141,6 +145,7 @@ if [ "${WAIT_ROLLOUT}" = "true" ] || [ "${WAIT_ROLLOUT}" = "1" ]; then
   kubectl -n "${NAMESPACE}" rollout status deployment/pages-gateway
   kubectl -n "${NAMESPACE}" rollout status deployment/pages-worker
   kubectl -n "${NAMESPACE}" rollout status deployment/slack-agent
+  kubectl -n "${NAMESPACE}" rollout status deployment/slack-connector
 fi
 
 echo "pages-system applied. Use: kubectl -n ${NAMESPACE} get pods"
