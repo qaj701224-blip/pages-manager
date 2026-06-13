@@ -386,6 +386,7 @@ function slackJobInput(body) {
   };
 }
 
+const CREATE_JOB_INTENTS = new Set(['create_or_update_site', 'new_site_request', 'create_site', 'update_site']);
 const FOLLOWUP_INTENTS = new Set(['modify_existing_preview', 'append_requirement']);
 const NON_FOLLOWUP_ACTIONS = new Set(['help', 'ping', 'status', 'cancel', 'close_session', 'empty', 'missing_requirement']);
 
@@ -395,11 +396,10 @@ function hasActiveSlackTarget(slackSession) {
   );
 }
 
-function shouldTrySlackFollowup(intake, slackSession) {
-  if (!hasActiveSlackTarget(slackSession)) return false;
+function shouldAnalyzeSlackTurn(intake, slackSession) {
   if (NON_FOLLOWUP_ACTIONS.has(intake.action)) return false;
-  if (intake.command) return false;
-  return intake.action === 'unknown' || intake.shouldCreateJob;
+  if (intake.command && !intake.shouldCreateJob) return false;
+  return Boolean(intake.shouldAnalyze || intake.shouldCreateJob || hasActiveSlackTarget(slackSession));
 }
 
 function looksLikeSlackFollowupText(text = '') {
@@ -439,6 +439,23 @@ function shouldCloseSlackSession(intake, slackAgentAnalysis) {
   return intake.action === 'close_session' || slackAgentAnalysis?.intent === 'close_session';
 }
 
+function shouldCreateSlackJob(intake, slackAgentAnalysis) {
+  if (!slackAgentAnalysis) return Boolean(intake.shouldCreateJob);
+  if (slackAgentAnalysis.needsClarification) return false;
+  return CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent);
+}
+
+function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null) {
+  return (
+    slackAgentAnalysis?.clarifyingQuestion ||
+    slackAgentAnalysis?.clarifying_question ||
+    slackAgentAnalysis?.summary ||
+    fallbackText ||
+    intake.replyText ||
+    '我已记录这轮消息，但还需要再确认一下需求。'
+  );
+}
+
 function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
   const closedSession = store.closeSlackSession(slackSession.id);
   store.updateSessionMemory(slackSession.id, {
@@ -462,6 +479,90 @@ function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, a
     agentRunId: agentRun?.id,
     replyText: '已关闭当前会话。后续你可以用 `issue: ...` 开一个新任务，或者带上 job id 查询旧任务。',
     session: closedSession,
+  });
+}
+
+function handleSlackAgentStatusQuery({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+  const job = activeJobForSlackSession(store, slackSession);
+  const replyText = job
+    ? slackStatusReply(job.id, job)
+    : '我还没有在当前会话里找到发布任务。你可以带上 job id，例如 `status: job_xxx`。';
+
+  store.updateSessionMemory(slackSession.id, {
+    summary: slackAgentAnalysis?.summary || sessionMemory.summary || intake.text,
+    lastAgentResponse: replyText,
+  });
+  completeSlackAgentRun(store, agentRun, {
+    publishingJobId: job?.id || null,
+    provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
+    model: slackAgentAnalysis?.modelName || null,
+    modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+    report: {
+      action: 'status_query',
+      accepted: false,
+      intent: slackAgentAnalysis?.intent || null,
+    },
+  });
+
+  return jsonResponse({
+    ok: true,
+    action: 'status_query',
+    accepted: false,
+    replyText,
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis } : {}),
+  });
+}
+
+function handleSlackAgentNonPublishingTurn({
+  store,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  action,
+  replyText,
+}) {
+  const finalReplyText = slackAgentReplyText(intake, slackAgentAnalysis, replyText);
+  store.updateSessionMemory(slackSession.id, {
+    summary: slackAgentAnalysis?.summary || sessionMemory.summary || intake.text,
+    requirements: slackAgentAnalysis || sessionMemory.requirements || {},
+    lastAgentResponse: finalReplyText,
+    pendingQuestions: slackAgentAnalysis?.needsClarification ? [finalReplyText] : sessionMemory.pendingQuestions || [],
+  });
+  completeSlackAgentRun(store, agentRun, {
+    provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
+    model: slackAgentAnalysis?.modelName || null,
+    modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+    report: {
+      action,
+      accepted: false,
+      slackAgentUsed: Boolean(slackAgentAnalysis),
+      intent: slackAgentAnalysis?.intent || null,
+      needsClarification: Boolean(slackAgentAnalysis?.needsClarification),
+    },
+  });
+  console.log(
+    JSON.stringify({
+      service: 'pages-gateway',
+      message: 'slack_agent_turn_recorded',
+      action,
+      intent: slackAgentAnalysis?.intent || null,
+      needsClarification: Boolean(slackAgentAnalysis?.needsClarification),
+      text: intake.text,
+    })
+  );
+
+  return jsonResponse({
+    ok: true,
+    action,
+    accepted: false,
+    replyText: finalReplyText,
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis } : {}),
   });
 }
 
@@ -660,7 +761,7 @@ export async function handleSlackEvents(request, env) {
       });
     }
 
-    if (shouldTrySlackFollowup(intake, slackSession)) {
+    if (shouldAnalyzeSlackTurn(intake, slackSession)) {
       slackAgentAnalysis = await analyzeSlackEventIfConfigured(body, intake, env, {
         slackSession,
         sessionMemory,
@@ -679,7 +780,31 @@ export async function handleSlackEvents(request, env) {
         });
       }
 
-      if (isSlackFollowupIntent(slackAgentAnalysis, intake)) {
+      if (slackAgentAnalysis?.intent === 'status_query') {
+        return handleSlackAgentStatusQuery({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+        });
+      }
+
+      if (slackAgentAnalysis?.intent === 'cancel_request') {
+        return handleSlackAgentNonPublishingTurn({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+          action: 'cancel_request',
+          replyText: '收到取消意图。当前 MVP 还没有自动取消 job；如果已经创建了 issue，可以先在 issue 里补充“取消”。',
+        });
+      }
+
+      if (hasActiveSlackTarget(slackSession) && isSlackFollowupIntent(slackAgentAnalysis, intake)) {
         return handleSlackFollowup({
           store,
           env,
@@ -692,40 +817,30 @@ export async function handleSlackEvents(request, env) {
       }
     }
 
-    if (!intake.shouldCreateJob) {
-      store.updateSessionMemory(slackSession.id, {
-        summary: slackAgentAnalysis?.summary || sessionMemory.summary || intake.text,
-        lastAgentResponse: slackAgentAnalysis?.needsClarification ? slackAgentAnalysis.summary : intake.replyText,
-      });
-      completeSlackAgentRun(store, agentRun, {
-        report: { action: intake.action, accepted: false },
-      });
-      console.log(
-        JSON.stringify({
-          service: 'pages-gateway',
-          message: 'slack_intake_ignored',
-          action: intake.action,
-          text: intake.text,
-        })
-      );
-      return jsonResponse({
-        ok: true,
-        action: intake.action,
-        accepted: false,
-        replyText: slackAgentAnalysis?.needsClarification ? slackAgentAnalysis.summary : intake.replyText,
-        slackSessionId: slackSession.id,
-        ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    if (slackAgentAnalysis?.needsClarification) {
+      return handleSlackAgentNonPublishingTurn({
+        store,
+        intake,
+        slackSession,
+        sessionMemory,
+        agentRun,
+        slackAgentAnalysis,
+        action: 'clarification_needed',
       });
     }
 
-    if (!slackAgentAnalysis) {
-      slackAgentAnalysis = await analyzeSlackEventIfConfigured(body, intake, env, {
+    if (!shouldCreateSlackJob(intake, slackAgentAnalysis)) {
+      return handleSlackAgentNonPublishingTurn({
+        store,
+        intake,
         slackSession,
         sessionMemory,
-        issueLinks: store.findIssueLinksForSlackSession(slackSession.id),
         agentRun,
+        slackAgentAnalysis,
+        action: slackAgentAnalysis ? 'agent_turn_recorded' : intake.action,
       });
     }
+
     store.updateSessionMemory(slackSession.id, {
       summary: slackAgentAnalysis?.summary || intake.text,
       requirements: slackAgentAnalysis || { text: intake.text, action: intake.action },
