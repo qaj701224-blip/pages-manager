@@ -174,4 +174,48 @@ describe('slack agent', () => {
 
     assert.equal(calls[0], 'https://agent-gateway.example/v1/chat/completions');
   });
+
+  it('preserves model clarification questions for free-form conversations', async () => {
+    const app = createSlackAgentApp({
+      config: {
+        modelProvider: 'company-agent',
+        gatewayUrl: 'https://agent-gateway.example',
+        apiKey: 'gateway-key',
+        modelName: 'company-agent',
+        requestTimeoutMs: 1000,
+      },
+      async fetchImpl() {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    intent: 'clarify',
+                    summary: '需要补充目标内容。',
+                    clarifyingQuestion: '你希望页面重点展示项目、履历还是联系方式？',
+                    needsClarification: true,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '先聊聊我的个人主页' }),
+      })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.analysis.needsClarification, true);
+    assert.equal(body.analysis.clarifyingQuestion, '你希望页面重点展示项目、履历还是联系方式？');
+  });
 });

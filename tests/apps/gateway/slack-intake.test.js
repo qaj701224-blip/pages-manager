@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  classifySlackIntake,
-  normalizeSlackIntakeText,
-  slackStatusReply,
-} from '../../../apps/gateway/src/slack-intake.js';
+import { classifySlackIntake, normalizeSlackIntakeText, slackStatusReply } from '../../../apps/gateway/src/slack-intake.js';
 
 function body(text) {
   return {
@@ -20,7 +16,7 @@ test('normalizes Slack mention prefixes', () => {
   assert.equal(normalizeSlackIntakeText('<@U01ABC>   创建一个 issue'), '创建一个 issue');
 });
 
-test('classifies help ping and unknown messages without creating jobs', () => {
+test('classifies help ping and free-form messages without creating jobs', () => {
   assert.deepEqual(
     {
       action: classifySlackIntake(body('帮助')).action,
@@ -40,8 +36,16 @@ test('classifies help ping and unknown messages without creating jobs', () => {
       action: classifySlackIntake(body('随便聊一句')).action,
       shouldCreateJob: classifySlackIntake(body('随便聊一句')).shouldCreateJob,
     },
-    { action: 'unknown', shouldCreateJob: false }
+    { action: 'agent_turn', shouldCreateJob: false }
   );
+});
+
+test('keeps casual greetings as free-form agent turns', () => {
+  const result = classifySlackIntake(body('你好，我想先聊聊个人主页'));
+
+  assert.equal(result.action, 'agent_turn');
+  assert.equal(result.shouldCreateJob, false);
+  assert.equal(result.shouldAnalyze, true);
 });
 
 test('classifies message commands deterministically', () => {
