@@ -207,6 +207,138 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
   assert.equal(jobBody.job.summary, 'Agent summary');
 });
 
+test('Slack free-form turn asks clarification through Slack Agent without creating a job', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-clarify-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000102',
+          text: '先聊聊我个人品牌的方向',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        const payload = JSON.parse(request.body);
+        assert.equal(payload.text, '先聊聊我个人品牌的方向');
+        assert.equal(payload.slackSession.primarySlackUserId, 'U1');
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'clarify',
+              summary: '可以，我需要先确认你想突出哪些内容：项目、履历还是设计风格？',
+              needsClarification: true,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'clarification_needed');
+  assert.equal(body.accepted, false);
+  assert.equal(body.jobId, undefined);
+  assert.match(body.replyText, /需要先确认/);
+  assert.equal(agentCalls.length, 1);
+  assert.equal(app.store.jobs.size, 0);
+});
+
+test('Slack free-form turn can create a job when Slack Agent decides the requirement is ready', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-freeform-create-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000103',
+          text: '个人品牌想走清爽可信的路线，先给我落一个页面',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              employeeSlug: 'alice',
+              siteSlug: 'brand',
+              title: 'Alice personal brand page',
+              summary: '用户希望创建一个清爽可信的个人品牌页面。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${body.jobId}`)));
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'agent_turn');
+  assert.equal(body.accepted, true);
+  assert.equal(jobBody.job.employeeSlug, 'alice');
+  assert.equal(jobBody.job.siteSlug, 'brand');
+  assert.equal(jobBody.job.summary, '用户希望创建一个清爽可信的个人品牌页面。');
+});
+
+test('Slack free-form turn stays conversational when Slack Agent is not configured', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-freeform-no-provider-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000104',
+          text: '先聊聊我个人品牌的方向',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'agent_turn');
+  assert.equal(body.accepted, false);
+  assert.equal(body.jobId, undefined);
+  assert.match(body.replyText, /没有可用的 Slack Agent/);
+  assert.equal(app.store.jobs.size, 0);
+});
+
 test('executor callbacks notify the source Slack thread', async () => {
   const app = createGatewayApp();
   const slackMessages = [];
@@ -322,7 +454,7 @@ test('Slack help and ping messages do not create jobs', async () => {
     assert.equal(body.action, action);
     assert.equal(body.accepted, false);
     assert.equal(body.jobId, undefined);
-    assert.match(body.replyText, action === 'help' ? /推荐用消息命令写法/ : /我在/);
+    assert.match(body.replyText, action === 'help' ? /自然语言/ : /我在/);
   }
 
   assert.equal(workerStarts.length, 0);
@@ -614,6 +746,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   }
 
   const workerStarts = [];
+  const agentCalls = [];
   const followupResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -632,6 +765,24 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
       }),
     }),
     {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        const payload = JSON.parse(request.body);
+        assert.equal(payload.slackSession.activeJobId, created.jobId);
+        assert.equal(payload.issueLinks.length, 1);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'append_requirement',
+              summary: '把标题改成中文，再加一个项目经历区域。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
@@ -655,6 +806,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(followup.jobId, created.jobId);
   assert.match(followup.replyText, /同一个 PR/);
   assert.equal(jobBody.job.status, 'fixing');
+  assert.equal(agentCalls.length, 1);
   assert.equal(workerStarts.length, 1);
 });
 

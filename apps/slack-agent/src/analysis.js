@@ -60,18 +60,17 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
   const normalized = {
     ...fallback,
     intent: stringOrFallback(modelAnalysis.intent, fallback.intent),
-    employeeSlug: stringOrFallback(
-      modelAnalysis.employeeSlug || modelAnalysis.employee_slug,
-      fallback.employeeSlug
-    ),
+    confidence: typeof modelAnalysis.confidence === 'number' ? modelAnalysis.confidence : fallback.confidence,
+    employeeSlug: stringOrFallback(modelAnalysis.employeeSlug || modelAnalysis.employee_slug, fallback.employeeSlug),
     siteSlug: stringOrFallback(modelAnalysis.siteSlug || modelAnalysis.site_slug, fallback.siteSlug),
     title: stringOrFallback(modelAnalysis.title, fallback.title),
     summary: stringOrFallback(modelAnalysis.summary || modelAnalysis.brief, fallback.summary),
-    approvalMode: stringOrFallback(
-      modelAnalysis.approvalMode || modelAnalysis.approval_mode,
-      fallback.approvalMode
-    ),
+    approvalMode: stringOrFallback(modelAnalysis.approvalMode || modelAnalysis.approval_mode, fallback.approvalMode),
     sourceMessages: arrayOrFallback(modelAnalysis.sourceMessages || modelAnalysis.source_messages, fallback.sourceMessages),
+    clarifyingQuestion: stringOrFallback(
+      modelAnalysis.clarifyingQuestion || modelAnalysis.clarifying_question,
+      fallback.clarifyingQuestion || ''
+    ),
     sessionContext: {
       ...sessionContextFromInput(input),
       ...(modelAnalysis.sessionContext || modelAnalysis.session_context || {}),
@@ -100,12 +99,16 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
 
   const system = [
     '你是 pages-manager 的 Slack Agent，负责把 Slack 对话整理成公司内部个人网站发布任务。',
+    '用户不需要使用 /issue、issue:、page: 等命令；自然语言、连续闲聊和设计调整都必须被理解为一次会话 turn。',
     '你只做需求理解、澄清、会话续接和任务摘要，不生成代码，不创建 PR，不处理部署凭据。',
     '不要输出或猜测任何 token、secret、cookie、API key、内部账号凭据。',
     '员工可以有多个网站；employeeSlug 表示员工/归属域，siteSlug 表示该员工名下的具体站点。',
     '如果用户是在修改已有 preview，优先保留当前 sessionContext 的 activeJobId / issue / PR / preview 关系。',
     '必须只返回 JSON object，不要返回 Markdown，不要包裹代码块。',
-    'JSON 字段：intent, employeeSlug, siteSlug, title, summary, approvalMode, needsClarification, sourceMessages。',
+    [
+      'JSON 字段：intent, employeeSlug, siteSlug, title, summary, approvalMode,',
+      'needsClarification, clarifyingQuestion, sourceMessages。',
+    ].join(' '),
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
       'status_query, cancel_request, close_session, clarify。',

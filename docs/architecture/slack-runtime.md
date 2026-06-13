@@ -415,28 +415,32 @@ app_mention
 
 ## 消息识别
 
-MVP 不直接把每条 Slack 消息都变成 issue，而是先做确定性消息识别。这里的 `issue:` / `page:` 是普通 Slack 消息，不是 Slack Slash Command；如果直接输入 `/issue`，Slack 客户端会按 Slash Command 处理，当前 Socket Mode 监听链路不会收到这条消息。
+MVP 不直接把每条 Slack 消息都变成 issue，而是先进入 Slack Agent 对话理解层。用户可以完全用自然语言闲聊、补充设计想法或表达对 preview 的不满；gateway 只把少数控制类消息先做确定性识别，其余消息都作为 `agent_turn` 交给 `apps/slack-agent`。Slack Agent 的输出再由 gateway 判断是追问、创建 `PublishingJob`、续接已有 issue / PR / preview，还是查询状态 / 关闭会话。
 
-| 文案 | 行为 |
-| --- | --- |
-| `issue: <需求>` | 创建发布任务 / issue |
-| `page: <需求>` | 创建发布任务 / issue |
-| `site: <需求>` | 创建发布任务 / issue |
-| `status: job_xxx` | 查询 job 状态 |
-| `help` | 返回帮助 |
-| `ping` | 连通性回复 |
-| `cancel` | 返回取消提示，MVP 暂不真正取消 |
-| `关闭会话` / `结束对话` | 关闭当前选中的 session，清空 active context |
-| `这个任务不用了` / `归档这个 preview` | 关闭当前 active IssueLink 或转人工确认 |
+`issue:` / `page:` 仍然保留为兼容入口，但不是必需用法。这里的 `issue:` / `page:` 是普通 Slack 消息，不是 Slack Slash Command；如果直接输入 `/issue`，Slack 客户端会按 Slash Command 处理，当前 Socket Mode 监听链路不会收到这条消息。
 
-中文强意图兜底可以继续支持，例如 `创建 issue：...`、`帮我生成一个个人网页`。普通聊天、模糊消息、测试闲聊不会创建 issue。
+| 文案                                  | 行为                                             |
+| ------------------------------------- | ------------------------------------------------ |
+| 任意自然语言需求                      | 进入 Slack Agent；信息足够时创建发布任务 / issue |
+| 模糊闲聊 / 信息不足                   | 进入 Slack Agent；回复澄清问题，不创建 issue     |
+| `issue: <需求>`                       | 兼容命令入口；仍会经过 Slack Agent 结构化        |
+| `page: <需求>`                        | 兼容命令入口；仍会经过 Slack Agent 结构化        |
+| `site: <需求>`                        | 兼容命令入口；仍会经过 Slack Agent 结构化        |
+| `status: job_xxx`                     | 查询 job 状态                                    |
+| `help`                                | 返回帮助                                         |
+| `ping`                                | 连通性回复                                       |
+| `cancel`                              | 返回取消提示，MVP 暂不真正取消                   |
+| `关闭会话` / `结束对话`               | 关闭当前选中的 session，清空 active context      |
+| `这个任务不用了` / `归档这个 preview` | 关闭当前 active IssueLink 或转人工确认           |
+
+普通聊天、模糊消息、测试闲聊不会直接创建 issue；只有 Slack Agent 明确返回 `create_or_update_site` / `new_site_request` / `create_site` / `update_site` 且 `needsClarification=false` 时，gateway 才创建发布任务。没有配置 Slack Agent 时，自由聊天只记录会话并回复兜底提示，不自动开 issue。
 
 Agent 消息分析应放在 `apps/slack-agent` 中，把当前用户可见的 Slack thread / DM 上下文总结成结构化需求，并维护按用户隔离、可多开的 `SlackSession` / `SessionMemory` / `IssueLink`。Agent 的输出仍需经过 gateway 的权限、幂等和创建 job 规则，不能直接创建 issue / PR。
 
 默认 session 生命周期：
 
 ```text
-SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS=12
+SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS=2
 SLACK_AGENT_WAITING_CLARIFICATION_TTL_DAYS=1
 SLACK_AGENT_RECENT_SESSION_DAYS=14
 SLACK_AGENT_ARCHIVE_AFTER_DAYS=90

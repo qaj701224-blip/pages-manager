@@ -209,7 +209,7 @@ Slack message
 | Slack Agent session lease | 180 秒 | 同一 `slack_session_id` 同时只允许一个 AgentRun 处理，避免两条 Slack 消息并发改同一 memory |
 | Slack Agent retry | 2 次 | 只重试网络或供应商 5xx；模型安全拒绝、权限失败、输入不明确不自动重试 |
 | Provider thread TTL | 24 小时 | 如果使用模型供应商 thread / assistant id，只作为缓存；DB 中的 SessionMemory 才是真相源 |
-| Coding Agent run timeout | 30 分钟 | `pages-agent.yml(mode=initial|fix)` 是一次性执行，超时后写失败状态，不能常驻 |
+| Coding Agent run timeout | 30 分钟 | `pages-agent.yml(mode=initial or fix)` 是一次性执行，超时后写失败状态，不能常驻 |
 
 AgentRun 规则：
 
@@ -223,20 +223,27 @@ AgentRun 规则：
 
 Slack Agent 每次收到消息后先做分类：
 
-| Intent | 动作 |
-| --- | --- |
-| `new_site_request` | 创建新的 `PublishingJob` 和 issue |
-| `modify_existing_preview` | 追加 issue comment，触发 fix round |
-| `append_requirement` | 追加需求到当前 issue / session memory |
-| `status_query` | 查询当前 job / issue / PR / preview 状态 |
-| `cancel_request` | 标记取消或转人工确认 |
-| `close_session` | 关闭当前选中的 session |
-| `close_current_task` | 关闭当前 active issue / PR / preview 关联 |
-| `choose_version` | 记录用户选择，必要时触发后续 deploy |
-| `clarification_reply` | 补齐 pending question 后继续创建或修改 |
-| `unknown` | 反问，不创建 job |
+| Intent                                                                       | 动作                                                            |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `create_or_update_site` / `new_site_request` / `create_site` / `update_site` | 需求已经足够明确，gateway 可以创建新的 `PublishingJob` 和 issue |
+| `modify_existing_preview`                                                    | 追加 issue comment，触发 fix round                              |
+| `append_requirement`                                                         | 追加需求到当前 issue / session memory                           |
+| `status_query`                                                               | 查询当前 job / issue / PR / preview 状态                        |
+| `cancel_request`                                                             | 标记取消或转人工确认                                            |
+| `close_session`                                                              | 关闭当前选中的 session                                          |
+| `close_current_task`                                                         | 关闭当前 active issue / PR / preview 关联                       |
+| `choose_version`                                                             | 记录用户选择，必要时触发后续 deploy                             |
+| `clarification_reply`                                                        | 补齐 pending question 后继续创建或修改                          |
+| `clarify` / `unknown`                                                        | 反问或继续闲聊，不创建 job                                      |
 
 同一用户如果只有一个未过期 active session，默认续接该 session 的 active job。新 thread 可以创建该用户自己的新 session，但不会创建共享会话。若该用户已有多个 recent session / job，消息又没有明确引用 session id、job id、issue number、PR number 或 preview URL，Slack Agent 必须反问“你要改哪一个 preview / issue？”。
+
+gateway 的硬规则：
+
+- Slack 用户不需要使用 `/issue`、`issue:` 或其它命令；除 `help` / `ping` / `status` / `cancel` / `close` 等控制类消息外，普通文本都作为 `agent_turn`。
+- `needsClarification=true` 时只回 Slack 澄清问题，不创建 `PublishingJob`。
+- 没有 active job / issue / PR / preview 时，`append_requirement` / `modify_existing_preview` 不得凭空修改任务，必须要求用户选择或新建。
+- 没有配置 Slack Agent provider 时，自由聊天只记录会话并回复兜底提示；明确 `issue:` 兼容命令仍可走确定性 smoke 流程。
 
 ## Preview 不满意时
 
