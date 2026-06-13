@@ -240,18 +240,18 @@ jobs:
             printf 'Index snapshot: %s\n' "$INDEX_SNAPSHOT_ID"
           } > .pages-artifacts/pr-body.md
 
-          if ! gh pr view "$branch" --json number --jq .number >/tmp/pages-pr-number 2>/dev/null; then
-            gh pr create --head "$branch" --base "$BASE_REF" --title "$title" --body-file .pages-artifacts/pr-body.md
-            gh pr view "$branch" --json number --jq .number >/tmp/pages-pr-number
+          open_pr_json="$(gh pr list --head "$branch" --base "$BASE_REF" --state open --json number,url --jq '.[0] // empty')"
+          if [[ -z "$open_pr_json" ]]; then
+            pr_url="$(gh pr create --head "$branch" --base "$BASE_REF" --title "$title" --body-file .pages-artifacts/pr-body.md)"
+            pr_number="$(gh pr view "$pr_url" --json number --jq .number)"
           else
-            gh pr edit "$branch" --title "$title" --body-file .pages-artifacts/pr-body.md
+            pr_number="$(jq -r .number <<< "$open_pr_json")"
+            pr_url="$(jq -r .url <<< "$open_pr_json")"
+            gh pr edit "$pr_number" --title "$title" --body-file .pages-artifacts/pr-body.md
           fi
 
-          gh pr comment "$branch" --body "@codex review"
+          gh pr comment "$pr_number" --body "@codex review"
 
-          gh pr view "$branch" --json url --jq .url >/tmp/pages-pr-url
-          pr_number="$(cat /tmp/pages-pr-number)"
-          pr_url="$(cat /tmp/pages-pr-url)"
           head_sha="$(git rev-parse HEAD)"
           echo "branchName=$branch" >> "$GITHUB_OUTPUT"
           echo "prNumber=$pr_number" >> "$GITHUB_OUTPUT"

@@ -19,6 +19,8 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /AGENT_CODE_API_KEY: \$\{\{ secrets\.AGENT_CODE_API_KEY \}\}/);
   assert.match(workflow, /branchName must use the sites\/ agent branch prefix/);
   assert.match(workflow, /agent branch must use the sites\/ prefix/);
+  assert.match(workflow, /gh pr list --head "\$branch" --base "\$BASE_REF" --state open/);
+  assert.doesNotMatch(workflow, /gh pr view "\$branch"/);
   assert.match(workflow, /Callback gateway on failure[\s\S]*PUBLISHING_JOB_ID: \$\{\{ inputs\.publishingJobId \}\}/);
   assert.match(workflow, /Callback gateway on failure[\s\S]*PAGES_CALLBACK_URL: \$\{\{ inputs\.callbackUrl \}\}/);
   assert.match(workflow, /callbackUrl: process\.env\.PAGES_CALLBACK_URL/);
