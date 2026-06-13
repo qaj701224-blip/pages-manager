@@ -9,7 +9,7 @@
 ```text
 Slack
   ↓
-apps/slack-connector / gateway 接收并创建任务
+pages-gateway 接收 Slack HTTP event 并创建任务
   ↓
 需求整理
   ↓
@@ -38,7 +38,7 @@ Agent 自合并 / 部署到 Preview
 必须跑通：
 
 - Slack 私聊、mention 或 slash command 能进入平台。
-- Socket Mode MVP 使用仓库内 `apps/slack-connector`，不使用临时 `/tmp` 监听脚本。
+- Slack Events / Interactivity 直接进入 `pages-gateway`，不使用临时 `/tmp` 监听脚本，也不使用 Socket Mode fallback。
 - 平台能把 Slack 消息整理成结构化需求。
 - 平台能创建 GitHub Enterprise issue。
 - issue 创建由 `apps/worker` 使用平台 GitHub App installation token 完成，不依赖 Slack 用户拥有 repo 权限。

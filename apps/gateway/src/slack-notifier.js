@@ -1,9 +1,17 @@
 function slackApiUrl(env = {}, method = 'chat.postMessage') {
+  if (env.SLACK_API_BASE_URL) {
+    return `${String(env.SLACK_API_BASE_URL).replace(/\/+$/, '')}/${method}`;
+  }
+
   if (method === 'chat.update') {
     return (
       env.SLACK_UPDATE_API_URL ||
       String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, '/chat.update')
     );
+  }
+
+  if (method !== 'chat.postMessage') {
+    return String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, `/${method}`);
   }
 
   return env.SLACK_POST_API_URL || env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage';
@@ -121,6 +129,23 @@ function jobActionElements(job = {}) {
           action_id: 'open_preview',
         }
       : null,
+    job.slackSessionId
+      ? {
+          type: 'button',
+          text: { type: 'plain_text', text: '继续修改' },
+          action_id: 'pages_continue_modifying',
+          value: job.slackSessionId,
+        }
+      : null,
+    job.slackSessionId
+      ? {
+          type: 'button',
+          text: { type: 'plain_text', text: '关闭会话' },
+          style: 'danger',
+          action_id: 'pages_close_session',
+          value: job.slackSessionId,
+        }
+      : null,
   ].filter(Boolean);
 }
 
@@ -204,6 +229,10 @@ export async function postSlackMessage(env, payload) {
 
 export async function updateSlackMessage(env, payload) {
   return callSlackApi(env, 'chat.update', payload);
+}
+
+export async function addSlackReaction(env, payload) {
+  return callSlackApi(env, 'reactions.add', payload);
 }
 
 function formatReviewLocation(comment = {}) {

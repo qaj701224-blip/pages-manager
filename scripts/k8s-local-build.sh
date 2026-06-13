@@ -14,7 +14,6 @@ LOAD_IMAGES="${PAGES_K8S_LOAD_IMAGES:-auto}"
 SERVICES=(
   gateway
   worker
-  slack-connector
   slack-agent
 )
 

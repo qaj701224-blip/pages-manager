@@ -8,6 +8,7 @@ const MAP_FIELDS = [
   'idempotency',
   'events',
   'githubDeliveries',
+  'slackDeliveries',
   'reviewAgentComments',
   'slackNotifications',
   'slackJobStatusMessages',
@@ -95,6 +96,12 @@ export class FileBackedGatewayStore extends MemoryGatewayStore {
 
   recordGithubDelivery(input) {
     const result = super.recordGithubDelivery(input);
+    this.persist();
+    return result;
+  }
+
+  recordSlackDelivery(input) {
+    const result = super.recordSlackDelivery(input);
     this.persist();
     return result;
   }

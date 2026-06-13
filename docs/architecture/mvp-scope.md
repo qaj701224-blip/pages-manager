@@ -109,7 +109,6 @@ API 是 `pages-gateway` 的正式入口。详细设计见 [api-entry.md](./api-e
 
 ```text
 apps/gateway
-apps/slack-connector
 apps/slack-agent
 apps/worker
 packages/workflow-core
@@ -127,7 +126,7 @@ MVP 可以不做完整 `apps/frontend`，但至少要有 API 查询 job 状态�
 
 `k8s/` 对 MVP 分两层理解：
 
-- `k8s/base/pages-system`：MVP 要做，用来跑 gateway、slack-connector、slack-agent、worker、MySQL、Redis 等常驻控制面。
+- `k8s/base/pages-system`：MVP 要做，用来跑 gateway、slack-agent、worker、MySQL、Redis 等常驻控制面。
 - `k8s/jobs` 或 `pages-jobs`：后续再做，用来跑 coding-agent、builder、site-check、controlled-committer、deployer 这类一次性 K8s Job。
 
 ### 2. 最小数据模型
@@ -212,8 +211,7 @@ Actions-first MVP 可以先由 `pages-gateway` 内置 Slack 通知 adapter 回�
 但必须保留这些安全边界：
 
 - 只维护一个平台 Slack bot。
-- Socket Mode MVP 使用仓库内长期组件 `apps/slack-connector`，不使用临时本地监听脚本。
-- HTTP Events 模式下 `pages-gateway` 校验 Slack signature；Socket Mode 模式下 `apps/slack-connector` 消费 Slack envelope，gateway 校验 connector shared secret。
+- Slack Events / Interactivity 直接进入 `pages-gateway`；gateway 校验 Slack signature / timestamp，不使用 Socket Mode fallback。
 - `pages-gateway` 用非空 `dedupe_key` 做幂等，避免 Slack 重投重复创建任务。
 - Slack user 必须通过 `ExternalIdentityBinding` 解析成内部 `User` / `Employee`。
 - Slack Agent 按 `(team_id, slack_user_id)` 做用户隔离；同一个用户可以有多个 `SlackSession`，同一个 thread 里多个人同时对话时，每个人只进入自己名下的 session。
@@ -221,7 +219,7 @@ Actions-first MVP 可以先由 `pages-gateway` 内置 Slack 通知 adapter 回�
 - Slack 回复和进度回写必须 @ 对应 Slack user，不能让多人 thread 中的状态消息没有明确归属。
 - SlackBot 消息只能作为需求来源；不能自动成为 `requested_by`。
 - SlackBot 没有 `TrustedSlackBotPolicy` 或真人确认时，不能创建 `PublishingJob`。
-- Slack token 只进入 `pages-gateway`、`apps/slack-connector`、`apps/slack-agent`、`slack-notifier`，不进入 coding-agent/builder/site-check/deployer workflow/job。
+- Slack token 只进入 `pages-gateway`、必要时 `apps/slack-agent`、`slack-notifier`，不进入 coding-agent/builder/site-check/deployer workflow/job。
 - Slack Agent 模型 API key 只进入 `apps/slack-agent` 常驻服务，不进入 GitHub Actions executor、coding-agent、site-check、deployer 或员工页面。
 
 MVP 可以用管理员预配置绑定：

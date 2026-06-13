@@ -22,7 +22,6 @@ pages-manager/
 ├── apps/
 │   ├── deploy-api/          # 现有 Cloudflare 发布 API；apps/server 可先作为过渡名
 │   ├── gateway/             # 平台控制面：鉴权、权限、PublishingJob、webhook、executor 调度
-│   ├── slack-connector/     # Slack Socket Mode 长驻接入；转交 gateway，不直接做发布
 │   ├── frontend/            # 管理控制台
 │   ├── indexer/             # 项目索引组件；MVP 放在大仓内，后续可拆独立服务
 │   ├── worker/              # workflow / slack / review 调度 worker
@@ -70,7 +69,7 @@ pages-manager/
 
 前期不使用 K8s Job executor 时，自动开发、索引和构建由 `.github/workflows/project-index.yml`、`pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 承担。`pages-production-deploy.yml` 和 `apps/job-runner` 是后续增强；`k8s/` 先用于本地 `pages-system` 控制面 manifests，`pages-jobs` 后置。
 
-Slack 不用临时本地脚本。MVP 的长期接入进程放在 `apps/slack-connector`，通过 Socket Mode 监听统一 Slack bot，并调用 `apps/gateway` 的 `/integrations/slack/events`。后续如果改成 Slack HTTP Events，仍然复用同一个 gateway endpoint 和状态机。
+Slack 不用临时本地脚本，也不使用 Socket Mode fallback。MVP 的长期入口是 `apps/gateway` 暴露的 `/integrations/slack/events` 和 `/integrations/slack/interactions`，由 Slack HTTP Events / Interactivity 直接调用，gateway 负责签名校验、幂等、会话隔离和状态机。
 
 项目索引能力不需要先拆独立 repo。MVP 先在 `pages-manager` 内实现 `apps/indexer` / `packages/project-index`，保持 issue、PR、Review Agent comment、Preview deploy 和审计在同一个 repo 内闭环。后续如果索引服务要服务多个业务 repo 或多个平台，再拆独立 repo / 独立服务。
 
