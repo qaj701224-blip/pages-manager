@@ -225,9 +225,9 @@ ConfigMap, image tags, and Deployment rollout state.
 
 For routine preview updates, choose a single `component` input (`gateway`,
 `worker`, `slack-agent`, or `slack-notifier`) to build and roll only that
-Deployment. Choose `all` for full platform refreshes. Each component uses an ACR
-registry cache tag such as `public/pages-manager/gateway:buildcache` to reuse
-Docker build layers across manual workflow runs.
+Deployment. Choose `all` for full platform refreshes. The workflow does not use
+ACR registry cache because GitHub-hosted runners have repeatedly timed out on
+ACR blob `HEAD` requests in this environment.
 
 Single-component deploys assume the overlay has already been bootstrapped by an
 `all` deploy. They server-side validate the rendered overlay but intentionally
