@@ -1,8 +1,8 @@
-# Slack Socket Mode Local Test
+# Slack Socket Mode Local Test (Archived)
 
 ## 定位
 
-这份文档记录 Slack Socket Mode 本地验证结论，用于 `pages-manager` MVP Slack 入口开发和排障。
+这份文档记录 Slack Socket Mode 的历史本地验证结论。当前 `pages-manager` MVP 已决定不使用 Socket Mode，也不保留 Socket fallback；正式 Slack 入口是 `pages-gateway` 的 HTTP Events / Interactivity。
 
 结论：
 
@@ -16,9 +16,9 @@ Socket Mode
 bot 回复
 ```
 
-这条链路已经验证可用，可以作为本地开发和内网环境早期联调方式。
+这条链路曾经验证可用，但不再作为本地开发、内网联调或服务器部署方案。
 
-生产默认仍建议优先使用 HTTP Events API 进入 `pages-gateway`。如果公司网络暂时不方便暴露公网 HTTPS，Socket Mode 可以作为 MVP 的入口方案，但事件最终仍要转交给 gateway，由 gateway 做签名/身份/幂等/审计/状态机处理。
+本地 K8s、测试服务器和生产都应使用 HTTP Events API / Interactivity 进入 `pages-gateway`，由 gateway 做签名、身份、幂等、审计和状态机处理。
 
 ## 临时测试目录
 

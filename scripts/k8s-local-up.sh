@@ -52,11 +52,9 @@ apply_secret_if_any() {
 
 apply_secret_if_any slack-platform-secret \
   slack-bot-token "${SLACK_BOT_TOKEN:-}" \
-  slack-app-token "${SLACK_APP_TOKEN:-}" \
   slack-signing-secret "${SLACK_SIGNING_SECRET:-}" \
   slack-app-id "${SLACK_APP_ID:-}" \
   slack-bot-user-id "${SLACK_BOT_USER_ID:-}" \
-  slack-connector-shared-secret "${SLACK_CONNECTOR_SHARED_SECRET:-${PAGES_GATEWAY_CONNECTOR_TOKEN:-}}" \
   slack-agent-shared-secret "${SLACK_AGENT_SHARED_SECRET:-}"
 
 apply_secret_if_any model-provider-secret \
@@ -77,6 +75,7 @@ apply_secret_if_any callback-secrets \
   pages-worker-shared-secret "${PAGES_WORKER_SHARED_SECRET:-}"
 
 kubectl apply -k "${ROOT}/k8s/base/pages-system"
+kubectl -n "${NAMESPACE}" delete deployment/slack-connector --ignore-not-found
 
 config_patched=false
 
@@ -116,6 +115,11 @@ patch_config_value GITHUB_REVIEW_AGENT_LOGINS "${GITHUB_REVIEW_AGENT_LOGINS:-}"
 patch_config_value AGENT_MODEL_PROVIDER "${AGENT_MODEL_PROVIDER:-${SLACK_AGENT_MODEL_PROVIDER:-}}"
 patch_config_value AGENT_MODEL_NAME "${AGENT_MODEL_NAME:-${SLACK_AGENT_MODEL_NAME:-}}"
 patch_config_value AGENT_GATEWAY_URL "${AGENT_GATEWAY_URL:-${SLACK_AGENT_GATEWAY_URL:-}}"
+patch_config_value SLACK_EVENTS_PROCESSING_MODE "${SLACK_EVENTS_PROCESSING_MODE:-}"
+patch_config_value SLACK_SIGNATURE_REQUIRED "${SLACK_SIGNATURE_REQUIRED:-}"
+patch_config_value SLACK_REACTION_ON_RECEIVE "${SLACK_REACTION_ON_RECEIVE:-}"
+patch_config_value SLACK_WORKING_REACTION "${SLACK_WORKING_REACTION:-}"
+patch_config_value SLACK_SIGNATURE_MAX_SKEW_SECONDS "${SLACK_SIGNATURE_MAX_SKEW_SECONDS:-}"
 patch_config_value SLACK_AGENT_MAX_CONTEXT_MESSAGES "${SLACK_AGENT_MAX_CONTEXT_MESSAGES:-}"
 patch_config_value SLACK_AGENT_MAX_OUTPUT_TOKENS "${SLACK_AGENT_MAX_OUTPUT_TOKENS:-}"
 patch_config_value SLACK_AGENT_REQUEST_TIMEOUT_SECONDS "${SLACK_AGENT_REQUEST_TIMEOUT_SECONDS:-}"
@@ -128,16 +132,11 @@ patch_config_value SLACK_AGENT_TURN_TIMEOUT_SECONDS "${SLACK_AGENT_TURN_TIMEOUT_
 patch_config_value SLACK_AGENT_SESSION_LEASE_SECONDS "${SLACK_AGENT_SESSION_LEASE_SECONDS:-}"
 patch_config_value SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS "${SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS:-}"
 patch_config_value CODING_AGENT_RUN_TIMEOUT_MINUTES "${CODING_AGENT_RUN_TIMEOUT_MINUTES:-}"
-patch_config_value SLACK_CONNECTOR_DM_POLL_ENABLED "${SLACK_CONNECTOR_DM_POLL_ENABLED:-}"
-patch_config_value SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS "${SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS:-}"
-patch_config_value SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT "${SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT:-}"
-patch_config_value SLACK_CONNECTOR_DM_POLL_BATCH_SIZE "${SLACK_CONNECTOR_DM_POLL_BATCH_SIZE:-}"
 
 if [ "${config_patched}" = "true" ]; then
   kubectl -n "${NAMESPACE}" rollout restart \
     deployment/pages-gateway \
     deployment/pages-worker \
-    deployment/slack-connector \
     deployment/slack-agent
 fi
 
@@ -145,7 +144,6 @@ if [ "${WAIT_ROLLOUT}" = "true" ] || [ "${WAIT_ROLLOUT}" = "1" ]; then
   kubectl -n "${NAMESPACE}" rollout status deployment/pages-gateway
   kubectl -n "${NAMESPACE}" rollout status deployment/pages-worker
   kubectl -n "${NAMESPACE}" rollout status deployment/slack-agent
-  kubectl -n "${NAMESPACE}" rollout status deployment/slack-connector
 fi
 
 echo "pages-system applied. Use: kubectl -n ${NAMESPACE} get pods"

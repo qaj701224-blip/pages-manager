@@ -64,7 +64,7 @@ Slack bot 全平台统一一个：
 - Slack bot 负责收集消息和回写进度；需求理解、会话续接和任务创建判断由 `apps/slack-agent` 通过 gateway 完成。
 - Slack bot 不能绕过 gateway 权限检查直接创建 PR、合并或部署。
 
-Slack runtime 是 `pages-manager` 的常驻平台服务，组件是 `pages-gateway`、`apps/slack-connector`、`apps/slack-agent` 和 `slack-notifier`；如果保留 `slack-worker`，它只是异步执行器，不是会话真相源。MVP 本地先跑在 K8s 的 `pages-system` namespace，后续服务器沿用同一套控制面部署模型。Slack 平台通过 HTTPS event / command / interaction 打到 `pages-gateway`，gateway 校验签名和幂等后再调用 Slack Agent。详细拓扑见 [slack-runtime.md](./slack-runtime.md)。
+Slack runtime 是 `pages-manager` 的常驻平台服务，组件是 `pages-gateway`、`apps/slack-agent` 和 `slack-notifier`；如果保留 `slack-worker`，它只是异步执行器，不是会话真相源。MVP 本地先跑在 K8s 的 `pages-system` namespace，后续服务器沿用同一套控制面部署模型。Slack 平台通过 HTTPS event / command / interaction 打到 `pages-gateway`，gateway 校验签名和幂等后再调用 Slack Agent。详细拓扑见 [slack-runtime.md](./slack-runtime.md)。
 
 Slack event 的真实 actor 必须通过 `ExternalIdentityBinding` 解析到内部 `User` / `Employee`。
 
