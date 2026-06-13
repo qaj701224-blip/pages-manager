@@ -136,13 +136,13 @@ test('Slack event creates a slack-sourced job', async () => {
   assert.equal(jobBody.job.source, 'slack');
   assert.equal(jobBody.job.requestedById, 'slack:T1:U1');
   assert.equal(jobBody.job.slackSessionId, body.slackSessionId);
-  assert.match(jobBody.job.slackSessionKey, /^dm:D1:1710000000\.000100$/);
+  assert.match(jobBody.job.slackSessionKey, /^dm-thread:D1:1710000000\.000100$/);
   assert.deepEqual(jobBody.job.slackThread, {
     teamId: 'T1',
     channelId: 'D1',
     channelType: 'im',
     messageTs: '1710000000.000100',
-    threadTs: null,
+    threadTs: '1710000000.000100',
     userId: 'U1',
   });
 });
@@ -930,6 +930,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000010.000100',
+          thread_ts: '1710000000.000100',
           text: '这个 preview 不满意，把标题改成中文，再加一个项目经历区域',
         },
       }),

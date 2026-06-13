@@ -380,6 +380,7 @@ function slackJobInput(body) {
   const teamId = body.team_id || body.team?.id || 'unknown-team';
   const slackUserId = event.user || body.user_id || body.user?.id || body.source_user_id || 'unknown-user';
   const intake = body.intake || classifySlackIntake(body);
+  const surface = surfaceForSlackBody(body);
   const text = intake.text || event.text || body.text || '';
   const idempotencyKey = body.event_id || body.trigger_id || `${teamId}:${event.ts || body.event_ts || Date.now()}`;
 
@@ -398,10 +399,10 @@ function slackJobInput(body) {
     slackSessionKey: slackSession?.sessionKey || body.slackSessionKey || null,
     slackThread: {
       teamId,
-      channelId: event.channel || null,
-      channelType: event.channel_type || null,
-      messageTs: event.ts || body.event_ts || null,
-      threadTs: event.channel_type === 'im' ? null : event.thread_ts || event.ts || null,
+      channelId: surface.channelId,
+      channelType: surface.channelType,
+      messageTs: surface.messageTs,
+      threadTs: surface.threadTs,
       userId: slackUserId,
     },
   };
