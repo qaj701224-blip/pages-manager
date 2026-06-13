@@ -1,0 +1,13 @@
+{
+  "employeeSlug": "smoke",
+  "siteSlug": "profile",
+  "title": "K8s internal callback probe",
+  "publishingJobId": "job_f7588924ceab402c85eab35c",
+  "issueNumber": "26",
+  "indexSnapshotId": "idxsnap_probe",
+  "baseRef": "staging",
+  "generatedBy": "pages-agent-coding",
+  "generatedAt": "2026-06-13T11:22:12.558Z",
+  "codingSummary": "Created a self-contained static internal employee profile page for smoke/profile, including callback probe metadata and the requested unique identifier.",
+  "modelName": "codex/gpt-5.5"
+}
