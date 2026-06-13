@@ -90,7 +90,7 @@ test('builds gateway payload from Socket Mode event body', () => {
   assert.equal(payload.connector.transport, 'socket_mode');
 });
 
-test('builds Slack reply text and keeps direct messages out of threads', () => {
+test('builds Slack reply text and replies in Slack threads', () => {
   assert.equal(buildSlackAckText({ replyText: '自定义回复' }), '自定义回复');
   assert.match(buildSlackAckText({ created: true, jobId: 'job_123' }), /job_123/);
   assert.match(
@@ -104,7 +104,16 @@ test('builds Slack reply text and keeps direct messages out of threads', () => {
   assert.deepEqual(buildSlackReplyMessage({ channel: 'D1', channel_type: 'im', user: 'U1', ts: '1' }, 'ok'), {
     channel: 'D1',
     text: '<@U1> ok',
+    thread_ts: '1',
   });
+  assert.deepEqual(
+    buildSlackReplyMessage({ channel: 'D1', channel_type: 'im', user: 'U1', ts: '2', thread_ts: '1' }, 'ok'),
+    {
+      channel: 'D1',
+      text: '<@U1> ok',
+      thread_ts: '1',
+    }
+  );
   assert.deepEqual(buildSlackReplyMessage({ channel: 'C1', channel_type: 'channel', user: 'U1', ts: '1' }, 'ok'), {
     channel: 'C1',
     text: '<@U1> ok',

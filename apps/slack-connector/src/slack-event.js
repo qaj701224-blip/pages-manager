@@ -110,9 +110,7 @@ export function buildSlackReplyMessage(event, text) {
     text: mentionSlackUser(text, event.user),
   };
 
-  if (event.channel_type !== 'im') {
-    message.thread_ts = event.thread_ts || event.ts;
-  }
+  message.thread_ts = event.thread_ts || event.ts;
 
   return message;
 }

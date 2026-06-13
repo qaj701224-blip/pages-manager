@@ -49,7 +49,7 @@ export function surfaceForSlackBody(body = {}) {
   const channelType = event.channel_type || body.channel_type || null;
   const channelId = event.channel || body.channel_id || null;
   const messageTs = event.ts || body.event_ts || null;
-  const threadTs = channelType === 'im' ? null : event.thread_ts || messageTs;
+  const threadTs = event.thread_ts || messageTs;
   const dmChannelId = channelType === 'im' ? channelId : null;
 
   return {
@@ -199,6 +199,21 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
         action: 'selected_linked_job',
       };
     }
+  }
+
+  if (
+    surface.channelType === 'im' &&
+    surface.threadTs &&
+    !['help', 'ping', 'status', 'cancel', 'empty'].includes(intake.action)
+  ) {
+    const dmThreadKey = `dm-thread:${surface.dmChannelId || 'unknown'}:${surface.threadTs}`;
+    const session = store.upsertSlackSession(sessionInputFrom(body, intake, dmThreadKey, config, now), now);
+    return {
+      session,
+      memory: store.getSessionMemory(session.id),
+      config,
+      action: 'selected_dm_thread',
+    };
   }
 
   if (surface.channelType !== 'im') {
