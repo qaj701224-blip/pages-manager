@@ -8,12 +8,24 @@ import {
   isTargetSlackEvent,
   normalizeSlackText,
   postGatewayEvent,
+  shouldReplyToGatewayResult,
 } from '../../../apps/slack-connector/src/slack-event.js';
 
 test('targets direct messages and app mentions', () => {
   assert.equal(isTargetSlackEvent({ type: 'message', channel_type: 'im', user: 'U1' }), true);
   assert.equal(isTargetSlackEvent({ type: 'app_mention', user: 'U1' }), true);
   assert.equal(isTargetSlackEvent({ type: 'message', channel_type: 'channel', user: 'U1' }), false);
+  assert.equal(
+    isTargetSlackEvent(
+      { type: 'message', channel_type: 'channel', user: 'U1', thread_ts: '1000.000' },
+      { acceptThreadMessages: true }
+    ),
+    true
+  );
+  assert.equal(
+    isTargetSlackEvent({ type: 'message', channel_type: 'channel', user: 'U1' }, { acceptThreadMessages: true }),
+    false
+  );
 });
 
 test('ignores bot and changed message events by default', () => {
@@ -85,6 +97,13 @@ test('builds Slack reply text and keeps direct messages out of threads', () => {
     text: '<@U1> ok',
     thread_ts: '1',
   });
+});
+
+test('can suppress connector replies for ignored gateway events', () => {
+  assert.equal(shouldReplyToGatewayResult({ ok: true, action: 'ignored_untracked_thread_message' }), false);
+  assert.equal(shouldReplyToGatewayResult({ ok: true, reply: false }), false);
+  assert.equal(shouldReplyToGatewayResult({ ok: true, replyText: null }), false);
+  assert.equal(shouldReplyToGatewayResult({ ok: true, replyText: '继续处理' }), true);
 });
 
 test('posts gateway event and rejects failed responses', async () => {

@@ -287,6 +287,11 @@ export class MemoryGatewayStore {
     return [input.teamId, input.primarySlackUserId, input.sessionKey].join(':');
   }
 
+  findSlackSessionByScope(teamId, slackUserId, sessionKey) {
+    const sessionId = this.slackSessionByScopeKey.get([teamId, slackUserId, sessionKey].join(':'));
+    return sessionId ? this.getSlackSession(sessionId) : null;
+  }
+
   upsertSlackSession(input, now = new Date()) {
     const scopeKey = this.slackSessionScopeKey(input);
     const existingId = input.id || this.slackSessionByScopeKey.get(scopeKey);

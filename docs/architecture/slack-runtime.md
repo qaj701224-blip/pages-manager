@@ -419,9 +419,12 @@ Slack 入口不限制私聊。`apps/slack-connector` 同时监听：
 ```text
 message.im
 app_mention
+message.channels / message.groups 中已有任务 thread 的后续普通回复
 ```
 
 私聊会直接回复 DM；在频道或 thread 中 `@bot` 触发的 `app_mention` 会回复到对应 thread。前提是 Slack App 已订阅 `app_mention`，并且 bot 已加入对应频道。
+
+为了支持像 Slack 工作台一样连续对话，`SLACK_CONNECTOR_ACCEPT_THREAD_MESSAGES=true` 时，connector 会把频道 thread 里的后续普通 `message` 转交给 gateway。gateway 只续接同一 Slack user 已经存在的 `SlackSession`；如果一个普通 thread 消息没有匹配到该用户已有 session，会返回 `ignored_untracked_thread_message` 且不回复，避免把频道里的无关聊天误当需求。
 
 ## 消息识别
 
