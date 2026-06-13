@@ -7,6 +7,7 @@ import {
   buildSlackAckText,
   buildSlackReplyMessage,
   classifySlackEvent,
+  inferSlackChannelType,
   postGatewayEvent,
   shouldReplyToGatewayResult,
 } from './slack-event.js';
@@ -20,7 +21,7 @@ function summarizeSlackEvent(event, extra = {}, options = {}) {
     type: event?.type || null,
     subtype: event?.subtype || null,
     channel: event?.channel || null,
-    channelType: event?.channel_type || null,
+    channelType: inferSlackChannelType(event),
     user: event?.user || null,
     threadTs: event?.thread_ts || null,
     ts: event?.ts || null,
