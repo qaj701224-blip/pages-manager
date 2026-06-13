@@ -317,12 +317,22 @@ Slack thread message update / reply
 MVP 当前实现是在 `pages-gateway` 内置一个 notifier adapter：
 
 ```text
-executor callback / GitHub Review Agent webhook
+Slack Agent 分析 / executor callback / GitHub Review Agent webhook
   ↓
 pages-gateway 更新 PublishingJob
   ↓
-pages-gateway 使用 job.slackThread 调 chat.postMessage
+pages-gateway 使用 job.slackThread 调 chat.postMessage / chat.update
 ```
+
+Slack 右侧体验采用“状态卡片 + 关键节点稳定消息”：
+
+- 创建 Slack 发布任务时，gateway 先在对应 DM / thread 发一条 Block Kit 状态卡片。
+- Slack Agent 对用户可见的整理结果会进入 job summary，并展示在状态卡片中。
+- executor callback / Review webhook 到达后，gateway 用 `chat.update` 更新同一张状态卡片。
+- issue / PR / preview / failure 等关键节点继续单独发一条稳定 thread 消息，方便用户回看链接。
+- gateway 记录 `AgentRunEvent` 和 `SlackJobStatusMessage`，用于去重、重试和后续拆独立 notifier。
+
+“回现 Slack Agent 消息”只指对用户可见的输出，例如追问、需求摘要、任务创建判断、状态解释和错误提示；不得回显模型内部推理、system / developer prompt、token、secret 或公司网关原始调试信息。
 
 已覆盖的回写节点：
 

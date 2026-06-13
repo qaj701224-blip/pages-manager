@@ -2,7 +2,12 @@ import { jsonResponse } from '@xd/worker-kit';
 
 import { isAllowedReviewAgent, normalizeReviewAgentWebhook } from './github-review.js';
 import { classifySlackIntake, slackStatusReply } from './slack-intake.js';
-import { notificationTextForCallback, notificationTextForReviewAction, notifySlackJob } from './slack-notifier.js';
+import {
+  notificationTextForCallback,
+  notificationTextForReviewAction,
+  notifySlackJob,
+  notifySlackJobStatus,
+} from './slack-notifier.js';
 import { selectSlackSession } from './slack-session.js';
 
 const CALLBACK_STAGE_RESULTS = {
@@ -203,6 +208,10 @@ async function handleGithubIssueWebhook({ body, action, store, env, result }) {
   if (job.status === 'issue_created') {
     job = store.updateJob(job.id, 'generating_page');
     store.linkJobToSlackSession(job);
+    await notifySlackJobStatus(env, store, job, {
+      stage: 'issue_created',
+      text: 'GitHub issue 已创建，准备启动页面生成。',
+    });
     workerStart = await startWorkerForJobIfConfigured(job, env);
     issueAction = workerStart?.started ? 'pages_agent_dispatched' : 'pages_agent_ready';
   } else if (['generating_page', 'patch_generated', 'branch_committed', 'pr_created', 'reviewing'].includes(job.status)) {
@@ -848,6 +857,14 @@ export async function handleSlackEvents(request, env) {
     });
     const { job, created } = store.createJob(slackJobInput({ ...body, intake, slackAgentAnalysis, slackSession }));
     const issueLink = store.linkJobToSlackSession(job, slackSession);
+    const slackStatusNotification = created
+      ? await notifySlackJobStatus(env, store, job, {
+          stage: 'received',
+          agentRunId: agentRun?.id || null,
+          text: '已收到 Slack 发布需求，正在整理任务。',
+          statusText: ':hourglass_flowing_sand: 我已收到需求，正在整理...',
+        })
+      : null;
     const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
     completeSlackAgentRun(store, agentRun, {
       publishingJobId: job.id,
@@ -884,6 +901,7 @@ export async function handleSlackEvents(request, env) {
       agentRunId: agentRun?.id,
       issueLink,
       created,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
       ...(slackAgentAnalysis ? { slackAgentAnalysis } : {}),
       ...(workerStart ? { workerStart } : {}),
     });
@@ -911,6 +929,11 @@ export async function handleExecutorCallback(request, env) {
     const job = store.failJob(jobId, body.errorCode || body.error_code, body.errorMessage || body.error_message);
     if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
     store.linkJobToSlackSession(job);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+      stage: 'failed',
+      text: job.errorMessage || job.errorCode || '发布任务失败',
+      statusText: ':x: 发布任务失败',
+    });
     const slackNotification = await notifySlackJob(
       env,
       store,
@@ -918,7 +941,11 @@ export async function handleExecutorCallback(request, env) {
       `失败：${job.errorMessage || job.errorCode || '发布任务失败'}`,
       `failed:${job.errorCode || 'unknown'}`
     );
-    return jsonResponse({ job, ...(slackNotification ? { slackNotification } : {}) });
+    return jsonResponse({
+      job,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      ...(slackNotification ? { slackNotification } : {}),
+    });
   }
 
   const stageResult = required(body.stageResult || body.stage_result, 'stageResult');
@@ -931,12 +958,17 @@ export async function handleExecutorCallback(request, env) {
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   store.linkJobToSlackSession(job);
   const workerStart = await startWorkerForJobIfConfigured(job, env);
+  const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+    stage: stageResult,
+    text: notificationTextForCallback(stageResult, job) || `PublishingJob moved to ${job.status}`,
+  });
   const slackText = notificationTextForCallback(stageResult, job);
   const slackNotification = await notifySlackJob(env, store, job, slackText, `callback:${stageResult}`);
 
   return jsonResponse({
     job,
     ...(workerStart ? { workerStart } : {}),
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
     ...(slackNotification ? { slackNotification } : {}),
   });
 }
@@ -985,6 +1017,7 @@ export async function handleGithubWebhook(request, env) {
   let updatedJob = job;
   let workerStart = null;
   let reviewAction = 'recorded';
+  let slackStatusNotification = null;
   let slackNotification = null;
 
   const fullHeadSha = normalized.headSha && normalized.headSha.length === 40 ? normalized.headSha : null;
@@ -1018,6 +1051,10 @@ export async function handleGithubWebhook(request, env) {
 
   if (updatedJob) {
     store.linkJobToSlackSession(updatedJob);
+    slackStatusNotification = await notifySlackJobStatus(env, store, updatedJob, {
+      stage: updatedJob.status,
+      text: notificationTextForReviewAction(reviewAction, { gate, reviewComment: reviewComment.comment }) || reviewAction,
+    });
     slackNotification = await notifySlackJob(
       env,
       store,
@@ -1037,6 +1074,7 @@ export async function handleGithubWebhook(request, env) {
     gate,
     ...(updatedJob ? { job: updatedJob } : {}),
     ...(workerStart ? { workerStart } : {}),
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
     ...(slackNotification ? { slackNotification } : {}),
   });
 }
