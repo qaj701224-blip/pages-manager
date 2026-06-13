@@ -14,8 +14,9 @@
 | [first-priority-preview-loop.md](./first-priority-preview-loop.md) | 当前第一优先级：Slack 到需求整理、issue、Agent 自运行、Agent Review、Preview 自动闭环和 Slack 回通 |
 | [end-to-end-flow.md](./end-to-end-flow.md) | Slack / API 到 issue、PR、review、deploy、回写的完整流程 |
 | [slack-to-pr-review-agent-flow.md](./slack-to-pr-review-agent-flow.md) | MVP 主线：Slack 发消息、创建 issue、agent 编码、自动 PR、实时监听 GitHub Review Agent comments、按 comment 修复 |
-| [github-actions-first-runtime.md](./github-actions-first-runtime.md) | 前期不使用 K8s Job executor 时，基于 GitHub Actions runner 跑 coding agent、build、preview、Greptile review 闭环 |
-| [local-k8s-control-plane.md](./local-k8s-control-plane.md) | MVP 接受的本地 K8s 控制面运行模型：常驻服务跑 `pages-system`，一次性 executor 继续跑 GitHub Actions |
+| [k8s-runtime-contract.md](./k8s-runtime-contract.md) | 非 MVP 降级的运行态硬约束：Slack/GitHub/Review 监控必须进入 K8s 控制面，`gh` CLI 只作排障 |
+| [github-actions-first-runtime.md](./github-actions-first-runtime.md) | 前期不使用 K8s Job executor 时，基于 GitHub Actions runner 跑 coding agent、build、preview；控制面仍在 K8s |
+| [local-k8s-control-plane.md](./local-k8s-control-plane.md) | 本地 K8s 控制面运行模型：常驻服务跑 `pages-system`，一次性 executor 可继续跑 GitHub Actions |
 | [project-indexing.md](./project-indexing.md) | 项目索引能力：MVP 放在 pages-manager 大仓内做独立组件，后续可拆独立 repo / 服务 |
 | [app-domain.md](./app-domain.md) | frontend / pages-gateway / 数据模型 / 权限控制 |
 | [db-schema-v0.md](./db-schema-v0.md) | MVP 数据库 schema v0：字段、索引、唯一约束、迁移顺序 |
@@ -56,3 +57,4 @@
 - Cloudflare 由平台统一管理，员工不申请 Cloudflare 账号或 token。
 - 站点访问权限和管理权限分离。
 - Slack bot 全平台统一一个。
+- 平台运行态必须跑在 K8s 控制面；本机 `gh` CLI、`gh watch`、临时 Node listener 只能用于排障，不能推进状态机。

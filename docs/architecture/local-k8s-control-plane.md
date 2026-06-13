@@ -2,7 +2,7 @@
 
 ## 定位
 
-MVP 接受的运行形态是：
+`pages-manager` 的控制面从本地验证开始就必须跑在 K8s 上。这不是 MVP 降级选项，而是当前和长期都要遵守的运行态合同：
 
 ```text
 本地 K8s 跑常驻控制面服务
@@ -12,7 +12,14 @@ GitHub Actions 跑一次性 coding / site-check / preview executor
 后续再把一次性 executor 迁到 K8s Job
 ```
 
-这不是“全量 K8s executor”。本阶段只把长期常驻服务先按 K8s 方式运行起来，让本地、测试服务器和后续生产部署使用同一种控制面模型。
+这不是“全量 K8s executor”。当前先把长期常驻服务按 K8s 方式运行起来，让本地、测试服务器和后续生产部署使用同一种控制面模型。完整硬约束见 [k8s-runtime-contract.md](./k8s-runtime-contract.md)。
+
+因此：
+
+- Slack Events / Interactivity 必须进入 K8s 里的 `pages-gateway`。
+- GitHub webhook 和 executor callback 必须进入同一个 K8s `pages-gateway`。
+- Review Agent comment、required check、preview gate 的状态推进必须由 K8s gateway / worker 完成。
+- 本机 `gh watch`、`gh pr view`、临时 Node listener 只能排障，不能成为平台链路的一环。
 
 ## 为什么这样做
 
@@ -26,7 +33,7 @@ GitHub Actions 跑一次性 coding / site-check / preview executor
 相比第一阶段直接全量 K8s Job executor：
 
 - coding agent、builder、site-check、preview 继续用 GitHub Actions，少做 PVC、Job image、RBAC、workspace cleanup 和受控 committer 容器。
-- MVP 仍然聚焦 Slack 到 Preview URL 的闭环。
+- 当前仍然聚焦 Slack 到 Preview URL 的闭环，但控制面和状态监听不从 K8s 退回本机脚本。
 
 ## 本地集群
 
@@ -53,7 +60,7 @@ local cluster
        └─ Secret callback-secrets
 ```
 
-`pages-jobs` namespace 不属于本阶段必需项。它等到 K8s Job executor 开始实现时再启用。
+`pages-jobs` namespace 不属于当前必需项。它等到 K8s Job executor 开始实现时再启用。即使一次性 executor 还在 GitHub Actions，控制面、webhook、callback、Slack 回写仍必须在 `pages-system`。
 
 ## 网络入口
 
@@ -96,7 +103,7 @@ K8s Secret 只保存引用和运行时注入，不写进 Git。
 
 Gateway 本地持久化：
 
-- MVP 本地 K8s 使用 `PAGES_GATEWAY_STORE_FILE=/data/pages-gateway-store.json`，并通过 `pages-gateway-data` PVC 保存 `PublishingJob`、`SlackSession`、`SessionMemory`、`IssueLink`、GitHub webhook delivery 和 Review Agent comment 的 JSON snapshot。
+- 当前本地 K8s 使用 `PAGES_GATEWAY_STORE_FILE=/data/pages-gateway-store.json`，并通过 `pages-gateway-data` PVC 保存 `PublishingJob`、`SlackSession`、`SessionMemory`、`IssueLink`、GitHub webhook delivery 和 Review Agent comment 的 JSON snapshot。
 - 这不是长期数据库方案；它只用于本地和早期服务器验证，避免 gateway pod 重启后 Slack 多轮会话、issue/PR 关联和 webhook 幂等全部丢失。
 - 正式平台仍按 [db-schema-v0.md](./db-schema-v0.md) 迁移到 MySQL 真相源。
 
@@ -134,14 +141,14 @@ pages-preview.yml
 
 Actions callback 仍然回到 K8s 里的 `pages-gateway`。
 
-## MVP 实现顺序
+## 当前落地顺序
 
 1. 新增 `k8s/base/pages-system`，只放 namespace、ConfigMap、Secret template、ServiceAccount、Deployment、Service。
 2. 为 `apps/gateway`、`apps/slack-agent`、`apps/worker` 准备容器镜像构建方式。
 3. 本地用 kind/k3d 部署 `pages-system`。
 4. 用 tunnel 暴露 gateway 的 webhook / callback URL。
 5. 让 Slack Events / Interactivity、GitHub Actions callback 和 GitHub webhook 都打到同一个 gateway public URL。
-7. 保持 `pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 继续在 GitHub Actions 上运行。
+7. 保持 `pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 继续在 GitHub Actions 上运行，但 workflow 结果必须 callback K8s gateway，PR / Review / check 状态必须通过 GitHub webhook 进入 K8s gateway。
 
 当前仓库内已落地第一版骨架：
 
@@ -210,14 +217,14 @@ smoke control plane
 - 通过临时 `kubectl port-forward` 探测 `pages-gateway`、`pages-worker`、`slack-agent` 的 `/health`。
 - 如果 `PAGES_PREVIEW_MODE=local_deploy`，还会要求 `cloudflare-preview-secret` 中存在 legacy preview owner marker。这个 marker 只用于本地 smoke，不代表长期员工隔离模型。
 
-本地 MVP 推荐：
+本地推荐：
 
 ```text
 PAGES_WORKFLOW_REF=staging
 PAGES_BASE_REF=staging
 ```
 
-`PAGES_WORKFLOW_REF` 表示从哪个分支读取 GitHub Actions workflow 文件；`PAGES_BASE_REF` 表示生成代码和 PR 的目标业务分支。当前新版 `project-index.yml`、`pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 合同已先合入 `staging`，本地 MVP 用 `staging` 同时作为 workflow ref 和生成 PR 的 base。
+`PAGES_WORKFLOW_REF` 表示从哪个分支读取 GitHub Actions workflow 文件；`PAGES_BASE_REF` 表示生成代码和 PR 的目标业务分支。当前新版 `project-index.yml`、`pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 合同已先合入 `staging`，本地 K8s smoke 用 `staging` 同时作为 workflow ref 和生成 PR 的 base。
 
 Preview token 边界：
 

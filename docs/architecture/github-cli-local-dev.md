@@ -2,18 +2,18 @@
 
 ## 定位
 
-本地 `gh` CLI 已经配置好，可以作为 MVP 开发期的冒烟测试工具。
+本地 `gh` CLI 已经配置好，可以作为开发期的观察和排障工具。
 
-它适合用来验证：
+它适合用来人工查看：
 
 - 当前本机能访问 `pages-manager` repo。
 - issue 创建是否可用。
 - PR 查询是否可用。
 - GitHub Actions workflow dispatch 是否可用。
 - workflow run 状态和日志是否可读。
-- Review Agent comment 是否能从 PR 中读到。
+- Review Agent comment 是否已经出现在 PR 中。
 
-它不适合作为生产运行身份。
+它不适合作为运行时身份，也不能作为本地完整链路的状态推进器。
 
 生产平台自动化仍然必须使用：
 
@@ -24,7 +24,7 @@ GitHub webhook
 DB audit
 ```
 
-不能让 `pages-gateway`、GitHub Actions、worker 或 K8s job 依赖某个开发者机器上的 `gh` 登录态。
+不能让 `pages-gateway`、GitHub Actions、worker 或 K8s job 依赖某个开发者机器上的 `gh` 登录态。不能用本机 `gh run watch`、`gh pr view` 或 `gh api` 轮询结果来推进 `PublishingJob`、preview gate 或 Slack 回写。
 
 ## 当前本地确认
 
@@ -40,7 +40,7 @@ remote: git@github.com:xindong/pages-manager.git
 
 不要把 `gh auth status` 输出里的 token 写进文档、环境变量、issue、PR 或日志。即使是 masked token，也只用于排障时临时确认，不作为配置来源。
 
-## 可做的本地冒烟测试
+## 可做的本地观察
 
 ### 1. 确认登录和 repo
 
@@ -52,11 +52,11 @@ git remote -v
 
 ### 2. 创建测试 issue
 
-用于验证 GitHub issue API、权限和模板：
+只用于验证 GitHub issue API、权限和模板，不代表平台发布链路。正式 issue 必须由 K8s `pages-worker` 使用 GitHub App / installation token 创建：
 
 ```bash
 gh issue create \
-  --title "[MVP smoke] Slack to Preview test" \
+  --title "[Smoke] Slack to Preview test" \
   --body "Created by local gh CLI smoke test. Do not use as production automation identity."
 ```
 
@@ -78,9 +78,9 @@ gh run list --workflow project-index.yml --limit 5
 gh run view <run-id> --log
 ```
 
-这只用于本地调试。正式流程必须由 `pages-gateway` 创建 `JobStageAttempt` 后触发 workflow，并通过 callback 签名推进状态机。
+这只用于本地调试。正式流程必须由 K8s `pages-gateway` 创建 `JobStageAttempt`，再由 K8s `pages-worker` 触发 workflow，并通过 callback 签名推进状态机。
 
-`--ref` 表示从哪个分支读取和执行 workflow；`baseRef` 表示 Project Index / Pages Agent 以哪个业务分支作为生成和 PR base。MVP 默认 `baseRef=staging`，避免自动生成的站点 PR 直接指向 `master`。
+`--ref` 表示从哪个分支读取和执行 workflow；`baseRef` 表示 Project Index / Pages Agent 以哪个业务分支作为生成和 PR base。当前默认 `baseRef=staging`，避免自动生成的站点 PR 直接指向 `master`。
 
 如果是反复验证 Slack 到 PR 的本地 smoke，不要每次都新建 PR。worker 应启用：
 
@@ -90,7 +90,7 @@ PAGES_PR_MODE=smoke_single
 PAGES_SMOKE_PR_BRANCH=sites/smoke-local-slack-smoke-profile
 ```
 
-此时 `gh` 只用于观察固定 smoke issue / PR 的状态，不作为平台运行时。
+此时 `gh` 只用于观察固定 smoke issue / PR 的状态，不作为平台运行时。完整本地验收必须看 K8s gateway / worker 的 webhook、callback、store / DB 和 Slack 回写。
 
 ### 4. 查询 PR 和 Review Agent comment
 
@@ -101,7 +101,7 @@ gh pr view <pr-number> --json number,title,headRefName,headRefOid,reviewDecision
 gh pr checks <pr-number>
 ```
 
-平台实现不能靠 `gh pr view` 轮询。正式运行必须通过 GitHub webhook 写入 `GitHubWebhookDelivery` 和 `ReviewAgentComment`。
+平台实现不能靠 `gh pr view` 轮询。正式运行必须通过 GitHub webhook 写入 `GitHubWebhookDelivery` 和 `ReviewAgentComment`，再由 K8s gateway / worker 推进状态。
 
 ### 5. 暴露本地 gateway callback
 
@@ -174,7 +174,7 @@ curl -i -X POST "$PAGES_GATEWAY_CALLBACK_URL" \
 | ------------------------ | --------------- | ------------------------------- |
 | 手动创建 smoke issue     | yes             | GitHub App                      |
 | 手动触发 workflow 冒烟   | yes             | gateway dispatch                |
-| 查看 run 日志            | yes             | GitHub API / Actions callback   |
+| 查看 run 日志            | yes             | K8s worker 记录 run id + Actions callback |
 | 读取 PR comments 排障    | yes             | GitHub webhook                  |
 | controlled commit        | no              | GitHub App installation token   |
 | 自动 PR / Preview 主链路 | no              | gateway + workflow              |
@@ -187,10 +187,11 @@ curl -i -X POST "$PAGES_GATEWAY_CALLBACK_URL" \
 - 不让本地 `gh` 创建的 issue / workflow run 绕过 `PublishingJob` 和 `AuditLog`。
 - 不把 `gh` CLI 当成 worker runtime。
 - 不用 `gh` CLI 代替 GitHub webhook 监听 Review Agent comment。
+- 不用 `gh run watch` 的成功或失败结果推进 preview gate。
 
 ## 对第一优先级的帮助
 
-本地 `gh` CLI 可以让第一阶段更快验证这些点：
+本地 `gh` CLI 可以帮助排障这些点：
 
 ```text
 repo access
