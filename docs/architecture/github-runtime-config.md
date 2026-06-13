@@ -98,7 +98,7 @@ gh api repos/xindong/pages-manager/hooks/... --method PATCH
 - 写入 / 对齐 `PAGES_API`，供 preview workflow 或本地 preview deploy 使用。
 - 更新 repo webhook：
   - URL 指向当前 `PAGES_GATEWAY_PUBLIC_URL` 下的 `/integrations/github/webhook`。
-  - Events 设置为 `check_run`、`issue_comment`、`pull_request_review`、`pull_request_review_comment`。
+  - Events 设置为 `issues`、`check_run`、`issue_comment`、`pull_request_review`、`pull_request_review_comment`。
   - Webhook secret 来源为 `GITHUB_WEBHOOK_SECRET`。
 
 验证路径：
@@ -123,6 +123,47 @@ Slack event
 - GitHub PR 复用 smoke PR。
 - Review Agent comment 通过 webhook 触发 preview gate。
 - 本地 K8s `pages-worker` 成功生成 staging preview URL。
+
+### 2026-06-13 GitHub runtime 配置对齐
+
+更新方式：
+
+```text
+gh secret set AGENT_CODE_API_KEY
+gh variable set AGENT_GATEWAY_URL
+gh variable set AGENT_MODEL_NAME
+gh variable set PAGES_GATEWAY_CALLBACK_URL
+gh variable set PAGES_BASE_REF
+gh variable set PAGES_API
+gh variable set PAGES_CALLBACK_ALLOWED_ORIGINS
+gh api repos/xindong/pages-manager/hooks/<id> --method PATCH
+```
+
+更新项：
+
+- 写入 / 对齐 `AGENT_CODE_API_KEY` secret，供 GitHub Actions runner 中的 Coding Agent 使用。
+- 写入 / 对齐 `AGENT_GATEWAY_URL`、`AGENT_MODEL_NAME`、`PAGES_GATEWAY_CALLBACK_URL`、`PAGES_BASE_REF`、`PAGES_API`、`PAGES_CALLBACK_ALLOWED_ORIGINS` repository variables。
+- 更新 repo webhook，保留 review / check 事件，并补上 `issues` 事件，确保 issue webhook 可以触发 gateway 后续调度。
+- 重新写入 webhook secret，来源仍为本地 `.env` 的 `GITHUB_WEBHOOK_SECRET`。
+
+验证路径：
+
+```text
+corepack pnpm k8s:check-env
+corepack pnpm k8s:smoke
+signed Slack event -> pages-gateway -> slack-agent -> pages-worker -> smoke issue
+gh variable list
+gh secret list
+gh api repos/xindong/pages-manager/hooks
+```
+
+验证结果：
+
+- 本地 K8s 必需环境变量存在，`pages-gateway`、`pages-worker`、`slack-agent` smoke check 通过。
+- Slack HTTP event signature 校验通过，Slack Agent 在 K8s 内成功调用公司模型并生成结构化发布意图。
+- GitHub smoke issue 成功复用并追加本次请求 comment。
+- 当前完整链路仍未到 PR / preview：本地运行配置的 `PAGES_WORKFLOW_REF=master`，但远端 `master` 上的 `project-index.yml` / `pages-agent.yml` / `pages-preview.yml` 仍是旧输入合同，不接受本地 worker 发送的 `baseRef` 等新版 inputs。
+- 要跑通当前 Coding Agent 版本，必须先让 `PAGES_WORKFLOW_REF` 指向包含当前 workflow 和 `scripts/pages-agent-coding.mjs`、`scripts/pages-agent-context.mjs` 的远端分支，或把这些 workflow 变更合并到 `master`。
 
 ### 2026-06-13 Issue webhook 到 Coding Agent PR
 
