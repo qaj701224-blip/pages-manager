@@ -9,7 +9,7 @@ Slack Agent 是服务器常驻的会话理解层。MVP 本地先运行在 K8s `p
 ```text
 Slack message
   ↓
-apps/slack-connector 或 Slack HTTP event
+Slack HTTP event / interaction
   ↓
 pages-gateway
   ↓
@@ -22,7 +22,7 @@ SlackSession / SessionMemory / IssueLink
 PublishingJob / GitHub issue / PR
 ```
 
-Slack Agent 不改代码，也不直接创建 issue。它只负责理解人、会话、需求、权限和已有 issue / PR 关系。`apps/slack-connector` 只负责接入和 ack；`apps/gateway` 负责权限、状态机和派发；`apps/worker` 负责受控 GitHub API 写操作，例如创建 issue。
+Slack Agent 不改代码，也不直接创建 issue。它只负责理解人、会话、需求、权限和已有 issue / PR 关系。`apps/gateway` 负责 Slack 签名校验、ack、权限、状态机和派发；`apps/worker` 负责受控 GitHub API 写操作，例如创建 issue。
 
 当前 `apps/slack-agent` 保留确定性 MVP adapter 作为本地 smoke fallback，正式运行通过 provider adapter 调公司 Agent Gateway。公司网关内部如何路由模型不进入 pages-manager；对外必须返回同一份结构化分析结果，并继续遵守 gateway / worker 的工具权限边界。
 

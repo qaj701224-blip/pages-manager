@@ -29,7 +29,7 @@ MVP 运行时采用两层：
 
 ```text
 pages-system namespace
-  跑 gateway / slack-connector / slack-agent / pages-worker 等常驻控制面
+  跑 gateway / slack-agent / pages-worker 等常驻控制面
 
 GitHub Actions runner
   跑 project-index / pages-agent / site-check / pages-preview 等一次性 executor
@@ -263,7 +263,6 @@ MVP 先启用系统 namespace 跑常驻控制面。Actions-first executor 不需
 namespace: pages-system
   ├─ pages-frontend
   ├─ pages-gateway
-  ├─ slack-connector
   ├─ pages-worker
   ├─ project-indexer
   ├─ slack-agent

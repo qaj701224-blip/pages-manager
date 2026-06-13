@@ -17,31 +17,28 @@ pages-manager Slack runtime
 
 也就是说，Slack 本身不跑在我们的 K8s，也不跑在 GitHub Actions。Slack bot 的运行逻辑跑在 `pages-manager` 的常驻服务里：MVP 本地先跑在 K8s 的 `pages-system` namespace，后续测试服务器和生产沿用同一套控制面 manifests。
 
-当前 MVP 采用仓库内正式组件 `apps/slack-connector`，不再依赖 `/tmp/slack-mention-test/listen.mjs` 这类临时脚本：
+当前 MVP 采用 Slack HTTP Events / Interactivity 直达 `pages-gateway`，不再使用 Socket Mode listener，也不保留 Socket fallback：
 
 ```text
-Slack Socket Mode
-  ↓
-apps/slack-connector
-  - 持有 SLACK_BOT_TOKEN / SLACK_APP_TOKEN
-  - 监听 app_mention / message.im
-  - ack Slack envelope
-  - 转发事件给 gateway
+Slack Events API / Interactivity
   ↓
 POST /integrations/slack/events
-  - X-Pages-Slack-Connector-Token
+POST /integrations/slack/interactions
+  - Slack signature
+  - 3 秒内 ack
   ↓
 apps/gateway
+  - 校验 Slack signature / timestamp
   - 幂等接收 SlackEvent
+  - 对原消息添加 working reaction
   - 调用 apps/slack-agent 做需求分析
   - 推进后续 issue / coding agent / PR / preview 状态
+  - 使用 chat.postMessage / chat.update 回写同一个 Slack thread
 ```
 
-`slack-connector` 是长期运行组件，不是本地测试脚本。它和 gateway 分进程部署，后续可以分别容器化、扩容、重启和注入不同 secret。
+gateway 收到目标消息后会先对用户原消息添加 `SLACK_WORKING_REACTION`，默认是 `eyes`，让用户立刻知道 Agent 已开始处理。这个 feedback 不参与任务状态机，失败时只记日志，不阻塞 Slack Agent / worker 流程。Slack App 需要授予 `reactions:write` 后重新安装 / 审批，否则日志会出现 `slack_reaction_failed`，但消息仍会继续处理。
 
-`slack-connector` 收到目标消息后会先对用户原消息添加 `SLACK_CONNECTOR_WORKING_REACTION`，默认是 `eyes`，让用户立刻知道 Agent 已开始处理。这个 feedback 不参与任务状态机，失败时只记日志，不阻塞 gateway / Slack Agent / worker 流程。Slack App 需要授予 `reactions:write` 后重新安装 / 审批，否则日志会出现 `slack_reaction_failed`，但消息仍会继续转发给 gateway。
-
-为了排查 DM / thread 里“用户发了消息但平台没回复”的问题，connector 会记录被忽略事件的原因，例如 `ignored_subtype:message_replied`、`ignored_bot_event`、`unsupported_event`。被忽略事件只记录 channel、user、timestamp、text length 等 metadata，不记录消息原文，避免把其它 bot 或用户消息里的内部信息写入平台日志。如果某条用户消息完全没有 `slack_event_received` 或 `slack_event_ignored` 日志，说明 Slack 没有把该事件投递给当前 Socket Mode 连接，优先检查 Slack App 的 Event Subscriptions、Bot scopes、App Home Messages Tab 和 reinstall / approve 状态。
+为了排查 DM / thread 里“用户发了消息但平台没回复”的问题，gateway 会记录被忽略事件的原因，例如 `ignored_subtype:message_replied`、`ignored_bot_event`、`unsupported_event`。如果 Slack 里有消息但 gateway 没有对应日志，优先检查 Slack App 的 Event Subscriptions、Request URL、Bot scopes、App Home Messages Tab、是否 reinstall / approve，以及公网 tunnel / Ingress 是否仍然指向当前 K8s gateway。
 
 当前代码中的 `apps/slack-agent` 是确定性 MVP adapter，用规则输出结构化字段。长期目标是把它升级为服务器常驻的模型 Agent runtime：服务本身跑在 K8s / 服务器上，持续处理同一 Slack DM 或 thread 的多轮消息，并在每轮消息到达时加载持久 session、调用配置的模型供应商、输出结构化 intent 和工具调用请求。
 
@@ -87,7 +84,6 @@ MVP 先把 Slack 相关常驻服务放在系统 namespace：
 ```text
 namespace: pages-system
   ├─ pages-gateway
-  ├─ slack-connector
   ├─ slack-agent
   ├─ pages-worker
   ├─ slack-notifier
@@ -110,7 +106,6 @@ MVP 阶段 Slack App 权限可以先拉满，不把 scope 申请作为上线阻�
 secret ref: pages-slack-platform-secret
   SLACK_SIGNING_SECRET
   SLACK_BOT_TOKEN
-  SLACK_APP_TOKEN
   SLACK_APP_ID
 ```
 
@@ -118,8 +113,7 @@ secret ref: pages-slack-platform-secret
 
 | 组件 | 需要的 Slack secret | 不应该拿到 |
 | --- | --- | --- |
-| `pages-gateway` | `SLACK_SIGNING_SECRET` | Git push token、Cloudflare deploy token、auto-merge token |
-| `slack-connector` | `SLACK_BOT_TOKEN`、`SLACK_APP_TOKEN`、connector shared secret | repo write token、Cloudflare deploy token、auto-merge token |
+| `pages-gateway` | `SLACK_SIGNING_SECRET`、MVP 内置 notifier 需要 `SLACK_BOT_TOKEN` | Git push token、Cloudflare deploy token、auto-merge token |
 | `slack-agent` | 可选 `SLACK_BOT_TOKEN`，用于拉 thread / channel 上下文；gateway service token | Git push token、Cloudflare deploy token、auto-merge token |
 | `slack-notifier` | `SLACK_BOT_TOKEN` | repo write token、Cloudflare deploy token、auto-merge token |
 | GitHub Actions executor / job containers | 不需要 Slack token | Slack bot token |
@@ -175,17 +169,17 @@ POST /integrations/slack/interactions
 - 使用非空 `dedupe_key` 做幂等；event callback 可由 Slack `event_id` 生成，slash command / interaction 必须由稳定 request id、payload id 或平台自定义 idempotency key 生成。
 - 只把已验证事件写入 DB / queue。
 
-当前 MVP 先采用 Socket Mode，是因为不需要先暴露公网 HTTPS，也更适合公司内网早期验证。仓库内实现是 `apps/slack-connector`。本地已验证 Socket Mode 私聊实时监听可用，配置和排障记录见 [slack-socket-mode-local-test.md](./slack-socket-mode-local-test.md)：
+当前 MVP 已选择 HTTP Events / Interactivity 作为唯一入口。Socket Mode 本地验证记录只作为历史排障材料，不是运行时 fallback。Slack App 需要配置：
 
 ```text
-apps/slack-connector
-  连接 Slack Socket Mode
-  收到事件后转交 pages-gateway /integrations/slack/events
+Event Request URL:
+  <PAGES_GATEWAY_PUBLIC_URL>/integrations/slack/events
+
+Interactivity Request URL:
+  <PAGES_GATEWAY_PUBLIC_URL>/integrations/slack/interactions
 ```
 
-无论 Socket Mode 还是 HTTP Events，平台内的正式入口都必须是 gateway 的 Slack endpoint。区别只在于最外层由 Slack 直接调用 gateway，还是由 `slack-connector` 代为接入后转交 gateway。
-
-Socket Mode 模式下，gateway 不能依赖 Slack signature，因为外部 Slack envelope 已由 connector 消费；connector 到 gateway 必须使用 `X-Pages-Slack-Connector-Token` 这类内部 shared secret 或后续 mTLS / service identity 校验。
+gateway 使用 `SLACK_SIGNING_SECRET` 校验 `X-Slack-Signature` 和 `X-Slack-Request-Timestamp`，再用 Slack `event_id` 做幂等。K8s / production 配置必须设置 `SLACK_SIGNATURE_REQUIRED=true`，缺少 Signing Secret 时 fail closed。Events API 的 `url_verification` 会直接返回 challenge；普通事件会快速 ack，再由 gateway 后台推进 Slack Agent / worker / notifier。
 
 ## 身份判断
 
@@ -214,7 +208,7 @@ User / Employee
 - 用户只能显式续接自己名下的 `SlackSession` / `PublishingJob`。如果用户把别人的 `session: sess_xxx` 或 `job_xxx` 贴到 Slack，gateway 必须拒绝续接和状态查询，不能把对方的 issue、PR、preview、session memory 暴露出来。
 - 未绑定 SSO 的 Slack actor 只能收到登录/绑定链接，不能创建 `PublishingJob`。
 
-DM 也按 thread 管会话：用户在私聊里发起一条新需求后，connector 的回复必须带 `thread_ts`，后续用户在这个 Slack thread 里继续补充。gateway 对 DM thread 使用 `dm-thread:<dmChannelId>:<threadTs>` 作为 session key，这样“创建任务 / 追问 / 修改 preview / 查看状态”不会散落在整个 DM 主时间线里，也不会因为同一个用户有多个 active session 就反复要求选择。
+DM 也按 thread 管会话：用户在私聊里发起一条新需求后，gateway 的回复必须带 `thread_ts`，后续用户在这个 Slack thread 里继续补充。gateway 对 DM thread 使用 `dm-thread:<dmChannelId>:<threadTs>` 作为 session key，这样“创建任务 / 追问 / 修改 preview / 查看状态”不会散落在整个 DM 主时间线里，也不会因为同一个用户有多个 active session 就反复要求选择。
 
 ## 多人共享运行隔离
 
@@ -222,14 +216,13 @@ DM 也按 thread 管会话：用户在私聊里发起一条新需求后，connec
 
 隔离规则：
 
-- 同一个 Slack App 的 `SLACK_APP_TOKEN` 只能由一个 `slack-connector` Deployment 持有；Socket Mode 多进程连接同一个 `xapp` token 会导致事件被其它连接消费，表现为 Slack 里有消息但当前 connector 没有 `slack_event_received`。
-- `slack-connector` 在 Socket Mode MVP 中保持 `replicas: 1`。需要高可用时优先切 HTTP Events + gateway signature 校验，再在 gateway 后面横向扩容。
-- 本地 MVP 可以开启 `SLACK_CONNECTOR_DM_POLL_ENABLED=true` 作为 DM 漏投补偿：connector 仍优先消费 Socket Mode，但会周期性读取 bot 可见的 IM history，把新用户消息补送 gateway。这个 fallback 只用于早期验证和排障，不能替代长期的“唯一 Socket Mode consumer”治理；开启时要控制 polling interval、channel limit 和 batch size，避免触发 Slack Web API rate limit。
+- 同一个 Slack App 的 Events / Interactivity Request URL 应只指向一个当前有效的 gateway public URL。本地多人测试不要争用同一个 Slack App 配置。
+- `pages-gateway` 可以横向扩容，但必须共享 DB / queue / lease / delivery dedupe，避免重复处理 Slack event 或重复回写。
 - `pages-gateway` 负责用户隔离，所有 Slack session、memory、issue link、job status 查询都必须以 `(team_id, slack_user_id)` 为访问边界。
-- `slack-agent` 不持有 GitHub / Cloudflare / Slack connector token，只处理当前用户当前 session 的上下文；prompt 和审计日志里的用户文本可以记录，但 secret-like 内容必须先脱敏。
+- `slack-agent` 不持有 GitHub / Cloudflare token，只处理当前用户当前 session 的上下文；prompt 和审计日志里的用户文本可以记录，但 secret-like 内容必须先脱敏。
 - GitHub Actions / Coding Agent 不接收 Slack token，也不能直接读 gateway 的全量 session store；它们只处理 gateway 派发的单个 job context。
 
-本地多人共用开发机时，如果多个开发者都要跑自己的控制面，必须使用不同的 k3d/kind cluster 名、namespace、端口、PVC storage 目录、公网 tunnel 和 Slack App token。不要共用同一个 `SLACK_APP_TOKEN` 启动多套 Socket Mode connector。
+本地多人共用开发机时，如果多个开发者都要跑自己的控制面，必须使用不同的 k3d/kind cluster 名、namespace、端口、PVC storage 目录、公网 tunnel 和 Slack App Request URL。不要共用同一个 Slack App 同时指向多套 gateway。
 
 如果消息来自另一个 SlackBot：
 
@@ -332,8 +325,7 @@ Slack thread message update / reply
 
 规则：
 
-- `slack-connector` 的即时 ack 要 @ 原始 Slack event 的 user。
-- `slack-notifier` / gateway 进度回写要 @ `PublishingJob.slackThread.userId`。
+- gateway 对非任务类回复、进度回写和关键节点消息都要 @ `PublishingJob.slackThread.userId` 或原始 Slack event user。
 - 在频道或 thread 中必须 @，避免多人同 thread 时串用户。
 - DM 中也可以保留 @ 前缀，保证消息格式一致。
 - 如果没有可信 user id，不拼接 mention，也不能从消息文本中猜用户。
@@ -373,48 +365,32 @@ Slack 右侧体验采用“状态卡片 + 关键节点稳定消息”：
 
 ### 本地开发
 
-本地开发不再使用 `/tmp/slack-mention-test/listen.mjs`。MVP 目标是用本地 K8s 启动常驻服务，裸 Node 启动只作为临时调试。启动顺序：
+本地开发不再使用 `/tmp/slack-mention-test/listen.mjs`，也不使用 Socket Mode listener。MVP 目标是用本地 K8s 启动常驻服务，裸 Node 启动只作为临时调试。启动顺序：
 
 ```text
+Slack Events / Interactivity
+  ↓
+public HTTPS tunnel / Ingress
+  ↓
 pages-gateway Service
-  ↓
-apps/slack-connector Deployment
-  ↓
-Slack 私聊 / mention
   ↓
 gateway 创建 PublishingJob
 ```
 
-`apps/slack-connector` 使用这些环境变量：
+gateway Slack HTTP 入口使用这些环境变量：
 
 ```text
 SLACK_BOT_TOKEN
-SLACK_APP_TOKEN
-PAGES_GATEWAY_SLACK_URL
-PAGES_GATEWAY_CONNECTOR_TOKEN
-PAGES_EMPLOYEE_SLUG
-PAGES_SITE_SLUG
-SLACK_BOT_USER_ID
-SLACK_CONNECTOR_REPLY_ON_RECEIVE
-SLACK_CONNECTOR_REACTION_ON_RECEIVE
-SLACK_CONNECTOR_WORKING_REACTION
-SLACK_CONNECTOR_LOG_IGNORED_EVENTS
-SLACK_CONNECTOR_ACCEPT_BOT_EVENTS
-SLACK_CONNECTOR_ACCEPT_THREAD_MESSAGES
-SLACK_CONNECTOR_DM_POLL_ENABLED
-SLACK_CONNECTOR_DM_POLL_INTERVAL_SECONDS
-SLACK_CONNECTOR_DM_POLL_CHANNEL_LIMIT
-SLACK_CONNECTOR_DM_POLL_BATCH_SIZE
-```
-
-gateway 内置 Slack 回通 adapter 额外使用：
-
-```text
-SLACK_BOT_TOKEN
+SLACK_SIGNING_SECRET
+SLACK_EVENTS_PROCESSING_MODE
+SLACK_SIGNATURE_REQUIRED
+SLACK_REACTION_ON_RECEIVE
+SLACK_WORKING_REACTION
+SLACK_SIGNATURE_MAX_SKEW_SECONDS
 SLACK_API_URL
 ```
 
-真实 token 只能放本机私有环境或 secret manager，不能写入 repo。`xoxb` 和 `xapp` 必须属于同一个 Slack App。
+真实 token 只能放本机私有环境或 secret manager，不能写入 repo。Slack App 的 Events URL 和 Interactivity URL 都应指向当前 `PAGES_GATEWAY_PUBLIC_URL`。
 
 本地 smoke 测试建议同时启用 worker 的单 issue 和单 PR 模式：
 
@@ -446,7 +422,7 @@ preview gate / Slack notification
 
 本地可以用 `gh pr view`、`gh api`、`gh run view` 辅助观察，但不能把 `gh` CLI 轮询写进 gateway、worker 或 workflow runtime。
 
-Slack 入口不限制私聊。`apps/slack-connector` 同时监听：
+Slack 入口不限制私聊。Slack App 应订阅这些事件：
 
 ```text
 message.im
@@ -456,13 +432,13 @@ message.channels / message.groups 中已有任务 thread 的后续普通回复
 
 私聊会直接回复 DM；在频道或 thread 中 `@bot` 触发的 `app_mention` 会回复到对应 thread。前提是 Slack App 已订阅 `app_mention`，并且 bot 已加入对应频道。
 
-为了支持像 Slack 工作台一样连续对话，`SLACK_CONNECTOR_ACCEPT_THREAD_MESSAGES=true` 时，connector 会把频道 thread 里的后续普通 `message` 转交给 gateway。gateway 只续接同一 Slack user 已经存在的 `SlackSession`；如果一个普通 thread 消息没有匹配到该用户已有 session，会返回 `ignored_untracked_thread_message` 且不回复，避免把频道里的无关聊天误当需求。
+为了支持像 Slack 工作台一样连续对话，gateway 会接受频道 thread 里的后续普通 `message`。gateway 只续接同一 Slack user 已经存在的 `SlackSession`；如果一个普通 thread 消息没有匹配到该用户已有 session，会返回 `ignored_untracked_thread_message` 且不回复，避免把频道里的无关聊天误当需求。
 
 ## 消息识别
 
 MVP 不直接把每条 Slack 消息都变成 issue，而是先进入 Slack Agent 对话理解层。用户可以完全用自然语言闲聊、补充设计想法或表达对 preview 的不满；gateway 只把少数控制类消息先做确定性识别，其余消息都作为 `agent_turn` 交给 `apps/slack-agent`。Slack Agent 的输出再由 gateway 判断是追问、创建 `PublishingJob`、续接已有 issue / PR / preview，还是查询状态 / 关闭会话。
 
-`issue:` / `page:` 仍然保留为兼容入口，但不是必需用法。这里的 `issue:` / `page:` 是普通 Slack 消息，不是 Slack Slash Command；如果直接输入 `/issue`，Slack 客户端会按 Slash Command 处理，当前 Socket Mode 监听链路不会收到这条消息。
+`issue:` / `page:` 仍然保留为兼容入口，但不是必需用法。这里的 `issue:` / `page:` 是普通 Slack 消息，不是 Slack Slash Command；如果后续要支持 `/issue`，应把 Slack Slash Command Request URL 配到 gateway 并复用同一套签名校验、幂等和 Slack Agent 流程。
 
 | 文案                                  | 行为                                             |
 | ------------------------------------- | ------------------------------------------------ |
@@ -510,7 +486,6 @@ Agent 生命周期规则：
 
 ```text
 pages-gateway replicas=N
-slack-connector replicas=1..N
 slack-agent replicas=N
 slack-notifier replicas=1..N
 queue / redis 做 lease 和幂等

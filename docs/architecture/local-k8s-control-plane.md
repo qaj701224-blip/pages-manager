@@ -20,7 +20,7 @@ GitHub Actions 跑一次性 coding / site-check / preview executor
 
 - gateway、Slack Agent、worker、DB、Redis 从第一天就有 namespace、Service、Secret、ConfigMap 和 readiness 边界。
 - 本地跑通后，上服务器主要是换 kube context、Ingress、域名和 secret。
-- Slack Socket Mode、GitHub webhook、Actions callback、worker callback 的网络拓扑能提前验证。
+- Slack HTTP Events / Interactivity、GitHub webhook、Actions callback、worker callback 的网络拓扑能提前验证。
 - 后续启用 K8s Job executor 时，不需要重写控制面部署方式。
 
 相比第一阶段直接全量 K8s Job executor：
@@ -37,7 +37,6 @@ local cluster
   └─ namespace: pages-system
        ├─ Deployment pages-gateway
        │   └─ PVC pages-gateway-data (/data/pages-gateway-store.json)
-       ├─ Deployment slack-connector
        ├─ Deployment slack-agent
        ├─ Deployment pages-worker
        ├─ Deployment review-monitor-worker  (MVP 可先合在 gateway)
@@ -58,17 +57,17 @@ local cluster
 
 ## 网络入口
 
-Slack Socket Mode：
+Slack HTTP Events / Interactivity：
 
 ```text
 Slack Platform
-  ↓ websocket outbound
-slack-connector Pod
-  ↓ internal service call
+  ↓ HTTPS public URL
+Cloudflare Tunnel / ngrok / Ingress
+  ↓
 pages-gateway Service
 ```
 
-Socket Mode 不要求 Slack 直接访问本地 gateway，但 gateway 仍然需要被 GitHub webhook 和 GitHub Actions callback 访问。
+Slack、GitHub webhook 和 GitHub Actions callback 都需要能访问同一个 gateway public URL。本地用 tunnel；测试服务器和生产建议用正式 Ingress + 域名。
 
 GitHub webhook / Actions callback：
 
@@ -88,7 +87,7 @@ K8s Secret 只保存引用和运行时注入，不写进 Git。
 
 | Secret | 用途 | 可注入组件 |
 | --- | --- | --- |
-| `slack-platform-secret` | Slack bot/app/signing secret | `slack-connector`、`slack-agent`、`slack-notifier`、必要时 `pages-gateway` |
+| `slack-platform-secret` | Slack bot token、signing secret、app metadata | `pages-gateway`、必要时 `slack-agent` / `slack-notifier` |
 | `model-provider-secret` | 公司 OpenAI-compatible 模型网关 key；`slack-agent-api-key` 注入 Slack Agent，`coding-agent-api-key` 预留给 Coding Agent / 后续 K8s Job | `slack-agent` |
 | `github-platform-secret` | GitHub App / callback / webhook secret | `pages-gateway`、`pages-worker` |
 | `cloudflare-preview-secret` | legacy `/deploy` preview owner marker；仅用于本地 smoke / 兼容旧 API | `pages-worker` 或 preview deploy executor |
@@ -138,11 +137,10 @@ Actions callback 仍然回到 K8s 里的 `pages-gateway`。
 ## MVP 实现顺序
 
 1. 新增 `k8s/base/pages-system`，只放 namespace、ConfigMap、Secret template、ServiceAccount、Deployment、Service。
-2. 为 `apps/gateway`、`apps/slack-connector`、`apps/slack-agent`、`apps/worker` 准备容器镜像构建方式。
+2. 为 `apps/gateway`、`apps/slack-agent`、`apps/worker` 准备容器镜像构建方式。
 3. 本地用 kind/k3d 部署 `pages-system`。
 4. 用 tunnel 暴露 gateway 的 webhook / callback URL。
-5. 让 Slack Socket Mode 事件进入 K8s 中的 `slack-connector`，再进入 gateway。
-6. 让 GitHub Actions callback 和 GitHub webhook 都打到同一个 gateway public URL。
+5. 让 Slack Events / Interactivity、GitHub Actions callback 和 GitHub webhook 都打到同一个 gateway public URL。
 7. 保持 `pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 继续在 GitHub Actions 上运行。
 
 当前仓库内已落地第一版骨架：
@@ -161,7 +159,6 @@ k8s/base/pages-system/
   configmap.yaml
   gateway.yaml
   worker.yaml
-  slack-connector.yaml
   slack-agent.yaml
   secrets.template.yaml
 ```
@@ -181,10 +178,10 @@ pnpm k8s:smoke
 
 共享开发机隔离要求：
 
-- 默认 `pages-manager` cluster / `pages-system` namespace 只适合一个本地控制面长期持有 Slack Socket Mode 连接。
-- 多个开发者同时跑本地控制面时，必须分别设置独立的 cluster 名、API port、storage 目录、Cloudflare tunnel、公网 callback URL 和 Slack App token；不要让两套 connector 使用同一个 `SLACK_APP_TOKEN`。
+- 默认 `pages-manager` cluster / `pages-system` namespace 只适合一个本地控制面绑定同一个 Slack App 的 Events / Interactivity Request URL。
+- 多个开发者同时跑本地控制面时，必须分别设置独立的 cluster 名、API port、storage 目录、Cloudflare tunnel、公网 callback URL 和 Slack App；不要让多套本地控制面争用同一个 Slack App Request URL。
 - `.env`、K8s Secret、PVC 数据和 gateway store 都按控制面实例隔离；不要把个人 `.env` 放到共享路径，也不要复用别人的 `PAGES_GATEWAY_PUBLIC_URL`。
-- 如果只是多人从 Slack 使用同一个 bot，不需要启动多套 connector；所有用户都走同一个 `pages-gateway`，再由 gateway 按 Slack user/session 隔离。
+- 如果只是多人从 Slack 使用同一个 bot，不需要启动多套控制面；所有用户都走同一个 `pages-gateway`，再由 gateway 按 Slack user/session 隔离。
 
 如果要按 `xdclaw` 的本地验证方式一次跑完整个非破坏性链路，使用：
 
@@ -206,10 +203,10 @@ smoke control plane
 
 `pnpm k8s:smoke` 会验证：
 
-- `pages-gateway`、`pages-worker`、`slack-agent`、`slack-connector` Deployment 已 rollout。
+- `pages-gateway`、`pages-worker`、`slack-agent` Deployment 已 rollout。
 - `slack-platform-secret`、`github-platform-secret`、`callback-secrets` 中存在必须 key，但不会打印 secret 值。
 - `pages-config` 中的 GitHub repo、workflow ref、base ref、gateway public/callback URL 等运行时值不是占位符。
-- 如果启用 `SLACK_CONNECTOR_DM_POLL_ENABLED`，还会检查 polling interval、channel limit、batch size 等运行时配置已经写入 K8s ConfigMap。
+- `SLACK_EVENTS_PROCESSING_MODE`、`SLACK_SIGNATURE_REQUIRED`、`SLACK_SIGNATURE_MAX_SKEW_SECONDS` 等 Slack HTTP 入口配置已经写入 K8s ConfigMap。测试时仍以 K8s ConfigMap/Secret 和 pod env 为准，不能直接读取宿主机 `.env` 判断运行态。
 - 通过临时 `kubectl port-forward` 探测 `pages-gateway`、`pages-worker`、`slack-agent` 的 `/health`。
 - 如果 `PAGES_PREVIEW_MODE=local_deploy`，还会要求 `cloudflare-preview-secret` 中存在 legacy preview owner marker。这个 marker 只用于本地 smoke，不代表长期员工隔离模型。
 
@@ -240,7 +237,7 @@ Preview token 边界：
 
 `scripts/k8s-local-up.sh` 会：
 
-- 构建 `pages-manager/gateway:local`、`pages-manager/worker:local`、`pages-manager/slack-connector:local`、`pages-manager/slack-agent:local`。
+- 构建 `pages-manager/gateway:local`、`pages-manager/worker:local`、`pages-manager/slack-agent:local`。
 - 如果本地存在名为 `pages-manager` 的 kind/k3d cluster，则自动把镜像 load/import 进去。
 - 默认读取仓库根目录 `.env`。
 - 从 `.env` 和当前 shell 环境变量创建 K8s Secret，不输出 secret，也不提交真实 `.env`。
@@ -251,8 +248,7 @@ Preview token 边界：
 ```text
 PAGES_GATEWAY_PUBLIC_URL
 SLACK_BOT_TOKEN
-SLACK_APP_TOKEN
-SLACK_CONNECTOR_SHARED_SECRET
+SLACK_SIGNING_SECRET
 SLACK_AGENT_SHARED_SECRET
 AGENT_GATEWAY_URL
 SLACK_AGENT_API_KEY
@@ -269,13 +265,13 @@ PAGES_PREVIEW_TOKEN      # local_deploy smoke only; long-term should be owner/jo
 ```bash
 pnpm k8s:status
 pnpm k8s:logs
-PAGES_K8S_LOG_TARGET=slack-connector pnpm k8s:logs
+PAGES_K8S_LOG_TARGET=slack-agent pnpm k8s:logs
 pnpm k8s:port-forward
 ```
 
 `pnpm k8s:port-forward` 是给本地 tunnel 长期使用的 gateway 转发入口。`kubectl port-forward` 在 pod 重启或连接 broken pipe 时可能退出，所以脚本默认会自动重连；只有设置 `PAGES_K8S_PORT_FORWARD_ONCE=true` 时才会按一次性命令退出。GitHub Actions callback 和 GitHub webhook 都依赖这条转发链路，测试前要确认公网 tunnel 的 `/health` 能打到当前 gateway pod。
 
-`PAGES_GATEWAY_PUBLIC_URL` 必须是公网 HTTPS tunnel URL，用于 GitHub webhook 和 GitHub Actions callback；Slack Socket Mode 本身不需要 Slack 访问本地 gateway。`PAGES_GATEWAY_CALLBACK_URL` 应显式设置为 `${PAGES_GATEWAY_PUBLIC_URL}/internal/executor-callback`，本地 `k8s:up` 会在未单独配置时自动从 `PAGES_GATEWAY_PUBLIC_URL` 派生并写入 ConfigMap。
+`PAGES_GATEWAY_PUBLIC_URL` 必须是公网 HTTPS tunnel URL，用于 Slack Events、Slack Interactivity、GitHub webhook 和 GitHub Actions callback。`PAGES_GATEWAY_CALLBACK_URL` 应显式设置为 `${PAGES_GATEWAY_PUBLIC_URL}/internal/executor-callback`，本地 `k8s:up` 会在未单独配置时自动从 `PAGES_GATEWAY_PUBLIC_URL` 派生并写入 ConfigMap。
 
 ## 本地验证分层
 

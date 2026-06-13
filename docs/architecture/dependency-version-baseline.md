@@ -87,14 +87,15 @@ xdclaw/k8s/operator/values/*.yaml
 | `@slack/web-api` | `^7.15.1` |
 | `@slack/types` | `^2.20.1` |
 
-`pages-manager` 的 Slack 入口可以有两种方式：
+`pages-manager` 的 Slack MVP 已选择 gateway raw endpoint：
 
 | 方式 | 建议 |
 | --- | --- |
-| Fastify raw endpoint + `@slack/web-api` | 更贴合当前 gateway 架构，适合严格控制 signature、幂等和状态机 |
-| `@slack/bolt` | 适合快速接 event / command / interaction，但必须确认不会绕过 gateway 的统一鉴权和幂等 |
+| raw endpoint + fetch 调 Slack Web API | 当前实现。更贴合 gateway 架构，严格控制 signature、幂等、会话隔离和状态机 |
+| `@slack/web-api` | 后续如果 Slack API 调用复杂化，可以只作为 Web API client 引入 |
+| `@slack/bolt` | 暂不引入，避免把事件 ack、signature、重试和状态机藏到另一个框架里 |
 
-MVP 推荐先用 Fastify endpoint 自己校验 Slack signature，再用 `@slack/web-api@^7.15.1` 拉 thread 和回写消息。
+MVP 不使用 Socket Mode，也不保留 Socket fallback；Slack Events / Interactivity 直接打到 `pages-gateway`。
 
 ## 数据库和 Redis
 

@@ -33,7 +33,7 @@
 | [slack-runtime.md](./slack-runtime.md) | Slack bot 运行位置、事件入口、secret、幂等和回写 |
 | [slack-agent-session.md](./slack-agent-session.md) | 常驻 Slack Agent 的 session / memory / issue 续接、preview 不满意后的 fix round |
 | [agent-policy-and-prompts.md](./agent-policy-and-prompts.md) | 公司规则、issue 规范、secret 权限和 Slack Agent / Coding Agent prompt 分层 |
-| [slack-socket-mode-local-test.md](./slack-socket-mode-local-test.md) | Slack Socket Mode 本地私聊监听验证、token 同源校验和排障结论 |
+| [slack-socket-mode-local-test.md](./slack-socket-mode-local-test.md) | 已归档的 Slack Socket Mode 本地验证记录；当前运行方案不使用 Socket fallback |
 | [github-enterprise.md](./github-enterprise.md) | GitHub Enterprise 组织/团队仓库、GitHub App、Rulesets、Actions 和 webhook |
 | [github-cli-local-dev.md](./github-cli-local-dev.md) | 本地 gh CLI 冒烟测试：issue、workflow、PR、Review comment 查询；不作为生产身份 |
 | [xdclaw-reference.md](./xdclaw-reference.md) | 从 xdclaw 参考哪些边界、哪些不能照搬 |
