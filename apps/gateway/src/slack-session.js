@@ -44,10 +44,15 @@ export function slackActorFromBody(body = {}) {
   };
 }
 
+function inferSlackChannelType(channelType, channelId) {
+  if (channelType) return channelType;
+  return String(channelId || '').startsWith('D') ? 'im' : null;
+}
+
 export function surfaceForSlackBody(body = {}) {
   const event = body.event || {};
-  const channelType = event.channel_type || body.channel_type || null;
   const channelId = event.channel || body.channel_id || null;
+  const channelType = inferSlackChannelType(event.channel_type || body.channel_type || null, channelId);
   const messageTs = event.ts || body.event_ts || null;
   const threadTs = event.thread_ts || messageTs;
   const dmChannelId = channelType === 'im' ? channelId : null;
