@@ -214,6 +214,8 @@ User / Employee
 - 用户只能显式续接自己名下的 `SlackSession` / `PublishingJob`。如果用户把别人的 `session: sess_xxx` 或 `job_xxx` 贴到 Slack，gateway 必须拒绝续接和状态查询，不能把对方的 issue、PR、preview、session memory 暴露出来。
 - 未绑定 SSO 的 Slack actor 只能收到登录/绑定链接，不能创建 `PublishingJob`。
 
+DM 也按 thread 管会话：用户在私聊里发起一条新需求后，connector 的回复必须带 `thread_ts`，后续用户在这个 Slack thread 里继续补充。gateway 对 DM thread 使用 `dm-thread:<dmChannelId>:<threadTs>` 作为 session key，这样“创建任务 / 追问 / 修改 preview / 查看状态”不会散落在整个 DM 主时间线里，也不会因为同一个用户有多个 active session 就反复要求选择。
+
 ## 多人共享运行隔离
 
 多人使用同一台服务器时，运行时边界是“一个平台控制面 + 多个 Slack 用户会话”，不是每个用户各自启动一套 listener。
