@@ -118,13 +118,45 @@ root package.json
 环境变量沿用当前 K8s 设计：
 
 ```text
-DATABASE_URL=mysql://...
+MYSQL_ADDR=mysql.internal:3306
+MYSQL_USER=pages_manager
+MYSQL_PASSWORD=...
+MYSQL_DATABASE=pages_manager_preview
 REDIS_URL=redis://...
 PAGES_STORE_BACKEND=mysql
 PAGES_QUEUE_BACKEND=redis
 ```
 
-`setup-db` 可以额外兼容 `MYSQL_ADDR` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE`，方便参考 `xdclaw` 的本地脚本；但运行态 Deployment 仍以 `DATABASE_URL` 和 `REDIS_URL` 为准。
+运行态 Deployment 使用 `MYSQL_ADDR` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE`，
+与 `xdclaw` 的 MySQL 配置形态保持一致；代码仍兼容 `DATABASE_URL`，但 ACK/K8s 路径不以它作为主约定。
+
+### ACK preview 资源隔离
+
+早期 ACK preview 可以临时复用 xdclaw preview 已有的 RDS MySQL 与 Redis/Tair
+实例，用来避免在验证 Slack -> issue -> coding -> preview 链路前新增付费实例。
+这只是基础设施复用，不是业务 schema 复用：
+
+- `pages-manager` 必须使用独立 MySQL database：`pages_manager_preview`。
+- `pages-manager` 必须使用独立 Redis DB：当前约定为 `/11`。
+- `pages-manager-preview` namespace 必须维护自己的 `database-secret` 和
+  `redis-secret`；Deployment 不得直接引用 `xdclaw-system/xdclaw-secrets`。
+- 临时阶段可以复制共享实例的 host、port、user、password 到
+  `pages-manager-preview` 的 Secret，但 `MYSQL_DATABASE` 不能是 `xdclaw`。
+- 如果临时复用的是 xdclaw 的 MySQL 用户，要把它视为权限过大的 smoke
+  配置，不能作为长期安全边界。
+- 如果共享 MySQL 用户不能访问 `pages_manager_preview`，不能退而求其次把
+  pages-manager 表建到 `xdclaw` database 里；这会破坏 schema 和运维边界。
+
+长期方案需要二选一：
+
+- 同一个 RDS 实例内创建 `pages_manager_preview` 专用 MySQL 用户，只授权
+  `pages_manager_preview.*`。
+- 或为 pages-manager 创建独立 RDS / Redis 实例。
+
+在暂时不找运维且 RDS 授权不足的情况下，可以用
+`pages-manager-preview` namespace 内的 MySQL / Redis StatefulSet 作为短期
+smoke 数据面，但它仍然必须通过 `database-secret` / `redis-secret` 注入，
+并且后续需要迁回托管 RDS/Redis 或专用授权。
 
 ### PR 拆分
 

@@ -105,7 +105,10 @@ model-provider-secret:
   slack-agent-model-name
 
 database-secret:
-  database-url
+  mysql-addr
+  mysql-user
+  mysql-password
+  mysql-database
 
 redis-secret:
   redis-url
@@ -126,11 +129,87 @@ the namespace.
 configure the company OpenAI-compatible model gateway used by Slack Agent.
 `pages-worker-shared-secret` protects gateway-to-worker dispatch inside the
 namespace.
-`database-url` enables the gateway MySQL-backed runtime store. Test deployments
-do not migrate the old PVC/file store data; losing old test jobs is acceptable.
+`mysql-addr`, `mysql-user`, `mysql-password`, and `mysql-database` enable the
+gateway MySQL-backed runtime store and intentionally mirror xdclaw's split
+MySQL environment shape. Test deployments do not migrate the old PVC/file store
+data; losing old test jobs is acceptable.
 `redis-url` is injected now for queue/lease parity with the long-term runtime.
 `pages-gateway` uses `/health` for process liveness and `/ready` for DB-backed
 store readiness; ACK rollout must not pass if MySQL is unreachable.
+
+### Temporary DB / Redis Reuse
+
+During early ACK preview smoke tests, `pages-manager` may temporarily reuse the
+same RDS MySQL and Redis/Tair instances used by the xdclaw preview platform.
+This is only infrastructure reuse. It must not reuse xdclaw's business database
+or xdclaw's K8s secrets directly.
+
+Keep the isolation layers explicit:
+
+```text
+xdclaw-system
+  Secret/xdclaw-secrets
+  MYSQL_DATABASE=xdclaw
+  Redis DB used by xdclaw
+
+pages-manager-preview
+  Secret/database-secret
+  MYSQL_DATABASE=pages_manager_preview
+
+  Secret/redis-secret
+  REDIS_URL=redis://.../11
+```
+
+Rules for this temporary setup:
+
+- `pages-manager-preview` owns its own `database-secret` and `redis-secret`.
+- Do not reference or mount `xdclaw-system/xdclaw-secrets` from
+  `pages-manager-preview` Deployments.
+- `mysql-addr`, `mysql-user`, and `mysql-password` may be copied from the shared
+  preview infrastructure while this is a smoke environment.
+- `mysql-database` must be `pages_manager_preview`, not `xdclaw`.
+- `redis-url` must point at a dedicated Redis DB number, currently DB `11`, and
+  must not use xdclaw's Redis DB.
+- This is acceptable for temporary preview validation because the K8s namespace,
+  MySQL database, and Redis DB are isolated. It is not the final permission
+  boundary.
+
+Before this path is promoted beyond preview smoke testing, replace the shared
+MySQL user with a dedicated `pages_manager_preview` MySQL user that is granted
+only on `pages_manager_preview.*`, or move pages-manager to its own RDS/Redis
+instances.
+
+Current ACK finding: the xdclaw preview MySQL user can reach the shared RDS
+instance, but it is not allowed to create or access the
+`pages_manager_preview` database. If `setup-db` returns
+`Access denied ... to database 'pages_manager_preview'`, do not switch
+`MYSQL_DATABASE` to `xdclaw` and do not run pages-manager migrations in the
+xdclaw business database. Either get a dedicated database/user grant for
+`pages_manager_preview`, or run temporary namespace-local MySQL/Redis
+StatefulSets under `pages-manager-preview` until the managed database grant is
+available.
+
+The current no-ops ACK smoke fallback uses namespace-local data services:
+
+```text
+Deployment/pages-mysql
+  image: xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/pages-manager/mysql:8.4
+  storage: emptyDir
+  service: pages-mysql:3306
+  database: pages_manager_preview
+  user: pages_manager
+
+Deployment/pages-redis
+  image: xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/pages-manager/redis:7-alpine
+  storage: in-memory / no appendonly
+  service: pages-redis:6379
+  redis db: 11
+```
+
+This fallback is intentionally disposable. It avoids creating paid RDS/Tair
+instances and does not write to xdclaw's database, but data is lost if the Pod
+is rescheduled. Keep it for ACK smoke only; move back to managed RDS/Redis with
+dedicated pages-manager grants before any durable preview environment.
 
 `cloudflare-preview-secret` is only needed when falling back to a single
 service-level preview owner marker. This overlay derives the legacy owner marker
@@ -324,6 +403,33 @@ This is the accepted temporary smoke path while ACK SLB connectivity from GitHub
 is blocked. Restore the repository webhook payload URL, callback variable, and
 live ConfigMap callback URL to the ACK URL only after the SLB path is fixed and a
 GitHub ping reaches the ACK ingress logs directly.
+
+## Slack Events / Interactivity
+
+Slack Events API and Interactivity use the same gateway ingress and signature
+guard as GitHub, but with Slack's `X-Slack-Signature` and
+`X-Slack-Request-Timestamp` headers.
+
+When Slack cannot reliably reach the ACK public ingress directly, point the
+Slack App URLs at the same temporary transparent tunnel used by GitHub:
+
+```text
+Event Subscriptions Request URL:
+  <temporary-tunnel-origin>/integrations/slack/events
+
+Interactivity Request URL:
+  <temporary-tunnel-origin>/integrations/slack/interactions
+```
+
+The local proxy must preserve the raw request body and Slack signature headers.
+The proxy must not verify or rewrite Slack payloads; `pages-gateway` performs
+Slack signature verification with `slack-platform-secret/slack-signing-secret`.
+
+For smoke validation, send a signed `url_verification` payload through the
+tunnel and expect the challenge string back. Also send a signed
+`application/x-www-form-urlencoded` Block Kit interaction payload and expect a
+Slack-compatible JSON ack. Passing both checks proves the Slack App can use the
+temporary tunnel path to reach the ACK gateway.
 
 ## K8s Hardening
 
