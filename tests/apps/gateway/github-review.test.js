@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   classifyReviewAgentComment,
   isAllowedReviewAgent,
+  isAllowedSiteCheckRun,
   normalizeReviewAgentWebhook,
+  normalizeSiteCheckRunWebhook,
   reviewAgentLogins,
 } from '../../../apps/gateway/src/github-review.js';
 
@@ -106,5 +108,66 @@ test('ignores issue comments that are not on pull requests', () => {
       'org/pages-manager'
     ),
     null
+  );
+});
+
+test('normalizes and allowlists site-check check_run events', () => {
+  const normalized = normalizeSiteCheckRunWebhook(
+    {
+      action: 'completed',
+      check_run: {
+        id: 7001,
+        node_id: 'SCR_7001',
+        name: 'site-check',
+        status: 'completed',
+        conclusion: 'success',
+        head_sha: 'b'.repeat(40),
+        details_url: 'https://github.example/org/pages-manager/actions/runs/7001',
+        app: { slug: 'github-actions', name: 'GitHub Actions' },
+        output: {
+          title: 'site-check passed',
+          summary: 'Allowed path only.',
+        },
+        pull_requests: [{ number: 16 }],
+      },
+    },
+    'check_run',
+    'delivery-site-check',
+    'org/pages-manager'
+  );
+
+  assert.equal(normalized.prNumber, 16);
+  assert.equal(normalized.checkRunNodeId, 'SCR_7001');
+  assert.equal(normalized.headSha, 'b'.repeat(40));
+  assert.match(normalized.outputSummary, /Allowed path only/);
+  assert.equal(isAllowedSiteCheckRun(normalized), true);
+});
+
+test('site-check allowlist requires both trusted check name and app', () => {
+  const run = {
+    checkName: 'site-check',
+    appSlug: 'random-ci',
+    appName: 'Random CI',
+  };
+
+  assert.equal(isAllowedSiteCheckRun(run), false);
+  assert.equal(
+    isAllowedSiteCheckRun(run, {
+      GITHUB_SITE_CHECK_APP_LOGINS: 'random-ci',
+    }),
+    true
+  );
+  assert.equal(
+    isAllowedSiteCheckRun(
+      {
+        checkName: 'lint',
+        appSlug: 'github-actions',
+        appName: 'GitHub Actions',
+      },
+      {
+        GITHUB_SITE_CHECK_NAMES: 'site-check',
+      }
+    ),
+    false
   );
 });

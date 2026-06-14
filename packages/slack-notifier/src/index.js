@@ -284,6 +284,7 @@ export function notificationTextForCallback(stageResult, job) {
 
 export function notificationTextForReviewAction(reviewAction, payload = {}) {
   const comment = payload.reviewComment || {};
+  const siteCheck = payload.siteCheckRun || payload.gate?.siteCheck?.latestRun || {};
   const location = formatReviewLocation(comment);
 
   if (reviewAction === 'reviewing') {
@@ -296,6 +297,19 @@ export function notificationTextForReviewAction(reviewAction, payload = {}) {
   }
   if (reviewAction === 'preview_dispatched') {
     return 'Review gate 已通过，开始生成 staging Preview。';
+  }
+  if (reviewAction === 'site_check_waiting') {
+    return 'Review Agent 已记录，正在等待 site-check 通过后再生成 Preview。';
+  }
+  if (reviewAction === 'site_check_passed') {
+    return 'site-check 已通过，继续等待 Review Agent 结果。';
+  }
+  if (reviewAction === 'site_check_failed') {
+    const detail = siteCheck.detailsUrl || siteCheck.htmlUrl;
+    return detail ? `site-check 未通过，已暂停 Preview：${detail}` : 'site-check 未通过，已暂停 Preview。';
+  }
+  if (reviewAction === 'site_check_recorded') {
+    return null;
   }
   if (reviewAction === 'recorded') {
     return recordedReviewText(comment, location);
@@ -363,7 +377,7 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const blocks = buildJobStatusBlocks(job, {
     stage,
-    statusText: options.statusText,
+    statusText: options.statusText || options.text,
   });
   const text = buildSlackStatusText(job, stage);
   let result;
