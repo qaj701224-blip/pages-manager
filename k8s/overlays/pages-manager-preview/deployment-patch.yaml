@@ -1,0 +1,179 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pages-gateway
+  namespace: pages-system
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: acr-credential-secret-aggregation
+      containers:
+        - name: pages-gateway
+          imagePullPolicy: Always
+          env:
+            - name: INTERNAL_CALLBACK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: callback-secrets
+                  key: internal-callback-token
+                  optional: false
+            - name: PAGES_WORKER_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: callback-secrets
+                  key: pages-worker-shared-secret
+                  optional: false
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: github-platform-secret
+                  key: github-webhook-secret
+                  optional: false
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-signing-secret
+                  optional: false
+            - name: SLACK_AGENT_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-agent-shared-secret
+                  optional: false
+            - name: SLACK_NOTIFIER_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-notifier-shared-secret
+                  optional: false
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: database-url
+                  optional: false
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-url
+                  optional: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pages-worker
+  namespace: pages-system
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: acr-credential-secret-aggregation
+      containers:
+        - name: pages-worker
+          imagePullPolicy: Always
+          env:
+            - name: INTERNAL_CALLBACK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: callback-secrets
+                  key: internal-callback-token
+                  optional: false
+            - name: PAGES_WORKER_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: callback-secrets
+                  key: pages-worker-shared-secret
+                  optional: false
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: database-url
+                  optional: false
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-url
+                  optional: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-agent
+  namespace: pages-system
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: acr-credential-secret-aggregation
+      containers:
+        - name: slack-agent
+          imagePullPolicy: Always
+          env:
+            - name: SLACK_AGENT_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-agent-shared-secret
+                  optional: false
+            - name: SLACK_AGENT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: model-provider-secret
+                  key: slack-agent-api-key
+                  optional: false
+            - name: AGENT_GATEWAY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: model-provider-secret
+                  key: slack-agent-gateway-url
+                  optional: false
+            - name: AGENT_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: model-provider-secret
+                  key: slack-agent-model-name
+                  optional: false
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: database-url
+                  optional: false
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-url
+                  optional: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-notifier
+  namespace: pages-system
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: acr-credential-secret-aggregation
+      containers:
+        - name: slack-notifier
+          imagePullPolicy: Always
+          env:
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-bot-token
+                  optional: false
+            - name: SLACK_NOTIFIER_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: slack-platform-secret
+                  key: slack-notifier-shared-secret
+                  optional: false

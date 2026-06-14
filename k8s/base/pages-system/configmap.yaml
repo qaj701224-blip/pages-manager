@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pages-config
+  namespace: pages-system
+  labels:
+    app.kubernetes.io/name: pages-config
+    app.kubernetes.io/part-of: pages-manager
+data:
+  NODE_ENV: production
+  PAGES_STORE_BACKEND: mysql
+  PAGES_QUEUE_BACKEND: redis
+  PAGES_EXECUTOR_MODE: github_issue_webhook
+  PAGES_ISSUE_MODE: per_job
+  PAGES_PR_MODE: per_job
+  PAGES_PREVIEW_MODE: actions
+  PAGES_WORKFLOW_REF: staging
+  PAGES_BASE_REF: staging
+  PAGES_GATEWAY_URL: http://pages-gateway:8788
+  PAGES_GATEWAY_PUBLIC_URL: https://replace-me.example.com
+  PAGES_GATEWAY_CALLBACK_URL: https://replace-me.example.com/internal/executor-callback
+  PAGES_WORKER_START_URL: http://pages-worker:8790/internal/publishing-jobs/start
+  SLACK_AGENT_ANALYZE_URL: http://slack-agent:8791/internal/slack-agent/analyze
+  SLACK_NOTIFIER_URL: http://slack-notifier:8792
+  SLACK_EVENTS_PROCESSING_MODE: async
+  SLACK_SIGNATURE_REQUIRED: 'true'
+  SLACK_REACTION_ON_RECEIVE: 'true'
+  SLACK_WORKING_REACTION: eyes
+  SLACK_SIGNATURE_MAX_SKEW_SECONDS: '300'
+  AGENT_MODEL_PROVIDER: company-agent
+  AGENT_MODEL_NAME: ''
+  AGENT_GATEWAY_URL: ''
+  SLACK_AGENT_MAX_CONTEXT_MESSAGES: '50'
+  SLACK_AGENT_MAX_OUTPUT_TOKENS: '2048'
+  SLACK_AGENT_REQUEST_TIMEOUT_SECONDS: '120'
+  SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS: '2'
+  SLACK_AGENT_WAITING_CLARIFICATION_TTL_DAYS: '1'
+  SLACK_AGENT_RECENT_SESSION_DAYS: '14'
+  SLACK_AGENT_ARCHIVE_AFTER_DAYS: '90'
+  SLACK_AGENT_TURN_TIMEOUT_SECONDS: '120'
+  SLACK_AGENT_SESSION_LEASE_SECONDS: '180'
+  SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS: '24'
+  CODING_AGENT_RUN_TIMEOUT_MINUTES: '30'
+  PAGES_API: https://api-staging.workers.xd.team
+  GITHUB_ENTERPRISE_API_BASE_URL: https://api.github.com
+  GITHUB_REPO: owner/pages-manager
+  SLACK_API_URL: https://slack.com/api/chat.postMessage
+  GITHUB_REVIEW_AGENT_LOGINS: greptile[bot],greptile-bot,copilot-pull-request-reviewer[bot],chatgpt-codex-connector,chatgpt-codex-connector[bot]
