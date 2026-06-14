@@ -1010,6 +1010,39 @@ test('Slack HTTP url verification echoes the challenge as plain text', async () 
   assert.equal(await response.text(), 'challenge-value');
 });
 
+test('Slack HTTP auth failures log only safe diagnostics', async () => {
+  const app = createGatewayApp();
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (line) => logs.push(line);
+
+  try {
+    const response = await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Slackbot 1.0 (+https://api.slack.com/robots)',
+        },
+        body: JSON.stringify({ type: 'event_callback', event_id: 'Ev-missing-signature' }),
+      }),
+      { SLACK_SIGNING_SECRET: 'slack-signing-secret', SLACK_SIGNATURE_REQUIRED: 'true' }
+    );
+
+    assert.equal(response.status, 401);
+  } finally {
+    console.log = originalLog;
+  }
+
+  const diagnostic = logs.map((line) => JSON.parse(line)).find((line) => line.message === 'slack_http_request_failed');
+  assert.equal(diagnostic.path, '/integrations/slack/events');
+  assert.equal(diagnostic.status, 401);
+  assert.equal(diagnostic.error, 'Missing Slack signature');
+  assert.equal(diagnostic.slackSignaturePresent, false);
+  assert.equal(diagnostic.slackTimestampPresent, false);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /Ev-missing-signature|slack-signing-secret|v0=/);
+});
+
 test('Slack interaction can close only the caller owned session', async () => {
   const app = createGatewayApp();
   const created = await json(
