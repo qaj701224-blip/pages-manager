@@ -34,7 +34,7 @@ preview deploy
 - 只有 controlled-committer 能在 patch 校验通过后创建 branch、commit 和 PR。
 - GitHub Review Agent comment 只通过 GitHub webhook 实时进入平台，不让 GitHub Actions runner 或 K8s job 长轮询 PR。
 - `review-monitor-worker` 是长期形态下监听和归一化 Review Agent comment 的主组件；当前 MVP 先在 `pages-gateway` 的 `/integrations/github/webhook` 内完成同样的归一化和 gate 推进。
-- Slack bot token 只进入 `pages-gateway`、必要时 `apps/slack-agent`、`slack-notifier`，不进入 coding-agent、builder、site-check、committer、deployer workflow/job。
+- Slack bot token 在正式 K8s 路径只进入 `slack-notifier`，必要时可进入 `apps/slack-agent` 拉取 thread / channel 上下文；`pages-gateway` 只允许本地 fallback 临时持有，不进入 coding-agent、builder、site-check、committer、deployer workflow/job。
 
 ## Slack 运行位置
 

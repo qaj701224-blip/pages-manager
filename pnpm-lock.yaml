@@ -29,6 +29,9 @@ importers:
 
   apps/gateway:
     dependencies:
+      '@xd/slack-notifier-core':
+        specifier: workspace:*
+        version: link:../../packages/slack-notifier
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
@@ -136,6 +139,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker-kit
 
+  apps/slack-notifier:
+    dependencies:
+      '@xd/slack-notifier-core':
+        specifier: workspace:*
+        version: link:../../packages/slack-notifier
+      '@xd/worker-kit':
+        specifier: workspace:*
+        version: link:../../packages/worker-kit
+
   apps/worker:
     dependencies:
       '@xd/git-client':
@@ -162,6 +174,8 @@ importers:
   packages/ip-guard: {}
 
   packages/pages-runtime-protocol: {}
+
+  packages/slack-notifier: {}
 
   packages/wfp-client: {}
 
