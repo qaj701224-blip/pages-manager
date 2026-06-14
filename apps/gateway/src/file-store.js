@@ -38,6 +38,7 @@ export class FileBackedGatewayStore extends MemoryGatewayStore {
     if (!filePath) {
       throw new Error('filePath is required');
     }
+    this.backend = 'file';
     this.filePath = filePath;
     this.load();
   }
@@ -102,6 +103,12 @@ export class FileBackedGatewayStore extends MemoryGatewayStore {
 
   recordSlackDelivery(input) {
     const result = super.recordSlackDelivery(input);
+    this.persist();
+    return result;
+  }
+
+  updateSlackDelivery(input = {}, patch = {}, now = new Date()) {
+    const result = super.updateSlackDelivery(input, patch, now);
     this.persist();
     return result;
   }

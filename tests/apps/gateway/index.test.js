@@ -97,6 +97,45 @@ test('API creates a PublishingJob without requiring GitHub repo user permissions
   assert.equal(body.job.status, 'received');
 });
 
+test('gateway readiness checks the runtime store', async () => {
+  const app = createGatewayApp({
+    store: {
+      backend: 'mysql',
+      async health() {
+        return { ok: true, backend: 'mysql' };
+      },
+    },
+  });
+
+  const health = await json(await app.fetch(new Request('http://gateway.test/health')));
+  const readyResponse = await app.fetch(new Request('http://gateway.test/ready'));
+  const ready = await json(readyResponse);
+
+  assert.equal(health.storeBackend, 'mysql');
+  assert.equal(readyResponse.status, 200);
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.storeBackend, 'mysql');
+});
+
+test('gateway readiness fails closed when store health fails', async () => {
+  const app = createGatewayApp({
+    store: {
+      backend: 'mysql',
+      async health() {
+        throw new Error('database unavailable');
+      },
+    },
+  });
+
+  const response = await app.fetch(new Request('http://gateway.test/ready'));
+  const body = await json(response);
+
+  assert.equal(response.status, 503);
+  assert.equal(body.status, 'not_ready');
+  assert.equal(body.storeBackend, 'mysql');
+  assert.equal(body.error, 'database unavailable');
+});
+
 test('API create is idempotent by actor and idempotency key', async () => {
   const app = createGatewayApp();
   const request = () =>
@@ -117,6 +156,36 @@ test('API create is idempotent by actor and idempotency key', async () => {
   assert.equal(secondResponse.status, 200);
   assert.equal(first.job.id, second.job.id);
   assert.equal(second.created, false);
+});
+
+test('API lists PublishingJobs for ACK smoke troubleshooting', async () => {
+  const app = createGatewayApp();
+
+  for (const [idempotencyKey, employeeSlug, siteSlug] of [
+    ['api-list-1', 'alice', 'profile'],
+    ['api-list-2', 'bob', 'portfolio'],
+  ]) {
+    const response = await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'X-Pages-Actor-Id': 'usr_list',
+        },
+        body: JSON.stringify({ employeeSlug, siteSlug }),
+      })
+    );
+    assert.equal(response.status, 201);
+  }
+
+  const listed = await json(await app.fetch(new Request('http://gateway.test/api/publishing-jobs?source=api&q=portfolio')));
+
+  assert.equal(listed.total, 1);
+  assert.equal(listed.limit, 50);
+  assert.equal(listed.offset, 0);
+  assert.equal(listed.jobs[0].employeeSlug, 'bob');
+  assert.equal(listed.jobs[0].siteSlug, 'portfolio');
 });
 
 test('Slack event creates a slack-sourced job', async () => {
@@ -158,6 +227,15 @@ test('Slack event creates a slack-sourced job', async () => {
     threadTs: '1710000000.000100',
     userId: 'U1',
   });
+
+  const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev1' });
+  assert.equal(deliveries.total, 1);
+  assert.equal(deliveries.deliveries[0].processingStatus, 'processed');
+  assert.equal(deliveries.deliveries[0].resultType, 'job_created');
+  assert.equal(deliveries.deliveries[0].publishingJobId, body.jobId);
+  assert.equal(deliveries.deliveries[0].slackSessionId, body.slackSessionId);
+  assert.equal(deliveries.deliveries[0].channelId, 'D1');
+  assert.equal(deliveries.deliveries[0].threadTs, '1710000000.000100');
 });
 
 test('Slack event can use Slack Agent analysis before creating a job', async () => {

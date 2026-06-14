@@ -159,11 +159,11 @@ function isUnaddressedChannelThreadMessage(body = {}) {
   return event.type === 'message' && surface.channelType !== 'im' && Boolean(event.thread_ts);
 }
 
-function existingSlackThreadSession(store, body = {}) {
+async function existingSlackThreadSession(store, body = {}) {
   const actor = slackActorFromBody(body);
   const surface = surfaceForSlackBody(body);
   const sessionKey = `thread:${surface.channelId || 'unknown'}:${surface.threadTs || surface.messageTs || 'unknown'}`;
-  return store.findSlackSessionByScope?.(actor.teamId, actor.slackUserId, sessionKey) || null;
+  return store.findSlackSessionByScope ? await store.findSlackSessionByScope(actor.teamId, actor.slackUserId, sessionKey) : null;
 }
 
 function publishingJobIdFromIssueBody(body) {
@@ -175,15 +175,15 @@ function issueUrl(issue = {}) {
   return issue.html_url || issue.url || null;
 }
 
-function applyExecutorCallback(store, jobId, stageResult, status, patch) {
-  const existing = store.getJob(jobId);
+async function applyExecutorCallback(store, jobId, stageResult, status, patch) {
+  const existing = await store.getJob(jobId);
   if (!existing) return null;
 
   if (STALE_CALLBACK_PATCH_STATUSES[stageResult]?.has(existing.status)) {
-    return store.patchJob(jobId, patch);
+    return await store.patchJob(jobId, patch);
   }
 
-  return store.updateJob(jobId, status, patch);
+  return await store.updateJob(jobId, status, patch);
 }
 
 async function handleGithubIssueWebhook({ body, action, store, env, result }) {
@@ -201,7 +201,7 @@ async function handleGithubIssueWebhook({ body, action, store, env, result }) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'non_pages_issue' });
   }
 
-  let job = store.getJob(jobId);
+  let job = await store.getJob(jobId);
   if (!job) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'job_not_found', jobId });
   }
@@ -212,19 +212,19 @@ async function handleGithubIssueWebhook({ body, action, store, env, result }) {
   }
 
   if (!job.issueNumber || ['received', 'issue_creating'].includes(job.status)) {
-    job = store.updateJob(job.id, 'issue_created', {
+    job = await store.updateJob(job.id, 'issue_created', {
       issueNumber,
       issueUrl: issueUrl(issue),
     });
   }
-  store.linkJobToSlackSession(job);
+  await store.linkJobToSlackSession(job);
 
   let workerStart = null;
   let issueAction = 'recorded';
 
   if (job.status === 'issue_created') {
-    job = store.updateJob(job.id, 'generating_page');
-    store.linkJobToSlackSession(job);
+    job = await store.updateJob(job.id, 'generating_page');
+    await store.linkJobToSlackSession(job);
     await notifySlackJobStatus(env, store, job, {
       stage: 'issue_created',
       text: 'GitHub issue 已创建，准备启动页面生成。',
@@ -293,7 +293,7 @@ function repoFullNameForJob(job, env) {
   return null;
 }
 
-function previewTriggerFromStoredReviews(store, job, env) {
+async function previewTriggerFromStoredReviews(store, job, env) {
   if (!job?.prNumber || job.previewUrl) return null;
   if (!['pr_created', 'reviewing', 'previewing'].includes(job.status)) return null;
 
@@ -301,10 +301,11 @@ function previewTriggerFromStoredReviews(store, job, env) {
   if (!repoFullName) return null;
 
   const options = job.headSha ? { headSha: job.headSha } : {};
-  const gate = store.reviewGateForPr(repoFullName, job.prNumber, options);
+  const gate = await store.reviewGateForPr(repoFullName, job.prNumber, options);
   if (!gate.canPreview) return null;
 
-  const reviewComment = store.listReviewAgentComments(repoFullName, job.prNumber, options).find((comment) => {
+  const comments = await store.listReviewAgentComments(repoFullName, job.prNumber, options);
+  const reviewComment = comments.find((comment) => {
     if (comment.status !== 'open') return false;
     if (!['review_summary', 'issue_comment'].includes(comment.sourceType)) return false;
     return ['note', 'suggestion'].includes(classifyReviewAgentComment(comment));
@@ -314,11 +315,11 @@ function previewTriggerFromStoredReviews(store, job, env) {
 }
 
 async function dispatchPreviewFromStoredReviewIfReady(job, store, env) {
-  const trigger = previewTriggerFromStoredReviews(store, job, env);
+  const trigger = await previewTriggerFromStoredReviews(store, job, env);
   if (!trigger) return null;
 
   const updatedJob =
-    job.status === 'previewing' ? job : store.updateJob(job.id, 'previewing', job.headSha ? { headSha: job.headSha } : {});
+    job.status === 'previewing' ? job : await store.updateJob(job.id, 'previewing', job.headSha ? { headSha: job.headSha } : {});
   const workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
 
   return {
@@ -496,14 +497,15 @@ function isSlackFollowupIntent(analysis, intake) {
   return looksLikeSlackFollowupText(intake.text);
 }
 
-function activeJobForSlackSession(store, slackSession) {
+async function activeJobForSlackSession(store, slackSession) {
   if (slackSession?.activeJobId) {
-    const job = store.getJob(slackSession.activeJobId);
+    const job = await store.getJob(slackSession.activeJobId);
     if (job) return job;
   }
 
-  const link = store.findIssueLinksForSlackSession(slackSession.id)[0];
-  return link?.publishingJobId ? store.getJob(link.publishingJobId) : null;
+  const links = await store.findIssueLinksForSlackSession(slackSession.id);
+  const link = links[0];
+  return link?.publishingJobId ? await store.getJob(link.publishingJobId) : null;
 }
 
 function followupSummary(existingSummary, text) {
@@ -522,14 +524,8 @@ function redactSecretLikeText(text = '') {
     .replace(/\b(ghp_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
-    .replace(
-      /("(?:api[_-]?key|token|secret|password|passwd|pwd)"\s*:\s*")[^"]+(")/gi,
-      '$1[REDACTED_SECRET]$2'
-    )
-    .replace(
-      /\b(api[_-]?key|token|secret|password|passwd|pwd)\b\s*[:=]\s*["']?[^"',\s}]+/gi,
-      '$1=[REDACTED_SECRET]'
-    );
+    .replace(/("(?:api[_-]?key|token|secret|password|passwd|pwd)"\s*:\s*")[^"]+(")/gi, '$1[REDACTED_SECRET]$2')
+    .replace(/\b(api[_-]?key|token|secret|password|passwd|pwd)\b\s*[:=]\s*["']?[^"',\s}]+/gi, '$1=[REDACTED_SECRET]');
 }
 
 function redactSlackAnalysisValue(value) {
@@ -562,11 +558,11 @@ function shouldCreateSlackJob(intake, slackAgentAnalysis) {
 function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null) {
   return redactSecretLikeText(
     slackAgentAnalysis?.clarifyingQuestion ||
-    slackAgentAnalysis?.clarifying_question ||
-    slackAgentAnalysis?.summary ||
-    fallbackText ||
-    intake.replyText ||
-    '我已记录这轮消息，但还需要再确认一下需求。'
+      slackAgentAnalysis?.clarifying_question ||
+      slackAgentAnalysis?.summary ||
+      fallbackText ||
+      intake.replyText ||
+      '我已记录这轮消息，但还需要再确认一下需求。'
   );
 }
 
@@ -595,6 +591,50 @@ function shouldPostSlackResultReply(result = {}) {
   if (result.reply === false || result.noReply) return false;
   if (result.action === 'ignored_untracked_thread_message') return false;
   return true;
+}
+
+function slackDeliveryContextFromBody(body = {}) {
+  const event = body.event || {};
+  const surface = surfaceForSlackBody(body);
+  return {
+    teamId: body.team_id || body.team?.id || event.team || 'unknown-team',
+    eventId: slackEventId(body) || 'unknown-event',
+    channelId: surface.channelId || null,
+    threadTs: surface.threadTs || surface.messageTs || null,
+    slackUserId: event.user || body.user_id || body.user?.id || body.source_user_id || null,
+    requestId: body.event_context || body.trigger_id || null,
+  };
+}
+
+function slackResultType(result = {}) {
+  if (result.action === 'close_session') return 'session_closed';
+  if (result.action === 'clarification_needed') return 'clarification_requested';
+  if (result.action === 'status' || result.action === 'status_query') return 'status_returned';
+  if (String(result.action || '').startsWith('followup_')) return 'followup_appended';
+  if (result.jobId) return 'job_created';
+  if (result.replyText) return 'agent_replied';
+  return 'none';
+}
+
+function slackProcessingStatus(result = {}, overrides = {}) {
+  if (overrides.processingStatus) return overrides.processingStatus;
+  if (result.action === 'ignored_slack_event' || result.action === 'ignored_untracked_thread_message') return 'ignored';
+  return 'processed';
+}
+
+function slackDeliveryPatchForResult(result = {}, overrides = {}) {
+  const processingStatus = slackProcessingStatus(result, overrides);
+  return {
+    processingStatus,
+    resultType: overrides.resultType || slackResultType(result),
+    ignoredReason:
+      overrides.ignoredReason || (processingStatus === 'ignored' ? result.reason || result.action || 'ignored' : null),
+    errorCode: overrides.errorCode || null,
+    errorMessage: overrides.errorMessage || null,
+    slackSessionId: result.slackSessionId || null,
+    publishingJobId: result.jobId || null,
+    agentRunId: result.agentRunId || null,
+  };
 }
 
 async function addWorkingReactionForSlackEvent(env, body = {}) {
@@ -672,9 +712,20 @@ async function processSlackEventBody(body, env) {
   }
 
   const eventId = slackEventId(body);
+  const deliveryContext = slackDeliveryContextFromBody(body);
+  const updateDelivery = async (patch = {}) => {
+    if (!eventId || !store.updateSlackDelivery) return null;
+    return await store.updateSlackDelivery(deliveryContext, patch);
+  };
+  const respond = async (resultOrPromise, overrides = {}) => {
+    const result = await resultOrPromise;
+    await updateDelivery(slackDeliveryPatchForResult(result, overrides));
+    return result;
+  };
+
   if (eventId && store.recordSlackDelivery) {
-    const delivery = store.recordSlackDelivery({
-      teamId: body.team_id || body.team?.id || body.event?.team || 'unknown-team',
+    const delivery = await store.recordSlackDelivery({
+      ...deliveryContext,
       eventId,
       eventType: body.event?.type || body.type || null,
       action: body.event?.subtype || body.action || null,
@@ -691,40 +742,42 @@ async function processSlackEventBody(body, env) {
     }
   }
 
+  await updateDelivery({ processingStatus: 'processing' });
+
   const ignoredReason = ignoredSlackEventReason(body);
   if (ignoredReason) {
-    return {
+    return respond({
       ok: true,
       action: 'ignored_slack_event',
       reason: ignoredReason,
       accepted: false,
       reply: false,
-    };
+    });
   }
 
   const intake = classifySlackIntake(body);
-  if (isUnaddressedChannelThreadMessage(body) && !existingSlackThreadSession(store, body)) {
-    return {
+  if (isUnaddressedChannelThreadMessage(body) && !(await existingSlackThreadSession(store, body))) {
+    return respond({
       ok: true,
       action: 'ignored_untracked_thread_message',
       accepted: false,
       reply: false,
-    };
+    });
   }
 
-  const sessionSelection = selectSlackSession(store, body, intake, env);
+  const sessionSelection = await selectSlackSession(store, body, intake, env);
 
   if (sessionSelection.forbidden) {
-    return {
+    return respond({
       ok: true,
       action: sessionSelection.action,
       accepted: false,
       replyText: sessionSelection.replyText,
-    };
+    });
   }
 
   if (sessionSelection.ambiguous) {
-    return {
+    return respond({
       ok: true,
       action: sessionSelection.action,
       accepted: false,
@@ -737,159 +790,173 @@ async function processSlackEventBody(body, env) {
         activePrNumber: session.activePrNumber,
         activePreviewUrl: session.activePreviewUrl,
       })),
-    };
+    });
   }
 
   const slackSession = sessionSelection.session;
   const sessionMemory = sessionSelection.memory;
-  const lease = slackSession ? store.acquireSlackAgentLease(slackSession.id, sessionSelection.config) : null;
+  const lease = slackSession ? await store.acquireSlackAgentLease(slackSession.id, sessionSelection.config) : null;
 
   if (lease && !lease.acquired) {
-    return {
+    return respond({
       ok: true,
       action: 'agent_busy',
       accepted: false,
       replyText: '上一轮会话还在处理中，请稍等一下再发。',
       slackSessionId: slackSession.id,
       agentRunId: lease.agentRun.id,
-    };
+    });
   }
 
   const agentRun = lease?.agentRun || null;
 
   if (intake.action === 'status') {
-    const statusJob = intake.jobId ? store.getJob(intake.jobId) : null;
+    const statusJob = intake.jobId ? await store.getJob(intake.jobId) : null;
     if (statusJob && !slackJobVisibleToActor(statusJob, body)) {
-      completeSlackAgentRun(store, agentRun, {
+      await completeSlackAgentRun(store, agentRun, {
         report: { action: intake.action, jobId: intake.jobId, forbidden: true },
       });
-      return {
+      return respond({
         ok: true,
         action: 'forbidden_cross_user_job',
         accepted: false,
         replyText: '这个发布任务不属于当前 Slack 用户，不能查看状态。',
         ...(slackSession ? { slackSessionId: slackSession.id } : {}),
         ...(agentRun ? { agentRunId: agentRun.id } : {}),
-      };
+      });
     }
 
-    completeSlackAgentRun(store, agentRun, {
+    await completeSlackAgentRun(store, agentRun, {
       report: { action: intake.action, jobId: intake.jobId || null },
     });
-    return {
+    return respond({
       ok: true,
       action: intake.action,
       accepted: false,
       replyText: intake.jobId ? slackStatusReply(intake.jobId, statusJob) : intake.replyText,
       ...(slackSession ? { slackSessionId: slackSession.id } : {}),
       ...(agentRun ? { agentRunId: agentRun.id } : {}),
-    };
+    });
   }
 
   try {
     let slackAgentAnalysis = null;
     if (intake.action === 'close_session') {
-      return handleCloseSlackSession({
-        store,
-        intake,
-        slackSession,
-        sessionMemory,
-        agentRun,
-        slackAgentAnalysis,
-      });
+      return respond(
+        handleCloseSlackSession({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+        })
+      );
     }
 
     if (shouldAnalyzeSlackTurn(intake, slackSession)) {
       slackAgentAnalysis = await analyzeSlackEventIfConfigured(body, intake, env, {
         slackSession,
         sessionMemory,
-        issueLinks: store.findIssueLinksForSlackSession(slackSession.id),
+        issueLinks: await store.findIssueLinksForSlackSession(slackSession.id),
         agentRun,
       });
 
       if (shouldCloseSlackSession(intake, slackAgentAnalysis)) {
-        return handleCloseSlackSession({
-          store,
-          intake,
-          slackSession,
-          sessionMemory,
-          agentRun,
-          slackAgentAnalysis,
-        });
+        return respond(
+          handleCloseSlackSession({
+            store,
+            intake,
+            slackSession,
+            sessionMemory,
+            agentRun,
+            slackAgentAnalysis,
+          })
+        );
       }
 
       if (slackAgentAnalysis?.intent === 'status_query') {
-        return handleSlackAgentStatusQuery({
-          store,
-          intake,
-          slackSession,
-          sessionMemory,
-          agentRun,
-          slackAgentAnalysis,
-        });
+        return respond(
+          handleSlackAgentStatusQuery({
+            store,
+            intake,
+            slackSession,
+            sessionMemory,
+            agentRun,
+            slackAgentAnalysis,
+          })
+        );
       }
 
       if (slackAgentAnalysis?.intent === 'cancel_request') {
-        return handleSlackAgentNonPublishingTurn({
-          store,
-          intake,
-          slackSession,
-          sessionMemory,
-          agentRun,
-          slackAgentAnalysis,
-          action: 'cancel_request',
-          replyText: '收到取消意图。当前 MVP 还没有自动取消 job；如果已经创建了 issue，可以先在 issue 里补充“取消”。',
-        });
+        return respond(
+          handleSlackAgentNonPublishingTurn({
+            store,
+            intake,
+            slackSession,
+            sessionMemory,
+            agentRun,
+            slackAgentAnalysis,
+            action: 'cancel_request',
+            replyText: '收到取消意图。当前 MVP 还没有自动取消 job；如果已经创建了 issue，可以先在 issue 里补充“取消”。',
+          })
+        );
       }
 
       if (hasActiveSlackTarget(slackSession) && isSlackFollowupIntent(slackAgentAnalysis, intake)) {
-        return handleSlackFollowup({
-          store,
-          env,
-          intake,
-          slackSession,
-          sessionMemory,
-          agentRun,
-          slackAgentAnalysis,
-        });
+        return respond(
+          handleSlackFollowup({
+            store,
+            env,
+            intake,
+            slackSession,
+            sessionMemory,
+            agentRun,
+            slackAgentAnalysis,
+          })
+        );
       }
     }
 
     if (slackAgentAnalysis?.needsClarification) {
-      return handleSlackAgentNonPublishingTurn({
-        store,
-        intake,
-        slackSession,
-        sessionMemory,
-        agentRun,
-        slackAgentAnalysis,
-        action: 'clarification_needed',
-      });
+      return respond(
+        handleSlackAgentNonPublishingTurn({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+          action: 'clarification_needed',
+        })
+      );
     }
 
     if (!shouldCreateSlackJob(intake, slackAgentAnalysis)) {
-      return handleSlackAgentNonPublishingTurn({
-        store,
-        intake,
-        slackSession,
-        sessionMemory,
-        agentRun,
-        slackAgentAnalysis,
-        action: slackAgentAnalysis ? 'agent_turn_recorded' : intake.action,
-      });
+      return respond(
+        handleSlackAgentNonPublishingTurn({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+          action: slackAgentAnalysis ? 'agent_turn_recorded' : intake.action,
+        })
+      );
     }
 
     const redactedIntake = { ...intake, text: redactSecretLikeText(intake.text) };
     const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
-    store.updateSessionMemory(slackSession.id, {
+    await store.updateSessionMemory(slackSession.id, {
       summary: redactedSlackAgentAnalysis?.summary || redactedIntake.text,
       requirements: redactedSlackAgentAnalysis || { text: redactedIntake.text, action: redactedIntake.action },
       lastAgentResponse: redactedSlackAgentAnalysis?.needsClarification ? redactedSlackAgentAnalysis.summary : null,
     });
-    const { job, created } = store.createJob(
+    const { job, created } = await store.createJob(
       slackJobInput({ ...body, intake: redactedIntake, slackAgentAnalysis: redactedSlackAgentAnalysis, slackSession })
     );
-    const issueLink = store.linkJobToSlackSession(job, slackSession);
+    const issueLink = await store.linkJobToSlackSession(job, slackSession);
     const slackStatusNotification = created
       ? await notifySlackJobStatus(env, store, job, {
           stage: 'received',
@@ -899,7 +966,7 @@ async function processSlackEventBody(body, env) {
         })
       : null;
     const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
-    completeSlackAgentRun(store, agentRun, {
+    await completeSlackAgentRun(store, agentRun, {
       publishingJobId: job.id,
       provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
       model: slackAgentAnalysis?.modelName || null,
@@ -925,7 +992,7 @@ async function processSlackEventBody(body, env) {
         workerError: workerStart?.error || null,
       })
     );
-    return {
+    return respond({
       ok: true,
       action: intake.action,
       accepted: true,
@@ -937,23 +1004,29 @@ async function processSlackEventBody(body, env) {
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
       ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
       ...(workerStart ? { workerStart } : {}),
-    };
+    });
   } catch (err) {
+    await updateDelivery({
+      processingStatus: 'failed',
+      resultType: 'none',
+      errorCode: 'slack_event_processing_failed',
+      errorMessage: err.message,
+    });
     if (agentRun) {
-      store.failAgentRun(agentRun.id, 'slack_agent_failed', err.message);
+      await store.failAgentRun(agentRun.id, 'slack_agent_failed', err.message);
     }
     throw err;
   }
 }
 
-function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
-  const closedSession = store.closeSlackSession(slackSession.id);
-  store.updateSessionMemory(slackSession.id, {
+async function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+  const closedSession = await store.closeSlackSession(slackSession.id);
+  await store.updateSessionMemory(slackSession.id, {
     summary: redactSecretLikeText(sessionMemory.summary || intake.text),
     lastAgentResponse: '会话已关闭。',
     pendingQuestions: [],
   });
-  completeSlackAgentRun(store, agentRun, {
+  await completeSlackAgentRun(store, agentRun, {
     report: {
       action: 'close_session',
       accepted: true,
@@ -972,17 +1045,17 @@ function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, a
   };
 }
 
-function handleSlackAgentStatusQuery({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
-  const job = activeJobForSlackSession(store, slackSession);
+async function handleSlackAgentStatusQuery({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+  const job = await activeJobForSlackSession(store, slackSession);
   const replyText = job
     ? slackStatusReply(job.id, job)
     : '我还没有在当前会话里找到发布任务。你可以带上 job id，例如 `status: job_xxx`。';
 
-  store.updateSessionMemory(slackSession.id, {
+  await store.updateSessionMemory(slackSession.id, {
     summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory.summary || intake.text),
     lastAgentResponse: replyText,
   });
-  completeSlackAgentRun(store, agentRun, {
+  await completeSlackAgentRun(store, agentRun, {
     publishingJobId: job?.id || null,
     provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
     model: slackAgentAnalysis?.modelName || null,
@@ -1005,7 +1078,7 @@ function handleSlackAgentStatusQuery({ store, intake, slackSession, sessionMemor
   };
 }
 
-function handleSlackAgentNonPublishingTurn({
+async function handleSlackAgentNonPublishingTurn({
   store,
   intake,
   slackSession,
@@ -1018,7 +1091,7 @@ function handleSlackAgentNonPublishingTurn({
   const redactedIntakeText = redactSecretLikeText(intake.text);
   const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
   const finalReplyText = slackAgentReplyText(intake, redactedSlackAgentAnalysis, replyText);
-  store.updateSessionMemory(slackSession.id, {
+  await store.updateSessionMemory(slackSession.id, {
     summary: redactedSlackAgentAnalysis?.summary || redactSecretLikeText(sessionMemory.summary) || redactedIntakeText,
     requirements: redactedSlackAgentAnalysis || redactSlackAnalysis(sessionMemory.requirements) || {},
     lastAgentResponse: finalReplyText,
@@ -1026,7 +1099,7 @@ function handleSlackAgentNonPublishingTurn({
       ? [finalReplyText]
       : redactSlackAnalysis(sessionMemory.pendingQuestions) || [],
   });
-  completeSlackAgentRun(store, agentRun, {
+  await completeSlackAgentRun(store, agentRun, {
     provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
     model: slackAgentAnalysis?.modelName || null,
     modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
@@ -1061,12 +1134,12 @@ function handleSlackAgentNonPublishingTurn({
 }
 
 async function handleSlackFollowup({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
-  const job = activeJobForSlackSession(store, slackSession);
+  const job = await activeJobForSlackSession(store, slackSession);
   const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
   const feedback = redactSecretLikeText(redactedSlackAgentAnalysis?.summary || intake.text);
 
   if (!job) {
-    completeSlackAgentRun(store, agentRun, {
+    await completeSlackAgentRun(store, agentRun, {
       report: { action: 'followup_missing_job', accepted: false },
     });
     return {
@@ -1084,7 +1157,7 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
     title: redactedSlackAgentAnalysis?.title || job.title,
     summary: followupSummary(job.summary, feedback),
   };
-  store.updateSessionMemory(slackSession.id, {
+  await store.updateSessionMemory(slackSession.id, {
     summary: followupSummary(sessionMemory.summary, feedback),
     requirements: redactedSlackAgentAnalysis || { text: redactSecretLikeText(intake.text), action: 'followup' },
     lastPreviewFeedback: feedback,
@@ -1097,9 +1170,9 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
   let replyText = `收到，已把这轮修改意见关联到 ${job.id}。`;
 
   if (canDispatchFixForJob(job)) {
-    updatedJob = store.moveJobToFixing(job.id, patch);
+    updatedJob = await store.moveJobToFixing(job.id, patch);
     if (updatedJob) {
-      store.linkJobToSlackSession(updatedJob, slackSession);
+      await store.linkJobToSlackSession(updatedJob, slackSession);
       workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
       action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
       replyText = workerStart?.started
@@ -1109,12 +1182,12 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
   }
 
   if (!updatedJob) {
-    updatedJob = store.patchJob(job.id, patch);
-    store.linkJobToSlackSession(updatedJob, slackSession);
+    updatedJob = await store.patchJob(job.id, patch);
+    await store.linkJobToSlackSession(updatedJob, slackSession);
     replyText = `收到，已记录到 ${job.id}。当前任务还在 ${job.status}，会优先保留在同一个会话里。`;
   }
 
-  completeSlackAgentRun(store, agentRun, {
+  await completeSlackAgentRun(store, agentRun, {
     publishingJobId: updatedJob.id,
     provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
     model: slackAgentAnalysis?.modelName || null,
@@ -1152,34 +1225,75 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
   };
 }
 
-function completeSlackAgentRun(store, agentRun, patch = {}) {
+async function completeSlackAgentRun(store, agentRun, patch = {}) {
   if (!agentRun) return null;
-  return store.completeAgentRun(agentRun.id, patch);
+  return await store.completeAgentRun(agentRun.id, patch);
 }
 
-export async function handleHealth() {
-  return jsonResponse({ status: 'ok', service: 'pages-gateway' });
+export async function handleHealth(_request, env = {}) {
+  const store = getStore(env);
+  return jsonResponse({
+    status: 'ok',
+    service: 'pages-gateway',
+    storeBackend: store.backend || env.PAGES_STORE_BACKEND || 'memory',
+  });
+}
+
+export async function handleReady(_request, env = {}) {
+  const store = getStore(env);
+
+  try {
+    const health = store.health ? await store.health() : { ok: true, backend: store.backend || 'unknown' };
+    return jsonResponse({
+      status: 'ready',
+      service: 'pages-gateway',
+      storeBackend: health.backend || store.backend || env.PAGES_STORE_BACKEND || 'memory',
+    });
+  } catch (error) {
+    return jsonResponse(
+      {
+        status: 'not_ready',
+        service: 'pages-gateway',
+        storeBackend: store.backend || env.PAGES_STORE_BACKEND || 'unknown',
+        error: error.message,
+      },
+      503
+    );
+  }
 }
 
 export async function handleCreatePublishingJob(request, env) {
   const store = getStore(env);
   const body = await readJson(request);
-  const { job, created } = store.createJob(normalizePublishingJobInput(body, request));
+  const { job, created } = await store.createJob(normalizePublishingJobInput(body, request));
   const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
 
   return jsonResponse({ job, created, ...(workerStart ? { workerStart } : {}) }, created ? 201 : 200);
 }
 
+export async function handleListPublishingJobs(request, env) {
+  const url = new URL(request.url);
+  const result = await getStore(env).listJobs({
+    status: url.searchParams.get('status') || undefined,
+    source: url.searchParams.get('source') || undefined,
+    q: url.searchParams.get('q') || undefined,
+    limit: url.searchParams.get('limit') || undefined,
+    offset: url.searchParams.get('offset') || undefined,
+  });
+
+  return jsonResponse(result);
+}
+
 export async function handleGetPublishingJob(_request, env, params) {
-  const job = getStore(env).getJob(params.jobId);
+  const job = await getStore(env).getJob(params.jobId);
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   return jsonResponse({ job });
 }
 
 export async function handleGetPublishingJobEvents(_request, env, params) {
   const store = getStore(env);
-  if (!store.getJob(params.jobId)) return jsonResponse({ error: 'PublishingJob not found' }, 404);
-  return jsonResponse({ events: store.listEvents(params.jobId) });
+  if (!(await store.getJob(params.jobId))) return jsonResponse({ error: 'PublishingJob not found' }, 404);
+  return jsonResponse({ events: await store.listEvents(params.jobId) });
 }
 
 export async function handleSlackEvents(request, env) {
@@ -1214,7 +1328,7 @@ export async function handleSlackInteractions(request, env) {
 
   if (actionId === 'pages_close_session') {
     const sessionId = action.value || '';
-    const session = store.getSlackSession(sessionId);
+    const session = await store.getSlackSession(sessionId);
     if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
       return slackAckResponse({
         response_type: 'ephemeral',
@@ -1222,7 +1336,7 @@ export async function handleSlackInteractions(request, env) {
       });
     }
 
-    store.closeSlackSession(session.id);
+    await store.closeSlackSession(session.id);
     return slackAckResponse({
       response_type: 'ephemeral',
       text: '已关闭当前会话。后续可以直接发新需求开启新任务。',
@@ -1252,9 +1366,9 @@ export async function handleExecutorCallback(request, env) {
 
   if (body.status === 'failed') {
     const store = getStore(env);
-    const job = store.failJob(jobId, body.errorCode || body.error_code, body.errorMessage || body.error_message);
+    const job = await store.failJob(jobId, body.errorCode || body.error_code, body.errorMessage || body.error_message);
     if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
-    store.linkJobToSlackSession(job);
+    await store.linkJobToSlackSession(job);
     const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
       stage: 'failed',
       text: job.errorMessage || job.errorCode || '发布任务失败',
@@ -1280,16 +1394,16 @@ export async function handleExecutorCallback(request, env) {
 
   const patch = rule.patch ? rule.patch(body) : {};
   const store = getStore(env);
-  let job = applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
+  let job = await applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
-  store.linkJobToSlackSession(job);
+  await store.linkJobToSlackSession(job);
   let workerStart = await startWorkerForJobIfConfigured(job, env);
   const reviewReplay = stageResult === 'pr_created' ? await dispatchPreviewFromStoredReviewIfReady(job, store, env) : null;
 
   if (reviewReplay) {
     job = reviewReplay.job;
     workerStart = reviewReplay.workerStart;
-    store.linkJobToSlackSession(job);
+    await store.linkJobToSlackSession(job);
   }
 
   const statusText = reviewReplay
@@ -1331,7 +1445,7 @@ export async function handleGithubWebhook(request, env) {
   const eventName = request.headers.get('X-GitHub-Event') || body.eventName || 'unknown';
   const action = body.action || null;
   const store = getStore(env);
-  const result = store.recordGithubDelivery({ repoFullName, deliveryId, eventName, action });
+  const result = await store.recordGithubDelivery({ repoFullName, deliveryId, eventName, action });
 
   if (!result.created) {
     return jsonResponse({ ok: true, created: false, delivery: result.delivery });
@@ -1356,9 +1470,9 @@ export async function handleGithubWebhook(request, env) {
     });
   }
 
-  const reviewComment = store.recordReviewAgentComment(normalized);
-  const job = store.findJobByPrNumber(normalized.prNumber, { headSha: normalized.headSha });
-  const gate = store.reviewGateForPr(
+  const reviewComment = await store.recordReviewAgentComment(normalized);
+  const job = await store.findJobByPrNumber(normalized.prNumber, { headSha: normalized.headSha });
+  const gate = await store.reviewGateForPr(
     repoFullName,
     normalized.prNumber,
     normalized.headSha ? { headSha: normalized.headSha } : {}
@@ -1372,11 +1486,11 @@ export async function handleGithubWebhook(request, env) {
   const fullHeadSha = normalized.headSha && normalized.headSha.length === 40 ? normalized.headSha : null;
 
   if (updatedJob && fullHeadSha && updatedJob.headSha !== fullHeadSha) {
-    updatedJob = store.patchJob(updatedJob.id, { headSha: fullHeadSha });
+    updatedJob = await store.patchJob(updatedJob.id, { headSha: fullHeadSha });
   }
 
   if (updatedJob && updatedJob.status === 'pr_created') {
-    updatedJob = store.updateJob(updatedJob.id, 'reviewing', fullHeadSha ? { headSha: fullHeadSha } : {});
+    updatedJob = await store.updateJob(updatedJob.id, 'reviewing', fullHeadSha ? { headSha: fullHeadSha } : {});
     reviewAction = 'reviewing';
   }
 
@@ -1384,18 +1498,18 @@ export async function handleGithubWebhook(request, env) {
     updatedJob =
       updatedJob.status === 'changes_requested'
         ? updatedJob
-        : store.updateJob(updatedJob.id, 'changes_requested', fullHeadSha ? { headSha: fullHeadSha } : {});
+        : await store.updateJob(updatedJob.id, 'changes_requested', fullHeadSha ? { headSha: fullHeadSha } : {});
     reviewAction = 'changes_requested';
   } else if (shouldDispatchPreviewForReview(updatedJob, normalized, gate)) {
     if (updatedJob.status !== 'previewing') {
-      updatedJob = store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});
+      updatedJob = await store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});
     }
     workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
     reviewAction = 'preview_dispatched';
   }
 
   if (updatedJob) {
-    store.linkJobToSlackSession(updatedJob);
+    await store.linkJobToSlackSession(updatedJob);
     slackStatusNotification = await notifySlackJobStatus(env, store, updatedJob, {
       stage: updatedJob.status,
       text: notificationTextForReviewAction(reviewAction, { gate, reviewComment: reviewComment.comment }) || reviewAction,

@@ -58,7 +58,11 @@ function truncateText(value = '', max = 1800) {
 function slackText(text, emoji = true) {
   return {
     type: 'mrkdwn',
-    text: emoji ? String(text || '') : String(text || '').replaceAll(/:[a-z0-9_+-]+:/gi, '').trim(),
+    text: emoji
+      ? String(text || '')
+      : String(text || '')
+          .replaceAll(/:[a-z0-9_+-]+:/gi, '')
+          .trim(),
   };
 }
 
@@ -176,9 +180,7 @@ export function buildJobStatusBlocks(job = {}, options = {}) {
     },
     {
       type: 'context',
-      elements: [
-        slackText(`${statusLine} · 继续修改可以直接在这个 thread 里回复。`),
-      ],
+      elements: [slackText(`${statusLine} · 继续修改可以直接在这个 thread 里回复。`)],
     },
   ];
   const actions = jobActionElements(job);
@@ -270,7 +272,9 @@ export function notificationTextForCallback(stageResult, job) {
     return job.prUrl ? `已创建 PR：#${job.prNumber}\n${job.prUrl}` : `已创建 PR：#${job.prNumber}`;
   }
   if (stageResult === 'reviewing') {
-    return job.prUrl ? `修复轮次已提交，等待 Review Agent：#${job.prNumber}\n${job.prUrl}` : '修复轮次已提交，等待 Review Agent。';
+    return job.prUrl
+      ? `修复轮次已提交，等待 Review Agent：#${job.prNumber}\n${job.prUrl}`
+      : '修复轮次已提交，等待 Review Agent。';
   }
   if (stageResult === 'preview_deployed') {
     return job.previewUrl ? `Preview 已生成：${job.previewUrl}` : 'Preview 已生成。';
@@ -303,19 +307,15 @@ export async function notifySlackJob(env, store, job, text, key) {
   if (!text || !job?.id) return null;
   const target = slackTargetForJob(job);
   if (!target || !env.SLACK_BOT_TOKEN) return null;
-  if (store?.hasSlackNotification?.(job.id, key)) {
+  if (store?.hasSlackNotification && (await store.hasSlackNotification(job.id, key))) {
     return { skipped: true, reason: 'duplicate', key };
   }
 
   const fetchImpl = env.SLACK_FETCH || fetch;
-  const result = await callSlackApi(
-    { ...env, SLACK_FETCH: fetchImpl },
-    'chat.postMessage',
-    {
-      ...target,
-      text: mentionSlackUser(text, job.slackThread?.userId),
-    }
-  );
+  const result = await callSlackApi({ ...env, SLACK_FETCH: fetchImpl }, 'chat.postMessage', {
+    ...target,
+    text: mentionSlackUser(text, job.slackThread?.userId),
+  });
 
   if (!result?.ok) {
     return {
@@ -325,7 +325,7 @@ export async function notifySlackJob(env, store, job, text, key) {
     };
   }
 
-  store?.recordSlackNotification?.(job.id, key);
+  await store?.recordSlackNotification?.(job.id, key);
   return {
     ok: true,
     key,
@@ -341,23 +341,25 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const stage = options.stage || job.status;
   const dedupeKey = options.dedupeKey || `job-status:${job.id}:${stage}`;
-  const existing = store?.getSlackJobStatusMessage?.(job.id);
+  const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id) : null;
   if (existing?.messageTs && existing.stage === stage && options.skipDuplicate !== false) {
     return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existing };
   }
 
-  const progress = store?.recordAgentRunEvent?.({
-    publishingJobId: job.id,
-    slackSessionId: job.slackSessionId || null,
-    agentRunId: options.agentRunId || null,
-    type: options.type || 'job_progress',
-    stage,
-    text: options.text || stageLabel(stage, job),
-    status: options.status || job.status || 'running',
-    dedupeKey,
-    slackChannelId: target.channel,
-    slackThreadTs: target.thread_ts || null,
-  });
+  const progress = store?.recordAgentRunEvent
+    ? await store.recordAgentRunEvent({
+        publishingJobId: job.id,
+        slackSessionId: job.slackSessionId || null,
+        agentRunId: options.agentRunId || null,
+        type: options.type || 'job_progress',
+        stage,
+        text: options.text || stageLabel(stage, job),
+        status: options.status || job.status || 'running',
+        dedupeKey,
+        slackChannelId: target.channel,
+        slackThreadTs: target.thread_ts || null,
+      })
+    : null;
 
   const blocks = buildJobStatusBlocks(job, {
     stage,
@@ -390,13 +392,15 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
     };
   }
 
-  const message = store?.recordSlackJobStatusMessage?.(job.id, {
-    channel: result.channel || target.channel,
-    threadTs: target.thread_ts || null,
-    messageTs: result.ts || existing?.messageTs || null,
-    stage,
-    status: job.status,
-  });
+  const message = store?.recordSlackJobStatusMessage
+    ? await store.recordSlackJobStatusMessage(job.id, {
+        channel: result.channel || target.channel,
+        threadTs: target.thread_ts || null,
+        messageTs: result.ts || existing?.messageTs || null,
+        stage,
+        status: job.status,
+      })
+    : null;
   return {
     ok: true,
     key: dedupeKey,
