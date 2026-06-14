@@ -41,7 +41,7 @@ env:
   KUBECTL_VERSION: v1.35.2
   KUBE_NAMESPACE: pages-manager-preview
   KUSTOMIZE_OVERLAY: k8s/overlays/pages-manager-preview
-  NODE_IMAGE: xdclaw-hub-registry.cn-shanghai.cr.aliyuncs.com/public/library/node:22-bookworm-slim
+  NODE_IMAGE: node:22-bookworm-slim
   PLATFORM: linux/amd64
 
 jobs:
