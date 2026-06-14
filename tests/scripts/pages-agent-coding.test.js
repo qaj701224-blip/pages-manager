@@ -67,6 +67,7 @@ test('runs Coding Agent and writes only the allowed site files', async () => {
     assert.equal(calls[0].url, 'https://agent.example/v1/chat/completions');
     assert.equal(calls[0].request.headers.Authorization, 'Bearer code-key');
     assert.equal(requestBody.model, 'company-coder');
+    assert.equal('temperature' in requestBody, false);
     assert.deepEqual(requestBody.response_format, { type: 'json_object' });
     assert.match(html, /<h1>Alice<\/h1>/);
     assert.equal(siteJson.generatedBy, 'pages-agent-coding');

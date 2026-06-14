@@ -7,6 +7,12 @@ function required(value, name) {
   return value;
 }
 
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
 function trimTrailingSlash(value = '') {
   return String(value || '').replace(/\/+$/, '');
 }
@@ -128,19 +134,24 @@ export async function runCodingAgent(options = {}) {
   const context = contextFromEnv(env);
   validateContext(context);
 
+  const requestBody = {
+    model: context.modelName || undefined,
+    messages: buildCodingMessages(context),
+    max_tokens: Number(env.AGENT_CODE_MAX_OUTPUT_TOKENS || 4096),
+    response_format: { type: 'json_object' },
+  };
+  const temperature = optionalNumber(env.AGENT_CODE_TEMPERATURE || env.AGENT_MODEL_TEMPERATURE);
+  if (temperature !== undefined) {
+    requestBody.temperature = temperature;
+  }
+
   const response = await fetchImpl(companyChatCompletionsUrl(context.gatewayUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${context.apiKey}`,
     },
-    body: JSON.stringify({
-      model: context.modelName || undefined,
-      messages: buildCodingMessages(context),
-      temperature: 0.2,
-      max_tokens: Number(env.AGENT_CODE_MAX_OUTPUT_TOKENS || 4096),
-      response_format: { type: 'json_object' },
-    }),
+    body: JSON.stringify(requestBody),
   });
   const body = await readResponseJson(response);
   if (!response.ok) {
