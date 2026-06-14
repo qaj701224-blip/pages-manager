@@ -69,6 +69,14 @@ test('validateCallbackUrl rejects unsafe callback targets before token use', () 
     'https://gateway.test/internal/executor-callback'
   );
 
+  assert.equal(
+    validateCallbackUrl('https://gateway.test/publisher-test/internal/executor-callback', {
+      allowedOrigins: 'https://gateway.test',
+      hasToken: true,
+    }),
+    'https://gateway.test/publisher-test/internal/executor-callback'
+  );
+
   assert.throws(
     () =>
       validateCallbackUrl('https://attacker.test/internal/executor-callback', {
