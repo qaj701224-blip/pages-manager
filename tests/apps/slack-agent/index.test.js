@@ -78,6 +78,11 @@ describe('slack agent', () => {
     assert.equal(config.gatewayUrl, 'https://agent-gateway.example');
     assert.equal(config.apiKey, 'slack-agent-key');
 
+    const temperatureConfig = readSlackAgentConfig({
+      AGENT_MODEL_TEMPERATURE: '0.7',
+    });
+    assert.equal(temperatureConfig.temperature, 0.7);
+
     const legacyConfig = readSlackAgentConfig({
       SLACK_AGENT_MODEL_NAME: 'legacy-model',
       SLACK_AGENT_GATEWAY_URL: 'https://legacy-agent-gateway.example',
@@ -138,6 +143,7 @@ describe('slack agent', () => {
     assert.equal(calls[0].request.headers.Authorization, 'Bearer gateway-key');
     assert.equal(payload.model, 'company-agent');
     assert.equal(payload.messages.length, 2);
+    assert.equal('temperature' in payload, false);
     assert.deepEqual(payload.response_format, { type: 'json_object' });
     assert.equal(body.analysis.intent, 'append_requirement');
     assert.equal(body.analysis.modelProvider, 'company-agent');
