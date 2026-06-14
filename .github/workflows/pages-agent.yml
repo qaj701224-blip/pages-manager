@@ -244,12 +244,16 @@ jobs:
           {
             printf 'PublishingJob: %s\n\n' "$PUBLISHING_JOB_ID"
             printf 'Related issue: #%s\n\n' "$ISSUE_NUMBER"
+            printf 'Pipeline: user-site publishing\n'
+            printf 'Platform deployment: out of scope\n\n'
             printf 'Target: %s/%s\n' "$EMPLOYEE_SLUG" "$SITE_SLUG"
             printf 'Allowed path: %s\n' "$ALLOWED_PATH"
             printf 'Base ref: %s\n' "$BASE_REF"
             printf 'Base sha: %s\n' "$BASE_SHA"
             printf 'Agent mode: %s\n' "$AGENT_MODE"
             printf 'Index snapshot: %s\n' "$INDEX_SNAPSHOT_ID"
+            printf '\nBoundary: only %s/**\n' "$ALLOWED_PATH"
+            printf 'Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets in this PR.\n'
           } > .pages-artifacts/pr-body.md
 
           open_pr_json="$(gh pr list --head "$branch" --base "$BASE_REF" --state open --json number,url --jq '.[0] // empty')"
@@ -358,7 +362,11 @@ jobs:
           post_status "pending" "pages-generated-site-check" "Generated site validation dispatched"
           post_status "pending" "pages-user-flow" "Generated site publishing checks are running"
 
-          gh workflow run ci.yml --ref "$BRANCH_NAME"
+          gh workflow run ci.yml \
+            --ref "$BRANCH_NAME" \
+            -f baseSha="$BASE_SHA" \
+            -f headSha="$HEAD_SHA" \
+            -f allowedPath="$ALLOWED_PATH"
           gh workflow run site-check.yml \
             --ref "$BRANCH_NAME" \
             -f baseRef="$BASE_REF" \

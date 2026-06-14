@@ -1,10 +1,26 @@
 name: CI
 
+# Platform CI only. Generated user-site PRs under sites/** are validated by Site Check.
 on:
   workflow_dispatch:
+    inputs:
+      baseSha:
+        description: Optional immutable base SHA for generated site diff
+        required: false
+        type: string
+      headSha:
+        description: Optional expected head SHA for generated site diff
+        required: false
+        type: string
+      allowedPath:
+        description: Optional generated site root, for example sites/employee/site
+        required: false
+        type: string
   pull_request:
   push:
     branches: [master]
+    paths-ignore:
+      - 'sites/**'
 
 permissions:
   contents: read
@@ -14,17 +30,75 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect platform changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_BASE_SHA: ${{ inputs.baseSha }}
+          INPUT_HEAD_SHA: ${{ inputs.headSha }}
+          INPUT_ALLOWED_PATH: ${{ inputs.allowedPath }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          platform_changed=true
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            changed="$(git diff --name-only "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+            echo "$changed"
+            if [[ -n "$changed" ]] && ! grep -Ev '^(sites/|$)' <<<"$changed" >/dev/null; then
+              platform_changed=false
+            fi
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" &&
+            -n "${INPUT_BASE_SHA:-}" &&
+            -n "${INPUT_HEAD_SHA:-}" &&
+            -n "${INPUT_ALLOWED_PATH:-}" ]]; then
+            if [[ "$INPUT_BASE_SHA" =~ ^[0-9a-f]{40}$ &&
+              "$INPUT_HEAD_SHA" =~ ^[0-9a-f]{40}$ &&
+              "$INPUT_ALLOWED_PATH" =~ ^sites/[^/]+/[^/]+$ ]]; then
+              changed="$(git diff --name-only "$INPUT_BASE_SHA" "$INPUT_HEAD_SHA")"
+              echo "$changed"
+              site_only=true
+              while IFS= read -r path; do
+                [[ -z "$path" ]] && continue
+                case "$path" in
+                  "$INPUT_ALLOWED_PATH"/*) ;;
+                  *)
+                    site_only=false
+                    break
+                    ;;
+                esac
+              done <<< "$changed"
+              if [[ -n "$changed" && "$site_only" == "true" ]]; then
+                platform_changed=false
+              fi
+            fi
+          fi
+          echo "platform_changed=$platform_changed" >> "$GITHUB_OUTPUT"
+
+      - name: Skip platform CI for user-site-only changes
+        if: steps.changes.outputs.platform_changed != 'true'
+        run: echo "User-site-only PR; Site Check owns validation."
 
       - uses: pnpm/action-setup@v6
+        if: steps.changes.outputs.platform_changed == 'true'
         with:
           version: 9.15.0
 
       - uses: actions/setup-node@v6
+        if: steps.changes.outputs.platform_changed == 'true'
         with:
           node-version: 22.12.0
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm test
+      - if: steps.changes.outputs.platform_changed == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.changes.outputs.platform_changed == 'true'
+        run: pnpm lint
+      - if: steps.changes.outputs.platform_changed == 'true'
+        run: pnpm test
