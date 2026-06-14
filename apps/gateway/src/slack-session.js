@@ -137,7 +137,7 @@ function sessionInputFrom(body, intake, sessionKey, config, now) {
   };
 }
 
-export function selectSlackSession(store, body = {}, intake = {}, env = {}, options = {}) {
+export async function selectSlackSession(store, body = {}, intake = {}, env = {}, options = {}) {
   const now = options.now || new Date();
   const config = readSlackSessionConfig(env);
   const actor = slackActorFromBody(body);
@@ -145,7 +145,7 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
   const references = explicitReferences(intake.text || body.event?.text || body.text || '');
 
   if (references.sessionId) {
-    const byId = store.getSlackSession(references.sessionId);
+    const byId = await store.getSlackSession(references.sessionId);
     if (byId && (byId.teamId !== actor.teamId || byId.primarySlackUserId !== actor.slackUserId)) {
       return {
         forbidden: true,
@@ -157,7 +157,7 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
 
     if (byId) {
       return {
-        session: store.upsertSlackSession(
+        session: await store.upsertSlackSession(
           {
             ...byId,
             status: 'active',
@@ -167,7 +167,7 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
           },
           now
         ),
-        memory: store.getSessionMemory(references.sessionId),
+        memory: await store.getSessionMemory(references.sessionId),
         config,
         action: 'selected_explicit_session',
       };
@@ -175,8 +175,8 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
   }
 
   if (references.jobId) {
-    const linked = store.findIssueLinkByJobId(references.jobId);
-    const linkedSession = linked ? store.getSlackSession(linked.slackSessionId) : null;
+    const linked = await store.findIssueLinkByJobId(references.jobId);
+    const linkedSession = linked ? await store.getSlackSession(linked.slackSessionId) : null;
     if (linkedSession && (linkedSession.teamId !== actor.teamId || linkedSession.primarySlackUserId !== actor.slackUserId)) {
       return {
         forbidden: true,
@@ -187,7 +187,7 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
     }
 
     if (linkedSession) {
-      const session = store.upsertSlackSession(
+      const session = await store.upsertSlackSession(
         {
           ...linkedSession,
           status: 'active',
@@ -199,7 +199,7 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
       );
       return {
         session,
-        memory: store.getSessionMemory(session.id),
+        memory: await store.getSessionMemory(session.id),
         config,
         action: 'selected_linked_job',
       };
@@ -212,10 +212,10 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
     !['help', 'ping', 'status', 'cancel', 'empty'].includes(intake.action)
   ) {
     const dmThreadKey = `dm-thread:${surface.dmChannelId || 'unknown'}:${surface.threadTs}`;
-    const session = store.upsertSlackSession(sessionInputFrom(body, intake, dmThreadKey, config, now), now);
+    const session = await store.upsertSlackSession(sessionInputFrom(body, intake, dmThreadKey, config, now), now);
     return {
       session,
-      memory: store.getSessionMemory(session.id),
+      memory: await store.getSessionMemory(session.id),
       config,
       action: 'selected_dm_thread',
     };
@@ -223,10 +223,10 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
 
   if (surface.channelType !== 'im') {
     const threadKey = `thread:${surface.channelId || 'unknown'}:${surface.threadTs || surface.messageTs || 'unknown'}`;
-    const session = store.upsertSlackSession(sessionInputFrom(body, intake, threadKey, config, now), now);
+    const session = await store.upsertSlackSession(sessionInputFrom(body, intake, threadKey, config, now), now);
     return {
       session,
-      memory: store.getSessionMemory(session.id),
+      memory: await store.getSessionMemory(session.id),
       config,
       action: 'selected_thread',
     };
@@ -235,19 +235,19 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
   if (intake.shouldCreateJob) {
     const messageKey = surface.messageTs || body.event_id || body.trigger_id || String(now.getTime());
     const dmJobKey = `dm:${surface.dmChannelId || 'unknown'}:${messageKey}`;
-    const session = store.upsertSlackSession(sessionInputFrom(body, intake, dmJobKey, config, now), now);
+    const session = await store.upsertSlackSession(sessionInputFrom(body, intake, dmJobKey, config, now), now);
     return {
       session,
-      memory: store.getSessionMemory(session.id),
+      memory: await store.getSessionMemory(session.id),
       config,
       action: 'created_dm_job_session',
     };
   }
 
-  const userSessions = store.findSlackSessionsForUser(actor.teamId, actor.slackUserId);
+  const userSessions = await store.findSlackSessionsForUser(actor.teamId, actor.slackUserId);
   const activeSessions = userSessions.filter((session) => isActiveSession(session, now));
   if (activeSessions.length > 0 && ['help', 'ping', 'status', 'cancel', 'empty'].includes(intake.action)) {
-    const session = store.upsertSlackSession(
+    const session = await store.upsertSlackSession(
       {
         ...activeSessions[0],
         channelId: surface.channelId,
@@ -260,14 +260,14 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
     );
     return {
       session,
-      memory: store.getSessionMemory(session.id),
+      memory: await store.getSessionMemory(session.id),
       config,
       action: 'selected_active_dm_session',
     };
   }
 
   if (activeSessions.length === 1) {
-    const session = store.upsertSlackSession(
+    const session = await store.upsertSlackSession(
       {
         ...activeSessions[0],
         channelId: surface.channelId,
@@ -280,7 +280,7 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
     );
     return {
       session,
-      memory: store.getSessionMemory(session.id),
+      memory: await store.getSessionMemory(session.id),
       config,
       action: 'selected_active_dm_session',
     };
@@ -308,10 +308,10 @@ export function selectSlackSession(store, body = {}, intake = {}, env = {}, opti
   }
 
   const currentKey = `dm:${surface.dmChannelId || 'unknown'}:current`;
-  const session = store.upsertSlackSession(sessionInputFrom(body, intake, currentKey, config, now), now);
+  const session = await store.upsertSlackSession(sessionInputFrom(body, intake, currentKey, config, now), now);
   return {
     session,
-    memory: store.getSessionMemory(session.id),
+    memory: await store.getSessionMemory(session.id),
     config,
     action: 'selected_dm_current',
   };
