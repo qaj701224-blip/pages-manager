@@ -74,6 +74,12 @@ apply_secret_if_any callback-secrets \
   internal-callback-token "${INTERNAL_CALLBACK_TOKEN:-${PAGES_CALLBACK_TOKEN:-}}" \
   pages-worker-shared-secret "${PAGES_WORKER_SHARED_SECRET:-}"
 
+apply_secret_if_any database-secret \
+  database-url "${DATABASE_URL:-}"
+
+apply_secret_if_any redis-secret \
+  redis-url "${REDIS_URL:-}"
+
 kubectl apply -k "${ROOT}/k8s/base/pages-system"
 kubectl -n "${NAMESPACE}" delete deployment/slack-connector --ignore-not-found
 
@@ -97,6 +103,8 @@ patch_config_value() {
 
 patch_config_value PAGES_GATEWAY_PUBLIC_URL "${PAGES_GATEWAY_PUBLIC_URL:-}"
 patch_config_value PAGES_GATEWAY_CALLBACK_URL "${PAGES_GATEWAY_CALLBACK_URL:-${PAGES_GATEWAY_PUBLIC_URL:+${PAGES_GATEWAY_PUBLIC_URL%/}/internal/executor-callback}}"
+patch_config_value PAGES_STORE_BACKEND "${PAGES_STORE_BACKEND:-}"
+patch_config_value PAGES_QUEUE_BACKEND "${PAGES_QUEUE_BACKEND:-}"
 patch_config_value GITHUB_REPO "${GITHUB_REPO:-${GITHUB_REPOSITORY:-}}"
 patch_config_value GITHUB_ENTERPRISE_API_BASE_URL "${GITHUB_ENTERPRISE_API_BASE_URL:-${GITHUB_API_BASE_URL:-}}"
 patch_config_value PAGES_EXECUTOR_MODE "${PAGES_EXECUTOR_MODE:-}"
