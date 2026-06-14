@@ -83,6 +83,31 @@ MySQL 和 Redis 是 `pages-manager` 控制面的平台级依赖。
 - 本地 smoke、staging 和 production 都必须使用 MySQL + Redis；`FileBackedGatewayStore` 和内存 queue 只能作为历史过渡代码、单元测试 fixture 或一次性迁移输入。
 - 参考 `xdclaw` 的 DB 架构：gateway 是无状态多副本入口，持久元数据进外置 MySQL，in-flight flow / session lease / pub-sub 进 Redis；跨请求状态不得依赖文件、SQLite、进程内 Map / Set 或单 pod PVC。
 
+ACK preview 允许临时复用 xdclaw preview 的 RDS/Redis 实例来降低早期验证成本，
+但隔离边界必须落在 `pages-manager-preview` 自己的 K8s Secret、MySQL database
+和 Redis DB 上：
+
+```text
+pages-manager-preview/database-secret:
+  mysql-addr: <shared preview RDS host>:3306
+  mysql-user: <temporary shared user or dedicated pages-manager user>
+  mysql-password: <secret>
+  mysql-database: pages_manager_preview
+
+pages-manager-preview/redis-secret:
+  redis-url: redis://:<secret>@<shared preview redis host>:6379/11
+```
+
+不要把 `xdclaw-system/xdclaw-secrets` 直接注入 pages-manager Pod。临时复用
+共享 MySQL 用户只能用于 smoke；后续应改为只授权 `pages_manager_preview.*`
+的专用用户，或迁到 pages-manager 独立 RDS/Redis 实例。
+
+如果共享用户无法访问 `pages_manager_preview`，不要把
+`MYSQL_DATABASE` 改成 `xdclaw` 来绕过权限。当前可接受的无运维短期路径是
+在 `pages-manager-preview` namespace 内创建临时 MySQL / Redis StatefulSet，
+让 gateway 继续通过自己的 `database-secret` / `redis-secret` 访问；这只适合
+ACK smoke，不是长期生产数据库方案。
+
 ## 网络入口
 
 Slack HTTP Events / Interactivity：
@@ -125,7 +150,7 @@ K8s Secret 只保存引用和运行时注入，不写进 Git。
 Gateway 持久化：
 
 - 旧实现中的 `PAGES_GATEWAY_STORE_FILE=/data/pages-gateway-store.json` 和 `pages-gateway-data` PVC 必须迁出运行态。
-- MVP 运行态使用 `DATABASE_URL` 连接 MySQL，使用 `REDIS_URL` 连接 Redis。
+- MVP 运行态使用 `MYSQL_ADDR` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` 连接 MySQL，使用 `REDIS_URL` 连接 Redis。
 - MySQL 初始化必须通过 `pnpm db:setup` / `pnpm db:migrate` 或等价 K8s init / pre-start 流程执行 Drizzle migration；失败时 gateway 不允许 fallback 到文件 store。
 - `PublishingJob`、`SlackSession`、`SessionMemory`、`IssueLink`、AgentRun、GitHub webhook delivery、Review Agent comment、DeployRecord、JobEvent、AuditLog、RuntimeLogPointer、ExternalApiCallLog 都落 MySQL。
 - Slack / GitHub dedupe cache、session lease、worker queue、notifier queue、rate limit 和 console live update 落 Redis。
@@ -168,7 +193,7 @@ Actions callback 仍然回到 K8s 里的 `pages-gateway`。
 ## 下一步落地顺序
 
 1. 基于现有 `k8s/base/pages-system` 骨架继续收口 namespace、ConfigMap、Secret template、ServiceAccount、Deployment、Service。
-2. MySQL / Redis / Drizzle 平台基座已经进入 K8s 运行态：`DATABASE_URL`、`REDIS_URL` 由 Secret 注入，`PAGES_STORE_BACKEND=mysql`、`PAGES_QUEUE_BACKEND=redis` 由 ConfigMap 注入，gateway 不再挂载 PVC。
+2. MySQL / Redis / Drizzle 平台基座已经进入 K8s 运行态：`MYSQL_ADDR` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE`、`REDIS_URL` 由 Secret 注入，`PAGES_STORE_BACKEND=mysql`、`PAGES_QUEUE_BACKEND=redis` 由 ConfigMap 注入，gateway 不再挂载 PVC。
 3. 为 `apps/gateway`、`apps/slack-agent`、`apps/slack-notifier`、`apps/worker` 准备容器镜像构建方式。
 4. 本地用 kind/k3d 部署 `pages-system`。
 5. 用 tunnel 暴露 gateway 的 webhook / callback URL。
@@ -241,7 +266,7 @@ smoke control plane
 
 - `pages-gateway`、`pages-worker`、`slack-agent`、`slack-notifier` Deployment 已 rollout。
 - `slack-platform-secret`、`github-platform-secret`、`callback-secrets` 中存在必须 key，但不会打印 secret 值。
-- `database-secret/database-url` 与 `redis-secret/redis-url` 存在；测试阶段不迁移旧 file/PVC 数据。
+- `database-secret/mysql-addr`、`database-secret/mysql-user`、`database-secret/mysql-password`、`database-secret/mysql-database` 与 `redis-secret/redis-url` 存在；测试阶段不迁移旧 file/PVC 数据。
 - `pages-config` 中的 GitHub repo、workflow ref、base ref、gateway public/callback URL 等运行时值不是占位符。
 - `SLACK_EVENTS_PROCESSING_MODE`、`SLACK_SIGNATURE_REQUIRED`、`SLACK_SIGNATURE_MAX_SKEW_SECONDS` 等 Slack HTTP 入口配置已经写入 K8s ConfigMap。测试时仍以 K8s ConfigMap/Secret 和 pod env 为准，不能直接读取宿主机 `.env` 判断运行态。
 - 通过临时 `kubectl port-forward` 探测 `pages-gateway` 的 `/ready`，以及 `pages-worker`、`slack-agent`、`slack-notifier` 的 `/health`。`/ready` 会检查 gateway 当前 DB-backed store。
