@@ -29,7 +29,7 @@ export function validateCallbackUrl(callbackUrl, options = {}) {
     throw new Error(`PAGES_CALLBACK_URL origin is not allowed: ${url.origin}`);
   }
 
-  if (url.pathname !== '/internal/executor-callback') {
+  if (url.pathname !== '/internal/executor-callback' && !url.pathname.endsWith('/internal/executor-callback')) {
     throw new Error('PAGES_CALLBACK_URL must point to /internal/executor-callback');
   }
 
