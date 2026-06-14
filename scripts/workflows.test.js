@@ -230,8 +230,9 @@ test('ack preview deploy is manual and isolated from Cloudflare production deplo
   assert.match(workflow, /services=\(gateway worker slack-agent slack-notifier\)/);
   assert.match(workflow, /gateway\|worker\|slack-agent\|slack-notifier/);
   assert.match(workflow, /docker buildx build/);
-  assert.match(workflow, /--cache-from "type=registry,ref=\$cache_ref"/);
-  assert.match(workflow, /--cache-to "type=registry,ref=\$cache_ref,mode=max"/);
+  assert.doesNotMatch(workflow, /cache_ref/);
+  assert.doesNotMatch(workflow, /--cache-from/);
+  assert.doesNotMatch(workflow, /--cache-to/);
   assert.match(workflow, /--build-arg "NODE_IMAGE=\$NODE_IMAGE"/);
   assert.match(workflow, /kubectl kustomize "\$KUSTOMIZE_OVERLAY"/);
   assert.match(workflow, /if \[\[ "\$DEPLOY_COMPONENT" == "all" \]\]; then/);
