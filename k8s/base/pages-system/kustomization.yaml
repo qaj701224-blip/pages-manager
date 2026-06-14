@@ -4,7 +4,6 @@ namespace: pages-system
 resources:
   - serviceaccount.yaml
   - configmap.yaml
-  - gateway-pvc.yaml
   - gateway.yaml
   - worker.yaml
   - slack-agent.yaml
