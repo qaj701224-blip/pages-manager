@@ -1,0 +1,292 @@
+name: Deploy Pages Manager Platform ACK Preview
+
+# Platform CI/CD only: builds and deploys the pages-manager control plane to ACK.
+# User-triggered publishing stays on project-index.yml, pages-agent.yml, and pages-preview.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Platform component to build and deploy.
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - gateway
+          - worker
+          - slack-agent
+          - slack-notifier
+      imageTag:
+        description: Image tag. Defaults to UTC date plus short SHA.
+        required: false
+        type: string
+      workflowRef:
+        description: Runtime workflow ref used by pages-worker. Defaults to the dispatch ref.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-manager-ack-preview
+  cancel-in-progress: false
+
+env:
+  ACR_REGISTRY: xdclaw-hub-registry.cn-shanghai.cr.aliyuncs.com
+  ACR_PULL_REGISTRY: xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com
+  ACR_REPOSITORY_PREFIX: public/pages-manager
+  ACR_REGION: cn-shanghai
+  KUBECTL_VERSION: v1.35.2
+  KUBE_NAMESPACE: pages-manager-preview
+  KUSTOMIZE_OVERLAY: k8s/overlays/pages-manager-preview
+  NODE_IMAGE: xdclaw-hub-registry.cn-shanghai.cr.aliyuncs.com/public/library/node:22-bookworm-slim
+  PLATFORM: linux/amd64
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: ack-preview
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve image tag
+        shell: bash
+        env:
+          INPUT_COMPONENT: ${{ inputs.component || 'all' }}
+          INPUT_IMAGE_TAG: ${{ inputs.imageTag }}
+        run: |
+          set -euo pipefail
+          component="${INPUT_COMPONENT:-all}"
+          case "$component" in
+            all)
+              services=(gateway worker slack-agent slack-notifier)
+              ;;
+            gateway|worker|slack-agent|slack-notifier)
+              services=("$component")
+              ;;
+            *)
+              echo "component must be one of: all, gateway, worker, slack-agent, slack-notifier" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ -n "${INPUT_IMAGE_TAG:-}" ]]; then
+            image_tag="$INPUT_IMAGE_TAG"
+          else
+            image_tag="$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          fi
+          if [[ ! "$image_tag" =~ ^[A-Za-z0-9._-]{1,120}$ ]]; then
+            echo "imageTag contains unsupported characters" >&2
+            exit 1
+          fi
+          echo "IMAGE_TAG=$image_tag" >> "$GITHUB_ENV"
+          echo "DEPLOY_COMPONENT=$component" >> "$GITHUB_ENV"
+          printf 'DEPLOY_SERVICES=%s\n' "${services[*]}" >> "$GITHUB_ENV"
+
+      - name: Install pinned kubectl
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -fsSLo kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          rm -f kubectl kubectl.sha256
+          kubectl version --client=true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Configure kubeconfig
+        shell: bash
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          : "${KUBE_CONFIG_B64:?KUBE_CONFIG_B64 is required}"
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Print deployment tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker --version
+          docker buildx version
+          kubectl version --client=true --output=yaml
+
+      - name: Validate target namespace access
+        shell: bash
+        run: |
+          set -euo pipefail
+          checks=(
+            "get pods"
+            "list pods"
+            "watch pods"
+            "create pods/exec"
+            "get replicasets.apps"
+            "list replicasets.apps"
+            "watch replicasets.apps"
+            "create configmaps"
+            "get configmaps"
+            "patch configmaps"
+            "get deployments.apps"
+            "watch deployments.apps"
+            "create deployments.apps"
+            "patch deployments.apps"
+            "create serviceaccounts"
+            "get serviceaccounts"
+            "patch serviceaccounts"
+            "create services"
+            "get services"
+            "patch services"
+            "create persistentvolumeclaims"
+            "get persistentvolumeclaims"
+            "patch persistentvolumeclaims"
+            "create ingresses.networking.k8s.io"
+            "get ingresses.networking.k8s.io"
+            "patch ingresses.networking.k8s.io"
+          )
+
+          for check in "${checks[@]}"; do
+            read -r verb resource <<<"$check"
+            kubectl auth can-i "$verb" "$resource" -n "$KUBE_NAMESPACE"
+          done
+
+      - name: Configure ACR docker auth
+        shell: bash
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          ACR_INSTANCE_ID: ${{ secrets.ACR_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          scripts/acr-write-docker-config.sh
+
+      - name: Build and push platform control-plane images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read -r -a services <<<"$DEPLOY_SERVICES"
+          for service in "${services[@]}"; do
+            image="$ACR_REGISTRY/$ACR_REPOSITORY_PREFIX/$service:$IMAGE_TAG"
+            cache_ref="$ACR_REGISTRY/$ACR_REPOSITORY_PREFIX/$service:buildcache"
+            docker buildx build \
+              --platform "$PLATFORM" \
+              --push \
+              --cache-from "type=registry,ref=$cache_ref" \
+              --cache-to "type=registry,ref=$cache_ref,mode=max" \
+              -f Dockerfile.node-service \
+              --build-arg "SERVICE=$service" \
+              --build-arg "NODE_IMAGE=$NODE_IMAGE" \
+              -t "$image" \
+              .
+          done
+
+      - name: Render and apply platform ACK preview manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rendered="$RUNNER_TEMP/pages-manager-ack-preview.yaml"
+          kubectl kustomize "$KUSTOMIZE_OVERLAY" > "$rendered"
+
+          if [[ "$DEPLOY_COMPONENT" == "all" ]]; then
+            read -r -a services <<<"$DEPLOY_SERVICES"
+            for service in "${services[@]}"; do
+              image="$ACR_PULL_REGISTRY/$ACR_REPOSITORY_PREFIX/$service:$IMAGE_TAG"
+              sed -i "s#$ACR_PULL_REGISTRY/$ACR_REPOSITORY_PREFIX/$service:latest#$image#g" "$rendered"
+            done
+            kubectl apply -f "$rendered"
+          else
+            kubectl apply --dry-run=server -f "$rendered"
+            echo "Single-component deploy: validated overlay without applying unselected latest image placeholders."
+          fi
+
+      - name: Patch publishing workflow ref
+        shell: bash
+        env:
+          INPUT_WORKFLOW_REF: ${{ inputs.workflowRef }}
+        run: |
+          set -euo pipefail
+          if [[ "$DEPLOY_COMPONENT" != "all" && "$DEPLOY_COMPONENT" != "worker" ]]; then
+            echo "Skipping workflow ref patch for $DEPLOY_COMPONENT deploy."
+            exit 0
+          fi
+
+          workflow_ref="${INPUT_WORKFLOW_REF:-${GITHUB_REF_NAME}}"
+          if [[ ! "$workflow_ref" =~ ^[A-Za-z0-9._/-]{1,120}$ || "$workflow_ref" == *..* || "$workflow_ref" == /* || "$workflow_ref" == */ ]]; then
+            echo "workflowRef contains unsupported characters" >&2
+            exit 1
+          fi
+          kubectl -n "$KUBE_NAMESPACE" patch configmap pages-config \
+            --type merge \
+            -p "{\"data\":{\"PAGES_WORKFLOW_REF\":\"$workflow_ref\"}}"
+
+      - name: Roll out platform control-plane deployments
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r -a services <<<"$DEPLOY_SERVICES"
+          for service in "${services[@]}"; do
+            deployment="pages-$service"
+            container="pages-$service"
+            case "$service" in
+              slack-agent|slack-notifier)
+                deployment="$service"
+                container="$service"
+                ;;
+            esac
+
+            kubectl -n "$KUBE_NAMESPACE" set image "deployment/$deployment" \
+              "$container=$ACR_PULL_REGISTRY/$ACR_REPOSITORY_PREFIX/$service:$IMAGE_TAG"
+            kubectl -n "$KUBE_NAMESPACE" rollout restart "deployment/$deployment"
+            kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/$deployment" --timeout=300s
+          done
+
+      - name: Smoke platform health endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r -a services <<<"$DEPLOY_SERVICES"
+          for service in "${services[@]}"; do
+            deployment="pages-$service"
+            container="pages-$service"
+            port="8788"
+            case "$service" in
+              worker)
+                port="8790"
+                ;;
+              slack-agent)
+                deployment="slack-agent"
+                container="slack-agent"
+                port="8791"
+                ;;
+              slack-notifier)
+                deployment="slack-notifier"
+                container="slack-notifier"
+                port="8792"
+                ;;
+            esac
+
+            kubectl -n "$KUBE_NAMESPACE" exec "deployment/$deployment" -c "$container" -- \
+              node -e "void (async () => { const url='http://127.0.0.1:${port}/health'; const res=await fetch(url, { signal: AbortSignal.timeout(5000) }); if (!res.ok) throw new Error(url + ' -> ' + res.status); console.log(url + ' ok'); })().catch((error) => { console.error(error); process.exit(1); });"
+          done
+
+      - name: Roll back failed rollout
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r -a services <<<"${DEPLOY_SERVICES:-gateway worker slack-agent slack-notifier}"
+          for service in "${services[@]}"; do
+            deployment="pages-$service"
+            case "$service" in
+              slack-agent|slack-notifier)
+                deployment="$service"
+                ;;
+            esac
+            kubectl -n "$KUBE_NAMESPACE" rollout undo "deployment/$deployment" || true
+          done

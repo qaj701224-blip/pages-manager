@@ -1,0 +1,44 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pages-gateway
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - pages-manager-preview.xdclaw-dev.xindong.com
+      secretName: xdclaw-xindong-com-wildcard-tls
+  rules:
+    - host: pages-manager-preview.xdclaw-dev.xindong.com
+      http:
+        paths:
+          - path: /internal/executor-callback
+            pathType: Exact
+            backend:
+              service:
+                name: pages-gateway
+                port:
+                  number: 8788
+          - path: /integrations/github/webhook
+            pathType: Exact
+            backend:
+              service:
+                name: pages-gateway
+                port:
+                  number: 8788
+          - path: /integrations/slack/events
+            pathType: Exact
+            backend:
+              service:
+                name: pages-gateway
+                port:
+                  number: 8788
+          - path: /integrations/slack/interactions
+            pathType: Exact
+            backend:
+              service:
+                name: pages-gateway
+                port:
+                  number: 8788

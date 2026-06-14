@@ -171,3 +171,100 @@ test('deploy workflows inject all capability secrets from the key registry', () 
     );
   }
 });
+
+test('ack preview deploy is manual and isolated from Cloudflare production deploy', () => {
+  const workflow = readWorkflow('.github/workflows/deploy-ack-preview.yml');
+  const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
+
+  assert.match(workflow, /^name: Deploy Pages Manager Platform ACK Preview$/m);
+  assert.match(workflow, /Platform CI\/CD only: builds and deploys the pages-manager control plane to ACK/);
+  assert.match(workflow, /User-triggered publishing stays on project-index\.yml, pages-agent\.yml, and pages-preview\.yml/);
+  assert.match(triggers, /^ {2}workflow_dispatch:/m, 'ACK preview deploy is manually dispatchable');
+  assert.match(
+    triggers,
+    /component:[\s\S]*type: choice[\s\S]*- all[\s\S]*- gateway[\s\S]*- worker[\s\S]*- slack-agent[\s\S]*- slack-notifier/,
+  );
+  assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'ACK preview deploy has no non-manual trigger');
+  assert.match(workflow, /concurrency:\n {2}group: pages-manager-ack-preview\n {2}cancel-in-progress: false/);
+  assert.match(workflow, /runs-on: ubuntu-24\.04/);
+  assert.doesNotMatch(workflow, /runs-on: ubuntu-latest/);
+  assert.match(workflow, /KUBE_NAMESPACE: pages-manager-preview/);
+  assert.match(workflow, /KUSTOMIZE_OVERLAY: k8s\/overlays\/pages-manager-preview/);
+  assert.match(workflow, /ACR_REGISTRY: xdclaw-hub-registry\.cn-shanghai\.cr\.aliyuncs\.com/);
+  assert.match(workflow, /ACR_PULL_REGISTRY: xdclaw-hub-registry-vpc\.cn-shanghai\.cr\.aliyuncs\.com/);
+  assert.match(workflow, /ACR_REGION: cn-shanghai/);
+  assert.match(workflow, /KUBECTL_VERSION: v1\.35\.2/);
+  assert.match(
+    workflow,
+    /NODE_IMAGE: xdclaw-hub-registry\.cn-shanghai\.cr\.aliyuncs\.com\/public\/library\/node:22-bookworm-slim/,
+  );
+  assert.match(workflow, /name: Install pinned kubectl/);
+  assert.match(workflow, /dl\.k8s\.io\/release\/\$\{KUBECTL_VERSION\}\/bin\/linux\/amd64\/kubectl/);
+  assert.match(workflow, /sha256sum --check/);
+  assert.match(workflow, /name: Print deployment tool versions/);
+  assert.match(workflow, /docker buildx version/);
+  assert.match(workflow, /kubectl version --client=true --output=yaml/);
+  assert.match(workflow, /docker\/setup-buildx-action@v3/);
+  assert.match(workflow, /name: Configure kubeconfig[\s\S]*KUBE_CONFIG_B64/);
+  assert.match(
+    workflow,
+    /name: Validate target namespace access[\s\S]*name: Configure ACR docker auth/,
+    'K8s access is validated before ACR auth and image build',
+  );
+  assert.doesNotMatch(workflow, /aliyun\/setup-aliyun-cli-action/);
+  assert.match(workflow, /ALIYUN_ACCESS_KEY_ID/);
+  assert.match(workflow, /ALIYUN_ACCESS_KEY_SECRET/);
+  assert.match(workflow, /ACR_INSTANCE_ID/);
+  assert.match(workflow, /scripts\/acr-write-docker-config\.sh/);
+  assert.doesNotMatch(workflow, /aliyun cr GetAuthorizationToken/);
+  assert.doesNotMatch(workflow, /--output json/);
+  assert.doesNotMatch(workflow, /\.IsSuccess/);
+  assert.doesNotMatch(workflow, /docker login/);
+  assert.match(workflow, /name: Validate target namespace access/);
+  assert.match(workflow, /"create pods\/exec"/);
+  assert.match(workflow, /"create configmaps"/);
+  assert.match(workflow, /"create serviceaccounts"/);
+  assert.match(workflow, /"create ingresses\.networking\.k8s\.io"/);
+  assert.match(workflow, /"patch deployments\.apps"/);
+  assert.match(workflow, /"patch configmaps"/);
+  assert.match(workflow, /DEPLOY_COMPONENT=\$component/);
+  assert.match(workflow, /DEPLOY_SERVICES=%s\\n/);
+  assert.match(workflow, /case "\$component" in/);
+  assert.match(workflow, /services=\(gateway worker slack-agent slack-notifier\)/);
+  assert.match(workflow, /gateway\|worker\|slack-agent\|slack-notifier/);
+  assert.match(workflow, /docker buildx build/);
+  assert.match(workflow, /--cache-from "type=registry,ref=\$cache_ref"/);
+  assert.match(workflow, /--cache-to "type=registry,ref=\$cache_ref,mode=max"/);
+  assert.match(workflow, /--build-arg "NODE_IMAGE=\$NODE_IMAGE"/);
+  assert.match(workflow, /kubectl kustomize "\$KUSTOMIZE_OVERLAY"/);
+  assert.match(workflow, /if \[\[ "\$DEPLOY_COMPONENT" == "all" \]\]; then/);
+  assert.match(workflow, /kubectl apply -f "\$rendered"/);
+  assert.match(workflow, /kubectl apply --dry-run=server -f "\$rendered"/);
+  assert.match(workflow, /validated overlay without applying unselected latest image placeholders/);
+  assert.match(workflow, /if \[\[ "\$DEPLOY_COMPONENT" != "all" && "\$DEPLOY_COMPONENT" != "worker" \]\]; then/);
+  assert.match(workflow, /Skipping workflow ref patch for \$DEPLOY_COMPONENT deploy/);
+  assert.match(workflow, /read -r -a services <<<"\$DEPLOY_SERVICES"/);
+  assert.match(workflow, /slack-agent\|slack-notifier/);
+  assert.match(workflow, /kubectl -n "\$KUBE_NAMESPACE" set image "deployment\/\$deployment"/);
+  assert.match(workflow, /kubectl -n "\$KUBE_NAMESPACE" rollout restart "deployment\/\$deployment"/);
+  assert.match(workflow, /kubectl -n "\$KUBE_NAMESPACE" rollout status "deployment\/\$deployment" --timeout=300s/);
+  assert.match(workflow, /name: Smoke platform health endpoints/);
+  assert.match(workflow, /kubectl -n "\$KUBE_NAMESPACE" exec "deployment\/\$deployment" -c "\$container"/);
+  assert.match(workflow, /http:\/\/127\.0\.0\.1:\$\{port\}\/health/);
+  assert.match(workflow, /AbortSignal\.timeout\(5000\)/);
+  assert.doesNotMatch(workflow, /slack-connector/);
+  assert.doesNotMatch(workflow, /CLOUDFLARE_API_TOKEN/);
+  assert.doesNotMatch(workflow, /CF_API_TOKEN/);
+  assert.doesNotMatch(workflow, /PAGES_PREVIEW_TOKEN/);
+});
+
+test('ack preview README documents GitHub Actions kubeconfig generation, not GitLab runner setup', () => {
+  const readme = readWorkflow('k8s/overlays/pages-manager-preview/README.md');
+
+  assert.match(readme, /uses GitHub[\s\S]*Actions, GitHub environment secrets, and a `KUBE_CONFIG_B64` secret/);
+  assert.match(readme, /do not\s+reuse xdclaw's `gitlab-runner` namespace/);
+  assert.match(readme, /ca_file="\$\(mktemp\)"/);
+  assert.match(readme, /--certificate-authority="\$ca_file" \\\n\s+--embed-certs=true/);
+  assert.doesNotMatch(readme, /--certificate-authority-data/);
+  assert.doesNotMatch(readme, /xdclaw-ack-preview/);
+});

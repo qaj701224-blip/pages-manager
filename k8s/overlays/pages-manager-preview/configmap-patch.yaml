@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pages-config
+  namespace: pages-system
+data:
+  PAGES_PREVIEW_MODE: local_deploy
+  PAGES_WORKFLOW_REF: staging
+  PAGES_BASE_REF: staging
+  PAGES_GATEWAY_PUBLIC_URL: https://pages-manager-preview.xdclaw-dev.xindong.com
+  PAGES_GATEWAY_CALLBACK_URL: https://pages-manager-preview.xdclaw-dev.xindong.com/internal/executor-callback
+  PAGES_API: https://api-staging.workers.xd.team
+  PAGES_PREVIEW_IP_RESTRICT: 'true'
+  PAGES_PREVIEW_SITE_NAME_PATTERN: pm-{publishingJobId}
+  PAGES_PREVIEW_TOKEN_PATTERN: pages_{employeeSlug}@xd.com
+  GITHUB_REPO: xindong/pages-manager

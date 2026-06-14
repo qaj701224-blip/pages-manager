@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pages-manager-preview
+  labels:
+    app.kubernetes.io/name: pages-manager
+    app.kubernetes.io/part-of: pages-manager
+    pages.xd.team/environment: ack-preview

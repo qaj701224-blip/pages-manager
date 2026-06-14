@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: pages-manager-preview
+resources:
+  - ../../base/pages-system
+  - ingress.yaml
+images:
+  - name: pages-manager/gateway
+    newName: xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/pages-manager/gateway
+    newTag: latest
+  - name: pages-manager/worker
+    newName: xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/pages-manager/worker
+    newTag: latest
+  - name: pages-manager/slack-agent
+    newName: xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/pages-manager/slack-agent
+    newTag: latest
+  - name: pages-manager/slack-notifier
+    newName: xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/pages-manager/slack-notifier
+    newTag: latest
+patches:
+  - path: configmap-patch.yaml
+  - path: deployment-patch.yaml
