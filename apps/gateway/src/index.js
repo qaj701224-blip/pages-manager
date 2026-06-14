@@ -7,6 +7,8 @@ import {
   handleGetPublishingJobEvents,
   handleGithubWebhook,
   handleHealth,
+  handleListPublishingJobs,
+  handleReady,
   handleSlackEvents,
   handleSlackInteractions,
 } from './handlers.js';
@@ -18,7 +20,9 @@ export function createGatewayApp(options = {}) {
   const store = options.store || new MemoryGatewayStore();
 
   router.get('/health', handleHealth);
+  router.get('/ready', handleReady);
   router.post('/api/publishing-jobs', handleCreatePublishingJob);
+  router.get('/api/publishing-jobs', handleListPublishingJobs);
   router.get('/api/publishing-jobs/:jobId', handleGetPublishingJob);
   router.get('/api/publishing-jobs/:jobId/events', handleGetPublishingJobEvents);
   router.post('/integrations/slack/events', handleSlackEvents);
