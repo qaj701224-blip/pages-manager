@@ -1,0 +1,19 @@
+:80 {
+  encode gzip
+
+  @prefixed path {$PUBLIC_PATH_PREFIX} {$PUBLIC_PATH_PREFIX}/*
+  handle @prefixed {
+    uri strip_prefix {$PUBLIC_PATH_PREFIX}
+    reverse_proxy pages-gateway:8788
+  }
+
+  handle /health {
+    reverse_proxy pages-gateway:8788
+  }
+
+  handle /ready {
+    reverse_proxy pages-gateway:8788
+  }
+
+  respond "not found" 404
+}
