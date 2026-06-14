@@ -524,7 +524,7 @@ function looksLikeSlackFollowupText(text = '') {
 function isSlackFollowupIntent(analysis, intake) {
   if (analysis?.needsClarification) return false;
   if (FOLLOWUP_INTENTS.has(analysis?.intent)) return true;
-  if (analysis?.intent === 'create_or_update_site' && looksLikeSlackFollowupText(intake.text)) return true;
+  if (analysis?.intent) return CREATE_JOB_INTENTS.has(analysis.intent) && looksLikeSlackFollowupText(intake.text);
   return looksLikeSlackFollowupText(intake.text);
 }
 
@@ -1193,6 +1193,7 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
     intent: redactedSlackAgentAnalysis?.intent || 'modify_existing_preview',
     title: redactedSlackAgentAnalysis?.title || job.title,
     summary: followupSummary(job.summary, feedback),
+    previewUrl: null,
   };
   await store.updateSessionMemory(slackSession.id, {
     summary: followupSummary(sessionMemory.summary, feedback),
