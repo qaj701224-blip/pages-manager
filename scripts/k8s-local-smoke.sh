@@ -115,6 +115,8 @@ require_secret_key slack-platform-secret slack-signing-secret
 require_any_secret_key github-platform-secret github-app-installation-token github-token
 require_secret_key callback-secrets internal-callback-token
 require_secret_key callback-secrets pages-worker-shared-secret
+require_secret_key database-secret database-url
+require_secret_key redis-secret redis-url
 
 preview_mode="$(
   kubectl -n "${NAMESPACE}" get configmap pages-config \
@@ -153,10 +155,11 @@ require_runtime_config SLACK_EVENTS_PROCESSING_MODE
 require_runtime_config SLACK_SIGNATURE_REQUIRED
 require_runtime_config SLACK_SIGNATURE_MAX_SKEW_SECONDS
 
-probe_health() {
+probe_http() {
   local service_name="$1"
   local service_port="$2"
   local local_port="$3"
+  local path="$4"
   local log_file
   local pid
   local attempt
@@ -176,22 +179,22 @@ probe_health() {
       exit 1
     fi
 
-    if curl -fsS "http://127.0.0.1:${local_port}/health" >/dev/null 2>&1; then
-      log "health ok: ${service_name}"
+    if curl -fsS "http://127.0.0.1:${local_port}${path}" >/dev/null 2>&1; then
+      log "probe ok: ${service_name}${path}"
       return
     fi
 
     sleep 1
   done
 
-  echo "[k8s-smoke] health check timed out for ${service_name}" >&2
+  echo "[k8s-smoke] probe timed out for ${service_name}${path}" >&2
   sed -n '1,80p' "${log_file}" >&2
   exit 1
 }
 
-probe_health pages-gateway 8788 "${GATEWAY_LOCAL_PORT}"
-probe_health pages-worker 8790 "${WORKER_LOCAL_PORT}"
-probe_health slack-agent 8791 "${SLACK_AGENT_LOCAL_PORT}"
+probe_http pages-gateway 8788 "${GATEWAY_LOCAL_PORT}" /ready
+probe_http pages-worker 8790 "${WORKER_LOCAL_PORT}" /health
+probe_http slack-agent 8791 "${SLACK_AGENT_LOCAL_PORT}" /health
 
 log "pods summary"
 kubectl -n "${NAMESPACE}" get pods
