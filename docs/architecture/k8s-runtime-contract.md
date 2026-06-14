@@ -143,4 +143,3 @@ GitHub Actions runner 是执行器，不是控制面。
 - 绕过 gateway 状态机直接合并或发布 production。
 
 如果后续把 coding / build / preview executor 迁到 K8s Job，上层事件合同不变，只替换 executor adapter。
-

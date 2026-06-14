@@ -43,7 +43,6 @@ GitHub Actions 跑一次性 coding / site-check / preview executor
 local cluster
   └─ namespace: pages-system
        ├─ Deployment pages-gateway
-       │   └─ PVC pages-gateway-data (/data/pages-gateway-store.json)
        ├─ Deployment slack-agent
        ├─ Deployment pages-worker
        ├─ Deployment review-monitor-worker  (MVP 可先合在 gateway)
@@ -61,6 +60,27 @@ local cluster
 ```
 
 `pages-jobs` namespace 不属于当前必需项。它等到 K8s Job executor 开始实现时再启用。即使一次性 executor 还在 GitHub Actions，控制面、webhook、callback、Slack 回写仍必须在 `pages-system`。
+
+## MySQL / Redis 定位
+
+MySQL 和 Redis 是 `pages-manager` 控制面的平台级依赖。
+
+它们服务整条链路：
+
+| 组件                    | MySQL 用途                                                                                        | Redis 用途                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `pages-gateway`         | `PublishingJob`、Slack/GitHub delivery、session、issue link、review comment、deploy、audit 真相源 | Slack / GitHub 幂等短缓存、gateway lease、API rate limit、状态事件 fan-out |
+| `slack-agent`           | 读取 `SlackSession`、`SessionMemory`、`IssueLink`、`AgentRun` 上下文                              | session lease、模型调用并发控制、临时 provider thread state                |
+| `pages-worker`          | 读取 job 和 stage attempt，通过 gateway 合同推进状态                                              | worker queue、retry delay、dispatch lock                                   |
+| `review-monitor-worker` | 写 GitHub delivery、review comment、review run                                                    | webhook dedupe、review event queue                                         |
+| `slack-notifier`        | 读取 JobEvent / IssueLink，记录通知结果                                                           | notification queue、Slack rate-limit 协调                                  |
+
+原则：
+
+- MySQL 是长期真相源；Redis 只做短期协调、队列、lease、rate limit 和 pub/sub。
+- Redis flush 或 pod 重启不能导致 `PublishingJob`、Slack session、issue/PR 关联、deploy record 或 audit 丢失。
+- 本地 smoke、staging 和 production 都必须使用 MySQL + Redis；`FileBackedGatewayStore` 和内存 queue 只能作为历史过渡代码、单元测试 fixture 或一次性迁移输入。
+- 参考 `xdclaw` 的 DB 架构：gateway 是无状态多副本入口，持久元数据进外置 MySQL，in-flight flow / session lease / pub-sub 进 Redis；跨请求状态不得依赖文件、SQLite、进程内 Map / Set 或单 pod PVC。
 
 ## 网络入口
 
@@ -92,20 +112,23 @@ pages-gateway Service
 
 K8s Secret 只保存引用和运行时注入，不写进 Git。
 
-| Secret | 用途 | 可注入组件 |
-| --- | --- | --- |
-| `slack-platform-secret` | Slack bot token、signing secret、app metadata | `pages-gateway`、必要时 `slack-agent` / `slack-notifier` |
-| `model-provider-secret` | 公司 OpenAI-compatible 模型网关 key；`slack-agent-api-key` 注入 Slack Agent，`coding-agent-api-key` 预留给 Coding Agent / 后续 K8s Job | `slack-agent` |
-| `github-platform-secret` | GitHub App / callback / webhook secret | `pages-gateway`、`pages-worker` |
-| `cloudflare-preview-secret` | legacy `/deploy` preview owner marker；仅用于本地 smoke / 兼容旧 API | `pages-worker` 或 preview deploy executor |
-| `database-secret` | MySQL 连接 | `pages-gateway`、`slack-agent`、`pages-worker` |
-| `redis-secret` | Redis 连接 | `pages-gateway`、`slack-agent`、`pages-worker` |
+| Secret                      | 用途                                                                                                                                   | 可注入组件                                               |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `slack-platform-secret`     | Slack bot token、signing secret、app metadata                                                                                          | `pages-gateway`、必要时 `slack-agent` / `slack-notifier` |
+| `model-provider-secret`     | 公司 OpenAI-compatible 模型网关 key；`slack-agent-api-key` 注入 Slack Agent，`coding-agent-api-key` 预留给 Coding Agent / 后续 K8s Job | `slack-agent`                                            |
+| `github-platform-secret`    | GitHub App / callback / webhook secret                                                                                                 | `pages-gateway`、`pages-worker`                          |
+| `cloudflare-preview-secret` | legacy `/deploy` preview owner marker；仅用于本地 smoke / 兼容旧 API                                                                   | `pages-worker` 或 preview deploy executor                |
+| `database-secret`           | MySQL 连接                                                                                                                             | `pages-gateway`、`slack-agent`、`pages-worker`           |
+| `redis-secret`              | Redis 连接                                                                                                                             | `pages-gateway`、`slack-agent`、`pages-worker`           |
 
-Gateway 本地持久化：
+Gateway 持久化：
 
-- 当前本地 K8s 使用 `PAGES_GATEWAY_STORE_FILE=/data/pages-gateway-store.json`，并通过 `pages-gateway-data` PVC 保存 `PublishingJob`、`SlackSession`、`SessionMemory`、`IssueLink`、GitHub webhook delivery 和 Review Agent comment 的 JSON snapshot。
-- 这不是长期数据库方案；它只用于本地和早期服务器验证，避免 gateway pod 重启后 Slack 多轮会话、issue/PR 关联和 webhook 幂等全部丢失。
-- 正式平台仍按 [db-schema-v0.md](./db-schema-v0.md) 迁移到 MySQL 真相源。
+- 旧实现中的 `PAGES_GATEWAY_STORE_FILE=/data/pages-gateway-store.json` 和 `pages-gateway-data` PVC 必须迁出运行态。
+- MVP 运行态使用 `DATABASE_URL` 连接 MySQL，使用 `REDIS_URL` 连接 Redis。
+- MySQL 初始化必须通过 `pnpm db:setup` / `pnpm db:migrate` 或等价 K8s init / pre-start 流程执行 Drizzle migration；失败时 gateway 不允许 fallback 到文件 store。
+- `PublishingJob`、`SlackSession`、`SessionMemory`、`IssueLink`、AgentRun、GitHub webhook delivery、Review Agent comment、DeployRecord、JobEvent、AuditLog、RuntimeLogPointer、ExternalApiCallLog 都落 MySQL。
+- Slack / GitHub dedupe cache、session lease、worker queue、notifier queue、rate limit 和 console live update 落 Redis。
+- 如果已有 JSON snapshot，需要提供一次性迁移脚本导入 MySQL，迁移完成后 K8s manifest 不再挂载 gateway store PVC。
 
 禁止：
 
@@ -141,13 +164,14 @@ pages-preview.yml
 
 Actions callback 仍然回到 K8s 里的 `pages-gateway`。
 
-## 当前落地顺序
+## 下一步落地顺序
 
-1. 新增 `k8s/base/pages-system`，只放 namespace、ConfigMap、Secret template、ServiceAccount、Deployment、Service。
-2. 为 `apps/gateway`、`apps/slack-agent`、`apps/worker` 准备容器镜像构建方式。
-3. 本地用 kind/k3d 部署 `pages-system`。
-4. 用 tunnel 暴露 gateway 的 webhook / callback URL。
-5. 让 Slack Events / Interactivity、GitHub Actions callback 和 GitHub webhook 都打到同一个 gateway public URL。
+1. 基于现有 `k8s/base/pages-system` 骨架继续收口 namespace、ConfigMap、Secret template、ServiceAccount、Deployment、Service。
+2. MySQL / Redis / Drizzle 平台基座已经进入 K8s 运行态：`DATABASE_URL`、`REDIS_URL` 由 Secret 注入，`PAGES_STORE_BACKEND=mysql`、`PAGES_QUEUE_BACKEND=redis` 由 ConfigMap 注入，gateway 不再挂载 PVC。
+3. 为 `apps/gateway`、`apps/slack-agent`、`apps/worker` 准备容器镜像构建方式。
+4. 本地用 kind/k3d 部署 `pages-system`。
+5. 用 tunnel 暴露 gateway 的 webhook / callback URL。
+6. 让 Slack Events / Interactivity、GitHub Actions callback 和 GitHub webhook 都打到同一个 gateway public URL。
 7. 保持 `pages-agent.yml`、`site-check.yml`、`pages-preview.yml` 继续在 GitHub Actions 上运行，但 workflow 结果必须 callback K8s gateway，PR / Review / check 状态必须通过 GitHub webhook 进入 K8s gateway。
 
 当前仓库内已落地第一版骨架：
@@ -165,10 +189,13 @@ k8s/base/pages-system/
   serviceaccount.yaml
   configmap.yaml
   gateway.yaml
+  kustomization.yaml
   worker.yaml
   slack-agent.yaml
   secrets.template.yaml
 ```
+
+当前 K8s 运行态已经移除 gateway PVC 和 `PAGES_GATEWAY_STORE_FILE`，并通过 `PAGES_STORE_BACKEND=mysql` 使用 MySQL-backed runtime store。测试阶段不迁移旧 file store 数据。
 
 本地启动入口：
 
@@ -187,7 +214,7 @@ pnpm k8s:smoke
 
 - 默认 `pages-manager` cluster / `pages-system` namespace 只适合一个本地控制面绑定同一个 Slack App 的 Events / Interactivity Request URL。
 - 多个开发者同时跑本地控制面时，必须分别设置独立的 cluster 名、API port、storage 目录、Cloudflare tunnel、公网 callback URL 和 Slack App；不要让多套本地控制面争用同一个 Slack App Request URL。
-- `.env`、K8s Secret、PVC 数据和 gateway store 都按控制面实例隔离；不要把个人 `.env` 放到共享路径，也不要复用别人的 `PAGES_GATEWAY_PUBLIC_URL`。
+- `.env`、K8s Secret、MySQL database/schema、Redis namespace/key prefix 和集群持久卷都按控制面实例隔离；不要把个人 `.env` 放到共享路径，也不要复用别人的 `PAGES_GATEWAY_PUBLIC_URL`。
 - 如果只是多人从 Slack 使用同一个 bot，不需要启动多套控制面；所有用户都走同一个 `pages-gateway`，再由 gateway 按 Slack user/session 隔离。
 
 如果要按 `xdclaw` 的本地验证方式一次跑完整个非破坏性链路，使用：
@@ -212,9 +239,10 @@ smoke control plane
 
 - `pages-gateway`、`pages-worker`、`slack-agent` Deployment 已 rollout。
 - `slack-platform-secret`、`github-platform-secret`、`callback-secrets` 中存在必须 key，但不会打印 secret 值。
+- `database-secret/database-url` 与 `redis-secret/redis-url` 存在；测试阶段不迁移旧 file/PVC 数据。
 - `pages-config` 中的 GitHub repo、workflow ref、base ref、gateway public/callback URL 等运行时值不是占位符。
 - `SLACK_EVENTS_PROCESSING_MODE`、`SLACK_SIGNATURE_REQUIRED`、`SLACK_SIGNATURE_MAX_SKEW_SECONDS` 等 Slack HTTP 入口配置已经写入 K8s ConfigMap。测试时仍以 K8s ConfigMap/Secret 和 pod env 为准，不能直接读取宿主机 `.env` 判断运行态。
-- 通过临时 `kubectl port-forward` 探测 `pages-gateway`、`pages-worker`、`slack-agent` 的 `/health`。
+- 通过临时 `kubectl port-forward` 探测 `pages-gateway` 的 `/ready`，以及 `pages-worker`、`slack-agent` 的 `/health`。`/ready` 会检查 gateway 当前 DB-backed store。
 - 如果 `PAGES_PREVIEW_MODE=local_deploy`，还会要求 `cloudflare-preview-secret` 中存在 legacy preview owner marker。这个 marker 只用于本地 smoke，不代表长期员工隔离模型。
 
 本地推荐：
@@ -276,7 +304,7 @@ PAGES_K8S_LOG_TARGET=slack-agent pnpm k8s:logs
 pnpm k8s:port-forward
 ```
 
-`pnpm k8s:port-forward` 是给本地 tunnel 长期使用的 gateway 转发入口。`kubectl port-forward` 在 pod 重启或连接 broken pipe 时可能退出，所以脚本默认会自动重连；只有设置 `PAGES_K8S_PORT_FORWARD_ONCE=true` 时才会按一次性命令退出。GitHub Actions callback 和 GitHub webhook 都依赖这条转发链路，测试前要确认公网 tunnel 的 `/health` 能打到当前 gateway pod。
+`pnpm k8s:port-forward` 是给本地 tunnel 长期使用的 gateway 转发入口。`kubectl port-forward` 在 pod 重启或连接 broken pipe 时可能退出，所以脚本默认会自动重连；只有设置 `PAGES_K8S_PORT_FORWARD_ONCE=true` 时才会按一次性命令退出。GitHub Actions callback 和 GitHub webhook 都依赖这条转发链路，测试前要确认公网 tunnel 的 `/ready` 能打到当前 gateway pod 并通过 DB store 检查。
 
 `PAGES_GATEWAY_PUBLIC_URL` 必须是公网 HTTPS tunnel URL，用于 Slack Events、Slack Interactivity、GitHub webhook 和 GitHub Actions callback。`PAGES_GATEWAY_CALLBACK_URL` 应显式设置为 `${PAGES_GATEWAY_PUBLIC_URL}/internal/executor-callback`，本地 `k8s:up` 会在未单独配置时自动从 `PAGES_GATEWAY_PUBLIC_URL` 派生并写入 ConfigMap。
 
@@ -284,14 +312,14 @@ pnpm k8s:port-forward
 
 这部分参考 `xdclaw` 的本地验证方式，但保持 `pages-manager` 自己的命名、端口、namespace 和根目录 `.env` 约束。
 
-| 层级 | 命令 | 是否破坏性 | 验证目标 |
-| --- | --- | --- | --- |
-| 配置预检 | `pnpm k8s:check-env` | 否 | 根目录 `.env` 中是否具备 Slack / GitHub / callback 必需变量 |
-| 集群启动 | `pnpm k8s:cluster` | 否 | `pages-manager` 本地 kind/k3d cluster、context、StorageClass |
-| 控制面部署 | `pnpm k8s:up` | 否 | 构建镜像、导入本地集群、创建 Secret、应用 `pages-system` |
-| 控制面 smoke | `pnpm k8s:smoke` | 否 | Deployment rollout、Secret key、Service `/health` |
-| 非破坏性整链 | `pnpm k8s:validate` | 否 | 串起 check-env / cluster / up / smoke |
-| k3d Secret 持久化 | `pnpm k8s:verify-secret-persistence` | 是 | 验证 k3d control plane restart 与 stop/start 后 Secret 不丢 |
+| 层级              | 命令                                 | 是否破坏性 | 验证目标                                                     |
+| ----------------- | ------------------------------------ | ---------- | ------------------------------------------------------------ |
+| 配置预检          | `pnpm k8s:check-env`                 | 否         | 根目录 `.env` 中是否具备 Slack / GitHub / callback 必需变量  |
+| 集群启动          | `pnpm k8s:cluster`                   | 否         | `pages-manager` 本地 kind/k3d cluster、context、StorageClass |
+| 控制面部署        | `pnpm k8s:up`                        | 否         | 构建镜像、导入本地集群、创建 Secret、应用 `pages-system`     |
+| 控制面 smoke      | `pnpm k8s:smoke`                     | 否         | Deployment rollout、Secret key、gateway `/ready`、Service `/health` |
+| 非破坏性整链      | `pnpm k8s:validate`                  | 否         | 串起 check-env / cluster / up / smoke                        |
+| k3d Secret 持久化 | `pnpm k8s:verify-secret-persistence` | 是         | 验证 k3d control plane restart 与 stop/start 后 Secret 不丢  |
 
 `pnpm k8s:verify-secret-persistence` 只用于本地 k3d。它会创建临时 namespace/Secret，然后执行：
 
@@ -309,13 +337,13 @@ k3d cluster stop/start pages-manager
 
 本地 k3d 数据边界：
 
-| 场景 | 预期 |
-| --- | --- |
-| Pod 删除重建 | K8s Secret 和 local-path PVC 保留 |
-| Deployment rollout | K8s Secret 和 local-path PVC 保留 |
-| `docker restart k3d-pages-manager-server-0` | K8s Secret 保留 |
-| `k3d cluster stop/start pages-manager` | K8s Secret 保留 |
-| `k3d cluster delete pages-manager` | K8s 元数据删除，不能视作无损恢复 |
+| 场景                                        | 预期                              |
+| ------------------------------------------- | --------------------------------- |
+| Pod 删除重建                                | K8s Secret 和 local-path PVC 保留 |
+| Deployment rollout                          | K8s Secret 和 local-path PVC 保留 |
+| `docker restart k3d-pages-manager-server-0` | K8s Secret 保留                   |
+| `k3d cluster stop/start pages-manager`      | K8s Secret 保留                   |
+| `k3d cluster delete pages-manager`          | K8s 元数据删除，不能视作无损恢复  |
 
 ## 后续迁移
 

@@ -111,12 +111,12 @@ secret ref: pages-slack-platform-secret
 
 推荐拆分：
 
-| 组件 | 需要的 Slack secret | 不应该拿到 |
-| --- | --- | --- |
-| `pages-gateway` | `SLACK_SIGNING_SECRET`、当前内置 notifier 需要 `SLACK_BOT_TOKEN` | Git push token、Cloudflare deploy token、auto-merge token |
-| `slack-agent` | 可选 `SLACK_BOT_TOKEN`，用于拉 thread / channel 上下文；gateway service token | Git push token、Cloudflare deploy token、auto-merge token |
-| `slack-notifier` | `SLACK_BOT_TOKEN` | repo write token、Cloudflare deploy token、auto-merge token |
-| GitHub Actions executor / job containers | 不需要 Slack token | Slack bot token |
+| 组件                                     | 需要的 Slack secret                                                           | 不应该拿到                                                  |
+| ---------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `pages-gateway`                          | `SLACK_SIGNING_SECRET`、当前内置 notifier 需要 `SLACK_BOT_TOKEN`              | Git push token、Cloudflare deploy token、auto-merge token   |
+| `slack-agent`                            | 可选 `SLACK_BOT_TOKEN`，用于拉 thread / channel 上下文；gateway service token | Git push token、Cloudflare deploy token、auto-merge token   |
+| `slack-notifier`                         | `SLACK_BOT_TOKEN`                                                             | repo write token、Cloudflare deploy token、auto-merge token |
+| GitHub Actions executor / job containers | 不需要 Slack token                                                            | Slack bot token                                             |
 
 当前尚未拆出独立 `slack-notifier` 进程，因此 `pages-gateway` 可以临时注入 `SLACK_BOT_TOKEN` 来回写 job 进度。这个例外只适用于 K8s 控制面内部，不能把 Slack token 传给 GitHub Actions runner、coding agent、builder、site-check 或 deployer。
 
@@ -253,7 +253,7 @@ Slack message / slash command
   ↓
 pages-gateway 校验 signature + 幂等
   ↓
-写 SlackEvent + SlackMessageBatch(status=received)
+写 SlackEvent(processing_status=received) + SlackMessageBatch(status=pending)
   ↓
 enqueue slack-agent.analyze
   ↓
@@ -287,7 +287,9 @@ SlackEvent
   trigger_id
   slack_retry_num
   slack_retry_reason
-  status
+  processing_status
+  result_type
+  ignored_reason
   publishing_job_id
 ```
 

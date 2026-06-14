@@ -185,29 +185,35 @@ test/build notes
 <!-- pages-manager:job_id=job_xxx -->
 
 ## Request
+
 用户需求摘要。
 
 ## Target
+
 Employee: smoke
 Site: profile
 Allowed path: sites/smoke/profile
 
 ## Source
+
 Slack team:
 Slack channel:
 Slack thread:
 Requester:
 
 ## Requirements
+
 - ...
 
 ## Constraints
+
 - Preview only.
 - No production deploy.
 - Only modify allowed path.
 - Do not include secrets.
 
 ## Acceptance Criteria
+
 - Preview URL generated.
 - GitHub Review Agent has no blocking comments.
 ```
@@ -218,13 +224,13 @@ Requester:
 
 token 本身不进入 prompt、issue、PR、Slack 消息或生成页面。
 
-| 组件 | 可持有 | 禁止持有 |
-| --- | --- | --- |
-| Slack Agent | Slack read/reply 能力、gateway service token、模型供应商 API key | GitHub push token、Cloudflare token |
-| Coding Agent | 无 push token；只读 job context / repo workspace | Slack token、Cloudflare token、production secret |
-| Controlled committer | GitHub App installation token | Slack token、Cloudflare production token |
-| Preview deployer | staging `PAGES_PREVIEW_TOKEN` | Slack token、production deploy token |
-| Production deployer | production deploy token，需人工或受控 gate | Slack token、coding model secrets |
+| 组件                 | 可持有                                                           | 禁止持有                                         |
+| -------------------- | ---------------------------------------------------------------- | ------------------------------------------------ |
+| Slack Agent          | Slack read/reply 能力、gateway service token、模型供应商 API key | GitHub push token、Cloudflare token              |
+| Coding Agent         | 无 push token；只读 job context / repo workspace                 | Slack token、Cloudflare token、production secret |
+| Controlled committer | GitHub App installation token                                    | Slack token、Cloudflare production token         |
+| Preview deployer     | staging `PAGES_PREVIEW_TOKEN`                                    | Slack token、production deploy token             |
+| Production deployer  | production deploy token，需人工或受控 gate                       | Slack token、coding model secrets                |
 
 公司 Agent Gateway API key 必须按执行体分开注入。Slack Agent 只能读取 `SLACK_AGENT_API_KEY`，Coding Agent 只能读取 `AGENT_CODE_API_KEY`。任何 key 都不能进入 prompt、issue、PR、Slack 消息、`AgentRun` 明文字段、GitHub Actions log 或生成页面。
 
@@ -303,8 +309,8 @@ Slack progress notification
 MVP 可以先：
 
 - 使用规则分类 + 简单 Agent adapter。
-- 用 Markdown 文件保存 policy / prompt。
-- 用内存 store 跑本地 smoke。
+- policy / prompt 模板可以用 repo 内 Markdown 作为源文件，但每次运行绑定的 `PolicyVersion` / `PromptVersion`、hash 和 source ref 必须落 MySQL。
+- 用 MySQL + Redis + Drizzle 跑本地 smoke；内存 store 只能作为单元测试 fixture。
 - 用 GitHub Actions 跑 Coding Agent。
 
 长期需要：
