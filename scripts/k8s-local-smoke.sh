@@ -13,6 +13,7 @@ HEALTH_TIMEOUT_SECONDS="${PAGES_K8S_SMOKE_HEALTH_TIMEOUT_SECONDS:-30}"
 GATEWAY_LOCAL_PORT="${PAGES_K8S_SMOKE_GATEWAY_PORT:-18788}"
 WORKER_LOCAL_PORT="${PAGES_K8S_SMOKE_WORKER_PORT:-18790}"
 SLACK_AGENT_LOCAL_PORT="${PAGES_K8S_SMOKE_SLACK_AGENT_PORT:-18791}"
+SLACK_NOTIFIER_LOCAL_PORT="${PAGES_K8S_SMOKE_SLACK_NOTIFIER_PORT:-18792}"
 
 PORT_FORWARD_PIDS=()
 PORT_FORWARD_LOGS=()
@@ -64,6 +65,7 @@ wait_deployment() {
 wait_deployment pages-gateway
 wait_deployment pages-worker
 wait_deployment slack-agent
+wait_deployment slack-notifier
 
 secret_key_present() {
   local secret_name="$1"
@@ -112,6 +114,7 @@ require_any_secret_key() {
 log "checking required secret keys"
 require_secret_key slack-platform-secret slack-bot-token
 require_secret_key slack-platform-secret slack-signing-secret
+require_secret_key slack-platform-secret slack-notifier-shared-secret
 require_any_secret_key github-platform-secret github-app-installation-token github-token
 require_secret_key callback-secrets internal-callback-token
 require_secret_key callback-secrets pages-worker-shared-secret
@@ -154,6 +157,7 @@ require_runtime_config PAGES_GATEWAY_PUBLIC_URL
 require_runtime_config SLACK_EVENTS_PROCESSING_MODE
 require_runtime_config SLACK_SIGNATURE_REQUIRED
 require_runtime_config SLACK_SIGNATURE_MAX_SKEW_SECONDS
+require_runtime_config SLACK_NOTIFIER_URL
 
 probe_http() {
   local service_name="$1"
@@ -195,6 +199,7 @@ probe_http() {
 probe_http pages-gateway 8788 "${GATEWAY_LOCAL_PORT}" /ready
 probe_http pages-worker 8790 "${WORKER_LOCAL_PORT}" /health
 probe_http slack-agent 8791 "${SLACK_AGENT_LOCAL_PORT}" /health
+probe_http slack-notifier 8792 "${SLACK_NOTIFIER_LOCAL_PORT}" /health
 
 log "pods summary"
 kubectl -n "${NAMESPACE}" get pods
