@@ -16,7 +16,7 @@ MVP 的目标是先跑起来，但不能把未来一定会变成安全事故或�
 
 不能省：
 
-- DB 真相源。
+- DB 真相源：MVP 正式运行态必须使用 MySQL + Redis + Drizzle，不能用文件、SQLite、单 pod PVC、进程内 Map / Set 作为跨请求状态或业务真相源。
 - `PublishingJob` 状态机。
 - Slack 作为 MVP 主入口。
 - Slack 签名校验和事件幂等。
@@ -41,6 +41,7 @@ MVP 必须结合 Slack。同时，内部 API 也是正式入口，面向高级�
 
 - [db-schema-v0.md](./db-schema-v0.md)
 - [local-k8s-control-plane.md](./local-k8s-control-plane.md)
+- [dependency-version-baseline.md](./dependency-version-baseline.md)
 - [actions-workflow-contract.md](./actions-workflow-contract.md)
 - [github-review-agent-contract.md](./github-review-agent-contract.md)
 - [site-check.md](./site-check.md)
@@ -133,37 +134,39 @@ MVP 可以不做完整 `apps/frontend`，但至少要有 API 查询 job 状态�
 
 必须先落这些表或等价模型：
 
-| 模型 | MVP 用途 |
-| --- | --- |
-| `User` | 控制台 / Slack / Git actor 的内部身份 |
-| `Employee` | 员工归属主体 |
-| `ExternalIdentityBinding` | Slack/GitHub Enterprise user 到内部用户的绑定 |
-| `ServiceAccount` | CI / 内部系统 / 平台集成的 API 调用主体 |
-| `ApiToken` | Personal token / service token 的 hash、scope 和授权范围 |
-| `PolicyVersion` / `PromptVersion` | 公司规则、Agent prompt 的版本和 hash |
-| `SiteOwnerScope` | personal/team 归属域 |
-| `SiteProject` | 一个具体网站 |
-| `SiteAccessPolicy` | 网站内容访问策略 |
-| `SiteAdminGrant` | 管理权限 |
-| `PublishingJob` | 一次发布请求 |
-| `JobStage` | 阶段状态 |
-| `JobStageAttempt` | retry、callback、防迟到覆盖 |
-| `AgentRun` | Slack Agent 分类/摘要、coding agent 初次编码和按 review comment 修复的执行记录 |
-| `ProjectIndexSnapshot` | 本次 job 使用的项目索引快照 |
-| `ProjectIndexItem` | 索引快照内的文件、模板、站点和 review 上下文条目 |
-| `SlackEvent` | Slack event / command 幂等 |
-| `SlackMessageBatch` | Slack 原文、thread、摘要 |
-| `SlackSession` | 按 Slack user 隔离的常驻会话状态 |
-| `SessionMemory` | Slack 会话摘要、需求和 preview 反馈 |
-| `IssueLink` | Slack session、job、issue、PR、preview 的关联 |
-| `TrustedSlackBotPolicy` | SlackBot 来源和代发策略 |
-| `SiteCheckRun` | PR head SHA 上的 site-check / pages-site-policy 结果 |
-| `ReviewRun` | review 结果 |
-| `ReviewAgentComment` | GitHub Review Agent comment 归一化记录 |
-| `GitHubWebhookDelivery` | GitHub Enterprise webhook 幂等 |
-| `DeployRecord` | 部署记录 |
-| `CloudflareResourcePool` | 资源池抽象 |
-| `AuditLog` / `JobEvent` | 审计和进度事件 |
+| 模型                              | MVP 用途                                                                       |
+| --------------------------------- | ------------------------------------------------------------------------------ |
+| `User`                            | 控制台 / Slack / Git actor 的内部身份                                          |
+| `Employee`                        | 员工归属主体                                                                   |
+| `ExternalIdentityBinding`         | Slack/GitHub Enterprise user 到内部用户的绑定                                  |
+| `ServiceAccount`                  | CI / 内部系统 / 平台集成的 API 调用主体                                        |
+| `ApiToken`                        | Personal token / service token 的 hash、scope 和授权范围                       |
+| `PolicyVersion` / `PromptVersion` | 公司规则、Agent prompt 的版本和 hash                                           |
+| `SiteOwnerScope`                  | personal/team 归属域                                                           |
+| `SiteProject`                     | 一个具体网站                                                                   |
+| `SiteAccessPolicy`                | 网站内容访问策略                                                               |
+| `SiteAdminGrant`                  | 管理权限                                                                       |
+| `PublishingJob`                   | 一次发布请求                                                                   |
+| `JobStage`                        | 阶段状态                                                                       |
+| `JobStageAttempt`                 | retry、callback、防迟到覆盖                                                    |
+| `AgentRun`                        | Slack Agent 分类/摘要、coding agent 初次编码和按 review comment 修复的执行记录 |
+| `ProjectIndexSnapshot`            | 本次 job 使用的项目索引快照                                                    |
+| `ProjectIndexItem`                | 索引快照内的文件、模板、站点和 review 上下文条目                               |
+| `SlackEvent`                      | Slack event / command 幂等                                                     |
+| `SlackMessageBatch`               | Slack thread 脱敏消息快照、摘要和原文 hash / ref                               |
+| `SlackSession`                    | 按 Slack user 隔离的常驻会话状态                                               |
+| `SessionMemory`                   | Slack 会话摘要、需求和 preview 反馈                                            |
+| `IssueLink`                       | Slack session、job、issue、PR、preview 的关联                                  |
+| `TrustedSlackBotPolicy`           | SlackBot 来源和代发策略                                                        |
+| `SiteCheckRun`                    | PR head SHA 上的 site-check / pages-site-policy 结果                           |
+| `ReviewRun`                       | review 结果                                                                    |
+| `ReviewAgentComment`              | GitHub Review Agent comment 归一化记录                                         |
+| `GitHubWebhookDelivery`           | GitHub Enterprise webhook 幂等                                                 |
+| `DeployRecord`                    | 部署记录                                                                       |
+| `CloudflareResourcePool`          | 资源池抽象                                                                     |
+| `AuditLog` / `JobEvent`           | 审计和进度事件                                                                 |
+| `RuntimeLogPointer`               | job/stage/attempt 到 K8s / Actions 日志位置的关联                              |
+| `ExternalApiCallLog`              | Slack / GitHub / Cloudflare / model provider 调用摘要                          |
 
 可以先字段精简，但不能没有这些边界。
 
@@ -338,21 +341,21 @@ company
 
 ## MVP 可以简化
 
-| 主题 | MVP 简化 |
-| --- | --- |
-| Frontend | 可以先用 API + 简单状态页 |
-| Worker 拆分 | 先一个 `apps/worker`，内部按 task type 分发 |
-| Control plane runtime | 本地 K8s `pages-system`，后续服务器沿用同一套 manifests |
-| Runtime executor | 前期可以用 GitHub Actions runner；后续再换 K8s Job |
-| Coding agent | 第一轮可先用 placeholder page generator，先跑通真实 Preview URL；真实 Agent 后续替换生成 patch 的执行段 |
-| Project index | MVP 放在 `pages-manager` 内做独立组件 / workflow，不先拆独立 repo |
-| Namespace | MVP 先做 `pages-system`；`pages-jobs` / 每 job namespace 后置 |
-| Slack scope | App 权限先拉满，不在 MVP 内做最小 scope 收敛 |
-| Review Agent comment 处理 | MVP 先做 allowlist、幂等、分类和一轮修复，多轮策略后续增强 |
-| Production merge | 第一优先级不做 production merge，只做 Preview 自动闭环 |
-| Cloudflare resource pool | 先抽象数据模型，底层兼容旧 `/deploy` |
-| Team scope | 先 personal，schema 保留 team 扩展 |
-| 回滚 | 先记录 DeployRecord，手动回滚，后续自动化 |
+| 主题                      | MVP 简化                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Frontend                  | 可以先用 API + 简单状态页                                                                               |
+| Worker 拆分               | 先一个 `apps/worker`，内部按 task type 分发                                                             |
+| Control plane runtime     | 本地 K8s `pages-system`，后续服务器沿用同一套 manifests                                                 |
+| Runtime executor          | 前期可以用 GitHub Actions runner；后续再换 K8s Job                                                      |
+| Coding agent              | 第一轮可先用 placeholder page generator，先跑通真实 Preview URL；真实 Agent 后续替换生成 patch 的执行段 |
+| Project index             | MVP 放在 `pages-manager` 内做独立组件 / workflow，不先拆独立 repo                                       |
+| Namespace                 | MVP 先做 `pages-system`；`pages-jobs` / 每 job namespace 后置                                           |
+| Slack scope               | App 权限先拉满，不在 MVP 内做最小 scope 收敛                                                            |
+| Review Agent comment 处理 | MVP 先做 allowlist、幂等、分类和一轮修复，多轮策略后续增强                                              |
+| Production merge          | 第一优先级不做 production merge，只做 Preview 自动闭环                                                  |
+| Cloudflare resource pool  | 先抽象数据模型，底层兼容旧 `/deploy`                                                                    |
+| Team scope                | 先 personal，schema 保留 team 扩展                                                                      |
+| 回滚                      | 先记录 DeployRecord，手动回滚，后续自动化                                                               |
 
 ## MVP 不做
 
@@ -392,56 +395,56 @@ company
 
 这些不清楚就容易写错骨架：
 
-| 主题 | 要产出的内容 |
-| --- | --- |
-| Repo 结构 | `apps/`、`packages/`、`sites/`、`templates/`、`.github/workflows/`，以及后续 `k8s/` 目录树 |
-| DB schema v0 | [db-schema-v0.md](./db-schema-v0.md) 中的字段、索引、唯一约束和迁移顺序 |
-| Project index | [project-indexing.md](./project-indexing.md) 中的索引范围、触发、快照绑定和 agent context bundle |
-| 状态机 | `PublishingJob.status` 转移表、失败状态、retry 规则 |
-| Executor callback | [actions-workflow-contract.md](./actions-workflow-contract.md) 中的 callback URL、签名、`attempt_id`、迟到 callback 行为 |
-| GitHub Enterprise | GitHub App 权限、installation id、enterprise/api base URL、webhook secret、org/repo allowlist、Rulesets、Actions environments |
-| API idempotency | `Idempotency-Key`、唯一约束、重复请求返回已有 job |
-| Path allowlist | 哪些路径允许自动 PR 修改，哪些必须人工 review |
-| Secret 分层 | gateway、worker、committer、deployer、slack-notifier 各拿什么 secret |
+| 主题                | 要产出的内容                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repo 结构           | `apps/`、`packages/`、`sites/`、`templates/`、`.github/workflows/`，以及后续 `k8s/` 目录树                                                                       |
+| DB schema v0        | [db-schema-v0.md](./db-schema-v0.md) 中的字段、索引、唯一约束、SQL / Drizzle 实施计划和迁移顺序                                                                  |
+| Project index       | [project-indexing.md](./project-indexing.md) 中的索引范围、触发、快照绑定和 agent context bundle                                                                 |
+| 状态机              | `PublishingJob.status` 转移表、失败状态、retry 规则                                                                                                              |
+| Executor callback   | [actions-workflow-contract.md](./actions-workflow-contract.md) 中的 callback URL、签名、`attempt_id`、迟到 callback 行为                                         |
+| GitHub Enterprise   | GitHub App 权限、installation id、enterprise/api base URL、webhook secret、org/repo allowlist、Rulesets、Actions environments                                    |
+| API idempotency     | `Idempotency-Key`、唯一约束、重复请求返回已有 job                                                                                                                |
+| Path allowlist      | 哪些路径允许自动 PR 修改，哪些必须人工 review                                                                                                                    |
+| Secret 分层         | gateway、worker、committer、deployer、slack-notifier 各拿什么 secret                                                                                             |
 | Dependency baseline | Node、pnpm、MySQL、Redis、Docker base image 等版本锁定；K8s client 仅后续 executor 需要，参考 [dependency-version-baseline.md](./dependency-version-baseline.md) |
 
 ### P1: 发布闭环前必须写清
 
 这些决定 issue / PR / deploy 闭环能不能跑：
 
-| 主题 | 要产出的内容 |
-| --- | --- |
-| `site.json` schema | 必填字段、模板字段、链接、资源引用、访问策略 |
-| 站点命名 | [site-lifecycle-and-naming.md](./site-lifecycle-and-naming.md) 中的 `employee_slug`、`site_slug`、`site_name`、hostname 生成和冲突处理 |
-| Coding agent output | `workspace/generated/`、`workspace/patches/site.patch`、`report.json` 格式，以及 Actions artifact 名称 |
-| Controlled committer | patch 校验步骤、commit message、branch 命名、PR body 模板 |
-| Deterministic review | secret 扫描、文件大小、schema、构建、链接检查的失败码 |
-| DeployRecord | preview/production 字段、`repo_full_name`、`pr_number`、`merge_commit_sha`、`github_delivery_id`、幂等约束 |
-| Legacy deploy wrapper | [legacy-deploy-wrapper.md](./legacy-deploy-wrapper.md) 中现有 `/deploy` 如何被 gateway/deployer 调用，如何写审计 |
+| 主题                  | 要产出的内容                                                                                                                           |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `site.json` schema    | 必填字段、模板字段、链接、资源引用、访问策略                                                                                           |
+| 站点命名              | [site-lifecycle-and-naming.md](./site-lifecycle-and-naming.md) 中的 `employee_slug`、`site_slug`、`site_name`、hostname 生成和冲突处理 |
+| Coding agent output   | `workspace/generated/`、`workspace/patches/site.patch`、`report.json` 格式，以及 Actions artifact 名称                                 |
+| Controlled committer  | patch 校验步骤、commit message、branch 命名、PR body 模板                                                                              |
+| Deterministic review  | secret 扫描、文件大小、schema、构建、链接检查的失败码                                                                                  |
+| DeployRecord          | preview/production 字段、`repo_full_name`、`pr_number`、`merge_commit_sha`、`github_delivery_id`、幂等约束                             |
+| Legacy deploy wrapper | [legacy-deploy-wrapper.md](./legacy-deploy-wrapper.md) 中现有 `/deploy` 如何被 gateway/deployer 调用，如何写审计                       |
 
 ### P2: Slack 主入口前必须写清
 
 这些决定 Slack 主入口能不能稳定接入。P2 仍然属于 MVP，不是 MVP 之后：
 
-| 主题 | 要产出的内容 |
-| --- | --- |
-| Slack event routes | `/integrations/slack/events`、`commands`、`interactions` 请求/响应 |
-| SlackEvent | 非空 `dedupe_key`、`event_id`、`trigger_id`、状态、唯一约束、重投处理 |
-| Identity binding | `slack_user_id -> employee_id` 的管理员预配置流程 |
-| Slack summary prompt | 如何把 thread 转成结构化 intent、站点、变更摘要 |
-| SlackBot 来源 | `TrustedSlackBotPolicy`、另一个 bot 发来的消息如何记录，如何避免冒充用户 |
-| Slack notifier | thread update / reply 策略、失败重试、重复消息防护 |
+| 主题                 | 要产出的内容                                                             |
+| -------------------- | ------------------------------------------------------------------------ |
+| Slack event routes   | `/integrations/slack/events`、`commands`、`interactions` 请求/响应       |
+| SlackEvent           | 非空 `dedupe_key`、`event_id`、`trigger_id`、状态、唯一约束、重投处理    |
+| Identity binding     | `slack_user_id -> employee_id` 的管理员预配置流程                        |
+| Slack summary prompt | 如何把 thread 转成结构化 intent、站点、变更摘要                          |
+| SlackBot 来源        | `TrustedSlackBotPolicy`、另一个 bot 发来的消息如何记录，如何避免冒充用户 |
+| Slack notifier       | thread update / reply 策略、失败重试、重复消息防护                       |
 
 ### P3: MVP 后增强
 
 这些重要，但不应该卡 MVP 跑起来：
 
-| 主题 | 要产出的内容 |
-| --- | --- |
-| Review Agent 高级策略 | 多轮修复、comment 聚合、置信度、人工 override 和 trusted-auto 放行规则 |
-| trusted-auto | 自动合并条件、人工打断、回滚策略 |
-| Cloudflare Edge resource pool | 完整 Edge Worker + KV snapshot + R2 immutable deploy |
-| Preview 生命周期 | preview 域名、TTL、清理、权限 |
-| 完整控制台 | 列表、状态、审批、回滚、权限管理 |
-| 配额和告警 | 每员工站点数、job 并发、Slack/GitHub Enterprise/Cloudflare 失败告警 |
-| 灾备 | DB 备份、KV 重建、R2 manifest 重建、repo 恢复 |
+| 主题                          | 要产出的内容                                                           |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| Review Agent 高级策略         | 多轮修复、comment 聚合、置信度、人工 override 和 trusted-auto 放行规则 |
+| trusted-auto                  | 自动合并条件、人工打断、回滚策略                                       |
+| Cloudflare Edge resource pool | 完整 Edge Worker + KV snapshot + R2 immutable deploy                   |
+| Preview 生命周期              | preview 域名、TTL、清理、权限                                          |
+| 完整控制台                    | 列表、状态、审批、回滚、权限管理                                       |
+| 配额和告警                    | 每员工站点数、job 并发、Slack/GitHub Enterprise/Cloudflare 失败告警    |
+| 灾备                          | DB 备份、KV 重建、R2 manifest 重建、repo 恢复                          |

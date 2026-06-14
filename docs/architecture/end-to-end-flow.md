@@ -359,17 +359,18 @@ check_run / check_suite
 
 必须监听的 comment 类型：
 
-| 来源 | 事件 | 说明 |
-| --- | --- | --- |
-| PR review summary | `pull_request_review` | approve / changes requested / commented |
-| inline review comment | `pull_request_review_comment` | 指向文件、行号、diff hunk 的 comment |
-| PR conversation comment | `issue_comment` | Review Agent 可能把总结写在 PR conversation |
-| Review Agent check | `check_run` / `check_suite` | 如果 Review Agent 以 check 形式输出结果 |
+| 来源                    | 事件                          | 说明                                        |
+| ----------------------- | ----------------------------- | ------------------------------------------- |
+| PR review summary       | `pull_request_review`         | approve / changes requested / commented     |
+| inline review comment   | `pull_request_review_comment` | 指向文件、行号、diff hunk 的 comment        |
+| PR conversation comment | `issue_comment`               | Review Agent 可能把总结写在 PR conversation |
+| Review Agent check      | `check_run` / `check_suite`   | 如果 Review Agent 以 check 形式输出结果     |
 
 Review Agent comment 的处理规则：
 
 - 只信任配置允许的 GitHub App / bot login / check name。
 - 用 GitHub `comment_id` / `node_id` 做幂等，重复 webhook 不能重复创建反馈项。
+- Review Agent webhook 和 executor callback 没有全局顺序保证；如果 Review Agent comment 先于 `pr_created` callback 到达，gateway / DB 必须先记录 comment，等 `pr_created` 绑定 `pr_number` / `head_sha` 后回放已有非阻塞 review gate，再决定是否进入 `previewing`。
 - edited / deleted / dismissed comment 必须更新状态，不能只追加。
 - 不能把所有 comment 都当阻塞项，必须区分 `blocking | suggestion | note | unknown`。
 - 阻塞项进入 `changes_requested`；非阻塞建议可以记录但不阻塞 preview gate。
@@ -568,3 +569,19 @@ attempt_no = previous + 1
 ```
 
 旧 attempt 的迟到 callback 只能写审计，不能覆盖当前状态。
+
+## 乱序事件和补偿
+
+GitHub webhook、GitHub Actions callback、Slack retry 和 worker callback 都可能乱序到达。状态机必须以 `PublishingJob`、`JobStageAttempt`、`GitHubWebhookDelivery`、`ReviewAgentComment`、`SiteCheckRun` 和 `DeployRecord` 的持久化事实为准，而不是以请求到达顺序为准。
+
+必须支持的乱序场景：
+
+- Slack retry 在第一次事件仍处理时到达：`SlackEvent` 先按 `(team_id, dedupe_key)` 入库；重复请求只能更新 retry metadata 并返回已接收，不得重复调用 Slack Agent 或创建 issue。
+- 用户在 Slack Agent 总结 / issue 创建期间继续补充：追加到同一 `SlackSession` / `SlackMessageBatch`，由 session lease 串行处理；已经创建 job 的 follow-up 通过 `IssueLink` 进入 fix / append-comment，而不是另开任务。
+- `issue_comment` / `pull_request_review` 先到，但 `pages-agent.yml` 的 `pr_created` callback 后到：先记录 `ReviewAgentComment`；`pr_created` callback 绑定 PR 后回放同一 `repo_full_name + pr_number + head_sha` 的 review gate，非阻塞时进入 `previewing`。
+- `check_run` 先到，但 job 还没绑定 PR：先记录 delivery / check 摘要；绑定 PR 后按 head SHA 重新计算 `SiteCheckRun` 和 preview gate。
+- `preview_deployed` callback 重试到达：按 deploy id / preview URL / attempt id 幂等更新，不能重复发 Slack 稳定消息。
+- Slack `chat.update` / `chat.postMessage` 失败但 job 已推进：job 状态不能回滚；写 `ExternalApiCallLog` 和 `JobEvent`，由 notifier retry 或管理员 renotify 补偿。
+- 旧 attempt 的 `pr_created` / `reviewing` / `preview_deployed` callback 在新 attempt 后到：只能写 `AuditLog` / `JobEvent`，不能覆盖当前 job。
+
+正确补偿方式是由 K8s 控制面里的 gateway / worker / reconciler 基于 DB 状态回放 gate 或重启 retry attempt；不能由开发者本机 `gh` 轮询后手工补状态。

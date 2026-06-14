@@ -76,7 +76,7 @@ unique(repo_full_name, delivery_id)
 
 - `apps/gateway/src/github-review.js` 负责 allowlist、归一化和分类。
 - `apps/gateway/src/handlers.js` 的 `/integrations/github/webhook` 先记录 delivery，再处理 Review Agent 事件。
-- `MemoryGatewayStore` 先保存归一化 `ReviewAgentComment`，后续 DB 落地时保持同样唯一键。
+- 归一化 `ReviewAgentComment` 必须保存到 MySQL；当前 `MemoryGatewayStore` 只作为历史代码和测试 fixture，迁移时保持同样唯一键。
 - `pull_request_review` approved / LGTM 类 note 且无 open blocking / unknown comment 时，gateway 把 job 推进到 `previewing` 并调用 worker。
 - `pull_request_review_comment` / `issue_comment` 中的 blocking 内容会把 job 推进到 `changes_requested`。
 - 未命中 allowlist 的 bot 不影响 gate，不触发 preview 或 fix。
@@ -92,12 +92,12 @@ unique(repo_full_name, delivery_id)
 
 不同来源归一化为 `ReviewAgentComment`。
 
-| GitHub event | source_type | ID |
-| --- | --- | --- |
-| `pull_request_review` | `review_summary` | review node id |
-| `pull_request_review_comment` | `inline_comment` | comment node id |
-| `issue_comment` on PR | `issue_comment` | comment node id |
-| `check_run` output | `check_run` | check run node id + annotation index |
+| GitHub event                  | source_type      | ID                                   |
+| ----------------------------- | ---------------- | ------------------------------------ |
+| `pull_request_review`         | `review_summary` | review node id                       |
+| `pull_request_review_comment` | `inline_comment` | comment node id                      |
+| `issue_comment` on PR         | `issue_comment`  | comment node id                      |
+| `check_run` output            | `check_run`      | check run node id + annotation index |
 
 必填字段：
 
@@ -132,14 +132,14 @@ check:<check_run_id>:annotation:<path>:<line>:<hash(body)>
 
 同一个 GitHub comment 发生变化时，必须更新同一条 `ReviewAgentComment`。
 
-| GitHub action | ReviewAgentComment.status |
-| --- | --- |
-| created/submitted | `open` |
-| edited | 保持原 status，更新 body/body_hash |
-| deleted | `deleted` |
-| dismissed | `dismissed` |
-| outdated | `outdated` |
-| resolved | `resolved` |
+| GitHub action     | ReviewAgentComment.status          |
+| ----------------- | ---------------------------------- |
+| created/submitted | `open`                             |
+| edited            | 保持原 status，更新 body/body_hash |
+| deleted           | `deleted`                          |
+| dismissed         | `dismissed`                        |
+| outdated          | `outdated`                         |
+| resolved          | `resolved`                         |
 
 不得把 edited/deleted/dismissed 当作新 comment 追加。
 
@@ -156,12 +156,12 @@ unknown
 
 MVP 分类可以先用规则 + allowlist agent metadata：
 
-| classification | 规则 | 动作 |
-| --- | --- | --- |
-| `blocking` | review state 为 changes requested，或正文含明确必须修复项，或 check conclusion failure 且可定位到站点代码 | 进入 `changes_requested`，可触发 fix |
-| `suggestion` | 建议优化，但非必须 | 回写 Slack/issue，不阻塞 Preview gate |
-| `note` | 总结、说明、通过信息 | 记录和回写 |
-| `unknown` | 无法判断、来源格式变动、解析失败 | 等待人工确认，不自动修复 |
+| classification | 规则                                                                                                      | 动作                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `blocking`     | review state 为 changes requested，或正文含明确必须修复项，或 check conclusion failure 且可定位到站点代码 | 进入 `changes_requested`，可触发 fix  |
+| `suggestion`   | 建议优化，但非必须                                                                                        | 回写 Slack/issue，不阻塞 Preview gate |
+| `note`         | 总结、说明、通过信息                                                                                      | 记录和回写                            |
+| `unknown`      | 无法判断、来源格式变动、解析失败                                                                          | 等待人工确认，不自动修复              |
 
 `unknown` 的硬规则：
 
@@ -263,6 +263,36 @@ executor 不直接发 Slack。
 - approval mode allows merge path。
 - production approval policy passed。
 - deploy target is exact `merge_commit_sha` after merge。
+
+## 乱序到达合同
+
+GitHub webhook 和 executor callback 之间没有顺序保证。Review Agent 可能在 `pages-agent.yml` 已创建 PR 后立即评论，而 `pr_created` callback 可能因为 runner、tunnel、Ingress 或 gateway 重试稍后才到。
+
+必须按下面规则实现：
+
+```text
+Review Agent issue_comment / pull_request_review 先到
+  ↓
+gateway 记录 GitHubWebhookDelivery
+gateway 归一化并持久化 ReviewAgentComment
+gateway 暂时找不到 PublishingJob 或 PR link 时，不丢弃 comment
+  ↓
+pages-agent.yml pr_created callback 后到
+  ↓
+gateway 绑定 job.prNumber / job.headSha / IssueLink
+gateway 回放 repo + prNumber + headSha 下已有 ReviewAgentComment
+  ↓
+blocking / unknown 存在：不进入 Preview
+note / suggestion 且 required checks 通过：进入 previewing
+```
+
+实现要求：
+
+- `ReviewAgentComment` 唯一键必须独立于 `PublishingJob` 存在，至少由 `repo_full_name + github_comment_node_id` 或等价 normalized key 保证幂等。
+- `head_sha` 可以是 GitHub Review Agent 正文里的 7 到 40 位短 SHA；匹配 job 时允许与 40 位 head SHA 做前缀匹配，但持久化 job 仍保存完整 SHA。
+- `pr_created` callback 后必须主动计算一次 review gate，不能只等待后续新 review webhook。
+- 回放 review gate 时不能重复创建 `ReviewAgentComment`，也不能重复发送同一个 Slack 稳定消息；Slack 状态卡片可以更新到最新阶段。
+- 如果同一个 PR 被不同 job 复用，必须优先按 `head_sha` 选择 job；没有 head SHA 时选择当前 active job，并记录 audit 风险。
 
 ## Implementation Order
 
