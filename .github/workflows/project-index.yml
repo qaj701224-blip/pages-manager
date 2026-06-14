@@ -15,6 +15,10 @@ on:
         description: Allowed site path
         required: true
         type: string
+      baseRef:
+        description: Git ref used as the site generation base
+        required: false
+        type: string
       callbackUrl:
         description: Gateway callback URL
         required: true
@@ -32,6 +36,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.baseRef || github.ref_name }}
+
+      - name: Checkout trusted callback helper
+        uses: actions/checkout@v6
+        with:
+          path: .pages-trusted
+
+      - name: Copy trusted callback helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .pages-trusted/scripts/post-executor-callback.js "$RUNNER_TEMP/post-executor-callback.js"
+
+      - name: Validate index inputs
+        shell: bash
+        env:
+          BASE_REF: ${{ inputs.baseRef || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BASE_REF" =~ ^[A-Za-z0-9._/-]{1,120}$ || "$BASE_REF" == *..* || "$BASE_REF" == /* || "$BASE_REF" == */ ]]; then
+            echo "baseRef contains unsupported characters" >&2
+            exit 1
+          fi
 
       - name: Build placeholder project index
         shell: bash
@@ -39,12 +67,14 @@ jobs:
           PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
           SITE_PROJECT_ID: ${{ inputs.siteProjectId }}
           ALLOWED_PATH: ${{ inputs.allowedPath }}
+          BASE_REF: ${{ inputs.baseRef || github.ref_name }}
           ISSUE_NUMBER: ${{ inputs.issueNumber }}
-          HEAD_SHA: ${{ github.sha }}
           INDEX_SNAPSHOT_ID: idxsnap_${{ github.run_id }}
         run: |
           set -euo pipefail
           mkdir -p .pages-artifacts
+          HEAD_SHA="$(git rev-parse HEAD)"
+          export HEAD_SHA
           node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
 
@@ -52,6 +82,7 @@ jobs:
             publishingJobId: process.env.PUBLISHING_JOB_ID,
             siteProjectId: process.env.SITE_PROJECT_ID || '',
             allowedPath: process.env.ALLOWED_PATH,
+            baseRef: process.env.BASE_REF,
             issueNumber: process.env.ISSUE_NUMBER || '',
             headSha: process.env.HEAD_SHA,
             indexSnapshotId: process.env.INDEX_SNAPSHOT_ID,
@@ -96,10 +127,10 @@ jobs:
           PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
           PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
           PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
-        run: node scripts/post-executor-callback.js .pages-artifacts/callback.json
+        run: node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/callback.json
 
       - name: Callback gateway on failure
-        if: ${{ failure() }}
+        if: ${{ failure() && hashFiles('.pages-artifacts/callback.json') == '' }}
         shell: bash
         env:
           PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
@@ -124,4 +155,4 @@ jobs:
 
           writeFileSync('.pages-artifacts/callback-failed.json', `${JSON.stringify(data, null, 2)}\n`);
           NODE
-          node scripts/post-executor-callback.js .pages-artifacts/callback-failed.json
+          node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/callback-failed.json

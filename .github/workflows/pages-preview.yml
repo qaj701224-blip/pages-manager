@@ -19,6 +19,22 @@ on:
         description: SiteProject id
         required: false
         type: string
+      employeeSlug:
+        description: Employee slug
+        required: true
+        type: string
+      siteSlug:
+        description: Site slug
+        required: true
+        type: string
+      allowedPath:
+        description: Allowed site path
+        required: true
+        type: string
+      previewSiteName:
+        description: pages-manager preview site name
+        required: true
+        type: string
       previewHostname:
         description: Preview hostname
         required: false
@@ -40,6 +56,10 @@ jobs:
       PR_NUMBER: ${{ inputs.prNumber }}
       HEAD_SHA: ${{ inputs.headSha }}
       SITE_PROJECT_ID: ${{ inputs.siteProjectId }}
+      EMPLOYEE_SLUG: ${{ inputs.employeeSlug }}
+      SITE_SLUG: ${{ inputs.siteSlug }}
+      ALLOWED_PATH: ${{ inputs.allowedPath }}
+      PREVIEW_SITE_NAME: ${{ inputs.previewSiteName }}
       PREVIEW_HOSTNAME: ${{ inputs.previewHostname }}
     steps:
       - name: Checkout trusted callback helper
@@ -70,6 +90,23 @@ jobs:
             echo "headSha must be a full commit SHA" >&2
             exit 1
           fi
+          if [[ ! "$EMPLOYEE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "employeeSlug contains unsupported characters" >&2
+            exit 1
+          fi
+          if [[ ! "$SITE_SLUG" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+            echo "siteSlug contains unsupported characters" >&2
+            exit 1
+          fi
+          expected="sites/$EMPLOYEE_SLUG/$SITE_SLUG"
+          if [[ "$ALLOWED_PATH" != "$expected" ]]; then
+            echo "allowedPath must be $expected" >&2
+            exit 1
+          fi
+          if [[ ! "$PREVIEW_SITE_NAME" =~ ^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$ ]]; then
+            echo "previewSiteName must be a valid pages site name" >&2
+            exit 1
+          fi
           if [[ -n "$PREVIEW_HOSTNAME" && ! "$PREVIEW_HOSTNAME" =~ ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$ ]]; then
             echo "previewHostname contains unsupported characters" >&2
             exit 1
@@ -80,24 +117,85 @@ jobs:
           ref: ${{ inputs.headSha }}
           path: preview-worktree
 
-      - name: Build placeholder preview report
+      - name: Deploy preview through pages-manager
         shell: bash
         working-directory: preview-worktree
+        env:
+          PAGES_API: ${{ vars.PAGES_API || 'https://api-staging.workers.xd.team' }}
+          PAGES_DEPLOY_TOKEN: ${{ secrets.PAGES_PREVIEW_TOKEN || secrets.PAGES_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p .pages-artifacts
-          node --input-type=module <<'NODE'
-          import { writeFileSync } from 'node:fs';
+          if [[ -z "${PAGES_DEPLOY_TOKEN:-}" ]]; then
+            echo "PAGES_PREVIEW_TOKEN or PAGES_TOKEN secret is required for preview deploy" >&2
+            exit 1
+          fi
+          if [[ -z "${PAGES_API:-}" ]]; then
+            echo "PAGES_API is required for preview deploy" >&2
+            exit 1
+          fi
 
-          const previewUrl = process.env.PREVIEW_HOSTNAME
-            ? `https://${process.env.PREVIEW_HOSTNAME}`
-            : `https://preview-pr-${process.env.PR_NUMBER}.example.invalid`;
+          source_dir="$ALLOWED_PATH/src"
+          if [[ ! -d "$source_dir" ]]; then
+            source_dir="$ALLOWED_PATH"
+          fi
+          if [[ ! -d "$source_dir" ]]; then
+            echo "preview source directory not found: $source_dir" >&2
+            exit 1
+          fi
+
+          mapfile -d '' files < <(find "$source_dir" -type f -print0 | sort -z)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "preview source directory has no files: $source_dir" >&2
+            exit 1
+          fi
+
+          api="${PAGES_API%/}"
+          response_file="$(pwd)/.pages-artifacts/deploy-response.json"
+          curl_args=(-sS -X POST -H "X-Pages-Token: ${PAGES_DEPLOY_TOKEN}")
+          curl_args+=(-F "name=${PREVIEW_SITE_NAME}")
+          curl_args+=(-F "preset=static")
+          curl_args+=(-F "ip_restrict=true")
+
+          i=0
+          for file in "${files[@]}"; do
+            rel="${file#"$source_dir"/}"
+            curl_args+=(-F "file-${i}=@${file};filename=${rel}")
+            i=$((i + 1))
+          done
+
+          http_code="$(curl "${curl_args[@]}" -o "$response_file" -w "%{http_code}" "$api/deploy")"
+          if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+            echo "preview deploy failed with HTTP $http_code" >&2
+            cat "$response_file" >&2
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const deploy = JSON.parse(readFileSync('.pages-artifacts/deploy-response.json', 'utf8'));
+          if (!deploy.url) {
+            throw new Error('pages-manager deploy response did not include url');
+          }
           const data = {
             publishingJobId: process.env.PUBLISHING_JOB_ID,
             prNumber: process.env.PR_NUMBER,
             headSha: process.env.HEAD_SHA,
             siteProjectId: process.env.SITE_PROJECT_ID || '',
-            previewUrl,
+            employeeSlug: process.env.EMPLOYEE_SLUG,
+            siteSlug: process.env.SITE_SLUG,
+            allowedPath: process.env.ALLOWED_PATH,
+            previewSiteName: process.env.PREVIEW_SITE_NAME,
+            previewUrl: deploy.url,
+            deployResult: {
+              name: deploy.name,
+              url: deploy.url,
+              devUrl: deploy.devUrl || null,
+              preset: deploy.preset,
+              fileCount: deploy.fileCount,
+              ipRestrict: deploy.ipRestrict,
+            },
           };
 
           writeFileSync('.pages-artifacts/preview-report.json', `${JSON.stringify(data, null, 2)}\n`);
@@ -141,7 +239,7 @@ jobs:
         run: node "$RUNNER_TEMP/post-executor-callback.js" preview-worktree/.pages-artifacts/callback.json
 
       - name: Callback gateway on failure
-        if: ${{ failure() }}
+        if: ${{ failure() && hashFiles('preview-worktree/.pages-artifacts/callback.json') == '' }}
         shell: bash
         env:
           WORKFLOW_RUN_ID: ${{ github.run_id }}

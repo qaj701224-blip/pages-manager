@@ -33,9 +33,17 @@ pnpm test
 
 ## 分支与部署
 
-- `staging`：测试分支，push 后触发 `Deploy Staging`
-- `master`：生产分支，合并后不自动部署
+- `master`：生产真相源，feature / fix / ci / build 等项目类 PR 默认直接合入这里；合并后不自动部署
+- `staging`：共享 preview 分支，用于提前部署和验证指向 `master` 的项目类 PR；不是晋级来源
 - 生产部署必须人工在 GitHub Actions 中手动触发 `Deploy Production`
+
+分支整理规则：
+
+- 默认流向是 `feature branch -> PR to master -> sync to staging preview -> merge to master`
+- 不要从 `staging` 向 `master` 发起晋级 PR；`staging` 可能包含尚未合入 `master` 的其它 PR 代码
+- 如果项目类 PR 直接提交到 `master`，`Sync Master PR To Staging` workflow 必须在 PR ready 后把 PR head 提前 merge 到 `staging`，并显式 dispatch `Deploy Staging` 做预览验证；纯 `sites/**` 用户站点 PR 跳过这条同步
+- `staging` 被废弃 PR 污染时，由维护者确认没有活跃 preview 后重新对齐 `master`，再重新触发需要验证的 PR
+- 不要双向随意 cherry-pick 多个 workflow / k8s commit，避免把 preview-only 代码带入主线
 
 部署隔离要求：
 
@@ -48,7 +56,15 @@ pnpm test
 - staging 子 Worker 前缀：`pages-staging-`
 - production 子 Worker 前缀：`pages-`
 
+CI/CD 隔离要求：
+
+- 平台本体部署包括 `deploy-staging.yml`、`deploy.yml`、`deploy-ack-preview.yml`，只能构建 / 部署平台 Worker、ACK 镜像和 K8s Deployment
+- 用户站点发布执行器包括 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml`、`site-check.yml`，只能处理 `PublishingJob`、`sites/<employee>/<site>/`、生成 PR 和 preview
+- 用户站点发布 workflow 禁止使用 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、production Wrangler token 或 ACK namespace 权限
+- 自动生成的 `sites/**` PR 不得修改 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档
+
 改动 GitHub Actions 时，必须确认不会让 production 在 push/PR 时自动部署。
+详细分支和发布规则见 `docs/deployment-branch-policy.md`。
 
 ## 敏感信息规则
 

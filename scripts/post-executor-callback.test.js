@@ -49,7 +49,7 @@ test('postExecutorCallback posts JSON with optional callback token', async () =>
     }
   );
 
-  assert.deepEqual(result, { skipped: false, status: 200, body: { ok: true } });
+  assert.deepEqual(result, { skipped: false, status: 200, body: { ok: true }, attempts: 1 });
 });
 
 test('parseAllowedOrigins normalizes comma and whitespace separated origins', () => {
@@ -121,4 +121,74 @@ test('postExecutorCallback rejects gateway failures', async () => {
       ),
     /bad callback/
   );
+});
+
+test('postExecutorCallback retries transient network failures', async () => {
+  let calls = 0;
+  const sleeps = [];
+  const result = await postExecutorCallback(
+    { publishingJobId: 'job_123' },
+    {
+      callbackUrl: 'https://gateway.test/internal/executor-callback',
+      allowedOrigins: 'https://gateway.test',
+      maxAttempts: 3,
+      retryDelayMs: 5,
+      sleep(delay) {
+        sleeps.push(delay);
+        return Promise.resolve();
+      },
+      async fetchImpl() {
+        calls += 1;
+        if (calls < 3) throw new Error('fetch failed');
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+
+  assert.equal(calls, 3);
+  assert.deepEqual(sleeps, [5, 10]);
+  assert.deepEqual(result, { skipped: false, status: 200, body: { ok: true }, attempts: 3 });
+});
+
+test('postExecutorCallback retries transient HTTP failures but rejects deterministic failures', async () => {
+  let retryableCalls = 0;
+  const result = await postExecutorCallback(
+    { publishingJobId: 'job_123' },
+    {
+      callbackUrl: 'https://gateway.test/internal/executor-callback',
+      allowedOrigins: 'https://gateway.test',
+      maxAttempts: 2,
+      retryDelayMs: 0,
+      async fetchImpl() {
+        retryableCalls += 1;
+        if (retryableCalls === 1) {
+          return new Response(JSON.stringify({ error: 'temporary' }), { status: 502 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+
+  assert.equal(retryableCalls, 2);
+  assert.equal(result.attempts, 2);
+
+  let deterministicCalls = 0;
+  await assert.rejects(
+    () =>
+      postExecutorCallback(
+        { publishingJobId: 'job_123' },
+        {
+          callbackUrl: 'https://gateway.test/internal/executor-callback',
+          allowedOrigins: 'https://gateway.test',
+          maxAttempts: 3,
+          retryDelayMs: 0,
+          async fetchImpl() {
+            deterministicCalls += 1;
+            return new Response(JSON.stringify({ error: 'bad callback' }), { status: 400 });
+          },
+        }
+      ),
+    /bad callback/
+  );
+  assert.equal(deterministicCalls, 1);
 });

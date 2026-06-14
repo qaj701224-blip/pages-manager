@@ -1,0 +1,157 @@
+name: Sync Master PR To Staging
+
+# Keep staging as the preview validation branch for project PRs that target
+# master directly. User-site-only PRs under sites/** stay on the site workflow.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [master]
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: sync-master-pr-to-staging
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.inspect.outputs.skip }}
+      skipReason: ${{ steps.inspect.outputs.skipReason }}
+    steps:
+      - name: Inspect PR scope
+        id: inspect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$HEAD_REPO" != "$BASE_REPO" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skipReason=cross-repository PRs are not synced to staging" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skipReason=draft PRs are not synced until ready_for_review" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$HEAD_REF" == sites/* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skipReason=head branch is a generated user-site branch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
+          platform_changed=false
+          while IFS= read -r path; do
+            case "$path" in
+              "" | sites/*) ;;
+              *)
+                platform_changed=true
+                ;;
+            esac
+          done <<< "$files"
+
+          if [[ "$platform_changed" != "true" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skipReason=PR only touches sites/**" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "skipReason=" >> "$GITHUB_OUTPUT"
+
+      - name: Report skipped PR
+        if: steps.inspect.outputs.skip == 'true'
+        shell: bash
+        run: echo "Skipped staging sync: ${{ steps.inspect.outputs.skipReason }}"
+
+  sync:
+    needs: inspect
+    if: needs.inspect.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging
+        uses: actions/checkout@v6
+        with:
+          ref: staging
+          fetch-depth: 0
+
+      - name: Merge PR head into staging
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "pages-manager-bot"
+          git config user.email "pages-manager-bot@users.noreply.github.com"
+
+          git fetch --no-tags origin staging
+          git switch -C staging-sync origin/staging
+
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr/${PR_NUMBER}"
+          pr_ref="refs/remotes/origin/pr/${PR_NUMBER}"
+          actual_sha="$(git rev-parse "$pr_ref")"
+          if [[ "$actual_sha" != "$PR_HEAD_SHA" ]]; then
+            echo "PR head moved while sync was running. Expected $PR_HEAD_SHA, got $actual_sha." >&2
+            exit 1
+          fi
+
+          short_sha="$(git rev-parse --short "$pr_ref")"
+          if git merge-base --is-ancestor "$pr_ref" HEAD; then
+            echo "PR #${PR_NUMBER} (${short_sha}) is already included in staging."
+          elif ! git merge --no-ff "$pr_ref" -m "Auto-sync PR #${PR_NUMBER} to staging (${short_sha})"; then
+            git merge --abort || true
+            echo "PR #${PR_NUMBER} cannot be merged cleanly into staging. Rebase it on staging or resolve conflicts manually." >&2
+            exit 1
+          else
+            git push origin "HEAD:staging"
+          fi
+
+          deploy_head_sha="$(git rev-parse HEAD)"
+          dispatch_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run deploy-staging.yml --repo "$GITHUB_REPOSITORY" --ref staging -f component=all
+
+          run_id=""
+          run_url=""
+          for _ in {1..30}; do
+            run_line="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow deploy-staging.yml \
+              --branch staging \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId,createdAt,headSha,url \
+              --jq ".[] | select(.headSha == \"${deploy_head_sha}\" and .createdAt >= \"${dispatch_started_at}\") | [.databaseId, .url] | @tsv" \
+              | head -n 1)"
+            if [[ -n "$run_line" ]]; then
+              IFS=$'\t' read -r run_id run_url <<< "$run_line"
+              break
+            fi
+            sleep 5
+          done
+
+          if [[ -z "$run_id" ]]; then
+            echo "Deploy Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
+            exit 1
+          fi
+
+          echo "Waiting for Deploy Staging run: ${run_url}"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
