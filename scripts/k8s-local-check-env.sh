@@ -93,7 +93,11 @@ require_var GITHUB_REPO
 require_any "GITHUB_APP_INSTALLATION_TOKEN or GITHUB_TOKEN" GITHUB_APP_INSTALLATION_TOKEN GITHUB_TOKEN
 require_any "INTERNAL_CALLBACK_TOKEN or PAGES_CALLBACK_TOKEN" INTERNAL_CALLBACK_TOKEN PAGES_CALLBACK_TOKEN
 require_var PAGES_WORKER_SHARED_SECRET
-require_var DATABASE_URL
+if is_placeholder_value "${MYSQL_ADDR:-}" && (is_placeholder_value "${MYSQL_HOST:-}" || is_placeholder_value "${MYSQL_PORT:-}"); then
+  missing+=("MYSQL_ADDR or MYSQL_HOST+MYSQL_PORT")
+fi
+require_any "MYSQL_USER or MYSQL_USERNAME" MYSQL_USER MYSQL_USERNAME
+require_var MYSQL_DATABASE
 require_var REDIS_URL
 
 if [ "${PAGES_PREVIEW_MODE:-actions}" = "local_deploy" ]; then

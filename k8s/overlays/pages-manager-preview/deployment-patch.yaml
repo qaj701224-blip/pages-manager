@@ -48,11 +48,29 @@ spec:
                   name: slack-platform-secret
                   key: slack-notifier-shared-secret
                   optional: false
-            - name: DATABASE_URL
+            - name: MYSQL_ADDR
               valueFrom:
                 secretKeyRef:
                   name: database-secret
-                  key: database-url
+                  key: mysql-addr
+                  optional: false
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-user
+                  optional: false
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-password
+                  optional: false
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-database
                   optional: false
             - name: REDIS_URL
               valueFrom:
@@ -87,11 +105,29 @@ spec:
                   name: callback-secrets
                   key: pages-worker-shared-secret
                   optional: false
-            - name: DATABASE_URL
+            - name: MYSQL_ADDR
               valueFrom:
                 secretKeyRef:
                   name: database-secret
-                  key: database-url
+                  key: mysql-addr
+                  optional: false
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-user
+                  optional: false
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-password
+                  optional: false
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-database
                   optional: false
             - name: REDIS_URL
               valueFrom:
@@ -138,11 +174,29 @@ spec:
                   name: model-provider-secret
                   key: slack-agent-model-name
                   optional: false
-            - name: DATABASE_URL
+            - name: MYSQL_ADDR
               valueFrom:
                 secretKeyRef:
                   name: database-secret
-                  key: database-url
+                  key: mysql-addr
+                  optional: false
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-user
+                  optional: false
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-password
+                  optional: false
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-database
                   optional: false
             - name: REDIS_URL
               valueFrom:

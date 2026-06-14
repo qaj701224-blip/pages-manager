@@ -75,9 +75,15 @@ test('pages-manager preview overlay requires public callback and webhook auth se
   assert.match(deploymentPatch, /name: SLACK_AGENT_API_KEY[\s\S]*?key: slack-agent-api-key[\s\S]*?optional: false/);
   assert.match(deploymentPatch, /name: AGENT_GATEWAY_URL[\s\S]*?key: slack-agent-gateway-url[\s\S]*?optional: false/);
   assert.match(deploymentPatch, /name: AGENT_MODEL_NAME[\s\S]*?key: slack-agent-model-name[\s\S]*?optional: false/);
+  assert.match(deploymentPatch, /name: MYSQL_ADDR[\s\S]*?name: database-secret[\s\S]*?key: mysql-addr[\s\S]*?optional: false/);
+  assert.match(deploymentPatch, /name: MYSQL_USER[\s\S]*?name: database-secret[\s\S]*?key: mysql-user[\s\S]*?optional: false/);
   assert.match(
     deploymentPatch,
-    /name: DATABASE_URL[\s\S]*?name: database-secret[\s\S]*?key: database-url[\s\S]*?optional: false/
+    /name: MYSQL_PASSWORD[\s\S]*?name: database-secret[\s\S]*?key: mysql-password[\s\S]*?optional: false/
+  );
+  assert.match(
+    deploymentPatch,
+    /name: MYSQL_DATABASE[\s\S]*?name: database-secret[\s\S]*?key: mysql-database[\s\S]*?optional: false/
   );
   assert.match(deploymentPatch, /name: REDIS_URL[\s\S]*?name: redis-secret[\s\S]*?key: redis-url[\s\S]*?optional: false/);
 
@@ -97,7 +103,7 @@ test('pages-manager preview overlay requires public callback and webhook auth se
     )
   );
   assert.match(readme, /model-provider-secret:[\s\S]*slack-agent-api-key[\s\S]*slack-agent-gateway-url/);
-  assert.match(readme, /database-secret:[\s\S]*database-url/);
+  assert.match(readme, /database-secret:[\s\S]*mysql-addr[\s\S]*mysql-user[\s\S]*mysql-password[\s\S]*mysql-database/);
   assert.match(readme, /redis-secret:[\s\S]*redis-url/);
   assert.doesNotMatch(baseGateway, /PAGES_GATEWAY_STORE_FILE|pages-gateway-data|mountPath: \/data/);
   assert.match(baseGateway, /readinessProbe:[\s\S]*path: \/ready/);

@@ -118,7 +118,10 @@ require_secret_key slack-platform-secret slack-notifier-shared-secret
 require_any_secret_key github-platform-secret github-app-installation-token github-token
 require_secret_key callback-secrets internal-callback-token
 require_secret_key callback-secrets pages-worker-shared-secret
-require_secret_key database-secret database-url
+require_secret_key database-secret mysql-addr
+require_secret_key database-secret mysql-user
+require_secret_key database-secret mysql-password
+require_secret_key database-secret mysql-database
 require_secret_key redis-secret redis-url
 
 preview_mode="$(
