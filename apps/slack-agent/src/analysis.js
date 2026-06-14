@@ -111,7 +111,7 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     ].join(' '),
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
-      'status_query, cancel_request, close_session, clarify。',
+      'status_query, cancel_request, close_session, confirm_preview, clarify。',
     ].join(' '),
   ].join('\n');
 

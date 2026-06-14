@@ -1219,6 +1219,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
         assert.equal(body.job.id, created.jobId);
         assert.equal(body.job.status, 'fixing');
         assert.equal(body.job.prNumber, 31);
+        assert.equal(body.job.previewUrl, null);
         assert.match(body.job.summary, /Slack Follow-up/);
         assert.match(body.job.summary, /标题改成中文/);
         return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_fix_dispatched' } }), {
@@ -1235,8 +1236,123 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(followup.jobId, created.jobId);
   assert.match(followup.replyText, /同一个 PR/);
   assert.equal(jobBody.job.status, 'fixing');
+  assert.equal(jobBody.job.previewUrl, null);
   assert.equal(agentCalls.length, 1);
   assert.equal(workerStarts.length, 1);
+});
+
+test('Slack confirmation after preview does not dispatch another fix round', async () => {
+  const app = createGatewayApp();
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-confirm-create',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000120',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    })
+  );
+  const created = await json(createResponse);
+
+  for (const [stageResult, patch] of [
+    [
+      'issue_created',
+      {
+        issueNumber: 22,
+        issueUrl: 'https://github.example/org/pages-manager/issues/22',
+      },
+    ],
+    [
+      'pr_created',
+      {
+        issueNumber: 22,
+        branchName: 'sites/job-confirm-smoke-profile',
+        prNumber: 32,
+        prUrl: 'https://github.example/org/pages-manager/pull/32',
+        headSha: '2'.repeat(40),
+      },
+    ],
+    [
+      'preview_deployed',
+      {
+        previewUrl: 'https://preview.example.test/confirmed',
+      },
+    ],
+  ]) {
+    const response = await app.fetch(
+      new Request('http://gateway.test/internal/executor-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishingJobId: created.jobId,
+          stageResult,
+          ...patch,
+        }),
+      })
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const workerStarts = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-confirm-preview',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000010.000120',
+          text: '这个版本可以，帮我保留这个 preview。',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'confirm_preview',
+              summary: '已记录用户确认当前 preview 可以保留。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${created.jobId}`)));
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'agent_turn_recorded');
+  assert.equal(body.accepted, false);
+  assert.equal(body.jobId, undefined);
+  assert.equal(jobBody.job.status, 'preview_deployed');
+  assert.equal(jobBody.job.previewUrl, 'https://preview.example.test/confirmed');
+  assert.equal(workerStarts.length, 0);
+  assert.equal(app.store.jobs.size, 1);
 });
 
 test('Slack channel thread replies can continue an existing session without another mention', async () => {
