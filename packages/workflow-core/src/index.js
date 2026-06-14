@@ -56,7 +56,7 @@ const ALLOWED_TRANSITIONS = {
   branch_committed: ['pr_created', 'failed', 'cancelled'],
   pr_created: ['reviewing', 'previewing', 'failed', 'cancelled'],
   reviewing: ['changes_requested', 'fixing', 'previewing', 'failed', 'cancelled'],
-  changes_requested: ['fixing', 'failed', 'cancelled'],
+  changes_requested: ['fixing', 'previewing', 'failed', 'cancelled'],
   fixing: ['reviewing', 'failed', 'cancelled'],
   previewing: ['preview_deployed', 'failed', 'cancelled'],
   preview_deployed: ['fixing', 'approved', 'failed'],

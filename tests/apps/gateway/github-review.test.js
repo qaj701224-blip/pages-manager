@@ -65,6 +65,7 @@ test('classifies review agent comments conservatively', () => {
   assert.equal(classifyReviewAgentComment({ body: '建议优化一下视觉层级。' }), 'suggestion');
   assert.equal(classifyReviewAgentComment({ reviewState: 'approved', body: 'LGTM' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: "Didn't find any major issues." }), 'note');
+  assert.equal(classifyReviewAgentComment({ body: 'No blocking issues found. Site check passed.' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: 'Please inspect this custom output.' }), 'unknown');
 });
 
