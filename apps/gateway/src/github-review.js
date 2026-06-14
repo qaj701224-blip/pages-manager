@@ -6,6 +6,19 @@ const DEFAULT_REVIEW_AGENT_LOGINS = [
   'chatgpt-codex-connector[bot]',
 ];
 
+const NOTE_PATTERNS = [
+  /\bno blockers?\b/i,
+  /\bno blocking issues?\b/i,
+  /\bnot blocking\b/i,
+  /\bwithout blocking\b/i,
+  /\bapproved\b/i,
+  /\blgtm\b/i,
+  /\blooks good\b/i,
+  /\bno (major )?issues\b/i,
+  /\bdid(?: not|n't) find (any )?(major )?issues\b/i,
+  /\bpassed\b/i,
+];
+
 const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 
@@ -30,10 +43,7 @@ function parseAllowlistJson(value) {
 }
 
 export function reviewAgentLogins(env = {}) {
-  const configured = [
-    ...listFromCsv(env.GITHUB_REVIEW_AGENT_LOGINS),
-    ...parseAllowlistJson(env.GITHUB_REVIEW_AGENT_ALLOWLIST),
-  ];
+  const configured = [...listFromCsv(env.GITHUB_REVIEW_AGENT_LOGINS), ...parseAllowlistJson(env.GITHUB_REVIEW_AGENT_ALLOWLIST)];
   return new Set((configured.length ? configured : DEFAULT_REVIEW_AGENT_LOGINS).map((login) => login.toLowerCase()));
 }
 
@@ -77,18 +87,13 @@ export function classifyReviewAgentComment(input) {
   if (state === 'approved') return 'note';
   if (priority === 0 || priority === 1) return 'blocking';
   if (priority === 2 || priority === 3) return 'suggestion';
+  if (NOTE_PATTERNS.some((pattern) => pattern.test(body)) || /(通过|没问题|无阻塞)/.test(body)) {
+    return 'note';
+  }
   if (/\b(blocking|must fix|required|failing|failed|failure|security|critical|error)\b/i.test(body)) return 'blocking';
   if (/(必须|阻塞|失败|需要修复|安全风险|严重)/.test(body)) return 'blocking';
   if (/\b(suggestions?|nit|optional|consider)\b/i.test(body) || /(建议|可以考虑|优化建议)/.test(body)) {
     return 'suggestion';
-  }
-  if (
-    /\b(approved|lgtm|looks good|no (major )?issues|did(?: not|n't) find (any )?(major )?issues|passed)\b/i.test(
-      body
-    ) ||
-    /(通过|没问题|无阻塞)/.test(body)
-  ) {
-    return 'note';
   }
   if (!body.trim()) return 'note';
   return 'unknown';
