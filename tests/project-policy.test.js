@@ -45,7 +45,7 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
     workflow,
     /pull_request:[\s\S]*types: \[opened, synchronize, reopened, ready_for_review\][\s\S]*branches: \[master\]/,
   );
-  assert.match(workflow, /permissions:[\s\S]*actions: write[\s\S]*checks: read[\s\S]*contents: write/);
+  assert.match(workflow, /permissions:[\s\S]*actions: write[\s\S]*contents: write[\s\S]*pull-requests: read/);
   assert.doesNotMatch(workflow, /pull_request_target/);
   assert.match(workflow, /HEAD_REPO[\s\S]*BASE_REPO/);
   assert.match(workflow, /IS_DRAFT[\s\S]*draft PRs are not synced/);
