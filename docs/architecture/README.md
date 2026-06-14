@@ -32,6 +32,7 @@
 | [cloudflare-resource-pool.md](./cloudflare-resource-pool.md)           | Cloudflare 平台级资源池、KV/R2/Edge Worker、多站点隔离                                                                          |
 | [access-and-integrations.md](./access-and-integrations.md)             | Cloudflare、Slack bot、GitHub Enterprise、站点访问与管理权限                                                                    |
 | [slack-runtime.md](./slack-runtime.md)                                 | Slack bot 运行位置、事件入口、secret、幂等和回写                                                                                |
+| [slack-http-rich-workbench.md](./slack-http-rich-workbench.md)         | Slack HTTP 入口、富交互状态卡片、实时回写、独立 `slack-notifier` 和正式 K8s 多副本缺口                                          |
 | [slack-agent-session.md](./slack-agent-session.md)                     | 常驻 Slack Agent 的 session / memory / issue 续接、preview 不满意后的 fix round                                                 |
 | [agent-policy-and-prompts.md](./agent-policy-and-prompts.md)           | 公司规则、issue 规范、secret 权限和 Slack Agent / Coding Agent prompt 分层                                                      |
 | [slack-socket-mode-local-test.md](./slack-socket-mode-local-test.md)   | 已归档的 Slack Socket Mode 本地验证记录；当前运行方案不使用 Socket fallback                                                     |

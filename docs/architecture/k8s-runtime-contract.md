@@ -22,16 +22,18 @@ K8s 中的 pages-gateway
 
 这些组件是平台运行时，必须常驻在 K8s 的 `pages-system` namespace，不能靠开发者本机进程代替：
 
-| 组件 | 职责 |
-| --- | --- |
-| `pages-gateway` | Slack / GitHub / Internal API 入口、鉴权、幂等、状态机、审计、callback 接收 |
-| `slack-agent` | 按 Slack 用户和 session 隔离的多轮需求理解、澄清、续接判断 |
-| `pages-worker` | issue、workflow / job dispatch、preview gate、Cloudflare preview 调度 |
-| `review-monitor-worker` | 消费 GitHub webhook 中的 review / comment / check 事件并归一化 |
-| `slack-notifier` | 消费 `JobEvent`，用 Slack thread / Block Kit 回写状态 |
-| DB / queue | `PublishingJob`、`SlackSession`、`IssueLink`、`ReviewAgentComment`、幂等和 lease 的真相源 |
+| 组件                    | 职责                                                                                      |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| `pages-gateway`         | Slack / GitHub / Internal API 入口、鉴权、幂等、状态机、审计、callback 接收               |
+| `slack-agent`           | 按 Slack 用户和 session 隔离的多轮需求理解、澄清、续接判断                                |
+| `pages-worker`          | issue、workflow / job dispatch、preview gate、Cloudflare preview 调度                     |
+| `review-monitor-worker` | 消费 GitHub webhook 中的 review / comment / check 事件并归一化                            |
+| `slack-notifier`        | 消费 `JobEvent`，用 Slack thread / Block Kit 回写状态                                     |
+| DB / queue              | `PublishingJob`、`SlackSession`、`IssueLink`、`ReviewAgentComment`、幂等和 lease 的真相源 |
 
-当前实现可以暂时把 `review-monitor-worker` 和 `slack-notifier` 合在 `pages-gateway` 进程里，但它们仍属于 K8s 控制面，不能移到本机 `gh` 脚本或手动 watch。
+当前实现可以暂时把 `review-monitor-worker` 合在 `pages-gateway` 进程里；`slack-notifier` 已作为正式 K8s 路径的独立 Deployment，gateway 本地内置 adapter 只作为开发 fallback。无论是否拆进程，它们仍属于 K8s 控制面，不能移到本机 `gh` 脚本或手动 watch。
+
+Slack 富交互的正式运行合同见 [slack-http-rich-workbench.md](./slack-http-rich-workbench.md)：gateway 只负责接收 HTTP event、写状态和产出事件；独立 `slack-notifier` 负责 `chat.postMessage` / `chat.update`、Block Kit、重试、限流和 Slack API 调用日志。
 
 ## 一次性 executor 可以在哪
 
@@ -80,15 +82,15 @@ pages-gateway
 
 平台状态只从这些入口推进：
 
-| 事件 | 入口 | 状态来源 |
-| --- | --- | --- |
-| Slack 消息 | `POST /integrations/slack/events` | Slack signed HTTP request |
-| Slack 按钮 / 交互 | `POST /integrations/slack/interactions` | Slack signed HTTP request |
-| Internal API | `POST /api/publishing-jobs` 等 | gateway 鉴权后的 API request |
-| Issue 创建 / 更新 | `POST /integrations/github/webhook` | GitHub signed `issues` webhook |
-| PR / review / comment | `POST /integrations/github/webhook` | GitHub signed PR / review / comment webhook |
-| required check | `POST /integrations/github/webhook` | GitHub signed `check_run` / `check_suite` webhook |
-| executor 结果 | `POST /internal/executor-callback` | callback token / nonce 校验后的 payload |
+| 事件                  | 入口                                    | 状态来源                                          |
+| --------------------- | --------------------------------------- | ------------------------------------------------- |
+| Slack 消息            | `POST /integrations/slack/events`       | Slack signed HTTP request                         |
+| Slack 按钮 / 交互     | `POST /integrations/slack/interactions` | Slack signed HTTP request                         |
+| Internal API          | `POST /api/publishing-jobs` 等          | gateway 鉴权后的 API request                      |
+| Issue 创建 / 更新     | `POST /integrations/github/webhook`     | GitHub signed `issues` webhook                    |
+| PR / review / comment | `POST /integrations/github/webhook`     | GitHub signed PR / review / comment webhook       |
+| required check        | `POST /integrations/github/webhook`     | GitHub signed `check_run` / `check_suite` webhook |
+| executor 结果         | `POST /internal/executor-callback`      | callback token / nonce 校验后的 payload           |
 
 如果 GitHub webhook 或 executor callback 丢失，正确做法是：
 
