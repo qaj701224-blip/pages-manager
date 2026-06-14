@@ -75,8 +75,20 @@ apply_secret_if_any callback-secrets \
   internal-callback-token "${INTERNAL_CALLBACK_TOKEN:-${PAGES_CALLBACK_TOKEN:-}}" \
   pages-worker-shared-secret "${PAGES_WORKER_SHARED_SECRET:-}"
 
-apply_secret_if_any database-secret \
-  database-url "${DATABASE_URL:-}"
+mysql_addr_value="${MYSQL_ADDR:-${MYSQL_HOST:+${MYSQL_HOST}:${MYSQL_PORT:-3306}}}"
+mysql_user_value="${MYSQL_USER:-${MYSQL_USERNAME:-}}"
+mysql_database_value="${MYSQL_DATABASE:-pages_manager}"
+if [ -n "${mysql_addr_value}" ] || [ -n "${mysql_user_value}" ] || [ -n "${MYSQL_PASSWORD+x}" ] || [ -n "${MYSQL_DATABASE:-}" ]; then
+  kubectl -n "${NAMESPACE}" create secret generic database-secret \
+    --from-literal="mysql-addr=${mysql_addr_value}" \
+    --from-literal="mysql-user=${mysql_user_value}" \
+    --from-literal="mysql-password=${MYSQL_PASSWORD:-}" \
+    --from-literal="mysql-database=${mysql_database_value}" \
+    --dry-run=client \
+    -o yaml | kubectl apply -f -
+else
+  echo "Skipped secret database-secret; no matching environment variables are set."
+fi
 
 apply_secret_if_any redis-secret \
   redis-url "${REDIS_URL:-}"

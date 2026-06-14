@@ -20,6 +20,8 @@ apps/pages-skill/.xd-skill/
 ### Secrets & local env
 .env
 .ack-preview.env
+.ack_preview.env
+.ack*.env
 .staging.env
 .dev.vars
 .pages.json
