@@ -194,10 +194,7 @@ test('ack preview deploy is manual and isolated from Cloudflare production deplo
   assert.match(workflow, /ACR_PULL_REGISTRY: xdclaw-hub-registry-vpc\.cn-shanghai\.cr\.aliyuncs\.com/);
   assert.match(workflow, /ACR_REGION: cn-shanghai/);
   assert.match(workflow, /KUBECTL_VERSION: v1\.35\.2/);
-  assert.match(
-    workflow,
-    /NODE_IMAGE: xdclaw-hub-registry\.cn-shanghai\.cr\.aliyuncs\.com\/public\/library\/node:22-bookworm-slim/,
-  );
+  assert.match(workflow, /NODE_IMAGE: node:22-bookworm-slim/);
   assert.match(workflow, /name: Install pinned kubectl/);
   assert.match(workflow, /dl\.k8s\.io\/release\/\$\{KUBECTL_VERSION\}\/bin\/linux\/amd64\/kubectl/);
   assert.match(workflow, /sha256sum --check/);
