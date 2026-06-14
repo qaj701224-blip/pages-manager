@@ -8,6 +8,10 @@ on:
         required: true
         default: staging
         type: string
+      baseSha:
+        description: Optional immutable base SHA for generated site diff
+        required: false
+        type: string
       headSha:
         description: Optional expected head SHA
         required: false
@@ -37,6 +41,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_BASE_REF: ${{ inputs.baseRef }}
+          INPUT_BASE_SHA: ${{ inputs.baseSha }}
           INPUT_HEAD_SHA: ${{ inputs.headSha }}
           INPUT_ALLOWED_PATH: ${{ inputs.allowedPath }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -45,13 +50,21 @@ jobs:
           set -euo pipefail
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            base_ref="${INPUT_BASE_REF:-staging}"
-            if [[ ! "$base_ref" =~ ^[A-Za-z0-9._/-]{1,120}$ || "$base_ref" == *..* || "$base_ref" == /* || "$base_ref" == */ ]]; then
-              echo "baseRef contains unsupported characters" >&2
-              exit 1
+            if [[ -n "${INPUT_BASE_SHA:-}" ]]; then
+              if [[ ! "$INPUT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "baseSha must be a full commit SHA" >&2
+                exit 1
+              fi
+              base="$INPUT_BASE_SHA"
+            else
+              base_ref="${INPUT_BASE_REF:-staging}"
+              if [[ ! "$base_ref" =~ ^[A-Za-z0-9._/-]{1,120}$ || "$base_ref" == *..* || "$base_ref" == /* || "$base_ref" == */ ]]; then
+                echo "baseRef contains unsupported characters" >&2
+                exit 1
+              fi
+              git fetch origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+              base="origin/$base_ref"
             fi
-            git fetch origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref"
-            base="origin/$base_ref"
             head="${INPUT_HEAD_SHA:-HEAD}"
           else
             base="$PR_BASE_SHA"

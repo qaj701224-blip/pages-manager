@@ -147,6 +147,10 @@ jobs:
             exit 1
           fi
 
+          git fetch origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          base_sha="$(git rev-parse "origin/$BASE_REF")"
+          echo "BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+
       - name: Prepare agent branch
         shell: bash
         run: |
@@ -162,6 +166,11 @@ jobs:
           if [[ "$AGENT_MODE" == "fix" ]]; then
             git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
             git switch -C "$branch" "origin/$branch"
+            if ! git merge --no-edit "origin/$BASE_REF"; then
+              git merge --abort || true
+              echo "agent branch cannot be merged cleanly with $BASE_REF" >&2
+              exit 1
+            fi
           fi
 
       - name: Run Coding Agent
@@ -238,6 +247,7 @@ jobs:
             printf 'Target: %s/%s\n' "$EMPLOYEE_SLUG" "$SITE_SLUG"
             printf 'Allowed path: %s\n' "$ALLOWED_PATH"
             printf 'Base ref: %s\n' "$BASE_REF"
+            printf 'Base sha: %s\n' "$BASE_SHA"
             printf 'Agent mode: %s\n' "$AGENT_MODE"
             printf 'Index snapshot: %s\n' "$INDEX_SNAPSHOT_ID"
           } > .pages-artifacts/pr-body.md
@@ -352,6 +362,7 @@ jobs:
           gh workflow run site-check.yml \
             --ref "$BRANCH_NAME" \
             -f baseRef="$BASE_REF" \
+            -f baseSha="$BASE_SHA" \
             -f headSha="$HEAD_SHA" \
             -f allowedPath="$ALLOWED_PATH"
 
@@ -391,6 +402,7 @@ jobs:
             prNumber: process.env.PR_NUMBER,
             prUrl: process.env.PR_URL,
             baseRef: process.env.BASE_REF,
+            baseSha: process.env.BASE_SHA,
             headSha: process.env.HEAD_SHA,
             issueNumber: process.env.ISSUE_NUMBER,
             indexSnapshotId: process.env.INDEX_SNAPSHOT_ID,
