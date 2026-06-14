@@ -279,7 +279,7 @@ function shouldDispatchPreviewForReview(updatedJob, normalized, gate) {
   if (!updatedJob || updatedJob.previewUrl || !gate.canPreview) return false;
   if (!['review_summary', 'issue_comment'].includes(normalized.sourceType)) return false;
   if (!['note', 'suggestion'].includes(normalized.classification)) return false;
-  return ['pr_created', 'reviewing', 'previewing'].includes(updatedJob.status);
+  return ['pr_created', 'reviewing', 'changes_requested', 'previewing'].includes(updatedJob.status);
 }
 
 function shouldReportSiteCheckWaiting(updatedJob, normalized, gate) {
@@ -288,7 +288,7 @@ function shouldReportSiteCheckWaiting(updatedJob, normalized, gate) {
   if (gate.siteCheck?.passed) return false;
   if (!['review_summary', 'issue_comment'].includes(normalized.sourceType)) return false;
   if (!['note', 'suggestion'].includes(normalized.classification)) return false;
-  return ['pr_created', 'reviewing', 'previewing'].includes(updatedJob.status);
+  return ['pr_created', 'reviewing', 'changes_requested', 'previewing'].includes(updatedJob.status);
 }
 
 async function previewGateForPr(store, repoFullName, prNumber, options = {}) {
@@ -326,7 +326,7 @@ function repoFullNameForJob(job, env) {
 
 async function previewTriggerFromStoredReviews(store, job, env) {
   if (!job?.prNumber || job.previewUrl) return null;
-  if (!['pr_created', 'reviewing', 'previewing'].includes(job.status)) return null;
+  if (!['pr_created', 'reviewing', 'changes_requested', 'previewing'].includes(job.status)) return null;
 
   const repoFullName = repoFullNameForJob(job, env);
   if (!repoFullName) return null;
@@ -1517,12 +1517,7 @@ async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }
     } else {
       reviewAction = 'site_check_passed';
     }
-  } else if (
-    job &&
-    siteCheckRun.status === 'completed' &&
-    siteCheckRun.conclusion &&
-    siteCheckRun.conclusion !== 'success'
-  ) {
+  } else if (job && siteCheckRun.status === 'completed' && siteCheckRun.conclusion && siteCheckRun.conclusion !== 'success') {
     job = await moveJobToChangesRequestedForSiteCheck(store, job, fullHeadSha ? { headSha: fullHeadSha } : {});
     gate = await previewGateForPr(
       store,
@@ -1550,13 +1545,7 @@ async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }
       ].join(':'),
       skipDuplicate: false,
     });
-    slackNotification = await notifySlackJob(
-      env,
-      store,
-      job,
-      text,
-      `site-check:${reviewAction}:${siteCheckRun.checkRunNodeId}`
-    );
+    slackNotification = await notifySlackJob(env, store, job, text, `site-check:${reviewAction}:${siteCheckRun.checkRunNodeId}`);
   }
 
   return jsonResponse({

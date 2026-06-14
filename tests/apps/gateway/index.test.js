@@ -2481,6 +2481,112 @@ test('GitHub Review Agent blocking comment moves job to changes_requested', asyn
   assert.equal(body.job.status, 'changes_requested');
 });
 
+test('GitHub Review Agent approval can recover from changes_requested when gate is clear', async () => {
+  const app = createGatewayApp();
+  const headSha = 'd'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 27,
+    headSha,
+    idempotencyKey: 'api-review-recovered-preview',
+  });
+  const workerStarts = [];
+
+  const blockingResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-recover-blocking',
+        'X-GitHub-Event': 'pull_request_review_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 27, head: { sha: headSha } },
+        comment: {
+          id: 2700,
+          node_id: 'PRRC_2700',
+          body: 'Must fix the broken HTML before preview.',
+          path: 'sites/zhangsan/profile/src/index.html',
+          line: 3,
+          user: { login: 'greptile[bot]' },
+        },
+        sender: { login: 'greptile[bot]' },
+      }),
+    })
+  );
+  const blockingBody = await json(blockingResponse);
+  assert.equal(blockingBody.job.status, 'changes_requested');
+
+  await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-recover-delete',
+        'X-GitHub-Event': 'pull_request_review_comment',
+      },
+      body: JSON.stringify({
+        action: 'deleted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 27, head: { sha: headSha } },
+        comment: {
+          id: 2700,
+          node_id: 'PRRC_2700',
+          body: 'Must fix the broken HTML before preview.',
+          path: 'sites/zhangsan/profile/src/index.html',
+          line: 3,
+          user: { login: 'greptile[bot]' },
+        },
+        sender: { login: 'greptile[bot]' },
+      }),
+    })
+  );
+
+  const approvalResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-recover-approved',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 27, head: { sha: headSha } },
+        review: {
+          id: 2701,
+          node_id: 'PRR_2701',
+          state: 'approved',
+          body: 'LGTM',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, jobId);
+        assert.equal(body.job.status, 'previewing');
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_preview_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const approvalBody = await json(approvalResponse);
+
+  assert.equal(approvalResponse.status, 200, JSON.stringify(approvalBody));
+  assert.equal(approvalBody.reviewAction, 'preview_dispatched');
+  assert.equal(approvalBody.gate.canPreview, true);
+  assert.equal(approvalBody.job.status, 'previewing');
+  assert.equal(workerStarts.length, 1);
+});
+
 test('GitHub Review Agent blocking comment notifies Slack thread', async () => {
   const app = createGatewayApp();
   const slackMessages = [];
