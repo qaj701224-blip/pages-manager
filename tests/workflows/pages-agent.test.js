@@ -21,6 +21,9 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /^\s*statuses: write$/m);
   assert.match(workflow, /branchName must use the sites\/ agent branch prefix/);
   assert.match(workflow, /agent branch must use the sites\/ prefix/);
+  assert.match(workflow, /base_sha="\$\(git rev-parse "origin\/\$BASE_REF"\)"/);
+  assert.match(workflow, /BASE_SHA=\$base_sha/);
+  assert.match(workflow, /git merge --no-edit "origin\/\$BASE_REF"/);
   assert.match(workflow, /gh pr list --head "\$branch" --base "\$BASE_REF" --state open/);
   assert.doesNotMatch(workflow, /gh pr view "\$branch"/);
   assert.match(workflow, /Dispatch required PR checks/);
@@ -29,6 +32,7 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /gh workflow run ci\.yml --ref "\$BRANCH_NAME"/);
   assert.match(workflow, /gh workflow run site-check\.yml/);
   assert.match(workflow, /-f baseRef="\$BASE_REF"/);
+  assert.match(workflow, /-f baseSha="\$BASE_SHA"/);
   assert.match(workflow, /-f headSha="\$HEAD_SHA"/);
   assert.match(workflow, /-f allowedPath="\$ALLOWED_PATH"/);
   assert.match(workflow, /repos\/\$GITHUB_REPOSITORY\/statuses\/\$HEAD_SHA/);
@@ -62,9 +66,12 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   assert.match(ci, /^\s*workflow_dispatch:/m);
   assert.match(siteCheck, /^\s*workflow_dispatch:/m);
   assert.match(siteCheck, /baseRef:/);
+  assert.match(siteCheck, /baseSha:/);
   assert.match(siteCheck, /headSha:/);
   assert.match(siteCheck, /allowedPath:/);
   assert.match(siteCheck, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
+  assert.match(siteCheck, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
+  assert.match(siteCheck, /baseSha must be a full commit SHA/);
   assert.match(siteCheck, /git fetch origin "\+refs\/heads\/\$base_ref:refs\/remotes\/origin\/\$base_ref"/);
   assert.match(siteCheck, /PR must only modify expected site root/);
 });
