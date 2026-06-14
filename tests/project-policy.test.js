@@ -49,6 +49,7 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.doesNotMatch(workflow, /pull_request_target/);
   assert.match(workflow, /HEAD_REPO[\s\S]*BASE_REPO/);
   assert.match(workflow, /IS_DRAFT[\s\S]*draft PRs are not synced/);
+  assert.match(workflow, /run: \|\n\s+echo "Skipped staging sync:/);
   assert.match(workflow, /gh api --paginate/);
   assert.match(workflow, /HEAD_REF.*sites\/\*/);
   assert.match(workflow, /PR only touches sites\/\*\*/);
@@ -59,7 +60,13 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /refs\/pull\/\$\{PR_NUMBER\}\/head/);
   assert.match(workflow, /actual_sha[\s\S]*PR_HEAD_SHA/);
   assert.match(workflow, /git merge --no-ff "\$pr_ref"/);
+  assert.match(workflow, /sync_branch="staging-sync\/pr-\$\{PR_NUMBER\}-\$\{short_sha\}"/);
+  assert.match(workflow, /git push origin "HEAD:refs\/heads\/\$\{sync_branch\}"/);
+  assert.match(workflow, /gh workflow run ci\.yml[\s\S]*--ref "\$sync_branch"/);
+  assert.match(workflow, /gh run list[\s\S]*--workflow ci\.yml[\s\S]*--branch "\$sync_branch"/);
+  assert.match(workflow, /gh run watch "\$ci_run_id"[\s\S]*--exit-status/);
   assert.match(workflow, /git push origin "HEAD:staging"/);
+  assert.match(workflow, /git push origin ":refs\/heads\/\$\{sync_branch\}"/);
   assert.match(workflow, /gh workflow run deploy-staging\.yml[\s\S]*--ref staging[\s\S]*component=all/);
   assert.match(workflow, /gh run list[\s\S]*deploy-staging\.yml/);
   assert.match(workflow, /gh run watch "\$run_id"[\s\S]*--exit-status/);
@@ -68,7 +75,8 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
 
   assert.match(policy, /Master PR 同步 Staging 预览/);
   assert.match(policy, /项目类 PR 指向 `master`/);
-  assert.match(policy, /push 到 `staging`/);
+  assert.match(policy, /staging-sync\/pr-<number>-<sha>/);
+  assert.match(policy, /required status check/);
   assert.match(policy, /dispatch `Deploy Staging`/);
   assert.match(policy, /等待 `Deploy Staging` 完成/);
   assert.match(policy, /纯 `sites\/\*\*` 用户站点 PR/);
