@@ -69,6 +69,7 @@ test('core gateway schema exports runtime truth-source tables', () => {
     'agentRuns',
     'githubWebhookDeliveries',
     'reviewAgentComments',
+    'siteCheckRuns',
     'slackNotificationDedupes',
     'auditLogs',
     'externalApiCallLogs',

@@ -302,6 +302,55 @@ function rowToReviewComment(row) {
   };
 }
 
+function siteCheckRunToRow(run) {
+  return {
+    id: run.id || makeId('sitecheck'),
+    repo_full_name: run.repoFullName,
+    pr_number: run.prNumber,
+    check_run_id: run.checkRunId || null,
+    check_run_node_id: run.checkRunNodeId,
+    check_name: run.checkName,
+    app_slug: run.appSlug || null,
+    app_name: run.appName || null,
+    status: run.status || null,
+    conclusion: run.conclusion || null,
+    head_sha: run.headSha || null,
+    details_url: run.detailsUrl || null,
+    html_url: run.htmlUrl || null,
+    output_summary: run.outputSummary || null,
+    first_seen_delivery_id: run.firstSeenDeliveryId || null,
+    last_seen_delivery_id: run.lastSeenDeliveryId || run.firstSeenDeliveryId || null,
+    completed_at: toDate(run.completedAt),
+    created_at: toDate(run.createdAt),
+    updated_at: toDate(run.updatedAt || run.createdAt),
+  };
+}
+
+function rowToSiteCheckRun(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    repoFullName: row.repo_full_name,
+    prNumber: row.pr_number,
+    checkRunId: row.check_run_id || null,
+    checkRunNodeId: row.check_run_node_id,
+    checkName: row.check_name,
+    appSlug: row.app_slug || null,
+    appName: row.app_name || null,
+    status: row.status || null,
+    conclusion: row.conclusion || null,
+    headSha: row.head_sha || null,
+    detailsUrl: row.details_url || null,
+    htmlUrl: row.html_url || null,
+    outputSummary: row.output_summary || '',
+    firstSeenDeliveryId: row.first_seen_delivery_id || null,
+    lastSeenDeliveryId: row.last_seen_delivery_id || null,
+    completedAt: toIso(row.completed_at),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
 function sessionToRow(session) {
   return {
     id: session.id,
@@ -580,6 +629,11 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
   cacheReviewComment(comment) {
     if (comment) this.reviewAgentComments.set(`${comment.repoFullName}:${comment.githubCommentNodeId}`, comment);
     return comment;
+  }
+
+  cacheSiteCheckRun(run) {
+    if (run) this.siteCheckRuns.set(`${run.repoFullName}:${run.checkRunNodeId || run.checkRunId}`, run);
+    return run;
   }
 
   cacheSession(session) {
@@ -941,6 +995,61 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
     return result;
   }
 
+  async recordSiteCheckRun(run) {
+    const rows = await execute(
+      this.pool,
+      'SELECT * FROM site_check_runs WHERE repo_full_name = ? AND check_run_node_id = ? LIMIT 1',
+      [run.repoFullName, run.checkRunNodeId]
+    );
+    const existing = rowToSiteCheckRun(rows[0]);
+    if (existing) this.cacheSiteCheckRun(existing);
+
+    const result = super.recordSiteCheckRun({ ...run, id: existing?.id || run.id || makeId('sitecheck') });
+    await upsertRow(this.pool, 'site_check_runs', siteCheckRunToRow(result.run), {
+      excludeUpdate: ['id', 'created_at'],
+    });
+    return result;
+  }
+
+  async listSiteCheckRuns(repoFullName, prNumber, options = {}) {
+    const rows = await execute(
+      this.pool,
+      [
+        'SELECT * FROM site_check_runs WHERE repo_full_name = ? AND pr_number = ?',
+        'ORDER BY COALESCE(completed_at, updated_at, created_at) DESC',
+      ].join(' '),
+      [repoFullName, Number(prNumber)]
+    );
+    const runs = rows.map((row) => this.cacheSiteCheckRun(rowToSiteCheckRun(row)));
+    if (!options.headSha) return runs;
+    const normalized = String(options.headSha).toLowerCase();
+    return runs.filter((run) => {
+      const current = String(run.headSha || '').toLowerCase();
+      return (
+        current.length >= 7 &&
+        normalized.length >= 7 &&
+        (current.startsWith(normalized) || normalized.startsWith(current))
+      );
+    });
+  }
+
+  async siteCheckGateForPr(repoFullName, prNumber, options = {}) {
+    const runs = await this.listSiteCheckRuns(repoFullName, prNumber, options);
+    const latest = runs[0] || null;
+    const passed = latest?.status === 'completed' && latest.conclusion === 'success';
+    return {
+      prNumber: Number(prNumber),
+      required: true,
+      passed,
+      status: latest?.status || 'missing',
+      conclusion: latest?.conclusion || null,
+      checkName: latest?.checkName || null,
+      checkRunId: latest?.checkRunId || null,
+      detailsUrl: latest?.detailsUrl || latest?.htmlUrl || null,
+      latestRun: latest,
+    };
+  }
+
   async listReviewAgentComments(repoFullName, prNumber, options = {}) {
     const rows = await execute(
       this.pool,
@@ -985,6 +1094,18 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
       suggestionCount: openComments.filter((comment) => comment.classification === 'suggestion').length,
       noteCount: openComments.filter((comment) => comment.classification === 'note').length,
       canPreview: blocking.length === 0 && unknown.length === 0,
+    };
+  }
+
+  async previewGateForPr(repoFullName, prNumber, options = {}) {
+    const reviewGate = await this.reviewGateForPr(repoFullName, prNumber, options);
+    const siteCheckGate = await this.siteCheckGateForPr(repoFullName, prNumber, options);
+    return {
+      ...reviewGate,
+      reviewGate,
+      siteCheck: siteCheckGate,
+      siteCheckPassed: siteCheckGate.passed,
+      canPreview: reviewGate.canPreview && siteCheckGate.passed,
     };
   }
 

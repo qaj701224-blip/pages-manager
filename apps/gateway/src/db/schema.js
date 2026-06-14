@@ -368,6 +368,36 @@ export const slackNotificationDedupes = mysqlTable(
   })
 );
 
+export const siteCheckRuns = mysqlTable(
+  'site_check_runs',
+  {
+    id: id('id').primaryKey(),
+    repoFullName: varchar('repo_full_name', { length: 255 }).notNull(),
+    prNumber: int('pr_number').notNull(),
+    checkRunId: externalId('check_run_id'),
+    checkRunNodeId: externalId('check_run_node_id').notNull(),
+    checkName: varchar('check_name', { length: 255 }).notNull(),
+    appSlug: varchar('app_slug', { length: 255 }),
+    appName: varchar('app_name', { length: 255 }),
+    status: varchar('status', { length: 80 }),
+    conclusion: varchar('conclusion', { length: 80 }),
+    headSha: gitSha('head_sha'),
+    detailsUrl: url('details_url'),
+    htmlUrl: url('html_url'),
+    outputSummary: text('output_summary'),
+    firstSeenDeliveryId: externalId('first_seen_delivery_id'),
+    lastSeenDeliveryId: externalId('last_seen_delivery_id'),
+    completedAt: datetime('completed_at', { mode: 'date', fsp: 3 }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    checkRunUk: uniqueIndex('site_check_runs_node_uk').on(table.repoFullName, table.checkRunNodeId),
+    prIdx: index('site_check_runs_pr_idx').on(table.repoFullName, table.prNumber, table.headSha),
+    statusIdx: index('site_check_runs_status_idx').on(table.status, table.conclusion, table.updatedAt),
+  })
+);
+
 export const auditLogs = mysqlTable(
   'audit_logs',
   {

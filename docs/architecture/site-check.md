@@ -139,6 +139,8 @@ GitHub Review Agent 只负责语义/质量 review；`site-check` 负责确定性
 
 1. 新增 `packages/site-check`，先实现 path allowlist、platform path block、PR marker 和 placeholder schema。
 2. 新增 `.github/workflows/site-check.yml`，在 `pull_request` 上运行，并作为 required check。
-3. gateway 接收 `check_run` webhook 或 workflow callback，写入 `SiteCheckRun`。
-4. Preview Gate 读取 `SiteCheckRun`，不再只看 Review Agent comment。
+3. gateway 接收 `check_run` webhook，校验 check name / app allowlist 后写入 `SiteCheckRun`。
+4. Preview Gate 读取同一 PR head SHA 的 `SiteCheckRun`，并与 Review Agent gate 同时通过后才触发 Preview。
 5. 补 secret scan、file policy、lint/test/build。
+
+当前代码已具备第 3、4 步的最小闭环：`site-check` 成功可以回放已保存的 Review Agent 通过结果并触发 Preview；Review Agent 先通过但 `site-check` 缺失时只会在 Slack 中提示等待；`site-check` 失败会暂停 Preview。

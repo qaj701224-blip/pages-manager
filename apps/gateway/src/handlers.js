@@ -1,6 +1,12 @@
 import { jsonResponse } from '@xd/worker-kit';
 
-import { classifyReviewAgentComment, isAllowedReviewAgent, normalizeReviewAgentWebhook } from './github-review.js';
+import {
+  classifyReviewAgentComment,
+  isAllowedReviewAgent,
+  isAllowedSiteCheckRun,
+  normalizeReviewAgentWebhook,
+  normalizeSiteCheckRunWebhook,
+} from './github-review.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from './slack-http.js';
 import { classifySlackIntake, slackStatusReply } from './slack-intake.js';
 import {
@@ -276,6 +282,31 @@ function shouldDispatchPreviewForReview(updatedJob, normalized, gate) {
   return ['pr_created', 'reviewing', 'previewing'].includes(updatedJob.status);
 }
 
+function shouldReportSiteCheckWaiting(updatedJob, normalized, gate) {
+  if (!updatedJob || updatedJob.previewUrl || gate.canPreview) return false;
+  if (gate.blockingCount > 0 || gate.unknownCount > 0) return false;
+  if (gate.siteCheck?.passed) return false;
+  if (!['review_summary', 'issue_comment'].includes(normalized.sourceType)) return false;
+  if (!['note', 'suggestion'].includes(normalized.classification)) return false;
+  return ['pr_created', 'reviewing', 'previewing'].includes(updatedJob.status);
+}
+
+async function previewGateForPr(store, repoFullName, prNumber, options = {}) {
+  if (store.previewGateForPr) return await store.previewGateForPr(repoFullName, prNumber, options);
+
+  const reviewGate = await store.reviewGateForPr(repoFullName, prNumber, options);
+  const siteCheckGate = store.siteCheckGateForPr
+    ? await store.siteCheckGateForPr(repoFullName, prNumber, options)
+    : { required: true, passed: false, status: 'missing', conclusion: null };
+  return {
+    ...reviewGate,
+    reviewGate,
+    siteCheck: siteCheckGate,
+    siteCheckPassed: siteCheckGate.passed,
+    canPreview: reviewGate.canPreview && siteCheckGate.passed,
+  };
+}
+
 function repoFullNameForJob(job, env) {
   if (env.GITHUB_REPO) return env.GITHUB_REPO;
 
@@ -301,7 +332,7 @@ async function previewTriggerFromStoredReviews(store, job, env) {
   if (!repoFullName) return null;
 
   const options = job.headSha ? { headSha: job.headSha } : {};
-  const gate = await store.reviewGateForPr(repoFullName, job.prNumber, options);
+  const gate = await previewGateForPr(store, repoFullName, job.prNumber, options);
   if (!gate.canPreview) return null;
 
   const comments = await store.listReviewAgentComments(repoFullName, job.prNumber, options);
@@ -1442,6 +1473,115 @@ export async function handleExecutorCallback(request, env) {
   });
 }
 
+async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
+  if (!job) return null;
+  if (job.status === 'changes_requested') {
+    return await store.patchJob(job.id, patch);
+  }
+
+  let current = job;
+  if (current.status === 'pr_created') {
+    current = await store.updateJob(current.id, 'reviewing', patch);
+  }
+  if (current.status === 'reviewing') {
+    return await store.updateJob(current.id, 'changes_requested', patch);
+  }
+  return current;
+}
+
+async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }) {
+  const storedRun = await store.recordSiteCheckRun(siteCheckRun);
+  const fullHeadSha = siteCheckRun.headSha && siteCheckRun.headSha.length === 40 ? siteCheckRun.headSha : null;
+  let job = await store.findJobByPrNumber(siteCheckRun.prNumber, fullHeadSha ? { headSha: fullHeadSha } : {});
+  let gate = job
+    ? await previewGateForPr(store, siteCheckRun.repoFullName, siteCheckRun.prNumber, fullHeadSha ? { headSha: fullHeadSha } : {})
+    : null;
+  let workerStart = null;
+  let reviewReplay = null;
+  let reviewAction = 'site_check_recorded';
+  let slackStatusNotification = null;
+  let slackNotification = null;
+
+  if (job && fullHeadSha && job.headSha !== fullHeadSha) {
+    job = await store.patchJob(job.id, { headSha: fullHeadSha });
+  }
+
+  if (job && siteCheckRun.status === 'completed' && siteCheckRun.conclusion === 'success') {
+    reviewReplay = await dispatchPreviewFromStoredReviewIfReady(job, store, env);
+    if (reviewReplay) {
+      job = reviewReplay.job;
+      workerStart = reviewReplay.workerStart;
+      gate = reviewReplay.gate;
+      reviewAction = reviewReplay.reviewAction;
+    } else {
+      reviewAction = 'site_check_passed';
+    }
+  } else if (
+    job &&
+    siteCheckRun.status === 'completed' &&
+    siteCheckRun.conclusion &&
+    siteCheckRun.conclusion !== 'success'
+  ) {
+    job = await moveJobToChangesRequestedForSiteCheck(store, job, fullHeadSha ? { headSha: fullHeadSha } : {});
+    gate = await previewGateForPr(
+      store,
+      siteCheckRun.repoFullName,
+      siteCheckRun.prNumber,
+      fullHeadSha ? { headSha: fullHeadSha } : {}
+    );
+    reviewAction = 'site_check_failed';
+  } else if (job) {
+    reviewAction = 'site_check_waiting';
+  }
+
+  if (job) {
+    await store.linkJobToSlackSession(job);
+    const text = notificationTextForReviewAction(reviewAction, { gate, siteCheckRun: storedRun.run });
+    slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+      stage: job.status,
+      text: text || reviewAction,
+      dedupeKey: [
+        'site-check-status',
+        job.id,
+        siteCheckRun.checkRunNodeId,
+        siteCheckRun.status || 'unknown',
+        siteCheckRun.conclusion || 'none',
+      ].join(':'),
+      skipDuplicate: false,
+    });
+    slackNotification = await notifySlackJob(
+      env,
+      store,
+      job,
+      text,
+      `site-check:${reviewAction}:${siteCheckRun.checkRunNodeId}`
+    );
+  }
+
+  return jsonResponse({
+    ok: true,
+    created: true,
+    delivery: result.delivery,
+    reviewAction,
+    siteCheckRun: storedRun.run,
+    siteCheckRunCreated: storedRun.created,
+    ...(gate ? { gate } : {}),
+    ...(job ? { job } : {}),
+    ...(workerStart ? { workerStart } : {}),
+    ...(reviewReplay
+      ? {
+          reviewReplay: {
+            reviewAction: reviewReplay.reviewAction,
+            gate: reviewReplay.gate,
+            reviewComment: reviewReplay.reviewComment,
+          },
+        }
+      : {}),
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    ...(slackNotification ? { slackNotification } : {}),
+  });
+}
+
 export async function handleGithubWebhook(request, env) {
   const rawBody = await request.text();
   await verifyGithubWebhookSignature(request, env, rawBody);
@@ -1461,6 +1601,11 @@ export async function handleGithubWebhook(request, env) {
     return handleGithubIssueWebhook({ body, action, store, env, result });
   }
 
+  const siteCheckRun = normalizeSiteCheckRunWebhook(body, eventName, deliveryId, repoFullName);
+  if (siteCheckRun && isAllowedSiteCheckRun(siteCheckRun, env)) {
+    return handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result });
+  }
+
   const normalized = normalizeReviewAgentWebhook(body, eventName, deliveryId, repoFullName);
   if (!normalized) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'unsupported_event' });
@@ -1478,7 +1623,8 @@ export async function handleGithubWebhook(request, env) {
 
   const reviewComment = await store.recordReviewAgentComment(normalized);
   const job = await store.findJobByPrNumber(normalized.prNumber, { headSha: normalized.headSha });
-  const gate = await store.reviewGateForPr(
+  const gate = await previewGateForPr(
+    store,
     repoFullName,
     normalized.prNumber,
     normalized.headSha ? { headSha: normalized.headSha } : {}
@@ -1512,6 +1658,8 @@ export async function handleGithubWebhook(request, env) {
     }
     workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
     reviewAction = 'preview_dispatched';
+  } else if (shouldReportSiteCheckWaiting(updatedJob, normalized, gate)) {
+    reviewAction = 'site_check_waiting';
   }
 
   if (updatedJob) {
