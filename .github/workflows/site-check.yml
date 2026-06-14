@@ -1,6 +1,21 @@
 name: Site Check
 
 on:
+  workflow_dispatch:
+    inputs:
+      baseRef:
+        description: Base branch used to validate generated site diff
+        required: true
+        default: staging
+        type: string
+      headSha:
+        description: Optional expected head SHA
+        required: false
+        type: string
+      allowedPath:
+        description: Optional expected site root
+        required: false
+        type: string
   pull_request:
     paths:
       - sites/**
@@ -19,10 +34,30 @@ jobs:
 
       - name: Validate site-only change
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_BASE_REF: ${{ inputs.baseRef }}
+          INPUT_HEAD_SHA: ${{ inputs.headSha }}
+          INPUT_ALLOWED_PATH: ${{ inputs.allowedPath }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            base_ref="${INPUT_BASE_REF:-staging}"
+            if [[ ! "$base_ref" =~ ^[A-Za-z0-9._/-]{1,120}$ || "$base_ref" == *..* || "$base_ref" == /* || "$base_ref" == */ ]]; then
+              echo "baseRef contains unsupported characters" >&2
+              exit 1
+            fi
+            git fetch origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+            base="origin/$base_ref"
+            head="${INPUT_HEAD_SHA:-HEAD}"
+          else
+            base="$PR_BASE_SHA"
+            head="$PR_HEAD_SHA"
+          fi
+
           changed="$(git diff --name-only "$base" "$head")"
           echo "$changed"
           if echo "$changed" | grep -Ev '^(sites/[^/]+/[^/]+/|$)' >/tmp/non-site-paths; then
@@ -34,6 +69,11 @@ jobs:
           count="$(echo "$site_roots" | sed '/^$/d' | wc -l | tr -d ' ')"
           if [[ "$count" != "1" ]]; then
             echo "PR must modify exactly one site root" >&2
+            echo "$site_roots" >&2
+            exit 1
+          fi
+          if [[ -n "${INPUT_ALLOWED_PATH:-}" && "$site_roots" != "$INPUT_ALLOWED_PATH" ]]; then
+            echo "PR must only modify expected site root: $INPUT_ALLOWED_PATH" >&2
             echo "$site_roots" >&2
             exit 1
           fi
