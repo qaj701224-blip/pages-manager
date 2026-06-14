@@ -173,12 +173,9 @@ jobs:
           read -r -a services <<<"$DEPLOY_SERVICES"
           for service in "${services[@]}"; do
             image="$ACR_REGISTRY/$ACR_REPOSITORY_PREFIX/$service:$IMAGE_TAG"
-            cache_ref="$ACR_REGISTRY/$ACR_REPOSITORY_PREFIX/$service:buildcache"
             docker buildx build \
               --platform "$PLATFORM" \
               --push \
-              --cache-from "type=registry,ref=$cache_ref" \
-              --cache-to "type=registry,ref=$cache_ref,mode=max" \
               -f Dockerfile.node-service \
               --build-arg "SERVICE=$service" \
               --build-arg "NODE_IMAGE=$NODE_IMAGE" \
