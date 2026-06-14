@@ -2,8 +2,25 @@ import http from 'node:http';
 
 import { FileBackedGatewayStore } from './file-store.js';
 import { createGatewayApp } from './index.js';
+import { MySqlGatewayStore } from './db/gateway-store.js';
+import { runMigrations } from '../scripts/migrate.js';
 
-const store = process.env.PAGES_GATEWAY_STORE_FILE ? new FileBackedGatewayStore(process.env.PAGES_GATEWAY_STORE_FILE) : undefined;
+async function createStoreFromEnv() {
+  if (process.env.PAGES_STORE_BACKEND === 'mysql') {
+    if (process.env.PAGES_DB_AUTO_MIGRATE !== 'false') {
+      await runMigrations(process.env);
+    }
+    return MySqlGatewayStore.create(process.env);
+  }
+
+  if (process.env.PAGES_GATEWAY_STORE_FILE) {
+    return new FileBackedGatewayStore(process.env.PAGES_GATEWAY_STORE_FILE);
+  }
+
+  return undefined;
+}
+
+const store = await createStoreFromEnv();
 const app = createGatewayApp({ store });
 const port = Number(process.env.PORT || 8788);
 
