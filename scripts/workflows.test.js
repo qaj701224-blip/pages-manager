@@ -145,6 +145,12 @@ test('platform CI and staging deploy ignore generated user-site only changes', (
   assert.match(ci, /platform_changed=false/);
   assert.match(ci, /Skip platform CI for user-site-only changes/);
   assert.match(ci, /User-site-only PR; Site Check owns validation\./);
+  assert.match(ci, /workflow_dispatch:[\s\S]*baseSha:[\s\S]*headSha:[\s\S]*allowedPath:/);
+  assert.match(ci, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
+  assert.match(ci, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
+  assert.match(ci, /INPUT_HEAD_SHA: \$\{\{ inputs\.headSha \}\}/);
+  assert.match(ci, /INPUT_ALLOWED_PATH: \$\{\{ inputs\.allowedPath \}\}/);
+  assert.match(ci, /"\$INPUT_ALLOWED_PATH"\/\*/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm lint/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm test/);
   assert.match(staging, /Platform staging deploy only\. User-site changes under sites\/\*\* must not redeploy/);

@@ -29,7 +29,7 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /Dispatch required PR checks/);
   assert.match(workflow, /post_status\(\)/);
   assert.match(workflow, /wait_for_run\(\)/);
-  assert.match(workflow, /gh workflow run ci\.yml --ref "\$BRANCH_NAME"/);
+  assert.match(workflow, /gh workflow run ci\.yml[\s\S]*--ref "\$BRANCH_NAME"/);
   assert.match(workflow, /gh workflow run site-check\.yml/);
   assert.match(workflow, /-f baseRef="\$BASE_REF"/);
   assert.match(workflow, /-f baseSha="\$BASE_SHA"/);
@@ -64,11 +64,19 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   const siteCheck = await readFile(path.join(root, '.github/workflows/site-check.yml'), 'utf8');
 
   assert.match(ci, /^\s*workflow_dispatch:/m);
+  assert.match(ci, /baseSha:/);
+  assert.match(ci, /headSha:/);
+  assert.match(ci, /allowedPath:/);
   assert.match(siteCheck, /^\s*workflow_dispatch:/m);
   assert.match(siteCheck, /baseRef:/);
   assert.match(siteCheck, /baseSha:/);
   assert.match(siteCheck, /headSha:/);
   assert.match(siteCheck, /allowedPath:/);
+  assert.match(ci, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
+  assert.match(ci, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
+  assert.match(ci, /INPUT_HEAD_SHA: \$\{\{ inputs\.headSha \}\}/);
+  assert.match(ci, /INPUT_ALLOWED_PATH: \$\{\{ inputs\.allowedPath \}\}/);
+  assert.match(ci, /site_only=true/);
   assert.match(siteCheck, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
   assert.match(siteCheck, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
   assert.match(siteCheck, /baseSha must be a full commit SHA/);

@@ -362,7 +362,11 @@ jobs:
           post_status "pending" "pages-generated-site-check" "Generated site validation dispatched"
           post_status "pending" "pages-user-flow" "Generated site publishing checks are running"
 
-          gh workflow run ci.yml --ref "$BRANCH_NAME"
+          gh workflow run ci.yml \
+            --ref "$BRANCH_NAME" \
+            -f baseSha="$BASE_SHA" \
+            -f headSha="$HEAD_SHA" \
+            -f allowedPath="$ALLOWED_PATH"
           gh workflow run site-check.yml \
             --ref "$BRANCH_NAME" \
             -f baseRef="$BASE_REF" \
