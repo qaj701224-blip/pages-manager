@@ -13,6 +13,14 @@ function optionalNumber(value) {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function optionalReasoningEffort(value) {
+  const normalized = String(value === undefined || value === null ? 'minimal' : value)
+    .trim()
+    .toLowerCase();
+  if (!normalized || ['off', 'false', 'none', 'disabled'].includes(normalized)) return undefined;
+  return normalized;
+}
+
 function trimTrailingSlash(value = '') {
   return String(value || '').replace(/\/+$/, '');
 }
@@ -87,6 +95,7 @@ async function readResponseJson(response) {
 function extractModelJson(body) {
   const content = body?.choices?.[0]?.message?.content || body?.choices?.[0]?.text || body?.output_text;
   if (isPlainObject(content)) return content;
+  if (isPlainObject(body?.choices?.[0]?.message?.parsed)) return body.choices[0].message.parsed;
   const contentText = textFromContentParts(content);
   const parsedContent = parseJsonObject(contentText);
   if (parsedContent) return parsedContent;
@@ -211,11 +220,17 @@ function summarizeShape(value, depth = 0) {
 
 function writeMissingHtmlDiagnostic({ body, modelResult, context }) {
   mkdirSync('.pages-artifacts', { recursive: true });
+  const firstChoice = body?.choices?.[0] || {};
+  const firstMessage = firstChoice.message || {};
   const diagnostic = {
     reason: 'missing_html',
     publishingJobId: context.publishingJobId,
     allowedPath: context.allowedPath,
     modelName: context.modelName || null,
+    finishReason: firstChoice.finish_reason || null,
+    messageContentLength: typeof firstMessage.content === 'string' ? firstMessage.content.length : null,
+    completionTokens: body?.usage?.completion_tokens ?? null,
+    reasoningTokens: body?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
     responseShape: summarizeShape(body),
     modelResultShape: summarizeShape(modelResult),
   };
@@ -227,6 +242,10 @@ function writeMissingHtmlDiagnostic({ body, modelResult, context }) {
       publishingJobId: context.publishingJobId,
       allowedPath: context.allowedPath,
       modelName: context.modelName || null,
+      finishReason: diagnostic.finishReason,
+      messageContentLength: diagnostic.messageContentLength,
+      completionTokens: diagnostic.completionTokens,
+      reasoningTokens: diagnostic.reasoningTokens,
       responseShape: diagnostic.responseShape,
       modelResultShape: diagnostic.modelResultShape,
     })
@@ -269,7 +288,9 @@ function buildCodingMessages(context) {
         'You are the pages-manager Coding Agent.',
         'Generate a complete static personal website for an internal employee page request.',
         'When mode is fix, update the existing site according to the latest follow-up while preserving useful prior content.',
+        'Do not think step by step. Produce the final JSON immediately.',
         'Return only JSON. Required shape: {"html":"<!doctype html>...","summary":"short implementation summary"}.',
+        'Keep the HTML concise, self-contained, and under 16000 characters.',
         'Do not include secrets, tokens, API keys, cookies, private credentials, or instructions to reveal them.',
         'The implementation must be self-contained HTML/CSS and must not require external build steps.',
       ].join('\n'),
@@ -302,12 +323,17 @@ export async function runCodingAgent(options = {}) {
   const requestBody = {
     model: context.modelName || undefined,
     messages: buildCodingMessages(context),
-    max_tokens: Number(env.AGENT_CODE_MAX_OUTPUT_TOKENS || 4096),
+    max_tokens: Number(env.AGENT_CODE_MAX_OUTPUT_TOKENS || 8192),
+    max_completion_tokens: Number(env.AGENT_CODE_MAX_COMPLETION_TOKENS || env.AGENT_CODE_MAX_OUTPUT_TOKENS || 8192),
     response_format: { type: 'json_object' },
   };
   const temperature = optionalNumber(env.AGENT_CODE_TEMPERATURE || env.AGENT_MODEL_TEMPERATURE);
   if (temperature !== undefined) {
     requestBody.temperature = temperature;
+  }
+  const reasoningEffort = optionalReasoningEffort(env.AGENT_CODE_REASONING_EFFORT);
+  if (reasoningEffort !== undefined) {
+    requestBody.reasoning_effort = reasoningEffort;
   }
 
   const response = await fetchImpl(companyChatCompletionsUrl(context.gatewayUrl), {
