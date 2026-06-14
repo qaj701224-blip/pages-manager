@@ -148,6 +148,54 @@ test('slack notifier updates an existing status card', async () => {
   assert.equal(body.message.messageTs, '1710000001.000100');
 });
 
+test('slack notifier renders custom progress text in status cards', async () => {
+  const app = createSlackNotifierApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/job-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        job: {
+          id: 'job_2',
+          status: 'reviewing',
+          employeeSlug: 'alice',
+          siteSlug: 'profile',
+          summary: '个人主页',
+          slackThread: {
+            channelId: 'C1',
+            threadTs: '1710000000.000200',
+            userId: 'U1',
+          },
+        },
+        options: {
+          stage: 'reviewing',
+          text: 'Review Agent 已记录，正在等待 site-check 通过后再生成 Preview。',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000002.000100' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const payload = JSON.parse(slackRequests[0].request.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.match(JSON.stringify(payload.blocks), /等待 site-check 通过后再生成 Preview/);
+});
+
 test('slack notifier posts plain Slack messages for gateway replies', async () => {
   const app = createSlackNotifierApp();
   const slackRequests = [];

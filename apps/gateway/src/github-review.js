@@ -6,6 +6,9 @@ const DEFAULT_REVIEW_AGENT_LOGINS = [
   'chatgpt-codex-connector[bot]',
 ];
 
+const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
+const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
+
 function listFromCsv(value = '') {
   return String(value)
     .split(/[,\s]+/)
@@ -32,6 +35,19 @@ export function reviewAgentLogins(env = {}) {
     ...parseAllowlistJson(env.GITHUB_REVIEW_AGENT_ALLOWLIST),
   ];
   return new Set((configured.length ? configured : DEFAULT_REVIEW_AGENT_LOGINS).map((login) => login.toLowerCase()));
+}
+
+function configuredSet(value, fallback) {
+  const configured = listFromCsv(value);
+  return new Set((configured.length ? configured : fallback).map((item) => item.toLowerCase()));
+}
+
+export function siteCheckNames(env = {}) {
+  return configuredSet(env.GITHUB_SITE_CHECK_NAMES, DEFAULT_SITE_CHECK_NAMES);
+}
+
+export function siteCheckAppLogins(env = {}) {
+  return configuredSet(env.GITHUB_SITE_CHECK_APP_LOGINS, DEFAULT_SITE_CHECK_APP_LOGINS);
 }
 
 function commentStatusForAction(action) {
@@ -180,6 +196,33 @@ function normalizeCheckRun(body, deliveryId, repoFullName) {
   };
 }
 
+export function normalizeSiteCheckRunWebhook(body, eventName, deliveryId, repoFullName) {
+  if (eventName !== 'check_run') return null;
+  const checkRun = body.check_run || {};
+  const pullRequest = checkRun.pull_requests?.[0];
+  if (!pullRequest || (!checkRun.id && !checkRun.node_id)) return null;
+
+  return {
+    repoFullName,
+    prNumber: pullRequest.number,
+    checkRunId: checkRun.id ? String(checkRun.id) : null,
+    checkRunNodeId: checkRun.node_id || `site-check:${checkRun.id}`,
+    checkName: checkRun.name || '',
+    appSlug: checkRun.app?.slug || null,
+    appName: checkRun.app?.name || null,
+    status: checkRun.status || null,
+    conclusion: checkRun.conclusion || null,
+    headSha: checkRun.head_sha || null,
+    detailsUrl: checkRun.details_url || checkRun.html_url || null,
+    htmlUrl: checkRun.html_url || null,
+    outputSummary: [checkRun.output?.title, checkRun.output?.summary, checkRun.output?.text].filter(Boolean).join('\n\n'),
+    action: body.action || null,
+    firstSeenDeliveryId: deliveryId,
+    lastSeenDeliveryId: deliveryId,
+    completedAt: checkRun.completed_at || null,
+  };
+}
+
 export function normalizeReviewAgentWebhook(body, eventName, deliveryId, repoFullName) {
   const normalized =
     eventName === 'pull_request_review'
@@ -202,4 +245,14 @@ export function normalizeReviewAgentWebhook(body, eventName, deliveryId, repoFul
 export function isAllowedReviewAgent(comment, env = {}) {
   if (!comment?.reviewAgentLogin) return false;
   return reviewAgentLogins(env).has(comment.reviewAgentLogin.toLowerCase());
+}
+
+export function isAllowedSiteCheckRun(checkRun, env = {}) {
+  if (!checkRun?.checkName) return false;
+
+  const names = siteCheckNames(env);
+  const apps = siteCheckAppLogins(env);
+  const appCandidates = [checkRun.appSlug, checkRun.appName].filter(Boolean).map((value) => value.toLowerCase());
+
+  return names.has(String(checkRun.checkName).toLowerCase()) && appCandidates.some((candidate) => apps.has(candidate));
 }

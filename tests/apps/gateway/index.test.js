@@ -33,14 +33,37 @@ async function slackSignature(secret, timestamp, body) {
   return `v0=${hex}`;
 }
 
+async function recordSuccessfulSiteCheck(app, options = {}) {
+  const prNumber = options.prNumber || 12;
+  const headSha = options.headSha || 'a'.repeat(40);
+  await app.store.recordSiteCheckRun({
+    repoFullName: options.repoFullName || 'org/pages-manager',
+    prNumber,
+    checkRunId: options.checkRunId || `site-check-${prNumber}`,
+    checkRunNodeId: options.checkRunNodeId || `SCR_SITE_CHECK_${prNumber}`,
+    checkName: options.checkName || 'site-check',
+    appSlug: options.appSlug || 'github-actions',
+    appName: options.appName || 'GitHub Actions',
+    status: 'completed',
+    conclusion: 'success',
+    headSha,
+    detailsUrl: options.detailsUrl || `https://github.example/org/pages-manager/actions/runs/${prNumber}`,
+    firstSeenDeliveryId: options.deliveryId || `seed-site-check-${prNumber}`,
+    lastSeenDeliveryId: options.deliveryId || `seed-site-check-${prNumber}`,
+    completedAt: new Date('2026-06-14T00:00:00.000Z').toISOString(),
+  });
+}
+
 async function moveJobToPrCreated(app, options = {}) {
+  const prNumber = options.prNumber || 12;
+  const headSha = options.headSha || 'a'.repeat(40);
   const createBody = await json(
     await app.fetch(
       new Request('http://gateway.test/api/publishing-jobs', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Idempotency-Key': options.idempotencyKey || `api-pr-${options.prNumber || 12}`,
+          'Idempotency-Key': options.idempotencyKey || `api-pr-${prNumber}`,
           'X-Pages-Actor-Id': 'usr_1',
         },
         body: JSON.stringify({ employeeSlug: 'zhangsan', siteSlug: 'profile' }),
@@ -59,14 +82,18 @@ async function moveJobToPrCreated(app, options = {}) {
           issueNumber: 1,
           indexSnapshotId: 'idxsnap_1',
           branchName: `sites/job-${createBody.job.id}-zhangsan-profile`,
-          prNumber: options.prNumber || 12,
-          prUrl: `https://github.example/org/pages-manager/pull/${options.prNumber || 12}`,
+          prNumber,
+          prUrl: `https://github.example/org/pages-manager/pull/${prNumber}`,
           baseRef: 'staging',
-          headSha: options.headSha || 'a'.repeat(40),
+          headSha,
         }),
       })
     );
     assert.equal(response.status, 200);
+  }
+
+  if (options.siteCheck !== false) {
+    await recordSuccessfulSiteCheck(app, { prNumber, headSha });
   }
 
   return createBody.job.id;
@@ -1625,6 +1652,197 @@ test('GitHub Review Agent approval dispatches staging preview', async () => {
   assert.equal(workerStarts.length, 1);
 });
 
+test('GitHub Review Agent approval waits for site-check before preview', async () => {
+  const app = createGatewayApp();
+  const headSha = '6'.repeat(40);
+  await moveJobToPrCreated(app, {
+    prNumber: 26,
+    headSha,
+    idempotencyKey: 'api-review-waits-site-check',
+    siteCheck: false,
+  });
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-waits-site-check',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 26, head: { sha: headSha } },
+        review: {
+          id: 126,
+          node_id: 'PRR_126',
+          state: 'approved',
+          body: 'LGTM, no issues found.',
+          user: { login: 'greptile[bot]' },
+        },
+        sender: { login: 'greptile[bot]' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'site_check_waiting');
+  assert.equal(body.gate.canPreview, false);
+  assert.equal(body.gate.siteCheck.status, 'missing');
+  assert.equal(body.job.status, 'reviewing');
+  assert.equal(workerStarts.length, 0);
+});
+
+test('site-check success dispatches preview after stored Review Agent approval', async () => {
+  const app = createGatewayApp();
+  const headSha = '7'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 27,
+    headSha,
+    idempotencyKey: 'api-site-check-replays-review',
+    siteCheck: false,
+  });
+  const workerStarts = [];
+
+  const reviewResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-before-site-check',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 27, head: { sha: headSha } },
+        review: {
+          id: 127,
+          node_id: 'PRR_127',
+          state: 'approved',
+          body: 'LGTM, no issues found.',
+          user: { login: 'greptile[bot]' },
+        },
+        sender: { login: 'greptile[bot]' },
+      }),
+    })
+  );
+  assert.equal(reviewResponse.status, 200);
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-site-check-success',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 7001,
+          node_id: 'SCR_7001',
+          name: 'site-check',
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: headSha,
+          details_url: 'https://github.example/org/pages-manager/actions/runs/7001',
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 27 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, jobId);
+        assert.equal(body.job.status, 'previewing');
+        assert.equal(body.job.headSha, headSha);
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_preview_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'preview_dispatched');
+  assert.equal(body.siteCheckRun.conclusion, 'success');
+  assert.equal(body.gate.canPreview, true);
+  assert.equal(body.gate.siteCheck.passed, true);
+  assert.equal(body.job.status, 'previewing');
+  assert.equal(workerStarts.length, 1);
+});
+
+test('site-check failure pauses preview for the PR', async () => {
+  const app = createGatewayApp();
+  const headSha = '8'.repeat(40);
+  await moveJobToPrCreated(app, {
+    prNumber: 28,
+    headSha,
+    idempotencyKey: 'api-site-check-failed',
+    siteCheck: false,
+  });
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-site-check-failure',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 8001,
+          node_id: 'SCR_8001',
+          name: 'site-check',
+          status: 'completed',
+          conclusion: 'failure',
+          head_sha: headSha,
+          details_url: 'https://github.example/org/pages-manager/actions/runs/8001',
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 28 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'site_check_failed');
+  assert.equal(body.gate.canPreview, false);
+  assert.equal(body.gate.siteCheck.conclusion, 'failure');
+  assert.equal(body.job.status, 'changes_requested');
+  assert.equal(workerStarts.length, 0);
+});
+
 test('GitHub Review Agent nonblocking summary dispatches staging preview', async () => {
   const app = createGatewayApp();
   const headSha = '1'.repeat(40);
@@ -1872,6 +2090,8 @@ test('pr_created callback replays existing Review Agent summary and dispatches p
   assert.equal(reviewResponse.status, 200);
   assert.equal(reviewBody.reviewAction, 'recorded');
   assert.equal(reviewBody.job, undefined);
+
+  await recordSuccessfulSiteCheck(app, { prNumber: 34, headSha });
 
   const prResponse = await app.fetch(
     new Request('http://gateway.test/internal/executor-callback', {
@@ -2242,6 +2462,8 @@ test('GitHub Review Agent suggestion comment notifies Slack thread without block
     );
     assert.equal(response.status, 200);
   }
+
+  await recordSuccessfulSiteCheck(app, { prNumber: 16, headSha });
 
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/github/webhook', {

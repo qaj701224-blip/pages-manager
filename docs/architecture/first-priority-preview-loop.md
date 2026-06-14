@@ -64,7 +64,9 @@ Agent 自合并 / 部署到 Preview
 - 已跑通 issue 创建、Project Index workflow、Pages Agent workflow、受控 PR 创建。
 - 当前 issue 创建由 `apps/worker` 使用平台 GitHub token 调 GitHub API 完成，不是由 Codex / Claude 直接创建。Codex / Claude 后续可以起草 issue 内容，但创建动作仍归 gateway / worker 控制。
 - 已把自动生成 PR 的 base 对准 `staging`。
-- 已新增 Review Agent webhook 处理：allowed bot -> 归一化 comment / review -> 分类 -> blocking 进入 `changes_requested`，approved note 进入 `previewing` 并 dispatch `pages-preview.yml`。
+- 已新增 Review Agent webhook 处理：allowed bot -> 归一化 comment / review -> 分类 -> blocking 进入 `changes_requested`；非阻塞 summary / note / suggestion 只通过 Review gate，不会单独触发 Preview。
+- 已新增 `site-check` 的 `check_run` webhook 处理：allowed check app -> 归一化 `SiteCheckRun` -> 按 PR head SHA 持久化 -> 重新计算 Preview Gate。
+- Preview Gate 已同时读取 Review Agent gate 和 `site-check` gate：Review Agent 已通过但 `site-check` 未通过时，Slack 状态卡片显示等待；`site-check` 失败时进入 `changes_requested` 并暂停 Preview。
 - 已新增 GitHub webhook signature 可选校验：公网 / staging gateway 必须配置 `GITHUB_WEBHOOK_SECRET`。
 - 已抽出独立 `slack-notifier` 回通：`issue_created`、`index_ready`、`pr_created`、Review Agent blocking / suggestion / unknown / gate pass、`preview_deployed` 和失败回调会写回原 Slack DM 或 mention thread。gateway 在正式 K8s 路径通过内部 HTTP 调 notifier，Actions runner / coding agent 仍然不拿 Slack token。
 - 当前 GitHub issues webhook 先进入 `pages-gateway` 校验，再由 gateway / worker 通过 `workflow_dispatch` 启动 `pages-agent.yml`。workflow 解析受控 job context，调用 Coding Agent 产出 `sites/<employee>/<site>/src/index.html` 和 `site.json`，再按 controlled committer 规则创建 / 更新 PR。
@@ -78,7 +80,6 @@ Agent 自合并 / 部署到 Preview
 仍需继续补：
 
 - 把当前内部 HTTP 触发的 `slack-notifier` 改为消费 `JobEvent` / queue，并用持久化幂等表替代当前内存去重。
-- required checks / site-check 结果进入 preview gate。
 - blocking comment 自动触发 `pages-agent.yml(mode=fix)` 的修复策略仍需补完整，包括 max fix rounds、Review Agent comment id 输入、失败熔断和人工接管；当前已具备用户 Slack follow-up 触发 fix round 的执行通路。
 - `preview_deployed` 后把 Preview URL 继续回写 issue / PR；Slack 回写已由 `slack-notifier` 完成。
 
@@ -248,7 +249,9 @@ Preview 已生成：<preview_url>
 - Review Agent webhook：blocking 进入 `changes_requested` 并回写；suggestion / note / unknown 也会回写，其中 unknown 不进入 Preview。
 - Slack follow-up：active session 命中唯一 `IssueLink` 时，回写“已启动同一个 PR 的修复轮次”；多个 active / recent session 时先要求用户用 `session: sess_xxx` 选择。
 - `pages-agent.yml(mode=fix)` callback：回写“修复轮次已提交，等待 Review Agent”。
-- Review gate 通过：回写“开始生成 staging Preview”。
+- Review Agent gate 和 `site-check` gate 都通过：回写“开始生成 staging Preview”。
+- Review Agent gate 通过但 `site-check` 未通过：更新同一张 Slack 状态卡片，提示“等待 site-check 通过后再生成 Preview”。
+- `site-check` 失败：进入 `changes_requested`，回写失败链接，避免用户拿到不可信的 Preview。
 - `preview_deployed`：回写 Preview URL。
 - `failed` callback：回写失败原因。
 

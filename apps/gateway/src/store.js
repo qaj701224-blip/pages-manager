@@ -45,6 +45,7 @@ export class MemoryGatewayStore {
     this.githubDeliveries = new Map();
     this.slackDeliveries = new Map();
     this.reviewAgentComments = new Map();
+    this.siteCheckRuns = new Map();
     this.slackNotifications = new Set();
     this.slackJobStatusMessages = new Map();
     this.agentRunEvents = new Map();
@@ -341,6 +342,55 @@ export class MemoryGatewayStore {
     return { comment: stored, created: !existing };
   }
 
+  recordSiteCheckRun(run) {
+    const key = `${run.repoFullName}:${run.checkRunNodeId || run.checkRunId}`;
+    const now = new Date().toISOString();
+    const existing = this.siteCheckRuns.get(key);
+    const stored = {
+      ...(existing || {}),
+      ...run,
+      firstSeenDeliveryId: existing?.firstSeenDeliveryId || run.firstSeenDeliveryId,
+      lastSeenDeliveryId: run.lastSeenDeliveryId || run.firstSeenDeliveryId,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    this.siteCheckRuns.set(key, stored);
+    return { run: stored, created: !existing };
+  }
+
+  listSiteCheckRuns(repoFullName, prNumber, options = {}) {
+    const normalized = Number(prNumber);
+    return [...this.siteCheckRuns.values()]
+      .filter((run) => {
+        if (run.repoFullName !== repoFullName || Number(run.prNumber) !== normalized) return false;
+        if (!options.headSha) return true;
+        return shaMatches(run.headSha, options.headSha);
+      })
+      .sort((left, right) => {
+        const leftTime = new Date(left.completedAt || left.updatedAt || left.createdAt || 0).getTime();
+        const rightTime = new Date(right.completedAt || right.updatedAt || right.createdAt || 0).getTime();
+        return rightTime - leftTime;
+      });
+  }
+
+  siteCheckGateForPr(repoFullName, prNumber, options = {}) {
+    const runs = this.listSiteCheckRuns(repoFullName, prNumber, options);
+    const latest = runs[0] || null;
+    const passed = latest?.status === 'completed' && latest.conclusion === 'success';
+
+    return {
+      prNumber: Number(prNumber),
+      required: true,
+      passed,
+      status: latest?.status || 'missing',
+      conclusion: latest?.conclusion || null,
+      checkName: latest?.checkName || null,
+      checkRunId: latest?.checkRunId || null,
+      detailsUrl: latest?.detailsUrl || latest?.htmlUrl || null,
+      latestRun: latest,
+    };
+  }
+
   listReviewAgentComments(repoFullName, prNumber, options = {}) {
     const normalized = Number(prNumber);
     return [...this.reviewAgentComments.values()].filter((comment) => {
@@ -409,6 +459,19 @@ export class MemoryGatewayStore {
       suggestionCount: openComments.filter((comment) => comment.classification === 'suggestion').length,
       noteCount: openComments.filter((comment) => comment.classification === 'note').length,
       canPreview: blocking.length === 0 && unknown.length === 0,
+    };
+  }
+
+  previewGateForPr(repoFullName, prNumber, options = {}) {
+    const reviewGate = this.reviewGateForPr(repoFullName, prNumber, options);
+    const siteCheckGate = this.siteCheckGateForPr(repoFullName, prNumber, options);
+
+    return {
+      ...reviewGate,
+      reviewGate,
+      siteCheck: siteCheckGate,
+      siteCheckPassed: siteCheckGate.passed,
+      canPreview: reviewGate.canPreview && siteCheckGate.passed,
     };
   }
 
