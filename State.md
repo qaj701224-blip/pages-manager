@@ -33,7 +33,7 @@
 当前不能宣称“完整生产化跑通”的原因是：
 
 - 还需要用真实 Slack 消息跑完一次完整用户闭环。
-- 需要确认 GitHub Actions 变量已切到 ECS callback URL 和 `gpt-5.5` 模型名。
+- GitHub Actions 变量已切到 ECS callback URL 和 `gpt-5.5` 模型名。
 - 当前 ECS MySQL / Redis 是 compose 内临时运行态，不是最终生产数据库。
 - GitHub-hosted runner 到阿里云 ACR 公网 registry 出现过超时；这影响 ACK/ACR lane，不影响当前 ECS 离线镜像部署。
 
@@ -463,7 +463,7 @@ https://tableau.tapdb.com/publisher-test/integrations/github/webhook
 - webhook events 保持 `check_run`、`issues`、`issue_comment`、`pull_request_review`、`pull_request_review_comment`。
 - GitHub ping delivery 返回 200 OK。
 - webhook 已配置 secret，不能依赖未鉴权 callback。
-- GitHub Actions callback 变量应同步为 `https://tableau.tapdb.com/publisher-test/internal/executor-callback`，并把 allowed origins 调整为 `https://tableau.tapdb.com`。
+- GitHub Actions callback 变量已同步为 `https://tableau.tapdb.com/publisher-test/internal/executor-callback`，allowed origins 已调整为 `https://tableau.tapdb.com`。
 
 ## 11. 当前验证状态
 
@@ -574,16 +574,18 @@ https://tableau.tapdb.com/publisher-test/integrations/slack/interactions
 - 给当前 bot 发 DM 或 `@bot`，确认消息进入 ECS gateway。
 - 确认同一 Slack 会话能完成多轮对话，而不是只创建单条任务。
 
-### 阻塞 2：GitHub Actions 变量需要与 ECS 对齐
+### 阻塞 2：GitHub Actions 变量需要保持与 ECS 对齐
 
 全流程依赖 GitHub Actions 回调 ECS gateway，并使用公司模型网关。
 
-当前影响：
+当前配置：
 
-- `PAGES_GATEWAY_CALLBACK_URL` 必须指向 ECS 的 `/internal/executor-callback`。
-- `PAGES_CALLBACK_ALLOWED_ORIGINS` 必须允许 `https://tableau.tapdb.com`。
-- `AGENT_MODEL_NAME` 必须使用当前可用的 `gpt-5.5`。
+- `PAGES_GATEWAY_CALLBACK_URL=https://tableau.tapdb.com/publisher-test/internal/executor-callback`
+- `PAGES_CALLBACK_ALLOWED_ORIGINS=https://tableau.tapdb.com`
+- `AGENT_MODEL_NAME=gpt-5.5`
 - `AGENT_CODE_API_KEY` 仍放 GitHub secret，不能进入代码或文档。
+
+如果后续入口域名变化，这三项需要一起更新，否则 GitHub Actions callback 或 Coding Agent 模型调用会失败。
 
 ### 阻塞 3：GitHub-hosted runner 到 ACR 公网 registry 超时
 
