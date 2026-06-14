@@ -48,11 +48,29 @@ spec:
           env:
             - name: PORT
               value: '8788'
-            - name: DATABASE_URL
+            - name: MYSQL_ADDR
               valueFrom:
                 secretKeyRef:
                   name: database-secret
-                  key: database-url
+                  key: mysql-addr
+                  optional: true
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-user
+                  optional: true
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-password
+                  optional: true
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-database
                   optional: true
             - name: REDIS_URL
               valueFrom:
