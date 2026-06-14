@@ -44,7 +44,9 @@ base: master
 - 如果 PR 修改了平台路径，例如 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**` 或 Dockerfile，则从 `origin/staging` 创建临时工作分支。
 - workflow 使用全量历史 fetch PR head，并确认 fetch 到的 commit 与 PR head sha 一致。
 - 在临时工作分支上 merge PR head；冲突时 workflow 失败，作者需要先 rebase / merge `staging` 后再重试。
-- merge 成功后 push 到 `staging`。
+- merge 成功后先 push 到 `staging-sync/pr-<number>-<sha>` 临时分支，并 dispatch `CI` 在该 merge commit 上运行 `check`。
+- `check` 成功后再把同一个已验证 commit push 到 `staging`，满足 `staging` ruleset 的 required status check。
+- 临时分支只用于让 GitHub Actions 给待同步 commit 产生 required check，成功或失败后由 workflow 清理。
 - 由于 GitHub `GITHUB_TOKEN` 产生的 push 不会自动触发后续 push workflow，同步 workflow 必须显式 dispatch `Deploy Staging`。
 - 同步 workflow 必须等待 `Deploy Staging` 完成并继承其结果；这样 master PR 上能直接看到 staging preview / validation 是否通过。
 
@@ -54,7 +56,7 @@ base: master
 - workflow 只使用 GitHub `GITHUB_TOKEN`，不引入额外 bot token。
 - workflow 必须串行执行，避免多个 master PR 同时改写 `staging`。
 - 如果 PR head 无法干净 merge 到 `staging`，workflow 必须失败，转人工处理冲突。
-- 如果 `staging` branch protection 不允许 GitHub Actions push，workflow 会失败；需要在仓库分支规则中允许该 workflow 的 `GITHUB_TOKEN` 写入，或改为创建 `staging` PR 的模式。
+- 如果 `CI` 在临时同步分支上失败，workflow 不会更新 `staging`。
 - 如果仓库规则不允许 `GITHUB_TOKEN` dispatch workflow，`Deploy Staging` 不会被触发；需要允许 Actions workflow dispatch，或改用 GitHub App token。
 
 ## Staging Preview 整理流程
