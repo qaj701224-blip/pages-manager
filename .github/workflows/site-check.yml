@@ -1,5 +1,6 @@
 name: Site Check
 
+# User-site PR guard only. Platform code PRs are validated by CI.
 on:
   workflow_dispatch:
     inputs:

@@ -1,5 +1,7 @@
 name: Deploy Staging
 
+# Platform staging deploy only. User-site changes under sites/** must not redeploy
+# the pages-manager Cloudflare Workers.
 on:
   workflow_dispatch:
     inputs:
@@ -14,6 +16,8 @@ on:
           - kv-gateway
   push:
     branches: [staging]
+    paths-ignore:
+      - 'sites/**'
 
 permissions:
   contents: read

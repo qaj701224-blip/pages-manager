@@ -15,6 +15,12 @@ const deployWorkflows = [
   ['staging', '.github/workflows/deploy-staging.yml'],
 ];
 
+const publishingExecutorWorkflows = [
+  ['project index', '.github/workflows/project-index.yml'],
+  ['pages agent', '.github/workflows/pages-agent.yml'],
+  ['pages preview', '.github/workflows/pages-preview.yml'],
+];
+
 const capabilityActiveKidEnvPattern =
   String.raw`PAGES_CAP_JWT_ACTIVE_KID: \$\{\{ vars\.PAGES_CAP_JWT_ACTIVE_KID \}\}`;
 
@@ -118,12 +124,47 @@ test('deploy workflows keep production manual and separate wrangler token from r
     'production deploy has no non-manual trigger',
   );
   assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]/, 'staging deploy keeps staging push trigger');
+  assert.match(staging, /\n {4}paths-ignore:\n {6}- 'sites\/\*\*'/, 'staging deploy ignores user-site only changes');
   assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);
   assert.match(combined, /: "\$\{CF_API_TOKEN:\?CF_API_TOKEN is required\}"/);
   assert.match(combined, /printf '%s' "\$CF_API_TOKEN" \| pnpm --dir apps\/server exec wrangler secret put CF_API_TOKEN/);
   assert.doesNotMatch(combined, /RUNTIME_CF_API_TOKEN/);
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
+});
+
+test('platform CI and staging deploy ignore generated user-site only changes', () => {
+  const ci = readWorkflow('.github/workflows/ci.yml');
+  const staging = readWorkflow('.github/workflows/deploy-staging.yml');
+  const siteCheck = readWorkflow('.github/workflows/site-check.yml');
+
+  assert.match(ci, /Platform CI only\. Generated user-site PRs under sites\/\*\* are validated by Site Check\./);
+  assert.match(ci, /\n {2}pull_request:\n {2}push:/);
+  assert.match(ci, /\n {2}push:\n {4}branches: \[master\]\n {4}paths-ignore:\n {6}- 'sites\/\*\*'/);
+  assert.match(ci, /name: Detect platform changes/);
+  assert.match(ci, /platform_changed=false/);
+  assert.match(ci, /Skip platform CI for user-site-only changes/);
+  assert.match(ci, /User-site-only PR; Site Check owns validation\./);
+  assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm lint/);
+  assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm test/);
+  assert.match(staging, /Platform staging deploy only\. User-site changes under sites\/\*\* must not redeploy/);
+  assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]\n {4}paths-ignore:\n {6}- 'sites\/\*\*'/);
+
+  assert.match(siteCheck, /User-site PR guard only\. Platform code PRs are validated by CI\./);
+  assert.match(siteCheck, /\n {2}pull_request:\n {4}paths:\n {6}- sites\/\*\*/);
+  assert.doesNotMatch(siteCheck, /\bpnpm lint\b|\bpnpm test\b|wrangler|kubectl|docker build|ACR_|KUBE_CONFIG_B64/);
+});
+
+test('user-triggered publishing executor workflows stay separate from platform deploys', () => {
+  for (const [name, path] of publishingExecutorWorkflows) {
+    const workflow = readWorkflow(path);
+    const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
+
+    assert.match(triggers, /^ {2}workflow_dispatch:/m, `${name} is dispatched by pages-worker`);
+    assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, `${name} has no push or PR trigger`);
+    assert.match(workflow, /publishingJobId:/, `${name} is tied to a PublishingJob`);
+    assert.doesNotMatch(workflow, /docker buildx?|kubectl|wrangler|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY|CLOUDFLARE_API_TOKEN/);
+  }
 });
 
 test('deploy workflows inject all capability secrets from the key registry', () => {
