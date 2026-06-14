@@ -15,6 +15,7 @@ SERVICES=(
   gateway
   worker
   slack-agent
+  slack-notifier
 )
 
 for service in "${SERVICES[@]}"; do

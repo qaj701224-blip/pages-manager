@@ -55,7 +55,8 @@ apply_secret_if_any slack-platform-secret \
   slack-signing-secret "${SLACK_SIGNING_SECRET:-}" \
   slack-app-id "${SLACK_APP_ID:-}" \
   slack-bot-user-id "${SLACK_BOT_USER_ID:-}" \
-  slack-agent-shared-secret "${SLACK_AGENT_SHARED_SECRET:-}"
+  slack-agent-shared-secret "${SLACK_AGENT_SHARED_SECRET:-}" \
+  slack-notifier-shared-secret "${SLACK_NOTIFIER_SHARED_SECRET:-}"
 
 apply_secret_if_any model-provider-secret \
   slack-agent-api-key "${SLACK_AGENT_API_KEY:-}" \
@@ -127,6 +128,7 @@ patch_config_value SLACK_EVENTS_PROCESSING_MODE "${SLACK_EVENTS_PROCESSING_MODE:
 patch_config_value SLACK_SIGNATURE_REQUIRED "${SLACK_SIGNATURE_REQUIRED:-}"
 patch_config_value SLACK_REACTION_ON_RECEIVE "${SLACK_REACTION_ON_RECEIVE:-}"
 patch_config_value SLACK_WORKING_REACTION "${SLACK_WORKING_REACTION:-}"
+patch_config_value SLACK_NOTIFIER_URL "${SLACK_NOTIFIER_URL:-}"
 patch_config_value SLACK_SIGNATURE_MAX_SKEW_SECONDS "${SLACK_SIGNATURE_MAX_SKEW_SECONDS:-}"
 patch_config_value SLACK_AGENT_MAX_CONTEXT_MESSAGES "${SLACK_AGENT_MAX_CONTEXT_MESSAGES:-}"
 patch_config_value SLACK_AGENT_MAX_OUTPUT_TOKENS "${SLACK_AGENT_MAX_OUTPUT_TOKENS:-}"
@@ -145,13 +147,15 @@ if [ "${config_patched}" = "true" ]; then
   kubectl -n "${NAMESPACE}" rollout restart \
     deployment/pages-gateway \
     deployment/pages-worker \
-    deployment/slack-agent
+    deployment/slack-agent \
+    deployment/slack-notifier
 fi
 
 if [ "${WAIT_ROLLOUT}" = "true" ] || [ "${WAIT_ROLLOUT}" = "1" ]; then
   kubectl -n "${NAMESPACE}" rollout status deployment/pages-gateway
   kubectl -n "${NAMESPACE}" rollout status deployment/pages-worker
   kubectl -n "${NAMESPACE}" rollout status deployment/slack-agent
+  kubectl -n "${NAMESPACE}" rollout status deployment/slack-notifier
 fi
 
 echo "pages-system applied. Use: kubectl -n ${NAMESPACE} get pods"

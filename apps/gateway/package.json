@@ -11,6 +11,7 @@
     "setup-db:reset": "node scripts/setup-db.js --reset"
   },
   "dependencies": {
+    "@xd/slack-notifier-core": "workspace:*",
     "@xd/worker-kit": "workspace:*",
     "@xd/workflow-core": "workspace:*",
     "bullmq": "^5.76.4",

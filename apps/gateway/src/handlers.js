@@ -637,8 +637,14 @@ function slackDeliveryPatchForResult(result = {}, overrides = {}) {
   };
 }
 
+function canSendSlackOutput(env = {}) {
+  const hasNotifierUrl = Boolean(env.SLACK_NOTIFIER_URL || env.PAGES_SLACK_NOTIFIER_URL);
+  const hasNotifierSecret = Boolean(env.SLACK_NOTIFIER_SHARED_SECRET || env.PAGES_SLACK_NOTIFIER_SHARED_SECRET);
+  return Boolean(env.SLACK_BOT_TOKEN || (hasNotifierUrl && hasNotifierSecret));
+}
+
 async function addWorkingReactionForSlackEvent(env, body = {}) {
-  if (!env.SLACK_BOT_TOKEN) return null;
+  if (!canSendSlackOutput(env)) return null;
   if (String(env.SLACK_REACTION_ON_RECEIVE || 'false').toLowerCase() !== 'true') return null;
 
   const event = body.event || {};
@@ -664,7 +670,7 @@ async function addWorkingReactionForSlackEvent(env, body = {}) {
 }
 
 async function postSlackResultReply(env, body = {}, result = {}) {
-  if (!env.SLACK_BOT_TOKEN || !shouldPostSlackResultReply(result)) return null;
+  if (!canSendSlackOutput(env) || !shouldPostSlackResultReply(result)) return null;
 
   const event = body.event || {};
   const surface = surfaceForSlackBody(body);

@@ -46,10 +46,11 @@ local cluster
        ├─ Deployment slack-agent
        ├─ Deployment pages-worker
        ├─ Deployment review-monitor-worker  (MVP 可先合在 gateway)
-       ├─ Deployment slack-notifier         (MVP 可先合在 gateway)
+       ├─ Deployment slack-notifier
        ├─ Service pages-gateway
        ├─ Service pages-worker
        ├─ Service slack-agent
+       ├─ Service slack-notifier
        ├─ MySQL
        ├─ Redis
        ├─ ConfigMap pages-config
@@ -114,7 +115,7 @@ K8s Secret 只保存引用和运行时注入，不写进 Git。
 
 | Secret                      | 用途                                                                                                                                   | 可注入组件                                               |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `slack-platform-secret`     | Slack bot token、signing secret、app metadata                                                                                          | `pages-gateway`、必要时 `slack-agent` / `slack-notifier` |
+| `slack-platform-secret`     | Slack bot token、signing secret、app metadata                                                                                          | `pages-gateway`、`slack-notifier`、必要时 `slack-agent` |
 | `model-provider-secret`     | 公司 OpenAI-compatible 模型网关 key；`slack-agent-api-key` 注入 Slack Agent，`coding-agent-api-key` 预留给 Coding Agent / 后续 K8s Job | `slack-agent`                                            |
 | `github-platform-secret`    | GitHub App / callback / webhook secret                                                                                                 | `pages-gateway`、`pages-worker`                          |
 | `cloudflare-preview-secret` | legacy `/deploy` preview owner marker；仅用于本地 smoke / 兼容旧 API                                                                   | `pages-worker` 或 preview deploy executor                |
@@ -168,7 +169,7 @@ Actions callback 仍然回到 K8s 里的 `pages-gateway`。
 
 1. 基于现有 `k8s/base/pages-system` 骨架继续收口 namespace、ConfigMap、Secret template、ServiceAccount、Deployment、Service。
 2. MySQL / Redis / Drizzle 平台基座已经进入 K8s 运行态：`DATABASE_URL`、`REDIS_URL` 由 Secret 注入，`PAGES_STORE_BACKEND=mysql`、`PAGES_QUEUE_BACKEND=redis` 由 ConfigMap 注入，gateway 不再挂载 PVC。
-3. 为 `apps/gateway`、`apps/slack-agent`、`apps/worker` 准备容器镜像构建方式。
+3. 为 `apps/gateway`、`apps/slack-agent`、`apps/slack-notifier`、`apps/worker` 准备容器镜像构建方式。
 4. 本地用 kind/k3d 部署 `pages-system`。
 5. 用 tunnel 暴露 gateway 的 webhook / callback URL。
 6. 让 Slack Events / Interactivity、GitHub Actions callback 和 GitHub webhook 都打到同一个 gateway public URL。
@@ -192,6 +193,7 @@ k8s/base/pages-system/
   kustomization.yaml
   worker.yaml
   slack-agent.yaml
+  slack-notifier.yaml
   secrets.template.yaml
 ```
 
@@ -237,12 +239,12 @@ smoke control plane
 
 `pnpm k8s:smoke` 会验证：
 
-- `pages-gateway`、`pages-worker`、`slack-agent` Deployment 已 rollout。
+- `pages-gateway`、`pages-worker`、`slack-agent`、`slack-notifier` Deployment 已 rollout。
 - `slack-platform-secret`、`github-platform-secret`、`callback-secrets` 中存在必须 key，但不会打印 secret 值。
 - `database-secret/database-url` 与 `redis-secret/redis-url` 存在；测试阶段不迁移旧 file/PVC 数据。
 - `pages-config` 中的 GitHub repo、workflow ref、base ref、gateway public/callback URL 等运行时值不是占位符。
 - `SLACK_EVENTS_PROCESSING_MODE`、`SLACK_SIGNATURE_REQUIRED`、`SLACK_SIGNATURE_MAX_SKEW_SECONDS` 等 Slack HTTP 入口配置已经写入 K8s ConfigMap。测试时仍以 K8s ConfigMap/Secret 和 pod env 为准，不能直接读取宿主机 `.env` 判断运行态。
-- 通过临时 `kubectl port-forward` 探测 `pages-gateway` 的 `/ready`，以及 `pages-worker`、`slack-agent` 的 `/health`。`/ready` 会检查 gateway 当前 DB-backed store。
+- 通过临时 `kubectl port-forward` 探测 `pages-gateway` 的 `/ready`，以及 `pages-worker`、`slack-agent`、`slack-notifier` 的 `/health`。`/ready` 会检查 gateway 当前 DB-backed store。
 - 如果 `PAGES_PREVIEW_MODE=local_deploy`，还会要求 `cloudflare-preview-secret` 中存在 legacy preview owner marker。这个 marker 只用于本地 smoke，不代表长期员工隔离模型。
 
 本地推荐：
@@ -272,7 +274,7 @@ Preview token 边界：
 
 `scripts/k8s-local-up.sh` 会：
 
-- 构建 `pages-manager/gateway:local`、`pages-manager/worker:local`、`pages-manager/slack-agent:local`。
+- 构建 `pages-manager/gateway:local`、`pages-manager/worker:local`、`pages-manager/slack-agent:local`、`pages-manager/slack-notifier:local`。
 - 如果本地存在名为 `pages-manager` 的 kind/k3d cluster，则自动把镜像 load/import 进去。
 - 默认读取仓库根目录 `.env`。
 - 从 `.env` 和当前 shell 环境变量创建 K8s Secret，不输出 secret，也不提交真实 `.env`。
@@ -285,6 +287,7 @@ PAGES_GATEWAY_PUBLIC_URL
 SLACK_BOT_TOKEN
 SLACK_SIGNING_SECRET
 SLACK_AGENT_SHARED_SECRET
+SLACK_NOTIFIER_SHARED_SECRET
 AGENT_GATEWAY_URL
 SLACK_AGENT_API_KEY
 GITHUB_REPO

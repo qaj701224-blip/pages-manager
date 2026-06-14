@@ -209,7 +209,7 @@ cancelled
 ### 4. Slack 入口
 
 Slack App 权限可以先拉满，MVP 不被 scope 申请卡住。
-Actions-first MVP 可以先由 `pages-gateway` 内置 Slack 通知 adapter 回写进度；长期仍要拆成独立 `slack-notifier`。
+Actions-first MVP 已拆出独立 `slack-notifier` 回写进度；gateway 保留本地 fallback adapter，但正式 K8s 路径应通过内部 HTTP 调 notifier。
 
 但必须保留这些安全边界：
 
@@ -222,7 +222,7 @@ Actions-first MVP 可以先由 `pages-gateway` 内置 Slack 通知 adapter 回�
 - Slack 回复和进度回写必须 @ 对应 Slack user，不能让多人 thread 中的状态消息没有明确归属。
 - SlackBot 消息只能作为需求来源；不能自动成为 `requested_by`。
 - SlackBot 没有 `TrustedSlackBotPolicy` 或真人确认时，不能创建 `PublishingJob`。
-- Slack token 只进入 `pages-gateway`、必要时 `apps/slack-agent`、`slack-notifier`，不进入 coding-agent/builder/site-check/deployer workflow/job。
+- Slack token 在正式 K8s 路径只进入 `slack-notifier`，必要时可进入 `apps/slack-agent` 拉取 thread / channel 上下文；`pages-gateway` 只允许本地 fallback 临时持有，不进入 coding-agent/builder/site-check/deployer workflow/job。
 - Slack Agent 模型 API key 只进入 `apps/slack-agent` 常驻服务，不进入 GitHub Actions executor、coding-agent、site-check、deployer 或员工页面。
 
 MVP 可以用管理员预配置绑定：

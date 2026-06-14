@@ -30,13 +30,13 @@ POST /integrations/slack/interactions
 apps/gateway
   - 校验 Slack signature / timestamp
   - 幂等接收 SlackEvent
-  - 对原消息添加 working reaction
+  - 请求 slack-notifier 对原消息添加 working reaction
   - 调用 apps/slack-agent 做需求分析
   - 推进后续 issue / coding agent / PR / preview 状态
-  - 使用 chat.postMessage / chat.update 回写同一个 Slack thread
+  - 通过 slack-notifier 回写同一个 Slack thread
 ```
 
-gateway 收到目标消息后会先对用户原消息添加 `SLACK_WORKING_REACTION`，默认是 `eyes`，让用户立刻知道 Agent 已开始处理。这个 feedback 不参与任务状态机，失败时只记日志，不阻塞 Slack Agent / worker 流程。Slack App 需要授予 `reactions:write` 后重新安装 / 审批，否则日志会出现 `slack_reaction_failed`，但消息仍会继续处理。
+gateway 收到目标消息后会先请求 `slack-notifier` 对用户原消息添加 `SLACK_WORKING_REACTION`，默认是 `eyes`，让用户立刻知道 Agent 已开始处理。本地 fallback 模式下 gateway 可以直接调用 Slack API；正式 K8s 路径由 `slack-notifier` 持有 bot token 并执行 Slack Web API 调用。这个 feedback 不参与任务状态机，失败时只记日志，不阻塞 Slack Agent / worker 流程。Slack App 需要授予 `reactions:write` 后重新安装 / 审批，否则日志会出现 `slack_reaction_failed`，但消息仍会继续处理。
 
 为了排查 DM / thread 里“用户发了消息但平台没回复”的问题，gateway 会记录被忽略事件的原因，例如 `ignored_subtype:message_replied`、`ignored_bot_event`、`unsupported_event`。如果 Slack 里有消息但 gateway 没有对应日志，优先检查 Slack App 的 Event Subscriptions、Request URL、Bot scopes、App Home Messages Tab、是否 reinstall / approve，以及公网 tunnel / Ingress 是否仍然指向当前 K8s gateway。
 
@@ -107,18 +107,19 @@ secret ref: pages-slack-platform-secret
   SLACK_SIGNING_SECRET
   SLACK_BOT_TOKEN
   SLACK_APP_ID
+  SLACK_NOTIFIER_SHARED_SECRET
 ```
 
 推荐拆分：
 
-| 组件                                     | 需要的 Slack secret                                                           | 不应该拿到                                                  |
-| ---------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `pages-gateway`                          | `SLACK_SIGNING_SECRET`、当前内置 notifier 需要 `SLACK_BOT_TOKEN`              | Git push token、Cloudflare deploy token、auto-merge token   |
-| `slack-agent`                            | 可选 `SLACK_BOT_TOKEN`，用于拉 thread / channel 上下文；gateway service token | Git push token、Cloudflare deploy token、auto-merge token   |
-| `slack-notifier`                         | `SLACK_BOT_TOKEN`                                                             | repo write token、Cloudflare deploy token、auto-merge token |
-| GitHub Actions executor / job containers | 不需要 Slack token                                                            | Slack bot token                                             |
+| 组件                                     | 需要的 Slack secret                                                                            | 不应该拿到                                                  |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `pages-gateway`                          | `SLACK_SIGNING_SECRET`、`SLACK_NOTIFIER_SHARED_SECRET`；仅本地 fallback 需要 `SLACK_BOT_TOKEN` | Git push token、Cloudflare deploy token、auto-merge token   |
+| `slack-agent`                            | 可选 `SLACK_BOT_TOKEN`，用于拉 thread / channel 上下文；gateway service token                  | Git push token、Cloudflare deploy token、auto-merge token   |
+| `slack-notifier`                         | `SLACK_BOT_TOKEN`                                                                              | repo write token、Cloudflare deploy token、auto-merge token |
+| GitHub Actions executor / job containers | 不需要 Slack token                                                                             | Slack bot token                                             |
 
-当前尚未拆出独立 `slack-notifier` 进程，因此 `pages-gateway` 可以临时注入 `SLACK_BOT_TOKEN` 来回写 job 进度。这个例外只适用于 K8s 控制面内部，不能把 Slack token 传给 GitHub Actions runner、coding agent、builder、site-check 或 deployer。
+当前代码已经拆出独立 `apps/slack-notifier` 和共享 `@xd/slack-notifier-core`。`pages-gateway` 保留本地 fallback adapter，方便单进程调试；正式 K8s 路径配置 `SLACK_NOTIFIER_URL` 后，gateway 只用内部 shared secret 调 notifier，不持有 `SLACK_BOT_TOKEN`。这个例外只适用于本地 / 过渡调试，不能把 Slack token 传给 GitHub Actions runner、coding agent、builder、site-check 或 deployer。
 
 DB 只保存 `IntegrationBinding(scope_type=platform, provider=slack, secret_ref=...)`，不保存 token 明文。
 
@@ -305,6 +306,8 @@ SlackEvent
 
 回写 Slack 不应散落在各个 executor 任务里。
 
+富交互状态卡片、实时回写、`SlackMessageBinding`、独立 `slack-notifier` 和 K8s 多副本验收细节见 [slack-http-rich-workbench.md](./slack-http-rich-workbench.md)。本节只保留运行时边界和当前代码快照。
+
 推荐统一为：
 
 ```text
@@ -327,28 +330,30 @@ Slack thread message update / reply
 
 规则：
 
-- gateway 对非任务类回复、进度回写和关键节点消息都要 @ `PublishingJob.slackThread.userId` 或原始 Slack event user。
+- 所有非任务类回复、进度回写和关键节点消息都要 @ `PublishingJob.slackThread.userId` 或原始 Slack event user。
 - 在频道或 thread 中必须 @，避免多人同 thread 时串用户。
 - DM 中也可以保留 @ 前缀，保证消息格式一致。
 - 如果没有可信 user id，不拼接 mention，也不能从消息文本中猜用户。
 
-当前实现是在 `pages-gateway` 内置一个 notifier adapter：
+当前实现可以在 `pages-gateway` 内置一个 notifier adapter 作为本地 fallback；正式 K8s 路径应配置 `SLACK_NOTIFIER_URL`，由 gateway 调内部 `slack-notifier` 服务投递 Slack 消息：
 
 ```text
 Slack Agent 分析 / executor callback / GitHub Review Agent webhook
   ↓
 pages-gateway 更新 PublishingJob
   ↓
-pages-gateway 使用 job.slackThread 调 chat.postMessage / chat.update
+pages-gateway 写事件 / 查询 message binding
+  ↓
+slack-notifier 调 chat.postMessage / chat.update
 ```
 
 Slack 右侧体验采用“状态卡片 + 关键节点稳定消息”：
 
-- 创建 Slack 发布任务时，gateway 先在对应 DM / thread 发一条 Block Kit 状态卡片。
+- 创建 Slack 发布任务时，`slack-notifier` 先在对应 DM / thread 发一条 Block Kit 状态卡片。
 - Slack Agent 对用户可见的整理结果会进入 job summary，并展示在状态卡片中。
-- executor callback / Review webhook 到达后，gateway 用 `chat.update` 更新同一张状态卡片。
+- executor callback / Review webhook 到达后，gateway 通过 `slack-notifier` 用 `chat.update` 更新同一张状态卡片。
 - issue / PR / preview / failure 等关键节点继续单独发一条稳定 thread 消息，方便用户回看链接。
-- gateway 记录 `AgentRunEvent` 和 `SlackJobStatusMessage`，用于去重、重试和后续拆独立 notifier。
+- gateway 记录 `AgentRunEvent` 和 `SlackJobStatusMessage`，用于去重、重试和独立 notifier 恢复 `chat.update` 目标。
 
 “回现 Slack Agent 消息”只指对用户可见的输出，例如追问、需求摘要、任务创建判断、状态解释和错误提示；不得回显模型内部推理、system / developer prompt、token、secret 或公司网关原始调试信息。
 
@@ -361,7 +366,7 @@ Slack 右侧体验采用“状态卡片 + 关键节点稳定消息”：
 - Preview URL 生成完成。
 - executor 失败。
 
-这个 adapter 需要 `SLACK_BOT_TOKEN`。后续拆分成独立 `slack-notifier` 后，gateway 改为写 `JobEvent`，notifier 负责重试、持久化幂等和 Slack API 调用。
+本地 fallback adapter 需要 `SLACK_BOT_TOKEN`。正式 K8s 运行时不应让 gateway 持有 Slack bot token；gateway 通过 `SLACK_NOTIFIER_URL` 和内部 shared secret 调用 `slack-notifier`，由 notifier 持有 `SLACK_BOT_TOKEN`、执行 Slack API 调用、处理重试、持久化幂等和 Slack API 调用日志。
 
 ## 运行模式
 
@@ -382,14 +387,22 @@ gateway 创建 PublishingJob
 gateway Slack HTTP 入口使用这些环境变量：
 
 ```text
-SLACK_BOT_TOKEN
 SLACK_SIGNING_SECRET
 SLACK_EVENTS_PROCESSING_MODE
 SLACK_SIGNATURE_REQUIRED
 SLACK_REACTION_ON_RECEIVE
 SLACK_WORKING_REACTION
 SLACK_SIGNATURE_MAX_SKEW_SECONDS
+SLACK_NOTIFIER_URL
+SLACK_NOTIFIER_SHARED_SECRET
+```
+
+`slack-notifier` 使用这些环境变量：
+
+```text
+SLACK_BOT_TOKEN
 SLACK_API_URL
+SLACK_NOTIFIER_SHARED_SECRET
 ```
 
 真实 token 只能放本机私有环境或 secret manager，不能写入 repo。Slack App 的 Events URL 和 Interactivity URL 都应指向当前 `PAGES_GATEWAY_PUBLIC_URL`。
