@@ -43,6 +43,37 @@ function parseJsonObject(text) {
   }
 }
 
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function textFromContentParts(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!isPlainObject(item)) return '';
+        return textFromContentParts(item.text || item.content || item.value || '');
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function stripCodeFence(value) {
+  const text = String(value || '').trim();
+  const fence = text.match(/^```(?:html|json)?\s*\n([\s\S]*?)\n```$/i);
+  return fence ? fence[1].trim() : text;
+}
+
+function looksLikeHtml(value) {
+  return /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]|<main[\s>]|<section[\s>]|<article[\s>]|<div[\s>]|<h1[\s>]|<style[\s>]/i.test(
+    String(value || '')
+  );
+}
+
 async function readResponseJson(response) {
   const text = await response.text();
   if (!text) return {};
@@ -55,17 +86,151 @@ async function readResponseJson(response) {
 
 function extractModelJson(body) {
   const content = body?.choices?.[0]?.message?.content || body?.choices?.[0]?.text || body?.output_text;
-  if (content && typeof content === 'object') return content;
-  return parseJsonObject(content) || body?.data || body?.result || body || null;
+  if (isPlainObject(content)) return content;
+  const contentText = textFromContentParts(content);
+  const parsedContent = parseJsonObject(contentText);
+  if (parsedContent) return parsedContent;
+  if (isPlainObject(body?.data)) return body.data;
+  if (isPlainObject(body?.result)) return body.result;
+  if (isPlainObject(body?.output)) return body.output;
+  if (typeof body?.output === 'string') return parseJsonObject(body.output);
+  if (typeof body?.content === 'string') return parseJsonObject(body.content);
+  if (typeof body?.rawText === 'string') return parseJsonObject(body.rawText);
+  return body || null;
 }
 
-function htmlFromModelResult(result) {
-  if (typeof result?.html === 'string') return result.html;
-  if (typeof result?.indexHtml === 'string') return result.indexHtml;
-  const file = Array.isArray(result?.files)
-    ? result.files.find((item) => item?.path === 'src/index.html' && typeof item.content === 'string')
-    : null;
-  return file?.content || '';
+function pathMatchesIndexHtml(path, context = {}) {
+  const value = String(path || '').replace(/^\.\/+/, '');
+  const allowedPath = String(context.allowedPath || '').replace(/^\.\/+/, '');
+  return (
+    value === 'src/index.html' ||
+    value === 'index.html' ||
+    (allowedPath && value === `${allowedPath}/src/index.html`) ||
+    value.endsWith('/src/index.html')
+  );
+}
+
+function htmlFromFiles(files, context) {
+  if (Array.isArray(files)) {
+    const file = files.find((item) => pathMatchesIndexHtml(item?.path || item?.name || item?.filename, context));
+    const content = file?.content || file?.html || file?.body;
+    if (typeof content === 'string' && looksLikeHtml(stripCodeFence(content))) {
+      return stripCodeFence(content);
+    }
+  }
+
+  if (isPlainObject(files)) {
+    for (const [path, content] of Object.entries(files)) {
+      if (!pathMatchesIndexHtml(path, context)) continue;
+      if (typeof content === 'string' && looksLikeHtml(stripCodeFence(content))) {
+        return stripCodeFence(content);
+      }
+      if (isPlainObject(content)) {
+        const nested = content.content || content.html || content.body;
+        if (typeof nested === 'string' && looksLikeHtml(stripCodeFence(nested))) {
+          return stripCodeFence(nested);
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
+function htmlFromModelResult(result, context = {}, seen = new Set(), depth = 0) {
+  if (!result || depth > 6) return '';
+
+  if (typeof result === 'string') {
+    const parsed = parseJsonObject(result);
+    if (parsed) return htmlFromModelResult(parsed, context, seen, depth + 1);
+    const normalized = stripCodeFence(result);
+    return looksLikeHtml(normalized) ? normalized : '';
+  }
+
+  if (!isPlainObject(result) || seen.has(result)) return '';
+  seen.add(result);
+
+  const directKeys = ['html', 'indexHtml', 'indexHTML', 'index_html', 'index', 'content', 'fileContent', 'code'];
+  for (const key of directKeys) {
+    const value = result[key];
+    if (typeof value !== 'string') continue;
+    const parsed = parseJsonObject(value);
+    if (parsed) {
+      const nestedHtml = htmlFromModelResult(parsed, context, seen, depth + 1);
+      if (nestedHtml) return nestedHtml;
+    }
+    const normalized = stripCodeFence(value);
+    if (looksLikeHtml(normalized)) return normalized;
+  }
+
+  const fileHtml = htmlFromFiles(result.files || result.outputFiles || result.generatedFiles, context);
+  if (fileHtml) return fileHtml;
+
+  const nestedKeys = ['result', 'data', 'output', 'response', 'message'];
+  for (const key of nestedKeys) {
+    const nestedHtml = htmlFromModelResult(result[key], context, seen, depth + 1);
+    if (nestedHtml) return nestedHtml;
+  }
+
+  return '';
+}
+
+function summarizeShape(value, depth = 0) {
+  if (value === null || value === undefined) return { type: String(value) };
+  if (typeof value === 'string') {
+    return {
+      type: 'string',
+      length: value.length,
+      looksLikeHtml: looksLikeHtml(value),
+      looksLikeJsonObject: Boolean(parseJsonObject(value)),
+    };
+  }
+  if (typeof value !== 'object') return { type: typeof value };
+  if (Array.isArray(value)) {
+    return {
+      type: 'array',
+      length: value.length,
+      sample: depth >= 2 ? undefined : value.slice(0, 3).map((item) => summarizeShape(item, depth + 1)),
+    };
+  }
+
+  const keys = Object.keys(value);
+  const sample = {};
+  if (depth < 2) {
+    for (const key of keys.slice(0, 12)) {
+      sample[key] = summarizeShape(value[key], depth + 1);
+    }
+  }
+
+  return {
+    type: 'object',
+    keys: keys.slice(0, 30),
+    sample,
+  };
+}
+
+function writeMissingHtmlDiagnostic({ body, modelResult, context }) {
+  mkdirSync('.pages-artifacts', { recursive: true });
+  const diagnostic = {
+    reason: 'missing_html',
+    publishingJobId: context.publishingJobId,
+    allowedPath: context.allowedPath,
+    modelName: context.modelName || null,
+    responseShape: summarizeShape(body),
+    modelResultShape: summarizeShape(modelResult),
+  };
+  writeFileSync('.pages-artifacts/agent-debug.json', `${JSON.stringify(diagnostic, null, 2)}\n`);
+  console.error(
+    JSON.stringify({
+      service: 'pages-agent-coding',
+      message: 'coding_agent_missing_html',
+      publishingJobId: context.publishingJobId,
+      allowedPath: context.allowedPath,
+      modelName: context.modelName || null,
+      responseShape: diagnostic.responseShape,
+      modelResultShape: diagnostic.modelResultShape,
+    })
+  );
 }
 
 function contextFromEnv(env) {
@@ -159,8 +324,9 @@ export async function runCodingAgent(options = {}) {
   }
 
   const modelResult = extractModelJson(body);
-  const html = htmlFromModelResult(modelResult);
+  const html = htmlFromModelResult(modelResult, context);
   if (!html.trim()) {
+    writeMissingHtmlDiagnostic({ body, modelResult, context });
     throw new Error('Coding Agent response did not include html');
   }
 
