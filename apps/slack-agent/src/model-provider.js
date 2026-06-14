@@ -136,16 +136,20 @@ async function callCompanyOpenAiGateway({ config, messages, fetchImpl, signal })
   };
   if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
+  const requestBody = {
+    model: config.modelName || undefined,
+    messages,
+    max_tokens: config.maxOutputTokens,
+    response_format: { type: 'json_object' },
+  };
+  if (Number.isFinite(config.temperature)) {
+    requestBody.temperature = config.temperature;
+  }
+
   const response = await fetchImpl(companyChatCompletionsUrl(config), {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model: config.modelName || undefined,
-      messages,
-      temperature: 0,
-      max_tokens: config.maxOutputTokens,
-      response_format: { type: 'json_object' },
-    }),
+    body: JSON.stringify(requestBody),
     signal,
   });
   const body = await readResponseJson(response);
