@@ -10,6 +10,8 @@ export async function createCliLogin({
   loginSecret = createOpaqueToken('sec'),
   deviceCode = createDeviceCode(),
 }) {
+  validateUnixSecond('now', now);
+  validateTtlSeconds(ttlSeconds);
   if (environment !== 'production' && environment !== 'staging') throw new Error('CLI login environment is invalid');
   if (!DEVICE_CODE_RE.test(deviceCode)) throw new Error('CLI login device code must be 8 digits');
 
@@ -48,16 +50,47 @@ export async function consumeCliLogin({ loginId, loginSecret }, record, { now })
   if (record.status === 'consumed') throw new Error('CLI login invalid: already consumed');
   if (record.status !== 'confirmed') throw new Error(`CLI login invalid: status is ${record.status}`);
 
-  const actualHash = await sha256Hex(loginSecret);
-  if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('CLI login invalid: secret mismatch');
+  const previousStatus = record.status;
+  const previousConsumedAt = record.consumedAt;
+  record.status = 'consumed';
+  record.consumedAt = now;
 
-  const consumedRecord = { ...record, status: 'consumed', consumedAt: now };
+  try {
+    const actualHash = await sha256Hex(loginSecret);
+    if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('CLI login invalid: secret mismatch');
+  } catch (error) {
+    record.status = previousStatus;
+    record.consumedAt = previousConsumedAt;
+    throw error;
+  }
+
+  const consumedRecord = { ...record };
   return { userId: record.userId, environment: record.environment, record: consumedRecord };
 }
 
 function assertUsableRecord(record, now) {
   if (!record || typeof record !== 'object') throw new Error('CLI login invalid: missing record');
+  validateFiniteNumber('now', now);
+  validateFiniteNumber('expiresAt', record.expiresAt);
   if (record.expiresAt <= now) throw new Error('CLI login invalid: expired');
+}
+
+function validateUnixSecond(name, value) {
+  validateFiniteNumber(name, value);
+  if (!Number.isInteger(value)) throw new Error(`CLI login invalid: ${name} must be an integer`);
+  if (value < 0) throw new Error(`CLI login invalid: ${name} must be non-negative`);
+}
+
+function validateTtlSeconds(value) {
+  validateFiniteNumber('ttlSeconds', value);
+  if (!Number.isInteger(value)) throw new Error('CLI login invalid: ttlSeconds must be an integer');
+  if (value <= 0) throw new Error('CLI login invalid: ttlSeconds must be positive');
+}
+
+function validateFiniteNumber(name, value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`CLI login invalid: ${name} must be a finite number`);
+  }
 }
 
 function createDeviceCode() {
