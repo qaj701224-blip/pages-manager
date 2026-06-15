@@ -43,6 +43,24 @@ test('creates and consumes OAuth state once through storage', async () => {
   await assert.rejects(() => consumeStoredOAuthState(storage, 'ost_test.state-secret', { now: now + 2 }), /already consumed/);
 });
 
+test('OAuth state consume runs inside a storage transaction when available', async () => {
+  const storage = withTransactionTracking(createFakeStorage());
+  await createStoredOAuthState(storage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  storage.resetTransactionCount();
+
+  await consumeStoredOAuthState(storage, 'ost_test.state-secret', { now: now + 1 });
+
+  assert.equal(storage.transactionCount, 1);
+});
+
 test('creates pending CLI login and confirms with matching device code', async () => {
   const storage = createFakeStorage();
   const created = await createStoredCliLogin(storage, {
@@ -103,6 +121,24 @@ test('CLI login consume requires login secret and only succeeds once', async () 
     () => consumeStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'login-secret' }, { now: now + 4 }),
     /already consumed/
   );
+});
+
+test('CLI login consume runs inside a storage transaction when available', async () => {
+  const storage = withTransactionTracking(createFakeStorage());
+  await createStoredCliLogin(storage, {
+    environment: 'production',
+    now,
+    ttlSeconds: 600,
+    loginId: 'cli_test',
+    loginSecret: 'login-secret',
+    deviceCode: '12345678',
+  });
+  await confirmStoredCliLogin(storage, { deviceCode: '12345678', userId: 'usr_123' }, { now: now + 1 });
+  storage.resetTransactionCount();
+
+  await consumeStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'login-secret' }, { now: now + 2 });
+
+  assert.equal(storage.transactionCount, 1);
 });
 
 test('CLI login poll returns pending, consumes confirmed login, and rejects repeated poll', async () => {
@@ -178,6 +214,23 @@ function createFakeStorage() {
     },
     async delete(key) {
       records.delete(key);
+    },
+  };
+}
+
+function withTransactionTracking(storage) {
+  let transactionCount = 0;
+  return {
+    ...storage,
+    get transactionCount() {
+      return transactionCount;
+    },
+    resetTransactionCount() {
+      transactionCount = 0;
+    },
+    async transaction(callback) {
+      transactionCount += 1;
+      return callback(storage);
     },
   };
 }

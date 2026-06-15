@@ -6,6 +6,7 @@ import {
   consumeStoredOAuthState,
   createStoredCliLogin,
   createStoredOAuthState,
+  peekStoredCliLogin,
   pollStoredCliLogin,
   createStoredSession,
   refreshStoredSession,
@@ -69,6 +70,8 @@ export class CliLoginDO {
       '/create': (storage, body) => createStoredCliLogin(storage, body),
       '/confirm': (storage, body) =>
         confirmStoredCliLogin(storage, { deviceCode: body.deviceCode, userId: body.userId }, { now: body.now }),
+      '/peek': (storage, body) =>
+        peekStoredCliLogin(storage, { loginId: body.loginId, loginSecret: body.loginSecret }, { now: body.now }),
       '/poll': (storage, body) =>
         pollStoredCliLogin(storage, { loginId: body.loginId, loginSecret: body.loginSecret }, { now: body.now }),
       '/consume': (storage, body) =>

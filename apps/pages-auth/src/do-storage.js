@@ -15,14 +15,16 @@ export async function createStoredOAuthState(storage, input) {
 }
 
 export async function consumeStoredOAuthState(storage, publicState, options) {
-  const record = await storage.get(SINGLE_RECORD_KEY);
-  const consumed = await consumeOAuthState(publicState, record, options);
-  await storage.put(SINGLE_RECORD_KEY, consumed.record);
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    const consumed = await consumeOAuthState(publicState, record, options);
+    await transaction.put(SINGLE_RECORD_KEY, consumed.record);
 
-  return {
-    ...consumed,
-    record: stripSecretHash(consumed.record),
-  };
+    return {
+      ...consumed,
+      record: stripSecretHash(consumed.record),
+    };
+  });
 }
 
 export async function createStoredCliLogin(storage, input) {
@@ -38,25 +40,53 @@ export async function createStoredCliLogin(storage, input) {
 }
 
 export async function confirmStoredCliLogin(storage, input, options) {
-  const record = await storage.get(SINGLE_RECORD_KEY);
-  const confirmed = confirmCliLogin(input, record, options);
-  await storage.put(SINGLE_RECORD_KEY, confirmed);
-  return { record: stripSecretHash(confirmed) };
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    const confirmed = confirmCliLogin(input, record, options);
+    await transaction.put(SINGLE_RECORD_KEY, confirmed);
+    return { record: stripSecretHash(confirmed) };
+  });
 }
 
 export async function consumeStoredCliLogin(storage, input, options) {
-  const record = await storage.get(SINGLE_RECORD_KEY);
-  const consumed = await consumeCliLogin(input, record, options);
-  await storage.put(SINGLE_RECORD_KEY, consumed.record);
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    const consumed = await consumeCliLogin(input, record, options);
+    await transaction.put(SINGLE_RECORD_KEY, consumed.record);
 
-  return {
-    userId: consumed.userId,
-    environment: consumed.environment,
-    record: stripSecretHash(consumed.record),
-  };
+    return {
+      userId: consumed.userId,
+      environment: consumed.environment,
+      record: stripSecretHash(consumed.record),
+    };
+  });
 }
 
 export async function pollStoredCliLogin(storage, input, options) {
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    await assertCliLoginPollAllowed(record, input, options);
+
+    if (record.status === 'pending') {
+      return {
+        status: 'pending',
+        expiresAt: record.expiresAt,
+      };
+    }
+
+    const consumed = await consumeCliLogin(input, record, options);
+    await transaction.put(SINGLE_RECORD_KEY, consumed.record);
+
+    return {
+      status: 'confirmed',
+      userId: consumed.userId,
+      environment: consumed.environment,
+      record: stripSecretHash(consumed.record),
+    };
+  });
+}
+
+export async function peekStoredCliLogin(storage, input, options) {
   const record = await storage.get(SINGLE_RECORD_KEY);
   await assertCliLoginPollAllowed(record, input, options);
 
@@ -67,10 +97,11 @@ export async function pollStoredCliLogin(storage, input, options) {
     };
   }
 
-  const consumed = await consumeStoredCliLogin(storage, input, options);
   return {
     status: 'confirmed',
-    ...consumed,
+    userId: record.userId,
+    environment: record.environment,
+    record: stripSecretHash(record),
   };
 }
 
@@ -81,17 +112,21 @@ export async function createStoredSession(storage, input) {
 }
 
 export async function refreshStoredSession(storage, sid, options) {
-  const record = await storage.get(sessionKey(sid));
-  const refreshed = refreshSessionRecord(record, options);
-  await storage.put(sessionKey(sid), refreshed);
-  return refreshed;
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(sessionKey(sid));
+    const refreshed = refreshSessionRecord(record, options);
+    await transaction.put(sessionKey(sid), refreshed);
+    return refreshed;
+  });
 }
 
 export async function revokeStoredSession(storage, sid, options) {
-  const record = await storage.get(sessionKey(sid));
-  const revoked = revokeSessionRecord(record, options);
-  await storage.put(sessionKey(sid), revoked);
-  return revoked;
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(sessionKey(sid));
+    const revoked = revokeSessionRecord(record, options);
+    await transaction.put(sessionKey(sid), revoked);
+    return revoked;
+  });
 }
 
 function sessionKey(sid) {
@@ -116,4 +151,11 @@ async function assertCliLoginPollAllowed(record, input, { now }) {
 
   const actualHash = await sha256Hex(input.loginSecret);
   if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('CLI login invalid: secret mismatch');
+}
+
+async function runStorageTransaction(storage, callback) {
+  if (typeof storage?.transaction === 'function') {
+    return storage.transaction((transaction) => callback(transaction));
+  }
+  return callback(storage);
 }

@@ -44,36 +44,55 @@ export async function handleCliLoginPoll(request, env, config) {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400);
   }
 
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError('CLI_LOGIN_INVALID', 'CLI login request is invalid.', 400);
+  }
+
   const loginId = requireString(body.loginId);
   const loginSecret = requireString(body.loginSecret);
   if (!loginId || !loginSecret) return jsonError('CLI_LOGIN_INVALID', 'CLI login request is invalid.', 400);
 
   const now = readNow(env);
-  let consumed;
+  let loginStatus;
   try {
-    consumed = await pollCliLoginRecord(env, { loginId, loginSecret }, { now });
+    loginStatus = await peekCliLoginRecord(env, { loginId, loginSecret }, { now });
   } catch (error) {
     return handleCliPollError(error);
   }
 
-  if (consumed?.status === 'pending') return jsonOk({ status: 'pending' });
-  if (consumed?.environment !== config.environment) {
+  if (loginStatus?.status === 'pending') return jsonOk({ status: 'pending' });
+  if (loginStatus?.environment !== config.environment) {
     return jsonError('CLI_LOGIN_ENV_MISMATCH', 'CLI login environment does not match.', 403);
   }
 
-  const cliToken = await signSessionJwt(
-    {
-      purpose: 'cli_token',
-      audience: CLI_TOKEN_AUDIENCE,
-      subject: consumed.userId,
-      now,
-      ttlSeconds: config.authSessionAbsoluteTtlSeconds,
-      claims: {
-        jti: consumed.record?.id || loginId,
+  let cliToken;
+  try {
+    cliToken = await signSessionJwt(
+      {
+        purpose: 'cli_token',
+        audience: CLI_TOKEN_AUDIENCE,
+        subject: loginStatus.userId,
+        now,
+        ttlSeconds: config.authSessionAbsoluteTtlSeconds,
+        claims: {
+          jti: loginStatus.record?.id || loginId,
+        },
       },
-    },
-    env
-  );
+      env
+    );
+  } catch {
+    return jsonError('CLI_TOKEN_SIGN_FAILED', 'CLI token could not be signed.', 500);
+  }
+
+  let consumed;
+  try {
+    consumed = await consumeCliLoginRecord(env, { loginId, loginSecret }, { now });
+  } catch (error) {
+    return handleCliPollError(error);
+  }
+  if (consumed?.environment !== config.environment || consumed?.userId !== loginStatus.userId) {
+    return jsonError('CLI_LOGIN_ENV_MISMATCH', 'CLI login environment does not match.', 403);
+  }
 
   return jsonOk({
     status: 'confirmed',
@@ -98,12 +117,22 @@ async function createCliLoginRecord(env, input) {
   return response.json();
 }
 
-async function pollCliLoginRecord(env, input, options) {
+async function peekCliLoginRecord(env, input, options) {
+  if (typeof env?.peekCliLoginRecord === 'function') return env.peekCliLoginRecord(input, options);
   if (typeof env?.pollCliLoginRecord === 'function') return env.pollCliLoginRecord(input, options);
+
+  const stub = getCliLoginStub(env, input.loginId);
+  const response = await stub.fetch(jsonDoRequest('https://cli-login-do/peek', { ...input, now: options.now }));
+  if (response.status === 409) throw new Error('CLI login invalid: already consumed');
+  if (!response.ok) throw new Error('CLI login invalid');
+  return response.json();
+}
+
+async function consumeCliLoginRecord(env, input, options) {
   if (typeof env?.consumeCliLoginRecord === 'function') return env.consumeCliLoginRecord(input, options);
 
   const stub = getCliLoginStub(env, input.loginId);
-  const response = await stub.fetch(jsonDoRequest('https://cli-login-do/poll', { ...input, now: options.now }));
+  const response = await stub.fetch(jsonDoRequest('https://cli-login-do/consume', { ...input, now: options.now }));
   if (response.status === 409) throw new Error('CLI login invalid: already consumed');
   if (!response.ok) throw new Error('CLI login invalid');
   return response.json();

@@ -60,9 +60,7 @@ test('builds local CLI login browser URL from auth base instead of API host', ()
 
 test('poll returns pending before browser confirmation', async () => {
   const env = testEnv({
-    consumeCliLoginRecord: async () => {
-      throw new Error('CLI login invalid: still pending');
-    },
+    peekCliLoginRecord: async () => ({ status: 'pending', expiresAt: now + 600 }),
   });
   const response = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, readAuthConfig(env));
 
@@ -73,8 +71,11 @@ test('poll returns pending before browser confirmation', async () => {
 test('poll with wrong secret does not consume transaction', async () => {
   let consumed = false;
   const env = testEnv({
-    consumeCliLoginRecord: async ({ loginSecret }) => {
+    peekCliLoginRecord: async ({ loginSecret }) => {
       if (loginSecret === 'wrong-secret') throw new Error('CLI login invalid: secret mismatch');
+      return confirmedLogin();
+    },
+    consumeCliLoginRecord: async () => {
       consumed = true;
       return confirmedLogin();
     },
@@ -92,12 +93,56 @@ test('poll with wrong secret does not consume transaction', async () => {
   assert.equal(consumed, true);
 });
 
-test('poll after confirmation returns signed CLI token once', async () => {
-  let calls = 0;
-  const env = testEnv({
+test('poll rejects non-object JSON bodies with safe error envelope', async () => {
+  const env = testEnv();
+  const response = await handleCliLoginPoll(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/poll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'null',
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.equal((await response.json()).error.code, 'CLI_LOGIN_INVALID');
+});
+
+test('poll does not consume confirmed login when CLI token signing fails', async () => {
+  let consumed = false;
+  const env = {
+    PAGES_ENV: 'production',
+    now: () => now,
+    peekCliLoginRecord: async () => ({
+      status: 'confirmed',
+      userId: 'usr_123',
+      environment: 'production',
+      record: { id: 'cli_test' },
+    }),
     consumeCliLoginRecord: async () => {
-      calls += 1;
-      if (calls > 1) throw new Error('CLI login invalid: already consumed');
+      consumed = true;
+      return confirmedLogin();
+    },
+  };
+  const response = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, readAuthConfig(env));
+
+  assert.equal(response.status, 500);
+  assert.equal((await response.json()).error.code, 'CLI_TOKEN_SIGN_FAILED');
+  assert.equal(consumed, false);
+});
+
+test('poll after confirmation returns signed CLI token once', async () => {
+  let consumed = false;
+  const env = testEnv({
+    peekCliLoginRecord: async () => {
+      if (consumed) throw new Error('CLI login invalid: already consumed');
+      return { status: 'confirmed', userId: 'usr_123', environment: 'production', record: { id: 'cli_test' } };
+    },
+    consumeCliLoginRecord: async () => {
+      if (consumed) throw new Error('CLI login invalid: already consumed');
+      consumed = true;
       return confirmedLogin();
     },
   });

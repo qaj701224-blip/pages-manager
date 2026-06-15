@@ -48,6 +48,17 @@ test('routes CLI login start and poll public endpoints', async () => {
         expiresAt: 1_800_000_600,
       },
     }),
+    peekCliLoginRecord: async () => ({
+      status: 'confirmed',
+      userId: 'usr_123',
+      environment: 'production',
+      record: {
+        id: 'cli_test',
+        status: 'confirmed',
+        userId: 'usr_123',
+        environment: 'production',
+      },
+    }),
     consumeCliLoginRecord: async () => ({
       userId: 'usr_123',
       environment: 'production',
