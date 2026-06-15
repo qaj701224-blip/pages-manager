@@ -67,6 +67,7 @@ export function createFallbackSecretStore({
       await mkdir(profileDir, { recursive: true });
       await writeFile(filePath, `${JSON.stringify(secrets, null, 2)}\n`, { mode: 0o600 });
       if (platform !== 'win32') await chmod(filePath, 0o600);
+      await assertFallbackFileSafe(filePath, { platform, execFile });
     },
     async delete(environment) {
       const secrets = await readSecretsFile(filePath, { platform, execFile });
@@ -74,6 +75,7 @@ export function createFallbackSecretStore({
       await mkdir(profileDir, { recursive: true });
       await writeFile(filePath, `${JSON.stringify(secrets, null, 2)}\n`, { mode: 0o600 });
       if (platform !== 'win32') await chmod(filePath, 0o600);
+      await assertFallbackFileSafe(filePath, { platform, execFile });
     },
   };
 }
@@ -104,11 +106,7 @@ export function isWindowsAclSafeFromIcacls(output) {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  return !lines.some((line) => {
-    const broadPrincipal = BROAD_WINDOWS_PRINCIPALS.some((principal) => line.includes(principal));
-    const broadPermission = /\((?:[^)]*,)?[fmw](?:,[^)]*)?\)/i.test(line);
-    return broadPrincipal && broadPermission;
-  });
+  return !lines.some((line) => BROAD_WINDOWS_PRINCIPALS.some((principal) => line.includes(principal)) && /\([^)]+\)/.test(line));
 }
 
 export function parseSecretName(environment) {

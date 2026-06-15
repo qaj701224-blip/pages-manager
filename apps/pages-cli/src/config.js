@@ -31,7 +31,8 @@ export function readCliConfig(env = {}, options = {}) {
   const apiBaseUrl = validateTrustedOrigin(options.apiBaseUrl || env.PAGES_API_BASE, { environment });
   const authBaseUrl = validateTrustedOrigin(options.authBaseUrl || env.PAGES_AUTH_BASE, { environment });
   const siteDomainSuffix = normalizeSiteDomainSuffix(
-    options.siteDomainSuffix || env.PAGES_SITE_DOMAIN_SUFFIX || new URL(apiBaseUrl).hostname
+    options.siteDomainSuffix || env.PAGES_SITE_DOMAIN_SUFFIX || new URL(apiBaseUrl).hostname,
+    { environment }
   );
   return {
     environment,
@@ -73,13 +74,14 @@ function isLoopbackHost(hostname) {
   return (
     normalized === 'localhost' ||
     normalized === '127.0.0.1' ||
+    normalized === '127.0.0.1.nip.io' ||
     normalized === '[::1]' ||
     normalized === '::1' ||
     normalized.endsWith('.127.0.0.1.nip.io')
   );
 }
 
-function normalizeSiteDomainSuffix(value) {
+function normalizeSiteDomainSuffix(value, { environment } = {}) {
   const suffix = String(value || '')
     .trim()
     .toLowerCase();
@@ -87,5 +89,6 @@ function normalizeSiteDomainSuffix(value) {
   if (suffix === 'workers.xd.team' || suffix.endsWith('.workers.xd.team')) {
     throw new Error('workers.xd.team is a v1 domain and is not supported by the v2 CLI.');
   }
+  if (environment === 'custom' && !isLoopbackHost(suffix)) throw new Error('Pages custom site suffix must be loopback.');
   return suffix;
 }

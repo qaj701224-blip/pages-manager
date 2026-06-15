@@ -69,6 +69,19 @@ test('allows loopback custom endpoints for local development', () => {
   );
 });
 
+test('rejects custom site domain suffix outside loopback allowlist', () => {
+  assert.throws(
+    () =>
+      readCliConfig({
+        PAGES_CLI_ENV: 'custom',
+        PAGES_API_BASE: 'http://127.0.0.1:8787',
+        PAGES_AUTH_BASE: 'http://127.0.0.1:8787',
+        PAGES_SITE_DOMAIN_SUFFIX: 'pages.example.com',
+      }),
+    /custom site suffix must be loopback/
+  );
+});
+
 test('normalizes safe origins and rejects paths, credentials, and unsupported protocols', () => {
   assert.equal(
     validateTrustedOrigin('https://api.pages.xd.team/', { environment: 'production', fixed: true }),

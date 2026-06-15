@@ -90,6 +90,10 @@ test('browser login opens authorize URL, polls, and stores CLI token once confir
   assert.equal(output.join('\n').includes('sec_1'), false);
   assert.equal(output.join('\n').includes('cli_token_secret'), false);
   assert.match(output.join('\n'), /12345678/);
+  assert.match(output.join('\n'), /production/);
+  assert.match(output.join('\n'), /auth\.pages\.xd\.team/);
+  assert.match(output.join('\n'), /api\.pages\.xd\.team/);
+  assert.match(output.join('\n'), /cli_token/);
 });
 
 test('browser login respects --no-open and fails on expiry', async () => {

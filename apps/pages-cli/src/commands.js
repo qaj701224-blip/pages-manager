@@ -86,7 +86,7 @@ async function runDeploy(parsed, context) {
   const artifactKind = parsed.flags.artifactKind || context.project?.defaultArtifactKind || (await inferArtifactKind(targetPath));
   if (!VALID_ARTIFACT_KINDS.has(artifactKind)) throw new Error('ARTIFACT_KIND_INVALID');
 
-  const projectForEnvironment = context.project?.environment === config.environment ? context.project : null;
+  const projectForEnvironment = getProjectForEnvironment(context.project, config.environment);
   let siteId = parsed.flags.site || projectForEnvironment?.siteId || null;
   let project = projectForEnvironment || null;
   if (!siteId) {
@@ -146,7 +146,8 @@ async function runStatus(parsed, context) {
     return 0;
   }
 
-  const siteId = parsed.flags.site || context.project?.siteId;
+  const projectForEnvironment = getProjectForEnvironment(context.project, config.environment);
+  const siteId = parsed.flags.site || projectForEnvironment?.siteId;
   if (!siteId) throw new Error('SITE_REQUIRED');
   const result = await client.requestApi('GET', `/.xd-pages/api/sites/${encodeURIComponent(siteId)}`);
   context.output(JSON.stringify(result));
@@ -173,7 +174,7 @@ async function runRollback(parsed, context) {
 
 async function runOpen(parsed, context) {
   const config = readConfigForCommand(parsed, context);
-  const url = siteUrlForProject(context.project, config);
+  const url = siteUrlForProject(getProjectForEnvironment(context.project, config.environment), config);
   if (parsed.flags.print) {
     context.output(url);
     return 0;
@@ -220,6 +221,11 @@ async function runEnv(parsed, context) {
   }
 
   throw new Error('ENV_COMMAND_INVALID');
+}
+
+function getProjectForEnvironment(project, environment) {
+  if (!project) return null;
+  return project.environment === environment ? project : null;
 }
 
 function readConfigForCommand(parsed, context) {

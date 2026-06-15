@@ -122,6 +122,22 @@ test('status and rollback call v2 API with the stored credential', async () => {
   assert.equal(calls[1].headers.get('Idempotency-Key'), 'rb_1');
 });
 
+test('status does not reuse a project binding from a different environment', async () => {
+  const dir = await tempProject();
+  await writeProjectConfig(dir, { version: 1, environment: 'production', siteId: 'site_prod', slug: 'docs' });
+
+  await assert.rejects(
+    () =>
+      executeCommand(['status', '--env', 'staging'], {
+        cwd: dir,
+        env: { PAGES_ACCESS_KEY: 'xdpak_staging_ak_1_secret' },
+        fetch: fakeFetch([], [{ site: { id: 'site_prod' } }]),
+        output: () => {},
+      }),
+    /SITE_REQUIRED/
+  );
+});
+
 test('open prints project URL without network when requested', async () => {
   const dir = await tempProject();
   await writeProjectConfig(dir, { version: 1, environment: 'staging', siteId: 'site_1', slug: 'docs' });
@@ -138,6 +154,20 @@ test('open prints project URL without network when requested', async () => {
   assert.equal(exitCode, 0);
   assert.deepEqual(output, ['https://docs-staging.pages.xd.team']);
   assert.deepEqual(opened, []);
+});
+
+test('open does not reuse a project binding from a different environment', async () => {
+  const dir = await tempProject();
+  await writeProjectConfig(dir, { version: 1, environment: 'production', siteId: 'site_prod', slug: 'docs' });
+
+  await assert.rejects(
+    () =>
+      executeCommand(['open', '--env', 'staging', '--print'], {
+        cwd: dir,
+        output: () => {},
+      }),
+    /SITE_BINDING_REQUIRED/
+  );
 });
 
 test('env commands list, switch, and reject unsafe custom endpoints', async () => {

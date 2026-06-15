@@ -45,6 +45,10 @@ export async function loginWithBrowser({
     fetch,
   });
 
+  output(`Environment: ${config.environment}`);
+  output(`API: ${config.apiBaseUrl}`);
+  output(`Auth: ${config.authBaseUrl}`);
+  output('Scope: cli_token');
   const start = await client.requestAuth('POST', '/.xd-pages/cli/login/start');
   assertLoginStart(start);
   output(`Device code: ${start.deviceCode}`);

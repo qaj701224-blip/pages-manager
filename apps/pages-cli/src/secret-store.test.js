@@ -56,6 +56,39 @@ C:\\Users\\alice\\AppData\\Roaming\\xd-pages\\credentials.json NT AUTHORITY\\Aut
   );
 });
 
+test('Windows ACL parser rejects broad read principals for fallback secrets', () => {
+  assert.equal(
+    isWindowsAclSafeFromIcacls(`
+C:\\Users\\alice\\AppData\\Roaming\\xd-pages\\credentials.json Everyone:(R)
+`),
+    false
+  );
+  assert.equal(
+    isWindowsAclSafeFromIcacls(`
+C:\\Users\\alice\\AppData\\Roaming\\xd-pages\\credentials.json BUILTIN\\Users:(RX)
+`),
+    false
+  );
+});
+
+test('Windows fallback store rejects unsafe ACL after writing secrets', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-secret-win-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  const store = createSecretStore({
+    profileDir: dir,
+    platform: 'win32',
+    prefer: 'fallback',
+    execFile: async () => ({
+      stdout: 'C:\\Users\\alice\\AppData\\Roaming\\xd-pages\\credentials.json Everyone:(R)',
+    }),
+  });
+
+  await assert.rejects(
+    () => store.set('production', { type: 'cli_token', value: 'cli_secret' }),
+    /SECRET_FILE_PERMISSIONS_UNSAFE/
+  );
+});
+
 test('secret names are environment scoped and reject unsafe values', () => {
   assert.equal(parseSecretName('production'), 'xd-pages:production');
   assert.throws(() => parseSecretName('prod/../../x'), /SECRET_NAME_INVALID/);
