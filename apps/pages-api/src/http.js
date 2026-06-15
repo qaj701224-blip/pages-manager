@@ -15,7 +15,7 @@ export async function readJsonBody(request, { maxBytes = 1024 * 1024 } = {}) {
   if (!isJsonContentType(contentType)) throw new Error('JSON content type is required');
 
   const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > maxBytes) throw new Error('JSON body is too large');
+  if (new globalThis.TextEncoder().encode(text).byteLength > maxBytes) throw new Error('JSON body is too large');
 
   try {
     const parsed = JSON.parse(text || '{}');

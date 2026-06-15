@@ -1,4 +1,4 @@
-const encoder = new TextEncoder();
+const encoder = new globalThis.TextEncoder();
 
 const ENVIRONMENT_KEY_PREFIX = {
   production: 'prod',
