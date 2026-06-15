@@ -502,6 +502,10 @@ DO_NAMESPACE_ID_*
 
 如果公司规范认为 Cloudflare account id、zone id、D1/KV id 或 dispatch namespace 非 secret，也仍建议在本 public repo 标准下至少不要把真实资源 id 写进代码、文档和测试快照。`WFP_DISPATCH_NAMESPACE` 名称本身不是凭证，但它是强环境边界，必须按 environment 固定和校验。
 
+v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 `apps/pages-api`、`apps/pages-auth`、`apps/pages-router`，不部署 v1 `apps/server`、`apps/kv-gateway`、ACK、用户站点或发布执行器。
+
+v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 只注入 `PAGES_SESSION_JWT_SECRET_*`。
+
 ### 配置校验
 
 部署脚本必须 fail closed：

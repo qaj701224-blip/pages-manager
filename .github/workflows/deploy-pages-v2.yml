@@ -1,0 +1,172 @@
+name: Deploy Pages V2 Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Deploy v2 component
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - pages-api
+          - pages-auth
+          - pages-router
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_COMPONENT: ${{ github.event_name == 'workflow_dispatch' && inputs.component || 'all' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+
+      - name: Generate Pages API Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ secrets.PAGES_V2_D1_DATABASE_ID }}
+          ROUTE_SNAPSHOTS_KV_ID: ${{ secrets.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
+          WFP_COMPATIBILITY_DATE: ${{ vars.WFP_COMPATIBILITY_DATE }}
+          ACCESS_KEY_ACTIVE_PEPPER_ID: ${{ vars.ACCESS_KEY_ACTIVE_PEPPER_ID }}
+          ACCESS_KEY_PEPPERS: ${{ vars.ACCESS_KEY_PEPPERS }}
+        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-api production
+
+      - name: Generate Pages Auth Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ vars.PAGES_SESSION_JWT_ACTIVE_KID }}
+          PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
+          SSO_AUTHORIZATION_URL: ${{ vars.SSO_AUTHORIZATION_URL }}
+          SSO_TOKEN_URL: ${{ vars.SSO_TOKEN_URL }}
+          SSO_PROFILE_URL: ${{ vars.SSO_PROFILE_URL }}
+          SSO_CLIENT_ID: ${{ vars.SSO_CLIENT_ID }}
+          SSO_ALLOWED_USER_SCOPE: ${{ vars.SSO_ALLOWED_USER_SCOPE }}
+          OAUTH_STATE_TTL_SECONDS: ${{ vars.OAUTH_STATE_TTL_SECONDS }}
+          CLI_LOGIN_TTL_SECONDS: ${{ vars.CLI_LOGIN_TTL_SECONDS }}
+          AUTH_SESSION_IDLE_TTL_SECONDS: ${{ vars.AUTH_SESSION_IDLE_TTL_SECONDS }}
+          AUTH_SESSION_ABSOLUTE_TTL_SECONDS: ${{ vars.AUTH_SESSION_ABSOLUTE_TTL_SECONDS }}
+          SITE_SESSION_IDLE_TTL_SECONDS: ${{ vars.SITE_SESSION_IDLE_TTL_SECONDS }}
+          SITE_SESSION_ABSOLUTE_TTL_SECONDS: ${{ vars.SITE_SESSION_ABSOLUTE_TTL_SECONDS }}
+        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-auth production
+
+      - name: Generate Pages Router Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ROUTE_SNAPSHOTS_KV_ID: ${{ secrets.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ vars.PAGES_SESSION_JWT_ACTIVE_KID }}
+          PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
+          ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
+          ROUTE_CACHE_TTL_SECONDS: ${{ vars.ROUTE_CACHE_TTL_SECONDS }}
+          SITE_SESSION_IDLE_TTL_SECONDS: ${{ vars.SITE_SESSION_IDLE_TTL_SECONDS }}
+          SITE_SESSION_FRESHNESS_TTL_SECONDS: ${{ vars.SITE_SESSION_FRESHNESS_TTL_SECONDS }}
+          INTERNAL_WORKER_JWT_TTL_SECONDS: ${{ vars.INTERNAL_WORKER_JWT_TTL_SECONDS }}
+        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router production
+
+      - name: Validate Pages API secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          ACCESS_KEY_ACTIVE_PEPPER_ID: ${{ vars.ACCESS_KEY_ACTIVE_PEPPER_ID }}
+          ACCESS_KEY_PEPPERS: ${{ vars.ACCESS_KEY_PEPPERS }}
+          # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
+          ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
+        run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-api
+
+      - name: Validate Pages Auth secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
+        env:
+          SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ vars.PAGES_SESSION_JWT_ACTIVE_KID }}
+          PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+        run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-auth
+
+      - name: Validate Pages Router secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ vars.PAGES_SESSION_JWT_ACTIVE_KID }}
+          PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+        run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-router
+
+      - name: Deploy Pages API
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/pages-api exec wrangler deploy
+
+      - name: Inject Pages API secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          ACCESS_KEY_ACTIVE_PEPPER_ID: ${{ vars.ACCESS_KEY_ACTIVE_PEPPER_ID }}
+          ACCESS_KEY_PEPPERS: ${{ vars.ACCESS_KEY_PEPPERS }}
+          # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
+          ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/pages-api
+
+      - name: Deploy Pages Auth
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/pages-auth exec wrangler deploy
+
+      - name: Inject Pages Auth secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ vars.PAGES_SESSION_JWT_ACTIVE_KID }}
+          PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/pages-auth
+
+      - name: Deploy Pages Router
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/pages-router exec wrangler deploy
+
+      - name: Inject Pages Router secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ vars.PAGES_SESSION_JWT_ACTIVE_KID }}
+          PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/pages-router

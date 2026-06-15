@@ -15,6 +15,11 @@ const deployWorkflows = [
   ['staging', '.github/workflows/deploy-staging.yml'],
 ];
 
+const pagesV2DeployWorkflows = [
+  ['production', '.github/workflows/deploy-pages-v2.yml', 'production'],
+  ['staging', '.github/workflows/deploy-pages-v2-staging.yml', 'staging'],
+];
+
 const publishingExecutorWorkflows = [
   ['project index', '.github/workflows/project-index.yml'],
   ['pages agent', '.github/workflows/pages-agent.yml'],
@@ -217,6 +222,83 @@ test('deploy workflows inject all capability secrets from the key registry', () 
       `${name} does not hard-code one capability secret injection`,
     );
   }
+});
+
+test('pages v2 deploy workflows keep production manual and staging scoped to v2 files', () => {
+  const production = readWorkflow('.github/workflows/deploy-pages-v2.yml');
+  const staging = readWorkflow('.github/workflows/deploy-pages-v2-staging.yml');
+  const productionTriggers = production.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
+
+  assert.match(productionTriggers, /^ {2}workflow_dispatch:/m, 'pages v2 production deploy is manual');
+  assert.doesNotMatch(
+    productionTriggers,
+    /^ {2}(?!workflow_dispatch:)\S/m,
+    'pages v2 production has no non-manual trigger',
+  );
+  assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]/, 'pages v2 staging deploys on staging push');
+  assert.match(staging, /- 'apps\/pages-api\/\*\*'/);
+  assert.match(staging, /- 'apps\/pages-auth\/\*\*'/);
+  assert.match(staging, /- 'apps\/pages-router\/\*\*'/);
+  assert.match(staging, /- 'packages\/wfp-client\/\*\*'/);
+  assert.doesNotMatch(staging, /sites\/\*\*/);
+});
+
+test('pages v2 deploy workflows expose only v2 component choices', () => {
+  for (const [name, path] of pagesV2DeployWorkflows) {
+    const workflow = readWorkflow(path);
+
+    assert.match(workflow, /workflow_dispatch:\n(?: {4}.+\n)* {4}inputs:/, `${name} has workflow_dispatch inputs`);
+    assert.match(workflow, /component:\n(?: {8}.+\n)* {8}type: choice/, `${name} component is a choice`);
+    assert.match(workflow, /default: all/, `${name} defaults to all`);
+    assert.match(workflow, /- all/, `${name} supports all deploys`);
+    assert.match(workflow, /- pages-api/, `${name} supports pages-api deploys`);
+    assert.match(workflow, /- pages-auth/, `${name} supports pages-auth deploys`);
+    assert.match(workflow, /- pages-router/, `${name} supports pages-router deploys`);
+    assert.doesNotMatch(workflow, /- server\b|- kv-gateway\b/, `${name} does not expose v1 components`);
+  }
+});
+
+test('pages v2 deploy workflows use explicit v2 templates and secret injection', () => {
+  for (const [name, path, environment] of pagesV2DeployWorkflows) {
+    const workflow = readWorkflow(path);
+
+    assert.match(
+      workflow,
+      new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-api ${environment}`),
+      `${name} renders pages-api ${environment} template`,
+    );
+    assert.match(
+      workflow,
+      new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-auth ${environment}`),
+      `${name} renders pages-auth ${environment} template`,
+    );
+    assert.match(
+      workflow,
+      new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-router ${environment}`),
+      `${name} renders pages-router ${environment} template`,
+    );
+    assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
+    assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
+    assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
+    assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
+    assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
+    assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
+    assert.match(workflow, /pnpm --dir apps\/pages-api exec wrangler deploy/);
+    assert.match(workflow, /pnpm --dir apps\/pages-auth exec wrangler deploy/);
+    assert.match(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
+  }
+});
+
+test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy lanes', () => {
+  const combined = pagesV2DeployWorkflows.map(([, path]) => readWorkflow(path)).join('\n');
+
+  assert.doesNotMatch(combined, /scripts\/gen-wrangler\.sh/);
+  assert.doesNotMatch(combined, /apps\/server|apps\/kv-gateway/);
+  assert.doesNotMatch(combined, /PAGES_CAP_JWT|CF_ZONE_ID_NEW/);
+  assert.doesNotMatch(combined, /docker buildx?|kubectl|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
+  assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
+  assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);
+  assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
 });
 
 test('ack preview deploy is manual and isolated from Cloudflare production deploy', () => {
