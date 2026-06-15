@@ -1600,10 +1600,13 @@ iat / exp
 
 CLI 只适配 v2 `pages.xd.team` 平台。它不发布、不管理、不回退兼容 v1 `workers.xd.team` 站点；v1 继续使用现有 API、skill 和发布流程。
 
+当前 v2 CLI 落地为 `apps/pages-cli` workspace package，bin 名称为 `pages`。CLI 只负责本地 UX、项目绑定、凭据读取、artifact hash 和调用 v2 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
+
 v2 CLI 使用 pages 平台签发的 token，不直接持有心动 SSO `access_token`：
 
 - `pages login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
 - `pages login --env staging` 登录 staging；默认登录 production。
+- `pages login --access-key <key>` 只在用户显式传入 access key 时保存该 access key；普通 deploy 默认也可直接读取 `PAGES_ACCESS_KEY`。
 - CLI token 支持过期、scope、吊销和本地安全存储。
 - CI 默认使用 `access key`，不使用个人浏览器 session。`service token` 只有在后续需要组织级机器人身份时再单独设计，不混入 MVP。
 - CLI token、access key 和本地 profile 必须按 environment 隔离保存，staging token 不能调用 production API。
@@ -1628,7 +1631,7 @@ Secret store:
   CLI token、refresh token、用户明确保存的 access key。
 
 Global config:
-  环境配置、API/auth 域名、默认 env、默认 visibility。
+  默认 env、custom env、最近登录时间等非敏感 profile 元数据。
 
 Project binding:
   当前目录绑定的 site/env/url/version，不保存任何凭证。
@@ -1640,20 +1643,21 @@ Project binding:
 
 ```text
 macOS: Keychain
-Windows: Credential Manager
-Linux: Secret Service / libsecret
+Linux: Secret Service / libsecret（当前实现通过 secret-tool opt-in）
+Windows: 后续可接 Credential Manager / DPAPI；当前实现必须走安全 fallback ACL 检查
 CI: environment variables
 fallback:
-  Unix: ~/.xd-pages/secrets.json, chmod 0600
-  Windows: %USERPROFILE%\.xd-pages\secrets.json, ACL 当前用户 only
+  macOS/Linux: $XDG_CONFIG_HOME/xd-pages/credentials.json 或 ~/.config/xd-pages/credentials.json, chmod 0600
+  Windows: %APPDATA%\xd-pages\credentials.json, ACL 当前用户 only
 ```
 
 secret key 必须带 environment：
 
 ```text
-xd-pages:production:cli_token
-xd-pages:staging:cli_token
-xd-pages:local:cli_token
+xd-pages:production
+xd-pages:staging
+xd-pages:local
+xd-pages:custom
 ```
 
 Windows fallback 文件没有 `chmod 0600` 语义，CLI 必须检查 ACL：只允许当前 Windows 用户读写，不允许 `Everyone` 或普通 `Users` 组读取。不满足时拒绝读取 secret，或提示用户执行修复命令。
@@ -1664,72 +1668,58 @@ access key 默认只通过环境变量传入：
 PAGES_ACCESS_KEY=... pages deploy ./dist --name foo
 ```
 
-本地 CLI 不应自动保存 access key。只有用户明确执行类似 `pages access-key use --env staging` 时，才允许写入 secret store，并且必须提示 scope、site 限制和过期时间。
+本地 CLI 不应自动从环境变量持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类命令时，才允许写入 secret store，并且输出不得回显 key 明文。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
 
 #### Global config
 
-全局配置只存非敏感信息。建议路径：
+全局 profile 只存非敏感信息。当前实现路径：
 
 ```text
-~/.xd-pages/config.json
+macOS/Linux: $XDG_CONFIG_HOME/xd-pages/profile.json 或 ~/.config/xd-pages/profile.json
+Windows: %APPDATA%\xd-pages\profile.json
 ```
 
 示例：
 
 ```json
 {
-  "currentEnv": "production",
-  "defaults": {
-    "visibility": "org"
-  },
-  "envs": {
+  "activeEnvironment": "production",
+  "environments": {
     "production": {
-      "apiBase": "https://api.pages.xd.team",
-      "authBase": "https://auth.pages.xd.team",
-      "siteSuffix": "pages.xd.team"
+      "credentialType": "cli_token",
+      "lastLoginAt": "2026-06-15T00:00:00.000Z"
     },
-    "staging": {
-      "apiBase": "https://api-staging.pages.xd.team",
-      "authBase": "https://auth-staging.pages.xd.team",
-      "siteSuffix": "-staging.pages.xd.team"
-    }
-  },
-  "profiles": {
-    "production": {
-      "userId": "usr_xxx",
-      "email": "user@example.com",
-      "expiresAt": "2026-07-15T00:00:00.000Z"
+    "custom": {
+      "environment": "custom",
+      "apiBaseUrl": "http://127.0.0.1:8787",
+      "authBaseUrl": "http://127.0.0.1:8787",
+      "siteDomainSuffix": "127.0.0.1.nip.io"
     }
   }
 }
 ```
 
-`profiles` 只用于本地显示和用户体验，服务端不能信任。真实权限只看 CLI token、access key 和服务端存储。
+profile 只用于本地显示和用户体验，服务端不能信任。真实权限只看 CLI token、access key 和服务端存储。profile 禁止出现 token、access key、cookie、Cloudflare id、SSO secret 或 capability。
 
 CLI 可以支持：
 
 ```bash
 pages env list
 pages env use staging
-pages env add local --api http://127.0.0.1:8787 --auth http://127.0.0.1:8788 --site-suffix localhost
-pages env inspect staging
-pages config get
-pages config set defaults.visibility org
+pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 ```
 
-内置 `production` / `staging` 是 v2 固定环境，不能被 `config set` 或普通 override 改写。需要调试时新增 v2 custom env，例如 `local`。custom env 只允许两类目标：
+内置 `production` / `staging` 是 v2 固定环境，不能被本地 profile、环境变量或普通 override 改写。`local` 也是固定本地 SSO 开发入口：`http://xd-pages.127.0.0.1.nip.io:8787`。需要更灵活调试时使用 `custom`。当前 M4 实现先只允许 custom 指向 loopback：
 
 - 本机开发：`localhost` / `127.0.0.1` / `::1`，可使用 HTTP。
-- 明确 allowlist 的 v2 测试域：例如公司批准的 `*.pages.xd.team` 或专用测试后缀，必须使用 HTTPS。
 
-custom env 不能作为 v1 `workers.xd.team` 兼容入口，也不能指向任意第三方 host。CLI 必须内置或从受信配置读取 custom env domain allowlist；用户本地 config 不能自行扩大 allowlist。
+如果后续要允许公司专用 v2 测试域，必须由 CLI 内置或受信发布配置提供 allowlist；用户本地 profile 不能自行扩大 allowlist。custom env 不能作为 v1 `workers.xd.team` 兼容入口，也不能指向任意第三方 host。
 
 env 安全规则：
 
 - production/staging 不可变，固定指向 `api.pages.xd.team`、`auth.pages.xd.team`、`api-staging.pages.xd.team`、`auth-staging.pages.xd.team` 和对应 site suffix。
 - 登录前必须展示将要打开的 auth host、API host、environment 和请求 scope。
-- API host 变化后，旧 token 不自动复用，除非服务端 `/openapi.json` 返回的 `environment`、`issuer`、`audience`、`siteSuffix` 和 CLI env 全部匹配。
-- `public-docs` 的 environment 必须与 CLI env 一致，否则 fail closed。
+- API host 变化后，旧 token 不自动复用；credential key 以 environment 隔离。
 - 如果 API/auth/site suffix 指向 `workers.xd.team` 或不在 custom env allowlist 中，CLI 应直接拒绝，并提示用户该 host 不属于 v2 CLI 信任域。
 
 #### Project binding `.pages.json`
@@ -1745,32 +1735,22 @@ env 安全规则：
 
 `.pages.json` 只描述 v2 `pages.xd.team` 站点绑定。CLI 读取到 `workers.xd.team` URL 或 v1 API 配置时必须 fail closed，不能把旧项目配置“自动升级”为 v2，也不能反向操作 v1 站点。
 
-推荐支持一项目多环境：
+当前 M4 实现使用 flat v1 binding，表示“当前目录在某个 environment 下的默认绑定”：
 
 ```json
 {
-  "schemaVersion": 1,
-  "defaultEnv": "staging",
-  "sites": {
-    "production": {
-      "slug": "foo",
-      "siteId": "site_xxx",
-      "url": "https://foo.pages.xd.team",
-      "lastDeploymentId": "dep_prod_xxx",
-      "lastVersionId": "ver_prod_xxx",
-      "updatedAt": "2026-06-15T00:00:00.000Z"
-    },
-    "staging": {
-      "slug": "foo",
-      "siteId": "site_xxx",
-      "url": "https://foo-staging.pages.xd.team",
-      "lastDeploymentId": "dep_stg_xxx",
-      "lastVersionId": "ver_stg_xxx",
-      "updatedAt": "2026-06-15T00:00:00.000Z"
-    }
-  }
+  "version": 1,
+  "environment": "production",
+  "siteId": "site_xxx",
+  "slug": "foo",
+  "defaultArtifactKind": "spa",
+  "lastDeploymentId": "dep_xxx",
+  "lastVersionId": "ver_xxx",
+  "updatedAt": "2026-06-15T00:00:00.000Z"
 }
 ```
+
+CLI 显式指定 `--env staging` 时，如果当前 `.pages.json` 是 production 绑定，不能复用 production `siteId` 调 staging API；它应当使用 slug 创建或绑定 staging 站点，或提示用户补充目标。未来如果需要同一目录同时持有 production/staging 两套绑定，应升级为 `version: 2` 的 multi-env schema，并保留迁移测试。
 
 `.pages.json` 禁止存：
 
@@ -1783,28 +1763,29 @@ env 安全规则：
 CLI 日常命令契约建议：
 
 ```bash
-pages init                      # 生成或更新 .pages.json，不创建远端站点
-pages bind --site foo --env staging
-pages unbind --env staging
-pages status                    # 读取 .pages.json 默认 env + 远端状态
-pages open                      # 打开当前 env 的站点 URL
-pages deploy ./dist --name foo  # 成功后写回 .pages.json 对应 env 的 lastDeploymentId / lastVersionId
-pages rollback --version ver_xxx
+pages login [--env staging] [--access-key <key>] [--no-open]
+pages deploy ./dist --slug foo --visibility org
+pages status [--site site_xxx] [--deployment dep_xxx]
+pages rollback ver_xxx
+pages open [--print]
+pages env list
+pages env use staging
+pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 ```
 
 配置优先级从高到低：
 
 ```text
 显式 CLI 参数
-  > 环境变量，例如 PAGES_ENV / PAGES_API / PAGES_ACCESS_KEY
-  > 当前目录 .pages.json 的 defaultEnv 和 sites[env]
-  > ~/.xd-pages/config.json 的 currentEnv/defaults
+  > 环境变量，例如 PAGES_CLI_ENV / PAGES_ACCESS_KEY
+  > 当前目录 .pages.json 的 environment/siteId/slug
+  > profile.json 的 activeEnvironment/custom env
   > CLI 内置 production 默认值
 ```
 
 如果远端站点被重命名、删除或当前用户失去权限，CLI 必须停止自动部署，提示用户重新 `pages bind` 或选择新的 site；不能用旧 `.pages.json` 静默创建同名新站。
 
-`.pages.json` 的 `schemaVersion` 必须随不兼容变更递增。CLI 读取未知 schema version 时不能静默忽略，应提示升级 CLI 或重新执行 `pages init` / `pages bind`。
+`.pages.json` 的 `version` 必须随不兼容变更递增。CLI 读取未知 version 时不能静默忽略，应提示升级 CLI 或重新绑定项目。
 
 ### 最小 API 契约
 

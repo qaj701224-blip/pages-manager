@@ -101,24 +101,25 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 
 ### M4. CLI v2-only
 
-实现 v2 `pages` CLI 行为。
+实现 v2 `pages` CLI 行为。当前落地包为 `apps/pages-cli`，bin 为 `pages`。
 
 职责：
 
 - 支持 `pages login` 浏览器登录和轮询领取 CLI token。
-- 支持 `PAGES_ACCESS_KEY` 用于 CI / agent。
+- 支持 `pages login --access-key <key>` 显式保存 access key，以及 `PAGES_ACCESS_KEY` 用于 CI / agent。
 - 支持 `pages deploy`、`pages status`、`pages rollback`、`pages open`、`pages env`。
-- 支持 `.pages.json` 项目绑定。
-- 使用 OS secret store；fallback 文件必须校验权限。
+- 支持 `.pages.json` flat v1 项目绑定；跨 environment 时不能复用其它环境的 `siteId`。
+- 使用 OS secret store；fallback 文件必须校验 POSIX mode 或 Windows ACL。
 - 内置 production/staging 只指向 `pages.xd.team`。
 
 验收：
 
 - CLI 指向 `workers.xd.team` 时直接拒绝。
 - production/staging env 不可被用户本地 config override。
-- custom env 只能指向 localhost 或受信 allowlist 中的 v2 测试域，不能把 token/access key 发往任意第三方 host。
+- custom env 第一版只能指向 localhost / loopback；未来如需公司 v2 测试域，必须由受信 allowlist 扩展，不能把 token/access key 发往任意第三方 host。
 - production/staging token、profile 和 access key 隔离。
 - `.pages.json` 不存 token、cookie、Cloudflare id、SSO secret 或 capability。
+- `pages deploy --env staging` 不能复用 production `.pages.json` 的 `siteId`。
 - Windows fallback secret 文件 ACL 不安全时拒绝读取。
 - v2 AI skill 只调用 CLI，不手写 API 请求。
 
