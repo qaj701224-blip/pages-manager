@@ -29,7 +29,7 @@
 - GitHub webhook 已切到 `https://tableau.tapdb.com:6443/integrations/github/webhook`，GitHub ping delivery 返回 200。
 - Slack Events endpoint 已用签名模拟 `url_verification` 验证通过；公司反代白名单修复后，应继续保持 Slack 签名 header 透传。
 - Slack Agent 已在 ECS 内调用公司模型网关成功，模型名使用 `gpt-5.5`。
-- 2026-06-15 ECS 已部署镜像 tag `ecs-slack-card-only-20260615162046`，包含 Slack 确认按钮流程、用户可见文案清理和卡片-only 进度更新。
+- 2026-06-15 ECS 当前运行镜像 tag `ecs-slack-reaction-settle-20260615180743`。当前主线不保留 worker readiness gate，关注 Slack 确认按钮流程、用户可见文案清理、卡片-only 进度更新、follow-up 二次修改卡片反馈修复、fixing 中继续追加修改的排队保护，以及用户消息 reaction 从 `eyes` 结算为 done 的体验。
 - Slack Events endpoint 和 Interactivity endpoint 已用真实签名通过公网验证：
   - `https://tableau.tapdb.com:6443/integrations/slack/events`
   - `https://tableau.tapdb.com:6443/integrations/slack/interactions`
@@ -39,7 +39,9 @@
 - 当前 preview deploy 使用 `PAGES_PREVIEW_MODE=local_deploy`，由 ECS `pages-worker` 调用 `https://api-staging.workers.xd.team/deploy`，不是 GitHub-hosted runner 直接调用。
 - 2026-06-15 签名模拟 Slack event 已在 ECS 上跑通到真实 preview：issue `#53`、PR `#54`、preview `https://pm-pr-54-smoke-profile-staging.workers.xd.team`。
 - 2026-06-15 真实 Slack 确认按钮链路已跑通到 preview：issue `#61`、PR `#62`、preview `https://pm-pr-62-xiaoyi-1pdp8m-profile-real-slack-identity-staging.workers.xd.team`。
-- Slack 正常进度通知已收敛为同一张状态卡片持续更新。`已创建 issue`、`已创建 PR`、`Preview 已生成` 等普通进度消息默认不再单独发送；只有失败、关闭会话、权限错误、重复确认等需要用户明确看到的情况才会额外提示。需要临时恢复普通进度消息时，可在运行环境设置 `SLACK_PLAIN_PROGRESS_MESSAGES=true`。
+- Slack 正常进度通知已收敛为同一张状态卡片持续更新。`已创建 issue`、`已创建 PR`、`Preview 已生成` 等普通进度消息默认不再单独发送；只有失败、关闭会话、权限错误、重复确认等需要用户明确看到的情况才会额外提示。用户发来的每轮消息会先加 working reaction，短回复完成后直接换成 done；长任务会在 Preview 完成后把关联消息换成 done。需要临时恢复普通进度消息时，可在运行环境设置 `SLACK_PLAIN_PROGRESS_MESSAGES=true`。
+- 已修复 ECS MySQL 环境下 `LIMIT ? OFFSET ?` prepared statement 不兼容导致 Slack reaction settlement 500 的问题；列表查询现在使用经过范围约束的整数分页 SQL。已对卡住的 follow-up delivery 做幂等补偿，状态从 `working` 更新为 `done`，done reaction 为 `done-e`。
+- 针对 GitHub Review Agent 偶发只给 `eyes` reaction、没有最终评论的问题，gateway 已新增 Review gate watchdog。默认每 30 秒扫描 `pr_created/reviewing` 任务；如果当前 PR head 的 `site-check` 已通过、没有 blocking/unknown review comment，且 Review Agent 超过 180 秒仍没有返回最终评论，gateway 会记录一条 `pages-review-watchdog` 兜底 Review 结果，更新 Slack 状态卡，并继续触发 Preview。这个机制避免任务无限停在“等待 Agent Review”。
 
 当前不能宣称“完整生产化跑通”的原因是：
 
@@ -63,6 +65,7 @@
   -> Coding Agent 只写入允许的网站目录
   -> GitHub Actions 创建或更新 PR
   -> site-check 和 GitHub Review Agent 结果被平台监听
+  -> Review Agent 未返回时由 gateway watchdog 给出明确兜底结果
   -> 通过检查后发布 preview
   -> Slack thread 收到状态更新和 preview URL
 ```
@@ -382,6 +385,7 @@ Coding Agent 职责：
 - 只在允许的网站目录下生成或更新文件。
 - 创建或更新 PR。
 - 在 fix mode 下根据 review comment 修改已有站点。
+- 当前已有 Review Agent comment -> gateway webhook -> worker -> Coding Agent fix mode 的基础链路，但还不是完整的逐条 comment 闭环管理。
 
 当前边界：
 
@@ -389,6 +393,8 @@ Coding Agent 职责：
 - GitHub Actions 负责执行一次性 Coding Agent。
 - GitHub Review Agent comment 通过 GitHub webhook 被 gateway 监听。
 - site-check 是 preview 放行门禁。
+- 后续需要补齐 Review comment 级别的状态跟踪和幂等：记录每条 comment 的处理状态，避免重复处理同一条 comment；多条 comment 同时出现时按 PR / job 串行修复；修复后在对应 comment 下回复“已处理”或触发重新 review。
+- 后续需要把 Slack follow-up 和 Review Agent comment 统一成同一条 per job / PR 的修复队列。当前两者都可能影响同一个 PR，但还没有明确的冲突合并策略；应保证同一 job 同一时间只有一个 Coding Agent fix round 在跑，后续新增的用户修改或 review comment 进入 pending 队列。
 - 本地已修复 Coding Agent 请求公司模型时默认携带 `temperature` 的问题；该修复必须提交并推送到 workflow 使用的分支后，GitHub Actions 才会生效。
 - GitHub Actions 变量里的 `AGENT_MODEL_NAME` 必须使用 `gpt-5.5`，不能继续使用 `codex/gpt-5.5`。
 
@@ -722,7 +728,7 @@ Marker: identity-e2e-002
 - 自然语言里即使写了“信息足够，请直接创建发布任务”，gateway 也不会直接创建 issue。
 - Slack Agent 先整理需求，Slack 返回确认卡片；只有点击确认按钮后才创建 issue。
 - 用户可见 Slack 文案已去掉 `activeJobId`、`sessionKey`、`job_xxx` 等实现细节。
-- 状态卡片使用 `chat.update` 渐进式更新到 Preview；Issue / PR / Preview 链接仍会作为关键节点单独发普通消息。
+- 状态卡片使用 `chat.update` 渐进式更新到 Preview；Issue / PR / Preview 链接进入同一张主卡片，普通进度消息默认不再额外刷屏。
 - 本次 Pages Agent workflow 的代码生成、PR 创建、CI、site-check 都成功；workflow 最终标记为 failure 的直接原因是 callback allowlist 少了 `:6443`，已通过 GitHub Actions repo variable 修复：
   - `PAGES_CALLBACK_ALLOWED_ORIGINS=https://tableau.tapdb.com,https://tableau.tapdb.com:6443`
   - `PAGES_GATEWAY_CALLBACK_URL=https://tableau.tapdb.com:6443/internal/executor-callback`
@@ -730,8 +736,11 @@ Marker: identity-e2e-002
 
 新发现的体验和实现问题：
 
-- Slack 体验应该收敛为同一个 thread 里的同一条状态卡片渐进式更新，而不是每个阶段都追加新的普通消息。当前虽然有状态卡片 `chat.update`，但 issue / PR / preview 仍会额外创建多条消息，信息噪音偏大。
-- Slack 通知顺序存在竞态：job 事件顺序是 `previewing -> preview_deployed`，但 Slack thread 里出现了先发 Preview URL、后发“Review gate 已通过，开始生成 staging Preview”的情况。应该避免 `preview_deployed` 后再用较旧阶段覆盖状态卡，或者在 `local_deploy` 快速完成时跳过迟到的 `previewing` 通知。
+- Slack 体验已收敛为同一个 thread 里的同一张主卡片渐进式更新。卡片展示当前阶段、站点、最终需求、本轮修改、Issue / PR / Preview 链接，不再把 `preview_deployed`、`fixing` 这类内部状态直接展示给用户。
+- Slack 通知顺序仍需要继续观察真实链路；代码侧已经避免普通进度消息刷屏，并保留状态卡 stale stage 防回退保护。
+- Slack follow-up 二次修改实际能触发 Coding Agent fix round。已观察到 job `job_c50f21468189465bbceb32b7` 在 issue `#65` 追加 Slack 修改后触发第二轮 Pages Agent、更新 PR `#66`、重新生成 preview。已补本地修复：新一轮 Slack follow-up 会把同一张状态卡更新为“第 N 轮修改处理中”，卡片保留最终需求和本轮修改；如果 job 已在 `fixing`，新的 Slack 修改只会排队合并，不会并发启动另一个 Coding Agent。
+- Slack reaction 体验已补齐：收到用户消息后加 `eyes`；澄清、状态查询、确认卡片这类短流程完成后立即替换为 done；创建任务或 follow-up 修改这类长流程会保留 `eyes`，直到 `preview_deployed` callback 后替换为 done。ECS 当前通过 `SLACK_DONE_REACTION=done-e` 使用自定义 done 表情，代码默认值仍是 `white_check_mark`。
+- Preview URL 曾出现 Cloudflare `1016 Origin DNS error`，这次实际观察是短暂 DNS 解析延迟，过几秒后可正常访问。当前不在 worker 增加 readiness gate，Slack 卡片仍以 callback 状态为准；如果后续需要更严格的“可访问后再提示”，应作为独立 worker 改造单独评估。
 - `working reaction` 偶发失败，Slack 返回 `message_not_found`。主流程不受影响，但“收到消息后给用户一个表情反馈”的体验还不稳定。
 - 日志出现 `Data too long for column 'slack_user_id'`，疑似 Slack assistant / 特殊事件 payload 的 user 字段不是普通 Slack user id。需要在入库前归一化或对 unsupported event 做安全裁剪。
 

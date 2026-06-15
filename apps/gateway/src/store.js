@@ -250,6 +250,8 @@ export class MemoryGatewayStore {
       slackSessionId: input.slackSessionId || input.slack_session_id || null,
       publishingJobId: input.publishingJobId || input.publishing_job_id || null,
       agentRunId: input.agentRunId || input.agent_run_id || null,
+      payloadRedacted: input.payloadRedacted || input.payload_redacted || input.payloadRedactedJson || null,
+      payloadHash: input.payloadHash || input.payload_hash || null,
       receivedAt: input.receivedAt || input.received_at || now,
       createdAt: now,
       updatedAt: now,

@@ -9,6 +9,7 @@ import {
   handleHealth,
   handleListPublishingJobs,
   handleReady,
+  handleReviewGateReconcile,
   handleSlackEvents,
   handleSlackInteractions,
 } from './handlers.js';
@@ -46,6 +47,7 @@ export function createGatewayApp(options = {}) {
   router.post('/integrations/slack/events', handleSlackEvents);
   router.post('/integrations/slack/interactions', handleSlackInteractions);
   router.post('/internal/executor-callback', handleExecutorCallback);
+  router.post('/internal/review-gate/reconcile', handleReviewGateReconcile);
   router.post('/integrations/github/webhook', handleGithubWebhook);
 
   return {

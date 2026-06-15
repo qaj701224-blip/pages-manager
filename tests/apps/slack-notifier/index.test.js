@@ -199,6 +199,8 @@ test('slack notifier updates an existing status card', async () => {
   assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.update');
   assert.equal(slackRequests[0].request.headers.Authorization, 'Bearer xoxb-test');
   assert.match(JSON.stringify(payload.blocks), /Preview 已生成/);
+  assert.match(JSON.stringify(payload.blocks), /最终需求/);
+  assert.doesNotMatch(JSON.stringify(payload.blocks), /preview_deployed/);
   assert.equal(body.message.messageTs, '1710000001.000100');
 });
 
@@ -249,6 +251,71 @@ test('slack notifier skips stale status card regressions', async () => {
   assert.equal(body.skipped, true);
   assert.equal(body.reason, 'stale_stage');
   assert.deepEqual(slackRequests, []);
+});
+
+test('slack notifier can update a deployed preview card for a new fix round', async () => {
+  const app = createSlackNotifierApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/job-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        job: {
+          id: 'job_1',
+          status: 'fixing',
+          employeeSlug: 'alice',
+          siteSlug: 'profile',
+          summary: '个人主页\n\n## Slack Follow-up\n\n标题改成中文。',
+          slackThread: {
+            channelId: 'C1',
+            threadTs: '1710000000.000100',
+            userId: 'U1',
+          },
+        },
+        options: {
+          stage: 'fixing',
+          allowRegression: true,
+          skipDuplicate: false,
+          cardTitle: '第 1 轮修改处理中',
+          currentChange: '本轮修改：标题改成中文。',
+          statusText: ':hourglass_flowing_sand: 正在更新 PR 和 Preview。',
+        },
+        existingMessage: {
+          channel: 'C1',
+          threadTs: '1710000000.000100',
+          messageTs: '1710000001.000100',
+          stage: 'preview_deployed',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000100' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const payload = JSON.parse(slackRequests[0].request.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.action, 'updated');
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.update');
+  assert.match(JSON.stringify(payload.blocks), /第 1 轮修改处理中/);
+  assert.match(JSON.stringify(payload.blocks), /最终需求/);
+  assert.match(JSON.stringify(payload.blocks), /本轮修改.*标题改成中文。/);
+  assert.doesNotMatch(JSON.stringify(payload.blocks), /Slack Follow-up/);
+  assert.doesNotMatch(JSON.stringify(payload.blocks), /\\nfixing/);
+  assert.equal(body.message.stage, 'fixing');
 });
 
 test('slack notifier renders custom progress text in status cards', async () => {
@@ -368,6 +435,46 @@ test('slack notifier adds working reactions', async () => {
   assert.equal(response.status, 200);
   assert.equal(body.ok, true);
   assert.equal(slackRequests[0].url, 'https://slack.com/api/reactions.add');
+  assert.deepEqual(payload, {
+    channel: 'C1',
+    timestamp: '1710000000.000100',
+    name: 'eyes',
+  });
+});
+
+test('slack notifier removes working reactions', async () => {
+  const app = createSlackNotifierApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/reaction-remove', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        payload: {
+          channel: 'C1',
+          timestamp: '1710000000.000100',
+          name: 'eyes',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }));
+      },
+    }
+  );
+  const body = await json(response);
+  const payload = JSON.parse(slackRequests[0].request.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/reactions.remove');
   assert.deepEqual(payload, {
     channel: 'C1',
     timestamp: '1710000000.000100',
