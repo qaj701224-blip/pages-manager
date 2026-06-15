@@ -18,7 +18,7 @@ import {
   notifySlackJobStatus,
   postSlackMessage,
 } from './slack-notifier.js';
-import { selectSlackSession, slackActorFromBody, surfaceForSlackBody } from './slack-session.js';
+import { selectSlackSession, slackActorFromBody, slackUserIdFromBody, surfaceForSlackBody } from './slack-session.js';
 
 const CALLBACK_STAGE_RESULTS = {
   index_ready: {
@@ -457,7 +457,49 @@ function normalizePublishingJobInput(body, request) {
     title: body.title,
     summary: body.summary || body.brief || '',
     brief: body.brief,
+    requesterProfile: body.requesterProfile || body.requester_profile || null,
   };
+}
+
+function stableSlugHash(value = '') {
+  let hash = 2166136261;
+  for (const char of String(value || '')) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, '0').slice(0, 6);
+}
+
+function slugSegment(value, fallback, maxLength = 48) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replaceAll(/[\u0300-\u036f]/g, '')
+    .replaceAll(/[^a-z0-9]+/g, '-')
+    .replaceAll(/^-+|-+$/g, '')
+    .replaceAll(/-{2,}/g, '-');
+  const slug = normalized || fallback;
+  return slug.slice(0, maxLength).replaceAll(/-+$/g, '') || fallback;
+}
+
+function requesterSlugBase(profileInput = {}, slackUserId) {
+  const profile = profileInput || {};
+  const email = String(profile.email || '')
+    .trim()
+    .toLowerCase();
+  if (email.includes('@')) return email.split('@')[0].split('+')[0];
+  return profile.displayName || profile.display_name || profile.realName || profile.real_name || profile.name || slackUserId;
+}
+
+function employeeSlugForSlack({ teamId, slackUserId, requesterProfile }) {
+  const identityKey = `${teamId || 'unknown-team'}:${slackUserId || 'unknown-user'}`;
+  const suffix = stableSlugHash(identityKey);
+  const base = slugSegment(requesterSlugBase(requesterProfile, slackUserId), 'slack-user', 40);
+  return `${base}-${suffix}`;
+}
+
+function siteSlugForSlack(analysis = {}, body = {}) {
+  return slugSegment(analysis.siteSlug || analysis.site_slug || body.siteSlug || body.site_slug || 'profile', 'profile', 72);
 }
 
 function slackJobInput(body) {
@@ -465,23 +507,25 @@ function slackJobInput(body) {
   const analysis = body.slackAgentAnalysis || {};
   const slackSession = body.slackSession || null;
   const teamId = body.team_id || body.team?.id || 'unknown-team';
-  const slackUserId = event.user || body.user_id || body.user?.id || body.source_user_id || 'unknown-user';
+  const slackUserId = slackUserIdFromBody(body);
   const intake = body.intake || classifySlackIntake(body);
   const surface = surfaceForSlackBody(body);
   const text = intake.text || event.text || body.text || '';
   const idempotencyKey = body.event_id || body.trigger_id || `${teamId}:${event.ts || body.event_ts || Date.now()}`;
+  const requesterProfile = body.requesterProfile || body.requester_profile || null;
 
   return {
     source: 'slack',
     requestedByType: 'user',
     requestedById: `slack:${teamId}:${slackUserId}`,
     idempotencyKey,
-    employeeSlug: analysis.employeeSlug || body.employeeSlug || body.employee_slug || 'smoke',
-    siteSlug: analysis.siteSlug || body.siteSlug || body.site_slug || 'profile',
+    employeeSlug: employeeSlugForSlack({ teamId, slackUserId, requesterProfile }),
+    siteSlug: siteSlugForSlack(analysis, body),
     intent: analysis.intent || 'create_site',
     approvalMode: analysis.approvalMode || body.approvalMode || body.approval_mode || 'manual_required',
     title: body.title || analysis.title || text.slice(0, 80) || 'Slack publishing request',
     summary: body.summary || analysis.summary || text,
+    requesterProfile,
     slackSessionId: slackSession?.id || body.slackSessionId || null,
     slackSessionKey: slackSession?.sessionKey || body.slackSessionKey || null,
     slackThread: {
@@ -586,9 +630,37 @@ function shouldCreateSlackJob(intake, slackAgentAnalysis) {
   return CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent);
 }
 
-function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null) {
+function explicitSlackCreateConfirmation(text = '') {
+  return /(?:信息|需求|内容).{0,8}(?:足够|完整|明确)|(?:直接|马上|现在).{0,8}(?:创建|提交|开始)|(?:确认|可以|同意).{0,8}(?:创建|提交|开始|发布)|(?:创建|提交|开始).{0,8}(?:发布任务|issue|任务)|(?:生成|创建).{0,8}(?:preview|预览)|go ahead|ship it/i.test(
+    text
+  );
+}
+
+function shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis, slackSession) {
+  if (!slackAgentAnalysis || slackAgentAnalysis.needsClarification) return false;
+  if (!CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent)) return false;
+  if (intake.command) return false;
+  if (!['agent_turn', 'create_job'].includes(intake.action)) return false;
+  if (hasActiveSlackTarget(slackSession)) return false;
+  return !explicitSlackCreateConfirmation(intake.text);
+}
+
+function slackIssueConfirmationText(slackAgentAnalysis = {}) {
+  const summary = String(slackAgentAnalysis.summary || '').trim();
+  const site = String(slackAgentAnalysis.siteSlug || slackAgentAnalysis.site_slug || 'profile').trim();
+  const title = String(slackAgentAnalysis.title || '').trim();
+  const lines = ['我先整理一下，目前还不会创建 issue：'];
+  if (title) lines.push(`标题：${title}`);
+  if (site) lines.push(`站点：${site}`);
+  if (summary) lines.push(`需求摘要：${summary}`);
+  lines.push('如果确认无误，请回复“确认创建发布任务”；如果还想调整，直接继续补充需求。');
+  return lines.join('\n');
+}
+
+function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null, options = {}) {
   return redactSecretLikeText(
-    slackAgentAnalysis?.clarifyingQuestion ||
+    (options.preferFallback ? fallbackText : null) ||
+      slackAgentAnalysis?.clarifyingQuestion ||
       slackAgentAnalysis?.clarifying_question ||
       slackAgentAnalysis?.summary ||
       fallbackText ||
@@ -632,7 +704,7 @@ function slackDeliveryContextFromBody(body = {}) {
     eventId: slackEventId(body) || 'unknown-event',
     channelId: surface.channelId || null,
     threadTs: surface.threadTs || surface.messageTs || null,
-    slackUserId: event.user || body.user_id || body.user?.id || body.source_user_id || null,
+    slackUserId: slackUserIdFromBody(body, null),
     requestId: body.event_context || body.trigger_id || null,
   };
 }
@@ -674,9 +746,131 @@ function canSendSlackOutput(env = {}) {
   return Boolean(env.SLACK_BOT_TOKEN || (hasNotifierUrl && hasNotifierSecret));
 }
 
+function slackApiMethodUrl(env = {}, method) {
+  if (env.SLACK_API_BASE_URL) {
+    return `${String(env.SLACK_API_BASE_URL).replace(/\/+$/, '')}/${method}`;
+  }
+
+  return String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, `/${method}`);
+}
+
+function remoteSlackNotifierUrl(env = {}, path) {
+  const base = env.SLACK_NOTIFIER_URL || env.PAGES_SLACK_NOTIFIER_URL;
+  if (!base) return null;
+  return `${String(base).replace(/\/+$/, '')}${path}`;
+}
+
+function remoteSlackNotifierToken(env = {}) {
+  return env.SLACK_NOTIFIER_SHARED_SECRET || env.PAGES_SLACK_NOTIFIER_SHARED_SECRET;
+}
+
+function requesterProfileFromSlackUser(body = {}, slackUser = {}) {
+  const event = body.event || {};
+  const profile = slackUser.profile || {};
+  const slackUserId = slackUser.id || slackUserIdFromBody(body, null);
+  const slackTeamId = slackUser.team_id || body.team_id || body.team?.id || event.team || null;
+  const displayName = profile.display_name || profile.display_name_normalized || null;
+  const realName = profile.real_name || profile.real_name_normalized || slackUser.real_name || null;
+  const name = slackUser.name || profile.name || null;
+
+  return {
+    source: 'slack.users.info',
+    slackTeamId,
+    slackUserId,
+    name,
+    displayName,
+    realName,
+    email: profile.email || null,
+  };
+}
+
+async function fetchSlackRequesterProfileFromNotifier(env = {}, slackUserId) {
+  const url = remoteSlackNotifierUrl(env, '/internal/slack-notifier/user-info');
+  const token = remoteSlackNotifierToken(env);
+  if (!url || !token || !slackUserId) return null;
+
+  const fetchImpl = env.SLACK_NOTIFIER_FETCH || env.SLACK_FETCH || fetch;
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'X-Pages-Slack-Notifier-Token': token,
+    },
+    body: JSON.stringify({ user: slackUserId }),
+  });
+  const body = await response.json().catch(() => null);
+
+  if (!response.ok || body?.ok === false || !body?.profile) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'slack_user_profile_lookup_failed',
+        slackUserId,
+        via: 'slack-notifier',
+        error: body?.error || response.statusText || `HTTP ${response.status}`,
+      })
+    );
+    return null;
+  }
+
+  return body.profile;
+}
+
+async function fetchSlackRequesterProfile(env = {}, body = {}) {
+  if (String(env.SLACK_USER_PROFILE_LOOKUP || 'true').toLowerCase() === 'false') return null;
+
+  const slackUserId = slackUserIdFromBody(body, null);
+  if (!slackUserId) return null;
+
+  const notifierProfile = await fetchSlackRequesterProfileFromNotifier(env, slackUserId);
+  if (notifierProfile) return notifierProfile;
+
+  if (!env.SLACK_BOT_TOKEN) return requesterProfileFromSlackUser(body, { id: slackUserId });
+
+  const fetchImpl = env.SLACK_PROFILE_FETCH || env.SLACK_FETCH || fetch;
+  let response;
+  let payload;
+  try {
+    response = await fetchImpl(slackApiMethodUrl(env, 'users.info'), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+      },
+      body: new URLSearchParams({ user: slackUserId }).toString(),
+    });
+    payload = await response.json().catch(() => null);
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'slack_user_profile_lookup_failed',
+        slackUserId,
+        error: error.message,
+      })
+    );
+    return requesterProfileFromSlackUser(body, { id: slackUserId });
+  }
+
+  if (!response.ok || payload?.ok === false || !payload?.user) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'slack_user_profile_lookup_failed',
+        slackUserId,
+        error: payload?.error || response.statusText || `HTTP ${response.status}`,
+      })
+    );
+    return requesterProfileFromSlackUser(body, { id: slackUserId });
+  }
+
+  return requesterProfileFromSlackUser(body, payload.user);
+}
+
 async function addWorkingReactionForSlackEvent(env, body = {}) {
   if (!canSendSlackOutput(env)) return null;
   if (String(env.SLACK_REACTION_ON_RECEIVE || 'false').toLowerCase() !== 'true') return null;
+  if (ignoredSlackEventReason(body)) return null;
 
   const event = body.event || {};
   const channel = event.channel || body.channel_id;
@@ -711,7 +905,7 @@ async function postSlackResultReply(env, body = {}, result = {}) {
   return postSlackMessage(env, {
     channel,
     thread_ts: surface.threadTs || event.ts || undefined,
-    text: mentionSlackUser(result.replyText, event.user || body.user_id || body.user?.id),
+    text: mentionSlackUser(result.replyText, slackUserIdFromBody(body, null)),
   });
 }
 
@@ -969,6 +1163,22 @@ async function processSlackEventBody(body, env) {
       );
     }
 
+    if (shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis, slackSession)) {
+      return respond(
+        handleSlackAgentNonPublishingTurn({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+          action: 'confirm_before_issue',
+          replyText: slackIssueConfirmationText(slackAgentAnalysis),
+          preferReplyText: true,
+        })
+      );
+    }
+
     if (!shouldCreateSlackJob(intake, slackAgentAnalysis)) {
       return respond(
         handleSlackAgentNonPublishingTurn({
@@ -990,8 +1200,15 @@ async function processSlackEventBody(body, env) {
       requirements: redactedSlackAgentAnalysis || { text: redactedIntake.text, action: redactedIntake.action },
       lastAgentResponse: redactedSlackAgentAnalysis?.needsClarification ? redactedSlackAgentAnalysis.summary : null,
     });
+    const requesterProfile = await fetchSlackRequesterProfile(env, body);
     const { job, created } = await store.createJob(
-      slackJobInput({ ...body, intake: redactedIntake, slackAgentAnalysis: redactedSlackAgentAnalysis, slackSession })
+      slackJobInput({
+        ...body,
+        intake: redactedIntake,
+        slackAgentAnalysis: redactedSlackAgentAnalysis,
+        slackSession,
+        requesterProfile,
+      })
     );
     const issueLink = await store.linkJobToSlackSession(job, slackSession);
     const slackStatusNotification = created
@@ -1124,10 +1341,11 @@ async function handleSlackAgentNonPublishingTurn({
   slackAgentAnalysis,
   action,
   replyText,
+  preferReplyText = false,
 }) {
   const redactedIntakeText = redactSecretLikeText(intake.text);
   const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
-  const finalReplyText = slackAgentReplyText(intake, redactedSlackAgentAnalysis, replyText);
+  const finalReplyText = slackAgentReplyText(intake, redactedSlackAgentAnalysis, replyText, { preferFallback: preferReplyText });
   await store.updateSessionMemory(slackSession.id, {
     summary: redactedSlackAgentAnalysis?.summary || redactSecretLikeText(sessionMemory.summary) || redactedIntakeText,
     requirements: redactedSlackAgentAnalysis || redactSlackAnalysis(sessionMemory.requirements) || {},
@@ -1362,7 +1580,7 @@ export async function handleSlackInteractions(request, env) {
   const action = body.actions?.[0] || {};
   const actionId = action.action_id || '';
   const teamId = body.team?.id || body.team_id || 'unknown-team';
-  const slackUserId = body.user?.id || body.user_id || 'unknown-user';
+  const slackUserId = slackUserIdFromBody(body);
 
   if (actionId === 'pages_close_session') {
     const sessionId = action.value || '';

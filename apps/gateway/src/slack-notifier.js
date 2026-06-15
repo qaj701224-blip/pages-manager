@@ -29,6 +29,41 @@ function remoteNotifierHeaders(env = {}) {
   };
 }
 
+const STAGE_ORDER = [
+  'received',
+  'issue_creating',
+  'issue_created',
+  'indexing',
+  'index_ready',
+  'generating_page',
+  'patch_generated',
+  'branch_committed',
+  'pr_created',
+  'reviewing',
+  'changes_requested',
+  'fixing',
+  'previewing',
+  'preview_deployed',
+  'approved',
+  'merging',
+  'merged',
+  'deploying',
+  'deployed',
+  'failed',
+  'cancelled',
+];
+
+function stageRank(stage) {
+  const index = STAGE_ORDER.indexOf(stage);
+  return index === -1 ? -1 : index;
+}
+
+function isStaleStageUpdate(existingStage, nextStage) {
+  const existingRank = stageRank(existingStage);
+  const nextRank = stageRank(nextStage);
+  return existingRank >= 0 && nextRank >= 0 && existingRank > nextRank;
+}
+
 async function callRemoteNotifier(env, path, payload) {
   const url = remoteNotifierUrl(env, path);
   if (!url) return null;
@@ -120,6 +155,9 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
   const stage = options.stage || job.status;
   const dedupeKey = options.dedupeKey || `job-status:${job.id}:${stage}`;
   const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id) : null;
+  if (existing?.messageTs && isStaleStageUpdate(existing.stage, stage) && options.allowRegression !== true) {
+    return { skipped: true, reason: 'stale_stage', key: dedupeKey, message: existing };
+  }
   if (existing?.messageTs && existing.stage === stage && options.skipDuplicate !== false) {
     return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existing };
   }
