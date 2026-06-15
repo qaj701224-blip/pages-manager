@@ -3,6 +3,7 @@ import {
   notifySlackJob,
   notifySlackJobStatus,
   postSlackMessage,
+  removeSlackReaction,
   updateSlackMessage,
 } from '@xd/slack-notifier-core';
 import { jsonResponse } from '@xd/worker-kit';
@@ -173,6 +174,12 @@ export function createSlackNotifierApp() {
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/reaction') {
           const body = await readJson(request);
           const result = await addSlackReaction(env, body.payload || {});
+          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/reaction-remove') {
+          const body = await readJson(request);
+          const result = await removeSlackReaction(env, body.payload || {});
           return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
         }
 

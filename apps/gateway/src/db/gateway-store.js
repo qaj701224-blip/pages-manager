@@ -45,6 +45,10 @@ function quote(name) {
   return `\`${name}\``;
 }
 
+function limitOffsetSql(limit, offset) {
+  return `LIMIT ${Number(limit)} OFFSET ${Number(offset)}`;
+}
+
 async function execute(pool, sql, params = []) {
   const [rows] = await pool.execute(sql, params.map(toDb));
   return rows;
@@ -765,11 +769,11 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
 
     const whereSql = where.length ? `WHERE ${where.map((item) => `(${item})`).join(' AND ')}` : '';
     const countRows = await execute(this.pool, `SELECT COUNT(*) AS total FROM publishing_jobs ${whereSql}`, params);
-    const rows = await execute(this.pool, `SELECT * FROM publishing_jobs ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`, [
-      ...params,
-      limit,
-      offset,
-    ]);
+    const rows = await execute(
+      this.pool,
+      `SELECT * FROM publishing_jobs ${whereSql} ORDER BY updated_at DESC ${limitOffsetSql(limit, offset)}`,
+      params
+    );
 
     const jobs = rows.map((row) => this.cacheJob(rowToJob(row)));
     return {
@@ -884,8 +888,8 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
     const countRows = await execute(this.pool, `SELECT COUNT(*) AS total FROM github_webhook_deliveries ${whereSql}`, params);
     const rows = await execute(
       this.pool,
-      `SELECT * FROM github_webhook_deliveries ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
+      `SELECT * FROM github_webhook_deliveries ${whereSql} ORDER BY updated_at DESC ${limitOffsetSql(limit, offset)}`,
+      params
     );
     return {
       deliveries: rows.map((row) => this.cacheGithubDelivery(rowToGithubDelivery(row))),
@@ -948,11 +952,11 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const countRows = await execute(this.pool, `SELECT COUNT(*) AS total FROM slack_events ${whereSql}`, params);
-    const rows = await execute(this.pool, `SELECT * FROM slack_events ${whereSql} ORDER BY updated_at DESC LIMIT ? OFFSET ?`, [
-      ...params,
-      limit,
-      offset,
-    ]);
+    const rows = await execute(
+      this.pool,
+      `SELECT * FROM slack_events ${whereSql} ORDER BY updated_at DESC ${limitOffsetSql(limit, offset)}`,
+      params
+    );
     return {
       deliveries: rows.map((row) => this.cacheSlackDelivery(rowToSlackDelivery(row))),
       total: Number(countRows[0]?.total || 0),

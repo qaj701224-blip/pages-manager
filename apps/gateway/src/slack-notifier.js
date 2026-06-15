@@ -9,6 +9,7 @@ import {
   notifySlackJob as notifySlackJobDirect,
   notifySlackJobStatus as notifySlackJobStatusDirect,
   postSlackMessage as postSlackMessageDirect,
+  removeSlackReaction as removeSlackReactionDirect,
   updateSlackMessage as updateSlackMessageDirect,
 } from '@xd/slack-notifier-core';
 
@@ -126,6 +127,14 @@ export async function addSlackReaction(env, payload) {
   }
 
   return callRemoteNotifier(env, '/internal/slack-notifier/reaction', { payload });
+}
+
+export async function removeSlackReaction(env, payload) {
+  if (!remoteNotifierUrl(env, '/internal/slack-notifier/reaction-remove')) {
+    return removeSlackReactionDirect(env, payload);
+  }
+
+  return callRemoteNotifier(env, '/internal/slack-notifier/reaction-remove', { payload });
 }
 
 export async function notifySlackJob(env, store, job, text, key) {

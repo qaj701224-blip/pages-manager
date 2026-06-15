@@ -17,6 +17,7 @@ import {
   notifySlackJob,
   notifySlackJobStatus,
   postSlackMessage,
+  removeSlackReaction,
 } from './slack-notifier.js';
 import { selectSlackSession, slackActorFromBody, slackUserIdFromBody, surfaceForSlackBody } from './slack-session.js';
 
@@ -91,6 +92,10 @@ const STALE_CALLBACK_PATCH_STATUSES = {
   ]),
 };
 
+const REVIEW_RECONCILE_JOB_STATUSES = ['pr_created', 'reviewing'];
+const REVIEW_FALLBACK_AGENT_LOGIN = 'pages-review-watchdog';
+const DEFAULT_REVIEW_AGENT_TIMEOUT_SECONDS = 180;
+
 async function readJson(request) {
   const text = await request.text();
   return parseJsonText(text);
@@ -157,6 +162,15 @@ function required(value, name) {
     throw error;
   }
   return value;
+}
+
+function verifyInternalCallbackToken(request, env) {
+  if (!env.INTERNAL_CALLBACK_TOKEN) return null;
+
+  const token = request.headers.get('X-Pages-Callback-Token');
+  if (token === env.INTERNAL_CALLBACK_TOKEN) return null;
+
+  return jsonResponse({ error: 'Invalid callback token' }, 401);
 }
 
 function isUnaddressedChannelThreadMessage(body = {}) {
@@ -349,20 +363,179 @@ async function previewTriggerFromStoredReviews(store, job, env) {
   return reviewComment ? { gate, reviewComment } : null;
 }
 
-async function dispatchPreviewFromStoredReviewIfReady(job, store, env) {
-  const trigger = await previewTriggerFromStoredReviews(store, job, env);
-  if (!trigger) return null;
-
+async function dispatchPreviewFromReviewTrigger(job, store, env, trigger, reviewAction = 'preview_dispatched') {
   const updatedJob =
     job.status === 'previewing' ? job : await store.updateJob(job.id, 'previewing', job.headSha ? { headSha: job.headSha } : {});
   const workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
 
   return {
-    reviewAction: 'preview_dispatched',
+    reviewAction,
     job: updatedJob,
     workerStart,
     gate: trigger.gate,
     reviewComment: trigger.reviewComment,
+  };
+}
+
+async function dispatchPreviewFromStoredReviewIfReady(job, store, env) {
+  const trigger = await previewTriggerFromStoredReviews(store, job, env);
+  if (!trigger) return null;
+  return dispatchPreviewFromReviewTrigger(job, store, env, trigger);
+}
+
+function reviewFallbackTimeoutMs(env = {}) {
+  const seconds = Number(env.GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS || DEFAULT_REVIEW_AGENT_TIMEOUT_SECONDS);
+  if (!Number.isFinite(seconds) || seconds < 0) return DEFAULT_REVIEW_AGENT_TIMEOUT_SECONDS * 1000;
+  return seconds * 1000;
+}
+
+function reviewWaitElapsedMs(job, nowMs) {
+  const since = new Date(job.updatedAt || job.createdAt || 0).getTime();
+  if (!Number.isFinite(since)) return 0;
+  return Math.max(0, nowMs - since);
+}
+
+function isOpenNonblockingReviewSummary(comment) {
+  if (comment.status !== 'open') return false;
+  if (!['review_summary', 'issue_comment'].includes(comment.sourceType)) return false;
+  return ['note', 'suggestion'].includes(classifyReviewAgentComment(comment));
+}
+
+function syntheticReviewFallbackComment(job, repoFullName, timeoutMs) {
+  const shortSha = String(job.headSha || '').slice(0, 10) || 'unknown';
+  const timeoutSeconds = Math.round(timeoutMs / 1000);
+
+  return {
+    repoFullName,
+    prNumber: job.prNumber,
+    githubReviewId: null,
+    githubCommentId: null,
+    githubCommentNodeId: `review-fallback:${job.id}:${shortSha}`,
+    sourceType: 'issue_comment',
+    reviewAgentLogin: REVIEW_FALLBACK_AGENT_LOGIN,
+    reviewState: '',
+    body: [
+      'Pages Review Gate: no blocking result was returned by the external Review Agent before timeout.',
+      '',
+      `Timeout: ${timeoutSeconds}s`,
+      `Reviewed commit: \`${shortSha}\``,
+      '',
+      'site-check has passed and no blocking or unknown Review Agent comments were recorded for this PR head. Proceeding to Preview.',
+    ].join('\n'),
+    path: null,
+    line: null,
+    diffHunk: null,
+    status: 'open',
+    classification: 'note',
+    firstSeenDeliveryId: `review-fallback:${job.id}:${shortSha}`,
+    lastSeenDeliveryId: `review-fallback:${job.id}:${shortSha}`,
+    headSha: job.headSha,
+  };
+}
+
+async function reviewFallbackTriggerForJob(store, job, env, nowMs = Date.now()) {
+  if (!job?.prNumber || !job.headSha || job.previewUrl) return { skipped: 'missing_pr_head_or_preview' };
+  if (!REVIEW_RECONCILE_JOB_STATUSES.includes(job.status)) return { skipped: 'status_not_reconcilable' };
+
+  const repoFullName = repoFullNameForJob(job, env);
+  if (!repoFullName) return { skipped: 'repo_unknown' };
+
+  const options = { headSha: job.headSha };
+  const replay = await previewTriggerFromStoredReviews(store, job, env);
+  if (replay) return { trigger: replay, reviewAction: 'preview_dispatched' };
+
+  const timeoutMs = reviewFallbackTimeoutMs(env);
+  const elapsedMs = reviewWaitElapsedMs(job, nowMs);
+  const gate = await previewGateForPr(store, repoFullName, job.prNumber, options);
+
+  if (!gate.siteCheck?.passed) return { skipped: 'site_check_waiting', gate };
+  if (gate.blockingCount > 0) return { skipped: 'blocking_review_comment', gate };
+  if (gate.unknownCount > 0) return { skipped: 'unknown_review_comment', gate };
+  if (elapsedMs < timeoutMs) {
+    return {
+      skipped: 'review_timeout_waiting',
+      gate,
+      elapsedMs,
+      timeoutMs,
+    };
+  }
+
+  const comments = await store.listReviewAgentComments(repoFullName, job.prNumber, options);
+  if (comments.some(isOpenNonblockingReviewSummary)) {
+    const trigger = await previewTriggerFromStoredReviews(store, job, env);
+    return trigger ? { trigger, reviewAction: 'preview_dispatched' } : { skipped: 'stored_review_not_dispatchable', gate };
+  }
+
+  const reviewComment = await store.recordReviewAgentComment(syntheticReviewFallbackComment(job, repoFullName, timeoutMs));
+  const gateAfterFallback = await previewGateForPr(store, repoFullName, job.prNumber, options);
+
+  return {
+    trigger: {
+      gate: gateAfterFallback,
+      reviewComment: reviewComment.comment,
+    },
+    reviewAction: 'review_timeout_preview_dispatched',
+    reviewCommentCreated: reviewComment.created,
+    elapsedMs,
+    timeoutMs,
+  };
+}
+
+async function notifySlackForReviewAction(env, store, job, reviewAction, gate, reviewComment, dedupeKey) {
+  const text = notificationTextForReviewAction(reviewAction, { gate, reviewComment }) || reviewAction;
+  const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+    stage: job.status,
+    text,
+    dedupeKey,
+    skipDuplicate: false,
+  });
+  const slackNotification = await notifySlackPlainProgress(env, store, job, text, dedupeKey);
+  return { slackStatusNotification, slackNotification };
+}
+
+async function reconcileReviewGateForJob(store, job, env, nowMs = Date.now()) {
+  const fallback = await reviewFallbackTriggerForJob(store, job, env, nowMs);
+  if (!fallback.trigger) {
+    return {
+      jobId: job?.id || null,
+      prNumber: job?.prNumber || null,
+      headSha: job?.headSha || null,
+      skipped: fallback.skipped || 'not_ready',
+      ...(fallback.gate ? { gate: fallback.gate } : {}),
+      ...(fallback.elapsedMs !== undefined ? { elapsedMs: fallback.elapsedMs, timeoutMs: fallback.timeoutMs } : {}),
+    };
+  }
+
+  const result = await dispatchPreviewFromReviewTrigger(
+    job,
+    store,
+    env,
+    fallback.trigger,
+    fallback.reviewAction || 'preview_dispatched'
+  );
+  await store.linkJobToSlackSession(result.job);
+  const slack = await notifySlackForReviewAction(
+    env,
+    store,
+    result.job,
+    result.reviewAction,
+    result.gate,
+    result.reviewComment,
+    `review-reconcile:${result.reviewAction}:${result.reviewComment?.githubCommentNodeId || result.job.headSha}`
+  );
+
+  return {
+    jobId: result.job.id,
+    prNumber: result.job.prNumber,
+    headSha: result.job.headSha,
+    reviewAction: result.reviewAction,
+    job: result.job,
+    gate: result.gate,
+    reviewComment: result.reviewComment,
+    reviewCommentCreated: fallback.reviewCommentCreated,
+    ...(result.workerStart ? { workerStart: result.workerStart } : {}),
+    ...(slack.slackStatusNotification ? { slackStatusNotification: slack.slackStatusNotification } : {}),
+    ...(slack.slackNotification ? { slackNotification: slack.slackNotification } : {}),
   };
 }
 
@@ -598,6 +771,40 @@ function followupSummary(existingSummary, text) {
   const previous = String(existingSummary || '').trim();
   const block = ['## Slack Follow-up', '', cleanText].join('\n');
   return previous ? `${previous}\n\n${block}` : block;
+}
+
+function followupRoundFromSummary(summary = '') {
+  return (String(summary || '').match(/## Slack Follow-up/g) || []).length;
+}
+
+function followupCardTitle(round) {
+  return `第 ${Math.max(1, Number(round) || 1)} 轮修改处理中`;
+}
+
+function followupCardSummary(feedback = '') {
+  const text = compactUserFacingText(feedback);
+  return text ? `本轮修改：${text}` : '本轮修改已记录，正在更新页面。';
+}
+
+function finalRequirementCardSummary(summary = '') {
+  const parts = String(summary || '')
+    .split(/^\s*##\s*Slack Follow-up\s*$/gim)
+    .map((part) => compactUserFacingText(part))
+    .filter(Boolean);
+  const base = parts.shift() || '';
+  if (!parts.length) return base;
+
+  const visibleFollowups = parts.slice(-4).map((part, index) => `${index + 1}. ${part}`);
+  const hiddenCount = Math.max(0, parts.length - visibleFollowups.length);
+  return [
+    base || '已记录初始需求。',
+    '',
+    '*已追加修改*',
+    hiddenCount ? `...前面还有 ${hiddenCount} 轮修改` : null,
+    ...visibleFollowups,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function redactSecretLikeText(text = '') {
@@ -902,6 +1109,13 @@ function slackDeliveryContextFromBody(body = {}) {
   };
 }
 
+function slackReactionName(value, fallback) {
+  const normalized = String(value || fallback || '')
+    .trim()
+    .replace(/^:+|:+$/g, '');
+  return normalized || null;
+}
+
 function slackResultType(result = {}) {
   if (result.action === 'close_session') return 'session_closed';
   if (result.action === 'clarification_needed') return 'clarification_requested';
@@ -930,6 +1144,7 @@ function slackDeliveryPatchForResult(result = {}, overrides = {}) {
     slackSessionId: result.slackSessionId || null,
     publishingJobId: result.jobId || null,
     agentRunId: result.agentRunId || null,
+    ...(overrides.payloadRedacted ? { payloadRedacted: overrides.payloadRedacted } : {}),
   };
 }
 
@@ -1068,10 +1283,11 @@ async function addWorkingReactionForSlackEvent(env, body = {}) {
   const event = body.event || {};
   const channel = event.channel || body.channel_id;
   const timestamp = event.ts || body.event_ts;
-  const name = String(env.SLACK_WORKING_REACTION || 'eyes').replace(/^:+|:+$/g, '');
+  const name = slackReactionName(env.SLACK_WORKING_REACTION, 'eyes');
   if (!channel || !timestamp || !name) return null;
 
-  const result = await addSlackReaction(env, { channel, timestamp, name });
+  const reaction = { channel, timestamp, name };
+  const result = await addSlackReaction(env, reaction);
   if (!result?.ok) {
     console.log(
       JSON.stringify({
@@ -1084,7 +1300,164 @@ async function addWorkingReactionForSlackEvent(env, body = {}) {
       })
     );
   }
-  return result;
+  return {
+    ...result,
+    reaction,
+    status: result?.ok ? 'working' : 'failed',
+  };
+}
+
+async function updateSlackReaction(env, currentReaction, nextName) {
+  if (!canSendSlackOutput(env) || !currentReaction?.channel || !currentReaction?.timestamp) return null;
+  const normalizedNextName = slackReactionName(nextName, null);
+  const removed = currentReaction.name
+    ? await removeSlackReaction(env, {
+        channel: currentReaction.channel,
+        timestamp: currentReaction.timestamp,
+        name: currentReaction.name,
+      })
+    : null;
+  const added = normalizedNextName
+    ? await addSlackReaction(env, {
+        channel: currentReaction.channel,
+        timestamp: currentReaction.timestamp,
+        name: normalizedNextName,
+      })
+    : null;
+
+  for (const [action, result] of [
+    ['remove', removed],
+    ['add', added],
+  ]) {
+    if (result && !result.ok) {
+      console.log(
+        JSON.stringify({
+          service: 'pages-gateway',
+          message: 'slack_reaction_update_failed',
+          action,
+          channel: currentReaction.channel,
+          timestamp: currentReaction.timestamp,
+          reaction: action === 'add' ? normalizedNextName : currentReaction.name,
+          error: result.error || 'unknown_error',
+        })
+      );
+    }
+  }
+
+  return {
+    removed,
+    added,
+    nextName: normalizedNextName,
+  };
+}
+
+function shouldKeepWorkingReactionForResult(result = {}) {
+  if (!result || result.accepted === false) return false;
+  if (result.jobId) return true;
+  return String(result.action || '').startsWith('followup_');
+}
+
+async function settleImmediateSlackReaction(env, workingReaction, result = {}) {
+  const reaction = workingReaction?.reaction;
+  if (!reaction || workingReaction?.status !== 'working') return null;
+  if (shouldKeepWorkingReactionForResult(result)) return null;
+  if (result.action === 'ignored_slack_event' || result.action === 'ignored_untracked_thread_message') {
+    return updateSlackReaction(env, reaction, null);
+  }
+  const doneReaction = slackReactionName(env.SLACK_DONE_REACTION, 'white_check_mark');
+  return updateSlackReaction(env, reaction, doneReaction);
+}
+
+async function settleJobSlackReactions(env, store, job, outcome = 'done') {
+  if (!job?.id || !store?.listSlackDeliveries || !store?.updateSlackDelivery) return null;
+  const doneReaction =
+    outcome === 'failed'
+      ? slackReactionName(env.SLACK_FAILED_REACTION, 'x')
+      : slackReactionName(env.SLACK_DONE_REACTION, 'white_check_mark');
+  const candidates = new Map();
+  const addCandidates = async (options = {}) => {
+    const result = await store.listSlackDeliveries({ ...options, limit: 100 });
+    for (const delivery of result?.deliveries || []) {
+      const key = `${delivery.teamId || 'unknown-team'}:${delivery.eventId || 'unknown-event'}`;
+      candidates.set(key, delivery);
+    }
+  };
+
+  await addCandidates({ publishingJobId: job.id });
+  if (job.slackSessionId) {
+    await addCandidates({ slackSessionId: job.slackSessionId });
+  }
+  if (job.slackThread?.channelId) {
+    await addCandidates({ channelId: job.slackThread.channelId });
+  }
+
+  const deliveries = [...candidates.values()].filter((delivery) => {
+    if (delivery.publishingJobId === job.id) return true;
+    if (job.slackSessionId && delivery.slackSessionId === job.slackSessionId) return true;
+    return (
+      job.slackThread?.channelId &&
+      delivery.channelId === job.slackThread.channelId &&
+      (!job.slackThread?.threadTs || !delivery.threadTs || delivery.threadTs === job.slackThread.threadTs)
+    );
+  });
+  const settled = [];
+
+  for (const delivery of deliveries) {
+    const state = delivery.payloadRedacted?.workingReaction;
+    if (!state || state.status !== 'working' || !state.reaction?.channel || !state.reaction?.timestamp) continue;
+
+    let reactionResult = null;
+    try {
+      reactionResult = await updateSlackReaction(env, state.reaction, doneReaction);
+    } catch (error) {
+      console.log(
+        JSON.stringify({
+          service: 'pages-gateway',
+          message: 'slack_reaction_settlement_failed',
+          jobId: job.id,
+          eventId: delivery.eventId,
+          error: error.message,
+        })
+      );
+      continue;
+    }
+    const nextPayload = {
+      ...(delivery.payloadRedacted || {}),
+      workingReaction: {
+        ...state,
+        status: outcome,
+        doneReaction,
+        settledAt: new Date().toISOString(),
+      },
+    };
+    await store.updateSlackDelivery(
+      {
+        teamId: delivery.teamId,
+        eventId: delivery.eventId,
+      },
+      {
+        payloadRedacted: nextPayload,
+      }
+    );
+    settled.push({
+      eventId: delivery.eventId,
+      reactionResult,
+    });
+  }
+
+  console.log(
+    JSON.stringify({
+      service: 'pages-gateway',
+      message: 'slack_reaction_settlement_checked',
+      jobId: job.id,
+      outcome,
+      candidateCount: candidates.size,
+      matchedCount: deliveries.length,
+      settledCount: settled.length,
+    })
+  );
+
+  return settled.length ? { outcome, settledCount: settled.length, settled } : null;
 }
 
 async function postSlackResultReply(env, body = {}, result = {}) {
@@ -1129,7 +1502,28 @@ function shouldProcessSlackEventsAsync(env = {}) {
   return Boolean(env.SLACK_SIGNING_SECRET);
 }
 
-async function processSlackEventBody(body, env) {
+function slackReactionPayloadFromResult(workingReaction, patch = {}) {
+  if (!workingReaction?.reaction) return null;
+  return {
+    workingReaction: {
+      reaction: workingReaction.reaction,
+      status: workingReaction.status || 'working',
+      addedAt: new Date().toISOString(),
+      ...patch,
+    },
+  };
+}
+
+async function updateSlackDeliveryReactionState(env, body = {}, workingReaction, patch = {}) {
+  if (!workingReaction?.reaction) return null;
+  const store = getStore(env);
+  if (!store.updateSlackDelivery) return null;
+  return store.updateSlackDelivery(slackDeliveryContextFromBody(body), {
+    payloadRedacted: slackReactionPayloadFromResult(workingReaction, patch),
+  });
+}
+
+async function processSlackEventBody(body, env, options = {}) {
   const store = getStore(env);
 
   if (body.type === 'url_verification' && body.challenge) {
@@ -1154,6 +1548,7 @@ async function processSlackEventBody(body, env) {
       eventId,
       eventType: body.event?.type || body.type || null,
       action: body.event?.subtype || body.action || null,
+      ...(options.workingReaction ? { payloadRedacted: slackReactionPayloadFromResult(options.workingReaction) } : {}),
     });
 
     if (!delivery.created) {
@@ -1619,18 +2014,39 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
 
   let updatedJob = null;
   let workerStart = null;
+  let slackStatusNotification = null;
   let action = 'followup_recorded';
   let replyText = '收到，已记录这轮修改意见。';
 
   if (canDispatchFixForJob(job)) {
-    updatedJob = await store.moveJobToFixing(job.id, patch);
+    updatedJob = job.status === 'fixing' ? await store.patchJob(job.id, patch) : await store.moveJobToFixing(job.id, patch);
     if (updatedJob) {
       await store.linkJobToSlackSession(updatedJob, slackSession);
-      workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
-      action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
-      replyText = workerStart?.started
-        ? '收到，已追加修改意见，正在启动修复。'
-        : '收到，已追加修改意见，等待修复开始。';
+      const round = followupRoundFromSummary(updatedJob.summary);
+      const alreadyFixing = job.status === 'fixing';
+      slackStatusNotification = await notifySlackJobStatus(env, store, updatedJob, {
+        stage: 'fixing',
+        text: alreadyFixing ? `已排队第 ${round || 1} 轮修改。` : `正在处理第 ${round || 1} 轮修改。`,
+        statusText: alreadyFixing
+          ? ':hourglass_flowing_sand: 当前修复正在进行，本轮会合并处理。'
+          : ':hourglass_flowing_sand: 正在更新 PR 和 Preview。',
+        cardTitle: alreadyFixing ? `第 ${Math.max(1, Number(round) || 1)} 轮修改已排队` : followupCardTitle(round),
+        finalSummary: finalRequirementCardSummary(updatedJob.summary),
+        currentChange: followupCardSummary(feedback),
+        allowRegression: true,
+        skipDuplicate: false,
+        dedupeKey: `slack-followup:${updatedJob.id}:${agentRun?.id || Date.now()}`,
+      });
+      if (alreadyFixing) {
+        action = 'followup_fix_queued';
+        replyText = '收到，已追加修改意见，会合并到当前修复轮次。';
+      } else {
+        workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
+        action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
+        replyText = workerStart?.started
+          ? '收到，已追加修改意见，正在启动修复。'
+          : '收到，已追加修改意见，等待修复开始。';
+      }
     }
   }
 
@@ -1672,8 +2088,10 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
     slackSessionId: slackSession.id,
     agentRunId: agentRun?.id,
     replyText,
+    noReply: action === 'followup_fix_dispatched' || action === 'followup_fix_ready' || action === 'followup_fix_queued',
     job: updatedJob,
     ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
     ...(workerStart ? { workerStart } : {}),
   };
 }
@@ -1757,9 +2175,17 @@ export async function handleSlackEvents(request, env) {
   }
 
   const process = async () => {
-    await addWorkingReactionForSlackEvent(env, body);
-    const result = await processSlackEventBody(body, env);
+    const workingReaction = await addWorkingReactionForSlackEvent(env, body);
+    const result = await processSlackEventBody(body, env, { workingReaction });
     await postSlackResultReply(env, body, result);
+    const settledReaction = await settleImmediateSlackReaction(env, workingReaction, result);
+    if (settledReaction) {
+      await updateSlackDeliveryReactionState(env, body, workingReaction, {
+        status: result.action === 'ignored_slack_event' || result.action === 'ignored_untracked_thread_message' ? 'ignored' : 'done',
+        doneReaction: settledReaction.nextName || null,
+        settledAt: new Date().toISOString(),
+      });
+    }
     return result;
   };
 
@@ -1866,13 +2292,57 @@ export async function handleSlackInteractions(request, env) {
   return slackAckResponse({ ok: true });
 }
 
-export async function handleExecutorCallback(request, env) {
-  if (env.INTERNAL_CALLBACK_TOKEN) {
-    const token = request.headers.get('X-Pages-Callback-Token');
-    if (token !== env.INTERNAL_CALLBACK_TOKEN) {
-      return jsonResponse({ error: 'Invalid callback token' }, 401);
-    }
+async function listReviewReconcileCandidateJobs(store, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 200);
+  const jobs = [];
+
+  for (const status of REVIEW_RECONCILE_JOB_STATUSES) {
+    const result = await store.listJobs({ status, limit });
+    jobs.push(...(result.jobs || []));
   }
+
+  const seen = new Set();
+  return jobs
+    .filter((job) => {
+      if (!job?.id || seen.has(job.id)) return false;
+      seen.add(job.id);
+      return true;
+    })
+    .sort((left, right) => {
+      const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
+      const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+      return leftTime - rightTime;
+    })
+    .slice(0, limit);
+}
+
+export async function handleReviewGateReconcile(request, env) {
+  const authError = verifyInternalCallbackToken(request, env);
+  if (authError) return authError;
+
+  const body = await readJson(request);
+  const store = getStore(env);
+  const nowMs = Date.now();
+  const jobs = body.publishingJobId
+    ? [await store.getJob(body.publishingJobId)].filter(Boolean)
+    : await listReviewReconcileCandidateJobs(store, { limit: body.limit });
+
+  const results = [];
+  for (const job of jobs) {
+    results.push(await reconcileReviewGateForJob(store, job, env, nowMs));
+  }
+
+  return jsonResponse({
+    ok: true,
+    checked: jobs.length,
+    reconciled: results.filter((result) => result.reviewAction).length,
+    results,
+  });
+}
+
+export async function handleExecutorCallback(request, env) {
+  const authError = verifyInternalCallbackToken(request, env);
+  if (authError) return authError;
 
   const body = await readJson(request);
   const jobId = required(body.publishingJobId || body.publishing_job_id, 'publishingJobId');
@@ -1894,10 +2364,12 @@ export async function handleExecutorCallback(request, env) {
       `失败：${job.errorMessage || job.errorCode || '发布任务失败'}`,
       `failed:${job.errorCode || 'unknown'}`
     );
+    const slackReactionSettlement = await settleJobSlackReactions(env, store, job, 'failed');
     return jsonResponse({
       job,
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
       ...(slackNotification ? { slackNotification } : {}),
+      ...(slackReactionSettlement ? { slackReactionSettlement } : {}),
     });
   }
 
@@ -1907,6 +2379,7 @@ export async function handleExecutorCallback(request, env) {
 
   const patch = rule.patch ? rule.patch(body) : {};
   const store = getStore(env);
+  const previousJob = await store.getJob(jobId);
   let job = await applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   await store.linkJobToSlackSession(job);
@@ -1928,9 +2401,15 @@ export async function handleExecutorCallback(request, env) {
   const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
     stage: reviewReplay ? job.status : stageResult,
     text: statusText,
+    allowRegression: previousJob?.status === 'fixing' && stageResult === 'reviewing',
+    skipDuplicate: previousJob?.status === 'fixing' ? false : undefined,
   });
   const slackText = notificationTextForCallback(stageResult, job);
   const slackNotification = await notifySlackPlainProgress(env, store, job, slackText, `callback:${stageResult}`);
+  const slackReactionSettlement =
+    stageResult === 'preview_deployed' || job.status === 'preview_deployed'
+      ? await settleJobSlackReactions(env, store, job, 'done')
+      : null;
 
   return jsonResponse({
     job,
@@ -1946,6 +2425,7 @@ export async function handleExecutorCallback(request, env) {
       : {}),
     ...(slackStatusNotification ? { slackStatusNotification } : {}),
     ...(slackNotification ? { slackNotification } : {}),
+    ...(slackReactionSettlement ? { slackReactionSettlement } : {}),
   });
 }
 
