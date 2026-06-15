@@ -1,0 +1,32 @@
+name = "pages-router"
+main = "src/index.js"
+compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
+
+[vars]
+PAGES_ENV = "production"
+PUBLIC_AUTH_BASE = "https://auth.pages.xd.team"
+PUBLIC_API_BASE = "https://api.pages.xd.team"
+PUBLIC_SITE_SUFFIX = "pages.xd.team"
+ROUTE_CACHE_TTL_SECONDS = "__ROUTE_CACHE_TTL_SECONDS__"
+ROUTER_IP_ALLOWLIST_CIDRS = "__ROUTER_IP_ALLOWLIST_CIDRS__"
+ROUTER_JWKS_URL = "https://auth.pages.xd.team/.xd-pages/jwks.json"
+PAGES_SESSION_JWT_ISSUER = "pages-router"
+PAGES_SESSION_JWT_ACTIVE_KID = "__PAGES_SESSION_JWT_ACTIVE_KID__"
+PAGES_SESSION_JWT_KEYS = "__PAGES_SESSION_JWT_KEYS__"
+SITE_SESSION_IDLE_TTL_SECONDS = "__SITE_SESSION_IDLE_TTL_SECONDS__"
+SITE_SESSION_FRESHNESS_TTL_SECONDS = "__SITE_SESSION_FRESHNESS_TTL_SECONDS__"
+INTERNAL_WORKER_JWT_TTL_SECONDS = "__INTERNAL_WORKER_JWT_TTL_SECONDS__"
+
+[[services]]
+binding = "PAGES_AUTH"
+service = "pages-auth"
+
+[[kv_namespaces]]
+binding = "ROUTE_SNAPSHOTS"
+id = "__ROUTE_SNAPSHOTS_KV_ID__"
+
+[[dispatch_namespaces]]
+binding = "PAGES_DISPATCH"
+namespace = "pages-production"

@@ -498,6 +498,9 @@ DO_NAMESPACE_ID_*
 
 部署脚本必须 fail closed：
 
+- v2 三个系统 Worker 的拓扑配置以环境显式模板为准：`apps/pages-api/wrangler.production.template.toml`、`apps/pages-api/wrangler.staging.template.toml`、`apps/pages-auth/wrangler.production.template.toml`、`apps/pages-auth/wrangler.staging.template.toml`、`apps/pages-router/wrangler.production.template.toml`、`apps/pages-router/wrangler.staging.template.toml`。
+- v2 使用 `node scripts/render-pages-v2-wrangler.mjs <app> <production|staging>` 渲染最终 `wrangler.toml`。渲染器只做 `__PLACEHOLDER__` 占位符替换、必填项检查和环境串用校验；Worker 名、域名、service binding、dispatch namespace 等拓扑值直接写在对应环境模板里，避免把 v2 环境逻辑藏进 shell 分支。
+- `scripts/gen-wrangler.sh` 继续服务 v1 `apps/server`、`apps/kv-gateway` 和 `apps/xdads-302`，v2 不复用这条旧生成链路。
 - production workflow 只能手动触发。
 - staging workflow 可以由 `staging` 分支触发。
 - `PAGES_ENV=production` 时，API/auth/site suffix 必须是 production 域名。

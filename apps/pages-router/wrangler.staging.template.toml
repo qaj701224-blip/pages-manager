@@ -1,15 +1,17 @@
-name = "__WORKER_NAME__"
+name = "pages-router-staging"
 main = "src/index.js"
 compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
 
 [vars]
-PAGES_ENV = "__PAGES_ENV__"
-PUBLIC_AUTH_BASE = "__PUBLIC_AUTH_BASE__"
-PUBLIC_API_BASE = "__PUBLIC_API_BASE__"
-PUBLIC_SITE_SUFFIX = "__PUBLIC_SITE_SUFFIX__"
+PAGES_ENV = "staging"
+PUBLIC_AUTH_BASE = "https://auth-staging.pages.xd.team"
+PUBLIC_API_BASE = "https://api-staging.pages.xd.team"
+PUBLIC_SITE_SUFFIX = "pages.xd.team"
 ROUTE_CACHE_TTL_SECONDS = "__ROUTE_CACHE_TTL_SECONDS__"
 ROUTER_IP_ALLOWLIST_CIDRS = "__ROUTER_IP_ALLOWLIST_CIDRS__"
-ROUTER_JWKS_URL = "__ROUTER_JWKS_URL__"
+ROUTER_JWKS_URL = "https://auth-staging.pages.xd.team/.xd-pages/jwks.json"
 PAGES_SESSION_JWT_ISSUER = "pages-router"
 PAGES_SESSION_JWT_ACTIVE_KID = "__PAGES_SESSION_JWT_ACTIVE_KID__"
 PAGES_SESSION_JWT_KEYS = "__PAGES_SESSION_JWT_KEYS__"
@@ -19,7 +21,7 @@ INTERNAL_WORKER_JWT_TTL_SECONDS = "__INTERNAL_WORKER_JWT_TTL_SECONDS__"
 
 [[services]]
 binding = "PAGES_AUTH"
-service = "__PAGES_AUTH_SERVICE__"
+service = "pages-auth-staging"
 
 [[kv_namespaces]]
 binding = "ROUTE_SNAPSHOTS"
@@ -27,4 +29,4 @@ id = "__ROUTE_SNAPSHOTS_KV_ID__"
 
 [[dispatch_namespaces]]
 binding = "PAGES_DISPATCH"
-namespace = "__PAGES_DISPATCH_NAMESPACE__"
+namespace = "pages-staging"

@@ -1,18 +1,20 @@
-name = "__WORKER_NAME__"
+name = "pages-api-staging"
 main = "src/index.js"
 compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
 
 [vars]
-PAGES_ENV = "__PAGES_ENV__"
-PUBLIC_API_BASE = "__PUBLIC_API_BASE__"
-PUBLIC_AUTH_BASE = "__PUBLIC_AUTH_BASE__"
-PUBLIC_SITE_SUFFIX = "__PUBLIC_SITE_SUFFIX__"
-WFP_DISPATCH_NAMESPACE = "__WFP_DISPATCH_NAMESPACE__"
+PAGES_ENV = "staging"
+PUBLIC_API_BASE = "https://api-staging.pages.xd.team"
+PUBLIC_AUTH_BASE = "https://auth-staging.pages.xd.team"
+PUBLIC_SITE_SUFFIX = "pages.xd.team"
+WFP_DISPATCH_NAMESPACE = "pages-staging"
 WFP_COMPATIBILITY_DATE = "__WFP_COMPATIBILITY_DATE__"
 
 [[d1_databases]]
 binding = "PAGES_METADATA"
-database_name = "__D1_DATABASE_NAME__"
+database_name = "pages-v2-metadata-staging"
 database_id = "__D1_DATABASE_ID__"
 
 [[kv_namespaces]]
@@ -25,7 +27,7 @@ class_name = "RoutePointerDO"
 
 [[services]]
 binding = "PAGES_AUTH"
-service = "__PAGES_AUTH_SERVICE__"
+service = "pages-auth-staging"
 
 [[migrations]]
 tag = "v1"

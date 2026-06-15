@@ -1,12 +1,14 @@
-name = "__WORKER_NAME__"
+name = "pages-auth"
 main = "src/index.js"
 compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
 
 [vars]
-PAGES_ENV = "__PAGES_ENV__"
-PUBLIC_AUTH_BASE = "__PUBLIC_AUTH_BASE__"
-PUBLIC_API_BASE = "__PUBLIC_API_BASE__"
-PUBLIC_SITE_SUFFIX = "__PUBLIC_SITE_SUFFIX__"
+PAGES_ENV = "production"
+PUBLIC_AUTH_BASE = "https://auth.pages.xd.team"
+PUBLIC_API_BASE = "https://api.pages.xd.team"
+PUBLIC_SITE_SUFFIX = "pages.xd.team"
 OAUTH_STATE_TTL_SECONDS = "__OAUTH_STATE_TTL_SECONDS__"
 CLI_LOGIN_TTL_SECONDS = "__CLI_LOGIN_TTL_SECONDS__"
 AUTH_SESSION_IDLE_TTL_SECONDS = "__AUTH_SESSION_IDLE_TTL_SECONDS__"
@@ -16,7 +18,7 @@ SITE_SESSION_ABSOLUTE_TTL_SECONDS = "__SITE_SESSION_ABSOLUTE_TTL_SECONDS__"
 PAGES_SESSION_JWT_ACTIVE_KID = "__PAGES_SESSION_JWT_ACTIVE_KID__"
 PAGES_SESSION_JWT_KEYS = "__PAGES_SESSION_JWT_KEYS__"
 SSO_AUTHORIZATION_URL = "__SSO_AUTHORIZATION_URL__"
-SSO_REDIRECT_URI = "__SSO_REDIRECT_URI__"
+SSO_REDIRECT_URI = "https://auth.pages.xd.team/.xd-pages/auth/callback"
 SSO_TOKEN_URL = "__SSO_TOKEN_URL__"
 SSO_PROFILE_URL = "__SSO_PROFILE_URL__"
 SSO_CLIENT_ID = "__SSO_CLIENT_ID__"
@@ -36,7 +38,7 @@ class_name = "AuthSessionDO"
 
 [[services]]
 binding = "PAGES_API"
-service = "__PAGES_API_SERVICE__"
+service = "pages-api"
 
 [[migrations]]
 tag = "v1"

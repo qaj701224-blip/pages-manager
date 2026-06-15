@@ -196,7 +196,7 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 
 职责：
 
-- 新增 v2 wrangler templates。
+- 新增 v2 wrangler templates；三套系统 Worker 使用 production/staging 显式模板，渲染器只做占位符替换和校验，不在 shell 里生成环境拓扑。
 - 新增 staging/production GitHub Actions，保持 production 手动部署。
 - 增加配置静态校验：域名、route、binding、secret、dispatch namespace、D1/KV/DO 必须与环境匹配。
 - 生成 v2 OpenAPI、skill、README/API 文档。

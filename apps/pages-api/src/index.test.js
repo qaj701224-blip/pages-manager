@@ -82,12 +82,15 @@ test('internal user upsert is only callable through internal service host', asyn
   assert.equal((await store.getUser('usr_1')).sessionVersion, 2);
 });
 
-test('wrangler template includes required WFP vars without runtime token placeholders', async () => {
-  const template = await readFile(new URL('../wrangler.template.toml', import.meta.url), 'utf8');
+test('wrangler templates include required WFP vars without runtime token placeholders', async () => {
+  const productionTemplate = await readFile(new URL('../wrangler.production.template.toml', import.meta.url), 'utf8');
+  const stagingTemplate = await readFile(new URL('../wrangler.staging.template.toml', import.meta.url), 'utf8');
 
-  assert.match(template, /WFP_DISPATCH_NAMESPACE = "__WFP_DISPATCH_NAMESPACE__"/);
-  assert.match(template, /WFP_COMPATIBILITY_DATE = "__WFP_COMPATIBILITY_DATE__"/);
-  assert.doesNotMatch(template, /CF_API_TOKEN|CF_ACCOUNT_ID/);
+  assert.match(productionTemplate, /WFP_DISPATCH_NAMESPACE = "pages-production"/);
+  assert.match(stagingTemplate, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
+  assert.match(productionTemplate, /WFP_COMPATIBILITY_DATE = "__WFP_COMPATIBILITY_DATE__"/);
+  assert.match(stagingTemplate, /WFP_COMPATIBILITY_DATE = "__WFP_COMPATIBILITY_DATE__"/);
+  assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /CF_API_TOKEN|CF_ACCOUNT_ID/);
 });
 
 function jsonRequest(url, body) {
