@@ -82,13 +82,29 @@ test('safeRedirect only accepts absolute http URLs without credentials or fragme
 });
 
 test('redactUrl removes sensitive query values without leaking their content', () => {
-  const redacted = redactUrl(
-    'https://auth.pages.xd.team/.xd-pages/auth/callback?code=secret-code&state=secret-state&access_token=secret-token&client_secret=secret-client&login_secret=secret-login&token=secret-jwt&ok=1'
-  );
+  const url = new URL('https://auth.pages.xd.team/.xd-pages/auth/callback');
+  url.search = new URLSearchParams({
+    code: 'secret-code',
+    state: 'secret-state',
+    access_token: 'secret-token',
+    client_secret: 'secret-client',
+    login_secret: 'secret-login',
+    token: 'secret-jwt',
+    ok: '1',
+  }).toString();
+  const redacted = redactUrl(url);
 
   assert.equal(
     redacted,
-    'https://auth.pages.xd.team/.xd-pages/auth/callback?code=%5BREDACTED%5D&state=%5BREDACTED%5D&access_token=%5BREDACTED%5D&client_secret=%5BREDACTED%5D&login_secret=%5BREDACTED%5D&token=%5BREDACTED%5D&ok=1'
+    [
+      'https://auth.pages.xd.team/.xd-pages/auth/callback?code=%5BREDACTED%5D',
+      'state=%5BREDACTED%5D',
+      'access_token=%5BREDACTED%5D',
+      'client_secret=%5BREDACTED%5D',
+      'login_secret=%5BREDACTED%5D',
+      'token=%5BREDACTED%5D',
+      'ok=1',
+    ].join('&')
   );
   for (const value of ['secret-code', 'secret-state', 'secret-token', 'secret-client', 'secret-login', 'secret-jwt']) {
     assert.equal(redacted.includes(value), false);
