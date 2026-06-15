@@ -352,6 +352,9 @@ test('CLI OAuth callback shows manual device confirmation and does not create a 
   assert.equal(response.status, 200, await response.clone().text());
   const text = await response.text();
   assert.match(text, /Confirm Pages CLI Login/);
+  assert.match(text, /production/);
+  assert.match(text, /https:\/\/auth\.pages\.xd\.team/);
+  assert.match(text, /cli_token/);
   assert.match(text, /name="loginId" value="cli_test"/);
   assert.match(text, /name="deviceCode"/);
   assert.equal(siteCodeCreated, false);

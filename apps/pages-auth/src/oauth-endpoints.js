@@ -80,7 +80,7 @@ export async function handleOAuthCallback(request, env, config) {
   }
 
   if (consumedState.kind === 'cli') {
-    const response = new Response(buildCliLoginConfirmationHtml(consumedState.cliLoginId), {
+    const response = new Response(buildCliLoginConfirmationHtml(consumedState.cliLoginId, config), {
       status: 200,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
@@ -350,8 +350,10 @@ function jsonDoRequest(url, body) {
   });
 }
 
-function buildCliLoginConfirmationHtml(loginId) {
+function buildCliLoginConfirmationHtml(loginId, config) {
   const safeLoginId = htmlEscape(loginId);
+  const safeEnvironment = htmlEscape(config.environment);
+  const safeAuthBase = htmlEscape(config.authBase);
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -363,9 +365,20 @@ function buildCliLoginConfirmationHtml(loginId) {
   <main>
     <h1>Confirm Pages CLI Login</h1>
     <p>Enter the 8-digit code shown in your terminal to authorize this CLI session.</p>
+    <dl>
+      <dt>Environment</dt>
+      <dd>${safeEnvironment}</dd>
+      <dt>Auth</dt>
+      <dd>${safeAuthBase}</dd>
+      <dt>Scope</dt>
+      <dd>cli_token</dd>
+    </dl>
     <form method="post" action="/.xd-pages/cli/login/confirm" autocomplete="off">
       <input type="hidden" name="loginId" value="${safeLoginId}">
-      <label>Device code <input name="deviceCode" inputmode="numeric" pattern="[0-9]{8}" required></label>
+      <label>
+        Device code
+        <input name="deviceCode" inputmode="numeric" pattern="[0-9]{8}" autocomplete="one-time-code" required>
+      </label>
       <button type="submit">Confirm</button>
     </form>
   </main>
