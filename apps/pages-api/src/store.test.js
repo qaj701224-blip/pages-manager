@@ -157,6 +157,38 @@ test('site policy changes update visibility, ACL, cache tier, and policy version
   assert.equal((await store.getSite('site_1')).defaultVisibility, 'disabled');
 });
 
+test('conditional restore helpers do not clobber newer route state', async () => {
+  const store = createSeededStore();
+  await createSite(store);
+  const previousRoute = await store.getRouteBySiteId('site_1');
+  const failedRoute = await store.activateSiteVersion(
+    'site_1',
+    {
+      activeVersionId: 'ver_1',
+      workerName: 'pages-v2-docs-ver-1',
+      visibility: 'org',
+      updatedAt: '2026-06-15T00:01:00.000Z',
+    },
+    'production'
+  );
+  const newerRoute = await store.activateSiteVersion(
+    'site_1',
+    {
+      activeVersionId: 'ver_2',
+      workerName: 'pages-v2-docs-ver-2',
+      visibility: 'org',
+      updatedAt: '2026-06-15T00:02:00.000Z',
+    },
+    'production'
+  );
+
+  const restored = await store.restoreSiteRouteIfCurrent('site_1', previousRoute, failedRoute, 'production');
+
+  assert.equal(restored.activeVersionId, 'ver_2');
+  assert.equal(restored.workerName, 'pages-v2-docs-ver-2');
+  assert.equal((await store.getRouteBySiteId('site_1')).routeGeneration, newerRoute.routeGeneration);
+});
+
 test('access keys persist hash metadata without plaintext', async () => {
   const store = createSeededStore();
 

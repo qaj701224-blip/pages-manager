@@ -319,7 +319,7 @@ export SSO_CLIENT_ID=<local-sso-client-id>
 export SSO_CLIENT_SECRET=<local-sso-client-secret>
 ```
 
-`xd-pages.127.0.0.1.nip.io` 用于让 OAuth redirect URI 具备稳定 host，同时仍解析到本机 `127.0.0.1`。本地 callback 路径也统一使用平台保留路径 `/.xd-pages/auth/callback`，避免和用户站点路由冲突。M2 代码当前只实现 production/staging 的 host 校验；接入 local SSO 前需要补齐 `PAGES_ENV=local` 的 host allowlist 和 cookie/session 测试，或明确本地只使用 mock SSO。
+`xd-pages.127.0.0.1.nip.io` 用于让 OAuth redirect URI 具备稳定 host，同时仍解析到本机 `127.0.0.1`。本地 callback 路径也统一使用平台保留路径 `/.xd-pages/auth/callback`，避免和用户站点路由冲突。`pages-auth` 配置层支持 `PAGES_ENV=local`；router 首版仍只服务 production/staging 站点域名，本地如需完整子站访问链路需要单独补 local router host allowlist 与 cookie/session 测试。
 
 需要配置：
 
@@ -345,18 +345,15 @@ vars:
   PUBLIC_API_BASE
   PUBLIC_AUTH_BASE
   PUBLIC_SITE_SUFFIX
-  ROUTER_CACHE_KV_BINDING_NAME
   WFP_DISPATCH_NAMESPACE
   WFP_COMPATIBILITY_DATE
   CF_API_BASE_URL
-  AUTH_JWKS_URL
-  ROUTER_JWKS_URL
 
 bindings:
   D1: PAGES_METADATA
-  KV: ROUTER_CACHE
+  KV: ROUTE_SNAPSHOTS
+  Durable Objects: ROUTE_POINTER_LOCKS
   service: PAGES_AUTH
-  service: PAGES_ROUTER
 
 secrets:
   CF_ACCOUNT_ID
@@ -377,24 +374,22 @@ vars:
   PAGES_ENV
   PUBLIC_AUTH_BASE
   PUBLIC_API_BASE
-  SESSION_SIGNING_ACTIVE_KID
-  SESSION_SIGNING_KEYS
+  PAGES_SESSION_JWT_ACTIVE_KID
+  PAGES_SESSION_JWT_KEYS
   SSO_AUTHORIZATION_URL
   SSO_TOKEN_URL
   SSO_PROFILE_URL
   SSO_REDIRECT_URI
 
 bindings:
-  D1: PAGES_METADATA
-  Durable Objects: OAUTH_STATE, CLI_LOGIN, USER_SESSION
+  Durable Objects: OAUTH_STATES, CLI_LOGINS, AUTH_SESSIONS
 
 secrets:
-  SSO_CLIENT_ID
   SSO_CLIENT_SECRET
-  SESSION_SIGNING_SECRET_*
+  PAGES_SESSION_JWT_SECRET_*
 ```
 
-`SSO_CLIENT_ID` 是否作为 secret 取决于公司规范；如果不敏感可放 vars，但保持 secret 更保守。
+`SSO_CLIENT_ID` 是否作为 secret 取决于公司规范；如果不敏感可放 vars，但保持 secret 更保守。当前 wrangler template 把 `SSO_CLIENT_ID` 作为非敏感配置占位，`SSO_CLIENT_SECRET` 必须通过 secret 注入。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
 #### pages-router
 
@@ -406,24 +401,23 @@ vars:
   PUBLIC_SITE_SUFFIX
   ROUTE_CACHE_TTL_SECONDS
   ROUTER_IP_ALLOWLIST_CIDRS
-  INTERNAL_JWT_ACTIVE_KID
-  INTERNAL_JWT_KEYS
-  SESSION_SIGNING_ACTIVE_KID
-  SESSION_SIGNING_KEYS
+  ROUTER_JWKS_URL
+  PAGES_SESSION_JWT_ISSUER
+  PAGES_SESSION_JWT_ACTIVE_KID
+  PAGES_SESSION_JWT_KEYS
+  SITE_SESSION_IDLE_TTL_SECONDS
+  INTERNAL_WORKER_JWT_TTL_SECONDS
 
 bindings:
-  D1: PAGES_METADATA
-  KV: ROUTER_CACHE
+  KV: ROUTE_SNAPSHOTS
   dispatch namespace: PAGES_DISPATCH
   service: PAGES_AUTH
-  Durable Objects: SITE_POLICY, USER_SESSION
 
 secrets:
-  INTERNAL_JWT_SECRET_*
-  SESSION_SIGNING_SECRET_*
+  PAGES_SESSION_JWT_SECRET_*
 ```
 
-router 不需要 Cloudflare API token。router 只能 dispatch 到当前环境的 namespace。`ROUTER_IP_ALLOWLIST_CIDRS` 是第一版强制配置；缺失或格式错误时 router 必须 fail closed。
+router 不需要 Cloudflare API token。router 只能 dispatch 到当前环境的 namespace。`ROUTER_IP_ALLOWLIST_CIDRS` 是第一版强制配置；缺失或格式错误时 router 必须 fail closed。当前实现用统一的 `PAGES_SESSION_JWT_*` registry 签发和校验 `site_session` 与 `internal_worker_jwt`，通过 `PAGES_SESSION_JWT_ISSUER`、`purpose`、`aud`、`kid` 和 `env` 区分用途；不要再配置独立的 `INTERNAL_JWT_*` 或 `SESSION_SIGNING_*` 名称，避免文档和 wrangler template 串线。
 
 #### pages-kv-gateway
 
@@ -459,10 +453,9 @@ PUBLIC_API_BASE
 PUBLIC_AUTH_BASE
 PUBLIC_SITE_SUFFIX
 ROUTER_IP_ALLOWLIST_CIDRS
-SESSION_SIGNING_ACTIVE_KID
-SESSION_SIGNING_KEYS
-INTERNAL_JWT_ACTIVE_KID
-INTERNAL_JWT_KEYS
+PAGES_SESSION_JWT_ISSUER
+PAGES_SESSION_JWT_ACTIVE_KID
+PAGES_SESSION_JWT_KEYS
 PAGES_CAP_JWT_ACTIVE_KID
 PAGES_CAP_JWT_KEYS
 SSO_AUTHORIZATION_URL
@@ -485,8 +478,7 @@ CLOUDFLARE_API_TOKEN
 CF_API_TOKEN
 SSO_CLIENT_ID
 SSO_CLIENT_SECRET
-SESSION_SIGNING_SECRET_*
-INTERNAL_JWT_SECRET_*
+PAGES_SESSION_JWT_SECRET_*
 PAGES_CAP_JWT_SECRET_*
 D1_DATABASE_ID_*
 KV_NAMESPACE_ID_*
@@ -836,6 +828,14 @@ cli_login:{login_id}
 - CLI 领取 token 后标记 `consumedAt`，防止重复领取。
 
 CLI login 必须使用 `login_id + login_secret` 双值模型。`login_id` 可以出现在浏览器 URL 和轮询路径中；`login_secret` 只保存在 CLI 进程内，用于 poll/consume 时证明请求方就是发起登录的 CLI。服务端只保存 `loginSecretHash`，比较时使用常量时间比较。登录结果只能领取一次，TTL 建议 5-10 分钟，并对 poll/consume 失败次数限流和审计。
+
+首版浏览器登录 URL 由 `pages-auth` 返回，形如：
+
+```text
+https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id={loginId}&device_code={deviceCode}
+```
+
+`cli_login_id` 可以出现在浏览器 URL 中，`device_code` 必须同时显示在 CLI 终端和浏览器确认页。`login_secret` 不进入 URL、日志或浏览器，只在 CLI poll 时随请求体提交。
 
 为防止攻击者生成登录链接诱导他人授权，CLI login 还必须有 device confirmation：
 
@@ -1818,6 +1818,8 @@ pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 | `DELETE` | `/.xd-pages/api/access-keys/{id}`       | api_session + recent login / CLI token | 吊销后进入 strict 失效路径                            |
 
 所有带 `Idempotency-Key` 的 API 都必须保存 request hash。同 key 不同 request hash 返回 409；同 key 同 hash 返回原 deployment 状态或 terminal response。
+
+`/.xd-pages/internal/consume-site-code` 和 `/.xd-pages/internal/verify-cli-token` 不是公开 API。它们只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；即使路径相同，公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 访问也必须返回 404。`pages-api` 只能通过 `PAGES_AUTH` binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
 
 统一错误响应：
 

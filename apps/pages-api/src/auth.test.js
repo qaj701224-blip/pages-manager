@@ -75,6 +75,39 @@ test('accepts verified CLI tokens with cli purpose and environment binding', asy
   });
 });
 
+test('accepts CLI tokens verified through pages-auth service binding', async () => {
+  const result = await authenticateApiRequest(
+    new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
+      headers: { Authorization: 'Bearer cli-token' },
+    }),
+    {
+      PAGES_AUTH: {
+        fetch: async (request) => {
+          assert.equal(request.url, 'https://pages-auth.internal/.xd-pages/internal/verify-cli-token');
+          assert.equal(request.method, 'POST');
+          assert.deepEqual(await request.json(), {
+            token: 'cli-token',
+            audience: 'pages-cli',
+          });
+          return Response.json({
+            sub: 'usr_1',
+            purpose: 'cli_token',
+            aud: 'pages-cli',
+            env: 'production',
+            jti: 'cli_binding',
+          });
+        },
+      },
+    },
+    await createSeededStore(),
+    config
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.actor.tokenId, 'cli_binding');
+  assert.equal(result.actor.source, 'cli');
+});
+
 test('rejects CLI tokens with wrong purpose or environment', async () => {
   const wrongPurpose = await authenticateApiRequest(
     bearerRequest('cli-token'),

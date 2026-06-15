@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker, { AuthSessionDO, CliLoginDO, OAuthStateDO } from './index.js';
+import { signSessionJwt } from './jwt.js';
 
 test('health endpoint returns non-sensitive environment status without cache', async () => {
   const response = await worker.fetch(new Request('https://auth.pages.xd.team/.xd-pages/health'), {
@@ -209,6 +210,58 @@ test('internal endpoint consumes site code for router service binding', async ()
       sessionVersion: 2,
     },
   });
+});
+
+test('public auth host cannot call internal endpoints', async () => {
+  const consumeResponse = await worker.fetch(
+    jsonRequest('https://auth.pages.xd.team/.xd-pages/internal/consume-site-code', {
+      siteCode: 'ost_test.site-secret',
+      siteHost: 'demo.pages.xd.team',
+    }),
+    testJwtEnv()
+  );
+  const verifyResponse = await worker.fetch(
+    jsonRequest('https://auth.pages.xd.team/.xd-pages/internal/verify-cli-token', {
+      token: 'cli-token',
+    }),
+    testJwtEnv()
+  );
+
+  assert.equal(consumeResponse.status, 404);
+  assert.equal((await consumeResponse.json()).error.code, 'NOT_FOUND');
+  assert.equal(verifyResponse.status, 404);
+  assert.equal((await verifyResponse.json()).error.code, 'NOT_FOUND');
+});
+
+test('internal endpoint verifies CLI token for API service binding', async () => {
+  const env = { ...testJwtEnv(), now: () => 1_800_000_000 };
+  const token = await signSessionJwt(
+    {
+      purpose: 'cli_token',
+      audience: 'pages-cli',
+      subject: 'usr_123',
+      now: 1_800_000_000,
+      ttlSeconds: 600,
+      claims: { jti: 'cli_123' },
+    },
+    env
+  );
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-auth.internal/.xd-pages/internal/verify-cli-token', {
+      token,
+      audience: 'pages-cli',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const payload = await response.json();
+  assert.equal(payload.sub, 'usr_123');
+  assert.equal(payload.purpose, 'cli_token');
+  assert.equal(payload.aud, 'pages-cli');
+  assert.equal(payload.env, 'production');
+  assert.equal(payload.jti, 'cli_123');
 });
 
 test('exports Durable Object shell classes', () => {
