@@ -3,6 +3,7 @@ import { canonicalRequestHash } from './crypto.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
+import { createDeploymentProvider, normalizeArtifactBundle } from './wfp-provider.js';
 
 const ARTIFACT_KINDS = new Set(['static', 'spa', 'worker']);
 
@@ -49,6 +50,7 @@ async function createDeployment(request, env, config, store, actor) {
   const artifactKind = typeof body.artifactKind === 'string' ? body.artifactKind : '';
   const contentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
+  let artifactBundle;
 
   if (!siteId) return jsonError('SITE_REQUIRED', 'siteId is required.', 400, 'Pass a siteId.');
   if (!ARTIFACT_KINDS.has(artifactKind)) {
@@ -56,6 +58,11 @@ async function createDeployment(request, env, config, store, actor) {
   }
   if (!contentHash.startsWith('sha256:')) {
     return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
+  }
+  try {
+    artifactBundle = normalizeArtifactBundle({ artifactKind, contentHash, artifactBundle: body.artifactBundle });
+  } catch {
+    return jsonError('ARTIFACT_BUNDLE_INVALID', 'Artifact bundle is invalid.', 400, 'Send a valid artifact bundle.');
   }
   if (!actorCanDeploy(actor, siteId, 'deploy:site')) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
@@ -88,6 +95,64 @@ async function createDeployment(request, env, config, store, actor) {
   const deployment = deploymentResult.deployment;
   const versionId = nextId(env, 'ver');
   const workerName = workerNameFor(site, versionId, config.environment);
+  let provider;
+  try {
+    provider = createDeploymentProvider(env, config);
+  } catch {
+    await store.updateDeployment(deployment.id, {
+      status: 'failed',
+      errorCode: 'WFP_CONFIG_INVALID',
+      errorMessage: 'WFP provider configuration is invalid.',
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      'WFP_CONFIG_INVALID',
+      'WFP provider configuration is invalid.',
+      500,
+      'Check the Pages WFP environment bindings.'
+    );
+  }
+
+  await store.updateDeployment(deployment.id, { status: 'uploading' });
+  let uploaded;
+  try {
+    uploaded = await provider.upload({
+      site,
+      workerName,
+      versionId,
+      artifactKind,
+      contentHash,
+      artifactBundle,
+    });
+  } catch {
+    await store.updateDeployment(deployment.id, {
+      status: 'failed',
+      errorCode: 'WFP_UPLOAD_FAILED',
+      errorMessage: 'WFP upload failed.',
+      completedAt: readNow(env),
+    });
+    return jsonError('WFP_UPLOAD_FAILED', 'WFP upload failed.', 502, 'Retry the deployment with the same Idempotency-Key.');
+  }
+
+  await store.updateDeployment(deployment.id, { status: 'uploaded' });
+  try {
+    await provider.verify({
+      site,
+      workerName,
+      versionId,
+      artifactRef: uploaded.artifactRef,
+    });
+  } catch {
+    await store.updateDeployment(deployment.id, {
+      status: 'failed',
+      errorCode: 'WFP_VERIFY_FAILED',
+      errorMessage: 'WFP verify failed.',
+      completedAt: readNow(env),
+    });
+    return jsonError('WFP_VERIFY_FAILED', 'WFP verify failed.', 502, 'Retry the deployment with the same Idempotency-Key.');
+  }
+
+  await store.updateDeployment(deployment.id, { status: 'verified' });
   const version = await store.createSiteVersion({
     id: versionId,
     siteId,
@@ -95,11 +160,15 @@ async function createDeployment(request, env, config, store, actor) {
     workerName,
     runtime: 'wfp',
     artifactKind,
-    artifactRef: `dispatch/${workerName}`,
+    artifactRef: uploaded.artifactRef,
     contentHash,
     createdBy: actor.userId,
   });
   const previousRoute = await store.getRouteBySiteId(siteId, config.environment);
+  await store.updateDeployment(deployment.id, {
+    status: 'activating',
+    versionId: version.id,
+  });
   const route = await store.activateSiteVersion(
     siteId,
     {

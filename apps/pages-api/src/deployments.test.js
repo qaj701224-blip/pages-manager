@@ -31,8 +31,47 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   assert.equal(body.version.workerName, 'pages-v2-docs-ver-1');
   assert.equal(body.route.routeGeneration, 1);
   assert.equal((await store.getSiteVersion('ver_1')).contentHash, 'sha256:abc');
+  assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'wfp://test/pages-v2-docs-ver-1');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
   assert.equal(snapshots.read('route_pointer:docs.pages.xd.team').routeGeneration, 1);
+});
+
+test('uploads and verifies WFP worker before route activation', async () => {
+  const store = await createSeededStore();
+  const events = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => {
+        events.push(['upload', workerName, (await store.getRouteBySiteId('site_1')).activeVersionId]);
+        return { artifactRef: `wfp://test/${workerName}` };
+      },
+      verify: async ({ workerName }) => {
+        events.push(['verify', workerName, (await store.getRouteBySiteId('site_1')).activeVersionId]);
+        return { ok: true };
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        artifactKind: 'worker',
+        contentHash: 'sha256:abc',
+        artifactBundle: workerBundle('export default {};'),
+      },
+      { 'Idempotency-Key': 'wfp_order' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(events, [
+    ['upload', 'pages-v2-docs-ver-1', null],
+    ['verify', 'pages-v2-docs-ver-1', null],
+  ]);
+  assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
 });
 
 test('deployment idempotency replays same request and rejects changed request', async () => {
@@ -218,6 +257,86 @@ test('marks deployment failed when route snapshot write fails and replays failed
   assert.equal((await replay.json()).deployment.status, 'failed');
 });
 
+test('marks deployment failed when WFP upload fails without creating active version', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async () => {
+        throw new Error('upload failed');
+      },
+      verify: async () => {
+        throw new Error('verify should not run');
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc', artifactBundle: workerBundle('export default {};') },
+      { 'Idempotency-Key': 'wfp_upload_fail' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.code, 'WFP_UPLOAD_FAILED');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
+test('marks deployment failed when WFP verify fails without creating active version', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => {
+        throw new Error('verify failed');
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc', artifactBundle: workerBundle('export default {};') },
+      { 'Idempotency-Key': 'wfp_verify_fail' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.code, 'WFP_VERIFY_FAILED');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
+test('fails deployment when production WFP namespace points at staging', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: undefined,
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    WFP_DISPATCH_NAMESPACE: 'pages-staging',
+  });
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc', artifactBundle: workerBundle('export default {};') },
+      { 'Idempotency-Key': 'wfp_config_fail' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal((await response.json()).error.code, 'WFP_CONFIG_INVALID');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
 test('keeps previous active route when rollback snapshot write fails', async () => {
   const store = await createSeededStore();
   const env = testEnv(store, createSnapshotStore());
@@ -300,7 +419,7 @@ async function createSeededStore() {
   return store;
 }
 
-function testEnv(store, snapshots) {
+function testEnv(store, snapshots, overrides = {}) {
   let counters = { dep: 0, ver: 0 };
   return {
     PAGES_ENV: 'production',
@@ -321,6 +440,11 @@ function testEnv(store, snapshots) {
       env: 'production',
       jti: 'cli_1',
     }),
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => ({ ok: true }),
+    },
+    ...overrides,
   };
 }
 
@@ -375,4 +499,12 @@ function authRequest(url) {
   return new Request(url, {
     headers: { Authorization: 'Bearer cli-token' },
   });
+}
+
+function workerBundle(content) {
+  return {
+    kind: 'worker',
+    mainModule: 'worker.mjs',
+    modules: [{ name: 'worker.mjs', content, type: 'application/javascript+module' }],
+  };
 }
