@@ -224,6 +224,20 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
+  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }) {
+    await this.db
+      .prepare(
+        `UPDATE site_routes
+        SET active_version_id = ?, worker_name = ?, runtime = 'wfp',
+          visibility = ?, route_status = 'active', route_generation = route_generation + 1,
+          updated_at = ?
+        WHERE site_id = ?`
+      )
+      .bind(activeVersionId, workerName, visibility, updatedAt, siteId)
+      .run();
+    return this.getRouteBySiteId(siteId);
+  }
+
   async getSiteVersion(id) {
     const row = await this.db.prepare('SELECT * FROM site_versions WHERE id = ?').bind(id).first();
     return row ? mapSiteVersion(row) : null;
@@ -295,6 +309,31 @@ export class D1PagesStore {
   async getDeployment(id) {
     const row = await this.db.prepare('SELECT * FROM deployments WHERE id = ?').bind(id).first();
     return row ? mapDeployment(row) : null;
+  }
+
+  async updateDeployment(id, patch) {
+    const existing = await this.getDeployment(id);
+    if (!existing) return null;
+    const next = { ...existing, ...patch };
+    await this.db
+      .prepare(
+        `UPDATE deployments SET
+          version_id = ?, status = ?, terminal_response_json = ?, previous_version_id = ?,
+          error_code = ?, error_message = ?, completed_at = ?
+        WHERE id = ?`
+      )
+      .bind(
+        next.versionId,
+        next.status,
+        next.terminalResponseJson,
+        next.previousVersionId,
+        next.errorCode,
+        next.errorMessage,
+        next.completedAt,
+        id
+      )
+      .run();
+    return this.getDeployment(id);
   }
 
   async createDeploymentForIdempotency(input) {

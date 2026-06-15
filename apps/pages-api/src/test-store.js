@@ -129,6 +129,20 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
+  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }) {
+    const routeId = this.routeBySiteId.get(siteId);
+    const route = this.routes.get(routeId);
+    if (!route) return null;
+    route.activeVersionId = activeVersionId;
+    route.workerName = workerName;
+    route.visibility = visibility;
+    route.runtime = 'wfp';
+    route.routeStatus = 'active';
+    route.routeGeneration += 1;
+    route.updatedAt = updatedAt;
+    return cloneRecord(route);
+  }
+
   async getSiteVersion(id) {
     return cloneRecord(this.siteVersions.get(id) || null);
   }
@@ -177,6 +191,13 @@ class TestPagesStore {
 
   async getDeployment(id) {
     return cloneRecord(this.deployments.get(id) || null);
+  }
+
+  async updateDeployment(id, patch) {
+    const record = this.deployments.get(id);
+    if (!record) return null;
+    Object.assign(record, patch);
+    return cloneRecord(record);
   }
 
   async createDeploymentForIdempotency(input) {
