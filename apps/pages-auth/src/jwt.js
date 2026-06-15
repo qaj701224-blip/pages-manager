@@ -3,7 +3,13 @@ const ALGORITHM = 'HS256';
 const CLOCK_SKEW_SECONDS = 0;
 const encoder = new globalThis.TextEncoder();
 
-const ALLOWED_PURPOSES = new Set(['auth_session', 'site_session', 'cli_token', 'internal_worker_jwt']);
+const ALLOWED_PURPOSES = new Set([
+  'auth_session',
+  'site_session',
+  'cli_token',
+  'cli_login_confirm',
+  'internal_worker_jwt',
+]);
 const SAFE_JTI_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RESERVED_CLAIMS = new Set(['iss', 'aud', 'env', 'purpose', 'sub', 'iat', 'nbf', 'exp']);
 

@@ -212,6 +212,7 @@ test('consumes auth callback site code and sets host-only site_session before re
 
   assert.equal(response.status, 302);
   assert.equal(response.headers.get('Location'), 'https://demo.pages.xd.team/private');
+  assert.equal(response.headers.get('Referrer-Policy'), 'no-referrer');
   assert.equal(env.dispatchGetCount, 0);
   assert.equal(env.dispatchCount, 0);
 
@@ -462,6 +463,34 @@ test('redirects protected sites when site_session identity freshness expires', a
     siteId: 'site_demo',
     policyVersion: 2,
     userCheckedAt: 1_699_999_900,
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get('Location'), /reason=SITE_SESSION_STALE/);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('clamps oversized site_session freshness to 15 minutes', async () => {
+  const env = routeEnv({
+    SITE_SESSION_FRESHNESS_TTL_SECONDS: '3600',
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org', policyVersion: 2 }),
+    },
+  });
+  const session = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    policyVersion: 2,
+    userCheckedAt: 1_699_999_099,
   });
   const response = await worker.fetch(
     new Request('https://demo.pages.xd.team/private', {

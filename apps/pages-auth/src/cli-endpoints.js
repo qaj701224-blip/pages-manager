@@ -5,6 +5,7 @@ import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
+const CLI_LOGIN_CONFIRM_AUDIENCE = 'pages-cli-login-confirm';
 const DEVICE_CODE_RE = /^[0-9]{8}$/;
 
 export async function handleCliLoginStart(request, env, config) {
@@ -104,8 +105,11 @@ export async function handleCliLoginPoll(request, env, config) {
   });
 }
 
-export async function handleCliLoginConfirm(request, env) {
+export async function handleCliLoginConfirm(request, env, config) {
   if (request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  if (!isSameOriginConfirmation(request, config)) {
+    return jsonError('CLI_LOGIN_CONFIRM_FORBIDDEN', 'CLI login confirmation is not allowed.', 403);
+  }
 
   let body;
   try {
@@ -116,6 +120,7 @@ export async function handleCliLoginConfirm(request, env) {
 
   const loginId = requireString(body.loginId || body.cli_login_id);
   const deviceCode = requireString(body.deviceCode || body.device_code);
+  const confirmToken = requireString(body.confirmToken || body.confirm_token || body.csrfToken || body.csrf_token);
   if (!loginId || !DEVICE_CODE_RE.test(deviceCode || '')) {
     return jsonError('CLI_LOGIN_CONFIRM_INVALID', 'CLI login confirmation is invalid.', 400);
   }
@@ -123,6 +128,11 @@ export async function handleCliLoginConfirm(request, env) {
   const user = await readAuthSessionUser(request, env);
   if (!user) {
     return jsonError('AUTH_SESSION_REQUIRED', 'Login required before confirming CLI access.', 401, 'Restart `pages login`.');
+  }
+
+  const confirmTokenOk = await verifyCliLoginConfirmToken(confirmToken, env, { loginId, user });
+  if (!confirmTokenOk) {
+    return jsonError('CLI_LOGIN_CONFIRM_FORBIDDEN', 'CLI login confirmation is not allowed.', 403);
   }
 
   try {
@@ -224,10 +234,35 @@ async function readAuthSessionUser(request, env) {
       audience: AUTH_SESSION_AUDIENCE,
       now: readNow(env),
     });
-    return { userId: payload.sub };
+    return { userId: payload.sub, sid: payload.sid };
   } catch {
     return null;
   }
+}
+
+async function verifyCliLoginConfirmToken(token, env, { loginId, user }) {
+  if (!token) return false;
+  try {
+    const payload = await verifySessionJwt(token, env, {
+      purpose: 'cli_login_confirm',
+      audience: CLI_LOGIN_CONFIRM_AUDIENCE,
+      now: readNow(env),
+    });
+    return payload.sub === user.userId && payload.sid === user.sid && payload.loginId === loginId;
+  } catch {
+    return false;
+  }
+}
+
+function isSameOriginConfirmation(request, config) {
+  const expectedOrigin = config?.authBase;
+  if (!expectedOrigin) return false;
+
+  const origin = request.headers.get('Origin');
+  if (origin) return origin === expectedOrigin;
+
+  const secFetchSite = request.headers.get('Sec-Fetch-Site');
+  return secFetchSite === 'same-origin' || secFetchSite === 'none';
 }
 
 function readCookie(cookieHeader, name) {

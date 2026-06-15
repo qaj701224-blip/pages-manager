@@ -394,7 +394,7 @@ secrets:
 
 `SSO_CLIENT_ID` 是否作为 secret 取决于公司规范；如果不敏感可放 vars，但保持 secret 更保守。当前 wrangler template 把 `SSO_CLIENT_ID` 作为非敏感配置占位，`SSO_CLIENT_SECRET` 必须通过 secret 注入。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
-SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须通过 `PAGES_API` service binding 调 `pages-api.internal/.xd-pages/internal/users/upsert` 同步用户权威记录。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态，CLI token 不会因为缺少用户记录而在 API 层全部 403。
+SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须通过 `PAGES_API` service binding 调 `pages-api.internal/.xd-pages/internal/users/upsert` 同步用户权威记录。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。
 
 #### pages-router
 
@@ -848,6 +848,7 @@ https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id={loginId}
 
 - CLI 在终端显示短码，例如 `12345678`，并展示 environment、auth host 和请求 scope。
 - 浏览器 SSO 成功后，页面必须明确提示“正在授权 pages CLI”，并要求用户手动输入终端短码，再确认 environment、auth host 和 scope。
+- 浏览器确认表单必须带服务端签发的短 TTL confirm token，绑定 `cli_login_id`、当前 `auth_session.sid` 和用户；确认 POST 必须校验 exact `Origin` / same-origin fetch metadata，防止其它 `*.pages.xd.team` 子站 CSRF 自动确认。
 - 用户未确认短码前，`CliLoginDO` 不能写入 completed user，也不能让 CLI 领取 token。
 - 后续如果改成本机 loopback callback，也应配合 PKCE / nonce，把浏览器回调绑定到本地 CLI。
 
@@ -1584,7 +1585,7 @@ absolute TTL: 7 天
 
 该 cookie 只在当前子站 host 生效，避免一个子站的站点 session 被其他子站复用。`site_session` 比内部 JWT 长很多，是为了让受保护子站的日常访问尽量停留在 `pages-router` 快路径，不频繁跳回 `pages-auth` 补发。
 
-`site_session` 仍需要可控失效。首版采用“较长 cookie TTL + 较短身份 freshness”的方式：cookie 可以按 `SITE_SESSION_IDLE_TTL_SECONDS` 存活，但受保护站点还必须满足 `SITE_SESSION_FRESHNESS_TTL_SECONDS`，超过该窗口后 router 会带 `SITE_SESSION_STALE` 回到 auth 重新基于 SSO profile 补发。建议 claims 或 DO/D1 session record 中包含：
+`site_session` 仍需要可控失效。首版采用“较长 cookie TTL + 较短身份 freshness”的方式：cookie 可以按 `SITE_SESSION_IDLE_TTL_SECONDS` 存活，但受保护站点还必须满足 `SITE_SESSION_FRESHNESS_TTL_SECONDS`，默认和最大值都按 15 分钟处理；超过该窗口后 router 会带 `SITE_SESSION_STALE` 回到 auth 重新基于 SSO profile 补发。建议 claims 或 DO/D1 session record 中包含：
 
 ```text
 sub: user id

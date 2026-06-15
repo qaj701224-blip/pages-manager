@@ -79,14 +79,16 @@ test('confirm requires auth_session and manually entered device code', async () 
     },
     env
   );
+  const confirmToken = await signConfirmToken(env, { loginId: 'cli_test', userId: 'usr_123', sid: 'sid_test' });
   const response = await handleCliLoginConfirm(
     new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Origin: 'https://auth.pages.xd.team',
         Cookie: buildAuthSessionCookie(token, { maxAgeSeconds: 600 }).split(';', 1)[0],
       },
-      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678' }),
+      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678', confirmToken }),
     }),
     env,
     readAuthConfig(env)
@@ -109,8 +111,8 @@ test('confirm rejects requests without auth_session before touching CLI transact
   const response = await handleCliLoginConfirm(
     new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678' }),
+      headers: { 'Content-Type': 'application/json', Origin: 'https://auth.pages.xd.team' },
+      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678', confirmToken: 'invalid' }),
     }),
     env,
     readAuthConfig(env)
@@ -118,6 +120,83 @@ test('confirm rejects requests without auth_session before touching CLI transact
 
   assert.equal(response.status, 401);
   assert.equal((await response.json()).error.code, 'AUTH_SESSION_REQUIRED');
+  assert.equal(confirmed, false);
+});
+
+test('confirm rejects cross-origin form posts before touching CLI transaction', async () => {
+  let confirmed = false;
+  const env = testEnv({
+    confirmCliLoginRecord: async () => {
+      confirmed = true;
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_test' },
+    },
+    env
+  );
+  const confirmToken = await signConfirmToken(env, { loginId: 'cli_test', userId: 'usr_123', sid: 'sid_test' });
+
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Origin: 'https://evil.pages.xd.team',
+        Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }).split(';', 1)[0],
+      },
+      body: new URLSearchParams({ loginId: 'cli_test', deviceCode: '12345678', confirmToken }).toString(),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONFIRM_FORBIDDEN');
+  assert.equal(confirmed, false);
+});
+
+test('confirm rejects missing confirmation token before touching CLI transaction', async () => {
+  let confirmed = false;
+  const env = testEnv({
+    confirmCliLoginRecord: async () => {
+      confirmed = true;
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_test' },
+    },
+    env
+  );
+
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://auth.pages.xd.team',
+        Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }).split(';', 1)[0],
+      },
+      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678' }),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONFIRM_FORBIDDEN');
   assert.equal(confirmed, false);
 });
 
@@ -277,6 +356,20 @@ function confirmedLogin() {
       consumedAt: now + 1,
     },
   };
+}
+
+function signConfirmToken(env, { loginId, userId, sid }) {
+  return signSessionJwt(
+    {
+      purpose: 'cli_login_confirm',
+      audience: 'pages-cli-login-confirm',
+      subject: userId,
+      now,
+      ttlSeconds: 600,
+      claims: { loginId, sid },
+    },
+    env
+  );
 }
 
 function testEnv(overrides = {}) {

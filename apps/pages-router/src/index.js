@@ -12,7 +12,8 @@ const VALID_ROUTER_ENVIRONMENTS = new Set(['production', 'staging']);
 const SITE_SESSION_COOKIE = '__Host-pages_site_session';
 const SITE_AUTH_CALLBACK_PATH = '/.xd-pages/auth/callback';
 const DEFAULT_SITE_SESSION_TTL_SECONDS = 604_800;
-const DEFAULT_SITE_SESSION_FRESHNESS_TTL_SECONDS = 43_200;
+const MAX_SITE_SESSION_FRESHNESS_TTL_SECONDS = 900;
+const DEFAULT_SITE_SESSION_FRESHNESS_TTL_SECONDS = 900;
 const PRODUCTION_WORKER_PREFIX = 'pages-v2-';
 const STAGING_WORKER_PREFIX = 'pages-v2-staging-';
 const MAX_WORKER_NAME_LENGTH = 63;
@@ -297,6 +298,7 @@ async function handleSiteAuthCallback(request, env, route) {
     headers: {
       Location: returnTo,
       'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
     },
   });
   response.headers.set('Set-Cookie', buildSiteSessionCookie(token, { maxAgeSeconds: readSiteSessionTtlSeconds(env) }));
@@ -346,10 +348,10 @@ function readSiteSessionTtlSeconds(env) {
 
 function readSiteSessionFreshnessTtlSeconds(env) {
   const value = Number(env.SITE_SESSION_FRESHNESS_TTL_SECONDS || DEFAULT_SITE_SESSION_FRESHNESS_TTL_SECONDS);
-  if (!Number.isInteger(value) || value <= 0 || value > DEFAULT_SITE_SESSION_TTL_SECONDS) {
+  if (!Number.isInteger(value) || value <= 0) {
     return DEFAULT_SITE_SESSION_FRESHNESS_TTL_SECONDS;
   }
-  return value;
+  return Math.min(value, MAX_SITE_SESSION_FRESHNESS_TTL_SECONDS);
 }
 
 function requiresFreshIdentity(route) {

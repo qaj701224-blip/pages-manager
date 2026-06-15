@@ -301,10 +301,15 @@ test('callback rejects profiles without explicit active employee status', async 
     stateSecret: 'state-secret',
   });
   let sessionCreated = false;
+  let syncedProfile;
   const env = testEnv({
     consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
     fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
     fetchSsoProfile: async () => ({ id: 'usr_123', email: 'user@example.test' }),
+    syncSsoUserProfile: async (profile) => {
+      syncedProfile = profile;
+      return { user: { id: profile.id } };
+    },
     createAuthSessionRecord: async () => {
       sessionCreated = true;
     },
@@ -318,6 +323,13 @@ test('callback rejects profiles without explicit active employee status', async 
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SSO_PROFILE_INACTIVE');
+  assert.deepEqual(syncedProfile, {
+    id: 'usr_123',
+    email: 'user@example.test',
+    employeeStatus: 'unknown',
+    departments: [],
+    sessionVersion: 1,
+  });
   assert.equal(sessionCreated, false);
 });
 
@@ -356,7 +368,23 @@ test('CLI OAuth callback shows manual device confirmation and does not create a 
   assert.match(text, /https:\/\/auth\.pages\.xd\.team/);
   assert.match(text, /cli_token/);
   assert.match(text, /name="loginId" value="cli_test"/);
+  assert.match(text, /name="confirmToken" value="[^"]+"/);
   assert.match(text, /name="deviceCode"/);
+  const confirmToken = text.match(/name="confirmToken" value="([^"]+)"/)[1];
+  const authToken = response.headers.get('Set-Cookie').split(';', 1)[0].split('=', 2)[1];
+  const authPayload = await verifySessionJwt(authToken, env, {
+    purpose: 'auth_session',
+    audience: 'pages-auth',
+    now,
+  });
+  const confirmPayload = await verifySessionJwt(confirmToken, env, {
+    purpose: 'cli_login_confirm',
+    audience: 'pages-cli-login-confirm',
+    now,
+  });
+  assert.equal(confirmPayload.sub, 'usr_123');
+  assert.equal(confirmPayload.loginId, 'cli_test');
+  assert.equal(confirmPayload.sid, authPayload.sid);
   assert.equal(siteCodeCreated, false);
   assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });

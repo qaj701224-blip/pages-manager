@@ -5,7 +5,9 @@ import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
+const CLI_LOGIN_CONFIRM_AUDIENCE = 'pages-cli-login-confirm';
 const SITE_CODE_TTL_SECONDS = 60;
+const CLI_LOGIN_CONFIRM_TTL_SECONDS = 600;
 const ACTIVE_EMPLOYEE_STATUS = 'active';
 
 export async function handleOAuthAuthorize(request, env, config) {
@@ -62,9 +64,6 @@ export async function handleOAuthCallback(request, env, config) {
   }
 
   if (!profile.id) return jsonError('SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
-  if (profile.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) {
-    return jsonError('SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
-  }
 
   try {
     await syncSsoUserProfile(env, profile, now);
@@ -72,22 +71,42 @@ export async function handleOAuthCallback(request, env, config) {
     return jsonError('SSO_USER_SYNC_FAILED', 'SSO user could not be synced.', 502);
   }
 
-  let authToken;
+  if (profile.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) {
+    return jsonError('SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
+  }
+
+  let authSession;
   try {
-    authToken = await createAuthSession(env, config, profile.id, now);
+    authSession = await createAuthSession(env, config, profile.id, now);
   } catch {
     return jsonError('AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
 
   if (consumedState.kind === 'cli') {
-    const response = new Response(buildCliLoginConfirmationHtml(consumedState.cliLoginId, config), {
+    let confirmToken;
+    try {
+      confirmToken = await createCliLoginConfirmToken(env, {
+        loginId: consumedState.cliLoginId,
+        userId: profile.id,
+        sid: authSession.sid,
+        now,
+      });
+    } catch {
+      return jsonError('CLI_LOGIN_CONFIRM_CREATE_FAILED', 'CLI login confirmation could not be created.', 500);
+    }
+
+    const response = new Response(buildCliLoginConfirmationHtml(consumedState.cliLoginId, config, confirmToken), {
       status: 200,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
+        'Referrer-Policy': 'no-referrer',
       },
     });
-    response.headers.set('Set-Cookie', buildAuthSessionCookie(authToken, { maxAgeSeconds: config.authSessionIdleTtlSeconds }));
+    response.headers.set(
+      'Set-Cookie',
+      buildAuthSessionCookie(authSession.token, { maxAgeSeconds: config.authSessionIdleTtlSeconds })
+    );
     return response;
   }
 
@@ -105,7 +124,10 @@ export async function handleOAuthCallback(request, env, config) {
   }
 
   const response = safeRedirect(buildSiteCallbackUrl(consumedState.siteHost, siteCode.siteCode), 302);
-  response.headers.set('Set-Cookie', buildAuthSessionCookie(authToken, { maxAgeSeconds: config.authSessionIdleTtlSeconds }));
+  response.headers.set(
+    'Set-Cookie',
+    buildAuthSessionCookie(authSession.token, { maxAgeSeconds: config.authSessionIdleTtlSeconds })
+  );
   return response;
 }
 
@@ -279,19 +301,22 @@ async function createAuthSession(env, config, userId, now) {
     idleTtlSeconds: config.authSessionIdleTtlSeconds,
     absoluteTtlSeconds: config.authSessionAbsoluteTtlSeconds,
   });
-  return signSessionJwt(
-    {
-      purpose: 'auth_session',
-      audience: AUTH_SESSION_AUDIENCE,
-      subject: userId,
-      now,
-      ttlSeconds: config.authSessionIdleTtlSeconds,
-      claims: {
-        sid,
+  return {
+    sid,
+    token: await signSessionJwt(
+      {
+        purpose: 'auth_session',
+        audience: AUTH_SESSION_AUDIENCE,
+        subject: userId,
+        now,
+        ttlSeconds: config.authSessionIdleTtlSeconds,
+        claims: {
+          sid,
+        },
       },
-    },
-    env
-  );
+      env
+    ),
+  };
 }
 
 async function createAuthSessionRecord(env, input) {
@@ -326,6 +351,23 @@ async function syncSsoUserProfile(env, profile, now) {
   return response.json();
 }
 
+function createCliLoginConfirmToken(env, { loginId, userId, sid, now }) {
+  return signSessionJwt(
+    {
+      purpose: 'cli_login_confirm',
+      audience: CLI_LOGIN_CONFIRM_AUDIENCE,
+      subject: userId,
+      now,
+      ttlSeconds: CLI_LOGIN_CONFIRM_TTL_SECONDS,
+      claims: {
+        loginId,
+        sid,
+      },
+    },
+    env
+  );
+}
+
 function buildSiteCallbackUrl(siteHost, siteCode) {
   const url = new URL(`https://${siteHost}/.xd-pages/auth/callback`);
   url.searchParams.set('code', siteCode);
@@ -350,8 +392,9 @@ function jsonDoRequest(url, body) {
   });
 }
 
-function buildCliLoginConfirmationHtml(loginId, config) {
+function buildCliLoginConfirmationHtml(loginId, config, confirmToken) {
   const safeLoginId = htmlEscape(loginId);
+  const safeConfirmToken = htmlEscape(confirmToken);
   const safeEnvironment = htmlEscape(config.environment);
   const safeAuthBase = htmlEscape(config.authBase);
   return `<!doctype html>
@@ -375,6 +418,7 @@ function buildCliLoginConfirmationHtml(loginId, config) {
     </dl>
     <form method="post" action="/.xd-pages/cli/login/confirm" autocomplete="off">
       <input type="hidden" name="loginId" value="${safeLoginId}">
+      <input type="hidden" name="confirmToken" value="${safeConfirmToken}">
       <label>
         Device code
         <input name="deviceCode" inputmode="numeric" pattern="[0-9]{8}" autocomplete="one-time-code" required>
