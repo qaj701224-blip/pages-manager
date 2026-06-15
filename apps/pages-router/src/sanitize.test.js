@@ -48,12 +48,19 @@ test('strips platform response headers and platform Set-Cookie values', async ()
   headers.append('Set-Cookie', '__Host-pages_site_session=evil; Path=/; Secure');
   headers.append('Set-Cookie', 'app=ok; Path=/; Secure');
   headers.append('Set-Cookie', 'bad=parent; Domain=.pages.xd.team; Path=/; Secure');
+  headers.append('Set-Cookie', 'bad=apex; Domain=pages.xd.team; Path=/; Secure');
 
-  const response = sanitizeUserWorkerResponse(new Response('ok', { status: 200, headers }));
+  const response = sanitizeUserWorkerResponse(new Response('ok', {
+    status: 299,
+    statusText: 'Router Sanitized',
+    headers,
+  }));
 
   assert.equal(response.headers.get('CF-Platform-Trace-Id'), null);
   assert.equal(response.headers.get('X-Pages-Token'), null);
   assert.equal(response.headers.get('Content-Type'), 'text/plain');
+  assert.equal(response.status, 299);
+  assert.equal(response.statusText, 'Router Sanitized');
 
   const setCookies = getSetCookies(response.headers);
   assert.deepEqual(setCookies, ['app=ok; Path=/; Secure']);
