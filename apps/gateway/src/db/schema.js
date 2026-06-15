@@ -71,6 +71,7 @@ export const publishingJobs = mysqlTable(
     status: mysqlEnum('status', publishingJobStatusValues).notNull(),
     title: varchar('title', { length: 255 }),
     summary: text('summary'),
+    requesterProfileJson: json('requester_profile_json'),
     slackThreadJson: json('slack_thread_json'),
     slackSessionId: id('slack_session_id'),
     slackSessionKey: varchar('slack_session_key', { length: 255 }),

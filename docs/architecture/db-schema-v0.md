@@ -475,32 +475,33 @@ Slack Agent / Coding Agent 的 prompt 模板版本快照。
 
 一次发布请求的总状态。
 
-| 字段                        | 类型                   | 说明                                                         |
-| --------------------------- | ---------------------- | ------------------------------------------------------------ |
-| `id`                        | varchar(64) pk         | `job_...`                                                    |
-| `source`                    | enum                   | `slack \| api \| admin \| system`                            |
-| `idempotency_key`           | varchar(255)           | 来源幂等 key                                                 |
-| `request_id`                | varchar(128) nullable  | 入口请求 / Slack / API correlation id                        |
-| `requested_by_type`         | enum                   | `user \| employee \| service_account`                        |
-| `requested_by_id`           | varchar(64)            | 发起者                                                       |
-| `site_project_id`           | varchar(64) nullable   | 目标站点，创建前可为空                                       |
-| `owner_scope_id`            | varchar(64)            | 归属域                                                       |
-| `employee_id`               | varchar(64) nullable   | personal scope 下使用                                        |
-| `employee_slug`             | varchar(80)            | 冗余快照                                                     |
-| `site_slug`                 | varchar(80)            | 冗余快照                                                     |
-| `intent`                    | enum                   | `create_site \| update_site \| delete_site \| rollback_site` |
-| `approval_mode`             | enum                   | `draft \| manual_required \| trusted_auto`                   |
-| `status`                    | enum                   | 见状态机                                                     |
-| `title`                     | varchar(255)           | 需求标题                                                     |
-| `summary`                   | text                   | 结构化摘要                                                   |
-| `error_code`                | varchar(128) nullable  | 失败码                                                       |
-| `error_message`             | text nullable          | 可展示错误                                                   |
-| `issue_number`              | int nullable           | GitHub issue                                                 |
-| `pr_number`                 | int nullable           | GitHub PR                                                    |
-| `branch_name`               | varchar(255) nullable  | 受控分支                                                     |
-| `index_snapshot_id`         | varchar(64) nullable   | 本次 job 固定使用的项目索引快照                              |
-| `preview_url`               | varchar(1024) nullable | preview                                                      |
-| `created_at` / `updated_at` | datetime               | 时间戳                                                       |
+| 字段                        | 类型                   | 说明                                                           |
+| --------------------------- | ---------------------- | -------------------------------------------------------------- |
+| `id`                        | varchar(64) pk         | `job_...`                                                      |
+| `source`                    | enum                   | `slack \| api \| admin \| system`                              |
+| `idempotency_key`           | varchar(255)           | 来源幂等 key                                                   |
+| `request_id`                | varchar(128) nullable  | 入口请求 / Slack / API correlation id                          |
+| `requested_by_type`         | enum                   | `user \| employee \| service_account`                          |
+| `requested_by_id`           | varchar(64)            | 发起者                                                         |
+| `site_project_id`           | varchar(64) nullable   | 目标站点，创建前可为空                                         |
+| `owner_scope_id`            | varchar(64)            | 归属域                                                         |
+| `employee_id`               | varchar(64) nullable   | personal scope 下使用                                          |
+| `employee_slug`             | varchar(80)            | 冗余快照                                                       |
+| `site_slug`                 | varchar(80)            | 冗余快照                                                       |
+| `intent`                    | enum                   | `create_site \| update_site \| delete_site \| rollback_site`   |
+| `approval_mode`             | enum                   | `draft \| manual_required \| trusted_auto`                     |
+| `status`                    | enum                   | 见状态机                                                       |
+| `title`                     | varchar(255)           | 需求标题                                                       |
+| `summary`                   | text                   | 结构化摘要                                                     |
+| `requester_profile_json`    | json nullable          | 发起人快照，例如 Slack display name、real name、email、user id |
+| `error_code`                | varchar(128) nullable  | 失败码                                                         |
+| `error_message`             | text nullable          | 可展示错误                                                     |
+| `issue_number`              | int nullable           | GitHub issue                                                   |
+| `pr_number`                 | int nullable           | GitHub PR                                                      |
+| `branch_name`               | varchar(255) nullable  | 受控分支                                                       |
+| `index_snapshot_id`         | varchar(64) nullable   | 本次 job 固定使用的项目索引快照                                |
+| `preview_url`               | varchar(1024) nullable | preview                                                        |
+| `created_at` / `updated_at` | datetime               | 时间戳                                                         |
 
 约束：
 
