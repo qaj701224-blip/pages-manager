@@ -284,21 +284,27 @@ production 和 staging 分开申请或创建：
 
 ### 心动 SSO 应用配置
 
-建议 production 和 staging 使用两个 SSO 应用或至少两个 redirect URI：
+production、staging 和 local 建议使用三个独立 SSO 应用，至少也要使用三组独立 redirect URI。OAuth 入口和 callback 都应落到 `pages-auth`，不能落到 `pages-api`，否则控制面会被迫持有 SSO client secret 和 session signing secret。
 
 ```text
-production redirect URI:
-  https://auth.pages.xd.team/.xd-pages/auth/callback
+production app:
+  应用名称：xd_pages
+  用户访问入口：https://auth.pages.xd.team/.xd-pages/auth/authorize
+  SSO认证重定向地址：https://auth.pages.xd.team/.xd-pages/auth/callback
 
-staging redirect URI:
-  https://auth-staging.pages.xd.team/.xd-pages/auth/callback
+staging app:
+  应用名称：xd_pages_staging
+  用户访问入口：https://auth-staging.pages.xd.team/.xd-pages/auth/authorize
+  SSO认证重定向地址：https://auth-staging.pages.xd.team/.xd-pages/auth/callback
 ```
 
-本地开发可申请或使用单独的 local SSO 应用，redirect URI 示例：
+本地开发使用单独的 local SSO 应用：
 
 ```text
-local redirect URI:
-  http://xdclaw.127.0.0.1.nip.io:5188/api/auth/callback
+local app:
+  应用名称：xd_pages_local
+  用户访问入口：http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/authorize
+  SSO认证重定向地址：http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/callback
 ```
 
 local SSO 的 `SSO_CLIENT_ID` 和 `SSO_CLIENT_SECRET` 只能放本地 ignored env，例如当前仓库已忽略的 `.env`、`.dev.vars`，或只放 shell 环境变量；不得写入本文档、Git、CLI config、`.pages.json` 或测试快照。若使用 `.env.local`、`.dev.vars.local` 等新文件名，必须先确认它们已被 `.gitignore` 覆盖。若本地调试凭证曾被公开粘贴到 issue、PR、聊天记录或日志，应按公司规范轮换。
@@ -307,20 +313,20 @@ local SSO 的 `SSO_CLIENT_ID` 和 `SSO_CLIENT_SECRET` 只能放本地 ignored en
 
 ```bash
 export PAGES_ENV=local
-export PUBLIC_AUTH_BASE=http://xdclaw.127.0.0.1.nip.io:5188
-export SSO_REDIRECT_URI=http://xdclaw.127.0.0.1.nip.io:5188/api/auth/callback
+export PUBLIC_AUTH_BASE=http://xd-pages.127.0.0.1.nip.io:8787
+export SSO_REDIRECT_URI=http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/callback
 export SSO_CLIENT_ID=<local-sso-client-id>
 export SSO_CLIENT_SECRET=<local-sso-client-secret>
 ```
 
-`xdclaw.127.0.0.1.nip.io` 用于让 OAuth redirect URI 具备稳定 host，同时仍解析到本机 `127.0.0.1`。本地 callback 路径可以先沿用现有服务风格的 `/api/auth/callback`；线上架构仍建议使用平台保留路径 `/.xd-pages/auth/callback`，避免和用户站点路由冲突。
+`xd-pages.127.0.0.1.nip.io` 用于让 OAuth redirect URI 具备稳定 host，同时仍解析到本机 `127.0.0.1`。本地 callback 路径也统一使用平台保留路径 `/.xd-pages/auth/callback`，避免和用户站点路由冲突。M2 代码当前只实现 production/staging 的 host 校验；接入 local SSO 前需要补齐 `PAGES_ENV=local` 的 host allowlist 和 cookie/session 测试，或明确本地只使用 mock SSO。
 
 需要配置：
 
 ```text
 SSO_CLIENT_ID
 SSO_CLIENT_SECRET
-SSO_AUTHORIZE_URL
+SSO_AUTHORIZATION_URL
 SSO_TOKEN_URL
 SSO_PROFILE_URL
 SSO_REDIRECT_URI
@@ -369,7 +375,7 @@ vars:
   PUBLIC_API_BASE
   SESSION_SIGNING_ACTIVE_KID
   SESSION_SIGNING_KEYS
-  SSO_AUTHORIZE_URL
+  SSO_AUTHORIZATION_URL
   SSO_TOKEN_URL
   SSO_PROFILE_URL
   SSO_REDIRECT_URI
@@ -455,7 +461,7 @@ INTERNAL_JWT_ACTIVE_KID
 INTERNAL_JWT_KEYS
 PAGES_CAP_JWT_ACTIVE_KID
 PAGES_CAP_JWT_KEYS
-SSO_AUTHORIZE_URL
+SSO_AUTHORIZATION_URL
 SSO_TOKEN_URL
 SSO_PROFILE_URL
 SSO_REDIRECT_URI
