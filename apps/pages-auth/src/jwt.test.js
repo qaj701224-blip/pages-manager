@@ -166,3 +166,49 @@ test('rejects missing active key and duplicate key registry entries', async () =
     /duplicate/i
   );
 });
+
+test('rejects extra claims that can rewrite reserved fields during JSON serialization', async () => {
+  await assert.rejects(
+    () =>
+      signSessionJwt(
+        {
+          purpose: 'auth_session',
+          audience: 'pages-auth',
+          subject: 'usr_123',
+          now,
+          ttlSeconds: 10,
+          claims: {
+            sid: 'sid_auth',
+            toJSON() {
+              return { iss: 'evil', sid: 'sid_auth' };
+            },
+          },
+        },
+        testEnv()
+      ),
+    /toJSON/i
+  );
+});
+
+test('rejects inherited and non-string key registry secret bindings', async () => {
+  await assert.rejects(
+    () =>
+      signSessionJwt(
+        { purpose: 'auth_session', audience: 'pages-auth', subject: 'usr_123', now, ttlSeconds: 10 },
+        testEnv({
+          PAGES_SESSION_JWT_KEYS: 'prod-hs-2026-06:HS256:toString',
+        })
+      ),
+    /secret/i
+  );
+  await assert.rejects(
+    () =>
+      signSessionJwt(
+        { purpose: 'auth_session', audience: 'pages-auth', subject: 'usr_123', now, ttlSeconds: 10 },
+        testEnv({
+          PAGES_SESSION_JWT_SECRET_TEST: { value: 'test-session-secret' },
+        })
+      ),
+    /secret/i
+  );
+});

@@ -22,9 +22,13 @@ export function parseKeyRegistry(env) {
     if (keys.has(kid)) throw new Error(`Duplicate session JWT key registry entry for kid ${kid}`);
     if (alg !== ALGORITHM) throw new Error(`Unsupported session JWT algorithm ${alg}`);
 
-    const secret = env?.[secretEnvName];
-    if (!secret) throw new Error(`Missing session JWT secret for kid ${kid}`);
-    keys.set(kid, { kid, alg, secret: String(secret), secretEnvName });
+    if (!Object.hasOwn(env, secretEnvName)) throw new Error(`Missing session JWT secret for kid ${kid}`);
+
+    const secret = env[secretEnvName];
+    if (typeof secret !== 'string' || secret === '') {
+      throw new Error(`Session JWT secret for kid ${kid} must be a non-empty string`);
+    }
+    keys.set(kid, { kid, alg, secret, secretEnvName });
   }
 
   return keys;
@@ -44,7 +48,7 @@ export async function signSessionJwt({ purpose, audience, subject, now, ttlSecon
   validateRequiredString(purpose, 'purpose');
   validateRequiredString(audience, 'audience');
   validateRequiredString(subject, 'subject');
-  validateExtraClaims(claims);
+  const extraClaims = sanitizeExtraClaims(claims);
 
   const header = { alg: ALGORITHM, typ: 'JWT', kid: activeKid };
   const payload = {
@@ -56,7 +60,7 @@ export async function signSessionJwt({ purpose, audience, subject, now, ttlSecon
     iat: issuedAt,
     nbf: issuedAt,
     exp: issuedAt + ttl,
-    ...claims,
+    ...extraClaims,
   };
 
   const encodedHeader = base64UrlEncodeJson(header);
@@ -151,14 +155,20 @@ function validateRequiredString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`JWT ${label} is required`);
 }
 
-function validateExtraClaims(claims) {
-  if (!claims || typeof claims !== 'object' || Array.isArray(claims)) {
-    throw new Error('JWT claims must be an object');
+function sanitizeExtraClaims(claims) {
+  if (!claims || typeof claims !== 'object' || Array.isArray(claims) || Object.getPrototypeOf(claims) !== Object.prototype) {
+    throw new Error('JWT claims must be a plain object');
   }
 
-  for (const claim of Object.keys(claims)) {
+  const sanitizedClaims = {};
+  for (const [claim, value] of Object.entries(claims)) {
+    if (claim === 'toJSON') throw new Error('JWT claim toJSON is not allowed');
     if (RESERVED_CLAIMS.has(claim)) throw new Error(`JWT claim ${claim} is reserved`);
+    if (typeof value === 'function') throw new Error(`JWT claim ${claim} must not be a function`);
+    sanitizedClaims[claim] = value;
   }
+
+  return sanitizedClaims;
 }
 
 function base64UrlEncodeJson(value) {
