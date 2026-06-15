@@ -85,34 +85,111 @@ export function smokeIssueMarker(scope) {
   return `${SMOKE_MARKER_PREFIX} ${scope}`;
 }
 
+function safeText(value, fallback = '未提供') {
+  const text = String(value || '').trim();
+  return text || fallback;
+}
+
+function requesterProfileForJob(job = {}) {
+  const profile = job.requesterProfile || job.requester_profile || job.requester || {};
+  const slackUserId = profile.slackUserId || profile.slack_user_id || job.slackThread?.userId || '';
+  return {
+    name: profile.displayName || profile.display_name || profile.realName || profile.real_name || profile.name || '',
+    email: profile.email || '',
+    slackTeamId: profile.slackTeamId || profile.slack_team_id || job.slackThread?.teamId || '',
+    slackUserId,
+  };
+}
+
+function requesterLines(job = {}) {
+  const profile = requesterProfileForJob(job);
+  const requesterId = `${job.requestedByType}:${job.requestedById}`;
+  return [
+    `- 发起人：${safeText(profile.name, '未获取 Slack 昵称')}`,
+    `- 邮箱：${safeText(profile.email, '未获取')}`,
+    `- Slack 用户：${profile.slackUserId ? `\`${profile.slackUserId}\`` : '未获取'}`,
+    `- 平台身份：\`${requesterId}\``,
+  ];
+}
+
+function sourceLines(job = {}) {
+  const thread = job.slackThread || {};
+  if (job.source !== 'slack') {
+    return [`- 来源：${safeText(job.source)}`];
+  }
+
+  return [
+    `- 来源：Slack`,
+    `- Team：${thread.teamId ? `\`${thread.teamId}\`` : '未获取'}`,
+    `- Channel：${thread.channelId ? `\`${thread.channelId}\`` : '未获取'}`,
+    `- Thread：${thread.threadTs ? `\`${thread.threadTs}\`` : '未获取'}`,
+  ];
+}
+
+function automationMetadataLines(job, options = {}) {
+  const allowedPath = options.allowedPath || allowedPathForJob(job);
+  return [
+    publishingJobMarker(job.id),
+    `Source: ${job.source}`,
+    `Requested by: ${job.requestedByType}:${job.requestedById}`,
+    `Requester: ${job.requestedByType}:${job.requestedById}`,
+    `Target: ${job.employeeSlug}/${job.siteSlug}`,
+    `Allowed path: ${allowedPath}`,
+    `Base ref: ${options.baseRef || ''}`,
+    `Approval mode: ${job.approvalMode}`,
+    'Pipeline: user-site publishing',
+    'Platform deployment: out of scope',
+  ];
+}
+
 export function buildPublishingIssue(job, options = {}) {
   const allowedPath = options.allowedPath || allowedPathForJob(job);
-  const title = `[pages] ${job.employeeSlug}/${job.siteSlug}: ${job.title || job.intent || 'site request'}`;
-  const summary = job.summary || job.brief || 'No summary provided.';
+  const title = `[pages] ${job.employeeSlug}/${job.siteSlug}：${job.title || job.intent || '站点发布需求'}`;
+  const summary = safeText(job.summary || job.brief, '未提供需求摘要。');
 
   return {
     title,
     labels: options.labels || ['pages-publishing-job', 'site-change'],
     body: [
-      publishingJobMarker(job.id),
+      `<!-- pages-manager:job_id=${job.id} -->`,
       '',
-      `Source: ${job.source}`,
-      `Requested by: ${job.requestedByType}:${job.requestedById}`,
-      `Target: ${job.employeeSlug}/${job.siteSlug}`,
-      `Allowed path: ${allowedPath}`,
-      `Base ref: ${options.baseRef || ''}`,
-      `Approval mode: ${job.approvalMode}`,
-      'Pipeline: user-site publishing',
-      'Platform deployment: out of scope',
-      '',
-      '## Requirement Summary',
+      '## 发布需求',
       '',
       summary,
       '',
-      '## Automation Boundary',
+      '## 发起人',
       '',
-      `Automated changes for this job must stay under \`${allowedPath}/\`.`,
-      'Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets for this job.',
+      ...requesterLines(job),
+      '',
+      '## 目标站点',
+      '',
+      `- 归属目录：\`${job.employeeSlug}\``,
+      `- 站点名称：\`${job.siteSlug}\``,
+      `- 允许修改目录：\`${allowedPath}/\``,
+      `- Base ref：${options.baseRef ? `\`${options.baseRef}\`` : '未指定'}`,
+      '',
+      '## 来源上下文',
+      '',
+      ...sourceLines(job),
+      '',
+      '## 自动化边界',
+      '',
+      `- Coding Agent 只能修改 \`${allowedPath}/\` 下的文件。`,
+      '- 不允许修改平台代码、GitHub Actions、Kubernetes manifests、Dockerfile、部署脚本或任何 secret 配置。',
+      '- 本 issue 只驱动个人站点 preview 流程，不触发 production deploy。',
+      '',
+      '## 验收标准',
+      '',
+      '- 生成或更新个人网站内容，并保留用户需求里的关键标识。',
+      '- PR 只包含允许目录下的站点文件变更。',
+      '- site-check 和 Review Agent gate 通过后生成 preview URL。',
+      '- 用户可以继续在原 Slack thread 里追加修改意见。',
+      '',
+      '## 自动化元数据',
+      '',
+      '```text',
+      ...automationMetadataLines(job, options),
+      '```',
     ].join('\n'),
   };
 }
@@ -120,64 +197,73 @@ export function buildPublishingIssue(job, options = {}) {
 export function buildSmokeIssue(job, options = {}) {
   const scope = options.scope || 'local-slack-smoke';
   const allowedPath = options.allowedPath || allowedPathForJob(job);
+  const summary = safeText(job.summary || job.brief, '未提供需求摘要。');
 
   return {
-    title: options.title || `[pages-smoke] Slack issue intake (${scope})`,
+    title: options.title || `[pages-smoke] Slack 发布任务验证（${scope}）`,
     labels: [],
     body: [
       smokeIssueMarker(scope),
       '',
-      'This issue is reused by local Slack smoke tests to avoid creating one GitHub issue per test message.',
+      '这个 issue 用于复用 Slack smoke 测试入口，避免每条测试消息都创建一个新的 GitHub issue。',
       '',
-      '## Latest Request',
+      '## 最新发布需求',
       '',
-      `PublishingJob: ${job.id}`,
-      `Source: ${job.source}`,
-      `Requested by: ${job.requestedByType}:${job.requestedById}`,
-      `Target: ${job.employeeSlug}/${job.siteSlug}`,
-      `Allowed path: ${allowedPath}`,
-      'Pipeline: user-site publishing',
-      'Platform deployment: out of scope',
+      summary,
       '',
-      job.summary || job.brief || 'No summary provided.',
+      '## 发起人',
+      '',
+      ...requesterLines(job),
+      '',
+      '## 目标和边界',
+      '',
+      `- 目标站点：\`${job.employeeSlug}/${job.siteSlug}\``,
+      `- 允许修改目录：\`${allowedPath}/\``,
+      '- 只允许用户站点发布流程使用，不允许修改平台或部署配置。',
+      '',
+      '## 自动化元数据',
+      '',
+      '```text',
+      ...automationMetadataLines(job, options),
+      '```',
     ].join('\n'),
   };
 }
 
 export function buildSmokeIssueComment(job, options = {}) {
-  const allowedPath = options.allowedPath || allowedPathForJob(job);
-
   return [
-    `PublishingJob: ${job.id}`,
+    '## 新的 Slack smoke 发布请求',
     '',
-    `Source: ${job.source}`,
-    `Requested by: ${job.requestedByType}:${job.requestedById}`,
-    `Target: ${job.employeeSlug}/${job.siteSlug}`,
-    `Allowed path: ${allowedPath}`,
-    'Pipeline: user-site publishing',
-    'Platform deployment: out of scope',
+    safeText(job.summary || job.brief, '未提供需求摘要。'),
     '',
-    job.summary || job.brief || 'No summary provided.',
+    '## 发起人',
+    '',
+    ...requesterLines(job),
+    '',
+    '## 自动化元数据',
+    '',
+    '```text',
+    ...automationMetadataLines(job, options),
+    '```',
   ].join('\n');
 }
 
 export function buildFollowupIssueComment(job, options = {}) {
-  const allowedPath = options.allowedPath || allowedPathForJob(job);
-
   return [
-    `PublishingJob: ${job.id}`,
+    '## Slack 追加修改',
     '',
-    '## Slack Follow-up',
+    safeText(job.summary || job.brief, '未提供追加说明。'),
     '',
-    `Source: ${job.source}`,
-    `Requested by: ${job.requestedByType}:${job.requestedById}`,
-    `Target: ${job.employeeSlug}/${job.siteSlug}`,
-    `Allowed path: ${allowedPath}`,
+    '## 发起人',
+    '',
+    ...requesterLines(job),
+    '',
+    '## 自动化元数据',
+    '',
+    '```text',
+    ...automationMetadataLines(job, options),
     `Agent mode: ${options.mode || 'fix'}`,
-    'Pipeline: user-site publishing',
-    'Platform deployment: out of scope',
-    '',
-    job.summary || job.brief || 'No summary provided.',
+    '```',
   ].join('\n');
 }
 
