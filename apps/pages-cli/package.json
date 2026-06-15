@@ -1,0 +1,15 @@
+{
+  "name": "@xd/pages-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pages": "./src/main.js"
+  },
+  "scripts": {
+    "test": "node --test src/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
