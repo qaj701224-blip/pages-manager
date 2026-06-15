@@ -94,6 +94,62 @@ test('rejects unsupported methods on CLI login endpoints', async () => {
   assert.equal((await response.json()).error.code, 'METHOD_NOT_ALLOWED');
 });
 
+test('routes OAuth authorize and callback public endpoints', async () => {
+  const env = {
+    ...testJwtEnv(),
+    SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
+    SSO_CLIENT_ID: 'xd_pages_test',
+    now: () => 1_800_000_000,
+    createOAuthStateRecord: async () => ({
+      publicState: 'ost_test.state-secret',
+      record: {
+        id: 'ost_test',
+        expiresAt: 1_800_000_300,
+      },
+    }),
+    consumeOAuthStateRecord: async () => ({
+      returnTo: 'https://demo.pages.xd.team/app',
+      siteHost: 'demo.pages.xd.team',
+      record: {
+        id: 'ost_test',
+        consumedAt: 1_800_000_000,
+      },
+    }),
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({ id: 'usr_123' }),
+    createAuthSessionRecord: async () => ({}),
+  };
+
+  const authorizeResponse = await worker.fetch(
+    new Request(
+      'https://auth.pages.xd.team/.xd-pages/auth/authorize?site_host=demo.pages.xd.team&return_to=https://demo.pages.xd.team/app'
+    ),
+    env
+  );
+
+  assert.equal(authorizeResponse.status, 302);
+  assert.equal(new URL(authorizeResponse.headers.get('Location')).origin, 'https://sso.example.test');
+
+  const callbackResponse = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=ost_test.state-secret'),
+    env
+  );
+
+  assert.equal(callbackResponse.status, 302);
+  assert.equal(callbackResponse.headers.get('Location'), 'https://demo.pages.xd.team/app');
+  assert.match(callbackResponse.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
+});
+
+test('rejects unsupported methods on OAuth endpoints', async () => {
+  const response = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/callback', { method: 'POST' }),
+    testJwtEnv()
+  );
+
+  assert.equal(response.status, 405);
+  assert.equal((await response.json()).error.code, 'METHOD_NOT_ALLOWED');
+});
+
 test('exports Durable Object shell classes', () => {
   assert.equal(typeof OAuthStateDO, 'function');
   assert.equal(typeof CliLoginDO, 'function');

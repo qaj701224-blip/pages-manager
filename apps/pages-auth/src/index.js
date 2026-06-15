@@ -12,6 +12,7 @@ import {
   revokeStoredSession,
 } from './do-storage.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
 
 export default {
   async fetch(request, env) {
@@ -36,6 +37,8 @@ export default {
 
     if (url.pathname === '/.xd-pages/cli/login/start') return handleCliLoginStart(request, env, config);
     if (url.pathname === '/.xd-pages/cli/login/poll') return handleCliLoginPoll(request, env, config);
+    if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config);
+    if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config);
 
     return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
   },

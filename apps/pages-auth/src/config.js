@@ -39,6 +39,9 @@ export function readAuthConfig(env = {}) {
     authHost: new URL(authBase).hostname,
     apiBase,
     ssoRedirectUri,
+    ssoAuthorizationUrl: readOptionalUrl(env.SSO_AUTHORIZATION_URL, 'SSO authorization URL'),
+    ssoClientId: readOptionalString(env.SSO_CLIENT_ID),
+    ssoAllowedUserScope: readOptionalString(env.SSO_ALLOWED_USER_SCOPE),
     oauthStateTtlSeconds: readPositiveInteger(env.OAUTH_STATE_TTL_SECONDS, 300, TTL_ENV_NAMES.oauthStateTtlSeconds),
     cliLoginTtlSeconds: readPositiveInteger(env.CLI_LOGIN_TTL_SECONDS, 600, TTL_ENV_NAMES.cliLoginTtlSeconds),
     authSessionIdleTtlSeconds: readPositiveInteger(
@@ -92,4 +95,14 @@ function readPositiveInteger(value, fallback, label) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer`);
   return parsed;
+}
+
+function readOptionalUrl(value, label) {
+  if (value === undefined || value === null || value === '') return null;
+  return normalizeUrl(value, label);
+}
+
+function readOptionalString(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return String(value);
 }

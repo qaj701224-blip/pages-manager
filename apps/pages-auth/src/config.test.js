@@ -13,6 +13,9 @@ test('reads production auth config from placeholders-safe env', () => {
     CLI_LOGIN_TTL_SECONDS: '600',
     AUTH_SESSION_IDLE_TTL_SECONDS: '1209600',
     AUTH_SESSION_ABSOLUTE_TTL_SECONDS: '2592000',
+    SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
+    SSO_CLIENT_ID: 'xd_pages_test',
+    SSO_ALLOWED_USER_SCOPE: 'xd',
   });
 
   assert.equal(config.environment, 'production');
@@ -24,6 +27,9 @@ test('reads production auth config from placeholders-safe env', () => {
   assert.equal(config.cliLoginTtlSeconds, 600);
   assert.equal(config.authSessionIdleTtlSeconds, 1_209_600);
   assert.equal(config.authSessionAbsoluteTtlSeconds, 2_592_000);
+  assert.equal(config.ssoAuthorizationUrl, 'https://sso.example.test/oauth/authorize');
+  assert.equal(config.ssoClientId, 'xd_pages_test');
+  assert.equal(config.ssoAllowedUserScope, 'xd');
 });
 
 test('reads local auth config for SSO development', () => {
@@ -97,5 +103,13 @@ test('rejects unsafe origins, callback URLs, and TTLs', () => {
         OAUTH_STATE_TTL_SECONDS: '0',
       }),
     /OAUTH_STATE_TTL_SECONDS/i
+  );
+  assert.throws(
+    () =>
+      readAuthConfig({
+        PAGES_ENV: 'production',
+        SSO_AUTHORIZATION_URL: 'https://user:pass@sso.example.test/oauth/authorize',
+      }),
+    /SSO authorization URL/i
   );
 });
