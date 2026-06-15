@@ -2,6 +2,7 @@ import { handleAccessKeysApi } from './access-keys.js';
 import { readApiConfig } from './config.js';
 import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
 import { jsonError, jsonOk } from './http.js';
+import { handleInternalApi } from './internal.js';
 import { buildOpenApi } from './openapi.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
@@ -42,6 +43,18 @@ export default {
 
     if (url.pathname === '/.xd-pages/api/openapi.json') {
       return jsonOk(buildOpenApi(config));
+    }
+
+    if (url.pathname.startsWith('/.xd-pages/internal/')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+
+      const response = await handleInternalApi(request, env, store);
+      if (response) return response;
     }
 
     if (url.pathname.startsWith('/.xd-pages/api/sites')) {

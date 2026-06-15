@@ -228,6 +228,7 @@ test('consumes auth callback site code and sets host-only site_session before re
   assert.equal(payload.siteId, 'site_demo');
   assert.equal(payload.policyVersion, 3);
   assert.equal(payload.sessionVersion, 5);
+  assert.equal(payload.userCheckedAt, 1_700_000_000);
   assert.equal(payload.employeeStatus, 'active');
   assert.deepEqual(payload.departments, ['dept_design']);
 });
@@ -434,6 +435,34 @@ test('redirects stale site_session when policyVersion no longer matches', async 
     },
   });
   const session = await siteSession({ audience: 'demo.pages.xd.team', siteId: 'site_demo', policyVersion: 2 });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get('Location'), /reason=SITE_SESSION_STALE/);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('redirects protected sites when site_session identity freshness expires', async () => {
+  const env = routeEnv({
+    SITE_SESSION_FRESHNESS_TTL_SECONDS: '60',
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org', policyVersion: 2 }),
+    },
+  });
+  const session = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    policyVersion: 2,
+    userCheckedAt: 1_699_999_900,
+  });
   const response = await worker.fetch(
     new Request('https://demo.pages.xd.team/private', {
       headers: {
@@ -738,6 +767,7 @@ async function siteSession({
   employeeStatus = 'active',
   email = 'user@example.com',
   departments = [],
+  userCheckedAt = 1_700_000_000,
 } = {}) {
   return signSessionJwt(
     {
@@ -751,6 +781,7 @@ async function siteSession({
         siteId,
         policyVersion,
         sessionVersion,
+        userCheckedAt,
         employeeStatus,
         email,
         departments,

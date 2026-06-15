@@ -63,7 +63,7 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 职责：
 
 - 实现 OAuth state DO，一次性消费，绑定 return_to 和 site host。
-- 实现 CLI login DO，使用 `login_id + login_secret + device code`。
+- 实现 CLI login DO，使用 `login_id + login_secret + device code`；browser authorize URL 只携带 `login_id`，device code 必须由用户在 SSO 后确认页手动输入。
 - 支持 `auth_session`、`site_session` 的签发、刷新和吊销结构。
 - 通过 service binding 与 router/API 协作，不暴露内部 token 到浏览器 URL。
 - 本地 SSO 配置只读取 ignored env 或 shell 环境变量。
@@ -71,7 +71,7 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 验收：
 
 - OAuth state 过期或重复消费失败。
-- CLI login 未确认 device code 前不能完成。
+- CLI login 未手动确认 device code 前不能完成，不能把 device code 放入 authorize URL 自动确认。
 - `auth_session` 只在 `auth.pages.xd.team` 生效。
 - `site_session` 只在子站 host 生效。
 - token 校验必须包含 `iss`、`aud`、`kid`、环境和用途绑定。
@@ -170,6 +170,7 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 - 受保护站点登录后访问不回 `pages-api`。
 - ACL 命中任意 allow entry 即可访问，未命中拒绝。
 - ACL / visibility 变更能让旧 `site_session` 在可接受窗口内失效。
+- `site_session` 需要 `userCheckedAt` freshness 窗口，避免员工离职/禁用状态滞留到完整 cookie TTL。
 - OpenAPI 必须暴露 visibility / ACL 契约，并明确第一版只支持 allow-only。
 
 ### M7. 平台能力与运行边界

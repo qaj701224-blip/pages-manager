@@ -126,4 +126,36 @@ test('rejects unsafe origins, callback URLs, and TTLs', () => {
       }),
     /SSO token URL/i
   );
+  assert.throws(
+    () =>
+      readAuthConfig({
+        PAGES_ENV: 'production',
+        SSO_AUTHORIZATION_URL: 'http://sso.example.test/oauth/authorize',
+      }),
+    /https/i
+  );
+  assert.throws(
+    () =>
+      readAuthConfig({
+        PAGES_ENV: 'staging',
+        SSO_PROFILE_URL: 'http://sso.example.test/oauth/profile',
+      }),
+    /https/i
+  );
+});
+
+test('allows http SSO endpoints only for local development', () => {
+  const config = readAuthConfig({
+    PAGES_ENV: 'local',
+    PUBLIC_AUTH_BASE: 'http://xd-pages.127.0.0.1.nip.io:8787',
+    PUBLIC_API_BASE: 'http://xd-pages.127.0.0.1.nip.io:8787',
+    SSO_REDIRECT_URI: 'http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/callback',
+    SSO_AUTHORIZATION_URL: 'http://sso.127.0.0.1.nip.io/oauth/authorize',
+    SSO_TOKEN_URL: 'http://sso.127.0.0.1.nip.io/oauth/token',
+    SSO_PROFILE_URL: 'http://sso.127.0.0.1.nip.io/oauth/profile',
+  });
+
+  assert.equal(config.ssoAuthorizationUrl, 'http://sso.127.0.0.1.nip.io/oauth/authorize');
+  assert.equal(config.ssoTokenUrl, 'http://sso.127.0.0.1.nip.io/oauth/token');
+  assert.equal(config.ssoProfileUrl, 'http://sso.127.0.0.1.nip.io/oauth/profile');
 });

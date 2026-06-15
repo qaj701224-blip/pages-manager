@@ -1,7 +1,9 @@
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { signSessionJwt } from './jwt.js';
+import { AUTH_SESSION_COOKIE } from './cookies.js';
+import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
+const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
 const DEVICE_CODE_RE = /^[0-9]{8}$/;
 
@@ -29,7 +31,7 @@ export async function handleCliLoginStart(request, env, config) {
     loginId: created.loginId,
     loginSecret: created.loginSecret,
     deviceCode: created.deviceCode,
-    browserUrl: buildCliLoginBrowserUrl(config, created.loginId, created.deviceCode),
+    browserUrl: buildCliLoginBrowserUrl(config, created.loginId),
     expiresAt: created.record?.expiresAt || now + config.cliLoginTtlSeconds,
   });
 }
@@ -102,10 +104,45 @@ export async function handleCliLoginPoll(request, env, config) {
   });
 }
 
-export function buildCliLoginBrowserUrl(config, loginId, deviceCode) {
+export async function handleCliLoginConfirm(request, env) {
+  if (request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+
+  let body;
+  try {
+    body = await readConfirmationBody(request);
+  } catch {
+    return jsonError('CLI_LOGIN_CONFIRM_INVALID', 'CLI login confirmation is invalid.', 400);
+  }
+
+  const loginId = requireString(body.loginId || body.cli_login_id);
+  const deviceCode = requireString(body.deviceCode || body.device_code);
+  if (!loginId || !DEVICE_CODE_RE.test(deviceCode || '')) {
+    return jsonError('CLI_LOGIN_CONFIRM_INVALID', 'CLI login confirmation is invalid.', 400);
+  }
+
+  const user = await readAuthSessionUser(request, env);
+  if (!user) {
+    return jsonError('AUTH_SESSION_REQUIRED', 'Login required before confirming CLI access.', 401, 'Restart `pages login`.');
+  }
+
+  try {
+    await confirmCliLoginRecord(env, { loginId, deviceCode, userId: user.userId }, { now: readNow(env) });
+  } catch {
+    return jsonError('CLI_LOGIN_CONFIRM_FAILED', 'CLI login could not be confirmed.', 400);
+  }
+
+  return new Response('CLI login confirmed. You can return to the terminal.', {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+    },
+  });
+}
+
+export function buildCliLoginBrowserUrl(config, loginId) {
   const url = new URL('/.xd-pages/auth/authorize', config.authBase);
   url.searchParams.set('cli_login_id', loginId);
-  if (deviceCode) url.searchParams.set('device_code', deviceCode);
   return url.toString();
 }
 
@@ -139,6 +176,21 @@ async function consumeCliLoginRecord(env, input, options) {
   return response.json();
 }
 
+async function confirmCliLoginRecord(env, input, options) {
+  if (typeof env?.confirmCliLoginRecord === 'function') return env.confirmCliLoginRecord(input, options);
+
+  const stub = getCliLoginStub(env, input.loginId);
+  const response = await stub.fetch(
+    jsonDoRequest('https://cli-login-do/confirm', {
+      deviceCode: input.deviceCode,
+      userId: input.userId,
+      now: options.now,
+    })
+  );
+  if (!response.ok) throw new Error('CLI login confirm failed');
+  return response.json();
+}
+
 function getCliLoginStub(env, loginId) {
   if (!env?.CLI_LOGINS) throw new Error('CLI login Durable Object binding is missing');
   const id = env.CLI_LOGINS.idFromName(loginId);
@@ -151,6 +203,42 @@ function jsonDoRequest(url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+async function readConfirmationBody(request) {
+  const contentType = request.headers.get('Content-Type') || '';
+  if (contentType.split(';', 1)[0].trim().toLowerCase() === 'application/x-www-form-urlencoded') {
+    const form = new URLSearchParams(await request.text());
+    return Object.fromEntries(form.entries());
+  }
+  return readJsonBody(request);
+}
+
+async function readAuthSessionUser(request, env) {
+  const token = readCookie(request.headers.get('Cookie'), AUTH_SESSION_COOKIE);
+  if (!token) return null;
+
+  try {
+    const payload = await verifySessionJwt(token, env, {
+      purpose: 'auth_session',
+      audience: AUTH_SESSION_AUDIENCE,
+      now: readNow(env),
+    });
+    return { userId: payload.sub };
+  } catch {
+    return null;
+  }
+}
+
+function readCookie(cookieHeader, name) {
+  for (const part of String(cookieHeader || '').split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator < 0) continue;
+    if (trimmed.slice(0, separator) === name) return trimmed.slice(separator + 1);
+  }
+  return '';
 }
 
 function handleCliPollError(error) {

@@ -37,6 +37,9 @@ export async function handleSitesApi(request, env, config, store) {
 }
 
 async function listSites(store, actor, environment) {
+  if (!actorCanReadSite(actor)) {
+    return jsonError('SITE_READ_FORBIDDEN', 'Actor cannot read sites.', 403, 'Use a token with read:site scope.');
+  }
   const sites = await store.listSitesForUser(actor.userId, actor, environment);
   return jsonOk({
     sites: sites.map(formatSite),
@@ -44,6 +47,9 @@ async function listSites(store, actor, environment) {
 }
 
 async function getSite(store, actor, siteId, environment) {
+  if (!actorCanReadSite(actor, siteId)) {
+    return jsonError('SITE_READ_FORBIDDEN', 'Actor cannot read this site.', 403, 'Use a token with read:site scope.');
+  }
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   return jsonOk({ site: formatSite(site) });
@@ -219,6 +225,12 @@ function formatSite(site) {
 function hostnameForSlug(slug, config) {
   if (config.environment === 'staging') return `${slug}-staging.${config.siteDomainSuffix}`;
   return `${slug}.${config.siteDomainSuffix}`;
+}
+
+function actorCanReadSite(actor, siteId) {
+  if (actor.type !== 'access_key') return true;
+  if (siteId && actor.siteId && actor.siteId !== siteId) return false;
+  return actor.scopes.includes('read:site');
 }
 
 async function getOwnerSite(store, actor, siteId, environment) {

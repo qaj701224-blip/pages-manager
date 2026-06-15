@@ -161,6 +161,7 @@ async function createDeployment(request, env, config, store, actor) {
       artifactRef: uploaded.artifactRef,
     });
   } catch {
+    await cleanupUploadedWorker(provider, workerName);
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       errorCode: 'WFP_VERIFY_FAILED',
@@ -201,6 +202,7 @@ async function createDeployment(request, env, config, store, actor) {
     await writeSnapshot(env, store, { site, route, version });
   } catch {
     await restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, route, config.environment);
+    await cleanupUploadedWorker(provider, workerName);
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -228,6 +230,9 @@ async function createDeployment(request, env, config, store, actor) {
 async function getDeployment(store, actor, deploymentId, environment) {
   const deployment = await store.getDeployment(deploymentId, environment);
   if (!deployment) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
+  if (!actorCanReadSite(actor, deployment.siteId)) {
+    return jsonError('DEPLOYMENT_READ_FORBIDDEN', 'Actor cannot read this deployment.', 403, 'Use a token with read:site scope.');
+  }
   const site = await store.getSiteForUser(deployment.siteId, actor.userId, actor, environment);
   if (!site) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
   return jsonOk(await deploymentEnvelope(store, deployment, {}, environment));
@@ -377,10 +382,25 @@ async function restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute
   return store.restoreSiteRoute(siteId, previousRoute, environment);
 }
 
+async function cleanupUploadedWorker(provider, workerName) {
+  if (typeof provider?.delete !== 'function') return;
+  try {
+    await provider.delete({ workerName });
+  } catch {
+    // Best-effort cleanup must not hide the original deployment failure.
+  }
+}
+
 function actorCanDeploy(actor, siteId, requiredScope) {
   if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return false;
   if (actor.type === 'access_key' && !actor.scopes.includes(requiredScope)) return false;
   return true;
+}
+
+function actorCanReadSite(actor, siteId) {
+  if (actor.type !== 'access_key') return true;
+  if (actor.siteId && actor.siteId !== siteId) return false;
+  return actor.scopes.includes('read:site');
 }
 
 function workerNameFor(site, deploymentId, environment) {

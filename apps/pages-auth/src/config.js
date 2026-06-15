@@ -39,9 +39,9 @@ export function readAuthConfig(env = {}) {
     authHost: new URL(authBase).hostname,
     apiBase,
     ssoRedirectUri,
-    ssoAuthorizationUrl: readOptionalUrl(env.SSO_AUTHORIZATION_URL, 'SSO authorization URL'),
-    ssoTokenUrl: readOptionalUrl(env.SSO_TOKEN_URL, 'SSO token URL'),
-    ssoProfileUrl: readOptionalUrl(env.SSO_PROFILE_URL, 'SSO profile URL'),
+    ssoAuthorizationUrl: readOptionalSsoUrl(env.SSO_AUTHORIZATION_URL, 'SSO authorization URL', environment),
+    ssoTokenUrl: readOptionalSsoUrl(env.SSO_TOKEN_URL, 'SSO token URL', environment),
+    ssoProfileUrl: readOptionalSsoUrl(env.SSO_PROFILE_URL, 'SSO profile URL', environment),
     ssoClientId: readOptionalString(env.SSO_CLIENT_ID),
     ssoClientSecret: readOptionalString(env.SSO_CLIENT_SECRET),
     ssoAllowedUserScope: readOptionalString(env.SSO_ALLOWED_USER_SCOPE),
@@ -103,6 +103,15 @@ function readPositiveInteger(value, fallback, label) {
 function readOptionalUrl(value, label) {
   if (value === undefined || value === null || value === '') return null;
   return normalizeUrl(value, label);
+}
+
+function readOptionalSsoUrl(value, label, environment) {
+  const normalized = readOptionalUrl(value, label);
+  if (!normalized) return null;
+  if (environment !== 'local' && new URL(normalized).protocol !== 'https:') {
+    throw new Error(`${label} must use https`);
+  }
+  return normalized;
 }
 
 function readOptionalString(value) {

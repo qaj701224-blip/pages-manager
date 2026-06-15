@@ -6,7 +6,6 @@ export async function createOAuthState({
   siteHost,
   returnTo,
   cliLoginId,
-  deviceCode,
   now,
   ttlSeconds,
   stateId = createOpaqueToken('ost'),
@@ -19,7 +18,6 @@ export async function createOAuthState({
   const normalizedSiteHost = kind === 'site' ? validateSiteHost(siteHost, environment) : null;
   const normalizedReturnTo = kind === 'site' ? validateReturnTo(returnTo, normalizedSiteHost) : null;
   const normalizedCliLoginId = kind === 'cli' ? normalizeRequiredString(cliLoginId, 'cliLoginId') : null;
-  const normalizedDeviceCode = kind === 'cli' ? validateDeviceCode(deviceCode) : null;
 
   return {
     publicState: `${stateId}.${stateSecret}`,
@@ -30,7 +28,7 @@ export async function createOAuthState({
       siteHost: normalizedSiteHost,
       returnTo: normalizedReturnTo,
       cliLoginId: normalizedCliLoginId,
-      deviceCode: normalizedDeviceCode,
+      deviceCode: null,
       secretHash: await sha256Hex(stateSecret),
       issuedAt: now,
       expiresAt: now + ttlSeconds,
@@ -66,7 +64,6 @@ export async function consumeOAuthState(publicState, record, { now, environment 
     returnTo: record.returnTo,
     siteHost: record.siteHost,
     cliLoginId: record.cliLoginId,
-    deviceCode: record.deviceCode,
     environment: record.environment,
   };
 }
@@ -158,12 +155,6 @@ function validateEnvironment(environment) {
   if (environment !== 'production' && environment !== 'staging' && environment !== 'local') {
     throw new Error('OAuth state invalid: environment is invalid');
   }
-}
-
-function validateDeviceCode(value) {
-  const normalized = normalizeRequiredString(value, 'deviceCode');
-  if (!/^[0-9]{8}$/.test(normalized)) throw new Error('OAuth state invalid: deviceCode must be 8 digits');
-  return normalized;
 }
 
 function normalizeRequiredString(value, label) {

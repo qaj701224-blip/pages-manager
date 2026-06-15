@@ -87,6 +87,34 @@ test('createSite creates owner membership and inactive route authority record', 
   });
 });
 
+test('upsertUserFromSso creates users and bumps session version on status changes', async () => {
+  const store = createSeededStore();
+
+  const created = await store.upsertUserFromSso({
+    id: 'usr_sso',
+    ssoSubject: 'sso_usr',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+    sessionVersion: 2,
+    lastLoginAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  const disabled = await store.upsertUserFromSso({
+    id: 'usr_sso',
+    ssoSubject: 'sso_usr',
+    email: 'user@example.com',
+    employeeStatus: 'disabled',
+    sessionVersion: 1,
+    lastLoginAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+
+  assert.equal(created.sessionVersion, 2);
+  assert.equal(disabled.employeeStatus, 'disabled');
+  assert.equal(disabled.sessionVersion, 3);
+  assert.equal((await store.getUser('usr_sso')).lastLoginAt, '2026-06-15T00:01:00.000Z');
+});
+
 test('site versions are immutable records', async () => {
   const store = createSeededStore();
   await createSite(store);

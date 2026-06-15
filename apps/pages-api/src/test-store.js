@@ -44,6 +44,26 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
+  async upsertUserFromSso(input) {
+    const existing = this.users.get(input.id) || null;
+    const now = input.updatedAt || this.now();
+    const incomingSessionVersion = input.sessionVersion || 1;
+    const statusChanged = existing && existing.employeeStatus !== input.employeeStatus;
+    const record = {
+      id: input.id,
+      ssoSubject: input.ssoSubject || input.id,
+      email: input.email,
+      name: input.name || existing?.name || null,
+      employeeStatus: input.employeeStatus || 'unknown',
+      sessionVersion: Math.max(incomingSessionVersion, existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1),
+      lastLoginAt: input.lastLoginAt || now,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    this.users.set(record.id, record);
+    return cloneRecord(record);
+  }
+
   async getUser(id) {
     return cloneRecord(this.users.get(id) || null);
   }

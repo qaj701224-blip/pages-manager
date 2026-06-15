@@ -335,6 +335,8 @@ SSO_ALLOWED_USER_SCOPE
 
 `SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
 
+生产和 staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 必须使用 HTTPS；只有 `PAGES_ENV=local` 允许 HTTP 本地 SSO mock。OAuth code 换 token 使用 `POST application/x-www-form-urlencoded`，`client_secret` 放请求 body 或后续按公司 SSO 要求改为 Basic auth；profile 请求使用 `Authorization: Bearer <access_token>`。`client_secret`、`access_token`、OAuth code 都不能出现在 URL query、错误响应、日志或 Referer 中。
+
 ### Worker bindings
 
 #### pages-api
@@ -383,6 +385,7 @@ vars:
 
 bindings:
   Durable Objects: OAUTH_STATES, CLI_LOGINS, AUTH_SESSIONS
+  service: PAGES_API
 
 secrets:
   SSO_CLIENT_SECRET
@@ -390,6 +393,8 @@ secrets:
 ```
 
 `SSO_CLIENT_ID` 是否作为 secret 取决于公司规范；如果不敏感可放 vars，但保持 secret 更保守。当前 wrangler template 把 `SSO_CLIENT_ID` 作为非敏感配置占位，`SSO_CLIENT_SECRET` 必须通过 secret 注入。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
+
+SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须通过 `PAGES_API` service binding 调 `pages-api.internal/.xd-pages/internal/users/upsert` 同步用户权威记录。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态，CLI token 不会因为缺少用户记录而在 API 层全部 403。
 
 #### pages-router
 
@@ -406,6 +411,7 @@ vars:
   PAGES_SESSION_JWT_ACTIVE_KID
   PAGES_SESSION_JWT_KEYS
   SITE_SESSION_IDLE_TTL_SECONDS
+  SITE_SESSION_FRESHNESS_TTL_SECONDS
   INTERNAL_WORKER_JWT_TTL_SECONDS
 
 bindings:
@@ -456,6 +462,7 @@ ROUTER_IP_ALLOWLIST_CIDRS
 PAGES_SESSION_JWT_ISSUER
 PAGES_SESSION_JWT_ACTIVE_KID
 PAGES_SESSION_JWT_KEYS
+SITE_SESSION_FRESHNESS_TTL_SECONDS
 PAGES_CAP_JWT_ACTIVE_KID
 PAGES_CAP_JWT_KEYS
 SSO_AUTHORIZATION_URL
@@ -832,15 +839,15 @@ CLI login 必须使用 `login_id + login_secret` 双值模型。`login_id` 可�
 首版浏览器登录 URL 由 `pages-auth` 返回，形如：
 
 ```text
-https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id={loginId}&device_code={deviceCode}
+https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id={loginId}
 ```
 
-`cli_login_id` 可以出现在浏览器 URL 中，`device_code` 必须同时显示在 CLI 终端和浏览器确认页。`login_secret` 不进入 URL、日志或浏览器，只在 CLI poll 时随请求体提交。
+`cli_login_id` 可以出现在浏览器 URL 中。`device_code` 不能出现在 authorize URL、日志或 Referer 中；它只显示在 CLI 终端，并由用户在 SSO 成功后的浏览器确认页手动输入。`login_secret` 不进入 URL、日志或浏览器，只在 CLI poll 时随请求体提交。
 
 为防止攻击者生成登录链接诱导他人授权，CLI login 还必须有 device confirmation：
 
-- CLI 在终端显示短码，例如 `ABCD-1234`，并展示 environment、auth host 和请求 scope。
-- 浏览器 SSO 成功后，页面必须明确提示“正在授权 pages CLI”，并要求用户确认同一个短码、environment、auth host 和 scope。
+- CLI 在终端显示短码，例如 `12345678`，并展示 environment、auth host 和请求 scope。
+- 浏览器 SSO 成功后，页面必须明确提示“正在授权 pages CLI”，并要求用户手动输入终端短码，再确认 environment、auth host 和 scope。
 - 用户未确认短码前，`CliLoginDO` 不能写入 completed user，也不能让 CLI 领取 token。
 - 后续如果改成本机 loopback callback，也应配合 PKCE / nonce，把浏览器回调绑定到本地 CLI。
 
@@ -1577,7 +1584,7 @@ absolute TTL: 7 天
 
 该 cookie 只在当前子站 host 生效，避免一个子站的站点 session 被其他子站复用。`site_session` 比内部 JWT 长很多，是为了让受保护子站的日常访问尽量停留在 `pages-router` 快路径，不频繁跳回 `pages-auth` 补发。
 
-`site_session` 仍需要可控失效。建议 claims 或 DO/D1 session record 中包含：
+`site_session` 仍需要可控失效。首版采用“较长 cookie TTL + 较短身份 freshness”的方式：cookie 可以按 `SITE_SESSION_IDLE_TTL_SECONDS` 存活，但受保护站点还必须满足 `SITE_SESSION_FRESHNESS_TTL_SECONDS`，超过该窗口后 router 会带 `SITE_SESSION_STALE` 回到 auth 重新基于 SSO profile 补发。建议 claims 或 DO/D1 session record 中包含：
 
 ```text
 sub: user id
@@ -1585,6 +1592,7 @@ siteId: site id
 sid: site session id
 policyVersion: site access policy version
 sessionVersion: user/site session invalidation version
+userCheckedAt: 本次 SSO/profile 派生身份的确认时间
 iat / exp
 ```
 
@@ -1592,6 +1600,7 @@ iat / exp
 
 用户级吊销不能只依赖 route snapshot。router 至少需要一种 user revocation 快路径：
 
+- 首版必须校验 `userCheckedAt` freshness，避免离职/禁用状态最多滞留到完整 `site_session` TTL。
 - 在受保护站点访问时，短 TTL 缓存 `userId -> sessionVersion / employee_status`，来源是 `UserSessionDO` 或 D1 index。
 - 当 `site_session.sessionVersion` 小于用户最新 `sessionVersion`，必须拒绝或重新登录。
 - 对禁用、离职、封禁、管理员踢下线这类事件，最大生效窗口应由配置控制，并在监控中暴露。
@@ -1807,19 +1816,21 @@ pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 | -------- | --------------------------------------- | -------------------------------------- | ----------------------------------------------------- |
 | `POST`   | `/.xd-pages/cli/login/start`            | 无                                     | 返回 `loginId`、浏览器 URL；CLI 保存 `loginSecret`    |
 | `POST`   | `/.xd-pages/cli/login/poll`             | `loginId + loginSecret`                | pending / completed / expired；completed 只能消费一次 |
-| `GET`    | `/.xd-pages/api/sites`                  | CLI token / api_session                | 分页返回当前 actor 可见站点，不返回 token             |
+| `GET`    | `/.xd-pages/api/sites`                  | CLI token / api_session / `read:site` access key | 分页返回当前 actor 可见站点，不返回 token             |
 | `PATCH`  | `/.xd-pages/api/sites/{id}`             | owner CLI token / api_session          | 修改 visibility，bump `policyVersion`，刷新 snapshot  |
 | `GET`    | `/.xd-pages/api/sites/{id}/acl`         | CLI token / api_session                | 返回站点 ACL，不返回 token 或 session                 |
 | `PUT`    | `/.xd-pages/api/sites/{id}/acl`         | owner CLI token / api_session          | allow-only 全量替换 ACL，bump `policyVersion`         |
 | `POST`   | `/.xd-pages/api/deployments`            | CLI token / access key                 | 必须带 `Idempotency-Key`；返回 deployment 状态        |
-| `GET`    | `/.xd-pages/api/deployments/{id}`       | CLI token / access key                 | 用于轮询 deploy 状态                                  |
+| `GET`    | `/.xd-pages/api/deployments/{id}`       | CLI token / `read:site` access key     | 用于轮询 deploy 状态                                  |
 | `POST`   | `/.xd-pages/api/versions/{id}/rollback` | CLI token / access key                 | 必须带 `Idempotency-Key`；走同一发布状态机            |
 | `POST`   | `/.xd-pages/api/access-keys`            | api_session + recent login             | 明文只返回一次                                        |
 | `DELETE` | `/.xd-pages/api/access-keys/{id}`       | api_session + recent login / CLI token | 吊销后进入 strict 失效路径                            |
 
 所有带 `Idempotency-Key` 的 API 都必须保存 request hash。同 key 不同 request hash 返回 409；同 key 同 hash 返回原 deployment 状态或 terminal response。
 
-`/.xd-pages/internal/consume-site-code` 和 `/.xd-pages/internal/verify-cli-token` 不是公开 API。它们只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；即使路径相同，公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 访问也必须返回 404。`pages-api` 只能通过 `PAGES_AUTH` binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
+access key scope 必须在 API 层强制执行：`deploy:site` 只允许发布，`rollback:site` 只允许回滚，`read:site` 才能读取站点和 deployment 元数据。ACL 读取和策略管理首版只允许用户 CLI token / 未来 api_session，不允许 access key。
+
+`/.xd-pages/internal/consume-site-code` 和 `/.xd-pages/internal/verify-cli-token` 不是公开 API。它们只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；即使路径相同，公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 访问也必须返回 404。`pages-api` 只能通过 `PAGES_AUTH` binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。`pages-api.internal/.xd-pages/internal/users/upsert` 同样只能由 service binding 调用，用于 SSO callback 后同步用户权威表。
 
 统一错误响应：
 
@@ -1867,11 +1878,11 @@ CF-Platform-Trace-Id: <trace-id>
 ```text
 pages login
   -> CLI 调 pages-auth /.xd-pages/cli/login/start
-  -> CLI 本地生成 login_secret 和短码，仅把 hash/证明传给服务端
+  -> CLI 本地保存 login_secret，服务端生成 login_id 和短码并只保存 loginSecretHash
   -> CLI 展示短码、environment、auth host、scope
-  -> 打开浏览器到 pages-auth 登录页
+  -> 打开浏览器到 pages-auth 登录页，URL 只包含 cli_login_id，不包含短码和 login_secret
   -> 用户通过心动 SSO 登录
-  -> 浏览器确认同一个短码、environment、auth host、scope
+  -> 浏览器确认页要求用户手动输入终端短码
   -> CLI 带 login_secret 轮询 /.xd-pages/cli/login/poll
   -> 获取 pages CLI token
 

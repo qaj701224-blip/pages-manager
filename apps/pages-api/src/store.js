@@ -45,6 +45,57 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
+  async upsertUserFromSso(input) {
+    const existing = await this.getUser(input.id);
+    const now = input.updatedAt || this.now();
+    const incomingSessionVersion = input.sessionVersion || 1;
+    const statusChanged = existing && existing.employeeStatus !== input.employeeStatus;
+    const sessionVersion = Math.max(
+      incomingSessionVersion,
+      existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1
+    );
+    const record = {
+      id: input.id,
+      ssoSubject: input.ssoSubject || input.id,
+      email: input.email,
+      name: input.name || existing?.name || null,
+      employeeStatus: input.employeeStatus || 'unknown',
+      sessionVersion,
+      lastLoginAt: input.lastLoginAt || now,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    await this.db
+      .prepare(
+        `INSERT INTO users (
+          id, sso_subject, email, name, employee_status, session_version,
+          last_login_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          sso_subject = excluded.sso_subject,
+          email = excluded.email,
+          name = excluded.name,
+          employee_status = excluded.employee_status,
+          session_version = ?,
+          last_login_at = excluded.last_login_at,
+          updated_at = excluded.updated_at`
+      )
+      .bind(
+        record.id,
+        record.ssoSubject,
+        record.email,
+        record.name,
+        record.employeeStatus,
+        record.sessionVersion,
+        record.lastLoginAt,
+        record.createdAt,
+        record.updatedAt,
+        record.sessionVersion
+      )
+      .run();
+    return cloneRecord(record);
+  }
+
   async getUser(id) {
     const row = await this.db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
     return row ? mapUser(row) : null;

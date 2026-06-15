@@ -180,6 +180,44 @@ test('gets deployment by id for authorized site actors', async () => {
   assert.equal((await response.json()).deployment.id, 'dep_1');
 });
 
+test('requires read:site scope for access key deployment reads', async () => {
+  const store = await createSeededStore();
+  await store.createDeploymentForIdempotency({
+    id: 'dep_1',
+    environment: 'production',
+    actorId: 'usr_1',
+    actorUserId: 'usr_1',
+    actorType: 'user',
+    source: 'cli',
+    siteId: 'site_1',
+    operation: 'deploy',
+    idempotencyKey: 'idem_1',
+    requestHash: 'hash_1',
+    visibility: 'org',
+    status: 'succeeded',
+  });
+  const deployOnlyKey = await seedAccessKey(store, 'ak_deploy', ['deploy:site']);
+  const readKey = await seedAccessKey(store, 'ak_read', ['read:site']);
+
+  const denied = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_1', {
+      Authorization: `Bearer ${deployOnlyKey}`,
+    }),
+    testEnv(store, createSnapshotStore())
+  );
+  const allowed = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_1', {
+      Authorization: `Bearer ${readKey}`,
+    }),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).error.code, 'DEPLOYMENT_READ_FORBIDDEN');
+  assert.equal(allowed.status, 200);
+  assert.equal((await allowed.json()).deployment.id, 'dep_1');
+});
+
 test('enforces deploy and rollback access key scopes separately', async () => {
   const store = await createSeededStore();
   const snapshots = createSnapshotStore();
@@ -253,7 +291,14 @@ test('rolls back to an existing immutable version and writes a new route snapsho
 
 test('marks deployment failed when route snapshot write fails and replays failed terminal state', async () => {
   const store = await createSeededStore();
-  const env = testEnv(store, failingSnapshotStore());
+  const deletedWorkers = [];
+  const env = testEnv(store, failingSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => ({ ok: true }),
+      delete: async ({ workerName }) => deletedWorkers.push(workerName),
+    },
+  });
   const request = () =>
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'snapshot_fail' });
 
@@ -263,6 +308,7 @@ test('marks deployment failed when route snapshot write fails and replays failed
   assert.equal(first.status, 503);
   assert.equal((await first.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
   assert.deepEqual(await store.getRouteBySiteId('site_1'), {
     id: 'route_1',
     hostname: 'docs.pages.xd.team',
@@ -314,12 +360,14 @@ test('marks deployment failed when WFP upload fails without creating active vers
 
 test('marks deployment failed when WFP verify fails without creating active version', async () => {
   const store = await createSeededStore();
+  const deletedWorkers = [];
   const env = testEnv(store, createSnapshotStore(), {
     WFP_PROVIDER: {
       upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
       verify: async () => {
         throw new Error('verify failed');
       },
+      delete: async ({ workerName }) => deletedWorkers.push(workerName),
     },
   });
 
@@ -337,6 +385,7 @@ test('marks deployment failed when WFP verify fails without creating active vers
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
 });
 
 test('fails deployment when production WFP namespace points at staging', async () => {
@@ -515,9 +564,9 @@ function jsonRequest(url, body, headers = {}) {
   });
 }
 
-function authRequest(url) {
+function authRequest(url, headers = {}) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token' },
+    headers: { Authorization: 'Bearer cli-token', ...headers },
   });
 }
 

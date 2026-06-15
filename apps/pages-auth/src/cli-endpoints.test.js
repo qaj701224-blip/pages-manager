@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { readAuthConfig } from './config.js';
-import { buildCliLoginBrowserUrl, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
-import { verifySessionJwt } from './jwt.js';
+import { buildAuthSessionCookie } from './cookies.js';
+import { buildCliLoginBrowserUrl, handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
+import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const now = 1_800_000_000;
 
@@ -38,9 +39,10 @@ test('starts CLI login transaction with browser URL on current auth base', async
     loginId: 'cli_test',
     loginSecret: 'login-secret',
     deviceCode: '12345678',
-    browserUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test&device_code=12345678',
+    browserUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test',
     expiresAt: now + 600,
   });
+  assert.equal(new URL(body.browserUrl).searchParams.has('device_code'), false);
   assert.equal(JSON.stringify(body).includes('secretHash'), false);
 });
 
@@ -53,9 +55,70 @@ test('builds local CLI login browser URL from auth base instead of API host', ()
   });
 
   assert.equal(
-    buildCliLoginBrowserUrl(config, 'cli_test', '12345678'),
-    'http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/authorize?cli_login_id=cli_test&device_code=12345678'
+    buildCliLoginBrowserUrl(config, 'cli_test'),
+    'http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/authorize?cli_login_id=cli_test'
   );
+});
+
+test('confirm requires auth_session and manually entered device code', async () => {
+  let confirmedInput;
+  const env = testEnv({
+    confirmCliLoginRecord: async (input, options) => {
+      confirmedInput = { input, options };
+      return { record: { status: 'confirmed' } };
+    },
+  });
+  const token = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_test' },
+    },
+    env
+  );
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: buildAuthSessionCookie(token, { maxAgeSeconds: 600 }).split(';', 1)[0],
+      },
+      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678' }),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(confirmedInput, {
+    input: { loginId: 'cli_test', deviceCode: '12345678', userId: 'usr_123' },
+    options: { now },
+  });
+});
+
+test('confirm rejects requests without auth_session before touching CLI transaction', async () => {
+  let confirmed = false;
+  const env = testEnv({
+    confirmCliLoginRecord: async () => {
+      confirmed = true;
+    },
+  });
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678' }),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error.code, 'AUTH_SESSION_REQUIRED');
+  assert.equal(confirmed, false);
 });
 
 test('poll returns pending before browser confirmation', async () => {

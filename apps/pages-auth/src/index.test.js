@@ -81,7 +81,7 @@ test('routes CLI login start and poll public endpoints', async () => {
   assert.equal(startResponse.status, 200);
   assert.equal(
     (await startResponse.json()).browserUrl,
-    'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test&device_code=12345678'
+    'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test'
   );
 
   const pollResponse = await worker.fetch(
@@ -101,9 +101,15 @@ test('rejects unsupported methods on CLI login endpoints', async () => {
     new Request('https://auth.pages.xd.team/.xd-pages/cli/login/start', { method: 'GET' }),
     testJwtEnv()
   );
+  const confirmResponse = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', { method: 'GET' }),
+    testJwtEnv()
+  );
 
   assert.equal(response.status, 405);
   assert.equal((await response.json()).error.code, 'METHOD_NOT_ALLOWED');
+  assert.equal(confirmResponse.status, 405);
+  assert.equal((await confirmResponse.json()).error.code, 'METHOD_NOT_ALLOWED');
 });
 
 test('routes OAuth authorize and callback public endpoints', async () => {
@@ -129,6 +135,7 @@ test('routes OAuth authorize and callback public endpoints', async () => {
     }),
     fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
     fetchSsoProfile: async () => ({ id: 'usr_123', employeeStatus: 'active' }),
+    syncSsoUserProfile: async () => ({}),
     createAuthSessionRecord: async () => ({}),
     createOAuthSiteCodeRecord: async () => ({ siteCode: 'ost_test.site-secret' }),
   };

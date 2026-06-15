@@ -130,6 +130,11 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
     createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
     createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile, options) => {
+      assert.equal(profile.id, 'usr_123');
+      assert.equal(options.now, now);
+      return { user: { id: 'usr_123' } };
+    },
     fetchSsoToken: async ({ code, redirectUri }) => {
       assert.equal(code, 'oauth-code');
       assert.equal(redirectUri, 'https://auth.pages.xd.team/.xd-pages/auth/callback');
@@ -222,12 +227,21 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
   });
   const requests = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
-    requests.push(new URL(url));
-    if (String(url).startsWith('https://sso.example.test/oauth/accessToken')) {
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url: new URL(url), init });
+    if (String(url) === 'https://sso.example.test/oauth/accessToken') {
+      assert.equal(init.method, 'POST');
+      assert.equal(init.headers['Content-Type'], 'application/x-www-form-urlencoded');
+      const form = new URLSearchParams(init.body);
+      assert.equal(form.get('code'), 'oauth-code');
+      assert.equal(form.get('client_id'), 'xd_pages_test');
+      assert.equal(form.get('client_secret'), 'test-client-secret');
+      assert.equal(form.get('grant_type'), 'authorization_code');
       return Response.json({ access_token: 'sso-access-token' });
     }
-    if (String(url).startsWith('https://sso.example.test/oauth/profile')) {
+    if (String(url) === 'https://sso.example.test/oauth/profile') {
+      assert.equal(init.method, 'GET');
+      assert.equal(init.headers.Authorization, 'Bearer sso-access-token');
       return Response.json({
         userId: 'usr_123',
         email: 'USER@example.test',
@@ -254,11 +268,8 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
     );
 
     assert.equal(response.status, 302, await response.clone().text());
-    assert.equal(requests[0].searchParams.get('code'), 'oauth-code');
-    assert.equal(requests[0].searchParams.get('client_id'), 'xd_pages_test');
-    assert.equal(requests[0].searchParams.get('client_secret'), 'test-client-secret');
-    assert.equal(requests[0].searchParams.get('grant_type'), 'authorization_code');
-    assert.equal(requests[1].searchParams.get('access_token'), 'sso-access-token');
+    assert.equal(requests[0].url.search, '');
+    assert.equal(requests[1].url.search, '');
 
     const siteCode = new URL(response.headers.get('Location')).searchParams.get('code');
     const consumedSiteCode = await consumeStoredOAuthSiteCode(oauthStorage, siteCode, {
@@ -310,29 +321,23 @@ test('callback rejects profiles without explicit active employee status', async 
   assert.equal(sessionCreated, false);
 });
 
-test('CLI OAuth callback confirms pending CLI login and does not create a site code', async () => {
+test('CLI OAuth callback shows manual device confirmation and does not create a site code', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
   const created = await createStoredOAuthState(oauthStorage, {
     environment: 'production',
     cliLoginId: 'cli_test',
-    deviceCode: '12345678',
     now,
     ttlSeconds: 300,
     stateId: 'ost_test',
     stateSecret: 'state-secret',
   });
-  let confirmedInput;
   let siteCodeCreated = false;
   const env = testEnv({
     consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
     createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
     fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
     fetchSsoProfile: async () => ({ userId: 'usr_123', employee_status: '1' }),
-    confirmCliLoginRecord: async (input, options) => {
-      confirmedInput = { input, options };
-      return { record: { status: 'confirmed' } };
-    },
     createOAuthSiteCodeRecord: async () => {
       siteCodeCreated = true;
     },
@@ -345,15 +350,10 @@ test('CLI OAuth callback confirms pending CLI login and does not create a site c
   );
 
   assert.equal(response.status, 200, await response.clone().text());
-  assert.match(await response.text(), /CLI login confirmed/);
-  assert.deepEqual(confirmedInput, {
-    input: {
-      loginId: 'cli_test',
-      deviceCode: '12345678',
-      userId: 'usr_123',
-    },
-    options: { now },
-  });
+  const text = await response.text();
+  assert.match(text, /Confirm Pages CLI Login/);
+  assert.match(text, /name="loginId" value="cli_test"/);
+  assert.match(text, /name="deviceCode"/);
   assert.equal(siteCodeCreated, false);
   assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });
@@ -393,6 +393,7 @@ function testEnv(overrides = {}) {
     PAGES_SESSION_JWT_KEYS: 'test:HS256:JWT_SECRET',
     JWT_SECRET: 'test-secret',
     now: () => now,
+    syncSsoUserProfile: async () => ({}),
     ...overrides,
   };
 }

@@ -12,6 +12,7 @@ const VALID_ROUTER_ENVIRONMENTS = new Set(['production', 'staging']);
 const SITE_SESSION_COOKIE = '__Host-pages_site_session';
 const SITE_AUTH_CALLBACK_PATH = '/.xd-pages/auth/callback';
 const DEFAULT_SITE_SESSION_TTL_SECONDS = 604_800;
+const DEFAULT_SITE_SESSION_FRESHNESS_TTL_SECONDS = 43_200;
 const PRODUCTION_WORKER_PREFIX = 'pages-v2-';
 const STAGING_WORKER_PREFIX = 'pages-v2-staging-';
 const MAX_WORKER_NAME_LENGTH = 63;
@@ -44,6 +45,9 @@ export default {
     const route = routeResult.route;
 
     const identity = await readSiteIdentity(request, env, route);
+    if (identity && requiresFreshIdentity(route) && !siteSessionIsFresh(identity, env)) {
+      return redirectToAuth(request, env, route, 'SITE_SESSION_STALE');
+    }
     const policy = evaluateAccessPolicy(route, identity);
     if (!policy.ok) {
       if (policy.status === 302) return redirectToAuth(request, env, route, policy.code);
@@ -183,6 +187,7 @@ function identityFromSessionPayload(payload) {
     employeeStatus: payload.employeeStatus || 'unknown',
     email: payload.email || '',
     departments: Array.isArray(payload.departments) ? payload.departments : [],
+    userCheckedAt: Number.isInteger(payload.userCheckedAt) ? payload.userCheckedAt : 0,
   };
 }
 
@@ -268,6 +273,7 @@ async function handleSiteAuthCallback(request, env, route) {
           siteId: route.siteId,
           policyVersion: route.policyVersion,
           sessionVersion: identity.sessionVersion,
+          userCheckedAt: readNowSeconds(env),
           employeeStatus: identity.employeeStatus,
           email: identity.email,
           departments: identity.departments,
@@ -336,6 +342,23 @@ function readSiteSessionTtlSeconds(env) {
   const value = Number(env.SITE_SESSION_IDLE_TTL_SECONDS || DEFAULT_SITE_SESSION_TTL_SECONDS);
   if (!Number.isInteger(value) || value <= 0) return DEFAULT_SITE_SESSION_TTL_SECONDS;
   return value;
+}
+
+function readSiteSessionFreshnessTtlSeconds(env) {
+  const value = Number(env.SITE_SESSION_FRESHNESS_TTL_SECONDS || DEFAULT_SITE_SESSION_FRESHNESS_TTL_SECONDS);
+  if (!Number.isInteger(value) || value <= 0 || value > DEFAULT_SITE_SESSION_TTL_SECONDS) {
+    return DEFAULT_SITE_SESSION_FRESHNESS_TTL_SECONDS;
+  }
+  return value;
+}
+
+function requiresFreshIdentity(route) {
+  return route?.visibility === 'org' || route?.visibility === 'acl' || route?.visibility === 'owner';
+}
+
+function siteSessionIsFresh(identity, env) {
+  if (!Number.isInteger(identity?.userCheckedAt) || identity.userCheckedAt <= 0) return false;
+  return readNowSeconds(env) - identity.userCheckedAt <= readSiteSessionFreshnessTtlSeconds(env);
 }
 
 function readInternalWorkerJwtTtlSeconds(env) {

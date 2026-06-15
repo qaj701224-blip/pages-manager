@@ -34,6 +34,10 @@ class_name = "CliLoginDO"
 name = "AUTH_SESSIONS"
 class_name = "AuthSessionDO"
 
+[[services]]
+binding = "PAGES_API"
+service = "__PAGES_API_SERVICE__"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["OAuthStateDO", "CliLoginDO", "AuthSessionDO"]

@@ -1,4 +1,4 @@
-import { handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
+import { handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
 import { readAuthConfig } from './config.js';
 import {
   confirmStoredCliLogin,
@@ -45,6 +45,7 @@ export default {
 
     if (url.pathname === '/.xd-pages/cli/login/start') return handleCliLoginStart(request, env, config);
     if (url.pathname === '/.xd-pages/cli/login/poll') return handleCliLoginPoll(request, env, config);
+    if (url.pathname === '/.xd-pages/cli/login/confirm') return handleCliLoginConfirm(request, env, config);
     if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config);
     if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config);
     if (url.pathname === '/.xd-pages/internal/consume-site-code') return handleInternalConsumeSiteCode(request, env, config);

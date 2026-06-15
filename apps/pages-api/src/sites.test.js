@@ -126,6 +126,48 @@ test('gets a site by id for members and hides unknown sites', async () => {
   assert.equal(missing.status, 404);
 });
 
+test('requires read:site scope for access key site reads', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  const deployOnlyKey = await seedAccessKey(store, 'ak_deploy', ['deploy:site']);
+  const readKey = await seedAccessKey(store, 'ak_read', ['read:site']);
+
+  const deniedList = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      Authorization: `Bearer ${deployOnlyKey}`,
+    }),
+    testEnv(store)
+  );
+  const deniedGet = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
+      Authorization: `Bearer ${deployOnlyKey}`,
+    }),
+    testEnv(store)
+  );
+  const allowedGet = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
+      Authorization: `Bearer ${readKey}`,
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(deniedList.status, 403);
+  assert.equal((await deniedList.json()).error.code, 'SITE_READ_FORBIDDEN');
+  assert.equal(deniedGet.status, 403);
+  assert.equal((await deniedGet.json()).error.code, 'SITE_READ_FORBIDDEN');
+  assert.equal(allowedGet.status, 200);
+  assert.equal((await allowedGet.json()).site.id, 'site_1');
+});
+
 test('updates site visibility and bumps policy version for active routes', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({

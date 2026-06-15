@@ -66,6 +66,12 @@ export async function handleOAuthCallback(request, env, config) {
     return jsonError('SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
   }
 
+  try {
+    await syncSsoUserProfile(env, profile, now);
+  } catch {
+    return jsonError('SSO_USER_SYNC_FAILED', 'SSO user could not be synced.', 502);
+  }
+
   let authToken;
   try {
     authToken = await createAuthSession(env, config, profile.id, now);
@@ -74,24 +80,10 @@ export async function handleOAuthCallback(request, env, config) {
   }
 
   if (consumedState.kind === 'cli') {
-    try {
-      await confirmCliLoginRecord(
-        env,
-        {
-          loginId: consumedState.cliLoginId,
-          deviceCode: consumedState.deviceCode,
-          userId: profile.id,
-        },
-        { now }
-      );
-    } catch {
-      return jsonError('CLI_LOGIN_CONFIRM_FAILED', 'CLI login could not be confirmed.', 400);
-    }
-
-    const response = new Response('CLI login confirmed. You can return to the terminal.', {
+    const response = new Response(buildCliLoginConfirmationHtml(consumedState.cliLoginId), {
       status: 200,
       headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
       },
     });
@@ -204,12 +196,9 @@ export function buildSsoAuthorizeUrl(config, publicState) {
 function buildOAuthStateInput(url, config, now) {
   const cliLoginId = requiredQuery(url, 'cli_login_id');
   if (cliLoginId) {
-    const deviceCode = requiredQuery(url, 'device_code');
-    if (!deviceCode) return null;
     return {
       environment: config.environment,
       cliLoginId,
-      deviceCode,
       now,
       ttlSeconds: config.oauthStateTtlSeconds,
       stateId: createOpaqueToken('ost'),
@@ -314,18 +303,26 @@ async function createAuthSessionRecord(env, input) {
   return response.json();
 }
 
-async function confirmCliLoginRecord(env, input, options) {
-  if (typeof env?.confirmCliLoginRecord === 'function') return env.confirmCliLoginRecord(input, options);
+async function syncSsoUserProfile(env, profile, now) {
+  if (typeof env?.syncSsoUserProfile === 'function') return env.syncSsoUserProfile(profile, { now });
 
-  const stub = getCliLoginStub(env, input.loginId);
-  const response = await stub.fetch(
-    jsonDoRequest('https://cli-login-do/confirm', {
-      deviceCode: input.deviceCode,
-      userId: input.userId,
-      now: options.now,
+  if (!env?.PAGES_API || typeof env.PAGES_API.fetch !== 'function') {
+    throw new Error('PAGES_API binding is required');
+  }
+  const response = await env.PAGES_API.fetch(
+    jsonDoRequest('https://pages-api.internal/.xd-pages/internal/users/upsert', {
+      user: {
+        id: profile.id,
+        ssoSubject: profile.id,
+        email: profile.email,
+        employeeStatus: profile.employeeStatus,
+        departments: profile.departments,
+        sessionVersion: profile.sessionVersion,
+      },
+      now,
     })
   );
-  if (!response.ok) throw new Error('CLI login confirm failed');
+  if (!response.ok) throw new Error('SSO user sync failed');
   return response.json();
 }
 
@@ -345,17 +342,43 @@ function getAuthSessionStub(env, sid) {
   return env.AUTH_SESSIONS.get(env.AUTH_SESSIONS.idFromName(sid));
 }
 
-function getCliLoginStub(env, loginId) {
-  if (!env?.CLI_LOGINS) throw new Error('CLI login Durable Object binding is missing');
-  return env.CLI_LOGINS.get(env.CLI_LOGINS.idFromName(loginId));
-}
-
 function jsonDoRequest(url, body) {
   return new Request(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+function buildCliLoginConfirmationHtml(loginId) {
+  const safeLoginId = htmlEscape(loginId);
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Confirm Pages CLI Login</title>
+</head>
+<body>
+  <main>
+    <h1>Confirm Pages CLI Login</h1>
+    <p>Enter the 8-digit code shown in your terminal to authorize this CLI session.</p>
+    <form method="post" action="/.xd-pages/cli/login/confirm" autocomplete="off">
+      <input type="hidden" name="loginId" value="${safeLoginId}">
+      <label>Device code <input name="deviceCode" inputmode="numeric" pattern="[0-9]{8}" required></label>
+      <button type="submit">Confirm</button>
+    </form>
+  </main>
+</body>
+</html>`;
+}
+
+function htmlEscape(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }
 
 function requiredQuery(url, name) {
@@ -430,14 +453,21 @@ async function fetchSsoToken(env, config, { code }) {
     return env.fetchSsoToken({ code, redirectUri: config.ssoRedirectUri });
   }
 
-  const url = new URL(config.ssoTokenUrl);
-  url.searchParams.set('code', code);
-  url.searchParams.set('client_id', config.ssoClientId);
-  url.searchParams.set('client_secret', config.ssoClientSecret);
-  url.searchParams.set('redirect_uri', config.ssoRedirectUri);
-  url.searchParams.set('grant_type', 'authorization_code');
+  const body = new URLSearchParams();
+  body.set('code', code);
+  body.set('client_id', config.ssoClientId);
+  body.set('client_secret', config.ssoClientSecret);
+  body.set('redirect_uri', config.ssoRedirectUri);
+  body.set('grant_type', 'authorization_code');
 
-  const response = await fetch(url.toString(), { method: 'GET' });
+  const response = await fetch(config.ssoTokenUrl, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
   if (!response.ok) throw new Error('SSO token request failed');
   const token = await response.json();
   if (token?.error) throw new Error('SSO token response failed');
@@ -447,9 +477,13 @@ async function fetchSsoToken(env, config, { code }) {
 async function fetchSsoProfile(env, config, { accessToken }) {
   if (typeof env?.fetchSsoProfile === 'function') return env.fetchSsoProfile({ accessToken });
 
-  const url = new URL(config.ssoProfileUrl);
-  url.searchParams.set('access_token', accessToken);
-  const response = await fetch(url.toString(), { method: 'GET' });
+  const response = await fetch(config.ssoProfileUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
   if (!response.ok) throw new Error('SSO profile request failed');
   return response.json();
 }
