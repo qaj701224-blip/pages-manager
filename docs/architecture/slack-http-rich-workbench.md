@@ -18,19 +18,19 @@
 
 当前 `feat/slack-preview-gateway` 已经具备这些基础：
 
-| 能力                     | 当前位置                               | 说明                                            |
-| ------------------------ | -------------------------------------- | ----------------------------------------------- |
-| Slack HTTP Events        | `apps/gateway/src/index.js`            | `POST /integrations/slack/events`               |
-| Slack Interactivity      | `apps/gateway/src/index.js`            | `POST /integrations/slack/interactions`         |
-| Slack signature 校验     | `apps/gateway/src/slack-http.js`       | 基于 raw body、timestamp、signing secret 校验   |
-| URL verification         | `apps/gateway/src/handlers.js`         | 返回 Slack challenge                            |
-| DM / channel thread 会话 | `apps/gateway/src/slack-session.js`    | `SlackSession` 按 Slack user 和 thread 隔离     |
-| 基础状态卡片             | `packages/slack-notifier/src/index.js` | Block Kit 展示 stage、job、issue、PR、preview   |
-| 原地更新卡片             | `packages/slack-notifier/src/index.js` | 首次 `chat.postMessage`，后续 `chat.update`     |
-| 独立 notifier app        | `apps/slack-notifier/src/index.js`     | 内部 HTTP endpoint，K8s 正式路径持有 bot token  |
-| gateway notifier adapter | `apps/gateway/src/slack-notifier.js`   | 调独立 notifier；本地无 URL 时走 fallback       |
-| 基础按钮                 | `apps/gateway/src/handlers.js`         | `继续修改`、`关闭会话`                          |
-| Agent 需求分析           | `apps/slack-agent/src/index.js`        | `/internal/slack-agent/analyze` 返回结构化 JSON |
+| 能力                     | 当前位置                               | 说明                                                |
+| ------------------------ | -------------------------------------- | --------------------------------------------------- |
+| Slack HTTP Events        | `apps/gateway/src/index.js`            | `POST /integrations/slack/events`                   |
+| Slack Interactivity      | `apps/gateway/src/index.js`            | `POST /integrations/slack/interactions`             |
+| Slack signature 校验     | `apps/gateway/src/slack-http.js`       | 基于 raw body、timestamp、signing secret 校验       |
+| URL verification         | `apps/gateway/src/handlers.js`         | 返回 Slack challenge                                |
+| DM / channel thread 会话 | `apps/gateway/src/slack-session.js`    | `SlackSession` 按 Slack user 和 thread 隔离         |
+| 基础状态卡片             | `packages/slack-notifier/src/index.js` | Block Kit 展示 stage、job、issue、PR、preview       |
+| 原地更新卡片             | `packages/slack-notifier/src/index.js` | 首次 `chat.postMessage`，后续 `chat.update`         |
+| 独立 notifier app        | `apps/slack-notifier/src/index.js`     | 内部 HTTP endpoint，K8s 正式路径持有 bot token      |
+| gateway notifier adapter | `apps/gateway/src/slack-notifier.js`   | 调独立 notifier；本地无 URL 时走 fallback           |
+| 基础按钮                 | `apps/gateway/src/handlers.js`         | `查看 Issue`、`查看 PR`、`打开 Preview`、`关闭会话` |
+| Agent 需求分析           | `apps/slack-agent/src/index.js`        | `/internal/slack-agent/analyze` 返回结构化 JSON     |
 
 当前还不是正式版：
 
@@ -261,7 +261,6 @@ Actions:
   查看 Issue
   查看 PR
   打开 Preview
-  继续修改
   关闭会话
 ```
 
@@ -325,14 +324,13 @@ Agent 不允许回写的内容：
 
 按钮 `action_id` 建议使用 `pages_` 前缀，`value` 使用 JSON 或短 id；敏感信息不能放在 `value` 里。
 
-| Action                      | 第一版行为                             | 后台事件                   |
-| --------------------------- | -------------------------------------- | -------------------------- |
-| `pages_continue_modifying`  | ephemeral 提示用户直接在 thread 里回复 | 可选写 `CommandEvent`      |
-| `pages_close_session`       | 关闭当前用户拥有的 session             | `session.close_requested`  |
-| `pages_cancel_job`          | 请求取消或转人工确认                   | `job.cancel_requested`     |
-| `pages_regenerate`          | 对同一 PR branch 启动新 fix round      | `job.regenerate_requested` |
-| `pages_confirm_requirement` | 确认摘要并创建 job                     | `job.confirm_requested`    |
-| `pages_open_admin`          | 打开内部控制台链接                     | 只生成 URL，不推进状态     |
+| Action                      | 第一版行为                        | 后台事件                   |
+| --------------------------- | --------------------------------- | -------------------------- |
+| `pages_close_session`       | 关闭当前用户拥有的 session        | `session.close_requested`  |
+| `pages_cancel_job`          | 请求取消或转人工确认              | `job.cancel_requested`     |
+| `pages_regenerate`          | 对同一 PR branch 启动新 fix round | `job.regenerate_requested` |
+| `pages_confirm_requirement` | 确认摘要并创建 job                | `job.confirm_requested`    |
+| `pages_open_admin`          | 打开内部控制台链接                | 只生成 URL，不推进状态     |
 
 交互处理规则：
 
