@@ -129,10 +129,12 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 
 职责：
 
-- 上传 custom Worker 到 dispatch namespace。
-- 为 static / SPA 生成 user Worker 或走 R2/asset store fallback。
+- 读取 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`WFP_DISPATCH_NAMESPACE`、可选 `WFP_COMPATIBILITY_DATE` 和 `CF_API_BASE_URL`。
+- 强制 production 使用 `pages-production` dispatch namespace，staging 使用 `pages-staging`。
+- 上传 custom Worker artifact bundle 到 dispatch namespace。
+- 第一版由 CLI 为 static / SPA 生成 WFP-compatible user Worker，内嵌 base64 asset map；后续可迁移到 R2 / asset store 而不改变 CLI 命令形态。
 - 创建 immutable version。
-- 按状态机切 active route：pending -> uploaded -> verified -> activating -> succeeded。
+- 按状态机切 active route：pending -> uploading -> uploaded -> verified -> activating -> succeeded。
 - 支持 rollback，复用 active route 切换流程。
 - 标记 orphan user Worker / assets，交给 reconciliation 清理。
 
@@ -143,6 +145,7 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 - 回滚不修改历史 version。
 - staging/prod dispatch namespace 不可串。
 - Cloudflare API token 只存在 `pages-api` runtime。
+- CLI deploy 请求包含 `artifactBundle`，但不包含本地绝对路径、`.pages.json`、token、Cloudflare 资源 id 或 secret。
 
 ### M6. 子站 SSO + Visibility + ACL
 

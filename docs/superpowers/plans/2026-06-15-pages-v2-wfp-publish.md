@@ -8,6 +8,8 @@
 
 **Tech Stack:** Cloudflare Workers, JavaScript ESM, Node `node:test`, Fetch API, FormData/Blob, D1-compatible store.
 
+**Implementation status:** Tasks 1-3 have landed in focused commits. Task 4 is this documentation and verification pass. The current static/SPA implementation uses a generated WFP user Worker with embedded base64 assets; R2 / asset-store optimization can replace the server-side storage path later without changing the CLI command shape.
+
 ---
 
 ## Scope Notes
@@ -43,7 +45,7 @@
 - Create: `packages/wfp-client/src/index.js`
 - Test: `packages/wfp-client/src/index.test.js`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Tests cover:
 
@@ -54,23 +56,23 @@ Tests cover:
 - upload uses multipart `metadata` with `main_module`, `compatibility_date`, `tags`.
 - API errors are redacted and do not include token.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `node --test packages/wfp-client/src/index.test.js`
 
 Expected: FAIL with module-not-found.
 
-- [ ] **Step 3: Implement WFP client**
+- [x] **Step 3: Implement WFP client**
 
 Implement `readWfpConfig`, `createWfpClient`, `uploadUserWorker`, `getUserWorker`, `deleteUserWorker`, `WfpApiError`, and script-name validation.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `node --test packages/wfp-client/src/index.test.js`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/wfp-client
@@ -85,7 +87,7 @@ git commit -m "feat(wfp): 增加 Workers for Platforms client"
 - Modify: `apps/pages-api/src/deployments.js`
 - Test: `apps/pages-api/src/deployments.test.js`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Tests cover:
 
@@ -95,13 +97,13 @@ Tests cover:
 - successful deployment final state is `succeeded` and version artifactRef is `wfp://{namespace}/{workerName}`.
 - production/staging namespace mismatch fails before upload.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `node --test apps/pages-api/src/deployments.test.js`
 
 Expected: FAIL on missing provider behavior.
 
-- [ ] **Step 3: Implement provider path**
+- [x] **Step 3: Implement provider path**
 
 Use `env.WFP_PROVIDER` in tests; otherwise create a real WFP client from runtime env. Deployment flow:
 
@@ -120,13 +122,13 @@ update succeeded
 
 If any step before route activation fails, do not create active route. If snapshot write fails after activation, restore previous route as M3 already does.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `node --test apps/pages-api/src/deployments.test.js`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/pages-api/src/wfp-provider.js apps/pages-api/src/deployments.js apps/pages-api/src/deployments.test.js
@@ -142,7 +144,7 @@ git commit -m "feat(api): 接入 WFP 发布状态机"
 - Modify: `apps/pages-cli/src/commands.js`
 - Modify: `apps/pages-cli/src/commands.test.js`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Tests cover:
 
@@ -151,13 +153,13 @@ Tests cover:
 - `.pages.json`, `.git`, `node_modules` remain excluded.
 - deploy request body includes `artifactBundle` but not local absolute paths.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `node --test apps/pages-cli/src/artifact.test.js apps/pages-cli/src/commands.test.js`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement bundle builder**
+- [x] **Step 3: Implement bundle builder**
 
 Implement `buildArtifactBundle(targetPath, artifactKind)` returning:
 
@@ -171,13 +173,13 @@ Implement `buildArtifactBundle(targetPath, artifactKind)` returning:
 
 For static/SPA, generate a module that serves embedded base64 assets. This is an initial WFP-compatible path; larger asset-store/R2 optimization remains a later scale task without changing CLI command shape.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `node --test apps/pages-cli/src/artifact.test.js apps/pages-cli/src/commands.test.js`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/pages-cli/src/artifact.js apps/pages-cli/src/artifact.test.js apps/pages-cli/src/commands.js apps/pages-cli/src/commands.test.js
@@ -191,11 +193,11 @@ git commit -m "feat(cli): 上传 WFP artifact bundle"
 - Modify: `docs/pages-v2-wfp-architecture.md`
 - Modify: `docs/superpowers/specs/2026-06-15-pages-v2-full-implementation-design.md`
 
-- [ ] **Step 1: Update docs**
+- [x] **Step 1: Update docs**
 
 Document WFP env vars, namespace validation, publish state machine, artifact bundle shape, and current static/SPA generated-worker implementation.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run:
 
@@ -213,7 +215,7 @@ Expected:
 - Prettier check: PASS.
 - `git ls-files --error-unmatch docs/xd-sso.md`: FAIL, confirming the local SSO reference is not tracked.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/pages-v2-wfp-architecture.md docs/superpowers/specs/2026-06-15-pages-v2-full-implementation-design.md docs/superpowers/plans/2026-06-15-pages-v2-wfp-publish.md

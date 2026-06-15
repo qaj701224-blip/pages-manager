@@ -347,6 +347,8 @@ vars:
   PUBLIC_SITE_SUFFIX
   ROUTER_CACHE_KV_BINDING_NAME
   WFP_DISPATCH_NAMESPACE
+  WFP_COMPATIBILITY_DATE
+  CF_API_BASE_URL
   AUTH_JWKS_URL
   ROUTER_JWKS_URL
 
@@ -357,12 +359,14 @@ bindings:
   service: PAGES_ROUTER
 
 secrets:
+  CF_ACCOUNT_ID
   CF_API_TOKEN
-  CLOUDFLARE_ACCOUNT_ID
   CLOUDFLARE_ZONE_ID
 ```
 
-`CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 的 Worker secret，不得注入 user Worker。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
+`CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`.pages.json` 或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
+
+`WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 推荐显式配置，保证 Worker 模块语义可复现；未配置时实现会使用当前日期。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`，只允许 HTTPS 且路径为 `/client/v4`，通常不需要在生产配置中覆盖。
 
 `pages-api` 不能持有 `auth_session`、`site_session` 或 `internal_worker_jwt` 的 signing secret。控制面如需校验用户态 token，只能使用 verify-only JWKS / public key，或通过 `PAGES_AUTH` service binding 完成一次性 code / session 校验；不能在 API Worker 中签发子站 session 或 router internal JWT。
 
@@ -465,11 +469,16 @@ SSO_AUTHORIZATION_URL
 SSO_TOKEN_URL
 SSO_PROFILE_URL
 SSO_REDIRECT_URI
+WFP_DISPATCH_NAMESPACE
+WFP_COMPATIBILITY_DATE
 ```
+
+`CF_API_BASE_URL` 只用于本地测试或特殊网络环境；生产和 staging 默认不配置，使用 Cloudflare 官方 API base。
 
 `secrets` 放所有敏感配置和真实资源 id：
 
 ```text
+CF_ACCOUNT_ID
 CLOUDFLARE_ACCOUNT_ID
 CLOUDFLARE_ZONE_ID
 CLOUDFLARE_API_TOKEN
@@ -482,10 +491,9 @@ PAGES_CAP_JWT_SECRET_*
 D1_DATABASE_ID_*
 KV_NAMESPACE_ID_*
 DO_NAMESPACE_ID_*
-WFP_DISPATCH_NAMESPACE
 ```
 
-如果公司规范认为 Cloudflare account id、zone id、D1/KV id 非 secret，也仍建议在本 public repo 标准下放 GitHub Environment Secret，避免公开输出真实资源标识。
+如果公司规范认为 Cloudflare account id、zone id、D1/KV id 或 dispatch namespace 非 secret，也仍建议在本 public repo 标准下至少不要把真实资源 id 写进代码、文档和测试快照。`WFP_DISPATCH_NAMESPACE` 名称本身不是凭证，但它是强环境边界，必须按 environment 固定和校验。
 
 ### 配置校验
 
@@ -497,6 +505,7 @@ WFP_DISPATCH_NAMESPACE
 - `PAGES_ENV=staging` 时，API/auth/site suffix 必须是 staging 域名。
 - signing key registry 中的 active kid 必须能找到对应 secret。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
+- `CF_ACCOUNT_ID` / `CF_API_TOKEN` 必须只出现在 `pages-api` runtime；router/auth/thin router 不能持有。
 - D1、KV、Durable Object binding 必须指向当前环境资源。
 - `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时部署或启动必须 fail closed。
 - `CF_API_TOKEN` 只能注入 `pages-api` runtime；`CLOUDFLARE_API_TOKEN` 只能出现在 GitHub Actions / Wrangler 部署环境。
@@ -1118,31 +1127,34 @@ router 遇到缓存、权威存储或 dispatch 异常时，必须按 cache tier 
 
 ### 发布与回滚状态机
 
-WFP 发布不能简单理解为“上传 Worker 后写 active version”。推荐状态机：
+WFP 发布不能简单理解为“上传 Worker 后写 active version”。当前 M5 落地状态机为：
 
 ```text
 1. pages-api 校验 actor、scope、site 权限、idempotency key 和 payload limit。
-2. D1 创建 deployments(status=pending) 和 immutable site_versions。
-3. 上传 user Worker / assets 到目标环境的 WFP dispatch namespace。
-4. status=uploaded。
-5. 对新 Worker 做最小健康检查或 manifest 校验。
-6. status=verified。
-7. 先写 immutable route snapshot candidate。
-8. 用 D1 transaction / CAS 更新 site_routes:
+2. 规范化并校验 artifactBundle。
+3. D1 创建 deployments(status=pending)。
+4. status=uploading。
+5. 通过 pages-api 的 WFP provider 上传 user Worker 到目标环境 dispatch namespace。
+6. status=uploaded。
+7. 通过 Cloudflare WFP API 读取新 user Worker，完成最小 verify。
+8. status=verified。
+9. 创建 immutable site_versions，artifact_ref 形如 wfp://{namespace}/{workerName}。
+10. status=activating。
+11. 用 D1 transaction / CAS 更新 site_routes:
      active_version_id = newVersion
      worker_name = newWorkerName
      route_generation += 1
      policy_version 按需更新
-9. status=activating。
-10. 写 route pointer 指向新的 routeGeneration。
-11. status=succeeded，返回 url、deploymentId、versionId。
+12. 写 route snapshot / route pointer 指向新的 routeGeneration。
+13. status=succeeded，返回 url、deploymentId、versionId。
 ```
 
 失败处理：
 
-- 1-7 失败：保留旧 active version，不改 route pointer。
-- 8 成功但 10 失败：以 D1 为权威，后台重建 pointer；router 发现 D1 generation 高于 pointer 时刷新或返回短暂 503。
-- 10 成功但 11 失败：deployment 可由 reconciliation job 修正为 `succeeded` 或 `failed_with_active_route`。
+- 1-8 失败：保留旧 active version，不创建新 active route。
+- 9 之后、route 激活前失败：保留旧 active version；已创建但未激活的 version 保留为非 active 历史记录或由 reconciliation 标记。
+- route 激活成功但 snapshot / pointer 写入失败：当前实现立即恢复 previous route，并把 deployment 标记为 `failed`，避免 router 看到 D1 与 KV 指针不一致的半激活状态。后续如引入更强 reconciliation，可切换为“D1 为权威、后台重建 pointer”的策略，但必须有 fail-closed 测试。
+- `succeeded` 写入失败：deployment 可由 reconciliation job 修正为 `succeeded` 或 `failed_with_active_route`。
 - 已上传但未激活的 user Worker / assets 标记为 orphan，延迟 GC，不立即删除，避免误删正在回滚的版本。
 
 回滚不是修改历史 version 内容，而是复用同一套 active route 切换流程，把 `active_version_id` 和 `worker_name` 切回目标 version，并 bump `route_generation`。所有 deploy / rollback 必须写审计。
@@ -1860,10 +1872,14 @@ pages login
 
 pages deploy ./dist --name foo --visibility org
   -> CLI 调 pages-api /.xd-pages/api/deployments
+  -> CLI 计算 artifact hash，并生成 artifactBundle
+     custom Worker: 读取入口模块内容
+     static / SPA: 生成 worker.mjs，内嵌 base64 asset map
   -> pages-api 校验 CLI token 和发布权限
-  -> pages-api 构建站点版本 metadata
+  -> pages-api 规范化 artifactBundle，校验 kind/mainModule/modules
   -> pages-api 上传 user Worker 到 WFP dispatch namespace
-  -> pages-api 通过发布状态机切换 active version 和 route snapshot
+  -> pages-api verify 后创建 immutable version
+  -> pages-api 通过发布状态机切换 active route 和 route snapshot
   -> 返回 https://foo.pages.xd.team
 
 pages deploy ./dist --name foo --visibility org --env staging
@@ -1981,12 +1997,31 @@ user.kv:
 
 ## 静态站点和 SPA
 
-v2 需要验证 Workers for Platforms 对 static/spa assets 的支持边界；这不影响 v1 Workers Assets 发布链路。
+v2 需要验证 Workers for Platforms 对 static/spa assets 的支持边界；这不影响 v1 Workers Assets 发布链路。当前 M5 闭环采用“CLI 生成 user Worker 模块”的方式先打通 WFP 发布路径：
+
+```json
+{
+  "kind": "static|spa|worker",
+  "mainModule": "worker.mjs",
+  "modules": [
+    {
+      "name": "worker.mjs",
+      "type": "application/javascript+module",
+      "content": "export default { ... }"
+    }
+  ]
+}
+```
+
+custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` / `.ts` 文件内容作为 module。static / SPA 发布时，CLI 遍历目录并排除 `.pages.json`、`.git`、`node_modules`、`.DS_Store`，生成一个 `worker.mjs`：文件内容以 base64 asset map 内嵌，static 按 path 返回文件，SPA 在未命中时 fallback 到 `index.html`。这个 bundle 不包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `.pages.json` 内容。
+
+`pages-api` 只接受 `artifactBundle` 后调用 `packages/wfp-client` 上传 WFP，不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。当前 API JSON body 有大小上限；大站点、多二进制资产和长期缓存优化应演进到 R2 / asset store 或 Cloudflare 原生 asset 能力，但 CLI 命令和 deploy API 的用户心智保持不变。
 
 建议实现时准备两种路径：
 
-1. 如果 WFP user Worker 可满足 assets 需求，则继续由平台生成 static/spa user Worker。
-2. 如果 assets 与 WFP 组合不满足需求，则将静态资产放入 R2 或专用 asset store，由 generated user Worker 或 router asset layer 读取。
+1. 小型 static / SPA：继续由平台生成 WFP user Worker，适合文档、demo 和轻量内部工具。
+2. 中大型 static / SPA：将静态资产放入 R2 或专用 asset store，由 generated user Worker 或 router asset layer 读取。
+3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist --name foo`。
 
 无论采用哪种路径，对用户暴露的心智保持一致：
 
