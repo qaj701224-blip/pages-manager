@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import worker from './index.js';
@@ -52,4 +53,12 @@ test('unknown endpoints return safe JSON errors', async () => {
   const body = await response.json();
   assert.equal(body.error.code, 'NOT_FOUND');
   assert.match(body.error.action, /Check the endpoint/);
+});
+
+test('wrangler template includes required WFP vars without runtime token placeholders', async () => {
+  const template = await readFile(new URL('../wrangler.template.toml', import.meta.url), 'utf8');
+
+  assert.match(template, /WFP_DISPATCH_NAMESPACE = "__WFP_DISPATCH_NAMESPACE__"/);
+  assert.match(template, /WFP_COMPATIBILITY_DATE = "__WFP_COMPATIBILITY_DATE__"/);
+  assert.doesNotMatch(template, /CF_API_TOKEN|CF_ACCOUNT_ID/);
 });

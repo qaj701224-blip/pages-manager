@@ -129,14 +129,14 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 
 职责：
 
-- 读取 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`WFP_DISPATCH_NAMESPACE`、可选 `WFP_COMPATIBILITY_DATE` 和 `CF_API_BASE_URL`。
+- 读取 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`WFP_DISPATCH_NAMESPACE`、可选 `WFP_COMPATIBILITY_DATE` 和 `CF_API_BASE_URL`；production / staging 的 `CF_API_BASE_URL` 只能是 Cloudflare 官方 host。
 - 强制 production 使用 `pages-production` dispatch namespace，staging 使用 `pages-staging`。
 - 上传 custom Worker artifact bundle 到 dispatch namespace。
 - 第一版由 CLI 为 static / SPA 生成 WFP-compatible user Worker，内嵌 base64 asset map；后续可迁移到 R2 / asset store 而不改变 CLI 命令形态。
 - 创建 immutable version。
 - 按状态机切 active route：pending -> uploading -> uploaded -> verified -> activating -> succeeded。
 - 支持 rollback，复用 active route 切换流程。
-- 标记 orphan user Worker / assets，交给 reconciliation 清理。
+- 通过 failed deployment、非 active version 和 WFP 命名规则推导 orphan user Worker / assets，交给 reconciliation 清理；后续再补显式 orphan 标记。
 
 验收：
 
@@ -145,7 +145,9 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 - 回滚不修改历史 version。
 - staging/prod dispatch namespace 不可串。
 - Cloudflare API token 只存在 `pages-api` runtime。
-- CLI deploy 请求包含 `artifactBundle`，但不包含本地绝对路径、`.pages.json`、token、Cloudflare 资源 id 或 secret。
+- CLI deploy 请求必须包含 `artifactBundle`，并纳入 idempotency request hash；bundle 不包含本地绝对路径、`.pages.json`、token、Cloudflare 资源 id 或 secret。
+- 第一版 custom Worker 只直传 `.js` / `.mjs`；`.ts` 入口在接入 bundler 前 fail closed。
+- 第一版 static / SPA generated-worker 路径有明确大小上限；超限后转向 R2 / asset store 路径。
 
 ### M6. 子站 SSO + Visibility + ACL
 

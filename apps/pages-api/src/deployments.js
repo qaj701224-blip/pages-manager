@@ -42,7 +42,15 @@ async function createDeployment(request, env, config, store, actor) {
   let body;
   try {
     body = await readJsonBody(request, { maxBytes: 1024 * 1024 });
-  } catch {
+  } catch (error) {
+    if (error?.code === 'JSON_BODY_TOO_LARGE') {
+      return jsonError(
+        'PAYLOAD_TOO_LARGE',
+        'Deployment payload is too large.',
+        413,
+        'Reduce artifact size or use an asset store backed deployment path.'
+      );
+    }
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
 
@@ -61,7 +69,10 @@ async function createDeployment(request, env, config, store, actor) {
   }
   try {
     artifactBundle = normalizeArtifactBundle({ artifactKind, contentHash, artifactBundle: body.artifactBundle });
-  } catch {
+  } catch (error) {
+    if (error?.message === 'ARTIFACT_BUNDLE_REQUIRED') {
+      return jsonError('ARTIFACT_BUNDLE_REQUIRED', 'artifactBundle is required.', 400, 'Send an artifact bundle.');
+    }
     return jsonError('ARTIFACT_BUNDLE_INVALID', 'Artifact bundle is invalid.', 400, 'Send a valid artifact bundle.');
   }
   if (!actorCanDeploy(actor, siteId, 'deploy:site')) {
@@ -71,7 +82,14 @@ async function createDeployment(request, env, config, store, actor) {
   const site = await store.getSiteForUser(siteId, actor.userId, actor, config.environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
-  const requestHash = await canonicalRequestHash({ operation: 'deploy', siteId, artifactKind, contentHash, source });
+  const requestHash = await canonicalRequestHash({
+    operation: 'deploy',
+    siteId,
+    artifactKind,
+    contentHash,
+    artifactBundle,
+    source,
+  });
   const deploymentResult = await store.createDeploymentForIdempotency({
     id: nextId(env, 'dep'),
     environment: config.environment,

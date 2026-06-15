@@ -13,9 +13,7 @@ test('creates deployment, immutable version, active route, and route snapshot', 
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
-        siteId: 'site_1',
-        artifactKind: 'worker',
-        contentHash: 'sha256:abc',
+        ...deployPayload(),
         source: 'cli',
       },
       { 'Idempotency-Key': 'idem_1' }
@@ -80,25 +78,25 @@ test('deployment idempotency replays same request and rejects changed request', 
   const env = testEnv(store, snapshots);
 
   const first = await worker.fetch(
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
-      { 'Idempotency-Key': 'idem_1' }
-    ),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
     env
   );
   const replay = await worker.fetch(
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { contentHash: 'sha256:abc', artifactKind: 'worker', siteId: 'site_1' },
-      { 'Idempotency-Key': 'idem_1' }
-    ),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
     env
   );
   const conflict = await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:def' },
+      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      { 'Idempotency-Key': 'idem_1' }
+    ),
+    env
+  );
+  const bundleConflict = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("changed"); } };' }),
       { 'Idempotency-Key': 'idem_1' }
     ),
     env
@@ -109,7 +107,41 @@ test('deployment idempotency replays same request and rejects changed request', 
   assert.equal((await replay.json()).deployment.id, 'dep_1');
   assert.equal(conflict.status, 409);
   assert.equal((await conflict.json()).error.code, 'IDEMPOTENCY_CONFLICT');
+  assert.equal(bundleConflict.status, 409);
+  assert.equal((await bundleConflict.json()).error.code, 'IDEMPOTENCY_CONFLICT');
   assert.equal(await store.getSiteVersion('ver_2'), null);
+});
+
+test('requires artifactBundle for deployments', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
+      { 'Idempotency-Key': 'missing_bundle' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'ARTIFACT_BUNDLE_REQUIRED');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('returns payload-too-large for oversized deployment bodies', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'a'.repeat(1024 * 1024) }),
+      { 'Idempotency-Key': 'too_large' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error.code, 'PAYLOAD_TOO_LARGE');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
 });
 
 test('gets deployment by id for authorized site actors', async () => {
@@ -146,23 +178,15 @@ test('enforces deploy and rollback access key scopes separately', async () => {
   const rollbackOnlyKey = await seedAccessKey(store, 'ak_rollback', ['rollback:site']);
 
   const deployWithRollbackOnly = await worker.fetch(
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
-      {
-        Authorization: `Bearer ${rollbackOnlyKey}`,
-        'Idempotency-Key': 'deploy_rollback_only',
-      }
-    ),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      Authorization: `Bearer ${rollbackOnlyKey}`,
+      'Idempotency-Key': 'deploy_rollback_only',
+    }),
     env
   );
 
   await worker.fetch(
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
-      { 'Idempotency-Key': 'deploy_1' }
-    ),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
     env
   );
   const rollbackWithDeployOnly = await worker.fetch(
@@ -189,17 +213,13 @@ test('rolls back to an existing immutable version and writes a new route snapsho
   const env = testEnv(store, snapshots);
 
   await worker.fetch(
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
-      { 'Idempotency-Key': 'deploy_1' }
-    ),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
     env
   );
   await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:def' },
+      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
       { 'Idempotency-Key': 'deploy_2' }
     ),
     env
@@ -225,11 +245,7 @@ test('marks deployment failed when route snapshot write fails and replays failed
   const store = await createSeededStore();
   const env = testEnv(store, failingSnapshotStore());
   const request = () =>
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
-      { 'Idempotency-Key': 'snapshot_fail' }
-    );
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'snapshot_fail' });
 
   const first = await worker.fetch(request(), env);
   const replay = await worker.fetch(request(), env);
@@ -342,17 +358,13 @@ test('keeps previous active route when rollback snapshot write fails', async () 
   const env = testEnv(store, createSnapshotStore());
 
   await worker.fetch(
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
-      { 'Idempotency-Key': 'deploy_1' }
-    ),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
     env
   );
   await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:def' },
+      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
       { 'Idempotency-Key': 'deploy_2' }
     ),
     env
@@ -378,9 +390,7 @@ test('requires idempotency key for deploy and rollback', async () => {
   const store = await createSeededStore();
   const deploy = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', {
-      siteId: 'site_1',
-      artifactKind: 'worker',
-      contentHash: 'sha256:abc',
+      ...deployPayload(),
     }),
     testEnv(store, createSnapshotStore())
   );
@@ -507,4 +517,20 @@ function workerBundle(content) {
     mainModule: 'worker.mjs',
     modules: [{ name: 'worker.mjs', content, type: 'application/javascript+module' }],
   };
+}
+
+function deployPayload(overrides = {}) {
+  const contentHash = overrides.contentHash || 'sha256:abc';
+  const moduleContent =
+    overrides.moduleContent || `export default { fetch() { return new Response(${JSON.stringify(contentHash)}); } };`;
+  const payload = {
+    siteId: 'site_1',
+    artifactKind: 'worker',
+    contentHash,
+    artifactBundle: overrides.artifactBundle || workerBundle(moduleContent),
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key !== 'moduleContent') payload[key] = value;
+  }
+  return payload;
 }

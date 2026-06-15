@@ -24,7 +24,8 @@ export function createDeploymentProvider(env, config) {
 }
 
 export function normalizeArtifactBundle(input) {
-  const bundle = input.artifactBundle || generatedArtifactBundle(input);
+  const bundle = input.artifactBundle;
+  if (bundle === undefined || bundle === null) throw new Error('ARTIFACT_BUNDLE_REQUIRED');
   if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) throw new Error('ARTIFACT_BUNDLE_INVALID');
   if (bundle.kind !== input.artifactKind) throw new Error('ARTIFACT_BUNDLE_KIND_MISMATCH');
   if (typeof bundle.mainModule !== 'string' || bundle.mainModule === '') throw new Error('ARTIFACT_BUNDLE_MAIN_INVALID');
@@ -46,26 +47,5 @@ function normalizeModule(module) {
     name: module.name,
     content: module.content,
     type: typeof module.type === 'string' && module.type ? module.type : 'application/javascript+module',
-  };
-}
-
-function generatedArtifactBundle({ artifactKind, contentHash }) {
-  const escapedHash = JSON.stringify(contentHash);
-  const body = JSON.stringify(`XD Pages artifact ${contentHash}`);
-  const content = [
-    'export default {',
-    `  fetch() { return new Response(${body}, { headers: { 'X-XD-Pages-Content-Hash': ${escapedHash} } }); }`,
-    '};',
-  ].join('\n');
-  return {
-    kind: artifactKind,
-    mainModule: 'worker.mjs',
-    modules: [
-      {
-        name: 'worker.mjs',
-        type: 'application/javascript+module',
-        content,
-      },
-    ],
   };
 }

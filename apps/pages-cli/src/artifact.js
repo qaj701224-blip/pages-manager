@@ -3,6 +3,8 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 const IGNORED_NAMES = new Set(['.git', 'node_modules', '.pages.json', '.DS_Store']);
+export const MAX_STATIC_ARTIFACT_BYTES = 512 * 1024;
+export const MAX_STATIC_ARTIFACT_FILES = 1000;
 
 export async function hashArtifact(targetPath) {
   const absolute = path.resolve(targetPath);
@@ -36,8 +38,9 @@ export async function inferArtifactKind(targetPath) {
   const absolute = path.resolve(targetPath);
   const stats = await stat(absolute);
   if (stats.isFile()) {
-    const extension = path.extname(absolute);
-    if (extension === '.js' || extension === '.mjs' || extension === '.ts') return 'worker';
+    const extension = path.extname(absolute).toLowerCase();
+    if (extension === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
+    if (extension === '.js' || extension === '.mjs') return 'worker';
     return 'static';
   }
 
@@ -80,6 +83,7 @@ async function collectDirectoryFiles(root, dir) {
 async function buildWorkerBundle(absolutePath) {
   const stats = await stat(absolutePath);
   if (!stats.isFile()) throw new Error('WORKER_ARTIFACT_FILE_REQUIRED');
+  if (path.extname(absolutePath).toLowerCase() === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
   const name = path.basename(absolutePath);
   return {
     kind: 'worker',
@@ -98,9 +102,13 @@ async function buildStaticWorkerBundle(absolutePath, kind) {
   const stats = await stat(absolutePath);
   if (!stats.isDirectory()) throw new Error('STATIC_ARTIFACT_DIRECTORY_REQUIRED');
   const files = await collectDirectoryFiles(absolutePath, absolutePath);
+  if (files.length > MAX_STATIC_ARTIFACT_FILES) throw new Error('ARTIFACT_FILE_COUNT_LIMIT_EXCEEDED');
   const entries = {};
+  let sizeBytes = 0;
   for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
     const bytes = await readFile(file.absolutePath);
+    sizeBytes += bytes.byteLength;
+    if (sizeBytes > MAX_STATIC_ARTIFACT_BYTES) throw new Error('ARTIFACT_BUNDLE_TOO_LARGE');
     entries[file.relativePath] = {
       body: Buffer.from(bytes).toString('base64'),
       type: contentTypeFor(file.relativePath),

@@ -32,6 +32,39 @@ export function buildOpenApi(config) {
             },
           },
         },
+        ArtifactModule: {
+          type: 'object',
+          required: ['name', 'content'],
+          properties: {
+            name: { type: 'string', examples: ['worker.mjs'] },
+            content: { type: 'string', description: 'ES module source generated or read by the v2 CLI.' },
+            type: { type: 'string', examples: ['application/javascript+module'] },
+          },
+        },
+        ArtifactBundle: {
+          type: 'object',
+          required: ['kind', 'mainModule', 'modules'],
+          properties: {
+            kind: { type: 'string', enum: ['static', 'spa', 'worker'] },
+            mainModule: { type: 'string', examples: ['worker.mjs'] },
+            modules: {
+              type: 'array',
+              minItems: 1,
+              items: { $ref: '#/components/schemas/ArtifactModule' },
+            },
+          },
+        },
+        DeploymentRequest: {
+          type: 'object',
+          required: ['siteId', 'artifactKind', 'contentHash', 'artifactBundle'],
+          properties: {
+            siteId: { type: 'string' },
+            artifactKind: { type: 'string', enum: ['static', 'spa', 'worker'] },
+            contentHash: { type: 'string', pattern: '^sha256:' },
+            artifactBundle: { $ref: '#/components/schemas/ArtifactBundle' },
+            source: { type: 'string', examples: ['cli'] },
+          },
+        },
       },
     },
     paths: {
@@ -89,8 +122,31 @@ export function buildOpenApi(config) {
         post: {
           summary: 'Create a deployment',
           parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeploymentRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'ARTIFACT_BUNDLE_REQUIRED',
+            'ARTIFACT_BUNDLE_INVALID',
+            'PAYLOAD_TOO_LARGE',
+            'WFP_CONFIG_INVALID',
+            'WFP_UPLOAD_FAILED',
+            'WFP_VERIFY_FAILED',
+            'ROUTE_SNAPSHOT_WRITE_FAILED',
+            'IDEMPOTENCY_CONFLICT',
+          ],
           responses: {
             201: { description: 'Deployment created' },
+            400: { description: 'Invalid deployment request' },
+            413: { description: 'Deployment payload too large for the current upload path' },
+            500: { description: 'WFP provider configuration invalid' },
+            502: { description: 'WFP upload or verification failed' },
+            503: { description: 'Route snapshot write failed' },
             409: { description: 'Idempotency conflict' },
           },
         },

@@ -64,6 +64,31 @@ test('readWfpConfig fails closed on missing credentials and unsafe API origins',
       ),
     /CF_API_BASE_URL/
   );
+  assert.throws(
+    () =>
+      readWfpConfig(
+        {
+          CF_ACCOUNT_ID: 'account',
+          CF_API_TOKEN: 'token',
+          WFP_DISPATCH_NAMESPACE: 'pages-production',
+          CF_API_BASE_URL: 'https://example.com/client/v4',
+        },
+        { environment: 'production' }
+      ),
+    /CF_API_BASE_URL/
+  );
+  assert.equal(
+    readWfpConfig(
+      {
+        CF_ACCOUNT_ID: 'account',
+        CF_API_TOKEN: 'token',
+        WFP_DISPATCH_NAMESPACE: 'pages-local',
+        CF_API_BASE_URL: 'https://mock.cloudflare.test/client/v4',
+      },
+      { environment: 'local' }
+    ).apiBaseUrl,
+    'https://mock.cloudflare.test/client/v4'
+  );
 });
 
 test('uploadUserWorker sends multipart metadata and module to dispatch namespace endpoint', async () => {

@@ -19,6 +19,23 @@ test('serves production v2-only OpenAPI skeleton', async () => {
   assert.ok(body.paths['/.xd-pages/api/deployments']);
   assert.ok(body.paths['/.xd-pages/api/deployments/{id}']);
   assert.ok(body.paths['/.xd-pages/api/versions/{id}/rollback']);
+  assert.ok(body.components.schemas.DeploymentRequest);
+  assert.ok(body.components.schemas.ArtifactBundle);
+  assert.equal(
+    body.paths['/.xd-pages/api/deployments'].post.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/DeploymentRequest'
+  );
+  assert.deepEqual(body.paths['/.xd-pages/api/deployments'].post['x-error-codes'], [
+    'ARTIFACT_BUNDLE_REQUIRED',
+    'ARTIFACT_BUNDLE_INVALID',
+    'PAYLOAD_TOO_LARGE',
+    'WFP_CONFIG_INVALID',
+    'WFP_UPLOAD_FAILED',
+    'WFP_VERIFY_FAILED',
+    'ROUTE_SNAPSHOT_WRITE_FAILED',
+    'IDEMPOTENCY_CONFLICT',
+  ]);
+  assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /artifactBundle/);
   assert.doesNotMatch(serialized, /workers\.xd\.team/);
   assert.doesNotMatch(serialized, /X-Pages-Token/);
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);

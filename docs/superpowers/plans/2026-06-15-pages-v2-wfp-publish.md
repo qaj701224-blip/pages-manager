@@ -10,6 +10,8 @@
 
 **Implementation status:** Tasks 1-3 have landed in focused commits. Task 4 is this documentation and verification pass. The current static/SPA implementation uses a generated WFP user Worker with embedded base64 assets; R2 / asset-store optimization can replace the server-side storage path later without changing the CLI command shape.
 
+**Review follow-up:** The M5 review fixes tightened `CF_API_BASE_URL`, made `artifactBundle` mandatory, included the normalized bundle in deploy idempotency hashing, added explicit payload-too-large behavior, rejected `.ts` Worker entrypoints until bundling exists, and documented current generated-worker limits.
+
 ---
 
 ## Scope Notes

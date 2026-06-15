@@ -24,6 +24,9 @@ export function readWfpConfig(env = {}, { environment = env.PAGES_ENV } = {}) {
   if (expectedNamespace && dispatchNamespace !== expectedNamespace) {
     throw new Error(`WFP_DISPATCH_NAMESPACE must be ${expectedNamespace} for ${environment}.`);
   }
+  if (expectedNamespace && new URL(apiBaseUrl).hostname !== 'api.cloudflare.com') {
+    throw new Error('CF_API_BASE_URL must be api.cloudflare.com for production and staging.');
+  }
 
   return {
     accountId,

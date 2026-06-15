@@ -366,7 +366,7 @@ secrets:
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`.pages.json` 或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
-`WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 推荐显式配置，保证 Worker 模块语义可复现；未配置时实现会使用当前日期。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`，只允许 HTTPS 且路径为 `/client/v4`，通常不需要在生产配置中覆盖。
+`WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 推荐显式配置，保证 Worker 模块语义可复现；未配置时实现会使用当前日期。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
 `pages-api` 不能持有 `auth_session`、`site_session` 或 `internal_worker_jwt` 的 signing secret。控制面如需校验用户态 token，只能使用 verify-only JWKS / public key，或通过 `PAGES_AUTH` service binding 完成一次性 code / session 校验；不能在 API Worker 中签发子站 session 或 router internal JWT。
 
@@ -473,7 +473,7 @@ WFP_DISPATCH_NAMESPACE
 WFP_COMPATIBILITY_DATE
 ```
 
-`CF_API_BASE_URL` 只用于本地测试或特殊网络环境；生产和 staging 默认不配置，使用 Cloudflare 官方 API base。
+`CF_API_BASE_URL` 只用于本地测试或特殊网络环境；生产和 staging 默认不配置，使用 Cloudflare 官方 API base。若生产或 staging 因代理需求必须覆盖，也只能覆盖到 `https://api.cloudflare.com/client/v4` 这一官方 host，不能指向任意第三方域名。
 
 `secrets` 放所有敏感配置和真实资源 id：
 
@@ -506,6 +506,7 @@ DO_NAMESPACE_ID_*
 - signing key registry 中的 active kid 必须能找到对应 secret。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
 - `CF_ACCOUNT_ID` / `CF_API_TOKEN` 必须只出现在 `pages-api` runtime；router/auth/thin router 不能持有。
+- production / staging 的 `CF_API_BASE_URL` 必须是 `https://api.cloudflare.com/client/v4`，不能把 `CF_API_TOKEN` 发送到其它 host。
 - D1、KV、Durable Object binding 必须指向当前环境资源。
 - `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时部署或启动必须 fail closed。
 - `CF_API_TOKEN` 只能注入 `pages-api` runtime；`CLOUDFLARE_API_TOKEN` 只能出现在 GitHub Actions / Wrangler 部署环境。
@@ -1155,7 +1156,7 @@ WFP 发布不能简单理解为“上传 Worker 后写 active version”。当�
 - 9 之后、route 激活前失败：保留旧 active version；已创建但未激活的 version 保留为非 active 历史记录或由 reconciliation 标记。
 - route 激活成功但 snapshot / pointer 写入失败：当前实现立即恢复 previous route，并把 deployment 标记为 `failed`，避免 router 看到 D1 与 KV 指针不一致的半激活状态。后续如引入更强 reconciliation，可切换为“D1 为权威、后台重建 pointer”的策略，但必须有 fail-closed 测试。
 - `succeeded` 写入失败：deployment 可由 reconciliation job 修正为 `succeeded` 或 `failed_with_active_route`。
-- 已上传但未激活的 user Worker / assets 标记为 orphan，延迟 GC，不立即删除，避免误删正在回滚的版本。
+- 已上传但未激活的 user Worker / assets 第一版可由 failed deployment、非 active version 和 WFP 命名规则推导为 orphan；后续 reconciliation 负责延迟 GC，不立即删除，避免误删正在回滚的版本。若需要更强可观测性，再补显式 orphan 标记表。
 
 回滚不是修改历史 version 内容，而是复用同一套 active route 切换流程，把 `active_version_id` 和 `worker_name` 切回目标 version，并 bump `route_generation`。所有 deploy / rollback 必须写审计。
 
@@ -1877,6 +1878,7 @@ pages deploy ./dist --name foo --visibility org
      static / SPA: 生成 worker.mjs，内嵌 base64 asset map
   -> pages-api 校验 CLI token 和发布权限
   -> pages-api 规范化 artifactBundle，校验 kind/mainModule/modules
+     artifactBundle 必填，并参与 idempotency request hash
   -> pages-api 上传 user Worker 到 WFP dispatch namespace
   -> pages-api verify 后创建 immutable version
   -> pages-api 通过发布状态机切换 active route 和 route snapshot
@@ -2013,9 +2015,9 @@ v2 需要验证 Workers for Platforms 对 static/spa assets 的支持边界；�
 }
 ```
 
-custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` / `.ts` 文件内容作为 module。static / SPA 发布时，CLI 遍历目录并排除 `.pages.json`、`.git`、`node_modules`、`.DS_Store`，生成一个 `worker.mjs`：文件内容以 base64 asset map 内嵌，static 按 path 返回文件，SPA 在未命中时 fallback 到 `index.html`。这个 bundle 不包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `.pages.json` 内容。
+custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署到 WFP。static / SPA 发布时，CLI 遍历目录并排除 `.pages.json`、`.git`、`node_modules`、`.DS_Store`，生成一个 `worker.mjs`：文件内容以 base64 asset map 内嵌，static 按 path 返回文件，SPA 在未命中时 fallback 到 `index.html`。这个 bundle 不包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `.pages.json` 内容。
 
-`pages-api` 只接受 `artifactBundle` 后调用 `packages/wfp-client` 上传 WFP，不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。当前 API JSON body 有大小上限；大站点、多二进制资产和长期缓存优化应演进到 R2 / asset store 或 Cloudflare 原生 asset 能力，但 CLI 命令和 deploy API 的用户心智保持不变。
+`pages-api` 只接受必填的 `artifactBundle` 后调用 `packages/wfp-client` 上传 WFP，不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。当前 API JSON body 上限是 1 MiB，CLI 首版 static / SPA generated-worker 路径限制原始文件总量不超过 512 KiB、文件数不超过 1000；超限时 CLI 提前失败，API 对超大请求返回 `PAYLOAD_TOO_LARGE` / 413。大站点、多二进制资产和长期缓存优化应演进到 R2 / asset store 或 Cloudflare 原生 asset 能力，但 CLI 命令和 deploy API 的用户心智保持不变。
 
 建议实现时准备两种路径：
 
@@ -2091,12 +2093,12 @@ pages deploy ./dist --name foo
 
 需要一个后台 reconciliation job 或管理员工具，负责修复最终一致性和清理资源：
 
-| 对象                        | 职责                                                                                    |
-| --------------------------- | --------------------------------------------------------------------------------------- |
-| route snapshot              | 对比 D1 `route_generation`、KV pointer 和 immutable snapshot，修复缺失或过期 pointer    |
-| deployment                  | 修正卡在 `activating` / `uploaded` 的状态，补齐 terminal response                       |
-| orphan user worker / assets | mark-and-sweep 清理，保留 active version、rollback window、非终态 deployment 和审计引用 |
-| key registry                | 检查 active/draining/retired key 与最大 token TTL 是否匹配                              |
+| 对象                        | 职责                                                                                                                                      |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| route snapshot              | 对比 D1 `route_generation`、KV pointer 和 immutable snapshot，修复缺失或过期 pointer                                                      |
+| deployment                  | 修正卡在 `activating` / `uploaded` 的状态，补齐 terminal response                                                                         |
+| orphan user worker / assets | reconciliation 根据 failed deployment、非 active version、WFP 命名规则和审计引用推导 orphan；后续可升级为显式标记表和 mark-and-sweep 清理 |
+| key registry                | 检查 active/draining/retired key 与最大 token TTL 是否匹配                                                                                |
 
 key rotation 生命周期：
 
