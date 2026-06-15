@@ -173,7 +173,11 @@ async function existingSlackThreadSession(store, body = {}) {
 }
 
 function publishingJobIdFromIssueBody(body) {
-  const match = String(body || '').match(/^PublishingJob:\s*(job_[A-Za-z0-9_]{1,80})\s*$/m);
+  const text = String(body || '');
+  const htmlCommentMatch = text.match(/<!--\s*pages-manager:job_id=(job_[A-Za-z0-9_]{1,80})\s*-->/);
+  if (htmlCommentMatch) return htmlCommentMatch[1];
+
+  const match = text.match(/^PublishingJob:\s*(job_[A-Za-z0-9_]{1,80})\s*$/m);
   return match ? match[1] : '';
 }
 
@@ -511,7 +515,8 @@ function slackJobInput(body) {
   const intake = body.intake || classifySlackIntake(body);
   const surface = surfaceForSlackBody(body);
   const text = intake.text || event.text || body.text || '';
-  const idempotencyKey = body.event_id || body.trigger_id || `${teamId}:${event.ts || body.event_ts || Date.now()}`;
+  const idempotencyKey =
+    body.idempotencyKey || body.idempotency_key || body.event_id || body.trigger_id || `${teamId}:${event.ts || body.event_ts || Date.now()}`;
   const requesterProfile = body.requesterProfile || body.requester_profile || null;
 
   return {
@@ -565,10 +570,14 @@ function looksLikeSlackFollowupText(text = '') {
   return /(preview|预览|不满意|继续|调整|修改|改成|换成|加|增加|删除|删掉|标题|文案|颜色|布局|风格|重新|再来)/i.test(text);
 }
 
-function isSlackFollowupIntent(analysis, intake) {
+function isSlackFollowupIntent(analysis, intake, slackSession = null) {
   if (analysis?.needsClarification) return false;
   if (FOLLOWUP_INTENTS.has(analysis?.intent)) return true;
-  if (analysis?.intent) return CREATE_JOB_INTENTS.has(analysis.intent) && looksLikeSlackFollowupText(intake.text);
+  if (analysis?.intent) {
+    if (!CREATE_JOB_INTENTS.has(analysis.intent)) return false;
+    if (hasActiveSlackTarget(slackSession)) return true;
+    return looksLikeSlackFollowupText(intake.text);
+  }
   return looksLikeSlackFollowupText(intake.text);
 }
 
@@ -603,6 +612,47 @@ function redactSecretLikeText(text = '') {
     .replace(/\b(api[_-]?key|token|secret|password|passwd|pwd)\b\s*[:=]\s*["']?[^"',\s}]+/gi, '$1=[REDACTED_SECRET]');
 }
 
+function compactUserFacingText(text = '') {
+  const redacted = redactSecretLikeText(text)
+    .replace(/\b(?:activeJobId|activeIssueNumber|activePrNumber|activePreviewUrl|issueLinkCount|slackSessionId|sessionKey)\s*[:=]\s*[^，。；;、\s)）]+/gi, '')
+    .replace(/\b(?:employeeSlug|previewUrl)\s*[:=]\s*[^，。；;、\s)）]+/gi, '')
+    .replace(/\bjob_[A-Za-z0-9_]{1,80}\b/g, '')
+    .replace(/\bsess_[A-Za-z0-9_]{1,80}\b/g, '')
+    .replace(/https?:\/\/pm-pr-[^\s)）]+/gi, '');
+
+  const parts = redacted
+    .split(/(?<=[。！？!?；;])\s*|\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !/(active(?:Job|Issue|Pr|Preview)|slackSession|sessionKey|issueLinkCount|previewUrl|gateway 根据|历史关联 PR)/i.test(part));
+
+  return parts
+    .join('')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/([：:，,；;、]){2,}/g, '$1')
+    .replace(/\s+([，。；：])/g, '$1')
+    .trim();
+}
+
+function userFacingSlackSummary(analysis = {}, fallback = '') {
+  const sourceMessages = Array.isArray(analysis.sourceMessages || analysis.source_messages)
+    ? analysis.sourceMessages || analysis.source_messages
+    : [];
+  const candidates = [analysis.summary, fallback, ...sourceMessages]
+    .map((value) => compactUserFacingText(value))
+    .filter(Boolean)
+    .filter((value) => !/\b(activeJobId|activeIssueNumber|previewUrl|slackSessionId|sessionKey)\b/i.test(value));
+
+  return candidates[0] || '已记录你的个人网站需求。';
+}
+
+function userFacingSlackTitle(analysis = {}) {
+  const title = compactUserFacingText(analysis.title || '');
+  if (title) return title.slice(0, 80);
+  const summary = userFacingSlackSummary(analysis);
+  return summary.length > 48 ? `${summary.slice(0, 45)}...` : summary;
+}
+
 function redactSlackAnalysisValue(value) {
   if (typeof value === 'string') return redactSecretLikeText(value);
   if (Array.isArray(value)) return value.map((item) => redactSlackAnalysisValue(item));
@@ -630,31 +680,92 @@ function shouldCreateSlackJob(intake, slackAgentAnalysis) {
   return CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent);
 }
 
-function explicitSlackCreateConfirmation(text = '') {
-  return /(?:信息|需求|内容).{0,8}(?:足够|完整|明确)|(?:直接|马上|现在).{0,8}(?:创建|提交|开始)|(?:确认|可以|同意).{0,8}(?:创建|提交|开始|发布)|(?:创建|提交|开始).{0,8}(?:发布任务|issue|任务)|(?:生成|创建).{0,8}(?:preview|预览)|go ahead|ship it/i.test(
-    text
-  );
-}
-
 function shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis, slackSession) {
   if (!slackAgentAnalysis || slackAgentAnalysis.needsClarification) return false;
   if (!CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent)) return false;
   if (intake.command) return false;
   if (!['agent_turn', 'create_job'].includes(intake.action)) return false;
   if (hasActiveSlackTarget(slackSession)) return false;
-  return !explicitSlackCreateConfirmation(intake.text);
+  return true;
 }
 
 function slackIssueConfirmationText(slackAgentAnalysis = {}) {
-  const summary = String(slackAgentAnalysis.summary || '').trim();
+  const summary = userFacingSlackSummary(slackAgentAnalysis);
   const site = String(slackAgentAnalysis.siteSlug || slackAgentAnalysis.site_slug || 'profile').trim();
-  const title = String(slackAgentAnalysis.title || '').trim();
-  const lines = ['我先整理一下，目前还不会创建 issue：'];
-  if (title) lines.push(`标题：${title}`);
-  if (site) lines.push(`站点：${site}`);
-  if (summary) lines.push(`需求摘要：${summary}`);
-  lines.push('如果确认无误，请回复“确认创建发布任务”；如果还想调整，直接继续补充需求。');
+  const title = userFacingSlackTitle(slackAgentAnalysis);
+  const lines = ['我整理好了，先等你确认。', '', `标题：${title}`, `站点：${site}`];
+  if (summary) lines.push('', `需求：${summary}`);
+  lines.push('', '下一步：点击「确认创建发布任务」。');
   return lines.join('\n');
+}
+
+function slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis = {}) {
+  const sessionId = slackSession?.id || '';
+  const title = userFacingSlackTitle(slackAgentAnalysis);
+  const site = String(slackAgentAnalysis.siteSlug || slackAgentAnalysis.site_slug || 'profile').trim();
+  const summary = userFacingSlackSummary(slackAgentAnalysis);
+  const fields = [
+    {
+      type: 'mrkdwn',
+      text: `*站点*\n${site}`,
+    },
+    {
+      type: 'mrkdwn',
+      text: '*状态*\n待确认',
+    },
+  ];
+
+  return [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '确认发布需求' },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${title}*\n${summary.slice(0, 900)}`,
+      },
+    },
+    {
+      type: 'section',
+      fields,
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: '点击确认后，我会创建 issue 并开始生成 PR。',
+        },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '确认创建发布任务' },
+          style: 'primary',
+          action_id: 'pages_confirm_issue',
+          value: sessionId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '继续补充需求' },
+          action_id: 'pages_continue_modifying',
+          value: sessionId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '关闭会话' },
+          style: 'danger',
+          action_id: 'pages_close_session',
+          value: sessionId,
+        },
+      ],
+    },
+  ];
 }
 
 function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null, options = {}) {
@@ -694,6 +805,88 @@ function shouldPostSlackResultReply(result = {}) {
   if (result.reply === false || result.noReply) return false;
   if (result.action === 'ignored_untracked_thread_message') return false;
   return true;
+}
+
+function interactionChannelId(body = {}, session = null) {
+  return session?.channelId || body.channel?.id || body.container?.channel_id || null;
+}
+
+function interactionThreadTs(body = {}, session = null) {
+  return session?.threadTs || body.message?.thread_ts || body.message?.ts || body.container?.thread_ts || body.container?.message_ts || null;
+}
+
+function interactionChannelType(channelId, session = null) {
+  if (session?.dmChannelId || String(channelId || '').startsWith('D')) return 'im';
+  return null;
+}
+
+function draftAnalysisFromMemory(memory = {}) {
+  const requirements = memory.requirements && typeof memory.requirements === 'object' ? memory.requirements : {};
+  return {
+    ...requirements,
+    intent: requirements.intent || 'create_or_update_site',
+    summary: requirements.summary || memory.summary || '',
+    title: requirements.title || memory.summary || 'Slack publishing request',
+    siteSlug: requirements.siteSlug || requirements.site_slug || 'profile',
+    approvalMode: requirements.approvalMode || requirements.approval_mode || 'manual_required',
+    needsClarification: Boolean(requirements.needsClarification || requirements.needs_clarification),
+  };
+}
+
+function hasConfirmableDraft(analysis = {}) {
+  return CREATE_JOB_INTENTS.has(analysis.intent) && !analysis.needsClarification && Boolean(String(analysis.summary || '').trim());
+}
+
+function confirmedSlackJobBodyFromInteraction(body = {}, session, analysis = {}, requesterProfile = null) {
+  const teamId = body.team?.id || body.team_id || session.teamId || 'unknown-team';
+  const slackUserId = slackUserIdFromBody(body);
+  const channelId = interactionChannelId(body, session);
+  const threadTs = interactionThreadTs(body, session);
+  const messageTs = body.message?.ts || body.container?.message_ts || threadTs || null;
+  const draftHash = stableSlugHash(JSON.stringify({ analysis, sessionId: session.id }));
+
+  return {
+    team_id: teamId,
+    trigger_id: body.trigger_id || `confirm:${session.id}`,
+    idempotencyKey: `slack-confirm:${session.id}:${draftHash}`,
+    event: {
+      type: 'block_actions',
+      user: slackUserId,
+      channel: channelId,
+      channel_type: interactionChannelType(channelId, session),
+      ts: messageTs,
+      thread_ts: threadTs,
+      text: analysis.summary || analysis.title || 'Slack confirmed publishing request',
+    },
+    intake: {
+      action: 'confirm_issue',
+      shouldCreateJob: true,
+      text: analysis.summary || analysis.title || '',
+    },
+    slackAgentAnalysis: analysis,
+    slackSession: session,
+    requesterProfile,
+  };
+}
+
+async function postSlackInteractionThreadReply(env, body = {}, session = null, text = '') {
+  if (!canSendSlackOutput(env) || !text) return null;
+  const channel = interactionChannelId(body, session);
+  if (!channel) return null;
+  return postSlackMessage(env, {
+    channel,
+    thread_ts: interactionThreadTs(body, session) || undefined,
+    text: mentionSlackUser(text, slackUserIdFromBody(body, null)),
+  });
+}
+
+function shouldPostSlackPlainProgressMessages(env = {}) {
+  return String(env.SLACK_PLAIN_PROGRESS_MESSAGES || 'false').toLowerCase() === 'true';
+}
+
+async function notifySlackPlainProgress(env, store, job, text, key) {
+  if (!shouldPostSlackPlainProgressMessages(env)) return null;
+  return notifySlackJob(env, store, job, text, key);
 }
 
 function slackDeliveryContextFromBody(body = {}) {
@@ -906,6 +1099,7 @@ async function postSlackResultReply(env, body = {}, result = {}) {
     channel,
     thread_ts: surface.threadTs || event.ts || undefined,
     text: mentionSlackUser(result.replyText, slackUserIdFromBody(body, null)),
+    ...(result.blocks ? { blocks: result.blocks } : {}),
   });
 }
 
@@ -1042,7 +1236,7 @@ async function processSlackEventBody(body, env) {
   const agentRun = lease?.agentRun || null;
 
   if (intake.action === 'status') {
-    const statusJob = intake.jobId ? await store.getJob(intake.jobId) : null;
+    const statusJob = intake.jobId ? await store.getJob(intake.jobId) : slackSession ? await activeJobForSlackSession(store, slackSession) : null;
     if (statusJob && !slackJobVisibleToActor(statusJob, body)) {
       await completeSlackAgentRun(store, agentRun, {
         report: { action: intake.action, jobId: intake.jobId, forbidden: true },
@@ -1064,7 +1258,7 @@ async function processSlackEventBody(body, env) {
       ok: true,
       action: intake.action,
       accepted: false,
-      replyText: intake.jobId ? slackStatusReply(intake.jobId, statusJob) : intake.replyText,
+      replyText: statusJob ? slackStatusReply(statusJob.id, statusJob) : intake.replyText || '我还没有在当前会话里找到发布任务。',
       ...(slackSession ? { slackSessionId: slackSession.id } : {}),
       ...(agentRun ? { agentRunId: agentRun.id } : {}),
     });
@@ -1134,7 +1328,7 @@ async function processSlackEventBody(body, env) {
         );
       }
 
-      if (hasActiveSlackTarget(slackSession) && isSlackFollowupIntent(slackAgentAnalysis, intake)) {
+      if (hasActiveSlackTarget(slackSession) && isSlackFollowupIntent(slackAgentAnalysis, intake, slackSession)) {
         return respond(
           handleSlackFollowup({
             store,
@@ -1174,6 +1368,7 @@ async function processSlackEventBody(body, env) {
           slackAgentAnalysis,
           action: 'confirm_before_issue',
           replyText: slackIssueConfirmationText(slackAgentAnalysis),
+          blocks: slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis),
           preferReplyText: true,
         })
       );
@@ -1294,7 +1489,7 @@ async function handleCloseSlackSession({ store, intake, slackSession, sessionMem
     accepted: true,
     slackSessionId: slackSession.id,
     agentRunId: agentRun?.id,
-    replyText: '已关闭当前会话。后续你可以用 `issue: ...` 开一个新任务，或者带上 job id 查询旧任务。',
+    replyText: '已关闭当前会话。继续发新需求会开启新任务。',
     session: closedSession,
   };
 }
@@ -1303,7 +1498,7 @@ async function handleSlackAgentStatusQuery({ store, intake, slackSession, sessio
   const job = await activeJobForSlackSession(store, slackSession);
   const replyText = job
     ? slackStatusReply(job.id, job)
-    : '我还没有在当前会话里找到发布任务。你可以带上 job id，例如 `status: job_xxx`。';
+    : '我还没有在当前会话里找到发布任务。';
 
   await store.updateSessionMemory(slackSession.id, {
     summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory.summary || intake.text),
@@ -1341,6 +1536,7 @@ async function handleSlackAgentNonPublishingTurn({
   slackAgentAnalysis,
   action,
   replyText,
+  blocks,
   preferReplyText = false,
 }) {
   const redactedIntakeText = redactSecretLikeText(intake.text);
@@ -1382,6 +1578,7 @@ async function handleSlackAgentNonPublishingTurn({
     action,
     accepted: false,
     replyText: finalReplyText,
+    ...(blocks ? { blocks } : {}),
     slackSessionId: slackSession.id,
     agentRunId: agentRun?.id,
     ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
@@ -1401,7 +1598,7 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
       ok: true,
       action: 'followup_missing_job',
       accepted: false,
-      replyText: '我找到了当前会话，但没有找到可继续修改的发布任务。可以用 `issue: ...` 新开一个任务。',
+      replyText: '我找到了当前会话，但还没有可继续修改的发布任务。请先确认创建，或继续补充需求。',
       slackSessionId: slackSession.id,
       agentRunId: agentRun?.id,
     };
@@ -1423,7 +1620,7 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
   let updatedJob = null;
   let workerStart = null;
   let action = 'followup_recorded';
-  let replyText = `收到，已把这轮修改意见关联到 ${job.id}。`;
+  let replyText = '收到，已记录这轮修改意见。';
 
   if (canDispatchFixForJob(job)) {
     updatedJob = await store.moveJobToFixing(job.id, patch);
@@ -1432,15 +1629,15 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
       workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
       action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
       replyText = workerStart?.started
-        ? `收到，已把修改意见追加到 ${job.id}，并启动同一个 PR 的修复轮次。`
-        : `收到，已把修改意见追加到 ${job.id}，等待 worker 启动修复轮次。`;
+        ? '收到，已追加修改意见，正在启动修复。'
+        : '收到，已追加修改意见，等待修复开始。';
     }
   }
 
   if (!updatedJob) {
     updatedJob = await store.patchJob(job.id, patch);
     await store.linkJobToSlackSession(updatedJob, slackSession);
-    replyText = `收到，已记录到 ${job.id}。当前任务还在 ${job.status}，会优先保留在同一个会话里。`;
+    replyText = '收到，已记录。会继续沿用当前会话。';
   }
 
   await completeSlackAgentRun(store, agentRun, {
@@ -1582,6 +1779,65 @@ export async function handleSlackInteractions(request, env) {
   const teamId = body.team?.id || body.team_id || 'unknown-team';
   const slackUserId = slackUserIdFromBody(body);
 
+  if (actionId === 'pages_confirm_issue') {
+    const sessionId = action.value || '';
+    const session = await store.getSlackSession(sessionId);
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个会话不属于当前 Slack 用户，不能创建发布任务。',
+      });
+    }
+
+    if (session.activeJobId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话已经在处理中。继续回复修改意见即可。',
+      });
+    }
+
+    const sessionMemory = await store.getSessionMemory(session.id);
+    const slackAgentAnalysis = draftAnalysisFromMemory(sessionMemory);
+    if (!hasConfirmableDraft(slackAgentAnalysis)) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话还没有可确认的发布需求。请先继续补充你想做的个人网站内容。',
+      });
+    }
+
+    const requesterProfile = await fetchSlackRequesterProfile(env, confirmedSlackJobBodyFromInteraction(body, session, slackAgentAnalysis));
+    const { job, created } = await store.createJob(
+      slackJobInput(confirmedSlackJobBodyFromInteraction(body, session, slackAgentAnalysis, requesterProfile))
+    );
+    const issueLink = await store.linkJobToSlackSession(job, session);
+    await store.updateSessionMemory(session.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis.summary || sessionMemory.summary),
+      requirements: redactSlackAnalysis(slackAgentAnalysis),
+      lastAgentResponse: '已确认创建发布任务。',
+      pendingQuestions: [],
+    });
+
+    const slackStatusNotification = created
+      ? await notifySlackJobStatus(env, store, job, {
+          stage: 'received',
+          text: '用户已确认发布需求，正在创建 GitHub issue。',
+          statusText: ':hourglass_flowing_sand: 已确认，正在创建 GitHub issue...',
+          skipDuplicate: false,
+        })
+      : null;
+    const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
+
+    return slackAckResponse({
+      ok: true,
+      ...(created ? {} : { response_type: 'ephemeral', text: '这个需求已经确认过，继续在当前会话补充即可。' }),
+      jobId: job.id,
+      issueLink,
+      created,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      ...(workerStart ? { workerStart } : {}),
+    });
+  }
+
   if (actionId === 'pages_close_session') {
     const sessionId = action.value || '';
     const session = await store.getSlackSession(sessionId);
@@ -1593,16 +1849,17 @@ export async function handleSlackInteractions(request, env) {
     }
 
     await store.closeSlackSession(session.id);
+    await postSlackInteractionThreadReply(env, body, session, '已关闭当前会话。继续发新需求会开启新任务。');
     return slackAckResponse({
       response_type: 'ephemeral',
-      text: '已关闭当前会话。后续可以直接发新需求开启新任务。',
+      text: '已关闭当前会话。继续发新需求会开启新任务。',
     });
   }
 
   if (actionId === 'pages_continue_modifying') {
     return slackAckResponse({
       response_type: 'ephemeral',
-      text: '直接在当前 thread 里回复修改意见即可，我会继续关联到这个任务。',
+      text: '直接继续回复修改意见即可，我会沿用当前会话。',
     });
   }
 
@@ -1673,7 +1930,7 @@ export async function handleExecutorCallback(request, env) {
     text: statusText,
   });
   const slackText = notificationTextForCallback(stageResult, job);
-  const slackNotification = await notifySlackJob(env, store, job, slackText, `callback:${stageResult}`);
+  const slackNotification = await notifySlackPlainProgress(env, store, job, slackText, `callback:${stageResult}`);
 
   return jsonResponse({
     job,
@@ -1763,7 +2020,7 @@ async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }
       ].join(':'),
       skipDuplicate: false,
     });
-    slackNotification = await notifySlackJob(env, store, job, text, `site-check:${reviewAction}:${siteCheckRun.checkRunNodeId}`);
+    slackNotification = await notifySlackPlainProgress(env, store, job, text, `site-check:${reviewAction}:${siteCheckRun.checkRunNodeId}`);
   }
 
   return jsonResponse({
@@ -1876,7 +2133,7 @@ export async function handleGithubWebhook(request, env) {
       stage: updatedJob.status,
       text: notificationTextForReviewAction(reviewAction, { gate, reviewComment: reviewComment.comment }) || reviewAction,
     });
-    slackNotification = await notifySlackJob(
+    slackNotification = await notifySlackPlainProgress(
       env,
       store,
       updatedJob,
