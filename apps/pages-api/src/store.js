@@ -228,6 +228,29 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
+  async getAccessKeyById(id) {
+    const row = await this.db.prepare('SELECT * FROM access_keys WHERE id = ?').bind(id).first();
+    return row ? mapAccessKey(row) : null;
+  }
+
+  async listAccessKeysForOwner(ownerUserId) {
+    const result = await this.db
+      .prepare('SELECT * FROM access_keys WHERE owner_user_id = ? ORDER BY created_at DESC')
+      .bind(ownerUserId)
+      .all();
+    return (result.results || []).map(mapAccessKey);
+  }
+
+  async updateAccessKeyLastUsed(id, lastUsedAt) {
+    await this.db.prepare('UPDATE access_keys SET last_used_at = ? WHERE id = ?').bind(lastUsedAt, id).run();
+    return this.getAccessKeyById(id);
+  }
+
+  async revokeAccessKey(id, revokedAt) {
+    await this.db.prepare('UPDATE access_keys SET revoked_at = ? WHERE id = ?').bind(revokedAt, id).run();
+    return this.getAccessKeyById(id);
+  }
+
   async getDeployment(id) {
     const row = await this.db.prepare('SELECT * FROM deployments WHERE id = ?').bind(id).first();
     return row ? mapDeployment(row) : null;
@@ -415,6 +438,22 @@ function mapSiteVersion(row) {
     artifactRef: row.artifact_ref,
     contentHash: row.content_hash,
     createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+function mapAccessKey(row) {
+  return {
+    id: row.id,
+    ownerUserId: row.owner_user_id,
+    keyHash: row.key_hash,
+    pepperId: row.pepper_id,
+    name: row.name,
+    scopes: JSON.parse(row.scopes_json),
+    siteId: row.site_id,
+    expiresAt: row.expires_at,
+    lastUsedAt: row.last_used_at,
+    revokedAt: row.revoked_at,
     createdAt: row.created_at,
   };
 }

@@ -128,6 +128,28 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
+  async getAccessKeyById(id) {
+    return cloneRecord(this.accessKeys.get(id) || null);
+  }
+
+  async listAccessKeysForOwner(ownerUserId) {
+    return cloneRecord([...this.accessKeys.values()].filter((key) => key.ownerUserId === ownerUserId));
+  }
+
+  async updateAccessKeyLastUsed(id, lastUsedAt) {
+    const record = this.accessKeys.get(id);
+    if (!record) return null;
+    record.lastUsedAt = lastUsedAt;
+    return cloneRecord(record);
+  }
+
+  async revokeAccessKey(id, revokedAt) {
+    const record = this.accessKeys.get(id);
+    if (!record) return null;
+    record.revokedAt = revokedAt;
+    return cloneRecord(record);
+  }
+
   async getDeployment(id) {
     return cloneRecord(this.deployments.get(id) || null);
   }
