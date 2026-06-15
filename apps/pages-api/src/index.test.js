@@ -90,6 +90,8 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.match(stagingTemplate, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
   assert.match(productionTemplate, /WFP_COMPATIBILITY_DATE = "__WFP_COMPATIBILITY_DATE__"/);
   assert.match(stagingTemplate, /WFP_COMPATIBILITY_DATE = "__WFP_COMPATIBILITY_DATE__"/);
+  assert.match(productionTemplate, /ACCESS_KEY_ACTIVE_PEPPER_ID = "__ACCESS_KEY_ACTIVE_PEPPER_ID__"/);
+  assert.match(stagingTemplate, /ACCESS_KEY_PEPPERS = "__ACCESS_KEY_PEPPERS__"/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /CF_API_TOKEN|CF_ACCOUNT_ID/);
 });
 

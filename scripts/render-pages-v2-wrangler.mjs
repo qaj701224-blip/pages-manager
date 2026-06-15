@@ -21,7 +21,13 @@ const DEFAULTS = {
 };
 
 const REQUIRED_TOKENS_BY_APP = {
-  'apps/pages-api': ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID', 'ROUTE_SNAPSHOTS_KV_ID'],
+  'apps/pages-api': [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'D1_DATABASE_ID',
+    'ROUTE_SNAPSHOTS_KV_ID',
+    'ACCESS_KEY_ACTIVE_PEPPER_ID',
+    'ACCESS_KEY_PEPPERS',
+  ],
   'apps/pages-auth': [
     'CLOUDFLARE_ACCOUNT_ID',
     'PAGES_SESSION_JWT_ACTIVE_KID',
@@ -142,6 +148,12 @@ function assertTokenPolicy(name, value) {
   if (name === 'WFP_COMPATIBILITY_DATE' && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     throw new Error(`${name} must use YYYY-MM-DD`);
   }
+  if (name === 'ACCESS_KEY_ACTIVE_PEPPER_ID' && !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${name} must be a safe id`);
+  }
+  if (name === 'ACCESS_KEY_PEPPERS') {
+    assertAccessKeyPepperRegistry(value);
+  }
 }
 
 function assertHttpsUrl(name, value) {
@@ -159,6 +171,25 @@ function assertHttpsUrl(name, value) {
 function assertPositiveInteger(name, value) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`);
+}
+
+function assertAccessKeyPepperRegistry(value) {
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (entries.length === 0) throw new Error('ACCESS_KEY_PEPPERS must not be empty');
+
+  for (const entry of entries) {
+    const [pepperId, secretEnvName, extra] = entry.split(':').map((part) => part.trim());
+    if (extra !== undefined || !pepperId || !secretEnvName) {
+      throw new Error('ACCESS_KEY_PEPPERS entries must be pepperId:secretEnvName');
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(pepperId)) throw new Error('ACCESS_KEY_PEPPERS contains an unsafe pepper id');
+    if (!/^ACCESS_KEY_PEPPER_[A-Z0-9_]+$/.test(secretEnvName)) {
+      throw new Error('ACCESS_KEY_PEPPERS secret env names must use ACCESS_KEY_PEPPER_*');
+    }
+  }
 }
 
 function assertNoUnresolvedPlaceholders(rendered, templatePath) {

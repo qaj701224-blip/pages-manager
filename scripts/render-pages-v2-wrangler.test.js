@@ -16,6 +16,8 @@ const baseEnv = {
   CLOUDFLARE_ACCOUNT_ID: 'dummy-account',
   D1_DATABASE_ID: 'dummy-pages-d1',
   ROUTE_SNAPSHOTS_KV_ID: 'dummy-route-snapshots-kv',
+  ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
+  ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606',
   PAGES_SESSION_JWT_ACTIVE_KID: 'pages-session-2026-06',
   PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
   ROUTER_IP_ALLOWLIST_CIDRS: '10.0.0.0/8,192.168.0.0/16',
@@ -101,6 +103,8 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-production"/);
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
+  assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
+  assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
   assert.match(config, /binding = "ROUTE_SNAPSHOTS"/);
@@ -121,6 +125,8 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
+  assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
+  assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
   assert.match(config, /service = "pages-auth-staging"/);
 });
@@ -134,8 +140,14 @@ test('pages-api config accepts explicit WFP compatibility date', () => {
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-07-01"/);
 });
 
-test('pages-api config requires resource ids', () => {
-  for (const name of ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID', 'ROUTE_SNAPSHOTS_KV_ID']) {
+test('pages-api config requires resource ids and access key pepper registry', () => {
+  for (const name of [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'D1_DATABASE_ID',
+    'ROUTE_SNAPSHOTS_KV_ID',
+    'ACCESS_KEY_ACTIVE_PEPPER_ID',
+    'ACCESS_KEY_PEPPERS',
+  ]) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);
@@ -261,6 +273,22 @@ test('pages-api config rejects invalid WFP compatibility date', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /WFP_COMPATIBILITY_DATE/);
+});
+
+test('pages-api config rejects unsafe access key pepper registry', () => {
+  const unsafeId = runRenderer(['apps/pages-api', 'production'], {
+    ...baseEnv,
+    ACCESS_KEY_ACTIVE_PEPPER_ID: 'bad:id',
+  });
+  const unsafeSecretName = runRenderer(['apps/pages-api', 'production'], {
+    ...baseEnv,
+    ACCESS_KEY_PEPPERS: 'pepper_2026_06:REAL_SECRET_VALUE',
+  });
+
+  assert.notEqual(unsafeId.status, 0);
+  assert.match(`${unsafeId.stderr}${unsafeId.stdout}`, /ACCESS_KEY_ACTIVE_PEPPER_ID/);
+  assert.notEqual(unsafeSecretName.status, 0);
+  assert.match(`${unsafeSecretName.stderr}${unsafeSecretName.stdout}`, /ACCESS_KEY_PEPPERS/);
 });
 
 test('production pages-router config renders explicit production fast-path settings only', () => {

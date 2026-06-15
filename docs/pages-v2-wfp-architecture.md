@@ -350,6 +350,8 @@ vars:
   WFP_DISPATCH_NAMESPACE
   WFP_COMPATIBILITY_DATE
   CF_API_BASE_URL
+  ACCESS_KEY_ACTIVE_PEPPER_ID
+  ACCESS_KEY_PEPPERS
 
 bindings:
   D1: PAGES_METADATA
@@ -361,11 +363,14 @@ secrets:
   CF_ACCOUNT_ID
   CF_API_TOKEN
   CLOUDFLARE_ZONE_ID
+  ACCESS_KEY_PEPPER_*
 ```
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`.pages.json` 或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
 `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 推荐显式配置，保证 Worker 模块语义可复现；未配置时实现会使用当前日期。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
+
+`ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`.pages.json` 或文档示例。
 
 `pages-api` 不能持有 `auth_session`、`site_session` 或 `internal_worker_jwt` 的 signing secret。控制面如需校验用户态 token，只能使用 verify-only JWKS / public key，或通过 `PAGES_AUTH` service binding 完成一次性 code / session 校验；不能在 API Worker 中签发子站 session 或 router internal JWT。
 
@@ -471,6 +476,8 @@ SSO_PROFILE_URL
 SSO_REDIRECT_URI
 WFP_DISPATCH_NAMESPACE
 WFP_COMPATIBILITY_DATE
+ACCESS_KEY_ACTIVE_PEPPER_ID
+ACCESS_KEY_PEPPERS
 ```
 
 `CF_API_BASE_URL` 只用于本地测试或特殊网络环境；生产和 staging 默认不配置，使用 Cloudflare 官方 API base。若生产或 staging 因代理需求必须覆盖，也只能覆盖到 `https://api.cloudflare.com/client/v4` 这一官方 host，不能指向任意第三方域名。
@@ -487,6 +494,7 @@ SSO_CLIENT_ID
 SSO_CLIENT_SECRET
 PAGES_SESSION_JWT_SECRET_*
 PAGES_CAP_JWT_SECRET_*
+ACCESS_KEY_PEPPER_*
 D1_DATABASE_ID_*
 KV_NAMESPACE_ID_*
 DO_NAMESPACE_ID_*
