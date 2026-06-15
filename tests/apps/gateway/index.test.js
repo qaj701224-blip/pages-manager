@@ -135,6 +135,183 @@ test('Slack bot events do not receive working reactions', async () => {
   assert.equal(body.reason, 'ignored_bot_event');
 });
 
+test('Slack immediate replies replace working reaction with done reaction', async () => {
+  const app = createGatewayApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-reaction-done',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000100',
+          text: 'ping',
+        },
+      }),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      SLACK_REACTION_ON_RECEIVE: 'true',
+      SLACK_WORKING_REACTION: 'eyes',
+      SLACK_DONE_REACTION: 'done-e',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const reactionCalls = slackRequests
+    .map((call) => ({ url: call.url, payload: JSON.parse(call.request.body) }))
+    .filter((call) => call.url.includes('/reactions.'));
+  const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-reaction-done' }).deliveries;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'ping');
+  assert.deepEqual(
+    reactionCalls.map((call) => [call.url, call.payload.name]),
+    [
+      ['https://slack.com/api/reactions.add', 'eyes'],
+      ['https://slack.com/api/reactions.remove', 'eyes'],
+      ['https://slack.com/api/reactions.add', 'done-e'],
+    ]
+  );
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'done');
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.doneReaction, 'done-e');
+});
+
+test('preview completion replaces pending Slack working reactions with done reaction', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, { prNumber: 77, headSha: 'b'.repeat(40) });
+  app.store.recordSlackDelivery({
+    teamId: 'T1',
+    eventId: 'Ev-job-reaction-done',
+    eventType: 'message',
+    channelId: 'D1',
+    threadTs: '1710000000.000100',
+    slackUserId: 'U1',
+    publishingJobId: jobId,
+    payloadRedacted: {
+      workingReaction: {
+        status: 'working',
+        addedAt: '2026-06-15T00:00:00.000Z',
+        reaction: {
+          channel: 'D1',
+          timestamp: '1710000000.000100',
+          name: 'eyes',
+        },
+      },
+    },
+  });
+
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://preview.example.test/job-reaction',
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_DONE_REACTION: 'done-e',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const reactionCalls = slackRequests.map((call) => ({ url: call.url, payload: JSON.parse(call.request.body) }));
+  const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-job-reaction-done' }).deliveries;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.slackReactionSettlement.settledCount, 1);
+  assert.deepEqual(
+    reactionCalls.map((call) => [call.url, call.payload.name]),
+    [
+      ['https://slack.com/api/reactions.remove', 'eyes'],
+      ['https://slack.com/api/reactions.add', 'done-e'],
+    ]
+  );
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'done');
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.doneReaction, 'done-e');
+});
+
+test('preview completion also settles working reactions linked by Slack session', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, { prNumber: 78, headSha: 'c'.repeat(40) });
+  app.store.patchJob(jobId, {
+    slackSessionId: 'sess_reaction_fallback',
+    slackThread: {
+      channelId: 'D1',
+      threadTs: '1710000000.000200',
+      userId: 'U1',
+    },
+  });
+  app.store.recordSlackDelivery({
+    teamId: 'T1',
+    eventId: 'Ev-session-reaction-done',
+    eventType: 'message',
+    channelId: 'D1',
+    threadTs: '1710000000.000200',
+    slackUserId: 'U1',
+    slackSessionId: 'sess_reaction_fallback',
+    payloadRedacted: {
+      workingReaction: {
+        status: 'working',
+        addedAt: '2026-06-15T00:00:00.000Z',
+        reaction: {
+          channel: 'D1',
+          timestamp: '1710000030.000200',
+          name: 'eyes',
+        },
+      },
+    },
+  });
+
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://preview.example.test/session-reaction',
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_DONE_REACTION: 'done-e',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-session-reaction-done' }).deliveries;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.slackReactionSettlement.settledCount, 1);
+  assert.equal(slackRequests.filter((call) => call.url.includes('/reactions.')).length, 2);
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'done');
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.doneReaction, 'done-e');
+});
+
 test('API creates a PublishingJob without requiring GitHub repo user permissions', async () => {
   const app = createGatewayApp();
   const response = await app.fetch(
@@ -1574,8 +1751,17 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
     assert.equal(response.status, 200);
   }
 
+  app.store.recordSlackJobStatusMessage(created.jobId, {
+    channel: 'D1',
+    threadTs: '1710000000.000100',
+    messageTs: '1710000001.000100',
+    stage: 'preview_deployed',
+    status: 'preview_deployed',
+  });
+
   const workerStarts = [];
   const agentCalls = [];
+  const slackRequests = [];
   const followupResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -1627,18 +1813,92 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
           status: 200,
         });
       },
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
+          status: 200,
+        });
+      },
     }
   );
   const followup = await json(followupResponse);
   const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${created.jobId}`)));
+  const slackPayload = JSON.parse(slackRequests[0].request.body);
 
   assert.equal(followupResponse.status, 200);
   assert.equal(followup.action, 'followup_fix_dispatched');
   assert.equal(followup.jobId, created.jobId);
-  assert.match(followup.replyText, /正在启动修复/);
+  assert.equal(followup.noReply, true);
+  assert.equal(followup.slackStatusNotification.action, 'updated');
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.update');
+  assert.match(JSON.stringify(slackPayload.blocks), /第 1 轮修改处理中/);
+  assert.match(JSON.stringify(slackPayload.blocks), /最终需求/);
+  assert.match(JSON.stringify(slackPayload.blocks), /本轮修改.*把标题改成中文/);
+  assert.doesNotMatch(JSON.stringify(slackPayload.blocks), /Slack Follow-up/);
   assert.equal(jobBody.job.status, 'fixing');
   assert.equal(jobBody.job.previewUrl, null);
   assert.equal(agentCalls.length, 1);
+  assert.equal(workerStarts.length, 1);
+
+  const queuedResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-followup-queued',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000020.000100',
+          thread_ts: '1710000000.000100',
+          text: '再把按钮改成黑色',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        agentCalls.push({ queued: true });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'append_requirement',
+              summary: '再把按钮改成黑色。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        workerStarts.push({ queued: true });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const queued = await json(queuedResponse);
+  const queuedSlackPayload = JSON.parse(slackRequests.at(-1).request.body);
+
+  assert.equal(queuedResponse.status, 200);
+  assert.equal(queued.action, 'followup_fix_queued');
+  assert.equal(queued.noReply, true);
+  assert.match(JSON.stringify(queuedSlackPayload.blocks), /第 2 轮修改已排队/);
+  assert.match(JSON.stringify(queuedSlackPayload.blocks), /最终需求/);
+  assert.match(JSON.stringify(queuedSlackPayload.blocks), /本轮修改.*再把按钮改成黑色/);
+  assert.doesNotMatch(JSON.stringify(queuedSlackPayload.blocks), /Slack Follow-up/);
   assert.equal(workerStarts.length, 1);
 });
 
@@ -2451,6 +2711,86 @@ test('site-check success dispatches preview after stored Review Agent approval',
   assert.equal(body.gate.siteCheck.passed, true);
   assert.equal(body.job.status, 'previewing');
   assert.equal(workerStarts.length, 1);
+});
+
+test('review gate reconcile records fallback result when Review Agent does not answer', async () => {
+  const app = createGatewayApp();
+  const headSha = 'e'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 29,
+    headSha,
+    idempotencyKey: 'api-review-fallback-preview',
+  });
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/review-gate/reconcile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publishingJobId: jobId }),
+    }),
+    {
+      GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS: '0',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, jobId);
+        assert.equal(body.job.status, 'previewing');
+        assert.equal(body.job.headSha, headSha);
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_preview_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const comments = app.store.listReviewAgentComments('org/pages-manager', 29, { headSha });
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reconciled, 1);
+  assert.equal(body.results[0].reviewAction, 'review_timeout_preview_dispatched');
+  assert.equal(body.results[0].job.status, 'previewing');
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0].reviewAgentLogin, 'pages-review-watchdog');
+  assert.equal(comments[0].classification, 'note');
+  assert.match(comments[0].body, /site-check has passed/);
+  assert.equal(workerStarts.length, 1);
+});
+
+test('review gate reconcile waits before fallback timeout', async () => {
+  const app = createGatewayApp();
+  const headSha = 'f'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 30,
+    headSha,
+    idempotencyKey: 'api-review-fallback-waiting',
+  });
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/review-gate/reconcile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publishingJobId: jobId }),
+    }),
+    {
+      GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS: '3600',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const job = app.store.getJob(jobId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reconciled, 0);
+  assert.equal(body.results[0].skipped, 'review_timeout_waiting');
+  assert.equal(job.status, 'pr_created');
+  assert.equal(workerStarts.length, 0);
 });
 
 test('site-check failure pauses preview for the PR', async () => {

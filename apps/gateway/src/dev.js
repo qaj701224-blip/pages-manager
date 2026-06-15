@@ -40,6 +40,74 @@ function sessionEnv() {
   return Object.fromEntries(SESSION_ENV_KEYS.map((key) => [key, process.env[key]]).filter(([, value]) => value));
 }
 
+function gatewayEnv() {
+  return {
+    ...sessionEnv(),
+    INTERNAL_CALLBACK_TOKEN: process.env.INTERNAL_CALLBACK_TOKEN,
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
+    SLACK_SIGNATURE_REQUIRED: process.env.SLACK_SIGNATURE_REQUIRED,
+    SLACK_EVENTS_PROCESSING_MODE: process.env.SLACK_EVENTS_PROCESSING_MODE,
+    SLACK_REACTION_ON_RECEIVE: process.env.SLACK_REACTION_ON_RECEIVE,
+    SLACK_WORKING_REACTION: process.env.SLACK_WORKING_REACTION,
+    SLACK_DONE_REACTION: process.env.SLACK_DONE_REACTION,
+    SLACK_FAILED_REACTION: process.env.SLACK_FAILED_REACTION,
+    SLACK_AGENT_ANALYZE_URL: process.env.SLACK_AGENT_ANALYZE_URL,
+    SLACK_AGENT_SHARED_SECRET: process.env.SLACK_AGENT_SHARED_SECRET,
+    SLACK_NOTIFIER_URL: process.env.SLACK_NOTIFIER_URL,
+    SLACK_NOTIFIER_SHARED_SECRET: process.env.SLACK_NOTIFIER_SHARED_SECRET,
+    PAGES_SLACK_NOTIFIER_URL: process.env.PAGES_SLACK_NOTIFIER_URL,
+    PAGES_SLACK_NOTIFIER_SHARED_SECRET: process.env.PAGES_SLACK_NOTIFIER_SHARED_SECRET,
+    SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
+    SLACK_API_URL: process.env.SLACK_API_URL,
+    SLACK_API_BASE_URL: process.env.SLACK_API_BASE_URL,
+    GITHUB_REPO: process.env.GITHUB_REPO,
+    GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET,
+    GITHUB_REVIEW_AGENT_ALLOWLIST: process.env.GITHUB_REVIEW_AGENT_ALLOWLIST,
+    GITHUB_REVIEW_AGENT_LOGINS: process.env.GITHUB_REVIEW_AGENT_LOGINS,
+    GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS: process.env.GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS,
+    PAGES_WORKER_START_URL: process.env.PAGES_WORKER_START_URL,
+    PAGES_WORKER_SHARED_SECRET: process.env.PAGES_WORKER_SHARED_SECRET,
+  };
+}
+
+async function reconcileReviewGate() {
+  const headers = {};
+  if (process.env.INTERNAL_CALLBACK_TOKEN) {
+    headers['X-Pages-Callback-Token'] = process.env.INTERNAL_CALLBACK_TOKEN;
+  }
+
+  const response = await app.fetch(
+    new Request('http://pages-gateway.internal/internal/review-gate/reconcile', {
+      method: 'POST',
+      headers,
+    }),
+    gatewayEnv()
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok || body?.ok === false) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'review_gate_reconcile_failed',
+        status: response.status,
+        error: body?.error || response.statusText,
+      })
+    );
+    return;
+  }
+
+  if (body?.reconciled > 0) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'review_gate_reconciled',
+        checked: body.checked,
+        reconciled: body.reconciled,
+      })
+    );
+  }
+}
+
 const server = http.createServer(async (nodeRequest, nodeResponse) => {
   const origin = `http://${nodeRequest.headers.host || `localhost:${port}`}`;
   const chunks = [];
@@ -55,29 +123,7 @@ const server = http.createServer(async (nodeRequest, nodeResponse) => {
     body,
   });
 
-  const response = await app.fetch(request, {
-    ...sessionEnv(),
-    INTERNAL_CALLBACK_TOKEN: process.env.INTERNAL_CALLBACK_TOKEN,
-    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
-    SLACK_SIGNATURE_REQUIRED: process.env.SLACK_SIGNATURE_REQUIRED,
-    SLACK_EVENTS_PROCESSING_MODE: process.env.SLACK_EVENTS_PROCESSING_MODE,
-    SLACK_REACTION_ON_RECEIVE: process.env.SLACK_REACTION_ON_RECEIVE,
-    SLACK_WORKING_REACTION: process.env.SLACK_WORKING_REACTION,
-    SLACK_AGENT_ANALYZE_URL: process.env.SLACK_AGENT_ANALYZE_URL,
-    SLACK_AGENT_SHARED_SECRET: process.env.SLACK_AGENT_SHARED_SECRET,
-    SLACK_NOTIFIER_URL: process.env.SLACK_NOTIFIER_URL,
-    SLACK_NOTIFIER_SHARED_SECRET: process.env.SLACK_NOTIFIER_SHARED_SECRET,
-    PAGES_SLACK_NOTIFIER_URL: process.env.PAGES_SLACK_NOTIFIER_URL,
-    PAGES_SLACK_NOTIFIER_SHARED_SECRET: process.env.PAGES_SLACK_NOTIFIER_SHARED_SECRET,
-    SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
-    SLACK_API_URL: process.env.SLACK_API_URL,
-    SLACK_API_BASE_URL: process.env.SLACK_API_BASE_URL,
-    GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET,
-    GITHUB_REVIEW_AGENT_ALLOWLIST: process.env.GITHUB_REVIEW_AGENT_ALLOWLIST,
-    GITHUB_REVIEW_AGENT_LOGINS: process.env.GITHUB_REVIEW_AGENT_LOGINS,
-    PAGES_WORKER_START_URL: process.env.PAGES_WORKER_START_URL,
-    PAGES_WORKER_SHARED_SECRET: process.env.PAGES_WORKER_SHARED_SECRET,
-  });
+  const response = await app.fetch(request, gatewayEnv());
 
   nodeResponse.writeHead(response.status, Object.fromEntries(response.headers.entries()));
   nodeResponse.end(Buffer.from(await response.arrayBuffer()));
@@ -86,3 +132,19 @@ const server = http.createServer(async (nodeRequest, nodeResponse) => {
 server.listen(port, () => {
   console.log(`pages-gateway dev server listening on http://localhost:${port}`);
 });
+
+const reviewGateReconcileIntervalSeconds = Number(process.env.GITHUB_REVIEW_GATE_RECONCILE_INTERVAL_SECONDS || 0);
+if (Number.isFinite(reviewGateReconcileIntervalSeconds) && reviewGateReconcileIntervalSeconds > 0) {
+  const intervalMs = Math.max(5, reviewGateReconcileIntervalSeconds) * 1000;
+  setInterval(() => {
+    reconcileReviewGate().catch((err) => {
+      console.log(
+        JSON.stringify({
+          service: 'pages-gateway',
+          message: 'review_gate_reconcile_error',
+          error: err.message,
+        })
+      );
+    });
+  }, intervalMs).unref?.();
+}
