@@ -68,6 +68,35 @@ test('deploy reuses existing project binding without creating a site', async () 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
 });
 
+test('deploy does not reuse a project binding from a different environment', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeProjectConfig(dir, { version: 1, environment: 'production', siteId: 'site_prod', slug: 'docs' });
+  const calls = [];
+
+  await executeCommand(['deploy', '.', '--env', 'staging'], {
+    cwd: dir,
+    env: { PAGES_ACCESS_KEY: 'xdpak_staging_ak_1_secret' },
+    fetch: fakeFetch(calls, [
+      { site: { id: 'site_staging', slug: 'docs', environment: 'staging', url: 'https://docs-staging.pages.xd.team' } },
+      { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
+    ]),
+    idempotencyKey: () => 'idem_1',
+    output: () => {},
+  });
+
+  assert.equal(calls[0].url, 'https://api-staging.pages.xd.team/.xd-pages/api/sites');
+  assert.deepEqual(await calls[0].json(), { slug: 'docs', visibility: 'org' });
+  const deployBody = await calls[1].json();
+  assert.match(deployBody.contentHash, /^sha256:/);
+  assert.deepEqual(deployBody, {
+    siteId: 'site_staging',
+    artifactKind: 'spa',
+    contentHash: deployBody.contentHash,
+    source: 'cli',
+  });
+});
+
 test('status and rollback call v2 API with the stored credential', async () => {
   const dir = await tempProject();
   await writeProjectConfig(dir, { version: 1, environment: 'production', siteId: 'site_1', slug: 'docs' });

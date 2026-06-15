@@ -86,10 +86,11 @@ async function runDeploy(parsed, context) {
   const artifactKind = parsed.flags.artifactKind || context.project?.defaultArtifactKind || (await inferArtifactKind(targetPath));
   if (!VALID_ARTIFACT_KINDS.has(artifactKind)) throw new Error('ARTIFACT_KIND_INVALID');
 
-  let siteId = parsed.flags.site || context.project?.siteId || null;
-  let project = context.project || null;
+  const projectForEnvironment = context.project?.environment === config.environment ? context.project : null;
+  let siteId = parsed.flags.site || projectForEnvironment?.siteId || null;
+  let project = projectForEnvironment || null;
   if (!siteId) {
-    const slug = parsed.flags.slug || project?.slug;
+    const slug = parsed.flags.slug || project?.slug || context.project?.slug;
     if (!slug) throw new Error('SITE_SLUG_REQUIRED');
     const visibility = parsed.flags.visibility || 'org';
     if (!VALID_VISIBILITIES.has(visibility)) throw new Error('SITE_VISIBILITY_INVALID');
