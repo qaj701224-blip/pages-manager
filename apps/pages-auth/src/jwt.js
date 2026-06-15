@@ -121,13 +121,7 @@ async function verifyHs256(signingInput, encodedSignature, secret) {
 }
 
 async function importHmacKey(secret, usages) {
-  return crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    usages
-  );
+  return crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, usages);
 }
 
 function validateEnvironment(environment) {
@@ -192,7 +186,10 @@ function base64UrlEncodeBytes(bytes) {
 function base64UrlDecodeBytes(value) {
   if (!/^[A-Za-z0-9_-]*$/.test(value)) throw new Error('Malformed base64url value');
 
-  const padded = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+  const padded = value
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(Math.ceil(value.length / 4) * 4, '=');
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);

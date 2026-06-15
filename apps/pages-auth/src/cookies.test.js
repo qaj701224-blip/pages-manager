@@ -42,10 +42,7 @@ test('rejects unsafe session cookie values before serialization', () => {
   ];
 
   for (const value of unsafeValues) {
-    assert.throws(
-      () => buildAuthSessionCookie(value, { maxAgeSeconds: 1209600 }),
-      /Cookie value contains unsafe characters/,
-    );
+    assert.throws(() => buildAuthSessionCookie(value, { maxAgeSeconds: 1209600 }), /Cookie value contains unsafe characters/);
   }
 });
 

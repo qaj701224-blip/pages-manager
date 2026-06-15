@@ -93,11 +93,11 @@ test('rejects refreshing records with invalid persisted expiration timestamps', 
 
   assert.throws(
     () => refreshSessionRecord({ ...record, expiresAt: Number.NaN }, { now: now + 30, idleTtlSeconds: 120 }),
-    /expiresAt/i,
+    /expiresAt/i
   );
   assert.throws(
     () => refreshSessionRecord({ ...record, absoluteExpiresAt: Number.NaN }, { now: now + 30, idleTtlSeconds: 120 }),
-    /absoluteExpiresAt/i,
+    /absoluteExpiresAt/i
   );
 });
 

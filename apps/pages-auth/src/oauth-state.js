@@ -60,7 +60,9 @@ function parsePublicState(value) {
 }
 
 function validateSiteHost(siteHost, environment) {
-  const host = String(siteHost || '').trim().toLowerCase();
+  const host = String(siteHost || '')
+    .trim()
+    .toLowerCase();
   const classified = classifyHost(host, { environment });
   if (!classified.ok) throw new Error('OAuth state invalid: site host is not allowed');
   return classified.hostname;

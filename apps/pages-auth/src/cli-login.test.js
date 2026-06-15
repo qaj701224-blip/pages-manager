@@ -52,10 +52,7 @@ test('confirms with matching device code and consumes once with login secret', a
 test('rejects wrong device code, wrong login secret, and expiration', async () => {
   const tx = await createTestCliLogin();
 
-  assert.throws(
-    () => confirmCliLogin({ deviceCode: '00000000', userId: 'usr_123' }, tx.record, { now: now + 20 }),
-    /device/i
-  );
+  assert.throws(() => confirmCliLogin({ deviceCode: '00000000', userId: 'usr_123' }, tx.record, { now: now + 20 }), /device/i);
   const confirmed = confirmCliLogin({ deviceCode: '12345678', userId: 'usr_123' }, tx.record, { now: now + 20 });
   await assert.rejects(
     () => consumeCliLogin({ loginId: 'cli_login', loginSecret: 'wrong' }, confirmed, { now: now + 21 }),
@@ -102,17 +99,10 @@ test('rejects CLI login creation with invalid times', async () => {
 test('rejects CLI login confirmation and consumption with invalid times', async () => {
   const tx = await createTestCliLogin();
 
-  assert.throws(
-    () => confirmCliLogin({ deviceCode: '12345678', userId: 'usr_123' }, tx.record, { now: Number.NaN }),
-    /now/i
-  );
+  assert.throws(() => confirmCliLogin({ deviceCode: '12345678', userId: 'usr_123' }, tx.record, { now: Number.NaN }), /now/i);
   assert.throws(
     () =>
-      confirmCliLogin(
-        { deviceCode: '12345678', userId: 'usr_123' },
-        { ...tx.record, expiresAt: Number.NaN },
-        { now: now + 20 }
-      ),
+      confirmCliLogin({ deviceCode: '12345678', userId: 'usr_123' }, { ...tx.record, expiresAt: Number.NaN }, { now: now + 20 }),
     /expires/i
   );
 
