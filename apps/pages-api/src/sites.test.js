@@ -1,0 +1,201 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import worker from './index.js';
+import { createTestPagesStore } from './test-store.js';
+
+test('creates a production site with owner membership and inactive route', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'docs',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.equal(body.site.id, 'site_1');
+  assert.equal(body.site.slug, 'docs');
+  assert.equal(body.site.url, 'https://docs.pages.xd.team');
+  assert.equal(body.site.defaultVisibility, 'org');
+  assert.equal('token' in body.site, false);
+
+  assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'docs.pages.xd.team');
+  assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'disabled');
+  assert.equal((await store.listSiteMembers('site_1'))[0].role, 'owner');
+});
+
+test('lists only sites visible to the authenticated actor', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    id: 'usr_2',
+    ssoSubject: 'sso_2',
+    email: 'other@example.com',
+    name: 'Other User',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_1',
+    slug: 'mine',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'mine.pages.xd.team',
+  });
+  await store.createSite({
+    id: 'site_2',
+    slug: 'other',
+    ownerUserId: 'usr_2',
+    siteUuid: 'uuid_2',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_2',
+    hostname: 'other.pages.xd.team',
+  });
+
+  const response = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites'), testEnv(store));
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(
+    body.sites.map((site) => site.slug),
+    ['mine']
+  );
+  assert.equal('token' in body.sites[0], false);
+});
+
+test('gets a site by id for members and hides unknown sites', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+
+  const found = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1'), testEnv(store));
+  const missing = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_missing'), testEnv(store));
+
+  assert.equal(found.status, 200);
+  assert.equal((await found.json()).site.slug, 'docs');
+  assert.equal(missing.status, 404);
+});
+
+test('rejects invalid visibility, duplicate slugs, and production -staging slugs', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_existing',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_existing',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_existing',
+    hostname: 'docs.pages.xd.team',
+  });
+
+  const invalidVisibility = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'new-site',
+      visibility: 'private',
+    }),
+    testEnv(store)
+  );
+  const duplicate = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'docs',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+  const stagingSuffix = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'docs-staging',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(invalidVisibility.status, 400);
+  assert.equal((await invalidVisibility.json()).error.code, 'SITE_VISIBILITY_INVALID');
+  assert.equal(duplicate.status, 409);
+  assert.equal((await duplicate.json()).error.code, 'SITE_SLUG_CONFLICT');
+  assert.equal(stagingSuffix.status, 400);
+  assert.equal((await stagingSuffix.json()).error.code, 'SITE_SLUG_RESERVED');
+});
+
+test('sites API rejects legacy X-Pages-Token', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
+      headers: {
+        Authorization: 'Bearer cli-token',
+        'X-Pages-Token': 'legacy',
+      },
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'LEGACY_TOKEN_UNSUPPORTED');
+});
+
+function jsonRequest(url, body) {
+  return new Request(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer cli-token',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function authRequest(url) {
+  return new Request(url, {
+    headers: { Authorization: 'Bearer cli-token' },
+  });
+}
+
+async function createSeededStore() {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  await store.createUser({
+    id: 'usr_1',
+    ssoSubject: 'sso_1',
+    email: 'user@example.com',
+    name: 'User One',
+    employeeStatus: 'active',
+  });
+  return store;
+}
+
+function testEnv(store) {
+  return {
+    PAGES_ENV: 'production',
+    PAGES_STORE: store,
+    now: () => '2026-06-15T00:00:00.000Z',
+    nextId: (prefix) =>
+      ({
+        site: 'site_1',
+        route: 'route_1',
+        uuid: 'uuid_1',
+      })[prefix],
+    verifyCliToken: async () => ({
+      sub: 'usr_1',
+      purpose: 'cli_token',
+      aud: 'pages-cli',
+      env: 'production',
+      jti: 'cli_1',
+    }),
+  };
+}

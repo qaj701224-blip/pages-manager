@@ -78,6 +78,31 @@ class TestPagesStore {
     return cloneRecord(this.sites.get(id) || null);
   }
 
+  async listSitesForUser(userId, actor = {}) {
+    const siteIds = new Set();
+    if (actor.type === 'access_key' && actor.siteId) {
+      siteIds.add(actor.siteId);
+    } else {
+      for (const [siteId, members] of this.siteMembers.entries()) {
+        if (members.some((member) => member.userId === userId)) siteIds.add(siteId);
+      }
+    }
+
+    return cloneRecord(
+      [...siteIds]
+        .map((siteId) => this.siteWithRoute(siteId))
+        .filter(Boolean)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    );
+  }
+
+  async getSiteForUser(siteId, userId, actor = {}) {
+    if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return null;
+    const members = this.siteMembers.get(siteId) || [];
+    if (actor.type !== 'access_key' && !members.some((member) => member.userId === userId)) return null;
+    return cloneRecord(this.siteWithRoute(siteId));
+  }
+
   async listSiteMembers(siteId) {
     return cloneRecord(this.siteMembers.get(siteId) || []);
   }
@@ -189,5 +214,14 @@ class TestPagesStore {
     this.deployments.set(record.id, record);
     this.deploymentIdempotencyIndex.set(key, record.id);
     return { kind: 'created', deployment: cloneRecord(record) };
+  }
+
+  siteWithRoute(siteId) {
+    const site = this.sites.get(siteId);
+    if (!site) return null;
+    return {
+      ...site,
+      route: this.routes.get(this.routeBySiteId.get(siteId)) || null,
+    };
   }
 }

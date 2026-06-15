@@ -1,5 +1,7 @@
 import { readApiConfig } from './config.js';
 import { jsonError, jsonOk } from './http.js';
+import { handleSitesApi } from './sites.js';
+import { createPagesStore } from './store.js';
 
 export default {
   async fetch(request, env) {
@@ -22,6 +24,18 @@ export default {
         service: 'pages-api',
         environment: config.environment,
       });
+    }
+
+    if (url.pathname.startsWith('/.xd-pages/api/sites')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+
+      const response = await handleSitesApi(request, env, config, store);
+      if (response) return response;
     }
 
     return jsonError('NOT_FOUND', 'Endpoint not found.', 404, 'Check the endpoint path and API version.');

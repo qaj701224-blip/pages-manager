@@ -136,6 +136,47 @@ export class D1PagesStore {
     return row ? mapSite(row) : null;
   }
 
+  async listSitesForUser(userId) {
+    const result = await this.db
+      .prepare(
+        `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
+          site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+          site_routes.active_version_id AS route_active_version_id,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.route_generation AS route_route_generation,
+          site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
+          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
+        FROM sites
+        JOIN site_members ON site_members.site_id = sites.id
+        LEFT JOIN site_routes ON site_routes.site_id = sites.id
+        WHERE site_members.user_id = ? AND sites.deleted_at IS NULL
+        ORDER BY sites.created_at DESC`
+      )
+      .bind(userId)
+      .all();
+    return (result.results || []).map(mapSiteWithJoinedRoute);
+  }
+
+  async getSiteForUser(siteId, userId) {
+    const row = await this.db
+      .prepare(
+        `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
+          site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+          site_routes.active_version_id AS route_active_version_id,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.route_generation AS route_route_generation,
+          site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
+          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
+        FROM sites
+        JOIN site_members ON site_members.site_id = sites.id
+        LEFT JOIN site_routes ON site_routes.site_id = sites.id
+        WHERE sites.id = ? AND site_members.user_id = ? AND sites.deleted_at IS NULL`
+      )
+      .bind(siteId, userId)
+      .first();
+    return row ? mapSiteWithJoinedRoute(row) : null;
+  }
+
   async listSiteMembers(siteId) {
     const result = await this.db.prepare('SELECT * FROM site_members WHERE site_id = ?').bind(siteId).all();
     return (result.results || []).map(mapSiteMember);
@@ -396,6 +437,29 @@ function mapSite(row) {
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
   };
+}
+
+function mapSiteWithJoinedRoute(row) {
+  const site = mapSite(row);
+  site.route = row.route_id
+    ? {
+        id: row.route_id,
+        hostname: row.route_hostname,
+        siteId: site.id,
+        environment: site.environment,
+        runtime: row.route_runtime,
+        workerName: row.route_worker_name,
+        activeVersionId: row.route_active_version_id,
+        visibility: row.route_visibility,
+        policyVersion: row.route_policy_version,
+        routeGeneration: row.route_route_generation,
+        routeStatus: row.route_route_status,
+        cacheTier: row.route_cache_tier,
+        createdAt: row.route_created_at,
+        updatedAt: row.route_updated_at,
+      }
+    : null;
+  return site;
 }
 
 function mapSiteRoute(row) {
