@@ -10,6 +10,9 @@ export async function createOAuthState({
   stateId = createOpaqueToken('ost'),
   stateSecret = createOpaqueToken('sec'),
 }) {
+  validateUnixSecond('now', now);
+  validateTtlSeconds(ttlSeconds);
+
   const normalizedSiteHost = validateSiteHost(siteHost, environment);
   const normalizedReturnTo = validateReturnTo(returnTo, normalizedSiteHost);
 
@@ -32,12 +35,15 @@ export async function consumeOAuthState(publicState, record, { now }) {
   const [stateId, stateSecret] = parsePublicState(publicState);
   if (!record || record.id !== stateId) throw new Error('OAuth state invalid: unknown state');
   if (record.consumedAt !== null) throw new Error('OAuth state invalid: already consumed');
+  validateFiniteNumber('now', now);
+  validateFiniteNumber('expiresAt', record.expiresAt);
   if (record.expiresAt <= now) throw new Error('OAuth state invalid: expired');
 
   const actualHash = await sha256Hex(stateSecret);
   if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('OAuth state invalid: secret mismatch');
 
-  const consumedRecord = { ...record, consumedAt: now };
+  record.consumedAt = now;
+  const consumedRecord = { ...record };
   return { ok: true, record: consumedRecord, returnTo: record.returnTo, siteHost: record.siteHost };
 }
 
@@ -65,6 +71,22 @@ function validateReturnTo(returnTo, siteHost) {
   if (url.protocol !== 'https:') throw new Error('OAuth state invalid: return_to must use https');
   if (url.username || url.password) throw new Error('OAuth state invalid: return_to credentials are not allowed');
   if (url.hash) throw new Error('OAuth state invalid: return_to fragment is not allowed');
-  if (url.hostname !== siteHost) throw new Error('OAuth state invalid: return_to host is not allowed');
+  if (url.origin !== `https://${siteHost}`) throw new Error('OAuth state invalid: return_to origin is not allowed');
   return url.toString();
+}
+
+function validateUnixSecond(name, value) {
+  validateFiniteNumber(name, value);
+  if (!Number.isInteger(value)) throw new Error(`OAuth state invalid: ${name} must be an integer`);
+}
+
+function validateTtlSeconds(value) {
+  validateUnixSecond('ttlSeconds', value);
+  if (value <= 0) throw new Error('OAuth state invalid: ttlSeconds must be positive');
+}
+
+function validateFiniteNumber(name, value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`OAuth state invalid: ${name} must be a finite number`);
+  }
 }
