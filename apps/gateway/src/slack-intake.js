@@ -1,6 +1,7 @@
 const JOB_ID_RE = /\bjob_[A-Za-z0-9_]+\b/;
+const PR_NUMBER_RE = /(?:\bPR\s*#?|#)(\d{1,8})\b/i;
 const SLASH_COMMAND_RE = /^\/([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i;
-const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close)(?::|\s+)?([\s\S]*)?$/i;
+const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close|tasks?|prs?|work)(?::|\s+)?([\s\S]*)?$/i;
 
 export function normalizeSlackIntakeText(text = '') {
   return String(text)
@@ -28,11 +29,9 @@ function helpText() {
 }
 
 function unknownText() {
-  return [
-    '我收到了，但现在还不能理解这条消息，所以先不创建 issue。',
-    '',
-    '你可以稍后重试，或直接描述你想做的个人网站。',
-  ].join('\n');
+  return ['我收到了，但现在还不能理解这条消息，所以先不创建 issue。', '', '你可以稍后重试，或直接描述你想做的个人网站。'].join(
+    '\n'
+  );
 }
 
 function commandIntent(text) {
@@ -42,6 +41,13 @@ function commandIntent(text) {
     command: match[1].toLowerCase(),
     args: (match[2] || '').trim(),
   };
+}
+
+export function parseSlackPrNumber(text = '') {
+  const match = String(text || '').match(PR_NUMBER_RE);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export function classifySlackIntake(body) {
@@ -109,6 +115,31 @@ export function classifySlackIntake(body) {
       text,
       jobId: commandJobId,
       replyText: commandJobId ? null : null,
+    };
+  }
+
+  const prNumber = parseSlackPrNumber(text);
+  if (prNumber && /(继续|接着|切换|选择|打开|查看|回到|续上|处理|修改)/i.test(text)) {
+    return {
+      action: 'switch_work_item',
+      shouldCreateJob: false,
+      shouldAnalyze: false,
+      text,
+      prNumber,
+      replyText: null,
+    };
+  }
+
+  if (
+    ['task', 'tasks', 'pr', 'prs', 'work'].includes(command?.command) ||
+    /^(我的|查看|看看|列出|查询).*(PR|pr|任务|发布任务|网站|项目)/i.test(text) ||
+    /^(PR|pr|任务|发布任务|网站|项目)(列表|清单)$/i.test(text)
+  ) {
+    return {
+      action: 'list_work_items',
+      shouldCreateJob: false,
+      text,
+      replyText: null,
     };
   }
 

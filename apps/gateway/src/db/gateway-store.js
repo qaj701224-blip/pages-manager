@@ -74,6 +74,12 @@ async function upsertRow(pool, table, row, options = {}) {
   );
 }
 
+function slackStatusScopeKey(input = {}) {
+  if (input.scopeKey) return String(input.scopeKey);
+  if (input.slackSessionId) return `session:${input.slackSessionId}`;
+  return 'job';
+}
+
 function jobToRow(job) {
   return {
     id: job.id,
@@ -568,7 +574,10 @@ function rowToAgentRunEvent(row) {
 
 function slackJobStatusMessageToRow(message) {
   return {
+    id: message.id || makeId('slackmsg'),
     job_id: message.jobId,
+    slack_session_id: message.slackSessionId || null,
+    scope_key: message.scopeKey || 'job',
     channel: message.channel,
     thread_ts: message.threadTs,
     message_ts: message.messageTs,
@@ -582,7 +591,10 @@ function slackJobStatusMessageToRow(message) {
 function rowToSlackJobStatusMessage(row) {
   if (!row) return null;
   return {
+    id: row.id,
     jobId: row.job_id,
+    slackSessionId: row.slack_session_id || null,
+    scopeKey: row.scope_key || 'job',
     channel: row.channel || null,
     threadTs: row.thread_ts || null,
     messageTs: row.message_ts || null,
@@ -657,7 +669,6 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
   cacheIssueLink(link) {
     if (!link) return null;
     this.issueLinks.set(link.id, link);
-    this.issueLinkByJobId.set(link.publishingJobId, link);
     if (link.issueNumber) this.issueLinkByIssueNumber.set(String(link.issueNumber), link);
     if (link.prNumber) this.issueLinkByPrNumber.set(String(link.prNumber), link);
     return link;
@@ -676,7 +687,7 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
   }
 
   cacheSlackJobStatusMessage(message) {
-    if (message) this.slackJobStatusMessages.set(message.jobId, message);
+    if (message) this.slackJobStatusMessages.set(`${message.jobId}:${message.scopeKey || 'job'}`, message);
     return message;
   }
 
@@ -1031,11 +1042,7 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
     const normalized = String(options.headSha).toLowerCase();
     return runs.filter((run) => {
       const current = String(run.headSha || '').toLowerCase();
-      return (
-        current.length >= 7 &&
-        normalized.length >= 7 &&
-        (current.startsWith(normalized) || normalized.startsWith(current))
-      );
+      return current.length >= 7 && normalized.length >= 7 && (current.startsWith(normalized) || normalized.startsWith(current));
     });
   }
 
@@ -1134,17 +1141,25 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
     );
   }
 
-  async getSlackJobStatusMessage(jobId) {
-    const rows = await execute(this.pool, 'SELECT * FROM slack_job_status_messages WHERE job_id = ? LIMIT 1', [jobId]);
+  async getSlackJobStatusMessage(jobId, options = {}) {
+    const scopeKey = slackStatusScopeKey(options);
+    const rows = await execute(this.pool, 'SELECT * FROM slack_job_status_messages WHERE job_id = ? AND scope_key = ? LIMIT 1', [
+      jobId,
+      scopeKey,
+    ]);
     return this.cacheSlackJobStatusMessage(rowToSlackJobStatusMessage(rows[0]));
   }
 
   async recordSlackJobStatusMessage(jobId, input = {}, now = new Date()) {
-    const existing = await this.getSlackJobStatusMessage(jobId);
+    const scopeKey = slackStatusScopeKey(input);
+    const existing = await this.getSlackJobStatusMessage(jobId, { scopeKey });
     const nowIso = now.toISOString();
     const message = {
       ...(existing || {}),
+      id: existing?.id || input.id || makeId('slackmsg'),
       jobId,
+      slackSessionId: input.slackSessionId ?? existing?.slackSessionId ?? null,
+      scopeKey,
       channel: input.channel ?? existing?.channel ?? null,
       threadTs: input.threadTs ?? existing?.threadTs ?? null,
       messageTs: input.messageTs ?? input.ts ?? existing?.messageTs ?? null,
@@ -1155,7 +1170,7 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
     };
     this.cacheSlackJobStatusMessage(message);
     await upsertRow(this.pool, 'slack_job_status_messages', slackJobStatusMessageToRow(message), {
-      excludeUpdate: ['job_id', 'created_at'],
+      excludeUpdate: ['id', 'created_at'],
     });
     return message;
   }
@@ -1289,9 +1304,10 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
 
   async linkJobToSlackSession(job, session, now = new Date()) {
     if (!job?.id) return null;
-    const existing = await this.findIssueLinkByJobId(job.id);
-    const slackSessionId = session?.id || job.slackSessionId || existing?.slackSessionId;
+    const existingByJob = await this.findIssueLinkByJobId(job.id);
+    const slackSessionId = session?.id || job.slackSessionId || existingByJob?.slackSessionId;
     if (!slackSessionId) return null;
+    const existing = await this.findIssueLinkForSlackSessionAndJob(slackSessionId, job.id);
 
     const nowIso = now.toISOString();
     const link = {
@@ -1329,8 +1345,21 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
     return link;
   }
 
+  async findIssueLinkForSlackSessionAndJob(slackSessionId, jobId) {
+    const rows = await execute(
+      this.pool,
+      'SELECT * FROM issue_links WHERE slack_session_id = ? AND publishing_job_id = ? LIMIT 1',
+      [slackSessionId, jobId]
+    );
+    return this.cacheIssueLink(rowToIssueLink(rows[0]));
+  }
+
   async findIssueLinkByJobId(jobId) {
-    const rows = await execute(this.pool, 'SELECT * FROM issue_links WHERE publishing_job_id = ? LIMIT 1', [jobId]);
+    const rows = await execute(
+      this.pool,
+      'SELECT * FROM issue_links WHERE publishing_job_id = ? ORDER BY updated_at DESC LIMIT 1',
+      [jobId]
+    );
     return this.cacheIssueLink(rowToIssueLink(rows[0]));
   }
 
@@ -1353,6 +1382,30 @@ export class MySqlGatewayStore extends MemoryGatewayStore {
       slackSessionId,
     ]);
     return rows.map((row) => this.cacheIssueLink(rowToIssueLink(row)));
+  }
+
+  async listWorkItemsForSlackUser(teamId, slackUserId, options = {}) {
+    const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 20);
+    const requestedById = `slack:${teamId || 'unknown-team'}:${slackUserId || 'unknown-user'}`;
+    const where = ['source = ?', 'requested_by_id = ?'];
+    const params = ['slack', requestedById];
+    if (options.statuses?.length) {
+      where.push(`status IN (${queryPlaceholders(options.statuses.length)})`);
+      params.push(...options.statuses);
+    }
+    const whereSql = `WHERE ${where.join(' AND ')}`;
+    const countRows = await execute(this.pool, `SELECT COUNT(*) AS total FROM publishing_jobs ${whereSql}`, params);
+    const rows = await execute(
+      this.pool,
+      `SELECT * FROM publishing_jobs ${whereSql} ORDER BY updated_at DESC ${limitOffsetSql(limit, 0)}`,
+      params
+    );
+    return {
+      jobs: rows.map((row) => this.cacheJob(rowToJob(row))),
+      total: Number(countRows[0]?.total || 0),
+      limit,
+      offset: 0,
+    };
   }
 
   async listAgentRunsForJob(publishingJobId) {

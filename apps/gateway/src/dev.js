@@ -136,15 +136,17 @@ server.listen(port, () => {
 const reviewGateReconcileIntervalSeconds = Number(process.env.GITHUB_REVIEW_GATE_RECONCILE_INTERVAL_SECONDS || 0);
 if (Number.isFinite(reviewGateReconcileIntervalSeconds) && reviewGateReconcileIntervalSeconds > 0) {
   const intervalMs = Math.max(5, reviewGateReconcileIntervalSeconds) * 1000;
-  setInterval(() => {
-    reconcileReviewGate().catch((err) => {
-      console.log(
-        JSON.stringify({
-          service: 'pages-gateway',
-          message: 'review_gate_reconcile_error',
-          error: err.message,
-        })
-      );
-    });
-  }, intervalMs).unref?.();
+  globalThis
+    .setInterval(() => {
+      reconcileReviewGate().catch((err) => {
+        console.log(
+          JSON.stringify({
+            service: 'pages-gateway',
+            message: 'review_gate_reconcile_error',
+            error: err.message,
+          })
+        );
+      });
+    }, intervalMs)
+    .unref?.();
 }
