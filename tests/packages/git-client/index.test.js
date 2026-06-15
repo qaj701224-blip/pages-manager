@@ -32,6 +32,18 @@ const job = {
   approvalMode: 'manual_required',
   title: 'Profile page',
   summary: 'Create a personal profile page.',
+  requesterProfile: {
+    slackTeamId: 'T1',
+    slackUserId: 'U1',
+    displayName: '张三',
+    email: 'zhangsan@example.com',
+  },
+  slackThread: {
+    teamId: 'T1',
+    channelId: 'D1',
+    threadTs: '1710000000.000100',
+    userId: 'U1',
+  },
   issueNumber: 7,
   indexSnapshotId: 'idxsnap_1',
   prNumber: 12,
@@ -52,16 +64,17 @@ test('builds publishing issue with stable job marker and path boundary', () => {
     baseRef: 'staging',
     callbackUrl: 'https://gateway.example/internal/executor-callback',
   });
-  assert.equal(issue.title, '[pages] zhangsan/profile: Profile page');
+  assert.equal(issue.title, '[pages] zhangsan/profile：Profile page');
   assert.ok(issue.body.includes(publishingJobMarker('job_123')));
   assert.ok(issue.body.includes('Allowed path: sites/zhangsan/profile'));
   assert.ok(issue.body.includes('Base ref: staging'));
   assert.ok(issue.body.includes('Pipeline: user-site publishing'));
   assert.ok(issue.body.includes('Platform deployment: out of scope'));
+  assert.ok(issue.body.includes('## 发布需求'));
+  assert.ok(issue.body.includes('- 发起人：张三'));
+  assert.ok(issue.body.includes('- 邮箱：zhangsan@example.com'));
   assert.ok(
-    issue.body.includes(
-      'Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets'
-    )
+    issue.body.includes('不允许修改平台代码、GitHub Actions、Kubernetes manifests、Dockerfile、部署脚本或任何 secret 配置')
   );
   assert.deepEqual(issue.labels, ['pages-publishing-job', 'site-change']);
 });
@@ -71,14 +84,15 @@ test('builds smoke issue with reusable marker', () => {
   const comment = buildSmokeIssueComment(job);
   const followup = buildFollowupIssueComment(job);
 
-  assert.equal(issue.title, '[pages-smoke] Slack issue intake (slack-local)');
+  assert.equal(issue.title, '[pages-smoke] Slack 发布任务验证（slack-local）');
   assert.ok(issue.body.includes(smokeIssueMarker('slack-local')));
   assert.match(issue.body, /Pipeline: user-site publishing/);
   assert.match(issue.body, /Platform deployment: out of scope/);
   assert.match(comment, /PublishingJob: job_123/);
   assert.match(comment, /Allowed path: sites\/zhangsan\/profile/);
   assert.match(comment, /Platform deployment: out of scope/);
-  assert.match(followup, /## Slack Follow-up/);
+  assert.match(comment, /发起人：张三/);
+  assert.match(followup, /## Slack 追加修改/);
   assert.match(followup, /Agent mode: fix/);
   assert.match(followup, /Platform deployment: out of scope/);
 });
@@ -306,7 +320,7 @@ test('appendFollowupIssueComment posts to the existing publishing issue', async 
       assert.equal(request.method, 'POST');
       const body = JSON.parse(request.body).body;
       assert.match(body, /PublishingJob: job_123/);
-      assert.match(body, /## Slack Follow-up/);
+      assert.match(body, /## Slack 追加修改/);
       return new Response(JSON.stringify({ id: 100, html_url: 'https://github.example/issues/7#issuecomment-100' }), {
         status: 201,
       });
