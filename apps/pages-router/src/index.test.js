@@ -23,6 +23,34 @@ test('fails closed when CF-Connecting-IP is missing', async () => {
   assert.equal(env.dispatchCount, 0);
 });
 
+test('fails closed before route lookup when PAGES_ENV is missing', async () => {
+  const env = routeEnv({ PAGES_ENV: undefined });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal((await response.json()).error.code, 'ROUTER_ENV_INVALID');
+  assert.equal(env.lookupCount, 0);
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('fails closed before route lookup when PAGES_ENV is invalid', async () => {
+  const env = routeEnv({ PAGES_ENV: 'preview' });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal((await response.json()).error.code, 'ROUTER_ENV_INVALID');
+  assert.equal(env.lookupCount, 0);
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
 test('rejects reserved platform hosts before dispatch', async () => {
   const env = routeEnv();
   const response = await worker.fetch(
@@ -69,6 +97,7 @@ test('dispatches an allowed production site with sanitized request headers', asy
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Id'), 'site_demo');
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Slug'), 'demo');
   assert.equal(env.dispatchedRequest.headers.get('Cookie'), 'app=ok');
+  assert.equal(env.dispatchedEnv, undefined);
 });
 
 test('sanitizes platform response headers and cookies', async () => {
@@ -97,7 +126,7 @@ test('rejects route snapshot environment mismatches', async () => {
         hostname: 'demo.pages.xd.team',
         routeStatus: 'active',
         runtime: 'wfp',
-        workerName: 'demo-worker',
+        workerName: 'pages-v2-staging-demo-worker',
         siteId: 'site_demo',
         slug: 'demo',
         activeVersionId: 'ver_demo',
@@ -114,23 +143,81 @@ test('rejects route snapshot environment mismatches', async () => {
   assert.equal(env.dispatchCount, 0);
 });
 
+test('rejects route snapshots with missing worker names before dispatch', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ workerName: undefined }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'ROUTE_WORKER_INVALID');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('rejects route snapshots with invalid worker name syntax before dispatch', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ workerName: 'pages-v2-Demo_worker' }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'ROUTE_WORKER_INVALID');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('rejects staging-prefix worker names in production routes before dispatch', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ workerName: 'pages-v2-staging-demo-worker' }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'ROUTE_WORKER_INVALID');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+function routeSnapshot(overrides = {}) {
+  return {
+    environment: 'production',
+    hostname: 'demo.pages.xd.team',
+    routeStatus: 'active',
+    runtime: 'wfp',
+    workerName: 'pages-v2-demo-worker',
+    siteId: 'site_demo',
+    slug: 'demo',
+    activeVersionId: 'ver_demo',
+    ...overrides,
+  };
+}
+
 function routeEnv(overrides = {}) {
   const state = {
     lookupCount: 0,
+    dispatchGetCount: 0,
     dispatchCount: 0,
     dispatchedRequest: null,
+    dispatchedEnv: null,
   };
   const routes = overrides.routes || {
-    'demo.pages.xd.team': {
-      environment: 'production',
-      hostname: 'demo.pages.xd.team',
-      routeStatus: 'active',
-      runtime: 'wfp',
-      workerName: 'demo-worker',
-      siteId: 'site_demo',
-      slug: 'demo',
-      activeVersionId: 'ver_demo',
-    },
+    'demo.pages.xd.team': routeSnapshot(),
   };
   const userResponse = overrides.userResponse || new Response('user worker ok');
 
@@ -142,14 +229,18 @@ function routeEnv(overrides = {}) {
     TEST_INTERNAL_JWT: 'test.internal.jwt',
     PAGES_DISPATCH: {
       get(workerName) {
-        assert.equal(workerName, 'demo-worker');
+        state.dispatchGetCount += 1;
+        env.dispatchGetCount = state.dispatchGetCount;
+        assert.equal(workerName, 'pages-v2-demo-worker');
         return {
-          async fetch(request) {
+          async fetch(request, dispatchedEnv) {
             this;
             state.dispatchCount += 1;
             env.dispatchCount = state.dispatchCount;
             state.dispatchedRequest = request;
             env.dispatchedRequest = request;
+            state.dispatchedEnv = dispatchedEnv;
+            env.dispatchedEnv = dispatchedEnv;
             return userResponse;
           },
         };
@@ -160,6 +251,12 @@ function routeEnv(overrides = {}) {
     },
     set lookupCount(value) {
       state.lookupCount = value;
+    },
+    get dispatchGetCount() {
+      return state.dispatchGetCount;
+    },
+    set dispatchGetCount(value) {
+      state.dispatchGetCount = value;
     },
     get dispatchCount() {
       return state.dispatchCount;
@@ -172,6 +269,12 @@ function routeEnv(overrides = {}) {
     },
     set dispatchedRequest(value) {
       state.dispatchedRequest = value;
+    },
+    get dispatchedEnv() {
+      return state.dispatchedEnv;
+    },
+    set dispatchedEnv(value) {
+      state.dispatchedEnv = value;
     },
     lookupRoute(hostname) {
       state.lookupCount += 1;
