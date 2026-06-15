@@ -226,7 +226,8 @@ export const issueLinks = mysqlTable(
     updatedAt: updatedAt(),
   },
   (table) => ({
-    jobUk: uniqueIndex('issue_links_job_uk').on(table.publishingJobId),
+    sessionJobUk: uniqueIndex('issue_links_session_job_uk').on(table.slackSessionId, table.publishingJobId),
+    jobIdx: index('issue_links_job_idx').on(table.publishingJobId, table.updatedAt),
     sessionIdx: index('issue_links_session_idx').on(table.slackSessionId, table.updatedAt),
     issueIdx: index('issue_links_issue_idx').on(table.issueNumber),
     prIdx: index('issue_links_pr_idx').on(table.prNumber),
@@ -341,7 +342,10 @@ export const reviewAgentComments = mysqlTable(
 export const slackJobStatusMessages = mysqlTable(
   'slack_job_status_messages',
   {
-    jobId: id('job_id').primaryKey(),
+    id: id('id').primaryKey(),
+    jobId: id('job_id').notNull(),
+    slackSessionId: id('slack_session_id'),
+    scopeKey: varchar('scope_key', { length: 255 }).notNull().default('job'),
     channel: externalId('channel'),
     threadTs: varchar('thread_ts', { length: 64 }),
     messageTs: varchar('message_ts', { length: 64 }),
@@ -351,6 +355,9 @@ export const slackJobStatusMessages = mysqlTable(
     updatedAt: updatedAt(),
   },
   (table) => ({
+    jobScopeUk: uniqueIndex('slack_job_status_messages_job_scope_uk').on(table.jobId, table.scopeKey),
+    jobIdx: index('slack_job_status_messages_job_idx').on(table.jobId, table.updatedAt),
+    sessionIdx: index('slack_job_status_messages_session_idx').on(table.slackSessionId, table.updatedAt),
     channelMessageIdx: index('slack_job_status_messages_channel_idx').on(table.channel, table.messageTs),
   })
 );

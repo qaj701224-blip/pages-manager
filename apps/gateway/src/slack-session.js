@@ -57,7 +57,13 @@ function slackIdValue(value) {
 
 export function slackUserIdFromBody(body = {}, fallback = 'unknown-user') {
   const event = body.event || {};
-  return slackIdValue(event.user) || slackIdValue(body.user_id) || slackIdValue(body.user) || slackIdValue(body.source_user_id) || fallback;
+  return (
+    slackIdValue(event.user) ||
+    slackIdValue(body.user_id) ||
+    slackIdValue(body.user) ||
+    slackIdValue(body.source_user_id) ||
+    fallback
+  );
 }
 
 function inferSlackChannelType(channelType, channelId) {

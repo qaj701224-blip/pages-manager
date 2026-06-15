@@ -65,6 +65,12 @@ function isStaleStageUpdate(existingStage, nextStage) {
   return existingRank >= 0 && nextRank >= 0 && existingRank > nextRank;
 }
 
+function sameSlackStatusTarget(message = {}, job = {}) {
+  const thread = job.slackThread || {};
+  if (!message?.messageTs || !thread.channelId) return false;
+  return message.channel === thread.channelId && (message.threadTs || null) === (thread.threadTs || null);
+}
+
 async function callRemoteNotifier(env, path, payload) {
   const url = remoteNotifierUrl(env, path);
   if (!url) return null;
@@ -163,18 +169,26 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const stage = options.stage || job.status;
   const dedupeKey = options.dedupeKey || `job-status:${job.id}:${stage}`;
-  const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id) : null;
-  if (existing?.messageTs && isStaleStageUpdate(existing.stage, stage) && options.allowRegression !== true) {
-    return { skipped: true, reason: 'stale_stage', key: dedupeKey, message: existing };
+  const slackSessionId = options.slackSessionId || job.slackSessionId || null;
+  const scopeKey = options.scopeKey || (slackSessionId ? `session:${slackSessionId}` : 'job');
+  const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id, { scopeKey }) : null;
+  const fallbackExisting =
+    !existing && scopeKey !== 'job' && store?.getSlackJobStatusMessage
+      ? await store.getSlackJobStatusMessage(job.id, { scopeKey: 'job' })
+      : null;
+  const reusableFallback = sameSlackStatusTarget(fallbackExisting, job) ? fallbackExisting : null;
+  const existingMessage = existing || reusableFallback;
+  if (existingMessage?.messageTs && isStaleStageUpdate(existingMessage.stage, stage) && options.allowRegression !== true) {
+    return { skipped: true, reason: 'stale_stage', key: dedupeKey, message: existingMessage };
   }
-  if (existing?.messageTs && existing.stage === stage && options.skipDuplicate !== false) {
-    return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existing };
+  if (existingMessage?.messageTs && existingMessage.stage === stage && options.skipDuplicate !== false) {
+    return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existingMessage };
   }
 
   const progress = store?.recordAgentRunEvent
     ? await store.recordAgentRunEvent({
         publishingJobId: job.id,
-        slackSessionId: job.slackSessionId || null,
+        slackSessionId,
         agentRunId: options.agentRunId || null,
         type: options.type || 'job_progress',
         stage,
@@ -188,8 +202,8 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const result = await callRemoteNotifier(env, '/internal/slack-notifier/job-status', {
     job,
-    options,
-    existingMessage: existing || null,
+    options: { ...options, slackSessionId, scopeKey },
+    existingMessage: existingMessage || null,
   });
 
   if (!result?.ok) {
@@ -203,7 +217,7 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const message =
     result.message && store?.recordSlackJobStatusMessage
-      ? await store.recordSlackJobStatusMessage(job.id, result.message)
+      ? await store.recordSlackJobStatusMessage(job.id, { ...result.message, slackSessionId, scopeKey })
       : null;
   return {
     ...result,

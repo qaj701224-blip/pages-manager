@@ -169,6 +169,12 @@ function isStaleStageUpdate(existingStage, nextStage) {
   return existingRank >= 0 && nextRank >= 0 && existingRank > nextRank;
 }
 
+function sameSlackStatusTarget(message = {}, job = {}) {
+  const target = slackTargetForJob(job);
+  if (!message?.messageTs || !target?.channel) return false;
+  return message.channel === target.channel && (message.threadTs || null) === (target.thread_ts || null);
+}
+
 function jobLinkFields(job = {}) {
   const fields = [];
   if (job.issueNumber || job.issueUrl) {
@@ -233,11 +239,7 @@ export function buildJobStatusBlocks(job = {}, options = {}) {
   const statusLine = job.status === 'failed' ? ':x: 失败' : options.statusText || ':hourglass_flowing_sand: 处理中';
   const finalSummary = formatFinalSummary(job, options);
   const currentChange = formatCurrentChange(job, options);
-  const fields = [
-    slackText(`*当前阶段*\n${label}`),
-    slackText(`*站点*\n${job.siteSlug || '-'}`),
-    ...jobLinkFields(job),
-  ];
+  const fields = [slackText(`*当前阶段*\n${label}`), slackText(`*站点*\n${job.siteSlug || '-'}`), ...jobLinkFields(job)];
   const blocks = [
     {
       type: 'header',
@@ -445,18 +447,26 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const stage = options.stage || job.status;
   const dedupeKey = options.dedupeKey || `job-status:${job.id}:${stage}`;
-  const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id) : null;
-  if (existing?.messageTs && isStaleStageUpdate(existing.stage, stage) && options.allowRegression !== true) {
-    return { skipped: true, reason: 'stale_stage', key: dedupeKey, message: existing };
+  const slackSessionId = options.slackSessionId || job.slackSessionId || null;
+  const scopeKey = options.scopeKey || (slackSessionId ? `session:${slackSessionId}` : 'job');
+  const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id, { scopeKey }) : null;
+  const fallbackExisting =
+    !existing && scopeKey !== 'job' && store?.getSlackJobStatusMessage
+      ? await store.getSlackJobStatusMessage(job.id, { scopeKey: 'job' })
+      : null;
+  const reusableFallback = sameSlackStatusTarget(fallbackExisting, job) ? fallbackExisting : null;
+  const existingMessage = existing || reusableFallback;
+  if (existingMessage?.messageTs && isStaleStageUpdate(existingMessage.stage, stage) && options.allowRegression !== true) {
+    return { skipped: true, reason: 'stale_stage', key: dedupeKey, message: existingMessage };
   }
-  if (existing?.messageTs && existing.stage === stage && options.skipDuplicate !== false) {
-    return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existing };
+  if (existingMessage?.messageTs && existingMessage.stage === stage && options.skipDuplicate !== false) {
+    return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existingMessage };
   }
 
   const progress = store?.recordAgentRunEvent
     ? await store.recordAgentRunEvent({
         publishingJobId: job.id,
-        slackSessionId: job.slackSessionId || null,
+        slackSessionId,
         agentRunId: options.agentRunId || null,
         type: options.type || 'job_progress',
         stage,
@@ -479,10 +489,10 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
   const text = buildSlackStatusText(job, stage);
   let result;
 
-  if (existing?.messageTs) {
+  if (existingMessage?.messageTs) {
     result = await updateSlackMessage(env, {
-      channel: existing.channel || target.channel,
-      ts: existing.messageTs,
+      channel: existingMessage.channel || target.channel,
+      ts: existingMessage.messageTs,
       text,
       blocks,
     });
@@ -505,9 +515,11 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const message = store?.recordSlackJobStatusMessage
     ? await store.recordSlackJobStatusMessage(job.id, {
+        slackSessionId,
+        scopeKey,
         channel: result.channel || target.channel,
         threadTs: target.thread_ts || null,
-        messageTs: result.ts || existing?.messageTs || null,
+        messageTs: result.ts || existingMessage?.messageTs || null,
         stage,
         status: job.status,
       })
@@ -515,9 +527,9 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
   return {
     ok: true,
     key: dedupeKey,
-    action: existing?.messageTs ? 'updated' : 'posted',
+    action: existingMessage?.messageTs ? 'updated' : 'posted',
     channel: result.channel || target.channel,
-    ts: result.ts || existing?.messageTs || null,
+    ts: result.ts || existingMessage?.messageTs || null,
     message,
     event: progress?.event || null,
   };

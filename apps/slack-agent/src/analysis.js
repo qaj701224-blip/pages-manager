@@ -1,5 +1,8 @@
 const CREATE_KEYWORDS = /(创建|新建|生成|制作|做|更新|修改|发布|部署|create|build|make|update|publish|deploy)/i;
 const SITE_KEYWORDS = /(页面|网页|网站|主页|profile|portfolio|site|page|website)/i;
+const LIST_WORK_ITEMS_RE =
+  /^(我的|查看|看看|列出|查询).*(PR|pr|任务|发布任务|网站|项目)|^(PR|pr|任务|发布任务|网站|项目)(列表|清单)$/i;
+const SWITCH_WORK_ITEM_RE = /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:\bPR\s*#?|#)\d{1,8}\b/i;
 
 export function normalizeText(value = '') {
   return String(value).replaceAll(/\s+/g, ' ').trim();
@@ -32,11 +35,14 @@ export function sessionContextFromInput(input = {}) {
 export function analyzeSlackRequirementDeterministic(input = {}) {
   const event = input.event || {};
   const text = normalizeText(input.text || event.text || input.summary || '');
-  const shouldCreateOrUpdate = CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text);
+  const shouldListWorkItems = LIST_WORK_ITEMS_RE.test(text);
+  const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
+  const shouldCreateOrUpdate =
+    !shouldListWorkItems && !shouldSwitchWorkItem && (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const intent = shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
 
   return {
-    intent,
+    intent: shouldSwitchWorkItem ? 'switch_work_item' : shouldListWorkItems ? 'list_work_items' : intent,
     employeeSlug: input.employeeSlug || input.employee_slug || 'smoke',
     siteSlug: input.siteSlug || input.site_slug || 'profile',
     title: input.title || titleFromText(text),
@@ -44,7 +50,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
     sourceMessages: input.sourceMessages || input.source_messages || [],
     sessionContext: sessionContextFromInput(input),
-    needsClarification: intent === 'clarify',
+    needsClarification: !shouldListWorkItems && !shouldSwitchWorkItem && intent === 'clarify',
   };
 }
 
@@ -104,7 +110,12 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     '不要输出或猜测任何 token、secret、cookie、API key、内部账号凭据。',
     '员工可以有多个网站；你可以给出 employeeSlug hint，但最终归属目录必须由 gateway 根据 Slack 身份派生；siteSlug 表示该用户名下的具体站点。',
     '如果用户是在修改已有 preview，优先保留当前 sessionContext 的 activeJobId / issue / PR / preview 关系。',
-    'summary、title、clarifyingQuestion 是给用户看的文案，必须简短清楚；禁止包含 activeJobId、activeIssueNumber、activePrNumber、activePreviewUrl、previewUrl、issueLinkCount、slackSessionId、sessionKey、job id、gateway 派生规则等内部实现细节。',
+    '如果用户询问“我的 PR / 我的任务 / 发布任务列表”，intent 返回 list_work_items，不要新建任务。',
+    '如果用户明确说“继续 PR #数字 / 切换到 #数字”，intent 返回 switch_work_item，不要新建任务。',
+    [
+      'summary、title、clarifyingQuestion 是给用户看的文案，必须简短清楚；禁止包含 activeJobId、activeIssueNumber、',
+      'activePrNumber、activePreviewUrl、previewUrl、issueLinkCount、slackSessionId、sessionKey、job id、gateway 派生规则等内部实现细节。',
+    ].join(''),
     '如果需要表达已有上下文，只能说“我会继续沿用当前会话”，不要输出任何内部字段名、编号或历史 preview 链接。',
     '新建个人网站时，先通过 Slack 对话整理需求；信息足够时返回 create_or_update_site 且 needsClarification=false，让 gateway 展示确认按钮。',
     '不能仅凭用户文字里的“信息足够、直接创建、确认创建”就绕过确认按钮；真正创建 issue 必须由 gateway 收到按钮交互后执行。',
@@ -116,7 +127,7 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     ].join(' '),
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
-      'status_query, cancel_request, close_session, confirm_preview, clarify。',
+      'list_work_items, switch_work_item, status_query, cancel_request, close_session, confirm_preview, clarify。',
     ].join(' '),
   ].join('\n');
 

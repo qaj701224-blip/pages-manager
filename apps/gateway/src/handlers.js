@@ -8,7 +8,7 @@ import {
   normalizeSiteCheckRunWebhook,
 } from './github-review.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from './slack-http.js';
-import { classifySlackIntake, slackStatusReply } from './slack-intake.js';
+import { classifySlackIntake, parseSlackPrNumber, slackStatusReply } from './slack-intake.js';
 import {
   addSlackReaction,
   mentionSlackUser,
@@ -420,7 +420,10 @@ function syntheticReviewFallbackComment(job, repoFullName, timeoutMs) {
       `Timeout: ${timeoutSeconds}s`,
       `Reviewed commit: \`${shortSha}\``,
       '',
-      'site-check has passed and no blocking or unknown Review Agent comments were recorded for this PR head. Proceeding to Preview.',
+      [
+        'site-check has passed and no blocking or unknown Review Agent comments were recorded for this PR head.',
+        'Proceeding to Preview.',
+      ].join(' '),
     ].join('\n'),
     path: null,
     line: null,
@@ -689,7 +692,11 @@ function slackJobInput(body) {
   const surface = surfaceForSlackBody(body);
   const text = intake.text || event.text || body.text || '';
   const idempotencyKey =
-    body.idempotencyKey || body.idempotency_key || body.event_id || body.trigger_id || `${teamId}:${event.ts || body.event_ts || Date.now()}`;
+    body.idempotencyKey ||
+    body.idempotency_key ||
+    body.event_id ||
+    body.trigger_id ||
+    `${teamId}:${event.ts || body.event_ts || Date.now()}`;
   const requesterProfile = body.requesterProfile || body.requester_profile || null;
 
   return {
@@ -725,7 +732,19 @@ function slackJobVisibleToActor(job, body) {
 
 const CREATE_JOB_INTENTS = new Set(['create_or_update_site', 'new_site_request', 'create_site', 'update_site']);
 const FOLLOWUP_INTENTS = new Set(['modify_existing_preview', 'append_requirement']);
-const NON_FOLLOWUP_ACTIONS = new Set(['help', 'ping', 'status', 'cancel', 'close_session', 'empty', 'missing_requirement']);
+const NON_FOLLOWUP_ACTIONS = new Set([
+  'help',
+  'ping',
+  'status',
+  'cancel',
+  'close_session',
+  'empty',
+  'missing_requirement',
+  'list_work_items',
+  'switch_work_item',
+]);
+const LIST_WORK_ITEM_INTENTS = new Set(['list_work_items']);
+const SWITCH_WORK_ITEM_INTENTS = new Set(['switch_work_item']);
 
 function hasActiveSlackTarget(slackSession) {
   return Boolean(
@@ -820,8 +839,15 @@ function redactSecretLikeText(text = '') {
 }
 
 function compactUserFacingText(text = '') {
+  const internalContextFieldRe = new RegExp(
+    [
+      '\\b(?:activeJobId|activeIssueNumber|activePrNumber|activePreviewUrl',
+      '|issueLinkCount|slackSessionId|sessionKey)\\s*[:=]\\s*[^，。；;、\\s)）]+',
+    ].join(''),
+    'gi'
+  );
   const redacted = redactSecretLikeText(text)
-    .replace(/\b(?:activeJobId|activeIssueNumber|activePrNumber|activePreviewUrl|issueLinkCount|slackSessionId|sessionKey)\s*[:=]\s*[^，。；;、\s)）]+/gi, '')
+    .replace(internalContextFieldRe, '')
     .replace(/\b(?:employeeSlug|previewUrl)\s*[:=]\s*[^，。；;、\s)）]+/gi, '')
     .replace(/\bjob_[A-Za-z0-9_]{1,80}\b/g, '')
     .replace(/\bsess_[A-Za-z0-9_]{1,80}\b/g, '')
@@ -831,7 +857,10 @@ function compactUserFacingText(text = '') {
     .split(/(?<=[。！？!?；;])\s*|\n+/)
     .map((part) => part.trim())
     .filter(Boolean)
-    .filter((part) => !/(active(?:Job|Issue|Pr|Preview)|slackSession|sessionKey|issueLinkCount|previewUrl|gateway 根据|历史关联 PR)/i.test(part));
+    .filter(
+      (part) =>
+        !/(active(?:Job|Issue|Pr|Preview)|slackSession|sessionKey|issueLinkCount|previewUrl|gateway 根据|历史关联 PR)/i.test(part)
+    );
 
   return parts
     .join('')
@@ -987,6 +1016,177 @@ function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null, op
   );
 }
 
+function slackThreadForSession(session = {}, fallback = {}) {
+  const surface = session.surfaceContext || {};
+  return {
+    ...(fallback || {}),
+    teamId: session.teamId || fallback.teamId || null,
+    channelId: session.channelId || surface.channelId || fallback.channelId || null,
+    channelType: surface.channelType || fallback.channelType || (session.dmChannelId ? 'im' : null),
+    messageTs: surface.messageTs || fallback.messageTs || session.threadTs || null,
+    threadTs: session.threadTs || surface.threadTs || fallback.threadTs || null,
+    userId: session.primarySlackUserId || fallback.userId || null,
+  };
+}
+
+function slackJobBindingPatchForSession(job = {}, session = {}) {
+  return {
+    slackSessionId: session.id || job.slackSessionId || null,
+    slackSessionKey: session.sessionKey || job.slackSessionKey || null,
+    slackThread: slackThreadForSession(session, job.slackThread || {}),
+  };
+}
+
+function sessionMemoryForSelectedJob(job = {}) {
+  const summary = redactSecretLikeText(job.summary || job.title || job.siteSlug || '');
+  return {
+    summary,
+    requirements: {
+      intent: job.intent || 'modify_existing_preview',
+      title: redactSecretLikeText(job.title || ''),
+      summary,
+      siteSlug: job.siteSlug || null,
+      issueNumber: job.issueNumber || null,
+      prNumber: job.prNumber || null,
+      previewUrl: job.previewUrl || null,
+    },
+    pendingQuestions: [],
+    lastPreviewFeedback: null,
+    lastAgentResponse: job.prNumber
+      ? `已切换到 PR #${job.prNumber}，后续回复会继续修改这个任务。`
+      : '已切换到这个发布任务，后续回复会继续修改它。',
+  };
+}
+
+async function activateJobForSlackSession(store, job, session) {
+  if (!job?.id || !session?.id) return job || null;
+  const slackBindingPatch = slackJobBindingPatchForSession(job, session);
+  const updatedJob = (await store.patchJob(job.id, slackBindingPatch)) || { ...job, ...slackBindingPatch };
+  await store.linkJobToSlackSession(updatedJob, session);
+  await store.updateSessionMemory(session.id, sessionMemoryForSelectedJob(updatedJob));
+  return updatedJob;
+}
+
+function slackButtonValue(value = {}) {
+  return JSON.stringify(value).slice(0, 1900);
+}
+
+function parseSlackButtonValue(value = '') {
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function slackStatusLabel(status = '') {
+  const labels = {
+    received: '整理需求',
+    issue_creating: '创建 Issue',
+    issue_created: 'Issue 已创建',
+    indexing: '固定索引',
+    generating_page: '生成页面',
+    pr_created: 'PR 已创建',
+    reviewing: '等待 Review',
+    changes_requested: '等待修复',
+    fixing: '修复中',
+    previewing: '生成 Preview',
+    preview_deployed: 'Preview 已生成',
+    failed: '失败',
+    cancelled: '已取消',
+  };
+  return labels[status] || status || '处理中';
+}
+
+function workItemLine(job = {}) {
+  const parts = [
+    `*${compactUserFacingText(job.title || job.siteSlug || '未命名任务').slice(0, 80)}*`,
+    `站点：${job.siteSlug || '-'}`,
+    `状态：${slackStatusLabel(job.status)}`,
+  ];
+  if (job.issueNumber) parts.push(`Issue：#${job.issueNumber}`);
+  if (job.prNumber) parts.push(`PR：#${job.prNumber}`);
+  if (job.previewUrl) parts.push('Preview：已生成');
+  return parts.join('\n');
+}
+
+function slackWorkItemListText(jobs = []) {
+  if (!jobs.length) return '我还没有找到你的发布任务。可以先描述一个个人网站需求，我会整理后等你确认创建。';
+  return `找到你最近的 ${jobs.length} 个发布任务。选择一个后，这个对话会继续围绕它修改。`;
+}
+
+function slackWorkItemListBlocks(slackSession, jobs = []) {
+  if (!jobs.length) {
+    return [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: slackWorkItemListText(jobs) },
+      },
+    ];
+  }
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '你的发布任务' },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '点「继续修改」后，后续回复会进入选中的 PR / Preview。' }],
+    },
+  ];
+
+  for (const job of jobs.slice(0, 6)) {
+    const elements = [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '继续修改' },
+        style: 'primary',
+        action_id: 'pages_select_work_item',
+        value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id }),
+      },
+    ];
+    if (job.prUrl) {
+      elements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '打开 PR' },
+        url: job.prUrl,
+        action_id: 'open_pr',
+      });
+    }
+    if (job.previewUrl) {
+      elements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '打开 Preview' },
+        url: job.previewUrl,
+        action_id: 'open_preview',
+      });
+    }
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: workItemLine(job) } });
+    blocks.push({ type: 'actions', elements });
+  }
+
+  return blocks;
+}
+
+async function listSlackWorkItemsForSession(store, body, options = {}) {
+  const actor = slackActorFromBody(body);
+  if (store.listWorkItemsForSlackUser) {
+    return store.listWorkItemsForSlackUser(actor.teamId, actor.slackUserId, options);
+  }
+  const result = await store.listJobs({ source: 'slack', limit: options.limit || 20 });
+  const requestedById = actor.requestedById;
+  const jobs = (result.jobs || []).filter((job) => job.requestedById === requestedById).slice(0, options.limit || 5);
+  return { jobs, total: jobs.length, limit: options.limit || 5, offset: 0 };
+}
+
+async function findVisibleSlackJobByPrNumber(store, body, prNumber) {
+  const job = store.findJobByPrNumber ? await store.findJobByPrNumber(prNumber) : null;
+  if (!job || !slackJobVisibleToActor(job, body)) return null;
+  return job;
+}
+
 function slackEventId(body = {}) {
   return body.event_id || body.trigger_id || body.event?.client_msg_id || null;
 }
@@ -1019,7 +1219,14 @@ function interactionChannelId(body = {}, session = null) {
 }
 
 function interactionThreadTs(body = {}, session = null) {
-  return session?.threadTs || body.message?.thread_ts || body.message?.ts || body.container?.thread_ts || body.container?.message_ts || null;
+  return (
+    session?.threadTs ||
+    body.message?.thread_ts ||
+    body.message?.ts ||
+    body.container?.thread_ts ||
+    body.container?.message_ts ||
+    null
+  );
 }
 
 function interactionChannelType(channelId, session = null) {
@@ -1041,7 +1248,9 @@ function draftAnalysisFromMemory(memory = {}) {
 }
 
 function hasConfirmableDraft(analysis = {}) {
-  return CREATE_JOB_INTENTS.has(analysis.intent) && !analysis.needsClarification && Boolean(String(analysis.summary || '').trim());
+  return (
+    CREATE_JOB_INTENTS.has(analysis.intent) && !analysis.needsClarification && Boolean(String(analysis.summary || '').trim())
+  );
 }
 
 function confirmedSlackJobBodyFromInteraction(body = {}, session, analysis = {}, requesterProfile = null) {
@@ -1120,6 +1329,7 @@ function slackResultType(result = {}) {
   if (result.action === 'close_session') return 'session_closed';
   if (result.action === 'clarification_needed') return 'clarification_requested';
   if (result.action === 'status' || result.action === 'status_query') return 'status_returned';
+  if (result.action === 'list_work_items' || String(result.action || '').startsWith('switch_work_item')) return 'status_returned';
   if (String(result.action || '').startsWith('followup_')) return 'followup_appended';
   if (result.jobId) return 'job_created';
   if (result.replyText) return 'agent_replied';
@@ -1353,6 +1563,7 @@ async function updateSlackReaction(env, currentReaction, nextName) {
 
 function shouldKeepWorkingReactionForResult(result = {}) {
   if (!result || result.accepted === false) return false;
+  if (result.action === 'switch_work_item') return false;
   if (result.jobId) return true;
   return String(result.action || '').startsWith('followup_');
 }
@@ -1630,8 +1841,81 @@ async function processSlackEventBody(body, env, options = {}) {
 
   const agentRun = lease?.agentRun || null;
 
+  if (intake.action === 'list_work_items') {
+    const result = await listSlackWorkItemsForSession(store, body, { limit: 5 });
+    await completeSlackAgentRun(store, agentRun, {
+      report: { action: intake.action, accepted: false, total: result.total },
+    });
+    return respond({
+      ok: true,
+      action: 'list_work_items',
+      accepted: false,
+      replyText: slackWorkItemListText(result.jobs || []),
+      blocks: slackWorkItemListBlocks(slackSession, result.jobs || []),
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      jobs: (result.jobs || []).map((job) => ({
+        id: job.id,
+        status: job.status,
+        siteSlug: job.siteSlug,
+        issueNumber: job.issueNumber,
+        prNumber: job.prNumber,
+        previewUrl: job.previewUrl,
+      })),
+    });
+  }
+
+  if (intake.action === 'switch_work_item') {
+    const prNumber = intake.prNumber || parseSlackPrNumber(intake.text);
+    const job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
+    if (!job) {
+      await completeSlackAgentRun(store, agentRun, {
+        report: { action: intake.action, accepted: false, prNumber: prNumber || null },
+      });
+      return respond({
+        ok: true,
+        action: 'switch_work_item_not_found',
+        accepted: false,
+        replyText: prNumber
+          ? `我没有找到你可继续操作的 PR #${prNumber}。可以说「我的 PR」查看当前可选任务。`
+          : '我还没识别出要继续哪个 PR。可以说「继续 PR #数字」。',
+        slackSessionId: slackSession.id,
+        agentRunId: agentRun?.id,
+      });
+    }
+
+    const activeJob = await activateJobForSlackSession(store, job, slackSession);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, activeJob, {
+      stage: activeJob.status,
+      text: '已切换到这个发布任务。',
+      statusText: ':white_check_mark: 已切换到这个任务。',
+      skipDuplicate: false,
+      dedupeKey: `slack-switch:${activeJob.id}:${slackSession.id}:${agentRun?.id || Date.now()}`,
+      slackSessionId: slackSession.id,
+    });
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: activeJob.id,
+      report: { action: intake.action, accepted: true, prNumber },
+    });
+    return respond({
+      ok: true,
+      action: 'switch_work_item',
+      accepted: true,
+      jobId: activeJob.id,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      replyText: `已切换到${activeJob.prNumber ? ` PR #${activeJob.prNumber}` : '这个发布任务'}，继续在这里回复修改意见即可。`,
+      noReply: Boolean(slackStatusNotification?.ok),
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    });
+  }
+
   if (intake.action === 'status') {
-    const statusJob = intake.jobId ? await store.getJob(intake.jobId) : slackSession ? await activeJobForSlackSession(store, slackSession) : null;
+    const statusJob = intake.jobId
+      ? await store.getJob(intake.jobId)
+      : slackSession
+        ? await activeJobForSlackSession(store, slackSession)
+        : null;
     if (statusJob && !slackJobVisibleToActor(statusJob, body)) {
       await completeSlackAgentRun(store, agentRun, {
         report: { action: intake.action, jobId: intake.jobId, forbidden: true },
@@ -1706,6 +1990,79 @@ async function processSlackEventBody(body, env, options = {}) {
             slackAgentAnalysis,
           })
         );
+      }
+
+      if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis?.intent)) {
+        const result = await listSlackWorkItemsForSession(store, body, { limit: 5 });
+        await completeSlackAgentRun(store, agentRun, {
+          provider: slackAgentAnalysis?.modelProvider || 'unknown',
+          model: slackAgentAnalysis?.modelName || null,
+          modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+          report: { action: 'list_work_items', accepted: false, intent: slackAgentAnalysis.intent, total: result.total },
+        });
+        return respond({
+          ok: true,
+          action: 'list_work_items',
+          accepted: false,
+          replyText: slackWorkItemListText(result.jobs || []),
+          blocks: slackWorkItemListBlocks(slackSession, result.jobs || []),
+          slackSessionId: slackSession.id,
+          agentRunId: agentRun?.id,
+          slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
+        });
+      }
+
+      if (SWITCH_WORK_ITEM_INTENTS.has(slackAgentAnalysis?.intent)) {
+        const prNumber = parseSlackPrNumber(intake.text || slackAgentAnalysis.summary || '');
+        const job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
+        if (!job) {
+          await completeSlackAgentRun(store, agentRun, {
+            provider: slackAgentAnalysis?.modelProvider || 'unknown',
+            model: slackAgentAnalysis?.modelName || null,
+            modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+            report: { action: 'switch_work_item_not_found', accepted: false, intent: slackAgentAnalysis.intent, prNumber },
+          });
+          return respond({
+            ok: true,
+            action: 'switch_work_item_not_found',
+            accepted: false,
+            replyText: prNumber
+              ? `我没有找到你可继续操作的 PR #${prNumber}。可以说「我的 PR」查看当前可选任务。`
+              : '我还没识别出要继续哪个 PR。可以说「继续 PR #数字」。',
+            slackSessionId: slackSession.id,
+            agentRunId: agentRun?.id,
+            slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
+          });
+        }
+
+        const activeJob = await activateJobForSlackSession(store, job, slackSession);
+        const slackStatusNotification = await notifySlackJobStatus(env, store, activeJob, {
+          stage: activeJob.status,
+          text: '已切换到这个发布任务。',
+          statusText: ':white_check_mark: 已切换到这个任务。',
+          skipDuplicate: false,
+          dedupeKey: `slack-switch:${activeJob.id}:${slackSession.id}:${agentRun?.id || Date.now()}`,
+          slackSessionId: slackSession.id,
+        });
+        await completeSlackAgentRun(store, agentRun, {
+          publishingJobId: activeJob.id,
+          provider: slackAgentAnalysis?.modelProvider || 'unknown',
+          model: slackAgentAnalysis?.modelName || null,
+          modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+          report: { action: 'switch_work_item', accepted: true, intent: slackAgentAnalysis.intent, prNumber },
+        });
+        return respond({
+          ok: true,
+          action: 'switch_work_item',
+          accepted: true,
+          jobId: activeJob.id,
+          slackSessionId: slackSession.id,
+          agentRunId: agentRun?.id,
+          replyText: `已切换到${activeJob.prNumber ? ` PR #${activeJob.prNumber}` : '这个发布任务'}，继续在这里回复修改意见即可。`,
+          noReply: Boolean(slackStatusNotification?.ok),
+          slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
+          ...(slackStatusNotification ? { slackStatusNotification } : {}),
+        });
       }
 
       if (slackAgentAnalysis?.intent === 'cancel_request') {
@@ -1891,9 +2248,7 @@ async function handleCloseSlackSession({ store, intake, slackSession, sessionMem
 
 async function handleSlackAgentStatusQuery({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
   const job = await activeJobForSlackSession(store, slackSession);
-  const replyText = job
-    ? slackStatusReply(job.id, job)
-    : '我还没有在当前会话里找到发布任务。';
+  const replyText = job ? slackStatusReply(job.id, job) : '我还没有在当前会话里找到发布任务。';
 
   await store.updateSessionMemory(slackSession.id, {
     summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory.summary || intake.text),
@@ -2004,6 +2359,9 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
     title: redactedSlackAgentAnalysis?.title || job.title,
     summary: followupSummary(job.summary, feedback),
     previewUrl: null,
+    slackSessionId: slackSession.id,
+    slackSessionKey: slackSession.sessionKey,
+    slackThread: slackThreadForSession(slackSession, job.slackThread || {}),
   };
   await store.updateSessionMemory(slackSession.id, {
     summary: followupSummary(sessionMemory.summary, feedback),
@@ -2043,9 +2401,7 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
       } else {
         workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
         action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
-        replyText = workerStart?.started
-          ? '收到，已追加修改意见，正在启动修复。'
-          : '收到，已追加修改意见，等待修复开始。';
+        replyText = workerStart?.started ? '收到，已追加修改意见，正在启动修复。' : '收到，已追加修改意见，等待修复开始。';
       }
     }
   }
@@ -2181,7 +2537,8 @@ export async function handleSlackEvents(request, env) {
     const settledReaction = await settleImmediateSlackReaction(env, workingReaction, result);
     if (settledReaction) {
       await updateSlackDeliveryReactionState(env, body, workingReaction, {
-        status: result.action === 'ignored_slack_event' || result.action === 'ignored_untracked_thread_message' ? 'ignored' : 'done',
+        status:
+          result.action === 'ignored_slack_event' || result.action === 'ignored_untracked_thread_message' ? 'ignored' : 'done',
         doneReaction: settledReaction.nextName || null,
         settledAt: new Date().toISOString(),
       });
@@ -2231,7 +2588,10 @@ export async function handleSlackInteractions(request, env) {
       });
     }
 
-    const requesterProfile = await fetchSlackRequesterProfile(env, confirmedSlackJobBodyFromInteraction(body, session, slackAgentAnalysis));
+    const requesterProfile = await fetchSlackRequesterProfile(
+      env,
+      confirmedSlackJobBodyFromInteraction(body, session, slackAgentAnalysis)
+    );
     const { job, created } = await store.createJob(
       slackJobInput(confirmedSlackJobBodyFromInteraction(body, session, slackAgentAnalysis, requesterProfile))
     );
@@ -2261,6 +2621,39 @@ export async function handleSlackInteractions(request, env) {
       created,
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
       ...(workerStart ? { workerStart } : {}),
+    });
+  }
+
+  if (actionId === 'pages_select_work_item') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个任务卡片不属于当前 Slack 用户，不能切换。',
+      });
+    }
+
+    const job = value.jobId ? await store.getJob(value.jobId) : null;
+    if (!job || !slackJobVisibleToActor(job, body)) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个发布任务不存在，或不属于当前 Slack 用户。',
+      });
+    }
+
+    const activeJob = await activateJobForSlackSession(store, job, session);
+    await notifySlackJobStatus(env, store, activeJob, {
+      stage: activeJob.status,
+      text: '已切换到这个发布任务。',
+      statusText: ':white_check_mark: 已切换到这个任务。',
+      skipDuplicate: false,
+      dedupeKey: `slack-select:${activeJob.id}:${session.id}:${body.trigger_id || Date.now()}`,
+      slackSessionId: session.id,
+    });
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: `已切换到${activeJob.prNumber ? ` PR #${activeJob.prNumber}` : '这个发布任务'}，继续在这个对话里回复修改意见即可。`,
     });
   }
 
@@ -2500,7 +2893,13 @@ async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }
       ].join(':'),
       skipDuplicate: false,
     });
-    slackNotification = await notifySlackPlainProgress(env, store, job, text, `site-check:${reviewAction}:${siteCheckRun.checkRunNodeId}`);
+    slackNotification = await notifySlackPlainProgress(
+      env,
+      store,
+      job,
+      text,
+      `site-check:${reviewAction}:${siteCheckRun.checkRunNodeId}`
+    );
   }
 
   return jsonResponse({

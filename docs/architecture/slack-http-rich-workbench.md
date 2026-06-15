@@ -18,30 +18,30 @@
 
 当前 `feat/slack-preview-gateway` 已经具备这些基础：
 
-| 能力                     | 当前位置                               | 说明                                                |
-| ------------------------ | -------------------------------------- | --------------------------------------------------- |
-| Slack HTTP Events        | `apps/gateway/src/index.js`            | `POST /integrations/slack/events`                   |
-| Slack Interactivity      | `apps/gateway/src/index.js`            | `POST /integrations/slack/interactions`             |
-| Slack signature 校验     | `apps/gateway/src/slack-http.js`       | 基于 raw body、timestamp、signing secret 校验       |
-| URL verification         | `apps/gateway/src/handlers.js`         | 返回 Slack challenge                                |
-| DM / channel thread 会话 | `apps/gateway/src/slack-session.js`    | `SlackSession` 按 Slack user 和 thread 隔离         |
-| 基础状态卡片             | `packages/slack-notifier/src/index.js` | Block Kit 展示 stage、job、issue、PR、preview       |
-| 原地更新卡片             | `packages/slack-notifier/src/index.js` | 首次 `chat.postMessage`，后续 `chat.update`         |
-| 独立 notifier app        | `apps/slack-notifier/src/index.js`     | 内部 HTTP endpoint，K8s 正式路径持有 bot token      |
-| gateway notifier adapter | `apps/gateway/src/slack-notifier.js`   | 调独立 notifier；本地无 URL 时走 fallback           |
-| 基础按钮                 | `apps/gateway/src/handlers.js`         | `查看 Issue`、`查看 PR`、`打开 Preview`、`关闭会话` |
-| Agent 需求分析           | `apps/slack-agent/src/index.js`        | `/internal/slack-agent/analyze` 返回结构化 JSON     |
+| 能力                     | 当前位置                               | 说明                                               |
+| ------------------------ | -------------------------------------- | -------------------------------------------------- |
+| Slack HTTP Events        | `apps/gateway/src/index.js`            | `POST /integrations/slack/events`                  |
+| Slack Interactivity      | `apps/gateway/src/index.js`            | `POST /integrations/slack/interactions`            |
+| Slack signature 校验     | `apps/gateway/src/slack-http.js`       | 基于 raw body、timestamp、signing secret 校验      |
+| URL verification         | `apps/gateway/src/handlers.js`         | 返回 Slack challenge                               |
+| DM / channel thread 会话 | `apps/gateway/src/slack-session.js`    | `SlackSession` 按 Slack user 和 thread 隔离        |
+| 基础状态卡片             | `packages/slack-notifier/src/index.js` | Block Kit 展示 stage、job、issue、PR、preview      |
+| 原地更新卡片             | `packages/slack-notifier/src/index.js` | 首次 `chat.postMessage`，后续 `chat.update`        |
+| 独立 notifier app        | `apps/slack-notifier/src/index.js`     | 内部 HTTP endpoint，K8s 正式路径持有 bot token     |
+| gateway notifier adapter | `apps/gateway/src/slack-notifier.js`   | 调独立 notifier；本地无 URL 时走 fallback          |
+| 基础按钮                 | `apps/gateway/src/handlers.js`         | 确认创建、继续修改、查看链接、选择旧任务、关闭会话 |
+| Agent 需求分析           | `apps/slack-agent/src/index.js`        | `/internal/slack-agent/analyze` 返回结构化 JSON    |
 
 当前还不是正式版：
 
-| 缺口                                            | 影响                                                                |
-| ----------------------------------------------- | ------------------------------------------------------------------- |
-| notifier 目前由 gateway 同步 HTTP fallback 触发 | 还不是 Redis Stream / Queue consumer，无法从 offset 自动恢复        |
-| store 仍是 memory / file backed                 | K8s 多副本会丢幂等、lease、message binding 和 session 状态          |
-| 实时回写只跟随阶段 callback                     | Slack Agent 和 executor 不能持续输出 `progress event`               |
-| Interactivity 只覆盖两个按钮                    | 还缺取消、重新生成、确认需求、选择站点、转人工确认等命令事件        |
-| Slack API 调用没有持久重试                      | `chat.postMessage` / `chat.update` 失败后只能返回错误，不能可靠补偿 |
-| Preview 只有链接                                | 还没有截图、图片 block 或文件上传链路                               |
+| 缺口                                            | 影响                                                                                   |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------- |
+| notifier 目前由 gateway 同步 HTTP fallback 触发 | 还不是 Redis Stream / Queue consumer，无法从 offset 自动恢复                           |
+| store 仍是 memory / file backed                 | K8s 多副本会丢幂等、lease、message binding 和 session 状态                             |
+| 实时回写只跟随阶段 callback                     | Slack Agent 和 executor 不能持续输出 `progress event`                                  |
+| Interactivity 还不是完整命令面                  | 已有确认创建、选择旧任务和关闭会话；还缺取消、重新生成、选择站点、转人工确认等命令事件 |
+| Slack API 调用没有持久重试                      | `chat.postMessage` / `chat.update` 失败后只能返回错误，不能可靠补偿                    |
+| Preview 只有链接                                | 还没有截图、图片 block 或文件上传链路                                                  |
 
 ## 正式拓扑
 
@@ -163,7 +163,7 @@ Slash command 不是第一优先级，但正式入口要保留同样合同：签
 | `SlackNotificationAttempt` | Slack API 调用尝试、错误、重试、rate limit              |
 | `ExternalApiCallLog`       | Slack/GitHub/Cloudflare/model provider 调用摘要         |
 
-`SlackMessageBinding` 是 `chat.update` 的关键。没有它，notifier 只能不断发新消息，无法稳定更新同一张状态卡片。如果 DB schema 已有最小形态的 `slack_job_status_messages`，可作为第一步承接状态卡片 `channel + message_ts`；正式富交互阶段再扩展为支持多 message kind、stage order 和通知尝试记录的 binding 模型。
+`SlackMessageBinding` 是 `chat.update` 的关键。没有它，notifier 只能不断发新消息，无法稳定更新同一张状态卡片。如果 DB schema 已有最小形态的 `slack_job_status_messages`，可作为第一步承接状态卡片 `channel + message_ts`。当前实现已经把状态卡片扩展为 `job_id + scope_key` 维度，`scope_key=session:<slack_session_id>` 表示同一个 job 可以在不同 Slack thread 中拥有各自的状态卡。正式富交互阶段再扩展为支持多 message kind、stage order 和通知尝试记录的 binding 模型。
 
 注意：`SlackMessageBinding`、`SlackNotificationAttempt` 和 `ExternalApiCallLog` 是本文面向正式富交互提出的 schema 扩展目标。MVP 闭环可以在同一个 PR 里同步补齐最小 DB schema / migration；如果文档先于 DB 改动合并，则不能假设当前 `db-schema-v0.md` 已经完整定义这些表。
 
