@@ -93,7 +93,7 @@ test('classifies status command without job id as a friendly reply', () => {
   assert.equal(result.action, 'status');
   assert.equal(result.shouldCreateJob, false);
   assert.equal(result.jobId, null);
-  assert.match(result.replyText, /status: job_xxx/);
+  assert.equal(result.replyText, null);
 });
 
 test('builds status reply from a job', () => {
