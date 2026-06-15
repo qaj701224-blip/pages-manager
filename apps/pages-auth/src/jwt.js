@@ -3,6 +3,8 @@ const ALGORITHM = 'HS256';
 const CLOCK_SKEW_SECONDS = 0;
 const encoder = new globalThis.TextEncoder();
 
+const ALLOWED_PURPOSES = new Set(['auth_session', 'site_session', 'cli_token']);
+const SAFE_JTI_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RESERVED_CLAIMS = new Set(['iss', 'aud', 'env', 'purpose', 'sub', 'iat', 'nbf', 'exp']);
 
 export function parseKeyRegistry(env) {
@@ -45,7 +47,7 @@ export async function signSessionJwt({ purpose, audience, subject, now, ttlSecon
   const issuedAt = validateUnixTime(now, 'now');
   const ttl = validateTtl(ttlSeconds);
   const environment = validateEnvironment(env?.PAGES_ENV);
-  validateRequiredString(purpose, 'purpose');
+  const tokenPurpose = validatePurpose(purpose);
   validateRequiredString(audience, 'audience');
   validateRequiredString(subject, 'subject');
   const extraClaims = sanitizeExtraClaims(claims);
@@ -55,13 +57,14 @@ export async function signSessionJwt({ purpose, audience, subject, now, ttlSecon
     iss: ISSUER,
     aud: audience,
     env: environment,
-    purpose,
+    purpose: tokenPurpose,
     sub: subject,
     iat: issuedAt,
     nbf: issuedAt,
     exp: issuedAt + ttl,
     ...extraClaims,
   };
+  validateJtiForPurpose(payload);
 
   const encodedHeader = base64UrlEncodeJson(header);
   const encodedPayload = base64UrlEncodeJson(payload);
@@ -91,15 +94,18 @@ export async function verifySessionJwt(token, env, { purpose, audience, now } = 
   const payload = decodeJson(encodedPayload, 'payload');
   const environment = validateEnvironment(env?.PAGES_ENV);
   const checkedAt = validateUnixTime(now, 'now');
+  const expectedPurpose = validatePurpose(purpose);
 
   if (payload.iss !== ISSUER) throw new Error('JWT issuer mismatch');
   if (payload.aud !== audience) throw new Error('JWT audience mismatch');
   if (payload.env !== environment) throw new Error('JWT environment mismatch');
-  if (payload.purpose !== purpose) throw new Error('JWT purpose mismatch');
+  validatePurpose(payload.purpose);
+  if (payload.purpose !== expectedPurpose) throw new Error('JWT purpose mismatch');
   validateRequiredString(payload.sub, 'sub');
   validateNumericClaim(payload.iat, 'iat');
   validateNumericClaim(payload.nbf, 'nbf');
   validateNumericClaim(payload.exp, 'exp');
+  validateJtiForPurpose(payload);
 
   if (payload.iat > checkedAt + CLOCK_SKEW_SECONDS) throw new Error('JWT iat is in the future');
   if (payload.nbf > checkedAt + CLOCK_SKEW_SECONDS) throw new Error('JWT nbf is in the future');
@@ -147,6 +153,24 @@ function validateNumericClaim(value, label) {
 
 function validateRequiredString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`JWT ${label} is required`);
+}
+
+function validatePurpose(value) {
+  validateRequiredString(value, 'purpose');
+  if (!ALLOWED_PURPOSES.has(value)) throw new Error(`JWT purpose ${value} is unsupported`);
+  return value;
+}
+
+function validateJtiForPurpose(payload) {
+  if (payload.purpose === 'cli_token' || Object.hasOwn(payload, 'jti')) {
+    validateJwtId(payload.jti);
+  }
+}
+
+function validateJwtId(value) {
+  if (typeof value !== 'string' || !SAFE_JTI_RE.test(value)) {
+    throw new Error('JWT jti must be a safe non-empty string');
+  }
 }
 
 function sanitizeExtraClaims(claims) {

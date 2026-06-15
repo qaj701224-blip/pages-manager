@@ -4,6 +4,7 @@ import test from 'node:test';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const now = 1_700_000_000;
+const encoder = new globalThis.TextEncoder();
 
 function testEnv(overrides = {}) {
   return {
@@ -145,6 +146,117 @@ test('rejects expired tokens and future-issued tokens', async () => {
   );
 });
 
+test('rejects unsupported session JWT purposes', async () => {
+  await assert.rejects(
+    () =>
+      signSessionJwt(
+        {
+          purpose: 'admin_session',
+          audience: 'pages-auth',
+          subject: 'usr_123',
+          now,
+          ttlSeconds: 10,
+        },
+        testEnv()
+      ),
+    /purpose/i
+  );
+
+  const token = await signRawJwt({
+    iss: 'pages-auth',
+    aud: 'pages-auth',
+    env: 'production',
+    purpose: 'admin_session',
+    sub: 'usr_123',
+    iat: now,
+    nbf: now,
+    exp: now + 10,
+  });
+
+  await assert.rejects(
+    () =>
+      verifySessionJwt(token, testEnv(), {
+        purpose: 'admin_session',
+        audience: 'pages-auth',
+        now,
+      }),
+    /purpose/i
+  );
+});
+
+test('requires cli_token JWT IDs and rejects malformed jti values', async () => {
+  await assert.rejects(
+    () =>
+      signSessionJwt(
+        {
+          purpose: 'cli_token',
+          audience: 'pages-api',
+          subject: 'usr_123',
+          now,
+          ttlSeconds: 10,
+        },
+        testEnv()
+      ),
+    /jti/i
+  );
+  await assert.rejects(
+    () =>
+      signSessionJwt(
+        {
+          purpose: 'cli_token',
+          audience: 'pages-api',
+          subject: 'usr_123',
+          now,
+          ttlSeconds: 10,
+          claims: { jti: 'bad jti' },
+        },
+        testEnv()
+      ),
+    /jti/i
+  );
+
+  const missingJti = await signRawJwt({
+    iss: 'pages-auth',
+    aud: 'pages-api',
+    env: 'production',
+    purpose: 'cli_token',
+    sub: 'usr_123',
+    iat: now,
+    nbf: now,
+    exp: now + 10,
+  });
+  const malformedJti = await signRawJwt({
+    iss: 'pages-auth',
+    aud: 'pages-api',
+    env: 'production',
+    purpose: 'cli_token',
+    sub: 'usr_123',
+    iat: now,
+    nbf: now,
+    exp: now + 10,
+    jti: '',
+  });
+
+  await assert.rejects(
+    () =>
+      verifySessionJwt(missingJti, testEnv(), {
+        purpose: 'cli_token',
+        audience: 'pages-api',
+        now,
+      }),
+    /jti/i
+  );
+  await assert.rejects(
+    () =>
+      verifySessionJwt(malformedJti, testEnv(), {
+        purpose: 'cli_token',
+        audience: 'pages-api',
+        now,
+      }),
+    /jti/i
+  );
+});
+
 test('rejects missing active key and duplicate key registry entries', async () => {
   await assert.rejects(
     () =>
@@ -212,3 +324,27 @@ test('rejects inherited and non-string key registry secret bindings', async () =
     /secret/i
   );
 });
+
+async function signRawJwt(payload, env = testEnv()) {
+  const header = { alg: 'HS256', typ: 'JWT', kid: env.PAGES_SESSION_JWT_ACTIVE_KID };
+  const signingInput = `${base64UrlEncodeJson(header)}.${base64UrlEncodeJson(payload)}`;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(env.PAGES_SESSION_JWT_SECRET_TEST),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(signingInput));
+  return `${signingInput}.${base64UrlEncodeBytes(new Uint8Array(signature))}`;
+}
+
+function base64UrlEncodeJson(value) {
+  return base64UrlEncodeBytes(encoder.encode(JSON.stringify(value)));
+}
+
+function base64UrlEncodeBytes(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
