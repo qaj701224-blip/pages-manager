@@ -31,6 +31,24 @@ test('builds host-only site_session cookies without Domain', () => {
   assert.doesNotMatch(cookie, /Domain=/i);
 });
 
+test('rejects unsafe session cookie values before serialization', () => {
+  const unsafeValues = [
+    'ok\r\nSet-Cookie: injected=1',
+    'ok; Domain=.pages.xd.team',
+    'has space',
+    'has"quote',
+    'has,comma',
+    'has\\backslash',
+  ];
+
+  for (const value of unsafeValues) {
+    assert.throws(
+      () => buildAuthSessionCookie(value, { maxAgeSeconds: 1209600 }),
+      /Cookie value contains unsafe characters/,
+    );
+  }
+});
+
 test('builds clearing cookies for host-only sessions', () => {
   assert.match(buildClearAuthSessionCookie(), new RegExp(`^${AUTH_SESSION_COOKIE}=;`));
   assert.match(buildClearAuthSessionCookie(), /Max-Age=0/);
