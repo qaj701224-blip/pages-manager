@@ -1,6 +1,6 @@
 const PLATFORM_HEADER_PREFIXES = ['cf-platform-', 'x-pages-', 'x-xd-pages-'];
 const PLATFORM_COOKIE_PREFIXES = ['__Host-pages_', '__Secure-pages_'];
-const FORBIDDEN_COOKIE_DOMAIN_RE = /;\s*domain=(?:\.pages\.xd\.team|pages\.xd\.team)\s*(?:;|$)/i;
+const COOKIE_DOMAIN_ATTRIBUTE_RE = /;\s*domain\s*=/i;
 
 export function sanitizeRequestForUserWorker(request, platformHeaders = {}) {
   const headers = new Headers(request.headers);
@@ -61,7 +61,7 @@ function sanitizeCookieHeader(value) {
 function isAllowedSetCookie(value) {
   const name = String(value || '').split('=', 1)[0];
   if (isPlatformCookieName(name)) return false;
-  if (FORBIDDEN_COOKIE_DOMAIN_RE.test(value)) return false;
+  if (COOKIE_DOMAIN_ATTRIBUTE_RE.test(value)) return false;
   return true;
 }
 
