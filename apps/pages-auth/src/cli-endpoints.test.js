@@ -127,6 +127,28 @@ test('poll after confirmation returns signed CLI token once', async () => {
   assert.equal((await repeatedResponse.json()).error.code, 'CLI_LOGIN_CONSUMED');
 });
 
+test('poll maps Durable Object consumed responses to CLI_LOGIN_CONSUMED', async () => {
+  const env = testEnv({
+    CLI_LOGINS: {
+      idFromName: (name) => name,
+      get: () => ({
+        fetch: async () =>
+          new Response(JSON.stringify({ error: { code: 'STATE_INVALID', message: 'State transition is invalid.' } }), {
+            status: 409,
+            headers: {
+              'Cache-Control': 'no-store',
+              'Content-Type': 'application/json',
+            },
+          }),
+      }),
+    },
+  });
+  const response = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, readAuthConfig(env));
+
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONSUMED');
+});
+
 function pollRequest(loginId, loginSecret) {
   return new Request('https://auth.pages.xd.team/.xd-pages/cli/login/poll', {
     method: 'POST',

@@ -104,6 +104,7 @@ async function pollCliLoginRecord(env, input, options) {
 
   const stub = getCliLoginStub(env, input.loginId);
   const response = await stub.fetch(jsonDoRequest('https://cli-login-do/poll', { ...input, now: options.now }));
+  if (response.status === 409) throw new Error('CLI login invalid: already consumed');
   if (!response.ok) throw new Error('CLI login invalid');
   return response.json();
 }
