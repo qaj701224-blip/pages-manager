@@ -22,6 +22,13 @@
       "when": 1781415144485,
       "tag": "0002_unique_silhouette",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1781496803840,
+      "tag": "0003_smiling_blur",
+      "breakpoints": true
     }
   ]
 }
