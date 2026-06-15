@@ -35,13 +35,29 @@ export function readSlackSessionConfig(env = {}) {
 export function slackActorFromBody(body = {}) {
   const event = body.event || {};
   const teamId = body.team_id || body.team?.id || event.team || 'unknown-team';
-  const slackUserId = event.user || body.user_id || body.user?.id || body.source_user_id || 'unknown-user';
+  const slackUserId = slackUserIdFromBody(body);
 
   return {
     teamId,
     slackUserId,
     requestedById: `slack:${teamId}:${slackUserId}`,
   };
+}
+
+function slackIdValue(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed.slice(0, 255) : null;
+  }
+  if (value && typeof value === 'object') {
+    return slackIdValue(value.id || value.user_id || value.user);
+  }
+  return null;
+}
+
+export function slackUserIdFromBody(body = {}, fallback = 'unknown-user') {
+  const event = body.event || {};
+  return slackIdValue(event.user) || slackIdValue(body.user_id) || slackIdValue(body.user) || slackIdValue(body.source_user_id) || fallback;
 }
 
 function inferSlackChannelType(channelType, channelId) {

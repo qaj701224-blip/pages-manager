@@ -72,6 +72,58 @@ function transientMessageStore() {
   };
 }
 
+function slackApiUrl(env = {}, method) {
+  if (env.SLACK_API_BASE_URL) {
+    return `${String(env.SLACK_API_BASE_URL).replace(/\/+$/, '')}/${method}`;
+  }
+  return String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, `/${method}`);
+}
+
+function normalizeSlackUserProfile(user = {}) {
+  const profile = user.profile || {};
+  return {
+    source: 'slack.users.info',
+    slackTeamId: user.team_id || null,
+    slackUserId: user.id || null,
+    name: user.name || profile.name || null,
+    displayName: profile.display_name || profile.display_name_normalized || null,
+    realName: profile.real_name || profile.real_name_normalized || user.real_name || null,
+    email: profile.email || null,
+  };
+}
+
+async function fetchSlackUserProfile(env = {}, userId) {
+  if (!env.SLACK_BOT_TOKEN) {
+    return { ok: false, error: 'Slack bot token is not configured' };
+  }
+  if (!userId) {
+    return { ok: false, error: 'Slack user id is required' };
+  }
+
+  const fetchImpl = env.SLACK_PROFILE_FETCH || env.SLACK_FETCH || fetch;
+  const response = await fetchImpl(slackApiUrl(env, 'users.info'), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+      'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+    },
+    body: new URLSearchParams({ user: userId }).toString(),
+  });
+  const body = await response.json().catch(() => null);
+
+  if (!response.ok || body?.ok === false || !body?.user) {
+    return {
+      ok: false,
+      error: body?.error || response.statusText || `HTTP ${response.status}`,
+    };
+  }
+
+  return {
+    ok: true,
+    profile: normalizeSlackUserProfile(body.user),
+  };
+}
+
 export function createSlackNotifierApp() {
   return {
     async fetch(request, env = {}) {
@@ -122,6 +174,12 @@ export function createSlackNotifierApp() {
           const body = await readJson(request);
           const result = await addSlackReaction(env, body.payload || {});
           return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/user-info') {
+          const body = await readJson(request);
+          const result = await fetchSlackUserProfile(env, body.user || body.userId || body.slackUserId);
+          return jsonResponse(result || { ok: false, error: 'Slack user lookup failed' }, result?.ok === false ? 502 : 200);
         }
 
         return jsonResponse({ error: 'Endpoint not found', method: request.method, path: url.pathname }, 404);
