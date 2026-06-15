@@ -17,6 +17,14 @@ test('buildPublishingJob creates a received job with an idempotency scope', () =
       employeeSlug: 'zhangsan',
       siteSlug: 'profile',
       brief: 'Create a profile page',
+      requesterProfile: {
+        source: 'slack.users.info',
+        slackTeamId: 'T1',
+        slackUserId: 'U1',
+        displayName: '张三',
+        realName: 'Zhang San',
+        email: 'zhangsan@example.com',
+      },
     },
     { id: 'job_test', now: new Date('2026-06-12T00:00:00.000Z') }
   );
@@ -24,6 +32,14 @@ test('buildPublishingJob creates a received job with an idempotency scope', () =
   assert.equal(job.id, 'job_test');
   assert.equal(job.status, 'received');
   assert.equal(job.employeeSlug, 'zhangsan');
+  assert.deepEqual(job.requesterProfile, {
+    source: 'slack.users.info',
+    slackTeamId: 'T1',
+    slackUserId: 'U1',
+    displayName: '张三',
+    realName: 'Zhang San',
+    email: 'zhangsan@example.com',
+  });
   assert.equal(idempotencyScopeForJob(job), 'slack:user:slack:T:user:evt_1');
 });
 

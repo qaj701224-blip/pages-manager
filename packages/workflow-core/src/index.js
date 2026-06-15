@@ -106,6 +106,29 @@ export function makeId(prefix) {
   return `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
 }
 
+function cleanString(value, maxLength = 255) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
+function normalizeRequesterProfile(input = {}) {
+  const profile = input.requesterProfile || input.requester_profile || input.requester || null;
+  if (!profile || typeof profile !== 'object') return null;
+
+  const normalized = {
+    source: cleanString(profile.source, 80),
+    slackTeamId: cleanString(profile.slackTeamId || profile.slack_team_id, 255),
+    slackUserId: cleanString(profile.slackUserId || profile.slack_user_id, 255),
+    name: cleanString(profile.name, 255),
+    displayName: cleanString(profile.displayName || profile.display_name, 255),
+    realName: cleanString(profile.realName || profile.real_name, 255),
+    email: cleanString(profile.email, 255),
+  };
+  const compact = Object.fromEntries(Object.entries(normalized).filter(([, value]) => value));
+  return Object.keys(compact).length ? compact : null;
+}
+
 export function buildPublishingJob(input, options = {}) {
   const now = options.now || new Date();
   const source = input.source || 'api';
@@ -137,6 +160,7 @@ export function buildPublishingJob(input, options = {}) {
     status: 'received',
     title: input.title || input.summary || input.brief || `${employeeSlug}/${siteSlug}`,
     summary: input.summary || input.brief || '',
+    requesterProfile: normalizeRequesterProfile(input),
     slackThread: input.slackThread || input.slack_thread || null,
     slackSessionId: input.slackSessionId || input.slack_session_id || null,
     slackSessionKey: input.slackSessionKey || input.slack_session_key || null,
