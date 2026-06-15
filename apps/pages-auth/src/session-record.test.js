@@ -29,7 +29,14 @@ test('creates revocable auth session records with idle and absolute expiration',
 });
 
 test('refreshes idle expiration without passing absolute expiration', () => {
-  const record = createSessionRecord({ sid: 'sid_auth', userId: 'usr_123', purpose: 'auth_session', now, idleTtlSeconds: 120, absoluteTtlSeconds: 300 });
+  const record = createSessionRecord({
+    sid: 'sid_auth',
+    userId: 'usr_123',
+    purpose: 'auth_session',
+    now,
+    idleTtlSeconds: 300,
+    absoluteTtlSeconds: 300,
+  });
   const refreshed = refreshSessionRecord(record, { now: now + 250, idleTtlSeconds: 120 });
 
   assert.equal(refreshed.lastSeenAt, now + 250);
@@ -37,12 +44,59 @@ test('refreshes idle expiration without passing absolute expiration', () => {
 });
 
 test('rejects refresh after idle expiration, absolute expiration, or revocation', () => {
-  const record = createSessionRecord({ sid: 'sid_auth', userId: 'usr_123', purpose: 'auth_session', now, idleTtlSeconds: 120, absoluteTtlSeconds: 300 });
+  const record = createSessionRecord({
+    sid: 'sid_auth',
+    userId: 'usr_123',
+    purpose: 'auth_session',
+    now,
+    idleTtlSeconds: 120,
+    absoluteTtlSeconds: 300,
+  });
 
+  assert.throws(() => refreshSessionRecord(record, { now: now + 120, idleTtlSeconds: 120 }), /expired/i);
   assert.throws(() => refreshSessionRecord(record, { now: now + 121, idleTtlSeconds: 120 }), /expired/i);
   assert.throws(() => refreshSessionRecord(record, { now: now + 301, idleTtlSeconds: 120 }), /expired/i);
 
   const revoked = revokeSessionRecord(record, { now: now + 30 });
   assert.equal(revoked.revokedAt, now + 30);
   assert.throws(() => refreshSessionRecord(revoked, { now: now + 31, idleTtlSeconds: 120 }), /revoked/i);
+});
+
+test('rejects creating records with invalid timestamps or ttl values', () => {
+  const base = {
+    sid: 'sid_auth',
+    userId: 'usr_123',
+    purpose: 'auth_session',
+    now,
+    idleTtlSeconds: 120,
+    absoluteTtlSeconds: 300,
+  };
+
+  assert.throws(() => createSessionRecord({ ...base, absoluteTtlSeconds: 119 }), /absoluteTtlSeconds/i);
+  assert.throws(() => createSessionRecord({ ...base, now: Number.NaN }), /now/i);
+  assert.throws(() => createSessionRecord({ ...base, now: undefined }), /now/i);
+  assert.throws(() => createSessionRecord({ ...base, idleTtlSeconds: Number.NaN }), /idleTtlSeconds/i);
+  assert.throws(() => createSessionRecord({ ...base, idleTtlSeconds: undefined }), /idleTtlSeconds/i);
+  assert.throws(() => createSessionRecord({ ...base, absoluteTtlSeconds: Number.NaN }), /absoluteTtlSeconds/i);
+  assert.throws(() => createSessionRecord({ ...base, absoluteTtlSeconds: undefined }), /absoluteTtlSeconds/i);
+});
+
+test('rejects refreshing records with invalid persisted expiration timestamps', () => {
+  const record = createSessionRecord({
+    sid: 'sid_auth',
+    userId: 'usr_123',
+    purpose: 'auth_session',
+    now,
+    idleTtlSeconds: 120,
+    absoluteTtlSeconds: 300,
+  });
+
+  assert.throws(
+    () => refreshSessionRecord({ ...record, expiresAt: Number.NaN }, { now: now + 30, idleTtlSeconds: 120 }),
+    /expiresAt/i,
+  );
+  assert.throws(
+    () => refreshSessionRecord({ ...record, absoluteExpiresAt: Number.NaN }, { now: now + 30, idleTtlSeconds: 120 }),
+    /absoluteExpiresAt/i,
+  );
 });
