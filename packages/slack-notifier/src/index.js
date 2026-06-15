@@ -55,6 +55,52 @@ function truncateText(value = '', max = 1800) {
   return `${text.slice(0, max - 1)}...`;
 }
 
+function cleanCardText(value = '') {
+  return String(value || '')
+    .replace(/^\s*#+\s*Slack Follow-up\s*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function splitSlackFollowupSummary(summary = '') {
+  const parts = String(summary || '')
+    .split(/^\s*##\s*Slack Follow-up\s*$/gim)
+    .map((part) => cleanCardText(part))
+    .filter(Boolean);
+  const base = parts.shift() || '';
+  return { base, followups: parts };
+}
+
+function formatFinalSummary(job = {}, options = {}) {
+  const explicit = cleanCardText(options.finalSummary);
+  if (explicit) return truncateText(explicit, 1000);
+
+  const { base, followups } = splitSlackFollowupSummary(job.summary || '');
+  const seed = cleanCardText(base || job.brief || job.title || '');
+  if (!followups.length) return truncateText(seed || '暂无摘要', 1000);
+
+  const visibleFollowups = followups.slice(-4).map((item, index) => `${index + 1}. ${truncateText(item, 220)}`);
+  const hiddenCount = Math.max(0, followups.length - visibleFollowups.length);
+  const lines = [
+    seed || '已记录初始需求。',
+    '',
+    '*已追加修改*',
+    hiddenCount ? `...前面还有 ${hiddenCount} 轮修改` : null,
+    ...visibleFollowups,
+  ].filter(Boolean);
+
+  return truncateText(lines.join('\n'), 1000);
+}
+
+function formatCurrentChange(job = {}, options = {}) {
+  const explicit = cleanCardText(options.currentChange || options.cardSummary).replace(/^本轮修改[：:]\s*/u, '');
+  if (explicit) return truncateText(explicit, 700);
+
+  const { followups } = splitSlackFollowupSummary(job.summary || '');
+  const latest = cleanCardText(followups.at(-1) || '');
+  return latest ? truncateText(latest, 700) : '';
+}
+
 function slackText(text, emoji = true) {
   return {
     type: 'mrkdwn',
@@ -183,12 +229,13 @@ function jobActionElements(job = {}) {
 export function buildJobStatusBlocks(job = {}, options = {}) {
   const stage = options.stage || job.status;
   const label = stageLabel(stage, job);
+  const cardTitle = truncateText(options.cardTitle || label, 180);
   const statusLine = job.status === 'failed' ? ':x: 失败' : options.statusText || ':hourglass_flowing_sand: 处理中';
-  const summary = truncateText(job.summary || job.brief || job.title || '暂无摘要', 900);
+  const finalSummary = formatFinalSummary(job, options);
+  const currentChange = formatCurrentChange(job, options);
   const fields = [
     slackText(`*当前阶段*\n${label}`),
     slackText(`*站点*\n${job.siteSlug || '-'}`),
-    slackText(`*状态*\n${job.status || '-'}`),
     ...jobLinkFields(job),
   ];
   const blocks = [
@@ -198,17 +245,27 @@ export function buildJobStatusBlocks(job = {}, options = {}) {
     },
     {
       type: 'section',
-      text: slackText(`*${label}*\n${summary}`),
+      text: slackText(`*${cardTitle}*`),
     },
     {
       type: 'section',
       fields: fields.slice(0, 10),
     },
     {
+      type: 'section',
+      text: slackText(`*最终需求*\n${finalSummary}`),
+    },
+    currentChange
+      ? {
+          type: 'section',
+          text: slackText(`*本轮修改*\n${currentChange}`),
+        }
+      : null,
+    {
       type: 'context',
       elements: [slackText(`${statusLine} · 继续修改可以直接在当前对话里回复。`)],
     },
-  ];
+  ].filter(Boolean);
   const actions = jobActionElements(job);
   if (actions.length) {
     blocks.push({ type: 'actions', elements: actions });
@@ -261,6 +318,10 @@ export async function updateSlackMessage(env, payload) {
 
 export async function addSlackReaction(env, payload) {
   return callSlackApi(env, 'reactions.add', payload);
+}
+
+export async function removeSlackReaction(env, payload) {
+  return callSlackApi(env, 'reactions.remove', payload);
 }
 
 function formatReviewLocation(comment = {}) {
@@ -323,6 +384,9 @@ export function notificationTextForReviewAction(reviewAction, payload = {}) {
   }
   if (reviewAction === 'preview_dispatched') {
     return 'Review gate 已通过，开始生成 staging Preview。';
+  }
+  if (reviewAction === 'review_timeout_preview_dispatched') {
+    return 'Review Agent 超时未返回。site-check 已通过且无阻塞评论，已记录兜底 Review，开始生成 Preview。';
   }
   if (reviewAction === 'site_check_waiting') {
     return 'Review Agent 已记录，正在等待 site-check 通过后再生成 Preview。';
@@ -407,6 +471,10 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
   const blocks = buildJobStatusBlocks(job, {
     stage,
     statusText: options.statusText || options.text,
+    cardTitle: options.cardTitle,
+    cardSummary: options.cardSummary,
+    finalSummary: options.finalSummary,
+    currentChange: options.currentChange,
   });
   const text = buildSlackStatusText(job, stage);
   let result;
