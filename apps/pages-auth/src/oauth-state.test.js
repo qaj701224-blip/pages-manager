@@ -149,6 +149,31 @@ test('consumes OAuth state once with matching secret', async () => {
   await assert.rejects(() => consumeOAuthState('ost_state.secret', tx.record, { now: now + 11 }), /consumed/i);
 });
 
+test('does not allow concurrent consumes against the same record', async () => {
+  const tx = await createOAuthState({
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_state',
+    stateSecret: 'secret',
+  });
+
+  const results = await Promise.allSettled([
+    consumeOAuthState('ost_state.secret', tx.record, { now: now + 10 }),
+    consumeOAuthState('ost_state.secret', tx.record, { now: now + 11 }),
+  ]);
+
+  const fulfilled = results.filter((result) => result.status === 'fulfilled');
+  const rejected = results.filter((result) => result.status === 'rejected');
+
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.match(rejected[0].reason.message, /consumed/i);
+  assert.equal(tx.record.consumedAt, fulfilled[0].value.record.consumedAt);
+});
+
 test('rejects OAuth state with wrong secret or expiration', async () => {
   const tx = await createOAuthState({
     environment: 'production',
@@ -161,6 +186,7 @@ test('rejects OAuth state with wrong secret or expiration', async () => {
   });
 
   await assert.rejects(() => consumeOAuthState('ost_state.wrong', tx.record, { now: now + 10 }), /secret/i);
+  assert.equal(tx.record.consumedAt, null);
   await assert.rejects(() => consumeOAuthState('ost_state.secret', tx.record, { now: now + 300 }), /expired/i);
   await assert.rejects(() => consumeOAuthState('ost_state.secret', tx.record, { now: now + 301 }), /expired/i);
 });

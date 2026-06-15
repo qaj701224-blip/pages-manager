@@ -34,15 +34,21 @@ export async function createOAuthState({
 export async function consumeOAuthState(publicState, record, { now }) {
   const [stateId, stateSecret] = parsePublicState(publicState);
   if (!record || record.id !== stateId) throw new Error('OAuth state invalid: unknown state');
-  if (record.consumedAt !== null) throw new Error('OAuth state invalid: already consumed');
+  const previousConsumedAt = record.consumedAt;
+  if (previousConsumedAt !== null) throw new Error('OAuth state invalid: already consumed');
   validateFiniteNumber('now', now);
   validateFiniteNumber('expiresAt', record.expiresAt);
   if (record.expiresAt <= now) throw new Error('OAuth state invalid: expired');
 
-  const actualHash = await sha256Hex(stateSecret);
-  if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('OAuth state invalid: secret mismatch');
-
   record.consumedAt = now;
+  try {
+    const actualHash = await sha256Hex(stateSecret);
+    if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('OAuth state invalid: secret mismatch');
+  } catch (error) {
+    record.consumedAt = previousConsumedAt;
+    throw error;
+  }
+
   const consumedRecord = { ...record };
   return { ok: true, record: consumedRecord, returnTo: record.returnTo, siteHost: record.siteHost };
 }
