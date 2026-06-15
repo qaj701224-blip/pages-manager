@@ -115,14 +115,9 @@ function selectionReply(sessions) {
   const lines = [
     '我找到了多个最近的会话，需要你指定要继续哪一个。',
     '',
-    ...sessions.slice(0, 5).map((session, index) => {
-      const target = [session.activeJobId, session.activeIssueNumber && `#${session.activeIssueNumber}`]
-        .filter(Boolean)
-        .join(' / ');
-      return `${index + 1}. ${session.sessionTitle || session.sessionKey}（${session.id}${target ? `，${target}` : ''}）`;
-    }),
+    ...sessions.slice(0, 5).map((session, index) => `${index + 1}. ${session.sessionTitle || '未命名会话'}`),
     '',
-    '你可以回复 `session: sess_xxx`，或者直接用 `issue: ...` 开一个新任务。',
+    '可以继续在对应对话里回复，或者直接描述一个新需求。',
   ];
   return lines.join('\n');
 }

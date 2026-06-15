@@ -12,26 +12,26 @@ export function normalizeSlackIntakeText(text = '') {
 
 function helpText() {
   return [
-    '你可以直接用自然语言和我聊个人网站需求，我会先整理清楚，再决定是追问、创建 issue，还是继续修改已有 preview。',
+    '你可以直接和我聊个人网站需求。我会先整理，等你确认后再创建 issue。',
     '',
     '可以这样说：',
     '- `我想做一个个人主页，突出项目经历和技术风格`',
     '- `这个 preview 不满意，把标题改成中文，再加一个项目经历区域`',
-    '- `帮我看一下 job_xxx 的状态`',
+    '- `现在进度怎么样`',
     '',
     '命令写法仍然支持：',
     '- `issue: 给 smoke/profile 做一个个人主页`',
-    '- `status: job_xxx`',
+    '- `status`',
     '',
-    '如果信息不够，我会继续问你，不会立刻创建 issue。',
+    '如果信息不够，我会继续追问。',
   ].join('\n');
 }
 
 function unknownText() {
   return [
-    '我收到了，但当前没有可用的 Slack Agent 来理解这轮自然语言，所以先不创建 issue。',
+    '我收到了，但现在还不能理解这条消息，所以先不创建 issue。',
     '',
-    '你可以稍后重试，或临时用明确命令：`issue: 给 smoke/profile 做一个个人主页`。',
+    '你可以稍后重试，或直接描述你想做的个人网站。',
   ].join('\n');
 }
 
@@ -74,7 +74,7 @@ export function classifySlackIntake(body) {
       action: 'ping',
       shouldCreateJob: false,
       text,
-      replyText: '我在。可以说 `创建 issue：...` 来创建发布任务，或说 `帮助` 查看示例。',
+      replyText: '我在。直接告诉我你想做什么个人网站即可。',
     };
   }
 
@@ -83,7 +83,7 @@ export function classifySlackIntake(body) {
       action: 'cancel',
       shouldCreateJob: false,
       text,
-      replyText: '收到取消意图。当前 MVP 还没有自动取消 job；如果已经创建了 issue，可以先在 issue 里补充“取消”。',
+      replyText: '收到。如果要结束当前对话，可以说「关闭会话」。',
     };
   }
 
@@ -108,7 +108,7 @@ export function classifySlackIntake(body) {
       shouldCreateJob: false,
       text,
       jobId: commandJobId,
-      replyText: commandJobId ? null : '请带上 job id，例如 `status: job_xxx`。',
+      replyText: commandJobId ? null : null,
     };
   }
 
@@ -163,10 +163,10 @@ export function classifySlackIntake(body) {
 
 export function slackStatusReply(jobId, job) {
   if (!job) {
-    return `没有找到发布任务 ${jobId}。`;
+    return '没有找到对应的发布任务。';
   }
 
-  const lines = [`发布任务 ${job.id}`, `状态：${job.status}`, `目标：${job.employeeSlug}/${job.siteSlug}`];
+  const lines = ['发布进度', `状态：${job.status}`, `站点：${job.siteSlug || '-'}`];
 
   if (job.issueNumber) lines.push(`Issue：#${job.issueNumber}`);
   if (job.prNumber) lines.push(`PR：#${job.prNumber}`);

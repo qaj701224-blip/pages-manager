@@ -616,12 +616,63 @@ test('Slack free-form turn asks for confirmation before creating an issue', asyn
   assert.equal(body.action, 'confirm_before_issue');
   assert.equal(body.accepted, false);
   assert.equal(body.jobId, undefined);
-  assert.match(body.replyText, /不会创建 issue/);
-  assert.match(body.replyText, /确认创建发布任务/);
+  assert.match(body.replyText, /我整理好了，先等你确认/);
+  assert.match(body.replyText, /下一步：点击「确认创建发布任务」/);
+  assert.equal(body.blocks?.at(-1)?.elements?.[0]?.action_id, 'pages_confirm_issue');
   assert.equal(app.store.jobs.size, 0);
 });
 
-test('Slack free-form turn can create a job after explicit confirmation', async () => {
+test('Slack confirmation draft hides internal session and job context from users', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-freeform-internal-summary-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000107',
+          text: '做一个 profile 网站，唯一标识 clean-copy-001',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              siteSlug: 'profile',
+              title: '创建/更新 smoke/profile 个人网站',
+              summary:
+                '为 smoke 名下的 profile 个人网站创建/更新发布任务，突出项目经历和联系方式。当前会话历史中用户已确认开始生成页面，应优先沿用已有会话关系，避免重复创建新的 issue：activeJobId=job_abc123，activeIssueNumber=59，并保留既有 PR/preview 关系（历史关联 PR #58，previewUrl=https://pm-pr-58-example.workers.xd.team）。最终归属目录应由 gateway 根据 Slack 身份派生。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = `${body.replyText}\n${JSON.stringify(body.blocks)}`;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'confirm_before_issue');
+  assert.doesNotMatch(visible, /activeJobId|activeIssueNumber|previewUrl|gateway|job_abc123|pm-pr-58/i);
+  assert.match(body.replyText, /标题：/);
+  assert.match(body.replyText, /需求：/);
+  assert.match(body.replyText, /下一步：点击「确认创建发布任务」/);
+});
+
+test('Slack free-form turn still requires button confirmation before creating an issue', async () => {
   const app = createGatewayApp();
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
@@ -661,15 +712,100 @@ test('Slack free-form turn can create a job after explicit confirmation', async 
     }
   );
   const body = await json(response);
-  const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${body.jobId}`)));
 
   assert.equal(response.status, 200);
-  assert.equal(body.action, 'create_job');
-  assert.equal(body.accepted, true);
+  assert.equal(body.action, 'confirm_before_issue');
+  assert.equal(body.accepted, false);
+  assert.equal(body.jobId, undefined);
+  assert.match(body.replyText, /下一步：点击「确认创建发布任务」/);
+  assert.equal(body.blocks?.at(-1)?.type, 'actions');
+  assert.equal(body.blocks.at(-1).elements[0].action_id, 'pages_confirm_issue');
+  assert.equal(app.store.jobs.size, 0);
+});
+
+test('Slack confirm issue button creates the publishing job and starts worker', async () => {
+  const app = createGatewayApp();
+  const draftResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-freeform-confirm-button-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000109',
+          text: '个人品牌想走清爽可信的路线，信息足够，请直接创建发布任务',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              employeeSlug: 'alice',
+              siteSlug: 'brand',
+              title: 'Alice personal brand page',
+              summary: '用户希望创建一个清爽可信的个人品牌页面。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const draft = await json(draftResponse);
+  const sessionId = draft.slackSessionId;
+  const secret = 'slack-signing-secret';
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const payload = JSON.stringify({
+    type: 'block_actions',
+    team: { id: 'T1' },
+    user: { id: 'U1' },
+    channel: { id: 'D1' },
+    message: { ts: '1710000000.000109' },
+    actions: [{ action_id: 'pages_confirm_issue', value: sessionId }],
+  });
+  const formBody = new URLSearchParams({ payload }).toString();
+  const workerStarts = [];
+
+  const confirmResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Slack-Request-Timestamp': timestamp,
+        'X-Slack-Signature': await slackSignature(secret, timestamp, formBody),
+      },
+      body: formBody,
+    }),
+    {
+      SLACK_SIGNING_SECRET: secret,
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const confirmed = await json(confirmResponse);
+  const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${confirmed.jobId}`)));
+
+  assert.equal(confirmResponse.status, 200);
+  assert.equal(confirmed.created, true);
   assert.match(jobBody.job.employeeSlug, /^u1-[a-z0-9]{6}$/);
   assert.notEqual(jobBody.job.employeeSlug, 'alice');
   assert.equal(jobBody.job.siteSlug, 'brand');
   assert.equal(jobBody.job.summary, '用户希望创建一个清爽可信的个人品牌页面。');
+  assert.equal(workerStarts.length, 1);
 });
 
 test('Slack free-form turn stays conversational when Slack Agent is not configured', async () => {
@@ -698,7 +834,7 @@ test('Slack free-form turn stays conversational when Slack Agent is not configur
   assert.equal(body.action, 'agent_turn');
   assert.equal(body.accepted, false);
   assert.equal(body.jobId, undefined);
-  assert.match(body.replyText, /没有可用的 Slack Agent/);
+  assert.match(body.replyText, /现在还不能理解这条消息/);
   assert.equal(app.store.jobs.size, 0);
 });
 
@@ -731,7 +867,7 @@ test('Slack free-form turn redacts token-like content from gateway session memor
   assert.match(JSON.stringify(memory), /\[REDACTED_API_KEY\]/);
 });
 
-test('executor callbacks notify the source Slack thread', async () => {
+test('executor callbacks update the source Slack status card without extra progress messages', async () => {
   const app = createGatewayApp();
   const slackMessages = [];
   const createResponse = await app.fetch(
@@ -782,21 +918,16 @@ test('executor callbacks notify the source Slack thread', async () => {
   assert.equal(response.status, 200);
   assert.equal(body.slackStatusNotification.ok, true);
   assert.equal(body.slackStatusNotification.action, 'posted');
-  assert.equal(body.slackNotification.ok, true);
-  assert.equal(slackMessages.length, 2);
+  assert.equal(body.slackNotification, undefined);
+  assert.equal(slackMessages.length, 1);
   const statusPayload = JSON.parse(slackMessages[0].request.body);
   assert.equal(slackMessages[0].url, 'https://slack.com/api/chat.postMessage');
   assert.equal(statusPayload.channel, 'C1');
   assert.equal(statusPayload.thread_ts, '1710000000.000200');
-  assert.match(statusPayload.text, /^<@U1> Pages 发布任务/);
+  assert.match(statusPayload.text, /^<@U1> Pages 发布进度/);
   assert.ok(Array.isArray(statusPayload.blocks));
   assert.match(JSON.stringify(statusPayload.blocks), /Issue 已创建/);
   assert.match(JSON.stringify(statusPayload.blocks), /查看 Issue/);
-  assert.deepEqual(JSON.parse(slackMessages[1].request.body), {
-    channel: 'C1',
-    thread_ts: '1710000000.000200',
-    text: '<@U1> 已创建 GitHub issue：#8\nhttps://github.example/org/pages-manager/issues/8',
-  });
   assert.equal(body.job.issueUrl, 'https://github.example/org/pages-manager/issues/8');
 
   const duplicate = await app.fetch(
@@ -819,7 +950,7 @@ test('executor callbacks notify the source Slack thread', async () => {
   );
   const duplicateBody = await json(duplicate);
   assert.equal(duplicateBody.slackStatusNotification.skipped, true);
-  assert.equal(duplicateBody.slackNotification.skipped, true);
+  assert.equal(duplicateBody.slackNotification, undefined);
 });
 
 test('executor callbacks update the Slack status card in place', async () => {
@@ -1008,7 +1139,7 @@ test('Slack help and ping messages do not create jobs', async () => {
     assert.equal(body.action, action);
     assert.equal(body.accepted, false);
     assert.equal(body.jobId, undefined);
-    assert.match(body.replyText, action === 'help' ? /自然语言/ : /我在/);
+    assert.match(body.replyText, action === 'help' ? /先整理，等你确认/ : /我在/);
   }
 
   assert.equal(workerStarts.length, 0);
@@ -1056,7 +1187,7 @@ test('Slack status message reads an existing job without creating a new one', as
   assert.equal(body.action, 'status');
   assert.equal(body.accepted, false);
   assert.equal(body.jobId, undefined);
-  assert.match(body.replyText, new RegExp(created.jobId));
+  assert.doesNotMatch(body.replyText, /job_[A-Za-z0-9_]+/);
   assert.match(body.replyText, /状态：received/);
 });
 
@@ -1504,11 +1635,100 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(followupResponse.status, 200);
   assert.equal(followup.action, 'followup_fix_dispatched');
   assert.equal(followup.jobId, created.jobId);
-  assert.match(followup.replyText, /同一个 PR/);
+  assert.match(followup.replyText, /正在启动修复/);
   assert.equal(jobBody.job.status, 'fixing');
   assert.equal(jobBody.job.previewUrl, null);
   assert.equal(agentCalls.length, 1);
   assert.equal(workerStarts.length, 1);
+});
+
+test('Slack create intent in an active DM session records follow-up instead of creating another issue', async () => {
+  const app = createGatewayApp();
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-active-create-intent-create',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000130',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    })
+  );
+  const created = await json(createResponse);
+
+  const issueResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: created.jobId,
+        stageResult: 'issue_created',
+        issueNumber: 71,
+        issueUrl: 'https://github.example/org/pages-manager/issues/71',
+      }),
+    })
+  );
+  assert.equal(issueResponse.status, 200);
+
+  const workerStarts = [];
+  const followupResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-active-create-intent-confirm',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000010.000130',
+          thread_ts: '1710000000.000130',
+          text: '我确定了，开始生成页面吧',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              title: '确认开始生成个人网站页面',
+              summary: '用户确认开始生成页面，应沿用当前 active issue。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const followup = await json(followupResponse);
+  const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${created.jobId}`)));
+
+  assert.equal(followupResponse.status, 200);
+  assert.equal(followup.action, 'followup_recorded');
+  assert.equal(followup.jobId, created.jobId);
+  assert.equal(jobBody.job.issueNumber, 71);
+  assert.equal(app.store.jobs.size, 1);
+  assert.equal(workerStarts.length, 0);
 });
 
 test('Slack confirmation after preview does not dispatch another fix round', async () => {
@@ -1906,6 +2126,64 @@ test('GitHub issue webhook routes platform issue through gateway before starting
   assert.equal(workerBody.job.id, createBody.job.id);
   assert.equal(workerBody.job.status, 'generating_page');
   assert.equal(workerBody.job.issueNumber, 31);
+});
+
+test('GitHub issue webhook accepts pages-manager HTML job marker', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-issue-webhook-html-marker',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-html-marker-1',
+        'X-GitHub-Event': 'issues',
+      },
+      body: JSON.stringify({
+        action: 'opened',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 33,
+          html_url: 'https://github.example/org/pages-manager/issues/33',
+          body: `<!-- pages-manager:job_id=${createBody.job.id} -->\n\n## 发布需求\n\nCreate a personal website.`,
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.issueAction, 'pages_agent_dispatched');
+  assert.equal(body.job.status, 'generating_page');
+  assert.equal(body.job.issueNumber, 33);
+  assert.equal(workerStarts.length, 1);
 });
 
 test('late issue_created callback is idempotent after GitHub issue webhook started pages-agent', async () => {
@@ -2824,7 +3102,7 @@ test('GitHub Review Agent approval can recover from changes_requested when gate 
   assert.equal(workerStarts.length, 1);
 });
 
-test('GitHub Review Agent blocking comment notifies Slack thread', async () => {
+test('GitHub Review Agent blocking comment updates Slack status card', async () => {
   const app = createGatewayApp();
   const slackMessages = [];
   const createResponse = await app.fetch(
@@ -2905,13 +3183,12 @@ test('GitHub Review Agent blocking comment notifies Slack thread', async () => {
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'changes_requested');
   assert.equal(body.slackStatusNotification.ok, true);
-  assert.equal(body.slackNotification.ok, true);
-  assert.equal(slackMessages.length, 2);
+  assert.equal(body.slackNotification, undefined);
+  assert.equal(slackMessages.length, 1);
   assert.match(JSON.stringify(JSON.parse(slackMessages[0].request.body).blocks), /等待修复 Review 意见/);
-  assert.match(JSON.parse(slackMessages[1].request.body).text, /^<@U1> .*blocking comment/s);
 });
 
-test('GitHub Review Agent suggestion comment notifies Slack thread without blocking preview', async () => {
+test('GitHub Review Agent suggestion comment updates Slack status card without blocking preview', async () => {
   const app = createGatewayApp();
   const slackMessages = [];
   const createResponse = await app.fetch(
@@ -2991,7 +3268,6 @@ test('GitHub Review Agent suggestion comment notifies Slack thread without block
   );
   const body = await json(response);
   const statusPayload = JSON.parse(slackMessages[0].request.body);
-  const slackText = JSON.parse(slackMessages[1].request.body).text;
 
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'reviewing');
@@ -2999,11 +3275,9 @@ test('GitHub Review Agent suggestion comment notifies Slack thread without block
   assert.equal(body.gate.canPreview, true);
   assert.equal(body.job.status, 'reviewing');
   assert.equal(body.slackStatusNotification.ok, true);
-  assert.equal(body.slackNotification.ok, true);
+  assert.equal(body.slackNotification, undefined);
+  assert.equal(slackMessages.length, 1);
   assert.match(JSON.stringify(statusPayload.blocks), /等待 Agent Review/);
-  assert.match(slackText, /^<@U1> /);
-  assert.match(slackText, /suggestion/);
-  assert.match(slackText, /sites\/zhangsan\/profile\/src\/index.html:5/);
 });
 
 test('GitHub webhook ignores untrusted review agents and deduplicates deliveries', async () => {
