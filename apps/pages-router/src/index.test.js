@@ -194,6 +194,53 @@ test('rejects staging-prefix worker names in production routes before dispatch',
   assert.equal(env.dispatchCount, 0);
 });
 
+test('dispatches an allowed staging site with a staging worker name', async () => {
+  const env = routeEnv({
+    PAGES_ENV: 'staging',
+    expectedWorkerName: 'pages-v2-staging-demo-worker',
+    routes: {
+      'demo-staging.pages.xd.team': routeSnapshot({
+        environment: 'staging',
+        hostname: 'demo-staging.pages.xd.team',
+        workerName: 'pages-v2-staging-demo-worker',
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo-staging.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'user worker ok');
+  assert.equal(env.dispatchGetCount, 1);
+  assert.equal(env.dispatchCount, 1);
+  assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Slug'), 'demo');
+  assert.equal(env.dispatchedEnv, undefined);
+});
+
+test('rejects production-prefix worker names in staging routes before dispatch', async () => {
+  const env = routeEnv({
+    PAGES_ENV: 'staging',
+    routes: {
+      'demo-staging.pages.xd.team': routeSnapshot({
+        environment: 'staging',
+        hostname: 'demo-staging.pages.xd.team',
+        workerName: 'pages-v2-demo-worker',
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo-staging.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'ROUTE_WORKER_INVALID');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
 function routeSnapshot(overrides = {}) {
   return {
     environment: 'production',
@@ -220,6 +267,7 @@ function routeEnv(overrides = {}) {
     'demo.pages.xd.team': routeSnapshot(),
   };
   const userResponse = overrides.userResponse || new Response('user worker ok');
+  const expectedWorkerName = overrides.expectedWorkerName || 'pages-v2-demo-worker';
 
   const env = {
     ...state,
@@ -231,7 +279,7 @@ function routeEnv(overrides = {}) {
       get(workerName) {
         state.dispatchGetCount += 1;
         env.dispatchGetCount = state.dispatchGetCount;
-        assert.equal(workerName, 'pages-v2-demo-worker');
+        assert.equal(workerName, expectedWorkerName);
         return {
           async fetch(request, dispatchedEnv) {
             this;
@@ -283,7 +331,7 @@ function routeEnv(overrides = {}) {
   };
 
   for (const [key, value] of Object.entries(overrides)) {
-    if (key !== 'routes' && key !== 'userResponse') env[key] = value;
+    if (key !== 'routes' && key !== 'userResponse' && key !== 'expectedWorkerName') env[key] = value;
   }
 
   return env;
