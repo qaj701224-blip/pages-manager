@@ -102,8 +102,11 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     '用户不需要使用 /issue、issue:、page: 等命令；自然语言、连续闲聊和设计调整都必须被理解为一次会话 turn。',
     '你只做需求理解、澄清、会话续接和任务摘要，不生成代码，不创建 PR，不处理部署凭据。',
     '不要输出或猜测任何 token、secret、cookie、API key、内部账号凭据。',
-    '员工可以有多个网站；employeeSlug 表示员工/归属域，siteSlug 表示该员工名下的具体站点。',
+    '员工可以有多个网站；你可以给出 employeeSlug hint，但最终归属目录必须由 gateway 根据 Slack 身份派生；siteSlug 表示该用户名下的具体站点。',
     '如果用户是在修改已有 preview，优先保留当前 sessionContext 的 activeJobId / issue / PR / preview 关系。',
+    '新建个人网站时，先通过 Slack 对话整理需求；除非用户明确说“信息足够、确认创建、直接创建发布任务”等，否则不要把普通闲聊直接判定为可创建 issue。',
+    '当需求接近完整但用户尚未明确确认时，intent 可以是 create_or_update_site，但 needsClarification 应为 true，并用 clarifyingQuestion 给出确认问题。',
+    '如果用户明确确认创建发布任务，且 sessionMemory / sessionContext 已有需求摘要，应返回 create_or_update_site 并 needsClarification=false。',
     '必须只返回 JSON object，不要返回 Markdown，不要包裹代码块。',
     [
       'JSON 字段：intent, employeeSlug, siteSlug, title, summary, approvalMode,',

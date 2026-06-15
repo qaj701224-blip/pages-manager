@@ -99,6 +99,42 @@ async function moveJobToPrCreated(app, options = {}) {
   return createBody.job.id;
 }
 
+test('Slack bot events do not receive working reactions', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-bot-reaction-skip',
+        event: {
+          type: 'message',
+          subtype: 'bot_message',
+          bot_id: 'B1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000100',
+          text: 'status update',
+        },
+      }),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      SLACK_REACTION_ON_RECEIVE: 'true',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_FETCH() {
+        throw new Error('bot events should not call Slack API');
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'ignored_slack_event');
+  assert.equal(body.reason, 'ignored_bot_event');
+});
+
 test('API creates a PublishingJob without requiring GitHub repo user permissions', async () => {
   const app = createGatewayApp();
   const response = await app.fetch(
@@ -265,6 +301,150 @@ test('Slack event creates a slack-sourced job', async () => {
   assert.equal(deliveries.deliveries[0].threadTs, '1710000000.000100');
 });
 
+test('Slack event snapshots requester profile when bot token can read Slack user info', async () => {
+  const app = createGatewayApp();
+  const profileCalls = [];
+  const slackMessages = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-profile-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000106',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_PROFILE_FETCH(url, request) {
+        profileCalls.push({ url: String(url), request });
+        assert.equal(String(url), 'https://slack.com/api/users.info');
+        assert.equal(new URLSearchParams(request.body).get('user'), 'U1');
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            user: {
+              id: 'U1',
+              team_id: 'T1',
+              name: 'zhangsan',
+              profile: {
+                display_name: '张三',
+                real_name: 'Zhang San',
+                email: 'zhangsan@example.com',
+              },
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      async SLACK_FETCH(url, request) {
+        slackMessages.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000106' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${body.jobId}`)));
+
+  assert.equal(response.status, 200);
+  assert.equal(profileCalls.length, 1);
+  assert.equal(slackMessages.length, 1);
+  assert.match(jobBody.job.employeeSlug, /^zhangsan-[a-z0-9]{6}$/);
+  assert.deepEqual(jobBody.job.requesterProfile, {
+    source: 'slack.users.info',
+    slackTeamId: 'T1',
+    slackUserId: 'U1',
+    name: 'zhangsan',
+    displayName: '张三',
+    realName: 'Zhang San',
+    email: 'zhangsan@example.com',
+  });
+});
+
+test('Slack event can snapshot requester profile through slack-notifier', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-profile-notifier-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000107',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    }),
+    {
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'notifier-secret',
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        notifierCalls.push({ url: String(url), request });
+        assert.equal(request.headers['X-Pages-Slack-Notifier-Token'], 'notifier-secret');
+        if (String(url).endsWith('/internal/slack-notifier/job-status')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              action: 'posted',
+              channel: 'D1',
+              ts: '1710000001.000107',
+              message: {
+                channel: 'D1',
+                threadTs: '1710000000.000107',
+                messageTs: '1710000001.000107',
+                stage: 'received',
+                status: 'received',
+              },
+            })
+          );
+        }
+        if (String(url).endsWith('/internal/slack-notifier/job-message')) {
+          return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000002.000107' }));
+        }
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            profile: {
+              source: 'slack.users.info',
+              slackTeamId: 'T1',
+              slackUserId: 'U1',
+              name: 'zhangsan',
+              displayName: '张三',
+              realName: 'Zhang San',
+              email: 'zhangsan@example.com',
+            },
+          })
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${body.jobId}`)));
+
+  assert.equal(response.status, 200);
+  const profileCall = notifierCalls.find((call) => call.url === 'http://slack-notifier.test/internal/slack-notifier/user-info');
+  assert.ok(profileCall);
+  assert.equal(JSON.parse(profileCall.request.body).user, 'U1');
+  assert.match(jobBody.job.employeeSlug, /^zhangsan-[a-z0-9]{6}$/);
+  assert.equal(jobBody.job.requesterProfile.email, 'zhangsan@example.com');
+});
+
 test('Slack event can use Slack Agent analysis before creating a job', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
@@ -290,6 +470,9 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
       SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
       SLACK_AGENT_SHARED_SECRET: 'agent-secret',
       SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_PROFILE_FETCH() {
+        return new Response(JSON.stringify({ ok: true, user: { id: 'U1', profile: {} } }), { status: 200 });
+      },
       async SLACK_AGENT_FETCH(url, request) {
         agentCalls.push({ url: String(url), request });
         assert.equal(request.headers['X-Pages-Slack-Agent-Token'], 'agent-secret');
@@ -329,7 +512,8 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
   assert.equal(body.slackAgentAnalysis.summary, 'Agent summary');
   assert.equal(body.slackStatusNotification.ok, true);
   assert.match(JSON.stringify(JSON.parse(slackMessages[0].request.body).blocks), /Agent summary/);
-  assert.equal(jobBody.job.employeeSlug, 'alice');
+  assert.match(jobBody.job.employeeSlug, /^u1-[a-z0-9]{6}$/);
+  assert.notEqual(jobBody.job.employeeSlug, 'alice');
   assert.equal(jobBody.job.siteSlug, 'portfolio');
   assert.equal(jobBody.job.intent, 'create_or_update_site');
   assert.equal(jobBody.job.summary, 'Agent summary');
@@ -387,7 +571,7 @@ test('Slack free-form turn asks clarification through Slack Agent without creati
   assert.equal(app.store.jobs.size, 0);
 });
 
-test('Slack free-form turn can create a job when Slack Agent decides the requirement is ready', async () => {
+test('Slack free-form turn asks for confirmation before creating an issue', async () => {
   const app = createGatewayApp();
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
@@ -402,7 +586,57 @@ test('Slack free-form turn can create a job when Slack Agent decides the require
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000103',
-          text: '个人品牌想走清爽可信的路线，先给我落一个页面',
+          text: '我想做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              employeeSlug: 'alice',
+              siteSlug: 'brand',
+              title: 'Alice personal brand page',
+              summary: '用户希望创建一个突出项目经历和联系方式的个人主页。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'confirm_before_issue');
+  assert.equal(body.accepted, false);
+  assert.equal(body.jobId, undefined);
+  assert.match(body.replyText, /不会创建 issue/);
+  assert.match(body.replyText, /确认创建发布任务/);
+  assert.equal(app.store.jobs.size, 0);
+});
+
+test('Slack free-form turn can create a job after explicit confirmation', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-freeform-confirmed-create-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000108',
+          text: '个人品牌想走清爽可信的路线，信息足够，请直接创建发布任务',
         },
       }),
     }),
@@ -430,9 +664,10 @@ test('Slack free-form turn can create a job when Slack Agent decides the require
   const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${body.jobId}`)));
 
   assert.equal(response.status, 200);
-  assert.equal(body.action, 'agent_turn');
+  assert.equal(body.action, 'create_job');
   assert.equal(body.accepted, true);
-  assert.equal(jobBody.job.employeeSlug, 'alice');
+  assert.match(jobBody.job.employeeSlug, /^u1-[a-z0-9]{6}$/);
+  assert.notEqual(jobBody.job.employeeSlug, 'alice');
   assert.equal(jobBody.job.siteSlug, 'brand');
   assert.equal(jobBody.job.summary, '用户希望创建一个清爽可信的个人品牌页面。');
 });
@@ -532,6 +767,7 @@ test('executor callbacks notify the source Slack thread', async () => {
     }),
     {
       SLACK_BOT_TOKEN: 'test-slack-token',
+      SLACK_USER_PROFILE_LOOKUP: 'false',
       async SLACK_FETCH(url, request) {
         slackMessages.push({ url: String(url), request });
         assert.equal(request.headers.Authorization, 'Bearer test-slack-token');
@@ -608,6 +844,7 @@ test('executor callbacks update the Slack status card in place', async () => {
     }),
     {
       SLACK_BOT_TOKEN: 'test-slack-token',
+      SLACK_USER_PROFILE_LOOKUP: 'false',
       async SLACK_FETCH(url, request) {
         slackMessages.push({ url: String(url), request });
         return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000210' }), {

@@ -92,6 +92,60 @@ test('slack notifier returns json errors for delivery failures', async () => {
   assert.equal(body.error, 'Slack request failed');
 });
 
+test('slack notifier fetches Slack user profile through internal endpoint', async () => {
+  const app = createSlackNotifierApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/user-info', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({ user: 'U1' }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            user: {
+              id: 'U1',
+              team_id: 'T1',
+              name: 'zhangsan',
+              real_name: 'Zhang San',
+              profile: {
+                display_name: '张三',
+                real_name: 'Zhang San',
+                email: 'zhangsan@example.com',
+              },
+            },
+          })
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/users.info');
+  assert.equal(slackRequests[0].request.headers.Authorization, 'Bearer xoxb-test');
+  assert.equal(new URLSearchParams(slackRequests[0].request.body).get('user'), 'U1');
+  assert.deepEqual(body.profile, {
+    source: 'slack.users.info',
+    slackTeamId: 'T1',
+    slackUserId: 'U1',
+    name: 'zhangsan',
+    displayName: '张三',
+    realName: 'Zhang San',
+    email: 'zhangsan@example.com',
+  });
+});
+
 test('slack notifier updates an existing status card', async () => {
   const app = createSlackNotifierApp();
   const slackRequests = [];
@@ -146,6 +200,55 @@ test('slack notifier updates an existing status card', async () => {
   assert.equal(slackRequests[0].request.headers.Authorization, 'Bearer xoxb-test');
   assert.match(JSON.stringify(payload.blocks), /Preview 已生成/);
   assert.equal(body.message.messageTs, '1710000001.000100');
+});
+
+test('slack notifier skips stale status card regressions', async () => {
+  const app = createSlackNotifierApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/job-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        job: {
+          id: 'job_1',
+          status: 'previewing',
+          employeeSlug: 'alice',
+          siteSlug: 'profile',
+          summary: '个人主页',
+          slackThread: {
+            channelId: 'C1',
+            threadTs: '1710000000.000100',
+            userId: 'U1',
+          },
+        },
+        options: { stage: 'previewing' },
+        existingMessage: {
+          channel: 'C1',
+          threadTs: '1710000000.000100',
+          messageTs: '1710000001.000100',
+          stage: 'preview_deployed',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }));
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.skipped, true);
+  assert.equal(body.reason, 'stale_stage');
+  assert.deepEqual(slackRequests, []);
 });
 
 test('slack notifier renders custom progress text in status cards', async () => {

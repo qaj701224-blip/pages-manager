@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 
 import { FileBackedGatewayStore } from '../../../apps/gateway/src/file-store.js';
 import { createGatewayApp } from '../../../apps/gateway/src/index.js';
-import { readSlackSessionConfig } from '../../../apps/gateway/src/slack-session.js';
+import { readSlackSessionConfig, slackUserIdFromBody } from '../../../apps/gateway/src/slack-session.js';
 import { MemoryGatewayStore } from '../../../apps/gateway/src/store.js';
 
 async function json(response) {
@@ -90,6 +90,19 @@ test('Slack sessions are isolated by user and channel thread', async () => {
     'thread:C1:1710000001.000100',
   ]);
   assert.equal(userTwoSessions[0].sessionKey, 'thread:C1:1710000000.000100');
+});
+
+test('Slack user id normalization ignores object payload shape', () => {
+  assert.equal(
+    slackUserIdFromBody({
+      event: {
+        user: { id: 'U_OBJECT' },
+      },
+    }),
+    'U_OBJECT'
+  );
+  assert.equal(slackUserIdFromBody({ user: { id: 'U_BODY' } }), 'U_BODY');
+  assert.equal(slackUserIdFromBody({ event: { user: { name: 'missing-id' } } }, null), null);
 });
 
 test('top-level DM messages start isolated Slack thread sessions', async () => {
