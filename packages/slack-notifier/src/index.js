@@ -187,15 +187,14 @@ export function buildJobStatusBlocks(job = {}, options = {}) {
   const summary = truncateText(job.summary || job.brief || job.title || '暂无摘要', 900);
   const fields = [
     slackText(`*当前阶段*\n${label}`),
-    slackText(`*目标*\n${job.employeeSlug || '-'}/${job.siteSlug || '-'}`),
-    slackText(`*Job*\n${job.id || '-'}`),
+    slackText(`*站点*\n${job.siteSlug || '-'}`),
     slackText(`*状态*\n${job.status || '-'}`),
     ...jobLinkFields(job),
   ];
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: 'Pages 发布任务' },
+      text: { type: 'plain_text', text: 'Pages 发布进度' },
     },
     {
       type: 'section',
@@ -207,7 +206,7 @@ export function buildJobStatusBlocks(job = {}, options = {}) {
     },
     {
       type: 'context',
-      elements: [slackText(`${statusLine} · 继续修改可以直接在这个 thread 里回复。`)],
+      elements: [slackText(`${statusLine} · 继续修改可以直接在当前对话里回复。`)],
     },
   ];
   const actions = jobActionElements(job);
@@ -249,7 +248,7 @@ async function callSlackApi(env, method, payload) {
 }
 
 export function buildSlackStatusText(job = {}, stage) {
-  return mentionSlackUser(`Pages 发布任务 ${job.id || ''}：${stageLabel(stage, job)}`, job.slackThread?.userId);
+  return mentionSlackUser(`Pages 发布进度：${stageLabel(stage, job)}`, job.slackThread?.userId);
 }
 
 export async function postSlackMessage(env, payload) {
