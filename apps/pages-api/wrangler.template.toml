@@ -1,0 +1,22 @@
+name = "__WORKER_NAME__"
+main = "src/index.js"
+compatibility_date = "2026-06-15"
+
+[vars]
+PAGES_ENV = "__PAGES_ENV__"
+PUBLIC_API_BASE = "__PUBLIC_API_BASE__"
+PUBLIC_AUTH_BASE = "__PUBLIC_AUTH_BASE__"
+PUBLIC_SITE_SUFFIX = "__PUBLIC_SITE_SUFFIX__"
+
+[[d1_databases]]
+binding = "PAGES_METADATA"
+database_name = "__D1_DATABASE_NAME__"
+database_id = "__D1_DATABASE_ID__"
+
+[[kv_namespaces]]
+binding = "ROUTE_SNAPSHOTS"
+id = "__ROUTE_SNAPSHOTS_KV_ID__"
+
+[[services]]
+binding = "PAGES_AUTH"
+service = "__PAGES_AUTH_SERVICE__"

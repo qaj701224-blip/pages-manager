@@ -1,0 +1,16 @@
+{
+  "name": "@xd/pages-api",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@xd/worker-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "wrangler": "catalog:"
+  }
+}
