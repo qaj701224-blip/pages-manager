@@ -1,7 +1,7 @@
 const ISSUER = 'pages-auth';
 const ALGORITHM = 'HS256';
 const CLOCK_SKEW_SECONDS = 0;
-const encoder = new TextEncoder();
+const encoder = new globalThis.TextEncoder();
 
 const RESERVED_CLAIMS = new Set(['iss', 'aud', 'env', 'purpose', 'sub', 'iat', 'nbf', 'exp']);
 

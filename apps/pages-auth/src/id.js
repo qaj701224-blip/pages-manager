@@ -1,4 +1,4 @@
-const encoder = new TextEncoder();
+const encoder = new globalThis.TextEncoder();
 const SAFE_PREFIX_RE = /^[a-z][a-z0-9_]{1,15}$/;
 
 export function createOpaqueToken(prefix, { byteLength = 24, bytes } = {}) {
