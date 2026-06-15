@@ -1,0 +1,18 @@
+{
+  "name": "@xd/pages-router",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@xd/ip-guard": "workspace:*",
+    "@xd/pages-runtime-protocol": "workspace:*",
+    "@xd/worker-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "wrangler": "catalog:"
+  }
+}

@@ -1,0 +1,20 @@
+name = "__WORKER_NAME__"
+main = "src/index.js"
+compatibility_date = "2026-06-15"
+
+[vars]
+PAGES_ENV = "__PAGES_ENV__"
+PUBLIC_AUTH_BASE = "__PUBLIC_AUTH_BASE__"
+PUBLIC_API_BASE = "__PUBLIC_API_BASE__"
+PUBLIC_SITE_SUFFIX = "__PUBLIC_SITE_SUFFIX__"
+ROUTE_CACHE_TTL_SECONDS = "__ROUTE_CACHE_TTL_SECONDS__"
+ROUTER_IP_ALLOWLIST_CIDRS = "__ROUTER_IP_ALLOWLIST_CIDRS__"
+ROUTER_JWKS_URL = "__ROUTER_JWKS_URL__"
+
+[[services]]
+binding = "PAGES_AUTH"
+service = "__PAGES_AUTH_SERVICE__"
+
+[[dispatch_namespaces]]
+binding = "PAGES_DISPATCH"
+namespace = "__PAGES_DISPATCH_NAMESPACE__"
