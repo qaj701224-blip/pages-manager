@@ -69,6 +69,51 @@ test('gateway delegates Slack status delivery to remote notifier when configured
   assert.equal(result.message.jobId, 'job_1');
 });
 
+test('gateway skips stale Slack status updates before remote notifier call', async () => {
+  const calls = [];
+  const store = {
+    getSlackJobStatusMessage() {
+      return {
+        channel: 'C1',
+        threadTs: '1710000000.000100',
+        messageTs: '1710000001.000100',
+        stage: 'preview_deployed',
+        status: 'preview_deployed',
+      };
+    },
+  };
+  const job = {
+    id: 'job_1',
+    status: 'previewing',
+    employeeSlug: 'alice',
+    siteSlug: 'profile',
+    summary: '个人主页',
+    slackThread: {
+      channelId: 'C1',
+      threadTs: '1710000000.000100',
+      userId: 'U1',
+    },
+  };
+
+  const result = await notifySlackJobStatus(
+    {
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        calls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }));
+      },
+    },
+    store,
+    job,
+    { stage: 'previewing' }
+  );
+
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'stale_stage');
+  assert.deepEqual(calls, []);
+});
+
 test('gateway delegates plain Slack replies to remote notifier when configured', async () => {
   const calls = [];
   const result = await postSlackMessage(
