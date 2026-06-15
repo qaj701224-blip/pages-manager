@@ -19,6 +19,8 @@ test('published subpaths expose TypeScript declarations', () => {
 import { createPagesClient, type KVType } from '@xd/pages-sdk/browser';
 import {
   createPagesRuntime,
+  readPlatformContext,
+  type PagesPlatformContext,
   type PagesRuntimeEnv,
 } from '@xd/pages-sdk/worker';
 import { handlePagesRuntimeRequest } from '@xd/pages-sdk/adapter';
@@ -35,6 +37,7 @@ const env: PagesRuntimeEnv = {
   XD_PAGES_KV_GATEWAY: { fetch: async () => Response.json({ ok: true }) },
 };
 const runtime = createPagesRuntime({ env });
+const context: PagesPlatformContext | null = readPlatformContext(new Request('https://site.example/app'));
 const runtimeJsonValue: Promise<{ enabled: boolean } | null> = runtime.kv.get<{ enabled: boolean }>('app/config');
 const runtimeTextValue: Promise<string | null> = runtime.kv.get('app/text', { type: 'text' });
 const maybeResponse: Promise<Response | null> = handlePagesRuntimeRequest(new Request('https://site.example/app'), env);
@@ -47,6 +50,7 @@ void runtimeJsonValue;
 void runtimeTextValue;
 void maybeResponse;
 void runtimeSource;
+void context;
 `,
     'utf8'
   );

@@ -2039,6 +2039,8 @@ baseline egress policy：
 - 高风险 egress、异常失败率和访问平台保留 host 的尝试必须进入审计或安全告警。
 - 后续引入 Outbound Worker 后，再强制执行 allowlist/denylist、数据外传检测、每站点 subrequest 限额和封禁策略。
 
+当前 SDK 提供 `readPlatformContext(request)` 读取 router 注入的最小上下文，并校验 `CF-Platform-*` headers 与 `internal_worker_jwt` claims 的一致性。它不会返回 raw JWT 或 capability；User Worker 不能把该 helper 的返回值当作平台能力，也不能用它绕过 gateway scope。由于第一版 internal JWT 使用 router 持有的 HS256 session key，User Worker 侧不持有验签 secret；未来如果升级为非对称签名和 JWKS，再把该 helper 升级为真正的 cryptographic verify。
+
 ## Pages KV 与平台能力
 
 现有 `apps/kv-gateway` 的方向可以保留：
@@ -2062,10 +2064,10 @@ v2 需要调整：
 
 ```text
 site.kv:
-  s/{siteUuid}/k/{key}
+  s/{slug}--{siteUuid}/k/{key}
 ```
 
-这适合存站点配置、共享草稿、轻量状态和站点级缓存，但不应被当作用户数据库。业务代码自行约定 `users/{userId}/...` 前缀不能形成平台级隔离，因为 userId 可能来自浏览器、业务参数或不可信 Worker 代码。
+`slug` 只用于可读性和排查，不能作为隔离锚点；删除同名站点后新建站点必须得到新的 `siteUuid`，因此不会继承旧 KV 前缀。这适合存站点配置、共享草稿、轻量状态和站点级缓存，但不应被当作用户数据库。业务代码自行约定 `users/{userId}/...` 前缀不能形成平台级隔离，因为 userId 可能来自浏览器、业务参数或不可信 Worker 代码。
 
 如果未来需要用户级数据隔离，应在 SDK/API 层显式引入 `user` scope：
 
@@ -2078,10 +2080,10 @@ pages.user.kv.get('settings');
 
 ```text
 site.kv:
-  s/{siteUuid}/k/{key}
+  s/{slug}--{siteUuid}/k/{key}
 
 user.kv:
-  s/{siteUuid}/u/{userId}/k/{key}
+  s/{slug}--{siteUuid}/u/{userId}/k/{key}
 ```
 
 `userId` 必须来自 `pages-router` 注入的 `CF-Platform-Auth` 签名身份，不能由浏览器、SDK 调用方或 User Worker 自行传入。第一版 user scope 只建议支持当前登录用户自己的 `get` / `put` / `delete`，不支持 list、管理员读取他人数据、团队空间或共享用户组空间。

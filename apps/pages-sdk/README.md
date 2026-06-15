@@ -17,17 +17,20 @@ await pages.kv.delete('app/config');
 ## Worker
 
 ```js
-import { createPagesRuntime } from '@xd/pages-sdk/worker';
+import { createPagesRuntime, readPlatformContext } from '@xd/pages-sdk/worker';
 
 export default {
   async fetch(request, env) {
     const pages = createPagesRuntime({ env });
+    const context = readPlatformContext(request);
     const config = await pages.kv.get('app/config');
 
-    return Response.json({ config });
+    return Response.json({ config, userId: context?.userId ?? null });
   },
 };
 ```
+
+`readPlatformContext(request)` reads the minimal identity context injected by the Pages router. It does not expose the raw internal JWT and it is not a gateway capability. Platform data APIs still require the dedicated capability provided through Worker bindings.
 
 ## Runtime Adapter
 

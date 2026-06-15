@@ -12,6 +12,20 @@ export interface PagesRuntimeEnv {
   XD_PAGES_ENV?: string;
 }
 
+export interface PagesPlatformContext {
+  authenticated: boolean;
+  anonymous: boolean;
+  userId: string | null;
+  siteId: string;
+  siteUuid: string;
+  siteSlug: string;
+  routeId: string;
+  versionId: string;
+  policyVersion: number;
+  traceId: string;
+  environment: string;
+}
+
 export interface PagesKV {
   get<T = unknown>(key: string, options?: { type?: 'json' }): Promise<T | null>;
   get(key: string, options: { type: 'text' }): Promise<string | null>;
