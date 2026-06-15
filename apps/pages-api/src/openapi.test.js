@@ -45,6 +45,44 @@ test('serves production v2-only OpenAPI skeleton', async () => {
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);
 });
 
+test('serves public OpenAPI at top-level docs path', async () => {
+  const response = await worker.fetch(new Request('https://api.pages.xd.team/openapi.json'), {
+    PAGES_ENV: 'production',
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).servers, [{ url: 'https://api.pages.xd.team' }]);
+});
+
+test('serves v2 CLI-only skill without legacy API instructions', async () => {
+  const response = await worker.fetch(new Request('https://api.pages.xd.team/skill.md'), {
+    PAGES_ENV: 'production',
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Type'), /text\/markdown/);
+  const body = await response.text();
+  assert.match(body, /name: pages-v2/);
+  assert.match(body, /pages login/);
+  assert.match(body, /pages deploy/);
+  assert.match(body, /api\.pages\.xd\.team/);
+  assert.doesNotMatch(body, /curl|X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
+  assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
+});
+
+test('serves v2 readme docs without legacy API addresses', async () => {
+  const response = await worker.fetch(new Request('https://api-staging.pages.xd.team/readme.md'), {
+    PAGES_ENV: 'staging',
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Type'), /text\/markdown/);
+  const body = await response.text();
+  assert.match(body, /api-staging\.pages\.xd\.team/);
+  assert.match(body, /pages login --env staging/);
+  assert.doesNotMatch(body, /X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
+});
+
 test('OpenAPI rejects legacy token headers', async () => {
   const response = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/openapi.json', {

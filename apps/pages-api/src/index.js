@@ -4,6 +4,7 @@ import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
 import { jsonError, jsonOk } from './http.js';
 import { handleInternalApi } from './internal.js';
 import { buildOpenApi } from './openapi.js';
+import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
 
@@ -41,9 +42,12 @@ export default {
       });
     }
 
-    if (url.pathname === '/.xd-pages/api/openapi.json') {
+    if (url.pathname === '/openapi.json' || url.pathname === '/.xd-pages/api/openapi.json') {
       return jsonOk(buildOpenApi(config));
     }
+
+    if (url.pathname === '/skill.md') return markdownResponse(buildSkill(config));
+    if (url.pathname === '/readme.md') return markdownResponse(buildReadme(config));
 
     if (url.pathname.startsWith('/.xd-pages/internal/')) {
       let store;
