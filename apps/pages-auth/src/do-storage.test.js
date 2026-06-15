@@ -3,9 +3,11 @@ import test from 'node:test';
 
 import {
   confirmStoredCliLogin,
+  consumeStoredOAuthSiteCode,
   consumeStoredCliLogin,
   pollStoredCliLogin,
   consumeStoredOAuthState,
+  createStoredOAuthSiteCode,
   createStoredCliLogin,
   createStoredOAuthState,
   createStoredSession,
@@ -59,6 +61,43 @@ test('OAuth state consume runs inside a storage transaction when available', asy
   await consumeStoredOAuthState(storage, 'ost_test.state-secret', { now: now + 1 });
 
   assert.equal(storage.transactionCount, 1);
+});
+
+test('creates and consumes OAuth site code once through storage', async () => {
+  const storage = createFakeStorage();
+  const created = await createStoredOAuthState(storage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  await consumeStoredOAuthState(storage, created.publicState, { now: now + 1 });
+
+  const siteCode = await createStoredOAuthSiteCode(storage, {
+    stateId: 'ost_test',
+    user: { id: 'usr_1', email: 'user@example.com', employeeStatus: 'active', departments: ['dept_design'], sessionVersion: 2 },
+    now: now + 2,
+    ttlSeconds: 60,
+    codeSecret: 'site-secret',
+  });
+  const consumed = await consumeStoredOAuthSiteCode(storage, 'ost_test.site-secret', {
+    now: now + 3,
+    siteHost: 'demo.pages.xd.team',
+  });
+
+  assert.equal(siteCode.siteCode, 'ost_test.site-secret');
+  assert.equal(Object.hasOwn(siteCode.record.siteCode, 'secretHash'), false);
+  assert.equal(consumed.returnTo, 'https://demo.pages.xd.team/app');
+  assert.equal(consumed.user.id, 'usr_1');
+  assert.equal(consumed.user.sessionVersion, 2);
+  assert.equal(Object.hasOwn(consumed.record.siteCode, 'secretHash'), false);
+  await assert.rejects(
+    () => consumeStoredOAuthSiteCode(storage, 'ost_test.site-secret', { now: now + 4, siteHost: 'demo.pages.xd.team' }),
+    /already consumed/
+  );
 });
 
 test('creates pending CLI login and confirms with matching device code', async () => {

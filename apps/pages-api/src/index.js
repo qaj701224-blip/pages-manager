@@ -6,6 +6,8 @@ import { buildOpenApi } from './openapi.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
 
+export { RoutePointerDO } from './route-snapshot.js';
+
 export default {
   async fetch(request, env) {
     if (request.headers.has('X-Pages-Token')) {

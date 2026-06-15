@@ -38,7 +38,7 @@ test('starts CLI login transaction with browser URL on current auth base', async
     loginId: 'cli_test',
     loginSecret: 'login-secret',
     deviceCode: '12345678',
-    browserUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test',
+    browserUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test&device_code=12345678',
     expiresAt: now + 600,
   });
   assert.equal(JSON.stringify(body).includes('secretHash'), false);
@@ -53,8 +53,8 @@ test('builds local CLI login browser URL from auth base instead of API host', ()
   });
 
   assert.equal(
-    buildCliLoginBrowserUrl(config, 'cli_test'),
-    'http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/authorize?cli_login_id=cli_test'
+    buildCliLoginBrowserUrl(config, 'cli_test', '12345678'),
+    'http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/authorize?cli_login_id=cli_test&device_code=12345678'
   );
 });
 

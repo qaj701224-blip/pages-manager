@@ -696,15 +696,14 @@ site_acl_entries
 allow if:
   user.id in ACL(user)
   OR user.email in ACL(email)
-  OR user.groups intersects ACL(group)
   OR user.departments intersects ACL(department)
 ```
 
 同一站点可添加多条 ACL entry，例如“指定多个人”或“指定人 + 部门”。命中任意一条 allow entry 即可访问；没有命中则拒绝。
 
-第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。如果没有组织/群组接口，可以只启用 `user` 和 `email`；`group`、`department` 先保留 schema，不阻塞 MVP。
+第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。当前 API 开放 `user`、`email`、`department`；`group` 先保留为未来方向，不阻塞 MVP。
 
-`group` / `department` 只有在组织系统能提供稳定、不可复用 ID、成员快照版本和可控刷新 TTL 后才启用。启用后，成员变更必须能触发 `policyVersion` 或 `sessionVersion` 失效；否则仍只允许 `user` / `email`。
+`department` 只有在组织系统能提供稳定、不可复用 ID、成员快照版本和可控刷新 TTL 后才应在生产开放。启用后，成员变更必须能触发 `policyVersion` 或 `sessionVersion` 失效。`group` 等更复杂主体等组织目录语义稳定后再评审。
 
 #### access_keys
 
@@ -903,8 +902,7 @@ KV key 必须带环境前缀，避免 staging/prod 串环境：
 
 ```text
 {env}:route_pointer:{hostname}
-{env}:route_snapshot:{hostname}
-{env}:route_snapshot:{route_id}:{route_generation}
+{env}:route_snapshot:{hostname}:{route_generation}:{policy_version}
 {env}:policy_snapshot:{site_id}:{policy_version}
 {env}:jwks:{kid}
 ```
@@ -940,11 +938,11 @@ staging snapshot 必须使用 staging hostname 和 `environment=staging`，例�
 为了让发布 / 回滚的 generation 可比较，route snapshot 采用两层 key：
 
 ```text
-{env}:route_pointer:{hostname} -> { routeId, routeGeneration, snapshotKey, updatedAt }
-{env}:route_snapshot:{routeId}:{routeGeneration} -> immutable snapshot body
+{env}:route_pointer:{hostname} -> { routeId, routeGeneration, policyVersion, snapshotKey, updatedAt }
+{env}:route_snapshot:{hostname}:{routeGeneration}:{policyVersion} -> immutable snapshot body
 ```
 
-router 的 L1 cache 必须缓存 pointer 和 snapshot。发布或回滚时先写 immutable snapshot，再用 D1 transaction / CAS 更新 `site_routes.route_generation`，最后写 route pointer。router 发现 pointer generation 大于 L1 snapshot generation 时，必须刷新 snapshot；pointer 缺失或 malformed 时按故障矩阵 fail closed 或查 D1。
+router 的 L1 cache 必须缓存 pointer 和 snapshot。当前实现以 D1 `site_routes` 为权威：发布 / 回滚先切换 D1 active route，再写 immutable snapshot 和 route pointer；如果 snapshot / pointer 写入失败，API 立即恢复 previous route 并让操作失败。写 route pointer 前必须读取现有 pointer 做单调版本保护，禁止较低 `routeGeneration` 或同 generation 较低 `policyVersion` 覆盖更新的 pointer。后续如果引入 `SitePolicyDO` / CAS，可把发布、回滚和 policy-only 变更串行化，进一步减少并发写窗口。ACL / visibility 这类 policy-only 变更不应冒充发布 generation，但必须 bump `policyVersion` 并生成新的 immutable snapshot key，避免覆盖旧 snapshot。router 发现 pointer generation 或 policyVersion 大于 L1 snapshot 时，必须刷新 snapshot；pointer 缺失或 malformed 时按故障矩阵 fail closed 或查 D1。
 
 #### policy snapshot
 
@@ -956,6 +954,7 @@ router 的 L1 cache 必须缓存 pointer 和 snapshot。发布或回滚时先写
   "visibility": "acl",
   "allowedUsers": ["usr_123"],
   "allowedEmails": ["user@example.com"],
+  "allowedDepartments": ["dept_123"],
   "allowedGroups": [],
   "updatedAt": "2026-06-15T00:00:00.000Z"
 }
@@ -1078,7 +1077,7 @@ jwks.kid
 ```text
 1. 先提交 D1 / Durable Object 权威变更。
 2. 再生成新的 immutable KV route snapshot / policy snapshot。
-3. 再写 route pointer 指向新的 routeGeneration。
+3. 再写 route pointer 指向新的 `routeGeneration` + `policyVersion` snapshot，写入前做单调版本保护。
 4. 最后让 router L1 cache 自然过期，或对 strict 事件触发主动刷新。
 ```
 
@@ -1146,7 +1145,7 @@ WFP 发布不能简单理解为“上传 Worker 后写 active version”。当�
      worker_name = newWorkerName
      route_generation += 1
      policy_version 按需更新
-12. 写 route snapshot / route pointer 指向新的 routeGeneration。
+12. 写 route snapshot / route pointer 指向新的 `routeGeneration` + `policyVersion`。
 13. status=succeeded，返回 url、deploymentId、versionId。
 ```
 
@@ -1467,13 +1466,13 @@ router 还必须解析 User Worker 返回的所有 `Set-Cookie`：
 
 建议第一版支持：
 
-| visibility | 含义                        | 是否需要登录 | 典型用途             |
-| ---------- | --------------------------- | ------------ | -------------------- |
-| `public`   | 公司网络内匿名可访问        | 否           | 内部报告、demo       |
-| `org`      | 公司 SSO 用户可访问         | 是           | 默认内部站点         |
-| `acl`      | 指定用户、邮箱或组可访问    | 是           | 项目私有预览         |
-| `owner`    | owner / collaborator 可访问 | 是           | 管理预览、敏感站点   |
-| `disabled` | 暂停访问                    | 不适用       | 下线、风控、事故处理 |
+| visibility | 含义                       | 是否需要登录 | 典型用途             |
+| ---------- | -------------------------- | ------------ | -------------------- |
+| `public`   | 公司网络内匿名可访问       | 否           | 内部报告、demo       |
+| `org`      | 公司 SSO 用户可访问        | 是           | 默认内部站点         |
+| `acl`      | 指定用户、邮箱或部门可访问 | 是           | 项目私有预览         |
+| `owner`    | owner 可访问               | 是           | 管理预览、敏感站点   |
+| `disabled` | 暂停访问                   | 不适用       | 下线、风控、事故处理 |
 
 发布权限与访问权限必须分开：
 
@@ -1809,6 +1808,9 @@ pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 | `POST`   | `/.xd-pages/cli/login/start`            | 无                                     | 返回 `loginId`、浏览器 URL；CLI 保存 `loginSecret`    |
 | `POST`   | `/.xd-pages/cli/login/poll`             | `loginId + loginSecret`                | pending / completed / expired；completed 只能消费一次 |
 | `GET`    | `/.xd-pages/api/sites`                  | CLI token / api_session                | 分页返回当前 actor 可见站点，不返回 token             |
+| `PATCH`  | `/.xd-pages/api/sites/{id}`             | owner CLI token / api_session          | 修改 visibility，bump `policyVersion`，刷新 snapshot  |
+| `GET`    | `/.xd-pages/api/sites/{id}/acl`         | CLI token / api_session                | 返回站点 ACL，不返回 token 或 session                 |
+| `PUT`    | `/.xd-pages/api/sites/{id}/acl`         | owner CLI token / api_session          | allow-only 全量替换 ACL，bump `policyVersion`         |
 | `POST`   | `/.xd-pages/api/deployments`            | CLI token / access key                 | 必须带 `Idempotency-Key`；返回 deployment 状态        |
 | `GET`    | `/.xd-pages/api/deployments/{id}`       | CLI token / access key                 | 用于轮询 deploy 状态                                  |
 | `POST`   | `/.xd-pages/api/versions/{id}/rollback` | CLI token / access key                 | 必须带 `Idempotency-Key`；走同一发布状态机            |
@@ -2147,8 +2149,8 @@ publish -> activate -> drain -> retire
 ### 阶段 3：子站 SSO 与 ACL
 
 - 支持 `acl` 和 `owner` visibility。
-- 支持 collaborators。
-- 支持 group ACL（如果 SSO/组织接口可用）。
+- 支持 allow-only OR ACL：`user`、`email`、`department`。
+- `group`、`deny`、条件表达式、collaborator 管理和策略语言进入后续阶段，等组织目录和权限语义稳定后再开放。
 - 完成更细的 user/session revocation、risk policy 和管理 UI 入口。
 
 ### 阶段 4：执行面治理

@@ -122,6 +122,41 @@ test('site versions are immutable records', async () => {
   );
 });
 
+test('site policy changes update visibility, ACL, cache tier, and policy version', async () => {
+  const store = createSeededStore();
+  await createSite(store);
+
+  const aclEntries = await store.replaceSiteAclEntries(
+    'site_1',
+    [
+      { id: 'acl_1', subjectType: 'user', subjectValue: 'usr_2', accessRole: 'viewer', effect: 'allow' },
+      { id: 'acl_2', subjectType: 'department', subjectValue: 'dept_design', accessRole: 'viewer', effect: 'allow' },
+    ],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:01:00.000Z' },
+    'production'
+  );
+
+  assert.deepEqual(
+    aclEntries.map(({ id, subjectType, subjectValue, effect }) => ({ id, subjectType, subjectValue, effect })),
+    [
+      { id: 'acl_1', subjectType: 'user', subjectValue: 'usr_2', effect: 'allow' },
+      { id: 'acl_2', subjectType: 'department', subjectValue: 'dept_design', effect: 'allow' },
+    ]
+  );
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
+
+  const route = await store.updateSiteVisibility(
+    'site_1',
+    { visibility: 'disabled', updatedAt: '2026-06-15T00:02:00.000Z' },
+    'production'
+  );
+
+  assert.equal(route.visibility, 'disabled');
+  assert.equal(route.cacheTier, 'strict');
+  assert.equal(route.policyVersion, 3);
+  assert.equal((await store.getSite('site_1')).defaultVisibility, 'disabled');
+});
+
 test('access keys persist hash metadata without plaintext', async () => {
   const store = createSeededStore();
 

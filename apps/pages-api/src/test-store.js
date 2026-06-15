@@ -1,4 +1,10 @@
-import { cloneRecord, createInitialRoute, createOwnerMember, deploymentIdempotencyScope } from './store.js';
+import {
+  cacheTierForVisibility,
+  cloneRecord,
+  createInitialRoute,
+  createOwnerMember,
+  deploymentIdempotencyScope,
+} from './store.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString() } = {}) {
   return new TestPagesStore({ now });
@@ -13,6 +19,7 @@ class TestPagesStore {
     this.routes = new Map();
     this.routeBySiteId = new Map();
     this.siteMembers = new Map();
+    this.siteAclEntries = new Map();
     this.siteVersions = new Map();
     this.accessKeys = new Map();
     this.deployments = new Map();
@@ -66,6 +73,7 @@ class TestPagesStore {
     this.routes.set(route.id, route);
     this.routeBySiteId.set(site.id, route.id);
     this.siteMembers.set(site.id, [owner]);
+    this.siteAclEntries.set(site.id, []);
 
     return cloneRecord(site);
   }
@@ -110,10 +118,87 @@ class TestPagesStore {
     return cloneRecord(this.siteMembers.get(siteId) || []);
   }
 
+  async listSiteAclEntries(siteId) {
+    return cloneRecord(this.siteAclEntries.get(siteId) || []);
+  }
+
   async getRouteBySiteId(siteId, environment) {
     const route = this.routes.get(this.routeBySiteId.get(siteId)) || null;
     if (environment && route?.environment !== environment) return null;
     return cloneRecord(route);
+  }
+
+  async updateSiteVisibility(siteId, { visibility, updatedAt }, environment) {
+    const site = this.sites.get(siteId);
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!site || !route) return null;
+    if (environment && route.environment !== environment) return null;
+
+    site.defaultVisibility = visibility;
+    site.updatedAt = updatedAt || this.now();
+    route.visibility = visibility;
+    route.policyVersion += 1;
+    route.cacheTier = cacheTierForVisibility(visibility);
+    route.updatedAt = updatedAt || this.now();
+    return cloneRecord(route);
+  }
+
+  async restoreSiteVisibility(siteId, previousSite, previousRoute, environment) {
+    return this.restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, null, environment);
+  }
+
+  async restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, expectedRoute, environment) {
+    const site = this.sites.get(siteId);
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!site || !route || !previousRoute) return null;
+    if (environment && route.environment !== environment) return null;
+    if (expectedRoute && !routesMatch(route, expectedRoute)) return cloneRecord(route);
+
+    site.defaultVisibility = previousSite.defaultVisibility;
+    site.updatedAt = previousSite.updatedAt;
+    Object.assign(route, cloneRecord(previousRoute));
+    return cloneRecord(route);
+  }
+
+  async replaceSiteAclEntries(siteId, entries, { createdBy, updatedAt }, environment) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    const site = this.sites.get(siteId);
+    if (!site || !route) return [];
+    if (environment && route.environment !== environment) return [];
+
+    const now = updatedAt || this.now();
+    const nextEntries = entries.map((entry) => ({
+      id: entry.id,
+      siteId,
+      subjectType: entry.subjectType,
+      subjectValue: entry.subjectValue,
+      accessRole: entry.accessRole,
+      effect: entry.effect,
+      createdBy,
+      createdAt: now,
+    }));
+    this.siteAclEntries.set(siteId, nextEntries);
+    site.updatedAt = now;
+    route.policyVersion += 1;
+    route.updatedAt = now;
+    return cloneRecord(nextEntries);
+  }
+
+  async restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment) {
+    return this.restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, null, environment);
+  }
+
+  async restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, expectedRoute, environment) {
+    const site = this.sites.get(siteId);
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!site || !route || !previousRoute) return [];
+    if (environment && route.environment !== environment) return [];
+    if (expectedRoute && !routesMatch(route, expectedRoute)) return cloneRecord(this.siteAclEntries.get(siteId) || []);
+
+    this.siteAclEntries.set(siteId, cloneRecord(previousEntries));
+    site.updatedAt = previousSite.updatedAt;
+    Object.assign(route, cloneRecord(previousRoute));
+    return cloneRecord(previousEntries);
   }
 
   async createSiteVersion(input) {
@@ -154,6 +239,16 @@ class TestPagesStore {
     const route = this.routes.get(routeId);
     if (!route || !previousRoute) return null;
     if (environment && route.environment !== environment) return null;
+    Object.assign(route, cloneRecord(previousRoute));
+    return cloneRecord(route);
+  }
+
+  async restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment) {
+    const routeId = this.routeBySiteId.get(siteId);
+    const route = this.routes.get(routeId);
+    if (!route || !previousRoute) return null;
+    if (environment && route.environment !== environment) return null;
+    if (!routesMatch(route, expectedRoute)) return cloneRecord(route);
     Object.assign(route, cloneRecord(previousRoute));
     return cloneRecord(route);
   }
@@ -276,4 +371,17 @@ class TestPagesStore {
       route: this.routes.get(this.routeBySiteId.get(siteId)) || null,
     };
   }
+}
+
+function routesMatch(actual, expected) {
+  if (!actual || !expected) return false;
+  return (
+    actual.id === expected.id &&
+    actual.activeVersionId === expected.activeVersionId &&
+    actual.workerName === expected.workerName &&
+    actual.visibility === expected.visibility &&
+    actual.policyVersion === expected.policyVersion &&
+    actual.routeGeneration === expected.routeGeneration &&
+    actual.routeStatus === expected.routeStatus
+  );
 }

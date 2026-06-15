@@ -14,7 +14,10 @@ test('reads production auth config from placeholders-safe env', () => {
     AUTH_SESSION_IDLE_TTL_SECONDS: '1209600',
     AUTH_SESSION_ABSOLUTE_TTL_SECONDS: '2592000',
     SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
+    SSO_TOKEN_URL: 'https://sso.example.test/oauth/accessToken',
+    SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
     SSO_CLIENT_ID: 'xd_pages_test',
+    SSO_CLIENT_SECRET: 'test-client-secret',
     SSO_ALLOWED_USER_SCOPE: 'xd',
   });
 
@@ -28,7 +31,10 @@ test('reads production auth config from placeholders-safe env', () => {
   assert.equal(config.authSessionIdleTtlSeconds, 1_209_600);
   assert.equal(config.authSessionAbsoluteTtlSeconds, 2_592_000);
   assert.equal(config.ssoAuthorizationUrl, 'https://sso.example.test/oauth/authorize');
+  assert.equal(config.ssoTokenUrl, 'https://sso.example.test/oauth/accessToken');
+  assert.equal(config.ssoProfileUrl, 'https://sso.example.test/oauth/profile');
   assert.equal(config.ssoClientId, 'xd_pages_test');
+  assert.equal(config.ssoClientSecret, 'test-client-secret');
   assert.equal(config.ssoAllowedUserScope, 'xd');
 });
 
@@ -111,5 +117,13 @@ test('rejects unsafe origins, callback URLs, and TTLs', () => {
         SSO_AUTHORIZATION_URL: 'https://user:pass@sso.example.test/oauth/authorize',
       }),
     /SSO authorization URL/i
+  );
+  assert.throws(
+    () =>
+      readAuthConfig({
+        PAGES_ENV: 'production',
+        SSO_TOKEN_URL: 'https://user:pass@sso.example.test/oauth/accessToken',
+      }),
+    /SSO token URL/i
   );
 });

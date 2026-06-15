@@ -198,9 +198,9 @@ async function createDeployment(request, env, config, store, actor) {
     config.environment
   );
   try {
-    await writeSnapshot(env, { site, route, version });
+    await writeSnapshot(env, store, { site, route, version });
   } catch {
-    await store.restoreSiteRoute(siteId, previousRoute, config.environment);
+    await restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, route, config.environment);
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -280,9 +280,9 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     config.environment
   );
   try {
-    await writeSnapshot(env, { site, route, version });
+    await writeSnapshot(env, store, { site, route, version });
   } catch {
-    await store.restoreSiteRoute(site.id, currentRoute, config.environment);
+    await restoreSiteRouteAfterSnapshotFailure(store, site.id, currentRoute, route, config.environment);
     await store.updateDeployment(deploymentResult.deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -364,8 +364,17 @@ function formatRoute(route) {
   };
 }
 
-async function writeSnapshot(env, input) {
-  await writeRouteSnapshot(env.ROUTE_SNAPSHOTS, buildRouteSnapshot(input));
+async function writeSnapshot(env, store, input) {
+  const aclEntries = await store.listSiteAclEntries(input.site.id);
+  const site = await store.getSite(input.site.id);
+  await writeRouteSnapshot(env, buildRouteSnapshot({ ...input, site, aclEntries }));
+}
+
+async function restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, expectedRoute, environment) {
+  if (typeof store.restoreSiteRouteIfCurrent === 'function') {
+    return store.restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment);
+  }
+  return store.restoreSiteRoute(siteId, previousRoute, environment);
 }
 
 function actorCanDeploy(actor, siteId, requiredScope) {

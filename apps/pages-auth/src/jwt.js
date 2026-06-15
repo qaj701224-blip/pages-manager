@@ -1,9 +1,9 @@
-const ISSUER = 'pages-auth';
+const DEFAULT_ISSUER = 'pages-auth';
 const ALGORITHM = 'HS256';
 const CLOCK_SKEW_SECONDS = 0;
 const encoder = new globalThis.TextEncoder();
 
-const ALLOWED_PURPOSES = new Set(['auth_session', 'site_session', 'cli_token']);
+const ALLOWED_PURPOSES = new Set(['auth_session', 'site_session', 'cli_token', 'internal_worker_jwt']);
 const SAFE_JTI_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RESERVED_CLAIMS = new Set(['iss', 'aud', 'env', 'purpose', 'sub', 'iat', 'nbf', 'exp']);
 
@@ -54,7 +54,7 @@ export async function signSessionJwt({ purpose, audience, subject, now, ttlSecon
 
   const header = { alg: ALGORITHM, typ: 'JWT', kid: activeKid };
   const payload = {
-    iss: ISSUER,
+    iss: readIssuer(env),
     aud: audience,
     env: environment,
     purpose: tokenPurpose,
@@ -96,7 +96,7 @@ export async function verifySessionJwt(token, env, { purpose, audience, now } = 
   const checkedAt = validateUnixTime(now, 'now');
   const expectedPurpose = validatePurpose(purpose);
 
-  if (payload.iss !== ISSUER) throw new Error('JWT issuer mismatch');
+  if (payload.iss !== readIssuer(env)) throw new Error('JWT issuer mismatch');
   if (payload.aud !== audience) throw new Error('JWT audience mismatch');
   if (payload.env !== environment) throw new Error('JWT environment mismatch');
   validatePurpose(payload.purpose);
@@ -135,6 +135,12 @@ function validateEnvironment(environment) {
     throw new Error('Unsupported Pages environment');
   }
   return environment;
+}
+
+function readIssuer(env) {
+  const issuer = String(env?.PAGES_SESSION_JWT_ISSUER || DEFAULT_ISSUER).trim();
+  if (!issuer) throw new Error('Session JWT issuer is required');
+  return issuer;
 }
 
 function validateUnixTime(value, label) {

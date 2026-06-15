@@ -80,7 +80,7 @@ test('routes CLI login start and poll public endpoints', async () => {
   assert.equal(startResponse.status, 200);
   assert.equal(
     (await startResponse.json()).browserUrl,
-    'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test'
+    'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test&device_code=12345678'
   );
 
   const pollResponse = await worker.fetch(
@@ -127,8 +127,9 @@ test('routes OAuth authorize and callback public endpoints', async () => {
       },
     }),
     fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
-    fetchSsoProfile: async () => ({ id: 'usr_123' }),
+    fetchSsoProfile: async () => ({ id: 'usr_123', employeeStatus: 'active' }),
     createAuthSessionRecord: async () => ({}),
+    createOAuthSiteCodeRecord: async () => ({ siteCode: 'ost_test.site-secret' }),
   };
 
   const authorizeResponse = await worker.fetch(
@@ -147,7 +148,10 @@ test('routes OAuth authorize and callback public endpoints', async () => {
   );
 
   assert.equal(callbackResponse.status, 302);
-  assert.equal(callbackResponse.headers.get('Location'), 'https://demo.pages.xd.team/app');
+  assert.equal(
+    callbackResponse.headers.get('Location'),
+    'https://demo.pages.xd.team/.xd-pages/auth/callback?code=ost_test.site-secret'
+  );
   assert.match(callbackResponse.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });
 
@@ -159,6 +163,52 @@ test('rejects unsupported methods on OAuth endpoints', async () => {
 
   assert.equal(response.status, 405);
   assert.equal((await response.json()).error.code, 'METHOD_NOT_ALLOWED');
+});
+
+test('internal endpoint consumes site code for router service binding', async () => {
+  const env = {
+    ...testJwtEnv(),
+    now: () => 1_800_000_000,
+    consumeOAuthSiteCodeRecord: async (siteCode, options) => {
+      assert.equal(siteCode, 'ost_test.site-secret');
+      assert.deepEqual(options, {
+        now: 1_800_000_000,
+        siteHost: 'demo.pages.xd.team',
+        environment: 'production',
+      });
+      return {
+        returnTo: 'https://demo.pages.xd.team/private',
+        user: {
+          id: 'usr_1',
+          email: 'user@example.com',
+          employeeStatus: 'active',
+          departments: ['dept_design'],
+          sessionVersion: 2,
+        },
+      };
+    },
+  };
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-auth.internal/.xd-pages/internal/consume-site-code', {
+      siteCode: 'ost_test.site-secret',
+      siteHost: 'demo.pages.xd.team',
+      now: 1_800_000_000,
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    returnTo: 'https://demo.pages.xd.team/private',
+    user: {
+      id: 'usr_1',
+      email: 'user@example.com',
+      employeeStatus: 'active',
+      departments: ['dept_design'],
+      sessionVersion: 2,
+    },
+  });
 });
 
 test('exports Durable Object shell classes', () => {
@@ -199,10 +249,36 @@ test('OAuthStateDO stores, consumes, and rejects repeated consume without leakin
   assert.equal(consumeText.includes('secretHash'), false);
   assert.equal(JSON.parse(consumeText).record.consumedAt, 1_800_000_001);
 
+  const siteCodeResponse = await durableObject.fetch(
+    jsonRequest('https://oauth-state-do/create-site-code', {
+      stateId: 'ost_test',
+      user: { id: 'usr_123', email: 'user@example.com', employeeStatus: 'active', departments: [], sessionVersion: 1 },
+      now: 1_800_000_002,
+      ttlSeconds: 60,
+      codeSecret: 'site-secret',
+    })
+  );
+
+  assert.equal(siteCodeResponse.status, 200);
+  const siteCodeText = await siteCodeResponse.text();
+  assert.equal(siteCodeText.includes('secretHash'), false);
+  assert.equal(JSON.parse(siteCodeText).siteCode, 'ost_test.site-secret');
+
+  const consumeSiteCodeResponse = await durableObject.fetch(
+    jsonRequest('https://oauth-state-do/consume-site-code', {
+      siteCode: 'ost_test.site-secret',
+      siteHost: 'demo.pages.xd.team',
+      now: 1_800_000_003,
+    })
+  );
+
+  assert.equal(consumeSiteCodeResponse.status, 200);
+  assert.equal((await consumeSiteCodeResponse.json()).returnTo, 'https://demo.pages.xd.team/app');
+
   const repeatedResponse = await durableObject.fetch(
     jsonRequest('https://oauth-state-do/consume', {
       publicState: 'ost_test.state-secret',
-      now: 1_800_000_002,
+      now: 1_800_000_004,
     })
   );
 

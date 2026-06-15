@@ -1,6 +1,6 @@
 import { confirmCliLogin, consumeCliLogin, createCliLogin } from './cli-login.js';
 import { constantTimeEqualHex, sha256Hex } from './id.js';
-import { consumeOAuthState, createOAuthState } from './oauth-state.js';
+import { consumeOAuthSiteCode, consumeOAuthState, createOAuthSiteCode, createOAuthState } from './oauth-state.js';
 import { createSessionRecord, refreshSessionRecord, revokeSessionRecord } from './session-record.js';
 
 const SINGLE_RECORD_KEY = 'record';
@@ -20,6 +20,31 @@ export async function consumeStoredOAuthState(storage, publicState, options) {
     const consumed = await consumeOAuthState(publicState, record, options);
     await transaction.put(SINGLE_RECORD_KEY, consumed.record);
 
+    return {
+      ...consumed,
+      record: stripSecretHash(consumed.record),
+    };
+  });
+}
+
+export async function createStoredOAuthSiteCode(storage, input) {
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    if (!record || record.id !== input.stateId) throw new Error('OAuth site code invalid: unknown state');
+    const created = await createOAuthSiteCode(record, input);
+    await transaction.put(SINGLE_RECORD_KEY, created.record);
+    return {
+      siteCode: created.siteCode,
+      record: stripSecretHash(created.record),
+    };
+  });
+}
+
+export async function consumeStoredOAuthSiteCode(storage, siteCode, options) {
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    const consumed = await consumeOAuthSiteCode(siteCode, record, options);
+    await transaction.put(SINGLE_RECORD_KEY, consumed.record);
     return {
       ...consumed,
       record: stripSecretHash(consumed.record),
@@ -137,6 +162,11 @@ function stripSecretHash(record) {
   if (!record || typeof record !== 'object') return record;
   const { secretHash, ...safeRecord } = record;
   void secretHash;
+  if (safeRecord.siteCode && typeof safeRecord.siteCode === 'object') {
+    const { secretHash: siteSecretHash, ...safeSiteCode } = safeRecord.siteCode;
+    void siteSecretHash;
+    safeRecord.siteCode = safeSiteCode;
+  }
   return safeRecord;
 }
 

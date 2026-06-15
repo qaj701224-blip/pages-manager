@@ -3,7 +3,13 @@ import test from 'node:test';
 
 import { readAuthConfig } from './config.js';
 import { buildAuthSessionCookie } from './cookies.js';
-import { consumeStoredOAuthState, createStoredOAuthState, createStoredSession } from './do-storage.js';
+import {
+  consumeStoredOAuthSiteCode,
+  consumeStoredOAuthState,
+  createStoredOAuthSiteCode,
+  createStoredOAuthState,
+  createStoredSession,
+} from './do-storage.js';
 import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
 import { verifySessionJwt } from './jwt.js';
 
@@ -108,7 +114,7 @@ test('callback without code or state returns safe error without echoing OAuth va
   assert.equal(JSON.parse(text).error.code, 'OAUTH_CALLBACK_INVALID');
 });
 
-test('callback consumes state once, calls SSO hooks, sets auth_session cookie, and redirects', async () => {
+test('callback consumes state once, calls SSO hooks, sets auth_session cookie, and redirects to site callback', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
   const created = await createStoredOAuthState(oauthStorage, {
@@ -122,6 +128,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
   });
   const env = testEnv({
     consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
     createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
     fetchSsoToken: async ({ code, redirectUri }) => {
       assert.equal(code, 'oauth-code');
@@ -130,7 +137,13 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     },
     fetchSsoProfile: async ({ accessToken }) => {
       assert.equal(accessToken, 'sso-access-token');
-      return { id: 'usr_123', email: 'user@example.test' };
+      return {
+        id: 'usr_123',
+        email: 'user@example.test',
+        employeeStatus: 'active',
+        departments: ['dept_design'],
+        sessionVersion: 4,
+      };
     },
   });
   const response = await handleOAuthCallback(
@@ -140,7 +153,12 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
   );
 
   assert.equal(response.status, 302, await response.clone().text());
-  assert.equal(response.headers.get('Location'), 'https://demo.pages.xd.team/app');
+  const siteCallback = new URL(response.headers.get('Location'));
+  assert.equal(siteCallback.origin + siteCallback.pathname, 'https://demo.pages.xd.team/.xd-pages/auth/callback');
+  assert.equal(siteCallback.searchParams.has('state'), false);
+  assert.equal(siteCallback.searchParams.has('access_token'), false);
+  const siteCode = siteCallback.searchParams.get('code');
+  assert.match(siteCode, /^ost_test\./);
   const cookie = response.headers.get('Set-Cookie');
   assert.match(cookie, /^__Host-pages_auth_session=/);
   assert.equal(cookie, buildAuthSessionCookie(cookie.split(';', 1)[0].split('=', 2)[1], { maxAgeSeconds: 1_209_600 }));
@@ -164,6 +182,18 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     revokedAt: null,
     authTime: now,
   });
+  const consumedSiteCode = await consumeStoredOAuthSiteCode(oauthStorage, siteCode, {
+    now: now + 1,
+    siteHost: 'demo.pages.xd.team',
+  });
+  assert.equal(consumedSiteCode.returnTo, 'https://demo.pages.xd.team/app');
+  assert.deepEqual(consumedSiteCode.user, {
+    id: 'usr_123',
+    email: 'user@example.test',
+    employeeStatus: 'active',
+    departments: ['dept_design'],
+    sessionVersion: 4,
+  });
 
   const repeatedResponse = await handleOAuthCallback(
     new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
@@ -176,6 +206,156 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
   assert.equal(repeatedText.includes('oauth-code'), false);
   assert.equal(repeatedText.includes('state-secret'), false);
   assert.equal(JSON.parse(repeatedText).error.code, 'OAUTH_STATE_INVALID');
+});
+
+test('callback exchanges code with configured SSO HTTP endpoints and canonicalizes company profile', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  const requests = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    requests.push(new URL(url));
+    if (String(url).startsWith('https://sso.example.test/oauth/accessToken')) {
+      return Response.json({ access_token: 'sso-access-token' });
+    }
+    if (String(url).startsWith('https://sso.example.test/oauth/profile')) {
+      return Response.json({
+        userId: 'usr_123',
+        email: 'USER@example.test',
+        employee_status: '1',
+        departmentIds: ['dept_design'],
+      });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const env = testEnv({
+      SSO_TOKEN_URL: 'https://sso.example.test/oauth/accessToken',
+      SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
+      SSO_CLIENT_SECRET: 'test-client-secret',
+      consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+      createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+      createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    });
+    const response = await handleOAuthCallback(
+      new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+      env,
+      readAuthConfig(env)
+    );
+
+    assert.equal(response.status, 302, await response.clone().text());
+    assert.equal(requests[0].searchParams.get('code'), 'oauth-code');
+    assert.equal(requests[0].searchParams.get('client_id'), 'xd_pages_test');
+    assert.equal(requests[0].searchParams.get('client_secret'), 'test-client-secret');
+    assert.equal(requests[0].searchParams.get('grant_type'), 'authorization_code');
+    assert.equal(requests[1].searchParams.get('access_token'), 'sso-access-token');
+
+    const siteCode = new URL(response.headers.get('Location')).searchParams.get('code');
+    const consumedSiteCode = await consumeStoredOAuthSiteCode(oauthStorage, siteCode, {
+      now: now + 1,
+      siteHost: 'demo.pages.xd.team',
+      environment: 'production',
+    });
+    assert.deepEqual(consumedSiteCode.user, {
+      id: 'usr_123',
+      email: 'user@example.test',
+      employeeStatus: 'active',
+      departments: ['dept_design'],
+      sessionVersion: 1,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('callback rejects profiles without explicit active employee status', async () => {
+  const oauthStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let sessionCreated = false;
+  const env = testEnv({
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({ id: 'usr_123', email: 'user@example.test' }),
+    createAuthSessionRecord: async () => {
+      sessionCreated = true;
+    },
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SSO_PROFILE_INACTIVE');
+  assert.equal(sessionCreated, false);
+});
+
+test('CLI OAuth callback confirms pending CLI login and does not create a site code', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    cliLoginId: 'cli_test',
+    deviceCode: '12345678',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let confirmedInput;
+  let siteCodeCreated = false;
+  const env = testEnv({
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({ userId: 'usr_123', employee_status: '1' }),
+    confirmCliLoginRecord: async (input, options) => {
+      confirmedInput = { input, options };
+      return { record: { status: 'confirmed' } };
+    },
+    createOAuthSiteCodeRecord: async () => {
+      siteCodeCreated = true;
+    },
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.match(await response.text(), /CLI login confirmed/);
+  assert.deepEqual(confirmedInput, {
+    input: {
+      loginId: 'cli_test',
+      deviceCode: '12345678',
+      userId: 'usr_123',
+    },
+    options: { now },
+  });
+  assert.equal(siteCodeCreated, false);
+  assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });
 
 test('callback returns provider-unconfigured error when SSO hooks are absent', async () => {

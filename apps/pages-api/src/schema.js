@@ -142,6 +142,8 @@ export function createSchemaSql() {
       ON site_routes(site_id)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency
       ON deployments(idempotency_scope, idempotency_key)`,
+    `CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site
+      ON site_acl_entries(site_id, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_access_keys_owner
       ON access_keys(owner_user_id)`,
     `CREATE INDEX IF NOT EXISTS idx_audit_events_site_created

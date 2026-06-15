@@ -19,6 +19,14 @@ database_id = "__D1_DATABASE_ID__"
 binding = "ROUTE_SNAPSHOTS"
 id = "__ROUTE_SNAPSHOTS_KV_ID__"
 
+[[durable_objects.bindings]]
+name = "ROUTE_POINTER_LOCKS"
+class_name = "RoutePointerDO"
+
 [[services]]
 binding = "PAGES_AUTH"
 service = "__PAGES_AUTH_SERVICE__"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoutePointerDO"]

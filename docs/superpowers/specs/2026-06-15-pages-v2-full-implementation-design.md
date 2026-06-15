@@ -157,8 +157,12 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 - 第一版所有 visibility 都受 IP allowlist 约束。
 - `org` 只允许 active employee。
 - `acl` 使用 allow-only + OR 叠加，支持指定多人、指定人 + 部门。
-- `group` / `department` 只有组织系统提供稳定 ID、成员快照版本和 TTL 后启用。
+- 当前 API 开放 `user`、`email`、`department`，其中 `department` 依赖组织系统提供稳定 ID、成员快照版本和 TTL；`group`、`deny`、条件表达式和策略语言后置。
 - visibility、ACL、owner、用户状态变化必须 bump `policyVersion` 或 `sessionVersion`。
+- `PATCH /.xd-pages/api/sites/{id}` 只允许 owner 修改 visibility，更新 D1 权威路由并刷新 active route snapshot。
+- `GET/PUT /.xd-pages/api/sites/{id}/acl` 读取或全量替换 ACL；PUT 只允许 owner，access key 不能管理策略。
+- route snapshot key 必须包含 `routeGeneration` 和 `policyVersion`，避免 policy-only 变更覆盖发布 generation 对应的旧 snapshot。
+- route pointer 写入前必须做单调版本保护，禁止旧 `routeGeneration` 或旧 `policyVersion` 覆盖新 pointer；后续用 `SitePolicyDO` / CAS 收敛并发写窗口。
 
 验收：
 
@@ -166,6 +170,7 @@ v2 是一套全新 `*.pages.xd.team` 平台，目标是基于 Cloudflare Workers
 - 受保护站点登录后访问不回 `pages-api`。
 - ACL 命中任意 allow entry 即可访问，未命中拒绝。
 - ACL / visibility 变更能让旧 `site_session` 在可接受窗口内失效。
+- OpenAPI 必须暴露 visibility / ACL 契约，并明确第一版只支持 allow-only。
 
 ### M7. 平台能力与运行边界
 

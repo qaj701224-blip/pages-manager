@@ -7,6 +7,12 @@ import { createTestPagesStore } from './test-store.js';
 
 test('creates deployment, immutable version, active route, and route snapshot', async () => {
   const store = await createSeededStore();
+  await store.replaceSiteAclEntries(
+    'site_1',
+    [{ id: 'acl_1', subjectType: 'department', subjectValue: 'dept_design', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
   const snapshots = createSnapshotStore();
 
   const response = await worker.fetch(
@@ -31,7 +37,11 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   assert.equal((await store.getSiteVersion('ver_1')).contentHash, 'sha256:abc');
   assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'wfp://test/pages-v2-docs-ver-1');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
-  assert.equal(snapshots.read('route_pointer:docs.pages.xd.team').routeGeneration, 1);
+  const pointer = snapshots.read('production:route_pointer:docs.pages.xd.team');
+  assert.equal(pointer.routeGeneration, 1);
+  assert.deepEqual(snapshots.read(pointer.snapshotKey).acl, [
+    { effect: 'allow', subjectType: 'department', subjectValue: 'dept_design' },
+  ]);
 });
 
 test('uploads and verifies WFP worker before route activation', async () => {
@@ -238,7 +248,7 @@ test('rolls back to an existing immutable version and writes a new route snapsho
   assert.equal(body.route.routeGeneration, 3);
   assert.equal((await store.getSiteVersion('ver_1')).contentHash, 'sha256:abc');
   assert.equal((await store.getSiteVersion('ver_2')).contentHash, 'sha256:def');
-  assert.equal(snapshots.read('route_pointer:docs.pages.xd.team').routeGeneration, 3);
+  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').routeGeneration, 3);
 });
 
 test('marks deployment failed when route snapshot write fails and replays failed terminal state', async () => {

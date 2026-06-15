@@ -30,6 +30,7 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_environment_slug/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_access_keys_owner/);
   assert.doesNotMatch(sql, /workers\.xd\.team/);
   assert.doesNotMatch(sql, /X-Pages-Token/);

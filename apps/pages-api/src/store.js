@@ -190,12 +190,135 @@ export class D1PagesStore {
     return (result.results || []).map(mapSiteMember);
   }
 
+  async listSiteAclEntries(siteId) {
+    const result = await this.db
+      .prepare('SELECT * FROM site_acl_entries WHERE site_id = ? ORDER BY created_at ASC, id ASC')
+      .bind(siteId)
+      .all();
+    return (result.results || []).map(mapSiteAclEntry);
+  }
+
   async getRouteBySiteId(siteId, environment) {
     const row = await this.db
       .prepare('SELECT * FROM site_routes WHERE site_id = ?' + (environment ? ' AND environment = ?' : ''))
       .bind(...(environment ? [siteId, environment] : [siteId]))
       .first();
     return row ? mapSiteRoute(row) : null;
+  }
+
+  async updateSiteVisibility(siteId, { visibility, updatedAt }, environment) {
+    if (!(await this.getRouteBySiteId(siteId, environment))) return null;
+    const now = updatedAt || this.now();
+    const cacheTier = cacheTierForVisibility(visibility);
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE sites SET default_visibility = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`
+        )
+        .bind(...(environment ? [visibility, now, siteId, environment] : [visibility, now, siteId])),
+      this.db
+        .prepare(
+          `UPDATE site_routes
+          SET visibility = ?, policy_version = policy_version + 1,
+            cache_tier = ?, updated_at = ?
+          WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+        )
+        .bind(...(environment ? [visibility, cacheTier, now, siteId, environment] : [visibility, cacheTier, now, siteId])),
+    ]);
+    return this.getRouteBySiteId(siteId, environment);
+  }
+
+  async restoreSiteVisibility(siteId, previousSite, previousRoute, environment) {
+    return this.restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, null, environment);
+  }
+
+  async restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, expectedRoute, environment) {
+    if (!previousRoute) return null;
+    if (expectedRoute && !routesMatch(await this.getRouteBySiteId(siteId, environment), expectedRoute)) {
+      return this.getRouteBySiteId(siteId, environment);
+    }
+    await this.db
+      .prepare(`UPDATE sites SET default_visibility = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+      .bind(
+        ...(environment
+          ? [previousSite.defaultVisibility, previousSite.updatedAt, siteId, environment]
+          : [previousSite.defaultVisibility, previousSite.updatedAt, siteId])
+      )
+      .run();
+    return this.restoreSiteRoute(siteId, previousRoute, environment);
+  }
+
+  async replaceSiteAclEntries(siteId, entries, { createdBy, updatedAt }, environment) {
+    if (!(await this.getRouteBySiteId(siteId, environment))) return [];
+    const now = updatedAt || this.now();
+    const statements = [
+      this.db.prepare('DELETE FROM site_acl_entries WHERE site_id = ?').bind(siteId),
+      this.db
+        .prepare(`UPDATE sites SET updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+        .bind(...(environment ? [now, siteId, environment] : [now, siteId])),
+      this.db
+        .prepare(
+          `UPDATE site_routes
+          SET policy_version = policy_version + 1, updated_at = ?
+          WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+        )
+        .bind(...(environment ? [now, siteId, environment] : [now, siteId])),
+    ];
+    for (const entry of entries) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO site_acl_entries (
+              id, site_id, subject_type, subject_value, access_role,
+              effect, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .bind(entry.id, siteId, entry.subjectType, entry.subjectValue, entry.accessRole, entry.effect, createdBy, now)
+      );
+    }
+    await this.db.batch(statements);
+    return this.listSiteAclEntries(siteId);
+  }
+
+  async restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment) {
+    return this.restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, null, environment);
+  }
+
+  async restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, expectedRoute, environment) {
+    if (!previousRoute) return [];
+    if (expectedRoute && !routesMatch(await this.getRouteBySiteId(siteId, environment), expectedRoute)) {
+      return this.listSiteAclEntries(siteId);
+    }
+    const statements = [
+      this.db.prepare('DELETE FROM site_acl_entries WHERE site_id = ?').bind(siteId),
+      this.db
+        .prepare(`UPDATE sites SET updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+        .bind(...(environment ? [previousSite.updatedAt, siteId, environment] : [previousSite.updatedAt, siteId])),
+    ];
+    for (const entry of previousEntries) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO site_acl_entries (
+              id, site_id, subject_type, subject_value, access_role,
+              effect, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .bind(
+            entry.id,
+            siteId,
+            entry.subjectType,
+            entry.subjectValue,
+            entry.accessRole,
+            entry.effect,
+            entry.createdBy,
+            entry.createdAt
+          )
+      );
+    }
+    await this.db.batch(statements);
+    await this.restoreSiteRoute(siteId, previousRoute, environment);
+    return this.listSiteAclEntries(siteId);
   }
 
   async createSiteVersion(input) {
@@ -293,6 +416,13 @@ export class D1PagesStore {
       )
       .run();
     return this.getRouteBySiteId(siteId, environment);
+  }
+
+  async restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment) {
+    if (!routesMatch(await this.getRouteBySiteId(siteId, environment), expectedRoute)) {
+      return this.getRouteBySiteId(siteId, environment);
+    }
+    return this.restoreSiteRoute(siteId, previousRoute, environment);
   }
 
   async getSiteVersion(id, environment) {
@@ -533,6 +663,19 @@ export function cloneRecord(record) {
   return record == null ? null : JSON.parse(JSON.stringify(record));
 }
 
+function routesMatch(actual, expected) {
+  if (!actual || !expected) return false;
+  return (
+    actual.id === expected.id &&
+    actual.activeVersionId === expected.activeVersionId &&
+    actual.workerName === expected.workerName &&
+    actual.visibility === expected.visibility &&
+    actual.policyVersion === expected.policyVersion &&
+    actual.routeGeneration === expected.routeGeneration &&
+    actual.routeStatus === expected.routeStatus
+  );
+}
+
 function mapUser(row) {
   return {
     id: row.id,
@@ -608,6 +751,19 @@ function mapSiteMember(row) {
     siteId: row.site_id,
     userId: row.user_id,
     role: row.role,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+function mapSiteAclEntry(row) {
+  return {
+    id: row.id,
+    siteId: row.site_id,
+    subjectType: row.subject_type,
+    subjectValue: row.subject_value,
+    accessRole: row.access_role,
+    effect: row.effect,
     createdBy: row.created_by,
     createdAt: row.created_at,
   };

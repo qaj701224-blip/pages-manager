@@ -65,6 +65,52 @@ export function buildOpenApi(config) {
             source: { type: 'string', examples: ['cli'] },
           },
         },
+        SiteVisibility: {
+          type: 'string',
+          enum: ['public', 'org', 'acl', 'owner', 'disabled'],
+          description: 'First release is still protected by the company IP allowlist for every visibility.',
+        },
+        SiteUpdateRequest: {
+          type: 'object',
+          required: ['visibility'],
+          properties: {
+            visibility: { $ref: '#/components/schemas/SiteVisibility' },
+          },
+        },
+        SiteAclEntry: {
+          type: 'object',
+          required: ['subjectType', 'subjectValue'],
+          properties: {
+            subjectType: {
+              type: 'string',
+              enum: ['user', 'email', 'department'],
+              description: 'group is intentionally not enabled until organization directory semantics are stable.',
+            },
+            subjectValue: { type: 'string' },
+            effect: {
+              type: 'string',
+              enum: ['allow'],
+              default: 'allow',
+              description: 'deny is not supported in the first release.',
+            },
+            accessRole: {
+              type: 'string',
+              enum: ['viewer'],
+              default: 'viewer',
+            },
+          },
+        },
+        SiteAclReplaceRequest: {
+          type: 'object',
+          required: ['entries'],
+          properties: {
+            entries: {
+              type: 'array',
+              maxItems: 200,
+              items: { $ref: '#/components/schemas/SiteAclEntry' },
+            },
+          },
+        },
       },
     },
     paths: {
@@ -91,6 +137,64 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'Site returned' },
             404: { description: 'Site not found' },
+          },
+        },
+        patch: {
+          summary: 'Update site visibility and invalidate existing site sessions by policyVersion',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteUpdateRequest' },
+              },
+            },
+          },
+          'x-error-codes': ['SITE_VISIBILITY_INVALID', 'SITE_POLICY_FORBIDDEN', 'ROUTE_SNAPSHOT_WRITE_FAILED'],
+          responses: {
+            200: { description: 'Site policy updated' },
+            400: { description: 'Invalid visibility' },
+            403: { description: 'Only the site owner can manage site policy' },
+            404: { description: 'Site not found' },
+            503: { description: 'Route snapshot write failed' },
+          },
+        },
+      },
+      '/.xd-pages/api/sites/{id}/acl': {
+        get: {
+          summary: 'List site ACL entries',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            200: { description: 'ACL entries returned' },
+            404: { description: 'Site not found' },
+          },
+        },
+        put: {
+          summary: 'Replace site ACL entries using allow-only OR semantics',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteAclReplaceRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'ACL_ENTRIES_INVALID',
+            'ACL_EFFECT_UNSUPPORTED',
+            'ACL_ROLE_UNSUPPORTED',
+            'ACL_SUBJECT_TYPE_UNSUPPORTED',
+            'ACL_SUBJECT_VALUE_INVALID',
+            'SITE_POLICY_FORBIDDEN',
+            'ROUTE_SNAPSHOT_WRITE_FAILED',
+          ],
+          responses: {
+            200: { description: 'ACL entries replaced' },
+            400: { description: 'Invalid ACL request' },
+            403: { description: 'Only the site owner can manage site ACL' },
+            404: { description: 'Site not found' },
+            503: { description: 'Route snapshot write failed' },
           },
         },
       },

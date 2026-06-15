@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
 import { createTestPagesStore } from './test-store.js';
 
@@ -125,6 +126,190 @@ test('gets a site by id for members and hides unknown sites', async () => {
   assert.equal(missing.status, 404);
 });
 
+test('updates site visibility and bumps policy version for active routes', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'disabled' }),
+    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.site.defaultVisibility, 'disabled');
+  assert.equal(body.site.route.policyVersion, 2);
+  assert.equal(body.site.route.visibility, 'disabled');
+  assert.equal((await store.getRouteBySiteId('site_1')).cacheTier, 'strict');
+  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').policyVersion, 2);
+  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').routeGeneration, 1);
+});
+
+test('rolls back visibility changes when active route snapshot write fails', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'disabled' }),
+    testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await store.getSite('site_1')).defaultVisibility, 'org');
+  assert.equal((await store.getRouteBySiteId('site_1')).visibility, 'org');
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 1);
+});
+
+test('replaces site ACL with allow-only OR entries and rejects unsupported policy features', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+
+  const put = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [
+        { subjectType: 'user', subjectValue: 'usr_2' },
+        { subjectType: 'email', subjectValue: 'Alice@Example.COM' },
+        { subjectType: 'department', subjectValue: 'dept_design' },
+      ],
+    }),
+    testEnv(store)
+  );
+  const get = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl'), testEnv(store));
+  const deny = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'user', subjectValue: 'usr_2', effect: 'deny' }],
+    }),
+    testEnv(store)
+  );
+  const group = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'group', subjectValue: 'grp_1' }],
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(put.status, 200);
+  assert.deepEqual(
+    (await put.json()).aclEntries.map(({ subjectType, subjectValue, effect }) => ({ subjectType, subjectValue, effect })),
+    [
+      { subjectType: 'user', subjectValue: 'usr_2', effect: 'allow' },
+      { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow' },
+      { subjectType: 'department', subjectValue: 'dept_design', effect: 'allow' },
+    ]
+  );
+  assert.deepEqual(
+    (await get.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue })),
+    [
+      { subjectType: 'user', subjectValue: 'usr_2' },
+      { subjectType: 'email', subjectValue: 'alice@example.com' },
+      { subjectType: 'department', subjectValue: 'dept_design' },
+    ]
+  );
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
+  assert.equal(deny.status, 400);
+  assert.equal((await deny.json()).error.code, 'ACL_EFFECT_UNSUPPORTED');
+  assert.equal(group.status, 400);
+  assert.equal((await group.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
+});
+
+test('rejects deploy-only access keys from reading site ACL entries', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await store.replaceSiteAclEntries(
+    'site_1',
+    [{ id: 'acl_1', subjectType: 'email', subjectValue: 'user@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  const accessKey = await seedAccessKey(store, 'ak_deploy', ['deploy:site']);
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      Authorization: `Bearer ${accessKey}`,
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+});
+
+test('rolls back ACL changes when active route snapshot write fails', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await store.replaceSiteAclEntries(
+    'site_1',
+    [{ id: 'acl_existing', subjectType: 'user', subjectValue: 'usr_existing', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  await activateSite(store, site.id, { visibility: 'acl' });
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'user', subjectValue: 'usr_new' }],
+    }),
+    testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.deepEqual(
+    (await store.listSiteAclEntries('site_1')).map(({ id, subjectValue }) => ({ id, subjectValue })),
+    [{ id: 'acl_existing', subjectValue: 'usr_existing' }]
+  );
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
+});
+
 test('rejects invalid visibility, duplicate slugs, and production -staging slugs', async () => {
   const store = await createSeededStore();
   await store.createSite({
@@ -195,9 +380,28 @@ function jsonRequest(url, body) {
   });
 }
 
-function authRequest(url) {
+function patchJsonRequest(url, body) {
+  return jsonMethodRequest('PATCH', url, body);
+}
+
+function putJsonRequest(url, body) {
+  return jsonMethodRequest('PUT', url, body);
+}
+
+function jsonMethodRequest(method, url, body) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token' },
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer cli-token',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function authRequest(url, headers = {}) {
+  return new Request(url, {
+    headers: { Authorization: 'Bearer cli-token', ...headers },
   });
 }
 
@@ -215,10 +419,71 @@ async function createSeededStore() {
   return store;
 }
 
-function testEnv(store) {
+async function activateSite(store, siteId, overrides = {}) {
+  await store.createSiteVersion({
+    id: 'ver_1',
+    siteId,
+    deploymentId: 'dep_1',
+    workerName: 'pages-v2-docs-ver-1',
+    runtime: 'wfp',
+    artifactKind: 'worker',
+    artifactRef: 'wfp://test/pages-v2-docs-ver-1',
+    contentHash: 'sha256:abc',
+    createdBy: 'usr_1',
+  });
+  return store.activateSiteVersion(
+    siteId,
+    {
+      activeVersionId: 'ver_1',
+      workerName: 'pages-v2-docs-ver-1',
+      visibility: overrides.visibility || 'org',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    'production'
+  );
+}
+
+function failingSnapshotStore() {
+  return {
+    put: async () => {
+      throw new Error('snapshot write failed');
+    },
+  };
+}
+
+function createSnapshotStore() {
+  const values = new Map();
+  return {
+    put: async (key, value) => values.set(key, JSON.parse(value)),
+    read: (key) => values.get(key),
+  };
+}
+
+async function seedAccessKey(store, keyId, scopes) {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId,
+    bytes: new Uint8Array(24).fill(3),
+  });
+  await store.createAccessKey({
+    id: keyId,
+    ownerUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: keyId,
+    scopes,
+    siteId: 'site_1',
+    expiresAt: '2026-07-15T00:00:00.000Z',
+  });
+  return plaintext;
+}
+
+function testEnv(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
+    ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+    ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     now: () => '2026-06-15T00:00:00.000Z',
     nextId: (prefix) =>
       ({
@@ -233,5 +498,6 @@ function testEnv(store) {
       env: 'production',
       jti: 'cli_1',
     }),
+    ...overrides,
   };
 }

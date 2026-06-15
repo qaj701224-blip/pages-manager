@@ -15,6 +15,8 @@ test('serves production v2-only OpenAPI skeleton', async () => {
   assert.equal(body.openapi, '3.1.0');
   assert.deepEqual(body.servers, [{ url: 'https://api.pages.xd.team' }]);
   assert.ok(body.paths['/.xd-pages/api/sites']);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/deployments']);
   assert.ok(body.paths['/.xd-pages/api/deployments/{id}']);
@@ -36,6 +38,8 @@ test('serves production v2-only OpenAPI skeleton', async () => {
     'IDEMPOTENCY_CONFLICT',
   ]);
   assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /artifactBundle/);
+  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
+  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['user', 'email', 'department']);
   assert.doesNotMatch(serialized, /workers\.xd\.team/);
   assert.doesNotMatch(serialized, /X-Pages-Token/);
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);

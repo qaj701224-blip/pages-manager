@@ -3,8 +3,10 @@ import { readAuthConfig } from './config.js';
 import {
   confirmStoredCliLogin,
   consumeStoredCliLogin,
+  consumeStoredOAuthSiteCode,
   consumeStoredOAuthState,
   createStoredCliLogin,
+  createStoredOAuthSiteCode,
   createStoredOAuthState,
   peekStoredCliLogin,
   pollStoredCliLogin,
@@ -13,7 +15,12 @@ import {
   revokeStoredSession,
 } from './do-storage.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
+import {
+  handleInternalConsumeSiteCode,
+  handleInternalVerifyCliToken,
+  handleOAuthAuthorize,
+  handleOAuthCallback,
+} from './oauth-endpoints.js';
 
 export default {
   async fetch(request, env) {
@@ -40,6 +47,8 @@ export default {
     if (url.pathname === '/.xd-pages/cli/login/poll') return handleCliLoginPoll(request, env, config);
     if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config);
     if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config);
+    if (url.pathname === '/.xd-pages/internal/consume-site-code') return handleInternalConsumeSiteCode(request, env, config);
+    if (url.pathname === '/.xd-pages/internal/verify-cli-token') return handleInternalVerifyCliToken(request, env, config);
 
     return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
   },
@@ -54,7 +63,15 @@ export class OAuthStateDO {
   async fetch(request) {
     return handleStorageAction(request, this.state.storage, {
       '/create': (storage, body) => createStoredOAuthState(storage, body),
-      '/consume': (storage, body) => consumeStoredOAuthState(storage, body.publicState, { now: body.now }),
+      '/consume': (storage, body) =>
+        consumeStoredOAuthState(storage, body.publicState, { now: body.now, environment: body.environment }),
+      '/create-site-code': (storage, body) => createStoredOAuthSiteCode(storage, body),
+      '/consume-site-code': (storage, body) =>
+        consumeStoredOAuthSiteCode(storage, body.siteCode, {
+          now: body.now,
+          siteHost: body.siteHost,
+          environment: body.environment,
+        }),
     });
   }
 }

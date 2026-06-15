@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
 import worker from './index.js';
 
 test('fails closed before route lookup when IP allowlist is missing', async () => {
@@ -92,12 +93,382 @@ test('dispatches an allowed production site with sanitized request headers', asy
 
   assert.equal(response.status, 200);
   assert.equal(await response.text(), 'user worker ok');
-  assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Auth'), 'test.internal.jwt');
+  const internalJwt = env.dispatchedRequest.headers.get('CF-Platform-Auth');
+  const internalPayload = await verifySessionJwt(internalJwt, env, {
+    purpose: 'internal_worker_jwt',
+    audience: 'pages-v2-demo-worker',
+    now: 1_700_000_000,
+  });
+  assert.equal(internalPayload.iss, 'pages-router');
+  assert.equal(internalPayload.sub, 'anonymous');
+  assert.equal(internalPayload.siteId, 'site_demo');
+  assert.equal(internalPayload.versionId, 'ver_demo');
+  assert.equal(internalPayload.anonymous, true);
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-User'), 'anonymous');
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Id'), 'site_demo');
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Slug'), 'demo');
   assert.equal(env.dispatchedRequest.headers.get('Cookie'), 'app=ok');
   assert.equal(env.dispatchedEnv, undefined);
+});
+
+test('reads route snapshots from KV pointer records when lookupRoute is absent', async () => {
+  const snapshot = routeSnapshot({ routeGeneration: 4, policyVersion: 2 });
+  const env = routeEnv({
+    lookupRoute: undefined,
+    ROUTE_SNAPSHOTS: kvRouteSnapshots({
+      'production:route_pointer:demo.pages.xd.team': {
+        hostname: 'demo.pages.xd.team',
+        environment: 'production',
+        routeGeneration: 4,
+        policyVersion: 2,
+        snapshotKey: 'production:route_snapshot:demo.pages.xd.team:4:2',
+      },
+      'production:route_snapshot:demo.pages.xd.team:4:2': snapshot,
+    }),
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Version'), 'ver_demo');
+});
+
+test('fails closed when KV route pointer and snapshot versions do not match', async () => {
+  const env = routeEnv({
+    lookupRoute: undefined,
+    ROUTE_SNAPSHOTS: kvRouteSnapshots({
+      'production:route_pointer:demo.pages.xd.team': {
+        hostname: 'demo.pages.xd.team',
+        environment: 'production',
+        routeGeneration: 4,
+        policyVersion: 3,
+        snapshotKey: 'production:route_snapshot:demo.pages.xd.team:4:2',
+      },
+      'production:route_snapshot:demo.pages.xd.team:4:2': routeSnapshot({ routeGeneration: 4, policyVersion: 2 }),
+    }),
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_INVALID');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('fails closed when KV route pointer environment does not match router environment', async () => {
+  const env = routeEnv({
+    lookupRoute: undefined,
+    ROUTE_SNAPSHOTS: kvRouteSnapshots({
+      'production:route_pointer:demo.pages.xd.team': {
+        hostname: 'demo.pages.xd.team',
+        environment: 'staging',
+        routeGeneration: 4,
+        policyVersion: 2,
+        snapshotKey: 'production:route_snapshot:demo.pages.xd.team:4:2',
+      },
+      'production:route_snapshot:demo.pages.xd.team:4:2': routeSnapshot({ routeGeneration: 4, policyVersion: 2 }),
+    }),
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_INVALID');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('consumes auth callback site code and sets host-only site_session before redirecting', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org', policyVersion: 3 }),
+    },
+    consumeSiteCode: async ({ code, siteHost }) => {
+      assert.equal(code, 'ost_test.site-secret');
+      assert.equal(siteHost, 'demo.pages.xd.team');
+      return {
+        returnTo: 'https://demo.pages.xd.team/private',
+        user: {
+          id: 'usr_1',
+          email: 'user@example.com',
+          employeeStatus: 'active',
+          departments: ['dept_design'],
+          sessionVersion: 5,
+        },
+      };
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/auth/callback?code=ost_test.site-secret', {
+      headers: { 'CF-Connecting-IP': '10.1.2.3' },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get('Location'), 'https://demo.pages.xd.team/private');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+
+  const cookie = response.headers.get('Set-Cookie');
+  assert.match(cookie, /^__Host-pages_site_session=/);
+  assert.equal(cookie.includes('Domain='), false);
+  const token = cookie.split(';', 1)[0].split('=', 2)[1];
+  const payload = await verifySessionJwt(token, env, {
+    purpose: 'site_session',
+    audience: 'demo.pages.xd.team',
+    now: 1_700_000_000,
+  });
+  assert.equal(payload.sub, 'usr_1');
+  assert.equal(payload.siteId, 'site_demo');
+  assert.equal(payload.policyVersion, 3);
+  assert.equal(payload.sessionVersion, 5);
+  assert.equal(payload.employeeStatus, 'active');
+  assert.deepEqual(payload.departments, ['dept_design']);
+});
+
+test('redirects protected org sites to auth when site_session is missing', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org' }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get('Location'), /^https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/auth\/authorize\?/);
+  assert.equal(new URL(response.headers.get('Location')).searchParams.get('site_host'), 'demo.pages.xd.team');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('rejects disabled sites before dispatch even with a valid site_session', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'disabled' }),
+    },
+  });
+  const session = await siteSession({ audience: 'demo.pages.xd.team', siteId: 'site_demo' });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_DISABLED');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('dispatches org sites for active employees with a valid site_session', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org', policyVersion: 2 }),
+    },
+  });
+  const session = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    policyVersion: 2,
+    userId: 'usr_1',
+    employeeStatus: 'active',
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}; app=ok`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(env.dispatchedRequest.headers.get('CF-Platform-User'), 'usr_1');
+  assert.equal(env.dispatchedRequest.headers.get('Cookie'), 'app=ok');
+});
+
+test('rejects org sites for inactive employees', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org' }),
+    },
+  });
+  const session = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    employeeStatus: 'left',
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_ACCESS_FORBIDDEN');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('owner sites require the active owner identity', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'owner', ownerUserId: 'owner_1' }),
+    },
+  });
+  const nonOwner = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    userId: 'usr_2',
+  });
+  const owner = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    userId: 'owner_1',
+  });
+
+  const rejected = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${nonOwner}`,
+      },
+    }),
+    env
+  );
+  const allowed = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${owner}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(rejected.status, 403);
+  assert.equal((await rejected.json()).error.code, 'SITE_ACCESS_FORBIDDEN');
+  assert.equal(allowed.status, 200);
+  assert.equal(env.dispatchedRequest.headers.get('CF-Platform-User'), 'owner_1');
+});
+
+test('rejects acl sites when no allow entry matches', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'acl',
+        acl: [{ effect: 'allow', subjectType: 'user', subjectValue: 'usr_2' }],
+      }),
+    },
+  });
+  const session = await siteSession({ audience: 'demo.pages.xd.team', siteId: 'site_demo', userId: 'usr_1' });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_ACCESS_FORBIDDEN');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('dispatches acl sites when any allow entry matches', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'acl',
+        acl: [
+          { effect: 'allow', subjectType: 'user', subjectValue: 'usr_9' },
+          { effect: 'allow', subjectType: 'department', subjectValue: 'dept_design' },
+        ],
+      }),
+    },
+  });
+  const session = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    userId: 'usr_1',
+    departments: ['dept_design'],
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(env.dispatchedRequest.headers.get('CF-Platform-User'), 'usr_1');
+});
+
+test('redirects stale site_session when policyVersion no longer matches', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org', policyVersion: 3 }),
+    },
+  });
+  const session = await siteSession({ audience: 'demo.pages.xd.team', siteId: 'site_demo', policyVersion: 2 });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get('Location'), /reason=SITE_SESSION_STALE/);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('redirects malformed site_session to auth without dispatching', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org' }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: '__Host-pages_site_session=not-a-valid-jwt',
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get('Location'), /reason=SITE_SESSION_REQUIRED/);
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
 });
 
 test('sanitizes platform response headers and cookies', async () => {
@@ -250,6 +621,11 @@ function routeSnapshot(overrides = {}) {
     workerName: 'pages-v2-demo-worker',
     siteId: 'site_demo',
     slug: 'demo',
+    visibility: 'public',
+    policyVersion: 1,
+    ownerUserId: 'owner_1',
+    acl: [],
+    requiredSessionVersion: 1,
     activeVersionId: 'ver_demo',
     ...overrides,
   };
@@ -272,9 +648,14 @@ function routeEnv(overrides = {}) {
   const env = {
     ...state,
     PAGES_ENV: 'production',
+    PAGES_SESSION_JWT_ISSUER: 'pages-router',
+    PUBLIC_AUTH_BASE: 'https://auth.pages.xd.team',
     ROUTER_IP_ALLOWLIST_CIDRS: '10.0.0.0/8',
+    PAGES_SESSION_JWT_ACTIVE_KID: 'prod-hs-2026-06',
+    PAGES_SESSION_JWT_KEYS: 'prod-hs-2026-06:HS256:PAGES_SESSION_JWT_SECRET_TEST',
+    PAGES_SESSION_JWT_SECRET_TEST: 'test-session-secret',
+    nowSeconds: () => 1_700_000_000,
     ROUTE_SNAPSHOTS: routes,
-    TEST_INTERNAL_JWT: 'test.internal.jwt',
     PAGES_DISPATCH: {
       get(workerName) {
         state.dispatchGetCount += 1;
@@ -324,10 +705,13 @@ function routeEnv(overrides = {}) {
     set dispatchedEnv(value) {
       state.dispatchedEnv = value;
     },
-    lookupRoute(hostname) {
-      state.lookupCount += 1;
-      return routes[hostname] || null;
-    },
+    lookupRoute:
+      overrides.lookupRoute === undefined
+        ? undefined
+        : function lookupRoute(hostname) {
+            state.lookupCount += 1;
+            return routes[hostname] || null;
+          },
   };
 
   for (const [key, value] of Object.entries(overrides)) {
@@ -335,4 +719,49 @@ function routeEnv(overrides = {}) {
   }
 
   return env;
+}
+
+function kvRouteSnapshots(records) {
+  return {
+    async get(key) {
+      return Object.hasOwn(records, key) ? JSON.stringify(records[key]) : null;
+    },
+  };
+}
+
+async function siteSession({
+  audience,
+  userId = 'usr_1',
+  siteId = 'site_demo',
+  policyVersion = 1,
+  sessionVersion = 1,
+  employeeStatus = 'active',
+  email = 'user@example.com',
+  departments = [],
+} = {}) {
+  return signSessionJwt(
+    {
+      purpose: 'site_session',
+      audience,
+      subject: userId,
+      now: 1_700_000_000,
+      ttlSeconds: 600,
+      claims: {
+        sid: 'sid_site',
+        siteId,
+        policyVersion,
+        sessionVersion,
+        employeeStatus,
+        email,
+        departments,
+      },
+    },
+    {
+      PAGES_ENV: 'production',
+      PAGES_SESSION_JWT_ISSUER: 'pages-router',
+      PAGES_SESSION_JWT_ACTIVE_KID: 'prod-hs-2026-06',
+      PAGES_SESSION_JWT_KEYS: 'prod-hs-2026-06:HS256:PAGES_SESSION_JWT_SECRET_TEST',
+      PAGES_SESSION_JWT_SECRET_TEST: 'test-session-secret',
+    }
+  );
 }

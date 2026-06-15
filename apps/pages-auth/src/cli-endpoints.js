@@ -29,7 +29,7 @@ export async function handleCliLoginStart(request, env, config) {
     loginId: created.loginId,
     loginSecret: created.loginSecret,
     deviceCode: created.deviceCode,
-    browserUrl: buildCliLoginBrowserUrl(config, created.loginId),
+    browserUrl: buildCliLoginBrowserUrl(config, created.loginId, created.deviceCode),
     expiresAt: created.record?.expiresAt || now + config.cliLoginTtlSeconds,
   });
 }
@@ -102,9 +102,10 @@ export async function handleCliLoginPoll(request, env, config) {
   });
 }
 
-export function buildCliLoginBrowserUrl(config, loginId) {
+export function buildCliLoginBrowserUrl(config, loginId, deviceCode) {
   const url = new URL('/.xd-pages/auth/authorize', config.authBase);
   url.searchParams.set('cli_login_id', loginId);
+  if (deviceCode) url.searchParams.set('device_code', deviceCode);
   return url.toString();
 }
 
