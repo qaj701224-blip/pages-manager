@@ -35,10 +35,14 @@ test('deploy creates a site when project has no binding, writes .pages.json, the
   assert.equal(calls[1].headers.get('Idempotency-Key'), 'idem_1');
   const deployBody = await calls[1].json();
   assert.match(deployBody.contentHash, /^sha256:/);
+  assert.equal(deployBody.artifactBundle.kind, 'spa');
+  assert.equal(deployBody.artifactBundle.mainModule, 'worker.mjs');
+  assert.equal(deployBody.artifactBundle.modules[0].content.includes(dir), false);
   assert.deepEqual(deployBody, {
     siteId: 'site_1',
     artifactKind: 'spa',
     contentHash: deployBody.contentHash,
+    artifactBundle: deployBody.artifactBundle,
     source: 'cli',
   });
 
@@ -89,10 +93,12 @@ test('deploy does not reuse a project binding from a different environment', asy
   assert.deepEqual(await calls[0].json(), { slug: 'docs', visibility: 'org' });
   const deployBody = await calls[1].json();
   assert.match(deployBody.contentHash, /^sha256:/);
+  assert.equal(deployBody.artifactBundle.kind, 'spa');
   assert.deepEqual(deployBody, {
     siteId: 'site_staging',
     artifactKind: 'spa',
     contentHash: deployBody.contentHash,
+    artifactBundle: deployBody.artifactBundle,
     source: 'cli',
   });
 });

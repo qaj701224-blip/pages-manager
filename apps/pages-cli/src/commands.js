@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { parseArgs } from './args.js';
 import { createApiClient } from './api-client.js';
-import { hashArtifact, inferArtifactKind } from './artifact.js';
+import { buildArtifactBundle, hashArtifact, inferArtifactKind } from './artifact.js';
 import { FIXED_ENVIRONMENTS, readCliConfig, resolveEnvironment } from './config.js';
 import { loginWithAccessKey, loginWithBrowser } from './login.js';
 import { loadProfile, resolveProfileDir, saveProfile as saveProfileFile } from './profile.js';
@@ -108,6 +108,7 @@ async function runDeploy(parsed, context) {
   }
 
   const artifact = await hashArtifact(targetPath);
+  const artifactBundle = await buildArtifactBundle(targetPath, artifactKind);
   const deployed = await client.requestApi(
     'POST',
     '/.xd-pages/api/deployments',
@@ -115,6 +116,7 @@ async function runDeploy(parsed, context) {
       siteId,
       artifactKind,
       contentHash: artifact.contentHash,
+      artifactBundle,
       source: 'cli',
     },
     { idempotencyKey: nextIdempotencyKey(context) }

@@ -50,6 +50,14 @@ export async function inferArtifactKind(targetPath) {
   return 'static';
 }
 
+export async function buildArtifactBundle(targetPath, artifactKind) {
+  const kind = artifactKind || (await inferArtifactKind(targetPath));
+  const absolute = path.resolve(targetPath);
+  if (kind === 'worker') return buildWorkerBundle(absolute);
+  if (kind === 'static' || kind === 'spa') return buildStaticWorkerBundle(absolute, kind);
+  throw new Error('ARTIFACT_KIND_INVALID');
+}
+
 async function collectDirectoryFiles(root, dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = [];
@@ -67,4 +75,87 @@ async function collectDirectoryFiles(root, dir) {
     });
   }
   return files;
+}
+
+async function buildWorkerBundle(absolutePath) {
+  const stats = await stat(absolutePath);
+  if (!stats.isFile()) throw new Error('WORKER_ARTIFACT_FILE_REQUIRED');
+  const name = path.basename(absolutePath);
+  return {
+    kind: 'worker',
+    mainModule: name,
+    modules: [
+      {
+        name,
+        content: await readFile(absolutePath, 'utf8'),
+        type: 'application/javascript+module',
+      },
+    ],
+  };
+}
+
+async function buildStaticWorkerBundle(absolutePath, kind) {
+  const stats = await stat(absolutePath);
+  if (!stats.isDirectory()) throw new Error('STATIC_ARTIFACT_DIRECTORY_REQUIRED');
+  const files = await collectDirectoryFiles(absolutePath, absolutePath);
+  const entries = {};
+  for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    const bytes = await readFile(file.absolutePath);
+    entries[file.relativePath] = {
+      body: Buffer.from(bytes).toString('base64'),
+      type: contentTypeFor(file.relativePath),
+    };
+  }
+
+  const content = generatedAssetWorkerSource(entries, { spaFallback: kind === 'spa' });
+  return {
+    kind,
+    mainModule: 'worker.mjs',
+    modules: [
+      {
+        name: 'worker.mjs',
+        content,
+        type: 'application/javascript+module',
+      },
+    ],
+  };
+}
+
+function generatedAssetWorkerSource(entries, { spaFallback }) {
+  return [
+    `const files = ${JSON.stringify(entries, null, 2)};`,
+    `const spaFallback = ${JSON.stringify(Boolean(spaFallback))};`,
+    '',
+    'function decodeBase64(value) {',
+    '  const text = atob(value);',
+    '  const bytes = new Uint8Array(text.length);',
+    '  for (let index = 0; index < text.length; index += 1) bytes[index] = text.charCodeAt(index);',
+    '  return bytes;',
+    '}',
+    '',
+    'export default {',
+    '  fetch(request) {',
+    '    const url = new URL(request.url);',
+    "    let key = decodeURIComponent(url.pathname.replace(/^\\//, '')) || 'index.html';",
+    '    let asset = files[key] || files[`${key}/index.html`];',
+    "    if (!asset && spaFallback) asset = files['index.html'];",
+    "    if (!asset) return new Response('Not found', { status: 404 });",
+    "    return new Response(decodeBase64(asset.body), { headers: { 'Content-Type': asset.type } });",
+    '  },',
+    '};',
+    '',
+  ].join('\n');
+}
+
+function contentTypeFor(relativePath) {
+  const extension = path.extname(relativePath).toLowerCase();
+  if (extension === '.html') return 'text/html; charset=utf-8';
+  if (extension === '.css') return 'text/css; charset=utf-8';
+  if (extension === '.js' || extension === '.mjs') return 'text/javascript; charset=utf-8';
+  if (extension === '.json') return 'application/json; charset=utf-8';
+  if (extension === '.svg') return 'image/svg+xml';
+  if (extension === '.png') return 'image/png';
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
+  if (extension === '.webp') return 'image/webp';
+  return 'application/octet-stream';
 }

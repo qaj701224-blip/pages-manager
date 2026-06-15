@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { hashArtifact, inferArtifactKind } from './artifact.js';
+import { buildArtifactBundle, hashArtifact, inferArtifactKind } from './artifact.js';
 
 test('hashArtifact is deterministic for directories and ignores .pages.json', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-artifact-'));
@@ -31,4 +31,44 @@ test('inferArtifactKind detects worker files and SPA directories', async () => {
 
   assert.equal(await inferArtifactKind(path.join(dir, 'worker.mjs')), 'worker');
   assert.equal(await inferArtifactKind(path.join(dir, 'dist')), 'spa');
+});
+
+test('buildArtifactBundle returns worker module content without absolute paths', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-worker-bundle-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  const workerPath = path.join(dir, 'worker.mjs');
+  await writeFile(workerPath, 'export default { fetch() { return new Response("ok"); } };');
+
+  assert.deepEqual(await buildArtifactBundle(workerPath, 'worker'), {
+    kind: 'worker',
+    mainModule: 'worker.mjs',
+    modules: [
+      {
+        name: 'worker.mjs',
+        content: 'export default { fetch() { return new Response("ok"); } };',
+        type: 'application/javascript+module',
+      },
+    ],
+  });
+});
+
+test('buildArtifactBundle generates static and SPA worker modules from files', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-bundle-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), '<div id="app"></div>');
+  await writeFile(path.join(dir, 'style.css'), 'body { color: red; }');
+  await writeFile(path.join(dir, '.pages.json'), '{"secret":"ignored"}');
+
+  const bundle = await buildArtifactBundle(dir, 'spa');
+
+  assert.equal(bundle.kind, 'spa');
+  assert.equal(bundle.mainModule, 'worker.mjs');
+  assert.equal(bundle.modules.length, 1);
+  assert.equal(bundle.modules[0].name, 'worker.mjs');
+  assert.equal(bundle.modules[0].type, 'application/javascript+module');
+  assert.match(bundle.modules[0].content, /index\.html/);
+  assert.match(bundle.modules[0].content, /style\.css/);
+  assert.match(bundle.modules[0].content, /spaFallback/);
+  assert.equal(bundle.modules[0].content.includes(dir), false);
+  assert.equal(bundle.modules[0].content.includes('.pages.json'), false);
 });
