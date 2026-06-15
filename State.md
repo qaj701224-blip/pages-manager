@@ -1,6 +1,6 @@
 # pages-manager 当前状态
 
-更新时间：2026-06-14
+更新时间：2026-06-15
 
 当前分支：`feat/slack-preview-gateway`
 
@@ -13,11 +13,11 @@
 `pages-manager` 的 Slack 到个人网站 preview 的主链路已经完成了主要代码搭建：
 
 - Slack HTTP 入口、Slack Agent、Gateway、Worker、Slack Notifier 已经形成长期架构。
-- GitHub Actions 中的 Coding Agent、site-check、preview workflow 已接入链路。
+- GitHub Actions 中的 Coding Agent、site-check 已接入链路；`pages-preview.yml` 保留 actions mode，当前 preview deploy 由 ECS `pages-worker` 走 `local_deploy`。
 - Gateway 已开始从文件态切到 MySQL + Redis 运行态。
 - K8s/ACK 部署结构已经按 `gateway / worker / slack-agent / slack-notifier` 四个 Deployment 组织。
 - 平台 workflow 和用户站点 workflow 的权限边界已经拆开，相关 PR 已合入 `master`。
-- 本地代码验证已通过，当前主要问题不在单元测试，而在 ACK 真实环境的公网入口、数据库权限、ACR 网络稳定性和一次完整 E2E 验证。
+- 本地代码验证已通过，当前主要问题不在单元测试，而在真实 Slack 完整闭环、生产级数据库隔离、GitHub App 身份迁移，以及后续 ACK/ACR lane 的网络稳定性。
 
 当前最新环境状态：
 
@@ -29,13 +29,19 @@
 - GitHub webhook 已切到 `https://tableau.tapdb.com/publisher-test/integrations/github/webhook`，GitHub ping delivery 返回 200。
 - Slack Events endpoint 已用签名模拟 `url_verification` 验证通过；公司反代白名单修复后，应继续保持 Slack 签名 header 透传。
 - Slack Agent 已在 ECS 内调用公司模型网关成功，模型名使用 `gpt-5.5`。
+- 本地代码已补充 Slack 发起人 profile 快照和中文 issue/comment 模板；部署后新 issue 会展示 Slack 昵称、邮箱（取决于 Slack App 是否具备 `users:read.email`）和机器可读自动化元数据。
+- 本地代码已把 Slack 来源的 `employeeSlug` 改为 gateway 根据 Slack 身份派生，Slack Agent 只能影响 `siteSlug` 和需求摘要，不能靠用户文本写入别人的目录。
+- ECS 公网 IP `123.56.251.50` 已加入 GitHub `staging` environment 的 `IP_ALLOWLIST`，并触发 `Deploy Staging` 让 Cloudflare staging Worker 生效。
+- 当前 preview deploy 使用 `PAGES_PREVIEW_MODE=local_deploy`，由 ECS `pages-worker` 调用 `https://api-staging.workers.xd.team/deploy`，不是 GitHub-hosted runner 直接调用。
+- 2026-06-15 签名模拟 Slack event 已在 ECS 上跑通到真实 preview：issue `#53`、PR `#54`、preview `https://pm-pr-54-smoke-profile-staging.workers.xd.team`。
 
 当前不能宣称“完整生产化跑通”的原因是：
 
-- 还需要用真实 Slack 消息跑完一次完整用户闭环。
+- 还需要用真实 Slack 用户消息跑完一次完整用户闭环；当前签名模拟事件已覆盖后台链路，但模拟 channel 不能验证真实 Slack thread 回写。
 - GitHub Actions 变量已切到 ECS callback URL 和 `gpt-5.5` 模型名。
 - 当前 ECS MySQL / Redis 是 compose 内临时运行态，不是最终生产数据库。
 - GitHub-hosted runner 到阿里云 ACR 公网 registry 出现过超时；这影响 ACK/ACR lane，不影响当前 ECS 离线镜像部署。
+- 当前 ECS 上的 `SLACK_BOT_TOKEN` 实测 scope 仍缺少 `app_mentions:read`、`im:history`、`reactions:write` 等能力；如果 Slack 后台已经申请权限，需要确认是否已 reinstall / approve 并把新 token 更新到 ECS。
 
 ## 1. 目标实现状态
 
@@ -55,6 +61,77 @@
   -> Slack thread 收到状态更新和 preview URL
 ```
 
+当前真实运行链路图：
+
+```mermaid
+flowchart TD
+  U["员工在 Slack DM / thread / @bot 发需求"]
+  Slack["Slack Platform"]
+  Proxy["公司反代\nhttps://tableau.tapdb.com/publisher-test"]
+  Gateway["ECS pages-gateway\n验签 / session / job / webhook"]
+  SlackAgent["ECS slack-agent\n自由对话 / 需求整理"]
+  DB["ECS pages-mysql\n持久化 job / session / events"]
+  Redis["ECS pages-redis\nlease / queue / dedupe"]
+  Worker["ECS pages-worker\n编排 issue / workflow / preview"]
+  GitHub["GitHub Enterprise Repo\nissue / PR / review / checks"]
+  Actions["GitHub-hosted Actions\nCoding Agent / site-check"]
+  CF["Cloudflare staging API\napi-staging.workers.xd.team/deploy"]
+  Notifier["ECS slack-notifier\nreaction / thread 消息 / 状态卡"]
+
+  U --> Slack --> Proxy --> Gateway
+  Gateway --> SlackAgent
+  Gateway <--> DB
+  Gateway <--> Redis
+  Gateway --> Worker
+  Worker --> GitHub
+  Worker --> Actions
+  Actions --> GitHub
+  GitHub -->|"webhook"| Proxy --> Gateway
+  Worker -->|"local_deploy"| CF
+  CF --> Worker
+  Worker --> Gateway --> Notifier --> Slack --> U
+```
+
+当前运行边界图：
+
+```mermaid
+flowchart LR
+  subgraph ECS["ECS: 常驻平台控制面"]
+    G["pages-gateway"]
+    W["pages-worker"]
+    A["slack-agent"]
+    N["slack-notifier"]
+    M["pages-mysql"]
+    R["pages-redis"]
+  end
+
+  subgraph GHA["GitHub Actions: 一次性用户站点执行器"]
+    PA["pages-agent.yml\nCoding Agent"]
+    SC["site-check.yml"]
+    PI["project-index.yml"]
+    GA1["不持有 ACR / ACK / kubectl 权限"]
+    GA2["不直接调用 /deploy"]
+  end
+
+  subgraph CFZone["Cloudflare staging: 站点托管能力"]
+    API["api-staging.workers.xd.team"]
+    Site["preview 子 Worker / 静态站点"]
+  end
+
+  G --> W
+  G --> A
+  G --> N
+  G --> M
+  G --> R
+  W --> PA
+  W --> SC
+  W --> PI
+  W -->|"固定 ECS 出口 IP 调 /deploy"| API --> Site
+  PA -.-> GA1
+  PA -.-> GA2
+  GA2 -.-> API
+```
+
 产品要求不是“一个员工一个网站”，而是：
 
 ```text
@@ -63,9 +140,21 @@ sites/<employeeSlug>/<siteSlug>/
 
 一个员工可以有多个网站。每个网站需要在目录、任务、PR、preview、权限上隔离。
 
-因此，当前状态不是“目标还没实现”，而是“代码主链路已实现，ACK 真实环境还没有完成稳定、无人值守的全链路验收”。后续阻塞点主要集中在公网入口、DB/Redis 权限隔离、ACR 网络和一次完整 ACK E2E。
+因此，当前状态不是“目标还没实现”，而是“代码主链路已实现，ECS 真实运行态和关键分段验证已通过，但还没有完成真实 Slack 多轮消息触发的一次完整无人值守闭环”。后续阻塞点主要集中在真实 Slack E2E、生产级 DB/Redis 隔离、GitHub App 身份模型，以及后续 ACK/ACR lane。
 
 ## 2. 当前架构方向
+
+当前验证架构：
+
+```text
+Slack / GitHub Webhooks / Browser
+  -> 公司反代 tableau.tapdb.com/publisher-test
+  -> ECS pages-gateway
+  -> ECS pages-worker / slack-agent / slack-notifier
+  -> GitHub Actions 一次性执行器
+  -> ECS pages-worker 调 Cloudflare staging /deploy
+  -> Slack thread 回传状态和 preview URL
+```
 
 长期架构方向：
 
@@ -76,10 +165,10 @@ Slack / GitHub Webhooks / Browser
   -> slack-agent
   -> slack-notifier
   -> GitHub Actions 一次性执行器
-  -> Cloudflare / preview 发布
+  -> 平台 worker/deployer 调 Cloudflare / preview 发布
 ```
 
-ACK/K8s 运行态当前按四个长期运行的 Deployment 拆分：
+当前 ECS compose 已按长期 K8s 形态拆成相同的四个长期服务；后续迁移到 ACK/K8s 时，运行态仍按四个长期运行的 Deployment 拆分：
 
 - `pages-gateway`
   - 对外 HTTP 入口。
@@ -92,6 +181,7 @@ ACK/K8s 运行态当前按四个长期运行的 Deployment 拆分：
   - 接收 gateway 派发的发布任务。
   - 创建或复用 GitHub issue。
   - 触发 GitHub Actions workflow。
+  - 当前 ECS 路径下负责 `local_deploy`，即由 worker 用固定 ECS 出口 IP 调用 Cloudflare staging `/deploy`。
   - 当前设计里不直接运行 Coding Agent。
 
 - `slack-agent`
@@ -110,9 +200,15 @@ ACK/K8s 运行态当前按四个长期运行的 Deployment 拆分：
 - `project-index.yml`
 - `pages-agent.yml`
 - `site-check.yml`
-- `pages-preview.yml`
+- `pages-preview.yml`，保留 actions mode；当前 ECS 验证路径不使用它直接调用 `/deploy`
 
 后续可以把这些一次性执行器迁移到 K8s Job，但当前阶段不强制迁移。
+
+关键边界：
+
+- GitHub-hosted runner 负责 Coding Agent / site-check / PR，不直接调用 Cloudflare `/deploy`。
+- Preview deploy 当前由 ECS `pages-worker` 发起，避免 GitHub-hosted runner 动态出口 IP 进入 Cloudflare staging 白名单。
+- 后续迁到 ACK 时，应保持同样原则：由平台自有 worker/deployer 用固定出口访问 `/deploy`。
 
 ## 3. 仓库和 workflow 边界
 
@@ -145,7 +241,7 @@ ACK/K8s 运行态当前按四个长期运行的 Deployment 拆分：
 - `sites/<employeeSlug>/<siteSlug>/` 下的生成代码
 - PR 创建或更新
 - site-check
-- preview 发布
+- preview 发布触发和状态回调；当前实际 `/deploy` 由 ECS `pages-worker` 执行
 
 用户站点 workflow 不能拥有：
 
@@ -439,6 +535,45 @@ namespace-local MySQL/Redis 是一次性 smoke 方案，可以接受数据丢失
 
 preview access token / owner marker 应按 preview、站点、用户上下文生成，不能是所有人共用的全局凭据。
 
+当前实际调用路径：
+
+```text
+ECS pages-worker
+  -> https://api-staging.workers.xd.team/deploy
+  -> Cloudflare staging Worker
+  -> preview 子站点 / 子 Worker
+```
+
+当前不是：
+
+```text
+GitHub-hosted runner -> /deploy
+```
+
+这么拆的原因：
+
+- Cloudflare staging Worker 有 `IP_ALLOWLIST`。
+- GitHub-hosted runner 出口 IP 动态，不适合作为白名单来源。
+- ECS 出口 IP 相对固定，已经加入 `staging` environment 的 `IP_ALLOWLIST`。
+- GitHub Actions 不直接持有 preview 发布权限，降低用户站点 workflow 的权限面。
+
+已完成的 staging 配置动作：
+
+```text
+GitHub Environment: staging
+Variable: IP_ALLOWLIST
+追加: 123.56.251.50
+Deploy Staging run: 27520058875
+结果: success
+```
+
+验证结果：
+
+```text
+ECS pages-worker -> GET https://api-staging.workers.xd.team/list
+返回: 200 {"sites":[],"filtered":true}
+```
+
 ## 10. GitHub Webhook 细节
 
 Gateway 应该通过 GitHub webhook 接收事件，而不是依赖本地 `gh` 查询或轮询。
@@ -498,8 +633,66 @@ pages-redis
 ECS 外部依赖验证：
 
 - Slack Bot token 可用，`auth.test` 返回 ok。
+- 当前 Slack bot 身份：`tapdbbot`；实测 token scope 只有 `chat:write.customize`、`chat:write`、`incoming-webhook`，`users.list` / `conversations.list` / `conversations.open` 均返回 `missing_scope`。
 - GitHub token 可访问 `xindong/pages-manager`，repo permissions 包含 admin/push。
 - 公司模型网关可达，`gpt-5.5` 可完成 Slack Agent 结构化分析。
+- Cloudflare staging `/deploy` 可由 ECS `pages-worker` 调用，ECS 请求 `https://api-staging.workers.xd.team/list` 返回 200。
+
+2026-06-15 全链路签名模拟测试：
+
+```text
+Slack signed event -> ECS gateway -> Slack Agent -> issue #53
+  -> Pages Agent run 27521022782 -> PR #54
+  -> CI / Site Check success
+  -> Codex Review comment
+  -> GitHub webhook -> gateway review gate
+  -> ECS pages-worker local_deploy
+  -> preview_deployed
+```
+
+测试结果：
+
+```text
+Job: job_2116bca0cd50460a8703f39f
+Issue: https://github.com/xindong/pages-manager/issues/53
+PR: https://github.com/xindong/pages-manager/pull/54
+Preview: https://pm-pr-54-smoke-profile-staging.workers.xd.team
+Marker: ecs-full-e2e-1781491710154
+```
+
+这次测试确认后台链路已经走到真实 Cloudflare preview。限制是：Slack 入口使用签名模拟事件，channel 是 `D_ECS_SIM_FULL`，因此 Slack reaction / thread 回写不能作为真实 Slack 成功依据；日志里符合预期地出现了 `missing_scope` / `channel_not_found`。
+
+2026-06-15 真实 Slack 私聊全链路测试：
+
+```text
+Slack DM -> ECS gateway -> Slack Agent -> issue #55
+  -> Pages Agent run 27522977934 -> PR #56
+  -> CI / Site Check success
+  -> Codex Review comment
+  -> GitHub webhook -> gateway review gate
+  -> ECS pages-worker local_deploy
+  -> preview_deployed
+  -> Slack thread 回传 Preview URL
+```
+
+测试结果：
+
+```text
+Job: job_b9781a6d11c84e5a9a6a543c
+Issue: https://github.com/xindong/pages-manager/issues/55
+PR: https://github.com/xindong/pages-manager/pull/56
+Preview: https://pm-pr-56-smoke-profile-staging.workers.xd.team
+Marker: real-slack-e2e-001
+```
+
+这次测试确认真实 Slack 私聊入口、Slack Agent、GitHub Actions Coding Agent、Review Agent webhook、site-check、ECS `local_deploy` 和 Slack 回传全部跑通。
+
+新发现的体验和实现问题：
+
+- Slack 体验应该收敛为同一个 thread 里的同一条状态卡片渐进式更新，而不是每个阶段都追加新的普通消息。当前虽然有状态卡片 `chat.update`，但 issue / PR / preview 仍会额外创建多条消息，信息噪音偏大。
+- Slack 通知顺序存在竞态：job 事件顺序是 `previewing -> preview_deployed`，但 Slack thread 里出现了先发 Preview URL、后发“Review gate 已通过，开始生成 staging Preview”的情况。应该避免 `preview_deployed` 后再用较旧阶段覆盖状态卡，或者在 `local_deploy` 快速完成时跳过迟到的 `previewing` 通知。
+- `working reaction` 偶发失败，Slack 返回 `message_not_found`。主流程不受影响，但“收到消息后给用户一个表情反馈”的体验还不稳定。
+- 日志出现 `Data too long for column 'slack_user_id'`，疑似 Slack assistant / 特殊事件 payload 的 user 字段不是普通 Slack user id。需要在入库前归一化或对 unsupported event 做安全裁剪。
 
 本次新增聚焦测试：
 
@@ -573,6 +766,7 @@ https://tableau.tapdb.com/publisher-test/integrations/slack/interactions
 
 - 给当前 bot 发 DM 或 `@bot`，确认消息进入 ECS gateway。
 - 确认同一 Slack 会话能完成多轮对话，而不是只创建单条任务。
+- 当前 ECS token scope 仍不完整，缺少 `app_mentions:read`、`im:history`、`reactions:write` 等。Slack App 如果刚申请完权限，需要重新 install / approve，并确认 ECS `.env.ecs` 使用的是重新安装后的 bot token。
 
 ### 阻塞 2：GitHub Actions 变量需要保持与 ECS 对齐
 
@@ -609,6 +803,8 @@ Head "https://xdclaw-hub-registry.cn-shanghai.cr.aliyuncs.com/v2/public/pages-ma
 ### 阻塞 4：最终 MySQL / Redis 权限和隔离
 
 当前 ECS 已经临时运行 compose 内置 MySQL / Redis，可以支持 smoke 验证。
+
+测试阶段如果不关心历史数据，可以直接 reset ECS compose 内 MySQL database 或 volume；仓库里仍然保留 Drizzle migration，保证本地、ECS、ACK 新环境能从空库稳定建到当前 schema。
 
 最终生产化仍需要确认 MySQL 用户能否访问：
 
@@ -723,15 +919,15 @@ pages_manager_preview
 
 ## 14. 当前待确认事项
 
-这些不是长期 backlog，而是影响“当前是否能在 ACK 上完整跑通”的直接问题：
+这些不是长期 backlog，而是影响“当前是否能稳定完成真实 Slack 到 preview 闭环”的直接问题：
 
 - generated PR `#42` 的失败原因。
   - 当前现象：`pages-generated-site-check` / `pages-user-flow` 失败。
   - 需要确认：失败来自 site-check 逻辑、workflow 输入、preview deploy callback、生成内容，还是 ACK 环境。
 
-- ACK gateway 的稳定公网访问方式。
-  - 当前现象：Slack 和 GitHub 都还需要本机 tunnel / 反代。
-  - 需要确认：最终域名、Ingress/SLB、TLS、原始 body 和签名 header 转发是否稳定。
+- ECS gateway 的公网入口稳定性。
+  - 当前现象：已经通过公司反代 `https://tableau.tapdb.com/publisher-test` 暴露到 ECS:80。
+  - 需要确认：Slack Events、Slack Interactivity、GitHub webhook、executor callback 在长时间运行下都能稳定转发；反代必须保留原始 body、`X-Slack-Signature`、`X-Slack-Request-Timestamp`、GitHub webhook 签名 header。
 
 - `pages_manager_preview` 数据库权限。
   - 当前现象：允许临时复用 xdclaw preview 的 RDS 实例，但不能复用 xdclaw database。
@@ -749,6 +945,6 @@ pages_manager_preview
   - 当前状态：测试和配置中使用过 token。
   - 需要确认：后续是否切到 GitHub App installation token，以及最小权限集合。
 
-- ACK 上完整多轮 Slack E2E。
-  - 当前状态：代码链路和本地验证通过，但 ACK 环境还没有稳定完成完整闭环。
+- ECS 上完整多轮 Slack E2E。
+  - 当前状态：代码链路、ECS 运行态、签名模拟、GitHub webhook ping、模型调用、staging IP allowlist 分段验证通过。
   - 需要确认：同一个 Slack thread 内连续创建、修改、preview 回传是否能不依赖本地手工操作完成。
