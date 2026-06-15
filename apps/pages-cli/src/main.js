@@ -1,26 +1,31 @@
 #!/usr/bin/env node
-import { parseArgs } from './args.js';
-import { readCliConfig } from './config.js';
+import { executeCommand } from './commands.js';
 
 export async function main(argv = process.argv.slice(2), io = {}) {
+  const stdout = io.stdout || process.stdout;
   const stderr = io.stderr || process.stderr;
   try {
-    const parsed = parseArgs(argv);
-    if (parsed.command === 'help') {
-      write(stderr, 'Usage: pages <command> [options]\n');
-      return 0;
-    }
-    readCliConfig(process.env, { environment: parsed.flags.env });
-    write(stderr, `Command not implemented yet: ${parsed.command}\n`);
-    return 1;
+    await executeCommand(argv, {
+      ...io,
+      env: io.env || process.env,
+      stdout,
+    });
+    return 0;
   } catch (error) {
-    write(stderr, `${error instanceof Error ? error.message : String(error)}\n`);
+    write(stderr, `${formatError(error)}\n`);
     return 1;
   }
 }
 
 function write(stream, text) {
   if (typeof stream?.write === 'function') stream.write(text);
+}
+
+function formatError(error) {
+  if (!error || typeof error !== 'object') return String(error);
+  const code = error.code || error.message || 'CLI_ERROR';
+  const action = error.action ? ` ${error.action}` : '';
+  return `${code}${action}`;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
