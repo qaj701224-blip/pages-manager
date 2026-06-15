@@ -37,7 +37,10 @@ export function refreshSessionRecord(record, { now, idleTtlSeconds }) {
 export function revokeSessionRecord(record, { now }) {
   requireTimestamp(now, 'now');
   if (!record || typeof record !== 'object') throw new Error('Session record is missing');
-  if (record.revokedAt !== null) return record;
+  if (record.revokedAt !== null) {
+    requireTimestamp(record.revokedAt, 'revokedAt');
+    return record;
+  }
   return { ...record, revokedAt: now };
 }
 

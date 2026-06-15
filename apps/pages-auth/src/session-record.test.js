@@ -100,3 +100,35 @@ test('rejects refreshing records with invalid persisted expiration timestamps', 
     /absoluteExpiresAt/i,
   );
 });
+
+test('keeps revoke idempotent only for valid persisted revocation timestamps', () => {
+  const record = createSessionRecord({
+    sid: 'sid_auth',
+    userId: 'usr_123',
+    purpose: 'auth_session',
+    now,
+    idleTtlSeconds: 120,
+    absoluteTtlSeconds: 300,
+  });
+  const revoked = revokeSessionRecord(record, { now: now + 30 });
+  const revokedAgain = revokeSessionRecord(revoked, { now: now + 60 });
+
+  assert.equal(revokedAgain.revokedAt, now + 30);
+  assert.equal(revokedAgain, revoked);
+});
+
+test('rejects revoking records with invalid persisted revocation timestamps', () => {
+  const record = createSessionRecord({
+    sid: 'sid_auth',
+    userId: 'usr_123',
+    purpose: 'auth_session',
+    now,
+    idleTtlSeconds: 120,
+    absoluteTtlSeconds: 300,
+  });
+
+  assert.throws(() => revokeSessionRecord({ ...record, revokedAt: Number.NaN }, { now: now + 30 }), /revokedAt/i);
+  assert.throws(() => revokeSessionRecord({ ...record, revokedAt: undefined }, { now: now + 30 }), /revokedAt/i);
+  assert.throws(() => revokeSessionRecord({ ...record, revokedAt: 'bad' }, { now: now + 30 }), /revokedAt/i);
+  assert.throws(() => revokeSessionRecord(record, { now: Number.NaN }), /now/i);
+});
