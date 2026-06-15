@@ -126,6 +126,8 @@ Slack Agent 输出建议是结构化 JSON：
 }
 ```
 
+`employeeSlug` 只作为模型理解结果的 hint。Slack 入口创建 job 时，gateway 必须根据 Slack team / user / profile 快照派生最终归属目录，例如 `zhangsan-a1b2c3`；不能让 Slack Agent 或用户文本直接决定别人的目录。
+
 gateway 只在 `intent` 属于 `create_or_update_site` / `new_site_request` / `create_site` / `update_site` 且 `needsClarification=false` 时创建 `PublishingJob`。如果 Slack Agent 返回 `clarify`、`unknown` 或 `needsClarification=true`，gateway 只回 Slack 澄清问题并保存 `SessionMemory`。
 
 ## Coding Agent Prompt
@@ -181,42 +183,61 @@ test/build notes
 
 平台生成 issue body 使用稳定结构，方便 Slack Agent 续接、Coding Agent 读取、review/debug 追踪：
 
-```md
+````md
 <!-- pages-manager:job_id=job_xxx -->
 
-## Request
+## 发布需求
 
 用户需求摘要。
 
-## Target
+## 发起人
 
-Employee: smoke
-Site: profile
-Allowed path: sites/smoke/profile
+- 发起人：张三
+- 邮箱：zhangsan@example.com
+- Slack 用户：`U123`
+- 平台身份：`user:slack:T123:U123`
 
-## Source
+## 目标站点
 
-Slack team:
-Slack channel:
-Slack thread:
-Requester:
+- 归属目录：`smoke-a1b2c3`
+- 站点名称：`profile`
+- 允许修改目录：`sites/smoke-a1b2c3/profile/`
 
-## Requirements
+## 来源上下文
 
-- ...
+- 来源：Slack
+- Team：`T123`
+- Channel：`D123`
+- Thread：`1710000000.000100`
 
-## Constraints
+## 自动化边界
 
-- Preview only.
-- No production deploy.
-- Only modify allowed path.
-- Do not include secrets.
+- Coding Agent 只能修改 `sites/smoke-a1b2c3/profile/` 下的文件。
+- 不允许修改平台代码、GitHub Actions、Kubernetes manifests、Dockerfile、部署脚本或任何 secret 配置。
+- 本 issue 只驱动个人站点 preview 流程，不触发 production deploy。
 
-## Acceptance Criteria
+## 验收标准
 
-- Preview URL generated.
-- GitHub Review Agent has no blocking comments.
+- 生成或更新个人网站内容，并保留用户需求里的关键标识。
+- PR 只包含允许目录下的站点文件变更。
+- site-check 和 Review Agent gate 通过后生成 preview URL。
+- 用户可以继续在原 Slack thread 里追加修改意见。
+
+## 自动化元数据
+
+```text
+PublishingJob: job_xxx
+Source: slack
+Requested by: user:slack:T123:U123
+Requester: user:slack:T123:U123
+Target: smoke-a1b2c3/profile
+Allowed path: sites/smoke-a1b2c3/profile
+Base ref: staging
+Approval mode: manual_required
+Pipeline: user-site publishing
+Platform deployment: out of scope
 ```
+````
 
 后续 Slack 修改意见必须追加 issue comment，而不是只留在 Slack。
 
@@ -251,6 +272,8 @@ token 本身不进入 prompt、issue、PR、Slack 消息或生成页面。
 ```text
 sites/<employeeSlug>/<siteSlug>
 ```
+
+Slack 来源的 `employeeSlug` 由 gateway 派生：优先使用邮箱 local-part，其次 display name / real name / Slack name，最后 Slack user id；末尾追加 `teamId + slackUserId` 的短 hash，避免同名员工冲突且避免完整邮箱暴露在 repo 路径里。
 
 自动 PR 必须满足：
 
