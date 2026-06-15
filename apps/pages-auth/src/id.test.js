@@ -24,4 +24,6 @@ test('constantTimeEqualHex compares equal-length hex digests', () => {
   assert.equal(constantTimeEqualHex('aa00', 'aa00'), true);
   assert.equal(constantTimeEqualHex('aa00', 'aa01'), false);
   assert.equal(constantTimeEqualHex('aa00', 'aa'), false);
+  assert.equal(constantTimeEqualHex(null, 'aa00'), false);
+  assert.equal(constantTimeEqualHex('aa00', undefined), false);
 });
