@@ -23,6 +23,19 @@ test('creates pending CLI login with login secret and device code', async () => 
   assert.equal(tx.record.secretHash.length, 64);
 });
 
+test('supports local CLI login transactions for SSO development', async () => {
+  const tx = await createCliLogin({
+    environment: 'local',
+    now,
+    ttlSeconds: 600,
+    loginId: 'cli_login',
+    loginSecret: 'secret',
+    deviceCode: '12345678',
+  });
+
+  assert.equal(tx.record.environment, 'local');
+});
+
 test('does not let CLI consume before browser confirmation', async () => {
   const tx = await createTestCliLogin();
 

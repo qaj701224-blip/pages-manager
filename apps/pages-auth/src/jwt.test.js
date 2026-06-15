@@ -48,6 +48,31 @@ test('signs and verifies an auth_session token with purpose and audience binding
   assert.equal(verified.exp, now + 3600);
 });
 
+test('signs and verifies local auth_session tokens for local SSO development', async () => {
+  const jwt = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth-local',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 3600,
+      claims: {
+        sid: 'sid_auth',
+      },
+    },
+    testEnv({ PAGES_ENV: 'local' })
+  );
+
+  const verified = await verifySessionJwt(jwt, testEnv({ PAGES_ENV: 'local' }), {
+    purpose: 'auth_session',
+    audience: 'pages-auth-local',
+    now,
+  });
+
+  assert.equal(verified.env, 'local');
+  assert.equal(verified.sid, 'sid_auth');
+});
+
 test('rejects tampered tokens, wrong audience, wrong purpose, and wrong env', async () => {
   const jwt = await signSessionJwt(
     {

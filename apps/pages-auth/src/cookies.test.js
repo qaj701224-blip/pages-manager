@@ -56,8 +56,10 @@ test('builds clearing cookies for host-only sessions', () => {
 test('validates auth host by environment', () => {
   assert.equal(isAuthSessionHost('auth.pages.xd.team', 'production'), true);
   assert.equal(isAuthSessionHost('auth-staging.pages.xd.team', 'staging'), true);
+  assert.equal(isAuthSessionHost('xd-pages.127.0.0.1.nip.io', 'local'), true);
   assert.equal(isAuthSessionHost('auth.pages.xd.team', 'staging'), false);
   assert.equal(isAuthSessionHost('api.pages.xd.team', 'production'), false);
+  assert.equal(isAuthSessionHost('auth.pages.xd.team', 'local'), false);
 });
 
 test('validates site session host by environment and rejects platform hosts', () => {

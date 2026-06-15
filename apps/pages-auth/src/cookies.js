@@ -24,6 +24,7 @@ export function buildClearSiteSessionCookie() {
 export function isAuthSessionHost(hostname, environment) {
   if (environment === 'production') return hostname === 'auth.pages.xd.team';
   if (environment === 'staging') return hostname === 'auth-staging.pages.xd.team';
+  if (environment === 'local') return hostname === 'xd-pages.127.0.0.1.nip.io';
   return false;
 }
 

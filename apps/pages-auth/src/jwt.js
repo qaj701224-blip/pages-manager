@@ -131,7 +131,7 @@ async function importHmacKey(secret, usages) {
 }
 
 function validateEnvironment(environment) {
-  if (environment !== 'production' && environment !== 'staging') {
+  if (environment !== 'production' && environment !== 'staging' && environment !== 'local') {
     throw new Error('Unsupported Pages environment');
   }
   return environment;

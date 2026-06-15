@@ -1,6 +1,7 @@
 import { constantTimeEqualHex, createOpaqueToken, sha256Hex } from './id.js';
 
 const DEVICE_CODE_RE = /^[0-9]{8}$/;
+const VALID_CLI_LOGIN_ENVIRONMENTS = new Set(['production', 'staging', 'local']);
 
 export async function createCliLogin({
   environment,
@@ -12,7 +13,7 @@ export async function createCliLogin({
 }) {
   validateUnixSecond('now', now);
   validateTtlSeconds(ttlSeconds);
-  if (environment !== 'production' && environment !== 'staging') throw new Error('CLI login environment is invalid');
+  if (!VALID_CLI_LOGIN_ENVIRONMENTS.has(environment)) throw new Error('CLI login environment is invalid');
   if (!DEVICE_CODE_RE.test(deviceCode)) throw new Error('CLI login device code must be 8 digits');
 
   return {
