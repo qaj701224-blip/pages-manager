@@ -53,11 +53,13 @@ test('strips platform response headers and platform Set-Cookie values', async ()
   headers.append('Set-Cookie', 'bad=xd-apex; Domain=xd.team; Path=/; Secure');
   headers.append('Set-Cookie', 'bad=generic; Domain=example.com; Path=/; Secure');
 
-  const response = sanitizeUserWorkerResponse(new Response('ok', {
-    status: 299,
-    statusText: 'Router Sanitized',
-    headers,
-  }));
+  const response = sanitizeUserWorkerResponse(
+    new Response('ok', {
+      status: 299,
+      statusText: 'Router Sanitized',
+      headers,
+    })
+  );
 
   assert.equal(response.headers.get('CF-Platform-Trace-Id'), null);
   assert.equal(response.headers.get('X-Pages-Token'), null);
