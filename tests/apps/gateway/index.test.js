@@ -828,8 +828,13 @@ test('Slack confirmation draft hides internal session and job context from users
               intent: 'create_or_update_site',
               siteSlug: 'profile',
               title: '创建/更新 smoke/profile 个人网站',
-              summary:
-                '为 smoke 名下的 profile 个人网站创建/更新发布任务，突出项目经历和联系方式。当前会话历史中用户已确认开始生成页面，应优先沿用已有会话关系，避免重复创建新的 issue：activeJobId=job_abc123，activeIssueNumber=59，并保留既有 PR/preview 关系（历史关联 PR #58，previewUrl=https://pm-pr-58-example.workers.xd.team）。最终归属目录应由 gateway 根据 Slack 身份派生。',
+              summary: [
+                '为 smoke 名下的 profile 个人网站创建/更新发布任务，突出项目经历和联系方式。',
+                '当前会话历史中用户已确认开始生成页面，应优先沿用已有会话关系，避免重复创建新的 issue：',
+                'activeJobId=job_abc123，activeIssueNumber=59，并保留既有 PR/preview 关系',
+                '（历史关联 PR #58，previewUrl=https://pm-pr-58-example.workers.xd.team）。',
+                '最终归属目录应由 gateway 根据 Slack 身份派生。',
+              ].join(''),
               needsClarification: false,
             },
           }),
@@ -983,6 +988,336 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
   assert.equal(jobBody.job.siteSlug, 'brand');
   assert.equal(jobBody.job.summary, '用户希望创建一个清爽可信的个人品牌页面。');
   assert.equal(workerStarts.length, 1);
+});
+
+test('Slack work item list only shows current user publishing jobs', async () => {
+  const app = createGatewayApp();
+  const owned = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'owned-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(owned.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: 'https://preview.example.test/u1',
+  });
+  const other = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U2',
+    idempotencyKey: 'other-work-item',
+    employeeSlug: 'u2',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U2 profile page',
+    summary: '别人的主页',
+  }).job;
+  app.store.patchJob(other.id, { status: 'pr_created', prNumber: 70 });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-list-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000130',
+          text: '我的 PR',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.accepted, false);
+  assert.equal(body.jobs.length, 1);
+  assert.equal(body.jobs[0].prNumber, 68);
+  assert.match(visible, /你的发布任务/);
+  assert.match(visible, /pages_select_work_item/);
+  assert.doesNotMatch(visible, /#70/);
+  assert.equal(app.store.jobs.size, 2);
+
+  const selectValue = body.blocks.find((block) => block.type === 'actions')?.elements?.[0]?.value;
+  const interactionPayload = {
+    type: 'block_actions',
+    team: { id: 'T1' },
+    user: { id: 'U1' },
+    channel: { id: 'D1' },
+    message: { ts: '1710000000.000130' },
+    actions: [{ action_id: 'pages_select_work_item', value: selectValue }],
+  };
+  const selectResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ payload: JSON.stringify(interactionPayload) }).toString(),
+    })
+  );
+  const selected = await json(selectResponse);
+  const session = app.store.getSlackSession(body.slackSessionId);
+
+  assert.equal(selectResponse.status, 200);
+  assert.match(selected.text, /已切换到 PR #68/);
+  assert.equal(session.activeJobId, owned.id);
+  assert.equal(session.activePrNumber, 68);
+});
+
+test('Slack can switch the current thread to a visible PR', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'switch-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: 'https://preview.example.test/u1',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-switch-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000131',
+          text: '继续 PR #68',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const session = app.store.getSlackSession(body.slackSessionId);
+  const updatedJob = app.store.getJob(job.id);
+  const links = app.store.findIssueLinksForSlackSession(session.id);
+  const memory = app.store.getSessionMemory(session.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'switch_work_item');
+  assert.equal(body.jobId, job.id);
+  assert.equal(session.activeJobId, job.id);
+  assert.equal(session.activePrNumber, 68);
+  assert.equal(updatedJob.slackSessionId, session.id);
+  assert.equal(updatedJob.slackThread.threadTs, '1710000000.000131');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].publishingJobId, job.id);
+  assert.equal(memory.requirements.prNumber, 68);
+  assert.equal(memory.requirements.previewUrl, 'https://preview.example.test/u1');
+  assert.match(memory.lastAgentResponse, /已切换到 PR #68/);
+});
+
+test('Slack switch only patches Slack binding and keeps fresher job state', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'switch-keeps-fresher-job-state',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'reviewing',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: null,
+  });
+  const staleJob = app.store.getJob(job.id);
+  app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    previewUrl: 'https://preview.example.test/u1-fresh',
+    headSha: 'a'.repeat(40),
+  });
+  app.store.findJobByPrNumber = () => staleJob;
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-switch-stale-job-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000135',
+          text: '继续 PR #68',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const session = app.store.getSlackSession(body.slackSessionId);
+  const updatedJob = app.store.getJob(job.id);
+  const memory = app.store.getSessionMemory(session.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'switch_work_item');
+  assert.equal(updatedJob.status, 'preview_deployed');
+  assert.equal(updatedJob.previewUrl, 'https://preview.example.test/u1-fresh');
+  assert.equal(updatedJob.headSha, 'a'.repeat(40));
+  assert.equal(updatedJob.slackSessionId, session.id);
+  assert.equal(updatedJob.slackThread.threadTs, '1710000000.000135');
+  assert.equal(memory.requirements.previewUrl, 'https://preview.example.test/u1-fresh');
+});
+
+test('Slack switch posts a new scoped card when the existing job card belongs to another thread', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'switch-scoped-card',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: 'https://preview.example.test/u1',
+  });
+  app.store.recordSlackJobStatusMessage(job.id, {
+    channel: 'D-old',
+    threadTs: '1710000000.000001',
+    messageTs: '1710000000.000002',
+    stage: 'preview_deployed',
+    status: 'preview_deployed',
+  });
+  const slackRequests = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-switch-scoped-card-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D-new',
+          channel_type: 'im',
+          ts: '1710000000.000133',
+          text: '继续 PR #68',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D-new', ts: '1710000000.000134' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const payload = JSON.parse(slackRequests[0].request.body);
+  const scopedMessage = app.store.getSlackJobStatusMessage(job.id, { slackSessionId: body.slackSessionId });
+  const oldMessage = app.store.getSlackJobStatusMessage(job.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'switch_work_item');
+  assert.equal(body.noReply, true);
+  assert.equal(slackRequests.length, 1);
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.postMessage');
+  assert.equal(payload.channel, 'D-new');
+  assert.equal(payload.thread_ts, '1710000000.000133');
+  assert.equal(payload.ts, undefined);
+  assert.equal(scopedMessage.channel, 'D-new');
+  assert.equal(scopedMessage.threadTs, '1710000000.000133');
+  assert.equal(scopedMessage.messageTs, '1710000000.000134');
+  assert.equal(oldMessage.channel, 'D-old');
+  assert.equal(oldMessage.messageTs, '1710000000.000002');
+});
+
+test('Slack cannot switch to another user PR', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U2',
+    idempotencyKey: 'cross-user-work-item',
+    employeeSlug: 'u2',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U2 profile page',
+    summary: '别人的主页',
+  }).job;
+  app.store.patchJob(job.id, { status: 'pr_created', prNumber: 70 });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-cross-user-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000132',
+          text: '继续 PR #70',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'switch_work_item_not_found');
+  assert.equal(body.accepted, false);
+  assert.match(body.replyText, /没有找到你可继续操作的 PR #70/);
 });
 
 test('Slack free-form turn stays conversational when Slack Agent is not configured', async () => {
