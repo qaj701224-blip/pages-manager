@@ -1,9 +1,8 @@
 :80 {
   encode gzip
 
-  @prefixed path {$PUBLIC_PATH_PREFIX} {$PUBLIC_PATH_PREFIX}/*
-  handle @prefixed {
-    uri strip_prefix {$PUBLIC_PATH_PREFIX}
+  @public_callbacks path /integrations/slack/events /integrations/slack/interactions /integrations/github/webhook /internal/executor-callback
+  handle @public_callbacks {
     reverse_proxy pages-gateway:8788
   }
 
