@@ -78,7 +78,7 @@ class TestPagesStore {
     return cloneRecord(this.sites.get(id) || null);
   }
 
-  async listSitesForUser(userId, actor = {}) {
+  async listSitesForUser(userId, actor = {}, environment) {
     const siteIds = new Set();
     if (actor.type === 'access_key' && actor.siteId) {
       siteIds.add(actor.siteId);
@@ -92,23 +92,28 @@ class TestPagesStore {
       [...siteIds]
         .map((siteId) => this.siteWithRoute(siteId))
         .filter(Boolean)
+        .filter((site) => !environment || site.environment === environment)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     );
   }
 
-  async getSiteForUser(siteId, userId, actor = {}) {
+  async getSiteForUser(siteId, userId, actor = {}, environment) {
     if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return null;
     const members = this.siteMembers.get(siteId) || [];
     if (actor.type !== 'access_key' && !members.some((member) => member.userId === userId)) return null;
-    return cloneRecord(this.siteWithRoute(siteId));
+    const site = this.siteWithRoute(siteId);
+    if (environment && site?.environment !== environment) return null;
+    return cloneRecord(site);
   }
 
   async listSiteMembers(siteId) {
     return cloneRecord(this.siteMembers.get(siteId) || []);
   }
 
-  async getRouteBySiteId(siteId) {
-    return cloneRecord(this.routes.get(this.routeBySiteId.get(siteId)) || null);
+  async getRouteBySiteId(siteId, environment) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId)) || null;
+    if (environment && route?.environment !== environment) return null;
+    return cloneRecord(route);
   }
 
   async createSiteVersion(input) {
@@ -129,10 +134,11 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }) {
+  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }, environment) {
     const routeId = this.routeBySiteId.get(siteId);
     const route = this.routes.get(routeId);
     if (!route) return null;
+    if (environment && route.environment !== environment) return null;
     route.activeVersionId = activeVersionId;
     route.workerName = workerName;
     route.visibility = visibility;
@@ -143,8 +149,11 @@ class TestPagesStore {
     return cloneRecord(route);
   }
 
-  async getSiteVersion(id) {
-    return cloneRecord(this.siteVersions.get(id) || null);
+  async getSiteVersion(id, environment) {
+    const version = this.siteVersions.get(id) || null;
+    const site = version ? this.sites.get(version.siteId) : null;
+    if (environment && site?.environment !== environment) return null;
+    return cloneRecord(version);
   }
 
   async createAccessKey(input) {
@@ -167,12 +176,23 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async getAccessKeyById(id) {
-    return cloneRecord(this.accessKeys.get(id) || null);
+  async getAccessKeyById(id, environment) {
+    const key = this.accessKeys.get(id) || null;
+    if (environment && key?.siteId) {
+      const site = this.sites.get(key.siteId);
+      if (site?.environment !== environment) return null;
+    }
+    return cloneRecord(key);
   }
 
-  async listAccessKeysForOwner(ownerUserId) {
-    return cloneRecord([...this.accessKeys.values()].filter((key) => key.ownerUserId === ownerUserId));
+  async listAccessKeysForOwner(ownerUserId, environment) {
+    return cloneRecord(
+      [...this.accessKeys.values()].filter((key) => {
+        if (key.ownerUserId !== ownerUserId) return false;
+        if (!environment || !key.siteId) return true;
+        return this.sites.get(key.siteId)?.environment === environment;
+      })
+    );
   }
 
   async updateAccessKeyLastUsed(id, lastUsedAt) {
@@ -189,8 +209,10 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async getDeployment(id) {
-    return cloneRecord(this.deployments.get(id) || null);
+  async getDeployment(id, environment) {
+    const deployment = this.deployments.get(id) || null;
+    if (environment && deployment?.environment !== environment) return null;
+    return cloneRecord(deployment);
   }
 
   async updateDeployment(id, patch) {

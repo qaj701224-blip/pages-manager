@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from './index.js';
+import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { createTestPagesStore } from './test-store.js';
 
 test('creates a site-scoped access key and returns plaintext only once', async () => {
@@ -60,6 +61,44 @@ test('revokes access keys without returning plaintext or hash', async () => {
   assert.equal(body.accessKey.revokedAt, '2026-06-15T00:00:00.000Z');
   assert.equal(body.accessKey.plaintext, undefined);
   assert.equal(body.accessKey.keyHash, undefined);
+});
+
+test('rejects access key actors from listing or revoking access keys', async () => {
+  const store = await createSeededStore();
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_1',
+    bytes: new Uint8Array(24).fill(8),
+  });
+  await store.createAccessKey({
+    id: 'ak_1',
+    ownerUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'ci',
+    scopes: ['deploy:site'],
+    siteId: 'site_1',
+    expiresAt: '2026-07-15T00:00:00.000Z',
+  });
+
+  const list = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys', {
+      headers: { Authorization: `Bearer ${plaintext}` },
+    }),
+    testEnv(store)
+  );
+  const revoke = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/ak_1', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${plaintext}` },
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(list.status, 403);
+  assert.equal((await list.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
+  assert.equal(revoke.status, 403);
+  assert.equal((await revoke.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
 });
 
 test('rejects access key creation for inaccessible sites and invalid scopes', async () => {

@@ -136,10 +136,9 @@ export class D1PagesStore {
     return row ? mapSite(row) : null;
   }
 
-  async listSitesForUser(userId) {
-    const result = await this.db
-      .prepare(
-        `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
+  async listSitesForUser(userId, actor = {}, environment) {
+    const siteScope = actor.type === 'access_key' && actor.siteId ? actor.siteId : null;
+    const query = `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
           site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
           site_routes.active_version_id AS route_active_version_id,
           site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
@@ -150,14 +149,22 @@ export class D1PagesStore {
         JOIN site_members ON site_members.site_id = sites.id
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
         WHERE site_members.user_id = ? AND sites.deleted_at IS NULL
-        ORDER BY sites.created_at DESC`
-      )
-      .bind(userId)
+          ${environment ? 'AND sites.environment = ?' : ''}
+          ${siteScope ? 'AND sites.id = ?' : ''}
+        ORDER BY sites.created_at DESC`;
+    const binds = [userId];
+    if (environment) binds.push(environment);
+    if (siteScope) binds.push(siteScope);
+    const result = await this.db
+      .prepare(query)
+      .bind(...binds)
       .all();
     return (result.results || []).map(mapSiteWithJoinedRoute);
   }
 
-  async getSiteForUser(siteId, userId) {
+  async getSiteForUser(siteId, userId, actor = {}, environment) {
+    if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return null;
+
     const row = await this.db
       .prepare(
         `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
@@ -170,9 +177,10 @@ export class D1PagesStore {
         FROM sites
         JOIN site_members ON site_members.site_id = sites.id
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
-        WHERE sites.id = ? AND site_members.user_id = ? AND sites.deleted_at IS NULL`
+        WHERE sites.id = ? AND site_members.user_id = ? AND sites.deleted_at IS NULL` +
+          (environment ? ' AND sites.environment = ?' : '')
       )
-      .bind(siteId, userId)
+      .bind(...(environment ? [siteId, userId, environment] : [siteId, userId]))
       .first();
     return row ? mapSiteWithJoinedRoute(row) : null;
   }
@@ -182,8 +190,11 @@ export class D1PagesStore {
     return (result.results || []).map(mapSiteMember);
   }
 
-  async getRouteBySiteId(siteId) {
-    const row = await this.db.prepare('SELECT * FROM site_routes WHERE site_id = ?').bind(siteId).first();
+  async getRouteBySiteId(siteId, environment) {
+    const row = await this.db
+      .prepare('SELECT * FROM site_routes WHERE site_id = ?' + (environment ? ' AND environment = ?' : ''))
+      .bind(...(environment ? [siteId, environment] : [siteId]))
+      .first();
     return row ? mapSiteRoute(row) : null;
   }
 
@@ -224,22 +235,34 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
-  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }) {
+  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }, environment) {
     await this.db
       .prepare(
         `UPDATE site_routes
         SET active_version_id = ?, worker_name = ?, runtime = 'wfp',
           visibility = ?, route_status = 'active', route_generation = route_generation + 1,
           updated_at = ?
-        WHERE site_id = ?`
+        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
       )
-      .bind(activeVersionId, workerName, visibility, updatedAt, siteId)
+      .bind(
+        ...(environment
+          ? [activeVersionId, workerName, visibility, updatedAt, siteId, environment]
+          : [activeVersionId, workerName, visibility, updatedAt, siteId])
+      )
       .run();
-    return this.getRouteBySiteId(siteId);
+    return this.getRouteBySiteId(siteId, environment);
   }
 
-  async getSiteVersion(id) {
-    const row = await this.db.prepare('SELECT * FROM site_versions WHERE id = ?').bind(id).first();
+  async getSiteVersion(id, environment) {
+    const row = await this.db
+      .prepare(
+        `SELECT site_versions.*
+        FROM site_versions
+        JOIN sites ON sites.id = site_versions.site_id
+        WHERE site_versions.id = ?${environment ? ' AND sites.environment = ?' : ''}`
+      )
+      .bind(...(environment ? [id, environment] : [id]))
+      .first();
     return row ? mapSiteVersion(row) : null;
   }
 
@@ -283,15 +306,30 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
-  async getAccessKeyById(id) {
-    const row = await this.db.prepare('SELECT * FROM access_keys WHERE id = ?').bind(id).first();
+  async getAccessKeyById(id, environment) {
+    const row = await this.db
+      .prepare(
+        `SELECT access_keys.*
+        FROM access_keys
+        LEFT JOIN sites ON sites.id = access_keys.site_id
+        WHERE access_keys.id = ?${environment ? ' AND (access_keys.site_id IS NULL OR sites.environment = ?)' : ''}`
+      )
+      .bind(...(environment ? [id, environment] : [id]))
+      .first();
     return row ? mapAccessKey(row) : null;
   }
 
-  async listAccessKeysForOwner(ownerUserId) {
+  async listAccessKeysForOwner(ownerUserId, environment) {
     const result = await this.db
-      .prepare('SELECT * FROM access_keys WHERE owner_user_id = ? ORDER BY created_at DESC')
-      .bind(ownerUserId)
+      .prepare(
+        `SELECT access_keys.*
+        FROM access_keys
+        LEFT JOIN sites ON sites.id = access_keys.site_id
+        WHERE access_keys.owner_user_id = ?
+          ${environment ? 'AND (access_keys.site_id IS NULL OR sites.environment = ?)' : ''}
+        ORDER BY access_keys.created_at DESC`
+      )
+      .bind(...(environment ? [ownerUserId, environment] : [ownerUserId]))
       .all();
     return (result.results || []).map(mapAccessKey);
   }
@@ -306,8 +344,11 @@ export class D1PagesStore {
     return this.getAccessKeyById(id);
   }
 
-  async getDeployment(id) {
-    const row = await this.db.prepare('SELECT * FROM deployments WHERE id = ?').bind(id).first();
+  async getDeployment(id, environment) {
+    const row = await this.db
+      .prepare('SELECT * FROM deployments WHERE id = ?' + (environment ? ' AND environment = ?' : ''))
+      .bind(...(environment ? [id, environment] : [id]))
+      .first();
     return row ? mapDeployment(row) : null;
   }
 

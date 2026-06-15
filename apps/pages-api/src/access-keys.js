@@ -11,20 +11,22 @@ export async function handleAccessKeysApi(request, env, config, store) {
 
   const url = new URL(request.url);
   if (url.pathname === '/.xd-pages/api/access-keys') {
-    if (request.method === 'GET') return listAccessKeys(store, auth.actor);
+    if (request.method === 'GET') return listAccessKeys(store, auth.actor, config.environment);
     if (request.method === 'POST') return createAccessKey(request, env, config, store, auth.actor);
     return methodNotAllowed();
   }
 
   const accessKeyId = matchAccessKeyId(url.pathname);
-  if (accessKeyId && request.method === 'DELETE') return revokeAccessKey(env, store, auth.actor, accessKeyId);
+  if (accessKeyId && request.method === 'DELETE') return revokeAccessKey(env, config, store, auth.actor, accessKeyId);
   if (accessKeyId) return methodNotAllowed();
 
   return null;
 }
 
-async function listAccessKeys(store, actor) {
-  const keys = await store.listAccessKeysForOwner(actor.userId);
+async function listAccessKeys(store, actor, environment) {
+  if (actor.type !== 'user') return accessKeyManagementForbidden();
+
+  const keys = await store.listAccessKeysForOwner(actor.userId, environment);
   return jsonOk({ accessKeys: keys.map(formatAccessKey) });
 }
 
@@ -56,7 +58,7 @@ async function createAccessKey(request, env, config, store, actor) {
     return jsonError('ACCESS_KEY_EXPIRY_INVALID', 'Access key expiry is invalid.', 400, 'Use a future expiry time.');
   }
 
-  const site = await store.getSiteForUser(siteId, actor.userId, actor);
+  const site = await store.getSiteForUser(siteId, actor.userId, actor, config.environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
   const pepper = readActiveAccessKeyPepper(env);
@@ -81,8 +83,10 @@ async function createAccessKey(request, env, config, store, actor) {
   return jsonOk({ accessKey: { ...formatAccessKey(accessKey), plaintext } }, 201);
 }
 
-async function revokeAccessKey(env, store, actor, accessKeyId) {
-  const existing = await store.getAccessKeyById(accessKeyId);
+async function revokeAccessKey(env, config, store, actor, accessKeyId) {
+  if (actor.type !== 'user') return accessKeyManagementForbidden();
+
+  const existing = await store.getAccessKeyById(accessKeyId, config.environment);
   if (!existing || existing.ownerUserId !== actor.userId) {
     return jsonError('ACCESS_KEY_NOT_FOUND', 'Access key not found.', 404, 'Check the access key id.');
   }
@@ -157,4 +161,8 @@ function authErrorResponse(error) {
 
 function methodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
+}
+
+function accessKeyManagementForbidden() {
+  return jsonError('ACCESS_KEY_MANAGEMENT_FORBIDDEN', 'Access keys cannot manage access keys.', 403, 'Use a user CLI token.');
 }

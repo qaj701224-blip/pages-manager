@@ -4,7 +4,7 @@
 
 **Goal:** Build the v2-only `apps/pages-api` control plane for sites, access keys, deployments, versions, rollback, D1 authority records, route snapshots, audit records, and OpenAPI skeleton.
 
-**Architecture:** `pages-api` is a new Worker app and does not change v1 `apps/server`. The app exposes only `/.xd-pages/api/*` and `/.xd-pages/health`, rejects legacy `X-Pages-Token`, authenticates via CLI token or access key, writes authoritative records to D1-compatible storage, and writes route snapshot records through an injectable cache adapter. Real Cloudflare Workers for Platforms upload remains a later M5 provider, but M3 persists immutable versions and route state so M5 can replace the fake uploader without changing public API contracts.
+**Architecture:** `pages-api` is a new Worker app and does not change v1 `apps/server`. The app exposes only `/.xd-pages/api/*` and `/.xd-pages/health`, rejects legacy v1 token headers, authenticates via CLI token or access key, writes authoritative records to D1-compatible storage, and writes route snapshot records through an injectable cache adapter. Real Cloudflare Workers for Platforms upload remains a later M5 provider, but M3 persists immutable versions and route state so M5 can replace the fake uploader without changing public API contracts.
 
 **Tech Stack:** Cloudflare Workers, JavaScript ESM, `node:test`, Web Crypto, D1-compatible prepared statements, `@xd/worker-kit`.
 
@@ -179,7 +179,7 @@ git commit -m "feat(api): 增加 D1 权威存储模型"
 
 - [ ] **Step 1: Write failing auth tests**
 
-Tests must cover: `X-Pages-Token` rejection, missing bearer token returns `PAGES_AUTH_REQUIRED`, CLI token verifier accepts `purpose=cli_token` and `aud=pages-api`, access-key auth stores/compares only HMAC hash, revoked/expired access keys are rejected, and plaintext access key is never returned from list records.
+Tests must cover: legacy v1 token header rejection, missing bearer token returns `PAGES_AUTH_REQUIRED`, CLI token verifier accepts `purpose=cli_token` and `aud=pages-api`, access-key auth stores/compares only HMAC hash, revoked/expired access keys are rejected, and plaintext access key is never returned from list records.
 
 - [ ] **Step 2: Run tests to verify RED**
 
@@ -323,7 +323,7 @@ git commit -m "feat(api): 增加部署版本和回滚接口"
 
 - [ ] **Step 1: Write failing OpenAPI tests**
 
-Tests must assert `GET /.xd-pages/api/openapi.json` returns only v2 `api.pages.xd.team` / `api-staging.pages.xd.team` servers, includes sites/access-keys/deployments/versions endpoints, and does not contain `workers.xd.team`, `X-Pages-Token`, real Cloudflare ids, or SSO secrets.
+Tests must assert `GET /.xd-pages/api/openapi.json` returns only v2 `api.pages.xd.team` / `api-staging.pages.xd.team` servers, includes sites/access-keys/deployments/versions endpoints, and does not contain `workers.xd.team`, legacy v1 token headers, real Cloudflare ids, or SSO secrets.
 
 - [ ] **Step 2: Run tests to verify RED**
 

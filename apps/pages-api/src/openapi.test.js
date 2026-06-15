@@ -24,6 +24,20 @@ test('serves production v2-only OpenAPI skeleton', async () => {
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);
 });
 
+test('OpenAPI rejects legacy token headers', async () => {
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/openapi.json', {
+      headers: { 'X-Pages-Token': 'legacy' },
+    }),
+    {
+      PAGES_ENV: 'production',
+    }
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'LEGACY_TOKEN_UNSUPPORTED');
+});
+
 test('serves staging OpenAPI server URL without v1 addresses', async () => {
   const response = await worker.fetch(new Request('https://api-staging.pages.xd.team/.xd-pages/api/openapi.json'), {
     PAGES_ENV: 'staging',

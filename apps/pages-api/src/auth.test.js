@@ -23,7 +23,7 @@ test('rejects legacy X-Pages-Token before bearer auth', async () => {
     {
       verifyCliToken: async () => ({ sub: 'usr_1', purpose: 'cli_token', aud: 'pages-cli', env: 'production' }),
     },
-    createSeededStore(),
+    await createSeededStore(),
     config
   );
 
@@ -36,7 +36,7 @@ test('requires bearer auth', async () => {
   const result = await authenticateApiRequest(
     new Request('https://api.pages.xd.team/.xd-pages/api/sites'),
     {},
-    createSeededStore(),
+    await createSeededStore(),
     config
   );
 
@@ -60,7 +60,7 @@ test('accepts verified CLI tokens with cli purpose and environment binding', asy
         jti: 'cli_1',
       }),
     },
-    createSeededStore(),
+    await createSeededStore(),
     config
   );
 
@@ -81,7 +81,7 @@ test('rejects CLI tokens with wrong purpose or environment', async () => {
     {
       verifyCliToken: async () => ({ sub: 'usr_1', purpose: 'site_session', aud: 'pages-cli', env: 'production' }),
     },
-    createSeededStore(),
+    await createSeededStore(),
     config
   );
   const wrongEnv = await authenticateApiRequest(
@@ -89,7 +89,7 @@ test('rejects CLI tokens with wrong purpose or environment', async () => {
     {
       verifyCliToken: async () => ({ sub: 'usr_1', purpose: 'cli_token', aud: 'pages-cli', env: 'staging' }),
     },
-    createSeededStore(),
+    await createSeededStore(),
     config
   );
 
@@ -105,7 +105,7 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
     keyId: 'ak_1',
     bytes: new Uint8Array(24).fill(9),
   });
-  const store = createSeededStore();
+  const store = await createSeededStore();
   await store.createAccessKey({
     id: 'ak_1',
     ownerUserId: 'usr_1',
@@ -147,7 +147,7 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
   assert.equal(revoked.ok, false);
   assert.equal(revoked.error.code, 'ACCESS_KEY_REVOKED');
 
-  const expiredStore = createSeededStore();
+  const expiredStore = await createSeededStore();
   await expiredStore.createAccessKey({
     id: 'ak_1',
     ownerUserId: 'usr_1',
@@ -182,16 +182,26 @@ function accessKeyEnv() {
   };
 }
 
-function createSeededStore() {
+async function createSeededStore() {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
   });
-  store.createUser({
+  await store.createUser({
     id: 'usr_1',
     ssoSubject: 'sso_1',
     email: 'user@example.com',
     name: 'User One',
     employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
   });
   return store;
 }

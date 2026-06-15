@@ -17,7 +17,7 @@ export async function handleDeploymentsApi(request, env, config, store) {
   }
 
   const deploymentId = matchDeploymentId(url.pathname);
-  if (deploymentId && request.method === 'GET') return getDeployment(store, auth.actor, deploymentId);
+  if (deploymentId && request.method === 'GET') return getDeployment(store, auth.actor, deploymentId, config.environment);
   if (deploymentId) return methodNotAllowed();
 
   return null;
@@ -28,7 +28,7 @@ export async function handleVersionsApi(request, env, config, store) {
   if (!auth.ok) return authErrorResponse(auth.error);
 
   const versionId = matchRollbackVersionId(new URL(request.url).pathname);
-  if (versionId && request.method === 'POST') return rollbackVersion(request, env, store, auth.actor, versionId);
+  if (versionId && request.method === 'POST') return rollbackVersion(request, env, config, store, auth.actor, versionId);
   if (versionId) return methodNotAllowed();
 
   return null;
@@ -57,11 +57,11 @@ async function createDeployment(request, env, config, store, actor) {
   if (!contentHash.startsWith('sha256:')) {
     return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
   }
-  if (!actorCanDeploy(actor, siteId)) {
+  if (!actorCanDeploy(actor, siteId, 'deploy:site')) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
   }
 
-  const site = await store.getSiteForUser(siteId, actor.userId, actor);
+  const site = await store.getSiteForUser(siteId, actor.userId, actor, config.environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
   const requestHash = await canonicalRequestHash({ operation: 'deploy', siteId, artifactKind, contentHash, source });
@@ -82,7 +82,7 @@ async function createDeployment(request, env, config, store, actor) {
 
   if (deploymentResult.kind === 'conflict') return idempotencyConflict();
   if (deploymentResult.kind === 'existing') {
-    return jsonOk(await deploymentEnvelope(store, deploymentResult.deployment));
+    return jsonOk(await deploymentEnvelope(store, deploymentResult.deployment, {}, config.environment));
   }
 
   const deployment = deploymentResult.deployment;
@@ -99,13 +99,33 @@ async function createDeployment(request, env, config, store, actor) {
     contentHash,
     createdBy: actor.userId,
   });
-  const route = await store.activateSiteVersion(siteId, {
-    activeVersionId: version.id,
-    workerName: version.workerName,
-    visibility: site.defaultVisibility,
-    updatedAt: readNow(env),
-  });
-  await writeSnapshot(env, { site, route, version });
+  const route = await store.activateSiteVersion(
+    siteId,
+    {
+      activeVersionId: version.id,
+      workerName: version.workerName,
+      visibility: site.defaultVisibility,
+      updatedAt: readNow(env),
+    },
+    config.environment
+  );
+  try {
+    await writeSnapshot(env, { site, route, version });
+  } catch {
+    await store.updateDeployment(deployment.id, {
+      status: 'failed',
+      versionId: version.id,
+      errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+      errorMessage: 'Route snapshot write failed.',
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      'ROUTE_SNAPSHOT_WRITE_FAILED',
+      'Route snapshot could not be written.',
+      503,
+      'Retry the deployment with the same Idempotency-Key.'
+    );
+  }
 
   const completed = await store.updateDeployment(deployment.id, {
     status: 'succeeded',
@@ -116,31 +136,31 @@ async function createDeployment(request, env, config, store, actor) {
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
 
-async function getDeployment(store, actor, deploymentId) {
-  const deployment = await store.getDeployment(deploymentId);
+async function getDeployment(store, actor, deploymentId, environment) {
+  const deployment = await store.getDeployment(deploymentId, environment);
   if (!deployment) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
-  const site = await store.getSiteForUser(deployment.siteId, actor.userId, actor);
+  const site = await store.getSiteForUser(deployment.siteId, actor.userId, actor, environment);
   if (!site) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
-  return jsonOk(await deploymentEnvelope(store, deployment));
+  return jsonOk(await deploymentEnvelope(store, deployment, {}, environment));
 }
 
-async function rollbackVersion(request, env, store, actor, versionId) {
+async function rollbackVersion(request, env, config, store, actor, versionId) {
   const idempotencyKey = readIdempotencyKey(request);
   if (!idempotencyKey) return idempotencyKeyRequired();
 
-  const version = await store.getSiteVersion(versionId);
+  const version = await store.getSiteVersion(versionId, config.environment);
   if (!version) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
-  if (!actorCanDeploy(actor, version.siteId)) {
+  if (!actorCanDeploy(actor, version.siteId, 'rollback:site')) {
     return jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
   }
 
-  const site = await store.getSiteForUser(version.siteId, actor.userId, actor);
+  const site = await store.getSiteForUser(version.siteId, actor.userId, actor, config.environment);
   if (!site) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
-  const currentRoute = await store.getRouteBySiteId(site.id);
+  const currentRoute = await store.getRouteBySiteId(site.id, config.environment);
   const requestHash = await canonicalRequestHash({ operation: 'rollback', versionId });
   const deploymentResult = await store.createDeploymentForIdempotency({
     id: nextId(env, 'dep'),
-    environment: site.environment,
+    environment: config.environment,
     actorId: actor.actorId,
     actorUserId: actor.userId,
     actorType: actor.type,
@@ -157,16 +177,37 @@ async function rollbackVersion(request, env, store, actor, versionId) {
 
   if (deploymentResult.kind === 'conflict') return idempotencyConflict();
   if (deploymentResult.kind === 'existing') {
-    return jsonOk(await deploymentEnvelope(store, deploymentResult.deployment));
+    return jsonOk(await deploymentEnvelope(store, deploymentResult.deployment, {}, config.environment));
   }
 
-  const route = await store.activateSiteVersion(site.id, {
-    activeVersionId: version.id,
-    workerName: version.workerName,
-    visibility: currentRoute.visibility,
-    updatedAt: readNow(env),
-  });
-  await writeSnapshot(env, { site, route, version });
+  const route = await store.activateSiteVersion(
+    site.id,
+    {
+      activeVersionId: version.id,
+      workerName: version.workerName,
+      visibility: currentRoute.visibility,
+      updatedAt: readNow(env),
+    },
+    config.environment
+  );
+  try {
+    await writeSnapshot(env, { site, route, version });
+  } catch {
+    await store.updateDeployment(deploymentResult.deployment.id, {
+      status: 'failed',
+      versionId: version.id,
+      previousVersionId: currentRoute.activeVersionId,
+      errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+      errorMessage: 'Route snapshot write failed.',
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      'ROUTE_SNAPSHOT_WRITE_FAILED',
+      'Route snapshot could not be written.',
+      503,
+      'Retry the rollback with the same Idempotency-Key.'
+    );
+  }
 
   const completed = await store.updateDeployment(deploymentResult.deployment.id, {
     status: 'succeeded',
@@ -178,9 +219,10 @@ async function rollbackVersion(request, env, store, actor, versionId) {
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
 
-async function deploymentEnvelope(store, deployment, preloaded = {}) {
-  const version = preloaded.version || (deployment.versionId ? await store.getSiteVersion(deployment.versionId) : null);
-  const route = preloaded.route || (deployment.siteId ? await store.getRouteBySiteId(deployment.siteId) : null);
+async function deploymentEnvelope(store, deployment, preloaded = {}, environment) {
+  const version =
+    preloaded.version || (deployment.versionId ? await store.getSiteVersion(deployment.versionId, environment) : null);
+  const route = preloaded.route || (deployment.siteId ? await store.getRouteBySiteId(deployment.siteId, environment) : null);
   return {
     deployment: formatDeployment(deployment),
     version: version ? formatVersion(version) : null,
@@ -236,11 +278,9 @@ async function writeSnapshot(env, input) {
   await writeRouteSnapshot(env.ROUTE_SNAPSHOTS, buildRouteSnapshot(input));
 }
 
-function actorCanDeploy(actor, siteId) {
+function actorCanDeploy(actor, siteId, requiredScope) {
   if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return false;
-  if (actor.type === 'access_key' && !actor.scopes.includes('deploy:site') && !actor.scopes.includes('rollback:site')) {
-    return false;
-  }
+  if (actor.type === 'access_key' && !actor.scopes.includes(requiredScope)) return false;
   return true;
 }
 

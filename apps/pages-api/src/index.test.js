@@ -17,6 +17,20 @@ test('health returns pages-api service and environment', async () => {
   });
 });
 
+test('health rejects legacy token headers', async () => {
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/health', {
+      headers: { 'X-Pages-Token': 'legacy' },
+    }),
+    {
+      PAGES_ENV: 'production',
+    }
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'LEGACY_TOKEN_UNSUPPORTED');
+});
+
 test('invalid environment fails closed', async () => {
   const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/health'), {
     PAGES_ENV: 'preview',

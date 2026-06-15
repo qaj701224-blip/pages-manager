@@ -68,6 +68,42 @@ test('lists only sites visible to the authenticated actor', async () => {
   assert.equal('token' in body.sites[0], false);
 });
 
+test('filters sites by the active API environment', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_prod',
+    slug: 'prod',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_prod',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_prod',
+    hostname: 'prod.pages.xd.team',
+  });
+  await store.createSite({
+    id: 'site_staging',
+    slug: 'staging',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_staging',
+    defaultVisibility: 'org',
+    environment: 'staging',
+    routeId: 'route_staging',
+    hostname: 'staging-staging.pages.xd.team',
+  });
+
+  const list = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites'), testEnv(store));
+  const getStagingFromProduction = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_staging'),
+    testEnv(store)
+  );
+
+  assert.deepEqual(
+    (await list.json()).sites.map((site) => site.id),
+    ['site_prod']
+  );
+  assert.equal(getStagingFromProduction.status, 404);
+});
+
 test('gets a site by id for members and hides unknown sites', async () => {
   const store = await createSeededStore();
   await store.createSite({

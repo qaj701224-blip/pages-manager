@@ -8,6 +8,15 @@ import { createPagesStore } from './store.js';
 
 export default {
   async fetch(request, env) {
+    if (request.headers.has('X-Pages-Token')) {
+      return jsonError(
+        'LEGACY_TOKEN_UNSUPPORTED',
+        'Legacy Pages tokens are not supported by Pages v2.',
+        400,
+        'Run `pages login` or use a v2 access key.'
+      );
+    }
+
     let config;
     try {
       config = readApiConfig(env);

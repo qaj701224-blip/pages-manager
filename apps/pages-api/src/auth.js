@@ -63,7 +63,7 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
     return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Create an access key for this environment.');
   }
 
-  const accessKey = await store.getAccessKeyById(parts.keyId);
+  const accessKey = await store.getAccessKeyById(parts.keyId, config.environment);
   if (!accessKey) return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
   if (accessKey.revokedAt) {
     return authError('ACCESS_KEY_REVOKED', 'Access key has been revoked.', 401, 'Create a new access key.');

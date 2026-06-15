@@ -12,27 +12,27 @@ export async function handleSitesApi(request, env, config, store) {
 
   const url = new URL(request.url);
   if (url.pathname === '/.xd-pages/api/sites') {
-    if (request.method === 'GET') return listSites(store, auth.actor);
+    if (request.method === 'GET') return listSites(store, auth.actor, config.environment);
     if (request.method === 'POST') return createSite(request, env, config, store, auth.actor);
     return methodNotAllowed();
   }
 
   const siteId = matchSiteId(url.pathname);
-  if (siteId && request.method === 'GET') return getSite(store, auth.actor, siteId);
+  if (siteId && request.method === 'GET') return getSite(store, auth.actor, siteId, config.environment);
   if (siteId) return methodNotAllowed();
 
   return null;
 }
 
-async function listSites(store, actor) {
-  const sites = await store.listSitesForUser(actor.userId, actor);
+async function listSites(store, actor, environment) {
+  const sites = await store.listSitesForUser(actor.userId, actor, environment);
   return jsonOk({
     sites: sites.map(formatSite),
   });
 }
 
-async function getSite(store, actor, siteId) {
-  const site = await store.getSiteForUser(siteId, actor.userId, actor);
+async function getSite(store, actor, siteId, environment) {
+  const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   return jsonOk({ site: formatSite(site) });
 }
@@ -82,7 +82,7 @@ async function createSite(request, env, config, store, actor) {
     throw error;
   }
 
-  const route = await store.getRouteBySiteId(site.id);
+  const route = await store.getRouteBySiteId(site.id, config.environment);
   return jsonOk({ site: formatSite({ ...site, route }) }, 201);
 }
 
