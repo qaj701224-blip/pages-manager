@@ -2,6 +2,7 @@ import { handleAccessKeysApi } from './access-keys.js';
 import { readApiConfig } from './config.js';
 import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
 import { jsonError, jsonOk } from './http.js';
+import { buildOpenApi } from './openapi.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
 
@@ -26,6 +27,10 @@ export default {
         service: 'pages-api',
         environment: config.environment,
       });
+    }
+
+    if (url.pathname === '/.xd-pages/api/openapi.json') {
+      return jsonOk(buildOpenApi(config));
     }
 
     if (url.pathname.startsWith('/.xd-pages/api/sites')) {

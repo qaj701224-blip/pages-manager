@@ -1,0 +1,123 @@
+export function buildOpenApi(config) {
+  return {
+    openapi: '3.1.0',
+    info: {
+      title: 'XD Pages v2 API',
+      version: '2.0.0',
+      description: 'Control plane API for XD Pages v2.',
+    },
+    servers: [{ url: config.apiBaseUrl }],
+    security: [{ bearerAuth: [] }],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'CLI token or access key',
+        },
+      },
+      schemas: {
+        ErrorResponse: {
+          type: 'object',
+          required: ['error'],
+          properties: {
+            error: {
+              type: 'object',
+              required: ['code', 'message'],
+              properties: {
+                code: { type: 'string' },
+                message: { type: 'string' },
+                action: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+    paths: {
+      '/.xd-pages/api/sites': {
+        get: {
+          summary: 'List sites visible to the authenticated actor',
+          responses: {
+            200: { description: 'Sites returned' },
+            401: { description: 'Authentication required' },
+          },
+        },
+        post: {
+          summary: 'Create a site',
+          responses: {
+            201: { description: 'Site created' },
+            409: { description: 'Site slug conflict' },
+          },
+        },
+      },
+      '/.xd-pages/api/sites/{id}': {
+        get: {
+          summary: 'Get a site',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            200: { description: 'Site returned' },
+            404: { description: 'Site not found' },
+          },
+        },
+      },
+      '/.xd-pages/api/access-keys': {
+        get: {
+          summary: 'List access keys',
+          responses: {
+            200: { description: 'Access keys returned without plaintext or hash' },
+          },
+        },
+        post: {
+          summary: 'Create a site-scoped access key',
+          responses: {
+            201: { description: 'Access key created; plaintext returned once' },
+          },
+        },
+      },
+      '/.xd-pages/api/access-keys/{id}': {
+        delete: {
+          summary: 'Revoke an access key',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            200: { description: 'Access key revoked' },
+            404: { description: 'Access key not found' },
+          },
+        },
+      },
+      '/.xd-pages/api/deployments': {
+        post: {
+          summary: 'Create a deployment',
+          parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
+          responses: {
+            201: { description: 'Deployment created' },
+            409: { description: 'Idempotency conflict' },
+          },
+        },
+      },
+      '/.xd-pages/api/deployments/{id}': {
+        get: {
+          summary: 'Get deployment status',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            200: { description: 'Deployment returned' },
+            404: { description: 'Deployment not found' },
+          },
+        },
+      },
+      '/.xd-pages/api/versions/{id}/rollback': {
+        post: {
+          summary: 'Rollback a site route to a previous immutable version',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } },
+          ],
+          responses: {
+            201: { description: 'Rollback deployment created' },
+            409: { description: 'Idempotency conflict' },
+          },
+        },
+      },
+    },
+  };
+}
