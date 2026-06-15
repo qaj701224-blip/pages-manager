@@ -1,3 +1,4 @@
+import { handleAccessKeysApi } from './access-keys.js';
 import { readApiConfig } from './config.js';
 import { jsonError, jsonOk } from './http.js';
 import { handleSitesApi } from './sites.js';
@@ -35,6 +36,18 @@ export default {
       }
 
       const response = await handleSitesApi(request, env, config, store);
+      if (response) return response;
+    }
+
+    if (url.pathname.startsWith('/.xd-pages/api/access-keys')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+
+      const response = await handleAccessKeysApi(request, env, config, store);
       if (response) return response;
     }
 
