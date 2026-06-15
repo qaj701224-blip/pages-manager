@@ -1,10 +1,12 @@
-import { readEnvironment } from './config.js';
+import { handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
+import { readAuthConfig } from './config.js';
 import {
   confirmStoredCliLogin,
   consumeStoredCliLogin,
   consumeStoredOAuthState,
   createStoredCliLogin,
   createStoredOAuthState,
+  pollStoredCliLogin,
   createStoredSession,
   refreshStoredSession,
   revokeStoredSession,
@@ -13,9 +15,9 @@ import { jsonError, jsonOk, readJsonBody } from './http.js';
 
 export default {
   async fetch(request, env) {
-    let environment;
+    let config;
     try {
-      environment = readEnvironment(env?.PAGES_ENV);
+      config = readAuthConfig(env);
     } catch {
       return jsonError('AUTH_ENV_INVALID', 'Auth environment is invalid.', 500);
     }
@@ -26,11 +28,14 @@ export default {
         {
           status: 'ok',
           service: 'pages-auth',
-          environment,
+          environment: config.environment,
         },
         200
       );
     }
+
+    if (url.pathname === '/.xd-pages/cli/login/start') return handleCliLoginStart(request, env, config);
+    if (url.pathname === '/.xd-pages/cli/login/poll') return handleCliLoginPoll(request, env, config);
 
     return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
   },
@@ -61,6 +66,8 @@ export class CliLoginDO {
       '/create': (storage, body) => createStoredCliLogin(storage, body),
       '/confirm': (storage, body) =>
         confirmStoredCliLogin(storage, { deviceCode: body.deviceCode, userId: body.userId }, { now: body.now }),
+      '/poll': (storage, body) =>
+        pollStoredCliLogin(storage, { loginId: body.loginId, loginSecret: body.loginSecret }, { now: body.now }),
       '/consume': (storage, body) =>
         consumeStoredCliLogin(storage, { loginId: body.loginId, loginSecret: body.loginSecret }, { now: body.now }),
     });

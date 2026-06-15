@@ -1,4 +1,5 @@
 import { confirmCliLogin, consumeCliLogin, createCliLogin } from './cli-login.js';
+import { constantTimeEqualHex, sha256Hex } from './id.js';
 import { consumeOAuthState, createOAuthState } from './oauth-state.js';
 import { createSessionRecord, refreshSessionRecord, revokeSessionRecord } from './session-record.js';
 
@@ -55,6 +56,24 @@ export async function consumeStoredCliLogin(storage, input, options) {
   };
 }
 
+export async function pollStoredCliLogin(storage, input, options) {
+  const record = await storage.get(SINGLE_RECORD_KEY);
+  await assertCliLoginPollAllowed(record, input, options);
+
+  if (record.status === 'pending') {
+    return {
+      status: 'pending',
+      expiresAt: record.expiresAt,
+    };
+  }
+
+  const consumed = await consumeStoredCliLogin(storage, input, options);
+  return {
+    status: 'confirmed',
+    ...consumed,
+  };
+}
+
 export async function createStoredSession(storage, input) {
   const record = createSessionRecord(input);
   await storage.put(sessionKey(record.sid), record);
@@ -84,4 +103,17 @@ function stripSecretHash(record) {
   const { secretHash, ...safeRecord } = record;
   void secretHash;
   return safeRecord;
+}
+
+async function assertCliLoginPollAllowed(record, input, { now }) {
+  if (!record || typeof record !== 'object') throw new Error('CLI login invalid: missing record');
+  if (record.id !== input.loginId) throw new Error('CLI login invalid: unknown login id');
+  if (!Number.isInteger(now) || now < 0) throw new Error('CLI login invalid: now must be a non-negative integer');
+  if (!Number.isFinite(record.expiresAt) || record.expiresAt <= now) throw new Error('CLI login invalid: expired');
+  if (record.status === 'consumed') throw new Error('CLI login invalid: already consumed');
+  if (record.status !== 'pending' && record.status !== 'confirmed')
+    throw new Error(`CLI login invalid: status is ${record.status}`);
+
+  const actualHash = await sha256Hex(input.loginSecret);
+  if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('CLI login invalid: secret mismatch');
 }

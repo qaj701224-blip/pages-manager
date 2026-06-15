@@ -33,6 +33,67 @@ test('invalid PAGES_ENV fails closed', async () => {
   assert.equal((await response.json()).error.code, 'AUTH_ENV_INVALID');
 });
 
+test('routes CLI login start and poll public endpoints', async () => {
+  const env = {
+    ...testJwtEnv(),
+    now: () => 1_800_000_000,
+    createCliLoginRecord: async () => ({
+      loginId: 'cli_test',
+      loginSecret: 'login-secret',
+      deviceCode: '12345678',
+      record: {
+        id: 'cli_test',
+        status: 'pending',
+        environment: 'production',
+        expiresAt: 1_800_000_600,
+      },
+    }),
+    consumeCliLoginRecord: async () => ({
+      userId: 'usr_123',
+      environment: 'production',
+      record: {
+        id: 'cli_test',
+        status: 'consumed',
+        userId: 'usr_123',
+        environment: 'production',
+        consumedAt: 1_800_000_001,
+      },
+    }),
+  };
+
+  const startResponse = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/start', { method: 'POST' }),
+    env
+  );
+
+  assert.equal(startResponse.status, 200);
+  assert.equal(
+    (await startResponse.json()).browserUrl,
+    'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test'
+  );
+
+  const pollResponse = await worker.fetch(
+    jsonRequest('https://auth.pages.xd.team/.xd-pages/cli/login/poll', {
+      loginId: 'cli_test',
+      loginSecret: 'login-secret',
+    }),
+    env
+  );
+
+  assert.equal(pollResponse.status, 200);
+  assert.equal((await pollResponse.json()).status, 'confirmed');
+});
+
+test('rejects unsupported methods on CLI login endpoints', async () => {
+  const response = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/start', { method: 'GET' }),
+    testJwtEnv()
+  );
+
+  assert.equal(response.status, 405);
+  assert.equal((await response.json()).error.code, 'METHOD_NOT_ALLOWED');
+});
+
 test('exports Durable Object shell classes', () => {
   assert.equal(typeof OAuthStateDO, 'function');
   assert.equal(typeof CliLoginDO, 'function');
@@ -100,29 +161,40 @@ test('CliLoginDO confirms and consumes login transactions without leaking secret
   assert.equal(createText.includes('secretHash'), false);
   assert.equal(JSON.parse(createText).record.status, 'pending');
 
+  const pendingResponse = await durableObject.fetch(
+    jsonRequest('https://cli-login-do/poll', {
+      loginId: 'cli_test',
+      loginSecret: 'login-secret',
+      now: 1_800_000_001,
+    })
+  );
+
+  assert.equal(pendingResponse.status, 200);
+  assert.deepEqual(await pendingResponse.json(), { status: 'pending', expiresAt: 1_800_000_600 });
+
   const confirmResponse = await durableObject.fetch(
     jsonRequest('https://cli-login-do/confirm', {
       deviceCode: '12345678',
       userId: 'usr_123',
-      now: 1_800_000_001,
+      now: 1_800_000_002,
     })
   );
 
   assert.equal(confirmResponse.status, 200);
   assert.equal((await confirmResponse.json()).record.status, 'confirmed');
 
-  const consumeResponse = await durableObject.fetch(
-    jsonRequest('https://cli-login-do/consume', {
+  const pollResponse = await durableObject.fetch(
+    jsonRequest('https://cli-login-do/poll', {
       loginId: 'cli_test',
       loginSecret: 'login-secret',
-      now: 1_800_000_002,
+      now: 1_800_000_003,
     })
   );
 
-  assert.equal(consumeResponse.status, 200);
-  const consumeText = await consumeResponse.text();
-  assert.equal(consumeText.includes('secretHash'), false);
-  assert.equal(JSON.parse(consumeText).userId, 'usr_123');
+  assert.equal(pollResponse.status, 200);
+  const pollText = await pollResponse.text();
+  assert.equal(pollText.includes('secretHash'), false);
+  assert.equal(JSON.parse(pollText).userId, 'usr_123');
 });
 
 test('AuthSessionDO creates, refreshes, and revokes session records', async () => {
@@ -216,4 +288,13 @@ function createFakeStorage() {
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function testJwtEnv() {
+  return {
+    PAGES_ENV: 'production',
+    PAGES_SESSION_JWT_ACTIVE_KID: 'test',
+    PAGES_SESSION_JWT_KEYS: 'test:HS256:JWT_SECRET',
+    JWT_SECRET: 'test-secret',
+  };
 }

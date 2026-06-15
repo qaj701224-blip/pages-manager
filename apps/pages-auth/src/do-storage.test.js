@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   confirmStoredCliLogin,
   consumeStoredCliLogin,
+  pollStoredCliLogin,
   consumeStoredOAuthState,
   createStoredCliLogin,
   createStoredOAuthState,
@@ -100,6 +101,41 @@ test('CLI login consume requires login secret and only succeeds once', async () 
 
   await assert.rejects(
     () => consumeStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'login-secret' }, { now: now + 4 }),
+    /already consumed/
+  );
+});
+
+test('CLI login poll returns pending, consumes confirmed login, and rejects repeated poll', async () => {
+  const storage = createFakeStorage();
+  await createStoredCliLogin(storage, {
+    environment: 'production',
+    now,
+    ttlSeconds: 600,
+    loginId: 'cli_test',
+    loginSecret: 'login-secret',
+    deviceCode: '12345678',
+  });
+
+  const pending = await pollStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'login-secret' }, { now: now + 1 });
+
+  assert.deepEqual(pending, { status: 'pending', expiresAt: now + 600 });
+  assert.equal((await storage.get('record')).status, 'pending');
+
+  await assert.rejects(
+    () => pollStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'wrong-secret' }, { now: now + 2 }),
+    /secret mismatch/
+  );
+  await confirmStoredCliLogin(storage, { deviceCode: '12345678', userId: 'usr_123' }, { now: now + 3 });
+
+  const confirmed = await pollStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'login-secret' }, { now: now + 4 });
+
+  assert.equal(confirmed.status, 'confirmed');
+  assert.equal(confirmed.userId, 'usr_123');
+  assert.equal(confirmed.record.status, 'consumed');
+  assert.equal(Object.hasOwn(confirmed.record, 'secretHash'), false);
+
+  await assert.rejects(
+    () => pollStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'login-secret' }, { now: now + 5 }),
     /already consumed/
   );
 });
