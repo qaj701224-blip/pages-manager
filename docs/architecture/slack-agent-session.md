@@ -60,6 +60,24 @@ Session 选择规则：
 - 用户明确说“新建会话”“重新做一个”“另开一个版本”：创建新的 session。
 - 用户说“刚才那个”：只在该用户最近 active session 唯一且未过期时续接，否则反问。
 
+## 发布任务选择和 PR 续接
+
+Slack 不能只作为“一条消息触发器”，它需要像一个轻量任务工作台。用户可能同时有多个个人网站、多个 PR、多个 preview 修改轮次，不能要求用户不断往上翻旧卡片找入口。
+
+产品闭环规则：
+
+- 用户说“我的 PR”“我的发布任务”“看看我有哪些任务”时，gateway 返回一张新的任务选择卡片。
+- 任务选择卡片只展示当前 Slack 用户名下的 `PublishingJob`，不能按 GitHub PR author 判断归属，因为 PR 通常由平台 token 创建。
+- 查看任务列表不会切换当前 active job，也不会创建 issue / PR。
+- 用户点击“继续修改”，或明确说“继续 PR #68”时，当前 Slack thread 才绑定到这个 job。
+- 绑定后，这个 thread 变成该 job 的当前工作台；后续自然语言反馈进入同一个 issue / PR / preview 修改链路。
+- 新 thread 不自动继承旧 active job，除非用户显式选择或明确引用 PR / job。
+- 如果 PR 不属于当前 Slack 用户，或不是平台已知的发布任务，gateway 必须拒绝，并提示用户查看自己的任务列表。
+
+数据模型上，一个 `PublishingJob` 可以被多个 `SlackSession` 显式关联。这样用户可以在新 thread 里重新选择旧 PR，而不会破坏旧 thread 的历史记录。当前 active 操作目标仍以 `SlackSession.active_job_id` 为准；`IssueLink` 只表示“这个 session 可以继续操作这个 job”。
+
+状态卡片也需要按 session/thread 维度绑定，而不是只按 job 绑定。否则用户在新 thread 里选择旧 PR 后，后续进度会继续更新旧 thread 的卡片，用户会误以为没有反应。当前实现使用 `job_id + scope_key` 记录 Slack 状态卡，`scope_key=session:<slack_session_id>` 时表示这张卡属于某个具体会话。
+
 ## 必要数据
 
 `SlackSession`：
@@ -157,13 +175,13 @@ Slack Agent 复用 IssueLink，追加 issue comment，触发 fix round
 
 会话历史不应该被随意删除，但 active context 不能永远默认续接。推荐默认值：
 
-| 项 | 默认值 | 行为 |
-| --- | --- | --- |
-| active context TTL | 2 小时 | session 2 小时无消息后，`active_job_id` / `active_issue_number` 不再默认续接；用户明确引用 session / job / issue / PR / preview 时可恢复 |
-| waiting clarification TTL | 1 天 | Agent 问了澄清问题但用户 1 天未答，状态改为 `paused`，再次收到消息时先确认是否继续 |
-| recent selectable window | 14 天 | 过期但未归档的 session 可作为“最近任务”候选展示给用户选择 |
-| archive after inactive | 90 天 | session 进入 `archived` 或压缩 memory；IssueLink 和审计记录继续保留 |
-| user close command | 立即 | 用户说“关闭会话”“结束这个任务”“不用了”“归档”等，状态改为 `closed`，清空 active context |
+| 项                        | 默认值 | 行为                                                                                                                                     |
+| ------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| active context TTL        | 2 小时 | session 2 小时无消息后，`active_job_id` / `active_issue_number` 不再默认续接；用户明确引用 session / job / issue / PR / preview 时可恢复 |
+| waiting clarification TTL | 1 天   | Agent 问了澄清问题但用户 1 天未答，状态改为 `paused`，再次收到消息时先确认是否继续                                                       |
+| recent selectable window  | 14 天  | 过期但未归档的 session 可作为“最近任务”候选展示给用户选择                                                                                |
+| archive after inactive    | 90 天  | session 进入 `archived` 或压缩 memory；IssueLink 和审计记录继续保留                                                                      |
+| user close command        | 立即   | 用户说“关闭会话”“结束这个任务”“不用了”“归档”等，状态改为 `closed`，清空 active context                                                   |
 
 关闭或过期只影响“默认续接”。它不能删除 GitHub issue、PR、preview、DeployRecord 或 AgentRun。用户后续如果带着 session id、issue number、PR link、preview URL 或 job id 回来，Slack Agent 可以在权限校验通过后恢复为 active context。
 
@@ -203,13 +221,13 @@ Slack message
 
 推荐默认值：
 
-| 项 | 默认值 | 行为 |
-| --- | --- | --- |
-| Slack Agent turn timeout | 120 秒 | 单轮模型调用和工具规划超过 120 秒即失败并回写可重试提示 |
-| Slack Agent session lease | 180 秒 | 同一 `slack_session_id` 同时只允许一个 AgentRun 处理，避免两条 Slack 消息并发改同一 memory |
-| Slack Agent retry | 2 次 | 只重试网络或供应商 5xx；模型安全拒绝、权限失败、输入不明确不自动重试 |
-| Provider thread TTL | 24 小时 | 如果使用模型供应商 thread / assistant id，只作为缓存；DB 中的 SessionMemory 才是真相源 |
-| Coding Agent run timeout | 30 分钟 | `pages-agent.yml(mode=initial or fix)` 是一次性执行，超时后写失败状态，不能常驻 |
+| 项                        | 默认值  | 行为                                                                                       |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------ |
+| Slack Agent turn timeout  | 120 秒  | 单轮模型调用和工具规划超过 120 秒即失败并回写可重试提示                                    |
+| Slack Agent session lease | 180 秒  | 同一 `slack_session_id` 同时只允许一个 AgentRun 处理，避免两条 Slack 消息并发改同一 memory |
+| Slack Agent retry         | 2 次    | 只重试网络或供应商 5xx；模型安全拒绝、权限失败、输入不明确不自动重试                       |
+| Provider thread TTL       | 24 小时 | 如果使用模型供应商 thread / assistant id，只作为缓存；DB 中的 SessionMemory 才是真相源     |
+| Coding Agent run timeout  | 30 分钟 | `pages-agent.yml(mode=initial or fix)` 是一次性执行，超时后写失败状态，不能常驻            |
 
 AgentRun 规则：
 

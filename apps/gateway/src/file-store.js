@@ -18,7 +18,6 @@ const MAP_FIELDS = [
   'slackSessionByScopeKey',
   'sessionMemories',
   'issueLinks',
-  'issueLinkByJobId',
   'issueLinkByIssueNumber',
   'issueLinkByPrNumber',
   'agentRuns',

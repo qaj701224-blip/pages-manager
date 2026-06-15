@@ -36,6 +36,12 @@ function shaMatches(left, right) {
   return normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
 }
 
+function slackStatusScopeKey(input = {}) {
+  if (input.scopeKey) return String(input.scopeKey);
+  if (input.slackSessionId) return `session:${input.slackSessionId}`;
+  return 'job';
+}
+
 export class MemoryGatewayStore {
   constructor() {
     this.backend = 'memory';
@@ -54,7 +60,6 @@ export class MemoryGatewayStore {
     this.slackSessionByScopeKey = new Map();
     this.sessionMemories = new Map();
     this.issueLinks = new Map();
-    this.issueLinkByJobId = new Map();
     this.issueLinkByIssueNumber = new Map();
     this.issueLinkByPrNumber = new Map();
     this.agentRuns = new Map();
@@ -485,16 +490,20 @@ export class MemoryGatewayStore {
     this.slackNotifications.add(`${jobId}:${key}`);
   }
 
-  getSlackJobStatusMessage(jobId) {
-    return this.slackJobStatusMessages.get(jobId) || null;
+  getSlackJobStatusMessage(jobId, options = {}) {
+    return this.slackJobStatusMessages.get(`${jobId}:${slackStatusScopeKey(options)}`) || null;
   }
 
   recordSlackJobStatusMessage(jobId, input = {}, now = new Date()) {
-    const existing = this.getSlackJobStatusMessage(jobId);
+    const scopeKey = slackStatusScopeKey(input);
+    const existing = this.getSlackJobStatusMessage(jobId, { scopeKey });
     const nowIso = now.toISOString();
     const message = {
       ...(existing || {}),
+      id: existing?.id || makeId('slackmsg'),
       jobId,
+      slackSessionId: input.slackSessionId ?? existing?.slackSessionId ?? null,
+      scopeKey,
       channel: input.channel ?? existing?.channel ?? null,
       threadTs: input.threadTs ?? existing?.threadTs ?? null,
       messageTs: input.messageTs ?? input.ts ?? existing?.messageTs ?? null,
@@ -503,7 +512,7 @@ export class MemoryGatewayStore {
       updatedAt: nowIso,
       createdAt: existing?.createdAt || nowIso,
     };
-    this.slackJobStatusMessages.set(jobId, message);
+    this.slackJobStatusMessages.set(`${jobId}:${scopeKey}`, message);
     return message;
   }
 
@@ -664,11 +673,11 @@ export class MemoryGatewayStore {
 
   linkJobToSlackSession(job, session, now = new Date()) {
     if (!job?.id) return null;
-    const slackSessionId = session?.id || job.slackSessionId || this.issueLinkByJobId.get(job.id)?.slackSessionId;
+    const existingByJob = this.findIssueLinkByJobId(job.id);
+    const slackSessionId = session?.id || job.slackSessionId || existingByJob?.slackSessionId;
     if (!slackSessionId) return null;
 
-    const existingId = this.issueLinkByJobId.get(job.id)?.id;
-    const existing = existingId ? this.issueLinks.get(existingId) : null;
+    const existing = this.findIssueLinkForSlackSessionAndJob(slackSessionId, job.id);
     const nowIso = now.toISOString();
     const link = {
       id: existing?.id || makeId('issuelink'),
@@ -684,7 +693,6 @@ export class MemoryGatewayStore {
       updatedAt: nowIso,
     };
     this.issueLinks.set(link.id, link);
-    this.issueLinkByJobId.set(job.id, link);
     if (link.issueNumber) this.issueLinkByIssueNumber.set(String(link.issueNumber), link);
     if (link.prNumber) this.issueLinkByPrNumber.set(String(link.prNumber), link);
 
@@ -707,8 +715,23 @@ export class MemoryGatewayStore {
     return link;
   }
 
+  findIssueLinkForSlackSessionAndJob(slackSessionId, jobId) {
+    return (
+      [...this.issueLinks.values()].find((link) => link.slackSessionId === slackSessionId && link.publishingJobId === jobId) ||
+      null
+    );
+  }
+
   findIssueLinkByJobId(jobId) {
-    return this.issueLinkByJobId.get(jobId) || null;
+    return (
+      [...this.issueLinks.values()]
+        .filter((link) => link.publishingJobId === jobId)
+        .sort((left, right) => {
+          const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
+          const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+          return rightTime - leftTime;
+        })[0] || null
+    );
   }
 
   findIssueLinkByIssueNumber(issueNumber) {
@@ -727,6 +750,30 @@ export class MemoryGatewayStore {
         const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
         return rightTime - leftTime;
       });
+  }
+
+  listWorkItemsForSlackUser(teamId, slackUserId, options = {}) {
+    const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 20);
+    const requestedById = `slack:${teamId || 'unknown-team'}:${slackUserId || 'unknown-user'}`;
+    const jobs = [...this.jobs.values()]
+      .filter((job) => job.source === 'slack' && job.requestedById === requestedById)
+      .filter((job) => {
+        if (!options.statuses?.length) return true;
+        return options.statuses.includes(job.status);
+      })
+      .sort((left, right) => {
+        const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
+        const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+        return rightTime - leftTime;
+      })
+      .slice(0, limit);
+
+    return {
+      jobs,
+      total: jobs.length,
+      limit,
+      offset: 0,
+    };
   }
 
   listAgentRunsForJob(publishingJobId) {
