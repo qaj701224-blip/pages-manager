@@ -11,6 +11,10 @@ archive
 .env
 .env.*
 !.env.example
+.ack-preview.env
+.ack_preview.env
+.ack*.env
+*.tar.gz
 apps/server/wrangler.toml
 apps/xdads-302/wrangler.toml
 demos/**/.pages.json
