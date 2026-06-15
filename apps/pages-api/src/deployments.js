@@ -99,6 +99,7 @@ async function createDeployment(request, env, config, store, actor) {
     contentHash,
     createdBy: actor.userId,
   });
+  const previousRoute = await store.getRouteBySiteId(siteId, config.environment);
   const route = await store.activateSiteVersion(
     siteId,
     {
@@ -112,6 +113,7 @@ async function createDeployment(request, env, config, store, actor) {
   try {
     await writeSnapshot(env, { site, route, version });
   } catch {
+    await store.restoreSiteRoute(siteId, previousRoute, config.environment);
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -193,6 +195,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   try {
     await writeSnapshot(env, { site, route, version });
   } catch {
+    await store.restoreSiteRoute(site.id, currentRoute, config.environment);
     await store.updateDeployment(deploymentResult.deployment.id, {
       status: 'failed',
       versionId: version.id,

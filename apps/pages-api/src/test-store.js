@@ -149,6 +149,15 @@ class TestPagesStore {
     return cloneRecord(route);
   }
 
+  async restoreSiteRoute(siteId, previousRoute, environment) {
+    const routeId = this.routeBySiteId.get(siteId);
+    const route = this.routes.get(routeId);
+    if (!route || !previousRoute) return null;
+    if (environment && route.environment !== environment) return null;
+    Object.assign(route, cloneRecord(previousRoute));
+    return cloneRecord(route);
+  }
+
   async getSiteVersion(id, environment) {
     const version = this.siteVersions.get(id) || null;
     const site = version ? this.sites.get(version.siteId) : null;

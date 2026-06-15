@@ -198,8 +198,61 @@ test('marks deployment failed when route snapshot write fails and replays failed
   assert.equal(first.status, 503);
   assert.equal((await first.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.deepEqual(await store.getRouteBySiteId('site_1'), {
+    id: 'route_1',
+    hostname: 'docs.pages.xd.team',
+    siteId: 'site_1',
+    environment: 'production',
+    runtime: 'disabled',
+    workerName: null,
+    activeVersionId: null,
+    visibility: 'org',
+    policyVersion: 1,
+    routeGeneration: 0,
+    routeStatus: 'disabled',
+    cacheTier: 'fast',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
   assert.equal(replay.status, 200);
   assert.equal((await replay.json()).deployment.status, 'failed');
+});
+
+test('keeps previous active route when rollback snapshot write fails', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
+      { 'Idempotency-Key': 'deploy_1' }
+    ),
+    env
+  );
+  await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:def' },
+      { 'Idempotency-Key': 'deploy_2' }
+    ),
+    env
+  );
+
+  env.ROUTE_SNAPSHOTS = failingSnapshotStore();
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_fail' }),
+    env
+  );
+  const route = await store.getRouteBySiteId('site_1');
+
+  assert.equal(rollback.status, 503);
+  assert.equal((await rollback.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await store.getDeployment('dep_3')).status, 'failed');
+  assert.equal(route.activeVersionId, 'ver_2');
+  assert.equal(route.workerName, 'pages-v2-docs-ver-2');
+  assert.equal(route.routeGeneration, 2);
+  assert.equal(route.routeStatus, 'active');
 });
 
 test('requires idempotency key for deploy and rollback', async () => {

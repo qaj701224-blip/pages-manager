@@ -253,6 +253,48 @@ export class D1PagesStore {
     return this.getRouteBySiteId(siteId, environment);
   }
 
+  async restoreSiteRoute(siteId, route, environment) {
+    if (!route) return null;
+    await this.db
+      .prepare(
+        `UPDATE site_routes
+        SET active_version_id = ?, worker_name = ?, runtime = ?,
+          visibility = ?, policy_version = ?, route_generation = ?,
+          route_status = ?, cache_tier = ?, updated_at = ?
+        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+      )
+      .bind(
+        ...(environment
+          ? [
+              route.activeVersionId,
+              route.workerName,
+              route.runtime,
+              route.visibility,
+              route.policyVersion,
+              route.routeGeneration,
+              route.routeStatus,
+              route.cacheTier,
+              route.updatedAt,
+              siteId,
+              environment,
+            ]
+          : [
+              route.activeVersionId,
+              route.workerName,
+              route.runtime,
+              route.visibility,
+              route.policyVersion,
+              route.routeGeneration,
+              route.routeStatus,
+              route.cacheTier,
+              route.updatedAt,
+              siteId,
+            ])
+      )
+      .run();
+    return this.getRouteBySiteId(siteId, environment);
+  }
+
   async getSiteVersion(id, environment) {
     const row = await this.db
       .prepare(
