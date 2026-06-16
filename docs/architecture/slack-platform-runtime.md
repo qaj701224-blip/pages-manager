@@ -16,10 +16,10 @@
 
 Slack 体验分成两层：
 
-| 层级 | 用户感知 | 技术形态 |
-| --- | --- | --- |
-| 需求对话层 | 像 Agent 对话，有实时感 | Slack Agent 内部可 token streaming；Slack 外显按短句、语义片段或 500ms-1000ms 节流更新同一条 Agent 回复 |
-| 任务执行层 | 像发布控制台，稳定可追踪 | PublishingJob 状态卡片 + issue / PR / preview 关键节点消息 |
+| 层级       | 用户感知                 | 技术形态                                                                                                |
+| ---------- | ------------------------ | ------------------------------------------------------------------------------------------------------- |
+| 需求对话层 | 像 Agent 对话，有实时感  | Slack Agent 内部可 token streaming；Slack 外显按短句、语义片段或 500ms-1000ms 节流更新同一条 Agent 回复 |
+| 任务执行层 | 像发布控制台，稳定可追踪 | PublishingJob 状态卡片 + issue / PR / preview 关键节点消息                                              |
 
 目标不是把全链路都做成 token-by-token 输出。对话阶段追求接近实时的语义分块准流式：Agent 内部可以 token streaming，但 Slack 对外不能按裸 token 刷屏。执行阶段追求确定感，必须保持阶段化、可审计、可恢复。
 
@@ -29,34 +29,34 @@ Slack 体验分成两层：
 
 当前 `feat/slack-preview-gateway` 已具备这些基础：
 
-| 能力 | 当前位置 | 说明 |
-| --- | --- | --- |
-| Slack HTTP Events | `apps/gateway/src/index.js` | `POST /integrations/slack/events` |
-| Slack Interactivity | `apps/gateway/src/index.js` | `POST /integrations/slack/interactions` |
-| Slack signature 校验 | `apps/gateway/src/slack/http.js` | 基于 raw body、timestamp、signing secret 校验 |
-| URL verification | `apps/gateway/src/routes/handlers.js` | 返回 Slack challenge |
-| DM / channel thread 会话 | `apps/gateway/src/slack/session.js` | `SlackSession` 按 Slack user、thread 和 active context 隔离 |
-| Slack intake 分类 | `apps/gateway/src/slack/intake.js` | help、ping、status、自然语言需求、续接修改等前置分类 |
-| 基础状态卡片 | `packages/slack-notifier/src/index.js` | Block Kit 展示 stage、job、issue、PR、preview |
-| 原地更新卡片 | `packages/slack-notifier/src/index.js` | 首次 `chat.postMessage`，后续 `chat.update` |
-| 独立 notifier app | `apps/slack-notifier/src/index.js` | 内部 HTTP endpoint，正式 K8s 路径持有 bot token |
-| gateway notifier adapter | `apps/gateway/src/slack/notifier.js` | 调独立 notifier；本地无 URL 时走 fallback |
-| 基础按钮 | `apps/gateway/src/routes/handlers.js` | 确认创建、继续修改、查看链接、选择旧任务、关闭会话 |
-| Agent turn | `apps/slack-agent/src/index.js` | `/internal/slack-agent/turn` 已有基础合同；NDJSON 路径可流式输出事件；`analyze` 仅作为旧测试 / 兼容路径 |
-| Gateway turn adapter | `apps/gateway/src/routes/handlers.js` | 优先请求 NDJSON，能消费 `reply_delta` 并节流更新同一条 Agent 回复 |
-| Provider 语义分块 | `apps/slack-agent/src/model-provider.js` | 公司 OpenAI-compatible streaming 响应中只抽取 `visibleReply`，聚合成短句 / 语义片段 |
+| 能力                     | 当前位置                                 | 说明                                                                                                    |
+| ------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Slack HTTP Events        | `apps/gateway/src/index.js`              | `POST /integrations/slack/events`                                                                       |
+| Slack Interactivity      | `apps/gateway/src/index.js`              | `POST /integrations/slack/interactions`                                                                 |
+| Slack signature 校验     | `apps/gateway/src/slack/http.js`         | 基于 raw body、timestamp、signing secret 校验                                                           |
+| URL verification         | `apps/gateway/src/routes/handlers.js`    | 返回 Slack challenge                                                                                    |
+| DM / channel thread 会话 | `apps/gateway/src/slack/session.js`      | `SlackSession` 按 Slack user、thread 和 active context 隔离                                             |
+| Slack intake 分类        | `apps/gateway/src/slack/intake.js`       | help、ping、status、自然语言需求、续接修改等前置分类                                                    |
+| 基础状态卡片             | `packages/slack-notifier/src/index.js`   | Block Kit 展示 stage、job、issue、PR、preview                                                           |
+| 原地更新卡片             | `packages/slack-notifier/src/index.js`   | 首次 `chat.postMessage`，后续 `chat.update`                                                             |
+| 独立 notifier app        | `apps/slack-notifier/src/index.js`       | 内部 HTTP endpoint，正式 K8s 路径持有 bot token                                                         |
+| gateway notifier adapter | `apps/gateway/src/slack/notifier.js`     | 调独立 notifier；本地无 URL 时走 fallback                                                               |
+| 基础按钮                 | `apps/gateway/src/routes/handlers.js`    | 确认创建、继续修改、查看链接、选择旧任务、关闭会话                                                      |
+| Agent turn               | `apps/slack-agent/src/index.js`          | `/internal/slack-agent/turn` 已有基础合同；NDJSON 路径可流式输出事件；`analyze` 仅作为旧测试 / 兼容路径 |
+| Gateway turn adapter     | `apps/gateway/src/routes/handlers.js`    | 优先请求 NDJSON，能消费 `reply_delta` 并节流更新同一条 Agent 回复                                       |
+| Provider 语义分块        | `apps/slack-agent/src/model-provider.js` | 公司 OpenAI-compatible streaming 响应中只抽取 `visibleReply`，聚合成短句 / 语义片段                     |
 
 当前还不是正式版：
 
-| 缺口 | 影响 |
-| --- | --- |
+| 缺口                              | 影响                                                                                   |
+| --------------------------------- | -------------------------------------------------------------------------------------- |
 | Provider streaming 仍需真环境验证 | 代码已支持 OpenAI-compatible SSE streaming，但依赖模型按要求先输出 `visibleReply` 字段 |
-| `turn` 协议仍需生产化 | 已有 `reply_delta` + `analysis_final` 基础消费，但还缺持久 offset 恢复和更完整失败补偿 |
-| notifier 仍有同步 HTTP fallback | 还不是 Redis Stream / Queue consumer，offset 恢复能力不足 |
-| store 必须收敛到 MySQL-backed | 多副本下内存状态会丢幂等、lease、session 和 message binding |
-| Slack API 调用没有完整持久重试 | `chat.postMessage` / `chat.update` 失败后补偿能力不足 |
-| Interactivity 还不是完整命令面 | 缺取消、重新生成、选择站点、转人工确认等动作 |
-| Preview 只有链接 | 还没有截图、图片 block 或文件上传链路 |
+| `turn` 协议仍需生产化             | 已有 `reply_delta` + `analysis_final` 基础消费，但还缺持久 offset 恢复和更完整失败补偿 |
+| notifier 仍有同步 HTTP fallback   | 还不是 Redis Stream / Queue consumer，offset 恢复能力不足                              |
+| store 必须收敛到 MySQL-backed     | 多副本下内存状态会丢幂等、lease、session 和 message binding                            |
+| Slack API 调用没有完整持久重试    | `chat.postMessage` / `chat.update` 失败后补偿能力不足                                  |
+| Interactivity 还不是完整命令面    | 缺取消、重新生成、选择站点、转人工确认等动作                                           |
+| Preview 只有链接                  | 还没有截图、图片 block 或文件上传链路                                                  |
 
 ## 非目标
 
@@ -294,12 +294,12 @@ secret ref: pages-slack-platform-secret
 
 组件边界：
 
-| 组件 | 需要的 Slack secret | 不应该拿到 |
-| --- | --- | --- |
-| `pages-gateway` | `SLACK_SIGNING_SECRET`、`SLACK_NOTIFIER_SHARED_SECRET`；仅本地 fallback 可临时持有 `SLACK_BOT_TOKEN` | Git push token、Cloudflare deploy token、auto-merge token |
-| `slack-agent` | 默认不需要 Slack bot token；如需拉 thread / channel 上下文，必须单独评审最小只读路径 | Git push token、Cloudflare deploy token、auto-merge token |
-| `slack-notifier` | `SLACK_BOT_TOKEN` | repo write token、Cloudflare deploy token、auto-merge token |
-| GitHub Actions / executor | 不需要 Slack token | Slack bot token |
+| 组件                      | 需要的 Slack secret                                                                                  | 不应该拿到                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `pages-gateway`           | `SLACK_SIGNING_SECRET`、`SLACK_NOTIFIER_SHARED_SECRET`；仅本地 fallback 可临时持有 `SLACK_BOT_TOKEN` | Git push token、Cloudflare deploy token、auto-merge token   |
+| `slack-agent`             | 默认不需要 Slack bot token；如需拉 thread / channel 上下文，必须单独评审最小只读路径                 | Git push token、Cloudflare deploy token、auto-merge token   |
+| `slack-notifier`          | `SLACK_BOT_TOKEN`                                                                                    | repo write token、Cloudflare deploy token、auto-merge token |
+| GitHub Actions / executor | 不需要 Slack token                                                                                   | Slack bot token                                             |
 
 `pages-gateway` 配置 `SLACK_NOTIFIER_URL` 后，正式路径只通过内部 shared secret 调 `slack-notifier`。本地 fallback 只能用于调试，不能带到生产 K8s 默认配置。
 
@@ -402,19 +402,20 @@ Session 选择：
 - DM 顶层显式 `issue:` / `page:` / `site:` 测试命令：创建新的 message-scoped session，避免覆盖正在进行的任务。
 - 用户明确说“新建会话”“重新做一个”“另开一个版本”：创建新的 session。
 - 用户说“刚才那个”：只在该用户 active session 唯一且未过期时续接，否则提示用户查看自己的 PR / 任务列表再选择。
+- 用户点击或发送“关闭会话”后，当前 session 进入 closed，active job / issue / PR 指针被清空，running AgentRun 被失败化；后续即使在同一个 Slack thread 继续发消息，也不能自动复活这个 closed session，只能创建新 session 或通过“我的任务 / 继续 issue #数字 / PR #数字”显式重新选择。
 
 默认 TTL：
 
-| 项 | 默认值 | 行为 |
-| --- | --- | --- |
-| active context TTL | 2 小时 | 超过后不再默认续接；用户明确引用 job / issue / PR / preview 时可恢复 |
-| waiting clarification TTL | 1 天 | Agent 问澄清问题后长期未答，状态改为 paused |
-| recent selectable window | 14 天 | 只作为“我的 PR / 我的任务”列表的数据窗口；不会在普通 DM 顶层消息里自动续接 |
-| archive after inactive | 90 天 | session 进入 archived 或压缩 memory；IssueLink 和审计保留 |
-| Slack Agent turn timeout | 120 秒 | 单轮模型调用和工具规划超过后失败并回写可重试提示 |
-| Slack Agent session lease | 180 秒 | 同一 session 同时只允许一个 running AgentRun |
-| Provider thread TTL | 24 小时 | 供应商 thread 只做缓存；DB memory 才是真相源 |
-| Coding Agent run timeout | 30 分钟 | 一次性 coding workflow 超时后写失败状态 |
+| 项                        | 默认值  | 行为                                                                       |
+| ------------------------- | ------- | -------------------------------------------------------------------------- |
+| active context TTL        | 2 小时  | 超过后不再默认续接；用户明确引用 job / issue / PR / preview 时可恢复       |
+| waiting clarification TTL | 1 天    | Agent 问澄清问题后长期未答，状态改为 paused                                |
+| recent selectable window  | 14 天   | 只作为“我的 PR / 我的任务”列表的数据窗口；不会在普通 DM 顶层消息里自动续接 |
+| archive after inactive    | 90 天   | session 进入 archived 或压缩 memory；IssueLink 和审计保留                  |
+| Slack Agent turn timeout  | 120 秒  | 单轮模型调用和工具规划超过后失败并回写可重试提示                           |
+| Slack Agent session lease | 180 秒  | 同一 session 同时只允许一个 running AgentRun                               |
+| Provider thread TTL       | 24 小时 | 供应商 thread 只做缓存；DB memory 才是真相源                               |
+| Coding Agent run timeout  | 30 分钟 | 一次性 coding workflow 超时后写失败状态                                    |
 
 关闭或过期只影响默认续接，不能删除 GitHub issue、PR、preview、DeployRecord 或 AgentRun。
 
@@ -422,22 +423,22 @@ Session 选择：
 
 正式版至少需要这些持久对象：
 
-| 对象 | 用途 |
-| --- | --- |
-| `SlackEvent` | Slack HTTP event 幂等、审计和重放 |
-| `SlackInteractionEvent` | Interactivity / command 幂等和审计 |
-| `SlackMessageBatch` | 同一 thread / turn 的用户消息聚合和上下文来源 |
-| `SlackSession` | `(team_id, slack_user_id, session_key)` 维度的会话状态 |
-| `SessionMemory` | 需求摘要、待澄清问题、偏好、最近 preview feedback |
-| `IssueLink` | session 与 job / issue / PR / preview 的关联 |
-| `PublishingJob` | 发布任务状态机 |
-| `AgentRun` | Slack Agent 或 Coding Agent 的单轮运行 |
-| `AgentRunEvent` | Agent 对用户可见的进度、摘要、澄清、错误 |
-| `JobEvent` | job 阶段变化、callback、review、preview、失败 |
-| `SlackAgentReplyMessage` | 确认创建前的 Agent 对话回复 `channel + ts + offset` |
-| `slack_job_status_messages` 或 `SlackMessageBinding` | job/session 到 Slack card/message 的绑定 |
-| `SlackNotificationAttempt` | Slack API 调用尝试、错误、重试、rate limit |
-| `ExternalApiCallLog` | Slack/GitHub/Cloudflare/model provider 调用摘要 |
+| 对象                                                 | 用途                                                   |
+| ---------------------------------------------------- | ------------------------------------------------------ |
+| `SlackEvent`                                         | Slack HTTP event 幂等、审计和重放                      |
+| `SlackInteractionEvent`                              | Interactivity / command 幂等和审计                     |
+| `SlackMessageBatch`                                  | 同一 thread / turn 的用户消息聚合和上下文来源          |
+| `SlackSession`                                       | `(team_id, slack_user_id, session_key)` 维度的会话状态 |
+| `SessionMemory`                                      | 需求摘要、待澄清问题、偏好、最近 preview feedback      |
+| `IssueLink`                                          | session 与 job / issue / PR / preview 的关联           |
+| `PublishingJob`                                      | 发布任务状态机                                         |
+| `AgentRun`                                           | Slack Agent 或 Coding Agent 的单轮运行                 |
+| `AgentRunEvent`                                      | Agent 对用户可见的进度、摘要、澄清、错误               |
+| `JobEvent`                                           | job 阶段变化、callback、review、preview、失败          |
+| `SlackAgentReplyMessage`                             | 确认创建前的 Agent 对话回复 `channel + ts + offset`    |
+| `slack_job_status_messages` 或 `SlackMessageBinding` | job/session 到 Slack card/message 的绑定               |
+| `SlackNotificationAttempt`                           | Slack API 调用尝试、错误、重试、rate limit             |
+| `ExternalApiCallLog`                                 | Slack/GitHub/Cloudflare/model provider 调用摘要        |
 
 `SlackSession` 建议字段：
 
@@ -552,32 +553,39 @@ flowchart TD
 
 自然语言是主入口。`issue:`、`page:`、`site:` 这类前缀可以在测试阶段保留为开发便捷入口，但不是正式产品承诺。
 
-| Slack 输入 | 行为 |
-| --- | --- |
-| 任意自然语言需求 | 进入 Slack Agent；信息足够时展示确认卡片 |
-| 模糊闲聊 / 信息不足 | 进入 Slack Agent；回复澄清问题，不创建 job |
-| `status: job_xxx` | 查询当前用户有权限访问的 job 状态 |
-| `help` | 返回帮助 |
-| `ping` | 连通性回复 |
-| `cancel` | 返回取消提示或转人工确认 |
-| `关闭会话` / `结束对话` | 关闭当前选中的 session |
-| `这个任务不用了` / `归档这个 preview` | 关闭当前 active IssueLink 或转人工确认 |
+| Slack 输入                            | 行为                                                                        |
+| ------------------------------------- | --------------------------------------------------------------------------- |
+| 任意自然语言需求                      | 进入 Slack Agent；信息足够时展示确认卡片                                    |
+| 模糊闲聊 / 信息不足                   | 进入 Slack Agent；回复澄清问题，不创建 job                                  |
+| 查询我的任务 / PR                     | Slack Agent 请求 `list_my_work_items`；gateway 只返回当前用户可见任务       |
+| 查询历史 / 全部任务                   | `state=all`，返回当前用户 active + inactive 任务                            |
+| 查询已关闭 issue / PR                 | `state=closed`，只返回当前用户已关闭、已取消或失败任务；可恢复项展示 reopen |
+| 继续 issue #数字 / PR #数字           | Slack Agent 请求 `switch_work_item`；gateway 校验归属后切换当前 session     |
+| 重新打开 issue #数字 / PR #数字       | Slack Agent 请求 `reopen_work_item`；gateway 只恢复当前用户可恢复的关闭任务 |
+| `status: job_xxx`                     | 查询当前用户有权限访问的 job 状态                                           |
+| `help`                                | 返回帮助                                                                    |
+| `ping`                                | 连通性回复                                                                  |
+| `cancel`                              | 返回取消提示或转人工确认                                                    |
+| `关闭会话` / `结束对话`               | 关闭当前选中的 session                                                      |
+| `这个任务不用了` / `归档这个 preview` | 关闭当前 active IssueLink 或转人工确认                                      |
 
-只有 Slack Agent 明确返回创建类 intent，且 `needsClarification=false`，并且用户点击确认或触发受控动作后，gateway 才能创建 `PublishingJob`。
+只有 Slack Agent 明确返回创建类 intent / `confirm_create_issue`，且 `needsClarification=false`，并且用户点击确认后，gateway 才能创建 `PublishingJob`。
 
 当前产品化消息形态：
 
-- 一个 active `SlackSession` 里优先复用同一条 Agent 回复消息；连续 DM 或同一 thread 补充需求时，用 `chat.update` 更新该消息，不为每轮都新发一张草稿卡。
+- 确认前的需求整理阶段，优先复用同一条 Agent 回复消息；连续 DM 或同一 thread 补充需求时，用 `chat.update` 更新该消息，不为每轮都新发一张草稿卡。
 - `thinking` / `drafting` 阶段的 Agent 回复保持轻量，只用普通 section 文本承载准流式内容；不显示 header、按钮或正式状态字段，避免用户刚发一句话就看到重卡片跳动。
 - 信息足够时，Agent 回复消息变成“确认发布需求”卡片；卡片只代表确认前草稿，不创建 issue。
 - 用户点击“继续补充需求”时，原卡片更新为“等待补充”，不会创建 issue，也不会关闭会话。
 - 用户点击“确认创建发布任务”后，原确认卡片更新为“发布需求已确认”，确认按钮被移除，避免旧卡片被重复点击。
 - 确认后进入执行阶段，由单独的 `PublishingJob` 状态卡接管 issue / PR / Review / Preview 进度；用户后续继续在同一 thread 回复，会更新这张状态卡并触发同一个 PR 的 fix round 或排队。
+- 已有 active job / issue / PR 后，修改类消息不再创建“正在整理需求”的 Agent 占位回复；Agent 对用户修改意图的理解进入状态卡的“本轮修改 / 最终需求”。如果 Agent 需要追问、解释、返回查询结果或说明无法处理，仍然在同一 thread 里直接回复用户。
+- 每条用户输入的即时反馈优先用 reaction 表示：收到时加 working reaction，完成时换成 done，失败时换成 failed。文字消息只承载真正的信息，不重复刷“我已收到”。
 
 ```text
 轻量 Agent 回复：需求整理 / 澄清 / 确认前草稿的准流式正文
 确认卡：信息足够后的用户决策点
-PublishingJob 状态卡：确认后的执行进度、链接和后续修改入口
+PublishingJob 状态卡：确认后的执行进度、链接、Agent 对本轮修改的理解和后续修改入口
 ```
 
 ## Slack Agent Runtime
@@ -627,15 +635,23 @@ Slack Agent 不负责：
 ```text
 loadSession
 saveSessionMemory
-requestPublishingJobCreation
-appendIssueCommentRequest
-getJobStatus
+list_my_work_items(state=active|all|closed)
+switch_work_item(kind=issue|pr|unknown, number)
+reopen_work_item(kind=issue|pr|unknown, number)
+get_current_status
+record_followup
+confirm_create_issue
+close_session
+cancel_request
+unsupported_destructive_request
 getLinkedIssuePrPreview
 askClarification
 notifySlack
 ```
 
-这些工具也不能绕过 gateway 权限、幂等和状态机。
+这些工具也不能绕过 gateway 权限、幂等和状态机。Slack Agent 可以主导“下一步做什么”，但 gateway 必须在执行时重新计算当前 Slack 用户、当前 session、该用户名下的 job / issue / PR 范围；Agent 传入其它用户、其它 session 或其它人的 GitHub 编号时不能生效。
+
+产品上，gateway 不应该把“我的任务”“继续某个 issue / PR”“重新打开某个 issue / PR”等自然语言分支写死成主要体验。它可以保留 help / ping / status、签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底；正常对话应先进 Slack Agent，由 Agent 输出 `toolCall`，再由 gateway 做权限收口和执行。
 
 ## Turn 协议
 
@@ -685,17 +701,17 @@ POST /internal/slack-agent/turn
 
 事件字段：
 
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `type` | 是 | `reply_started`、`reply_delta`、`analysis_final`、`reply_completed`、`reply_failed` |
-| `sequence` | 是 | 单调递增，用于去重和乱序保护 |
-| `agentRunId` | 是 | gateway 创建的 `AgentRun` |
-| `slackSessionId` | 是 | 当前会话 |
-| `text` | delta 时必填 | 本次可见语义片段 / 短句增量，不包含内部推理；不应是裸 token |
-| `analysis` | final 时必填 | 结构化 intent / summary / needsClarification |
-| `visibleToUser` | 建议 | 默认 true；false 只能进日志 |
-| `dedupeKey` | 建议 | 事件级幂等键 |
-| `createdAt` | 建议 | Agent 侧产生时间，不能作为唯一顺序来源 |
+| 字段             | 必填         | 说明                                                                                |
+| ---------------- | ------------ | ----------------------------------------------------------------------------------- |
+| `type`           | 是           | `reply_started`、`reply_delta`、`analysis_final`、`reply_completed`、`reply_failed` |
+| `sequence`       | 是           | 单调递增，用于去重和乱序保护                                                        |
+| `agentRunId`     | 是           | gateway 创建的 `AgentRun`                                                           |
+| `slackSessionId` | 是           | 当前会话                                                                            |
+| `text`           | delta 时必填 | 本次可见语义片段 / 短句增量，不包含内部推理；不应是裸 token                         |
+| `analysis`       | final 时必填 | 结构化 intent / summary / needsClarification                                        |
+| `visibleToUser`  | 建议         | 默认 true；false 只能进日志                                                         |
+| `dedupeKey`      | 建议         | 事件级幂等键                                                                        |
+| `createdAt`      | 建议         | Agent 侧产生时间，不能作为唯一顺序来源                                              |
 
 gateway 消费规则：
 
@@ -716,7 +732,7 @@ gateway 消费规则：
 ```text
 gateway 创建 AgentRun
   ↓
-slack-notifier 创建或复用一条“正在整理需求...”
+slack-notifier 创建或复用一条“正在整理需求...” Agent 回复
   ↓
 slack-agent 持续产出短句 / 语义片段 reply_delta
   ↓
@@ -726,8 +742,10 @@ chat.update 同一条 Agent 回复
   ↓
 analysis_final 到达
   ↓
-最终 update + 后续澄清 / 确认卡片 / job 状态卡片
+最终 update + 后续澄清 / 确认卡片
 ```
+
+执行阶段如果已经有 active job / issue / PR，`chat.update` 的目标默认是 `PublishingJob` 状态卡，而不是 Agent 回复。只有澄清、解释、查询结果、错误提示这类沟通型内容才单独发 thread 回复。
 
 未来可以评估 Slack 原生 streaming API 作为输出通道：
 
@@ -848,13 +866,13 @@ failed
 
 按钮 `action_id` 建议使用 `pages_` 前缀，`value` 使用 JSON 或短 id；敏感信息不能放在 `value` 里。
 
-| Action | 第一版行为 | 后台事件 |
-| --- | --- | --- |
-| `pages_confirm_requirement` | 确认摘要并创建 job | `job.confirm_requested` |
-| `pages_close_session` | 关闭当前用户拥有的 session | `session.close_requested` |
-| `pages_cancel_job` | 请求取消或转人工确认 | `job.cancel_requested` |
-| `pages_regenerate` | 对同一 PR branch 启动新 fix round | `job.regenerate_requested` |
-| `pages_open_admin` | 打开内部控制台链接 | 只生成 URL，不推进状态 |
+| Action                      | 第一版行为                        | 后台事件                   |
+| --------------------------- | --------------------------------- | -------------------------- |
+| `pages_confirm_requirement` | 确认摘要并创建 job                | `job.confirm_requested`    |
+| `pages_close_session`       | 关闭当前用户拥有的 session        | `session.close_requested`  |
+| `pages_cancel_job`          | 请求取消或转人工确认              | `job.cancel_requested`     |
+| `pages_regenerate`          | 对同一 PR branch 启动新 fix round | `job.regenerate_requested` |
+| `pages_open_admin`          | 打开内部控制台链接                | 只生成 URL，不推进状态     |
 
 交互规则：
 
@@ -885,7 +903,7 @@ failed
 - 构建 Block Kit。
 - 处理 rate limit、retry、dead-letter。
 - 写 `SlackNotificationAttempt` 和 `ExternalApiCallLog`。
-- 提供内部 HTTP fallback endpoint，供 MVP 阶段 gateway 在写入事件后同步请求一次投递。
+- 提供内部 HTTP fallback endpoint，供 gateway 在写入事件后同步请求一次投递。
 
 不负责：
 
@@ -937,24 +955,24 @@ superseded
 
 至少需要这些幂等键：
 
-| 场景 | dedupe key |
-| --- | --- |
-| Slack event 接收 | `team_id:event_id` |
+| 场景                        | dedupe key                                                              |
+| --------------------------- | ----------------------------------------------------------------------- |
+| Slack event 接收            | `team_id:event_id`                                                      |
 | Slash command / interaction | `team_id:payload_type:action_id:action_ts:user_id` 或 full payload hash |
-| AgentRun 创建 | `slack_event:<team_id>:<event_id>` |
-| Agent delta | `agent_run_id:sequence` |
-| Agent reply message posted | `slack-reply-posted:<agent_run_id>` |
-| Agent reply message updated | `slack-reply-updated:<agent_run_id>:<sequence>` |
-| Agent reply message failed | `slack-reply-failed:<agent_run_id>:<sequence>` |
-| Confirm button | `team_id:action_id:action_ts:user_id` 或完整 payload hash |
-| PublishingJob 创建 | `slack-confirm:<session_id>:<redacted_analysis_hash>` |
+| AgentRun 创建               | `slack_event:<team_id>:<event_id>`                                      |
+| Agent delta                 | `agent_run_id:sequence`                                                 |
+| Agent reply message posted  | `slack-reply-posted:<agent_run_id>`                                     |
+| Agent reply message updated | `slack-reply-updated:<agent_run_id>:<sequence>`                         |
+| Agent reply message failed  | `slack-reply-failed:<agent_run_id>:<sequence>`                          |
+| Confirm button              | `team_id:action_id:action_ts:user_id` 或完整 payload hash               |
+| PublishingJob 创建          | `slack-confirm:<session_id>:<redacted_analysis_hash>`                   |
 
 规则：
 
 - `dedupe_key` 必须非空，不能依赖 nullable unique。
 - 同一个 `(team_id, dedupe_key)` 只能处理一次。
 - 同一 `slack_session_id` 同时只能有一个 running `AgentRun`。
-- 后到消息 MVP 可以回复“上一轮还在处理中，请稍等一下再发”；正式版可写入 queue 顺序处理。
+- 后到消息当前可以回复“上一轮还在处理中，请稍等一下再发”；后续可写入 queue 顺序处理。
 - 两轮 Agent 不能同时修改同一个 `SessionMemory`。
 - Slack update 限流，不要每个 token 都调用一次 Slack API；对话阶段按语义片段 / 500ms-1000ms 窗口更新，执行阶段按阶段变化更新。
 - notifier 重启后必须从 DB 找回 `message_ts` 和 `last_sent_offset`。

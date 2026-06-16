@@ -131,7 +131,11 @@ Slack 当前以自然语言对话为主，不要求用户输入 `/issue`。
 - 普通进度默认只更新卡片，不额外刷屏。
 - 用户继续回复修改意见时，默认续接同一个 session / issue / PR。
 - 如果用户要求“我的 PR / 我的任务”，返回任务选择卡片，不自动创建新任务。
-- 已关闭或不可继续的任务不展示“继续修改”；后续如果支持 reopen，需要单独确认动作。
+- Slack Agent 可以通过 `toolCall` 请求受控查询或操作；Gateway 负责把结果限定在当前 Slack 用户和当前 session 权限内。
+- 正常的任务查询、任务切换、恢复已关闭 issue / PR 都优先由 Slack Agent 理解，再由 Gateway 执行 `toolCall`；Gateway 的规则分类只做 help / ping / status / 危险操作拦截和无 Agent 时的兜底。
+- 已关闭或不可继续的任务不展示“继续修改”；可恢复的 GitHub issue / PR 展示“重新打开”动作。
+- 用户明确说“重新打开 issue #数字 / PR #数字”时，Slack Agent 可以请求 `reopen_work_item`；Gateway 会重新校验该 issue / PR 是否属于当前 Slack 用户，并只恢复可恢复的关闭任务。
+- 用户点击“关闭会话”后，当前 SlackSession 会关闭并清理 running AgentRun；之后即使继续在同一个 Slack thread 里发消息，也不会复活旧会话，而是开启新的会话上下文或按用户显式选择继续旧任务。
 - 危险批量操作，例如“关闭我名下所有 issue / PR”，会被拒绝，不会改写成任务列表查询。
 
 Slack 用户隔离：
