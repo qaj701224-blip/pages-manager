@@ -54,6 +54,7 @@ export class GatewayStoreFixture {
     this.siteCheckRuns = new Map();
     this.slackNotifications = new Set();
     this.slackJobStatusMessages = new Map();
+    this.slackAgentReplyMessages = new Map();
     this.agentRunEvents = new Map();
     this.agentRunEventByDedupeKey = new Map();
     this.slackSessions = new Map();
@@ -529,6 +530,44 @@ export class GatewayStoreFixture {
       createdAt: existing?.createdAt || nowIso,
     };
     this.slackJobStatusMessages.set(`${jobId}:${scopeKey}`, message);
+    return message;
+  }
+
+  getSlackAgentReplyMessage(agentRunId) {
+    return this.slackAgentReplyMessages.get(agentRunId) || null;
+  }
+
+  getLatestSlackAgentReplyMessageForSession(slackSessionId) {
+    if (!slackSessionId) return null;
+    return (
+      [...this.slackAgentReplyMessages.values()]
+        .filter((message) => message.slackSessionId === slackSessionId)
+        .sort((left, right) => {
+          const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
+          const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+          return rightTime - leftTime;
+        })[0] || null
+    );
+  }
+
+  recordSlackAgentReplyMessage(agentRunId, input = {}, now = new Date()) {
+    const existing = this.getSlackAgentReplyMessage(agentRunId);
+    const nowIso = now.toISOString();
+    const message = {
+      ...(existing || {}),
+      id: existing?.id || makeId('slackreply'),
+      slackSessionId: input.slackSessionId ?? existing?.slackSessionId ?? null,
+      agentRunId,
+      channel: input.channel ?? existing?.channel ?? null,
+      threadTs: input.threadTs ?? existing?.threadTs ?? null,
+      messageTs: input.messageTs ?? input.ts ?? existing?.messageTs ?? null,
+      textSnapshot: input.textSnapshot ?? input.text ?? existing?.textSnapshot ?? '',
+      lastSequence: input.lastSequence ?? input.sequence ?? existing?.lastSequence ?? 0,
+      status: input.status ?? existing?.status ?? 'running',
+      updatedAt: nowIso,
+      createdAt: existing?.createdAt || nowIso,
+    };
+    this.slackAgentReplyMessages.set(agentRunId, message);
     return message;
   }
 

@@ -36,6 +36,7 @@ export class MySqlGatewayStore {
     this.siteCheckRuns = new Map();
     this.slackNotifications = new Set();
     this.slackJobStatusMessages = new Map();
+    this.slackAgentReplyMessages = new Map();
     this.agentRunEvents = new Map();
     this.agentRunEventByDedupeKey = new Map();
     this.slackSessions = new Map();
@@ -164,6 +165,11 @@ export class MySqlGatewayStore {
 
   cacheSlackJobStatusMessage(message) {
     if (message) this.slackJobStatusMessages.set(`${message.jobId}:${message.scopeKey || 'job'}`, message);
+    return message;
+  }
+
+  cacheSlackAgentReplyMessage(message) {
+    if (message) this.slackAgentReplyMessages.set(message.agentRunId, message);
     return message;
   }
 }

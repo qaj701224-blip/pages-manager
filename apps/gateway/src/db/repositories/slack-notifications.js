@@ -1,6 +1,12 @@
 import { makeId } from '@xd/workflow-core';
 
-import { rowToSlackJobStatusMessage, slackJobStatusMessageToRow, slackStatusScopeKey } from '../rows/slack-row.js';
+import {
+  rowToSlackAgentReplyMessage,
+  rowToSlackJobStatusMessage,
+  slackAgentReplyMessageToRow,
+  slackJobStatusMessageToRow,
+  slackStatusScopeKey,
+} from '../rows/slack-row.js';
 import { execute, upsertRow } from '../sql.js';
 
 export const slackNotificationRepositoryMethods = {
@@ -52,6 +58,47 @@ export const slackNotificationRepositoryMethods = {
     };
     this.cacheSlackJobStatusMessage(message);
     await upsertRow(this.pool, 'slack_job_status_messages', slackJobStatusMessageToRow(message), {
+      excludeUpdate: ['id', 'created_at'],
+    });
+    return message;
+  },
+
+  async getSlackAgentReplyMessage(agentRunId) {
+    const rows = await execute(this.pool, 'SELECT * FROM slack_agent_reply_messages WHERE agent_run_id = ? LIMIT 1', [
+      agentRunId,
+    ]);
+    return this.cacheSlackAgentReplyMessage(rowToSlackAgentReplyMessage(rows[0]));
+  },
+
+  async getLatestSlackAgentReplyMessageForSession(slackSessionId) {
+    if (!slackSessionId) return null;
+    const rows = await execute(
+      this.pool,
+      'SELECT * FROM slack_agent_reply_messages WHERE slack_session_id = ? ORDER BY updated_at DESC LIMIT 1',
+      [slackSessionId]
+    );
+    return this.cacheSlackAgentReplyMessage(rowToSlackAgentReplyMessage(rows[0]));
+  },
+
+  async recordSlackAgentReplyMessage(agentRunId, input = {}, now = new Date()) {
+    const existing = await this.getSlackAgentReplyMessage(agentRunId);
+    const nowIso = now.toISOString();
+    const message = {
+      ...(existing || {}),
+      id: existing?.id || input.id || makeId('slackreply'),
+      slackSessionId: input.slackSessionId ?? existing?.slackSessionId,
+      agentRunId,
+      channel: input.channel ?? existing?.channel ?? null,
+      threadTs: input.threadTs ?? existing?.threadTs ?? null,
+      messageTs: input.messageTs ?? input.ts ?? existing?.messageTs ?? null,
+      textSnapshot: input.textSnapshot ?? input.text ?? existing?.textSnapshot ?? '',
+      lastSequence: input.lastSequence ?? input.sequence ?? existing?.lastSequence ?? 0,
+      status: input.status ?? existing?.status ?? 'running',
+      updatedAt: nowIso,
+      createdAt: existing?.createdAt || nowIso,
+    };
+    this.cacheSlackAgentReplyMessage(message);
+    await upsertRow(this.pool, 'slack_agent_reply_messages', slackAgentReplyMessageToRow(message), {
       excludeUpdate: ['id', 'created_at'],
     });
     return message;
