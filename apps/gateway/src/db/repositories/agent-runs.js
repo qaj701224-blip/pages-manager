@@ -33,6 +33,30 @@ async function releaseSlackAgentLease(store, run) {
   }
 }
 
+async function clearSlackAgentLeaseForSession(store, slackSessionId, expectedRunId = null) {
+  if (!store.redis || !slackSessionId) return false;
+
+  const key = slackAgentLeaseKey(slackSessionId);
+  try {
+    if (expectedRunId) {
+      const current = await store.redis.get(key);
+      if (current !== expectedRunId) return false;
+    }
+    await store.redis.del(key);
+    return true;
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'slack_agent_lease_clear_failed',
+        slackSessionId,
+        error: error.message,
+      })
+    );
+    return false;
+  }
+}
+
 async function runningSlackAgentRun(store, slackSessionId, now) {
   const runs = await store.listAgentRunsForSlackSession(slackSessionId);
   for (const run of runs) store.cacheAgentRun(run);
@@ -139,6 +163,7 @@ export const agentRunRepositoryMethods = {
   async completeAgentRun(agentRunId, patch = {}, now = new Date()) {
     const existing = await this.getAgentRun(agentRunId);
     if (!existing) return null;
+    if (existing.status !== 'running') return existing;
     const updated = {
       ...existing,
       ...patch,
@@ -155,6 +180,7 @@ export const agentRunRepositoryMethods = {
   async failAgentRun(agentRunId, errorCode, errorMessage, now = new Date()) {
     const existing = await this.getAgentRun(agentRunId);
     if (!existing) return null;
+    if (existing.status !== 'running') return existing;
     const updated = {
       ...existing,
       status: 'failed',
@@ -167,6 +193,10 @@ export const agentRunRepositoryMethods = {
     await upsertRow(this.pool, 'agent_runs', agentRunToRow(updated), { excludeUpdate: ['id', 'created_at'] });
     await releaseSlackAgentLease(this, existing);
     return updated;
+  },
+
+  async clearSlackAgentLeaseForSession(slackSessionId) {
+    return await clearSlackAgentLeaseForSession(this, slackSessionId);
   },
 
   async getAgentRun(agentRunId) {
@@ -192,6 +222,10 @@ export const agentRunRepositoryMethods = {
         const agentRun = currentRunId
           ? await this.getAgentRun(currentRunId)
           : await runningSlackAgentRun(this, slackSessionId, now);
+        if (currentRunId && (!agentRun || agentRun.status !== 'running')) {
+          const cleared = await clearSlackAgentLeaseForSession(this, slackSessionId, currentRunId);
+          if (cleared) return await this.acquireSlackAgentLease(slackSessionId, config, now);
+        }
         return {
           acquired: false,
           agentRun:

@@ -1,3 +1,4 @@
+import { githubApiUrl, githubRequest, parseRepoFullName } from '@xd/git-client';
 import { jsonResponse } from '@xd/worker-kit';
 
 import {
@@ -162,6 +163,96 @@ async function cancelJobForClosedGithubIssue(store, job, issue = {}) {
     errorCode: 'github_issue_closed',
     errorMessage: message,
   });
+}
+
+function gatewayGithubConfig(env = {}) {
+  const token = env.GITHUB_STATUS_TOKEN || env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
+  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
+  if (!token || !repoFullName) return null;
+  return {
+    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
+    token,
+    repoFullName,
+  };
+}
+
+function githubIssueIsClosed(issue = {}) {
+  if (!issue) return false;
+  return issue.state === 'closed' || Boolean(issue.closed_at);
+}
+
+async function fetchGithubIssueForJob(env = {}, job = {}) {
+  const config = gatewayGithubConfig(env);
+  if (!config || !job?.issueNumber) return null;
+
+  const { owner, repo } = parseRepoFullName(config.repoFullName);
+  const fetchImpl = env.GITHUB_STATUS_FETCH || env.GITHUB_FETCH || fetch;
+  const result = await githubRequest(fetchImpl, config, {
+    method: 'GET',
+    url: githubApiUrl(config, `/repos/${owner}/${repo}/issues/${job.issueNumber}`),
+  });
+  return result.body || null;
+}
+
+async function reconcileClosedGithubIssueForJob(store, env, job, options = {}) {
+  if (!job?.id || !job.issueNumber || job.status === 'cancelled') return job;
+
+  let issue = null;
+  try {
+    issue = await fetchGithubIssueForJob(env, job);
+  } catch (err) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'github_issue_state_reconcile_failed',
+        jobId: job.id,
+        issueNumber: job.issueNumber,
+        error: err.message,
+      })
+    );
+    return job;
+  }
+
+  if (!githubIssueIsClosed(issue)) return job;
+
+  let updatedJob = job;
+  const nextIssueUrl = issueUrl(issue) || job.issueUrl || null;
+  if (nextIssueUrl !== job.issueUrl) {
+    updatedJob = await store.patchJob(job.id, { issueUrl: nextIssueUrl });
+  }
+  updatedJob = await cancelJobForClosedGithubIssue(store, updatedJob, issue);
+  await store.linkJobToSlackSession(updatedJob);
+
+  if (options.notifySlack) {
+    await notifySlackJobStatus(env, store, updatedJob, {
+      stage: 'cancelled',
+      cardTitle: 'Issue 已关闭',
+      text: 'GitHub issue 已关闭，当前发布任务已停止。',
+      statusText: ':white_check_mark: GitHub issue 已关闭，任务已停止。',
+      skipDuplicate: false,
+      dedupeKey: `github-issue-reconciled-closed:${updatedJob.id}:${updatedJob.issueNumber || 'unknown'}`,
+    });
+  }
+
+  return updatedJob;
+}
+
+async function listReconciledSlackWorkItemsForSession(store, body, env, options = {}) {
+  const result = await listSlackWorkItemsForSession(store, body, options);
+  const jobs = [];
+
+  for (const job of result.jobs || []) {
+    const reconciled = await reconcileClosedGithubIssueForJob(store, env, job);
+    if (options.includeInactive || isActionableSlackWorkItem(reconciled)) {
+      jobs.push(reconciled);
+    }
+  }
+
+  return {
+    ...result,
+    jobs,
+    total: jobs.length,
+  };
 }
 
 async function applyExecutorCallback(store, jobId, stageResult, status, patch) {
@@ -901,8 +992,18 @@ async function readSlackAgentNdjsonResponse(response, context = {}) {
   let lastUpdateAt = 0;
   let lastSequence = replyMessage?.lastSequence || 1;
 
+  const isCurrentRun = async () =>
+    await slackAgentRunStillRunning(context.store, {
+      id: turn.agentRunId,
+      slackSessionId: turn.slackSessionId,
+    });
+
   const maybeUpdateReply = async ({ force = false, status = 'running' } = {}) => {
     if (!replyMessage?.messageTs || !turn.visibleText) return null;
+    if (!(await isCurrentRun())) {
+      turn.cancelled = true;
+      return null;
+    }
     const now = Date.now();
     if (!force && updateIntervalMs > 0 && now - lastUpdateAt < updateIntervalMs) return null;
     const update = await updateSlackAgentReplyMessage(
@@ -936,6 +1037,10 @@ async function readSlackAgentNdjsonResponse(response, context = {}) {
     turn.slackSessionId = turn.slackSessionId || event.slackSessionId || null;
     lastSequence = Number(event.sequence) || lastSequence;
     events.push(event);
+    if (!(await isCurrentRun())) {
+      turn.cancelled = true;
+      return;
+    }
     await recordSlackAgentTurnEvent(context.store, turn, event, replyMessage, events.length);
 
     if (event.type === 'reply_delta' && event.text) {
@@ -980,6 +1085,7 @@ async function readSlackAgentNdjsonResponse(response, context = {}) {
   return {
     ok: !failed,
     ...(failed ? { error: failed.error || failed.text || 'Slack Agent turn failed' } : {}),
+    ...(turn.cancelled ? { cancelled: true } : {}),
     turn,
     analysis: turn.analysis,
   };
@@ -1028,8 +1134,23 @@ async function runSlackAgentTurnIfConfigured(body, intake, env, context = {}) {
             replyMessage,
             agentRunId: payload.agentRunId,
             slackSessionId: payload.slackSessionId,
-          })
+        })
         : await readSlackAgentResponse(response);
+
+    if (result?.cancelled || !(await slackAgentRunStillRunning(store, context.agentRun))) {
+      return {
+        cancelled: true,
+        analysis: null,
+        turn: result?.turn
+          ? { ...result.turn, cancelled: true, replyMessage }
+          : {
+              agentRunId: context.agentRun?.id || null,
+              slackSessionId: context.slackSession?.id || null,
+              cancelled: true,
+              replyMessage,
+            },
+      };
+    }
 
     if (!response.ok || result?.ok === false) {
       const error = new Error(result?.error || response.statusText || `HTTP ${response.status}`);
@@ -2374,7 +2495,10 @@ async function processSlackEventBody(body, env, options = {}) {
   const agentRun = lease?.agentRun || null;
 
   if (intake.action === 'list_work_items') {
-    const result = await listSlackWorkItemsForSession(store, body, { limit: 5, includeInactive: intake.includeInactive });
+    const result = await listReconciledSlackWorkItemsForSession(store, body, env, {
+      limit: 5,
+      includeInactive: intake.includeInactive,
+    });
     await completeSlackAgentRun(store, agentRun, {
       report: { action: intake.action, accepted: false, total: result.total },
     });
@@ -2399,7 +2523,8 @@ async function processSlackEventBody(body, env, options = {}) {
 
   if (intake.action === 'switch_work_item') {
     const prNumber = intake.prNumber || parseSlackPrNumber(intake.text);
-    const job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
+    let job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
+    job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
     if (!job) {
       await completeSlackAgentRun(store, agentRun, {
         report: { action: intake.action, accepted: false, prNumber: prNumber || null },
@@ -2456,7 +2581,7 @@ async function processSlackEventBody(body, env, options = {}) {
   }
 
   if (intake.action === 'status') {
-    const statusJob = intake.jobId
+    let statusJob = intake.jobId
       ? await store.getJob(intake.jobId)
       : slackSession
         ? await activeJobForSlackSession(store, slackSession)
@@ -2474,6 +2599,7 @@ async function processSlackEventBody(body, env, options = {}) {
         ...(agentRun ? { agentRunId: agentRun.id } : {}),
       });
     }
+    statusJob = await reconcileClosedGithubIssueForJob(store, env, statusJob, { notifySlack: true });
 
     await completeSlackAgentRun(store, agentRun, {
       report: { action: intake.action, jobId: intake.jobId || null },
@@ -2511,6 +2637,17 @@ async function processSlackEventBody(body, env, options = {}) {
         issueLinks: await store.findIssueLinksForSlackSession(slackSession.id),
         agentRun,
       });
+      if (slackAgentTurnResult.cancelled) {
+        return respond({
+          ok: true,
+          action: 'slack_agent_turn_cancelled',
+          accepted: false,
+          reply: false,
+          noReply: true,
+          slackSessionId: slackSession.id,
+          agentRunId: agentRun?.id,
+        });
+      }
       slackAgentAnalysis = slackAgentTurnResult.analysis || null;
       activeSlackAgentTurn = slackAgentTurnResult.turn || null;
 
@@ -2531,6 +2668,7 @@ async function processSlackEventBody(body, env, options = {}) {
         return respond(
           handleSlackAgentStatusQuery({
             store,
+            env,
             intake,
             slackSession,
             sessionMemory,
@@ -2557,7 +2695,10 @@ async function processSlackEventBody(body, env, options = {}) {
       }
 
       if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis?.intent)) {
-        const result = await listSlackWorkItemsForSession(store, body, { limit: 5, includeInactive: intake.includeInactive });
+        const result = await listReconciledSlackWorkItemsForSession(store, body, env, {
+          limit: 5,
+          includeInactive: intake.includeInactive,
+        });
         await completeSlackAgentRun(store, agentRun, {
           provider: slackAgentAnalysis?.modelProvider || 'unknown',
           model: slackAgentAnalysis?.modelName || null,
@@ -2578,7 +2719,8 @@ async function processSlackEventBody(body, env, options = {}) {
 
       if (SWITCH_WORK_ITEM_INTENTS.has(slackAgentAnalysis?.intent)) {
         const prNumber = parseSlackPrNumber(intake.text || slackAgentAnalysis.summary || '');
-        const job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
+        let job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
+        job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
         if (!job) {
           await completeSlackAgentRun(store, agentRun, {
             provider: slackAgentAnalysis?.modelProvider || 'unknown',
@@ -2809,6 +2951,7 @@ async function processSlackEventBody(body, env, options = {}) {
 }
 
 async function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+  await failRunningSlackAgentRunsForClosedSession(store, slackSession.id, { excludeAgentRunId: agentRun?.id });
   const closedSession = await store.closeSlackSession(slackSession.id);
   await store.updateSessionMemory(slackSession.id, {
     summary: redactSecretLikeText(sessionMemory.summary || intake.text),
@@ -2834,8 +2977,10 @@ async function handleCloseSlackSession({ store, intake, slackSession, sessionMem
   };
 }
 
-async function handleSlackAgentStatusQuery({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
-  const job = await activeJobForSlackSession(store, slackSession);
+async function handleSlackAgentStatusQuery({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+  const job = await reconcileClosedGithubIssueForJob(store, env, await activeJobForSlackSession(store, slackSession), {
+    notifySlack: true,
+  });
   const replyText = job ? slackStatusReply(job.id, job) : '我还没有在当前会话里找到发布任务。';
 
   await store.updateSessionMemory(slackSession.id, {
@@ -2924,7 +3069,9 @@ async function handleSlackAgentNonPublishingTurn({
 }
 
 async function handleSlackFollowup({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
-  const job = await activeJobForSlackSession(store, slackSession);
+  const job = await reconcileClosedGithubIssueForJob(store, env, await activeJobForSlackSession(store, slackSession), {
+    notifySlack: true,
+  });
   const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
   const feedback = redactSecretLikeText(redactedSlackAgentAnalysis?.summary || intake.text);
 
@@ -3075,6 +3222,45 @@ async function handleSlackFollowup({ store, env, intake, slackSession, sessionMe
 async function completeSlackAgentRun(store, agentRun, patch = {}) {
   if (!agentRun) return null;
   return await store.completeAgentRun(agentRun.id, patch);
+}
+
+async function slackAgentRunStillRunning(store, run = {}) {
+  const agentRunId = typeof run === 'string' ? run : run?.id || run?.agentRunId || null;
+  if (!agentRunId) return true;
+  if (!store?.getAgentRun && !store?.listAgentRunsForSlackSession) return true;
+
+  let current = store.getAgentRun ? await store.getAgentRun(agentRunId) : null;
+  if (!current && store.listAgentRunsForSlackSession && run?.slackSessionId) {
+    const runs = await store.listAgentRunsForSlackSession(run.slackSessionId);
+    current = runs.find((item) => item.id === agentRunId) || null;
+  }
+  return current ? current.status === 'running' : false;
+}
+
+async function failRunningSlackAgentRunsForClosedSession(store, slackSessionId, options = {}) {
+  if (!slackSessionId || !store?.listAgentRunsForSlackSession || !store?.failAgentRun) return [];
+
+  const excludeAgentRunId = options.excludeAgentRunId || null;
+  const runs = await store.listAgentRunsForSlackSession(slackSessionId);
+  const failed = [];
+  for (const run of runs) {
+    if (
+      run.agentKind !== 'slack_agent' ||
+      run.status !== 'running' ||
+      (excludeAgentRunId && run.id === excludeAgentRunId)
+    ) {
+      continue;
+    }
+
+    const failedRun = await store.failAgentRun(
+      run.id,
+      'slack_session_closed',
+      'Slack session was closed before the agent run completed.'
+    );
+    if (failedRun) failed.push(failedRun);
+  }
+  await store.clearSlackAgentLeaseForSession?.(slackSessionId);
+  return failed;
 }
 
 export async function handleHealth(_request, env = {}) {
@@ -3273,13 +3459,14 @@ export async function handleSlackInteractions(request, env) {
       });
     }
 
-    const job = value.jobId ? await store.getJob(value.jobId) : null;
+    let job = value.jobId ? await store.getJob(value.jobId) : null;
     if (!job || !slackJobVisibleToActor(job, body)) {
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '这个发布任务不存在，或不属于当前 Slack 用户。',
       });
     }
+    job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
     if (!isActionableSlackWorkItem(job)) {
       return slackAckResponse({
         response_type: 'ephemeral',
@@ -3312,6 +3499,7 @@ export async function handleSlackInteractions(request, env) {
       });
     }
 
+    await failRunningSlackAgentRunsForClosedSession(store, session.id);
     await store.closeSlackSession(session.id);
     await postSlackInteractionThreadReply(env, body, session, '已关闭当前会话。继续发新需求会开启新任务。');
     return slackAckResponse({

@@ -3,6 +3,35 @@ import { makeId } from '@xd/workflow-core';
 import { issueLinkToRow, memoryToRow, rowToIssueLink, rowToMemory, rowToSession, sessionToRow } from '../rows/slack-row.js';
 import { execute, upsertRow } from '../sql.js';
 
+const SLACK_ACTIVE_JOB_STATUSES = new Set([
+  'received',
+  'summarizing',
+  'issue_creating',
+  'issue_created',
+  'indexing',
+  'generating_page',
+  'patch_generated',
+  'branch_committed',
+  'pr_created',
+  'reviewing',
+  'changes_requested',
+  'fixing',
+  'previewing',
+  'preview_deployed',
+]);
+
+function hasOwn(input, key) {
+  return Object.hasOwn(input, key);
+}
+
+function fieldOrExisting(input, existing, key) {
+  return hasOwn(input, key) ? input[key] : (existing?.[key] ?? null);
+}
+
+function jobKeepsSlackSessionActive(job = {}) {
+  return SLACK_ACTIVE_JOB_STATUSES.has(job.status);
+}
+
 function createDefaultSessionMemory(sessionId, now = new Date()) {
   const nowIso = now.toISOString();
   return {
@@ -44,12 +73,12 @@ export const slackSessionRepositoryMethods = {
       dmChannelId: input.dmChannelId ?? existing?.dmChannelId ?? null,
       surfaceContext: input.surfaceContext || existing?.surfaceContext || {},
       primarySlackUserId: input.primarySlackUserId,
-      ownerScopeId: input.ownerScopeId ?? existing?.ownerScopeId ?? null,
-      activeJobId: input.activeJobId ?? existing?.activeJobId ?? null,
-      activeIssueNumber: input.activeIssueNumber ?? existing?.activeIssueNumber ?? null,
-      activePrNumber: input.activePrNumber ?? existing?.activePrNumber ?? null,
-      activePreviewUrl: input.activePreviewUrl ?? existing?.activePreviewUrl ?? null,
-      activeContextExpiresAt: input.activeContextExpiresAt ?? existing?.activeContextExpiresAt ?? null,
+      ownerScopeId: fieldOrExisting(input, existing, 'ownerScopeId'),
+      activeJobId: fieldOrExisting(input, existing, 'activeJobId'),
+      activeIssueNumber: fieldOrExisting(input, existing, 'activeIssueNumber'),
+      activePrNumber: fieldOrExisting(input, existing, 'activePrNumber'),
+      activePreviewUrl: fieldOrExisting(input, existing, 'activePreviewUrl'),
+      activeContextExpiresAt: fieldOrExisting(input, existing, 'activeContextExpiresAt'),
       status: input.status || existing?.status || 'active',
       lastIntent: input.lastIntent || existing?.lastIntent || null,
       lastActiveAt: input.lastActiveAt || nowIso,
@@ -155,15 +184,17 @@ export const slackSessionRepositoryMethods = {
 
     const currentSession = session || (await this.getSlackSession(slackSessionId));
     if (currentSession) {
+      const active = jobKeepsSlackSessionActive(job);
       await this.upsertSlackSession(
         {
           ...currentSession,
           status: 'active',
           closedAt: null,
-          activeJobId: job.id,
-          activeIssueNumber: link.issueNumber,
-          activePrNumber: link.prNumber,
-          activePreviewUrl: link.previewUrl,
+          activeJobId: active ? job.id : null,
+          activeIssueNumber: active ? link.issueNumber : null,
+          activePrNumber: active ? link.prNumber : null,
+          activePreviewUrl: active ? link.previewUrl : null,
+          activeContextExpiresAt: active ? currentSession.activeContextExpiresAt : null,
         },
         now
       );
