@@ -146,22 +146,21 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /service = "pages-auth-staging"/);
 });
 
-test('pages-api config accepts explicit WFP compatibility date', () => {
+test('pages-api config keeps committed WFP compatibility date', () => {
   const config = renderPagesApi('production', {
     ...baseEnv,
     WFP_COMPATIBILITY_DATE: '2026-07-01',
   });
 
-  assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-07-01"/);
+  assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
+  assert.doesNotMatch(config, /2026-07-01/);
 });
 
-test('pages-api config requires resource ids and access key pepper registry', () => {
+test('pages-api config requires resource ids and execution mode', () => {
   for (const name of [
     'CLOUDFLARE_ACCOUNT_ID',
     'D1_DATABASE_ID',
     'ROUTE_SNAPSHOTS_KV_ID',
-    'ACCESS_KEY_ACTIVE_PEPPER_ID',
-    'ACCESS_KEY_PEPPERS',
     'PAGES_EXECUTION_MODE',
   ]) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));
@@ -222,7 +221,7 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.match(config, /service = "pages-api-staging"/);
 });
 
-test('pages-auth config supports explicit ttl and SSO scope overrides', () => {
+test('pages-auth config keeps committed ttl and SSO scope defaults', () => {
   const config = renderPagesAuth('production', {
     ...baseEnv,
     AUTH_SESSION_IDLE_TTL_SECONDS: '2592000',
@@ -230,15 +229,14 @@ test('pages-auth config supports explicit ttl and SSO scope overrides', () => {
     SSO_ALLOWED_USER_SCOPE: 'company-all',
   });
 
-  assert.match(config, /AUTH_SESSION_IDLE_TTL_SECONDS = "2592000"/);
-  assert.match(config, /SITE_SESSION_IDLE_TTL_SECONDS = "2592000"/);
-  assert.match(config, /SSO_ALLOWED_USER_SCOPE = "company-all"/);
+  assert.match(config, /AUTH_SESSION_IDLE_TTL_SECONDS = "1209600"/);
+  assert.match(config, /SITE_SESSION_IDLE_TTL_SECONDS = "604800"/);
+  assert.match(config, /SSO_ALLOWED_USER_SCOPE = "xindong"/);
+  assert.doesNotMatch(config, /company-all/);
 });
 
-test('pages-auth config requires session signing registry and SSO config', () => {
+test('pages-auth config requires SSO config', () => {
   for (const name of [
-    'PAGES_SESSION_JWT_ACTIVE_KID',
-    'PAGES_SESSION_JWT_KEYS',
     'SSO_AUTHORIZATION_URL',
     'SSO_TOKEN_URL',
     'SSO_PROFILE_URL',
@@ -271,26 +269,6 @@ test('pages-auth config requires production SSO URLs to use HTTPS', () => {
   assert.match(`${result.stderr}${result.stdout}`, /SSO_TOKEN_URL must be an HTTPS URL/);
 });
 
-test('pages-auth config rejects invalid TTL overrides', () => {
-  const result = runRenderer(['apps/pages-auth', 'production'], {
-    ...baseEnv,
-    AUTH_SESSION_IDLE_TTL_SECONDS: '0',
-  });
-
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /AUTH_SESSION_IDLE_TTL_SECONDS/);
-});
-
-test('pages-api config rejects invalid WFP compatibility date', () => {
-  const result = runRenderer(['apps/pages-api', 'production'], {
-    ...baseEnv,
-    WFP_COMPATIBILITY_DATE: 'June 15 2026',
-  });
-
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /WFP_COMPATIBILITY_DATE/);
-});
-
 test('pages-api config rejects invalid execution mode', () => {
   const result = runRenderer(['apps/pages-api', 'production'], {
     ...baseEnv,
@@ -299,44 +277,6 @@ test('pages-api config rejects invalid execution mode', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /PAGES_EXECUTION_MODE/);
-});
-
-test('pages-api config rejects unsafe access key pepper registry', () => {
-  const unsafeId = runRenderer(['apps/pages-api', 'production'], {
-    ...baseEnv,
-    ACCESS_KEY_ACTIVE_PEPPER_ID: 'bad:id',
-  });
-  const unsafeSecretName = runRenderer(['apps/pages-api', 'production'], {
-    ...baseEnv,
-    ACCESS_KEY_PEPPERS: 'pepper_2026_06:REAL_SECRET_VALUE',
-  });
-
-  assert.notEqual(unsafeId.status, 0);
-  assert.match(`${unsafeId.stderr}${unsafeId.stdout}`, /ACCESS_KEY_ACTIVE_PEPPER_ID/);
-  assert.notEqual(unsafeSecretName.status, 0);
-  assert.match(`${unsafeSecretName.stderr}${unsafeSecretName.stdout}`, /ACCESS_KEY_PEPPERS/);
-});
-
-test('pages v2 renderer rejects unsafe JWT key registries', () => {
-  const badSessionSecret = runRenderer(['apps/pages-auth', 'production'], {
-    ...baseEnv,
-    PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:REAL_SECRET_VALUE',
-  });
-  const badCapabilityAlg = runRenderer(['apps/pages-router', 'production'], {
-    ...baseEnv,
-    PAGES_CAP_JWT_KEYS: 'pages-cap-2026-06:RS256:PAGES_CAP_JWT_SECRET_202606',
-  });
-  const missingActiveKid = runRenderer(['apps/kv-gateway', 'production'], {
-    ...baseEnv,
-    PAGES_CAP_JWT_ACTIVE_KID: 'pages-cap-missing',
-  });
-
-  assert.notEqual(badSessionSecret.status, 0);
-  assert.match(`${badSessionSecret.stderr}${badSessionSecret.stdout}`, /PAGES_SESSION_JWT_KEYS/);
-  assert.notEqual(badCapabilityAlg.status, 0);
-  assert.match(`${badCapabilityAlg.stderr}${badCapabilityAlg.stdout}`, /PAGES_CAP_JWT_KEYS/);
-  assert.notEqual(missingActiveKid.status, 0);
-  assert.match(`${missingActiveKid.stderr}${missingActiveKid.stdout}`, /PAGES_CAP_JWT_ACTIVE_KID/);
 });
 
 test('production pages-router config renders explicit production fast-path settings only', () => {
@@ -437,7 +377,7 @@ test('pages-router config requires slot count in normal worker slot mode', () =>
   assert.match(`${result.stderr}${result.stdout}`, /PAGES_NORMAL_WORKER_SLOT_COUNT/);
 });
 
-test('pages-router config supports explicit cache and JWT ttl overrides', () => {
+test('pages-router config keeps committed cache and JWT ttl defaults', () => {
   const config = renderPagesRouter('production', {
     ...baseEnv,
     ROUTE_CACHE_TTL_SECONDS: '5',
@@ -445,19 +385,15 @@ test('pages-router config supports explicit cache and JWT ttl overrides', () => 
     INTERNAL_WORKER_JWT_TTL_SECONDS: '30',
   });
 
-  assert.match(config, /ROUTE_CACHE_TTL_SECONDS = "5"/);
-  assert.match(config, /SITE_SESSION_FRESHNESS_TTL_SECONDS = "300"/);
-  assert.match(config, /INTERNAL_WORKER_JWT_TTL_SECONDS = "30"/);
+  assert.match(config, /ROUTE_CACHE_TTL_SECONDS = "10"/);
+  assert.match(config, /SITE_SESSION_FRESHNESS_TTL_SECONDS = "900"/);
+  assert.match(config, /INTERNAL_WORKER_JWT_TTL_SECONDS = "60"/);
 });
 
-test('pages-router config requires allowlist, route snapshot store, and signing registry', () => {
+test('pages-router config requires allowlist, route snapshot store, and execution mode', () => {
   for (const name of [
     'ROUTER_IP_ALLOWLIST_CIDRS',
     'ROUTE_SNAPSHOTS_KV_ID',
-    'PAGES_SESSION_JWT_ACTIVE_KID',
-    'PAGES_SESSION_JWT_KEYS',
-    'PAGES_CAP_JWT_ACTIVE_KID',
-    'PAGES_CAP_JWT_KEYS',
     'PAGES_EXECUTION_MODE',
   ]) {
     const result = runRenderer(['apps/pages-router', 'production'], withoutEnv(name));
@@ -492,8 +428,8 @@ test('staging kv-gateway config renders explicit staging site data settings', ()
   assert.doesNotMatch(config, /name = "pages-kv-gateway"/);
 });
 
-test('kv-gateway config requires site data KV id and capability registry', () => {
-  for (const name of ['SITE_DATA_KV_ID', 'PAGES_CAP_JWT_ACTIVE_KID', 'PAGES_CAP_JWT_KEYS']) {
+test('kv-gateway config requires site data KV id', () => {
+  for (const name of ['SITE_DATA_KV_ID']) {
     const result = runRenderer(['apps/kv-gateway', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);

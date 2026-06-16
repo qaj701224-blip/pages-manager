@@ -436,11 +436,9 @@ SSO_CLIENT_SECRET
 SSO_AUTHORIZATION_URL
 SSO_TOKEN_URL
 SSO_PROFILE_URL
-SSO_REDIRECT_URI
-SSO_ALLOWED_USER_SCOPE
 ```
 
-`SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
+`SSO_REDIRECT_URI` 和 `SSO_ALLOWED_USER_SCOPE` 是 Git 可审查的环境常量，当前写在 v2 auth wrangler template 中；`SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
 
 生产和 staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 必须使用 HTTPS；只有 `PAGES_ENV=local` 允许 HTTP 本地 SSO mock。OAuth code 换 token 使用 `POST application/x-www-form-urlencoded`，`client_secret` 放请求 body 或后续按公司 SSO 要求改为 Basic auth；profile 请求使用 `Authorization: Bearer <access_token>`。`client_secret`、`access_token`、OAuth code 都不能出现在 URL query、错误响应、日志或 Referer 中。
 
@@ -478,9 +476,9 @@ secrets:
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`.pages.json` 或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
-`WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 推荐显式配置，保证 Worker 模块语义可复现；未配置时实现会使用当前日期。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
+`WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
-`ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`.pages.json` 或文档示例。
+`ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。registry 只包含 secret env 名，可以写入 wrangler template 和 workflow 接受 Git 审查；真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`.pages.json` 或文档示例。
 
 `pages-api` 不能持有 `auth_session`、`site_session` 或 `internal_worker_jwt` 的 signing secret。控制面如需校验用户态 token，只能使用 verify-only JWKS / public key，或通过 `PAGES_AUTH` service binding 完成一次性 code / session 校验；不能在 API Worker 中签发子站 session 或 router internal JWT。
 
@@ -525,6 +523,8 @@ vars:
   PAGES_SESSION_JWT_ISSUER
   PAGES_SESSION_JWT_ACTIVE_KID
   PAGES_SESSION_JWT_KEYS
+  PAGES_CAP_JWT_ACTIVE_KID
+  PAGES_CAP_JWT_KEYS
   SITE_SESSION_IDLE_TTL_SECONDS
   SITE_SESSION_FRESHNESS_TTL_SECONDS
   INTERNAL_WORKER_JWT_TTL_SECONDS
@@ -560,7 +560,7 @@ secrets:
   PAGES_CAP_JWT_SECRET_*
 ```
 
-沿用现有 capability key registry 思路，但 production/staging 必须使用不同 key registry 和不同 secret。
+沿用现有 capability key registry 思路；registry 名称可以随 Git 固定，但 production/staging 的真实 `PAGES_CAP_JWT_SECRET_*` 值必须来自不同 GitHub Environment Secret。
 
 ### GitHub Actions 配置
 
@@ -571,88 +571,95 @@ staging
 production
 ```
 
-`vars` 只放非敏感配置：
+配置项按三层处理：
+
+1. 可随 Git 提交、可审查的架构常量写在 v2 `wrangler.*.template.toml` 或 v2 deploy workflow 中。
+2. 不可随 public Git 提交、但安全要求正常的环境配置放 GitHub Environment `vars`。
+3. token、client secret、签名密钥、pepper 等高敏配置放 GitHub Environment `secrets`。
+
+当前随 Git 提交的非敏感常量包括：
 
 ```text
 PAGES_ENV
-PAGES_EXECUTION_MODE
 PUBLIC_API_BASE
 PUBLIC_AUTH_BASE
 PUBLIC_SITE_SUFFIX
-ROUTER_IP_ALLOWLIST_CIDRS
-PAGES_SESSION_JWT_ISSUER
-PAGES_SESSION_JWT_ACTIVE_KID
-PAGES_SESSION_JWT_KEYS
-SITE_SESSION_FRESHNESS_TTL_SECONDS
-PAGES_CAP_JWT_ACTIVE_KID
-PAGES_CAP_JWT_KEYS
-SSO_AUTHORIZATION_URL
-SSO_TOKEN_URL
-SSO_PROFILE_URL
 SSO_REDIRECT_URI
 WFP_DISPATCH_NAMESPACE
 WFP_COMPATIBILITY_DATE
 ACCESS_KEY_ACTIVE_PEPPER_ID
 ACCESS_KEY_PEPPERS
+PAGES_SESSION_JWT_ISSUER
+PAGES_SESSION_JWT_ACTIVE_KID
+PAGES_SESSION_JWT_KEYS
+PAGES_CAP_JWT_ACTIVE_KID
+PAGES_CAP_JWT_KEYS
+OAUTH_STATE_TTL_SECONDS
+CLI_LOGIN_TTL_SECONDS
+AUTH_SESSION_IDLE_TTL_SECONDS
+AUTH_SESSION_ABSOLUTE_TTL_SECONDS
+SITE_SESSION_IDLE_TTL_SECONDS
+SITE_SESSION_ABSOLUTE_TTL_SECONDS
+SITE_SESSION_FRESHNESS_TTL_SECONDS
+ROUTE_CACHE_TTL_SECONDS
+INTERNAL_WORKER_JWT_TTL_SECONDS
+SSO_ALLOWED_USER_SCOPE
 ```
 
 `CF_API_BASE_URL` 只用于本地测试或特殊网络环境；生产和 staging 默认不配置，使用 Cloudflare 官方 API base。若生产或 staging 因代理需求必须覆盖，也只能覆盖到 `https://api.cloudflare.com/client/v4` 这一官方 host，不能指向任意第三方域名。
 
-`secrets` 放所有敏感配置和真实资源 id：
+GitHub Environment `vars` 放非敏感但不可随 public Git 提交的环境配置：
 
 ```text
 CLOUDFLARE_ACCOUNT_ID
-CLOUDFLARE_API_TOKEN
-CF_API_TOKEN
 PAGES_V2_D1_DATABASE_ID
 PAGES_V2_ROUTE_SNAPSHOTS_KV_ID
 PAGES_V2_SITE_DATA_KV_ID
+PAGES_EXECUTION_MODE
+PAGES_NORMAL_WORKER_SLOT_COUNT
+ROUTER_IP_ALLOWLIST_CIDRS
+SSO_AUTHORIZATION_URL
+SSO_TOKEN_URL
+SSO_PROFILE_URL
+SSO_CLIENT_ID
+```
+
+如果后续 workflow 负责自动创建 Cloudflare route / custom domain，再单独引入 `CLOUDFLARE_ZONE_ID` 或 zone 相关 secret；当前 v2 deploy workflow 只部署 Worker、渲染 wrangler 配置并注入 runtime secrets，不需要 zone id。
+
+GitHub Environment `secrets` 只放高敏配置：
+
+```text
+CLOUDFLARE_API_TOKEN
+CF_API_TOKEN
 SSO_CLIENT_SECRET
 PAGES_SESSION_JWT_SECRET_*
 PAGES_CAP_JWT_SECRET_*
 ACCESS_KEY_PEPPER_*
 ```
 
-如果后续 workflow 负责自动创建 Cloudflare route / custom domain，再单独引入 `CLOUDFLARE_ZONE_ID` 或 zone 相关 secret；当前 v2 deploy workflow 只部署 Worker、渲染 wrangler 配置并注入 runtime secrets，不需要 zone id。
-
-如果公司规范认为 Cloudflare account id、zone id、D1/KV id 或 dispatch namespace 非 secret，也仍建议在本 public repo 标准下至少不要把真实资源 id 写进代码、文档和测试快照。`WFP_DISPATCH_NAMESPACE` 名称本身不是凭证，但它是强环境边界，必须按 environment 固定和校验。
+Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars` 读取；它们仍然不应写进 public repo。`WFP_DISPATCH_NAMESPACE` 名称本身不是凭证，但它是强环境边界，必须按 environment 固定和校验。
 
 当前 `deploy-pages-v2.yml` / `deploy-pages-v2-staging.yml` 的 GitHub Environment 配置应按 workflow 实际名称填写：
 
 | 名称                                  | 类型    | 使用方                         | 说明 |
 | ------------------------------------- | ------- | ------------------------------ | ---- |
-| `CLOUDFLARE_ACCOUNT_ID`               | secret  | v2 系统 Worker wrangler 渲染和部署 | 用于 `account_id` 与 Wrangler 部署 env；workflow 会把同一个值作为 runtime secret `CF_ACCOUNT_ID` 注入 `pages-api` |
-| `CLOUDFLARE_API_TOKEN`                | secret  | Wrangler 部署                  | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime |
-| `CF_API_TOKEN`                        | secret  | `pages-api` runtime            | 通过 `scripts/put-pages-v2-secrets.sh apps/pages-api` 注入，供 Cloudflare Workers / WFP API 调用 |
-| `PAGES_V2_D1_DATABASE_ID`             | secret  | `pages-api` wrangler 渲染      | 当前环境的 D1 metadata database id |
-| `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | secret  | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
-| `PAGES_V2_SITE_DATA_KV_ID`            | secret  | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
-| `SSO_CLIENT_SECRET`                   | secret  | `pages-auth` runtime           | OAuth token exchange secret，只注入 auth Worker |
-| `ACCESS_KEY_PEPPER_*`                 | secret  | `pages-api` runtime            | 必须覆盖 `ACCESS_KEY_PEPPERS` registry 中每个 `secretEnvName` |
-| `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
-| `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
-| `ACCESS_KEY_ACTIVE_PEPPER_ID`         | var     | `pages-api` wrangler 渲染和 secret dry-run | active id 必须存在于 `ACCESS_KEY_PEPPERS` |
-| `ACCESS_KEY_PEPPERS`                  | var     | `pages-api` wrangler 渲染和 secret dry-run | 格式 `pepperId:ACCESS_KEY_PEPPER_*`，不含真实 pepper |
-| `PAGES_SESSION_JWT_ACTIVE_KID`        | var     | `pages-auth` / `pages-router` wrangler 渲染和 secret dry-run | active kid 必须存在于 `PAGES_SESSION_JWT_KEYS` |
-| `PAGES_SESSION_JWT_KEYS`              | var     | `pages-auth` / `pages-router` wrangler 渲染和 secret dry-run | 格式 `kid:HS256:PAGES_SESSION_JWT_SECRET_*`，不含真实 signing secret |
+| `CLOUDFLARE_ACCOUNT_ID`               | var     | v2 系统 Worker wrangler 渲染和部署 | 用于 `account_id` 与 Wrangler 部署 env；workflow 会把同一个值作为 runtime secret `CF_ACCOUNT_ID` 注入 `pages-api` |
+| `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` wrangler 渲染      | 当前环境的 D1 metadata database id |
+| `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | var     | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
+| `PAGES_V2_SITE_DATA_KV_ID`            | var     | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
 | `PAGES_EXECUTION_MODE`                | var     | `pages-api` / `pages-router` wrangler 渲染 | 内部执行模式；WFP 未开通时为 `normal-worker-slot`，WFP 验证后改为 `wfp` |
 | `PAGES_NORMAL_WORKER_SLOT_COUNT`      | var     | `pages-router` wrangler 渲染   | `normal-worker-slot` 时必填，生成 `SITE_SLOT_001..N` service binding；`wfp` 时可省略 |
 | `SSO_AUTHORIZATION_URL`               | var     | `pages-auth` wrangler 渲染     | production / staging 必须是 HTTPS |
 | `SSO_TOKEN_URL`                       | var     | `pages-auth` wrangler 渲染     | production / staging 必须是 HTTPS |
 | `SSO_PROFILE_URL`                     | var     | `pages-auth` wrangler 渲染     | production / staging 必须是 HTTPS |
 | `SSO_CLIENT_ID`                       | var     | `pages-auth` wrangler 渲染     | 如公司规范认为敏感，可改为 secret 后同步 workflow/template |
-| `SSO_ALLOWED_USER_SCOPE`              | var     | `pages-auth` wrangler 渲染     | 可省略，默认 `xindong` |
 | `ROUTER_IP_ALLOWLIST_CIDRS`           | var     | `pages-router` wrangler 渲染   | 必填，router 缺失或无效时 fail closed |
-| `WFP_COMPATIBILITY_DATE`              | var     | `pages-api` wrangler 渲染      | 可省略，默认 `2026-06-15` |
-| `OAUTH_STATE_TTL_SECONDS`             | var     | `pages-auth` wrangler 渲染     | 可省略，使用安全默认值 |
-| `CLI_LOGIN_TTL_SECONDS`               | var     | `pages-auth` wrangler 渲染     | 可省略，使用安全默认值 |
-| `AUTH_SESSION_IDLE_TTL_SECONDS`       | var     | `pages-auth` wrangler 渲染     | 可省略，使用安全默认值 |
-| `AUTH_SESSION_ABSOLUTE_TTL_SECONDS`   | var     | `pages-auth` wrangler 渲染     | 可省略，使用安全默认值 |
-| `SITE_SESSION_IDLE_TTL_SECONDS`       | var     | `pages-auth` / `pages-router` wrangler 渲染 | 可省略，使用安全默认值 |
-| `SITE_SESSION_ABSOLUTE_TTL_SECONDS`   | var     | `pages-auth` wrangler 渲染     | 可省略，使用安全默认值 |
-| `SITE_SESSION_FRESHNESS_TTL_SECONDS`  | var     | `pages-router` wrangler 渲染   | 可省略，默认和最大值都按 15 分钟处理 |
-| `ROUTE_CACHE_TTL_SECONDS`             | var     | `pages-router` wrangler 渲染   | 可省略，使用安全默认值 |
-| `INTERNAL_WORKER_JWT_TTL_SECONDS`     | var     | `pages-router` wrangler 渲染   | 可省略，渲染器限制在短 TTL 范围 |
+| `CLOUDFLARE_API_TOKEN`                | secret  | Wrangler 部署                  | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime |
+| `CF_API_TOKEN`                        | secret  | `pages-api` runtime            | 通过 `scripts/put-pages-v2-secrets.sh apps/pages-api` 注入，供 Cloudflare Workers / WFP API 调用 |
+| `SSO_CLIENT_SECRET`                   | secret  | `pages-auth` runtime           | OAuth token exchange secret，只注入 auth Worker |
+| `ACCESS_KEY_PEPPER_*`                 | secret  | `pages-api` runtime            | 必须覆盖 `ACCESS_KEY_PEPPERS` registry 中每个 `secretEnvName` |
+| `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
+| `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
 
 v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。
 

@@ -201,11 +201,36 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/kv-gateway ${environment}`),
       `${name} renders kv-gateway ${environment} template`,
     );
-    assert.match(workflow, /SITE_DATA_KV_ID: \$\{\{ secrets\.PAGES_V2_SITE_DATA_KV_ID \}\}/);
+    assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ vars\.CLOUDFLARE_ACCOUNT_ID \}\}/);
+    assert.match(workflow, /D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}/);
+    assert.match(workflow, /ROUTE_SNAPSHOTS_KV_ID: \$\{\{ vars\.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID \}\}/);
+    assert.match(workflow, /SITE_DATA_KV_ID: \$\{\{ vars\.PAGES_V2_SITE_DATA_KV_ID \}\}/);
+    assert.doesNotMatch(
+      workflow,
+      /secrets\.(?:CLOUDFLARE_ACCOUNT_ID|PAGES_V2_D1_DATABASE_ID|PAGES_V2_ROUTE_SNAPSHOTS_KV_ID|PAGES_V2_SITE_DATA_KV_ID)/,
+    );
     assert.match(workflow, /PAGES_EXECUTION_MODE: \$\{\{ vars\.PAGES_EXECUTION_MODE \}\}/);
     assert.match(workflow, /PAGES_NORMAL_WORKER_SLOT_COUNT: \$\{\{ vars\.PAGES_NORMAL_WORKER_SLOT_COUNT \}\}/);
-    assert.match(workflow, /PAGES_CAP_JWT_ACTIVE_KID: \$\{\{ vars\.PAGES_CAP_JWT_ACTIVE_KID \}\}/);
-    assert.match(workflow, /PAGES_CAP_JWT_KEYS: \$\{\{ vars\.PAGES_CAP_JWT_KEYS \}\}/);
+    assert.match(workflow, /ACCESS_KEY_ACTIVE_PEPPER_ID: pepper_2026_06/);
+    assert.match(workflow, /ACCESS_KEY_PEPPERS: "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+    assert.match(workflow, /PAGES_SESSION_JWT_ACTIVE_KID: pages-session-2026-06/);
+    assert.match(
+      workflow,
+      /PAGES_SESSION_JWT_KEYS: "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/,
+    );
+    assert.match(workflow, /PAGES_CAP_JWT_ACTIVE_KID: pages-cap-2026-06/);
+    assert.match(workflow, /PAGES_CAP_JWT_KEYS: "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"/);
+    assert.doesNotMatch(workflow, /vars\.(?:ACCESS_KEY|PAGES_SESSION_JWT|PAGES_CAP_JWT)/);
+    assert.doesNotMatch(
+      workflow,
+      new RegExp(
+        String.raw`vars\.(?:WFP_COMPATIBILITY_DATE|SSO_ALLOWED_USER_SCOPE|OAUTH_STATE_TTL_SECONDS`
+          + String.raw`|CLI_LOGIN_TTL_SECONDS|AUTH_SESSION_IDLE_TTL_SECONDS|AUTH_SESSION_ABSOLUTE_TTL_SECONDS`
+          + String.raw`|SITE_SESSION_IDLE_TTL_SECONDS|SITE_SESSION_ABSOLUTE_TTL_SECONDS`
+          + String.raw`|ROUTE_CACHE_TTL_SECONDS|SITE_SESSION_FRESHNESS_TTL_SECONDS`
+          + String.raw`|INTERNAL_WORKER_JWT_TTL_SECONDS)`,
+      ),
+    );
     assert.match(workflow, /PAGES_CAP_JWT_SECRET_202606: \$\{\{ secrets\.PAGES_CAP_JWT_SECRET_202606 \}\}/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
