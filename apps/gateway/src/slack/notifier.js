@@ -1,6 +1,7 @@
 import {
   buildAgentProgressBlocks,
   buildJobStatusBlocks,
+  buildSlackAgentReplyBlocks,
   buildSlackStatusText,
   mentionSlackUser,
   notificationTextForCallback,
@@ -10,7 +11,9 @@ import {
   notifySlackJobStatus as notifySlackJobStatusDirect,
   postSlackMessage as postSlackMessageDirect,
   removeSlackReaction as removeSlackReactionDirect,
+  startSlackAgentReply as startSlackAgentReplyDirect,
   updateSlackMessage as updateSlackMessageDirect,
+  updateSlackAgentReply as updateSlackAgentReplyDirect,
 } from '@xd/slack-notifier-core';
 
 function remoteNotifierUrl(env = {}, path) {
@@ -105,11 +108,28 @@ async function callRemoteNotifier(env, path, payload) {
 export {
   buildAgentProgressBlocks,
   buildJobStatusBlocks,
+  buildSlackAgentReplyBlocks,
   buildSlackStatusText,
   mentionSlackUser,
   notificationTextForCallback,
   notificationTextForReviewAction,
 };
+
+export async function startSlackAgentReply(env, target, options = {}) {
+  if (!remoteNotifierUrl(env, '/internal/slack-notifier/agent-reply/start')) {
+    return startSlackAgentReplyDirect(env, target, options);
+  }
+
+  return callRemoteNotifier(env, '/internal/slack-notifier/agent-reply/start', { target, options });
+}
+
+export async function updateSlackAgentReply(env, message, options = {}) {
+  if (!remoteNotifierUrl(env, '/internal/slack-notifier/agent-reply/update')) {
+    return updateSlackAgentReplyDirect(env, message, options);
+  }
+
+  return callRemoteNotifier(env, '/internal/slack-notifier/agent-reply/update', { message, options });
+}
 
 export async function postSlackMessage(env, payload) {
   if (!remoteNotifierUrl(env, '/internal/slack-notifier/message')) {

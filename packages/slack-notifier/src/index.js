@@ -279,6 +279,75 @@ export function buildAgentProgressBlocks(job = {}, options = {}) {
   return buildJobStatusBlocks(job, options);
 }
 
+function agentReplyStatusText(status) {
+  if (status === 'failed') return ':x: 处理失败';
+  if (status === 'completed') return ':white_check_mark: 已整理';
+  return ':hourglass_flowing_sand: 正在整理';
+}
+
+function shouldUseAgentReplyCard(options = {}) {
+  return (
+    options.presentation === 'card' ||
+    options.layout === 'card' ||
+    (Array.isArray(options.actions) && options.actions.length > 0)
+  );
+}
+
+export function buildSlackAgentReplyBlocks(reply = {}, options = {}) {
+  const title = truncateText(options.title || reply.title || '需求整理', 120);
+  const text = truncateText(options.text || reply.text || reply.visibleText || '我正在整理这轮需求。', 2400);
+  const context = options.context || `${agentReplyStatusText(options.status || reply.status)} · 可以继续在当前对话里补充。`;
+  const blocks = shouldUseAgentReplyCard(options)
+    ? [
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: title },
+        },
+        {
+          type: 'section',
+          text: slackText(text),
+        },
+        {
+          type: 'context',
+          elements: [slackText(context)],
+        },
+      ]
+    : [
+        {
+          type: 'section',
+          text: slackText(text),
+        },
+      ];
+
+  if (Array.isArray(options.actions) && options.actions.length) {
+    blocks.push({ type: 'actions', elements: options.actions });
+  }
+
+  return blocks;
+}
+
+export async function startSlackAgentReply(env, target = {}, options = {}) {
+  if (!target.channel || !env.SLACK_BOT_TOKEN) return null;
+  const text = options.text || target.text || '我正在整理这轮需求。';
+  return postSlackMessage(env, {
+    channel: target.channel,
+    thread_ts: target.thread_ts || target.threadTs || undefined,
+    text,
+    blocks: options.blocks || buildSlackAgentReplyBlocks({ text }, { status: options.status || 'running' }),
+  });
+}
+
+export async function updateSlackAgentReply(env, message = {}, options = {}) {
+  if (!message.channel || !message.messageTs || !env.SLACK_BOT_TOKEN) return null;
+  const text = options.text || message.textSnapshot || '我已更新这轮需求整理。';
+  return updateSlackMessage(env, {
+    channel: message.channel,
+    ts: message.messageTs,
+    text,
+    blocks: options.blocks || buildSlackAgentReplyBlocks({ text }, { status: options.status || message.status || 'completed' }),
+  });
+}
+
 async function callSlackApi(env, method, payload) {
   if (!env.SLACK_BOT_TOKEN) return null;
   const fetchImpl = env.SLACK_FETCH || fetch;

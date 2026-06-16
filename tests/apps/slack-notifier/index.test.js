@@ -402,6 +402,63 @@ test('slack notifier posts plain Slack messages for gateway replies', async () =
   assert.equal(payload.text, '<@U1> 我已收到，正在整理。');
 });
 
+test('slack notifier starts and updates an agent reply message', async () => {
+  const app = createSlackNotifierApp();
+  const slackRequests = [];
+  const env = {
+    SLACK_BOT_TOKEN: 'xoxb-test',
+    SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+    async SLACK_FETCH(url, request) {
+      slackRequests.push({ url: String(url), request });
+      return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000002.000100' }));
+    },
+  };
+
+  const startResponse = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/agent-reply/start', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        target: { channel: 'C1', thread_ts: '1710000000.000100' },
+        options: { text: '<@U1> 我已收到，正在整理需求。' },
+      }),
+    }),
+    env
+  );
+  const updateResponse = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/agent-reply/update', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        message: { channel: 'C1', messageTs: '1710000002.000100' },
+        options: { text: '<@U1> 我整理好了，先等你确认。', status: 'completed' },
+      }),
+    }),
+    env
+  );
+  const startPayload = JSON.parse(slackRequests[0].request.body);
+  const updatePayload = JSON.parse(slackRequests[1].request.body);
+
+  assert.equal(startResponse.status, 200);
+  assert.equal(updateResponse.status, 200);
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.postMessage');
+  assert.equal(slackRequests[1].url, 'https://slack.com/api/chat.update');
+  assert.equal(startPayload.thread_ts, '1710000000.000100');
+  assert.match(JSON.stringify(startPayload.blocks), /正在整理/);
+  assert.equal(startPayload.blocks[0].type, 'section');
+  assert.ok(!startPayload.blocks.some((block) => block.type === 'header'));
+  assert.equal(updatePayload.ts, '1710000002.000100');
+  assert.match(JSON.stringify(updatePayload.blocks), /我整理好了/);
+  assert.equal(updatePayload.blocks[0].type, 'section');
+  assert.ok(!updatePayload.blocks.some((block) => block.type === 'header'));
+});
+
 test('slack notifier adds working reactions', async () => {
   const app = createSlackNotifierApp();
   const slackRequests = [];

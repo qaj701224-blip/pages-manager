@@ -6,6 +6,8 @@ import {
   notifySlackJobStatus,
   postSlackMessage,
   removeSlackReaction,
+  startSlackAgentReply,
+  updateSlackAgentReply,
 } from '../../../apps/gateway/src/slack/notifier.js';
 
 test('gateway delegates Slack status delivery to remote notifier when configured', async () => {
@@ -224,6 +226,38 @@ test('gateway delegates plain Slack replies to remote notifier when configured',
   assert.equal(calls[0].url, 'http://slack-notifier.test/internal/slack-notifier/message');
   assert.equal(calls[0].request.headers['X-Pages-Slack-Notifier-Token'], 'secret');
   assert.equal(payload.payload.text, '<@U1> 我已收到，正在整理。');
+});
+
+test('gateway delegates agent reply messages to remote notifier when configured', async () => {
+  const calls = [];
+  const env = {
+    SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+    SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+    async SLACK_NOTIFIER_FETCH(url, request) {
+      calls.push({ url: String(url), request });
+      return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000002.000100' }));
+    },
+  };
+
+  const startResult = await startSlackAgentReply(
+    env,
+    { channel: 'C1', thread_ts: '1710000000.000100' },
+    { text: '<@U1> 我已收到，正在整理需求。' }
+  );
+  const updateResult = await updateSlackAgentReply(
+    env,
+    { channel: 'C1', messageTs: '1710000002.000100' },
+    { text: '<@U1> 我整理好了，先等你确认。', status: 'completed' }
+  );
+  const startPayload = JSON.parse(calls[0].request.body);
+  const updatePayload = JSON.parse(calls[1].request.body);
+
+  assert.equal(startResult.ok, true);
+  assert.equal(updateResult.ok, true);
+  assert.equal(calls[0].url, 'http://slack-notifier.test/internal/slack-notifier/agent-reply/start');
+  assert.equal(calls[1].url, 'http://slack-notifier.test/internal/slack-notifier/agent-reply/update');
+  assert.equal(startPayload.target.channel, 'C1');
+  assert.equal(updatePayload.message.messageTs, '1710000002.000100');
 });
 
 test('gateway does not call remote notifier without shared secret', async () => {
