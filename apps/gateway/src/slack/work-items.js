@@ -1,5 +1,6 @@
 import { slackActorFromBody } from './session.js';
 import { compactUserFacingText } from './text.js';
+import { normalizeSlackWorkItemQueryState } from './work-item-query.js';
 
 export const ACTIONABLE_WORK_ITEM_STATUSES = [
   'received',
@@ -17,6 +18,8 @@ export const ACTIONABLE_WORK_ITEM_STATUSES = [
   'previewing',
   'preview_deployed',
 ];
+
+export const INACTIVE_WORK_ITEM_STATUSES = ['approved', 'merged', 'deployed', 'failed', 'cancelled'];
 
 const ACTIONABLE_WORK_ITEM_STATUS_SET = new Set(ACTIONABLE_WORK_ITEM_STATUSES);
 
@@ -64,7 +67,10 @@ export function slackStatusLabel(status = '', job = {}) {
 
 export function inactiveSlackWorkItemReply(job = {}) {
   const label = slackStatusLabel(job.status, job);
-  return `这个发布任务当前是「${label}」，不能继续修改。可以说「我的 PR」查看可继续任务，或重新描述一个新需求。`;
+  const reopenHint = isReopenableSlackWorkItem(job)
+    ? '可以说「查看我已关闭的任务」，然后在卡片里点击「重新打开」。'
+    : '可以说「我的 PR」查看可继续任务，或重新描述一个新需求。';
+  return `这个发布任务当前是「${label}」，不能继续修改。${reopenHint}`;
 }
 
 export function unsupportedDestructiveRequestReply() {
@@ -96,13 +102,25 @@ function workItemLine(job = {}) {
   return parts.join('\n');
 }
 
+export function slackWorkItemTargetLabel(job = {}) {
+  if (job.prNumber) return `PR #${job.prNumber}`;
+  if (job.issueNumber) return `Issue #${job.issueNumber}`;
+  return '这个发布任务';
+}
+
 export function slackWorkItemListText(jobs = [], options = {}) {
-  if (!jobs.length) return '我还没有找到你的发布任务。可以先描述一个个人网站需求，我会整理后等你确认创建。';
-  if (options.includeInactive) return `找到你最近的 ${jobs.length} 个发布任务。已关闭、已取消或失败的任务只展示状态，不会继续修改。`;
+  const state = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
+  if (!jobs.length) {
+    if (state === 'closed') return '我还没有找到你已关闭、已取消或失败的发布任务。';
+    return '我还没有找到你的发布任务。可以先描述一个个人网站需求，我会整理后等你确认创建。';
+  }
+  if (state === 'closed') return `找到你最近的 ${jobs.length} 个已关闭、已取消或失败的发布任务。可恢复的任务会显示「重新打开」。`;
+  if (state === 'all') return `找到你最近的 ${jobs.length} 个发布任务。已关闭、已取消或失败的任务只展示状态，不会继续修改。`;
   return `找到你最近的 ${jobs.length} 个发布任务。选择一个后，这个对话会继续围绕它修改。`;
 }
 
 export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
+  const state = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
   if (!jobs.length) {
     return [
       {
@@ -122,9 +140,12 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
       elements: [
         {
           type: 'mrkdwn',
-          text: options.includeInactive
-            ? '历史任务仅用于查看状态；只有可继续任务会出现「继续修改」。'
-            : '点「继续修改」后，后续回复会进入选中的 PR / Preview。',
+          text:
+            state === 'closed'
+              ? '这些任务当前不可继续修改；可恢复的任务会出现「重新打开」。'
+              : state === 'all'
+                ? '历史任务仅用于查看状态；只有可继续任务会出现「继续修改」。'
+                : '点「继续修改」后，后续回复会进入选中的 PR / Preview。',
         },
       ],
     },
@@ -147,7 +168,13 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
         text: { type: 'plain_text', text: target === 'pr' ? '重新打开 PR' : '重新打开 Issue' },
         style: 'primary',
         action_id: 'pages_reopen_work_item',
-        value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id, target, includeInactive: true }),
+        value: slackButtonValue({
+          sessionId: slackSession.id,
+          jobId: job.id,
+          target,
+          includeInactive: true,
+          workItemState: state,
+        }),
       });
     }
     if (job.issueUrl) {
@@ -183,9 +210,16 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
 
 export async function listSlackWorkItemsForSession(store, body, options = {}) {
   const actor = slackActorFromBody(body);
+  const state = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
   const queryOptions = {
     ...options,
-    statuses: options.includeInactive ? options.statuses : options.statuses || ACTIONABLE_WORK_ITEM_STATUSES,
+    workItemState: state,
+    statuses:
+      state === 'active'
+        ? options.statuses || ACTIONABLE_WORK_ITEM_STATUSES
+        : state === 'closed'
+          ? options.statuses || INACTIVE_WORK_ITEM_STATUSES
+          : options.statuses,
   };
   if (store.listWorkItemsForSlackUser) {
     return store.listWorkItemsForSlackUser(actor.teamId, actor.slackUserId, queryOptions);
@@ -200,7 +234,36 @@ export async function listSlackWorkItemsForSession(store, body, options = {}) {
 }
 
 export async function findVisibleSlackJobByPrNumber(store, body, prNumber) {
-  const job = store.findJobByPrNumber ? await store.findJobByPrNumber(prNumber) : null;
+  const link = store.findIssueLinkByPrNumber ? await store.findIssueLinkByPrNumber(prNumber) : null;
+  const linkedJob = link?.publishingJobId && store.getJob ? await store.getJob(link.publishingJobId) : null;
+  const job = linkedJob || (store.findJobByPrNumber ? await store.findJobByPrNumber(prNumber) : null);
   if (!job || !slackJobVisibleToActor(job, body)) return null;
   return job;
+}
+
+export async function findVisibleSlackJobByIssueNumber(store, body, issueNumber) {
+  const link = store.findIssueLinkByIssueNumber ? await store.findIssueLinkByIssueNumber(issueNumber) : null;
+  const linkedJob = link?.publishingJobId && store.getJob ? await store.getJob(link.publishingJobId) : null;
+  if (linkedJob && slackJobVisibleToActor(linkedJob, body)) return linkedJob;
+
+  const result = await listSlackWorkItemsForSession(store, body, { workItemState: 'all', limit: 20 });
+  return (
+    (result.jobs || []).find((job) => Number(job.issueNumber) === Number(issueNumber) && slackJobVisibleToActor(job, body)) ||
+    null
+  );
+}
+
+export async function findVisibleSlackJobByReference(store, body, reference = {}) {
+  const number = Number(reference.number || reference.targetNumber);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  if (reference.kind === 'issue' || reference.targetKind === 'issue') {
+    return await findVisibleSlackJobByIssueNumber(store, body, number);
+  }
+  if (reference.kind === 'pr' || reference.targetKind === 'pr') {
+    return await findVisibleSlackJobByPrNumber(store, body, number);
+  }
+
+  return (
+    (await findVisibleSlackJobByPrNumber(store, body, number)) || (await findVisibleSlackJobByIssueNumber(store, body, number))
+  );
 }
