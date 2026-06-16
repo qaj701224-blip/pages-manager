@@ -418,7 +418,7 @@ test('Slack close command closes the selected session and clears active context'
   assert.equal(session.activePreviewUrl, null);
 });
 
-test('closed Slack session is reactivated when the same thread starts a new job', async () => {
+test('closed Slack session stays closed when the same thread starts a new job', async () => {
   const app = createGatewayApp();
   const created = await postSlack(
     app,
@@ -455,12 +455,59 @@ test('closed Slack session is reactivated when the same thread starts a new job'
     })
   );
   const session = app.store.getSlackSession(created.slackSessionId);
+  const newSession = app.store.getSlackSession(reopened.slackSessionId);
 
   assert.equal(reopened.accepted, true);
-  assert.equal(reopened.slackSessionId, created.slackSessionId);
-  assert.equal(session.status, 'active');
-  assert.equal(session.closedAt, null);
-  assert.equal(session.activeJobId, reopened.jobId);
+  assert.notEqual(reopened.slackSessionId, created.slackSessionId);
+  assert.equal(session.status, 'closed');
+  assert.equal(session.activeJobId, null);
+  assert.equal(newSession.status, 'active');
+  assert.equal(newSession.activeJobId, reopened.jobId);
+});
+
+test('closed Slack channel thread ignores plain replies until the bot is addressed again', async () => {
+  const app = createGatewayApp();
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-closed-unaddressed-thread-1',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个个人主页',
+    })
+  );
+
+  await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-closed-unaddressed-thread-2',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000001.000100',
+      threadTs: '1710000000.000100',
+      text: `close: ${created.slackSessionId}`,
+    })
+  );
+
+  const ignored = await postSlack(app, {
+    team_id: 'T1',
+    event_id: 'Ev-closed-unaddressed-thread-3',
+    event: {
+      type: 'message',
+      user: 'U1',
+      channel: 'C1',
+      channel_type: 'channel',
+      ts: '1710000002.000100',
+      thread_ts: '1710000000.000100',
+      text: '继续帮我改一下标题',
+    },
+  });
+
+  assert.equal(ignored.action, 'ignored_untracked_thread_message');
+  assert.equal(ignored.accepted, false);
+  assert.equal(app.store.getSlackSession(created.slackSessionId).status, 'closed');
+  assert.equal(app.store.jobs.size, 1);
 });
 
 test('Slack close button clears a running Agent lease before the next thread message', async () => {

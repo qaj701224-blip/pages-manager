@@ -986,6 +986,8 @@ test('Slack free-form turn uses Slack Agent turn and updates one agent reply mes
   assert.equal(slackCalls.length, 2);
   assert.match(slackCalls[0].url, /chat\.postMessage$/);
   assert.match(slackCalls[1].url, /chat\.update$/);
+  assert.doesNotMatch(postPayload.text, /我已收到/);
+  assert.match(postPayload.text, /正在整理需求/);
   assert.equal(postPayload.thread_ts, '1710000000.000113');
   assert.equal(postPayload.blocks[0].type, 'section');
   assert.ok(!postPayload.blocks.some((block) => block.type === 'header'));
@@ -1107,7 +1109,7 @@ test('Slack Agent turn consumes ndjson chunks and updates one reply message prog
   );
 });
 
-test('Slack Agent posts a fresh reply card for each DM turn', async () => {
+test('Slack Agent posts fresh reply cards for requirement drafting turns', async () => {
   const app = createGatewayApp();
   const slackCalls = [];
   const agentSessionIds = [];
@@ -2195,6 +2197,307 @@ test('Slack Agent list intent preserves history scope from free-form user text',
   assert.match(blocks, /重新打开 Issue/);
 });
 
+test('Slack Agent tool call can list only closed work items without cross-user leakage', async () => {
+  const app = createGatewayApp();
+  const active = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-tool-active-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'active',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Active profile page',
+    summary: '可继续任务',
+  }).job;
+  app.store.patchJob(active.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    prNumber: 68,
+  });
+  const closed = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-tool-closed-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed profile page',
+    summary: '已关闭任务',
+  }).job;
+  app.store.patchJob(closed.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    errorMessage: 'GitHub issue #66 已关闭，发布任务已停止。',
+    issueNumber: 66,
+    issueUrl: 'https://github.example/org/pages-manager/issues/66',
+  });
+  const otherClosed = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U2',
+    idempotencyKey: 'agent-tool-other-closed-work-item',
+    employeeSlug: 'u2',
+    siteSlug: 'other-closed',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Other closed profile page',
+    summary: '别人的已关闭任务',
+  }).job;
+  app.store.patchJob(otherClosed.id, {
+    status: 'cancelled',
+    errorCode: 'github_pr_closed',
+    issueNumber: 67,
+    prNumber: 70,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-tool-closed-work-items-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001361',
+          text: '之前关掉的 issue 和 PR 有哪些',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'list_work_items',
+                visibleReply: '我来查看你已关闭的 issue 和 PR。',
+                summary: '查询已关闭的 issue 和 PR。',
+                toolCall: {
+                  name: 'list_my_work_items',
+                  args: { state: 'closed', requestedById: 'slack:T1:U2' },
+                },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'list_work_items',
+                    visibleReply: '我来查看你已关闭的 issue 和 PR。',
+                    summary: '查询已关闭的 issue 和 PR。',
+                    toolCall: {
+                      name: 'list_my_work_items',
+                      args: { state: 'closed', requestedById: 'slack:T1:U2' },
+                    },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const blocks = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.workItemState, 'closed');
+  assert.equal(body.jobs.length, 1);
+  assert.equal(body.jobs[0].issueNumber, 66);
+  assert.match(blocks, /Issue 已关闭/);
+  assert.match(blocks, /重新打开 Issue/);
+  assert.doesNotMatch(blocks, /#68/);
+  assert.doesNotMatch(blocks, /#70/);
+  assert.doesNotMatch(blocks, /pages_select_work_item/);
+});
+
+test('Slack closed work item query is not starved by many active work items', async () => {
+  const app = createGatewayApp();
+  const closed = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'closed-query-old-cancelled-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-old',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed old profile page',
+    summary: '旧的已关闭任务',
+  }).job;
+  app.store.patchJob(closed.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    issueNumber: 60,
+    issueUrl: 'https://github.example/org/pages-manager/issues/60',
+  });
+  app.store.jobs.set(closed.id, {
+    ...app.store.getJob(closed.id),
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  for (let index = 0; index < 25; index += 1) {
+    const active = app.store.createJob({
+      source: 'slack',
+      requestedByType: 'user',
+      requestedById: 'slack:T1:U1',
+      idempotencyKey: `active-before-closed-query-${index}`,
+      employeeSlug: 'u1',
+      siteSlug: `active-${index}`,
+      intent: 'create_site',
+      approvalMode: 'manual_required',
+      title: `Active profile page ${index}`,
+      summary: '可继续任务',
+    }).job;
+    app.store.patchJob(active.id, {
+      status: 'preview_deployed',
+      issueNumber: 100 + index,
+      prNumber: 200 + index,
+    });
+    app.store.jobs.set(active.id, {
+      ...app.store.getJob(active.id),
+      updatedAt: `2026-06-16T00:${String(index).padStart(2, '0')}:00.000Z`,
+    });
+  }
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-closed-query-not-starved-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001363',
+          text: '查看我已关闭的发布任务',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const blocks = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.workItemState, 'closed');
+  assert.equal(body.jobs.length, 1);
+  assert.equal(body.jobs[0].issueNumber, 60);
+  assert.match(blocks, /Issue 已关闭/);
+  assert.match(blocks, /重新打开 Issue/);
+  assert.doesNotMatch(blocks, /#200/);
+});
+
+test('Slack work item queries prefer Slack Agent tool execution when configured', async () => {
+  const app = createGatewayApp();
+  const closed = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-preferred-closed-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed profile page',
+    summary: '已关闭任务',
+  }).job;
+  app.store.patchJob(closed.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    issueNumber: 66,
+    issueUrl: 'https://github.example/org/pages-manager/issues/66',
+  });
+  const agentCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-preferred-work-items-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001362',
+          text: '查看我已关闭的发布任务',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        agentCalls.push(payload);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'list_work_items',
+                visibleReply: '我来查看你已关闭的发布任务。',
+                summary: '查询已关闭的发布任务。',
+                toolCall: { name: 'list_my_work_items', args: { state: 'closed' } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'list_work_items',
+                    toolCall: { name: 'list_my_work_items', args: { state: 'closed' } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(agentCalls.length, 1);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.workItemState, 'closed');
+  assert.equal(body.jobs.length, 1);
+  assert.equal(body.jobs[0].issueNumber, 66);
+});
+
 test('Slack work item list reconciles GitHub closed issues before showing actions', async () => {
   const app = createGatewayApp();
   const job = app.store.createJob({
@@ -2654,6 +2957,107 @@ test('Slack reopen button restores a closed GitHub issue work item', async () =>
   assert.equal(JSON.parse(githubRequests[0].request.body).state, 'open');
 });
 
+test('Slack Agent can reopen a visible closed issue through a scoped tool call', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-reopen-closed-issue-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-issue',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed issue profile page',
+    summary: '已关闭 issue 需要恢复。',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    errorMessage: 'GitHub issue #70 已关闭，发布任务已停止。',
+    issueNumber: 70,
+    issueUrl: 'https://github.example/org/pages-manager/issues/70',
+  });
+  const githubRequests = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-reopen-issue-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000142',
+          text: '重新打开 issue #70',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_APP_INSTALLATION_TOKEN: 'ghs_write',
+      async GITHUB_FETCH(url, request) {
+        githubRequests.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            number: 70,
+            state: 'open',
+            html_url: 'https://github.example/org/pages-manager/issues/70',
+          })
+        );
+      },
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'reopen_work_item',
+                visibleReply: '我来恢复这个 issue。',
+                summary: '恢复 issue #70。',
+                toolCall: { name: 'reopen_work_item', args: { kind: 'issue', number: 70 } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'reopen_work_item',
+                    toolCall: { name: 'reopen_work_item', args: { kind: 'issue', number: 70, requestedById: 'slack:T1:U2' } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const updatedJob = app.store.getJob(job.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'reopen_work_item');
+  assert.equal(body.jobId, job.id);
+  assert.equal(updatedJob.status, 'generating_page');
+  assert.equal(updatedJob.errorCode, null);
+  assert.equal(githubRequests.length, 1);
+  assert.match(githubRequests[0].url, /\/issues\/70$/);
+});
+
 test('Slack close session stops running agent runs before the same thread continues', async () => {
   const app = createGatewayApp();
   const session = app.store.upsertSlackSession({
@@ -2759,6 +3163,8 @@ test('Slack close session stops running agent runs before the same thread contin
   assert.equal(listResponse.status, 200);
   assert.notEqual(listBody.action, 'agent_busy');
   assert.equal(listBody.action, 'list_work_items');
+  assert.notEqual(listBody.slackSessionId, session.id);
+  assert.equal(app.store.getSlackSession(session.id).status, 'closed');
   assert.equal(listBody.jobs.length, 1);
 });
 
@@ -2819,6 +3225,58 @@ test('Slack can switch the current thread to a visible PR', async () => {
   assert.equal(memory.requirements.prNumber, 68);
   assert.equal(memory.requirements.previewUrl, 'https://preview.example.test/u1');
   assert.match(memory.lastAgentResponse, /已切换到 PR #68/);
+});
+
+test('Slack can switch the current thread to a visible issue', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'switch-issue-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page from issue',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'issue_created',
+    issueNumber: 66,
+    issueUrl: 'https://github.example/org/pages-manager/issues/66',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-switch-issue-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001311',
+          text: '继续 issue #66',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const session = app.store.getSlackSession(body.slackSessionId);
+  const memory = app.store.getSessionMemory(session.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'switch_work_item');
+  assert.equal(body.jobId, job.id);
+  assert.equal(session.activeJobId, job.id);
+  assert.equal(session.activeIssueNumber, 66);
+  assert.equal(session.activePrNumber, null);
+  assert.equal(memory.requirements.issueNumber, 66);
+  assert.match(memory.lastAgentResponse, /已切换到 Issue #66/);
 });
 
 test('Slack switch only patches Slack binding and keeps fresher job state', async () => {
@@ -3796,7 +4254,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
       }),
     }),
     {
-      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
       async SLACK_AGENT_FETCH(url, request) {
         agentCalls.push({ url: String(url), request });
         const payload = JSON.parse(request.body);
@@ -3805,10 +4263,22 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
         return new Response(
           JSON.stringify({
             ok: true,
-            analysis: {
-              intent: 'append_requirement',
-              summary: '把标题改成中文，再加一个项目经历区域。',
-              needsClarification: false,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'append_requirement',
+                    summary: '把标题改成中文，再加一个项目经历区域。',
+                    needsClarification: false,
+                  },
+                },
+              ],
             },
           }),
           { status: 200 }
@@ -3842,10 +4312,12 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   const slackPayload = JSON.parse(slackRequests[0].request.body);
 
   assert.equal(followupResponse.status, 200);
+  assert.equal(agentCalls[0].url, 'http://slack-agent.test/internal/slack-agent/turn');
   assert.equal(followup.action, 'followup_fix_dispatched');
   assert.equal(followup.jobId, created.jobId);
   assert.equal(followup.noReply, true);
   assert.equal(followup.slackStatusNotification.action, 'updated');
+  assert.ok(!slackRequests.some((request) => request.url.endsWith('/chat.postMessage')));
   assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.update');
   assert.match(JSON.stringify(slackPayload.blocks), /第 1 轮修改处理中/);
   assert.match(JSON.stringify(slackPayload.blocks), /最终需求/);
@@ -3959,6 +4431,113 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(rerun.queuedFollowupRerun.queuedFollowupCount, 1);
   assert.equal(rerun.workerStart.started, true);
   assert.equal(workerStarts.length, 2);
+});
+
+test('Slack active job clarification still replies without creating an agent placeholder', async () => {
+  const app = createGatewayApp();
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-active-clarify-create',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000150',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    })
+  );
+  const created = await json(createResponse);
+
+  const issueResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: created.jobId,
+        stageResult: 'issue_created',
+        issueNumber: 81,
+        issueUrl: 'https://github.example/org/pages-manager/issues/81',
+      }),
+    })
+  );
+  assert.equal(issueResponse.status, 200);
+
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-active-clarify-question',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000010.000150',
+          thread_ts: '1710000000.000150',
+          text: '项目经历这里怎么放比较好？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'clarify',
+                    summary: '用户在询问项目经历展示方式。',
+                    clarifyingQuestion:
+                      '可以按 2-3 个代表项目来写：项目名、你的角色、关键结果。你想偏技术成果还是业务影响？',
+                    needsClarification: true,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000011.000150' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const payload = JSON.parse(slackRequests[0].request.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'clarification_needed');
+  assert.equal(slackRequests.length, 1);
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.postMessage');
+  assert.match(payload.text, /^<@U1>/);
+  assert.match(payload.text, /偏技术成果还是业务影响/);
+  assert.doesNotMatch(payload.text, /正在整理需求/);
+  assert.equal(app.store.slackAgentReplyMessages.size, 0);
 });
 
 test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Agent dispatch', async () => {
