@@ -15,7 +15,7 @@ test('agent instructions stay synchronized', () => {
 });
 
 test('branch policy documents master PR preview sync and CI lane isolation', () => {
-  const policy = readDoc('docs/deployment-branch-policy.md');
+  const policy = readDoc('docs/architecture/github-automation.md');
   const agents = readDoc('AGENTS.md');
 
   for (const doc of [policy, agents]) {
@@ -42,12 +42,12 @@ test('branch policy documents master PR preview sync and CI lane isolation', () 
 test('master PR sync workflow merges project PR heads to staging and skips user-site PRs', () => {
   const workflow = readDoc('.github/workflows/sync-master-pr-to-staging.yml');
   const compatibilityCi = readDoc('.github/workflows/ci.yml');
-  const policy = readDoc('docs/deployment-branch-policy.md');
+  const policy = readDoc('docs/architecture/github-automation.md');
 
   assert.match(workflow, /^name: Sync Master PR To Staging$/m);
   assert.match(
     workflow,
-    /pull_request:[\s\S]*types: \[opened, synchronize, reopened, ready_for_review\][\s\S]*branches: \[master\]/,
+    /pull_request:[\s\S]*types: \[opened, synchronize, reopened, ready_for_review\][\s\S]*branches: \[master\]/
   );
   assert.match(workflow, /permissions:[\s\S]*actions: write[\s\S]*contents: write[\s\S]*pull-requests: read/);
   assert.doesNotMatch(workflow, /pull_request_target/);

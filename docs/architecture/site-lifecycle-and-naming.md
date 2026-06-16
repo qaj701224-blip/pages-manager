@@ -2,15 +2,11 @@
 
 ## 定位
 
-员工不是网站。一个员工可以有多个 `SiteProject`。
+员工不是网站。一个员工可以有多个 `SiteProject`。本文定义站点 slug、repo path、hostname 和生命周期规则，避免 Slack Agent、Coding Agent、gateway、deploy 和 review 各自猜。
 
-本文件定义 MVP 站点命名、目录、hostname、生命周期和冲突处理，避免 coding agent、gateway、deploy 和 review 各自猜规则。
+## Slug
 
-## Slugs
-
-### `employee_slug`
-
-MVP 格式：
+`employeeSlug`：
 
 ```text
 ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$
@@ -22,15 +18,7 @@ MVP 格式：
 2. 公司 SSO / HR 系统同步。
 3. 邮箱前缀转换后人工确认。
 
-规则：
-
-- 全局唯一。
-- 不随展示名变化自动变更。
-- 离职后默认保留，不立即释放。
-
-### `site_slug`
-
-MVP 格式：
+`siteSlug`：
 
 ```text
 ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$
@@ -38,9 +26,10 @@ MVP 格式：
 
 规则：
 
-- 在同一个 `owner_scope_id` 下唯一。
-- 不允许使用保留词。
-- 修改 `site_slug` 是 rename 操作，不是普通 update。
+- `employeeSlug` 全局唯一。
+- `siteSlug` 在同一个 owner scope 下唯一。
+- Slack Agent 可以给 `siteSlug` hint，但 `employeeSlug` 最终由 gateway 根据 Slack 身份派生。
+- 修改 `siteSlug` 是 rename 操作，不是普通 update。
 
 保留词：
 
@@ -66,7 +55,7 @@ node_modules
 站点源码路径：
 
 ```text
-sites/<employee_slug>/<site_slug>/
+sites/<employeeSlug>/<siteSlug>/
 ```
 
 示例：
@@ -85,39 +74,40 @@ sites/lisi/demo-portal/
 .github/**
 apps/**
 packages/**
-templates/**
 k8s/**
+scripts/**
+Dockerfile*
 sites/<other-employee>/**
 sites/<same-employee>/<other-site>/**
 ```
 
-## Site Name And Hostname
+## Site Name 和 Hostname
 
-默认 `site_name`：
+默认 site name：
 
 ```text
-<employee_slug>-<site_slug>
+<employeeSlug>-<siteSlug>
 ```
 
 production hostname：
 
 ```text
-<site_name>.workers.xd.team
+<siteName>.workers.xd.team
 ```
 
 preview hostname：
 
 ```text
-pr-<prNumber>-<site_name>-staging.workers.xd.team
+pr-<prNumber>-<siteName>-staging.workers.xd.team
 ```
 
 冲突处理：
 
-1. 如果 `site_name` 未被占用，直接使用。
-2. 如果被占用，gateway 返回冲突，让用户选择新 `site_slug`。
+1. 如果 `siteName` 未被占用，直接使用。
+2. 如果被占用，gateway 返回冲突，让用户选择新 `siteSlug`。
 3. 不自动追加随机后缀，避免用户不理解最终 URL。
 
-## Lifecycle States
+## 生命周期
 
 `SiteProject.status`：
 
@@ -127,136 +117,22 @@ archived
 deleted
 ```
 
-MVP 支持：
+当前支持重点：
 
-| Action | MVP |
-| --- | --- |
-| create | yes |
-| update | yes |
-| archive | manual/admin |
-| restore | manual/admin |
-| delete | soft delete only |
-| rename | manual/admin, creates PR |
-| transfer owner | manual/admin |
-| rollback | manual deploy record rollback later |
+| Action         | 规则                                                      |
+| -------------- | --------------------------------------------------------- |
+| create         | Slack / API 创建发布任务，确认后进入 issue / PR / preview |
+| update         | 默认修改同一个站点目录和同一个 active PR                  |
+| archive        | 管理员 / owner 操作，保留历史 deploy                      |
+| restore        | 管理员 / owner 操作                                       |
+| delete         | 软删除，不立即释放 hostname                               |
+| rename         | 显式操作，不能由普通内容修改隐式触发                      |
+| transfer owner | 管理员操作                                                |
+| rollback       | 后续通过 `DeployRecord` 实现                              |
 
-## Create Site
+## Quota
 
-Input:
-
-```json
-{
-  "employeeSlug": "zhangsan",
-  "siteSlug": "profile",
-  "title": "Zhangsan Profile",
-  "accessMode": "company"
-}
-```
-
-Flow:
-
-```text
-gateway validates actor
-  ↓
-checks owner scope and quota
-  ↓
-checks slug and hostname conflict
-  ↓
-creates SiteProject(status=active)
-  ↓
-creates PublishingJob(intent=create_site)
-  ↓
-issue → project index → pages-agent → PR → review → preview deploy
-```
-
-If site creation fails before Preview:
-
-- `SiteProject` can remain `active` with no deploy, or be marked `archived` by cleanup.
-- `PublishingJob` records failure.
-
-## Update Site
-
-Update means content or config changes under same `site_slug`.
-
-Rules:
-
-- Must target existing active `SiteProject`.
-- Actor must have `owner | admin | maintainer`.
-- PR modifies only `repo_path`.
-- deploy updates `current_deploy_id`.
-
-## Archive Site
-
-Archive means site is hidden from normal update flow but historical deploy remains auditable.
-
-Rules:
-
-- Requires owner/admin.
-- Does not delete Git history.
-- Can optionally disable production route in Cloudflare snapshot.
-- New publishing jobs should be rejected unless action is `restore_site`.
-
-## Delete Site
-
-MVP uses soft delete:
-
-```text
-status=deleted
-deleted_at=<time>
-```
-
-Rules:
-
-- Requires owner/admin plus optional platform admin confirmation.
-- Does not immediately release hostname.
-- Does not delete historical `DeployRecord`.
-- Cloudflare runtime snapshot can serve tombstone or 404.
-
-## Rename Site
-
-Rename changes `site_slug`, `repo_path`, `site_name`, hostname.
-
-MVP recommendation:
-
-- Do not allow automatic agent rename in normal content update.
-- Require explicit admin/owner action.
-- Create PR that moves directory.
-- Keep redirect from old hostname only if configured.
-
-Rename flow:
-
-```text
-validate new slug
-  ↓
-check hostname conflict
-  ↓
-create rename PublishingJob
-  ↓
-PR moves sites/<employee>/<old> to sites/<employee>/<new>
-  ↓
-merge
-  ↓
-deploy new hostname
-  ↓
-mark old hostname redirect/tombstone
-```
-
-## Transfer Owner
-
-Transfer moves site between owner scopes.
-
-MVP recommendation:
-
-- Admin-only.
-- Not part of Slack auto-generation.
-- Requires audit reason.
-- May create PR if repo path changes.
-
-## Quotas
-
-Even if product language says “一个员工可以有无数个网站”， implementation must have operational quotas.
-
-MVP default suggestions:
+产品上可以说“一个员工可以有很多网站”，但运行态必须有配额：
 
 ```text
 max_sites_per_employee: configurable
@@ -266,33 +142,22 @@ max_site_source_size_mb: configurable
 max_single_file_size_mb: configurable
 ```
 
-Quota exceeded:
+配额超出时：
 
-- gateway rejects or queues request.
-- Slack returns actionable message.
-- no issue/PR created until quota passes or admin overrides.
+- gateway 拒绝或排队。
+- Slack 给出可操作提示。
+- 不创建 issue / PR，直到配额恢复或管理员 override。
 
-## Access Policy Defaults
+## Access Policy 默认值
 
-MVP default:
+默认建议：
 
 ```text
 SiteAccessPolicy.mode = company
 ```
 
-Rules:
+规则：
 
-- production site content can be `public | company | allowlist`.
-- management UI always requires gateway auth.
-- public content access never implies management permission.
-
-## Implementation Order
-
-1. Implement slug validators and reserved words.
-2. Add `SiteProject` unique checks.
-3. Add path derivation helper.
-4. Add hostname derivation helper.
-5. Add create/update lifecycle methods.
-6. Add archive/restore admin methods.
-7. Add quota checks before `PublishingJob` creation.
-8. Add tests for slug, path, hostname and conflict cases.
+- production 内容可以是 `public | company | allowlist`。
+- 管理界面始终要求 gateway auth。
+- public 内容访问不等于管理权限。
