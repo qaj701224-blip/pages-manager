@@ -20,7 +20,7 @@ data:
   PAGES_GATEWAY_PUBLIC_URL: https://replace-me.example.com
   PAGES_GATEWAY_CALLBACK_URL: https://replace-me.example.com/internal/executor-callback
   PAGES_WORKER_START_URL: http://pages-worker:8790/internal/publishing-jobs/start
-  SLACK_AGENT_ANALYZE_URL: http://slack-agent:8791/internal/slack-agent/analyze
+  SLACK_AGENT_TURN_URL: http://slack-agent:8791/internal/slack-agent/turn
   SLACK_NOTIFIER_URL: http://slack-notifier:8792
   SLACK_EVENTS_PROCESSING_MODE: async
   SLACK_SIGNATURE_REQUIRED: 'true'
