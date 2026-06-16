@@ -17,7 +17,36 @@ describe('slack agent', () => {
     assert.equal(analysis.employeeSlug, 'alice');
     assert.equal(analysis.siteSlug, 'portfolio');
     assert.equal(analysis.needsClarification, false);
+    assert.equal(analysis.toolCall.name, 'confirm_create_issue');
     assert.match(analysis.summary, /个人网站/);
+  });
+
+  it('returns a scoped tool call for closed work item queries', () => {
+    const analysis = analyzeSlackRequirement({ text: '查看我已关闭的发布任务' });
+
+    assert.equal(analysis.intent, 'list_work_items');
+    assert.equal(analysis.workItemState, 'closed');
+    assert.deepEqual(analysis.toolCall, { name: 'list_my_work_items', args: { state: 'closed' } });
+  });
+
+  it('keeps issue and PR switch targets distinct', () => {
+    const issueAnalysis = analyzeSlackRequirement({ text: '继续 issue #60' });
+    const prAnalysis = analyzeSlackRequirement({ text: '继续 PR #68' });
+
+    assert.equal(issueAnalysis.intent, 'switch_work_item');
+    assert.deepEqual(issueAnalysis.toolCall, { name: 'switch_work_item', args: { kind: 'issue', number: 60 } });
+    assert.equal(prAnalysis.intent, 'switch_work_item');
+    assert.deepEqual(prAnalysis.toolCall, { name: 'switch_work_item', args: { kind: 'pr', number: 68 } });
+  });
+
+  it('emits a scoped reopen tool call for explicit closed issue or PR requests', () => {
+    const issueAnalysis = analyzeSlackRequirement({ text: '重新打开 issue #60' });
+    const prAnalysis = analyzeSlackRequirement({ text: 'reopen PR #68' });
+
+    assert.equal(issueAnalysis.intent, 'reopen_work_item');
+    assert.deepEqual(issueAnalysis.toolCall, { name: 'reopen_work_item', args: { kind: 'issue', number: 60 } });
+    assert.equal(prAnalysis.intent, 'reopen_work_item');
+    assert.deepEqual(prAnalysis.toolCall, { name: 'reopen_work_item', args: { kind: 'pr', number: 68 } });
   });
 
   it('includes session context for model-driven turns', () => {
@@ -244,13 +273,10 @@ describe('slack agent', () => {
             ],
           },
         ];
-        return new Response(
-          `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`,
-          {
-            status: 200,
-            headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
-          }
-        );
+        return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+        });
       },
     });
 
