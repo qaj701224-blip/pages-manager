@@ -19,8 +19,7 @@ import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../s
 import {
   classifySlackIntake,
   isUnsupportedBulkDestructiveRequest,
-  isWorkItemHistoryQuery,
-  parseSlackPrNumber,
+  parseSlackWorkItemReference,
   slackStatusReply,
 } from '../slack/intake.js';
 import {
@@ -40,7 +39,12 @@ import {
 import { selectSlackSession, slackActorFromBody, slackUserIdFromBody, surfaceForSlackBody } from '../slack/session.js';
 import { compactUserFacingText, redactSecretLikeText } from '../slack/text.js';
 import {
-  findVisibleSlackJobByPrNumber,
+  normalizeSlackWorkItemQueryState,
+  slackWorkItemIncludesInactive,
+  slackWorkItemQueryStateFromText,
+} from '../slack/work-item-query.js';
+import {
+  findVisibleSlackJobByReference,
   inactiveSlackWorkItemReply,
   isActionableSlackWorkItem,
   isReopenableSlackWorkItem,
@@ -48,6 +52,7 @@ import {
   parseSlackButtonValue,
   reopenTargetForSlackWorkItem,
   slackJobVisibleToActor,
+  slackWorkItemTargetLabel,
   slackWorkItemListBlocks,
   slackWorkItemListText,
   unsupportedDestructiveRequestReply,
@@ -158,11 +163,16 @@ async function existingSlackThreadSession(store, body = {}) {
   const actor = slackActorFromBody(body);
   const surface = surfaceForSlackBody(body);
   const sessionKey = `thread:${surface.channelId || 'unknown'}:${surface.threadTs || surface.messageTs || 'unknown'}`;
-  return store.findSlackSessionByScope ? await store.findSlackSessionByScope(actor.teamId, actor.slackUserId, sessionKey) : null;
+  const session = store.findSlackSessionByScope
+    ? await store.findSlackSessionByScope(actor.teamId, actor.slackUserId, sessionKey)
+    : null;
+  return session?.status === 'closed' ? null : session;
 }
 
 async function cancelJobForClosedGithubIssue(store, job, issue = {}) {
-  const message = issue.number ? `GitHub issue #${issue.number} 已关闭，发布任务已停止。` : 'GitHub issue 已关闭，发布任务已停止。';
+  const message = issue.number
+    ? `GitHub issue #${issue.number} 已关闭，发布任务已停止。`
+    : 'GitHub issue 已关闭，发布任务已停止。';
   if (store.cancelJob) {
     return await store.cancelJob(job.id, 'github_issue_closed', message);
   }
@@ -383,15 +393,18 @@ async function reconcileClosedGithubIssueForJob(store, env, job, options = {}) {
 async function listReconciledSlackWorkItemsForSession(store, body, env, options = {}) {
   const displayLimit = Math.min(Math.max(Number(options.limit) || 5, 1), 20);
   const reconcileLimit = options.reconcileLimit || Math.max(displayLimit, 20);
+  const workItemState = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
   const result = await listSlackWorkItemsForSession(store, body, {
     ...options,
     limit: reconcileLimit,
+    workItemState,
   });
   const reconciledJobs = [];
 
   for (const job of result.jobs || []) {
     const reconciled = await reconcileClosedGithubIssueForJob(store, env, job);
-    if (options.includeInactive || isActionableSlackWorkItem(reconciled)) {
+    const actionable = isActionableSlackWorkItem(reconciled);
+    if (workItemState === 'closed' ? !actionable : slackWorkItemIncludesInactive(workItemState) || actionable) {
       reconciledJobs.push(reconciled);
     }
   }
@@ -402,22 +415,103 @@ async function listReconciledSlackWorkItemsForSession(store, body, env, options 
     jobs,
     total: jobs.length,
     limit: displayLimit,
+    workItemState,
   };
 }
 
-function shouldIncludeInactiveWorkItems(intake = {}, slackAgentAnalysis = null) {
-  if (intake.includeInactive) return true;
-  return isWorkItemHistoryQuery(
-    [
-      intake.text,
-      slackAgentAnalysis?.visibleReply,
-      slackAgentAnalysis?.summary,
-      slackAgentAnalysis?.title,
-      slackAgentAnalysis?.clarifyingQuestion,
-    ]
+function slackAgentToolArgs(slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const toolCall = analysis.toolCall || analysis.tool_call || {};
+  const args = toolCall.args || toolCall.arguments || analysis.toolArgs || analysis.tool_args || {};
+  return args && typeof args === 'object' ? args : {};
+}
+
+function slackAgentToolName(slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const toolCall = analysis.toolCall || analysis.tool_call || {};
+  const rawName = toolCall.name || analysis.tool || analysis.toolName || analysis.tool_name || analysis.action;
+  const name = String(rawName || '')
+    .trim()
+    .toLowerCase();
+  const aliases = {
+    list_work_items: 'list_my_work_items',
+    list_tasks: 'list_my_work_items',
+    search_work_items: 'list_my_work_items',
+    switch_pr: 'switch_work_item',
+    switch_to_work_item: 'switch_work_item',
+    reopen: 'reopen_work_item',
+    reopen_issue: 'reopen_work_item',
+    reopen_pr: 'reopen_work_item',
+    reopen_work_item: 'reopen_work_item',
+    restore_work_item: 'reopen_work_item',
+    status_query: 'get_current_status',
+    get_status: 'get_current_status',
+    close: 'close_session',
+    reject_unsupported_destructive_request: 'unsupported_destructive_request',
+    unsupported_destructive: 'unsupported_destructive_request',
+    create_issue: 'confirm_create_issue',
+    create_job: 'confirm_create_issue',
+    confirm_issue: 'confirm_create_issue',
+    confirm_before_issue: 'confirm_create_issue',
+    create_or_update_site: 'confirm_create_issue',
+    new_site_request: 'confirm_create_issue',
+    create_site: 'confirm_create_issue',
+    update_site: 'confirm_create_issue',
+    update_current_work_item: 'record_followup',
+    followup: 'record_followup',
+    modify_existing_preview: 'record_followup',
+  };
+  return aliases[name] || name || null;
+}
+
+function slackAgentWorkItemState(intake = {}, slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const args = slackAgentToolArgs(slackAgentAnalysis);
+  const explicit =
+    args.state ||
+    args.workItemState ||
+    args.work_item_state ||
+    analysis.workItemState ||
+    analysis.work_item_state ||
+    intake.workItemState;
+  if (explicit) return normalizeSlackWorkItemQueryState(explicit);
+
+  return slackWorkItemQueryStateFromText(
+    [intake.text, args.query, analysis.visibleReply, analysis.summary, analysis.title, analysis.clarifyingQuestion]
       .filter(Boolean)
       .join('\n')
   );
+}
+
+function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
+  if (!slackAgentAnalysis) return null;
+
+  const explicitName = slackAgentToolName(slackAgentAnalysis);
+  if (explicitName) {
+    return {
+      name: explicitName,
+      args: slackAgentToolArgs(slackAgentAnalysis),
+    };
+  }
+
+  if (shouldCloseSlackSession(intake, slackAgentAnalysis)) return { name: 'close_session', args: {} };
+  if (slackAgentAnalysis.intent === 'status_query') return { name: 'get_current_status', args: {} };
+  if (shouldRejectUnsupportedDestructiveSlackTurn(intake, slackAgentAnalysis)) {
+    return { name: 'unsupported_destructive_request', args: {} };
+  }
+  if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis.intent)) {
+    return { name: 'list_my_work_items', args: { state: slackAgentWorkItemState(intake, slackAgentAnalysis) } };
+  }
+  if (SWITCH_WORK_ITEM_INTENTS.has(slackAgentAnalysis.intent)) return { name: 'switch_work_item', args: {} };
+  if (slackAgentAnalysis.intent === 'reopen_work_item') return { name: 'reopen_work_item', args: {} };
+  if (slackAgentAnalysis.intent === 'cancel_request') return { name: 'cancel_request', args: {} };
+  if (hasActiveSlackTarget(slackSession) && isSlackFollowupIntent(slackAgentAnalysis, intake, slackSession)) {
+    return { name: 'record_followup', args: {} };
+  }
+  if (shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis, slackSession)) {
+    return { name: 'confirm_create_issue', args: {} };
+  }
+  return null;
 }
 
 async function applyExecutorCallback(store, jobId, stageResult, status, patch) {
@@ -1013,8 +1107,11 @@ function normalizeSlackAgentTurnResult(result = {}, mode = 'analyze') {
   return { analysis: result?.analysis || null, turn: null };
 }
 
-function shouldStartSlackAgentReplyForTurn(intake, endpoint) {
-  return endpoint?.mode === 'turn' && intake.action === 'agent_turn';
+const SLACK_AGENT_REPLY_START_TEXT = '正在整理需求...';
+
+function shouldStartSlackAgentReplyForTurn(intake, endpoint, slackSession) {
+  if (endpoint?.mode !== 'turn' || intake.action !== 'agent_turn') return false;
+  return !hasActiveSlackTarget(slackSession);
 }
 
 async function startSlackAgentReplyMessage(env, store, body, slackSession, agentRun) {
@@ -1025,7 +1122,7 @@ async function startSlackAgentReplyMessage(env, store, body, slackSession, agent
   const thread = slackThreadForSession(slackSession, surfaceForSlackBody(body));
   if (!thread.channelId) return null;
 
-  const text = mentionSlackUser('我已收到，正在整理需求。', slackUserIdFromBody(body, null));
+  const text = mentionSlackUser(SLACK_AGENT_REPLY_START_TEXT, slackUserIdFromBody(body, null));
   let result;
   try {
     result = await startSlackAgentReply(
@@ -1034,10 +1131,7 @@ async function startSlackAgentReplyMessage(env, store, body, slackSession, agent
       {
         text,
         status: 'running',
-        blocks: buildSlackAgentReplyBlocks(
-          { text: '我已收到，正在整理需求。' },
-          { title: '需求整理', status: 'running' }
-        ),
+        blocks: buildSlackAgentReplyBlocks({ text: SLACK_AGENT_REPLY_START_TEXT }, { title: '需求整理', status: 'running' }),
       }
     );
   } catch (err) {
@@ -1062,7 +1156,7 @@ async function startSlackAgentReplyMessage(env, store, body, slackSession, agent
     channel: result.channel || thread.channelId,
     threadTs: thread.threadTs || thread.messageTs || null,
     messageTs,
-    textSnapshot: '我已收到，正在整理需求。',
+    textSnapshot: SLACK_AGENT_REPLY_START_TEXT,
     lastSequence: 1,
     status: 'running',
   });
@@ -1072,7 +1166,7 @@ async function startSlackAgentReplyMessage(env, store, body, slackSession, agent
     agentRunId: agentRun.id,
     type: 'slack_reply_posted',
     stage: 'slack_agent_turn',
-    text: '我已收到，正在整理需求。',
+    text: SLACK_AGENT_REPLY_START_TEXT,
     status: 'recorded',
     dedupeKey: `slack-reply-posted:${agentRun.id}`,
     slackChannelId: message.channel,
@@ -1094,10 +1188,7 @@ async function updateSlackAgentReplyMessage(env, store, body, replyMessage, resu
       status: options.status || 'completed',
       blocks:
         result.blocks ||
-        buildSlackAgentReplyBlocks(
-          { text: result.replyText },
-          { title: '需求整理', status: options.status || 'completed' }
-        ),
+        buildSlackAgentReplyBlocks({ text: result.replyText }, { title: '需求整理', status: options.status || 'completed' }),
     });
   } catch (err) {
     console.log(
@@ -1274,7 +1365,6 @@ async function readSlackAgentNdjsonResponse(response, context = {}) {
     if (event.type === 'analysis_final' && event.analysis) {
       turn.analysis = event.analysis;
     }
-
   };
 
   let buffer = '';
@@ -1336,7 +1426,7 @@ async function runSlackAgentTurnIfConfigured(body, intake, env, context = {}) {
   }
 
   const store = context.store || env.store || env.GATEWAY_STORE || globalThis.__PAGES_GATEWAY_STORE__;
-  const replyStart = shouldStartSlackAgentReplyForTurn(intake, endpoint)
+  const replyStart = shouldStartSlackAgentReplyForTurn(intake, endpoint, context.slackSession)
     ? await startSlackAgentReplyMessage(env, store, body, context.slackSession, context.agentRun)
     : null;
   const replyMessage = replyStart?.message || null;
@@ -1357,7 +1447,7 @@ async function runSlackAgentTurnIfConfigured(body, intake, env, context = {}) {
             replyMessage,
             agentRunId: payload.agentRunId,
             slackSessionId: payload.slackSessionId,
-        })
+          })
         : await readSlackAgentResponse(response);
 
     if (result?.cancelled || !(await slackAgentRunStillRunning(store, context.agentRun))) {
@@ -1525,8 +1615,6 @@ const NON_FOLLOWUP_ACTIONS = new Set([
   'close_session',
   'empty',
   'missing_requirement',
-  'list_work_items',
-  'switch_work_item',
   'unsupported_destructive_request',
 ]);
 const LIST_WORK_ITEM_INTENTS = new Set(['list_work_items']);
@@ -1635,9 +1723,7 @@ function agentEventTime(event = {}) {
 }
 
 function latestAgentEvent(events = [], type) {
-  return events
-    .filter((event) => event.type === type)
-    .sort((left, right) => agentEventTime(right) - agentEventTime(left))[0];
+  return events.filter((event) => event.type === type).sort((left, right) => agentEventTime(right) - agentEventTime(left))[0];
 }
 
 function agentEventRound(event = {}) {
@@ -1926,6 +2012,10 @@ function slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis = {}, opt
   return blocks;
 }
 
+function slackAgentEndpointConfigured(env = {}) {
+  return Boolean(slackAgentEndpoint(env));
+}
+
 function slackIssueConfirmedText(slackAgentAnalysis = {}) {
   const title = userFacingSlackTitle(slackAgentAnalysis);
   return `已确认：${title}\n我会开始创建 issue，后续进度会在当前对话更新。`;
@@ -1951,6 +2041,361 @@ function slackIssueWaitingMoreBlocks(slackSession, slackAgentAnalysis = {}) {
     statusLabel: '等待补充',
     contextText: '直接在当前对话回复新的要求；确认前不会创建 issue。',
   });
+}
+
+function slackWorkItemJobResponse(job = {}) {
+  return {
+    id: job.id,
+    status: job.status,
+    siteSlug: job.siteSlug,
+    issueNumber: job.issueNumber,
+    prNumber: job.prNumber,
+    previewUrl: job.previewUrl,
+  };
+}
+
+function slackAgentRunModelPatch(slackAgentAnalysis) {
+  return {
+    provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
+    model: slackAgentAnalysis?.modelName || null,
+    modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+  };
+}
+
+async function handleSlackListWorkItemsTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const workItemState = normalizeSlackWorkItemQueryState(
+    toolArgs.state || toolArgs.workItemState || toolArgs.work_item_state || slackAgentWorkItemState(intake, slackAgentAnalysis)
+  );
+  const includeInactive = slackWorkItemIncludesInactive(workItemState);
+  const result = await listReconciledSlackWorkItemsForSession(store, body, env, {
+    limit: 5,
+    workItemState,
+    includeInactive,
+  });
+  await completeSlackAgentRun(store, agentRun, {
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action: 'list_my_work_items',
+      accepted: false,
+      intent: slackAgentAnalysis?.intent || intake.action,
+      workItemState,
+      total: result.total,
+    },
+  });
+  return {
+    ok: true,
+    action: 'list_work_items',
+    accepted: false,
+    replyText: slackWorkItemListText(result.jobs || [], { workItemState, includeInactive }),
+    blocks: slackWorkItemListBlocks(slackSession, result.jobs || [], { workItemState, includeInactive }),
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    workItemState,
+    jobs: (result.jobs || []).map(slackWorkItemJobResponse),
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+  };
+}
+
+function numberFromSlackToolArg(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function slackWorkItemReferenceFromTool(intake = {}, slackAgentAnalysis = {}, toolArgs = {}) {
+  const queryText = [toolArgs.query, toolArgs.text, intake.text, slackAgentAnalysis?.summary].filter(Boolean).join('\n');
+  const explicitKind = String(
+    toolArgs.kind || toolArgs.type || toolArgs.targetKind || toolArgs.target_kind || intake.targetKind || ''
+  )
+    .trim()
+    .toLowerCase();
+  const explicitNumber =
+    numberFromSlackToolArg(toolArgs.number || toolArgs.targetNumber || toolArgs.target_number || intake.targetNumber) ||
+    numberFromSlackToolArg(toolArgs.issueNumber || toolArgs.issue_number || intake.issueNumber) ||
+    numberFromSlackToolArg(
+      toolArgs.prNumber || toolArgs.pr_number || toolArgs.pullRequestNumber || toolArgs.pull_request_number || intake.prNumber
+    );
+
+  if (explicitNumber) {
+    const hasIssueNumber = Boolean(toolArgs.issueNumber || toolArgs.issue_number || intake.issueNumber);
+    const hasPrNumber = Boolean(
+      toolArgs.prNumber || toolArgs.pr_number || toolArgs.pullRequestNumber || toolArgs.pull_request_number || intake.prNumber
+    );
+    const kind =
+      ['issue', 'issues', 'github_issue'].includes(explicitKind) || hasIssueNumber
+        ? 'issue'
+        : ['pr', 'pull_request', 'pull-request', 'pullrequest'].includes(explicitKind) || hasPrNumber
+          ? 'pr'
+          : 'unknown';
+    return { kind, number: explicitNumber };
+  }
+
+  return parseSlackWorkItemReference(queryText);
+}
+
+async function handleSlackSwitchWorkItemTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const reference = slackWorkItemReferenceFromTool(intake, slackAgentAnalysis, toolArgs);
+  let job = reference ? await findVisibleSlackJobByReference(store, body, reference) : null;
+  job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
+  const targetLabel =
+    reference?.kind === 'issue'
+      ? `Issue #${reference.number}`
+      : reference?.kind === 'pr'
+        ? `PR #${reference.number}`
+        : reference?.number
+          ? `#${reference.number}`
+          : null;
+  if (!job) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'switch_work_item_not_found',
+        accepted: false,
+        intent: slackAgentAnalysis?.intent || null,
+        reference,
+      },
+    });
+    return {
+      ok: true,
+      action: 'switch_work_item_not_found',
+      accepted: false,
+      replyText: targetLabel
+        ? `我没有找到你可继续操作的 ${targetLabel}。可以说「我的 PR」查看当前可选任务。`
+        : '我还没识别出要继续哪个 Issue 或 PR。可以说「继续 PR #数字」或「继续 issue #数字」。',
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+  if (!isActionableSlackWorkItem(job)) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'switch_work_item_inactive',
+        accepted: false,
+        intent: slackAgentAnalysis?.intent || null,
+        reference,
+        jobId: job.id,
+        status: job.status,
+      },
+    });
+    return {
+      ok: true,
+      action: 'switch_work_item_inactive',
+      accepted: false,
+      replyText: inactiveSlackWorkItemReply(job),
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  const activeJob = await activateJobForSlackSession(store, job, slackSession);
+  const slackStatusNotification = await notifySlackJobStatus(env, store, activeJob, {
+    stage: activeJob.status,
+    text: '已切换到这个发布任务。',
+    statusText: ':white_check_mark: 已切换到这个任务。',
+    skipDuplicate: false,
+    dedupeKey: `slack-switch:${activeJob.id}:${slackSession.id}:${agentRun?.id || Date.now()}`,
+    slackSessionId: slackSession.id,
+  });
+  await completeSlackAgentRun(store, agentRun, {
+    publishingJobId: activeJob.id,
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: { action: 'switch_work_item', accepted: true, intent: slackAgentAnalysis?.intent || intake.action, reference },
+  });
+  return {
+    ok: true,
+    action: 'switch_work_item',
+    accepted: true,
+    jobId: activeJob.id,
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    replyText: `已切换到 ${slackWorkItemTargetLabel(activeJob)}，继续在这里回复修改意见即可。`,
+    noReply: Boolean(slackStatusNotification?.ok),
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
+  };
+}
+
+async function handleSlackReopenWorkItemTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const reference = slackWorkItemReferenceFromTool(intake, slackAgentAnalysis, toolArgs);
+  let job = reference ? await findVisibleSlackJobByReference(store, body, reference) : null;
+  job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
+  const targetLabel =
+    reference?.kind === 'issue'
+      ? `Issue #${reference.number}`
+      : reference?.kind === 'pr'
+        ? `PR #${reference.number}`
+        : reference?.number
+          ? `#${reference.number}`
+          : '指定任务';
+
+  const complete = async (report, extra = {}) =>
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: extra.jobId || null,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'reopen_work_item',
+        intent: slackAgentAnalysis?.intent || intake.action,
+        reference,
+        ...report,
+      },
+    });
+
+  if (!job) {
+    await complete({ accepted: false, reason: 'not_found' });
+    return {
+      ok: true,
+      action: 'reopen_work_item_not_found',
+      accepted: false,
+      replyText: `我没有找到你可以恢复的 ${targetLabel}。可以说「查看我已关闭的任务」确认可恢复项。`,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  const target = reopenTargetForSlackWorkItem(job);
+  if (!isReopenableSlackWorkItem(job) || !target) {
+    await complete({ accepted: false, reason: 'not_reopenable', status: job.status }, { jobId: job.id });
+    return {
+      ok: true,
+      action: 'reopen_work_item_not_reopenable',
+      accepted: false,
+      jobId: job.id,
+      replyText: inactiveSlackWorkItemReply(job),
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  let resource = null;
+  try {
+    resource = await reopenGithubResourceForJob(env, job, target);
+  } catch (err) {
+    await complete({ accepted: false, reason: 'github_reopen_failed', error: err.message }, { jobId: job.id });
+    return {
+      ok: true,
+      action: 'reopen_work_item_failed',
+      accepted: false,
+      jobId: job.id,
+      replyText: `重新打开失败：${err.message}`,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  job = await restoreJobForReopenedGithubResource(store, job, target, resource || {});
+  await store.linkJobToSlackSession(job, slackSession);
+  const workerStart = await startWorkerForJobIfConfigured(job, env);
+  const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+    stage: job.status,
+    text: target === 'pr' ? 'GitHub PR 已重新打开，发布任务已恢复。' : 'GitHub issue 已重新打开，发布任务已恢复。',
+    statusText:
+      target === 'pr'
+        ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。'
+        : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
+    skipDuplicate: false,
+    dedupeKey: `slack-agent-reopen:${target}:${job.id}:${agentRun?.id || Date.now()}`,
+    slackSessionId: slackSession.id,
+  });
+  await complete({ accepted: true, target }, { jobId: job.id });
+
+  return {
+    ok: true,
+    action: 'reopen_work_item',
+    accepted: true,
+    jobId: job.id,
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    replyText:
+      target === 'pr'
+        ? '已重新打开 PR，继续在这个对话里回复修改意见即可。'
+        : '已重新打开 Issue，继续在这个对话里回复修改意见即可。',
+    noReply: Boolean(slackStatusNotification?.ok),
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    ...(workerStart ? { workerStart } : {}),
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
+  };
+}
+
+async function handleSlackAgentToolCall(context) {
+  const { intake, slackAgentAnalysis, slackSession } = context;
+  const toolCall = context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession);
+  if (!toolCall?.name) return null;
+  if (
+    slackAgentAnalysis?.needsClarification &&
+    ['confirm_create_issue', 'record_followup', 'switch_work_item', 'reopen_work_item'].includes(toolCall.name)
+  ) {
+    return null;
+  }
+
+  switch (toolCall.name) {
+    case 'close_session':
+      return handleCloseSlackSession(context);
+    case 'get_current_status':
+      return handleSlackAgentStatusQuery(context);
+    case 'unsupported_destructive_request':
+      return handleSlackAgentNonPublishingTurn({
+        ...context,
+        action: 'unsupported_destructive_request',
+        replyText: unsupportedDestructiveRequestReply(),
+        preferReplyText: true,
+      });
+    case 'list_my_work_items':
+      return handleSlackListWorkItemsTool({ ...context, toolArgs: toolCall.args || {} });
+    case 'switch_work_item':
+      return handleSlackSwitchWorkItemTool({ ...context, toolArgs: toolCall.args || {} });
+    case 'reopen_work_item':
+      return handleSlackReopenWorkItemTool({ ...context, toolArgs: toolCall.args || {} });
+    case 'cancel_request':
+      return handleSlackAgentNonPublishingTurn({
+        ...context,
+        action: 'cancel_request',
+        replyText: '收到取消意图。当前还没有自动取消发布任务；如果已经创建了 issue，可以先在 issue 里补充“取消”。',
+      });
+    case 'record_followup':
+      return handleSlackFollowup(context);
+    case 'confirm_create_issue':
+      return handleSlackAgentNonPublishingTurn({
+        ...context,
+        action: 'confirm_before_issue',
+        replyText: slackIssueConfirmationText(slackAgentAnalysis),
+        blocks: slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis),
+        preferReplyText: true,
+      });
+    default:
+      return null;
+  }
 }
 
 function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null, options = {}) {
@@ -2001,9 +2446,7 @@ function sessionMemoryForSelectedJob(job = {}) {
     },
     pendingQuestions: [],
     lastPreviewFeedback: null,
-    lastAgentResponse: job.prNumber
-      ? `已切换到 PR #${job.prNumber}，后续回复会继续修改这个任务。`
-      : '已切换到这个发布任务，后续回复会继续修改它。',
+    lastAgentResponse: `已切换到 ${slackWorkItemTargetLabel(job)}，后续回复会继续修改这个任务。`,
   };
 }
 
@@ -2725,90 +3168,37 @@ async function processSlackEventBody(body, env, options = {}) {
 
   const agentRun = lease?.agentRun || null;
 
-  if (intake.action === 'list_work_items') {
-    const result = await listReconciledSlackWorkItemsForSession(store, body, env, {
-      limit: 5,
-      includeInactive: intake.includeInactive,
-    });
-    await completeSlackAgentRun(store, agentRun, {
-      report: { action: intake.action, accepted: false, total: result.total },
-    });
-    return respond({
-      ok: true,
-      action: 'list_work_items',
-      accepted: false,
-      replyText: slackWorkItemListText(result.jobs || [], { includeInactive: intake.includeInactive }),
-      blocks: slackWorkItemListBlocks(slackSession, result.jobs || [], { includeInactive: intake.includeInactive }),
-      slackSessionId: slackSession.id,
-      agentRunId: agentRun?.id,
-      jobs: (result.jobs || []).map((job) => ({
-        id: job.id,
-        status: job.status,
-        siteSlug: job.siteSlug,
-        issueNumber: job.issueNumber,
-        prNumber: job.prNumber,
-        previewUrl: job.previewUrl,
-      })),
-    });
+  const useSlackAgentForToolLikeTurn = slackAgentEndpointConfigured(env) && intake.shouldAnalyze !== false;
+
+  if (intake.action === 'list_work_items' && !useSlackAgentForToolLikeTurn) {
+    return respond(
+      await handleSlackListWorkItemsTool({
+        store,
+        body,
+        env,
+        intake,
+        slackSession,
+        sessionMemory,
+        agentRun,
+        slackAgentAnalysis: null,
+        toolArgs: { state: intake.workItemState },
+      })
+    );
   }
 
-  if (intake.action === 'switch_work_item') {
-    const prNumber = intake.prNumber || parseSlackPrNumber(intake.text);
-    let job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
-    job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
-    if (!job) {
-      await completeSlackAgentRun(store, agentRun, {
-        report: { action: intake.action, accepted: false, prNumber: prNumber || null },
-      });
-      return respond({
-        ok: true,
-        action: 'switch_work_item_not_found',
-        accepted: false,
-        replyText: prNumber
-          ? `我没有找到你可继续操作的 PR #${prNumber}。可以说「我的 PR」查看当前可选任务。`
-          : '我还没识别出要继续哪个 PR。可以说「继续 PR #数字」。',
-        slackSessionId: slackSession.id,
-        agentRunId: agentRun?.id,
-      });
-    }
-    if (!isActionableSlackWorkItem(job)) {
-      await completeSlackAgentRun(store, agentRun, {
-        report: { action: `${intake.action}_inactive`, accepted: false, prNumber, jobId: job.id, status: job.status },
-      });
-      return respond({
-        ok: true,
-        action: 'switch_work_item_inactive',
-        accepted: false,
-        replyText: inactiveSlackWorkItemReply(job),
-        slackSessionId: slackSession.id,
-        agentRunId: agentRun?.id,
-      });
-    }
-
-    const activeJob = await activateJobForSlackSession(store, job, slackSession);
-    const slackStatusNotification = await notifySlackJobStatus(env, store, activeJob, {
-      stage: activeJob.status,
-      text: '已切换到这个发布任务。',
-      statusText: ':white_check_mark: 已切换到这个任务。',
-      skipDuplicate: false,
-      dedupeKey: `slack-switch:${activeJob.id}:${slackSession.id}:${agentRun?.id || Date.now()}`,
-      slackSessionId: slackSession.id,
-    });
-    await completeSlackAgentRun(store, agentRun, {
-      publishingJobId: activeJob.id,
-      report: { action: intake.action, accepted: true, prNumber },
-    });
-    return respond({
-      ok: true,
-      action: 'switch_work_item',
-      accepted: true,
-      jobId: activeJob.id,
-      slackSessionId: slackSession.id,
-      agentRunId: agentRun?.id,
-      replyText: `已切换到${activeJob.prNumber ? ` PR #${activeJob.prNumber}` : '这个发布任务'}，继续在这里回复修改意见即可。`,
-      noReply: Boolean(slackStatusNotification?.ok),
-      ...(slackStatusNotification ? { slackStatusNotification } : {}),
-    });
+  if (intake.action === 'switch_work_item' && !useSlackAgentForToolLikeTurn) {
+    return respond(
+      await handleSlackSwitchWorkItemTool({
+        store,
+        body,
+        env,
+        intake,
+        slackSession,
+        sessionMemory,
+        agentRun,
+        slackAgentAnalysis: null,
+      })
+    );
   }
 
   if (intake.action === 'status') {
@@ -2882,181 +3272,19 @@ async function processSlackEventBody(body, env, options = {}) {
       slackAgentAnalysis = slackAgentTurnResult.analysis || null;
       activeSlackAgentTurn = slackAgentTurnResult.turn || null;
 
-      if (shouldCloseSlackSession(intake, slackAgentAnalysis)) {
-        return respond(
-          handleCloseSlackSession({
-            store,
-            intake,
-            slackSession,
-            sessionMemory,
-            agentRun,
-            slackAgentAnalysis,
-          })
-        );
-      }
+      const toolResult = await handleSlackAgentToolCall({
+        store,
+        body,
+        env,
+        intake,
+        slackSession,
+        sessionMemory,
+        agentRun,
+        slackAgentAnalysis,
+      });
+      if (toolResult) return respond(toolResult);
 
-      if (slackAgentAnalysis?.intent === 'status_query') {
-        return respond(
-          handleSlackAgentStatusQuery({
-            store,
-            env,
-            intake,
-            slackSession,
-            sessionMemory,
-            agentRun,
-            slackAgentAnalysis,
-          })
-        );
-      }
-
-      if (shouldRejectUnsupportedDestructiveSlackTurn(intake, slackAgentAnalysis)) {
-        return respond(
-          handleSlackAgentNonPublishingTurn({
-            store,
-            intake,
-            slackSession,
-            sessionMemory,
-            agentRun,
-            slackAgentAnalysis,
-            action: 'unsupported_destructive_request',
-            replyText: unsupportedDestructiveRequestReply(),
-            preferReplyText: true,
-          })
-        );
-      }
-
-      if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis?.intent)) {
-        const includeInactive = shouldIncludeInactiveWorkItems(intake, slackAgentAnalysis);
-        const result = await listReconciledSlackWorkItemsForSession(store, body, env, {
-          limit: 5,
-          includeInactive,
-        });
-        await completeSlackAgentRun(store, agentRun, {
-          provider: slackAgentAnalysis?.modelProvider || 'unknown',
-          model: slackAgentAnalysis?.modelName || null,
-          modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
-          report: {
-            action: 'list_work_items',
-            accepted: false,
-            intent: slackAgentAnalysis.intent,
-            includeInactive,
-            total: result.total,
-          },
-        });
-        return respond({
-          ok: true,
-          action: 'list_work_items',
-          accepted: false,
-          replyText: slackWorkItemListText(result.jobs || [], { includeInactive }),
-          blocks: slackWorkItemListBlocks(slackSession, result.jobs || [], { includeInactive }),
-          slackSessionId: slackSession.id,
-          agentRunId: agentRun?.id,
-          jobs: (result.jobs || []).map((job) => ({
-            id: job.id,
-            status: job.status,
-            siteSlug: job.siteSlug,
-            issueNumber: job.issueNumber,
-            prNumber: job.prNumber,
-            previewUrl: job.previewUrl,
-          })),
-          slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
-        });
-      }
-
-      if (SWITCH_WORK_ITEM_INTENTS.has(slackAgentAnalysis?.intent)) {
-        const prNumber = parseSlackPrNumber(intake.text || slackAgentAnalysis.summary || '');
-        let job = prNumber ? await findVisibleSlackJobByPrNumber(store, body, prNumber) : null;
-        job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
-        if (!job) {
-          await completeSlackAgentRun(store, agentRun, {
-            provider: slackAgentAnalysis?.modelProvider || 'unknown',
-            model: slackAgentAnalysis?.modelName || null,
-            modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
-            report: { action: 'switch_work_item_not_found', accepted: false, intent: slackAgentAnalysis.intent, prNumber },
-          });
-          return respond({
-            ok: true,
-            action: 'switch_work_item_not_found',
-            accepted: false,
-            replyText: prNumber
-              ? `我没有找到你可继续操作的 PR #${prNumber}。可以说「我的 PR」查看当前可选任务。`
-              : '我还没识别出要继续哪个 PR。可以说「继续 PR #数字」。',
-            slackSessionId: slackSession.id,
-            agentRunId: agentRun?.id,
-            slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
-          });
-        }
-        if (!isActionableSlackWorkItem(job)) {
-          await completeSlackAgentRun(store, agentRun, {
-            provider: slackAgentAnalysis?.modelProvider || 'unknown',
-            model: slackAgentAnalysis?.modelName || null,
-            modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
-            report: {
-              action: 'switch_work_item_inactive',
-              accepted: false,
-              intent: slackAgentAnalysis.intent,
-              prNumber,
-              jobId: job.id,
-              status: job.status,
-            },
-          });
-          return respond({
-            ok: true,
-            action: 'switch_work_item_inactive',
-            accepted: false,
-            replyText: inactiveSlackWorkItemReply(job),
-            slackSessionId: slackSession.id,
-            agentRunId: agentRun?.id,
-            slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
-          });
-        }
-
-        const activeJob = await activateJobForSlackSession(store, job, slackSession);
-        const slackStatusNotification = await notifySlackJobStatus(env, store, activeJob, {
-          stage: activeJob.status,
-          text: '已切换到这个发布任务。',
-          statusText: ':white_check_mark: 已切换到这个任务。',
-          skipDuplicate: false,
-          dedupeKey: `slack-switch:${activeJob.id}:${slackSession.id}:${agentRun?.id || Date.now()}`,
-          slackSessionId: slackSession.id,
-        });
-        await completeSlackAgentRun(store, agentRun, {
-          publishingJobId: activeJob.id,
-          provider: slackAgentAnalysis?.modelProvider || 'unknown',
-          model: slackAgentAnalysis?.modelName || null,
-          modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
-          report: { action: 'switch_work_item', accepted: true, intent: slackAgentAnalysis.intent, prNumber },
-        });
-        return respond({
-          ok: true,
-          action: 'switch_work_item',
-          accepted: true,
-          jobId: activeJob.id,
-          slackSessionId: slackSession.id,
-          agentRunId: agentRun?.id,
-          replyText: `已切换到${activeJob.prNumber ? ` PR #${activeJob.prNumber}` : '这个发布任务'}，继续在这里回复修改意见即可。`,
-          noReply: Boolean(slackStatusNotification?.ok),
-          slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
-          ...(slackStatusNotification ? { slackStatusNotification } : {}),
-        });
-      }
-
-      if (slackAgentAnalysis?.intent === 'cancel_request') {
-        return respond(
-          handleSlackAgentNonPublishingTurn({
-            store,
-            intake,
-            slackSession,
-            sessionMemory,
-            agentRun,
-            slackAgentAnalysis,
-            action: 'cancel_request',
-            replyText: '收到取消意图。当前还没有自动取消发布任务；如果已经创建了 issue，可以先在 issue 里补充“取消”。',
-          })
-        );
-      }
-
-      if (hasActiveSlackTarget(slackSession) && isSlackFollowupIntent(slackAgentAnalysis, intake, slackSession)) {
+      if (!slackAgentAnalysis && hasActiveSlackTarget(slackSession) && isSlackFollowupIntent(null, intake, slackSession)) {
         return respond(
           handleSlackFollowup({
             store,
@@ -3138,8 +3366,8 @@ async function processSlackEventBody(body, env, options = {}) {
       ? await notifySlackJobStatus(env, store, job, {
           stage: 'received',
           agentRunId: agentRun?.id || null,
-          text: '已收到 Slack 发布需求，正在整理任务。',
-          statusText: ':hourglass_flowing_sand: 我已收到需求，正在整理...',
+          text: 'Slack 发布需求已进入处理队列。',
+          statusText: ':hourglass_flowing_sand: 正在整理发布任务...',
         })
       : null;
     const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
@@ -3490,11 +3718,7 @@ async function failRunningSlackAgentRunsForClosedSession(store, slackSessionId, 
   const runs = await store.listAgentRunsForSlackSession(slackSessionId);
   const failed = [];
   for (const run of runs) {
-    if (
-      run.agentKind !== 'slack_agent' ||
-      run.status !== 'running' ||
-      (excludeAgentRunId && run.id === excludeAgentRunId)
-    ) {
+    if (run.agentKind !== 'slack_agent' || run.status !== 'running' || (excludeAgentRunId && run.id === excludeAgentRunId)) {
       continue;
     }
 
@@ -3731,7 +3955,7 @@ export async function handleSlackInteractions(request, env) {
     });
     return slackAckResponse({
       response_type: 'ephemeral',
-      text: `已切换到${activeJob.prNumber ? ` PR #${activeJob.prNumber}` : '这个发布任务'}，继续在这个对话里回复修改意见即可。`,
+      text: `已切换到 ${slackWorkItemTargetLabel(activeJob)}，继续在这个对话里回复修改意见即可。`,
     });
   }
 
@@ -3777,7 +4001,10 @@ export async function handleSlackInteractions(request, env) {
     const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
       stage: job.status,
       text: target === 'pr' ? 'GitHub PR 已重新打开，发布任务已恢复。' : 'GitHub issue 已重新打开，发布任务已恢复。',
-      statusText: target === 'pr' ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。' : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
+      statusText:
+        target === 'pr'
+          ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。'
+          : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
       skipDuplicate: false,
       dedupeKey: `slack-reopen:${target}:${job.id}:${body.trigger_id || Date.now()}`,
       slackSessionId: session.id,
@@ -3785,15 +4012,25 @@ export async function handleSlackInteractions(request, env) {
     const refreshed = await listReconciledSlackWorkItemsForSession(store, body, env, {
       limit: 5,
       includeInactive: Boolean(value.includeInactive),
+      workItemState: value.workItemState,
     });
     const listUpdate = await updateSlackInteractionMessage(env, body, session, {
-      text: slackWorkItemListText(refreshed.jobs || [], { includeInactive: Boolean(value.includeInactive) }),
-      blocks: slackWorkItemListBlocks(session, refreshed.jobs || [], { includeInactive: Boolean(value.includeInactive) }),
+      text: slackWorkItemListText(refreshed.jobs || [], {
+        includeInactive: Boolean(value.includeInactive),
+        workItemState: value.workItemState,
+      }),
+      blocks: slackWorkItemListBlocks(session, refreshed.jobs || [], {
+        includeInactive: Boolean(value.includeInactive),
+        workItemState: value.workItemState,
+      }),
     });
 
     return slackAckResponse({
       response_type: 'ephemeral',
-      text: target === 'pr' ? '已重新打开 PR，继续在这个对话里回复修改意见即可。' : '已重新打开 Issue，继续在这个对话里回复修改意见即可。',
+      text:
+        target === 'pr'
+          ? '已重新打开 PR，继续在这个对话里回复修改意见即可。'
+          : '已重新打开 Issue，继续在这个对话里回复修改意见即可。',
       jobId: job.id,
       ...(workerStart ? { workerStart } : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
