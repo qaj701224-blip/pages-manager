@@ -7,7 +7,7 @@ import test from 'node:test';
 import { executeCommand } from './commands.js';
 import { writeProjectConfig } from './project-config.js';
 
-test('deploy creates a site when project has no binding, writes .pages.json, then deploys', async () => {
+test('deploy creates a site with a CLI token but does not write .pages.json by default', async () => {
   const dir = await tempProject();
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
   const calls = [];
@@ -15,7 +15,8 @@ test('deploy creates a site when project has no binding, writes .pages.json, the
 
   const exitCode = await executeCommand(['deploy', '.', '--slug', 'docs', '--visibility', 'org'], {
     cwd: dir,
-    env: { PAGES_CLI_ENV: 'production', PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
     fetch: fakeFetch(calls, [
       { site: { id: 'site_1', slug: 'docs', environment: 'production', url: 'https://docs.pages.xd.team' } },
       {
@@ -46,12 +47,99 @@ test('deploy creates a site when project has no binding, writes .pages.json, the
     source: 'cli',
   });
 
+  assert.match(output.join('\n'), /dep_1/);
+  assert.match(output.join('\n'), /site_1/);
+  assert.match(output.join('\n'), /Project config not saved/);
+  await assert.rejects(() => readFile(path.join(dir, '.pages.json'), 'utf8'), { code: 'ENOENT' });
+});
+
+test('deploy writes .pages.json only when --save-config is explicit', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const calls = [];
+
+  const exitCode = await executeCommand(['deploy', '.', '--slug', 'docs', '--visibility', 'org', '--save-config'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      { site: { id: 'site_1', slug: 'docs', environment: 'production', url: 'https://docs.pages.xd.team' } },
+      {
+        deployment: { id: 'dep_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'docs.pages.xd.team' },
+      },
+    ]),
+    idempotencyKey: () => 'idem_1',
+    nowIso: () => '2026-06-16T00:00:00.000Z',
+    output: () => {},
+  });
+
+  assert.equal(exitCode, 0);
   const project = JSON.parse(await readFile(path.join(dir, '.pages.json'), 'utf8'));
   assert.equal(project.siteId, 'site_1');
   assert.equal(project.slug, 'docs');
   assert.equal(project.lastDeploymentId, 'dep_1');
+  assert.equal(project.lastVersionId, 'ver_1');
+  assert.equal(project.createdAt, '2026-06-16T00:00:00.000Z');
+  assert.equal(project.updatedAt, '2026-06-16T00:00:00.000Z');
   assert.equal(JSON.stringify(project).includes('xdpak_'), false);
-  assert.match(output.join('\n'), /dep_1/);
+});
+
+test('deploy with an access key requires an existing site id instead of creating a site', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const calls = [];
+
+  await assert.rejects(
+    () =>
+      executeCommand(['deploy', '.', '--slug', 'docs'], {
+        cwd: dir,
+        env: { PAGES_CLI_ENV: 'production', PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
+        fetch: fakeFetch(calls, [{ site: { id: 'site_1' } }]),
+        output: () => {},
+      }),
+    (error) => {
+      assert.equal(error.code, 'SITE_ID_REQUIRED_FOR_ACCESS_KEY');
+      assert.match(error.action, /--site <site_id>/);
+      return true;
+    }
+  );
+
+  assert.equal(calls.length, 0);
+});
+
+test('deploy with an access key accepts an explicit site id and returns agent-friendly JSON without writing config', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const calls = [];
+  const output = [];
+
+  const exitCode = await executeCommand(['deploy', '.', '--site', 'site_1', '--slug', 'docs', '--json'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'production', PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
+    fetch: fakeFetch(calls, [{ deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} }]),
+    idempotencyKey: () => 'idem_1',
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
+  assert.equal((await calls[0].json()).siteId, 'site_1');
+  assert.deepEqual(JSON.parse(output.join('\n')), {
+    ok: true,
+    environment: 'production',
+    siteId: 'site_1',
+    slug: 'docs',
+    artifactKind: 'spa',
+    savedProjectConfig: false,
+    deployment: { id: 'dep_1', status: 'succeeded' },
+    version: { id: 'ver_1' },
+    route: {},
+    url: null,
+  });
+  await assert.rejects(() => readFile(path.join(dir, '.pages.json'), 'utf8'), { code: 'ENOENT' });
 });
 
 test('deploy reuses existing project binding without creating a site', async () => {
@@ -80,7 +168,8 @@ test('deploy does not reuse a project binding from a different environment', asy
 
   await executeCommand(['deploy', '.', '--env', 'staging'], {
     cwd: dir,
-    env: { PAGES_ACCESS_KEY: 'xdpak_staging_ak_1_secret' },
+    env: { PAGES_CLI_ENV: 'staging' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
     fetch: fakeFetch(calls, [
       { site: { id: 'site_staging', slug: 'docs', environment: 'staging', url: 'https://docs-staging.pages.xd.team' } },
       { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
@@ -199,10 +288,30 @@ test('prints help and version for top-level CLI aliases', async () => {
   const helpOutput = [];
   assert.equal(await executeCommand(['--help'], { output: (line) => helpOutput.push(line) }), 0);
   assert.match(helpOutput.join('\n'), /Usage: pages/);
+  assert.match(helpOutput.join('\n'), /pages help deploy/);
 
   const versionOutput = [];
   assert.equal(await executeCommand(['-v'], { output: (line) => versionOutput.push(line) }), 0);
   assert.match(versionOutput.join('\n'), /^0\.1\.0$/);
+});
+
+test('prints command-specific deploy help with parameters and agent-safe output hints', async () => {
+  for (const argv of [
+    ['help', 'deploy'],
+    ['deploy', '--help'],
+  ]) {
+    const output = [];
+    assert.equal(await executeCommand(argv, { output: (line) => output.push(line) }), 0);
+    const text = output.join('\n');
+    assert.match(text, /Usage: pages deploy/);
+    assert.match(text, /--site <site_id>/);
+    assert.match(text, /--slug <site-slug>/);
+    assert.match(text, /--visibility <public\|org\|acl\|owner\|disabled>/);
+    assert.match(text, /--save-config/);
+    assert.match(text, /--json/);
+    assert.match(text, /PAGES_ACCESS_KEY/);
+    assert.doesNotMatch(text, /WFP|slot|dispatch namespace|service binding/i);
+  }
 });
 
 async function tempProject() {
@@ -215,5 +324,12 @@ function fakeFetch(calls, payloads) {
   return async (request) => {
     calls.push(request.clone());
     return Response.json(payloads.shift() || {});
+  };
+}
+
+function fakeSecretStore(credential) {
+  return {
+    get: async () => credential,
+    set: async () => {},
   };
 }

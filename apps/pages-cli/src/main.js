@@ -16,7 +16,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     });
     return 0;
   } catch (error) {
-    write(stderr, `${formatError(error)}\n`);
+    write(stderr, wantsJson(argv) ? `${formatErrorJson(error)}\n` : `${formatError(error)}\n`);
     return 1;
   }
 }
@@ -31,6 +31,26 @@ function formatError(error) {
   const message = error.message && error.message !== code ? ` ${error.message}` : '';
   const action = error.action ? ` ${error.action}` : '';
   return `${code}${message}${action}`;
+}
+
+function formatErrorJson(error) {
+  if (!error || typeof error !== 'object') {
+    return JSON.stringify({ ok: false, error: { code: 'CLI_ERROR', message: String(error) } });
+  }
+  const code = error.code || error.message || 'CLI_ERROR';
+  const payload = {
+    ok: false,
+    error: {
+      code,
+      message: error.message || code,
+    },
+  };
+  if (error.action) payload.error.action = error.action;
+  return JSON.stringify(payload);
+}
+
+function wantsJson(argv) {
+  return Array.isArray(argv) && argv.some((token) => token === '--json' || token.startsWith('--json='));
 }
 
 export function isCliEntrypoint(moduleUrl = import.meta.url, argvPath = process.argv[1]) {

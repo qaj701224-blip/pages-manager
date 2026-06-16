@@ -68,6 +68,9 @@ test('serves v2 CLI-only skill without legacy API instructions', async () => {
   assert.match(body, /name: pages-v2/);
   assert.match(body, /pages login/);
   assert.match(body, /pages deploy/);
+  assert.match(body, /--site <site-id>/);
+  assert.match(body, /--save-config/);
+  assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);
   assert.doesNotMatch(body, /curl|X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);

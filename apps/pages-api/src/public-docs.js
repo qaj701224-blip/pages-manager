@@ -39,7 +39,7 @@ pages login${envFlag}
 CI 或 agent 环境使用平台签发的 access key：
 
 \`\`\`bash
-PAGES_ACCESS_KEY=<access-key> pages deploy <dir>${deployEnvFlag} --slug <site-slug>
+PAGES_ACCESS_KEY=<access-key> pages deploy <dir>${deployEnvFlag} --site <site-id> --json
 \`\`\`
 
 不要把 CLI token、access key、cookie、SSO code 或平台能力写入项目文件、日志、README、截图或聊天消息。
@@ -48,12 +48,15 @@ PAGES_ACCESS_KEY=<access-key> pages deploy <dir>${deployEnvFlag} --slug <site-sl
 
 \`\`\`bash
 pages deploy <dir>${deployEnvFlag} --slug <site-slug> --visibility org
+pages deploy <dir>${deployEnvFlag} --slug <site-slug> --visibility org --save-config
 pages status${deployEnvFlag}
 pages open${deployEnvFlag}
 pages rollback <version-id>${deployEnvFlag}
 \`\`\`
 
 可见性只使用 v2 支持的值：\`public\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。第一版 \`public\` 仍受公司网络访问限制。
+\`pages deploy\` 默认不写 \`.pages.json\`；需要保存非敏感项目绑定时显式加 \`--save-config\`。
+使用 \`PAGES_ACCESS_KEY\` 时不能创建站点，必须传 \`--site <site-id>\` 或已有当前环境的 \`.pages.json\`。
 
 ## 硬性规则
 
@@ -91,12 +94,14 @@ XD Pages v2 是新的内部站点发布平台。用户通过 \`pages\` CLI 发�
 \`\`\`bash
 pages login${envFlag}
 pages deploy ./dist${envFlag} --slug demo --visibility org
+pages deploy ./dist${envFlag} --slug demo --visibility org --save-config
 pages status${envFlag}
 pages open${envFlag}
 pages rollback <version-id>${envFlag}
 \`\`\`
 
-CI 使用 \`PAGES_ACCESS_KEY\`，不要在仓库中保存 access key 或 CLI token。
+CI 使用 \`PAGES_ACCESS_KEY\` 和显式 \`--site <site-id>\`，不要在仓库中保存 access key 或 CLI token。
+\`pages deploy\` 默认不写 \`.pages.json\`；需要保存非敏感项目绑定时显式加 \`--save-config\`。
 
 ## 安全边界
 

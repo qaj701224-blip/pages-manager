@@ -62,6 +62,33 @@ test('main prints API error code, message, and action', async () => {
   assert.equal(stdout.text(), '');
 });
 
+test('main prints JSON error envelopes when --json is requested', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const exitCode = await main(['deploy', '.', '--json'], {
+    stdout,
+    stderr,
+    env: {},
+    commandRunner: async () => {
+      const error = new Error('Site id is required when using an access key.');
+      error.code = 'SITE_ID_REQUIRED_FOR_ACCESS_KEY';
+      error.action = 'Pass --site <site_id>.';
+      throw error;
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), '');
+  assert.deepEqual(JSON.parse(stderr.text()), {
+    ok: false,
+    error: {
+      code: 'SITE_ID_REQUIRED_FOR_ACCESS_KEY',
+      message: 'Site id is required when using an access key.',
+      action: 'Pass --site <site_id>.',
+    },
+  });
+});
+
 test('global symlinked bin invokes the CLI entrypoint', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-bin-'));
   test.after(() => rm(dir, { recursive: true, force: true }));

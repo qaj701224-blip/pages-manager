@@ -4,12 +4,13 @@ import test from 'node:test';
 import { parseArgs } from './args.js';
 
 test('parses command flags and boolean aliases', () => {
-  assert.deepEqual(parseArgs(['login', '--env', 'staging', '--no-open']), {
-    command: 'login',
+  assert.deepEqual(parseArgs(['deploy', '--env', 'staging', '--no-open', '--save-config']), {
+    command: 'deploy',
     positional: [],
     flags: {
       env: 'staging',
       noOpen: true,
+      saveConfig: true,
     },
   });
 });
@@ -29,6 +30,7 @@ test('parses top-level help and version aliases', () => {
   assert.deepEqual(parseArgs(['-h']), { command: 'help', positional: [], flags: {} });
   assert.deepEqual(parseArgs(['--version']), { command: 'version', positional: [], flags: {} });
   assert.deepEqual(parseArgs(['-v']), { command: 'version', positional: [], flags: {} });
+  assert.deepEqual(parseArgs(['deploy', '-h']), { command: 'deploy', positional: [], flags: { help: true } });
 });
 
 test('rejects unknown short flags and missing flag values', () => {

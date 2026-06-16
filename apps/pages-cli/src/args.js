@@ -1,4 +1,4 @@
-const BOOLEAN_FLAGS = new Set(['no-open', 'print', 'json', 'help']);
+const BOOLEAN_FLAGS = new Set(['no-open', 'print', 'json', 'help', 'save-config']);
 
 export function parseArgs(argv = []) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
@@ -20,6 +20,10 @@ export function parseArgs(argv = []) {
     }
     if (!token.startsWith('-')) {
       positional.push(token);
+      continue;
+    }
+    if (token === '-h') {
+      setFlag(flags, 'help', true);
       continue;
     }
     if (!token.startsWith('--')) throw new Error(`Unknown option: ${token}`);

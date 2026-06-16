@@ -2054,10 +2054,10 @@ Windows fallback 文件没有 `chmod 0600` 语义，CLI 必须检查 ACL：只�
 access key 默认只通过环境变量传入：
 
 ```bash
-PAGES_ACCESS_KEY=... pages deploy ./dist --name foo
+PAGES_ACCESS_KEY=... pages deploy ./dist --site site_xxx --json
 ```
 
-本地 CLI 不应自动从环境变量持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类命令时，才允许写入 secret store，并且输出不得回显 key 明文。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
+本地 CLI 不应自动从环境变量持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类命令时，才允许写入 secret store，并且输出不得回显 key 明文。access key 不能创建站点；CI / agent 使用 access key 部署时必须显式传 `--site <site_id>`，或使用当前 environment 已存在的 `.pages.json` 绑定。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
 
 #### Global config
 
@@ -2122,6 +2122,8 @@ env 安全规则：
 
 `.pages.json` 是否提交到业务项目 Git 由业务项目自己决定；但它必须始终保持非敏感。本仓库的 demo `.pages.json` 仍不提交。
 
+`pages deploy` 默认不生成、不更新 `.pages.json`，避免 AI / CI 部署时静默修改工作区并被误提交。只有用户显式传 `--save-config` 时，CLI 才写入或更新 `.pages.json`；未保存时，CLI 必须在文本输出和 `--json` 输出中返回 `siteId`、`deploymentId`、`versionId` 和 URL，便于用户或 agent 后续复用 `--site <site_id>`。
+
 `.pages.json` 只描述 v2 `pages.xd.team` 站点绑定。CLI 读取到 `workers.xd.team` URL 或 v1 API 配置时必须 fail closed，不能把旧项目配置“自动升级”为 v2，也不能反向操作 v1 站点。
 
 当前 M4 实现使用 flat v1 binding，表示“当前目录在某个 environment 下的默认绑定”：
@@ -2153,7 +2155,8 @@ CLI 日常命令契约建议：
 
 ```bash
 pages login [--env staging] [--access-key <key>] [--no-open]
-pages deploy ./dist --slug foo --visibility org
+pages deploy ./dist --slug foo --visibility org [--save-config]
+PAGES_ACCESS_KEY=... pages deploy ./dist --site site_xxx --json
 pages status [--site site_xxx] [--deployment dep_xxx]
 pages rollback ver_xxx
 pages open [--print]
@@ -2254,7 +2257,7 @@ pages login
   -> CLI 带 login_secret 轮询 /.xd-pages/cli/login/poll
   -> 获取 pages CLI token
 
-pages deploy ./dist --name foo --visibility org
+pages deploy ./dist --slug foo --visibility org
   -> CLI 调 pages-api /.xd-pages/api/deployments
   -> CLI 计算 artifact hash，并生成 artifactBundle
      custom Worker: 读取入口模块内容
@@ -2267,7 +2270,7 @@ pages deploy ./dist --name foo --visibility org
   -> pages-api 通过发布状态机切换 active route 和 route snapshot
   -> 返回 https://foo.pages.xd.team
 
-pages deploy ./dist --name foo --visibility org --env staging
+pages deploy ./dist --slug foo --visibility org --env staging
   -> CLI 调 api-staging.pages.xd.team
   -> pages-api-staging 写 staging D1 / 当前执行面
   -> 返回 https://foo-staging.pages.xd.team
@@ -2276,7 +2279,7 @@ pages deploy ./dist --name foo --visibility org --env staging
 ### CI / Agent
 
 ```text
-PAGES_ACCESS_KEY=... pages deploy ./dist --name foo
+PAGES_ACCESS_KEY=... pages deploy ./dist --site site_xxx --json
 ```
 
 access key 要求：
@@ -2446,12 +2449,12 @@ custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容�
 
 1. 小型 static / SPA：继续由平台生成 user Worker 模块，适合文档、demo 和轻量内部工具。
 2. 中大型 static / SPA：将静态资产放入 R2 或专用 asset store，由 generated user Worker 或 router asset layer 读取。
-3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist --name foo`。
+3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist --slug foo` 或 `pages deploy ./dist --site site_xxx`。
 
 无论采用哪种路径，对用户暴露的心智保持一致：
 
 ```text
-pages deploy ./dist --name foo
+pages deploy ./dist --slug foo
 ```
 
 用户不需要理解 execution provider、dispatch namespace、slot、asset store、gateway 或 Cloudflare binding。
@@ -2565,7 +2568,7 @@ publish -> activate -> drain -> retire
 - 按 `PAGES_EXECUTION_MODE` 启用执行面：
   - WFP 未开通：`normal-worker-slot`，先创建少量 staging / production slot。
   - WFP 已开通：`wfp`，使用 dispatch namespace。
-- 用户仍只执行 `pages deploy ./dist --name foo`，不暴露 execution provider 参数。
+- 用户仍只执行 `pages deploy ./dist --slug foo` 或 `pages deploy ./dist --site site_xxx`，不暴露 execution provider 参数。
 - 支持 `public` 和 `org` visibility。
 - 支持 router IP allowlist 强限制；未命中公司网络直接 403。
 - 支持站点级 `site_session`、员工 active 状态校验、header/cookie 清洗和 `internal_worker_jwt`。
