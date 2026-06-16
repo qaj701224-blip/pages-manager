@@ -1,36 +1,12 @@
 import { jsonResponse } from '@xd/worker-kit';
 
-function bytesToHex(bytes) {
-  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function timingSafeEqualString(a, b) {
-  const left = new globalThis.TextEncoder().encode(a);
-  const right = new globalThis.TextEncoder().encode(b);
-  if (left.length !== right.length) return false;
-
-  let diff = 0;
-  for (let i = 0; i < left.length; i += 1) {
-    diff |= left[i] ^ right[i];
-  }
-  return diff === 0;
-}
+import { parseJsonText } from '../http/body.js';
+import { bytesToHex, timingSafeEqualString } from '../utils/crypto.js';
 
 function unauthorized(message) {
   const error = new Error(message);
   error.status = 401;
   return error;
-}
-
-function parseJsonText(text) {
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    const error = new Error('Invalid JSON body');
-    error.status = 400;
-    throw error;
-  }
 }
 
 function timestampSkewSeconds(env = {}) {

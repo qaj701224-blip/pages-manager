@@ -6,9 +6,9 @@ import {
   idempotencyScopeForJob,
   makeId,
   transitionJob,
-} from '@xd/workflow-core';
+} from '../../packages/workflow-core/src/index.js';
 
-import { classifyReviewAgentComment } from './github-review.js';
+import { classifyReviewAgentComment } from '../../apps/gateway/src/github/review.js';
 
 const CALLBACK_BRIDGES = {
   issue_created: {
@@ -42,7 +42,7 @@ function slackStatusScopeKey(input = {}) {
   return 'job';
 }
 
-export class MemoryGatewayStore {
+export class GatewayStoreFixture {
   constructor() {
     this.backend = 'memory';
     this.jobs = new Map();
@@ -198,6 +198,22 @@ export class MemoryGatewayStore {
     const updated = transitionJob(job, 'failed', { errorCode, errorMessage });
     this.jobs.set(jobId, updated);
     this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob failed');
+    return updated;
+  }
+
+  cancelJob(jobId, errorCode = 'cancelled', errorMessage = 'PublishingJob cancelled') {
+    const job = this.getJob(jobId);
+    if (!job) return null;
+
+    const updated = {
+      ...job,
+      status: 'cancelled',
+      errorCode,
+      errorMessage,
+      updatedAt: new Date().toISOString(),
+    };
+    this.jobs.set(jobId, updated);
+    this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob cancelled');
     return updated;
   }
 
