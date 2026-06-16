@@ -327,13 +327,13 @@ same PR branch
 Slack progress notification
 ```
 
-## MVP 与长期形态
+## 当前阶段与长期形态
 
-MVP 可以先：
+当前阶段可以先：
 
 - 使用规则分类 + 简单 Agent adapter。
 - policy / prompt 模板可以用 repo 内 Markdown 作为源文件，但每次运行绑定的 `PolicyVersion` / `PromptVersion`、hash 和 source ref 必须落 MySQL。
-- 用 MySQL + Redis + Drizzle 跑本地 smoke；内存 store 只能作为单元测试 fixture。
+- 用 MySQL + Redis + Drizzle 跑本地 smoke；gateway 运行态只保留 DB store。
 - 用 GitHub Actions 跑 Coding Agent。
 
 长期需要：
@@ -342,4 +342,4 @@ MVP 可以先：
 - prompt versioning。
 - DB 持久化 `PolicyVersion` / `PromptVersion` / `AgentRun`，每次 Slack Agent 和 Coding Agent 调用都记录 prompt version/hash、policy version/hash。
 - 每轮 `AgentRun` 记录输入摘要 hash、结构化输出 hash；Coding Agent 额外记录输出 patch hash、`allowedPath` 和使用的 review comments。
-- `site-check` 失败报告可以进入 Coding Agent fix 输入，但 Coding Agent 不能修改 `packages/site-check` 或 workflow 来绕过规则。
+- `site-check` 失败报告可以进入 Coding Agent fix 输入，但 Coding Agent 不能修改 `.github/workflows/site-check.yml`、gateway、worker 或其它平台代码来绕过规则。
