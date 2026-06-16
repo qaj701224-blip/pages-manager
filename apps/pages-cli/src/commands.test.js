@@ -48,8 +48,8 @@ test('deploy creates a site with a CLI token but does not write .pages.json by d
   });
 
   assert.match(output.join('\n'), /dep_1/);
-  assert.match(output.join('\n'), /site_1/);
-  assert.match(output.join('\n'), /Project config not saved/);
+  assert.match(output.join('\n'), /内部站点 ID：site_1/);
+  assert.match(output.join('\n'), /未写入 \.pages\.json/);
   await assert.rejects(() => readFile(path.join(dir, '.pages.json'), 'utf8'), { code: 'ENOENT' });
 });
 
@@ -86,27 +86,33 @@ test('deploy writes .pages.json only when --save-config is explicit', async () =
   assert.equal(JSON.stringify(project).includes('xdpak_'), false);
 });
 
-test('deploy with an access key requires an existing site id instead of creating a site', async () => {
+test('deploy with an access key uses slug without creating a site or requiring site id', async () => {
   const dir = await tempProject();
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
   const calls = [];
+  const output = [];
 
-  await assert.rejects(
-    () =>
-      executeCommand(['deploy', '.', '--slug', 'docs'], {
-        cwd: dir,
-        env: { PAGES_CLI_ENV: 'production', PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
-        fetch: fakeFetch(calls, [{ site: { id: 'site_1' } }]),
-        output: () => {},
-      }),
-    (error) => {
-      assert.equal(error.code, 'SITE_ID_REQUIRED_FOR_ACCESS_KEY');
-      assert.match(error.action, /--site <site_id>/);
-      return true;
-    }
-  );
+  const exitCode = await executeCommand(['deploy', '.', '--slug', 'docs', '--json'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'production', PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
+    fetch: fakeFetch(calls, [
+      {
+        deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: {},
+      },
+    ]),
+    idempotencyKey: () => 'idem_1',
+    output: (line) => output.push(line),
+  });
 
-  assert.equal(calls.length, 0);
+  assert.equal(exitCode, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
+  const deployBody = await calls[0].json();
+  assert.equal('siteId' in deployBody, false);
+  assert.equal(deployBody.siteSlug, 'docs');
+  assert.equal(JSON.parse(output.join('\n')).siteId, 'site_1');
 });
 
 test('deploy with an access key accepts an explicit site id and returns agent-friendly JSON without writing config', async () => {
@@ -142,6 +148,47 @@ test('deploy with an access key accepts an explicit site id and returns agent-fr
   await assert.rejects(() => readFile(path.join(dir, '.pages.json'), 'utf8'), { code: 'ENOENT' });
 });
 
+test('deploy by slug reuses an existing user-owned site when creation reports a conflict', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const calls = [];
+  const output = [];
+
+  const exitCode = await executeCommand(['deploy', '.', '--slug', 'docs', '--save-config'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      {
+        status: 409,
+        body: {
+          error: {
+            code: 'SITE_SLUG_CONFLICT',
+            message: 'Site slug already exists.',
+            action: 'Choose a different site slug.',
+          },
+        },
+      },
+      {
+        deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'docs.pages.xd.team', siteId: 'site_1' },
+      },
+    ]),
+    idempotencyKey: () => 'idem_1',
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.equal((await calls[1].json()).siteSlug, 'docs');
+  const project = JSON.parse(await readFile(path.join(dir, '.pages.json'), 'utf8'));
+  assert.equal(project.siteId, 'site_1');
+  assert.equal(project.slug, 'docs');
+  assert.match(output.join('\n'), /站点名：docs/);
+});
+
 test('deploy reuses existing project binding without creating a site', async () => {
   const dir = await tempProject();
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
@@ -158,6 +205,37 @@ test('deploy reuses existing project binding without creating a site', async () 
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
+});
+
+test('deploy explicit slug overrides an implicit project site id', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeProjectConfig(dir, { version: 1, environment: 'production', siteId: 'site_old', slug: 'old-docs' });
+  const calls = [];
+
+  await executeCommand(['deploy', '.', '--slug', 'docs'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      {
+        status: 409,
+        body: {
+          error: {
+            code: 'SITE_SLUG_CONFLICT',
+            message: 'Site slug already exists.',
+            action: 'Choose a different site slug.',
+          },
+        },
+      },
+      { deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
+    ]),
+    idempotencyKey: () => 'idem_1',
+    output: () => {},
+  });
+
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.equal((await calls[1].json()).siteSlug, 'docs');
 });
 
 test('deploy does not reuse a project binding from a different environment', async () => {
@@ -217,6 +295,38 @@ test('status and rollback call v2 API with the stored credential', async () => {
   assert.equal(calls[1].headers.get('Idempotency-Key'), 'rb_1');
 });
 
+test('status can resolve a site by slug without a local project binding', async () => {
+  const dir = await tempProject();
+  const calls = [];
+  const output = [];
+
+  const exitCode = await executeCommand(['status', '--slug', 'docs', '--json'], {
+    cwd: dir,
+    env: { PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
+    fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'docs', environment: 'production' }] }]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.deepEqual(JSON.parse(output.join('\n')).site, { id: 'site_1', slug: 'docs', environment: 'production' });
+});
+
+test('status explicit slug overrides an implicit project site id', async () => {
+  const dir = await tempProject();
+  await writeProjectConfig(dir, { version: 1, environment: 'production', siteId: 'site_old', slug: 'old-docs' });
+  const calls = [];
+
+  await executeCommand(['status', '--slug', 'docs'], {
+    cwd: dir,
+    env: { PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
+    fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'docs', environment: 'production' }] }]),
+    output: () => {},
+  });
+
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+});
+
 test('status does not reuse a project binding from a different environment', async () => {
   const dir = await tempProject();
   await writeProjectConfig(dir, { version: 1, environment: 'production', siteId: 'site_prod', slug: 'docs' });
@@ -229,11 +339,11 @@ test('status does not reuse a project binding from a different environment', asy
         fetch: fakeFetch([], [{ site: { id: 'site_prod' } }]),
         output: () => {},
       }),
-    /SITE_REQUIRED/
+    /缺少站点名/
   );
 });
 
-test('open prints project URL without network when requested', async () => {
+test('open prints project or slug URL without network when requested', async () => {
   const dir = await tempProject();
   await writeProjectConfig(dir, { version: 1, environment: 'staging', siteId: 'site_1', slug: 'docs' });
   const output = [];
@@ -249,6 +359,13 @@ test('open prints project URL without network when requested', async () => {
   assert.equal(exitCode, 0);
   assert.deepEqual(output, ['https://docs-staging.pages.xd.team']);
   assert.deepEqual(opened, []);
+
+  const slugOutput = [];
+  await executeCommand(['open', '--env', 'production', '--slug', 'docs', '--print'], {
+    cwd: dir,
+    output: (line) => slugOutput.push(line),
+  });
+  assert.deepEqual(slugOutput, ['https://docs.pages.xd.team']);
 });
 
 test('open does not reuse a project binding from a different environment', async () => {
@@ -261,7 +378,7 @@ test('open does not reuse a project binding from a different environment', async
         cwd: dir,
         output: () => {},
       }),
-    /SITE_BINDING_REQUIRED/
+    /当前项目没有站点绑定/
   );
 });
 
@@ -287,7 +404,7 @@ test('env commands list, switch, and reject unsafe custom endpoints', async () =
 test('prints help and version for top-level CLI aliases', async () => {
   const helpOutput = [];
   assert.equal(await executeCommand(['--help'], { output: (line) => helpOutput.push(line) }), 0);
-  assert.match(helpOutput.join('\n'), /Usage: pages/);
+  assert.match(helpOutput.join('\n'), /用法：pages/);
   assert.match(helpOutput.join('\n'), /pages help deploy/);
 
   const versionOutput = [];
@@ -303,13 +420,14 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     const output = [];
     assert.equal(await executeCommand(argv, { output: (line) => output.push(line) }), 0);
     const text = output.join('\n');
-    assert.match(text, /Usage: pages deploy/);
+    assert.match(text, /用法：pages deploy/);
     assert.match(text, /--site <site_id>/);
-    assert.match(text, /--slug <site-slug>/);
+    assert.match(text, /--slug <站点名>/);
     assert.match(text, /--visibility <public\|org\|acl\|owner\|disabled>/);
     assert.match(text, /--save-config/);
     assert.match(text, /--json/);
     assert.match(text, /PAGES_ACCESS_KEY/);
+    assert.match(text, /优先使用 --slug/);
     assert.doesNotMatch(text, /WFP|slot|dispatch namespace|service binding/i);
   }
 });
@@ -323,7 +441,11 @@ async function tempProject() {
 function fakeFetch(calls, payloads) {
   return async (request) => {
     calls.push(request.clone());
-    return Response.json(payloads.shift() || {});
+    const payload = payloads.shift() || {};
+    if (payload && typeof payload === 'object' && 'status' in payload && 'body' in payload) {
+      return Response.json(payload.body, { status: payload.status });
+    }
+    return Response.json(payload);
   };
 }
 

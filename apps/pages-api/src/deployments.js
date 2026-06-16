@@ -55,13 +55,16 @@ async function createDeployment(request, env, config, store, actor) {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
 
-  const siteId = typeof body.siteId === 'string' ? body.siteId : '';
+  const requestedSiteId = normalizeOptionalString(body.siteId);
+  const requestedSiteSlug = normalizeOptionalSlug(body.siteSlug ?? body.slug);
   const artifactKind = typeof body.artifactKind === 'string' ? body.artifactKind : '';
   const contentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
   let artifactBundle;
 
-  if (!siteId) return jsonError('SITE_REQUIRED', 'siteId is required.', 400, 'Pass a siteId.');
+  if (!requestedSiteId && !requestedSiteSlug) {
+    return jsonError('SITE_REQUIRED', 'Site is required.', 400, 'Pass siteId or siteSlug.');
+  }
   if (!ARTIFACT_KINDS.has(artifactKind)) {
     return jsonError('ARTIFACT_KIND_INVALID', 'Artifact kind is invalid.', 400, 'Use static, spa, or worker.');
   }
@@ -76,12 +79,15 @@ async function createDeployment(request, env, config, store, actor) {
     }
     return jsonError('ARTIFACT_BUNDLE_INVALID', 'Artifact bundle is invalid.', 400, 'Send a valid artifact bundle.');
   }
+  const site = await resolveDeploySite(store, actor, config.environment, {
+    siteId: requestedSiteId,
+    siteSlug: requestedSiteSlug,
+  });
+  if (site instanceof Response) return site;
+  const siteId = site.id;
   if (!actorCanDeploy(actor, siteId, 'deploy:site')) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
   }
-
-  const site = await store.getSiteForUser(siteId, actor.userId, actor, config.environment);
-  if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
   const requestHash = await canonicalRequestHash({
     operation: 'deploy',
@@ -392,6 +398,17 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
 
+async function resolveDeploySite(store, actor, environment, { siteId, siteSlug }) {
+  if (siteId) {
+    const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
+    return site || siteNotFound('Check the site id.');
+  }
+  const bySlug = typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(environment, siteSlug) : null;
+  if (!bySlug) return siteNotFound('Check the site slug.');
+  const site = await store.getSiteForUser(bySlug.id, actor.userId, actor, environment);
+  return site || siteNotFound('Check the site slug and access key scope.');
+}
+
 async function validateRollbackVersion(store, version, environment) {
   const deployment = await store.getDeployment(version.deploymentId, environment);
   if (!deployment || deployment.status !== 'succeeded') {
@@ -572,6 +589,18 @@ function matchDeploymentId(pathname) {
 function matchRollbackVersionId(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/versions\/([^/]+)\/rollback$/);
   return match ? match[1] : null;
+}
+
+function normalizeOptionalString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeOptionalSlug(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function siteNotFound(action) {
+  return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, action);
 }
 
 function nextId(env, prefix) {

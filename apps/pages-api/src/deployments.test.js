@@ -82,6 +82,63 @@ test('uploads and verifies WFP worker before route activation', async () => {
   assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
 });
 
+test('deployments can target an existing site by user-visible slug', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'Docs' }),
+      { 'Idempotency-Key': 'slug_deploy' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.deployment.siteId, 'site_1');
+  assert.equal(body.route.hostname, 'docs.pages.xd.team');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
+});
+
+test('access keys can deploy by slug only when the resolved site matches their scope', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_2',
+    slug: 'other',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_2',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_2',
+    hostname: 'other.pages.xd.team',
+  });
+  const matchingKey = await seedAccessKey(store, 'ak_deploy', ['deploy:site'], 'site_1');
+  const otherSiteKey = await seedAccessKey(store, 'ak_other', ['deploy:site'], 'site_2');
+  const env = testEnv(store, createSnapshotStore());
+
+  const allowed = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
+      Authorization: `Bearer ${matchingKey}`,
+      'Idempotency-Key': 'slug_access_key_ok',
+    }),
+    env
+  );
+  const denied = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
+      Authorization: `Bearer ${otherSiteKey}`,
+      'Idempotency-Key': 'slug_access_key_denied',
+    }),
+    env
+  );
+
+  assert.equal(allowed.status, 201, await allowed.clone().text());
+  assert.equal((await allowed.json()).deployment.siteId, 'site_1');
+  assert.equal(denied.status, 404);
+  const deniedBody = await denied.json();
+  assert.equal(deniedBody.error.code, 'SITE_NOT_FOUND');
+  assert.equal(deniedBody.error.action, 'Check the site slug and access key scope.');
+});
+
 test('uses bounded WFP worker names for valid long slugs', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
@@ -1003,7 +1060,7 @@ function assertNoPublicExecutionDetails(body) {
   assert.doesNotMatch(serialized, /normal-worker-slot|executionProvider|dispatchBindingName/);
 }
 
-async function seedAccessKey(store, keyId, scopes) {
+async function seedAccessKey(store, keyId, scopes, siteId = 'site_1') {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',
     keyId,
@@ -1016,7 +1073,7 @@ async function seedAccessKey(store, keyId, scopes) {
     pepperId: 'pepper_1',
     name: keyId,
     scopes,
-    siteId: 'site_1',
+    siteId,
     expiresAt: '2026-07-15T00:00:00.000Z',
   });
   return plaintext;

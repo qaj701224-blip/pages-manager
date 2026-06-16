@@ -40,6 +40,7 @@ test('serves production v2-only OpenAPI skeleton', async () => {
     'IDEMPOTENCY_CONFLICT',
   ]);
   assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /artifactBundle/);
+  assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /siteSlug/);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email']);
   assert.doesNotMatch(serialized, /workers\.xd\.team/);
@@ -68,7 +69,7 @@ test('serves v2 CLI-only skill without legacy API instructions', async () => {
   assert.match(body, /name: pages-v2/);
   assert.match(body, /pages login/);
   assert.match(body, /pages deploy/);
-  assert.match(body, /--site <site-id>/);
+  assert.match(body, /--slug <site-slug>/);
   assert.match(body, /--save-config/);
   assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);

@@ -69,7 +69,7 @@ test('pages v2 architecture keeps execution provider internal to the platform', 
 
   assert.match(doc, /slot 兼容层不是用户可选 provider/);
   assert.match(doc, /--save-config/);
-  assert.match(doc, /PAGES_ACCESS_KEY=.*--site site_xxx --json/);
+  assert.match(doc, /PAGES_ACCESS_KEY=.*--slug foo --json/);
   assert.doesNotMatch(doc, /--execution-provider/);
   assert.doesNotMatch(doc, /--runtime wfp/);
   assert.doesNotMatch(doc, /pages deploy --runtime/);

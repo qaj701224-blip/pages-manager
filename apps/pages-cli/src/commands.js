@@ -94,38 +94,53 @@ async function runDeploy(parsed, context) {
   const client = createClient(config, credential, context);
   const targetPath = path.resolve(context.cwd, parsed.positional[0] || '.');
   const artifactKind = parsed.flags.artifactKind || context.project?.defaultArtifactKind || (await inferArtifactKind(targetPath));
-  if (!VALID_ARTIFACT_KINDS.has(artifactKind)) throw new Error('ARTIFACT_KIND_INVALID');
+  if (!VALID_ARTIFACT_KINDS.has(artifactKind)) {
+    throw usageError('ARTIFACT_KIND_INVALID', 'artifact 类型无效。', '请使用 static、spa 或 worker。');
+  }
 
   const projectForEnvironment = getProjectForEnvironment(context.project, config.environment);
   const saveConfig = Boolean(parsed.flags.saveConfig);
-  let siteId = parsed.flags.site || projectForEnvironment?.siteId || null;
+  const explicitSiteSlug = normalizeSiteSlug(parsed.flags.slug);
+  let siteId = parsed.flags.site || (explicitSiteSlug ? null : projectForEnvironment?.siteId) || null;
   let project = projectForEnvironment || null;
-  let siteSlug = parsed.flags.slug || project?.slug || null;
+  let siteSlug = explicitSiteSlug || normalizeSiteSlug(project?.slug) || null;
   let createdAt = project?.createdAt;
   if (!siteId) {
-    if (credential.type === 'access_key') {
+    const slug = siteSlug || normalizeSiteSlug(context.project?.slug);
+    if (!slug) {
       throw usageError(
-        'SITE_ID_REQUIRED_FOR_ACCESS_KEY',
-        'Site id is required when deploying with a Pages access key.',
-        'Pass --site <site_id>, or create the site with `pages deploy --slug <slug> --save-config` after `pages login`.'
+        'SITE_SLUG_REQUIRED',
+        '缺少站点名。',
+        '请传 --slug <站点名>；如果要保存项目绑定，可以在首次发布时加 --save-config。'
       );
     }
-    const slug = siteSlug || context.project?.slug;
-    if (!slug) throw new Error('SITE_SLUG_REQUIRED');
-    const visibility = parsed.flags.visibility || 'org';
-    if (!VALID_VISIBILITIES.has(visibility)) throw new Error('SITE_VISIBILITY_INVALID');
-    const created = await client.requestApi('POST', '/.xd-pages/api/sites', { slug, visibility });
-    siteId = created.site.id;
-    siteSlug = created.site.slug || slug;
-    createdAt = nowIso(context);
-    project = {
-      version: 1,
-      environment: config.environment,
-      siteId,
-      slug: siteSlug,
-      defaultArtifactKind: artifactKind,
-      createdAt,
-    };
+    siteSlug = slug;
+    if (credential.type !== 'access_key') {
+      const visibility = parsed.flags.visibility || 'org';
+      if (!VALID_VISIBILITIES.has(visibility)) {
+        throw usageError(
+          'SITE_VISIBILITY_INVALID',
+          '站点可见性无效。',
+          '请使用 public、org、acl、owner 或 disabled。'
+        );
+      }
+      try {
+        const created = await client.requestApi('POST', '/.xd-pages/api/sites', { slug, visibility });
+        siteId = created.site.id;
+        siteSlug = normalizeSiteSlug(created.site.slug) || slug;
+        createdAt = nowIso(context);
+        project = {
+          version: 1,
+          environment: config.environment,
+          siteId,
+          slug: siteSlug,
+          defaultArtifactKind: artifactKind,
+          createdAt,
+        };
+      } catch (error) {
+        if (error?.code !== 'SITE_SLUG_CONFLICT') throw error;
+      }
+    }
   }
 
   const artifact = await hashArtifact(targetPath);
@@ -134,7 +149,7 @@ async function runDeploy(parsed, context) {
     'POST',
     '/.xd-pages/api/deployments',
     {
-      siteId,
+      ...(siteId ? { siteId } : { siteSlug }),
       artifactKind,
       contentHash: artifact.contentHash,
       artifactBundle,
@@ -143,12 +158,21 @@ async function runDeploy(parsed, context) {
     { idempotencyKey: nextIdempotencyKey(context) }
   );
 
+  const deployedSiteId = siteId || deployed.deployment?.siteId || deployed.route?.siteId || null;
+  const deployedSiteSlug = siteSlug || slugFromHostname(deployed.route?.hostname, config);
   if (saveConfig) {
+    if (!deployedSiteId) {
+      throw usageError(
+        'SITE_ID_MISSING',
+        '部署已完成，但服务端没有返回内部站点 ID。',
+        '请先不带 --save-config 重试；如果仍然出现，请联系 Pages 平台维护者。'
+      );
+    }
     await writeProjectConfig(context.cwd, {
       version: 1,
       environment: config.environment,
-      siteId,
-      slug: siteSlug || project?.slug,
+      siteId: deployedSiteId,
+      slug: deployedSiteSlug || project?.slug,
       defaultArtifactKind: artifactKind,
       lastDeploymentId: deployed.deployment?.id,
       lastVersionId: deployed.version?.id,
@@ -160,8 +184,8 @@ async function runDeploy(parsed, context) {
   if (
     outputJsonResult(parsed, context, {
       environment: config.environment,
-      siteId,
-      slug: siteSlug || null,
+      siteId: deployedSiteId,
+      slug: deployedSiteSlug || null,
       artifactKind,
       savedProjectConfig: saveConfig,
       deployment: deployed.deployment || null,
@@ -172,12 +196,13 @@ async function runDeploy(parsed, context) {
   ) {
     return 0;
   }
-  context.output(`Site ${siteId}`);
-  context.output(`Deployment ${deployed.deployment?.id || 'created'} ${deployed.deployment?.status || ''}`.trim());
+  if (deployedSiteSlug) context.output(`站点名：${deployedSiteSlug}`);
+  if (deployedSiteId) context.output(`内部站点 ID：${deployedSiteId}`);
+  context.output(`部署：${deployed.deployment?.id || 'created'} ${deployed.deployment?.status || ''}`.trim());
   if (url) context.output(`URL ${url}`);
   if (!saveConfig) {
     context.output(
-      'Project config not saved. Reuse this site with --site, or add --save-config to write .pages.json.'
+      '未写入 .pages.json。后续可继续用 --slug 指定站点名，或加 --save-config 保存项目绑定。'
     );
   }
   return 0;
@@ -196,9 +221,21 @@ async function runStatus(parsed, context) {
   }
 
   const projectForEnvironment = getProjectForEnvironment(context.project, config.environment);
-  const siteId = parsed.flags.site || projectForEnvironment?.siteId;
-  if (!siteId) throw new Error('SITE_REQUIRED');
-  const result = await client.requestApi('GET', `/.xd-pages/api/sites/${encodeURIComponent(siteId)}`);
+  const explicitSiteSlug = normalizeSiteSlug(parsed.flags.slug);
+  const siteId = parsed.flags.site || (explicitSiteSlug ? null : projectForEnvironment?.siteId);
+  const siteSlug = explicitSiteSlug || normalizeSiteSlug(projectForEnvironment?.slug);
+  let result;
+  if (siteId) {
+    result = await client.requestApi('GET', `/.xd-pages/api/sites/${encodeURIComponent(siteId)}`);
+  } else if (siteSlug) {
+    result = await readSiteBySlug(client, siteSlug);
+  } else {
+    throw usageError(
+      'SITE_REQUIRED',
+      '缺少站点名。',
+      '请传 --slug <站点名>，或在当前项目里先用 pages deploy --save-config 保存绑定。'
+    );
+  }
   if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
   context.output(JSON.stringify(result));
   return 0;
@@ -206,7 +243,7 @@ async function runStatus(parsed, context) {
 
 async function runRollback(parsed, context) {
   const versionId = parsed.positional[0];
-  if (!versionId) throw new Error('VERSION_REQUIRED');
+  if (!versionId) throw usageError('VERSION_REQUIRED', '缺少版本 ID。', '请传入要回滚到的 versionId。');
   const config = readConfigForCommand(parsed, context);
   const credential = await resolveCredential(config.environment, context);
   const client = createClient(config, credential, context);
@@ -219,13 +256,16 @@ async function runRollback(parsed, context) {
     }
   );
   if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
-  context.output(`Rollback ${result.deployment?.id || 'created'} ${result.deployment?.status || ''}`.trim());
+  context.output(`回滚：${result.deployment?.id || 'created'} ${result.deployment?.status || ''}`.trim());
   return 0;
 }
 
 async function runOpen(parsed, context) {
   const config = readConfigForCommand(parsed, context);
-  const url = siteUrlForProject(getProjectForEnvironment(context.project, config.environment), config);
+  const url = siteUrlForSlug(
+    normalizeSiteSlug(parsed.flags.slug) || getProjectForEnvironment(context.project, config.environment)?.slug,
+    config
+  );
   if (outputJsonResult(parsed, context, { environment: config.environment, url })) return 0;
   if (parsed.flags.print) {
     context.output(url);
@@ -251,7 +291,7 @@ async function runEnv(parsed, context) {
       activeEnvironment: environment,
     });
     if (outputJsonResult(parsed, context, { activeEnvironment: environment })) return 0;
-    context.output(`Active environment: ${environment}`);
+    context.output(`当前环境：${environment}`);
     return 0;
   }
 
@@ -271,16 +311,33 @@ async function runEnv(parsed, context) {
       },
     });
     if (outputJsonResult(parsed, context, { activeEnvironment: 'custom', custom })) return 0;
-    context.output('Custom environment saved.');
+    context.output('已保存 custom 环境。');
     return 0;
   }
 
-  throw new Error('ENV_COMMAND_INVALID');
+  throw usageError(
+    'ENV_COMMAND_INVALID',
+    'env 命令不完整或无效。',
+    '请使用 pages env list、pages env use <环境> 或 pages env set custom --api <origin> --auth <origin>。'
+  );
 }
 
 function getProjectForEnvironment(project, environment) {
   if (!project) return null;
   return project.environment === environment ? project : null;
+}
+
+async function readSiteBySlug(client, slug) {
+  const result = await client.requestApi('GET', '/.xd-pages/api/sites');
+  const site = Array.isArray(result?.sites) ? result.sites.find((candidate) => candidate.slug === slug) : null;
+  if (!site) {
+    throw usageError(
+      'SITE_NOT_FOUND',
+      `未找到站点：${slug}`,
+      '请确认站点名和当前环境；如果还没创建，先执行 pages deploy --slug <站点名>。'
+    );
+  }
+  return { site };
 }
 
 function readConfigForCommand(parsed, context) {
@@ -325,10 +382,29 @@ function createClient(config, credential, context) {
   });
 }
 
-function siteUrlForProject(project, config) {
-  if (!project?.slug) throw new Error('SITE_BINDING_REQUIRED');
-  if (config.environment === 'staging') return `https://${project.slug}-staging.${config.siteDomainSuffix}`;
-  return `https://${project.slug}.${config.siteDomainSuffix}`;
+function siteUrlForSlug(slug, config) {
+  const normalized = normalizeSiteSlug(slug);
+  if (!normalized) {
+    throw usageError('SITE_BINDING_REQUIRED', '当前项目没有站点绑定。', '请传 --slug <站点名>，或先用 --save-config 保存绑定。');
+  }
+  if (config.environment === 'staging') return `https://${normalized}-staging.${config.siteDomainSuffix}`;
+  return `https://${normalized}.${config.siteDomainSuffix}`;
+}
+
+function slugFromHostname(hostname, config) {
+  if (typeof hostname !== 'string' || !hostname) return null;
+  const suffix = `.${config.siteDomainSuffix}`;
+  if (!hostname.endsWith(suffix)) return null;
+  const label = hostname.slice(0, -suffix.length);
+  if (config.environment === 'staging' && label.endsWith('-staging')) {
+    return normalizeSiteSlug(label.slice(0, -'-staging'.length));
+  }
+  return normalizeSiteSlug(label);
+}
+
+function normalizeSiteSlug(value) {
+  const slug = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return slug || null;
 }
 
 function nextIdempotencyKey(context) {
@@ -354,107 +430,110 @@ function outputHelp(parsed, output) {
 
 function helpText(topic) {
   if (topic === 'deploy') {
-    return `Usage: pages deploy [dir] [options]
+    return `用法：pages deploy [目录] [选项]
 
-Deploy a static site, SPA, or custom Worker to XD Pages v2.
+发布 static 站点、SPA 或自定义 Worker 到 XD Pages v2。
 
-Options:
-  --env <production|staging|local|custom>   Target environment. Defaults to active profile or production.
-  --site <site_id>                          Existing site id. Required when using PAGES_ACCESS_KEY without .pages.json.
-  --slug <site-slug>                        Site slug for first deploy or local project binding.
+选项：
+  --env <production|staging|local|custom>   目标环境；默认使用当前 profile，未设置时为 production。
+  --slug <站点名>                            用户可见站点名，例如 docs；每个环境内唯一，推荐日常使用。
+  --site <site_id>                          高级参数：内部站点 ID；通常不需要手写。
   --visibility <public|org|acl|owner|disabled>
-                                            Initial visibility when CLI creates a site. Default: org.
-  --artifact-kind <static|spa|worker>       Override artifact type inference.
-  --save-config                             Write or update .pages.json with non-secret project binding data.
-  --json                                    Print stable JSON for agents and CI.
-  --help                                    Show this help.
+                                            创建站点时的初始可见性；默认 org。
+  --artifact-kind <static|spa|worker>       覆盖 artifact 类型自动识别。
+  --save-config                             写入或更新 .pages.json，只保存非敏感项目绑定。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。
 
-Examples:
+示例：
   pages deploy ./dist --slug demo --visibility org
   pages deploy ./dist --slug demo --visibility org --save-config
-  PAGES_ACCESS_KEY=<access-key> pages deploy ./dist --site site_xxx --json
+  PAGES_ACCESS_KEY=<access-key> pages deploy ./dist --slug demo --json
 
-Notes:
-  pages deploy does not write .pages.json unless --save-config is set.
-  Access keys cannot create sites. Create the site once with pages login, or pass --site for CI/agent deploys.
-  The CLI does not expose underlying platform execution details.`;
+说明：
+  pages deploy 默认不写 .pages.json；需要保存项目绑定时显式加 --save-config。
+  access key 不能创建站点；请先用用户登录创建站点，CI/agent 后续用 --slug 发布已有站点。
+  --site 是内部 ID 逃生口；优先使用 --slug。
+  CLI 不暴露底层执行平台细节。`;
   }
   if (topic === 'login') {
-    return `Usage: pages login [options]
+    return `用法：pages login [选项]
 
-Authenticate the local CLI with XD Pages v2.
+登录 XD Pages v2 CLI。
 
-Options:
-  --env <production|staging|local|custom>   Target environment. Defaults to production.
-  --access-key <key>                        Save an existing access key explicitly.
-  --no-open                                 Print browser URL without opening it.
-  --json                                    Print stable JSON without secrets.
-  --help                                    Show this help.`;
+选项：
+  --env <production|staging|local|custom>   目标环境；默认 production。
+  --access-key <key>                        显式保存已有 access key。
+  --no-open                                 只打印浏览器地址，不自动打开。
+  --json                                    输出稳定 JSON，不输出 secret。
+  --help                                    显示帮助。`;
   }
   if (topic === 'status') {
-    return `Usage: pages status [options]
+    return `用法：pages status [选项]
 
-Read site or deployment status.
+查看站点或部署状态。
 
-Options:
-  --env <production|staging|local|custom>   Target environment.
-  --site <site_id>                          Site id. Defaults to .pages.json for the active environment.
-  --deployment <deployment_id>              Read a deployment by id.
-  --json                                    Print stable JSON for agents and CI.
-  --help                                    Show this help.`;
+选项：
+  --env <production|staging|local|custom>   目标环境。
+  --slug <站点名>                            用户可见站点名；推荐日常使用。
+  --site <site_id>                          高级参数：内部站点 ID；默认读取当前环境的 .pages.json。
+  --deployment <deployment_id>              按部署 ID 查看部署状态。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
   }
   if (topic === 'rollback') {
-    return `Usage: pages rollback <version_id> [options]
+    return `用法：pages rollback <version_id> [选项]
 
-Rollback a site route to an existing immutable version.
+回滚站点到一个已存在的不可变版本。
 
-Options:
-  --env <production|staging|local|custom>   Target environment.
-  --json                                    Print stable JSON for agents and CI.
-  --help                                    Show this help.`;
+选项：
+  --env <production|staging|local|custom>   目标环境。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
   }
   if (topic === 'open') {
-    return `Usage: pages open [options]
+    return `用法：pages open [选项]
 
-Open or print the current site URL from .pages.json.
+打开或打印当前 .pages.json 绑定的站点地址。
 
-Options:
-  --env <production|staging|local|custom>   Target environment.
-  --print                                   Print URL without opening a browser.
-  --json                                    Print stable JSON for agents and CI.
-  --help                                    Show this help.`;
+选项：
+  --env <production|staging|local|custom>   目标环境。
+  --slug <站点名>                            不依赖 .pages.json，直接打开指定站点名。
+  --print                                   只打印 URL，不打开浏览器。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
   }
   if (topic === 'env') {
-    return `Usage: pages env <list|use|set> [options]
+    return `用法：pages env <list|use|set> [选项]
 
-Manage local CLI environment selection.
+管理本地 CLI 环境选择。
 
-Commands:
+命令：
   pages env list
   pages env use <production|staging|local|custom>
   pages env set custom --api <origin> --auth <origin> [--site-domain-suffix <suffix>]
 
-Options:
-  --json                                    Print stable JSON for agents and CI.
-  --help                                    Show this help.`;
+选项：
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
   }
-  return `Usage: pages <command> [options]
+  return `用法：pages <命令> [选项]
 
-Commands:
-  login       Authenticate with browser SSO or save an explicit access key.
-  deploy      Deploy a static site, SPA, or custom Worker.
-  status      Read site or deployment status.
-  rollback    Roll back to an immutable version id.
-  open        Open or print the current site URL.
-  env         List, switch, or configure environments.
+命令：
+  login       通过浏览器 SSO 登录，或显式保存 access key。
+  deploy      发布 static 站点、SPA 或自定义 Worker。
+  status      查看站点或部署状态。
+  rollback    回滚到不可变版本 ID。
+  open        打开或打印当前站点地址。
+  env         查看、切换或配置环境。
 
-Global options:
-  --env <production|staging|local|custom>   Target environment.
-  --json                                    Print stable JSON for agents and CI where supported.
-  --help, -h                                Show help.
-  --version, -v                             Show CLI version.
+全局选项：
+  --env <production|staging|local|custom>   目标环境。
+  --json                                    在支持的命令中输出稳定 JSON，适合 AI agent 和 CI。
+  --help, -h                                显示帮助。
+  --version, -v                             显示 CLI 版本。
 
-Run pages help <command> for command parameters, for example:
+查看某个命令的参数：
   pages help deploy`;
 }
 
@@ -462,8 +541,8 @@ function helpJson(topic) {
   return {
     topic,
     commands: ['login', 'deploy', 'status', 'rollback', 'open', 'env'],
-    commandHelp: 'pages help <command>',
-    jsonOutput: 'Use --json for stable machine-readable output. Secrets are never printed.',
+    commandHelp: 'pages help <命令>',
+    jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };
 }
 

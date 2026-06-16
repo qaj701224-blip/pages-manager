@@ -34,6 +34,6 @@ test('parses top-level help and version aliases', () => {
 });
 
 test('rejects unknown short flags and missing flag values', () => {
-  assert.throws(() => parseArgs(['login', '-x']), /Unknown option/);
-  assert.throws(() => parseArgs(['login', '--env']), /requires a value/);
+  assert.throws(() => parseArgs(['login', '-x']), /未知选项/);
+  assert.throws(() => parseArgs(['login', '--env']), /需要一个值/);
 });

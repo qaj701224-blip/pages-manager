@@ -21,7 +21,7 @@ export async function loginWithAccessKey({
     expiresAt: undefined,
   });
   await saveLoginProfile({ config, profile, saveProfile, credentialType: 'access_key', savedAt });
-  output(`Logged in to ${config.environment} with a Pages access key.`);
+  output(`已使用 Pages access key 登录 ${config.environment} 环境。`);
 }
 
 export async function loginWithBrowser({
@@ -45,14 +45,14 @@ export async function loginWithBrowser({
     fetch,
   });
 
-  output(`Environment: ${config.environment}`);
+  output(`环境：${config.environment}`);
   output(`API: ${config.apiBaseUrl}`);
-  output(`Auth: ${config.authBaseUrl}`);
-  output('Scope: cli_token');
+  output(`认证服务：${config.authBaseUrl}`);
+  output('权限：cli_token');
   const start = await client.requestAuth('POST', '/.xd-pages/cli/login/start');
   assertLoginStart(start);
-  output(`Device code: ${start.deviceCode}`);
-  output(`Open: ${start.browserUrl}`);
+  output(`设备码：${start.deviceCode}`);
+  output(`打开浏览器：${start.browserUrl}`);
 
   if (nowSeconds() >= start.expiresAt) throw new Error('CLI_LOGIN_EXPIRED');
   if (!noOpen) await openBrowser(start.browserUrl);
@@ -74,7 +74,7 @@ export async function loginWithBrowser({
         expiresAt: status.expiresAt,
       });
       await saveLoginProfile({ config, profile, saveProfile, credentialType: 'cli_token', savedAt });
-      output(`Logged in to ${config.environment}.`);
+      output(`已登录 ${config.environment} 环境。`);
       return;
     }
     if (status?.status !== 'pending') throw new Error('CLI_LOGIN_INVALID_STATUS');

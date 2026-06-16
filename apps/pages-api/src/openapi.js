@@ -56,9 +56,14 @@ export function buildOpenApi(config) {
         },
         DeploymentRequest: {
           type: 'object',
-          required: ['siteId', 'artifactKind', 'contentHash', 'artifactBundle'],
+          required: ['artifactKind', 'contentHash', 'artifactBundle'],
+          anyOf: [{ required: ['siteId'] }, { required: ['siteSlug'] }],
           properties: {
-            siteId: { type: 'string' },
+            siteId: { type: 'string', description: 'Internal site id. Usually written by .pages.json, not typed by users.' },
+            siteSlug: {
+              type: 'string',
+              description: 'User-visible site slug. Unique within one environment and preferred for CLI/agent deploys.',
+            },
             artifactKind: { type: 'string', enum: ['static', 'spa', 'worker'] },
             contentHash: { type: 'string', pattern: '^sha256:' },
             artifactBundle: { $ref: '#/components/schemas/ArtifactBundle' },

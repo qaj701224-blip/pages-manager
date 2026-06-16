@@ -57,8 +57,8 @@ test('main prints API error code, message, and action', async () => {
 
   assert.equal(exitCode, 1);
   assert.match(stderr.text(), /SITE_NOT_FOUND/);
-  assert.match(stderr.text(), /Site not found\./);
-  assert.match(stderr.text(), /Check the site id\./);
+  assert.match(stderr.text(), /未找到站点/);
+  assert.match(stderr.text(), /确认站点名和当前环境/);
   assert.equal(stdout.text(), '');
 });
 
@@ -70,9 +70,8 @@ test('main prints JSON error envelopes when --json is requested', async () => {
     stderr,
     env: {},
     commandRunner: async () => {
-      const error = new Error('Site id is required when using an access key.');
-      error.code = 'SITE_ID_REQUIRED_FOR_ACCESS_KEY';
-      error.action = 'Pass --site <site_id>.';
+      const error = new Error('SITE_SLUG_REQUIRED');
+      error.code = 'SITE_SLUG_REQUIRED';
       throw error;
     },
   });
@@ -82,9 +81,9 @@ test('main prints JSON error envelopes when --json is requested', async () => {
   assert.deepEqual(JSON.parse(stderr.text()), {
     ok: false,
     error: {
-      code: 'SITE_ID_REQUIRED_FOR_ACCESS_KEY',
-      message: 'Site id is required when using an access key.',
-      action: 'Pass --site <site_id>.',
+      code: 'SITE_SLUG_REQUIRED',
+      message: '缺少站点名。',
+      action: '请传 --slug <站点名>。',
     },
   });
 });
@@ -99,7 +98,7 @@ test('global symlinked bin invokes the CLI entrypoint', async () => {
   const result = await runNode([linkPath, 'help']);
 
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /Usage: pages/);
+  assert.match(result.stdout, /用法：pages/);
   assert.equal(result.stderr, '');
 });
 

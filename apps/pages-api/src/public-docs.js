@@ -39,7 +39,7 @@ pages login${envFlag}
 CI 或 agent 环境使用平台签发的 access key：
 
 \`\`\`bash
-PAGES_ACCESS_KEY=<access-key> pages deploy <dir>${deployEnvFlag} --site <site-id> --json
+PAGES_ACCESS_KEY=<access-key> pages deploy <dir>${deployEnvFlag} --slug <site-slug> --json
 \`\`\`
 
 不要把 CLI token、access key、cookie、SSO code 或平台能力写入项目文件、日志、README、截图或聊天消息。
@@ -56,7 +56,7 @@ pages rollback <version-id>${deployEnvFlag}
 
 可见性只使用 v2 支持的值：\`public\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。第一版 \`public\` 仍受公司网络访问限制。
 \`pages deploy\` 默认不写 \`.pages.json\`；需要保存非敏感项目绑定时显式加 \`--save-config\`。
-使用 \`PAGES_ACCESS_KEY\` 时不能创建站点，必须传 \`--site <site-id>\` 或已有当前环境的 \`.pages.json\`。
+使用 \`PAGES_ACCESS_KEY\` 时不能创建站点；请先用用户登录创建站点，CI / agent 后续传 \`--slug <site-slug>\` 发布已有站点。
 
 ## 硬性规则
 
@@ -100,7 +100,7 @@ pages open${envFlag}
 pages rollback <version-id>${envFlag}
 \`\`\`
 
-CI 使用 \`PAGES_ACCESS_KEY\` 和显式 \`--site <site-id>\`，不要在仓库中保存 access key 或 CLI token。
+CI 使用 \`PAGES_ACCESS_KEY\` 和显式 \`--slug <site-slug>\`，不要在仓库中保存 access key 或 CLI token。
 \`pages deploy\` 默认不写 \`.pages.json\`；需要保存非敏感项目绑定时显式加 \`--save-config\`。
 
 ## 安全边界

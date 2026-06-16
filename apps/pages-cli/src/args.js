@@ -26,13 +26,13 @@ export function parseArgs(argv = []) {
       setFlag(flags, 'help', true);
       continue;
     }
-    if (!token.startsWith('--')) throw new Error(`Unknown option: ${token}`);
+    if (!token.startsWith('--')) throw new Error(`未知选项：${token}`);
 
     const option = token.slice(2);
     const [rawName, inlineValue] = option.split(/=(.*)/s, 2);
     const name = normalizeFlagName(rawName);
     const kebabName = rawName.trim();
-    if (!kebabName) throw new Error(`Unknown option: ${token}`);
+    if (!kebabName) throw new Error(`未知选项：${token}`);
 
     if (BOOLEAN_FLAGS.has(kebabName)) {
       setFlag(flags, name, true);
@@ -41,7 +41,7 @@ export function parseArgs(argv = []) {
 
     const value = inlineValue !== undefined ? inlineValue : rest[index + 1];
     if (value === undefined || value.startsWith('-')) {
-      throw new Error(`Option --${kebabName} requires a value.`);
+      throw new Error(`选项 --${kebabName} 需要一个值。`);
     }
     if (inlineValue === undefined) index += 1;
     setFlag(flags, name, value);

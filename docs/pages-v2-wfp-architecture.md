@@ -95,7 +95,7 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 
 | 术语         | 含义                                               | 是否可变 | 是否可作为安全边界 |
 | ------------ | -------------------------------------------------- | -------- | ------------------ |
-| `slug`       | 用户可见站点名，例如 `foo`                         | 可变     | 否                 |
+| `slug`       | 用户可见站点名，例如 `foo`；同一 environment 内唯一 | 首版不开放修改；长期可 rename | 否 |
 | `siteId`     | 平台内部站点主键，例如 `site_xxx`                  | 不可变   | 可用于授权关系     |
 | `siteUuid`   | 站点数据隔离锚点，删除后重建必须变化               | 不可变   | 是                 |
 | `routeId`    | 某个 hostname 到站点版本的路由记录                 | 不可变   | 可用于审计         |
@@ -2054,10 +2054,10 @@ Windows fallback 文件没有 `chmod 0600` 语义，CLI 必须检查 ACL：只�
 access key 默认只通过环境变量传入：
 
 ```bash
-PAGES_ACCESS_KEY=... pages deploy ./dist --site site_xxx --json
+PAGES_ACCESS_KEY=... pages deploy ./dist --slug foo --json
 ```
 
-本地 CLI 不应自动从环境变量持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类命令时，才允许写入 secret store，并且输出不得回显 key 明文。access key 不能创建站点；CI / agent 使用 access key 部署时必须显式传 `--site <site_id>`，或使用当前 environment 已存在的 `.pages.json` 绑定。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
+本地 CLI 不应自动从环境变量持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类命令时，才允许写入 secret store，并且输出不得回显 key 明文。access key 不能创建站点；CI / agent 使用 access key 部署时优先显式传 `--slug <site_slug>`，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。`--site <site_id>` 只作为高级逃生口，不作为用户日常心智。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
 
 #### Global config
 
@@ -2122,7 +2122,7 @@ env 安全规则：
 
 `.pages.json` 是否提交到业务项目 Git 由业务项目自己决定；但它必须始终保持非敏感。本仓库的 demo `.pages.json` 仍不提交。
 
-`pages deploy` 默认不生成、不更新 `.pages.json`，避免 AI / CI 部署时静默修改工作区并被误提交。只有用户显式传 `--save-config` 时，CLI 才写入或更新 `.pages.json`；未保存时，CLI 必须在文本输出和 `--json` 输出中返回 `siteId`、`deploymentId`、`versionId` 和 URL，便于用户或 agent 后续复用 `--site <site_id>`。
+`pages deploy` 默认不生成、不更新 `.pages.json`，避免 AI / CI 部署时静默修改工作区并被误提交。只有用户显式传 `--save-config` 时，CLI 才写入或更新 `.pages.json`；未保存时，CLI 必须在文本输出和 `--json` 输出中返回 `slug`、内部 `siteId`、`deploymentId`、`versionId` 和 URL。用户和 agent 后续应优先复用 `--slug <site_slug>`；内部 `siteId` 主要用于排障、审计和低层 API 逃生。
 
 `.pages.json` 只描述 v2 `pages.xd.team` 站点绑定。CLI 读取到 `workers.xd.team` URL 或 v1 API 配置时必须 fail closed，不能把旧项目配置“自动升级”为 v2，也不能反向操作 v1 站点。
 
@@ -2156,10 +2156,10 @@ CLI 日常命令契约建议：
 ```bash
 pages login [--env staging] [--access-key <key>] [--no-open]
 pages deploy ./dist --slug foo --visibility org [--save-config]
-PAGES_ACCESS_KEY=... pages deploy ./dist --site site_xxx --json
-pages status [--site site_xxx] [--deployment dep_xxx]
+PAGES_ACCESS_KEY=... pages deploy ./dist --slug foo --json
+pages status [--slug foo] [--deployment dep_xxx]
 pages rollback ver_xxx
-pages open [--print]
+pages open [--slug foo] [--print]
 pages env list
 pages env use staging
 pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
@@ -2279,7 +2279,7 @@ pages deploy ./dist --slug foo --visibility org --env staging
 ### CI / Agent
 
 ```text
-PAGES_ACCESS_KEY=... pages deploy ./dist --site site_xxx --json
+PAGES_ACCESS_KEY=... pages deploy ./dist --slug foo --json
 ```
 
 access key 要求：
@@ -2449,7 +2449,7 @@ custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容�
 
 1. 小型 static / SPA：继续由平台生成 user Worker 模块，适合文档、demo 和轻量内部工具。
 2. 中大型 static / SPA：将静态资产放入 R2 或专用 asset store，由 generated user Worker 或 router asset layer 读取。
-3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist --slug foo` 或 `pages deploy ./dist --site site_xxx`。
+3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist --slug foo`。`--site site_xxx` 仅作为高级逃生口。
 
 无论采用哪种路径，对用户暴露的心智保持一致：
 
@@ -2568,7 +2568,7 @@ publish -> activate -> drain -> retire
 - 按 `PAGES_EXECUTION_MODE` 启用执行面：
   - WFP 未开通：`normal-worker-slot`，先创建少量 staging / production slot。
   - WFP 已开通：`wfp`，使用 dispatch namespace。
-- 用户仍只执行 `pages deploy ./dist --slug foo` 或 `pages deploy ./dist --site site_xxx`，不暴露 execution provider 参数。
+- 用户仍只执行 `pages deploy ./dist --slug foo`，不暴露 execution provider 参数；`--site site_xxx` 仅作为高级逃生口。
 - 支持 `public` 和 `org` visibility。
 - 支持 router IP allowlist 强限制；未命中公司网络直接 403。
 - 支持站点级 `site_session`、员工 active 状态校验、header/cookie 清洗和 `internal_worker_jwt`。
