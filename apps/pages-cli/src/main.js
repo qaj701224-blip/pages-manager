@@ -36,11 +36,12 @@ function formatError(error) {
 
 function formatErrorJson(error) {
   if (!error || typeof error !== 'object') {
-    return JSON.stringify({ ok: false, error: { code: 'CLI_ERROR', message: String(error) } });
+    return JSON.stringify({ ok: false, schemaVersion: 1, error: { code: 'CLI_ERROR', message: String(error) } });
   }
   const localized = localizeError(error);
   const payload = {
     ok: false,
+    schemaVersion: 1,
     error: {
       code: localized.code,
       message: localized.message || localized.code,
@@ -57,15 +58,15 @@ function localizeError(error) {
   const known = {
     PAGES_CREDENTIAL_REQUIRED: {
       message: '缺少 Pages 登录凭证。',
-      action: '请先运行 pages login；CI/agent 可以设置 PAGES_ACCESS_KEY。',
+      action: '请先运行 pages login；CI/agent 可以显式传 --access-key <key>。',
     },
     SITE_REQUIRED: {
       message: '缺少站点名。',
-      action: '请传 --slug <站点名>，或在当前项目里先用 --save-config 保存绑定。',
+      action: '请传入站点名，例如 pages deploy ./dist demo。',
     },
     SITE_SLUG_REQUIRED: {
       message: '缺少站点名。',
-      action: '请传 --slug <站点名>。',
+      action: '请传入站点名，例如 pages deploy ./dist demo。',
     },
     SITE_NOT_FOUND: {
       message: error.message && /^未找到/.test(error.message) ? error.message : '未找到站点。',
@@ -73,7 +74,7 @@ function localizeError(error) {
     },
     SITE_VISIBILITY_INVALID: {
       message: '站点可见性无效。',
-      action: '请使用 public、org、acl、owner 或 disabled。',
+      action: '请使用 internal、org、acl、owner 或 disabled。',
     },
     ARTIFACT_KIND_INVALID: {
       message: 'artifact 类型无效。',
@@ -81,15 +82,15 @@ function localizeError(error) {
     },
     VERSION_REQUIRED: {
       message: '缺少版本 ID。',
-      action: '请传入要回滚到的 versionId。',
+      action: '请使用 pages rollback <站点名> <version-id>。',
     },
     SITE_BINDING_REQUIRED: {
-      message: '当前项目没有站点绑定。',
-      action: '请传 --slug <站点名>，或先用 --save-config 保存绑定。',
+      message: '缺少站点名。',
+      action: '请显式传入站点名。',
     },
     ENV_COMMAND_INVALID: {
       message: 'env 命令不完整或无效。',
-      action: '请使用 pages env list、pages env use <环境> 或 pages env set custom。',
+      action: '请使用 pages env list 或 pages env use <production|staging>。',
     },
     UNKNOWN_COMMAND: {
       message: command ? `未知命令：${command}` : '未知命令。',

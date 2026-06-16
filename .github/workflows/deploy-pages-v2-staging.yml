@@ -1,10 +1,10 @@
-name: Deploy Pages V2 Staging
+name: Deploy XD Pages Staging
 
 on:
   workflow_dispatch:
     inputs:
       component:
-        description: Deploy v2 component
+        description: Deploy XD Pages component
         required: true
         type: choice
         default: all

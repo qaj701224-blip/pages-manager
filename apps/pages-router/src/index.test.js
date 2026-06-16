@@ -61,7 +61,9 @@ test('rejects reserved platform hosts before dispatch', async () => {
   );
 
   assert.equal(response.status, 404);
-  assert.equal((await response.json()).error.code, 'RESERVED_HOST');
+  const body = await response.json();
+  assert.equal(body.error.code, 'RESERVED_HOST');
+  assert.match(body.error.message, /routable XD Pages site/);
   assert.equal(env.dispatchCount, 0);
 });
 
@@ -369,6 +371,23 @@ test('rejects disabled sites before dispatch even with a valid site_session', as
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SITE_DISABLED');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('fails closed when route snapshot has an unknown visibility', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'public' }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SITE_POLICY_INVALID');
   assert.equal(env.dispatchGetCount, 0);
   assert.equal(env.dispatchCount, 0);
 });
@@ -811,7 +830,7 @@ function routeSnapshot(overrides = {}) {
     siteId: 'site_demo',
     siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
     slug: 'demo',
-    visibility: 'public',
+    visibility: 'internal',
     policyVersion: 1,
     ownerUserId: 'owner_1',
     acl: [],

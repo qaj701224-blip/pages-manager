@@ -40,7 +40,7 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
   };
 
   const createSite = await apiWorker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', { slug: 'docs', visibility: 'public' }),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', { slug: 'docs', visibility: 'internal' }),
     apiEnv
   );
   const siteBody = await createSite.json();

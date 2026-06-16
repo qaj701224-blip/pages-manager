@@ -43,7 +43,7 @@ test('main prints API error code, message, and action', async () => {
   const exitCode = await main(['deploy', '.'], {
     stdout,
     stderr,
-    env: { PAGES_ACCESS_KEY: 'xdpak_production_ak_1_secret' },
+    env: {},
     cwd: '/',
     commandRunner: async () => {
       throw new ApiError({
@@ -80,10 +80,11 @@ test('main prints JSON error envelopes when --json is requested', async () => {
   assert.equal(stdout.text(), '');
   assert.deepEqual(JSON.parse(stderr.text()), {
     ok: false,
+    schemaVersion: 1,
     error: {
       code: 'SITE_SLUG_REQUIRED',
       message: '缺少站点名。',
-      action: '请传 --slug <站点名>。',
+      action: '请传入站点名，例如 pages deploy ./dist demo。',
     },
   });
 });

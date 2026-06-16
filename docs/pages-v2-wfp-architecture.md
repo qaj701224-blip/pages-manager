@@ -1,14 +1,14 @@
-# Pages v2 多租户执行平台架构设计
+# XD Pages 多租户执行平台架构设计
 
 ## 状态
 
-本文是 `pages-manager` v2 架构草案，用于在 `pages.xd.team` 新建一套带统一身份、发布鉴权、子站 SSO、多租户执行隔离和统一审计的平台。
+本文是 `pages-manager` 新架构草案，用于在 `pages.xd.team` 新建一套带统一身份、发布鉴权、子站 SSO、多租户执行隔离和统一审计的平台。用户侧产品名统一为 **XD Pages**；`v2` 只作为内部工程边界、资源命名或迁移讨论使用，不出现在 CLI、OpenAPI、skill、readme、错误提示等用户路径中。
 
-设计目标是先明确 v1 / v2 边界。v1 `*.workers.xd.team` 保持不动，继续由现有 `apps/server` 和旧发布链路服务；v2 使用全新的 `*.pages.xd.team` 域名、资源和代码目录，不做历史站点迁移、不认领 v1 资产、不接管 v1 route。
+设计目标是先明确旧版 / 新架构边界。旧版 `*.workers.xd.team` 保持不动，继续由现有 `apps/server` 和旧发布链路服务；新架构使用全新的 `*.pages.xd.team` 域名、资源和代码目录，不做历史站点迁移、不认领旧版资产、不接管旧版 route。
 
 参考资料：
 
-- `docs/xd-sso.md`：心动统一身份认证 OAuth 接入说明的本地临时参考；该文件不随 v2 PR 提交，上线前删除或改为全量脱敏摘要
+- `docs/xd-sso.md`：心动统一身份认证 OAuth 接入说明的本地临时参考；该文件不随当前 PR 提交，上线前删除或改为全量脱敏摘要
 - Cloudflare Workers for Platforms：`https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/`
 - Dynamic Dispatch：`https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/dynamic-dispatch/`
 - Outbound Workers：`https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/outbound-workers/`
@@ -19,16 +19,16 @@
 域名和产品边界先固定为：
 
 ```text
-v1 / existing: *.workers.xd.team
+legacy / existing: *.workers.xd.team
   - 当前线上服务继续可访问。
-  - 现有 README、API、skill、apps/server 行为不因 v2 改动而变化。
-  - X-Pages-Token 仍只属于 v1 归属标记，不升级为 v2 强认证。
+  - 现有 README、API、skill、apps/server 行为不因新架构改动而变化。
+  - X-Pages-Token 仍只属于旧版归属标记，不升级为新架构强认证。
 
-v2 / greenfield: *.pages.xd.team
+XD Pages / greenfield: *.pages.xd.team
   - 新建多租户执行平台架构。
   - WFP 是目标执行模式；在 WFP 暂未开通时，允许使用普通 Worker slot 池作为内部兼容执行模式。
   - 新建 API、Auth、Router、D1/KV/DO、执行资源和 SSO redirect URI。
-  - 用户要使用 v2 时重新发布到 pages.xd.team，不从 workers.xd.team 自动迁移。
+  - 用户要使用新架构时重新发布到 pages.xd.team，不从 workers.xd.team 自动迁移。
 ```
 
 当前 `pages-manager` 的核心模型是：
@@ -67,7 +67,7 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 - 支持上千个 Worker，数据面请求不回管理 API Worker。
 - 使用统一 Execution Mode 承载用户 Worker。目标模式是 Workers for Platforms；WFP 暂不可用时使用普通 Worker slot 池兼容上线。
 - 平台 Gateway/Router 统一处理鉴权、审计、header 清洗和分发。
-- v2 作为 `pages.xd.team` 上的新平台独立上线，不影响 v1 `workers.xd.team`。
+- 新架构作为 `pages.xd.team` 上的平台独立上线，不影响旧版 `workers.xd.team`。
 
 ## 非目标
 
@@ -77,9 +77,9 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 - 不让用户 Worker 直接持有平台级 Cloudflare API token、全局 KV/R2/D1 binding 或 SSO access token。
 - 不做历史站点迁移、资产认领、v1 redirect 或 v1 route 接管；v1 站点继续按原域名访问。
 
-## v1 普通 Workers API、v2 WFP 与 v2 slot 兼容模式的差异
+## 旧版普通 Workers API、WFP 与 slot 兼容模式的差异
 
-| 维度     | v1 普通 Workers API                                          | v2 `wfp` 目标模式                                                             | v2 `normal-worker-slot` 兼容模式                                             |
+| 维度     | 旧版普通 Workers API                                          | `wfp` 目标模式                                                               | `normal-worker-slot` 兼容模式                                               |
 | -------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | 用户代码 | 每个站点是一个 account-level Worker script，例如 `pages-foo` | 每个站点版本是 dispatch namespace 中的 user Worker                            | 每个激活/待激活版本占用一个预创建普通 Worker slot，例如 `pages-v2-slot-007` |
 | 路由     | 每个站点维护独立 route，例如 `foo.workers.xd.team/*`         | `*.pages.xd.team` 进入 `pages-router`，router 通过 dispatch namespace 分发    | `*.pages.xd.team` 进入 `pages-router`，router 通过静态 service binding 分发  |
@@ -91,7 +91,7 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 
 ## 核心术语
 
-后续 schema、JWT、header、CLI 和 `.pages.json` 统一使用这些名字：
+后续 schema、JWT、header、CLI 和 API 契约统一使用这些名字：
 
 | 术语         | 含义                                               | 是否可变 | 是否可作为安全边界 |
 | ------------ | -------------------------------------------------- | -------- | ------------------ |
@@ -106,15 +106,15 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 
 ## 目标目录
 
-建议 v2 新建目录；现有 `apps/server` 继续作为 v1 控制面，不参与 v2 请求路径：
+建议新建目录；现有 `apps/server` 继续作为旧版控制面，不参与 `pages.xd.team` 请求路径：
 
 ```text
 apps/
-  server/            # v1 管理 API，继续服务 *.workers.xd.team
-  pages-api/         # v2 控制面 API：deploy/list/site/version/access/audit
-  pages-auth/        # v2 SSO 与 session：OAuth callback、CLI login、access key
-  pages-router/      # v2 数据面入口：*.pages.xd.team + execution dispatch
-  kv-gateway/        # v2 平台 KV 能力网关；v1 不再提供 KV
+  server/            # 旧版管理 API，继续服务 *.workers.xd.team
+  pages-api/         # XD Pages 控制面 API：deploy/list/site/version/access/audit
+  pages-auth/        # XD Pages SSO 与 session：OAuth callback、CLI login、access key
+  pages-router/      # XD Pages 数据面入口：*.pages.xd.team + execution dispatch
+  kv-gateway/        # XD Pages 平台 KV 能力网关；旧版不再提供 KV
 
 packages/
   auth/              # cookie、session JWT、SSO profile、ACL 校验
@@ -267,7 +267,7 @@ auth-staging.pages.xd.team/*    -> pages-auth-staging
 
 v2 上线前需要把 Cloudflare 资源、心动 SSO 应用和 GitHub Actions 配置一次性梳理清楚。文档、代码和 CI 中只能出现占位名称，不能写真实 account id、zone id、namespace id、client secret 或 token。
 
-WFP 是最终执行面目标；在账号暂未开通 WFP 时，第一版把 v2 wrangler template 里的 `PAGES_EXECUTION_MODE` 固定为 `normal-worker-slot`，使用预创建普通 Worker slot 池上线。这个兼容层只存在于平台内部：用户 CLI、`.pages.json`、AI skill 和 deploy API 都不暴露 execution provider 或 runtime 选择参数。
+WFP 是最终执行面目标；在账号暂未开通 WFP 时，第一版把 wrangler template 里的 `PAGES_EXECUTION_MODE` 固定为 `normal-worker-slot`，使用预创建普通 Worker slot 池上线。这个兼容层只存在于平台内部：用户 CLI、`--config`、AI skill 和 deploy API 都不暴露 execution provider 或 runtime 选择参数。
 
 `pages-kv-gateway`、`pages-kv-gateway-staging`、`pages-shared-data`、`pages-shared-data-staging` 原先只是 v1 预留；确认未投入使用且 KV key count 为 0 后，直接划归 v2。v1 `workers.xd.team` 不再提供 Pages KV，`apps/server` 不签发 KV capability，也不在 v1 deploy workflow 中部署 gateway。
 
@@ -336,7 +336,7 @@ effectiveMode =
   ?? env.PAGES_EXECUTION_MODE
 ```
 
-`site.execution_mode_override` 只允许平台维护者设置，取值为 `null | wfp | normal-worker-slot`。普通用户 `pages deploy` 不允许指定 provider；CLI help、`.pages.json`、OpenAPI 和 AI skill 都只描述“发布到 XD Pages v2”，不描述 WFP、slot、dispatch namespace 或 service binding。
+`site.execution_mode_override` 只允许平台维护者设置，取值为 `null | wfp | normal-worker-slot`。普通用户 `pages deploy` 不允许指定 provider；CLI help、`--config`、OpenAPI 和 AI skill 都只描述“发布到 XD Pages”，不描述 WFP、slot、dispatch namespace 或 service binding。
 
 slot 兼容层不是用户可选 provider，它只是 WFP 未开通期间的内部上线和回滚手段。
 
@@ -374,7 +374,7 @@ slot 状态由 D1 权威表管理：
 扩容是系统 Worker 部署期动作，不在用户发布请求路径里自动创建 Worker：
 
 ```text
-Deploy Pages V2 <environment>
+XD Pages deploy workflow <environment>
   1. 执行 D1 migration，确保 worker_slots 表存在。
   2. scripts/provision-pages-v2-slots.mjs <environment> prepare
      - 读取 worker_slots 当前 available 数量和最大 slot_number。
@@ -400,7 +400,7 @@ Deploy Pages V2 <environment>
 
 ### 心动 SSO 应用配置
 
-production、staging 和 local 建议使用三个独立 SSO 应用，至少也要使用三组独立 redirect URI。OAuth 入口和 callback 都应落到 `pages-auth`，不能落到 `pages-api`，否则控制面会被迫持有 SSO client secret 和 session signing secret。
+production 和 staging 使用独立 SSO 应用，至少也要使用两组独立 redirect URI。OAuth 入口和 callback 都应落到 `pages-auth`，不能落到 `pages-api`，否则控制面会被迫持有 SSO client secret 和 session signing secret。
 
 ```text
 production app:
@@ -414,7 +414,7 @@ staging app:
   SSO认证重定向地址：https://auth-staging.pages.xd.team/.xd-pages/auth/callback
 ```
 
-本地开发使用单独的 local SSO 应用：
+本地开发可使用单独的 local SSO 应用，但这是开发保留项，不属于用户侧 CLI 环境列表：
 
 ```text
 local app:
@@ -423,9 +423,9 @@ local app:
   SSO认证重定向地址：http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/callback
 ```
 
-local SSO 的 `SSO_CLIENT_ID` 和 `SSO_CLIENT_SECRET` 只能放本地 ignored env，例如当前仓库已忽略的 `.env`、`.dev.vars`，或只放 shell 环境变量；不得写入本文档、Git、CLI config、`.pages.json` 或测试快照。若使用 `.env.local`、`.dev.vars.local` 等新文件名，必须先确认它们已被 `.gitignore` 覆盖。若本地调试凭证曾被公开粘贴到 issue、PR、聊天记录或日志，应按公司规范轮换。
+local SSO 的 `SSO_CLIENT_ID` 和 `SSO_CLIENT_SECRET` 只能放本地 ignored env，例如当前仓库已忽略的 `.env`、`.dev.vars`，或只放 shell 环境变量；不得写入本文档、Git、CLI config、`--config` 文件或测试快照。若使用 `.env.local`、`.dev.vars.local` 等新文件名，必须先确认它们已被 `.gitignore` 覆盖。若本地调试凭证曾被公开粘贴到 issue、PR、聊天记录或日志，应按公司规范轮换。
 
-本地联调可以先使用公司分配的 OAuth local app。建议只在本机 shell 或已被 `.gitignore` 覆盖的 `.dev.vars` 中配置真实值：
+本地联调可以先使用公司分配的 OAuth local app。建议只在本机 shell 或已被 `.gitignore` 覆盖的 `.dev.vars` 中配置真实值；CLI 用户侧 `pages env list` 不展示 local：
 
 ```bash
 export PAGES_ENV=local
@@ -435,7 +435,7 @@ export SSO_CLIENT_ID=<local-sso-client-id>
 export SSO_CLIENT_SECRET=<local-sso-client-secret>
 ```
 
-`xd-pages.127.0.0.1.nip.io` 用于让 OAuth redirect URI 具备稳定 host，同时仍解析到本机 `127.0.0.1`。本地 callback 路径也统一使用平台保留路径 `/.xd-pages/auth/callback`，避免和用户站点路由冲突。`pages-auth` 配置层支持 `PAGES_ENV=local`；router 首版仍只服务 production/staging 站点域名，本地如需完整子站访问链路需要单独补 local router host allowlist 与 cookie/session 测试。
+`xd-pages.127.0.0.1.nip.io` 用于让 OAuth redirect URI 具备稳定 host，同时仍解析到本机 `127.0.0.1`。本地 callback 路径也统一使用平台保留路径 `/.xd-pages/auth/callback`，避免和用户站点路由冲突。`pages-auth` 配置层可支持 `PAGES_ENV=local` 供开发调试；router 首版仍只服务 production/staging 站点域名，本地如需完整子站访问链路需要单独补 local router host allowlist 与 cookie/session 测试。
 
 需要配置：
 
@@ -447,7 +447,7 @@ SSO_TOKEN_URL
 SSO_PROFILE_URL
 ```
 
-`SSO_REDIRECT_URI` 和 `SSO_ALLOWED_USER_SCOPE` 是 Git 可审查的环境常量，当前写在 v2 auth wrangler template 中；`SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
+`SSO_REDIRECT_URI` 和 `SSO_ALLOWED_USER_SCOPE` 是 Git 可审查的环境常量，当前写在 auth wrangler template 中；`SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
 
 生产和 staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 必须使用 HTTPS；只有 `PAGES_ENV=local` 允许 HTTP 本地 SSO mock。心动 SSO 当前 OAuth 接口形态是：
 
@@ -536,15 +536,15 @@ secrets:
   ACCESS_KEY_PEPPER_*
 ```
 
-`PAGES_EXECUTION_MODE` 是平台内部执行模式总开关。WFP 未开通时在 template 中设为 `normal-worker-slot`；WFP 开通且验证完成后通过 PR 改为 `wfp`。它是 Git 可审查的架构配置，不是 GitHub Environment Var，不能由 CLI、`.pages.json` 或用户请求覆盖。`pages-api` 运行时读取这个值决定新发布部署到哪个内部执行面；`pages-router` 的 wrangler 渲染会结合 `PAGES_EXECUTION_MODE` 和部署脚本计算出的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 决定持有哪些 dispatch binding。第一版不提供 `auto` fallback；如果后续要做灰度自动回退，必须同时设计 router 双绑定、部署状态机和失败回滚语义。
+`PAGES_EXECUTION_MODE` 是平台内部执行模式总开关。WFP 未开通时在 template 中设为 `normal-worker-slot`；WFP 开通且验证完成后通过 PR 改为 `wfp`。它是 Git 可审查的架构配置，不是 GitHub Environment Var，不能由 CLI、`--config` 或用户请求覆盖。`pages-api` 运行时读取这个值决定新发布部署到哪个内部执行面；`pages-router` 的 wrangler 渲染会结合 `PAGES_EXECUTION_MODE` 和部署脚本计算出的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 决定持有哪些 dispatch binding。第一版不提供 `auto` fallback；如果后续要做灰度自动回退，必须同时设计 router 双绑定、部署状态机和失败回滚语义。
 
-`CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`.pages.json` 或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
+`CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`--config` 文件或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
 `IP_ALLOWLIST` 是 `pages-api` 管理 API 门禁配置，复用 v1 的公司内网 / VPN / 办公出口 CIDR 列表。除 `/openapi.json`、`/skill.md`、`/readme.md` 和 health 外，`pages-api` 在进入站点、access key、部署、回滚等业务 handler 前必须先校验 `CF-Connecting-IP`；未命中时直接 403，不进入 token 校验和业务逻辑。内部 service binding host 不走公网 IP allowlist，由 internal host 校验保护。
 
 `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
-`ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。registry 只包含 secret env 名，可以写入 wrangler template 和 workflow 接受 Git 审查；真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`.pages.json` 或文档示例。
+`ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。registry 只包含 secret env 名，可以写入 wrangler template 和 workflow 接受 Git 审查；真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`--config` 文件或文档示例。
 
 `pages-api` 不能持有 `auth_session`、`site_session` 或 `internal_worker_jwt` 的 signing secret。控制面如需校验用户态 token，只能使用 verify-only JWKS / public key，或通过 `PAGES_AUTH` service binding 完成一次性 code / session 校验；不能在 API Worker 中签发子站 session 或 router internal JWT。
 
@@ -572,7 +572,7 @@ secrets:
   PAGES_SESSION_JWT_SECRET_*
 ```
 
-production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `.pages.json`。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
+production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `--config` 文件。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
 SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先校验 `SSO_ALLOWED_USER_SCOPE`，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。scope 校验优先使用 SSO profile 明确返回的 `scope` / `user_scope` / `roles` / `permissions` 等范围信号；当前 `xindong` 第一版也接受公司邮箱域作为兜底信号。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
 
@@ -726,7 +726,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
 | `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
 
-v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`。
+v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Pages Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Pages Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`。
 
 v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`。
 
@@ -776,21 +776,21 @@ pnpm test
 staging 首次部署前必须完成：
 
 1. GitHub `staging` Environment 已配置上表中的 vars/secrets，且真实 D1/KV/secret 值不出现在仓库、日志或文档中。
-2. Cloudflare 已创建 staging D1、staging route snapshot KV 和 staging site data KV；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 v2 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，workflow 会在 router 部署前检查并扩容 staging slot 池，再按历史最大 slot number 全量渲染 router service bindings；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
+2. Cloudflare 已创建 staging D1、staging route snapshot KV 和 staging site data KV；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，workflow 会在 router 部署前检查并扩容 staging slot 池，再按历史最大 slot number 全量渲染 router service bindings；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
 3. SSO staging 应用 redirect URI 指向 `https://auth-staging.pages.xd.team/.xd-pages/auth/callback`，不指向 `api-staging.pages.xd.team`。
-4. 手动或由 `staging` 分支触发 `Deploy Pages V2 Staging`，先用 `component=all` 验证四个 v2 系统 Worker 一起部署；单组件部署只用于已确认依赖兼容的修复。
+4. 手动或由 `staging` 分支触发 XD Pages staging 部署 workflow（当前 workflow 文件为 `deploy-pages-v2-staging.yml`），先用 `component=all` 验证四个系统 Worker 一起部署；单组件部署只用于已确认依赖兼容的修复。
 5. workflow 中四个 `DRY_RUN=1 scripts/put-pages-v2-secrets.sh ...` 步骤先通过，再执行真正 secret 注入。
 6. `https://api-staging.pages.xd.team/openapi.json` 只能返回 staging base URL，不能出现 production 或 v1 `workers.xd.team` API 地址。
 7. `pages login --env staging` 能完成 SSO、device code 手动确认和 CLI token 保存。
 8. `pages deploy --env staging` 至少验证 static、SPA 和 custom `.js/.mjs` Worker 三类 artifact；`.ts` Worker 入口在未接入 bundler 前必须 fail closed。
-9. staging 子站访问验证 IP allowlist、`public`、`org`、`acl`、`owner`、`disabled`、header/cookie 清洗、`site_session` freshness 和 rollback。
+9. staging 子站访问验证 IP allowlist、`internal`、`org`、`acl`、`owner`、`disabled`、header/cookie 清洗、`site_session` freshness 和 rollback。
 10. v1 `api.workers.xd.team`、`*.workers.xd.team`、旧 skill 和旧发布 workflow 不受 staging v2 部署影响。
 
 production 首次部署前必须完成：
 
 1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 只新增 `pages.xd.team` 相关资源。
 2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper 和 IP allowlist。执行面资源按 production template 中的 `PAGES_EXECUTION_MODE` 校验：`normal-worker-slot` 需要 production slot 池，`wfp` 需要 `pages-production` dispatch namespace。
-3. `Deploy Pages V2 Production` 只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
+3. XD Pages production 部署 workflow（当前 workflow 文件为 `deploy-pages-v2.yml`）只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
 4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker。
 5. 发布后先验证 `api.pages.xd.team/openapi.json`、`auth.pages.xd.team` 登录入口和一个受控试点站点。
 6. 回滚策略是重新 dispatch 上一个已知好 commit 的 workflow，或按组件手动部署上一个 commit；不得通过修改 v1 `workers.xd.team` route 回滚 v2。
@@ -864,7 +864,7 @@ sites
   id                  -- site_xxx
   slug                -- 用户可见站点名
   owner_user_id
-  default_visibility  -- public / org / acl / owner
+  default_visibility  -- internal / org / acl / owner / disabled
   execution_mode_override -- null / wfp / normal-worker-slot；仅平台维护者可写
   site_uuid           -- 存储隔离锚点，删除后重建必须变化
   created_at
@@ -889,7 +889,7 @@ site_routes
   dispatch_binding_name -- slot 模式为 SITE_SLOT_001；WFP 模式为 null
   slot_id             -- slot 模式引用 worker_slots.id；WFP 模式为 null
   active_version_id
-  visibility          -- public / org / acl / owner / disabled
+  visibility          -- internal / org / acl / owner / disabled
   policy_version
   route_generation    -- active version / workerName 切换代数
   route_status        -- active / disabled / deleted
@@ -1460,7 +1460,7 @@ jwks.kid
 
 | 等级        | 适用场景                                   | 一致性策略                                |
 | ----------- | ------------------------------------------ | ----------------------------------------- |
-| `fast`      | 普通 `public` / `org` 页面访问             | 本地 JWT + L1/KV snapshot，允许短传播窗口 |
+| `fast`      | 普通 `internal` / `org` 页面访问           | 本地 JWT + L1/KV snapshot，允许短传播窗口 |
 | `sensitive` | `acl` / `owner` 站点访问                   | 更短 snapshot TTL，版本不匹配时强制刷新   |
 | `strict`    | disabled、删除、封禁、access key 创建/吊销 | 直接查 D1/DO，不能只信缓存                |
 
@@ -1474,16 +1474,16 @@ router 遇到缓存、权威存储或 dispatch 异常时，必须按 cache tier 
 | ---------------------------- | ---------------------------------------------------- | ---------------------------------- | ------------------------ |
 | L1 miss                      | 读 KV / D1                                           | 读 KV / D1                         | 读 D1/DO                 |
 | KV miss                      | 查 D1 并回填 snapshot                                | 查 D1 并回填 snapshot              | 查 D1/DO，不依赖 KV      |
-| snapshot 过期但结构合法      | `public` 可短暂 max-stale；`org` 需重新检查 session  | 强制刷新；刷新失败则拒绝或重新登录 | 不使用 stale             |
+| snapshot 过期但结构合法      | `internal` 可短暂 max-stale；`org` 需重新检查 session | 强制刷新；刷新失败则拒绝或重新登录 | 不使用 stale             |
 | pointer generation 领先      | 刷新 snapshot；失败则按 D1/DO 可用性决策             | 强制刷新；失败则拒绝或重新登录     | 查 D1/DO                 |
 | tombstone / strictUntil 命中 | 不使用 stale，直接查 D1/DO 或拒绝                    | 不使用 stale，直接查 D1/DO 或拒绝  | 拒绝或查 D1/DO           |
 | snapshot malformed           | fail closed                                          | fail closed                        | fail closed              |
 | hostname 与 environment 不符 | fail closed                                          | fail closed                        | fail closed              |
-| D1/DO 超时                   | `public` 可返回短暂 503 或 max-stale；受保护站点拒绝 | 拒绝或 503，不扩大权限             | 拒绝或 503               |
+| D1/DO 超时                   | `internal` 可返回短暂 503 或 max-stale；受保护站点拒绝 | 拒绝或 503，不扩大权限             | 拒绝或 503               |
 | dispatch 404 / worker 缺失   | 返回平台 502/503，写审计                             | 返回平台 502/503，写审计           | 返回平台 502/503，写审计 |
 | disabled / deleted           | 不 dispatch                                          | 不 dispatch                        | 不 dispatch              |
 
-`max-stale` 只能用于不扩大访问权限的 public 路径，并且必须同时满足 snapshot 未超过 `staleUntil`、没有 tombstone、没有 `strictUntil` 命中、有审计标记和告警指标。任何 malformed、串环境、保留 host/path mismatch 都必须 fail closed。
+`max-stale` 只能用于不扩大访问权限的 `internal` 路径，并且必须同时满足 snapshot 未超过 `staleUntil`、没有 tombstone、没有 `strictUntil` 命中、有审计标记和告警指标。任何 malformed、串环境、保留 host/path mismatch 都必须 fail closed。
 
 ### 发布与回滚状态机
 
@@ -1727,12 +1727,12 @@ v2 发布 API 不能依赖 `X-Pages-Token`。`X-Pages-Token` 只属于 v1 归属
 IP allowlist 规则：
 
 - production 和 staging 使用独立 allowlist 配置，可以相同但必须显式配置，不能共享隐式默认值。
-- allowlist 来源应是 Worker runtime `vars` 或配置快照，例如 `ROUTER_IP_ALLOWLIST_CIDRS`，不能由用户站点或 `.pages.json` 控制。
+- allowlist 来源应是 Worker runtime `vars` 或配置快照，例如 `ROUTER_IP_ALLOWLIST_CIDRS`，不能由用户站点或 `--config` 控制。
 - 需要正确解析 Cloudflare 提供的客户端 IP；如果请求不经过 Cloudflare 标准链路或无法可信取得客户端 IP，必须 fail closed。
 - allowlist 变更属于高风险操作，需要审计、配置校验和快速回滚。
-- 第一版的 `public` 只表示“公司网络内匿名可访问”，不表示互联网公开。
+- 第一版的 `internal` 表示“公司网络内免登录访问”，不表示互联网公开。
 
-如果未来需要真正公网公开站点，应新增显式 visibility，例如 `internet_public`，并单独评审 WAF、滥用防护、缓存、审计和法务/合规要求；不要复用第一版 `public`。
+如果未来需要真正公网能力，应扩展为显式的两层模型，例如 `{ "exposure": "public", "access": "acl" }`，并单独评审 WAF、滥用防护、缓存、审计和法务/合规要求；不要复用第一版 `internal`。
 
 ### 子站访问门禁
 
@@ -1740,13 +1740,41 @@ IP allowlist 规则：
 
 | visibility | router 行为                                                             |
 | ---------- | ----------------------------------------------------------------------- |
-| `public`   | 命中 router IP allowlist 后可匿名访问，仍记录访问审计或采样审计         |
+| `internal` | 命中 router IP allowlist 后可免登录访问，仍记录访问审计或采样审计       |
 | `org`      | 需要有效 `site_session`，且用户 employee status 为 active；没有时走 SSO |
-| `acl`      | 需要有效 `site_session`，并命中任意一条 allow-only ACL                  |
-| `owner`    | 需要 owner 或 collaborator 身份                                         |
+| `acl`      | 需要有效 `site_session`，并命中任意一条 allow-only 邮箱 ACL；active owner 隐式可访问 |
+| `owner`    | 需要 active owner 身份                                                  |
 | `disabled` | 直接拒绝，不 dispatch 到 User Worker                                    |
 
-router 必须先处理门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。
+router 必须先处理门禁，再 dispatch 到 User Worker。User Worker 不能自行决定是否绕过平台门禁。未知 visibility，包括旧的 public，必须 fail closed。
+
+推荐判定顺序：
+
+```text
+if visibility == disabled:
+  deny
+
+if visibility == internal:
+  allow anonymous after IP allowlist
+
+require site_session
+require employeeStatus == active
+
+if userId == ownerUserId:
+  allow
+
+if visibility == org:
+  allow
+
+if visibility == owner:
+  deny non-owner
+
+if visibility == acl:
+  allow if any ACL email entry matches
+
+otherwise:
+  deny
+```
 
 `org`、`acl` 和 `owner` 都不是“只要登录过就永久可访问”。签发或刷新 `site_session` 时必须确认用户仍是允许访问的人：
 
@@ -1843,10 +1871,10 @@ router 还必须解析 User Worker 返回的所有 `Set-Cookie`：
 
 | visibility | 含义                       | 是否需要登录 | 典型用途             |
 | ---------- | -------------------------- | ------------ | -------------------- |
-| `public`   | 公司网络内匿名可访问       | 否           | 内部报告、demo       |
-| `org`      | 公司 SSO 用户可访问        | 是           | 默认内部站点         |
-| `acl`      | 指定邮箱或部门可访问       | 是           | 项目私有预览         |
-| `owner`    | owner 可访问               | 是           | 管理预览、敏感站点   |
+| `internal` | 公司网络内免登录访问       | 否           | 内部报告、demo       |
+| `org`      | 公司 SSO active 用户可访问 | 是           | 默认内部站点         |
+| `acl`      | 指定邮箱可访问，owner 隐式可访问 | 是      | 项目私有预览         |
+| `owner`    | active owner 可访问        | 是           | 管理预览、敏感站点   |
 | `disabled` | 暂停访问                   | 不适用       | 下线、风控、事故处理 |
 
 发布权限与访问权限必须分开：
@@ -1858,10 +1886,10 @@ access permission: 谁能访问子站内容
 
 默认建议：
 
-- 新站点默认 `org`，比 `public` 更安全。
-- CLI 支持显式 `--visibility public|org|acl|owner`。
+- 新站点默认 `org`，比 `internal` 更安全。
+- CLI 支持显式 `--visibility internal|org|acl|owner|disabled`。
 
-第一版所有 visibility 都受 `pages-router` IP allowlist 约束。`public` 只是跳过 SSO/ACL，不跳过公司网络限制。
+第一版所有 visibility 都受 `pages-router` IP allowlist 约束。`internal` 只是跳过 SSO/ACL，不跳过公司网络限制。public 保留给未来公网 exposure，不是第一版 visibility。
 
 ## SSO 登录链路
 
@@ -1936,7 +1964,7 @@ absolute TTL: 30 天
 - 删除站点。
 - 创建或查看 access key。
 - 修改 owner、collaborators 或 ACL。
-- 将站点可见性改为 `public`。
+- 将站点可见性改为 `internal` 或未来公网 exposure。
 
 ### site_session
 
@@ -1987,19 +2015,20 @@ iat / exp
 
 ### CLI 本地状态与配置
 
-CLI 只适配 v2 `pages.xd.team` 平台。它不发布、不管理、不回退兼容 v1 `workers.xd.team` 站点；v1 继续使用现有 API、skill 和发布流程。
+CLI 只适配 `pages.xd.team` 平台。它不发布、不管理、不回退兼容旧版 `workers.xd.team` 站点；旧版继续使用现有 API、skill 和发布流程。
 
-当前 v2 CLI 落地为 `apps/pages-cli` workspace package，bin 名称为 `pages`。CLI 只负责本地 UX、项目绑定、凭据读取、artifact hash 和调用 v2 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
+当前 CLI 落地为 `apps/pages-cli` workspace package，bin 名称为 `pages`。CLI 只负责本地 UX、凭据读取、显式配置读取、artifact hash 和调用 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
 
-v2 CLI 使用 pages 平台签发的 token，不直接持有心动 SSO `access_token`：
+CLI 使用 XD Pages 平台签发的 token，不直接持有心动 SSO `access_token`：
 
 - `pages login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
 - `pages login --env staging` 登录 staging；默认登录 production。
-- `pages login --access-key <key>` 只在用户显式传入 access key 时保存该 access key；普通 deploy 默认也可直接读取 `PAGES_ACCESS_KEY`。
+- `pages login --access-key <key>` 先调用 `/.xd-pages/api/auth/whoami` 验证该 access key 有效，再保存到本地 secret store。
+- 其它需要访问 API 的命令支持全局 `--access-key <key>`；它只用于本次命令，不保存、不读取本地登录态。
 - CLI token 支持过期、scope、吊销和本地安全存储。
 - CI 默认使用 `access key`，不使用个人浏览器 session。`service token` 只有在后续需要组织级机器人身份时再单独设计，不混入 MVP。
 - CLI token、access key 和本地 profile 必须按 environment 隔离保存，staging token 不能调用 production API。
-- CLI 内置环境只能指向 v2 production/staging：`api.pages.xd.team`、`api-staging.pages.xd.team`、`auth.pages.xd.team`、`auth-staging.pages.xd.team` 和 `*.pages.xd.team`。
+- CLI 用户侧内置环境只展示 production/staging：`api.pages.xd.team`、`api-staging.pages.xd.team`、`auth.pages.xd.team`、`auth-staging.pages.xd.team` 和 `*.pages.xd.team`。`custom` 作为隐藏开发保留项，只允许 loopback endpoint；`local` 不进入用户侧 CLI 环境列表。
 - CLI 不得静默调用 `api.workers.xd.team`，也不得把 v2 deploy 发布到 `*.workers.xd.team`。
 
 凭证边界：
@@ -2020,10 +2049,10 @@ Secret store:
   CLI token、refresh token、用户明确保存的 access key。
 
 Global config:
-  默认 env、custom env、最近登录时间等非敏感 profile 元数据。
+  active env、最近登录时间、credentialType 和开发保留项等非敏感 profile 元数据。
 
-Project binding:
-  当前目录绑定的 site/env/url/version，不保存任何凭证。
+Command config:
+  仅通过 --config <file> 显式传入；一次性生效，不属于本地状态。
 ```
 
 #### Secret store
@@ -2036,8 +2065,8 @@ Linux: Secret Service / libsecret（当前实现通过 secret-tool opt-in）
 Windows: 后续可接 Credential Manager / DPAPI；当前实现必须走安全 fallback ACL 检查
 CI: environment variables
 fallback:
-  macOS/Linux: $XDG_CONFIG_HOME/xd-pages/credentials.json 或 ~/.config/xd-pages/credentials.json, chmod 0600
-  Windows: %APPDATA%\xd-pages\credentials.json, ACL 当前用户 only
+  macOS/Linux: ~/.xd-pages/credentials.json, chmod 0600
+  Windows: %APPDATA%\.xd-pages\credentials.json, ACL 当前用户 only
 ```
 
 secret key 必须带 environment：
@@ -2045,27 +2074,27 @@ secret key 必须带 environment：
 ```text
 xd-pages:production
 xd-pages:staging
-xd-pages:local
 xd-pages:custom
 ```
 
 Windows fallback 文件没有 `chmod 0600` 语义，CLI 必须检查 ACL：只允许当前 Windows 用户读写，不允许 `Everyone` 或普通 `Users` 组读取。不满足时拒绝读取 secret，或提示用户执行修复命令。
 
-access key 默认只通过环境变量传入：
+access key 有两种使用方式：
 
 ```bash
-PAGES_ACCESS_KEY=... pages deploy ./dist --slug foo --json
+pages login --access-key <key>
+pages deploy ./dist foo --access-key <key> --json
 ```
 
-本地 CLI 不应自动从环境变量持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类命令时，才允许写入 secret store，并且输出不得回显 key 明文。access key 不能创建站点；CI / agent 使用 access key 部署时优先显式传 `--slug <site_slug>`，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。`--site <site_id>` 只作为高级逃生口，不作为用户日常心智。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
+本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--access-key <key>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。access key 不能创建站点；CI / agent 使用 access key 部署时显式传站点名，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
 
 #### Global config
 
-全局 profile 只存非敏感信息。当前实现路径：
+全局 profile 只存非敏感信息。路径固定为：
 
 ```text
-macOS/Linux: $XDG_CONFIG_HOME/xd-pages/profile.json 或 ~/.config/xd-pages/profile.json
-Windows: %APPDATA%\xd-pages\profile.json
+macOS/Linux: ~/.xd-pages/profile.json
+Windows: %APPDATA%\.xd-pages\profile.json
 ```
 
 示例：
@@ -2095,89 +2124,84 @@ CLI 可以支持：
 ```bash
 pages env list
 pages env use staging
-pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 ```
 
-内置 `production` / `staging` 是 v2 固定环境，不能被本地 profile、环境变量或普通 override 改写。`local` 也是固定本地 SSO 开发入口：`http://xd-pages.127.0.0.1.nip.io:8787`。需要更灵活调试时使用 `custom`。当前 M4 实现先只允许 custom 指向 loopback：
+用户侧 `pages env list` 只展示 `production` / `staging`。`custom` 是开发保留项，可以由测试或开发命令显式启用，但不在普通 help 和用户文档主路径中展示。内置 `production` / `staging` 是固定环境，不能被本地 profile、环境变量或普通 override 改写。`custom` 只允许指向 loopback：
 
 - 本机开发：`localhost` / `127.0.0.1` / `::1`，可使用 HTTP。
 
-如果后续要允许公司专用 v2 测试域，必须由 CLI 内置或受信发布配置提供 allowlist；用户本地 profile 不能自行扩大 allowlist。custom env 不能作为 v1 `workers.xd.team` 兼容入口，也不能指向任意第三方 host。
+如果后续要允许公司专用测试域，必须由 CLI 内置或受信发布配置提供 allowlist；用户本地 profile 不能自行扩大 allowlist。custom env 不能作为旧版 `workers.xd.team` 兼容入口，也不能指向任意第三方 host。
 
 env 安全规则：
 
 - production/staging 不可变，固定指向 `api.pages.xd.team`、`auth.pages.xd.team`、`api-staging.pages.xd.team`、`auth-staging.pages.xd.team` 和对应 site suffix。
 - 登录前必须展示将要打开的 auth host、API host、environment 和请求 scope。
 - API host 变化后，旧 token 不自动复用；credential key 以 environment 隔离。
-- 如果 API/auth/site suffix 指向 `workers.xd.team` 或不在 custom env allowlist 中，CLI 应直接拒绝，并提示用户该 host 不属于 v2 CLI 信任域。
+- 如果 API/auth/site suffix 指向 `workers.xd.team` 或不在 custom env allowlist 中，CLI 应直接拒绝，并提示用户该 host 不属于 XD Pages CLI 信任域。
 
-#### Project binding `.pages.json`
+#### Command config `--config <file>`
 
-`.pages.json` 是项目目录和远端站点的本地映射，不是身份凭证。它可以提升 CLI 和 AI 的上下文体验：
+XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不提供 `pages link/unlink` 作为项目绑定心智。站点名必须显式来自 positional 参数或显式 `--config <file>`。这样用户、CI 和 AI agent 都不会被项目目录里的隐藏状态影响。
 
-- 避免每次部署都询问站点名。
-- 防止当前目录误部署到不相关站点。
-- 让 `pages open`、`pages status`、`pages rollback` 有默认目标。
-- 让 AI skill 读取项目绑定，而不是猜测站点名。
+`--config <file>` 是一次性输入，不属于本地状态：
 
-`.pages.json` 是否提交到业务项目 Git 由业务项目自己决定；但它必须始终保持非敏感。本仓库的 demo `.pages.json` 仍不提交。
+- CLI 不自动发现。
+- 不写入 `profileDir`。
+- 不更新 `profile.json` 或 `config.json`。
+- 不等价于项目绑定。
+- 只影响本次命令。
+- CLI 参数优先于 config 文件。
+- 文件中禁止出现 token、access key、cookie、secret、Cloudflare 资源 id、SSO secret 或 signed capability。
 
-`pages deploy` 默认不生成、不更新 `.pages.json`，避免 AI / CI 部署时静默修改工作区并被误提交。只有用户显式传 `--save-config` 时，CLI 才写入或更新 `.pages.json`；未保存时，CLI 必须在文本输出和 `--json` 输出中返回 `slug`、内部 `siteId`、`deploymentId`、`versionId` 和 URL。用户和 agent 后续应优先复用 `--slug <site_slug>`；内部 `siteId` 主要用于排障、审计和低层 API 逃生。
-
-`.pages.json` 只描述 v2 `pages.xd.team` 站点绑定。CLI 读取到 `workers.xd.team` URL 或 v1 API 配置时必须 fail closed，不能把旧项目配置“自动升级”为 v2，也不能反向操作 v1 站点。
-
-当前 M4 实现使用 flat v1 binding，表示“当前目录在某个 environment 下的默认绑定”：
+建议 schema：
 
 ```json
 {
-  "version": 1,
   "environment": "production",
-  "siteId": "site_xxx",
-  "slug": "foo",
-  "defaultArtifactKind": "spa",
-  "lastDeploymentId": "dep_xxx",
-  "lastVersionId": "ver_xxx",
-  "updatedAt": "2026-06-15T00:00:00.000Z"
+  "site": "foo",
+  "dir": "./dist",
+  "visibility": "org",
+  "artifactKind": "spa"
 }
 ```
 
-CLI 显式指定 `--env staging` 时，如果当前 `.pages.json` 是 production 绑定，不能复用 production `siteId` 调 staging API；它应当使用 slug 创建或绑定 staging 站点，或提示用户补充目标。未来如果需要同一目录同时持有 production/staging 两套绑定，应升级为 `version: 2` 的 multi-env schema，并保留迁移测试。
-
-`.pages.json` 禁止存：
-
-- CLI token。
-- access key。
-- SSO access token。
-- Cloudflare token、account id、zone id、KV namespace id。
-- cookie、session、signed capability。
+`--config` 文件是用户或 agent 自己管理的输入文件；平台 CLI 不承诺保存、更新或迁移该文件。
 
 CLI 日常命令契约建议：
 
 ```bash
 pages login [--env staging] [--access-key <key>] [--no-open]
-pages deploy ./dist --slug foo --visibility org [--save-config]
-PAGES_ACCESS_KEY=... pages deploy ./dist --slug foo --json
-pages status [--slug foo] [--deployment dep_xxx]
-pages rollback ver_xxx
-pages open [--slug foo] [--print]
+pages auth status [--env staging]
+pages auth whoami [--env staging]
+pages auth logout [--env staging]
+pages deploy ./dist foo --visibility org
+pages deploy --config pages.config.json
+pages deploy ./dist foo --access-key <key> --json
+pages status foo
+pages rollback foo ver_xxx
+pages open foo [--print]
+pages sites list
+pages sites info foo
 pages env list
 pages env use staging
-pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 ```
 
 配置优先级从高到低：
 
 ```text
 显式 CLI 参数
-  > 环境变量，例如 PAGES_CLI_ENV / PAGES_ACCESS_KEY
-  > 当前目录 .pages.json 的 environment/siteId/slug
-  > profile.json 的 activeEnvironment/custom env
+  > 显式 --config <file>
+  > profile.json 的 activeEnvironment
   > CLI 内置 production 默认值
 ```
 
-如果远端站点被重命名、删除或当前用户失去权限，CLI 必须停止自动部署，提示用户重新 `pages bind` 或选择新的 site；不能用旧 `.pages.json` 静默创建同名新站。
+凭证优先级从高到低：
 
-`.pages.json` 的 `version` 必须随不兼容变更递增。CLI 读取未知 version 时不能静默忽略，应提示升级 CLI 或重新绑定项目。
+```text
+显式 --access-key <key>，仅本次命令生效
+  > 当前 environment 的本地 secret store
+  > 提示用户 pages login
+```
 
 ### 最小 API 契约
 
@@ -2257,7 +2281,7 @@ pages login
   -> CLI 带 login_secret 轮询 /.xd-pages/cli/login/poll
   -> 获取 pages CLI token
 
-pages deploy ./dist --slug foo --visibility org
+pages deploy ./dist foo --visibility org
   -> CLI 调 pages-api /.xd-pages/api/deployments
   -> CLI 计算 artifact hash，并生成 artifactBundle
      custom Worker: 读取入口模块内容
@@ -2270,7 +2294,7 @@ pages deploy ./dist --slug foo --visibility org
   -> pages-api 通过发布状态机切换 active route 和 route snapshot
   -> 返回 https://foo.pages.xd.team
 
-pages deploy ./dist --slug foo --visibility org --env staging
+pages deploy ./dist foo --visibility org --env staging
   -> CLI 调 api-staging.pages.xd.team
   -> pages-api-staging 写 staging D1 / 当前执行面
   -> 返回 https://foo-staging.pages.xd.team
@@ -2279,7 +2303,7 @@ pages deploy ./dist --slug foo --visibility org --env staging
 ### CI / Agent
 
 ```text
-PAGES_ACCESS_KEY=... pages deploy ./dist --slug foo --json
+pages deploy ./dist foo --access-key <key> --json
 ```
 
 access key 要求：
@@ -2294,13 +2318,13 @@ access key 要求：
 
 ### AI Skill
 
-v2 AI skill 最终只负责调用 v2 CLI：
+XD Pages AI skill 最终只负责调用 CLI：
 
 ```text
 用户 -> AI -> pages CLI -> pages-api
 ```
 
-不再让 AI 直接拼接 API、猜测 token、解释复杂 OpenAPI 或手写 multipart 请求。现有 v1 skill / 文档继续服务 `workers.xd.team`，不因 v2 CLI 改造而改变行为。
+不再让 AI 直接拼接 API、猜测 token、解释复杂 OpenAPI 或手写 multipart 请求。现有旧版 skill / 文档继续服务 `workers.xd.team`，不因 XD Pages CLI 改造而改变行为。
 
 ## 用户 Worker 运行边界
 
@@ -2441,7 +2465,7 @@ v2 需要验证当前 execution mode 对 static/spa assets 的支持边界；这
 }
 ```
 
-custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。static / SPA 发布时，CLI 遍历目录并排除 `.pages.json`、`.git`、`node_modules`、`.DS_Store`，生成一个 `worker.mjs`：文件内容以 base64 asset map 内嵌，static 按 path 返回文件，SPA 在未命中时 fallback 到 `index.html`。这个 bundle 不包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `.pages.json` 内容。
+custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。static / SPA 发布时，CLI 遍历目录并排除 `.git`、`node_modules`、`.DS_Store` 和显式约定的本地配置文件，生成一个 `worker.mjs`：文件内容以 base64 asset map 内嵌，static 按 path 返回文件，SPA 在未命中时 fallback 到 `index.html`。这个 bundle 不包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `--config` 文件内容。
 
 `pages-api` 只接受必填的 `artifactBundle` 后调用内部 execution provider 上传，不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。当前 API JSON body 上限是 1 MiB，CLI 首版 static / SPA generated-worker 路径限制原始文件总量不超过 512 KiB、文件数不超过 1000；超限时 CLI 提前失败，API 对超大请求返回 `PAYLOAD_TOO_LARGE` / 413。大站点、多二进制资产和长期缓存优化应演进到 R2 / asset store 或 Cloudflare 原生 asset 能力，但 CLI 命令和 deploy API 的用户心智保持不变。
 
@@ -2449,12 +2473,12 @@ custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容�
 
 1. 小型 static / SPA：继续由平台生成 user Worker 模块，适合文档、demo 和轻量内部工具。
 2. 中大型 static / SPA：将静态资产放入 R2 或专用 asset store，由 generated user Worker 或 router asset layer 读取。
-3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist --slug foo`。`--site site_xxx` 仅作为高级逃生口。
+3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist foo`。
 
 无论采用哪种路径，对用户暴露的心智保持一致：
 
 ```text
-pages deploy ./dist --slug foo
+pages deploy ./dist foo
 ```
 
 用户不需要理解 execution provider、dispatch namespace、slot、asset store、gateway 或 Cloudflare binding。
@@ -2503,7 +2527,7 @@ pages deploy ./dist --slug foo
 - dispatch success rate、dispatch 404/5xx、user Worker CPU/subrequest 超限，按 `execution_provider` 维度拆分。
 - WFP deploy success/failure、slot deploy success/failure、deploy duration、orphan worker count。
 - slot capacity：available / assigned / disabled / available_pending_router 数量、容量水位、扩容失败数、长时间未使用 slot。
-- 普通 Worker slot 容量耗尽时，`pages-api` 通过 `SLACK_PAGES_ALERT_WEBHOOK_URL` 发送 Slack 运维告警；第一版消息只 @ `SLACK_PAGES_ALERT_MENTION_USER_ID` 一次，并展示“环境 / 容量 / 剩余 / 扩容”。其中“容量”是当前已用 Worker / 当前总 Worker，“剩余”是当前可被发布使用的 available Worker 数量。按钮使用 GitHub Actions URL button，打开 `https://github.com/xindong/pages-manager/actions` 让维护者手动运行对应环境的 Pages V2 deploy workflow。不要在 `pages-api` 中保存 GitHub token，也不要让 Slack button 直接触发部署。
+- 普通 Worker slot 容量耗尽时，`pages-api` 通过 `SLACK_PAGES_ALERT_WEBHOOK_URL` 发送 Slack 运维告警；第一版消息只 @ `SLACK_PAGES_ALERT_MENTION_USER_ID` 一次，并展示“环境 / 容量 / 剩余 / 扩容”。其中“容量”是当前已用 Worker / 当前总 Worker，“剩余”是当前可被发布使用的 available Worker 数量。按钮使用 GitHub Actions URL button，打开 `https://github.com/xindong/pages-manager/actions` 让维护者手动运行对应环境的 XD Pages deploy workflow。不要在 `pages-api` 中保存 GitHub token，也不要让 Slack button 直接触发部署。
 - SSO login start/callback failure、CLI login poll/consume failure。
 - cross-env guard trip、reserved host/path mismatch。
 - audit write backlog、audit dropped/sampled count。
@@ -2557,9 +2581,9 @@ publish -> activate -> drain -> retire
 
 - 新增 `pages-auth`。
 - 新增 `pages-api` 的登录态校验和 access key。
-- v2 CLI 支持 `pages login`、`login_id + login_secret` 轮询和 `PAGES_ACCESS_KEY`。
-- v2 AI skill 改为只调用 v2 CLI。
-- 现有 `apps/server` 继续服务 v1 `workers.xd.team`，v2 不改 v1 API、skill、README 或发布行为。
+- CLI 支持 `pages login`、`login_id + login_secret` 轮询、`pages login --access-key <key>` 保存凭证，以及 API 命令的单次 `--access-key <key>`。
+- AI skill 改为只调用 XD Pages CLI。
+- 现有 `apps/server` 继续服务旧版 `workers.xd.team`，新架构不改旧版 API、skill、README 或发布行为。
 
 ### 阶段 2：发布 MVP（可上线受保护站点的最小闭环）
 
@@ -2568,8 +2592,8 @@ publish -> activate -> drain -> retire
 - 按 `PAGES_EXECUTION_MODE` 启用执行面：
   - WFP 未开通：`normal-worker-slot`，先创建少量 staging / production slot。
   - WFP 已开通：`wfp`，使用 dispatch namespace。
-- 用户仍只执行 `pages deploy ./dist --slug foo`，不暴露 execution provider 参数；`--site site_xxx` 仅作为高级逃生口。
-- 支持 `public` 和 `org` visibility。
+- 用户仍只执行 `pages deploy ./dist foo`，不暴露 execution provider 参数。
+- 支持 `internal` 和 `org` visibility。
 - 支持 router IP allowlist 强限制；未命中公司网络直接 403。
 - 支持站点级 `site_session`、员工 active 状态校验、header/cookie 清洗和 `internal_worker_jwt`。
 - 支持发布/回滚状态机、route snapshot generation 和基础故障矩阵。
@@ -2600,12 +2624,12 @@ publish -> activate -> drain -> retire
 | SSO clientSecret 泄露       | OAuth 换 token 需要 secret       | 只放 Worker secret，不进 CLI/浏览器/日志                             |
 | session 不可吊销            | 纯本地 JWT 验证性能好但吊销慢    | 短 TTL + sid + 高风险操作查状态                                      |
 | staging/prod 串环境         | route 或 binding 选错影响 P0     | 双 router 物理隔离，thin router 不持有 secret                        |
-| 子站公网暴露                | `public` 容易被误解为互联网公开  | router 强制 IP allowlist，第一版仅公司网络可访问                     |
+| 子站公网暴露                | 未来 public exposure 如果混入第一版 visibility 会造成误解 | 第一版只开放 `internal`，router 强制 IP allowlist；公网能力后续以 `exposure + access` 单独设计 |
 | 用户 Worker 伪造身份        | 浏览器可伪造普通 header          | router 清洗入站 header，并注入签名内部 JWT                           |
 | User Worker 覆盖平台 cookie | 不可信代码可返回 Set-Cookie      | router 清洗平台保留 cookie/header                                    |
 | User Worker 设置父域 cookie | 可污染 sibling 子站或平台 host   | 只允许 host-only cookie，拒绝父域 Domain                             |
 | internal JWT 被当能力凭证   | User Worker 可复制短期 JWT       | 平台能力使用独立 capability，不信 internal JWT                       |
-| v1/v2 心智混淆              | 用户可能以为 v2 会接管旧域名     | 文档、CLI help、错误提示和 skill 明确 `workers` 是 v1、`pages` 是 v2 |
+| 旧版/新架构心智混淆        | 用户可能以为 XD Pages 会接管旧域名 | 文档、CLI help、错误提示和 skill 明确 `workers` 是旧版、`pages` 是新架构 |
 | assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike，准备 R2/asset store 备选                       |
 | WFP 暂未开通                | 首发无法使用目标执行面           | 使用 `normal-worker-slot` 兼容层，用户 API 不变，后续切换默认 mode   |
 | slot binding 数量上限       | 普通 Worker slot 需要 router 静态 binding | 预留小规模池、容量告警、人工扩容 workflow，WFP 开通后停止扩张 |
@@ -2621,7 +2645,7 @@ publish -> activate -> drain -> retire
 4. 普通 Worker service binding 在当前账号和 Worker 中的数量上限、部署时长、日志和计费边界。
 5. WFP user Worker 或普通 Worker slot 是否可直接承载 static/spa assets 模型；如果不能，优先选择 R2 还是独立 asset store。
 6. 访问审计的保留周期、查询方式和敏感字段脱敏标准。
-7. CLI custom env 的开放范围：是否允许用户 override v2 内置 production/staging，还是只允许新增 v2 local/custom；无论哪种方式都不用于 v1 兼容。
+7. CLI custom env 的开放范围：第一版作为隐藏开发保留项，只允许 loopback，不进入用户侧 help/list；无论哪种方式都不用于旧版兼容。
 8. Cloudflare route 是否支持 `*-staging.pages.xd.team/*` 稳定优先于 `*.pages.xd.team/*`；如果不支持，是否接受 `pages-edge-router-thin`。
 9. SSO token endpoint 是否支持 POST；如果只能 GET，日志脱敏链路是否可验证。
 10. SSO profile 中 employee status 原始值到 `active / disabled / left / unknown` 的映射表和 freshness SLA。
@@ -2630,7 +2654,7 @@ publish -> activate -> drain -> retire
 
 ## 第一版验收标准
 
-- 用户必须登录后才能发布 v2 站点。
+- 用户必须登录后才能发布 XD Pages 站点。
 - 用户 CLI 不暴露 execution provider；`pages deploy` 由平台 `PAGES_EXECUTION_MODE` 决定部署到 WFP 或 ordinary Worker slot。
 - WFP 未开通时，`normal-worker-slot` 能发布试点站点；WFP 开通后切换默认 mode 不改变用户命令。
 - production/staging 由不同 router Worker 和不同资源承载；如果使用 thin router，它不能持有业务 secret。
@@ -2645,8 +2669,8 @@ publish -> activate -> drain -> retire
 - 发布和回滚遵循状态机，失败不会覆盖旧 active version。
 - CLI login 需要用户在浏览器确认终端短码、environment、auth host 和 scope。
 - API host 不直接依赖 auth host 的 `auth_session`；浏览器态 API 使用独立 host-only `api_session`。
-- `public` 站点在公司网络内无需登录可访问，但仍有站点 metadata 和审计；第一版不支持互联网公开子站。
+- `internal` 站点在公司网络内无需登录可访问，但仍有站点 metadata 和审计；第一版不支持互联网公开子站。
 - CLI 支持浏览器登录和 access key 两种模式。
-- CLI 只支持 v2 `pages.xd.team`，不能静默调用 `api.workers.xd.team`，也不能发布或管理 `*.workers.xd.team` 站点。
-- v1 `workers.xd.team` 站点、API、skill 和发布链路不受 v2 改动影响。
+- CLI 只支持 `pages.xd.team`，不能静默调用 `api.workers.xd.team`，也不能发布或管理 `*.workers.xd.team` 站点。
+- 旧版 `workers.xd.team` 站点、API、skill 和发布链路不受新架构改动影响。
 - 文档、测试和日志不包含真实 secret、真实 token 或真实 Cloudflare 资源 id。

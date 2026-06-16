@@ -4,13 +4,19 @@ import test from 'node:test';
 import { parseArgs } from './args.js';
 
 test('parses command flags and boolean aliases', () => {
-  assert.deepEqual(parseArgs(['deploy', '--env', 'staging', '--no-open', '--save-config']), {
-    command: 'deploy',
+  assert.deepEqual(parseArgs(['login', '--env', 'staging', '--no-open']), {
+    command: 'login',
     positional: [],
     flags: {
       env: 'staging',
       noOpen: true,
-      saveConfig: true,
+    },
+  });
+  assert.deepEqual(parseArgs(['deploy', './dist', 'docs', '--json']), {
+    command: 'deploy',
+    positional: ['./dist', 'docs'],
+    flags: {
+      json: true,
     },
   });
 });

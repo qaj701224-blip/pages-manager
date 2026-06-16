@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { readCliConfig, validateTrustedOrigin } from './config.js';
+import { FIXED_ENVIRONMENTS, readCliConfig, resolveEnvironment, validateTrustedOrigin } from './config.js';
 
-test('reads fixed production and staging v2 endpoints', () => {
+test('reads fixed production and staging endpoints', () => {
   assert.deepEqual(readCliConfig({ PAGES_CLI_ENV: 'production' }), {
     environment: 'production',
     apiBaseUrl: 'https://api.pages.xd.team',
@@ -17,6 +17,14 @@ test('reads fixed production and staging v2 endpoints', () => {
     authBaseUrl: 'https://auth-staging.pages.xd.team',
     siteDomainSuffix: 'pages.xd.team',
   });
+});
+
+test('user-facing fixed environments are production and staging only', () => {
+  assert.deepEqual(Object.keys(FIXED_ENVIRONMENTS), ['production', 'staging']);
+  assert.equal(resolveEnvironment('production'), 'production');
+  assert.equal(resolveEnvironment('staging'), 'staging');
+  assert.equal(resolveEnvironment('custom'), 'custom');
+  assert.throws(() => resolveEnvironment('local'), /Pages CLI environment is invalid/);
 });
 
 test('rejects overriding fixed production and staging endpoints', () => {

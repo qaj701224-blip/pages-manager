@@ -11,12 +11,6 @@ export const FIXED_ENVIRONMENTS = {
     authBaseUrl: 'https://auth-staging.pages.xd.team',
     siteDomainSuffix: 'pages.xd.team',
   },
-  local: {
-    environment: 'local',
-    apiBaseUrl: 'http://xd-pages.127.0.0.1.nip.io:8787',
-    authBaseUrl: 'http://xd-pages.127.0.0.1.nip.io:8787',
-    siteDomainSuffix: '127.0.0.1.nip.io',
-  },
 };
 
 export function readCliConfig(env = {}, options = {}) {
@@ -43,7 +37,7 @@ export function readCliConfig(env = {}, options = {}) {
 }
 
 export function resolveEnvironment(value) {
-  if (value === 'production' || value === 'staging' || value === 'local' || value === 'custom') return value;
+  if (value === 'production' || value === 'staging' || value === 'custom') return value;
   throw new Error('Pages CLI environment is invalid.');
 }
 
@@ -58,7 +52,7 @@ export function validateTrustedOrigin(value, { environment }) {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Invalid URL origin.');
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Invalid URL origin.');
   if (url.hostname === 'workers.xd.team' || url.hostname.endsWith('.workers.xd.team')) {
-    throw new Error('workers.xd.team is a v1 domain and is not supported by the v2 CLI.');
+    throw new Error('workers.xd.team is a legacy domain and is not supported by the CLI.');
   }
 
   if (environment === 'custom') {
@@ -87,7 +81,7 @@ function normalizeSiteDomainSuffix(value, { environment } = {}) {
     .toLowerCase();
   if (!suffix || suffix.includes('/') || suffix.includes(':')) throw new Error('Site domain suffix is invalid.');
   if (suffix === 'workers.xd.team' || suffix.endsWith('.workers.xd.team')) {
-    throw new Error('workers.xd.team is a v1 domain and is not supported by the v2 CLI.');
+    throw new Error('workers.xd.team is a legacy domain and is not supported by the CLI.');
   }
   if (environment === 'custom' && !isLoopbackHost(suffix)) throw new Error('Pages custom site suffix must be loopback.');
   return suffix;

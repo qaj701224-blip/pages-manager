@@ -9,11 +9,11 @@ import { loadProfile, resolveProfileDir, saveProfile } from './profile.js';
 test('resolves profile directories by platform', () => {
   assert.equal(
     resolveProfileDir({ env: { XDG_CONFIG_HOME: '/xdg' }, platform: 'linux', homedir: () => '/home/alice' }),
-    path.join('/xdg', 'xd-pages')
+    path.join('/home/alice', '.xd-pages')
   );
   assert.equal(
     resolveProfileDir({ env: {}, platform: 'darwin', homedir: () => '/Users/alice' }),
-    path.join('/Users/alice', '.config', 'xd-pages')
+    path.join('/Users/alice', '.xd-pages')
   );
   assert.equal(
     resolveProfileDir({
@@ -21,7 +21,7 @@ test('resolves profile directories by platform', () => {
       platform: 'win32',
       homedir: () => 'C:\\Users\\alice',
     }),
-    path.join('C:\\Users\\alice\\AppData\\Roaming', 'xd-pages')
+    path.join('C:\\Users\\alice\\AppData\\Roaming', '.xd-pages')
   );
 });
 

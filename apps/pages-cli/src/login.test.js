@@ -13,6 +13,7 @@ const productionConfig = {
 test('access-key login stores secret without printing it', async () => {
   const writes = [];
   const output = [];
+  const requests = [];
 
   await loginWithAccessKey({
     config: productionConfig,
@@ -22,10 +23,19 @@ test('access-key login stores secret without printing it', async () => {
     },
     profile: { activeEnvironment: 'production', environments: {} },
     saveProfile: async (profile) => writes.push({ profile }),
+    fetch: async (request) => {
+      requests.push(request);
+      return Response.json({
+        environment: 'production',
+        actor: { type: 'access_key', credentialType: 'access_key', accessKeyId: 'ak_1', scopes: ['deploy:site'] },
+      });
+    },
     now: () => '2026-06-15T00:00:00.000Z',
     output: (line) => output.push(line),
   });
 
+  assert.equal(requests[0].url, 'https://api.pages.xd.team/.xd-pages/api/auth/whoami');
+  assert.equal(requests[0].headers.get('Authorization'), 'Bearer xdpak_production_ak_1_secret');
   assert.deepEqual(writes[0], {
     environment: 'production',
     credential: {

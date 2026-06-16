@@ -29,6 +29,22 @@ test('creates a production site with owner membership and inactive route', async
   assert.equal((await store.listSiteMembers('site_1'))[0].role, 'owner');
 });
 
+test('creates a site with internal visibility', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'docs',
+      visibility: 'internal',
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.equal(body.site.defaultVisibility, 'internal');
+  assert.equal(body.site.route.visibility, 'internal');
+});
+
 test('lists only sites visible to the authenticated actor', async () => {
   const store = await createSeededStore();
   await store.createUser({
@@ -271,6 +287,12 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     }),
     testEnv(store)
   );
+  const departmentName = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'department_name', subjectValue: '平台' }],
+    }),
+    testEnv(store)
+  );
   const invalidEmail = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
       entries: [{ subjectType: 'email', subjectValue: 'not-an-email' }],
@@ -302,6 +324,8 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   assert.equal((await group.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(department.status, 400);
   assert.equal((await department.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
+  assert.equal(departmentName.status, 400);
+  assert.equal((await departmentName.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(invalidEmail.status, 400);
   assert.equal((await invalidEmail.json()).error.code, 'ACL_SUBJECT_VALUE_INVALID');
 });
@@ -393,6 +417,13 @@ test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid s
     }),
     testEnv(store)
   );
+  const publicVisibility = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'public-site',
+      visibility: 'public',
+    }),
+    testEnv(store)
+  );
   const duplicate = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
       slug: 'docs',
@@ -431,6 +462,10 @@ test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid s
 
   assert.equal(invalidVisibility.status, 400);
   assert.equal((await invalidVisibility.json()).error.code, 'SITE_VISIBILITY_INVALID');
+  const publicVisibilityBody = await publicVisibility.json();
+  assert.equal(publicVisibility.status, 400);
+  assert.equal(publicVisibilityBody.error.code, 'SITE_VISIBILITY_INVALID');
+  assert.match(publicVisibilityBody.error.action, /internal、org、acl、owner 或 disabled/);
   assert.equal(duplicate.status, 409);
   assert.equal((await duplicate.json()).error.code, 'SITE_SLUG_CONFLICT');
   assert.equal(stagingSuffix.status, 400);

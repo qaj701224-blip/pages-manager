@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-const IGNORED_NAMES = new Set(['.git', 'node_modules', '.pages.json', '.DS_Store']);
+const IGNORED_NAMES = new Set(['.git', 'node_modules', 'pages.config.json', '.DS_Store']);
 export const MAX_STATIC_ARTIFACT_BYTES = 512 * 1024;
 export const MAX_STATIC_ARTIFACT_FILES = 1000;
 

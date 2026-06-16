@@ -29,6 +29,8 @@ test('rejects legacy X-Pages-Token before bearer auth', async () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'LEGACY_TOKEN_UNSUPPORTED');
+  assert.equal(result.error.message, 'X-Pages-Token is not supported by XD Pages.');
+  assert.equal(result.error.action, 'Run `pages login` or use an XD Pages access key.');
   assert.equal(result.error.status, 400);
 });
 

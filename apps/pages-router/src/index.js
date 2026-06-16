@@ -38,7 +38,7 @@ export default {
     if (!environment) return errorResponse('ROUTER_ENV_INVALID', 'Router environment is invalid.', 500);
 
     const host = classifyHost(url.hostname, { environment });
-    if (!host.ok) return errorResponse(host.code, `Host ${url.hostname} is not a routable pages v2 site.`, 404);
+    if (!host.ok) return errorResponse(host.code, `Host ${url.hostname} is not a routable XD Pages site.`, 404);
     const runtimeGatewayPath = runtimeGatewayPathFor(url.pathname);
 
     if (url.pathname === SITE_AUTH_CALLBACK_PATH) {

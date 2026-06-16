@@ -12,7 +12,7 @@ import {
   inferArtifactKind,
 } from './artifact.js';
 
-test('hashArtifact is deterministic for directories and ignores .pages.json', async () => {
+test('hashArtifact is deterministic for directories and ignores default command config', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-artifact-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
   await mkdir(path.join(dir, 'assets'));
@@ -20,7 +20,7 @@ test('hashArtifact is deterministic for directories and ignores .pages.json', as
   await writeFile(path.join(dir, 'assets', 'app.js'), 'console.log("hi");');
 
   const first = await hashArtifact(dir);
-  await writeFile(path.join(dir, '.pages.json'), '{"siteId":"site_1"}');
+  await writeFile(path.join(dir, 'pages.config.json'), '{"site":"docs"}');
   const second = await hashArtifact(dir);
 
   assert.equal(first.contentHash, second.contentHash);
@@ -78,7 +78,7 @@ test('buildArtifactBundle generates static and SPA worker modules from files', a
   test.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, 'index.html'), '<div id="app"></div>');
   await writeFile(path.join(dir, 'style.css'), 'body { color: red; }');
-  await writeFile(path.join(dir, '.pages.json'), '{"secret":"ignored"}');
+  await writeFile(path.join(dir, 'pages.config.json'), '{"secret":"ignored"}');
 
   const bundle = await buildArtifactBundle(dir, 'spa');
 
@@ -91,7 +91,7 @@ test('buildArtifactBundle generates static and SPA worker modules from files', a
   assert.match(bundle.modules[0].content, /style\.css/);
   assert.match(bundle.modules[0].content, /spaFallback/);
   assert.equal(bundle.modules[0].content.includes(dir), false);
-  assert.equal(bundle.modules[0].content.includes('.pages.json'), false);
+  assert.equal(bundle.modules[0].content.includes('pages.config.json'), false);
 });
 
 test('buildArtifactBundle rejects static bundles above first-version limits', async () => {

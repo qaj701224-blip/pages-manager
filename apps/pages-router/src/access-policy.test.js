@@ -3,10 +3,18 @@ import test from 'node:test';
 
 import { evaluateAccessPolicy } from './access-policy.js';
 
-test('public visibility allows anonymous access', () => {
-  assert.deepEqual(evaluateAccessPolicy(route({ visibility: 'public' }), null), {
+test('internal visibility allows anonymous access after router IP allowlist', () => {
+  assert.deepEqual(evaluateAccessPolicy(route({ visibility: 'internal' }), null), {
     ok: true,
     user: null,
+  });
+});
+
+test('unknown visibility fails closed', () => {
+  assert.deepEqual(evaluateAccessPolicy(route({ visibility: 'public' }), null), {
+    ok: false,
+    code: 'SITE_POLICY_INVALID',
+    status: 403,
   });
 });
 
@@ -47,7 +55,17 @@ test('owner visibility requires active site owner', () => {
   });
 });
 
-test('acl visibility uses allow-only OR entries for email and department', () => {
+test('active owner is implicitly allowed for acl visibility', () => {
+  const aclRoute = route({
+    visibility: 'acl',
+    ownerUserId: 'owner_1',
+    acl: [],
+  });
+
+  assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ userId: 'owner_1' })).ok, true);
+});
+
+test('acl visibility uses allow-only OR entries for email and internal department snapshot entries', () => {
   const aclRoute = route({
     visibility: 'acl',
     acl: [

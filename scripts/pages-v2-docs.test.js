@@ -10,7 +10,7 @@ function readRepoFile(path) {
   return readFileSync(join(repoRoot, path), 'utf8');
 }
 
-test('pages v2 architecture documents exact deploy workflow config names', () => {
+test('XD Pages architecture documents exact deploy workflow config names', () => {
   const doc = readRepoFile('docs/pages-v2-wfp-architecture.md');
 
   for (const name of [
@@ -32,12 +32,12 @@ test('pages v2 architecture documents exact deploy workflow config names', () =>
     assert.match(doc, new RegExp(escapeRegExp(name)), `${name} should be documented`);
   }
 
-  assert.match(doc, /Deploy Pages V2 Production[\s\S]*workflow_dispatch/);
-  assert.match(doc, /Deploy Pages V2 Staging[\s\S]*component=all/);
+  assert.match(doc, /Deploy XD Pages Production[\s\S]*workflow_dispatch/);
+  assert.match(doc, /Deploy XD Pages Staging[\s\S]*component=all/);
   assert.match(doc, /docs\/xd-sso\.md # 期望失败/);
 });
 
-test('pages v2 architecture release gate names the checked workflow and secret scripts', () => {
+test('XD Pages architecture release gate names the checked workflow and secret scripts', () => {
   const doc = readRepoFile('docs/pages-v2-wfp-architecture.md');
 
   assert.match(
@@ -49,7 +49,7 @@ test('pages v2 architecture release gate names the checked workflow and secret s
   assert.match(doc, /deploy-pages-v2-staging\.yml/);
 });
 
-test('pages v2 architecture keeps execution provider internal to the platform', () => {
+test('XD Pages architecture keeps execution provider internal to the platform', () => {
   const doc = readRepoFile('docs/pages-v2-wfp-architecture.md');
 
   for (const text of [
@@ -68,8 +68,15 @@ test('pages v2 architecture keeps execution provider internal to the platform', 
   }
 
   assert.match(doc, /slot 兼容层不是用户可选 provider/);
-  assert.match(doc, /--save-config/);
-  assert.match(doc, /PAGES_ACCESS_KEY=.*--slug foo --json/);
+  assert.match(doc, /CLI 不自动读取、不自动生成隐式项目绑定文件/);
+  assert.match(doc, /pages deploy --config pages\.config\.json/);
+  assert.match(doc, /pages deploy \.\/dist foo --access-key <key> --json/);
+  assert.match(doc, /--visibility internal\|org\|acl\|owner\|disabled/);
+  assert.match(doc, /未知 visibility，包括旧的 public，必须 fail closed/);
+  assert.doesNotMatch(doc, /\.pages\.json/);
+  assert.doesNotMatch(doc, /--save-config/);
+  assert.doesNotMatch(doc, /--slug/);
+  assert.doesNotMatch(doc, /--site/);
   assert.doesNotMatch(doc, /--execution-provider/);
   assert.doesNotMatch(doc, /--runtime wfp/);
   assert.doesNotMatch(doc, /pages deploy --runtime/);

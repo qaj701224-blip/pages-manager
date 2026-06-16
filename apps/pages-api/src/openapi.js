@@ -2,9 +2,9 @@ export function buildOpenApi(config) {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'XD Pages v2 API',
+      title: 'XD Pages API',
       version: '2.0.0',
-      description: 'Control plane API for XD Pages v2.',
+      description: 'Control plane API for XD Pages.',
     },
     servers: [{ url: config.apiBaseUrl }],
     security: [{ bearerAuth: [] }],
@@ -37,7 +37,7 @@ export function buildOpenApi(config) {
           required: ['name', 'content'],
           properties: {
             name: { type: 'string', examples: ['worker.mjs'] },
-            content: { type: 'string', description: 'ES module source generated or read by the v2 CLI.' },
+            content: { type: 'string', description: 'ES module source generated or read by the CLI.' },
             type: { type: 'string', examples: ['application/javascript+module'] },
           },
         },
@@ -59,7 +59,10 @@ export function buildOpenApi(config) {
           required: ['artifactKind', 'contentHash', 'artifactBundle'],
           anyOf: [{ required: ['siteId'] }, { required: ['siteSlug'] }],
           properties: {
-            siteId: { type: 'string', description: 'Internal site id. Usually written by .pages.json, not typed by users.' },
+            siteId: {
+              type: 'string',
+              description: 'Internal site id. Usually resolved by the API; users normally provide siteSlug.',
+            },
             siteSlug: {
               type: 'string',
               description: 'User-visible site slug. Unique within one environment and preferred for CLI/agent deploys.',
@@ -72,8 +75,10 @@ export function buildOpenApi(config) {
         },
         SiteVisibility: {
           type: 'string',
-          enum: ['public', 'org', 'acl', 'owner', 'disabled'],
-          description: 'First release is still protected by the company IP allowlist for every visibility.',
+          enum: ['internal', 'org', 'acl', 'owner', 'disabled'],
+          description:
+            'First release is protected by the router IP allowlist for every visibility. ' +
+            'public is reserved for a future exposure model.',
         },
         SiteUpdateRequest: {
           type: 'object',
@@ -228,6 +233,16 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'Access key revoked' },
             404: { description: 'Access key not found' },
+          },
+        },
+      },
+      '/.xd-pages/api/auth/whoami': {
+        get: {
+          summary: 'Return the authenticated actor for CLI token or access key validation',
+          responses: {
+            200: { description: 'Authenticated actor returned without token plaintext or hashes' },
+            401: { description: 'Authentication required or invalid' },
+            403: { description: 'Authenticated user is not active' },
           },
         },
       },

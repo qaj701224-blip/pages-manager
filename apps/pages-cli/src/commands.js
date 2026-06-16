@@ -5,23 +5,26 @@ import path from 'node:path';
 import { parseArgs } from './args.js';
 import { createApiClient } from './api-client.js';
 import { buildArtifactBundle, hashArtifact, inferArtifactKind } from './artifact.js';
+import { readCommandConfig } from './command-config.js';
 import { FIXED_ENVIRONMENTS, readCliConfig, resolveEnvironment } from './config.js';
 import { loginWithAccessKey, loginWithBrowser } from './login.js';
 import { loadProfile, resolveProfileDir, saveProfile as saveProfileFile } from './profile.js';
-import { readProjectConfig, writeProjectConfig } from './project-config.js';
 import { createSecretStore } from './secret-store.js';
 
-const VALID_VISIBILITIES = new Set(['public', 'org', 'acl', 'owner', 'disabled']);
+const VALID_VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const VALID_ARTIFACT_KINDS = new Set(['static', 'spa', 'worker']);
+const USER_ENVIRONMENTS = ['production', 'staging'];
 
 export async function executeCommand(argv = [], options = {}) {
   const parsed = parseArgs(argv);
   const output = options.output || createOutput(options.stdout);
   if (parsed.command === 'help' || parsed.flags.help) {
+    assertAccessKeyNotUsed(parsed);
     outputHelp(parsed, output);
     return 0;
   }
   if (parsed.command === 'version') {
+    assertAccessKeyNotUsed(parsed);
     output(await readCliVersion());
     return 0;
   }
@@ -30,27 +33,46 @@ export async function executeCommand(argv = [], options = {}) {
   const env = options.env || process.env;
   const profileDir = options.profileDir || resolveProfileDir({ env, platform: options.platform, homedir: options.homedir });
   const profile = options.profile || (await loadProfile(profileDir));
-  const project = await readProjectConfig(cwd);
 
   switch (parsed.command) {
     case 'login':
       return runLogin(parsed, { ...options, env, profileDir, profile, output });
+    case 'auth':
+      return runAuth(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'deploy':
-      return runDeploy(parsed, { ...options, cwd, env, profileDir, profile, project, output });
+      return runDeploy(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'status':
-      return runStatus(parsed, { ...options, cwd, env, profile, project, output });
+      return runStatus(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'rollback':
-      return runRollback(parsed, { ...options, cwd, env, profile, project, output });
+      return runRollback(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'open':
-      return runOpen(parsed, { ...options, cwd, env, profile, project, output });
+      return runOpen(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'sites':
+      return runSites(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'env':
+      assertAccessKeyNotUsed(parsed);
       return runEnv(parsed, { ...options, env, profileDir, profile, output });
     default:
       throw new Error(`UNKNOWN_COMMAND:${parsed.command}`);
   }
 }
 
+async function runAuth(parsed, context) {
+  const subcommand = parsed.positional[0] || 'status';
+  const child = { ...parsed, command: `auth ${subcommand}`, positional: parsed.positional.slice(1) };
+  if (subcommand === 'login') return runLogin(child, context);
+  if (subcommand === 'status') return runAuthStatus(child, context);
+  if (subcommand === 'whoami') return runWhoami(child, context);
+  if (subcommand === 'logout') return runAuthLogout(child, context);
+  throw usageError(
+    'AUTH_COMMAND_INVALID',
+    'auth 命令无效。',
+    '请使用 pages auth login、pages auth status、pages auth whoami 或 pages auth logout。'
+  );
+}
+
 async function runLogin(parsed, context) {
+  assertNoPositionals(parsed, 'LOGIN_USAGE_INVALID', 'pages login 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
   const saveProfile = (profile) => saveProfileFile(context.profileDir, profile);
@@ -63,6 +85,7 @@ async function runLogin(parsed, context) {
       secretStore,
       profile: context.profile,
       saveProfile,
+      fetch: context.fetch,
       now: context.nowIso,
       output,
     });
@@ -88,58 +111,84 @@ async function runLogin(parsed, context) {
   return 0;
 }
 
-async function runDeploy(parsed, context) {
+async function runAuthStatus(parsed, context) {
+  assertAccessKeyNotUsed(parsed);
+  assertNoPositionals(parsed, 'AUTH_STATUS_USAGE_INVALID', 'pages auth status 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
-  const credential = await resolveCredential(config.environment, context);
+  const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
+  const credential = await secretStore.get(config.environment);
+  const payload = {
+    environment: config.environment,
+    authenticated: Boolean(credential),
+    credentialType: credential?.type || null,
+  };
+  if (outputJsonResult(parsed, context, payload)) return 0;
+  context.output(credential ? `已登录 ${config.environment}，凭证类型：${credential.type}` : `未登录 ${config.environment}`);
+  return 0;
+}
+
+async function runWhoami(parsed, context) {
+  assertNoPositionals(parsed, 'AUTH_WHOAMI_USAGE_INVALID', 'pages auth whoami 不接受位置参数。');
+  const config = readConfigForCommand(parsed, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const result = await createClient(config, credential, context).requestApi('GET', '/.xd-pages/api/auth/whoami');
+  if (outputJsonResult(parsed, context, result)) return 0;
+  context.output(JSON.stringify(result));
+  return 0;
+}
+
+async function runAuthLogout(parsed, context) {
+  assertAccessKeyNotUsed(parsed);
+  assertNoPositionals(parsed, 'AUTH_LOGOUT_USAGE_INVALID', 'pages auth logout 不接受位置参数。');
+  const config = readConfigForCommand(parsed, context);
+  const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
+  if (typeof secretStore.delete === 'function') await secretStore.delete(config.environment);
+  await saveProfileFile(context.profileDir, {
+    ...context.profile,
+    environments: {
+      ...(context.profile.environments || {}),
+      [config.environment]: {
+        ...(context.profile.environments?.[config.environment] || {}),
+        credentialType: undefined,
+        lastLoginAt: undefined,
+      },
+    },
+  });
+  if (outputJsonResult(parsed, context, { environment: config.environment, loggedOut: true })) return 0;
+  context.output(`已退出 ${config.environment}`);
+  return 0;
+}
+
+async function runDeploy(parsed, context) {
+  rejectRemovedProjectFlags(parsed);
+  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd });
+  const config = readConfigForCommand(parsed, { ...context, commandConfig });
+  const credential = await resolveCredential(config.environment, context, parsed);
   const client = createClient(config, credential, context);
-  const targetPath = path.resolve(context.cwd, parsed.positional[0] || '.');
-  const artifactKind = parsed.flags.artifactKind || context.project?.defaultArtifactKind || (await inferArtifactKind(targetPath));
+  if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 pages deploy <目录> <站点名>。');
+
+  const dirInput = parsed.positional[0] || commandConfig?.dir;
+  const siteSlug = normalizeSiteSlug(parsed.positional[1] || commandConfig?.site);
+  if (!dirInput) throw usageError('DIR_REQUIRED', '缺少发布目录。', '请使用 pages deploy <目录> <站点名>，或通过 --config <file> 提供 dir。');
+  if (!siteSlug) throw usageError('SITE_REQUIRED', '缺少站点名。', '请使用 pages deploy <目录> <站点名>，或通过 --config <file> 提供 site。');
+
+  const targetPath = path.resolve(context.cwd, dirInput);
+  const artifactKind = parsed.flags.artifactKind || commandConfig?.artifactKind || (await inferArtifactKind(targetPath));
   if (!VALID_ARTIFACT_KINDS.has(artifactKind)) {
     throw usageError('ARTIFACT_KIND_INVALID', 'artifact 类型无效。', '请使用 static、spa 或 worker。');
   }
 
-  const projectForEnvironment = getProjectForEnvironment(context.project, config.environment);
-  const saveConfig = Boolean(parsed.flags.saveConfig);
-  const explicitSiteSlug = normalizeSiteSlug(parsed.flags.slug);
-  let siteId = parsed.flags.site || (explicitSiteSlug ? null : projectForEnvironment?.siteId) || null;
-  let project = projectForEnvironment || null;
-  let siteSlug = explicitSiteSlug || normalizeSiteSlug(project?.slug) || null;
-  let createdAt = project?.createdAt;
-  if (!siteId) {
-    const slug = siteSlug || normalizeSiteSlug(context.project?.slug);
-    if (!slug) {
-      throw usageError(
-        'SITE_SLUG_REQUIRED',
-        '缺少站点名。',
-        '请传 --slug <站点名>；如果要保存项目绑定，可以在首次发布时加 --save-config。'
-      );
-    }
-    siteSlug = slug;
-    if (credential.type !== 'access_key') {
-      const visibility = parsed.flags.visibility || 'org';
-      if (!VALID_VISIBILITIES.has(visibility)) {
-        throw usageError(
-          'SITE_VISIBILITY_INVALID',
-          '站点可见性无效。',
-          '请使用 public、org、acl、owner 或 disabled。'
-        );
-      }
-      try {
-        const created = await client.requestApi('POST', '/.xd-pages/api/sites', { slug, visibility });
-        siteId = created.site.id;
-        siteSlug = normalizeSiteSlug(created.site.slug) || slug;
-        createdAt = nowIso(context);
-        project = {
-          version: 1,
-          environment: config.environment,
-          siteId,
-          slug: siteSlug,
-          defaultArtifactKind: artifactKind,
-          createdAt,
-        };
-      } catch (error) {
-        if (error?.code !== 'SITE_SLUG_CONFLICT') throw error;
-      }
+  const requestedVisibility = parsed.flags.visibility || commandConfig?.visibility;
+  if (requestedVisibility && !VALID_VISIBILITIES.has(requestedVisibility)) {
+    throw usageError('SITE_VISIBILITY_INVALID', '站点可见性无效。', '请使用 internal、org、acl、owner 或 disabled。');
+  }
+
+  if (credential.type !== 'access_key') {
+    const visibility = requestedVisibility || 'org';
+    try {
+      await client.requestApi('POST', '/.xd-pages/api/sites', { slug: siteSlug, visibility });
+    } catch (error) {
+      if (error?.code !== 'SITE_SLUG_CONFLICT') throw error;
     }
   }
 
@@ -149,7 +198,7 @@ async function runDeploy(parsed, context) {
     'POST',
     '/.xd-pages/api/deployments',
     {
-      ...(siteId ? { siteId } : { siteSlug }),
+      siteSlug,
       artifactKind,
       contentHash: artifact.contentHash,
       artifactBundle,
@@ -158,36 +207,12 @@ async function runDeploy(parsed, context) {
     { idempotencyKey: nextIdempotencyKey(context) }
   );
 
-  const deployedSiteId = siteId || deployed.deployment?.siteId || deployed.route?.siteId || null;
-  const deployedSiteSlug = siteSlug || slugFromHostname(deployed.route?.hostname, config);
-  if (saveConfig) {
-    if (!deployedSiteId) {
-      throw usageError(
-        'SITE_ID_MISSING',
-        '部署已完成，但服务端没有返回内部站点 ID。',
-        '请先不带 --save-config 重试；如果仍然出现，请联系 Pages 平台维护者。'
-      );
-    }
-    await writeProjectConfig(context.cwd, {
-      version: 1,
-      environment: config.environment,
-      siteId: deployedSiteId,
-      slug: deployedSiteSlug || project?.slug,
-      defaultArtifactKind: artifactKind,
-      lastDeploymentId: deployed.deployment?.id,
-      lastVersionId: deployed.version?.id,
-      createdAt,
-      updatedAt: nowIso(context),
-    });
-  }
-  const url = deployed.route?.hostname ? `https://${deployed.route.hostname}` : null;
+  const url = deployed.route?.hostname ? `https://${deployed.route.hostname}` : siteUrlForSlug(siteSlug, config);
   if (
     outputJsonResult(parsed, context, {
       environment: config.environment,
-      siteId: deployedSiteId,
-      slug: deployedSiteSlug || null,
+      site: siteSlug,
       artifactKind,
-      savedProjectConfig: saveConfig,
       deployment: deployed.deployment || null,
       version: deployed.version || null,
       route: deployed.route || null,
@@ -196,56 +221,39 @@ async function runDeploy(parsed, context) {
   ) {
     return 0;
   }
-  if (deployedSiteSlug) context.output(`站点名：${deployedSiteSlug}`);
-  if (deployedSiteId) context.output(`内部站点 ID：${deployedSiteId}`);
+  context.output(`站点名：${siteSlug}`);
   context.output(`部署：${deployed.deployment?.id || 'created'} ${deployed.deployment?.status || ''}`.trim());
   if (url) context.output(`URL ${url}`);
-  if (!saveConfig) {
-    context.output(
-      '未写入 .pages.json。后续可继续用 --slug 指定站点名，或加 --save-config 保存项目绑定。'
-    );
-  }
   return 0;
 }
 
 async function runStatus(parsed, context) {
   const config = readConfigForCommand(parsed, context);
-  const credential = await resolveCredential(config.environment, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
   const client = createClient(config, credential, context);
 
   if (parsed.flags.deployment) {
+    assertNoPositionals(parsed, 'STATUS_USAGE_INVALID', '按 deployment 查询时不接受站点名。');
     const result = await client.requestApi('GET', `/.xd-pages/api/deployments/${encodeURIComponent(parsed.flags.deployment)}`);
     if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
     context.output(JSON.stringify(result));
     return 0;
   }
 
-  const projectForEnvironment = getProjectForEnvironment(context.project, config.environment);
-  const explicitSiteSlug = normalizeSiteSlug(parsed.flags.slug);
-  const siteId = parsed.flags.site || (explicitSiteSlug ? null : projectForEnvironment?.siteId);
-  const siteSlug = explicitSiteSlug || normalizeSiteSlug(projectForEnvironment?.slug);
-  let result;
-  if (siteId) {
-    result = await client.requestApi('GET', `/.xd-pages/api/sites/${encodeURIComponent(siteId)}`);
-  } else if (siteSlug) {
-    result = await readSiteBySlug(client, siteSlug);
-  } else {
-    throw usageError(
-      'SITE_REQUIRED',
-      '缺少站点名。',
-      '请传 --slug <站点名>，或在当前项目里先用 pages deploy --save-config 保存绑定。'
-    );
-  }
+  const site = readSingleSiteArg(parsed, 'STATUS_USAGE_INVALID', '请使用 pages status <站点名>。');
+  const result = await readSiteBySlug(client, site);
   if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
   context.output(JSON.stringify(result));
   return 0;
 }
 
 async function runRollback(parsed, context) {
-  const versionId = parsed.positional[0];
-  if (!versionId) throw usageError('VERSION_REQUIRED', '缺少版本 ID。', '请传入要回滚到的 versionId。');
+  if (parsed.positional.length !== 2) {
+    throw usageError('ROLLBACK_USAGE_INVALID', 'rollback 参数无效。', '请使用 pages rollback <站点名> <version-id>。');
+  }
+  const [site, versionId] = parsed.positional;
   const config = readConfigForCommand(parsed, context);
-  const credential = await resolveCredential(config.environment, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
   const client = createClient(config, credential, context);
   const result = await client.requestApi(
     'POST',
@@ -255,18 +263,18 @@ async function runRollback(parsed, context) {
       idempotencyKey: nextIdempotencyKey(context),
     }
   );
-  if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
+  if (outputJsonResult(parsed, context, { environment: config.environment, site, ...result })) return 0;
+  context.output(`站点名：${site}`);
   context.output(`回滚：${result.deployment?.id || 'created'} ${result.deployment?.status || ''}`.trim());
   return 0;
 }
 
 async function runOpen(parsed, context) {
+  assertAccessKeyNotUsed(parsed);
   const config = readConfigForCommand(parsed, context);
-  const url = siteUrlForSlug(
-    normalizeSiteSlug(parsed.flags.slug) || getProjectForEnvironment(context.project, config.environment)?.slug,
-    config
-  );
-  if (outputJsonResult(parsed, context, { environment: config.environment, url })) return 0;
+  const site = readSingleSiteArg(parsed, 'OPEN_USAGE_INVALID', '请使用 pages open <站点名>。');
+  const url = siteUrlForSlug(site, config);
+  if (outputJsonResult(parsed, context, { environment: config.environment, site, url })) return 0;
   if (parsed.flags.print) {
     context.output(url);
     return 0;
@@ -276,16 +284,45 @@ async function runOpen(parsed, context) {
   return 0;
 }
 
+async function runSites(parsed, context) {
+  const subcommand = parsed.positional[0] || 'list';
+  const child = { ...parsed, positional: parsed.positional.slice(1) };
+  const config = readConfigForCommand(parsed, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
+
+  if (subcommand === 'list') {
+    assertNoPositionals(child, 'SITES_LIST_USAGE_INVALID', 'pages sites list 不接受位置参数。');
+    const result = await client.requestApi('GET', '/.xd-pages/api/sites');
+    if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
+    context.output(JSON.stringify(result));
+    return 0;
+  }
+
+  if (subcommand === 'info') {
+    const site = readSingleSiteArg(child, 'SITES_INFO_USAGE_INVALID', '请使用 pages sites info <站点名>。');
+    const result = await readSiteBySlug(client, site);
+    if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
+    context.output(JSON.stringify(result));
+    return 0;
+  }
+
+  throw usageError('SITES_COMMAND_INVALID', 'sites 命令无效。', '请使用 pages sites list 或 pages sites info <站点名>。');
+}
+
 async function runEnv(parsed, context) {
   const subcommand = parsed.positional[0] || 'list';
   if (subcommand === 'list') {
-    if (outputJsonResult(parsed, context, { environments: ['production', 'staging', 'local', 'custom'] })) return 0;
-    for (const name of ['production', 'staging', 'local', 'custom']) context.output(name);
+    if (outputJsonResult(parsed, context, { environments: USER_ENVIRONMENTS })) return 0;
+    for (const name of USER_ENVIRONMENTS) context.output(name);
     return 0;
   }
 
   if (subcommand === 'use') {
     const environment = resolveEnvironment(parsed.positional[1]);
+    if (!USER_ENVIRONMENTS.includes(environment) && environment !== 'custom') {
+      throw usageError('ENVIRONMENT_INVALID', '环境无效。', '请使用 production 或 staging。');
+    }
     await saveProfileFile(context.profileDir, {
       ...context.profile,
       activeEnvironment: environment,
@@ -315,27 +352,14 @@ async function runEnv(parsed, context) {
     return 0;
   }
 
-  throw usageError(
-    'ENV_COMMAND_INVALID',
-    'env 命令不完整或无效。',
-    '请使用 pages env list、pages env use <环境> 或 pages env set custom --api <origin> --auth <origin>。'
-  );
-}
-
-function getProjectForEnvironment(project, environment) {
-  if (!project) return null;
-  return project.environment === environment ? project : null;
+  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 pages env list 或 pages env use <环境>。');
 }
 
 async function readSiteBySlug(client, slug) {
   const result = await client.requestApi('GET', '/.xd-pages/api/sites');
   const site = Array.isArray(result?.sites) ? result.sites.find((candidate) => candidate.slug === slug) : null;
   if (!site) {
-    throw usageError(
-      'SITE_NOT_FOUND',
-      `未找到站点：${slug}`,
-      '请确认站点名和当前环境；如果还没创建，先执行 pages deploy --slug <站点名>。'
-    );
+    throw usageError('SITE_NOT_FOUND', `未找到站点：${slug}`, '请确认站点名和当前环境；如果使用 access key，请确认它绑定的是这个站点。');
   }
   return { site };
 }
@@ -343,8 +367,8 @@ async function readSiteBySlug(client, slug) {
 function readConfigForCommand(parsed, context) {
   const requestedEnvironment =
     parsed.flags.env ||
+    context.commandConfig?.environment ||
     context.env.PAGES_CLI_ENV ||
-    context.project?.environment ||
     context.profile?.activeEnvironment ||
     context.env.PAGES_ENV ||
     'production';
@@ -360,7 +384,13 @@ function readConfigForCommand(parsed, context) {
   return readCliConfig(context.env, { environment: requestedEnvironment });
 }
 
-async function resolveCredential(environment, context) {
+async function resolveCredential(environment, context, parsed) {
+  if (parsed.flags.accessKey) {
+    return {
+      type: 'access_key',
+      value: parsed.flags.accessKey,
+    };
+  }
   if (context.env.PAGES_ACCESS_KEY) {
     return {
       type: 'access_key',
@@ -384,27 +414,51 @@ function createClient(config, credential, context) {
 
 function siteUrlForSlug(slug, config) {
   const normalized = normalizeSiteSlug(slug);
-  if (!normalized) {
-    throw usageError('SITE_BINDING_REQUIRED', '当前项目没有站点绑定。', '请传 --slug <站点名>，或先用 --save-config 保存绑定。');
-  }
+  if (!normalized) throw usageError('SITE_REQUIRED', '缺少站点名。', '请传入站点名。');
   if (config.environment === 'staging') return `https://${normalized}-staging.${config.siteDomainSuffix}`;
   return `https://${normalized}.${config.siteDomainSuffix}`;
-}
-
-function slugFromHostname(hostname, config) {
-  if (typeof hostname !== 'string' || !hostname) return null;
-  const suffix = `.${config.siteDomainSuffix}`;
-  if (!hostname.endsWith(suffix)) return null;
-  const label = hostname.slice(0, -suffix.length);
-  if (config.environment === 'staging' && label.endsWith('-staging')) {
-    return normalizeSiteSlug(label.slice(0, -'-staging'.length));
-  }
-  return normalizeSiteSlug(label);
 }
 
 function normalizeSiteSlug(value) {
   const slug = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return slug || null;
+}
+
+function readSingleSiteArg(parsed, code, action) {
+  if (parsed.positional.length !== 1) {
+    throw usageError(
+      parsed.positional.length === 0 ? 'SITE_REQUIRED' : code,
+      parsed.positional.length === 0 ? '缺少站点名。' : '位置参数无效。',
+      action
+    );
+  }
+  const site = normalizeSiteSlug(parsed.positional[0]);
+  if (!site) throw usageError('SITE_REQUIRED', '缺少站点名。', action);
+  return site;
+}
+
+function assertNoPositionals(parsed, code, message) {
+  if (parsed.positional.length > 0) throw usageError(code, message, '运行 pages help 查看用法。');
+}
+
+function rejectRemovedProjectFlags(parsed) {
+  if (parsed.flags.slug || parsed.flags.site || parsed.flags.saveConfig) {
+    throw usageError(
+      'OPTION_UNSUPPORTED',
+      '该参数不再支持。',
+      '请使用位置参数：pages deploy <目录> <站点名>；配置文件请显式使用 --config <file>。'
+    );
+  }
+}
+
+function assertAccessKeyNotUsed(parsed) {
+  if (parsed.flags.accessKey) {
+    throw usageError(
+      'ACCESS_KEY_NOT_USED',
+      '当前命令不会使用 access key。',
+      '请只在 login、deploy、status、sites、rollback 或 auth whoami 等需要访问 API 的命令中传 --access-key。'
+    );
+  }
 }
 
 function nextIdempotencyKey(context) {
@@ -414,104 +468,116 @@ function nextIdempotencyKey(context) {
 
 function outputJsonResult(parsed, context, payload) {
   if (!parsed.flags.json) return false;
-  context.output(JSON.stringify({ ok: true, ...payload }));
+  context.output(JSON.stringify({ ok: true, schemaVersion: 1, ...payload }));
   return true;
 }
 
 function outputHelp(parsed, output) {
   const topic = parsed.command === 'help' ? parsed.positional[0] : parsed.command;
-  const body = helpText(topic || 'overview');
   if (parsed.flags.json) {
-    output(JSON.stringify({ ok: true, help: helpJson(topic || 'overview') }));
+    output(JSON.stringify({ ok: true, schemaVersion: 1, help: helpJson(topic || 'overview') }));
     return;
   }
-  output(body);
+  output(helpText(topic || 'overview'));
 }
 
 function helpText(topic) {
   if (topic === 'deploy') {
-    return `用法：pages deploy [目录] [选项]
+    return `用法：pages deploy <目录> <站点名> [选项]
+      pages deploy --config <file> [选项]
 
-发布 static 站点、SPA 或自定义 Worker 到 XD Pages v2。
+发布 static 站点、SPA 或自定义 Worker 到 XD Pages。
 
 选项：
-  --env <production|staging|local|custom>   目标环境；默认使用当前 profile，未设置时为 production。
-  --slug <站点名>                            用户可见站点名，例如 docs；每个环境内唯一，推荐日常使用。
-  --site <site_id>                          高级参数：内部站点 ID；通常不需要手写。
-  --visibility <public|org|acl|owner|disabled>
+  --env <production|staging>                目标环境；默认 production。
+  --visibility <internal|org|acl|owner|disabled>
                                             创建站点时的初始可见性；默认 org。
   --artifact-kind <static|spa|worker>       覆盖 artifact 类型自动识别。
-  --save-config                             写入或更新 .pages.json，只保存非敏感项目绑定。
+  --access-key <key>                        只在本次命令中使用的 access key，不写入本地。
+  --config <file>                           一次性读取发布参数，不自动发现、不写回。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。
 
 示例：
-  pages deploy ./dist --slug demo --visibility org
-  pages deploy ./dist --slug demo --visibility org --save-config
-  PAGES_ACCESS_KEY=<access-key> pages deploy ./dist --slug demo --json
+  pages deploy ./dist demo --visibility org
+  pages deploy ./dist demo --env staging --access-key <access-key> --json
+  pages deploy --config pages.config.json
 
 说明：
-  pages deploy 默认不写 .pages.json；需要保存项目绑定时显式加 --save-config。
-  access key 不能创建站点；请先用用户登录创建站点，CI/agent 后续用 --slug 发布已有站点。
-  --site 是内部 ID 逃生口；优先使用 --slug。
+  站点名使用位置参数；CLI 不读取隐藏项目绑定文件。
+  --config 文件只保存非敏感发布参数，例如 environment、site、dir、visibility、artifactKind。
   CLI 不暴露底层执行平台细节。`;
   }
-  if (topic === 'login') {
+  if (topic === 'login' || topic === 'auth') {
     return `用法：pages login [选项]
+      pages auth login [选项]
+      pages auth status [选项]
+      pages auth whoami [选项]
+      pages auth logout [选项]
 
-登录 XD Pages v2 CLI。
+登录、查看或退出 XD Pages CLI。
 
 选项：
-  --env <production|staging|local|custom>   目标环境；默认 production。
-  --access-key <key>                        显式保存已有 access key。
+  --env <production|staging>                目标环境；默认 production。
+  --access-key <key>                        显式保存已有 access key，保存前会先校验 whoami。
   --no-open                                 只打印浏览器地址，不自动打开。
   --json                                    输出稳定 JSON，不输出 secret。
   --help                                    显示帮助。`;
   }
   if (topic === 'status') {
-    return `用法：pages status [选项]
+    return `用法：pages status <站点名> [选项]
 
-查看站点或部署状态。
+查看站点状态。
 
 选项：
-  --env <production|staging|local|custom>   目标环境。
-  --slug <站点名>                            用户可见站点名；推荐日常使用。
-  --site <site_id>                          高级参数：内部站点 ID；默认读取当前环境的 .pages.json。
+  --env <production|staging>                目标环境。
   --deployment <deployment_id>              按部署 ID 查看部署状态。
+  --access-key <key>                        只在本次命令中使用的 access key。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
+  }
+  if (topic === 'sites') {
+    return `用法：pages sites list [选项]
+      pages sites info <站点名> [选项]
+
+查看站点列表或站点详情。
+
+选项：
+  --env <production|staging>                目标环境。
+  --access-key <key>                        只在本次命令中使用的 access key。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
   if (topic === 'rollback') {
-    return `用法：pages rollback <version_id> [选项]
+    return `用法：pages rollback <站点名> <version-id> [选项]
 
-回滚站点到一个已存在的不可变版本。
+回滚站点到一个已存在的不可变版本。普通 Worker slot 站点如果服务端不支持回滚，命令会返回可操作错误。
 
 选项：
-  --env <production|staging|local|custom>   目标环境。
+  --env <production|staging>                目标环境。
+  --access-key <key>                        只在本次命令中使用的 access key。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
   if (topic === 'open') {
-    return `用法：pages open [选项]
+    return `用法：pages open <站点名> [选项]
 
-打开或打印当前 .pages.json 绑定的站点地址。
+打开或打印站点地址。
 
 选项：
-  --env <production|staging|local|custom>   目标环境。
-  --slug <站点名>                            不依赖 .pages.json，直接打开指定站点名。
+  --env <production|staging>                目标环境。
   --print                                   只打印 URL，不打开浏览器。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
   if (topic === 'env') {
-    return `用法：pages env <list|use|set> [选项]
+    return `用法：pages env <list|use> [选项]
 
 管理本地 CLI 环境选择。
 
 命令：
   pages env list
-  pages env use <production|staging|local|custom>
-  pages env set custom --api <origin> --auth <origin> [--site-domain-suffix <suffix>]
+  pages env use <production|staging>
 
 选项：
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
@@ -521,14 +587,17 @@ function helpText(topic) {
 
 命令：
   login       通过浏览器 SSO 登录，或显式保存 access key。
+  auth        查看登录状态、whoami 或退出登录。
   deploy      发布 static 站点、SPA 或自定义 Worker。
   status      查看站点或部署状态。
+  sites       查看站点列表或详情。
   rollback    回滚到不可变版本 ID。
-  open        打开或打印当前站点地址。
-  env         查看、切换或配置环境。
+  open        打开或打印站点地址。
+  env         查看或切换环境。
 
 全局选项：
-  --env <production|staging|local|custom>   目标环境。
+  --env <production|staging>                目标环境。
+  --access-key <key>                        API 命令的一次性 access key。
   --json                                    在支持的命令中输出稳定 JSON，适合 AI agent 和 CI。
   --help, -h                                显示帮助。
   --version, -v                             显示 CLI 版本。
@@ -540,7 +609,7 @@ function helpText(topic) {
 function helpJson(topic) {
   return {
     topic,
-    commands: ['login', 'deploy', 'status', 'rollback', 'open', 'env'],
+    commands: ['login', 'auth', 'deploy', 'status', 'sites', 'rollback', 'open', 'env'],
     commandHelp: 'pages help <命令>',
     jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };
@@ -551,11 +620,6 @@ function usageError(code, message, action) {
   error.code = code;
   error.action = action;
   return error;
-}
-
-function nowIso(context) {
-  if (typeof context.nowIso === 'function') return context.nowIso();
-  return new Date().toISOString();
 }
 
 async function readCliVersion() {

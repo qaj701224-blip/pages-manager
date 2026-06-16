@@ -5,10 +5,11 @@ import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 
-const VISIBILITIES = new Set(['public', 'org', 'acl', 'owner', 'disabled']);
+const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const ACL_SUBJECT_TYPES = new Set(['email']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
+const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
 
 export async function handleSitesApi(request, env, config, store) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -69,7 +70,7 @@ async function updateSite(request, env, config, store, actor, siteId) {
 
   const visibility = typeof body.visibility === 'string' ? body.visibility : '';
   if (!VISIBILITIES.has(visibility)) {
-    return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, 'Use public, org, acl, owner, or disabled.');
+    return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
 
   const route = await store.updateSiteVisibility(
@@ -154,7 +155,7 @@ async function createSite(request, env, config, store, actor) {
   const slugError = validateSlug(slug, config.environment);
   if (slugError) return slugError;
   if (!VISIBILITIES.has(visibility)) {
-    return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, 'Use public, org, acl, owner, or disabled.');
+    return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
 
   const siteId = nextId(env, 'site');

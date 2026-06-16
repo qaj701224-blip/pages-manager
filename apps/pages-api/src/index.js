@@ -7,6 +7,7 @@ import { buildOpenApi } from './openapi.js';
 import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
+import { handleWhoamiApi } from './whoami.js';
 import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 
 export { RoutePointerDO } from './route-snapshot.js';
@@ -16,9 +17,9 @@ export default {
     if (request.headers.has('X-Pages-Token')) {
       return jsonError(
         'LEGACY_TOKEN_UNSUPPORTED',
-        'Legacy Pages tokens are not supported by Pages v2.',
+        'Legacy Pages tokens are not supported by XD Pages.',
         400,
-        'Run `pages login` or use a v2 access key.'
+        'Run `pages login` or use an XD Pages access key.'
       );
     }
 
@@ -64,6 +65,18 @@ export default {
       }
 
       const response = await handleInternalApi(request, env, store);
+      if (response) return response;
+    }
+
+    if (url.pathname.startsWith('/.xd-pages/api/auth/')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+
+      const response = await handleWhoamiApi(request, env, config, store);
       if (response) return response;
     }
 

@@ -9,10 +9,21 @@ export async function loginWithAccessKey({
   secretStore,
   profile,
   saveProfile,
+  fetch = globalThis.fetch,
   now = () => new Date().toISOString(),
   output = () => {},
 }) {
   if (typeof accessKey !== 'string' || accessKey.trim() === '') throw new Error('ACCESS_KEY_REQUIRED');
+  const client = createApiClient({
+    apiBaseUrl: config.apiBaseUrl,
+    authBaseUrl: config.authBaseUrl,
+    credential: { type: 'access_key', value: accessKey },
+    fetch,
+  });
+  const whoami = await client.requestApi('GET', '/.xd-pages/api/auth/whoami');
+  if (whoami?.environment !== config.environment || whoami?.actor?.credentialType !== 'access_key') {
+    throw new Error('ACCESS_KEY_WHOAMI_INVALID');
+  }
   const savedAt = now();
   await secretStore.set(config.environment, {
     type: 'access_key',

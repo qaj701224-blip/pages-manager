@@ -6,8 +6,8 @@ const PROFILE_FILE = 'profile.json';
 const SECRET_FIELD_RE = /token|access.?key|cookie|secret|cloudflare|accountid|zoneid|namespaceid|capability/i;
 
 export function resolveProfileDir({ env = process.env, platform = process.platform, homedir = defaultHomedir } = {}) {
-  if (platform === 'win32') return path.join(env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'), 'xd-pages');
-  return path.join(env.XDG_CONFIG_HOME || path.join(homedir(), '.config'), 'xd-pages');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'), '.xd-pages');
+  return path.join(homedir(), '.xd-pages');
 }
 
 export async function loadProfile(profileDir = resolveProfileDir()) {
