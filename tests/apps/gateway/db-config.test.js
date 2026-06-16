@@ -71,6 +71,7 @@ test('core gateway schema exports runtime truth-source tables', () => {
     'reviewAgentComments',
     'siteCheckRuns',
     'slackNotificationDedupes',
+    'slackAgentReplyMessages',
     'auditLogs',
     'externalApiCallLogs',
   ]) {
@@ -93,6 +94,34 @@ test('MySQL gateway store writes Slack notification dedupe rows', async () => {
   assert.equal(calls.length, 1);
   assert.match(calls[0].sql, /slack_notification_dedupes/);
   assert.deepEqual(calls[0].params.slice(1, 3), ['job_db', 'callback:issue_created']);
+});
+
+test('MySQL gateway store records Slack Agent reply messages', async () => {
+  const calls = [];
+  const store = new MySqlGatewayStore({
+    async execute(sql, params) {
+      calls.push({ sql, params });
+      if (/SELECT \* FROM slack_agent_reply_messages/.test(sql)) return [[], []];
+      return [[], []];
+    },
+    async end() {},
+  });
+
+  const message = await store.recordSlackAgentReplyMessage('agent_db', {
+    slackSessionId: 'sess_db',
+    channel: 'D1',
+    threadTs: '1710000000.000100',
+    messageTs: '1710000001.000100',
+    textSnapshot: '我已收到。',
+    lastSequence: 2,
+    status: 'running',
+  });
+
+  assert.equal(message.agentRunId, 'agent_db');
+  assert.equal(message.slackSessionId, 'sess_db');
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].sql, /slack_agent_reply_messages/);
+  assert.deepEqual(calls[1].params.slice(1, 4), ['sess_db', 'agent_db', 'D1']);
 });
 
 test('MySQL gateway store health checks the database connection', async () => {
