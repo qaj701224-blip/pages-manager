@@ -106,12 +106,28 @@ test('handlePagesRuntimeRequest rejects mismatched Origin with 403', async () =>
 });
 
 test('handlePagesRuntimeRequest dispatches valid get requests', async () => {
-  const response = await handlePagesRuntimeRequest(runtimeRequest('/.xd-pages/runtime/v1/kv/get'), env, {
-    checkAccess: async () => null,
+  const request = runtimeRequest('/.xd-pages/runtime/v1/kv/get', {
+    headers: { 'CF-Platform-KV-Capability': 'request-capability-token' },
   });
+  let captured;
+  const response = await handlePagesRuntimeRequest(
+    request,
+    {
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({ ok: true, found: true, value: 'ok' });
+        },
+      },
+    },
+    {
+      checkAccess: async () => null,
+    }
+  );
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Access-Control-Allow-Origin'), null);
+  assert.equal(captured.headers.get('Authorization'), 'Bearer request-capability-token');
   assert.deepEqual(await responseJson(response), { ok: true, found: true, value: 'ok' });
 });
 
@@ -169,9 +185,9 @@ test('handlePagesRuntimeRequest validates key and type', async () => {
   assert.equal((await responseJson(invalidType)).error.code, 'INVALID_TYPE');
 });
 
-test('handlePagesRuntimeRequest validates put ttl', async () => {
+test('handlePagesRuntimeRequest validates set ttl', async () => {
   const response = await handlePagesRuntimeRequest(
-    runtimeRequest('/.xd-pages/runtime/v1/kv/put', {
+    runtimeRequest('/.xd-pages/runtime/v1/kv/set', {
       body: JSON.stringify({ key: 'app/config', value: 'hello', type: 'text', expirationTtl: 59 }),
     }),
     env,
@@ -182,7 +198,7 @@ test('handlePagesRuntimeRequest validates put ttl', async () => {
   assert.equal((await responseJson(response)).error.code, 'INVALID_TTL');
 });
 
-test('handlePagesRuntimeRequest dispatches valid put and delete requests', async () => {
+test('handlePagesRuntimeRequest dispatches valid set and delete requests', async () => {
   const calls = [];
   const dispatchEnv = {
     XD_PAGES_KV_CAPABILITY: 'capability-token',
@@ -195,7 +211,7 @@ test('handlePagesRuntimeRequest dispatches valid put and delete requests', async
   };
 
   const putResponse = await handlePagesRuntimeRequest(
-    runtimeRequest('/.xd-pages/runtime/v1/kv/put', {
+    runtimeRequest('/.xd-pages/runtime/v1/kv/set', {
       body: JSON.stringify({ key: 'app/config', value: 'hello', type: 'text', expirationTtl: 60 }),
     }),
     dispatchEnv,
@@ -213,7 +229,7 @@ test('handlePagesRuntimeRequest dispatches valid put and delete requests', async
   assert.equal(deleteResponse.status, 200);
   assert.deepEqual(calls, [
     {
-      url: 'https://pages-kv-gateway.local/v1/kv/put',
+      url: 'https://pages-kv-gateway.local/v1/kv/set',
       body: { key: 'app/config', value: 'hello', type: 'text', expirationTtl: 60 },
     },
     {

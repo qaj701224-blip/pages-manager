@@ -1,6 +1,6 @@
 export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     routeId: route.id,
     hostname: route.hostname,
     environment: route.environment,
@@ -10,7 +10,13 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
     ownerUserId: site.ownerUserId,
     requiredSessionVersion: site.requiredSessionVersion || 1,
     runtime: route.runtime,
+    executionProvider: route.executionProvider || version.executionProvider || executionProviderFromRuntime(route.runtime),
     workerName: route.workerName,
+    dispatch: buildDispatchSnapshot(route, version),
+    kv: {
+      enabled: true,
+      scopes: ['kv:get', 'kv:set', 'kv:delete'],
+    },
     activeVersionId: route.activeVersionId,
     artifactKind: version.artifactKind,
     contentHash: version.contentHash,
@@ -21,6 +27,26 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
     cacheTier: route.cacheTier,
     acl: aclEntries.map(formatAclEntry),
   };
+}
+
+function buildDispatchSnapshot(route, version) {
+  const dispatchType = route.dispatchType || version.dispatchType || dispatchTypeFromExecutionProvider(route.executionProvider);
+  if (dispatchType === 'service-binding') {
+    return {
+      type: 'service-binding',
+      slotId: route.slotId || version.slotId || null,
+      bindingName: route.dispatchBindingName || version.dispatchBindingName,
+    };
+  }
+  return { type: 'dispatch-namespace' };
+}
+
+function executionProviderFromRuntime(runtime) {
+  return runtime === 'wfp' ? 'wfp' : null;
+}
+
+function dispatchTypeFromExecutionProvider(executionProvider) {
+  return executionProvider === 'normal-worker-slot' ? 'service-binding' : 'dispatch-namespace';
 }
 
 function formatAclEntry(entry) {
@@ -88,7 +114,11 @@ export class RoutePointerDO {
       const latestPointer = await this.state.storage.get('pointer');
       assertPointerIsNotStale(latestPointer, snapshot);
       const result = await writeRouteSnapshotUnlocked(this.env.ROUTE_SNAPSHOTS, snapshot);
-      await this.state.storage.put('pointer', result.pointer);
+      try {
+        await this.state.storage.put('pointer', result.pointer);
+      } catch {
+        result.pointerState = 'durable_state_write_failed_after_kv_commit';
+      }
       return jsonResponse(result, 200);
     } catch (error) {
       return jsonResponse({ error: error instanceof Error ? error.message : 'ROUTE_POINTER_WRITE_FAILED' }, 409);

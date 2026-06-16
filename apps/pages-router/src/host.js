@@ -1,4 +1,4 @@
-import { isValidSiteSlug } from '@xd/pages-runtime-protocol';
+import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 const PROD_SUFFIX = '.pages.xd.team';
 const STAGING_SUFFIX = '-staging.pages.xd.team';
@@ -12,28 +12,6 @@ const RESERVED_HOSTS = new Set([
   'auth-staging.pages.xd.team',
   'router-staging.pages.xd.team',
   'kv-gateway-staging.pages.xd.team',
-]);
-
-const RESERVED_SLUGS = new Set([
-  'api',
-  'api-staging',
-  'auth',
-  'auth-staging',
-  'admin',
-  'admin-staging',
-  'manager',
-  'manager-staging',
-  'router',
-  'router-staging',
-  'kv-gateway',
-  'kv-gateway-staging',
-  'pages',
-  'login',
-  'logout',
-  'callback',
-  'oauth',
-  'sso',
-  'internal',
 ]);
 
 export function classifyHost(hostname, { environment }) {
@@ -57,7 +35,7 @@ function classifyProductionHost(hostname) {
   if (slug.includes('.')) return rejected('INVALID_HOST', hostname, 'production');
   if (slug.endsWith('-staging')) return rejected('RESERVED_SLUG', hostname, 'production');
 
-  return validateSlug({ hostname, slug, environment: 'production' });
+  return validateHostSlug({ hostname, slug, environment: 'production' });
 }
 
 function classifyStagingHost(hostname) {
@@ -69,12 +47,12 @@ function classifyStagingHost(hostname) {
   const slug = hostname.slice(0, -STAGING_SUFFIX.length);
   if (slug.includes('.')) return rejected('INVALID_HOST', hostname, 'staging');
 
-  return validateSlug({ hostname, slug, environment: 'staging' });
+  return validateHostSlug({ hostname, slug, environment: 'staging' });
 }
 
-function validateSlug({ hostname, slug, environment }) {
-  if (RESERVED_SLUGS.has(slug)) return rejected('RESERVED_SLUG', hostname, environment);
-  if (!isValidSiteSlug(slug)) return rejected('INVALID_SLUG', hostname, environment);
+function validateHostSlug({ hostname, slug, environment }) {
+  const validation = validateSiteSlug(slug, { environment });
+  if (!validation.ok) return rejected(validation.error.code, hostname, environment);
 
   return { ok: true, environment, hostname, slug };
 }

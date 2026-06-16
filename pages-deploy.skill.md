@@ -54,7 +54,7 @@ curl -s https://pages-manager.xd-cf-2022.workers.dev/skill.md -o <本文件路�
 
 ```bash
 # 部署
-PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--kv]
+PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-deploy.sh <name> <dir> [--preset static|spa|worker]
 
 # 列出自己的站点
 PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh list
@@ -77,46 +77,9 @@ PAGES_TOKEN=pages_xxx@xd.com bash ~/.xd-pages/pages-manage.sh delete <name>
 
 **自定义 Worker 模式**：如果 static/spa 内置模板无法满足需求（如 SSR、API 代理、复杂路由），可以自行编写 `_worker.js` 放入部署目录，使用 `worker` preset。参考 openapi.json 中 `x-libs` 提供的代码片段（MIME 处理、IP 限制等）组装你需要的逻辑；部署时服务端会注入 `env.IP_ALLOWLIST`，不要在代码里写死 IP。
 
-## Pages KV（用户明确需要站点级读写数据时才开启）
+## Pages KV
 
-- 只有用户明确需要站点级 KV 存储时才部署 `kv=true`；未传、`false` 或 `kv=false` 都是关闭。
-- `kv=true` 只支持 `spa` 和 `worker` preset；`static + kv=true` 会被拒绝。
-- v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。
-- 公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。
-
-SPA 浏览器代码使用 `@xd/pages-sdk/browser`：
-
-```ts
-import { createPagesClient } from '@xd/pages-sdk/browser';
-
-const pages = createPagesClient();
-const config = await pages.kv.get('app/config', { type: 'json' });
-await pages.kv.put('drafts/123', { title: 'hello' });
-await pages.kv.delete('drafts/123');
-```
-
-浏览器 SDK 只访问同源 POST endpoint：
-
-- `POST /.xd-pages/runtime/v1/kv/get`
-- `POST /.xd-pages/runtime/v1/kv/put`
-- `POST /.xd-pages/runtime/v1/kv/delete`
-
-worker preset 使用 `@xd/pages-sdk/worker`：
-
-```js
-import { createPagesRuntime } from '@xd/pages-sdk/worker';
-
-export default {
-  async fetch(request, env) {
-    const pages = createPagesRuntime({ env });
-    return Response.json(await pages.kv.get('app/config'));
-  },
-};
-```
-
-`worker preset` 的 `_worker.js` 如果 import npm 包（包括 `@xd/pages-sdk/worker`），业务构建必须先 bundle/打包成可直接运行的 Worker module，再上传给 pages-manager；pages-manager 不会打包 `_worker.js`。
-
-worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能力；owner 代码可以误用或泄露自己的能力，平台只强制跨站前缀隔离。部署前用大白话提醒用户这个边界。
+v1 不再提供 Pages KV。不要在 `workers.xd.team` 部署时传 `--kv` 或 `kv=true`；如果用户需要 KV 能力，引导其使用 v2 `pages.xd.team` 平台。
 
 ## IP 限制（默认开启）
 
@@ -137,7 +100,7 @@ worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能�
 7. 部署前确认目录存在且非空
 8. 如果 API 返回错误，按响应中的 `hint` 字段提示用户修正
 9. worker preset 部署时，提醒用户需在 `_worker.js` 中调用 IP 检查代码，白名单从 `env.IP_ALLOWLIST` 读取
-10. 用户要求 Pages KV 时，只能对 spa/worker 使用 `kv=true`；static 站点不要加 `kv=true`
+10. 用户要求 Pages KV 时，不要在 v1 加 `--kv` 或 `kv=true`，引导使用 v2 `pages.xd.team`
 11. worker preset 如果 import npm 包，必须确认业务侧已 bundle/打包 `_worker.js`
 
 ## 错误恢复

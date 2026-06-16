@@ -1,13 +1,13 @@
 export const RUNTIME = {
   BASE_PATH: '/.xd-pages/runtime/v1',
   KV_GET_PATH: '/.xd-pages/runtime/v1/kv/get',
-  KV_PUT_PATH: '/.xd-pages/runtime/v1/kv/put',
+  KV_SET_PATH: '/.xd-pages/runtime/v1/kv/set',
   KV_DELETE_PATH: '/.xd-pages/runtime/v1/kv/delete',
 };
 
 export const GATEWAY = {
   KV_GET_PATH: '/v1/kv/get',
-  KV_PUT_PATH: '/v1/kv/put',
+  KV_SET_PATH: '/v1/kv/set',
   KV_DELETE_PATH: '/v1/kv/delete',
 };
 

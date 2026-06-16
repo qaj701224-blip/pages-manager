@@ -123,7 +123,7 @@ test('site detail exposes only public fields', async () => {
     devUrl: 'https://pages-demo.xd-cf-2022.workers.dev',
     fileCount: 12,
     ipRestrict: true,
-    kvEnabled: true,
+    kvEnabled: false,
     createdAt: '2026-06-11T00:00:00.000Z',
     updatedAt: '2026-06-12T00:00:00.000Z',
   });

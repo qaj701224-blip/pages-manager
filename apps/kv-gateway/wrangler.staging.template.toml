@@ -1,0 +1,14 @@
+name = "pages-kv-gateway-staging"
+main = "src/index.js"
+compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
+
+[vars]
+PAGES_ENV = "staging"
+PAGES_CAP_JWT_ACTIVE_KID = "__PAGES_CAP_JWT_ACTIVE_KID__"
+PAGES_CAP_JWT_KEYS = "__PAGES_CAP_JWT_KEYS__"
+
+[[kv_namespaces]]
+binding = "SITE_DATA"
+id = "__SITE_DATA_KV_ID__"

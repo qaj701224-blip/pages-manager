@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { D1PagesStore } from './store.js';
 import { createTestPagesStore } from './test-store.js';
 
 test('test store enforces unique site slug per environment', async () => {
@@ -75,7 +76,11 @@ test('createSite creates owner membership and inactive route authority record', 
     siteId: 'site_1',
     environment: 'production',
     runtime: 'disabled',
+    executionProvider: null,
     workerName: null,
+    dispatchType: null,
+    dispatchBindingName: null,
+    slotId: null,
     activeVersionId: null,
     visibility: 'acl',
     policyVersion: 1,
@@ -217,6 +222,44 @@ test('conditional restore helpers do not clobber newer route state', async () =>
   assert.equal((await store.getRouteBySiteId('site_1')).routeGeneration, newerRoute.routeGeneration);
 });
 
+test('conditional route activation rejects stale route authority records', async () => {
+  const store = createSeededStore();
+  await createSite(store);
+  const previousRoute = await store.getRouteBySiteId('site_1');
+  const newerRoute = await store.activateSiteVersion(
+    'site_1',
+    {
+      activeVersionId: 'ver_newer',
+      workerName: 'pages-v2-docs-newer',
+      runtime: 'worker',
+      executionProvider: 'wfp',
+      dispatchType: 'dispatch-namespace',
+      visibility: 'org',
+      updatedAt: '2026-06-15T00:01:00.000Z',
+    },
+    'production'
+  );
+
+  const staleRoute = await store.activateSiteVersion(
+    'site_1',
+    {
+      activeVersionId: 'ver_stale',
+      workerName: 'pages-v2-docs-stale',
+      runtime: 'worker',
+      executionProvider: 'wfp',
+      dispatchType: 'dispatch-namespace',
+      visibility: 'org',
+      updatedAt: '2026-06-15T00:02:00.000Z',
+    },
+    'production',
+    previousRoute
+  );
+
+  assert.equal(staleRoute, null);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_newer');
+  assert.equal((await store.getRouteBySiteId('site_1')).routeGeneration, newerRoute.routeGeneration);
+});
+
 test('access keys persist hash metadata without plaintext', async () => {
   const store = createSeededStore();
 
@@ -307,6 +350,28 @@ test('deployment idempotency returns existing records and rejects hash conflicts
   assert.equal(await store.getDeployment('dep_3'), null);
 });
 
+test('D1 store retries another available worker slot when CAS loses a race', async () => {
+  const slots = new Map([
+    ['slot_001', workerSlotRow({ id: 'slot_001', slot_number: 1 })],
+    ['slot_002', workerSlotRow({ id: 'slot_002', slot_number: 2 })],
+  ]);
+  const db = fakeSlotDb(slots, { loseFirstUpdate: true });
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const assigned = await store.assignAvailableWorkerSlot({
+    environment: 'production',
+    siteId: 'site_1',
+    routeId: 'route_1',
+    versionId: 'ver_1',
+    assignedAt: '2026-06-15T00:01:00.000Z',
+  });
+
+  assert.equal(assigned.id, 'slot_002');
+  assert.equal(assigned.status, 'assigned');
+  assert.equal(assigned.assignedVersionId, 'ver_1');
+  assert.equal(slots.get('slot_001').status, 'available');
+});
+
 function createSeededStore() {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
@@ -332,4 +397,72 @@ async function createSite(store) {
     routeId: 'route_1',
     hostname: 'docs.pages.xd.team',
   });
+}
+
+function workerSlotRow(overrides = {}) {
+  return {
+    id: 'slot_001',
+    environment: 'production',
+    slot_number: 1,
+    worker_name: 'pages-v2-production-slot-001',
+    binding_name: 'SITE_SLOT_001',
+    status: 'available',
+    assigned_site_id: null,
+    assigned_route_id: null,
+    assigned_version_id: null,
+    assigned_at: null,
+    last_deployed_version_id: null,
+    last_seen_at: null,
+    health_status: 'ok',
+    notes: null,
+    created_at: '2026-06-15T00:00:00.000Z',
+    updated_at: '2026-06-15T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function fakeSlotDb(slots, { loseFirstUpdate = false } = {}) {
+  let updateAttempts = 0;
+  return {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async all() {
+              assert.match(sql, /SELECT \* FROM worker_slots/);
+              const [environment] = args;
+              return {
+                results: [...slots.values()]
+                  .filter((slot) => slot.environment === environment && slot.status === 'available')
+                  .sort((left, right) => left.slot_number - right.slot_number),
+              };
+            },
+            async first() {
+              assert.match(sql, /SELECT \* FROM worker_slots WHERE id = \?/);
+              const [id] = args;
+              return slots.get(id) || null;
+            },
+            async run() {
+              assert.match(sql, /UPDATE worker_slots/);
+              updateAttempts += 1;
+              const [siteId, routeId, versionId, assignedAt, lastDeployedVersionId, updatedAt, id] = args;
+              if (loseFirstUpdate && updateAttempts === 1) return { meta: { changes: 0 } };
+              const slot = slots.get(id);
+              if (!slot || slot.status !== 'available') return { meta: { changes: 0 } };
+              Object.assign(slot, {
+                status: 'assigned',
+                assigned_site_id: siteId,
+                assigned_route_id: routeId,
+                assigned_version_id: versionId,
+                assigned_at: assignedAt,
+                last_deployed_version_id: lastDeployedVersionId,
+                updated_at: updatedAt,
+              });
+              return { meta: { changes: 1 } };
+            },
+          };
+        },
+      };
+    },
+  };
 }

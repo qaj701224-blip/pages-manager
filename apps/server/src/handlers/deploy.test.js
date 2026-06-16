@@ -39,10 +39,6 @@ function envWithExistingSite(existing) {
     WORKERS_DEV_SUBDOMAIN: 'xd-cf-2022',
     IP_ALLOWLIST: '127.0.0.1',
     PUBLIC_ENVIRONMENT: 'production',
-    KV_GATEWAY_SERVICE: 'pages-kv-gateway',
-    PAGES_CAP_JWT_ACTIVE_KID: 'prod-hs-2026-06',
-    PAGES_CAP_JWT_KEYS: 'prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
-    PAGES_CAP_JWT_SECRET_202606: 'test-secret',
     SITES: {
       async get() {
         return existing;
@@ -169,15 +165,6 @@ function envForDeploy(existing, putCalls = []) {
   };
 }
 
-async function getDeployMetadata(calls) {
-  const deployCall = calls.find(
-    (call) => call.options.method === 'PUT' && call.url.includes('/workers/scripts/pages-demo')
-  );
-  assert.ok(deployCall, 'expected worker deploy call');
-  const blob = deployCall.options.body.get('metadata');
-  return JSON.parse(await blob.text());
-}
-
 async function handleDeployHttpResponse(request, env) {
   try {
     return await handleDeploy(request, env);
@@ -205,20 +192,20 @@ test('deploy rejects invalid kv before touching Cloudflare', async () => {
   }
 });
 
-test('deploy rejects static kv before touching Cloudflare', async () => {
+test('deploy rejects kv=true because v1 Pages KV is retired before touching Cloudflare', async () => {
   const mock = installCloudflareMock();
   try {
     const response = await handleDeploy(
-      deployRequest({ token: 'pages_owner@xd.com', kv: 'true', preset: 'static' }),
+      deployRequest({ token: 'pages_owner@xd.com', kv: 'true', preset: 'spa' }),
       envForDeploy(null)
     );
     const body = await response.json();
 
     assert.equal(response.status, 400);
-    assert.equal(body.error, 'static preset 暂不支持 kv');
-    assert.equal(body.field, 'preset');
-    assert.equal(body.value, 'static');
-    assert.match(body.hint, /spa|worker/);
+    assert.equal(body.code, 'KV_NOT_SUPPORTED');
+    assert.equal(body.field, 'kv');
+    assert.equal(body.value, 'true');
+    assert.match(body.hint, /v2|pages\.xd\.team/);
     assert.equal(mock.calls.length, 0);
   } finally {
     mock.restore();
@@ -245,50 +232,10 @@ test('deploy rejects ip_restrict=false before touching Cloudflare', async () => 
   }
 });
 
-test('kv=true deploy preserves existing siteUuid and returns kv flag without leaking capability', async () => {
-  const mock = installCloudflareMock();
-  const putCalls = [];
-
-  try {
-    const response = await handleDeploy(
-      deployRequest({ token: 'pages_owner@xd.com', kv: 'true', preset: 'spa' }),
-      envForDeploy(
-        {
-          token: 'pages_owner@xd.com',
-          siteUuid: existingUuid,
-          siteGeneration: 2,
-          createdAt: '2026-01-01T00:00:00.000Z',
-        },
-        putCalls
-      )
-    );
-    const body = await response.json();
-    const metadata = await getDeployMetadata(mock.calls);
-
-    assert.equal(response.status, 200);
-    assert.equal(body.kv, true);
-    assert.equal(putCalls[0].value.kvEnabled, true);
-    assert.equal(putCalls[0].value.siteUuid, existingUuid);
-    assert.equal(putCalls[0].value.siteGeneration, 3);
-    assert.equal(putCalls[0].options.metadata.kvEnabled, true);
-    assert.equal(putCalls[0].options.metadata.siteUuid, existingUuid);
-    assert.equal(putCalls[0].options.metadata.siteGeneration, 3);
-    assert.ok(metadata.bindings.some((binding) => binding.name === 'XD_PAGES_KV_CAPABILITY'));
-    assert.doesNotMatch(JSON.stringify(body), /capability|jwt|test-secret/i);
-    assert.doesNotMatch(JSON.stringify(putCalls), /capability|jwt|test-secret/i);
-  } finally {
-    mock.restore();
-  }
-});
-
-test('kv=true deploy logs do not leak capability, jwt or secrets echoed by Cloudflare', async () => {
+test('deploy logs do not leak Cloudflare JWT echoes', async () => {
   const mock = installCloudflareMock({
     deployResult: {
       id: 'pages-demo',
-      metadata: {
-        bindings: [{ name: 'XD_PAGES_KV_CAPABILITY', text: 'capability.jwt' }],
-      },
-      secret: 'test-secret',
       jwt: 'upload-jwt',
     },
   });
@@ -298,7 +245,7 @@ test('kv=true deploy logs do not leak capability, jwt or secrets echoed by Cloud
 
   try {
     const response = await handleDeploy(
-      deployRequest({ token: 'pages_owner@xd.com', kv: 'true', preset: 'spa' }),
+      deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }),
       envForDeploy({
         token: 'pages_owner@xd.com',
         siteUuid: existingUuid,
@@ -309,9 +256,6 @@ test('kv=true deploy logs do not leak capability, jwt or secrets echoed by Cloud
     await response.json();
 
     const text = logs.join('\n');
-    assert.doesNotMatch(text, /XD_PAGES_KV_CAPABILITY/);
-    assert.doesNotMatch(text, /capability\.jwt/);
-    assert.doesNotMatch(text, /test-secret/);
     assert.doesNotMatch(text, /upload-jwt/);
     assert.doesNotMatch(text, /jwt/i);
   } finally {
@@ -320,7 +264,7 @@ test('kv=true deploy logs do not leak capability, jwt or secrets echoed by Cloud
   }
 });
 
-test('deploy failure response redacts Cloudflare capability and JWT echo', async () => {
+test('deploy failure response redacts Cloudflare JWT echo', async () => {
   const mock = installCloudflareMock({
     deployFailure: {
       status: 400,
@@ -330,13 +274,10 @@ test('deploy failure response redacts Cloudflare capability and JWT echo', async
           {
             code: 10021,
             message: [
-              'metadata XD_PAGES_KV_CAPABILITY capability.jwt',
               'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature',
-              'PAGES_CAP_JWT_SECRET_202606',
             ].join(' '),
             source: {
-              pointer: '/bindings/XD_PAGES_KV_CAPABILITY/capability.jwt',
-              nested: ['Bearer nested.token.value', { env: 'PAGES_CAP_JWT_SECRET_202606' }],
+              pointer: '/bindings/SECRET/Bearer nested.token.value',
             },
           },
         ],
@@ -346,18 +287,15 @@ test('deploy failure response redacts Cloudflare capability and JWT echo', async
 
   try {
     const response = await handleDeployHttpResponse(
-      deployRequest({ token: 'pages_owner@xd.com', kv: 'true', preset: 'spa' }),
+      deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }),
       envForDeploy({ token: 'pages_owner@xd.com', siteUuid: existingUuid, siteGeneration: 2 })
     );
     const body = await response.json();
     const text = JSON.stringify(body);
 
     assert.equal(response.status, 400);
-    assert.doesNotMatch(text, /XD_PAGES_KV_CAPABILITY/);
-    assert.doesNotMatch(text, /capability\.jwt/);
     assert.doesNotMatch(text, /eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxIn0\.signature/);
     assert.doesNotMatch(text, /Bearer /);
-    assert.doesNotMatch(text, /PAGES_CAP_JWT_SECRET/);
   } finally {
     mock.restore();
   }
@@ -368,28 +306,25 @@ test('missing or false kv does not require JWT env vars and returns kv false', a
     const mock = installCloudflareMock();
     try {
       const env = envForDeploy(null);
-      delete env.PAGES_CAP_JWT_ACTIVE_KID;
-      delete env.PAGES_CAP_JWT_KEYS;
-      delete env.PAGES_CAP_JWT_SECRET_202606;
 
       const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', kv }), env);
       const body = await response.json();
 
       assert.equal(response.status, 200);
-      assert.equal(body.kv, false);
+      assert.equal(body.kv, undefined);
     } finally {
       mock.restore();
     }
   }
 });
 
-test('new kv=true site generates 32 lowercase hex siteUuid', async () => {
+test('new site generates 32 lowercase hex siteUuid for stable metadata', async () => {
   const mock = installCloudflareMock();
   const putCalls = [];
 
   try {
     const response = await handleDeploy(
-      deployRequest({ token: 'pages_owner@xd.com', kv: 'true', preset: 'spa' }),
+      deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }),
       envForDeploy(null, putCalls)
     );
     await response.json();
@@ -407,7 +342,7 @@ test('same token redeploy preserves UUID while different token conflict is rejec
 
   try {
     const sameTokenResponse = await handleDeploy(
-      deployRequest({ token: 'pages_owner@xd.com', kv: 'true', preset: 'spa' }),
+      deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }),
       envForDeploy({ token: 'pages_owner@xd.com', siteUuid: existingUuid, siteGeneration: 4 }, putCalls)
     );
     assert.equal(sameTokenResponse.status, 200);
@@ -415,42 +350,12 @@ test('same token redeploy preserves UUID while different token conflict is rejec
     assert.equal(putCalls[0].value.siteGeneration, 5);
 
     const conflictResponse = await handleDeploy(
-      deployRequest({ token: 'pages_other@xd.com', kv: 'true', preset: 'spa' }),
+      deployRequest({ token: 'pages_other@xd.com', preset: 'spa' }),
       envForDeploy({ token: 'pages_owner@xd.com', siteUuid: existingUuid, siteGeneration: 4 })
     );
     const body = await conflictResponse.json();
     assert.equal(conflictResponse.status, 409);
     assert.equal(body.error, '站点名称已被占用');
-  } finally {
-    mock.restore();
-  }
-});
-
-test('worker preset with kv warning includes bundling and capability boundary', async () => {
-  const mock = installCloudflareMock();
-  try {
-    const response = await handleDeploy(
-      deployRequest({
-        token: 'pages_owner@xd.com',
-        kv: 'true',
-        preset: 'worker',
-        files: [
-          {
-            field: 'worker',
-            body: 'export default { async fetch() { return new Response("ok"); } };',
-            name: '_worker.js',
-            type: 'application/javascript',
-          },
-        ],
-      }),
-      envForDeploy(null)
-    );
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.match(body.warning, /@xd\/pages-sdk\/worker/);
-    assert.match(body.warning, /capability/);
-    assert.match(body.warning, /暴露/);
   } finally {
     mock.restore();
   }

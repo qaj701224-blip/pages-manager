@@ -1,4 +1,5 @@
 import { isAllowedIP } from '@xd/ip-guard';
+import { GATEWAY, HEADERS, RUNTIME } from '@xd/pages-runtime-protocol';
 import { jsonResponse } from '@xd/worker-kit';
 
 import { buildSiteSessionCookie } from '../../pages-auth/src/cookies.js';
@@ -18,6 +19,14 @@ const PRODUCTION_WORKER_PREFIX = 'pages-v2-';
 const STAGING_WORKER_PREFIX = 'pages-v2-staging-';
 const MAX_WORKER_NAME_LENGTH = 63;
 const WORKER_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const KV_CAPABILITY_ISSUER = 'pages-v2';
+const KV_CAPABILITY_AUDIENCE = 'pages-kv-gateway';
+const DEFAULT_KV_CAPABILITY_TTL_SECONDS = 60;
+const RUNTIME_GATEWAY_PATHS = new Map([
+  [RUNTIME.KV_GET_PATH, GATEWAY.KV_GET_PATH],
+  [RUNTIME.KV_SET_PATH, GATEWAY.KV_SET_PATH],
+  [RUNTIME.KV_DELETE_PATH, GATEWAY.KV_DELETE_PATH],
+]);
 
 export default {
   async fetch(request, env) {
@@ -30,6 +39,7 @@ export default {
 
     const host = classifyHost(url.hostname, { environment });
     if (!host.ok) return errorResponse(host.code, `Host ${url.hostname} is not a routable pages v2 site.`, 404);
+    const runtimeGatewayPath = runtimeGatewayPathFor(url.pathname);
 
     if (url.pathname === SITE_AUTH_CALLBACK_PATH) {
       const routeResult = await readUsableRoute(env, host.hostname, environment);
@@ -37,7 +47,7 @@ export default {
       return handleSiteAuthCallback(request, env, routeResult.route);
     }
 
-    if (isPlatformPath(url.pathname)) {
+    if (isPlatformPath(url.pathname) && !runtimeGatewayPath) {
       return errorResponse('PLATFORM_PATH_RESERVED', 'This platform path is not dispatched to user workers.', 404);
     }
 
@@ -55,8 +65,10 @@ export default {
       return errorResponse(policy.code, 'Site access denied.', policy.status);
     }
 
-    const dispatchTarget = env.PAGES_DISPATCH?.get(route.workerName);
-    if (!dispatchTarget) return errorResponse('DISPATCH_UNAVAILABLE', 'Dispatch namespace is not available.', 503);
+    if (runtimeGatewayPath) return handleRuntimeGatewayRequest(request, env, route, policy.user, runtimeGatewayPath);
+
+    const dispatchTarget = resolveDispatchTarget(env, route);
+    if (!dispatchTarget) return errorResponse('DISPATCH_UNAVAILABLE', 'Route dispatch target is not available.', 503);
 
     let platformHeaders;
     try {
@@ -84,7 +96,7 @@ async function readUsableRoute(env, hostname, environment) {
       response: errorResponse('ROUTE_ENV_MISMATCH', 'Route environment does not match router environment.', 403),
     };
   }
-  if (route.routeStatus !== 'active' || route.runtime !== 'wfp') {
+  if (route.routeStatus !== 'active' || !routeRuntimeIsActive(route.runtime)) {
     return { ok: false, response: errorResponse('ROUTE_INACTIVE', 'Site route is not active.', 404) };
   }
   if (!isValidRouteWorkerName(route.workerName, environment)) {
@@ -92,6 +104,37 @@ async function readUsableRoute(env, hostname, environment) {
   }
 
   return { ok: true, route };
+}
+
+function routeRuntimeIsActive(runtime) {
+  return runtime === 'worker' || runtime === 'wfp';
+}
+
+function resolveDispatchTarget(env, route) {
+  const dispatch = route.dispatch || dispatchFromLegacyRoute(route);
+  if (dispatch?.type === 'service-binding') {
+    if (!isValidSlotBindingName(dispatch.bindingName)) return null;
+    return env[dispatch.bindingName] || null;
+  }
+  if (dispatch?.type === 'dispatch-namespace') {
+    return env.PAGES_DISPATCH?.get(route.workerName) || null;
+  }
+  return null;
+}
+
+function dispatchFromLegacyRoute(route) {
+  if (route.dispatchType === 'service-binding') {
+    return {
+      type: 'service-binding',
+      bindingName: route.dispatchBindingName,
+      slotId: route.slotId || null,
+    };
+  }
+  return { type: 'dispatch-namespace' };
+}
+
+function isValidSlotBindingName(value) {
+  return /^SITE_SLOT_\d{3,}$/.test(String(value || ''));
 }
 
 function enforceIPAllowlist(request, env) {
@@ -211,7 +254,7 @@ function readNowSeconds(env) {
 async function buildPlatformHeaders(route, env, identity) {
   const traceId = crypto.randomUUID();
   const internalJwt = await signInternalWorkerJwt(route, env, identity, traceId);
-  return {
+  const headers = {
     'CF-Platform-Auth': internalJwt,
     'CF-Platform-User': identity?.userId || 'anonymous',
     'CF-Platform-Site-Id': route.siteId,
@@ -219,6 +262,10 @@ async function buildPlatformHeaders(route, env, identity) {
     'CF-Platform-Version': route.activeVersionId,
     'CF-Platform-Trace-Id': traceId,
   };
+  if (route.kv?.enabled) {
+    headers['CF-Platform-KV-Capability'] = await signKvCapability(route, env, identity, traceId);
+  }
+  return headers;
 }
 
 async function signInternalWorkerJwt(route, env, identity, traceId) {
@@ -242,6 +289,161 @@ async function signInternalWorkerJwt(route, env, identity, traceId) {
     },
     env
   );
+}
+
+async function handleRuntimeGatewayRequest(request, env, route, identity, gatewayPath) {
+  if (!route.kv?.enabled) return errorResponse('RUNTIME_NOT_ENABLED', 'Runtime API is not enabled for this site.', 404);
+  if (request.method !== 'POST') return errorResponse('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  if (request.headers.get(HEADERS.RUNTIME_REQUEST) !== '1') {
+    return errorResponse('RUNTIME_REQUEST_REQUIRED', 'Runtime request header is required.', 403);
+  }
+  if (!runtimeOriginAllowed(request)) {
+    return errorResponse('RUNTIME_ORIGIN_DENIED', 'Runtime request origin is denied.', 403);
+  }
+  if (typeof env.XD_PAGES_KV_GATEWAY?.fetch !== 'function') {
+    return errorResponse('RUNTIME_GATEWAY_UNAVAILABLE', 'Runtime gateway is unavailable.', 503);
+  }
+
+  let capability;
+  try {
+    capability = await signKvCapability(route, env, identity, crypto.randomUUID());
+  } catch {
+    return errorResponse('RUNTIME_CAPABILITY_CREATE_FAILED', 'Runtime capability could not be created.', 500);
+  }
+
+  const headers = new Headers();
+  headers.set('Authorization', `Bearer ${capability}`);
+  headers.set('Content-Type', request.headers.get('Content-Type') || 'application/json');
+  const body = await request.text();
+  const gatewayResponse = await env.XD_PAGES_KV_GATEWAY.fetch(
+    new Request(`https://pages-kv-gateway.local${gatewayPath}`, {
+      method: 'POST',
+      headers,
+      body,
+    })
+  );
+  return sanitizeRuntimeGatewayResponse(gatewayResponse);
+}
+
+function runtimeGatewayPathFor(pathname) {
+  return RUNTIME_GATEWAY_PATHS.get(pathname) || null;
+}
+
+function runtimeOriginAllowed(request) {
+  const origin = request.headers.get('Origin');
+  if (!origin) return true;
+  try {
+    return new URL(origin).origin === new URL(request.url).origin;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeRuntimeGatewayResponse(response) {
+  const headers = new Headers(response.headers);
+  headers.delete('Authorization');
+  headers.delete('CF-Platform-KV-Capability');
+  headers.delete('Set-Cookie');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+async function signKvCapability(route, env, identity, traceId) {
+  if (typeof env.signKvCapability === 'function') return env.signKvCapability({ route, identity, traceId });
+  const activeKid = readRequired(env.PAGES_CAP_JWT_ACTIVE_KID, 'PAGES_CAP_JWT_ACTIVE_KID');
+  const registry = parseJwtKeyRegistry(env.PAGES_CAP_JWT_KEYS, env, 'PAGES_CAP_JWT_KEYS', 'PAGES_CAP_JWT_SECRET_');
+  const key = registry.get(activeKid);
+  if (!key) throw new Error('PAGES_CAP_JWT_ACTIVE_KID is not present in PAGES_CAP_JWT_KEYS');
+  const now = readNowSeconds(env);
+  const ttl = readKvCapabilityTtlSeconds(env);
+  return createHs256Jwt({
+    kid: activeKid,
+    secret: key.secret,
+    payload: {
+      iss: KV_CAPABILITY_ISSUER,
+      aud: KV_CAPABILITY_AUDIENCE,
+      env: route.environment,
+      siteId: route.slug,
+      siteUuid: route.siteUuid,
+      routeId: route.routeId,
+      versionId: route.activeVersionId,
+      policyVersion: route.policyVersion,
+      sub: identity?.userId || 'anonymous',
+      anonymous: !identity,
+      scope: Array.isArray(route.kv?.scopes) ? route.kv.scopes : [],
+      traceId,
+      iat: now,
+      nbf: now,
+      exp: now + ttl,
+    },
+  });
+}
+
+function readKvCapabilityTtlSeconds(env) {
+  const configured = Number(env.KV_CAPABILITY_TTL_SECONDS || DEFAULT_KV_CAPABILITY_TTL_SECONDS);
+  if (!Number.isInteger(configured) || configured <= 0) return DEFAULT_KV_CAPABILITY_TTL_SECONDS;
+  return Math.min(configured, DEFAULT_KV_CAPABILITY_TTL_SECONDS);
+}
+
+function parseJwtKeyRegistry(value, env, registryName, secretPrefix) {
+  const registry = new Map();
+  const entries = String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    const [kid, alg, secretEnvName, extra] = entry.split(':').map((part) => part.trim());
+    if (extra !== undefined || !kid || alg !== 'HS256' || !secretEnvName || !secretEnvName.startsWith(secretPrefix)) {
+      throw new Error(`${registryName} is invalid`);
+    }
+    const secret = env[secretEnvName];
+    if (typeof secret !== 'string' || !secret) throw new Error(`${secretEnvName} is required`);
+    if (registry.has(kid)) throw new Error(`${registryName} contains duplicate kid`);
+    registry.set(kid, { alg, secret });
+  }
+
+  if (registry.size === 0) throw new Error(`${registryName} is empty`);
+  return registry;
+}
+
+async function createHs256Jwt({ kid, secret, payload }) {
+  const header = { typ: 'JWT', alg: 'HS256', kid };
+  const encodedHeader = base64UrlEncodeJson(header);
+  const encodedPayload = base64UrlEncodeJson(payload);
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+  const signature = await signHs256(secret, signingInput);
+  return `${signingInput}.${base64UrlEncodeBytes(new Uint8Array(signature))}`;
+}
+
+async function signHs256(secret, value) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new globalThis.TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return crypto.subtle.sign('HMAC', key, new globalThis.TextEncoder().encode(value));
+}
+
+function base64UrlEncodeJson(value) {
+  return base64UrlEncodeBytes(new globalThis.TextEncoder().encode(JSON.stringify(value)));
+}
+
+function base64UrlEncodeBytes(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function readRequired(value, name) {
+  const normalized = String(value || '').trim();
+  if (!normalized) throw new Error(`${name} is required`);
+  return normalized;
 }
 
 async function handleSiteAuthCallback(request, env, route) {

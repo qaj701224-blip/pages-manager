@@ -10,6 +10,7 @@ test('schema defines all v2 authority tables', () => {
     'sites',
     'site_routes',
     'site_versions',
+    'worker_slots',
     'deployments',
     'site_members',
     'site_acl_entries',
@@ -18,7 +19,7 @@ test('schema defines all v2 authority tables', () => {
     'audit_events',
   ];
 
-  assert.equal(SCHEMA_VERSION, 1);
+  assert.equal(SCHEMA_VERSION, 2);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -32,6 +33,9 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_access_keys_owner/);
+  assert.match(sql, /execution_provider TEXT/);
+  assert.match(sql, /dispatch_binding_name TEXT/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_binding/);
   assert.doesNotMatch(sql, /workers\.xd\.team/);
   assert.doesNotMatch(sql, /X-Pages-Token/);
 });

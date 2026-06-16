@@ -2,14 +2,14 @@ export const RUNTIME = {
   VERSION: 'v1',
   BASE_PATH: '/.xd-pages/runtime/v1',
   KV_GET_PATH: '/.xd-pages/runtime/v1/kv/get',
-  KV_PUT_PATH: '/.xd-pages/runtime/v1/kv/put',
+  KV_SET_PATH: '/.xd-pages/runtime/v1/kv/set',
   KV_DELETE_PATH: '/.xd-pages/runtime/v1/kv/delete',
 };
 
 export const GATEWAY = {
   BASE_PATH: '/v1',
   KV_GET_PATH: '/v1/kv/get',
-  KV_PUT_PATH: '/v1/kv/put',
+  KV_SET_PATH: '/v1/kv/set',
   KV_DELETE_PATH: '/v1/kv/delete',
 };
 
@@ -46,6 +46,31 @@ export const ERROR_CODES = {
 
 const SITE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 const SITE_UUID_RE = /^[0-9a-f]{32}$/;
+const RESERVED_SITE_SLUGS = new Set([
+  'api',
+  'api-staging',
+  'auth',
+  'auth-staging',
+  'admin',
+  'admin-staging',
+  'manager',
+  'manager-staging',
+  'router',
+  'router-staging',
+  'kv-gateway',
+  'kv-gateway-staging',
+  'pages',
+  'www',
+  'mail',
+  'static',
+  'assets',
+  'login',
+  'logout',
+  'callback',
+  'oauth',
+  'sso',
+  'internal',
+]);
 const MAX_USER_KEY_BYTES = 256;
 const MAX_STORAGE_KEY_BYTES = 512;
 const MIN_TTL_SECONDS = 60;
@@ -71,6 +96,21 @@ export function parseKvEnabled(value) {
 
 export function isValidSiteSlug(siteSlug) {
   return typeof siteSlug === 'string' && SITE_SLUG_RE.test(siteSlug);
+}
+
+export function isReservedSiteSlug(siteSlug, { environment } = {}) {
+  const value = String(siteSlug || '').trim();
+  return RESERVED_SITE_SLUGS.has(value) || (environment === 'production' && value.endsWith('-staging'));
+}
+
+export function validateSiteSlug(siteSlug, options = {}) {
+  if (!isValidSiteSlug(siteSlug)) {
+    return { ok: false, error: { code: 'INVALID_SLUG', message: 'Invalid site slug' } };
+  }
+  if (isReservedSiteSlug(siteSlug, options)) {
+    return { ok: false, error: { code: 'RESERVED_SLUG', message: 'Reserved site slug' } };
+  }
+  return { ok: true, value: siteSlug };
 }
 
 export function isValidSiteUuid(siteUuid) {

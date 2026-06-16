@@ -17,14 +17,15 @@ function testEnv(overrides = {}) {
 
 function claims(overrides = {}) {
   return {
-    iss: 'pages-manager',
+    iss: 'pages-v2',
     aud: 'pages-kv-gateway',
     env: 'production',
     siteId: 'q2-report',
     siteUuid,
-    scope: ['kv:get', 'kv:put'],
+    scope: ['kv:get', 'kv:set'],
     nbf: now - 10,
     iat: now - 10,
+    exp: now + 50,
     jti: 'capability-1',
     ...overrides,
   };
@@ -72,6 +73,16 @@ test('valid HS256 token verifies and returns claims', async () => {
   assert.equal(verified.siteId, 'q2-report');
   assert.equal(verified.siteUuid, siteUuid);
   assert.equal(verified.jti, 'capability-1');
+});
+
+test('valid HS256 token verifies against v2 PAGES_ENV', async () => {
+  const jwt = await token();
+  const env = testEnv({ PAGES_ENV: 'production' });
+  delete env.XD_PAGES_ENV;
+
+  const verified = await verifyCapability(`Bearer ${jwt}`, env, { requiredScope: 'kv:get', now });
+
+  assert.equal(verified.env, 'production');
 });
 
 test('rejects token when payload is mutated without resigning', async () => {
@@ -152,6 +163,24 @@ test('rejects iat more than 60 seconds in the future', async () => {
   await assert.rejects(
     verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:get', now }),
     /iat/i
+  );
+});
+
+test('rejects expired capability tokens', async () => {
+  const jwt = await token(claims({ exp: now - 1 }));
+
+  await assert.rejects(
+    verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:get', now }),
+    /exp|expired/i
+  );
+});
+
+test('rejects capability tokens that exceed max ttl', async () => {
+  const jwt = await token(claims({ iat: now - 10, exp: now + 120 }));
+
+  await assert.rejects(
+    verifyCapability(`Bearer ${jwt}`, testEnv(), { requiredScope: 'kv:get', now }),
+    /ttl|exp/i
   );
 });
 

@@ -47,7 +47,7 @@
                 │    │
                 │    ▼
                 │  绑定域名 + 启用 workers.dev
-                │  写入 KV 元数据 + 项目目录 .pages.json
+                │  写入站点 metadata + 项目目录 .pages.json
                 │    │
                 │    ▼
                 │  ✅ 返回:
@@ -81,45 +81,7 @@
 
 ## Pages KV
 
-Pages KV 是 v1 站点级 KV 能力，部署时必须显式传 `kv=true` 才会开启；未传、`false` 或 `kv=false` 都是关闭，非法 `kv` 值会被拒绝。`kv=true` 仅支持 `spa` 和 `worker` preset，`static + kv=true` 会被拒绝。
-
-SPA 浏览器代码使用 `@xd/pages-sdk/browser`：
-
-```ts
-import { createPagesClient } from '@xd/pages-sdk/browser';
-
-const pages = createPagesClient();
-const config = await pages.kv.get('app/config', { type: 'json' });
-await pages.kv.put('drafts/123', { title: 'hello' });
-await pages.kv.delete('drafts/123');
-```
-
-浏览器 SDK 只访问同源 POST runtime endpoint：
-
-- `POST /.xd-pages/runtime/v1/kv/get`
-- `POST /.xd-pages/runtime/v1/kv/put`
-- `POST /.xd-pages/runtime/v1/kv/delete`
-
-自定义 Worker 使用 `@xd/pages-sdk/worker`：
-
-```js
-import { createPagesRuntime } from '@xd/pages-sdk/worker';
-
-export default {
-  async fetch(request, env) {
-    const pages = createPagesRuntime({ env });
-    return Response.json(await pages.kv.get('app/config'));
-  },
-};
-```
-
-worker preset 的 `_worker.js` 如果 import npm 包（包括 `@xd/pages-sdk/worker`），业务构建必须先 bundle/打包成可直接运行的 Worker module，再上传给 pages-manager；pages-manager 不会打包 `_worker.js`。
-
-安全边界：
-
-- 公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。
-- v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。
-- worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能力；owner 代码可以误用或泄露自己的能力，平台只强制跨站前缀隔离。
+v1 不再提供 Pages KV。`workers.xd.team` 的 `POST /deploy` 传 `kv=true` 会返回 `400 KV_NOT_SUPPORTED`；KV 能力由 v2 `pages.xd.team` 平台提供。
 
 ## 使用方式
 
@@ -192,7 +154,7 @@ AI:   ✅ 已发布: https://q2-report.workers.xd.team
 | CF 账户      | 通过部署环境变量 `CLOUDFLARE_ACCOUNT_ID` 配置            |
 | 域名         | `workers.xd.team`（xd.team partial zone，DNS 在 DNSPod）|
 | 管理 Worker  | `pages-manager`，绑定 `api.workers.xd.team`             |
-| Workers KV   | 站点元数据存储，namespace ID 由环境变量配置              |
+| Workers KV   | 管理服务站点 metadata 存储，namespace ID 由环境变量配置  |
 | CF API Token | Workers Scripts Write + Workers Routes Write + KV Write |
 
 ### 不需要
@@ -228,10 +190,6 @@ pages-manager/
 │   │           ├── site.js
 │   │           ├── list.js
 │   │           └── health.js
-│   ├── kv-gateway/
-│   │   ├── wrangler.template.toml
-│   │   ├── package.json
-│   │   └── src/
 │   ├── pages-sdk/
 │   │   ├── package.json
 │   │   └── src/
@@ -259,36 +217,20 @@ pnpm install
 # 本地开发管理 Worker
 pnpm --dir apps/server dev
 
-# 生成本地 Wrangler 配置后，先部署 KV gateway，再部署管理 Worker
+# 生成本地 Wrangler 配置后部署管理 Worker。
 # 下方全部是占位示例；真实值放本地 shell、GitHub Environment Secrets/Vars 或 Wrangler secrets。
-# PAGES_CAP_JWT_SECRET_EXAMPLE 是示例 secret 变量名；同一个签名 secret 要注入 gateway 和 server。
-JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE
-JWT_SIGNING_SECRET="$(openssl rand -base64 32)"
-PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example
-PAGES_CAP_JWT_KEYS=prod-hs-example:HS256:${JWT_SIGNING_SECRET_ENV}
-export PAGES_CAP_JWT_ACTIVE_KID
-export PAGES_CAP_JWT_KEYS
-export "$JWT_SIGNING_SECRET_ENV=$JWT_SIGNING_SECRET"
-
-CLOUDFLARE_ACCOUNT_ID=example-account-id \
-SITE_DATA_KV_NAMESPACE_ID=example-site-data-kv-namespace-id \
-scripts/gen-wrangler.sh apps/kv-gateway production
-pnpm --dir apps/kv-gateway exec wrangler deploy
-scripts/put-capability-secrets.sh apps/kv-gateway
-
 CLOUDFLARE_ACCOUNT_ID=example-account-id \
 SITES_KV_NAMESPACE_ID=example-kv-namespace-id \
 IP_ALLOWLIST=127.0.0.1,::1 \
 scripts/gen-wrangler.sh apps/server production
 pnpm --dir apps/server run deploy
-scripts/put-capability-secrets.sh apps/server
 printf '%s' '<runtime-cloudflare-api-token>' | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
 printf '%s' '<zone-id>' | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
 ```
 
-staging 使用同一套命令，把最后一个参数改为 `staging`，并使用 staging 的 KV namespace、gateway、kid 和 secret。production GitHub Actions 只允许手动触发；staging push 到 `staging` 分支会按 `component=all` 全量自动部署 staging。手动触发 `Deploy Staging` / `Deploy Production` 时可用 `component=all | server | kv-gateway` 选择部署入口；选择 `server` 或 `kv-gateway` 时都会同步部署另一侧，以保持共享的 capability key registry 锁步。
+staging 使用同一套命令，把最后一个参数改为 `staging`，并使用 staging 的站点 metadata KV namespace。production GitHub Actions 只允许手动触发；staging push 到 `staging` 分支会按 `component=all` 全量自动部署 staging。手动触发 `Deploy Staging` / `Deploy Production` 时可用 `component=all | server` 选择部署入口。
 
-真实 `apps/server/wrangler.toml`、`apps/kv-gateway/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets/Vars 分别生成 `apps/kv-gateway/wrangler.toml` 和 `apps/server/wrangler.toml`。
+真实 `apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets/Vars 生成 `apps/server/wrangler.toml`。
 
 ## 路线图
 

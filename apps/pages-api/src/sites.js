@@ -1,14 +1,14 @@
+import { validateSiteSlug } from '@xd/pages-runtime-protocol';
+
 import { authenticateApiRequest } from './auth.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { newId } from './id.js';
+import { newHexId, newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 
 const VISIBILITIES = new Set(['public', 'org', 'acl', 'owner', 'disabled']);
 const ACL_SUBJECT_TYPES = new Set(['user', 'email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
-const RESERVED_SLUGS = new Set(['api', 'auth', 'admin', 'www', 'mail', 'static', 'assets']);
-const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export async function handleSitesApi(request, env, config, store) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -159,7 +159,7 @@ async function createSite(request, env, config, store, actor) {
 
   const siteId = nextId(env, 'site');
   const routeId = nextId(env, 'route');
-  const siteUuid = nextId(env, 'uuid');
+  const siteUuid = nextSiteUuid(env);
   const hostname = hostnameForSlug(slug, config);
 
   let site;
@@ -187,13 +187,17 @@ async function createSite(request, env, config, store, actor) {
 }
 
 function validateSlug(slug, environment) {
-  if (!slug || !SLUG_RE.test(slug)) {
-    return jsonError('SITE_SLUG_INVALID', 'Site slug is invalid.', 400, 'Use lowercase letters, numbers, and hyphens.');
-  }
-  if (RESERVED_SLUGS.has(slug) || (environment === 'production' && slug.endsWith('-staging'))) {
+  const validation = validateSiteSlug(slug, { environment });
+  if (validation.ok) return null;
+  if (validation.error.code === 'RESERVED_SLUG') {
     return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, 'Choose a different site slug.');
   }
-  return null;
+  return jsonError(
+    'SITE_SLUG_INVALID',
+    'Site slug is invalid.',
+    400,
+    'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
+  );
 }
 
 function formatSite(site) {
@@ -374,6 +378,14 @@ function nextId(env, prefix) {
     if (id) return id;
   }
   return newId(prefix);
+}
+
+function nextSiteUuid(env) {
+  if (typeof env?.nextSiteUuid === 'function') {
+    const id = env.nextSiteUuid();
+    if (id) return id;
+  }
+  return newHexId();
 }
 
 function readNow(env) {

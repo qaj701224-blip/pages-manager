@@ -25,6 +25,7 @@ test('creates a production site with owner membership and inactive route', async
 
   assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'docs.pages.xd.team');
   assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'disabled');
+  assert.equal((await store.getSite('site_1')).siteUuid, '4b4c8e8361ef4b47b64f5c20a7db7c47');
   assert.equal((await store.listSiteMembers('site_1'))[0].role, 'owner');
 });
 
@@ -352,7 +353,7 @@ test('rolls back ACL changes when active route snapshot write fails', async () =
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
 });
 
-test('rejects invalid visibility, duplicate slugs, and production -staging slugs', async () => {
+test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid slug shape', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_existing',
@@ -386,6 +387,27 @@ test('rejects invalid visibility, duplicate slugs, and production -staging slugs
     }),
     testEnv(store)
   );
+  const reserved = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'kv-gateway',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+  const tooLong = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: `a${'b'.repeat(49)}1`,
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+  const tooShort = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'a',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
 
   assert.equal(invalidVisibility.status, 400);
   assert.equal((await invalidVisibility.json()).error.code, 'SITE_VISIBILITY_INVALID');
@@ -393,6 +415,12 @@ test('rejects invalid visibility, duplicate slugs, and production -staging slugs
   assert.equal((await duplicate.json()).error.code, 'SITE_SLUG_CONFLICT');
   assert.equal(stagingSuffix.status, 400);
   assert.equal((await stagingSuffix.json()).error.code, 'SITE_SLUG_RESERVED');
+  assert.equal(reserved.status, 400);
+  assert.equal((await reserved.json()).error.code, 'SITE_SLUG_RESERVED');
+  assert.equal(tooLong.status, 400);
+  assert.equal((await tooLong.json()).error.code, 'SITE_SLUG_INVALID');
+  assert.equal(tooShort.status, 400);
+  assert.equal((await tooShort.json()).error.code, 'SITE_SLUG_INVALID');
 });
 
 test('sites API rejects legacy X-Pages-Token', async () => {
@@ -531,8 +559,8 @@ function testEnv(store, overrides = {}) {
       ({
         site: 'site_1',
         route: 'route_1',
-        uuid: 'uuid_1',
       })[prefix],
+    nextSiteUuid: () => '4b4c8e8361ef4b47b64f5c20a7db7c47',
     verifyCliToken: async () => ({
       sub: 'usr_1',
       purpose: 'cli_token',

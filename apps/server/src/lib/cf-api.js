@@ -1,5 +1,4 @@
 import { buildBakedGuardSource } from '@xd/ip-guard';
-import { PAGES_RUNTIME_SOURCE } from '@xd/pages-sdk/internal/runtime-source';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
@@ -50,28 +49,6 @@ function buildSpaWorkerIp(allowlist) {
 ${buildBakedGuardSource(allowlist)}
 export default {
   async fetch(request, env) {
-    const b=checkIP(request);if(b)return b;
-    return typed(request, await env.ASSETS.fetch(request));
-  },
-}`;
-}
-
-function buildSpaWorkerKv(allowlist) {
-  return `${MIME_WORKER_HELPER}
-${PAGES_RUNTIME_SOURCE}
-${buildBakedGuardSource(allowlist)}
-function checkRuntimeAccess(request) {
-  const denied = checkIP(request);if(denied)return denied;
-  if (!request.headers.get("CF-Connecting-IP")) return new Response("IP not allowed", { status: 403 });
-  return null;
-}
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname.startsWith('/.xd-pages/runtime/v1')) {
-      const runtimeResponse = await handlePagesRuntimeRequest(request, env, { checkAccess: checkRuntimeAccess });
-      if (runtimeResponse) return runtimeResponse;
-    }
     const b=checkIP(request);if(b)return b;
     return typed(request, await env.ASSETS.fetch(request));
   },
@@ -233,19 +210,9 @@ export async function uploadAssetBuckets(uploadJwt, accountId, buckets, fileMap)
   return completionJwt;
 }
 
-export function buildWorkerMetadata(completionJwt, preset, ipRestrict, allowlist, options = {}) {
+export function buildWorkerMetadata(completionJwt, preset, ipRestrict, allowlist, _options = {}) {
   const config = PRESET_CONFIG[preset] || PRESET_CONFIG.static;
   const bindings = [{ type: 'assets', name: 'ASSETS' }];
-
-  if (options.kv?.enabled) {
-    bindings.push(
-      { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: options.kv.gatewayService },
-      { type: 'plain_text', name: 'XD_PAGES_SITE_ID', text: options.kv.siteId },
-      { type: 'plain_text', name: 'XD_PAGES_SITE_UUID', text: options.kv.siteUuid },
-      { type: 'plain_text', name: 'XD_PAGES_ENV', text: options.kv.envName },
-      { type: 'secret_text', name: 'XD_PAGES_KV_CAPABILITY', text: options.kv.capability }
-    );
-  }
 
   if (preset === 'worker') {
     bindings.push({ type: 'plain_text', name: 'IP_ALLOWLIST', text: allowlist || '' });
@@ -262,11 +229,7 @@ export function buildWorkerMetadata(completionJwt, preset, ipRestrict, allowlist
   };
 }
 
-export function buildWorkerCode(preset, workerCode, ipRestrict, allowlist, options = {}) {
-  if (!workerCode && preset === 'spa' && options.kv?.enabled) {
-    return buildSpaWorkerKv(allowlist);
-  }
-
+export function buildWorkerCode(preset, workerCode, ipRestrict, allowlist, _options = {}) {
   const ipScripts = {
     static: buildStaticWorkerIp(allowlist),
     spa: buildSpaWorkerIp(allowlist),

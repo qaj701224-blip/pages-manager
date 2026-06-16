@@ -60,7 +60,7 @@ export function createHandlePagesRuntimeRequest(createPagesRuntime: RuntimeFacto
     if (!key.ok) return errorResponse(key.error.code, key.error.message, 400);
 
     try {
-      const runtime = createPagesRuntime({ env });
+      const runtime = createPagesRuntime({ env, request });
       if (action === 'get') {
         const type = validateKvType(body.value.type);
         if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
@@ -71,12 +71,12 @@ export function createHandlePagesRuntimeRequest(createPagesRuntime: RuntimeFacto
         return jsonResponse(buildOkEnvelope(value === null ? { found: false } : { found: true, value }));
       }
 
-      if (action === 'put') {
+      if (action === 'set') {
         const type = validateKvType(body.value.type);
         if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
         const ttl = validateTtl(body.value.expirationTtl);
         if (!ttl.ok) return errorResponse(ttl.error.code, ttl.error.message, 400);
-        await runtime.kv.put(key.value, body.value.value, { type: type.value as KVType, expirationTtl: ttl.value });
+        await runtime.kv.set(key.value, body.value.value, { type: type.value as KVType, expirationTtl: ttl.value });
         return jsonResponse(buildOkEnvelope());
       }
 
@@ -91,9 +91,9 @@ export function createHandlePagesRuntimeRequest(createPagesRuntime: RuntimeFacto
   };
 }
 
-function getRuntimeAction(pathname: string): 'get' | 'put' | 'delete' | null {
+function getRuntimeAction(pathname: string): 'get' | 'set' | 'delete' | null {
   if (pathname === RUNTIME.KV_GET_PATH) return 'get';
-  if (pathname === RUNTIME.KV_PUT_PATH) return 'put';
+  if (pathname === RUNTIME.KV_SET_PATH) return 'set';
   if (pathname === RUNTIME.KV_DELETE_PATH) return 'delete';
   return null;
 }

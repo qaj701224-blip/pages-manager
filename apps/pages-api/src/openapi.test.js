@@ -31,9 +31,10 @@ test('serves production v2-only OpenAPI skeleton', async () => {
     'ARTIFACT_BUNDLE_REQUIRED',
     'ARTIFACT_BUNDLE_INVALID',
     'PAYLOAD_TOO_LARGE',
-    'WFP_CONFIG_INVALID',
-    'WFP_UPLOAD_FAILED',
-    'WFP_VERIFY_FAILED',
+    'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
+    'DEPLOYMENT_UPLOAD_FAILED',
+    'DEPLOYMENT_VERIFY_FAILED',
+    'DEPLOYMENT_CAPACITY_EXHAUSTED',
     'ROUTE_SNAPSHOT_WRITE_FAILED',
     'IDEMPOTENCY_CONFLICT',
   ]);
@@ -41,6 +42,7 @@ test('serves production v2-only OpenAPI skeleton', async () => {
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['user', 'email', 'department']);
   assert.doesNotMatch(serialized, /workers\.xd\.team/);
+  assert.doesNotMatch(serialized, /WFP|SLOT|worker slot|execution provider|dispatch namespace|service binding/i);
   assert.doesNotMatch(serialized, /X-Pages-Token/);
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);
 });

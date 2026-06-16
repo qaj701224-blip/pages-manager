@@ -75,24 +75,20 @@ test('renderReadme rewrites README infrastructure table for staging', () => {
   assert.doesNotMatch(rendered, /`pages-manager`，绑定 `api\.workers\.xd\.team`/);
 });
 
-test('README public output documents Pages KV SDK usage and boundaries', () => {
+test('README public output says v1 Pages KV is retired without SDK usage', () => {
   const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8');
   const rendered = renderReadme(readme, getPublicConfig(new Request('https://api.workers.xd.team/readme.md'), {}));
 
-  assert.match(rendered, /kv=true/);
-  assert.match(rendered, /static \+ kv=true|static.*拒绝/);
-  assert.match(rendered, /@xd\/pages-sdk\/browser/);
-  assert.match(rendered, /@xd\/pages-sdk\/worker/);
-  assert.match(rendered, /createPagesClient/);
-  assert.match(rendered, /createPagesRuntime/);
-  assert.match(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/get/);
-  assert.match(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/put/);
-  assert.match(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/delete/);
-  assert.match(rendered, /worker preset/);
-  assert.match(rendered, /bundle|打包/);
-  assert.match(rendered, /IP 白名单/);
-  assert.match(rendered, /前缀隔离|prefix isolation/);
-  assert.match(rendered, /高度敏感|highly sensitive/);
+  assert.match(rendered, /v1 不再提供 Pages KV|Pages KV 已迁入 v2/);
+  assert.doesNotMatch(rendered, /@xd\/pages-sdk\/browser/);
+  assert.doesNotMatch(rendered, /@xd\/pages-sdk\/worker/);
+  assert.doesNotMatch(rendered, /createPagesClient/);
+  assert.doesNotMatch(rendered, /createPagesRuntime/);
+  assert.doesNotMatch(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/get/);
+  assert.doesNotMatch(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/put/);
+  assert.doesNotMatch(rendered, /\/\.xd-pages\/runtime\/v1\/kv\/delete/);
+  assert.doesNotMatch(rendered, /前缀隔离|prefix isolation/);
+  assert.doesNotMatch(rendered, /高度敏感|highly sensitive/);
 
   assert.doesNotMatch(rendered, /PAGES_CAP_JWT_SECRET_(?!EXAMPLE\b)[A-Z0-9_]+/);
   assert.doesNotMatch(rendered, /capability\.jwt/);

@@ -16,7 +16,7 @@ function toSiteSummary(site) {
     url: site.url,
     preset: site.preset,
     ipRestrict: site.ipRestrict,
-    kvEnabled: site.kvEnabled,
+    kvEnabled: false,
     updatedAt: site.updatedAt,
   });
 }

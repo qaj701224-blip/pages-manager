@@ -19,9 +19,11 @@ test('pages v2 architecture documents exact deploy workflow config names', () =>
     'CF_API_TOKEN',
     'PAGES_V2_D1_DATABASE_ID',
     'PAGES_V2_ROUTE_SNAPSHOTS_KV_ID',
+    'PAGES_V2_SITE_DATA_KV_ID',
     'SSO_CLIENT_SECRET',
     'ACCESS_KEY_PEPPER_*',
     'PAGES_SESSION_JWT_SECRET_*',
+    'PAGES_CAP_JWT_SECRET_*',
     'ROUTER_IP_ALLOWLIST_CIDRS',
   ]) {
     assert.match(doc, new RegExp(escapeRegExp(name)), `${name} should be documented`);
@@ -42,6 +44,27 @@ test('pages v2 architecture release gate names the checked workflow and secret s
   assert.match(doc, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh/);
   assert.match(doc, /deploy-pages-v2\.yml/);
   assert.match(doc, /deploy-pages-v2-staging\.yml/);
+});
+
+test('pages v2 architecture keeps execution provider internal to the platform', () => {
+  const doc = readRepoFile('docs/pages-v2-wfp-architecture.md');
+
+  for (const text of [
+    'PAGES_EXECUTION_MODE',
+    'PAGES_NORMAL_WORKER_SLOT_COUNT',
+    'normal-worker-slot',
+    'worker_slots',
+    'available_pending_router',
+    'schemaVersion": 2',
+    'CF-Platform-KV-Capability',
+  ]) {
+    assert.match(doc, new RegExp(escapeRegExp(text)), `${text} should be documented`);
+  }
+
+  assert.match(doc, /slot 兼容层不是用户可选 provider/);
+  assert.doesNotMatch(doc, /--execution-provider/);
+  assert.doesNotMatch(doc, /--runtime wfp/);
+  assert.doesNotMatch(doc, /pages deploy --runtime/);
 });
 
 function escapeRegExp(value) {

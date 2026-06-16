@@ -42,6 +42,9 @@ importers:
 
   apps/pages-api:
     dependencies:
+      '@xd/pages-runtime-protocol':
+        specifier: workspace:*
+        version: link:../../packages/pages-runtime-protocol
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
@@ -62,6 +65,8 @@ importers:
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
+
+  apps/pages-cli: {}
 
   apps/pages-router:
     dependencies:
@@ -113,6 +118,8 @@ importers:
   packages/ip-guard: {}
 
   packages/pages-runtime-protocol: {}
+
+  packages/wfp-client: {}
 
   packages/worker-kit: {}
 

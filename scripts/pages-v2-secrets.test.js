@@ -22,6 +22,10 @@ const baseEnv = {
     'old:HS256:PAGES_SESSION_JWT_SECRET_OLD,session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
   PAGES_SESSION_JWT_SECRET_OLD: 'old-session-secret',
   PAGES_SESSION_JWT_SECRET_202606: 'active-session-secret',
+  PAGES_CAP_JWT_ACTIVE_KID: 'cap-2026-06',
+  PAGES_CAP_JWT_KEYS: 'old:HS256:PAGES_CAP_JWT_SECRET_OLD,cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
+  PAGES_CAP_JWT_SECRET_OLD: 'old-cap-secret',
+  PAGES_CAP_JWT_SECRET_202606: 'active-cap-secret',
 };
 
 function runScript(app, env = {}) {
@@ -53,13 +57,24 @@ test('pages-auth secret injection includes SSO secret and session signing secret
   assert.doesNotMatch(result.stdout, /sso-client-secret|active-session-secret|old-session-secret/);
 });
 
-test('pages-router secret injection includes only session signing secrets', () => {
+test('pages-router secret injection includes session signing and capability signing secrets', () => {
   const result = runScript('apps/pages-router');
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /PAGES_SESSION_JWT_SECRET_OLD/);
   assert.match(result.stdout, /PAGES_SESSION_JWT_SECRET_202606/);
-  assert.doesNotMatch(result.stdout, /SSO_CLIENT_SECRET|CF_API_TOKEN|active-session-secret/);
+  assert.match(result.stdout, /PAGES_CAP_JWT_SECRET_OLD/);
+  assert.match(result.stdout, /PAGES_CAP_JWT_SECRET_202606/);
+  assert.doesNotMatch(result.stdout, /SSO_CLIENT_SECRET|CF_API_TOKEN|active-session-secret|active-cap-secret/);
+});
+
+test('kv-gateway secret injection includes only capability signing secrets', () => {
+  const result = runScript('apps/kv-gateway');
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PAGES_CAP_JWT_SECRET_OLD/);
+  assert.match(result.stdout, /PAGES_CAP_JWT_SECRET_202606/);
+  assert.doesNotMatch(result.stdout, /SSO_CLIENT_SECRET|CF_API_TOKEN|PAGES_SESSION_JWT_SECRET|active-cap-secret/);
 });
 
 test('pages-api secret injection fails when active pepper is missing from registry', () => {

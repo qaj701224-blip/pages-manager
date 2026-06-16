@@ -1,10 +1,11 @@
 import { createWfpClient, readWfpConfig } from '../../../packages/wfp-client/src/index.js';
+import { BINDINGS } from '../../../packages/pages-runtime-protocol/src/index.js';
 
 export function createDeploymentProvider(env, config) {
-  if (env.WFP_PROVIDER) return env.WFP_PROVIDER;
+  if (env.WFP_PROVIDER) return withWfpMetadata(env.WFP_PROVIDER);
   const wfpConfig = readWfpConfig(env, { environment: config.environment });
-  const client = createWfpClient(wfpConfig);
-  return {
+  const client = createWfpClient({ ...wfpConfig, fetch: env.fetch || globalThis.fetch });
+  return withWfpMetadata({
     async upload(input) {
       return client.uploadUserWorker({
         scriptName: input.workerName,
@@ -12,6 +13,7 @@ export function createDeploymentProvider(env, config) {
         modules: input.artifactBundle.modules,
         compatibilityDate: env.WFP_COMPATIBILITY_DATE,
         tags: ['pages-v2', config.environment, input.site.slug],
+        bindings: [kvGatewayServiceBinding(config.environment)],
       });
     },
     async verify(input) {
@@ -19,6 +21,38 @@ export function createDeploymentProvider(env, config) {
     },
     async delete(input) {
       return client.deleteUserWorker(input.workerName);
+    },
+  });
+}
+
+export function kvGatewayServiceBinding(environment) {
+  return {
+    type: 'service',
+    name: BINDINGS.KV_GATEWAY,
+    service: environment === 'staging' ? 'pages-kv-gateway-staging' : 'pages-kv-gateway',
+  };
+}
+
+function withWfpMetadata(provider) {
+  return {
+    executionProvider: 'wfp',
+    async upload(input) {
+      const result = await provider.upload(input);
+      return {
+        ...result,
+        runtime: 'worker',
+        executionProvider: 'wfp',
+        workerName: result?.scriptName || input.workerName,
+        dispatchType: 'dispatch-namespace',
+        dispatchBindingName: null,
+        slotId: null,
+      };
+    },
+    async verify(input) {
+      return provider.verify(input);
+    },
+    async delete(input) {
+      return provider.delete?.(input);
     },
   };
 }

@@ -103,6 +103,29 @@ test('createPagesRuntime().kv.get calls the gateway service binding and returns 
   assert.deepEqual(await captured.json(), { key: 'app/config', type: 'json' });
 });
 
+test('createPagesRuntime reads per-request KV capability from router header', async () => {
+  let captured;
+  const request = new Request('https://demo.pages.xd.team/', {
+    headers: { 'CF-Platform-KV-Capability': 'request-capability-token' },
+  });
+  const runtime = createPagesRuntime({
+    request,
+    env: {
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({ ok: true, found: false, value: null });
+        },
+      },
+    },
+  });
+
+  const value = await runtime.kv.get('app/config');
+
+  assert.equal(value, null);
+  assert.equal(captured.headers.get('Authorization'), 'Bearer request-capability-token');
+});
+
 test('createPagesRuntime rejects gateway error envelopes', async () => {
   const runtime = createPagesRuntime({
     env: {
@@ -151,7 +174,7 @@ test('createPagesRuntime throws invalid runtime response for non-JSON gateway re
   });
 });
 
-test('createPagesRuntime().kv.put calls the gateway put endpoint', async () => {
+test('createPagesRuntime().kv.set calls the gateway set endpoint', async () => {
   let captured;
   const runtime = createPagesRuntime({
     env: {
@@ -165,9 +188,9 @@ test('createPagesRuntime().kv.put calls the gateway put endpoint', async () => {
     },
   });
 
-  await runtime.kv.put('app/config', 'hello', { type: 'text', expirationTtl: 60 });
+  await runtime.kv.set('app/config', 'hello', { type: 'text', expirationTtl: 60 });
 
-  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/put');
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/set');
   assert.equal(captured.method, 'POST');
   assert.equal(captured.headers.get('Authorization'), 'Bearer capability-token');
   assert.deepEqual(await captured.json(), {

@@ -48,10 +48,10 @@ test('dry-run uses staging api fixed names and hides token', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /PAGES_DEMO_TARGET=staging/);
   assert.match(result.stdout, /PAGES_API=https:\/\/api-staging\.workers\.xd\.team/);
-  assert.match(result.stdout, /demo-html-img\s+static\s+false\s+demos\/html-img/);
-  assert.match(result.stdout, /demo-vue-app\s+spa\s+true\s+demos\/vue-app/);
-  assert.match(result.stdout, /demo-nuxt-app\s+spa\s+false\s+demos\/nuxt-app/);
-  assert.match(result.stdout, /demo-api\s+worker\s+false\s+demos\/api-demo/);
+  assert.match(result.stdout, /demo-html-img\s+static\s+demos\/html-img/);
+  assert.match(result.stdout, /demo-vue-app\s+spa\s+demos\/vue-app/);
+  assert.match(result.stdout, /demo-nuxt-app\s+spa\s+demos\/nuxt-app/);
+  assert.match(result.stdout, /demo-api\s+worker\s+demos\/api-demo/);
   assert.doesNotMatch(result.stdout, /pages_demo@xd\.com/);
   assert.doesNotMatch(result.stderr, /pages_demo@xd\.com/);
 });
@@ -63,7 +63,7 @@ test('dry-run production target uses production api without non-staging override
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /PAGES_DEMO_TARGET=production/);
   assert.match(result.stdout, /PAGES_API=https:\/\/api\.workers\.xd\.team/);
-  assert.match(result.stdout, /demo-html-img\s+static\s+false\s+demos\/html-img/);
+  assert.match(result.stdout, /demo-html-img\s+static\s+demos\/html-img/);
 });
 
 test('dry-run supports production target from env file', () => {
@@ -80,8 +80,8 @@ test('dry-run supports custom fixed prefix from env file', () => {
   const result = run(['--dry-run', '--env-file', envFile]);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /xtq-demo-html-img\s+static\s+false/);
-  assert.match(result.stdout, /xtq-demo-vue-app\s+spa\s+true/);
+  assert.match(result.stdout, /xtq-demo-html-img\s+static\s+demos\/html-img/);
+  assert.match(result.stdout, /xtq-demo-vue-app\s+spa\s+demos\/vue-app/);
   assert.doesNotMatch(result.stdout, /^demo-html-img\s+static/m);
 });
 
@@ -90,7 +90,7 @@ test('dry-run can target one demo', () => {
   const result = run(['--dry-run', '--env-file', envFile, '--demo', 'vue-app']);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /demo-vue-app\s+spa\s+true\s+demos\/vue-app/);
+  assert.match(result.stdout, /demo-vue-app\s+spa\s+demos\/vue-app/);
   assert.doesNotMatch(result.stdout, /demo-html-img/);
   assert.doesNotMatch(result.stdout, /demo-nuxt-app/);
 });
@@ -119,11 +119,14 @@ test('script rejects unknown target values', () => {
   assert.match(`${result.stderr}${result.stdout}`, /PAGES_DEMO_TARGET must be staging or production/);
 });
 
-test('vue demo uses local built pages sdk browser entry for kv testing', () => {
+test('vue demo is a regular spa without v1 Pages KV SDK usage', () => {
   const home = readFileSync(join(repoRoot, 'demos/vue-app/src/views/Home.vue'), 'utf8');
   const packageJson = JSON.parse(readFileSync(join(repoRoot, 'demos/vue-app/package.json'), 'utf8'));
+  const demoReadme = readFileSync(join(repoRoot, 'demos/README.md'), 'utf8');
+  const script = readFileSync(scriptPath, 'utf8');
 
-  assert.ok(home.includes('../../../../apps/pages-sdk/dist/browser.js'));
-  assert.match(home, /createPagesClient/);
+  assert.doesNotMatch(home, /apps\/pages-sdk|createPagesClient|PagesSDKError|Pages KV/);
   assert.equal(packageJson.dependencies['@xd/pages-sdk'], undefined);
+  assert.doesNotMatch(demoReadme, /kv=true|Pages KV panel|@xd\/pages-sdk|Pages KV 面板/);
+  assert.doesNotMatch(script, /pnpm --filter @xd\/pages-sdk build/);
 });

@@ -98,6 +98,7 @@ test('openapi documents site detail and delete as owner-token protected', () => 
   assert.equal(siteDetailProperties.siteUuid, undefined);
   assert.equal(siteDetailProperties.siteGeneration, undefined);
   assert.equal(siteDetailProperties.kvEnabled.type, 'boolean');
+  assert.match(siteDetailProperties.kvEnabled.description, /v1.*false|不再提供 Pages KV/);
   assert.equal(getExample.token, undefined);
   assert.equal(getExample.siteUuid, undefined);
   assert.equal(getExample.siteGeneration, undefined);
@@ -107,33 +108,26 @@ test('openapi documents site detail and delete as owner-token protected', () => 
   assert.doesNotMatch(manageScript, /if \[ -n "\$\{PAGES_TOKEN:-\}" \]; then/);
 });
 
-test('openapi documents Pages KV opt-in without leaking capability details', () => {
+test('openapi documents v1 Pages KV retirement without SDK or capability details', () => {
   const spec = buildOpenAPISpec(new Request('https://api.workers.xd.team/openapi.json'), {});
   const body = JSON.stringify(spec);
   const deploy = spec.paths['/deploy'].post;
   const formSchema = deploy.requestBody.content['multipart/form-data'].schema;
   const deployResult = spec.components.schemas.DeployResult.properties;
-  const staticKvExample = deploy.responses[400].content['application/json'].examples.staticKv.value;
 
-  assert.deepEqual(formSchema.properties.kv.enum, ['true', 'false']);
-  assert.match(formSchema.properties.kv.description, /kv=true/);
-  assert.match(formSchema.properties.kv.description, /spa/);
-  assert.match(formSchema.properties.kv.description, /worker/);
-  assert.match(formSchema.properties.kv.description, /static.*拒绝|static \+ kv=true/);
-  assert.equal(deployResult.kv.type, 'boolean');
-  assert.equal(staticKvExample.field, 'preset');
-  assert.equal(staticKvExample.value, 'static');
+  assert.equal(formSchema.properties.kv, undefined);
+  assert.equal(deployResult.kv, undefined);
+  assert.equal(spec['x-libs']['pages-kv'], undefined);
+  assert.match(body, /v1 不再提供 Pages KV|Pages KV 已迁入 v2/);
 
-  assert.match(body, /@xd\/pages-sdk\/browser/);
-  assert.match(body, /@xd\/pages-sdk\/worker/);
-  assert.match(body, /\/\.xd-pages\/runtime\/v1\/kv\/get/);
-  assert.match(body, /\/\.xd-pages\/runtime\/v1\/kv\/put/);
-  assert.match(body, /\/\.xd-pages\/runtime\/v1\/kv\/delete/);
-  assert.match(body, /worker preset/);
-  assert.match(body, /bundle|打包/);
-  assert.match(body, /IP allowlist|IP 白名单/);
-  assert.match(body, /prefix isolation|前缀隔离/);
-  assert.match(body, /highly sensitive|高度敏感/);
+  assert.doesNotMatch(body, /@xd\/pages-sdk\/browser/);
+  assert.doesNotMatch(body, /@xd\/pages-sdk\/worker/);
+  assert.doesNotMatch(body, /\/\.xd-pages\/runtime\/v1\/kv\/get/);
+  assert.doesNotMatch(body, /\/\.xd-pages\/runtime\/v1\/kv\/put/);
+  assert.doesNotMatch(body, /\/\.xd-pages\/runtime\/v1\/kv\/delete/);
+  assert.doesNotMatch(body, /static \+ kv=true/);
+  assert.doesNotMatch(body, /prefix isolation|前缀隔离/);
+  assert.doesNotMatch(body, /highly sensitive|高度敏感/);
 
   assert.doesNotMatch(body, /PAGES_CAP_JWT_SECRET/);
   assert.doesNotMatch(body, /SITE_DATA_KV_NAMESPACE_ID/);

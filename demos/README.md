@@ -7,11 +7,13 @@
 | Demo | Preset | Purpose | Deploy source |
 | --- | --- | --- | --- |
 | `html-img` | `static` | Plain HTML plus SVG asset serving | `demos/html-img` |
-| `vue-app` | `spa` | Vue Router fallback plus browser Pages KV SDK read/write test panel | `demos/vue-app/dist` after build |
+| `vue-app` | `spa` | Vue Router fallback and client-side state smoke test | `demos/vue-app/dist` after build |
 | `nuxt-app` | `spa` | Nuxt 3 generated static output | `demos/nuxt-app/.output/public` after generate |
 | `api-demo` | `worker` | Custom `_worker.js`, explicit IP guard, and static assets through `env.ASSETS` | `demos/api-demo` |
 
 ## Staging Test Script
+
+This section covers the legacy v1 `workers.xd.team` demos.
 
 Create a local `.env` at the repository root:
 
@@ -47,10 +49,6 @@ PAGES_API=https://api-staging.workers.xd.team
 PAGES_DEMO_PREFIX=demo
 ```
 
-`vue-app` is deployed with `kv=true` so the home page can exercise `@xd/pages-sdk/browser`.
-Because `@xd/pages-sdk` may not be published yet, the demo imports the local built browser entry from `apps/pages-sdk/dist`.
-The test script builds `@xd/pages-sdk` before building `vue-app`.
-
 For safety, `PAGES_API` must match the selected target by default:
 
 - `staging` -> `https://api-staging.workers.xd.team`
@@ -85,8 +83,34 @@ To run one demo:
 scripts/test-staging-demos.sh --demo vue-app
 ```
 
-After deploying `vue-app`, open the published home page and use the Pages KV panel to write, read, and delete a test key.
-The runtime endpoint remains protected by the staging IP allowlist.
+After deploying `vue-app`, open the published home page and verify client-side routing by navigating to `/about` and refreshing the page.
+
+## Pages v2 Vue Demo
+
+The Vue demo can also smoke-test the v2 `pages.xd.team` platform through the v2 CLI. This path does not use `PAGES_TOKEN` or the legacy multipart API.
+
+Dry run:
+
+```bash
+scripts/test-pages-v2-demos.sh --dry-run
+```
+
+Deploy the Vue demo to v2 staging:
+
+```bash
+PAGES_ACCESS_KEY=xdpak_staging_xxx scripts/test-pages-v2-demos.sh
+```
+
+The v2 script defaults to:
+
+```bash
+PAGES_V2_DEMO_TARGET=staging
+PAGES_V2_API=https://api-staging.pages.xd.team
+PAGES_V2_DEMO_SLUG=demo-vue-app
+PAGES_V2_DEMO_VISIBILITY=public
+```
+
+By default it verifies `https://demo-vue-app-staging.pages.xd.team/` and `/about`. Use `--slug <name>` for a personal staging site, or `--target production --slug <name>` for a production smoke test.
 
 ## Package Manager Relationship
 

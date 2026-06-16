@@ -7,19 +7,21 @@ export { PagesSDKError } from './errors.js';
 export type { KVType, PagesPlatformContext, PagesRuntimeEnv } from './types.js';
 
 const GATEWAY_ORIGIN = 'https://pages-kv-gateway.local';
+const KV_CAPABILITY_HEADER = 'CF-Platform-KV-Capability';
 const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const SITE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 const SITE_UUID_RE = /^[0-9a-f]{32}$/;
 
-export function createPagesRuntime(options: { env: PagesRuntimeEnv }): { kv: PagesKV } {
-  const { env } = options;
+export function createPagesRuntime(options: { env: PagesRuntimeEnv; request?: Request }): { kv: PagesKV } {
+  const { env, request } = options;
+  const capability = readKvCapability(env, request);
 
   async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
     const response = await env.XD_PAGES_KV_GATEWAY.fetch(
       new Request(`${GATEWAY_ORIGIN}${path}`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${env.XD_PAGES_KV_CAPABILITY}`,
+          Authorization: `Bearer ${capability}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
@@ -40,25 +42,31 @@ export function createPagesRuntime(options: { env: PagesRuntimeEnv }): { kv: Pag
     return envelope.value as T | string;
   }
 
-  async function put(
+  async function set(
     key: string,
     value: unknown,
-    putOptions: { type?: KVType; expirationTtl?: number } = {}
+    setOptions: { type?: KVType; expirationTtl?: number } = {}
   ): Promise<void> {
     const body: { key: string; value: unknown; type: KVType; expirationTtl?: number } = {
       key,
       value,
-      type: putOptions.type ?? 'json',
+      type: setOptions.type ?? 'json',
     };
-    if (putOptions.expirationTtl !== undefined) body.expirationTtl = putOptions.expirationTtl;
-    await post(GATEWAY.KV_PUT_PATH, body);
+    if (setOptions.expirationTtl !== undefined) body.expirationTtl = setOptions.expirationTtl;
+    await post(GATEWAY.KV_SET_PATH, body);
   }
 
   async function deleteKey(key: string): Promise<void> {
     await post(GATEWAY.KV_DELETE_PATH, { key });
   }
 
-  return { kv: { get, put, delete: deleteKey } };
+  return { kv: { get, set, delete: deleteKey } };
+}
+
+function readKvCapability(env: PagesRuntimeEnv, request?: Request): string {
+  const value = env.XD_PAGES_KV_CAPABILITY || request?.headers.get(KV_CAPABILITY_HEADER) || '';
+  if (!value) throw new PagesSDKError(ERROR_CODES.INVALID_PLATFORM_CONTEXT, 'KV capability is missing');
+  return value;
 }
 
 export function readPlatformContext(request: Request): PagesPlatformContext | null {

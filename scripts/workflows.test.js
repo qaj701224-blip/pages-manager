@@ -26,21 +26,6 @@ const publishingExecutorWorkflows = [
   ['pages preview', '.github/workflows/pages-preview.yml'],
 ];
 
-const capabilityActiveKidEnvPattern =
-  String.raw`PAGES_CAP_JWT_ACTIVE_KID: \$\{\{ vars\.PAGES_CAP_JWT_ACTIVE_KID \}\}`;
-
-function workflowStepPattern(stepName, commandPattern) {
-  return new RegExp([`name: ${stepName}`, capabilityActiveKidEnvPattern, commandPattern].join(String.raw`[\s\S]*`));
-}
-
-const lockstepComponentGuard =
-  "env\\.DEPLOY_COMPONENT == 'all' \\|\\| env\\.DEPLOY_COMPONENT == 'server' " +
-  "\\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'";
-
-function guardedLockstepStepPattern(stepName) {
-  return new RegExp(`name: ${stepName}\\n {8}if: ${lockstepComponentGuard}`);
-}
-
 test('deploy workflows expose component choice for manual deploys', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
@@ -50,69 +35,28 @@ test('deploy workflows expose component choice for manual deploys', () => {
     assert.match(workflow, /default: all/, `${name} defaults to all`);
     assert.match(workflow, /- all/, `${name} supports all deploys`);
     assert.match(workflow, /- server/, `${name} supports server deploys`);
-    assert.match(workflow, /- kv-gateway/, `${name} supports kv-gateway deploys`);
+    assert.doesNotMatch(workflow, /- kv-gateway/, `${name} no longer deploys v1 KV gateway`);
   }
 });
 
-test('deploy workflows keep server and kv-gateway in lockstep for component deploys', () => {
+test('deploy workflows only deploy the v1 server component', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
+    const serverOnlyIf = String.raw`if: env\.DEPLOY_COMPONENT == 'all' \|\| env\.DEPLOY_COMPONENT == 'server'`;
 
     assert.match(workflow, /DEPLOY_COMPONENT: .+inputs\.component.+all/, `${name} has component default env`);
-    assert.match(
-      workflow,
-      guardedLockstepStepPattern('Generate Server Wrangler config'),
-      `${name} generates server config when gateway deploys`,
-    );
-    assert.match(
-      workflow,
-      guardedLockstepStepPattern('Validate Server secrets'),
-      `${name} validates server secrets when gateway deploys`,
-    );
-    assert.match(
-      workflow,
-      guardedLockstepStepPattern('Deploy Worker'),
-      `${name} deploys server when gateway deploys`,
-    );
+    assert.match(workflow, new RegExp(`name: Generate Server Wrangler config\\n {8}${serverOnlyIf}`));
+    assert.match(workflow, new RegExp(`name: Validate Server secrets\\n {8}${serverOnlyIf}`));
+    assert.match(workflow, new RegExp(`name: Deploy Worker\\n {8}${serverOnlyIf}`));
     assert.match(workflow, /run: pnpm --dir apps\/server run deploy/, `${name} builds SDK before server deploy`);
     assert.doesNotMatch(workflow, /run: pnpm --dir apps\/server deploy\b/, `${name} uses the deploy script explicitly`);
-    assert.match(
-      workflow,
-      guardedLockstepStepPattern('Inject Worker secrets'),
-      `${name} injects server secrets when gateway deploys`,
-    );
-    assert.match(
-      workflow,
-      new RegExp(
-        "name: Generate KV Gateway Wrangler config\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
-          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
-      ),
-      `${name} deploys kv-gateway when server deploys`,
-    );
-    assert.match(
-      workflow,
-      new RegExp(
-        "name: Validate KV Gateway secrets\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
-          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
-      ),
-      `${name} validates kv-gateway secrets when server deploys`,
-    );
-    assert.match(
-      workflow,
-      new RegExp(
-        "name: Deploy KV Gateway\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
-          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
-      ),
-      `${name} deploys kv-gateway when server deploys`,
-    );
-    assert.match(
-      workflow,
-      new RegExp(
-        "name: Inject KV Gateway secrets\\n {8}if: env\\.DEPLOY_COMPONENT == 'all' " +
-          "\\|\\| env\\.DEPLOY_COMPONENT == 'server' \\|\\| env\\.DEPLOY_COMPONENT == 'kv-gateway'",
-      ),
-      `${name} injects kv-gateway secrets when server deploys`,
-    );
+    assert.match(workflow, new RegExp(`name: Inject Worker secrets\\n {8}${serverOnlyIf}`));
+    assert.doesNotMatch(workflow, /Generate KV Gateway Wrangler config/);
+    assert.doesNotMatch(workflow, /Validate KV Gateway secrets/);
+    assert.doesNotMatch(workflow, /Deploy KV Gateway/);
+    assert.doesNotMatch(workflow, /Inject KV Gateway secrets/);
+    assert.doesNotMatch(workflow, /PAGES_CAP_JWT/);
+    assert.doesNotMatch(workflow, /SITE_DATA_KV_NAMESPACE_ID/);
   }
 });
 
@@ -129,7 +73,8 @@ test('deploy workflows keep production manual and separate wrangler token from r
     'production deploy has no non-manual trigger',
   );
   assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]/, 'staging deploy keeps staging push trigger');
-  assert.match(staging, /\n {4}paths-ignore:\n {6}- 'sites\/\*\*'/, 'staging deploy ignores user-site only changes');
+  assert.match(staging, /\n {4}paths:/, 'staging deploy is path-scoped to v1 platform files');
+  assert.doesNotMatch(staging, /\n {4}paths-ignore:/, 'staging deploy must not run for arbitrary v2 changes');
   assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);
   assert.match(combined, /: "\$\{CF_API_TOKEN:\?CF_API_TOKEN is required\}"/);
@@ -158,8 +103,14 @@ test('platform CI and staging deploy ignore generated user-site only changes', (
   assert.match(ci, /"\$INPUT_ALLOWED_PATH"\/\*/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm lint/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm test/);
-  assert.match(staging, /Platform staging deploy only\. User-site changes under sites\/\*\* must not redeploy/);
-  assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]\n {4}paths-ignore:\n {6}- 'sites\/\*\*'/);
+  assert.match(staging, /V1 platform staging deploy only\. V2 app changes must not redeploy/);
+  assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]\n {4}paths:/);
+  assert.match(staging, /- 'apps\/server\/\*\*'/);
+  assert.match(staging, /- 'packages\/ip-guard\/\*\*'/);
+  assert.match(staging, /- 'packages\/worker-kit\/\*\*'/);
+  assert.match(staging, /- 'scripts\/gen-wrangler\.sh'/);
+  assert.doesNotMatch(staging, /paths-ignore:/);
+  assert.doesNotMatch(staging, /apps\/pages-api|apps\/pages-auth|apps\/pages-router|apps\/kv-gateway/);
 
   assert.match(siteCheck, /User-site PR guard only\. Platform code PRs are validated by CI\./);
   assert.match(siteCheck, /\n {2}pull_request:\n {4}paths:\n {6}- sites\/\*\*/);
@@ -178,49 +129,14 @@ test('user-triggered publishing executor workflows stay separate from platform d
   }
 });
 
-test('deploy workflows inject all capability secrets from the key registry', () => {
+test('v1 deploy workflows do not inject KV capability secrets', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
 
-    assert.match(workflow, /PAGES_CAP_JWT_KEYS: \$\{\{ vars\.PAGES_CAP_JWT_KEYS \}\}/);
-    assert.match(
-      workflow,
-      workflowStepPattern(
-        'Validate Server secrets',
-        String.raw`DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/server`,
-      ),
-      `${name} validates server active capability kid before deploy`,
-    );
-    assert.match(
-      workflow,
-      workflowStepPattern(
-        'Validate KV Gateway secrets',
-        String.raw`DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/kv-gateway`,
-      ),
-      `${name} validates kv-gateway active capability kid before deploy`,
-    );
-    assert.match(
-      workflow,
-      workflowStepPattern(
-        'Inject KV Gateway secrets',
-        String.raw`scripts\/put-capability-secrets\.sh apps\/kv-gateway`,
-      ),
-      `${name} injects kv-gateway secrets with active capability kid validation`,
-    );
-    assert.match(
-      workflow,
-      workflowStepPattern('Inject Worker secrets', String.raw`scripts\/put-capability-secrets\.sh apps\/server`),
-      `${name} injects server secrets with active capability kid validation`,
-    );
-    assert.match(workflow, /DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/server/);
-    assert.match(workflow, /DRY_RUN=1 scripts\/put-capability-secrets\.sh apps\/kv-gateway/);
-    assert.match(workflow, /scripts\/put-capability-secrets\.sh apps\/server/);
-    assert.match(workflow, /scripts\/put-capability-secrets\.sh apps\/kv-gateway/);
-    assert.doesNotMatch(
-      workflow,
-      /secret put PAGES_CAP_JWT_SECRET_202606/,
-      `${name} does not hard-code one capability secret injection`,
-    );
+    assert.doesNotMatch(workflow, /PAGES_CAP_JWT_KEYS/, `${name} has no capability key registry`);
+    assert.doesNotMatch(workflow, /PAGES_CAP_JWT_ACTIVE_KID/, `${name} has no active capability kid`);
+    assert.doesNotMatch(workflow, /put-capability-secrets\.sh/, `${name} does not inject capability secrets`);
+    assert.doesNotMatch(workflow, /apps\/kv-gateway/, `${name} does not deploy the v2-owned gateway`);
   }
 });
 
@@ -239,6 +155,8 @@ test('pages v2 deploy workflows keep production manual and staging scoped to v2 
   assert.match(staging, /- 'apps\/pages-api\/\*\*'/);
   assert.match(staging, /- 'apps\/pages-auth\/\*\*'/);
   assert.match(staging, /- 'apps\/pages-router\/\*\*'/);
+  assert.match(staging, /- 'apps\/kv-gateway\/\*\*'/);
+  assert.match(staging, /- 'packages\/pages-runtime-protocol\/\*\*'/);
   assert.match(staging, /- 'packages\/wfp-client\/\*\*'/);
   assert.doesNotMatch(staging, /sites\/\*\*/);
 });
@@ -254,6 +172,7 @@ test('pages v2 deploy workflows expose only v2 component choices', () => {
     assert.match(workflow, /- pages-api/, `${name} supports pages-api deploys`);
     assert.match(workflow, /- pages-auth/, `${name} supports pages-auth deploys`);
     assert.match(workflow, /- pages-router/, `${name} supports pages-router deploys`);
+    assert.match(workflow, /- pages-kv-gateway/, `${name} supports pages-kv-gateway deploys`);
     assert.doesNotMatch(workflow, /- server\b|- kv-gateway\b/, `${name} does not expose v1 components`);
   }
 });
@@ -277,15 +196,31 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-router ${environment}`),
       `${name} renders pages-router ${environment} template`,
     );
+    assert.match(
+      workflow,
+      new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/kv-gateway ${environment}`),
+      `${name} renders kv-gateway ${environment} template`,
+    );
+    assert.match(workflow, /SITE_DATA_KV_ID: \$\{\{ secrets\.PAGES_V2_SITE_DATA_KV_ID \}\}/);
+    assert.match(workflow, /PAGES_EXECUTION_MODE: \$\{\{ vars\.PAGES_EXECUTION_MODE \}\}/);
+    assert.match(workflow, /PAGES_NORMAL_WORKER_SLOT_COUNT: \$\{\{ vars\.PAGES_NORMAL_WORKER_SLOT_COUNT \}\}/);
+    assert.match(workflow, /PAGES_CAP_JWT_ACTIVE_KID: \$\{\{ vars\.PAGES_CAP_JWT_ACTIVE_KID \}\}/);
+    assert.match(workflow, /PAGES_CAP_JWT_KEYS: \$\{\{ vars\.PAGES_CAP_JWT_KEYS \}\}/);
+    assert.match(workflow, /PAGES_CAP_JWT_SECRET_202606: \$\{\{ secrets\.PAGES_CAP_JWT_SECRET_202606 \}\}/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
+    assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/kv-gateway/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
+    assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/kv-gateway/);
+    const d1DatabaseName = environment === 'staging' ? 'pages-v2-metadata-staging' : 'pages-v2-metadata';
+    assert.match(workflow, new RegExp(`wrangler d1 migrations apply ${d1DatabaseName} --remote --yes`));
     assert.match(workflow, /pnpm --dir apps\/pages-api exec wrangler deploy/);
     assert.match(workflow, /pnpm --dir apps\/pages-auth exec wrangler deploy/);
     assert.match(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
+    assert.match(workflow, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
   }
 });
 
@@ -293,8 +228,8 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
   const combined = pagesV2DeployWorkflows.map(([, path]) => readWorkflow(path)).join('\n');
 
   assert.doesNotMatch(combined, /scripts\/gen-wrangler\.sh/);
-  assert.doesNotMatch(combined, /apps\/server|apps\/kv-gateway/);
-  assert.doesNotMatch(combined, /PAGES_CAP_JWT|CF_ZONE_ID_NEW/);
+  assert.doesNotMatch(combined, /apps\/server/);
+  assert.doesNotMatch(combined, /CF_ZONE_ID_NEW/);
   assert.doesNotMatch(combined, /docker buildx?|kubectl|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
   assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);

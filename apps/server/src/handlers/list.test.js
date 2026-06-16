@@ -53,6 +53,7 @@ test('list filters by token and does not expose tokens', async () => {
       {
         name: 'owned',
         url: 'https://owned.workers.xd.team',
+        kvEnabled: false,
       },
     ],
     filtered: true,
@@ -89,7 +90,7 @@ test('list exposes only public site summary fields', async () => {
         url: 'https://owned.workers.xd.team',
         preset: 'spa',
         ipRestrict: true,
-        kvEnabled: true,
+        kvEnabled: false,
         updatedAt: '2026-06-12T00:00:00.000Z',
       },
     ],

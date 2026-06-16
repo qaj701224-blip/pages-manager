@@ -21,6 +21,7 @@ class TestPagesStore {
     this.siteMembers = new Map();
     this.siteAclEntries = new Map();
     this.siteVersions = new Map();
+    this.workerSlots = new Map();
     this.accessKeys = new Map();
     this.deployments = new Map();
     this.deploymentIdempotencyIndex = new Map();
@@ -80,6 +81,7 @@ class TestPagesStore {
       environment: input.environment,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
       updatedAt: now,
@@ -229,6 +231,10 @@ class TestPagesStore {
       deploymentId: input.deploymentId,
       workerName: input.workerName,
       runtime: input.runtime,
+      executionProvider: input.executionProvider || executionProviderFromRuntime(input.runtime),
+      dispatchType: input.dispatchType || dispatchTypeFromExecutionProvider(input.executionProvider || input.runtime),
+      dispatchBindingName: input.dispatchBindingName || null,
+      slotId: input.slotId || null,
       artifactKind: input.artifactKind,
       artifactRef: input.artifactRef,
       contentHash: input.contentHash,
@@ -239,15 +245,35 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }, environment) {
+  async activateSiteVersion(
+    siteId,
+    {
+      activeVersionId,
+      workerName,
+      runtime = 'worker',
+      executionProvider,
+      dispatchType,
+      dispatchBindingName = null,
+      slotId = null,
+      visibility,
+      updatedAt,
+    },
+    environment,
+    expectedRoute = null
+  ) {
     const routeId = this.routeBySiteId.get(siteId);
     const route = this.routes.get(routeId);
     if (!route) return null;
     if (environment && route.environment !== environment) return null;
+    if (expectedRoute && !routeActivationMatches(route, expectedRoute)) return null;
     route.activeVersionId = activeVersionId;
     route.workerName = workerName;
     route.visibility = visibility;
-    route.runtime = 'wfp';
+    route.runtime = runtime;
+    route.executionProvider = executionProvider;
+    route.dispatchType = dispatchType;
+    route.dispatchBindingName = dispatchBindingName;
+    route.slotId = slotId;
     route.routeStatus = 'active';
     route.routeGeneration += 1;
     route.updatedAt = updatedAt;
@@ -278,6 +304,63 @@ class TestPagesStore {
     const site = version ? this.sites.get(version.siteId) : null;
     if (environment && site?.environment !== environment) return null;
     return cloneRecord(version);
+  }
+
+  async createWorkerSlot(input) {
+    if (this.workerSlots.has(input.id)) throw new Error('WORKER_SLOT_EXISTS');
+    const now = input.createdAt || this.now();
+    const record = {
+      id: input.id,
+      environment: input.environment,
+      slotNumber: input.slotNumber,
+      workerName: input.workerName,
+      bindingName: input.bindingName,
+      status: input.status || 'provisioning',
+      assignedSiteId: input.assignedSiteId || null,
+      assignedRouteId: input.assignedRouteId || null,
+      assignedVersionId: input.assignedVersionId || null,
+      assignedAt: input.assignedAt || null,
+      lastDeployedVersionId: input.lastDeployedVersionId || null,
+      lastSeenAt: input.lastSeenAt || null,
+      healthStatus: input.healthStatus || 'unknown',
+      notes: input.notes || null,
+      createdAt: now,
+      updatedAt: input.updatedAt || now,
+    };
+    this.workerSlots.set(record.id, record);
+    return cloneRecord(record);
+  }
+
+  async getWorkerSlot(id) {
+    return cloneRecord(this.workerSlots.get(id) || null);
+  }
+
+  async assignAvailableWorkerSlot({ environment, siteId, routeId, versionId, assignedAt }) {
+    const slot = [...this.workerSlots.values()]
+      .filter((candidate) => candidate.environment === environment && candidate.status === 'available')
+      .sort((left, right) => left.slotNumber - right.slotNumber)[0];
+    if (!slot) return null;
+    const now = assignedAt || this.now();
+    slot.status = 'assigned';
+    slot.assignedSiteId = siteId;
+    slot.assignedRouteId = routeId;
+    slot.assignedVersionId = versionId;
+    slot.assignedAt = now;
+    slot.lastDeployedVersionId = versionId;
+    slot.updatedAt = now;
+    return cloneRecord(slot);
+  }
+
+  async releaseWorkerSlot(id, { status = 'available', updatedAt } = {}) {
+    const slot = this.workerSlots.get(id);
+    if (!slot) return null;
+    slot.status = status;
+    slot.assignedSiteId = null;
+    slot.assignedRouteId = null;
+    slot.assignedVersionId = null;
+    slot.assignedAt = null;
+    slot.updatedAt = updatedAt || this.now();
+    return cloneRecord(slot);
   }
 
   async createAccessKey(input) {
@@ -399,9 +482,34 @@ function routesMatch(actual, expected) {
     actual.id === expected.id &&
     actual.activeVersionId === expected.activeVersionId &&
     actual.workerName === expected.workerName &&
+    actual.runtime === expected.runtime &&
+    actual.executionProvider === expected.executionProvider &&
+    actual.dispatchType === expected.dispatchType &&
+    actual.dispatchBindingName === expected.dispatchBindingName &&
+    actual.slotId === expected.slotId &&
     actual.visibility === expected.visibility &&
     actual.policyVersion === expected.policyVersion &&
     actual.routeGeneration === expected.routeGeneration &&
     actual.routeStatus === expected.routeStatus
   );
+}
+
+function routeActivationMatches(actual, expected) {
+  if (!actual || !expected) return false;
+  return (
+    actual.activeVersionId === expected.activeVersionId &&
+    actual.routeGeneration === expected.routeGeneration &&
+    actual.policyVersion === expected.policyVersion
+  );
+}
+
+function executionProviderFromRuntime(runtime) {
+  return runtime === 'wfp' ? 'wfp' : null;
+}
+
+function dispatchTypeFromExecutionProvider(value) {
+  const executionProvider = executionProviderFromRuntime(value) || value;
+  if (executionProvider === 'normal-worker-slot') return 'service-binding';
+  if (executionProvider === 'wfp') return 'dispatch-namespace';
+  return null;
 }

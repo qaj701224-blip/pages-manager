@@ -59,7 +59,7 @@ function toSiteDetail(site) {
     devUrl: site.devUrl,
     fileCount: site.fileCount,
     ipRestrict: site.ipRestrict,
-    kvEnabled: site.kvEnabled,
+    kvEnabled: false,
     createdAt: site.createdAt,
     updatedAt: site.updatedAt,
   });

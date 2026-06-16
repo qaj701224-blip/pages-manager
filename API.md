@@ -41,7 +41,6 @@ https://api.workers.xd.team
 | `preset` | string | 否   | `static`（默认）/ `spa` / `worker`                    |
 | `token`  | string | 否   | 部署者 token，备选方式；优先使用必填的 `X-Pages-Token` 请求头 |
 | `ip_restrict` | string | 否 | 当前版本固定开启；只能不传或传 `true`，传 `false` 会返回 `400` |
-| `kv`     | string | 否   | Pages KV 开关，仅支持 `true` / `false`；`kv=true` 只支持 `spa` 和 `worker` |
 | `file-*` | file   | 是   | 要部署的文件，`filename` 为相对路径                   |
 
 **preset 说明**:
@@ -54,45 +53,7 @@ https://api.workers.xd.team
 
 **Pages KV**:
 
-`kv=true` 显式开启站点级 KV，仅支持 `spa` 和 `worker` preset。未传、`false` 或 `kv=false` 都是关闭；非法 `kv` 值会返回 `400`；`static + kv=true` 会被拒绝。
-
-SPA 浏览器代码使用 `@xd/pages-sdk/browser`：
-
-```ts
-import { createPagesClient } from '@xd/pages-sdk/browser';
-
-const pages = createPagesClient();
-const config = await pages.kv.get('app/config', { type: 'json' });
-await pages.kv.put('drafts/123', { title: 'hello' });
-await pages.kv.delete('drafts/123');
-```
-
-浏览器 SDK 只访问同源 POST runtime endpoint：
-
-- `POST /.xd-pages/runtime/v1/kv/get`
-- `POST /.xd-pages/runtime/v1/kv/put`
-- `POST /.xd-pages/runtime/v1/kv/delete`
-
-自定义 Worker 使用 `@xd/pages-sdk/worker`：
-
-```js
-import { createPagesRuntime } from '@xd/pages-sdk/worker';
-
-export default {
-  async fetch(request, env) {
-    const pages = createPagesRuntime({ env });
-    return Response.json(await pages.kv.get('app/config'));
-  },
-};
-```
-
-`worker preset` 的 `_worker.js` 如果 import npm 包（包括 `@xd/pages-sdk/worker`），业务构建必须先 bundle/打包成可直接运行的 Worker module，再上传给 pages-manager；pages-manager 不会打包 `_worker.js`。
-
-安全边界：
-
-- 公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。
-- v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。
-- worker preset 开启 `kv=true` 后，owner `_worker.js` 会收到本站 KV 能力；owner 代码可以误用或泄露自己的能力，平台只强制跨站前缀隔离。
+v1 不再提供 Pages KV。`workers.xd.team` 的 `POST /deploy` 传 `kv=true` 会返回 `400 KV_NOT_SUPPORTED`；KV 能力由 v2 `pages.xd.team` 平台提供。
 
 **worker preset 说明**:
 
@@ -127,8 +88,7 @@ export default {
   "name": "q2-report",
   "url": "https://q2-report.workers.xd.team",
   "fileCount": 42,
-  "preset": "static",
-  "kv": false
+  "preset": "static"
 }
 ```
 
@@ -177,7 +137,6 @@ curl -X POST https://api.workers.xd.team/deploy \
   -H "X-Pages-Token: pages_zhangsan@xd.com" \
   -F "name=my-app" \
   -F "preset=spa" \
-  -F "kv=true" \
   -F "file-0=@dist/index.html;filename=index.html" \
   -F "file-1=@dist/assets/index.js;filename=assets/index.js" \
   -F "file-2=@dist/assets/style.css;filename=assets/style.css"
@@ -220,7 +179,7 @@ curl -X POST https://api.workers.xd.team/deploy \
 ### GET /site/:name
 
 查询当前 token 名下的单个站点详情。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；token 不匹配时返回 `403`。成功响应不会返回站点 token。
-响应只返回公开字段，不返回 `siteUuid`、`siteGeneration` 等内部 KV 隔离字段。
+响应只返回公开字段，不返回 `siteUuid`、`siteGeneration` 等内部字段。
 
 **成功响应** `200`:
 

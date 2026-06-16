@@ -110,6 +110,7 @@ test('uploadUserWorker sends multipart metadata and module to dispatch namespace
     modules: [{ name: 'worker.mjs', content: 'export default {};', type: 'application/javascript+module' }],
     compatibilityDate: '2026-06-15',
     tags: ['pages-v2', 'production'],
+    bindings: [{ type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' }],
   });
 
   assert.deepEqual(result, {
@@ -131,6 +132,7 @@ test('uploadUserWorker sends multipart metadata and module to dispatch namespace
     main_module: 'worker.mjs',
     compatibility_date: '2026-06-15',
     tags: ['pages-v2', 'production'],
+    bindings: [{ type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' }],
   });
   assert.equal(await form.get('worker.mjs').text(), 'export default {};');
   assert.equal(form.get('worker.mjs').type, 'application/javascript+module');

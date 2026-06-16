@@ -85,7 +85,8 @@ base: master
 
 职责：
 
-- 部署 `apps/server`、`apps/kv-gateway` Cloudflare Worker。
+- v1 部署 `apps/server` Cloudflare Worker。
+- v2 部署 `apps/pages-api`、`apps/pages-auth`、`apps/pages-router`、`apps/kv-gateway` Cloudflare Worker。
 - 构建并发布 ACK 平台镜像。
 - 滚动平台 Pod，例如 `gateway`、`worker`、`slack-agent`、`slack-notifier`。
 

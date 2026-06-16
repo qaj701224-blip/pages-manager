@@ -3,11 +3,12 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SUPPORTED_APPS = new Set(['apps/pages-api', 'apps/pages-auth', 'apps/pages-router']);
+const SUPPORTED_APPS = new Set(['apps/pages-api', 'apps/pages-auth', 'apps/pages-router', 'apps/kv-gateway']);
 const SUPPORTED_ENVIRONMENTS = new Set(['production', 'staging']);
 
 const DEFAULTS = {
   WFP_COMPATIBILITY_DATE: '2026-06-15',
+  PAGES_NORMAL_WORKER_SLOT_COUNT: '',
   OAUTH_STATE_TTL_SECONDS: '300',
   CLI_LOGIN_TTL_SECONDS: '600',
   AUTH_SESSION_IDLE_TTL_SECONDS: '1209600',
@@ -27,6 +28,7 @@ const REQUIRED_TOKENS_BY_APP = {
     'ROUTE_SNAPSHOTS_KV_ID',
     'ACCESS_KEY_ACTIVE_PEPPER_ID',
     'ACCESS_KEY_PEPPERS',
+    'PAGES_EXECUTION_MODE',
   ],
   'apps/pages-auth': [
     'CLOUDFLARE_ACCOUNT_ID',
@@ -43,6 +45,15 @@ const REQUIRED_TOKENS_BY_APP = {
     'ROUTE_SNAPSHOTS_KV_ID',
     'PAGES_SESSION_JWT_ACTIVE_KID',
     'PAGES_SESSION_JWT_KEYS',
+    'PAGES_CAP_JWT_ACTIVE_KID',
+    'PAGES_CAP_JWT_KEYS',
+    'PAGES_EXECUTION_MODE',
+  ],
+  'apps/kv-gateway': [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'SITE_DATA_KV_ID',
+    'PAGES_CAP_JWT_ACTIVE_KID',
+    'PAGES_CAP_JWT_KEYS',
   ],
 };
 
@@ -58,11 +69,13 @@ const OPTIONAL_TOKENS_BY_APP = {
     'SSO_ALLOWED_USER_SCOPE',
   ],
   'apps/pages-router': [
+    'PAGES_NORMAL_WORKER_SLOT_COUNT',
     'ROUTE_CACHE_TTL_SECONDS',
     'SITE_SESSION_IDLE_TTL_SECONDS',
     'SITE_SESSION_FRESHNESS_TTL_SECONDS',
     'INTERNAL_WORKER_JWT_TTL_SECONDS',
   ],
+  'apps/kv-gateway': [],
 };
 
 const TEMPLATE_EXPECTATIONS = {
@@ -104,11 +117,20 @@ async function renderWrangler(appName, envName) {
   let rendered = await readFile(templatePath, 'utf8');
 
   const replacements = collectReplacements(appName);
+  assertCrossTokenPolicy(replacements);
   for (const [token, value] of Object.entries(replacements)) {
     assertTomlSafe(token, value);
     assertTokenPolicy(token, value);
     rendered = rendered.replaceAll(`__${token}__`, value);
   }
+  rendered = rendered.replaceAll(
+    '__NORMAL_WORKER_SLOT_SERVICES__',
+    renderNormalWorkerSlotServices(appName, envName, replacements)
+  );
+  rendered = rendered.replaceAll(
+    '__WFP_DISPATCH_NAMESPACE_BINDING__',
+    renderWfpDispatchNamespaceBinding(appName, envName, replacements)
+  );
 
   assertNoUnresolvedPlaceholders(rendered, templatePath);
   assertNoRuntimeSecrets(rendered, appName);
@@ -154,6 +176,71 @@ function assertTokenPolicy(name, value) {
   if (name === 'ACCESS_KEY_PEPPERS') {
     assertAccessKeyPepperRegistry(value);
   }
+  if (name === 'PAGES_SESSION_JWT_ACTIVE_KID' || name === 'PAGES_CAP_JWT_ACTIVE_KID') {
+    assertSafeKeyId(name, value);
+  }
+  if (name === 'PAGES_SESSION_JWT_KEYS') {
+    assertJwtKeyRegistry(name, value, 'PAGES_SESSION_JWT_SECRET_');
+  }
+  if (name === 'PAGES_CAP_JWT_KEYS') {
+    assertJwtKeyRegistry(name, value, 'PAGES_CAP_JWT_SECRET_');
+  }
+  if (name === 'PAGES_EXECUTION_MODE' && !/^(normal-worker-slot|wfp)$/.test(value)) {
+    throw new Error(`${name} must be normal-worker-slot or wfp`);
+  }
+  if (name === 'PAGES_NORMAL_WORKER_SLOT_COUNT' && value !== '') {
+    assertPositiveInteger(name, value);
+  }
+}
+
+function assertCrossTokenPolicy(replacements) {
+  assertActiveKidPresent(
+    replacements.PAGES_SESSION_JWT_ACTIVE_KID,
+    replacements.PAGES_SESSION_JWT_KEYS,
+    'PAGES_SESSION_JWT_ACTIVE_KID',
+    'PAGES_SESSION_JWT_KEYS',
+    'PAGES_SESSION_JWT_SECRET_'
+  );
+  assertActiveKidPresent(
+    replacements.PAGES_CAP_JWT_ACTIVE_KID,
+    replacements.PAGES_CAP_JWT_KEYS,
+    'PAGES_CAP_JWT_ACTIVE_KID',
+    'PAGES_CAP_JWT_KEYS',
+    'PAGES_CAP_JWT_SECRET_'
+  );
+}
+
+function renderNormalWorkerSlotServices(appName, envName, replacements) {
+  if (appName !== 'apps/pages-router') return '';
+  if (replacements.PAGES_EXECUTION_MODE !== 'normal-worker-slot' && replacements.PAGES_NORMAL_WORKER_SLOT_COUNT === '') {
+    return '';
+  }
+
+  const count = Number(replacements.PAGES_NORMAL_WORKER_SLOT_COUNT);
+  if (!Number.isInteger(count) || count <= 0) {
+    throw new Error('PAGES_NORMAL_WORKER_SLOT_COUNT is required when PAGES_EXECUTION_MODE=normal-worker-slot');
+  }
+  if (count > 999) throw new Error('PAGES_NORMAL_WORKER_SLOT_COUNT must be 999 or less');
+
+  const servicePrefix = envName === 'staging' ? 'pages-v2-staging-slot' : 'pages-v2-production-slot';
+  const entries = [];
+  for (let index = 1; index <= count; index += 1) {
+    const slotNumber = String(index).padStart(3, '0');
+    entries.push(`[[services]]
+binding = "SITE_SLOT_${slotNumber}"
+service = "${servicePrefix}-${slotNumber}"`);
+  }
+  return entries.join('\n\n');
+}
+
+function renderWfpDispatchNamespaceBinding(appName, envName, replacements) {
+  if (appName !== 'apps/pages-router') return '';
+  if (replacements.PAGES_EXECUTION_MODE === 'normal-worker-slot') return '';
+
+  const namespace = envName === 'staging' ? 'pages-staging' : 'pages-production';
+  return `[[dispatch_namespaces]]
+binding = "PAGES_DISPATCH"
+namespace = "${namespace}"`;
 }
 
 function assertHttpsUrl(name, value) {
@@ -192,6 +279,41 @@ function assertAccessKeyPepperRegistry(value) {
   }
 }
 
+function assertActiveKidPresent(activeKid, registry, activeName, registryName, secretPrefix) {
+  if (!activeKid && !registry) return;
+  if (!activeKid || !registry) return;
+  const kids = assertJwtKeyRegistry(registryName, registry, secretPrefix);
+  if (!kids.has(activeKid)) throw new Error(`${activeName} is not present in ${registryName}`);
+}
+
+function assertJwtKeyRegistry(name, value, secretPrefix) {
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (entries.length === 0) throw new Error(`${name} must not be empty`);
+
+  const kids = new Set();
+  for (const entry of entries) {
+    const [kid, alg, secretEnvName, extra] = entry.split(':').map((part) => part.trim());
+    if (extra !== undefined || !kid || !alg || !secretEnvName) {
+      throw new Error(`${name} entries must be kid:HS256:${secretPrefix}*`);
+    }
+    assertSafeKeyId(name, kid);
+    if (alg !== 'HS256') throw new Error(`${name} only supports HS256`);
+    if (!new RegExp(`^${secretPrefix}[A-Z0-9_]+$`).test(secretEnvName)) {
+      throw new Error(`${name} secret env names must use ${secretPrefix}*`);
+    }
+    if (kids.has(kid)) throw new Error(`${name} contains duplicate kid`);
+    kids.add(kid);
+  }
+  return kids;
+}
+
+function assertSafeKeyId(name, value) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error(`${name} must be a safe key id`);
+}
+
 function assertNoUnresolvedPlaceholders(rendered, templatePath) {
   if (/__[A-Za-z0-9_]+__/.test(rendered) || /<[^>]+>/.test(rendered)) {
     throw new Error(`unresolved template placeholders remain in ${templatePath}`);
@@ -219,5 +341,5 @@ function assertEnvironmentBoundary(rendered, envName, appName) {
 
 function usage() {
   console.error('Usage: node scripts/render-pages-v2-wrangler.mjs <app> <production|staging>');
-  console.error('Supported apps: apps/pages-api, apps/pages-auth, apps/pages-router');
+  console.error('Supported apps: apps/pages-api, apps/pages-auth, apps/pages-router, apps/kv-gateway');
 }

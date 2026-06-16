@@ -10,7 +10,7 @@ import { createPagesClient } from '@xd/pages-sdk/browser';
 const pages = createPagesClient();
 
 const config = await pages.kv.get('app/config');
-await pages.kv.put('app/config', { theme: 'dark' });
+await pages.kv.set('app/config', { theme: 'dark' });
 await pages.kv.delete('app/config');
 ```
 
@@ -21,7 +21,7 @@ import { createPagesRuntime, readPlatformContext } from '@xd/pages-sdk/worker';
 
 export default {
   async fetch(request, env) {
-    const pages = createPagesRuntime({ env });
+    const pages = createPagesRuntime({ request, env });
     const context = readPlatformContext(request);
     const config = await pages.kv.get('app/config');
 

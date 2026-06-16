@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { verifyCapability } from '../../kv-gateway/src/auth.js';
 import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
 import worker from './index.js';
 
@@ -67,7 +68,7 @@ test('rejects reserved platform hosts before dispatch', async () => {
 test('rejects platform reserved paths before dispatch', async () => {
   const env = routeEnv();
   const response = await worker.fetch(
-    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/kv/get', {
+    new Request('https://demo.pages.xd.team/.xd-pages/health', {
       headers: { 'CF-Connecting-IP': '10.1.2.3' },
     }),
     env
@@ -76,6 +77,79 @@ test('rejects platform reserved paths before dispatch', async () => {
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.code, 'PLATFORM_PATH_RESERVED');
   assert.equal(env.dispatchCount, 0);
+});
+
+test('proxies browser runtime KV requests through gateway without dispatching user worker', async () => {
+  let gatewayRequest;
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set', 'kv:delete'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        gatewayRequest = request;
+        return Response.json({ ok: true, found: true, value: { theme: 'dark' } });
+      },
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/kv/get', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+      },
+      body: JSON.stringify({ key: 'app/config' }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, found: true, value: { theme: 'dark' } });
+  assert.equal(env.dispatchCount, 0);
+  assert.equal(gatewayRequest.url, 'https://pages-kv-gateway.local/v1/kv/get');
+  assert.equal(gatewayRequest.headers.get('CF-Platform-KV-Capability'), null);
+  const claims = await verifyCapability(gatewayRequest.headers.get('Authorization'), gatewayEnv(), {
+    requiredScope: 'kv:get',
+    now: 1_700_000_000,
+  });
+  assert.equal(claims.siteId, 'demo');
+  assert.equal(claims.siteUuid, '4b4c8e8361ef4b47b64f5c20a7db7c47');
+});
+
+test('rejects browser runtime KV requests with cross-site origin', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch() {
+        throw new Error('gateway should not be called');
+      },
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/kv/get', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://evil.example',
+      },
+      body: JSON.stringify({ key: 'app/config' }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'RUNTIME_ORIGIN_DENIED');
 });
 
 test('dispatches an allowed production site with sanitized request headers', async () => {
@@ -109,6 +183,30 @@ test('dispatches an allowed production site with sanitized request headers', asy
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Slug'), 'demo');
   assert.equal(env.dispatchedRequest.headers.get('Cookie'), 'app=ok');
   assert.equal(env.dispatchedEnv, undefined);
+});
+
+test('injects a short-lived KV capability into user worker requests for kv-enabled routes', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set', 'kv:delete'] },
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  const capability = env.dispatchedRequest.headers.get('CF-Platform-KV-Capability');
+  const claims = await verifyCapability(`Bearer ${capability}`, gatewayEnv(), {
+    requiredScope: 'kv:set',
+    now: 1_700_000_000,
+  });
+  assert.equal(claims.siteId, 'demo');
+  assert.equal(claims.env, 'production');
+  assert.equal(claims.exp - claims.iat, 60);
 });
 
 test('reads route snapshots from KV pointer records when lookupRoute is absent', async () => {
@@ -670,14 +768,48 @@ test('rejects production-prefix worker names in staging routes before dispatch',
   assert.equal(env.dispatchCount, 0);
 });
 
+test('dispatches normal worker slot routes through static service binding', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        runtime: 'worker',
+        executionProvider: 'normal-worker-slot',
+        workerName: 'pages-v2-production-slot-007',
+        dispatch: {
+          type: 'service-binding',
+          slotId: 'slot_007',
+          bindingName: 'SITE_SLOT_007',
+        },
+      }),
+    },
+    expectedSlotBinding: 'SITE_SLOT_007',
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', { headers: { 'CF-Connecting-IP': '10.1.2.3' } }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'slot worker ok');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.slotDispatchCount, 1);
+});
+
 function routeSnapshot(overrides = {}) {
   return {
+    routeId: 'route_demo',
     environment: 'production',
     hostname: 'demo.pages.xd.team',
     routeStatus: 'active',
-    runtime: 'wfp',
+    runtime: 'worker',
+    executionProvider: 'wfp',
     workerName: 'pages-v2-demo-worker',
+    dispatch: {
+      type: 'dispatch-namespace',
+    },
     siteId: 'site_demo',
+    siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
     slug: 'demo',
     visibility: 'public',
     policyVersion: 1,
@@ -694,6 +826,7 @@ function routeEnv(overrides = {}) {
     lookupCount: 0,
     dispatchGetCount: 0,
     dispatchCount: 0,
+    slotDispatchCount: 0,
     dispatchedRequest: null,
     dispatchedEnv: null,
   };
@@ -712,6 +845,9 @@ function routeEnv(overrides = {}) {
     PAGES_SESSION_JWT_ACTIVE_KID: 'prod-hs-2026-06',
     PAGES_SESSION_JWT_KEYS: 'prod-hs-2026-06:HS256:PAGES_SESSION_JWT_SECRET_TEST',
     PAGES_SESSION_JWT_SECRET_TEST: 'test-session-secret',
+    PAGES_CAP_JWT_ACTIVE_KID: 'cap-hs-2026-06',
+    PAGES_CAP_JWT_KEYS: 'cap-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_TEST',
+    PAGES_CAP_JWT_SECRET_TEST: 'test-capability-secret',
     nowSeconds: () => 1_700_000_000,
     ROUTE_SNAPSHOTS: routes,
     PAGES_DISPATCH: {
@@ -733,6 +869,17 @@ function routeEnv(overrides = {}) {
         };
       },
     },
+    SITE_SLOT_007: {
+      async fetch(request, dispatchedEnv) {
+        state.slotDispatchCount += 1;
+        env.slotDispatchCount = state.slotDispatchCount;
+        state.dispatchedRequest = request;
+        env.dispatchedRequest = request;
+        state.dispatchedEnv = dispatchedEnv;
+        env.dispatchedEnv = dispatchedEnv;
+        return new Response('slot worker ok');
+      },
+    },
     get lookupCount() {
       return state.lookupCount;
     },
@@ -750,6 +897,12 @@ function routeEnv(overrides = {}) {
     },
     set dispatchCount(value) {
       state.dispatchCount = value;
+    },
+    get slotDispatchCount() {
+      return state.slotDispatchCount;
+    },
+    set slotDispatchCount(value) {
+      state.slotDispatchCount = value;
     },
     get dispatchedRequest() {
       return state.dispatchedRequest;
@@ -777,6 +930,14 @@ function routeEnv(overrides = {}) {
   }
 
   return env;
+}
+
+function gatewayEnv() {
+  return {
+    XD_PAGES_ENV: 'production',
+    PAGES_CAP_JWT_KEYS: 'cap-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_TEST',
+    PAGES_CAP_JWT_SECRET_TEST: 'test-capability-secret',
+  };
 }
 
 function kvRouteSnapshots(records) {

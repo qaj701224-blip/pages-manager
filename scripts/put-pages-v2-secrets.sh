@@ -104,6 +104,61 @@ collect_session_jwt_secrets() {
   fi
 }
 
+collect_capability_jwt_secrets() {
+  require_env PAGES_CAP_JWT_ACTIVE_KID
+  require_env PAGES_CAP_JWT_KEYS
+
+  local active_kid
+  active_kid="$(trim "$PAGES_CAP_JWT_ACTIVE_KID")"
+  local seen_kids="|"
+  local seen_secret_names="|"
+  local active_kid_found=0
+  IFS=',' read -r -a entries <<<"$PAGES_CAP_JWT_KEYS"
+
+  for raw_entry in "${entries[@]}"; do
+    local entry kid alg secret_name extra
+    entry="$(trim "$raw_entry")"
+    if [ -z "$entry" ]; then
+      continue
+    fi
+
+    IFS=':' read -r kid alg secret_name extra <<<"$entry"
+    kid="$(trim "${kid:-}")"
+    alg="$(trim "${alg:-}")"
+    secret_name="$(trim "${secret_name:-}")"
+
+    if [ -n "${extra:-}" ] || [ -z "$kid" ] || [ -z "$alg" ] || [ -z "$secret_name" ]; then
+      echo "::error::Malformed PAGES_CAP_JWT_KEYS entry" >&2
+      exit 1
+    fi
+    if [ "$alg" != "HS256" ]; then
+      echo "::error::Unsupported capability key alg: $alg" >&2
+      exit 1
+    fi
+    if has_seen "$seen_kids" "$kid"; then
+      echo "::error::Duplicate capability key kid: $kid" >&2
+      exit 1
+    fi
+    seen_kids="${seen_kids}${kid}|"
+    if [ "$kid" = "$active_kid" ]; then
+      active_kid_found=1
+    fi
+    if [[ ! "$secret_name" =~ ^PAGES_CAP_JWT_SECRET_[A-Z0-9_]+$ ]]; then
+      echo "::error::Unsupported capability secret env var name: $secret_name" >&2
+      exit 1
+    fi
+    if ! has_seen "$seen_secret_names" "$secret_name"; then
+      seen_secret_names="${seen_secret_names}${secret_name}|"
+      SECRET_NAMES+=("$secret_name")
+    fi
+  done
+
+  if [ "$active_kid_found" -ne 1 ]; then
+    echo "::error::PAGES_CAP_JWT_ACTIVE_KID is not present in PAGES_CAP_JWT_KEYS: $active_kid" >&2
+    exit 1
+  fi
+}
+
 collect_access_key_pepper_secrets() {
   require_env ACCESS_KEY_ACTIVE_PEPPER_ID
   require_env ACCESS_KEY_PEPPERS
@@ -167,6 +222,10 @@ case "$APP_DIR" in
     ;;
   apps/pages-router)
     collect_session_jwt_secrets
+    collect_capability_jwt_secrets
+    ;;
+  apps/kv-gateway)
+    collect_capability_jwt_secrets
     ;;
   *)
     echo "::error::unsupported app: $APP_DIR" >&2

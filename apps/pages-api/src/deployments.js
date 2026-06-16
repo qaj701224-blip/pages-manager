@@ -3,7 +3,7 @@ import { canonicalRequestHash } from './crypto.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
-import { createDeploymentProvider, normalizeArtifactBundle } from './wfp-provider.js';
+import { createDeploymentProvider, normalizeArtifactBundle } from './execution-provider.js';
 
 const ARTIFACT_KINDS = new Set(['static', 'spa', 'worker']);
 
@@ -112,22 +112,22 @@ async function createDeployment(request, env, config, store, actor) {
 
   const deployment = deploymentResult.deployment;
   const versionId = nextId(env, 'ver');
-  const workerName = workerNameFor(site, versionId, config.environment);
+  const plannedWorkerName = workerNameFor(site, versionId, config.environment);
   let provider;
   try {
-    provider = createDeploymentProvider(env, config);
+    provider = createDeploymentProvider(env, config, store, site);
   } catch {
     await store.updateDeployment(deployment.id, {
       status: 'failed',
-      errorCode: 'WFP_CONFIG_INVALID',
-      errorMessage: 'WFP provider configuration is invalid.',
+      errorCode: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
+      errorMessage: 'Deployment platform configuration is invalid.',
       completedAt: readNow(env),
     });
     return jsonError(
-      'WFP_CONFIG_INVALID',
-      'WFP provider configuration is invalid.',
+      'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
+      'Deployment platform configuration is invalid.',
       500,
-      'Check the Pages WFP environment bindings.'
+      'Check the Pages deployment platform configuration.'
     );
   }
 
@@ -136,39 +136,48 @@ async function createDeployment(request, env, config, store, actor) {
   try {
     uploaded = await provider.upload({
       site,
-      workerName,
+      workerName: plannedWorkerName,
       versionId,
       artifactKind,
       contentHash,
       artifactBundle,
     });
-  } catch {
+  } catch (error) {
+    const code = publicProviderErrorCode(error, 'upload');
     await store.updateDeployment(deployment.id, {
       status: 'failed',
-      errorCode: 'WFP_UPLOAD_FAILED',
-      errorMessage: 'WFP upload failed.',
+      errorCode: code,
+      errorMessage: 'Deployment upload failed.',
       completedAt: readNow(env),
     });
-    return jsonError('WFP_UPLOAD_FAILED', 'WFP upload failed.', 502, 'Retry the deployment with the same Idempotency-Key.');
+    const status = code === 'DEPLOYMENT_CAPACITY_EXHAUSTED' ? 503 : 502;
+    const action =
+      code === 'DEPLOYMENT_CAPACITY_EXHAUSTED'
+        ? 'Ask a Pages maintainer to expand platform deployment capacity.'
+        : 'Retry the deployment with the same Idempotency-Key.';
+    return jsonError(code, 'Deployment upload failed.', status, action);
   }
 
   await store.updateDeployment(deployment.id, { status: 'uploaded' });
+  const workerName = uploaded.workerName || plannedWorkerName;
   try {
     await provider.verify({
       site,
       workerName,
       versionId,
       artifactRef: uploaded.artifactRef,
+      ...uploaded,
     });
   } catch {
-    await cleanupUploadedWorker(provider, workerName);
+    await cleanupUploadedWorker(provider, uploaded);
+    const code = publicProviderErrorCode(null, 'verify');
     await store.updateDeployment(deployment.id, {
       status: 'failed',
-      errorCode: 'WFP_VERIFY_FAILED',
-      errorMessage: 'WFP verify failed.',
+      errorCode: code,
+      errorMessage: 'Deployment verification failed.',
       completedAt: readNow(env),
     });
-    return jsonError('WFP_VERIFY_FAILED', 'WFP verify failed.', 502, 'Retry the deployment with the same Idempotency-Key.');
+    return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with the same Idempotency-Key.');
   }
 
   await store.updateDeployment(deployment.id, { status: 'verified' });
@@ -177,7 +186,11 @@ async function createDeployment(request, env, config, store, actor) {
     siteId,
     deploymentId: deployment.id,
     workerName,
-    runtime: 'wfp',
+    runtime: uploaded.runtime || 'worker',
+    executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+    dispatchType: uploaded.dispatchType || 'dispatch-namespace',
+    dispatchBindingName: uploaded.dispatchBindingName || null,
+    slotId: uploaded.slotId || null,
     artifactKind,
     artifactRef: uploaded.artifactRef,
     contentHash,
@@ -193,16 +206,38 @@ async function createDeployment(request, env, config, store, actor) {
     {
       activeVersionId: version.id,
       workerName: version.workerName,
+      runtime: version.runtime,
+      executionProvider: version.executionProvider,
+      dispatchType: version.dispatchType,
+      dispatchBindingName: version.dispatchBindingName,
+      slotId: version.slotId,
       visibility: site.defaultVisibility,
       updatedAt: readNow(env),
     },
-    config.environment
+    config.environment,
+    previousRoute
   );
+  if (!route) {
+    await cleanupUploadedWorker(provider, uploaded);
+    await store.updateDeployment(deployment.id, {
+      status: 'failed',
+      versionId: version.id,
+      errorCode: 'ROUTE_ACTIVATION_CONFLICT',
+      errorMessage: 'Route changed while deployment was activating.',
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      'ROUTE_ACTIVATION_CONFLICT',
+      'Route changed while deployment was activating.',
+      409,
+      'Check the latest site status and retry the deployment with a new Idempotency-Key.'
+    );
+  }
   try {
     await writeSnapshot(env, store, { site, route, version });
   } catch {
     await restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, route, config.environment);
-    await cleanupUploadedWorker(provider, workerName);
+    await cleanupUploadedWorker(provider, uploaded);
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -250,6 +285,8 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
 
   const site = await store.getSiteForUser(version.siteId, actor.userId, actor, config.environment);
   if (!site) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
+  const versionAvailabilityError = await validateRollbackVersion(store, version, config.environment);
+  if (versionAvailabilityError) return versionAvailabilityError;
   const currentRoute = await store.getRouteBySiteId(site.id, config.environment);
   const requestHash = await canonicalRequestHash({ operation: 'rollback', versionId });
   const deploymentResult = await store.createDeploymentForIdempotency({
@@ -279,11 +316,33 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     {
       activeVersionId: version.id,
       workerName: version.workerName,
+      runtime: version.runtime,
+      executionProvider: version.executionProvider,
+      dispatchType: version.dispatchType,
+      dispatchBindingName: version.dispatchBindingName,
+      slotId: version.slotId,
       visibility: currentRoute.visibility,
       updatedAt: readNow(env),
     },
-    config.environment
+    config.environment,
+    currentRoute
   );
+  if (!route) {
+    await store.updateDeployment(deploymentResult.deployment.id, {
+      status: 'failed',
+      versionId: version.id,
+      previousVersionId: currentRoute.activeVersionId,
+      errorCode: 'ROUTE_ACTIVATION_CONFLICT',
+      errorMessage: 'Route changed while rollback was activating.',
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      'ROUTE_ACTIVATION_CONFLICT',
+      'Route changed while rollback was activating.',
+      409,
+      'Check the latest site status and retry the rollback with a new Idempotency-Key.'
+    );
+  }
   try {
     await writeSnapshot(env, store, { site, route, version });
   } catch {
@@ -312,6 +371,37 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
+}
+
+async function validateRollbackVersion(store, version, environment) {
+  const deployment = await store.getDeployment(version.deploymentId, environment);
+  if (!deployment || deployment.status !== 'succeeded') {
+    return jsonError(
+      'ROLLBACK_VERSION_UNAVAILABLE',
+      'Version is not available for rollback.',
+      409,
+      'Rollback to a version from a succeeded deployment.'
+    );
+  }
+
+  if (version.executionProvider !== 'normal-worker-slot') return null;
+  const slot = version.slotId && typeof store.getWorkerSlot === 'function' ? await store.getWorkerSlot(version.slotId) : null;
+  if (
+    !slot ||
+    slot.environment !== environment ||
+    slot.status !== 'assigned' ||
+    slot.assignedVersionId !== version.id ||
+    slot.workerName !== version.workerName ||
+    slot.bindingName !== version.dispatchBindingName
+  ) {
+    return jsonError(
+      'ROLLBACK_VERSION_UNAVAILABLE',
+      'Version is not available for rollback.',
+      409,
+      'The worker slot for this version is no longer active. Deploy a new version instead.'
+    );
+  }
+  return null;
 }
 
 async function deploymentEnvelope(store, deployment, preloaded = {}, environment) {
@@ -346,7 +436,6 @@ function formatVersion(version) {
     id: version.id,
     siteId: version.siteId,
     deploymentId: version.deploymentId,
-    workerName: version.workerName,
     runtime: version.runtime,
     artifactKind: version.artifactKind,
     contentHash: version.contentHash,
@@ -360,7 +449,6 @@ function formatRoute(route) {
     hostname: route.hostname,
     siteId: route.siteId,
     runtime: route.runtime,
-    workerName: route.workerName,
     activeVersionId: route.activeVersionId,
     visibility: route.visibility,
     policyVersion: route.policyVersion,
@@ -382,13 +470,18 @@ async function restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute
   return store.restoreSiteRoute(siteId, previousRoute, environment);
 }
 
-async function cleanupUploadedWorker(provider, workerName) {
+async function cleanupUploadedWorker(provider, uploaded) {
   if (typeof provider?.delete !== 'function') return;
   try {
-    await provider.delete({ workerName });
+    await provider.delete(uploaded);
   } catch {
     // Best-effort cleanup must not hide the original deployment failure.
   }
+}
+
+function publicProviderErrorCode(error, step) {
+  if (error?.code === 'SLOT_CAPACITY_EXHAUSTED') return 'DEPLOYMENT_CAPACITY_EXHAUSTED';
+  return step === 'upload' ? 'DEPLOYMENT_UPLOAD_FAILED' : 'DEPLOYMENT_VERIFY_FAILED';
 }
 
 function actorCanDeploy(actor, siteId, requiredScope) {

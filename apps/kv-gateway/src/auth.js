@@ -1,8 +1,9 @@
 import { isValidSiteSlug, isValidSiteUuid } from '@xd/pages-runtime-protocol';
 
-const JWT_ISSUER = 'pages-manager';
+const JWT_ISSUER = 'pages-v2';
 const JWT_AUDIENCE = 'pages-kv-gateway';
 const MAX_IAT_FUTURE_SKEW_SECONDS = 60;
+const MAX_CAPABILITY_TTL_SECONDS = 60;
 
 const encoder = new globalThis.TextEncoder();
 const decoder = new globalThis.TextDecoder();
@@ -86,7 +87,8 @@ function validateClaims(claims, env, requiredScope, now) {
 
   if (claims.iss !== JWT_ISSUER) throw new Error('Capability invalid: invalid issuer');
   if (claims.aud !== JWT_AUDIENCE) throw new Error('Capability invalid: invalid audience');
-  if (claims.env !== env.XD_PAGES_ENV) throw new Error('Capability invalid: environment mismatch');
+  const expectedEnv = env.PAGES_ENV ?? env.XD_PAGES_ENV;
+  if (!expectedEnv || claims.env !== expectedEnv) throw new Error('Capability invalid: environment mismatch');
   if (!isValidSiteSlug(claims.siteId)) throw new Error('Capability invalid: invalid site id');
   if (!isValidSiteUuid(claims.siteUuid)) throw new Error('Capability invalid: invalid site UUID');
 
@@ -104,6 +106,14 @@ function validateClaims(claims, env, requiredScope, now) {
     claims.iat > now + MAX_IAT_FUTURE_SKEW_SECONDS
   ) {
     throw new Error('Capability invalid: iat is in the future');
+  }
+
+  if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp) || claims.exp <= now) {
+    throw new Error('Capability invalid: exp is expired');
+  }
+
+  if (claims.exp - claims.iat > MAX_CAPABILITY_TTL_SECONDS) {
+    throw new Error('Capability invalid: exp exceeds max ttl');
   }
 }
 

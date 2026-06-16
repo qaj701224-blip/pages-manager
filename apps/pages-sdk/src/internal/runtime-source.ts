@@ -2,13 +2,13 @@ export const PAGES_RUNTIME_SOURCE = String.raw`
 const RUNTIME = {
   BASE_PATH: '/.xd-pages/runtime/v1',
   KV_GET_PATH: '/.xd-pages/runtime/v1/kv/get',
-  KV_PUT_PATH: '/.xd-pages/runtime/v1/kv/put',
+  KV_SET_PATH: '/.xd-pages/runtime/v1/kv/set',
   KV_DELETE_PATH: '/.xd-pages/runtime/v1/kv/delete',
 };
 
 const GATEWAY = {
   KV_GET_PATH: '/v1/kv/get',
-  KV_PUT_PATH: '/v1/kv/put',
+  KV_SET_PATH: '/v1/kv/set',
   KV_DELETE_PATH: '/v1/kv/delete',
 };
 
@@ -32,6 +32,7 @@ const MAX_USER_KEY_BYTES = 256;
 const MIN_TTL_SECONDS = 60;
 const MAX_TTL_SECONDS = 31536000;
 const GATEWAY_ORIGIN = 'https://pages-kv-gateway.local';
+const KV_CAPABILITY_HEADER = 'CF-Platform-KV-Capability';
 
 export async function handlePagesRuntimeRequest(request, env, options = {}) {
   const url = new URL(request.url);
@@ -74,23 +75,23 @@ export async function handlePagesRuntimeRequest(request, env, options = {}) {
 
   try {
     if (action === 'delete') {
-      const gatewayResponse = await callGateway(env, GATEWAY.KV_DELETE_PATH, { key: key.value });
+      const gatewayResponse = await callGateway(request, env, GATEWAY.KV_DELETE_PATH, { key: key.value });
       return envelopeResponse(gatewayResponse, action);
     }
 
     const type = validateKvType(body.value.type);
     if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
 
-    if (action === 'put') {
+    if (action === 'set') {
       const ttl = validateTtl(body.value.expirationTtl);
       if (!ttl.ok) return errorResponse(ttl.error.code, ttl.error.message, 400);
       const payload = { key: key.value, value: body.value.value, type: type.value };
       if (ttl.value !== undefined) payload.expirationTtl = ttl.value;
-      const gatewayResponse = await callGateway(env, GATEWAY.KV_PUT_PATH, payload);
+      const gatewayResponse = await callGateway(request, env, GATEWAY.KV_SET_PATH, payload);
       return envelopeResponse(gatewayResponse, action);
     }
 
-    const gatewayResponse = await callGateway(env, GATEWAY.KV_GET_PATH, { key: key.value, type: type.value });
+    const gatewayResponse = await callGateway(request, env, GATEWAY.KV_GET_PATH, { key: key.value, type: type.value });
     return envelopeResponse(gatewayResponse, action);
   } catch {
     return errorResponse(ERROR_CODES.KV_FAILED, 'KV failed', 500);
@@ -99,7 +100,7 @@ export async function handlePagesRuntimeRequest(request, env, options = {}) {
 
 function getRuntimeAction(pathname) {
   if (pathname === RUNTIME.KV_GET_PATH) return 'get';
-  if (pathname === RUNTIME.KV_PUT_PATH) return 'put';
+  if (pathname === RUNTIME.KV_SET_PATH) return 'set';
   if (pathname === RUNTIME.KV_DELETE_PATH) return 'delete';
   return null;
 }
@@ -174,12 +175,13 @@ function hasUnpairedSurrogate(value) {
   return false;
 }
 
-async function callGateway(env, path, body) {
+async function callGateway(request, env, path, body) {
+  const capability = env.XD_PAGES_KV_CAPABILITY || request.headers.get(KV_CAPABILITY_HEADER) || '';
   return env.XD_PAGES_KV_GATEWAY.fetch(
     new Request(GATEWAY_ORIGIN + path, {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer ' + env.XD_PAGES_KV_CAPABILITY,
+        Authorization: 'Bearer ' + capability,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),

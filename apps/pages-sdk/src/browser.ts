@@ -33,25 +33,25 @@ export function createPagesClient(options: { basePath?: string; fetch?: typeof f
     return envelope.value as T | string;
   }
 
-  async function put(
+  async function set(
     key: string,
     value: unknown,
-    putOptions: { type?: KVType; expirationTtl?: number } = {}
+    setOptions: { type?: KVType; expirationTtl?: number } = {}
   ): Promise<void> {
     const body: { key: string; value: unknown; type: KVType; expirationTtl?: number } = {
       key,
       value,
-      type: putOptions.type ?? 'json',
+      type: setOptions.type ?? 'json',
     };
-    if (putOptions.expirationTtl !== undefined) body.expirationTtl = putOptions.expirationTtl;
-    await post('/kv/put', body);
+    if (setOptions.expirationTtl !== undefined) body.expirationTtl = setOptions.expirationTtl;
+    await post('/kv/set', body);
   }
 
   async function deleteKey(key: string): Promise<void> {
     await post('/kv/delete', { key });
   }
 
-  return { kv: { get, put, delete: deleteKey } };
+  return { kv: { get, set, delete: deleteKey } };
 }
 
 async function readEnvelope(response: Response): Promise<Record<string, unknown>> {

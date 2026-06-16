@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scriptPath = join(repoRoot, 'scripts/gen-wrangler.sh');
 const serverWranglerPath = join(repoRoot, 'apps/server/wrangler.toml');
-const kvGatewayWranglerPath = join(repoRoot, 'apps/kv-gateway/wrangler.toml');
 const xdadsWranglerPath = join(repoRoot, 'apps/xdads-302/wrangler.toml');
 
 const baseEnv = {
@@ -18,16 +17,8 @@ const baseEnv = {
   IP_ALLOWLIST: '127.0.0.1,::1',
 };
 
-const kvEnv = {
-  ...baseEnv,
-  SITE_DATA_KV_NAMESPACE_ID: 'dummy-site-data-kv',
-  PAGES_CAP_JWT_ACTIVE_KID: 'prod-hs-2026-06',
-  PAGES_CAP_JWT_KEYS: 'prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
-};
-
 afterEach(() => {
   rmSync(serverWranglerPath, { force: true });
-  rmSync(kvGatewayWranglerPath, { force: true });
   rmSync(xdadsWranglerPath, { force: true });
 });
 
@@ -39,14 +30,9 @@ function renderApp(app, envName, env = baseEnv) {
   });
 }
 
-function renderServer(envName, env = kvEnv) {
+function renderServer(envName, env = baseEnv) {
   renderApp('apps/server', envName, env);
   return readFileSync(serverWranglerPath, 'utf8');
-}
-
-function renderKvGateway(envName, env = kvEnv) {
-  renderApp('apps/kv-gateway', envName, env);
-  return readFileSync(kvGatewayWranglerPath, 'utf8');
 }
 
 function renderXdads(envName, env = { ...baseEnv, OLD_ZONE_ID: 'dummy-old-zone' }) {
@@ -63,7 +49,7 @@ function runGenerator(args, env = baseEnv) {
 }
 
 function withoutEnv(name) {
-  const env = { ...kvEnv };
+  const env = { ...baseEnv };
   delete env[name];
   return env;
 }
@@ -76,12 +62,9 @@ test('production server config renders production values only', () => {
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.workers\.xd\.team"/);
   assert.match(config, /PUBLIC_MANAGER_DEV_BASE = "https:\/\/pages-manager\.xd-cf-2022\.workers\.dev"/);
   assert.match(config, /WORKER_PREFIX = "pages-"/);
-  assert.match(config, /KV_GATEWAY_SERVICE = "pages-kv-gateway"/);
-  assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "prod-hs-2026-06"/);
-  assert.match(
-    config,
-    /PAGES_CAP_JWT_KEYS = "prod-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"/,
-  );
+  assert.doesNotMatch(config, /KV_GATEWAY_SERVICE/);
+  assert.doesNotMatch(config, /PAGES_CAP_JWT_ACTIVE_KID/);
+  assert.doesNotMatch(config, /PAGES_CAP_JWT_KEYS/);
   assert.match(config, /pattern = "api\.workers\.xd\.team"/);
   assert.doesNotMatch(config, /api-staging/);
   assert.doesNotMatch(config, /pages-staging-/);
@@ -97,54 +80,10 @@ test('staging server config renders staging values', () => {
   assert.match(config, /PUBLIC_MANAGER_DEV_BASE = "https:\/\/pages-manager-staging\.xd-cf-2022\.workers\.dev"/);
   assert.match(config, /DOMAIN_LABEL = "-staging"/);
   assert.match(config, /WORKER_PREFIX = "pages-staging-"/);
-  assert.match(config, /KV_GATEWAY_SERVICE = "pages-kv-gateway-staging"/);
+  assert.doesNotMatch(config, /KV_GATEWAY_SERVICE/);
+  assert.doesNotMatch(config, /PAGES_CAP_JWT_ACTIVE_KID/);
+  assert.doesNotMatch(config, /PAGES_CAP_JWT_KEYS/);
   assert.match(config, /pattern = "api-staging\.workers\.xd\.team"/);
-});
-
-test('production kv-gateway config renders private production gateway', () => {
-  const config = renderKvGateway('production');
-
-  assert.match(config, /name = "pages-kv-gateway"/);
-  assert.match(config, /workers_dev = false/);
-  assert.match(config, /XD_PAGES_ENV = "production"/);
-  assert.match(config, /binding = "SITE_DATA"/);
-  assert.match(config, /id = "dummy-site-data-kv"/);
-  assert.doesNotMatch(config, /name = "pages-kv-gateway-staging"/);
-  assert.doesNotMatch(config, /XD_PAGES_ENV = "staging"/);
-});
-
-test('production kv-gateway config allows staging text in non-environment key metadata', () => {
-  const config = renderKvGateway('production', {
-    ...kvEnv,
-    PAGES_CAP_JWT_ACTIVE_KID: 'prod-staging-rollover',
-    PAGES_CAP_JWT_KEYS: 'prod-staging-rollover:HS256:PAGES_CAP_JWT_SECRET_202606',
-  });
-
-  assert.match(config, /name = "pages-kv-gateway"/);
-  assert.match(config, /XD_PAGES_ENV = "production"/);
-  assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "prod-staging-rollover"/);
-  assert.match(
-    config,
-    /PAGES_CAP_JWT_KEYS = "prod-staging-rollover:HS256:PAGES_CAP_JWT_SECRET_202606"/,
-  );
-  assert.doesNotMatch(config, /name = "pages-kv-gateway-staging"/);
-  assert.doesNotMatch(config, /XD_PAGES_ENV = "staging"/);
-});
-
-test('staging kv-gateway config renders staging gateway only', () => {
-  const config = renderKvGateway('staging');
-
-  assert.match(config, /name = "pages-kv-gateway-staging"/);
-  assert.match(config, /XD_PAGES_ENV = "staging"/);
-  assert.doesNotMatch(config, /name = "pages-kv-gateway"/);
-});
-
-test('server config renders environment-specific kv gateway service name', () => {
-  const production = renderServer('production', kvEnv);
-  assert.match(production, /KV_GATEWAY_SERVICE = "pages-kv-gateway"/);
-
-  const staging = renderServer('staging', kvEnv);
-  assert.match(staging, /KV_GATEWAY_SERVICE = "pages-kv-gateway-staging"/);
 });
 
 test('rejects unknown environment', () => {
@@ -154,19 +93,16 @@ test('rejects unknown environment', () => {
   assert.match(`${result.stderr}${result.stdout}`, /environment/i);
 });
 
-test('generated kv-gateway wrangler config is ignored', () => {
-  const result = spawnSync('git', ['check-ignore', 'apps/kv-gateway/wrangler.toml'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  });
+test('v1 wrangler generator rejects kv-gateway because v2 renderer owns it', () => {
+  const result = runGenerator(['apps/kv-gateway', 'production']);
 
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /apps\/kv-gateway\/wrangler\.toml/);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /unsupported app: apps\/kv-gateway/);
 });
 
 test('rejects unsafe IP_ALLOWLIST values', () => {
   const result = runGenerator(['apps/server', 'production'], {
-    ...kvEnv,
+    ...baseEnv,
     IP_ALLOWLIST: '127.0.0.1"bad',
   });
 
@@ -174,51 +110,13 @@ test('rejects unsafe IP_ALLOWLIST values', () => {
   assert.match(`${result.stderr}${result.stdout}`, /IP_ALLOWLIST/);
 });
 
-test('server config requires PAGES_CAP_JWT_ACTIVE_KID', () => {
-  const result = runGenerator(
-    ['apps/server', 'production'],
-    withoutEnv('PAGES_CAP_JWT_ACTIVE_KID'),
-  );
-
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /PAGES_CAP_JWT_ACTIVE_KID/);
-});
-
-test('server config requires PAGES_CAP_JWT_KEYS', () => {
+test('server config does not require capability registry env vars', () => {
   const result = runGenerator(['apps/server', 'production'], withoutEnv('PAGES_CAP_JWT_KEYS'));
 
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /PAGES_CAP_JWT_KEYS/);
-});
-
-test('kv-gateway config requires SITE_DATA_KV_NAMESPACE_ID', () => {
-  const result = runGenerator(
-    ['apps/kv-gateway', 'production'],
-    withoutEnv('SITE_DATA_KV_NAMESPACE_ID'),
-  );
-
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /SITE_DATA_KV_NAMESPACE_ID/);
-});
-
-test('kv-gateway config requires PAGES_CAP_JWT_ACTIVE_KID', () => {
-  const result = runGenerator(
-    ['apps/kv-gateway', 'production'],
-    withoutEnv('PAGES_CAP_JWT_ACTIVE_KID'),
-  );
-
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /PAGES_CAP_JWT_ACTIVE_KID/);
-});
-
-test('kv-gateway config requires PAGES_CAP_JWT_KEYS', () => {
-  const result = runGenerator(
-    ['apps/kv-gateway', 'production'],
-    withoutEnv('PAGES_CAP_JWT_KEYS'),
-  );
-
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /PAGES_CAP_JWT_KEYS/);
+  assert.equal(result.status, 0, `${result.stderr}${result.stdout}`);
+  const config = readFileSync(serverWranglerPath, 'utf8');
+  assert.doesNotMatch(config, /PAGES_CAP_JWT/);
+  assert.doesNotMatch(config, /KV_GATEWAY_SERVICE/);
 });
 
 test('xdads production config renders account id and old zone id', () => {

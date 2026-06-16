@@ -30,7 +30,7 @@ test('createPagesClient().kv.get returns null when runtime reports missing key',
   assert.equal(await client.kv.get('missing'), null);
 });
 
-test('createPagesClient().kv.put posts to the runtime put endpoint', async () => {
+test('createPagesClient().kv.set posts to the runtime set endpoint', async () => {
   let captured;
   const client = createPagesClient({
     fetch: async (url, init) => {
@@ -39,9 +39,9 @@ test('createPagesClient().kv.put posts to the runtime put endpoint', async () =>
     },
   });
 
-  await client.kv.put('app/config', { theme: 'light' }, { expirationTtl: 60 });
+  await client.kv.set('app/config', { theme: 'light' }, { expirationTtl: 60 });
 
-  assert.equal(captured.url, '/.xd-pages/runtime/v1/kv/put');
+  assert.equal(captured.url, '/.xd-pages/runtime/v1/kv/set');
   assert.equal(captured.init.method, 'POST');
   assert.equal(captured.init.headers['Content-Type'], 'application/json');
   assert.equal(captured.init.headers['X-XD-Pages-Runtime'], '1');

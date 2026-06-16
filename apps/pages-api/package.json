@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@xd/pages-runtime-protocol": "workspace:*",
     "@xd/worker-kit": "workspace:*"
   },
   "devDependencies": {

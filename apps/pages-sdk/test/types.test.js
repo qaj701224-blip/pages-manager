@@ -31,6 +31,7 @@ const client = createPagesClient();
 const defaultValue: Promise<unknown | null> = client.kv.get('app/config');
 const jsonValue: Promise<{ theme: string } | null> = client.kv.get<{ theme: string }>('app/config', { type: kvType });
 const textValue: Promise<string | null> = client.kv.get('app/text', { type: 'text' });
+const browserSetValue: Promise<void> = client.kv.set('app/config', { theme: 'dark' });
 
 const env: PagesRuntimeEnv = {
   XD_PAGES_KV_CAPABILITY: 'capability-token',
@@ -40,14 +41,17 @@ const runtime = createPagesRuntime({ env });
 const context: PagesPlatformContext | null = readPlatformContext(new Request('https://site.example/app'));
 const runtimeJsonValue: Promise<{ enabled: boolean } | null> = runtime.kv.get<{ enabled: boolean }>('app/config');
 const runtimeTextValue: Promise<string | null> = runtime.kv.get('app/text', { type: 'text' });
+const runtimeSetValue: Promise<void> = runtime.kv.set('app/config', { enabled: true });
 const maybeResponse: Promise<Response | null> = handlePagesRuntimeRequest(new Request('https://site.example/app'), env);
 const runtimeSource: string = PAGES_RUNTIME_SOURCE;
 
 void defaultValue;
 void jsonValue;
 void textValue;
+void browserSetValue;
 void runtimeJsonValue;
 void runtimeTextValue;
+void runtimeSetValue;
 void maybeResponse;
 void runtimeSource;
 void context;

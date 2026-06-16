@@ -13,7 +13,7 @@ import { verifyCapability } from './auth.js';
 
 const ROUTES = new Map([
   [GATEWAY.KV_GET_PATH, { scope: 'kv:get', handler: handleGet }],
-  [GATEWAY.KV_PUT_PATH, { scope: 'kv:put', handler: handlePut }],
+  [GATEWAY.KV_SET_PATH, { scope: 'kv:set', handler: handleSet }],
   [GATEWAY.KV_DELETE_PATH, { scope: 'kv:delete', handler: handleDelete }],
 ]);
 
@@ -76,12 +76,12 @@ async function handleGet(body, claims, env) {
   }
 }
 
-async function handlePut(body, claims, env) {
+async function handleSet(body, claims, env) {
   const validation = validateBody(body, { requireTtl: true });
   if (validation.response) return validation.response;
 
   const { key, type, expirationTtl } = validation;
-  const valueValidation = validatePutValue(body, type);
+  const valueValidation = validateSetValue(body, type);
   if (valueValidation.response) return valueValidation.response;
 
   const storageKey = buildStorageKey({ siteSlug: claims.siteId, siteUuid: claims.siteUuid, userKey: key });
@@ -121,7 +121,7 @@ async function handleDelete(body, claims, env) {
   return jsonResponse(buildOkEnvelope({ key }));
 }
 
-function validatePutValue(body, type) {
+function validateSetValue(body, type) {
   if (!Object.hasOwn(body, 'value')) {
     return { response: error(ERROR_CODES.INVALID_JSON, 'Missing KV value', 400) };
   }

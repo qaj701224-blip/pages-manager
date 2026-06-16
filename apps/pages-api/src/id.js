@@ -6,6 +6,10 @@ export function newId(prefix, { bytes } = {}) {
   return `${prefix}_${bytesToHex(random)}`;
 }
 
+export function newHexId({ bytes } = {}) {
+  return bytesToHex(bytes || randomBytes(16));
+}
+
 function randomBytes(byteLength) {
   const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);

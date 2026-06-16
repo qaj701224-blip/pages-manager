@@ -10,16 +10,22 @@ const scriptPath = join(repoRoot, 'scripts/render-pages-v2-wrangler.mjs');
 const pagesApiWranglerPath = join(repoRoot, 'apps/pages-api/wrangler.toml');
 const pagesAuthWranglerPath = join(repoRoot, 'apps/pages-auth/wrangler.toml');
 const pagesRouterWranglerPath = join(repoRoot, 'apps/pages-router/wrangler.toml');
+const kvGatewayWranglerPath = join(repoRoot, 'apps/kv-gateway/wrangler.toml');
 
 const baseEnv = {
   ...process.env,
   CLOUDFLARE_ACCOUNT_ID: 'dummy-account',
   D1_DATABASE_ID: 'dummy-pages-d1',
   ROUTE_SNAPSHOTS_KV_ID: 'dummy-route-snapshots-kv',
+  SITE_DATA_KV_ID: 'dummy-site-data-kv',
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606',
+  PAGES_EXECUTION_MODE: 'normal-worker-slot',
+  PAGES_NORMAL_WORKER_SLOT_COUNT: '2',
   PAGES_SESSION_JWT_ACTIVE_KID: 'pages-session-2026-06',
   PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
+  PAGES_CAP_JWT_ACTIVE_KID: 'pages-cap-2026-06',
+  PAGES_CAP_JWT_KEYS: 'pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
   ROUTER_IP_ALLOWLIST_CIDRS: '10.0.0.0/8,192.168.0.0/16',
   SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
   SSO_TOKEN_URL: 'https://sso.example.test/oauth/token',
@@ -31,6 +37,7 @@ afterEach(() => {
   rmSync(pagesApiWranglerPath, { force: true });
   rmSync(pagesAuthWranglerPath, { force: true });
   rmSync(pagesRouterWranglerPath, { force: true });
+  rmSync(kvGatewayWranglerPath, { force: true });
 });
 
 function renderApp(app, environment, env = baseEnv) {
@@ -56,6 +63,11 @@ function renderPagesRouter(environment, env = baseEnv) {
   return readFileSync(pagesRouterWranglerPath, 'utf8');
 }
 
+function renderKvGateway(environment, env = baseEnv) {
+  renderApp('apps/kv-gateway', environment, env);
+  return readFileSync(kvGatewayWranglerPath, 'utf8');
+}
+
 function runRenderer(args, env = baseEnv) {
   return spawnSync(process.execPath, [scriptPath, ...args], {
     cwd: repoRoot,
@@ -78,6 +90,7 @@ test('generated pages v2 wrangler configs are ignored', () => {
       'apps/pages-api/wrangler.toml',
       'apps/pages-auth/wrangler.toml',
       'apps/pages-router/wrangler.toml',
+      'apps/kv-gateway/wrangler.toml',
     ],
     {
       cwd: repoRoot,
@@ -89,6 +102,7 @@ test('generated pages v2 wrangler configs are ignored', () => {
   assert.match(result.stdout, /apps\/pages-api\/wrangler\.toml/);
   assert.match(result.stdout, /apps\/pages-auth\/wrangler\.toml/);
   assert.match(result.stdout, /apps\/pages-router\/wrangler\.toml/);
+  assert.match(result.stdout, /apps\/kv-gateway\/wrangler\.toml/);
 });
 
 test('production pages-api config renders explicit production template values only', () => {
@@ -102,6 +116,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-production"/);
+  assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
@@ -147,6 +162,7 @@ test('pages-api config requires resource ids and access key pepper registry', ()
     'ROUTE_SNAPSHOTS_KV_ID',
     'ACCESS_KEY_ACTIVE_PEPPER_ID',
     'ACCESS_KEY_PEPPERS',
+    'PAGES_EXECUTION_MODE',
   ]) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));
 
@@ -275,6 +291,16 @@ test('pages-api config rejects invalid WFP compatibility date', () => {
   assert.match(`${result.stderr}${result.stdout}`, /WFP_COMPATIBILITY_DATE/);
 });
 
+test('pages-api config rejects invalid execution mode', () => {
+  const result = runRenderer(['apps/pages-api', 'production'], {
+    ...baseEnv,
+    PAGES_EXECUTION_MODE: 'auto',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /PAGES_EXECUTION_MODE/);
+});
+
 test('pages-api config rejects unsafe access key pepper registry', () => {
   const unsafeId = runRenderer(['apps/pages-api', 'production'], {
     ...baseEnv,
@@ -291,6 +317,28 @@ test('pages-api config rejects unsafe access key pepper registry', () => {
   assert.match(`${unsafeSecretName.stderr}${unsafeSecretName.stdout}`, /ACCESS_KEY_PEPPERS/);
 });
 
+test('pages v2 renderer rejects unsafe JWT key registries', () => {
+  const badSessionSecret = runRenderer(['apps/pages-auth', 'production'], {
+    ...baseEnv,
+    PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:REAL_SECRET_VALUE',
+  });
+  const badCapabilityAlg = runRenderer(['apps/pages-router', 'production'], {
+    ...baseEnv,
+    PAGES_CAP_JWT_KEYS: 'pages-cap-2026-06:RS256:PAGES_CAP_JWT_SECRET_202606',
+  });
+  const missingActiveKid = runRenderer(['apps/kv-gateway', 'production'], {
+    ...baseEnv,
+    PAGES_CAP_JWT_ACTIVE_KID: 'pages-cap-missing',
+  });
+
+  assert.notEqual(badSessionSecret.status, 0);
+  assert.match(`${badSessionSecret.stderr}${badSessionSecret.stdout}`, /PAGES_SESSION_JWT_KEYS/);
+  assert.notEqual(badCapabilityAlg.status, 0);
+  assert.match(`${badCapabilityAlg.stderr}${badCapabilityAlg.stdout}`, /PAGES_CAP_JWT_KEYS/);
+  assert.notEqual(missingActiveKid.status, 0);
+  assert.match(`${missingActiveKid.stderr}${missingActiveKid.stdout}`, /PAGES_CAP_JWT_ACTIVE_KID/);
+});
+
 test('production pages-router config renders explicit production fast-path settings only', () => {
   const config = renderPagesRouter('production');
 
@@ -305,15 +353,23 @@ test('production pages-router config renders explicit production fast-path setti
   assert.match(config, /ROUTER_JWKS_URL = "https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/jwks\.json"/);
   assert.match(config, /PAGES_SESSION_JWT_ISSUER = "pages-router"/);
   assert.match(config, /PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"/);
+  assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "pages-cap-2026-06"/);
+  assert.match(config, /PAGES_CAP_JWT_KEYS = "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"/);
   assert.match(config, /SITE_SESSION_IDLE_TTL_SECONDS = "604800"/);
   assert.match(config, /SITE_SESSION_FRESHNESS_TTL_SECONDS = "900"/);
   assert.match(config, /INTERNAL_WORKER_JWT_TTL_SECONDS = "60"/);
   assert.match(config, /binding = "PAGES_AUTH"/);
   assert.match(config, /service = "pages-auth"/);
+  assert.match(config, /binding = "XD_PAGES_KV_GATEWAY"/);
+  assert.match(config, /service = "pages-kv-gateway"/);
+  assert.match(config, /binding = "SITE_SLOT_001"/);
+  assert.match(config, /service = "pages-v2-production-slot-001"/);
+  assert.match(config, /binding = "SITE_SLOT_002"/);
+  assert.match(config, /service = "pages-v2-production-slot-002"/);
   assert.match(config, /binding = "ROUTE_SNAPSHOTS"/);
   assert.match(config, /id = "dummy-route-snapshots-kv"/);
-  assert.match(config, /binding = "PAGES_DISPATCH"/);
-  assert.match(config, /namespace = "pages-production"/);
+  assert.doesNotMatch(config, /binding = "PAGES_DISPATCH"/);
+  assert.doesNotMatch(config, /namespace = "pages-production"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /namespace = "pages-staging"/);
@@ -334,7 +390,51 @@ test('staging pages-router config renders explicit staging fast-path settings', 
     /ROUTER_JWKS_URL = "https:\/\/auth-staging\.pages\.xd\.team\/\.xd-pages\/jwks\.json"/,
   );
   assert.match(config, /service = "pages-auth-staging"/);
-  assert.match(config, /namespace = "pages-staging"/);
+  assert.match(config, /binding = "XD_PAGES_KV_GATEWAY"/);
+  assert.match(config, /service = "pages-kv-gateway-staging"/);
+  assert.match(config, /binding = "SITE_SLOT_001"/);
+  assert.match(config, /service = "pages-v2-staging-slot-001"/);
+  assert.match(config, /binding = "SITE_SLOT_002"/);
+  assert.match(config, /service = "pages-v2-staging-slot-002"/);
+  assert.doesNotMatch(config, /binding = "PAGES_DISPATCH"/);
+  assert.doesNotMatch(config, /namespace = "pages-staging"/);
+});
+
+test('pages-router config renders WFP dispatch namespace and omits slot bindings in wfp mode', () => {
+  const config = renderPagesRouter('production', {
+    ...baseEnv,
+    PAGES_EXECUTION_MODE: 'wfp',
+    PAGES_NORMAL_WORKER_SLOT_COUNT: '',
+  });
+
+  assert.doesNotMatch(config, /SITE_SLOT_001/);
+  assert.doesNotMatch(config, /pages-v2-production-slot-001/);
+  assert.match(config, /binding = "PAGES_DISPATCH"/);
+  assert.match(config, /namespace = "pages-production"/);
+});
+
+test('pages-router config can keep slot bindings in wfp mode while draining slot routes', () => {
+  const config = renderPagesRouter('production', {
+    ...baseEnv,
+    PAGES_EXECUTION_MODE: 'wfp',
+    PAGES_NORMAL_WORKER_SLOT_COUNT: '2',
+  });
+
+  assert.match(config, /binding = "PAGES_DISPATCH"/);
+  assert.match(config, /namespace = "pages-production"/);
+  assert.match(config, /binding = "SITE_SLOT_001"/);
+  assert.match(config, /service = "pages-v2-production-slot-001"/);
+  assert.match(config, /binding = "SITE_SLOT_002"/);
+  assert.match(config, /service = "pages-v2-production-slot-002"/);
+});
+
+test('pages-router config requires slot count in normal worker slot mode', () => {
+  const env = { ...baseEnv };
+  delete env.PAGES_NORMAL_WORKER_SLOT_COUNT;
+  const result = runRenderer(['apps/pages-router', 'production'], env);
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /PAGES_NORMAL_WORKER_SLOT_COUNT/);
 });
 
 test('pages-router config supports explicit cache and JWT ttl overrides', () => {
@@ -356,8 +456,45 @@ test('pages-router config requires allowlist, route snapshot store, and signing 
     'ROUTE_SNAPSHOTS_KV_ID',
     'PAGES_SESSION_JWT_ACTIVE_KID',
     'PAGES_SESSION_JWT_KEYS',
+    'PAGES_CAP_JWT_ACTIVE_KID',
+    'PAGES_CAP_JWT_KEYS',
+    'PAGES_EXECUTION_MODE',
   ]) {
     const result = runRenderer(['apps/pages-router', 'production'], withoutEnv(name));
+
+    assert.notEqual(result.status, 0, `${name} should be required`);
+    assert.match(`${result.stderr}${result.stdout}`, new RegExp(name));
+  }
+});
+
+test('production kv-gateway config renders explicit production site data settings only', () => {
+  const config = renderKvGateway('production');
+
+  assert.match(config, /name = "pages-kv-gateway"/);
+  assert.match(config, /account_id = "dummy-account"/);
+  assert.match(config, /workers_dev = false/);
+  assert.match(config, /PAGES_ENV = "production"/);
+  assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "pages-cap-2026-06"/);
+  assert.match(config, /PAGES_CAP_JWT_KEYS = "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"/);
+  assert.match(config, /binding = "SITE_DATA"/);
+  assert.match(config, /id = "dummy-site-data-kv"/);
+  assert.doesNotMatch(config, /name = "pages-kv-gateway-staging"/);
+  assert.doesNotMatch(config, /PAGES_ENV = "staging"/);
+  assert.doesNotMatch(config, /CF_API_TOKEN|CLOUDFLARE_API_TOKEN|SSO_CLIENT_SECRET/);
+  assert.doesNotMatch(config, /__[A-Z0-9_]+__/);
+});
+
+test('staging kv-gateway config renders explicit staging site data settings', () => {
+  const config = renderKvGateway('staging');
+
+  assert.match(config, /name = "pages-kv-gateway-staging"/);
+  assert.match(config, /PAGES_ENV = "staging"/);
+  assert.doesNotMatch(config, /name = "pages-kv-gateway"/);
+});
+
+test('kv-gateway config requires site data KV id and capability registry', () => {
+  for (const name of ['SITE_DATA_KV_ID', 'PAGES_CAP_JWT_ACTIVE_KID', 'PAGES_CAP_JWT_KEYS']) {
+    const result = runRenderer(['apps/kv-gateway', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);
     assert.match(`${result.stderr}${result.stdout}`, new RegExp(name));

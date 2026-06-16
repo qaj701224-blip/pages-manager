@@ -111,6 +111,7 @@ export class D1PagesStore {
       environment: input.environment,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
+      executionModeOverride: input.executionModeOverride || null,
       siteUuid: input.siteUuid,
       createdAt: now,
       updatedAt: now,
@@ -123,9 +124,9 @@ export class D1PagesStore {
       this.db
         .prepare(
           `INSERT INTO sites (
-            id, slug, environment, owner_user_id, default_visibility, site_uuid,
+            id, slug, environment, owner_user_id, default_visibility, execution_mode_override, site_uuid,
             created_at, updated_at, deleted_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           site.id,
@@ -133,6 +134,7 @@ export class D1PagesStore {
           site.environment,
           site.ownerUserId,
           site.defaultVisibility,
+          site.executionModeOverride,
           site.siteUuid,
           site.createdAt,
           site.updatedAt,
@@ -141,10 +143,11 @@ export class D1PagesStore {
       this.db
         .prepare(
           `INSERT INTO site_routes (
-            id, hostname, site_id, environment, runtime, worker_name,
+            id, hostname, site_id, environment, runtime, execution_provider, worker_name,
+            dispatch_type, dispatch_binding_name, slot_id,
             active_version_id, visibility, policy_version, route_generation,
             route_status, cache_tier, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           route.id,
@@ -152,7 +155,11 @@ export class D1PagesStore {
           route.siteId,
           route.environment,
           route.runtime,
+          route.executionProvider,
           route.workerName,
+          route.dispatchType,
+          route.dispatchBindingName,
+          route.slotId,
           route.activeVersionId,
           route.visibility,
           route.policyVersion,
@@ -191,6 +198,10 @@ export class D1PagesStore {
     const siteScope = actor.type === 'access_key' && actor.siteId ? actor.siteId : null;
     const query = `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
           site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+          site_routes.execution_provider AS route_execution_provider,
+          site_routes.dispatch_type AS route_dispatch_type,
+          site_routes.dispatch_binding_name AS route_dispatch_binding_name,
+          site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
           site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
@@ -220,6 +231,10 @@ export class D1PagesStore {
       .prepare(
         `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
           site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+          site_routes.execution_provider AS route_execution_provider,
+          site_routes.dispatch_type AS route_dispatch_type,
+          site_routes.dispatch_binding_name AS route_dispatch_binding_name,
+          site_routes.slot_id AS route_slot_id,
           site_routes.active_version_id AS route_active_version_id,
           site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
@@ -380,6 +395,10 @@ export class D1PagesStore {
       deploymentId: input.deploymentId,
       workerName: input.workerName,
       runtime: input.runtime,
+      executionProvider: input.executionProvider || executionProviderFromRuntime(input.runtime),
+      dispatchType: input.dispatchType || dispatchTypeFromExecutionProvider(input.executionProvider),
+      dispatchBindingName: input.dispatchBindingName || null,
+      slotId: input.slotId || null,
       artifactKind: input.artifactKind,
       artifactRef: input.artifactRef,
       contentHash: input.contentHash,
@@ -389,9 +408,10 @@ export class D1PagesStore {
     await this.db
       .prepare(
         `INSERT INTO site_versions (
-          id, site_id, deployment_id, worker_name, runtime, artifact_kind,
+          id, site_id, deployment_id, worker_name, runtime, execution_provider,
+          dispatch_type, dispatch_binding_name, slot_id, artifact_kind,
           artifact_ref, content_hash, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -399,6 +419,10 @@ export class D1PagesStore {
         record.deploymentId,
         record.workerName,
         record.runtime,
+        record.executionProvider,
+        record.dispatchType,
+        record.dispatchBindingName,
+        record.slotId,
         record.artifactKind,
         record.artifactRef,
         record.contentHash,
@@ -409,21 +433,70 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
-  async activateSiteVersion(siteId, { activeVersionId, workerName, visibility, updatedAt }, environment) {
-    await this.db
+  async activateSiteVersion(
+    siteId,
+    {
+      activeVersionId,
+      workerName,
+      runtime = 'worker',
+      executionProvider,
+      dispatchType,
+      dispatchBindingName = null,
+      slotId = null,
+      visibility,
+      updatedAt,
+    },
+    environment,
+    expectedRoute = null
+  ) {
+    const expectedConditions = expectedRoute
+      ? ' AND route_generation = ? AND policy_version = ? AND active_version_id IS ?'
+      : '';
+    const result = await this.db
       .prepare(
         `UPDATE site_routes
-        SET active_version_id = ?, worker_name = ?, runtime = 'wfp',
+        SET active_version_id = ?, worker_name = ?, runtime = ?,
+          execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
           visibility = ?, route_status = 'active', route_generation = route_generation + 1,
           updated_at = ?
-        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}${expectedConditions}`
       )
       .bind(
         ...(environment
-          ? [activeVersionId, workerName, visibility, updatedAt, siteId, environment]
-          : [activeVersionId, workerName, visibility, updatedAt, siteId])
+          ? [
+              activeVersionId,
+              workerName,
+              runtime,
+              executionProvider,
+              dispatchType,
+              dispatchBindingName,
+              slotId,
+              visibility,
+              updatedAt,
+              siteId,
+              environment,
+              ...(expectedRoute
+                ? [expectedRoute.routeGeneration, expectedRoute.policyVersion, expectedRoute.activeVersionId]
+                : []),
+            ]
+          : [
+              activeVersionId,
+              workerName,
+              runtime,
+              executionProvider,
+              dispatchType,
+              dispatchBindingName,
+              slotId,
+              visibility,
+              updatedAt,
+              siteId,
+              ...(expectedRoute
+                ? [expectedRoute.routeGeneration, expectedRoute.policyVersion, expectedRoute.activeVersionId]
+                : []),
+            ])
       )
       .run();
+    if (expectedRoute && result?.meta?.changes === 0) return null;
     return this.getRouteBySiteId(siteId, environment);
   }
 
@@ -433,6 +506,7 @@ export class D1PagesStore {
       .prepare(
         `UPDATE site_routes
         SET active_version_id = ?, worker_name = ?, runtime = ?,
+          execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
           visibility = ?, policy_version = ?, route_generation = ?,
           route_status = ?, cache_tier = ?, updated_at = ?
         WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
@@ -443,6 +517,10 @@ export class D1PagesStore {
               route.activeVersionId,
               route.workerName,
               route.runtime,
+              route.executionProvider,
+              route.dispatchType,
+              route.dispatchBindingName,
+              route.slotId,
               route.visibility,
               route.policyVersion,
               route.routeGeneration,
@@ -456,6 +534,10 @@ export class D1PagesStore {
               route.activeVersionId,
               route.workerName,
               route.runtime,
+              route.executionProvider,
+              route.dispatchType,
+              route.dispatchBindingName,
+              route.slotId,
               route.visibility,
               route.policyVersion,
               route.routeGeneration,
@@ -487,6 +569,105 @@ export class D1PagesStore {
       .bind(...(environment ? [id, environment] : [id]))
       .first();
     return row ? mapSiteVersion(row) : null;
+  }
+
+  async createWorkerSlot(input) {
+    const now = input.createdAt || this.now();
+    const record = {
+      id: input.id,
+      environment: input.environment,
+      slotNumber: input.slotNumber,
+      workerName: input.workerName,
+      bindingName: input.bindingName,
+      status: input.status || 'provisioning',
+      assignedSiteId: input.assignedSiteId || null,
+      assignedRouteId: input.assignedRouteId || null,
+      assignedVersionId: input.assignedVersionId || null,
+      assignedAt: input.assignedAt || null,
+      lastDeployedVersionId: input.lastDeployedVersionId || null,
+      lastSeenAt: input.lastSeenAt || null,
+      healthStatus: input.healthStatus || 'unknown',
+      notes: input.notes || null,
+      createdAt: now,
+      updatedAt: input.updatedAt || now,
+    };
+    await this.db
+      .prepare(
+        `INSERT INTO worker_slots (
+          id, environment, slot_number, worker_name, binding_name, status,
+          assigned_site_id, assigned_route_id, assigned_version_id, assigned_at,
+          last_deployed_version_id, last_seen_at, health_status, notes,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        record.id,
+        record.environment,
+        record.slotNumber,
+        record.workerName,
+        record.bindingName,
+        record.status,
+        record.assignedSiteId,
+        record.assignedRouteId,
+        record.assignedVersionId,
+        record.assignedAt,
+        record.lastDeployedVersionId,
+        record.lastSeenAt,
+        record.healthStatus,
+        record.notes,
+        record.createdAt,
+        record.updatedAt
+      )
+      .run();
+    return cloneRecord(record);
+  }
+
+  async getWorkerSlot(id) {
+    const row = await this.db.prepare('SELECT * FROM worker_slots WHERE id = ?').bind(id).first();
+    return row ? mapWorkerSlot(row) : null;
+  }
+
+  async assignAvailableWorkerSlot({ environment, siteId, routeId, versionId, assignedAt }) {
+    const slotsResult = await this.db
+      .prepare(
+        `SELECT * FROM worker_slots
+        WHERE environment = ? AND status = 'available'
+        ORDER BY slot_number ASC
+        LIMIT 20`
+      )
+      .bind(environment)
+      .all();
+    const slots = slotsResult?.results || [];
+    if (slots.length === 0) return null;
+    const now = assignedAt || this.now();
+    for (const slot of slots) {
+      const result = await this.db
+        .prepare(
+          `UPDATE worker_slots
+          SET status = 'assigned', assigned_site_id = ?, assigned_route_id = ?,
+            assigned_version_id = ?, assigned_at = ?, last_deployed_version_id = ?,
+            updated_at = ?
+          WHERE id = ? AND status = 'available'`
+        )
+        .bind(siteId, routeId, versionId, now, versionId, now, slot.id)
+        .run();
+      if (!result?.meta || result.meta.changes !== 0) return this.getWorkerSlot(slot.id);
+    }
+    return null;
+  }
+
+  async releaseWorkerSlot(id, { status = 'available', updatedAt } = {}) {
+    const now = updatedAt || this.now();
+    await this.db
+      .prepare(
+        `UPDATE worker_slots
+        SET status = ?, assigned_site_id = NULL, assigned_route_id = NULL,
+          assigned_version_id = NULL, assigned_at = NULL, updated_at = ?
+        WHERE id = ?`
+      )
+      .bind(status, now, id)
+      .run();
+    return this.getWorkerSlot(id);
   }
 
   async createAccessKey(input) {
@@ -688,7 +869,11 @@ export function createInitialRoute(input, now) {
     siteId: input.id,
     environment: input.environment,
     runtime: 'disabled',
+    executionProvider: null,
     workerName: null,
+    dispatchType: null,
+    dispatchBindingName: null,
+    slotId: null,
     activeVersionId: null,
     visibility: input.defaultVisibility,
     policyVersion: 1,
@@ -720,6 +905,11 @@ function routesMatch(actual, expected) {
     actual.id === expected.id &&
     actual.activeVersionId === expected.activeVersionId &&
     actual.workerName === expected.workerName &&
+    actual.runtime === expected.runtime &&
+    actual.executionProvider === expected.executionProvider &&
+    actual.dispatchType === expected.dispatchType &&
+    actual.dispatchBindingName === expected.dispatchBindingName &&
+    actual.slotId === expected.slotId &&
     actual.visibility === expected.visibility &&
     actual.policyVersion === expected.policyVersion &&
     actual.routeGeneration === expected.routeGeneration &&
@@ -748,6 +938,7 @@ function mapSite(row) {
     environment: row.environment,
     ownerUserId: row.owner_user_id,
     defaultVisibility: row.default_visibility,
+    executionModeOverride: row.execution_mode_override || null,
     siteUuid: row.site_uuid,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -764,7 +955,12 @@ function mapSiteWithJoinedRoute(row) {
         siteId: site.id,
         environment: site.environment,
         runtime: row.route_runtime,
+        executionProvider: row.route_execution_provider || executionProviderFromRuntime(row.route_runtime),
         workerName: row.route_worker_name,
+        dispatchType:
+          row.route_dispatch_type || dispatchTypeFromExecutionProvider(row.route_execution_provider || row.route_runtime),
+        dispatchBindingName: row.route_dispatch_binding_name || null,
+        slotId: row.route_slot_id || null,
         activeVersionId: row.route_active_version_id,
         visibility: row.route_visibility,
         policyVersion: row.route_policy_version,
@@ -785,7 +981,11 @@ function mapSiteRoute(row) {
     siteId: row.site_id,
     environment: row.environment,
     runtime: row.runtime,
+    executionProvider: row.execution_provider || executionProviderFromRuntime(row.runtime),
     workerName: row.worker_name,
+    dispatchType: row.dispatch_type || dispatchTypeFromExecutionProvider(row.execution_provider || row.runtime),
+    dispatchBindingName: row.dispatch_binding_name || null,
+    slotId: row.slot_id || null,
     activeVersionId: row.active_version_id,
     visibility: row.visibility,
     policyVersion: row.policy_version,
@@ -827,12 +1027,48 @@ function mapSiteVersion(row) {
     deploymentId: row.deployment_id,
     workerName: row.worker_name,
     runtime: row.runtime,
+    executionProvider: row.execution_provider || executionProviderFromRuntime(row.runtime),
+    dispatchType: row.dispatch_type || dispatchTypeFromExecutionProvider(row.execution_provider || row.runtime),
+    dispatchBindingName: row.dispatch_binding_name || null,
+    slotId: row.slot_id || null,
     artifactKind: row.artifact_kind,
     artifactRef: row.artifact_ref,
     contentHash: row.content_hash,
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
+}
+
+function mapWorkerSlot(row) {
+  return {
+    id: row.id,
+    environment: row.environment,
+    slotNumber: row.slot_number,
+    workerName: row.worker_name,
+    bindingName: row.binding_name,
+    status: row.status,
+    assignedSiteId: row.assigned_site_id,
+    assignedRouteId: row.assigned_route_id,
+    assignedVersionId: row.assigned_version_id,
+    assignedAt: row.assigned_at,
+    lastDeployedVersionId: row.last_deployed_version_id,
+    lastSeenAt: row.last_seen_at,
+    healthStatus: row.health_status,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function executionProviderFromRuntime(runtime) {
+  return runtime === 'wfp' ? 'wfp' : null;
+}
+
+function dispatchTypeFromExecutionProvider(value) {
+  const executionProvider = executionProviderFromRuntime(value) || value;
+  if (executionProvider === 'normal-worker-slot') return 'service-binding';
+  if (executionProvider === 'wfp') return 'dispatch-namespace';
+  return null;
 }
 
 function mapAccessKey(row) {

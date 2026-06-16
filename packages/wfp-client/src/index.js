@@ -4,6 +4,7 @@ const EXPECTED_NAMESPACE_BY_ENV = {
   staging: 'pages-staging',
 };
 const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const BINDING_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 export class WfpApiError extends Error {
   constructor({ status, code = 'WFP_API_ERROR', message }) {
@@ -54,22 +55,20 @@ export function createWfpClient({
   const account = encodeURIComponent(accountId);
 
   return {
-    async uploadUserWorker({ scriptName, mainModule, modules, compatibilityDate, tags = [] }) {
+    async uploadUserWorker({ scriptName, mainModule, modules, compatibilityDate, tags = [], bindings = [] }) {
       const safeScriptName = validateScriptName(scriptName);
       validateModules({ mainModule, modules });
+      const safeBindings = normalizeWorkerBindings(bindings);
       const form = new FormData();
+      const metadata = {
+        main_module: mainModule,
+        compatibility_date: compatibilityDate || new Date().toISOString().slice(0, 10),
+        tags,
+      };
+      if (safeBindings.length > 0) metadata.bindings = safeBindings;
       form.set(
         'metadata',
-        new Blob(
-          [
-            JSON.stringify({
-              main_module: mainModule,
-              compatibility_date: compatibilityDate || new Date().toISOString().slice(0, 10),
-              tags,
-            }),
-          ],
-          { type: 'application/json' }
-        )
+        new Blob([JSON.stringify(metadata)], { type: 'application/json' })
       );
       for (const module of modules) {
         form.set(module.name, new Blob([module.content], { type: module.type || 'application/javascript+module' }), module.name);
@@ -104,6 +103,25 @@ export function validateScriptName(value) {
   const scriptName = String(value || '').trim();
   if (!SCRIPT_NAME_RE.test(scriptName)) throw new Error('WFP_SCRIPT_NAME_INVALID');
   return scriptName;
+}
+
+export function normalizeWorkerBindings(bindings = []) {
+  if (!Array.isArray(bindings)) throw new Error('WORKER_BINDINGS_INVALID');
+  return bindings.map((binding) => normalizeWorkerBinding(binding));
+}
+
+function normalizeWorkerBinding(binding) {
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding)) throw new Error('WORKER_BINDING_INVALID');
+  if (binding.type !== 'service') throw new Error('WORKER_BINDING_TYPE_INVALID');
+
+  const name = String(binding.name || '').trim();
+  if (!BINDING_NAME_RE.test(name)) throw new Error('WORKER_BINDING_NAME_INVALID');
+
+  return {
+    type: 'service',
+    name,
+    service: validateScriptName(binding.service),
+  };
 }
 
 async function requestCloudflare(fetch, apiToken, url, init) {

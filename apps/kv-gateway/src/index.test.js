@@ -4,7 +4,6 @@ import { buildStorageKey } from '@xd/pages-runtime-protocol';
 import worker from './index.js';
 import { createHs256Jwt } from './auth.js';
 
-const now = 1_700_000_000;
 const siteId = 'q2-report';
 const siteUuid = '4b4c8e8361ef4b47b64f5c20a7db7c47';
 const otherUuid = '11111111111111111111111111111111';
@@ -44,15 +43,17 @@ function env(overrides = {}) {
 }
 
 function claims(overrides = {}) {
+  const issuedAt = Math.floor(Date.now() / 1000) - 10;
   return {
-    iss: 'pages-manager',
+    iss: 'pages-v2',
     aud: 'pages-kv-gateway',
     env: 'production',
     siteId,
     siteUuid,
-    scope: ['kv:get', 'kv:put', 'kv:delete'],
-    nbf: now - 10,
-    iat: now - 10,
+    scope: ['kv:get', 'kv:set', 'kv:delete'],
+    nbf: issuedAt,
+    iat: issuedAt,
+    exp: issuedAt + 50,
     ...overrides,
   };
 }
@@ -94,12 +95,12 @@ test('get reads only JWT-derived prefix and ignores body siteId', async () => {
   assert.deepEqual(await json(response), { ok: true, key: 'app/config', found: true, value: { theme: 'light' } });
 });
 
-test('put stores text and ttl metadata under prefixed key', async () => {
+test('set stores text and ttl metadata under prefixed key', async () => {
   const gatewayEnv = env();
 
   const response = await worker.fetch(
     await request(
-      '/v1/kv/put',
+      '/v1/kv/set',
       { key: 'notes/welcome', value: 'hello', type: 'text', expirationTtl: 60 },
       { authorization: await authHeader() }
     ),
@@ -120,11 +121,11 @@ test('put stores text and ttl metadata under prefixed key', async () => {
   assert.match(gatewayEnv.SITE_DATA.puts[0].options.metadata.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
-test('put rejects missing json value before writing', async () => {
+test('set rejects missing json value before writing', async () => {
   const gatewayEnv = env();
 
   const response = await worker.fetch(
-    await request('/v1/kv/put', { key: 'app/config', type: 'json' }, { authorization: await authHeader() }),
+    await request('/v1/kv/set', { key: 'app/config', type: 'json' }, { authorization: await authHeader() }),
     gatewayEnv
   );
 
@@ -133,11 +134,11 @@ test('put rejects missing json value before writing', async () => {
   assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
 });
 
-test('put rejects missing text value before writing', async () => {
+test('set rejects missing text value before writing', async () => {
   const gatewayEnv = env();
 
   const response = await worker.fetch(
-    await request('/v1/kv/put', { key: 'app/config', type: 'text' }, { authorization: await authHeader() }),
+    await request('/v1/kv/set', { key: 'app/config', type: 'text' }, { authorization: await authHeader() }),
     gatewayEnv
   );
 
@@ -146,11 +147,11 @@ test('put rejects missing text value before writing', async () => {
   assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
 });
 
-test('put rejects null text value before writing', async () => {
+test('set rejects null text value before writing', async () => {
   const gatewayEnv = env();
 
   const response = await worker.fetch(
-    await request('/v1/kv/put', { key: 'app/config', value: null, type: 'text' }, { authorization: await authHeader() }),
+    await request('/v1/kv/set', { key: 'app/config', value: null, type: 'text' }, { authorization: await authHeader() }),
     gatewayEnv
   );
 
@@ -176,7 +177,7 @@ test('provider value-too-large errors are standardized', async () => {
   gatewayEnv.SITE_DATA.failPut = new Error('KV value is too large for namespace limit');
 
   const response = await worker.fetch(
-    await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
+    await request('/v1/kv/set', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
     gatewayEnv
   );
 
@@ -189,7 +190,7 @@ test('provider value-size errors are standardized', async () => {
   gatewayEnv.SITE_DATA.failPut = new Error('Value length exceeds maximum allowed size');
 
   const response = await worker.fetch(
-    await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
+    await request('/v1/kv/set', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
     gatewayEnv
   );
 
@@ -202,7 +203,7 @@ test('generic provider value errors are not mapped to too-large responses', asyn
   gatewayEnv.SITE_DATA.failPut = new Error('value must be a string');
 
   const response = await worker.fetch(
-    await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
+    await request('/v1/kv/set', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
     gatewayEnv
   );
 
@@ -215,7 +216,7 @@ test('provider rate limit errors are not mapped to too-large responses', async (
   gatewayEnv.SITE_DATA.failPut = new Error('Rate limit exceeded');
 
   const response = await worker.fetch(
-    await request('/v1/kv/put', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
+    await request('/v1/kv/set', { key: 'app/config', value: 'hello', type: 'text' }, { authorization: await authHeader() }),
     gatewayEnv
   );
 
@@ -266,7 +267,7 @@ test('body/header/env siteUuid is ignored and JWT siteUuid determines prefix', a
   const gatewayEnv = env({ XD_PAGES_SITE_UUID: otherUuid });
   const auth = await authHeader(claims({ siteUuid: otherUuid }));
   const headers = new Headers({ Authorization: auth, 'Content-Type': 'application/json', 'X-Site-Uuid': siteUuid });
-  const requestWithHeader = new Request('https://gateway.example/v1/kv/put', {
+  const requestWithHeader = new Request('https://gateway.example/v1/kv/set', {
     method: 'POST',
     headers,
     body: JSON.stringify({ key: 'app/config', value: { ok: true }, siteUuid }),

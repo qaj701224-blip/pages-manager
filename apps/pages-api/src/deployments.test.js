@@ -32,7 +32,7 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   assert.equal(body.deployment.id, 'dep_1');
   assert.equal(body.deployment.status, 'succeeded');
   assert.equal(body.deployment.versionId, 'ver_1');
-  assert.equal(body.version.workerName, 'pages-v2-docs-ver-1');
+  assertNoPublicExecutionDetails(body);
   assert.equal(body.route.routeGeneration, 1);
   assert.equal((await store.getSiteVersion('ver_1')).contentHash, 'sha256:abc');
   assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'wfp://test/pages-v2-docs-ver-1');
@@ -80,6 +80,141 @@ test('uploads and verifies WFP worker before route activation', async () => {
     ['verify', 'pages-v2-docs-ver-1', null],
   ]);
   assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
+});
+
+test('WFP upload metadata binds Pages KV gateway to user workers', async () => {
+  const store = await createSeededStore();
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: undefined,
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    WFP_DISPATCH_NAMESPACE: 'pages-production',
+    fetch: async (request) => {
+      requests.push(request);
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'wfp_binding',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 201);
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+  ]);
+});
+
+test('deploys through normal worker slot mode without exposing provider to the request', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  const snapshots = createSnapshotStore();
+  const events = [];
+  const env = testEnv(store, snapshots, {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    NORMAL_WORKER_SLOT_PROVIDER: {
+      upload: async ({ workerName, slot }) => {
+        events.push(['upload', workerName, slot.id, (await store.getRouteBySiteId('site_1')).activeVersionId]);
+      },
+      verify: async ({ workerName, slot }) => {
+        events.push(['verify', workerName, slot.id, (await store.getRouteBySiteId('site_1')).activeVersionId]);
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        ...deployPayload(),
+        executionProvider: 'wfp',
+      },
+      { 'Idempotency-Key': 'slot_deploy' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.equal(body.version.runtime, 'worker');
+  assertNoPublicExecutionDetails(body);
+  assert.equal((await store.getSiteVersion('ver_1')).executionProvider, 'normal-worker-slot');
+  assert.equal((await store.getRouteBySiteId('site_1')).dispatchBindingName, 'SITE_SLOT_007');
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'assigned');
+  assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, 'ver_1');
+  const pointer = snapshots.read('production:route_pointer:docs.pages.xd.team');
+  assert.deepEqual(snapshots.read(pointer.snapshotKey).dispatch, {
+    type: 'service-binding',
+    slotId: 'slot_007',
+    bindingName: 'SITE_SLOT_007',
+  });
+  assert.deepEqual(events, [
+    ['upload', 'pages-v2-production-slot-007', 'slot_007', null],
+    ['verify', 'pages-v2-production-slot-007', 'slot_007', null],
+  ]);
+});
+
+test('normal worker slot upload metadata binds Pages KV gateway to slot workers', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    fetch: async (request) => {
+      requests.push(request);
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'slot_binding',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 201);
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  assert.match(uploadRequest.url, /\/workers\/scripts\/pages-v2-production-slot-007$/);
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+  ]);
+});
+
+test('fails normal worker slot deployment when no slot is available', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_full' }),
+    testEnv(store, createSnapshotStore(), { PAGES_EXECUTION_MODE: 'normal-worker-slot' })
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_CAPACITY_EXHAUSTED');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
 });
 
 test('deployment idempotency replays same request and rejects changed request', async () => {
@@ -315,7 +450,11 @@ test('marks deployment failed when route snapshot write fails and replays failed
     siteId: 'site_1',
     environment: 'production',
     runtime: 'disabled',
+    executionProvider: null,
     workerName: null,
+    dispatchType: null,
+    dispatchBindingName: null,
+    slotId: null,
     activeVersionId: null,
     visibility: 'org',
     policyVersion: 1,
@@ -352,7 +491,7 @@ test('marks deployment failed when WFP upload fails without creating active vers
   );
 
   assert.equal(response.status, 502);
-  assert.equal((await response.json()).error.code, 'WFP_UPLOAD_FAILED');
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_UPLOAD_FAILED');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
@@ -381,10 +520,59 @@ test('marks deployment failed when WFP verify fails without creating active vers
   );
 
   assert.equal(response.status, 502);
-  assert.equal((await response.json()).error.code, 'WFP_VERIFY_FAILED');
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_VERIFY_FAILED');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
+});
+
+test('fails deployment activation without clobbering a concurrently changed route', async () => {
+  const store = await createSeededStore();
+  const originalActivate = store.activateSiteVersion.bind(store);
+  let injectedConcurrentActivation = false;
+  store.activateSiteVersion = async (siteId, patch, environment, expectedRoute) => {
+    if (!injectedConcurrentActivation) {
+      injectedConcurrentActivation = true;
+      await originalActivate(
+        siteId,
+        {
+          activeVersionId: 'ver_concurrent',
+          workerName: 'pages-v2-docs-concurrent',
+          runtime: 'worker',
+          executionProvider: 'wfp',
+          dispatchType: 'dispatch-namespace',
+          visibility: 'org',
+          updatedAt: '2026-06-15T00:00:30.000Z',
+        },
+        environment
+      );
+    }
+    return originalActivate(siteId, patch, environment, expectedRoute);
+  };
+  const snapshots = createSnapshotStore();
+  const deletedWorkers = [];
+  const env = testEnv(store, snapshots, {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => ({ ok: true }),
+      delete: async ({ workerName }) => deletedWorkers.push(workerName),
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'activation_race',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, 'ROUTE_ACTIVATION_CONFLICT');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal((await store.getDeployment('dep_1')).errorCode, 'ROUTE_ACTIVATION_CONFLICT');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_concurrent');
+  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team'), undefined);
   assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
 });
 
@@ -407,7 +595,7 @@ test('fails deployment when production WFP namespace points at staging', async (
   );
 
   assert.equal(response.status, 500);
-  assert.equal((await response.json()).error.code, 'WFP_CONFIG_INVALID');
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_PLATFORM_CONFIG_INVALID');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
 });
@@ -443,6 +631,72 @@ test('keeps previous active route when rollback snapshot write fails', async () 
   assert.equal(route.workerName, 'pages-v2-docs-ver-2');
   assert.equal(route.routeGeneration, 2);
   assert.equal(route.routeStatus, 'active');
+});
+
+test('rejects rollback to a version from a failed deployment', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, failingSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => ({ ok: true }),
+      delete: async () => null,
+    },
+  });
+
+  const failedDeploy = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'failed_version',
+    }),
+    env
+  );
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, {
+      'Idempotency-Key': 'rb_failed_version',
+    }),
+    env
+  );
+
+  assert.equal(failedDeploy.status, 503);
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal((await store.getSiteVersion('ver_1')).deploymentId, 'dep_1');
+  assert.equal(rollback.status, 409);
+  assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
+test('rejects rollback to a released normal worker slot version', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  const env = testEnv(store, failingSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    NORMAL_WORKER_SLOT_PROVIDER: {
+      upload: async () => null,
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const failedDeploy = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'failed_slot_version',
+    }),
+    env
+  );
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_released_slot' }),
+    env
+  );
+
+  assert.equal(failedDeploy.status, 503);
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'available');
+  assert.equal(rollback.status, 409);
+  assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
 });
 
 test('requires idempotency key for deploy and rollback', async () => {
@@ -515,6 +769,18 @@ function testEnv(store, snapshots, overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function assertNoPublicExecutionDetails(body) {
+  const serialized = JSON.stringify(body);
+  assert.equal('workerName' in (body.version || {}), false);
+  assert.equal('workerName' in (body.route || {}), false);
+  assert.equal('executionProvider' in (body.version || {}), false);
+  assert.equal('executionProvider' in (body.route || {}), false);
+  assert.equal('dispatchBindingName' in (body.route || {}), false);
+  assert.doesNotMatch(serialized, /pages-v2-(?:production|staging)-slot-\d+/);
+  assert.doesNotMatch(serialized, /SITE_SLOT_\d+/);
+  assert.doesNotMatch(serialized, /normal-worker-slot|executionProvider|dispatchBindingName/);
 }
 
 async function seedAccessKey(store, keyId, scopes) {

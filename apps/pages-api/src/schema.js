@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export function createSchemaSql() {
   return [
@@ -19,6 +19,7 @@ export function createSchemaSql() {
       environment TEXT NOT NULL,
       owner_user_id TEXT NOT NULL,
       default_visibility TEXT NOT NULL,
+      execution_mode_override TEXT,
       site_uuid TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -30,7 +31,11 @@ export function createSchemaSql() {
       site_id TEXT NOT NULL,
       environment TEXT NOT NULL,
       runtime TEXT NOT NULL,
+      execution_provider TEXT,
       worker_name TEXT,
+      dispatch_type TEXT,
+      dispatch_binding_name TEXT,
+      slot_id TEXT,
       active_version_id TEXT,
       visibility TEXT NOT NULL,
       policy_version INTEGER NOT NULL,
@@ -46,11 +51,33 @@ export function createSchemaSql() {
       deployment_id TEXT NOT NULL,
       worker_name TEXT NOT NULL,
       runtime TEXT NOT NULL,
+      execution_provider TEXT,
+      dispatch_type TEXT,
+      dispatch_binding_name TEXT,
+      slot_id TEXT,
       artifact_kind TEXT NOT NULL,
       artifact_ref TEXT NOT NULL,
       content_hash TEXT NOT NULL,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS worker_slots (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      slot_number INTEGER NOT NULL,
+      worker_name TEXT NOT NULL,
+      binding_name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      assigned_site_id TEXT,
+      assigned_route_id TEXT,
+      assigned_version_id TEXT,
+      assigned_at TEXT,
+      last_deployed_version_id TEXT,
+      last_seen_at TEXT,
+      health_status TEXT NOT NULL DEFAULT 'unknown',
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS deployments (
       id TEXT PRIMARY KEY,
@@ -140,6 +167,14 @@ export function createSchemaSql() {
       ON site_routes(hostname)`,
     `CREATE INDEX IF NOT EXISTS idx_site_routes_site_id
       ON site_routes(site_id)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_number
+      ON worker_slots(environment, slot_number)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_binding
+      ON worker_slots(environment, binding_name)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_worker
+      ON worker_slots(environment, worker_name)`,
+    `CREATE INDEX IF NOT EXISTS idx_worker_slots_status
+      ON worker_slots(environment, status, slot_number)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency
       ON deployments(idempotency_scope, idempotency_key)`,
     `CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site

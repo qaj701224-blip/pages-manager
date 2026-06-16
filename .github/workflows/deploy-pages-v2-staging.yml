@@ -13,13 +13,16 @@ on:
           - pages-api
           - pages-auth
           - pages-router
+          - pages-kv-gateway
   push:
     branches: [staging]
     paths:
       - 'apps/pages-api/**'
       - 'apps/pages-auth/**'
       - 'apps/pages-router/**'
+      - 'apps/kv-gateway/**'
       - 'packages/ip-guard/**'
+      - 'packages/pages-runtime-protocol/**'
       - 'packages/worker-kit/**'
       - 'packages/wfp-client/**'
       - 'scripts/render-pages-v2-wrangler.mjs'
@@ -60,6 +63,7 @@ jobs:
           D1_DATABASE_ID: ${{ secrets.PAGES_V2_D1_DATABASE_ID }}
           ROUTE_SNAPSHOTS_KV_ID: ${{ secrets.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
           WFP_COMPATIBILITY_DATE: ${{ vars.WFP_COMPATIBILITY_DATE }}
+          PAGES_EXECUTION_MODE: ${{ vars.PAGES_EXECUTION_MODE }}
           ACCESS_KEY_ACTIVE_PEPPER_ID: ${{ vars.ACCESS_KEY_ACTIVE_PEPPER_ID }}
           ACCESS_KEY_PEPPERS: ${{ vars.ACCESS_KEY_PEPPERS }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-api staging
@@ -90,12 +94,25 @@ jobs:
           ROUTE_SNAPSHOTS_KV_ID: ${{ secrets.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
           PAGES_SESSION_JWT_ACTIVE_KID: ${{ vars.PAGES_SESSION_JWT_ACTIVE_KID }}
           PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          PAGES_EXECUTION_MODE: ${{ vars.PAGES_EXECUTION_MODE }}
+          PAGES_NORMAL_WORKER_SLOT_COUNT: ${{ vars.PAGES_NORMAL_WORKER_SLOT_COUNT }}
           ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
           ROUTE_CACHE_TTL_SECONDS: ${{ vars.ROUTE_CACHE_TTL_SECONDS }}
           SITE_SESSION_IDLE_TTL_SECONDS: ${{ vars.SITE_SESSION_IDLE_TTL_SECONDS }}
           SITE_SESSION_FRESHNESS_TTL_SECONDS: ${{ vars.SITE_SESSION_FRESHNESS_TTL_SECONDS }}
           INTERNAL_WORKER_JWT_TTL_SECONDS: ${{ vars.INTERNAL_WORKER_JWT_TTL_SECONDS }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router staging
+
+      - name: Generate Pages KV Gateway Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SITE_DATA_KV_ID: ${{ secrets.PAGES_V2_SITE_DATA_KV_ID }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+        run: node scripts/render-pages-v2-wrangler.mjs apps/kv-gateway staging
 
       - name: Validate Pages API secrets
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
@@ -125,7 +142,27 @@ jobs:
           PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-router
+
+      - name: Validate Pages KV Gateway secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        env:
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/kv-gateway
+
+      - name: Apply Pages API D1 migrations
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/pages-api exec wrangler d1 migrations apply pages-v2-metadata-staging --remote --yes
 
       - name: Deploy Pages API
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
@@ -166,6 +203,24 @@ jobs:
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-auth
 
+      - name: Deploy Pages KV Gateway
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/kv-gateway exec wrangler deploy
+
+      - name: Inject Pages KV Gateway secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/kv-gateway
+
       - name: Deploy Pages Router
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
         env:
@@ -182,4 +237,8 @@ jobs:
           PAGES_SESSION_JWT_KEYS: ${{ vars.PAGES_SESSION_JWT_KEYS }}
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+          PAGES_CAP_JWT_ACTIVE_KID: ${{ vars.PAGES_CAP_JWT_ACTIVE_KID }}
+          PAGES_CAP_JWT_KEYS: ${{ vars.PAGES_CAP_JWT_KEYS }}
+          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
+          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-router
