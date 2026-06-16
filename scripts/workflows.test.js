@@ -192,6 +192,39 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-auth ${environment}`),
       `${name} renders pages-auth ${environment} template`,
     );
+    assert.match(
+      workflow,
+      new RegExp(
+        String.raw`name: Generate Pages Auth Wrangler config[\s\S]*`
+          + String.raw`D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}[\s\S]*`
+          + String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-auth`,
+      ),
+      `${name} gives pages-auth the shared metadata D1 id`,
+    );
+    assert.match(
+      workflow,
+      /name: Apply Pages API D1 migrations\n {8}if: .+pages-auth/,
+      `${name} applies D1 migrations for pages-auth deploys`,
+    );
+    assert.ok(
+      workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-auth ${environment}`) <
+        workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy'),
+      `${name} renders auth before deploying auth`,
+    );
+    assert.ok(
+      workflow.indexOf(
+        `wrangler d1 migrations apply ${
+          environment === 'staging' ? 'pages-v2-metadata-staging' : 'pages-v2-metadata'
+        } --remote`,
+      ) <
+        workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy'),
+      `${name} applies D1 migrations before deploying auth`,
+    );
+    assert.ok(
+      workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy') <
+        workflow.indexOf('pnpm --dir apps/pages-api exec wrangler deploy'),
+      `${name} deploys auth before api because api has a PAGES_AUTH service binding`,
+    );
     assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} prepare`));
     assert.match(
       workflow,

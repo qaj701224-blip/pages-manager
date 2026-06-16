@@ -323,6 +323,65 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
   }
 });
 
+test('callback syncs SSO profile through shared metadata store without pages-api binding', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let syncedUser;
+  const env = testEnv({
+    syncSsoUserProfile: undefined,
+    PAGES_STORE: {
+      async upsertUserFromSso(user) {
+        syncedUser = user;
+        return {
+          id: user.userId,
+          email: user.email,
+          employeeStatus: user.employeeStatus,
+          sessionVersion: user.sessionVersion,
+          lastLoginAt: user.lastLoginAt,
+        };
+      },
+    },
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_xindong_123',
+      email: 'User@Example.Test',
+      employee_status: '1',
+      realname: '示例用户',
+      account: 'demo.user@example.test',
+      accountId: 'acct_demo_001',
+      employeenum: 'demo.user',
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(syncedUser.userId, 'usr_xindong_123');
+  assert.equal(syncedUser.email, 'user@example.test');
+  assert.equal(syncedUser.realname, '示例用户');
+  assert.equal(syncedUser.account, 'demo.user@example.test');
+  assert.equal(syncedUser.accountId, 'acct_demo_001');
+  assert.equal(syncedUser.employeenum, 'demo.user');
+  assert.equal(syncedUser.employeeStatus, 'active');
+  assert.equal(syncedUser.lastLoginAt, '2027-01-15T08:00:00.000Z');
+});
+
 test('callback rejects profiles without explicit active employee status', async () => {
   const oauthStorage = createFakeStorage();
   const created = await createStoredOAuthState(oauthStorage, {

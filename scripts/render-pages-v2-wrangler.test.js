@@ -240,8 +240,11 @@ test('production pages-auth config renders explicit production auth settings onl
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
   assert.match(config, /SSO_ALLOWED_USER_SCOPE = "xindong"/);
-  assert.match(config, /binding = "PAGES_API"/);
-  assert.match(config, /service = "pages-api"/);
+  assert.match(config, /binding = "PAGES_METADATA"/);
+  assert.match(config, /database_name = "pages-v2-metadata"/);
+  assert.match(config, /database_id = "dummy-pages-d1"/);
+  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+  assert.doesNotMatch(config, /service = "pages-api"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /service = "pages-api-staging"/);
@@ -266,7 +269,9 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages_staging"/);
-  assert.match(config, /service = "pages-api-staging"/);
+  assert.match(config, /database_name = "pages-v2-metadata-staging"/);
+  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+  assert.doesNotMatch(config, /service = "pages-api-staging"/);
 });
 
 test('pages-auth config keeps committed ttl, SSO endpoints, client id, and scope defaults', () => {
@@ -299,6 +304,13 @@ test('pages-auth config no longer requires GitHub SSO vars', () => {
 
     assert.equal(result.status, 0, `${name} should come from the committed template`);
   }
+});
+
+test('pages-auth config requires the shared metadata D1 id', () => {
+  const result = runRenderer(['apps/pages-auth', 'production'], withoutEnv('D1_DATABASE_ID'));
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /D1_DATABASE_ID/);
 });
 
 test('renderer validates committed production SSO URLs', () => {

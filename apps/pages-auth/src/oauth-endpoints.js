@@ -2,6 +2,7 @@ import { buildAuthSessionCookie } from './cookies.js';
 import { createOpaqueToken } from './id.js';
 import { jsonError, readJsonBody, safeRedirect } from './http.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
@@ -331,27 +332,20 @@ async function createAuthSessionRecord(env, input) {
 async function syncSsoUserProfile(env, profile, now) {
   if (typeof env?.syncSsoUserProfile === 'function') return env.syncSsoUserProfile(profile, { now });
 
-  if (!env?.PAGES_API || typeof env.PAGES_API.fetch !== 'function') {
-    throw new Error('PAGES_API binding is required');
-  }
-  const response = await env.PAGES_API.fetch(
-    jsonDoRequest('https://pages-api.internal/.xd-pages/internal/users/upsert', {
-      user: {
-        userId: profile.userId,
-        email: profile.email,
-        realname: profile.realname,
-        account: profile.account,
-        accountId: profile.accountId,
-        employeenum: profile.employeenum,
-        employeeStatus: profile.employeeStatus,
-        departments: profile.departments,
-        sessionVersion: profile.sessionVersion,
-      },
-      now,
-    })
-  );
-  if (!response.ok) throw new Error('SSO user sync failed');
-  return response.json();
+  const timestamp = new Date(now * 1000).toISOString();
+  return createPagesStore(env).upsertUserFromSso({
+    userId: profile.userId,
+    email: profile.email,
+    realname: profile.realname,
+    account: profile.account,
+    accountId: profile.accountId,
+    employeenum: profile.employeenum,
+    employeeStatus: profile.employeeStatus,
+    departments: profile.departments,
+    sessionVersion: profile.sessionVersion,
+    lastLoginAt: timestamp,
+    updatedAt: timestamp,
+  });
 }
 
 function createCliLoginConfirmToken(env, { loginId, userId, sid, now }) {

@@ -141,6 +141,7 @@ flowchart TD
   Dispatch --> UserWorker["User Worker / Slot Worker<br/>untrusted code"]
   UserWorker --> KV["apps/kv-gateway<br/>Capability Gateway"]
   API --> Authority["D1 Authority<br/>sites / routes / versions / ACL"]
+  Auth --> Authority
   Router --> Snapshot["KV / Cache<br/>compiled route snapshot"]
   Snapshot --> Authority
   Auth --> DO["Durable Objects<br/>session / oauth / cli coordination"]
@@ -560,8 +561,8 @@ vars:
   SSO_REDIRECT_URI
 
 bindings:
+  D1: PAGES_METADATA
   Durable Objects: OAUTH_STATES, CLI_LOGINS, AUTH_SESSIONS
-  service: PAGES_API
 
 secrets:
   SSO_CLIENT_SECRET
@@ -570,7 +571,7 @@ secrets:
 
 production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `.pages.json`。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
-SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须通过 `PAGES_API` service binding 调 `pages-api.internal/.xd-pages/internal/users/upsert` 同步用户权威记录。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。
+SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
 
 #### pages-router
 
@@ -708,7 +709,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | 名称                                  | 类型    | 使用方                         | 说明 |
 | ------------------------------------- | ------- | ------------------------------ | ---- |
 | `CLOUDFLARE_ACCOUNT_ID`               | var     | v2 系统 Worker wrangler 渲染和部署 | 用于 `account_id` 与 Wrangler 部署 env；workflow 会把同一个值作为 runtime secret `CF_ACCOUNT_ID` 注入 `pages-api` |
-| `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` wrangler 渲染      | 当前环境的 D1 metadata database id |
+| `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` / `pages-auth` wrangler 渲染 | 当前环境的 D1 metadata database id |
 | `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | var     | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
 | `PAGES_V2_SITE_DATA_KV_ID`            | var     | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
 | `ROUTER_IP_ALLOWLIST_CIDRS`           | var     | `pages-router` wrangler 渲染   | 必填，router 缺失或无效时 fail closed |
@@ -720,7 +721,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
 | `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
 
-v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。
+v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`。
 
 v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`。
 
@@ -732,7 +733,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 
 - v2 系统 Worker 的拓扑配置以环境显式模板为准：`apps/pages-api/wrangler.production.template.toml`、`apps/pages-api/wrangler.staging.template.toml`、`apps/pages-auth/wrangler.production.template.toml`、`apps/pages-auth/wrangler.staging.template.toml`、`apps/pages-router/wrangler.production.template.toml`、`apps/pages-router/wrangler.staging.template.toml`、`apps/kv-gateway/wrangler.production.template.toml`、`apps/kv-gateway/wrangler.staging.template.toml`。`pages-kv-gateway` 不复用 v1 旧生成链路。
 - v2 使用 `node scripts/render-pages-v2-wrangler.mjs <app> <production|staging>` 渲染最终 `wrangler.toml`。渲染器只做 `__PLACEHOLDER__` 占位符替换、必填项检查和环境串用校验；Worker 名、域名、service binding、dispatch namespace 等拓扑值直接写在对应环境模板里，避免把 v2 环境逻辑藏进 shell 分支。
-- `apps/pages-api/migrations/` 是 v2 D1 authority schema 的显式迁移源。部署 `pages-api` 前必须先执行对应环境的 `wrangler d1 migrations apply`，确保 `sites`、`site_routes`、`site_versions`、`worker_slots`、`deployments` 等表结构先于 Worker 代码上线。
+- `apps/pages-api/migrations/` 是 v2 D1 authority schema 的显式迁移源。部署 `pages-auth` 或 `pages-api` 前必须先执行对应环境的 `wrangler d1 migrations apply`，确保 `users`、`sites`、`site_routes`、`site_versions`、`worker_slots`、`deployments` 等表结构先于 Worker 代码上线。
 - `scripts/gen-wrangler.sh` 继续服务 v1 `apps/server` 和 `apps/xdads-302`；`apps/kv-gateway` 的旧 v1 部署链路应退役，v2 gateway 不复用这条旧生成链路。
 - production workflow 只能手动触发。
 - staging workflow 可以由 `staging` 分支触发。
@@ -769,7 +770,7 @@ pnpm test
 staging 首次部署前必须完成：
 
 1. GitHub `staging` Environment 已配置上表中的 vars/secrets，且真实 D1/KV/secret 值不出现在仓库、日志或文档中。
-2. Cloudflare 已创建 staging D1、staging route snapshot KV 和 staging site data KV；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 v2 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，已创建 staging slot 池并让 router service binding 数量与 slot 数一致；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
+2. Cloudflare 已创建 staging D1、staging route snapshot KV 和 staging site data KV；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 v2 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，workflow 会在 router 部署前检查并扩容 staging slot 池，再按历史最大 slot number 全量渲染 router service bindings；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
 3. SSO staging 应用 redirect URI 指向 `https://auth-staging.pages.xd.team/.xd-pages/auth/callback`，不指向 `api-staging.pages.xd.team`。
 4. 手动或由 `staging` 分支触发 `Deploy Pages V2 Staging`，先用 `component=all` 验证四个 v2 系统 Worker 一起部署；单组件部署只用于已确认依赖兼容的修复。
 5. workflow 中四个 `DRY_RUN=1 scripts/put-pages-v2-secrets.sh ...` 步骤先通过，再执行真正 secret 注入。
@@ -784,7 +785,7 @@ production 首次部署前必须完成：
 1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 只新增 `pages.xd.team` 相关资源。
 2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper 和 IP allowlist。执行面资源按 production template 中的 `PAGES_EXECUTION_MODE` 校验：`normal-worker-slot` 需要 production slot 池，`wfp` 需要 `pages-production` dispatch namespace。
 3. `Deploy Pages V2 Production` 只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
-4. 生产首次发布使用 `component=all`，避免 service binding 指向旧版本或缺失 Worker。
+4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker。
 5. 发布后先验证 `api.pages.xd.team/openapi.json`、`auth.pages.xd.team` 登录入口和一个受控试点站点。
 6. 回滚策略是重新 dispatch 上一个已知好 commit 的 workflow，或按组件手动部署上一个 commit；不得通过修改 v1 `workers.xd.team` route 回滚 v2。
 
@@ -2192,7 +2193,7 @@ pages env set custom --api http://127.0.0.1:8787 --auth http://127.0.0.1:8787
 
 access key scope 必须在 API 层强制执行：`deploy:site` 只允许发布，`rollback:site` 只允许回滚，`read:site` 才能读取站点和 deployment 元数据。ACL 读取和策略管理首版只允许用户 CLI token / 未来 api_session，不允许 access key。
 
-`/.xd-pages/internal/consume-site-code` 和 `/.xd-pages/internal/verify-cli-token` 不是公开 API。它们只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；即使路径相同，公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 访问也必须返回 404。`pages-api` 只能通过 `PAGES_AUTH` binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。`pages-api.internal/.xd-pages/internal/users/upsert` 同样只能由 service binding 调用，用于 SSO callback 后同步用户权威表。
+`/.xd-pages/internal/consume-site-code` 和 `/.xd-pages/internal/verify-cli-token` 不是公开 API。它们只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；即使路径相同，公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 访问也必须返回 404。`pages-api` 只能通过 `PAGES_AUTH` binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。SSO callback 的用户同步由 `pages-auth` 直接写共享 D1 `users` 表，避免 auth/api 双向 service binding；如后续保留 `pages-api.internal/.xd-pages/internal/users/upsert`，也只能作为内部维护入口，不能暴露公网。
 
 统一错误响应：
 

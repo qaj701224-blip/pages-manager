@@ -19,6 +19,7 @@ const REQUIRED_TOKENS_BY_APP = {
   ],
   'apps/pages-auth': [
     'CLOUDFLARE_ACCOUNT_ID',
+    'D1_DATABASE_ID',
   ],
   'apps/pages-router': [
     'CLOUDFLARE_ACCOUNT_ID',

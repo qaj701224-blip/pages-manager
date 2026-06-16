@@ -28,6 +28,11 @@ SSO_PROFILE_URL = "https://sso.security.xindong.com/cas/oauth2.0/profile"
 SSO_CLIENT_ID = "xd_pages"
 SSO_ALLOWED_USER_SCOPE = "xindong"
 
+[[d1_databases]]
+binding = "PAGES_METADATA"
+database_name = "pages-v2-metadata"
+database_id = "__D1_DATABASE_ID__"
+
 [[durable_objects.bindings]]
 name = "OAUTH_STATES"
 class_name = "OAuthStateDO"
@@ -39,10 +44,6 @@ class_name = "CliLoginDO"
 [[durable_objects.bindings]]
 name = "AUTH_SESSIONS"
 class_name = "AuthSessionDO"
-
-[[services]]
-binding = "PAGES_API"
-service = "pages-api"
 
 [[migrations]]
 tag = "v1"
