@@ -28,6 +28,8 @@ v1 位于 `apps/server`，服务旧 `workers.xd.team` 链路。v1 只做 legacy 
 
 文档入口和真相源矩阵见 `docs/README.md`。
 
+Gateway 运行态必须是 MySQL-backed。`apps/gateway/src/db/gateway-store.js` 里的 `Map` 只能作为单进程缓存，不能作为跨请求真相源。不要重新引入 `PAGES_GATEWAY_STORE_FILE`、JSON 文件 store、SQLite、单 pod PVC 或运行时 `MemoryGatewayStore`。`tests/helpers/gateway-store-fixture.js` 只服务单元测试，不得被生产代码 import。
+
 ## 开发命令
 
 使用仓库根目录执行：
@@ -43,7 +45,7 @@ pnpm test
 - Node.js `>=22.12.0`
 - pnpm `>=9.15.0`
 
-不要把 `.env`、`.staging.env`、`apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、demo 目录里的 `.pages.json` 提交到 Git。
+不要把 `.env`、`.env.ecs`、`.ack-preview.env`、`.staging.env`、`apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、demo 目录里的 `.pages.json` 提交到 Git。
 
 ## 分支与部署
 
@@ -92,7 +94,7 @@ CI/CD 隔离要求：
 - 自动生成的 `sites/**` PR 不得修改 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档。
 
 改动 GitHub Actions 时，必须确认不会让 production 在 push/PR 时自动部署。
-详细分支和发布规则见 `docs/deployment-branch-policy.md`。
+详细 GitHub、分支和发布规则见 `docs/architecture/github-automation.md`。
 
 ## 敏感信息规则
 
@@ -180,6 +182,11 @@ Title 格式：
 - `docs`
 - `ci`
 - `demo`
+- `gateway`
+- `worker`
+- `slack-agent`
+- `slack-notifier`
+- `db`
 
 Title 和 Description 主体使用中文；技术术语、文件名、命令、API 名称、域名保留英文。禁止含糊标题，例如 `fix: bug`、`feat: 优化`、`chore: misc`、`update xxx`。
 
@@ -195,6 +202,7 @@ Title 和 Description 主体使用中文；技术术语、文件名、命令、A
 ## 风险与回滚
 
 ## Self-review Checklist
+
 - [ ] Title 符合 `<type>(<scope>): <精准中文描述>`
 - [ ] 没有提交 secret、真实 token、真实 `.env` 或本地部署配置
 - [ ] staging / production 配置没有串环境

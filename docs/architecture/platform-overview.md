@@ -1,90 +1,109 @@
 # Platform Overview
 
-## 目标定位
+## 定位
 
-`pages-manager` 目标从“内部 Cloudflare Workers 站点托管服务”升级为“员工多站点自动发布平台”。
+`pages-manager` 当前从“内部 Cloudflare Workers 站点发布服务”扩展为“Slack 驱动的员工个人网页发布平台”。
+
+阶段边界：
+
+- `apps/server`、KV SDK、Cloudflare staging / production 发布底座属于已有能力，改动时要保守处理公开 API、token 归属、staging / production 隔离和现有站点行为。
+- Slack / gateway / worker / slack-agent / slack-notifier / MySQL / Redis 这条新平台线尚未正式上线，不承担旧版本用户兼容。相关数据结构、内部 API、Slack 卡片和状态机可以优先按目标架构直接收敛，不需要为了临时测试版本保留 file store、MemoryGatewayStore、旧 Socket Mode、本地脚本或过渡字段。
+- 自动生成的 `sites/**` 用户站点仍然必须被隔离，不能因为新平台未上线就放松路径、secret 或 workflow 权限边界。
 
 核心模型：
 
 ```text
-User / Employee
-  ↓
-SiteOwnerScope
-  ↓
-SiteProject(s)
-  ↓
-PublishingJob
-  ↓
-Issue / PR / Review / Merge / Deploy
-  ↓
-Cloudflare resource pool
-  ↓
-Cloudflare Workers site
+Employee
+  -> SiteProject(s)
+  -> PublishingJob
+  -> GitHub issue / PR / Review gate
+  -> Preview / Production deploy
 ```
 
-不是一个员工一个网站。员工是归属主体，站点是发布主体。一个员工可以创建、维护、部署多个 `SiteProject`，实际数量由 `SiteOwnerScope.max_sites`、并发配额和资源配额控制。
+不是一个员工一个网站。员工是归属主体，站点是发布主体；一个员工可以拥有多个 `sites/<employeeSlug>/<siteSlug>/`。
 
-## 五层架构
+## 当前分层
 
 ```text
-用户 / Slack / 浏览器
+Slack / Browser / Internal API / GitHub webhook
   ↓
-pages-manager 控制台入口
+apps/gateway
+  - Slack 签名校验
+  - GitHub webhook 校验
+  - PublishingJob 状态机
+  - SlackSession / IssueLink / Review gate
   ↓
+MySQL + Redis
+  - MySQL 是最终状态真相源
+  - Redis 只做 lease / queue / 短期 dedupe / rate limit
+  ↓
+apps/slack-agent / apps/worker / apps/slack-notifier
+  - slack-agent 负责对话理解
+  - worker 负责编排 GitHub issue / workflow / preview
+  - slack-notifier 负责 Slack Web API 输出
+  ↓
+GitHub Actions
+  - project-index.yml
+  - pages-agent.yml
+  - site-check.yml
+  - pages-preview.yml 兼容路径
+  ↓
+Cloudflare Workers / assets
+```
+
+当前 ECS / 本地 / ACK 的服务拆分都应保持同一套长期形态：
+
+```text
 pages-gateway
-  (MVP: K8s pages-system)
-  ↓
-slack-agent / pages-worker / review-monitor-worker / browser-worker
-  (MVP: K8s pages-system)
-  ↓
-GitHub Actions runner (MVP) / K8s job executor (later)
-  ↓
-Cloudflare Workers 上的员工网站
+pages-worker
+slack-agent
+slack-notifier
+mysql
+redis
 ```
 
-职责一句话：
+## 核心职责
 
-```text
-pages-gateway 管谁能发布、发布什么、任务状态如何；
-worker 管自动化流程如何推进；MVP 常驻控制面先跑在本地 K8s 的 `pages-system` namespace；
-executor 管生成、构建、review、部署任务如何运行；MVP 用 GitHub Actions runner，后续再换 K8s Job；
-Cloudflare resource pool 管员工网站最终如何访问；
-Slack 是 MVP 默认用户入口和实时通知渠道，但所有动作仍必须先经过 gateway。
-```
+| 组件                  | 职责                                                                       | 不能做                                                    |
+| --------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `apps/gateway`        | HTTP 入口、验签、幂等、session、job 状态机、webhook、callback、Review gate | 长时间编码、直接跑构建、保存 secret 明文                  |
+| `apps/slack-agent`    | 自由对话、需求整理、澄清、续接已有任务、输出结构化 intent                  | 写代码、创建 PR、部署、读取 GitHub/Cloudflare token       |
+| `apps/worker`         | 创建 / 复用 issue、dispatch workflow、触发 preview、回调 gateway           | 直接发 Slack、执行 Coding Agent、绕过 gateway 写状态      |
+| `apps/slack-notifier` | `chat.postMessage`、`chat.update`、reaction、用户 profile 查询             | 创建 issue、调 Coding Agent、读取 GitHub/Cloudflare token |
+| GitHub Actions        | Coding Agent、站点校验、PR 创建 / 更新、site-check                         | 常驻监听 Slack/GitHub、持有 Slack bot token、部署平台 Pod |
+| `apps/server`         | 现有 Cloudflare `/deploy`、`/list` 等发布能力                              | 作为 Slack / GitHub 控制面真相源                          |
 
-## 实现边界
+## 数据真相源
 
-`pages-manager` 是实现真相源：
+Gateway 运行态已经切到 MySQL-backed store：
 
-- 新增应用放在 `pages-manager/apps/*`。
-- 共享逻辑放在 `pages-manager/packages/*`。
-- 员工站点源码放在 `pages-manager/sites/*`。
-- 站点模板放在 `pages-manager/templates/*`。
-- GitHub Actions workflow 放在 `pages-manager/.github/workflows/*`；后续 K8s manifest 放在 `pages-manager/k8s/*`。
-- 数据库 schema、Slack/GitHub Enterprise/Cloudflare 集成都在 `pages-manager` 内实现。
+- Drizzle schema：`apps/gateway/src/db/schema.js`
+- MySQL store：`apps/gateway/src/db/gateway-store.js`
+- Repository 拆分：`apps/gateway/src/db/repositories/`
+- Row mapper：`apps/gateway/src/db/rows/`
+- Migration：`apps/gateway/drizzle/migrations/`
 
-仓库采用大仓 monorepo 方案。Issue、PR、review、merge 和 deploy 都在 `pages-manager` repo 内闭环，但必须通过路径规则区分站点内容 PR 和平台代码 PR。详细目录和 PR 边界见 [repository-structure.md](./repository-structure.md)。
+文件 store、内存 store、SQLite、单 pod PVC 不再是运行时选项。测试里的 fixture 只服务单元测试。
+
+## 与 xdclaw 的关系
 
 `xdclaw` 只作为架构参考：
 
-- 不 import `xdclaw` 代码。
-- 不依赖 `xdclaw` gateway / worker / DB schema / CRD。
-- 不部署到 `xdclaw` namespace / service / gateway。
-- 具体参考点见 [xdclaw-reference.md](./xdclaw-reference.md)。
+- gateway 是控制面，不执行长任务。
+- worker 是自动化助手，不是 K8s worker node。
+- MySQL 是持久元数据真相源。
+- Redis 只做临时协调。
+- K8s namespace、Secret、Deployment 必须和 xdclaw 隔离。
 
-## 参考 xdclaw 的原则
+不能做：
 
-- gateway 是控制平面，不执行长任务。
-- worker 是自动化助手，不是 K8s node。
-- executor 资源只承载运行时和调度信息，通过 workflow input、job label 或 callback 关联业务 ID；如果启用 K8s，K8s label 不表达业务规则。
-- MySQL 保存持久元数据真相源；MVP 不同时兼容 Postgres。
-- Redis 只承载会话、临时 flow、幂等索引和事件。
-- gateway 必须从 DB 校验 owner，不接受前端或 worker 直接传来的身份结论。
+- 不 import xdclaw 代码。
+- 不复用 xdclaw 的业务 DB schema。
+- 不部署到 `xdclaw-preview` / `xdclaw-system`。
+- 不把 pages-manager 的 Secret 写入 xdclaw namespace。
 
 ## 当前保留能力
 
-现有 `apps/server` 的 `/deploy`、`/list`、`/site/:name`、`/openapi.json`、`/skill.md` 可以作为底层发布能力继续保留。
+`apps/server` 的 `/deploy`、`/list`、`/site/:name`、`/openapi.json`、`/skill.md` 继续作为底层 Cloudflare 发布能力。
 
-平台化后，production deploy 不应继续依赖弱归属的 `X-Pages-Token`。`/deploy` 需要收口为 gateway 或受控 deploy workflow/job 调用，或者升级为强认证、绑定 `site_project_id` / `publishing_job_id` 并写审计。
-
-Cloudflare 长期目标不是每站点一套 Cloudflare 资源，而是平台级资源池：少量 Edge Worker、少量 KV namespace、平台级 assets/R2 bucket，通过 `site_project_id`、`deploy_id`、hostname 和 key prefix 做逻辑隔离。详细设计见 [cloudflare-resource-pool.md](./cloudflare-resource-pool.md)。
+当前 preview 路径可以由 `pages-worker` 以 `local_deploy` 模式调用 staging `/deploy`，避免 GitHub-hosted runner 动态出口 IP 进入 Cloudflare 白名单。长期 production deploy 仍应由受控 gateway / worker / deploy workflow 从已记录的 commit 或 PR 状态触发。
