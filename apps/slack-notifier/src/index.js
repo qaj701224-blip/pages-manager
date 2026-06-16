@@ -4,7 +4,9 @@ import {
   notifySlackJobStatus,
   postSlackMessage,
   removeSlackReaction,
+  startSlackAgentReply,
   updateSlackMessage,
+  updateSlackAgentReply,
 } from '@xd/slack-notifier-core';
 import { jsonResponse } from '@xd/worker-kit';
 
@@ -168,6 +170,18 @@ export function createSlackNotifierApp() {
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/update') {
           const body = await readJson(request);
           const result = await updateSlackMessage(env, body.payload || {});
+          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/agent-reply/start') {
+          const body = await readJson(request);
+          const result = await startSlackAgentReply(env, body.target || {}, body.options || {});
+          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/agent-reply/update') {
+          const body = await readJson(request);
+          const result = await updateSlackAgentReply(env, body.message || {}, body.options || {});
           return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
         }
 
