@@ -81,6 +81,10 @@ function inferSlackChannelType(channelType, channelId) {
   return String(channelId || '').startsWith('D') ? 'im' : null;
 }
 
+function hasExplicitThreadTs(body = {}) {
+  return Boolean(body.event?.thread_ts || body.thread_ts);
+}
+
 export function surfaceForSlackBody(body = {}) {
   const event = body.event || {};
   const channelId = event.channel || body.channel_id || null;
@@ -119,12 +123,6 @@ function isActiveSession(session, now) {
     session.activeContextExpiresAt &&
     new Date(session.activeContextExpiresAt).getTime() > now.getTime()
   );
-}
-
-function isRecentSession(session, now, config) {
-  if (!session || ['closed', 'archived'].includes(session.status)) return false;
-  const lastActiveAt = new Date(session.lastActiveAt || session.updatedAt || session.createdAt || 0).getTime();
-  return now.getTime() - lastActiveAt <= config.recentSessionWindowMs;
 }
 
 function selectionReply(sessions) {
@@ -233,11 +231,35 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
     }
   }
 
-  if (
-    surface.channelType === 'im' &&
-    surface.threadTs &&
-    !['help', 'ping', 'status', 'cancel', 'empty'].includes(intake.action)
-  ) {
+  if (surface.channelType === 'im' && hasExplicitThreadTs(body) && !SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
+    const threadedSessions = await store.findSlackSessionsForUser(actor.teamId, actor.slackUserId);
+    const existingThreadSession = threadedSessions.find(
+      (session) =>
+        session.threadTs === surface.threadTs &&
+        (session.dmChannelId === surface.dmChannelId || session.channelId === surface.channelId)
+    );
+    if (existingThreadSession) {
+      const session = await store.upsertSlackSession(
+        {
+          ...existingThreadSession,
+          channelId: surface.channelId,
+          dmChannelId: surface.dmChannelId,
+          surfaceContext: surface.surfaceContext,
+          lastIntent: intake.action || existingThreadSession.lastIntent,
+          activeContextExpiresAt: addMs(now, config.activeContextTtlMs),
+          status: 'active',
+          closedAt: null,
+        },
+        now
+      );
+      return {
+        session,
+        memory: await store.getSessionMemory(session.id),
+        config,
+        action: 'selected_dm_thread',
+      };
+    }
+
     const dmThreadKey = `dm-thread:${surface.dmChannelId || 'unknown'}:${surface.threadTs}`;
     const session = await store.upsertSlackSession(sessionInputFrom(body, intake, dmThreadKey, config, now), now);
     return {
@@ -261,7 +283,7 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
 
   if (intake.shouldCreateJob) {
     const messageKey = surface.messageTs || body.event_id || body.trigger_id || String(now.getTime());
-    const dmJobKey = `dm:${surface.dmChannelId || 'unknown'}:${messageKey}`;
+    const dmJobKey = `dm-thread:${surface.dmChannelId || 'unknown'}:${messageKey}`;
     const session = await store.upsertSlackSession(sessionInputFrom(body, intake, dmJobKey, config, now), now);
     return {
       session,
@@ -323,18 +345,8 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
     };
   }
 
-  const recentSessions = userSessions.filter((session) => isRecentSession(session, now, config));
-  if (recentSessions.length > 0 && !SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
-    return {
-      ambiguous: true,
-      sessions: recentSessions,
-      replyText: selectionReply(recentSessions),
-      config,
-      action: 'ambiguous_recent_dm_sessions',
-    };
-  }
-
-  const currentKey = `dm:${surface.dmChannelId || 'unknown'}:current`;
+  const messageKey = surface.messageTs || body.event_id || body.trigger_id || String(now.getTime());
+  const currentKey = `dm:${surface.dmChannelId || 'unknown'}:${messageKey}`;
   const session = await store.upsertSlackSession(sessionInputFrom(body, intake, currentKey, config, now), now);
   return {
     session,

@@ -101,7 +101,7 @@ test('Slack user id normalization ignores object payload shape', () => {
   assert.equal(slackUserIdFromBody({ event: { user: { name: 'missing-id' } } }, null), null);
 });
 
-test('top-level DM messages start isolated Slack thread sessions', async () => {
+test('explicit top-level DM issue commands start isolated Slack sessions', async () => {
   const app = createGatewayApp();
 
   const first = await postSlack(
@@ -120,21 +120,34 @@ test('top-level DM messages start isolated Slack thread sessions', async () => {
       text: 'issue: 做一个招聘落地页',
     })
   );
-  const third = await postSlack(
+
+  assert.notEqual(first.slackSessionId, second.slackSessionId);
+  assert.equal(app.store.getSlackSession(first.slackSessionId).sessionKey, 'dm-thread:D1:1710000000.000100');
+  assert.equal(app.store.getSlackSession(second.slackSessionId).sessionKey, 'dm-thread:D1:1710000001.000100');
+});
+
+test('top-level DM messages continue the only active Slack session', async () => {
+  const app = createGatewayApp();
+
+  const first = await postSlack(
     app,
     slackEvent({
-      eventId: 'Ev-dm-3',
-      ts: '1710000002.000100',
-      text: '这个 preview 不满意',
+      eventId: 'Ev-dm-active-1',
+      ts: '1710000000.000100',
+      text: '我想先聊聊个人网站',
+    })
+  );
+  const second = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-dm-active-2',
+      ts: '1710000001.000100',
+      text: '再补充联系方式和项目经历',
     })
   );
 
-  assert.notEqual(first.slackSessionId, second.slackSessionId);
-  assert.notEqual(first.slackSessionId, third.slackSessionId);
-  assert.notEqual(second.slackSessionId, third.slackSessionId);
-  assert.equal(app.store.getSlackSession(first.slackSessionId).sessionKey, 'dm-thread:D1:1710000000.000100');
-  assert.equal(app.store.getSlackSession(second.slackSessionId).sessionKey, 'dm-thread:D1:1710000001.000100');
-  assert.equal(app.store.getSlackSession(third.slackSessionId).sessionKey, 'dm-thread:D1:1710000002.000100');
+  assert.equal(second.slackSessionId, first.slackSessionId);
+  assert.equal(app.store.getSlackSession(first.slackSessionId).sessionKey, 'dm:D1:1710000000.000100');
 });
 
 test('DM thread replies continue the same Slack session', async () => {
@@ -161,7 +174,7 @@ test('DM thread replies continue the same Slack session', async () => {
   const session = app.store.getSlackSession(first.slackSessionId);
 
   assert.equal(second.slackSessionId, first.slackSessionId);
-  assert.equal(session.sessionKey, 'dm-thread:D1:1710000000.000100');
+  assert.equal(session.sessionKey, 'dm:D1:1710000000.000100');
   assert.equal(session.threadTs, '1710000000.000100');
 });
 
@@ -195,7 +208,7 @@ test('DM events without channel_type are inferred from the D channel id', async 
   const session = app.store.getSlackSession(first.slackSessionId);
 
   assert.equal(second.slackSessionId, first.slackSessionId);
-  assert.equal(session.sessionKey, 'dm-thread:D1:1710000000.000100');
+  assert.equal(session.sessionKey, 'dm:D1:1710000000.000100');
   assert.equal(session.channelId, 'D1');
   assert.equal(session.surfaceContext.channelType, 'im');
   assert.equal(session.dmChannelId, 'D1');
@@ -292,7 +305,7 @@ test('top-level DM after expired active context starts a new thread session', as
   assert.equal(response.accepted, false);
   assert.equal(response.action, 'agent_turn');
   assert.notEqual(response.slackSessionId, created.slackSessionId);
-  assert.equal(app.store.getSlackSession(response.slackSessionId).sessionKey, 'dm-thread:D1:1710000001.000100');
+  assert.equal(app.store.getSlackSession(response.slackSessionId).sessionKey, 'dm:D1:1710000001.000100');
 });
 
 test('Slack Agent lease prevents concurrent runs in the same session', () => {
