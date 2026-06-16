@@ -15,6 +15,7 @@ const REQUIRED_TOKENS_BY_APP = {
   'apps/pages-api': [
     'CLOUDFLARE_ACCOUNT_ID',
     'D1_DATABASE_ID',
+    'IP_ALLOWLIST',
     'ROUTE_SNAPSHOTS_KV_ID',
   ],
   'apps/pages-auth': [
@@ -154,6 +155,9 @@ function assertTokenPolicy(name, value) {
   if (name === 'PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT' && value !== '') {
     assertPositiveInteger(name, value);
   }
+  if (name === 'IP_ALLOWLIST' || name === 'ROUTER_IP_ALLOWLIST_CIDRS') {
+    assertIpAllowlist(name, value);
+  }
 }
 
 function assertCrossTokenPolicy(replacements) {
@@ -251,6 +255,10 @@ function assertHttpsUrl(name, value) {
 function assertPositiveInteger(name, value) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`);
+}
+
+function assertIpAllowlist(name, value) {
+  if (!/^[0-9A-Fa-f:\s.,/_-]+$/.test(value)) throw new Error(`${name} contains unsupported characters`);
 }
 
 function assertAccessKeyPepperRegistry(value) {

@@ -82,6 +82,57 @@ test('uploads and verifies WFP worker before route activation', async () => {
   assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
 });
 
+test('uses bounded WFP worker names for valid long slugs', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    realname: 'User One',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_long',
+    slug: 'very-long-pages-site-slug-that-is-still-valid',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_long',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_long',
+    hostname: 'very-long-pages-site-slug-that-is-still-valid.pages.xd.team',
+  });
+  const uploadedWorkerNames = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    nextId: (prefix) => {
+      if (prefix === 'dep') return 'dep_1234567890abcdef1234567890abcdef';
+      if (prefix === 'ver') return 'ver_1234567890abcdef1234567890abcdef';
+      return `${prefix}_1`;
+    },
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => {
+        uploadedWorkerNames.push(workerName);
+        return { artifactRef: `wfp://test/${workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: 'site_long' }),
+      { 'Idempotency-Key': 'long_slug' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(uploadedWorkerNames.length, 1);
+  assert.equal(uploadedWorkerNames[0].length <= 63, true);
+  assert.match(uploadedWorkerNames[0], /^[a-z0-9][a-z0-9-]{0,62}$/);
+});
+
 test('WFP upload metadata binds Pages KV gateway to user workers', async () => {
   const store = await createSeededStore();
   const requests = [];
@@ -565,7 +616,9 @@ test('marks deployment failed when route snapshot write fails and replays failed
   const replay = await worker.fetch(request(), env);
 
   assert.equal(first.status, 503);
-  assert.equal((await first.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  const firstBody = await first.json();
+  assert.equal(firstBody.error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal(firstBody.error.action, 'Retry the deployment with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
   assert.deepEqual(await store.getRouteBySiteId('site_1'), {
@@ -589,7 +642,10 @@ test('marks deployment failed when route snapshot write fails and replays failed
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
   assert.equal(replay.status, 200);
-  assert.equal((await replay.json()).deployment.status, 'failed');
+  const replayBody = await replay.json();
+  assert.equal(replayBody.deployment.status, 'failed');
+  assert.equal(replayBody.deployment.errorCode, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal(replayBody.deployment.errorMessage, 'Route snapshot write failed.');
 });
 
 test('marks deployment failed when WFP upload fails without creating active version', async () => {
@@ -615,7 +671,9 @@ test('marks deployment failed when WFP upload fails without creating active vers
   );
 
   assert.equal(response.status, 502);
-  assert.equal((await response.json()).error.code, 'DEPLOYMENT_UPLOAD_FAILED');
+  const body = await response.json();
+  assert.equal(body.error.code, 'DEPLOYMENT_UPLOAD_FAILED');
+  assert.equal(body.error.action, 'Retry the deployment with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
@@ -644,8 +702,42 @@ test('marks deployment failed when WFP verify fails without creating active vers
   );
 
   assert.equal(response.status, 502);
-  assert.equal((await response.json()).error.code, 'DEPLOYMENT_VERIFY_FAILED');
+  const body = await response.json();
+  assert.equal(body.error.code, 'DEPLOYMENT_VERIFY_FAILED');
+  assert.equal(body.error.action, 'Retry the deployment with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
+});
+
+test('cleans uploaded workers and marks deployments failed when post-upload persistence fails', async () => {
+  const store = await createSeededStore();
+  store.createSiteVersion = async () => {
+    throw new Error('D1 unavailable');
+  };
+  const deletedWorkers = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => ({ ok: true }),
+      delete: async ({ workerName }) => deletedWorkers.push(workerName),
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'persist_fail',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal(body.error.action, 'Retry the deployment with a new Idempotency-Key.');
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
   assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
@@ -719,7 +811,9 @@ test('fails deployment when production WFP namespace points at staging', async (
   );
 
   assert.equal(response.status, 500);
-  assert.equal((await response.json()).error.code, 'DEPLOYMENT_PLATFORM_CONFIG_INVALID');
+  const body = await response.json();
+  assert.equal(body.error.code, 'DEPLOYMENT_PLATFORM_CONFIG_INVALID');
+  assert.equal(body.error.action, 'Check the Pages deployment platform configuration and retry with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
 });
@@ -749,7 +843,9 @@ test('keeps previous active route when rollback snapshot write fails', async () 
   const route = await store.getRouteBySiteId('site_1');
 
   assert.equal(rollback.status, 503);
-  assert.equal((await rollback.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  const body = await rollback.json();
+  assert.equal(body.error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal(body.error.action, 'Retry the rollback with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_3')).status, 'failed');
   assert.equal(route.activeVersionId, 'ver_2');
   assert.equal(route.workerName, 'pages-v2-docs-ver-2');
@@ -871,6 +967,7 @@ function testEnv(store, snapshots, overrides = {}) {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
     ROUTE_SNAPSHOTS: snapshots,
+    IP_ALLOWLIST: '10.0.0.0/8',
     ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
     ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     now: () => '2026-06-15T00:00:00.000Z',
@@ -947,6 +1044,7 @@ function jsonRequest(url, body, headers = {}) {
     headers: {
       'Content-Type': 'application/json',
       Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
       ...headers,
     },
     body: JSON.stringify(body),
@@ -955,7 +1053,7 @@ function jsonRequest(url, body, headers = {}) {
 
 function authRequest(url, headers = {}) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token', ...headers },
+    headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
   });
 }
 

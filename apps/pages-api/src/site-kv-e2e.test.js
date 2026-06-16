@@ -20,6 +20,7 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
     PAGES_ENV: 'production',
     PAGES_STORE: store,
     ROUTE_SNAPSHOTS: snapshots,
+    IP_ALLOWLIST: '10.0.0.0/8',
     ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
     ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     now: () => '2026-06-15T00:00:00.000Z',
@@ -127,6 +128,7 @@ function jsonRequest(url, body, headers = {}) {
     headers: {
       'Content-Type': 'application/json',
       Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
       ...headers,
     },
     body: JSON.stringify(body),

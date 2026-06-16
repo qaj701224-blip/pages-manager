@@ -35,6 +35,7 @@ const baseEnv = {
   PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
   PAGES_CAP_JWT_ACTIVE_KID: 'pages-cap-2026-06',
   PAGES_CAP_JWT_KEYS: 'pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606',
+  IP_ALLOWLIST: '10.0.0.0/8,192.168.0.0/16',
   ROUTER_IP_ALLOWLIST_CIDRS: '10.0.0.0/8,192.168.0.0/16',
   SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
   SSO_TOKEN_URL: 'https://sso.example.test/oauth/token',
@@ -154,6 +155,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
   assert.match(config, /binding = "ROUTE_SNAPSHOTS"/);
@@ -180,6 +182,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
   assert.match(config, /service = "pages-auth-staging"/);
 });
@@ -199,6 +202,7 @@ test('pages-api config requires resource ids and keeps template execution mode',
     'CLOUDFLARE_ACCOUNT_ID',
     'D1_DATABASE_ID',
     'ROUTE_SNAPSHOTS_KV_ID',
+    'IP_ALLOWLIST',
   ]) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));
 

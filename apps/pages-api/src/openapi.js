@@ -83,10 +83,10 @@ export function buildOpenApi(config) {
           properties: {
             subjectType: {
               type: 'string',
-              enum: ['email', 'department'],
+              enum: ['email'],
               description:
                 'People are specified by email. Internal SSO user ids are not accepted as public ACL subjects. ' +
-                'group is intentionally not enabled until organization directory semantics are stable.',
+                'department and group are intentionally not enabled until organization directory semantics are stable.',
             },
             subjectValue: { type: 'string' },
             effect: {
@@ -245,6 +245,7 @@ export function buildOpenApi(config) {
             'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
             'DEPLOYMENT_UPLOAD_FAILED',
             'DEPLOYMENT_VERIFY_FAILED',
+            'DEPLOYMENT_STATE_WRITE_FAILED',
             'DEPLOYMENT_CAPACITY_EXHAUSTED',
             'ROUTE_SNAPSHOT_WRITE_FAILED',
             'IDEMPOTENCY_CONFLICT',

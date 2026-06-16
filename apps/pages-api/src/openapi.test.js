@@ -34,13 +34,14 @@ test('serves production v2-only OpenAPI skeleton', async () => {
     'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
     'DEPLOYMENT_UPLOAD_FAILED',
     'DEPLOYMENT_VERIFY_FAILED',
+    'DEPLOYMENT_STATE_WRITE_FAILED',
     'DEPLOYMENT_CAPACITY_EXHAUSTED',
     'ROUTE_SNAPSHOT_WRITE_FAILED',
     'IDEMPOTENCY_CONFLICT',
   ]);
   assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /artifactBundle/);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
-  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email', 'department']);
+  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email']);
   assert.doesNotMatch(serialized, /workers\.xd\.team/);
   assert.doesNotMatch(serialized, /WFP|SLOT|worker slot|execution provider|dispatch namespace|service binding/i);
   assert.doesNotMatch(serialized, /X-Pages-Token/);

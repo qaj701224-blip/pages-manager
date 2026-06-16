@@ -128,7 +128,7 @@ async function createDeployment(request, env, config, store, actor) {
       'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
       'Deployment platform configuration is invalid.',
       500,
-      'Check the Pages deployment platform configuration.'
+      'Check the Pages deployment platform configuration and retry with a new Idempotency-Key.'
     );
   }
 
@@ -155,15 +155,21 @@ async function createDeployment(request, env, config, store, actor) {
     const action =
       code === 'DEPLOYMENT_CAPACITY_EXHAUSTED'
         ? 'Ask a Pages maintainer to expand platform deployment capacity.'
-        : 'Retry the deployment with the same Idempotency-Key.';
+        : 'Retry the deployment with a new Idempotency-Key.';
     if (code === 'DEPLOYMENT_CAPACITY_EXHAUSTED') {
       await notifyDeploymentCapacityExhausted(env, config, { store });
     }
     return jsonError(code, 'Deployment upload failed.', status, action);
   }
 
-  await store.updateDeployment(deployment.id, { status: 'uploaded' });
   const workerName = uploaded.workerName || plannedWorkerName;
+  try {
+    await store.updateDeployment(deployment.id, { status: 'uploaded' });
+  } catch {
+    await cleanupUploadedWorker(provider, uploaded);
+    await markDeploymentStateWriteFailed(store, deployment.id, { env });
+    return deploymentStateWriteFailed();
+  }
   try {
     await provider.verify({
       site,
@@ -181,46 +187,55 @@ async function createDeployment(request, env, config, store, actor) {
       errorMessage: 'Deployment verification failed.',
       completedAt: readNow(env),
     });
-    return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with the same Idempotency-Key.');
+    return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with a new Idempotency-Key.');
   }
 
-  await store.updateDeployment(deployment.id, { status: 'verified' });
-  const version = await store.createSiteVersion({
-    id: versionId,
-    siteId,
-    deploymentId: deployment.id,
-    workerName,
-    runtime: uploaded.runtime || 'worker',
-    executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
-    dispatchType: uploaded.dispatchType || 'dispatch-namespace',
-    dispatchBindingName: uploaded.dispatchBindingName || null,
-    slotId: uploaded.slotId || null,
-    artifactKind,
-    artifactRef: uploaded.artifactRef,
-    contentHash,
-    createdBy: actor.userId,
-  });
-  const previousRoute = await store.getRouteBySiteId(siteId, config.environment);
-  await store.updateDeployment(deployment.id, {
-    status: 'activating',
-    versionId: version.id,
-  });
-  const route = await store.activateSiteVersion(
-    siteId,
-    {
-      activeVersionId: version.id,
-      workerName: version.workerName,
-      runtime: version.runtime,
-      executionProvider: version.executionProvider,
-      dispatchType: version.dispatchType,
-      dispatchBindingName: version.dispatchBindingName,
-      slotId: version.slotId,
-      visibility: site.defaultVisibility,
-      updatedAt: readNow(env),
-    },
-    config.environment,
-    previousRoute
-  );
+  let version;
+  let previousRoute;
+  let route;
+  try {
+    await store.updateDeployment(deployment.id, { status: 'verified' });
+    version = await store.createSiteVersion({
+      id: versionId,
+      siteId,
+      deploymentId: deployment.id,
+      workerName,
+      runtime: uploaded.runtime || 'worker',
+      executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+      dispatchType: uploaded.dispatchType || 'dispatch-namespace',
+      dispatchBindingName: uploaded.dispatchBindingName || null,
+      slotId: uploaded.slotId || null,
+      artifactKind,
+      artifactRef: uploaded.artifactRef,
+      contentHash,
+      createdBy: actor.userId,
+    });
+    previousRoute = await store.getRouteBySiteId(siteId, config.environment);
+    await store.updateDeployment(deployment.id, {
+      status: 'activating',
+      versionId: version.id,
+    });
+    route = await store.activateSiteVersion(
+      siteId,
+      {
+        activeVersionId: version.id,
+        workerName: version.workerName,
+        runtime: version.runtime,
+        executionProvider: version.executionProvider,
+        dispatchType: version.dispatchType,
+        dispatchBindingName: version.dispatchBindingName,
+        slotId: version.slotId,
+        visibility: site.defaultVisibility,
+        updatedAt: readNow(env),
+      },
+      config.environment,
+      previousRoute
+    );
+  } catch {
+    await cleanupUploadedWorker(provider, uploaded);
+    await markDeploymentStateWriteFailed(store, deployment.id, { env, versionId: version?.id });
+    return deploymentStateWriteFailed();
+  }
   if (!route) {
     await cleanupUploadedWorker(provider, uploaded);
     await store.updateDeployment(deployment.id, {
@@ -253,7 +268,7 @@ async function createDeployment(request, env, config, store, actor) {
       'ROUTE_SNAPSHOT_WRITE_FAILED',
       'Route snapshot could not be written.',
       503,
-      'Retry the deployment with the same Idempotency-Key.'
+      'Retry the deployment with a new Idempotency-Key.'
     );
   }
 
@@ -363,7 +378,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
       'ROUTE_SNAPSHOT_WRITE_FAILED',
       'Route snapshot could not be written.',
       503,
-      'Retry the rollback with the same Idempotency-Key.'
+      'Retry the rollback with a new Idempotency-Key.'
     );
   }
 
@@ -429,6 +444,8 @@ function formatDeployment(deployment) {
     source: deployment.source,
     visibility: deployment.visibility,
     status: deployment.status,
+    errorCode: deployment.errorCode || null,
+    errorMessage: deployment.errorMessage || null,
     previousVersionId: deployment.previousVersionId,
     createdAt: deployment.createdAt,
     completedAt: deployment.completedAt,
@@ -483,6 +500,29 @@ async function cleanupUploadedWorker(provider, uploaded) {
   }
 }
 
+async function markDeploymentStateWriteFailed(store, deploymentId, { env, versionId = null } = {}) {
+  try {
+    await store.updateDeployment(deploymentId, {
+      status: 'failed',
+      versionId,
+      errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
+      errorMessage: 'Deployment state could not be persisted.',
+      completedAt: readNow(env || {}),
+    });
+  } catch {
+    // Best-effort status update after a persistence failure.
+  }
+}
+
+function deploymentStateWriteFailed() {
+  return jsonError(
+    'DEPLOYMENT_STATE_WRITE_FAILED',
+    'Deployment state could not be persisted.',
+    503,
+    'Retry the deployment with a new Idempotency-Key.'
+  );
+}
+
 function publicProviderErrorCode(error, step) {
   if (error?.code === 'SLOT_CAPACITY_EXHAUSTED') return 'DEPLOYMENT_CAPACITY_EXHAUSTED';
   return step === 'upload' ? 'DEPLOYMENT_UPLOAD_FAILED' : 'DEPLOYMENT_VERIFY_FAILED';
@@ -502,7 +542,21 @@ function actorCanReadSite(actor, siteId) {
 
 function workerNameFor(site, deploymentId, environment) {
   const prefix = environment === 'staging' ? 'pages-v2-staging' : 'pages-v2';
-  return `${prefix}-${site.slug}-${deploymentId.replaceAll('_', '-')}`;
+  const suffix = boundedNamePart(deploymentId, 16);
+  const maxSlugLength = Math.max(4, 63 - prefix.length - suffix.length - 2);
+  const slug = boundedNamePart(site.slug, maxSlugLength);
+  return `${prefix}-${slug}-${suffix}`;
+}
+
+function boundedNamePart(value, maxLength) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replaceAll('_', '-')
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
+  if (normalized.length <= maxLength) return normalized || 'x';
+  return normalized.slice(0, maxLength).replace(/-+$/g, '') || normalized.slice(-maxLength);
 }
 
 function readIdempotencyKey(request) {

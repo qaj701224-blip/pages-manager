@@ -250,6 +250,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ vars\.CLOUDFLARE_ACCOUNT_ID \}\}/);
     assert.match(workflow, /D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}/);
     assert.match(workflow, /ROUTE_SNAPSHOTS_KV_ID: \$\{\{ vars\.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID \}\}/);
+    assert.match(workflow, /IP_ALLOWLIST: \$\{\{ vars\.IP_ALLOWLIST \}\}/);
     assert.match(workflow, /SITE_DATA_KV_ID: \$\{\{ vars\.PAGES_V2_SITE_DATA_KV_ID \}\}/);
     assert.doesNotMatch(
       workflow,

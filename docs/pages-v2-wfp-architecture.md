@@ -500,7 +500,7 @@ GET /cas/oauth2.0/profile?access_token=...
 | `account_id` | `accountId` / `account_id` | 当前系统推送帐号对应 ID；用于身份排查和后续目录对齐，不作为权限判断。 |
 | `employeenum` | `employeenum` / `employeeNum` / `employee_num` | 员工账号；用于身份排查和后续组织目录对齐，不作为权限判断。 |
 | `employeeStatus` | `employee_status` / `employeeStatus` | `1` / `active` 映射为 `active`；`0` / `disabled` / `inactive` 映射为 `disabled`；`left` / `leave` / `departed` 映射为 `left`；其它为 `unknown`。 |
-| `departments` | 暂不从 SSO profile 获取 | 当前联调 profile 不返回部门；部门 ACL 第一版只保留数据结构，后续通过组织搜索/目录接口补齐。 |
+| `departments` | `departments` / `departmentIds` / `department_ids` | 如果 SSO profile 明确返回部门数组则透传到 site code / session；当前联调 profile 通常不返回部门，公开 API 第一版不开放 department ACL，后续通过组织搜索/目录接口补齐。 |
 | `sessionVersion` | `sessionVersion` / `session_version` | 缺失时平台默认 `1`。 |
 
 `account`、`account_id`、`employeenum`、`realname` 可以进入 `users` 表，因为它们是常用身份排查字段，且不改变权限判断。`users` 表不再同时保存 `id` 和 `sso_subject` 两个等价字段，避免同一 SSO `userId` 出现两套名字。`fs_id`、`wechat_work`、`ad_account`、`job_number` 暂不进入核心 `users` 表；如果后续要长期使用，应单独设计 `user_identities` 或组织目录同步表。`st`、`tgtId` 是 CAS ticket 类敏感字段，不能持久化到平台业务库，也不能透传给 User Worker。
@@ -519,6 +519,7 @@ vars:
   WFP_DISPATCH_NAMESPACE
   WFP_COMPATIBILITY_DATE
   CF_API_BASE_URL
+  IP_ALLOWLIST
   ACCESS_KEY_ACTIVE_PEPPER_ID
   ACCESS_KEY_PEPPERS
 
@@ -538,6 +539,8 @@ secrets:
 `PAGES_EXECUTION_MODE` 是平台内部执行模式总开关。WFP 未开通时在 template 中设为 `normal-worker-slot`；WFP 开通且验证完成后通过 PR 改为 `wfp`。它是 Git 可审查的架构配置，不是 GitHub Environment Var，不能由 CLI、`.pages.json` 或用户请求覆盖。`pages-api` 运行时读取这个值决定新发布部署到哪个内部执行面；`pages-router` 的 wrangler 渲染会结合 `PAGES_EXECUTION_MODE` 和部署脚本计算出的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 决定持有哪些 dispatch binding。第一版不提供 `auto` fallback；如果后续要做灰度自动回退，必须同时设计 router 双绑定、部署状态机和失败回滚语义。
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`.pages.json` 或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
+
+`IP_ALLOWLIST` 是 `pages-api` 管理 API 门禁配置，复用 v1 的公司内网 / VPN / 办公出口 CIDR 列表。除 `/openapi.json`、`/skill.md`、`/readme.md` 和 health 外，`pages-api` 在进入站点、access key、部署、回滚等业务 handler 前必须先校验 `CF-Connecting-IP`；未命中时直接 403，不进入 token 校验和业务逻辑。内部 service binding host 不走公网 IP allowlist，由 internal host 校验保护。
 
 `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
@@ -571,7 +574,7 @@ secrets:
 
 production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `.pages.json`。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
-SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
+SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先校验 `SSO_ALLOWED_USER_SCOPE`，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。scope 校验优先使用 SSO profile 明确返回的 `scope` / `user_scope` / `roles` / `permissions` 等范围信号；当前 `xindong` 第一版也接受公司邮箱域作为兜底信号。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
 
 #### pages-router
 
@@ -683,6 +686,7 @@ GitHub Environment `vars` 放非敏感但不可随 public Git 提交的环境配
 
 ```text
 CLOUDFLARE_ACCOUNT_ID
+IP_ALLOWLIST
 PAGES_V2_D1_DATABASE_ID
 PAGES_V2_ROUTE_SNAPSHOTS_KV_ID
 PAGES_V2_SITE_DATA_KV_ID
@@ -709,6 +713,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | 名称                                  | 类型    | 使用方                         | 说明 |
 | ------------------------------------- | ------- | ------------------------------ | ---- |
 | `CLOUDFLARE_ACCOUNT_ID`               | var     | v2 系统 Worker wrangler 渲染和部署 | 用于 `account_id` 与 Wrangler 部署 env；workflow 会把同一个值作为 runtime secret `CF_ACCOUNT_ID` 注入 `pages-api` |
+| `IP_ALLOWLIST`                        | var     | `pages-api` wrangler 渲染       | 管理 API 入口公司网络 allowlist，除公开文档和 health 外先于业务 handler 校验 |
 | `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` / `pages-auth` wrangler 渲染 | 当前环境的 D1 metadata database id |
 | `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | var     | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
 | `PAGES_V2_SITE_DATA_KV_ID`            | var     | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
@@ -747,6 +752,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - production / staging 的 `CF_API_BASE_URL` 必须是 `https://api.cloudflare.com/client/v4`，不能把 `CF_API_TOKEN` 发送到其它 host。
 - `SLACK_PAGES_ALERT_WEBHOOK_URL` 必须作为 GitHub Environment secret 注入 `pages-api`，不能放 GitHub Vars、wrangler template 或日志；告警发送失败不得影响用户部署响应。
 - D1、KV、Durable Object binding 必须指向当前环境资源。
+- `IP_ALLOWLIST` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；`pages-api` 管理 API 未命中时必须先于 token / access key 校验返回 403。
 - `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时部署或启动必须 fail closed。
 - `CF_API_TOKEN` 只能注入 `pages-api` runtime；`CLOUDFLARE_API_TOKEN` 只能出现在 GitHub Actions / Wrangler 部署环境。
 - `pages-router` 和 `pages-router-staging` 的 wrangler 配置不能同时出现两套环境 binding 或两套 signing key。
@@ -999,8 +1005,8 @@ site_members
 site_acl_entries
   id                  -- acl_xxx
   site_id
-  subject_type        -- email / department；group 为未来预留，不进入第一版公开 API
-  subject_value       -- 邮箱或稳定 department id/path
+  subject_type        -- 第一版公开 API 只开放 email；department / group 为未来预留
+  subject_value       -- 邮箱；未来可扩展稳定 department id/path
   access_role         -- viewer / editor
   effect              -- allow；第一版不支持 deny
   created_by
@@ -1012,12 +1018,11 @@ site_acl_entries
 ```text
 allow if:
   user.email in ACL(email)
-  OR user.departments intersects ACL(department)
 ```
 
-同一站点可添加多条 ACL entry，例如“指定多个邮箱”或“指定邮箱 + 部门”。命中任意一条 allow entry 即可访问；没有命中则拒绝。用户侧指定某个人时必须填写邮箱，不填写 SSO `userId`、`accountId`、工号、企微 ID 或其它内部身份字段。
+同一站点可添加多条 ACL entry，例如“指定多个邮箱”。命中任意一条 allow entry 即可访问；没有命中则拒绝。用户侧指定某个人时必须填写邮箱，不填写 SSO `userId`、`accountId`、工号、企微 ID 或其它内部身份字段。
 
-第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。当前 API 只开放 `email`、`department`；`group` 和内部 `user` subject type 先保留为未来方向，不阻塞 MVP。`owner`、session subject、审计归因仍使用平台内部 `userId`，但不作为用户可填写的 ACL subject。
+第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。当前公开 API 只开放 `email`；`department`、`group` 和内部 `user` subject type 先保留为未来方向，不阻塞 MVP。`owner`、session subject、审计归因仍使用平台内部 `userId`，但不作为用户可填写的 ACL subject。
 
 `department` 只有在组织系统能提供稳定、不可复用 ID、成员快照版本和可控刷新 TTL 后才应在生产开放。启用后，成员变更必须能触发 `policyVersion` 或 `sessionVersion` 失效。`group` 等更复杂主体等组织目录语义稳定后再评审。
 
@@ -2571,7 +2576,7 @@ publish -> activate -> drain -> retire
 ### 阶段 3：子站 SSO 与 ACL
 
 - 支持 `acl` 和 `owner` visibility。
-- 支持 allow-only OR ACL：`user`、`email`、`department`。
+- 支持 allow-only OR ACL：第一版公开 API 只开放 `email`，`owner` 使用内部 user id 判断。
 - `group`、`deny`、条件表达式、collaborator 管理和策略语言进入后续阶段，等组织目录和权限语义稳定后再开放。
 - 完成更细的 user/session revocation、risk policy 和管理 UI 入口。
 

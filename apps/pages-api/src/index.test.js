@@ -45,9 +45,15 @@ test('invalid environment fails closed', async () => {
 });
 
 test('unknown endpoints return safe JSON errors', async () => {
-  const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/api/missing'), {
-    PAGES_ENV: 'production',
-  });
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/missing', {
+      headers: { 'CF-Connecting-IP': '10.1.2.3' },
+    }),
+    {
+      PAGES_ENV: 'production',
+      IP_ALLOWLIST: '10.0.0.0/8',
+    }
+  );
 
   assert.equal(response.status, 404);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
@@ -56,16 +62,54 @@ test('unknown endpoints return safe JSON errors', async () => {
   assert.match(body.error.action, /Check the endpoint/);
 });
 
+test('management API rejects requests outside the configured IP allowlist before auth handlers', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+  });
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
+      headers: {
+        Authorization: 'Bearer cli-token',
+        'CF-Connecting-IP': '203.0.113.8',
+      },
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      IP_ALLOWLIST: '10.0.0.0/8',
+      verifyCliToken: async () => ({
+        sub: 'usr_1',
+        purpose: 'cli_token',
+        aud: 'pages-cli',
+        env: 'production',
+        jti: 'cli_1',
+      }),
+    }
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'IP_NOT_ALLOWED');
+});
+
 test('internal user upsert is only callable through internal service host', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
   });
   const publicResponse = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/internal/users/upsert', {
-      user: { userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active' },
-      now: 1_800_000_000,
-    }),
-    { PAGES_ENV: 'production', PAGES_STORE: store }
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/internal/users/upsert',
+      {
+        user: { userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active' },
+        now: 1_800_000_000,
+      },
+      { 'CF-Connecting-IP': '10.1.2.3' }
+    ),
+    { PAGES_ENV: 'production', PAGES_STORE: store, IP_ALLOWLIST: '10.0.0.0/8' }
   );
   const internalResponse = await worker.fetch(
     jsonRequest('https://pages-api.internal/.xd-pages/internal/users/upsert', {
@@ -115,10 +159,10 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /CF_API_TOKEN|CF_ACCOUNT_ID/);
 });
 
-function jsonRequest(url, body) {
+function jsonRequest(url, body, headers = {}) {
   return new Request(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
 }

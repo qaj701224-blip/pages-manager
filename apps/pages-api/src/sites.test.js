@@ -242,7 +242,6 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
       entries: [
         { subjectType: 'email', subjectValue: 'bob@example.com' },
         { subjectType: 'email', subjectValue: 'Alice@Example.COM' },
-        { subjectType: 'department', subjectValue: 'dept_design' },
       ],
     }),
     testEnv(store)
@@ -266,6 +265,12 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     }),
     testEnv(store)
   );
+  const department = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'department', subjectValue: 'dept_design' }],
+    }),
+    testEnv(store)
+  );
   const invalidEmail = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
       entries: [{ subjectType: 'email', subjectValue: 'not-an-email' }],
@@ -279,7 +284,6 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     [
       { subjectType: 'email', subjectValue: 'bob@example.com', effect: 'allow' },
       { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow' },
-      { subjectType: 'department', subjectValue: 'dept_design', effect: 'allow' },
     ]
   );
   assert.deepEqual(
@@ -287,7 +291,6 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     [
       { subjectType: 'email', subjectValue: 'bob@example.com' },
       { subjectType: 'email', subjectValue: 'alice@example.com' },
-      { subjectType: 'department', subjectValue: 'dept_design' },
     ]
   );
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
@@ -297,6 +300,8 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   assert.equal((await user.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(group.status, 400);
   assert.equal((await group.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
+  assert.equal(department.status, 400);
+  assert.equal((await department.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(invalidEmail.status, 400);
   assert.equal((await invalidEmail.json()).error.code, 'ACL_SUBJECT_VALUE_INVALID');
 });
@@ -460,6 +465,7 @@ function jsonRequest(url, body) {
     headers: {
       'Content-Type': 'application/json',
       Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
     },
     body: JSON.stringify(body),
   });
@@ -479,6 +485,7 @@ function jsonMethodRequest(method, url, body) {
     headers: {
       'Content-Type': 'application/json',
       Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
     },
     body: JSON.stringify(body),
   });
@@ -486,7 +493,7 @@ function jsonMethodRequest(method, url, body) {
 
 function authRequest(url, headers = {}) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token', ...headers },
+    headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
   });
 }
 
@@ -566,6 +573,7 @@ function testEnv(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
+    IP_ALLOWLIST: '10.0.0.0/8',
     ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
     ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     now: () => '2026-06-15T00:00:00.000Z',

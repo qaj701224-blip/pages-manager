@@ -59,7 +59,11 @@ export async function handleOAuthCallback(request, env, config) {
   try {
     const token = await fetchSsoToken(env, config, { code });
     const accessToken = normalizeAccessToken(token);
-    profile = normalizeSsoProfile(await fetchSsoProfile(env, config, { accessToken }));
+    const rawProfile = await fetchSsoProfile(env, config, { accessToken });
+    profile = normalizeSsoProfile(rawProfile);
+    if (!ssoProfileMatchesAllowedScope(rawProfile, profile, config.ssoAllowedUserScope)) {
+      return jsonError('SSO_PROFILE_SCOPE_FORBIDDEN', 'SSO profile is outside the allowed user scope.', 403);
+    }
   } catch {
     return jsonError('SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502);
   }
@@ -480,9 +484,44 @@ function normalizeSsoProfile(profile) {
     accountId: normalizeOptionalString(profile?.accountId ?? profile?.account_id) || null,
     employeenum: normalizeOptionalString(profile?.employeenum ?? profile?.employeeNum ?? profile?.employee_num) || null,
     employeeStatus: normalizeEmployeeStatus(profile?.employeeStatus ?? profile?.employee_status),
-    departments: [],
+    departments: normalizeDepartments(profile?.departments ?? profile?.departmentIds ?? profile?.department_ids),
     sessionVersion: normalizeSessionVersion(profile?.sessionVersion ?? profile?.session_version),
   };
+}
+
+function ssoProfileMatchesAllowedScope(rawProfile, profile, allowedScope) {
+  const scope = normalizeOptionalString(allowedScope).toLowerCase();
+  if (!scope) return true;
+
+  const candidates = scopeCandidates(rawProfile).map((value) => value.toLowerCase());
+  if (candidates.includes(scope)) return true;
+
+  if (scope === 'xindong') {
+    return [profile.email, rawProfile?.account, rawProfile?.fs_email]
+      .map((value) => normalizeOptionalString(value).toLowerCase())
+      .some((email) => email.endsWith('@xd.com') || email.endsWith('@xindong.com'));
+  }
+
+  return false;
+}
+
+function scopeCandidates(profile) {
+  const values = [];
+  for (const key of ['scope', 'userScope', 'user_scope', 'allowedUserScope', 'allowed_user_scope', 'tenant', 'organization']) {
+    const value = profile?.[key];
+    if (typeof value === 'string') values.push(...value.split(/[\s,]+/).filter(Boolean));
+    if (Array.isArray(value)) values.push(...value.filter((item) => typeof item === 'string'));
+  }
+  for (const key of ['permissions', 'roles']) {
+    const value = profile?.[key];
+    if (Array.isArray(value)) values.push(...value.filter((item) => typeof item === 'string'));
+  }
+  return values;
+}
+
+function normalizeDepartments(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => normalizeOptionalString(item)).filter(Boolean))];
 }
 
 function siteCodeUserFromProfile(profile) {

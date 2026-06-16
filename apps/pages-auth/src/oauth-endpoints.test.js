@@ -196,7 +196,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     id: 'usr_123',
     email: 'user@example.test',
     employeeStatus: 'active',
-    departments: [],
+    departments: ['dept_design'],
     sessionVersion: 4,
   });
 
@@ -430,6 +430,52 @@ test('callback refuses stale active SSO profiles when the authority store keeps 
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SSO_PROFILE_INACTIVE');
+  assert.equal(sessionCreated, false);
+});
+
+test('callback rejects profiles outside the configured SSO user scope before creating sessions', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let synced = false;
+  let sessionCreated = false;
+  const env = testEnv({
+    SSO_ALLOWED_USER_SCOPE: 'xindong',
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createAuthSessionRecord: async (input) => {
+      sessionCreated = true;
+      return createStoredSession(sessionStorage, input);
+    },
+    syncSsoUserProfile: async () => {
+      synced = true;
+    },
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_external_123',
+      email: 'user@example.test',
+      employee_status: '1',
+      scope: 'external',
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'SSO_PROFILE_SCOPE_FORBIDDEN');
+  assert.equal(synced, false);
   assert.equal(sessionCreated, false);
 });
 

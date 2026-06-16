@@ -50,7 +50,7 @@ test('revokes access keys without returning plaintext or hash', async () => {
   const response = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/ak_1', {
       method: 'DELETE',
-      headers: { Authorization: 'Bearer cli-token' },
+      headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3' },
     }),
     testEnv(store)
   );
@@ -83,14 +83,14 @@ test('rejects access key actors from listing or revoking access keys', async () 
 
   const list = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/access-keys', {
-      headers: { Authorization: `Bearer ${plaintext}` },
+      headers: { Authorization: `Bearer ${plaintext}`, 'CF-Connecting-IP': '10.1.2.3' },
     }),
     testEnv(store)
   );
   const revoke = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/ak_1', {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${plaintext}` },
+      headers: { Authorization: `Bearer ${plaintext}`, 'CF-Connecting-IP': '10.1.2.3' },
     }),
     testEnv(store)
   );
@@ -155,6 +155,7 @@ function testEnv(store) {
   return {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
+    IP_ALLOWLIST: '10.0.0.0/8',
     ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
     ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
     ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
@@ -177,6 +178,7 @@ function jsonRequest(url, body) {
     headers: {
       'Content-Type': 'application/json',
       Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
     },
     body: JSON.stringify(body),
   });
@@ -184,6 +186,6 @@ function jsonRequest(url, body) {
 
 function authRequest(url) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token' },
+    headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3' },
   });
 }

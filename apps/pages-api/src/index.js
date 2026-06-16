@@ -7,6 +7,7 @@ import { buildOpenApi } from './openapi.js';
 import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
+import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 
 export { RoutePointerDO } from './route-snapshot.js';
 
@@ -48,6 +49,11 @@ export default {
 
     if (url.pathname === '/skill.md') return markdownResponse(buildSkill(config));
     if (url.pathname === '/readme.md') return markdownResponse(buildReadme(config));
+
+    if (requiresIpAllowlist(url)) {
+      const ipError = checkIpAllowlist(request, env, config);
+      if (ipError) return ipError;
+    }
 
     if (url.pathname.startsWith('/.xd-pages/internal/')) {
       let store;
@@ -102,3 +108,20 @@ export default {
     return jsonError('NOT_FOUND', 'Endpoint not found.', 404, 'Check the endpoint path and API version.');
   },
 };
+
+function requiresIpAllowlist(url) {
+  if (url.hostname.endsWith('.internal')) return false;
+  const pathname = url.pathname;
+  if (pathname === '/.xd-pages/health') return false;
+  if (pathname === '/openapi.json' || pathname === '/.xd-pages/api/openapi.json') return false;
+  if (pathname === '/skill.md' || pathname === '/readme.md') return false;
+  return true;
+}
+
+function checkIpAllowlist(request, env, config) {
+  if (config.environment === 'local') return null;
+  const allowlist = String(env.IP_ALLOWLIST || '').trim();
+  const ip = request.headers.get('CF-Connecting-IP') || '';
+  if (isAllowedIP(ip, allowlist)) return null;
+  return jsonError('IP_NOT_ALLOWED', 'Source IP is not allowed.', 403, 'Connect from the company network or VPN.');
+}

@@ -17,6 +17,7 @@ test('pages v2 architecture documents exact deploy workflow config names', () =>
     'CLOUDFLARE_ACCOUNT_ID',
     'CLOUDFLARE_API_TOKEN',
     'CF_API_TOKEN',
+    'IP_ALLOWLIST',
     'SLACK_PAGES_ALERT_WEBHOOK_URL',
     'SLACK_PAGES_ALERT_MENTION_USER_ID',
     'PAGES_V2_D1_DATABASE_ID',

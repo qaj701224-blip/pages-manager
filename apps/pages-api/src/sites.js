@@ -6,7 +6,7 @@ import { newHexId, newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 
 const VISIBILITIES = new Set(['public', 'org', 'acl', 'owner', 'disabled']);
-const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
+const ACL_SUBJECT_TYPES = new Set(['email']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
 
@@ -278,7 +278,7 @@ function normalizeAclEntries(value, env) {
         'ACL_SUBJECT_TYPE_UNSUPPORTED',
         'ACL subject type is not supported.',
         400,
-        'Use email or department.'
+        'Use email. Department ACLs require organization directory sync and are not enabled in the first release.'
       );
     }
 
