@@ -1,23 +1,19 @@
 import http from 'node:http';
 
-import { FileBackedGatewayStore } from './file-store.js';
 import { createGatewayApp } from './index.js';
 import { MySqlGatewayStore } from './db/gateway-store.js';
 import { runMigrations } from '../scripts/migrate.js';
 
 async function createStoreFromEnv() {
-  if (process.env.PAGES_STORE_BACKEND === 'mysql') {
-    if (process.env.PAGES_DB_AUTO_MIGRATE !== 'false') {
-      await runMigrations(process.env);
-    }
-    return MySqlGatewayStore.create(process.env);
+  if (process.env.PAGES_STORE_BACKEND && process.env.PAGES_STORE_BACKEND !== 'mysql') {
+    throw new Error('PAGES_STORE_BACKEND must be mysql');
   }
 
-  if (process.env.PAGES_GATEWAY_STORE_FILE) {
-    return new FileBackedGatewayStore(process.env.PAGES_GATEWAY_STORE_FILE);
+  if (process.env.PAGES_DB_AUTO_MIGRATE !== 'false') {
+    await runMigrations(process.env);
   }
 
-  return undefined;
+  return MySqlGatewayStore.create(process.env);
 }
 
 const store = await createStoreFromEnv();

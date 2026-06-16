@@ -12,9 +12,9 @@ import {
   handleReviewGateReconcile,
   handleSlackEvents,
   handleSlackInteractions,
-} from './handlers.js';
-import { Router } from './router.js';
-import { MemoryGatewayStore } from './store.js';
+} from './routes/handlers.js';
+import { MySqlGatewayStore } from './db/gateway-store.js';
+import { Router } from './http/router.js';
 
 function logSlackHttpFailure(request, url, err) {
   if (!url.pathname.startsWith('/integrations/slack/')) return;
@@ -36,7 +36,16 @@ function logSlackHttpFailure(request, url, err) {
 
 export function createGatewayApp(options = {}) {
   const router = new Router();
-  const store = options.store || new MemoryGatewayStore();
+  let store = options.store || null;
+  let storePromise = store ? Promise.resolve(store) : null;
+
+  async function resolveStore(env) {
+    if (!storePromise) {
+      storePromise = MySqlGatewayStore.create(env);
+    }
+    store = await storePromise;
+    return store;
+  }
 
   router.get('/health', handleHealth);
   router.get('/ready', handleReady);
@@ -51,8 +60,11 @@ export function createGatewayApp(options = {}) {
   router.post('/integrations/github/webhook', handleGithubWebhook);
 
   return {
-    store,
+    get store() {
+      return store;
+    },
     async fetch(request, env = {}, ctx = {}) {
+      const requestStore = await resolveStore(env);
       const url = new URL(request.url);
       const match = router.match(request.method, url.pathname);
 
@@ -61,7 +73,7 @@ export function createGatewayApp(options = {}) {
       }
 
       try {
-        return await match.handler(request, { ...env, waitUntil: ctx.waitUntil?.bind(ctx), store }, match.params);
+        return await match.handler(request, { ...env, waitUntil: ctx.waitUntil?.bind(ctx), store: requestStore }, match.params);
       } catch (err) {
         logSlackHttpFailure(request, url, err);
         return jsonResponse({ error: err.message }, err.status || 500);

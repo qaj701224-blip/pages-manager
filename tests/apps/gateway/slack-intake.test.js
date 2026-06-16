@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifySlackIntake, normalizeSlackIntakeText, slackStatusReply } from '../../../apps/gateway/src/slack-intake.js';
+import { classifySlackIntake, normalizeSlackIntakeText, slackStatusReply } from '../../../apps/gateway/src/slack/intake.js';
 
 function body(text) {
   return {
@@ -70,11 +70,12 @@ test('classifies missing message command requirements without creating jobs', ()
   assert.match(result.replyText, /请在 `issue:` 后面/);
 });
 
-test('classifies explicit create issue and create page messages as jobs', () => {
+test('routes natural create or update messages to the Slack Agent', () => {
   for (const text of ['创建一个 issue', '帮我生成一个个人网页', 'create a profile page']) {
     const result = classifySlackIntake(body(`<@U01ABC> ${text}`));
-    assert.equal(result.action, 'create_job');
-    assert.equal(result.shouldCreateJob, true);
+    assert.equal(result.action, 'agent_turn');
+    assert.equal(result.shouldCreateJob, false);
+    assert.equal(result.shouldAnalyze, true);
     assert.equal(result.text, text);
   }
 });
@@ -94,6 +95,24 @@ test('classifies status command without job id as a friendly reply', () => {
   assert.equal(result.shouldCreateJob, false);
   assert.equal(result.jobId, null);
   assert.equal(result.replyText, null);
+});
+
+test('classifies bulk destructive issue requests as unsupported', () => {
+  for (const text of ['关闭我名下的所有 issue', '把我的全部 PR 都关掉', '取消所有发布任务', 'delete all my issues']) {
+    const result = classifySlackIntake(body(text));
+
+    assert.equal(result.action, 'unsupported_destructive_request');
+    assert.equal(result.shouldCreateJob, false);
+    assert.equal(result.shouldAnalyze, false);
+    assert.match(result.replyText, /不能批量关闭或删除/);
+  }
+});
+
+test('marks explicit work item history list requests', () => {
+  const result = classifySlackIntake(body('查看我的历史发布任务'));
+
+  assert.equal(result.action, 'list_work_items');
+  assert.equal(result.includeInactive, true);
 });
 
 test('builds status reply from a job', () => {
