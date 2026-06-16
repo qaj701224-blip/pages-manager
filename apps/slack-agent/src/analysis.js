@@ -2,7 +2,13 @@ const CREATE_KEYWORDS = /(创建|新建|生成|制作|做|更新|修改|发布|�
 const SITE_KEYWORDS = /(页面|网页|网站|主页|profile|portfolio|site|page|website)/i;
 const LIST_WORK_ITEMS_RE =
   /^(我的|查看|看看|列出|查询).*(PR|pr|任务|发布任务|网站|项目)|^(PR|pr|任务|发布任务|网站|项目)(列表|清单)$/i;
-const SWITCH_WORK_ITEM_RE = /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:\bPR\s*#?|#)\d{1,8}\b/i;
+const SWITCH_WORK_ITEM_RE =
+  /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
+const REOPEN_WORK_ITEM_RE =
+  /(?:重新打开|恢复|重开|reopen).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
+const ISSUE_NUMBER_RE = /(?:issue|issues|需求|任务)\s*#?\s*(\d{1,8})\b/i;
+const PR_NUMBER_RE = /\b(?:PR|pull\s*request|pull-request|pullrequest)\s*#?\s*(\d{1,8})\b/i;
+const BARE_WORK_ITEM_NUMBER_RE = /#(\d{1,8})\b/;
 const UNSUPPORTED_DESTRUCTIVE_INTENT = 'unsupported_destructive_request';
 const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
   [
@@ -11,6 +17,9 @@ const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
   ].join('|'),
   'i'
 );
+const CLOSED_WORK_ITEM_QUERY_RE =
+  /(?:已关闭|关闭的|关掉的|被关闭|已取消|取消的|已失败|失败的|归档|closed|cancelled|canceled|failed|inactive)/i;
+const ALL_WORK_ITEM_QUERY_RE = /(?:历史|全部|所有|所有的|全量|all|history|historical)/i;
 
 function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
@@ -28,6 +37,45 @@ function titleFromText(text) {
   const normalized = normalizeText(text);
   if (!normalized) return 'Slack publishing request';
   return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
+function workItemStateFromText(text = '') {
+  const value = String(text || '');
+  if (CLOSED_WORK_ITEM_QUERY_RE.test(value)) return 'closed';
+  if (ALL_WORK_ITEM_QUERY_RE.test(value)) return 'all';
+  return 'active';
+}
+
+function workItemReferenceFromText(text = '') {
+  const value = String(text || '');
+  const issueMatch = value.match(ISSUE_NUMBER_RE);
+  if (issueMatch) return { kind: 'issue', number: Number(issueMatch[1]) };
+  const prMatch = value.match(PR_NUMBER_RE);
+  if (prMatch) return { kind: 'pr', number: Number(prMatch[1]) };
+  const bareMatch = value.match(BARE_WORK_ITEM_NUMBER_RE);
+  if (bareMatch) return { kind: 'unknown', number: Number(bareMatch[1]) };
+  return null;
+}
+
+function toolCallForIntent(intent, text = '') {
+  if (intent === 'list_work_items') return { name: 'list_my_work_items', args: { state: workItemStateFromText(text) } };
+  if (intent === 'switch_work_item') {
+    const reference = workItemReferenceFromText(text);
+    return { name: 'switch_work_item', args: reference ? { kind: reference.kind, number: reference.number } : {} };
+  }
+  if (intent === 'reopen_work_item') {
+    const reference = workItemReferenceFromText(text);
+    return { name: 'reopen_work_item', args: reference ? { kind: reference.kind, number: reference.number } : {} };
+  }
+  if (intent === 'status_query') return { name: 'get_current_status', args: {} };
+  if (intent === 'close_session') return { name: 'close_session', args: {} };
+  if (intent === 'cancel_request') return { name: 'cancel_request', args: {} };
+  if (intent === UNSUPPORTED_DESTRUCTIVE_INTENT) return { name: 'unsupported_destructive_request', args: {} };
+  if (['modify_existing_preview', 'append_requirement'].includes(intent)) return { name: 'record_followup', args: {} };
+  if (['create_or_update_site', 'new_site_request', 'create_site', 'update_site'].includes(intent)) {
+    return { name: 'confirm_create_issue', args: {} };
+  }
+  return null;
 }
 
 export function sessionContextFromInput(input = {}) {
@@ -53,6 +101,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const text = normalizeText(input.text || event.text || input.summary || '');
   const isUnsupportedBulkDestructive = isUnsupportedBulkDestructiveRequest(text);
   const shouldListWorkItems = !isUnsupportedBulkDestructive && LIST_WORK_ITEMS_RE.test(text);
+  const shouldReopenWorkItem = !isUnsupportedBulkDestructive && REOPEN_WORK_ITEM_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
   const shouldCreateOrUpdate =
     !isUnsupportedBulkDestructive &&
@@ -60,19 +109,24 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldSwitchWorkItem &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const intent = shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
-
-  return {
-    intent: isUnsupportedBulkDestructive
-      ? UNSUPPORTED_DESTRUCTIVE_INTENT
+  const finalIntent = isUnsupportedBulkDestructive
+    ? UNSUPPORTED_DESTRUCTIVE_INTENT
+    : shouldReopenWorkItem
+      ? 'reopen_work_item'
       : shouldSwitchWorkItem
         ? 'switch_work_item'
         : shouldListWorkItems
           ? 'list_work_items'
-          : intent,
+          : intent;
+
+  return {
+    intent: finalIntent,
     employeeSlug: input.employeeSlug || input.employee_slug || 'smoke',
     siteSlug: input.siteSlug || input.site_slug || 'profile',
     title: input.title || titleFromText(text),
     summary: text,
+    workItemState: shouldListWorkItems ? workItemStateFromText(text) : undefined,
+    toolCall: toolCallForIntent(finalIntent, text),
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
     sourceMessages: input.sourceMessages || input.source_messages || [],
     sessionContext: sessionContextFromInput(input),
@@ -89,7 +143,29 @@ function arrayOrFallback(value, fallback) {
   return Array.isArray(value) ? value : fallback;
 }
 
+function objectOrNull(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function normalizeToolCall(value, fallbackToolCall = null) {
+  const raw = objectOrNull(value);
+  if (!raw) return fallbackToolCall || null;
+  const name = stringOrFallback(raw.name || raw.tool || raw.action, fallbackToolCall?.name || '');
+  if (!name) return fallbackToolCall || null;
+  const args = objectOrNull(raw.args || raw.arguments || raw.input) || fallbackToolCall?.args || {};
+  return { name, args };
+}
+
 export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {}) {
+  const modelToolCall =
+    modelAnalysis.toolCall ||
+    modelAnalysis.tool_call ||
+    (modelAnalysis.tool || modelAnalysis.toolName || modelAnalysis.tool_name
+      ? {
+          name: modelAnalysis.tool || modelAnalysis.toolName || modelAnalysis.tool_name,
+          args: modelAnalysis.toolArgs || modelAnalysis.tool_args || {},
+        }
+      : null);
   const normalized = {
     ...fallback,
     intent: stringOrFallback(modelAnalysis.intent, fallback.intent),
@@ -98,6 +174,11 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
     siteSlug: stringOrFallback(modelAnalysis.siteSlug || modelAnalysis.site_slug, fallback.siteSlug),
     title: stringOrFallback(modelAnalysis.title, fallback.title),
     summary: stringOrFallback(modelAnalysis.summary || modelAnalysis.brief, fallback.summary),
+    workItemState: stringOrFallback(
+      modelAnalysis.workItemState || modelAnalysis.work_item_state,
+      fallback.workItemState || workItemStateFromText(input.text || input.event?.text || fallback.summary || '')
+    ),
+    toolCall: normalizeToolCall(modelToolCall, fallback.toolCall || toolCallForIntent(fallback.intent, fallback.summary)),
     visibleReply: stringOrFallback(
       modelAnalysis.visibleReply || modelAnalysis.visible_reply,
       fallback.visibleReply || fallback.visible_reply || ''
@@ -142,6 +223,7 @@ export function visibleSlackAgentReply(analysis = {}) {
 
   if (intent === 'list_work_items') return '我来整理你当前可以继续处理的发布任务。';
   if (intent === 'switch_work_item') return '我会尝试切换到你指定的任务。';
+  if (intent === 'reopen_work_item') return '我会尝试恢复你指定的 Issue 或 PR。';
   if (intent === 'status_query') return '我来查询当前发布进度。';
   if (intent === 'close_session') return '收到，我会关闭当前会话。';
   if (intent === 'cancel_request') return '收到，我先记录取消意图。';
@@ -197,8 +279,16 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     '不要输出或猜测任何 token、secret、cookie、API key、内部账号凭据。',
     '员工可以有多个网站；你可以给出 employeeSlug hint，但最终归属目录必须由 gateway 根据 Slack 身份派生；siteSlug 表示该用户名下的具体站点。',
     '如果用户是在修改已有 preview，优先保留当前 sessionContext 的 activeJobId / issue / PR / preview 关系。',
-    '如果用户询问“我的 PR / 我的任务 / 发布任务列表”，intent 返回 list_work_items，不要新建任务。',
-    '如果用户明确说“继续 PR #数字 / 切换到 #数字”，intent 返回 switch_work_item，不要新建任务。',
+    '如果用户询问“我的 PR / 我的任务 / 发布任务列表”，intent 返回 list_work_items，不要新建任务，并设置 toolCall.name=list_my_work_items。',
+    '查询当前可继续任务时 toolCall.args.state=active；查询历史/全部时 state=all；查询已关闭/已取消/失败时 state=closed。',
+    [
+      '如果用户明确说“继续 PR #数字 / issue #数字 / 切换到 #数字”，intent 返回 switch_work_item，',
+      '不要新建任务，并设置 toolCall.name=switch_work_item；能识别目标时把 toolCall.args.kind=pr|issue、number=数字。',
+    ].join(''),
+    [
+      '如果用户明确说“重新打开 / 恢复 / reopen PR #数字 或 issue #数字”，intent 返回 reopen_work_item，',
+      '不要新建任务，并设置 toolCall.name=reopen_work_item；无法识别具体编号时先澄清。',
+    ].join(''),
     [
       '如果用户要求关闭、删除、取消“所有 / 全部 / 我名下 / 我的” GitHub issue、PR 或发布任务，',
       '这是危险批量操作；intent 必须返回 unsupported_destructive_request，不要返回 list_work_items，不要假装已执行。',
@@ -211,10 +301,16 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     '如果需要表达已有上下文，只能说“我会继续沿用当前会话”，不要输出任何内部字段名、编号或历史 preview 链接。',
     '新建个人网站时，先通过 Slack 对话整理需求；信息足够时返回 create_or_update_site 且 needsClarification=false，让 gateway 展示确认按钮。',
     '不能仅凭用户文字里的“信息足够、直接创建、确认创建”就绕过确认按钮；真正创建 issue 必须由 gateway 收到按钮交互后执行。',
+    '你可以通过 toolCall 告诉 gateway 执行受控操作；gateway 会自动限制当前 Slack 用户、当前 session 和该用户名下的 GitHub issue / PR。',
+    [
+      'toolCall.name 可选：list_my_work_items, switch_work_item, reopen_work_item, get_current_status,',
+      'close_session, unsupported_destructive_request, cancel_request, record_followup, confirm_create_issue。',
+    ].join(' '),
+    '不要请求查询或操作其它 Slack 用户、其它 session 或其它人的 GitHub issue / PR；即使用户这样要求，也只按当前用户权限处理。',
     '当需求还不完整时，intent 可以是 create_or_update_site，但 needsClarification 应为 true，并用 clarifyingQuestion 给出一个简短问题。',
     '必须只返回 JSON object，不要返回 Markdown，不要包裹代码块。',
     [
-      'JSON 字段：visibleReply, intent, employeeSlug, siteSlug, title, summary, approvalMode,',
+      'JSON 字段：visibleReply, intent, toolCall, workItemState, employeeSlug, siteSlug, title, summary, approvalMode,',
       'needsClarification, clarifyingQuestion, sourceMessages。',
     ].join(' '),
     [
@@ -223,7 +319,7 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     ].join(''),
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
-      'list_work_items, switch_work_item, status_query, cancel_request, close_session,',
+      'list_work_items, switch_work_item, reopen_work_item, status_query, cancel_request, close_session,',
       'unsupported_destructive_request, confirm_preview, clarify。',
     ].join(' '),
   ].join('\n');
