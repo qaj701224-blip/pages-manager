@@ -112,6 +112,54 @@ test('MySQL gateway store health checks the database connection', async () => {
   assert.equal(calls[0].sql, 'SELECT 1');
 });
 
+test('MySQL gateway store health checks Redis when Redis is configured', async () => {
+  const calls = [];
+  const redisCalls = [];
+  const store = new MySqlGatewayStore(
+    {
+      async execute(sql, params) {
+        calls.push({ sql, params });
+        return [[], []];
+      },
+      async end() {},
+    },
+    {
+      redis: {
+        async ping() {
+          redisCalls.push('ping');
+          return 'PONG';
+        },
+      },
+    }
+  );
+
+  const health = await store.health();
+
+  assert.deepEqual(health, { ok: true, backend: 'mysql' });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(redisCalls, ['ping']);
+});
+
+test('MySQL gateway store health fails when configured Redis is unavailable', async () => {
+  const store = new MySqlGatewayStore(
+    {
+      async execute() {
+        return [[], []];
+      },
+      async end() {},
+    },
+    {
+      redis: {
+        async ping() {
+          throw new Error('redis unavailable');
+        },
+      },
+    }
+  );
+
+  await assert.rejects(() => store.health(), /redis unavailable/);
+});
+
 test('MySQL gateway store transitions jobs against relational tables', async () => {
   const calls = [];
   const jobRow = {
@@ -180,6 +228,286 @@ test('MySQL gateway store records Slack status messages without relying on sync 
   assert.equal(message.jobId, 'job_db_status');
   assert.equal(message.messageTs, '1710000001.000100');
   assert.ok(calls.some((call) => call.sql.includes('INSERT INTO `slack_job_status_messages`')));
+});
+
+test('MySQL gateway store records Slack deliveries with duplicate-key idempotency', async () => {
+  const calls = [];
+  const store = new MySqlGatewayStore({
+    async execute(sql, params) {
+      calls.push({ sql, params });
+      if (sql.includes('INSERT INTO `slack_events`')) {
+        const error = new Error('Duplicate entry');
+        error.code = 'ER_DUP_ENTRY';
+        error.errno = 1062;
+        throw error;
+      }
+      if (sql.includes('SELECT * FROM slack_events')) {
+        return [
+          [
+            {
+              id: 'slackevt_existing',
+              team_id: 'T1',
+              event_id: 'Ev1',
+              event_type: 'message',
+              processing_status: 'received',
+              result_type: 'none',
+              retry_num: 0,
+              created_at: new Date('2026-06-14T00:00:00.000Z'),
+              updated_at: new Date('2026-06-14T00:00:00.000Z'),
+            },
+          ],
+          [],
+        ];
+      }
+      return [[], []];
+    },
+    async end() {},
+  });
+
+  const result = await store.recordSlackDelivery({
+    teamId: 'T1',
+    eventId: 'Ev1',
+    eventType: 'message',
+  });
+
+  assert.equal(result.created, false);
+  assert.equal(result.delivery.id, 'slackevt_existing');
+  assert.match(calls[0].sql, /INSERT INTO `slack_events`/);
+  assert.doesNotMatch(calls[0].sql, /INSERT IGNORE/);
+  assert.match(calls[1].sql, /SELECT \* FROM slack_events/);
+});
+
+test('MySQL gateway store does not suppress non-duplicate Slack delivery insert errors', async () => {
+  const store = new MySqlGatewayStore({
+    async execute(sql) {
+      if (sql.includes('INSERT INTO `slack_events`')) {
+        const error = new Error('Data truncated for column processing_status');
+        error.code = 'WARN_DATA_TRUNCATED';
+        throw error;
+      }
+      return [[], []];
+    },
+    async end() {},
+  });
+
+  await assert.rejects(
+    () =>
+      store.recordSlackDelivery({
+        teamId: 'T1',
+        eventId: 'Ev1',
+        eventType: 'message',
+      }),
+    /Data truncated/
+  );
+});
+
+test('MySQL gateway store records GitHub deliveries with duplicate-key idempotency', async () => {
+  const calls = [];
+  const store = new MySqlGatewayStore({
+    async execute(sql, params) {
+      calls.push({ sql, params });
+      if (sql.includes('INSERT INTO `github_webhook_deliveries`')) {
+        return [{ affectedRows: 1 }, []];
+      }
+      if (sql.includes('SELECT * FROM github_webhook_deliveries')) {
+        return [
+          [
+            {
+              id: 'ghdeliv_created',
+              repo_full_name: 'xindong/pages-manager',
+              delivery_id: 'delivery-1',
+              event_name: 'issues',
+              action: 'opened',
+              status: 'received',
+              created_at: new Date('2026-06-14T00:00:00.000Z'),
+              updated_at: new Date('2026-06-14T00:00:00.000Z'),
+            },
+          ],
+          [],
+        ];
+      }
+      return [[], []];
+    },
+    async end() {},
+  });
+
+  const result = await store.recordGithubDelivery({
+    repoFullName: 'xindong/pages-manager',
+    deliveryId: 'delivery-1',
+    eventName: 'issues',
+    action: 'opened',
+  });
+
+  assert.equal(result.created, true);
+  assert.equal(result.delivery.id, 'ghdeliv_created');
+  assert.match(calls[0].sql, /INSERT INTO `github_webhook_deliveries`/);
+  assert.doesNotMatch(calls[0].sql, /INSERT IGNORE/);
+  assert.match(calls[1].sql, /SELECT \* FROM github_webhook_deliveries/);
+});
+
+test('MySQL gateway store records agent run events with duplicate-key idempotency', async () => {
+  const calls = [];
+  const store = new MySqlGatewayStore({
+    async execute(sql, params) {
+      calls.push({ sql, params });
+      if (sql.includes('INSERT INTO `agent_run_events`')) {
+        const error = new Error('Duplicate entry');
+        error.code = 'ER_DUP_ENTRY';
+        error.errno = 1062;
+        throw error;
+      }
+      if (sql.includes('SELECT * FROM agent_run_events WHERE dedupe_key = ?')) {
+        return [
+          [
+            {
+              id: 'agentevent_existing',
+              publishing_job_id: 'job_1',
+              slack_session_id: 'sess_1',
+              type: 'job_progress',
+              stage: 'fixing',
+              text: 'already recorded',
+              status: 'recorded',
+              dedupe_key: 'progress:job_1:fixing',
+              created_at: new Date('2026-06-14T00:00:00.000Z'),
+            },
+          ],
+          [],
+        ];
+      }
+      return [[], []];
+    },
+    async end() {},
+  });
+
+  const result = await store.recordAgentRunEvent({
+    publishingJobId: 'job_1',
+    slackSessionId: 'sess_1',
+    type: 'job_progress',
+    stage: 'fixing',
+    text: 'already recorded',
+    dedupeKey: 'progress:job_1:fixing',
+  });
+
+  assert.equal(result.created, false);
+  assert.equal(result.event.id, 'agentevent_existing');
+  assert.match(calls[0].sql, /INSERT INTO `agent_run_events`/);
+  assert.match(calls[1].sql, /SELECT \* FROM agent_run_events WHERE dedupe_key = \?/);
+});
+
+test('MySQL gateway store returns canonical Slack session after unique-scope upsert', async () => {
+  const calls = [];
+  let scopeSelects = 0;
+  const store = new MySqlGatewayStore({
+    async execute(sql, params) {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT * FROM slack_sessions WHERE team_id = ?')) {
+        scopeSelects += 1;
+        if (scopeSelects === 1) return [[], []];
+        return [
+          [
+            {
+              id: 'sess_canonical',
+              team_id: 'T1',
+              primary_slack_user_id: 'U1',
+              session_key: 'dm:D1:current',
+              session_title: 'Slack conversation',
+              status: 'active',
+              created_at: new Date('2026-06-14T00:00:00.000Z'),
+              updated_at: new Date('2026-06-14T00:00:00.000Z'),
+            },
+          ],
+          [],
+        ];
+      }
+      if (sql.includes('SELECT * FROM session_memories')) return [[], []];
+      return [[], []];
+    },
+    async end() {},
+  });
+
+  const session = await store.upsertSlackSession({
+    id: 'sess_generated',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:current',
+  });
+
+  const memoryInsert = calls.find((call) => call.sql.includes('INSERT INTO `session_memories`'));
+  assert.equal(session.id, 'sess_canonical');
+  assert.equal(memoryInsert.params[1], 'sess_canonical');
+});
+
+test('MySQL gateway store uses Redis SET NX as Slack Agent lease when Redis is configured', async () => {
+  const calls = [];
+  const redisCalls = [];
+  const redis = {
+    async set(...args) {
+      redisCalls.push(['set', ...args]);
+      return 'OK';
+    },
+    async get(...args) {
+      redisCalls.push(['get', ...args]);
+      return null;
+    },
+    async del(...args) {
+      redisCalls.push(['del', ...args]);
+      return 1;
+    },
+  };
+  const store = new MySqlGatewayStore(
+    {
+      async execute(sql, params) {
+        calls.push({ sql, params });
+        if (sql.includes('SELECT * FROM agent_runs')) return [[], []];
+        if (sql.includes('INSERT INTO `agent_runs`')) return [{ affectedRows: 1 }, []];
+        return [[], []];
+      },
+      async end() {},
+    },
+    { redis }
+  );
+
+  const lease = await store.acquireSlackAgentLease(
+    'sess_lease',
+    { slackAgentSessionLeaseMs: 180_000, slackAgentTurnTimeoutMs: 300_000 },
+    new Date('2026-06-14T00:00:00.000Z')
+  );
+
+  assert.equal(lease.acquired, true);
+  assert.equal(lease.agentRun.slackSessionId, 'sess_lease');
+  assert.deepEqual(redisCalls[0].slice(0, 4), ['set', 'pages-manager:slack-agent:lease:sess_lease', lease.agentRun.id, 'PX']);
+  assert.equal(redisCalls[0][5], 'NX');
+  assert.ok(calls.some((call) => call.sql.includes('INSERT INTO `agent_runs`')));
+});
+
+test('MySQL gateway store refuses a Slack Agent lease when Redis NX sees another holder', async () => {
+  const redis = {
+    async set() {
+      return null;
+    },
+    async get() {
+      return 'agent_existing';
+    },
+  };
+  const store = new MySqlGatewayStore(
+    {
+      async execute(sql) {
+        if (sql.includes('SELECT * FROM agent_runs')) return [[], []];
+        return [[], []];
+      },
+      async end() {},
+    },
+    { redis }
+  );
+
+  const lease = await store.acquireSlackAgentLease(
+    'sess_lease',
+    { slackAgentSessionLeaseMs: 180_000, slackAgentTurnTimeoutMs: 300_000 },
+    new Date('2026-06-14T00:00:00.000Z')
+  );
+
+  assert.equal(lease.acquired, false);
+  assert.equal(lease.agentRun.id, 'agent_existing');
 });
 
 test('MySQL gateway store uses sanitized pagination SQL for list queries', async () => {

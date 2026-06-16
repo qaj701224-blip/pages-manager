@@ -8,7 +8,7 @@ import {
   normalizeReviewAgentWebhook,
   normalizeSiteCheckRunWebhook,
   reviewAgentLogins,
-} from '../../../apps/gateway/src/github-review.js';
+} from '../../../apps/gateway/src/github/review.js';
 
 test('review agent allowlist supports csv and json metadata', () => {
   assert.equal(reviewAgentLogins({}).has('greptile[bot]'), true);

@@ -6,7 +6,7 @@ import {
   notifySlackJobStatus,
   postSlackMessage,
   removeSlackReaction,
-} from '../../../apps/gateway/src/slack-notifier.js';
+} from '../../../apps/gateway/src/slack/notifier.js';
 
 test('gateway delegates Slack status delivery to remote notifier when configured', async () => {
   const calls = [];
