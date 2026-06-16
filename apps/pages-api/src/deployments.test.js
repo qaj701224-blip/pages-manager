@@ -217,6 +217,78 @@ test('fails normal worker slot deployment when no slot is available', async () =
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
 });
 
+test('notifies Slack with an actions URL button when normal worker slot capacity is exhausted', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'assigned',
+  });
+  await store.createWorkerSlot({
+    id: 'slot_002',
+    environment: 'production',
+    slotNumber: 2,
+    workerName: 'pages-v2-production-slot-002',
+    bindingName: 'SITE_SLOT_002',
+    status: 'assigned',
+  });
+  const slackRequests = [];
+  const webhookUrl = testSlackWebhookUrl();
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_notify' }),
+    testEnv(store, createSnapshotStore(), {
+      PAGES_EXECUTION_MODE: 'normal-worker-slot',
+      PAGES_NORMAL_WORKER_SLOT_EXPAND_BY: '2',
+      SLACK_PAGES_ALERT_MENTION_USER_ID: 'UTESTMEMBER',
+      SLACK_PAGES_ALERT_WEBHOOK_URL: webhookUrl,
+      fetch: async (request) => {
+        slackRequests.push(request);
+        return new Response('ok');
+      },
+    })
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal(slackRequests.length, 1);
+  assert.equal(slackRequests[0].method, 'POST');
+  assert.equal(slackRequests[0].url, webhookUrl);
+  const payload = await slackRequests[0].json();
+  const serialized = JSON.stringify(payload);
+  assert.equal(payload.text, '静态页面池容量不足，需要扩容');
+  assert.equal((serialized.match(/<@UTESTMEMBER>/g) || []).length, 1);
+  assert.deepEqual(payload.blocks[2].fields, [
+    { type: 'mrkdwn', text: '*环境*\nproduction' },
+    { type: 'mrkdwn', text: '*容量*\n已用 2 / 总计 2' },
+    { type: 'mrkdwn', text: '*剩余*\n0' },
+    { type: 'mrkdwn', text: '*扩容*\n+2' },
+  ]);
+  assert.match(serialized, /https:\/\/github\.com\/xindong\/pages-manager\/actions/);
+  assert.match(serialized, /button/);
+  assert.doesNotMatch(serialized, /Deployment|Site|dep_1|site_1/);
+  assert.doesNotMatch(serialized, /cli-token|pepper|cf_secret_token|Authorization|user@example\.com/);
+});
+
+test('does not mask capacity response when Slack notification fails', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'slot_notify_fail',
+    }),
+    testEnv(store, createSnapshotStore(), {
+      PAGES_EXECUTION_MODE: 'normal-worker-slot',
+      SLACK_PAGES_ALERT_WEBHOOK_URL: testSlackWebhookUrl(),
+      fetch: async () => new Response('nope', { status: 500 }),
+    })
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_CAPACITY_EXHAUSTED');
+  assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_CAPACITY_EXHAUSTED');
+});
+
 test('deployment idempotency replays same request and rejects changed request', async () => {
   const store = await createSeededStore();
   const snapshots = createSnapshotStore();
@@ -723,10 +795,9 @@ async function createSeededStore() {
     now: () => '2026-06-15T00:00:00.000Z',
   });
   await store.createUser({
-    id: 'usr_1',
-    ssoSubject: 'sso_1',
+    userId: 'usr_1',
     email: 'user@example.com',
-    name: 'User One',
+    realname: 'User One',
     employeeStatus: 'active',
   });
   await store.createSite({
@@ -842,6 +913,10 @@ function workerBundle(content) {
     mainModule: 'worker.mjs',
     modules: [{ name: 'worker.mjs', content, type: 'application/javascript+module' }],
   };
+}
+
+function testSlackWebhookUrl() {
+  return ['https://hooks.slack.com', 'services', 'T000', 'B000', 'PLACEHOLDER'].join('/');
 }
 
 function deployPayload(overrides = {}) {

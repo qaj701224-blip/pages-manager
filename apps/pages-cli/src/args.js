@@ -1,6 +1,13 @@
 const BOOLEAN_FLAGS = new Set(['no-open', 'print', 'json', 'help']);
 
 export function parseArgs(argv = []) {
+  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
+    return { command: 'help', positional: [], flags: {} };
+  }
+  if (argv.length === 1 && (argv[0] === '--version' || argv[0] === '-v')) {
+    return { command: 'version', positional: [], flags: {} };
+  }
+
   const [command = 'help', ...rest] = argv;
   const positional = [];
   const flags = {};

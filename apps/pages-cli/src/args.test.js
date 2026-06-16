@@ -24,6 +24,13 @@ test('parses repeated scopes and positional arguments', () => {
   });
 });
 
+test('parses top-level help and version aliases', () => {
+  assert.deepEqual(parseArgs(['--help']), { command: 'help', positional: [], flags: {} });
+  assert.deepEqual(parseArgs(['-h']), { command: 'help', positional: [], flags: {} });
+  assert.deepEqual(parseArgs(['--version']), { command: 'version', positional: [], flags: {} });
+  assert.deepEqual(parseArgs(['-v']), { command: 'version', positional: [], flags: {} });
+});
+
 test('rejects unknown short flags and missing flag values', () => {
   assert.throws(() => parseArgs(['login', '-x']), /Unknown option/);
   assert.throws(() => parseArgs(['login', '--env']), /requires a value/);

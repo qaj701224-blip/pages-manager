@@ -63,7 +63,7 @@ export async function handleOAuthCallback(request, env, config) {
     return jsonError('SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502);
   }
 
-  if (!profile.id) return jsonError('SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
+  if (!profile.userId) return jsonError('SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
 
   try {
     await syncSsoUserProfile(env, profile, now);
@@ -77,7 +77,7 @@ export async function handleOAuthCallback(request, env, config) {
 
   let authSession;
   try {
-    authSession = await createAuthSession(env, config, profile.id, now);
+    authSession = await createAuthSession(env, config, profile.userId, now);
   } catch {
     return jsonError('AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
@@ -87,7 +87,7 @@ export async function handleOAuthCallback(request, env, config) {
     try {
       confirmToken = await createCliLoginConfirmToken(env, {
         loginId: consumedState.cliLoginId,
-        userId: profile.id,
+        userId: profile.userId,
         sid: authSession.sid,
         now,
       });
@@ -114,7 +114,7 @@ export async function handleOAuthCallback(request, env, config) {
   try {
     siteCode = await createOAuthSiteCodeRecord(env, {
       stateId: consumedState.record.id,
-      user: profile,
+      user: siteCodeUserFromProfile(profile),
       now,
       ttlSeconds: SITE_CODE_TTL_SECONDS,
       codeSecret: createOpaqueToken('sec'),
@@ -337,9 +337,12 @@ async function syncSsoUserProfile(env, profile, now) {
   const response = await env.PAGES_API.fetch(
     jsonDoRequest('https://pages-api.internal/.xd-pages/internal/users/upsert', {
       user: {
-        id: profile.id,
-        ssoSubject: profile.id,
+        userId: profile.userId,
         email: profile.email,
+        realname: profile.realname,
+        account: profile.account,
+        accountId: profile.accountId,
+        employeenum: profile.employeenum,
         employeeStatus: profile.employeeStatus,
         departments: profile.departments,
         sessionVersion: profile.sessionVersion,
@@ -462,12 +465,27 @@ function normalizeAccessToken(token) {
 }
 
 function normalizeSsoProfile(profile) {
+  const userId = normalizeUserId(profile);
   return {
-    id: normalizeUserId(profile),
+    userId,
     email: normalizeOptionalString(profile?.email).toLowerCase(),
+    realname: normalizeOptionalString(profile?.realname ?? profile?.name) || null,
+    account: normalizeOptionalString(profile?.account) || null,
+    accountId: normalizeOptionalString(profile?.accountId ?? profile?.account_id) || null,
+    employeenum: normalizeOptionalString(profile?.employeenum ?? profile?.employeeNum ?? profile?.employee_num) || null,
     employeeStatus: normalizeEmployeeStatus(profile?.employeeStatus ?? profile?.employee_status),
-    departments: normalizeDepartments(profile),
+    departments: [],
     sessionVersion: normalizeSessionVersion(profile?.sessionVersion ?? profile?.session_version),
+  };
+}
+
+function siteCodeUserFromProfile(profile) {
+  return {
+    id: profile.userId,
+    email: profile.email,
+    employeeStatus: profile.employeeStatus,
+    departments: profile.departments,
+    sessionVersion: profile.sessionVersion,
   };
 }
 
@@ -488,14 +506,6 @@ function normalizeEmployeeStatus(value) {
   return 'unknown';
 }
 
-function normalizeDepartments(profile) {
-  const value = profile?.departments ?? profile?.departmentIds ?? profile?.department_ids;
-  if (Array.isArray(value)) return value.map((item) => normalizeOptionalString(item)).filter(Boolean);
-  const single = profile?.departmentId ?? profile?.department_id ?? profile?.department;
-  const normalized = normalizeOptionalString(single);
-  return normalized ? [normalized] : [];
-}
-
 function normalizeSessionVersion(value) {
   return Number.isInteger(value) && value > 0 ? value : 1;
 }
@@ -510,20 +520,18 @@ async function fetchSsoToken(env, config, { code }) {
     return env.fetchSsoToken({ code, redirectUri: config.ssoRedirectUri });
   }
 
-  const body = new URLSearchParams();
-  body.set('code', code);
-  body.set('client_id', config.ssoClientId);
-  body.set('client_secret', config.ssoClientSecret);
-  body.set('redirect_uri', config.ssoRedirectUri);
-  body.set('grant_type', 'authorization_code');
+  const url = new URL(config.ssoTokenUrl);
+  url.searchParams.set('code', code);
+  url.searchParams.set('client_id', config.ssoClientId);
+  url.searchParams.set('client_secret', config.ssoClientSecret);
+  url.searchParams.set('redirect_uri', config.ssoRedirectUri);
+  url.searchParams.set('grant_type', 'authorization_code');
 
-  const response = await fetch(config.ssoTokenUrl, {
-    method: 'POST',
+  const response = await fetch(url, {
+    method: 'GET',
     headers: {
       Accept: 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded',
     },
-    body: body.toString(),
   });
   if (!response.ok) throw new Error('SSO token request failed');
   const token = await response.json();
@@ -534,11 +542,13 @@ async function fetchSsoToken(env, config, { code }) {
 async function fetchSsoProfile(env, config, { accessToken }) {
   if (typeof env?.fetchSsoProfile === 'function') return env.fetchSsoProfile({ accessToken });
 
-  const response = await fetch(config.ssoProfileUrl, {
+  const url = new URL(config.ssoProfileUrl);
+  url.searchParams.set('access_token', accessToken);
+
+  const response = await fetch(url, {
     method: 'GET',
     headers: {
       Accept: 'application/json',
-      Authorization: `Bearer ${accessToken}`,
     },
   });
   if (!response.ok) throw new Error('SSO profile request failed');

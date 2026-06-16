@@ -2,10 +2,12 @@
 -- Apply with wrangler D1 migrations before deploying pages-api.
 
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  sso_subject TEXT NOT NULL UNIQUE,
+  user_id TEXT PRIMARY KEY,
+  account TEXT,
+  account_id TEXT,
   email TEXT NOT NULL,
-  name TEXT,
+  realname TEXT,
+  employeenum TEXT,
   employee_status TEXT NOT NULL,
   session_version INTEGER NOT NULL DEFAULT 1,
   last_login_at TEXT,

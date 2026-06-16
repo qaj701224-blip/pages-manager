@@ -283,10 +283,10 @@ production 和 staging 分开申请或创建：
 | KV namespace               | `pages_router_cache_production`                               | `pages_router_cache_staging`                                                                  | route/policy/JWKS snapshot                    |
 | KV namespace               | `pages-shared-data`                                           | `pages-shared-data-staging`                                                                   | v2 Pages KV 站点数据；现有空 namespace 直接划归 v2 |
 | Durable Object namespaces  | production bindings                                           | staging bindings                                                                              | OAuth、CLI login、session、policy 协调        |
-| Routes / custom domains    | `api.pages.xd.team`、`auth.pages.xd.team`、`*.pages.xd.team`  | `api-staging.pages.xd.team`、`auth-staging.pages.xd.team`、`*-staging.pages.xd.team`          | 新建 v2 route，不修改 v1 `workers.xd.team`    |
+| Routes / custom domains    | `api.pages.xd.team`、`auth.pages.xd.team`、`*.pages.xd.team/*` | `api-staging.pages.xd.team`、`auth-staging.pages.xd.team`、`*-staging.pages.xd.team/*`        | 由 v2 wrangler template 声明，部署创建/更新 Cloudflare 绑定；不修改 v1 `workers.xd.team` |
 | Advanced certificate / DCV | `*.pages.xd.team`                                             | 同证书覆盖或独立策略                                                                          | 参考 partial zone 约束，单独验证 `pages` 子域 |
 
-需要在阶段 0 做 Cloudflare route / DNS / certificate spike，验证 `pages` 与 `*.pages` CNAME、DCV 和 `*-staging.pages.xd.team/*` route 优先级。该 spike 只能新增 `pages.xd.team` 相关资源，不能修改 v1 `workers.xd.team` DNS、证书或 route。
+需要在阶段 0 做 Cloudflare route / DNS / certificate spike，验证 `pages` 与 `*.pages` CNAME、DCV 和 `*-staging.pages.xd.team/*` route 优先级。API/Auth 固定域名和 router wildcard route 写入 v2 wrangler template，系统 Worker 部署时创建/更新 Cloudflare 绑定；partial zone 下 DNSPod CNAME、DCV 委派和证书状态仍需人工确认。该 spike 只能新增 `pages.xd.team` 相关资源，不能修改 v1 `workers.xd.team` DNS、证书或 route。
 
 如果 Cloudflare route 层无法独立匹配 staging 子站，fallback 只能是一个无业务 secret 的 `pages-edge-router-thin`：
 
@@ -313,13 +313,17 @@ production 和 staging 分开申请或创建：
 PAGES_EXECUTION_MODE=normal-worker-slot | wfp
 ```
 
-当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，router wrangler 渲染还需要一个容量参数：
+当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，router template 固定声明部署期 slot 扩容策略：
 
 ```text
-PAGES_NORMAL_WORKER_SLOT_COUNT=2
+PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE=1
+PAGES_NORMAL_WORKER_SLOT_EXPAND_BY=2
+PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL=100
 ```
 
-这个值表示当前环境要渲染进 `pages-router` 的普通 Worker slot service binding 总数。它不是用户发布参数，也不是执行模式选择；只是 WFP 未开通阶段和 WFP 切换排空阶段的临时容量配置。`PAGES_EXECUTION_MODE` 不放 GitHub Environment Vars；当前默认值直接写在 `apps/pages-api/wrangler.*.template.toml` 和 `apps/pages-router/wrangler.*.template.toml`。切到 `wfp` 必须走 PR 修改对应 template。`PAGES_EXECUTION_MODE=wfp` 时可以不配置 `PAGES_NORMAL_WORKER_SLOT_COUNT`；但如果仍有 active / rollback window 内的 route snapshot 指向 `service-binding` slot，就必须继续配置原 slot 总数并部署同时持有 WFP dispatch namespace 与 slot bindings 的 router，直到这些 slot route 全部迁移或释放。
+这些值不是用户发布参数，也不是 GitHub Environment Var。部署脚本 `scripts/provision-pages-v2-slots.mjs` 会在 router 部署前读取 D1 `worker_slots`，当 `available < MIN_AVAILABLE` 时按 `EXPAND_BY` 创建缺失 slot Worker，并受 `MAX_TOTAL` fail closed 保护。脚本随后计算实际需要全量绑定的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)`，通过 `$GITHUB_ENV` 传给 `scripts/render-pages-v2-wrangler.mjs`。router 渲染必须绑定 `SITE_SLOT_001..SITE_SLOT_N` 的完整历史范围，不能只绑定本次新增 slot。
+
+`PAGES_EXECUTION_MODE` 不放 GitHub Environment Vars；当前默认值直接写在 `apps/pages-api/wrangler.*.template.toml` 和 `apps/pages-router/wrangler.*.template.toml`。切到 `wfp` 必须走 PR 修改对应 template。`PAGES_EXECUTION_MODE=wfp` 时可以没有 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`；但如果仍有 active / rollback window 内的 route snapshot 指向 `service-binding` slot，部署脚本必须继续提供原全量 binding count 并部署同时持有 WFP dispatch namespace 与 slot bindings 的 router，直到这些 slot route 全部迁移或释放。
 
 不建议再增加 `DEFAULT_EXECUTION_PROVIDER`、`ALLOWED_EXECUTION_PROVIDERS`、`NORMAL_WORKER_NEW_DEPLOY_ENABLED` 这类组合开关。原因是这些开关会把“默认值、允许值、是否新建普通 Worker”拆成多个状态，容易出现互相矛盾的配置。第一版用一个 mode 表达平台当前策略；更细粒度的灰度或站点例外写入 D1 权威表，由管理员 API 或后台任务管理，不暴露给普通用户。
 
@@ -366,28 +370,31 @@ slot 状态由 D1 权威表管理：
 
 `pages-api` 只能分配 `available` slot。若没有可用 slot，deploy 返回可操作错误，例如 `DEPLOYMENT_CAPACITY_EXHAUSTED`，提示平台维护者扩容；用户不应看到 Cloudflare binding 细节。
 
-扩容是平台运维动作，不在用户发布路径里自动创建 Worker：
+扩容是系统 Worker 部署期动作，不在用户发布请求路径里自动创建 Worker：
 
 ```text
-Expand Pages V2 Slots
-  inputs: environment, target_count, dry_run
-  1. 读取 worker_slots 当前最大编号和目标数量。
-  2. 幂等创建缺失的 numbered ordinary Workers。
-  3. 在 D1 写入 provisioning / available_pending_router。
-  4. 更新对应环境 `PAGES_NORMAL_WORKER_SLOT_COUNT` 并重新渲染 router wrangler 配置，让 `SITE_SLOT_XXX` service binding 出现在最终配置里。
-  5. 部署对应环境 router。
-  6. smoke check 每个新增 binding 可 dispatch。
-  7. 将通过检查的 slot 标记为 available。
+Deploy Pages V2 <environment>
+  1. 执行 D1 migration，确保 worker_slots 表存在。
+  2. scripts/provision-pages-v2-slots.mjs <environment> prepare
+     - 读取 worker_slots 当前 available 数量和最大 slot_number。
+     - available < PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE 时，从 max(slot_number)+1 创建 PAGES_NORMAL_WORKER_SLOT_EXPAND_BY 个 ordinary Workers。
+     - 创建数量受 PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL 限制，超过则 fail closed。
+     - 新 slot 写入 available_pending_router。
+     - 输出 PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)。
+  3. render-pages-v2-wrangler.mjs 用 binding count 全量渲染 SITE_SLOT_001..SITE_SLOT_N。
+  4. 部署对应环境 router，并注入 router secrets。
+  5. scripts/provision-pages-v2-slots.mjs <environment> activate
+     - 只把已经被当前 router 全量 binding 覆盖的 available_pending_router 标记为 available。
 ```
 
-第一次创建和后续扩容使用同一套 workflow。`target_count` 表示扩到多少个总 slot，而不是新增多少个；脚本必须幂等，只创建缺失编号，不覆盖已 assigned 的 slot。
+第一次创建和后续扩容使用同一套 workflow。脚本必须幂等，只创建缺失编号，不覆盖已 assigned 的 slot，不复用 `disabled` / `cleanup_pending` 中间编号。router 每次部署都必须全量绑定 `SITE_SLOT_001..SITE_SLOT_N`，其中 `N` 是当前环境历史最大 slot 编号；不能只绑定本次新增 slot，否则旧 route snapshot 可能指向缺失 binding。
 
 普通 Worker slot 与 WFP 的主要差别只在执行面 dispatch：
 
 - WFP：`pages-router` 通过 dispatch namespace 按 user Worker name 获取执行目标。
 - slot：`pages-router` 通过 route snapshot 中的 `dispatch.bindingName` 调静态 service binding。
 
-其它架构保持一致：SSO、ACL、route snapshot、KV gateway capability、审计、header/cookie 清洗和发布/回滚状态机都走同一套平台逻辑。WFP 开通后，新增站点默认使用 `wfp`；已在 slot 上的试点版本可以继续保留到回滚窗口结束，也可以通过一次显式管理员迁移重新发布到 WFP。切到 `wfp` 时不要立刻清空 `PAGES_NORMAL_WORKER_SLOT_COUNT`，除非 D1 和 route snapshot 已确认不存在任何 active / rollback window 内的 `normal-worker-slot` 版本。第一版不强制立即迁移，因为 slot 数量不大，保留兼容路径更利于平稳上线和回滚。
+其它架构保持一致：SSO、ACL、route snapshot、KV gateway capability、审计、header/cookie 清洗和发布/回滚状态机都走同一套平台逻辑。WFP 开通后，新增站点默认使用 `wfp`；已在 slot 上的试点版本可以继续保留到回滚窗口结束，也可以通过一次显式管理员迁移重新发布到 WFP。切到 `wfp` 时不要立刻去掉 slot bindings，除非 D1 和 route snapshot 已确认不存在任何 active / rollback window 内的 `normal-worker-slot` 版本。第一版不强制立即迁移，因为 slot 数量不大，保留兼容路径更利于平稳上线和回滚。
 
 ### 心动 SSO 应用配置
 
@@ -440,7 +447,61 @@ SSO_PROFILE_URL
 
 `SSO_REDIRECT_URI` 和 `SSO_ALLOWED_USER_SCOPE` 是 Git 可审查的环境常量，当前写在 v2 auth wrangler template 中；`SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
 
-生产和 staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 必须使用 HTTPS；只有 `PAGES_ENV=local` 允许 HTTP 本地 SSO mock。OAuth code 换 token 使用 `POST application/x-www-form-urlencoded`，`client_secret` 放请求 body 或后续按公司 SSO 要求改为 Basic auth；profile 请求使用 `Authorization: Bearer <access_token>`。`client_secret`、`access_token`、OAuth code 都不能出现在 URL query、错误响应、日志或 Referer 中。
+生产和 staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 必须使用 HTTPS；只有 `PAGES_ENV=local` 允许 HTTP 本地 SSO mock。心动 SSO 当前 OAuth 接口形态是：
+
+```text
+GET /cas/oauth2.0/authorize?response_type=code&client_id=...&redirect_uri=...
+GET /cas/oauth2.0/accessToken?code=...&client_id=...&client_secret=...&redirect_uri=...&grant_type=authorization_code
+GET /cas/oauth2.0/profile?access_token=...
+```
+
+因为 provider 要求 `client_secret` 和 `access_token` 出现在 query 中，平台代码、测试、日志和错误响应必须做强脱敏：不得记录完整 token/profile 请求 URL，不得把 `client_secret`、OAuth code、access token、CAS `st`、`tgtId` 或 cookie-like ticket 写入日志、文档、审计和用户可见错误。
+
+心动 SSO profile 当前联调返回形态可用下列伪造样例表达；样例仅用于字段契约说明，不能使用真实账号、真实票据或真实员工信息：
+
+```json
+{
+  "account": "demo.user@example.test",
+  "accountId": "acct_demo_001",
+  "ad_account": "demo.user",
+  "authWay": "13",
+  "email": "demo.user@example.test",
+  "employee_status": "1",
+  "employeenum": "demo.user",
+  "fs_email": "demo.user@example.test",
+  "fs_id": "fs_demo_001",
+  "isPublicAccount": false,
+  "job_number": "1001",
+  "loginTime": 1781595126585,
+  "permissions": [],
+  "realname": "示例用户",
+  "roles": [],
+  "sort": "0",
+  "st": "ST-demo-redacted",
+  "tgtId": "TGT-demo-redacted",
+  "userId": "usr_xindong_123",
+  "wechat_work": "ww_demo_001",
+  "service": "http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/auth/callback",
+  "id": "demo.user@example.test",
+  "client_id": "xd_pages_local"
+}
+```
+
+`pages-auth` 第一版只把 profile 归一化为平台身份所需的最小字段：
+
+| 平台字段 | SSO 来源 | 说明 |
+| -------- | -------- | ---- |
+| `user_id` | `userId`，后备 `id` / `sub` | `users` 表主键，优先使用稳定且不可复用的 SSO `userId`；不要优先用邮箱。 |
+| `email` | `email` | 统一转小写，用于展示、审计和邮箱 ACL。 |
+| `realname` | `realname` / `name` | 员工姓名，仅用于管理展示、审计可读性和问题排查，不作为权限判断。 |
+| `account` | `account` | 当前系统推送帐号，受 SSO 后台应用设置影响；用于身份排查和后续目录对齐，不作为权限判断。 |
+| `account_id` | `accountId` / `account_id` | 当前系统推送帐号对应 ID；用于身份排查和后续目录对齐，不作为权限判断。 |
+| `employeenum` | `employeenum` / `employeeNum` / `employee_num` | 员工账号；用于身份排查和后续组织目录对齐，不作为权限判断。 |
+| `employeeStatus` | `employee_status` / `employeeStatus` | `1` / `active` 映射为 `active`；`0` / `disabled` / `inactive` 映射为 `disabled`；`left` / `leave` / `departed` 映射为 `left`；其它为 `unknown`。 |
+| `departments` | 暂不从 SSO profile 获取 | 当前联调 profile 不返回部门；部门 ACL 第一版只保留数据结构，后续通过组织搜索/目录接口补齐。 |
+| `sessionVersion` | `sessionVersion` / `session_version` | 缺失时平台默认 `1`。 |
+
+`account`、`account_id`、`employeenum`、`realname` 可以进入 `users` 表，因为它们是常用身份排查字段，且不改变权限判断。`users` 表不再同时保存 `id` 和 `sso_subject` 两个等价字段，避免同一 SSO `userId` 出现两套名字。`fs_id`、`wechat_work`、`ad_account`、`job_number` 暂不进入核心 `users` 表；如果后续要长期使用，应单独设计 `user_identities` 或组织目录同步表。`st`、`tgtId` 是 CAS ticket 类敏感字段，不能持久化到平台业务库，也不能透传给 User Worker。
 
 ### Worker bindings
 
@@ -472,7 +533,7 @@ secrets:
   ACCESS_KEY_PEPPER_*
 ```
 
-`PAGES_EXECUTION_MODE` 是平台内部执行模式总开关。WFP 未开通时在 template 中设为 `normal-worker-slot`；WFP 开通且验证完成后通过 PR 改为 `wfp`。它是 Git 可审查的架构配置，不是 GitHub Environment Var，不能由 CLI、`.pages.json` 或用户请求覆盖。`pages-api` 运行时读取这个值决定新发布部署到哪个内部执行面；`pages-router` 的 wrangler 渲染会结合 `PAGES_EXECUTION_MODE` 和 `PAGES_NORMAL_WORKER_SLOT_COUNT` 决定持有哪些 dispatch binding。第一版不提供 `auto` fallback；如果后续要做灰度自动回退，必须同时设计 router 双绑定、部署状态机和失败回滚语义。
+`PAGES_EXECUTION_MODE` 是平台内部执行模式总开关。WFP 未开通时在 template 中设为 `normal-worker-slot`；WFP 开通且验证完成后通过 PR 改为 `wfp`。它是 Git 可审查的架构配置，不是 GitHub Environment Var，不能由 CLI、`.pages.json` 或用户请求覆盖。`pages-api` 运行时读取这个值决定新发布部署到哪个内部执行面；`pages-router` 的 wrangler 渲染会结合 `PAGES_EXECUTION_MODE` 和部署脚本计算出的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 决定持有哪些 dispatch binding。第一版不提供 `auto` fallback；如果后续要做灰度自动回退，必须同时设计 router 双绑定、部署状态机和失败回滚语义。
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`.pages.json` 或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
@@ -494,6 +555,7 @@ vars:
   SSO_AUTHORIZATION_URL
   SSO_TOKEN_URL
   SSO_PROFILE_URL
+  SSO_CLIENT_ID
   SSO_REDIRECT_URI
 
 bindings:
@@ -505,7 +567,7 @@ secrets:
   PAGES_SESSION_JWT_SECRET_*
 ```
 
-`SSO_CLIENT_ID` 是否作为 secret 取决于公司规范；如果不敏感可放 vars，但保持 secret 更保守。当前 wrangler template 把 `SSO_CLIENT_ID` 作为非敏感配置占位，`SSO_CLIENT_SECRET` 必须通过 secret 注入。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
+production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `.pages.json`。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
 SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须通过 `PAGES_API` service binding 调 `pages-api.internal/.xd-pages/internal/users/upsert` 同步用户权威记录。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。
 
@@ -543,7 +605,7 @@ secrets:
 
 router 不需要 Cloudflare API token。router 只能 dispatch 到当前环境的 WFP namespace 或当前环境预绑定的 slot service binding。`ROUTER_IP_ALLOWLIST_CIDRS` 是第一版强制配置；缺失或格式错误时 router 必须 fail closed。当前实现用统一的 `PAGES_SESSION_JWT_*` registry 签发和校验 `site_session` 与 `internal_worker_jwt`，通过 `PAGES_SESSION_JWT_ISSUER`、`purpose`、`aud`、`kid` 和 `env` 区分用途；不要再配置独立的 `INTERNAL_JWT_*` 或 `SESSION_SIGNING_*` 名称，避免文档和 wrangler template 串线。
 
-router wrangler 渲染阶段会从 template 读取 `PAGES_EXECUTION_MODE`，从 GitHub Environment Var 读取 `PAGES_NORMAL_WORKER_SLOT_COUNT`。当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，`PAGES_NORMAL_WORKER_SLOT_COUNT` 必填，用于生成 `SITE_SLOT_001..N` service binding；当 `PAGES_EXECUTION_MODE=wfp` 时，这个容量值可为空，也可以保留为正整数，用于让 router 在 WFP 新发布之外继续服务尚未排空的 slot route。生成后的 router 业务逻辑不依赖 `PAGES_NORMAL_WORKER_SLOT_COUNT`。该值必须和 Cloudflare 上已创建的普通 Worker slot 池、D1 `worker_slots` 权威表保持一致；扩容时先创建缺失 slot，再增加该值并重新部署对应环境 router，smoke 通过后才能把新 slot 标记为 `available`。确认不存在 active / rollback window 内的 slot route 后，才可以清空该值并重新部署 router 去掉 slot bindings。
+router wrangler 渲染阶段会从 template 读取 `PAGES_EXECUTION_MODE`，并从部署脚本输出读取 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`。当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，`PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 必填，用于生成 `SITE_SLOT_001..N` service binding；当 `PAGES_EXECUTION_MODE=wfp` 时，这个值可为空，也可以保留为正整数，用于让 router 在 WFP 新发布之外继续服务尚未排空的 slot route。生成后的 router 业务逻辑不依赖扩容阈值。binding count 必须和 D1 `worker_slots` 当前环境历史最大 `slot_number` 保持一致；扩容时先创建缺失 slot 并写入 `available_pending_router`，再重新渲染并部署对应环境 router，router 部署与 secret 注入成功后才能把新 slot 标记为 `available`。确认不存在 active / rollback window 内的 slot route 后，才可以让部署脚本输出空 binding count 并重新部署 router 去掉 slot bindings。
 
 #### pages-kv-gateway
 
@@ -582,10 +644,16 @@ production
 ```text
 PAGES_ENV
 PAGES_EXECUTION_MODE
+PAGES_NORMAL_WORKER_SLOT_EXPAND_BY
 PUBLIC_API_BASE
 PUBLIC_AUTH_BASE
 PUBLIC_SITE_SUFFIX
+SLACK_PAGES_ALERT_MENTION_USER_ID
+SSO_AUTHORIZATION_URL
 SSO_REDIRECT_URI
+SSO_TOKEN_URL
+SSO_PROFILE_URL
+SSO_CLIENT_ID
 WFP_DISPATCH_NAMESPACE
 WFP_COMPATIBILITY_DATE
 ACCESS_KEY_ACTIVE_PEPPER_ID
@@ -616,15 +684,10 @@ CLOUDFLARE_ACCOUNT_ID
 PAGES_V2_D1_DATABASE_ID
 PAGES_V2_ROUTE_SNAPSHOTS_KV_ID
 PAGES_V2_SITE_DATA_KV_ID
-PAGES_NORMAL_WORKER_SLOT_COUNT
 ROUTER_IP_ALLOWLIST_CIDRS
-SSO_AUTHORIZATION_URL
-SSO_TOKEN_URL
-SSO_PROFILE_URL
-SSO_CLIENT_ID
 ```
 
-如果后续 workflow 负责自动创建 Cloudflare route / custom domain，再单独引入 `CLOUDFLARE_ZONE_ID` 或 zone 相关 secret；当前 v2 deploy workflow 只部署 Worker、渲染 wrangler 配置并注入 runtime secrets，不需要 zone id。
+v2 wrangler template 声明 API/Auth custom domain 和 router route。`pages-router` / `pages-router-staging` 的 route 使用 `zone_name = "xd.team"`，因此 workflow 不需要额外引入 `CLOUDFLARE_ZONE_ID`，但 `CLOUDFLARE_API_TOKEN` 必须具备部署 Worker、创建/更新 Worker route 和 custom domain 绑定的权限。DNSPod CNAME 与证书 DCV 不由当前 workflow 自动管理。
 
 GitHub Environment `secrets` 只放高敏配置：
 
@@ -647,14 +710,10 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` wrangler 渲染      | 当前环境的 D1 metadata database id |
 | `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | var     | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
 | `PAGES_V2_SITE_DATA_KV_ID`            | var     | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
-| `PAGES_NORMAL_WORKER_SLOT_COUNT`      | var     | `pages-router` wrangler 渲染   | `normal-worker-slot` 时必填，生成 `SITE_SLOT_001..N` service binding；`wfp` 时可省略 |
-| `SSO_AUTHORIZATION_URL`               | var     | `pages-auth` wrangler 渲染     | production / staging 必须是 HTTPS |
-| `SSO_TOKEN_URL`                       | var     | `pages-auth` wrangler 渲染     | production / staging 必须是 HTTPS |
-| `SSO_PROFILE_URL`                     | var     | `pages-auth` wrangler 渲染     | production / staging 必须是 HTTPS |
-| `SSO_CLIENT_ID`                       | var     | `pages-auth` wrangler 渲染     | 如公司规范认为敏感，可改为 secret 后同步 workflow/template |
 | `ROUTER_IP_ALLOWLIST_CIDRS`           | var     | `pages-router` wrangler 渲染   | 必填，router 缺失或无效时 fail closed |
-| `CLOUDFLARE_API_TOKEN`                | secret  | Wrangler 部署                  | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime |
+| `CLOUDFLARE_API_TOKEN`                | secret  | Wrangler 部署                  | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime；权限需覆盖 Worker 部署、Worker route 和 custom domain 绑定 |
 | `CF_API_TOKEN`                        | secret  | `pages-api` runtime            | 通过 `scripts/put-pages-v2-secrets.sh apps/pages-api` 注入，供 Cloudflare Workers / WFP API 调用 |
+| `SLACK_PAGES_ALERT_WEBHOOK_URL`       | secret  | `pages-api` runtime            | Slack Incoming Webhook URL；用于 slot 容量耗尽等平台运维告警，只注入 `pages-api`，不能写入 wrangler template、GitHub Vars 或文档 |
 | `SSO_CLIENT_SECRET`                   | secret  | `pages-auth` runtime           | OAuth token exchange secret，只注入 auth Worker |
 | `ACCESS_KEY_PEPPER_*`                 | secret  | `pages-api` runtime            | 必须覆盖 `ACCESS_KEY_PEPPERS` registry 中每个 `secretEnvName` |
 | `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
@@ -662,7 +721,9 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 
 v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。
 
-v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`。
+v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`。
+
+`SLACK_PAGES_ALERT_MENTION_USER_ID` 是 `pages-api` wrangler template 中固定的非敏感告警接收人 id，用于 slot 容量告警正文里的单次 Slack mention。`PAGES_NORMAL_WORKER_SLOT_EXPAND_BY` 同时出现在 `pages-router` 和 `pages-api` template：router 部署期用它决定每次新增多少个 slot，`pages-api` 只把它显示在容量不足告警的“扩容”字段里。
 
 ### 配置校验
 
@@ -679,9 +740,10 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - signing key registry 中的 active kid 必须能找到对应 secret。
 - `PAGES_EXECUTION_MODE` 必须在 `pages-api` 和 `pages-router` 对应环境 template 中各出现一次，只能是 `normal-worker-slot` 或 `wfp`；不得从 GitHub Environment Vars 注入。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
-- `PAGES_EXECUTION_MODE=wfp` 时必须配置并验证当前环境 WFP dispatch namespace；`normal-worker-slot` 时必须设置 `PAGES_NORMAL_WORKER_SLOT_COUNT`，至少存在一个 `available` slot，且最终渲染出的 router wrangler 配置中有对应 service binding。
+- `PAGES_EXECUTION_MODE=wfp` 时必须配置并验证当前环境 WFP dispatch namespace；`normal-worker-slot` 时部署脚本必须先完成 slot provision，至少存在一个 `available` slot，且最终渲染出的 router wrangler 配置中有对应 service binding。
 - `CF_ACCOUNT_ID` / `CF_API_TOKEN` 必须只出现在 `pages-api` runtime；router/auth/thin router 不能持有。
 - production / staging 的 `CF_API_BASE_URL` 必须是 `https://api.cloudflare.com/client/v4`，不能把 `CF_API_TOKEN` 发送到其它 host。
+- `SLACK_PAGES_ALERT_WEBHOOK_URL` 必须作为 GitHub Environment secret 注入 `pages-api`，不能放 GitHub Vars、wrangler template 或日志；告警发送失败不得影响用户部署响应。
 - D1、KV、Durable Object binding 必须指向当前环境资源。
 - `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时部署或启动必须 fail closed。
 - `CF_API_TOKEN` 只能注入 `pages-api` runtime；`CLOUDFLARE_API_TOKEN` 只能出现在 GitHub Actions / Wrangler 部署环境。
@@ -706,7 +768,7 @@ pnpm test
 staging 首次部署前必须完成：
 
 1. GitHub `staging` Environment 已配置上表中的 vars/secrets，且真实 D1/KV/secret 值不出现在仓库、日志或文档中。
-2. Cloudflare 已创建 `pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、staging D1、staging route snapshot KV 和对应 route；如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，已创建 staging slot 池并部署 router service binding；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
+2. Cloudflare 已创建 staging D1、staging route snapshot KV 和 staging site data KV；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 v2 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，已创建 staging slot 池并让 router service binding 数量与 slot 数一致；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
 3. SSO staging 应用 redirect URI 指向 `https://auth-staging.pages.xd.team/.xd-pages/auth/callback`，不指向 `api-staging.pages.xd.team`。
 4. 手动或由 `staging` 分支触发 `Deploy Pages V2 Staging`，先用 `component=all` 验证四个 v2 系统 Worker 一起部署；单组件部署只用于已确认依赖兼容的修复。
 5. workflow 中四个 `DRY_RUN=1 scripts/put-pages-v2-secrets.sh ...` 步骤先通过，再执行真正 secret 注入。
@@ -772,10 +834,12 @@ JWT Cookie:
 
 ```sql
 users
-  id                  -- usr_xxx
-  sso_subject         -- 心动 SSO 稳定用户标识
+  user_id             -- SSO profile userId
+  account             -- 当前系统推送帐号
+  account_id          -- SSO profile accountId
   email
-  name
+  realname            -- SSO profile realname
+  employeenum         -- SSO profile employeenum
   employee_status     -- active / disabled / left / unknown
   session_version     -- 用户级 session 失效版本
   last_login_at
@@ -783,7 +847,7 @@ users
   updated_at
 ```
 
-`sso_subject` 应优先使用 SSO profile 中稳定且不可复用的用户 ID。如果只能拿到邮箱，需要在风险清单中标记“邮箱复用/变更”问题。
+`user_id` 直接对应 SSO profile 中稳定且不可复用的 `userId`。如果未来某个环境只能拿到邮箱，需要在风险清单中标记“邮箱复用/变更”问题，不能静默把邮箱当 `user_id`。
 
 #### sites
 
@@ -933,8 +997,8 @@ site_members
 site_acl_entries
   id                  -- acl_xxx
   site_id
-  subject_type        -- user / email / group / department
-  subject_value       -- user id、邮箱、外部 group id 或 department id
+  subject_type        -- email / department；group 为未来预留，不进入第一版公开 API
+  subject_value       -- 邮箱或稳定 department id/path
   access_role         -- viewer / editor
   effect              -- allow；第一版不支持 deny
   created_by
@@ -945,14 +1009,13 @@ site_acl_entries
 
 ```text
 allow if:
-  user.id in ACL(user)
-  OR user.email in ACL(email)
+  user.email in ACL(email)
   OR user.departments intersects ACL(department)
 ```
 
-同一站点可添加多条 ACL entry，例如“指定多个人”或“指定人 + 部门”。命中任意一条 allow entry 即可访问；没有命中则拒绝。
+同一站点可添加多条 ACL entry，例如“指定多个邮箱”或“指定邮箱 + 部门”。命中任意一条 allow entry 即可访问；没有命中则拒绝。用户侧指定某个人时必须填写邮箱，不填写 SSO `userId`、`accountId`、工号、企微 ID 或其它内部身份字段。
 
-第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。当前 API 开放 `user`、`email`、`department`；`group` 先保留为未来方向，不阻塞 MVP。
+第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。当前 API 只开放 `email`、`department`；`group` 和内部 `user` subject type 先保留为未来方向，不阻塞 MVP。`owner`、session subject、审计归因仍使用平台内部 `userId`，但不作为用户可填写的 ACL subject。
 
 `department` 只有在组织系统能提供稳定、不可复用 ID、成员快照版本和可控刷新 TTL 后才应在生产开放。启用后，成员变更必须能触发 `policyVersion` 或 `sessionVersion` 失效。`group` 等更复杂主体等组织目录语义稳定后再评审。
 
@@ -1486,7 +1549,7 @@ auth-staging.pages.xd.team/*    -> pages-auth-staging
 *.pages.xd.team/*               -> pages-router
 ```
 
-当前 v1 `workers` 和 `*.workers` DNS / route / certificate 保持不动。v2 需要在 DNSPod 和 Cloudflare 侧新增 `pages` 与 `*.pages` CNAME、证书 DCV、custom domain / route 绑定；所有验证都只针对 `pages.xd.team`，不能改动 `workers.xd.team`。
+当前 v1 `workers` 和 `*.workers` DNS / route / certificate 保持不动。v2 需要在 DNSPod 侧新增或确认 `pages` 与 `*.pages` CNAME、证书 DCV；Cloudflare custom domain / route 绑定由 v2 wrangler template 随部署创建/更新。所有验证都只针对 `pages.xd.team`，不能改动 `workers.xd.team`。
 
 需要确认 Cloudflare 侧 wildcard route / custom domain 绑定策略：
 
@@ -1775,7 +1838,7 @@ router 还必须解析 User Worker 返回的所有 `Set-Cookie`：
 | ---------- | -------------------------- | ------------ | -------------------- |
 | `public`   | 公司网络内匿名可访问       | 否           | 内部报告、demo       |
 | `org`      | 公司 SSO 用户可访问        | 是           | 默认内部站点         |
-| `acl`      | 指定用户、邮箱或部门可访问 | 是           | 项目私有预览         |
+| `acl`      | 指定邮箱或部门可访问       | 是           | 项目私有预览         |
 | `owner`    | owner 可访问               | 是           | 管理预览、敏感站点   |
 | `disabled` | 暂停访问                   | 不适用       | 下线、风控、事故处理 |
 
@@ -2430,6 +2493,7 @@ pages deploy ./dist --name foo
 - dispatch success rate、dispatch 404/5xx、user Worker CPU/subrequest 超限，按 `execution_provider` 维度拆分。
 - WFP deploy success/failure、slot deploy success/failure、deploy duration、orphan worker count。
 - slot capacity：available / assigned / disabled / available_pending_router 数量、容量水位、扩容失败数、长时间未使用 slot。
+- 普通 Worker slot 容量耗尽时，`pages-api` 通过 `SLACK_PAGES_ALERT_WEBHOOK_URL` 发送 Slack 运维告警；第一版消息只 @ `SLACK_PAGES_ALERT_MENTION_USER_ID` 一次，并展示“环境 / 容量 / 剩余 / 扩容”。其中“容量”是当前已用 Worker / 当前总 Worker，“剩余”是当前可被发布使用的 available Worker 数量。按钮使用 GitHub Actions URL button，打开 `https://github.com/xindong/pages-manager/actions` 让维护者手动运行对应环境的 Pages V2 deploy workflow。不要在 `pages-api` 中保存 GitHub token，也不要让 Slack button 直接触发部署。
 - SSO login start/callback failure、CLI login poll/consume failure。
 - cross-env guard trip、reserved host/path mismatch。
 - audit write backlog、audit dropped/sampled count。

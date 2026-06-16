@@ -6,7 +6,7 @@ import { newHexId, newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 
 const VISIBILITIES = new Set(['public', 'org', 'acl', 'owner', 'disabled']);
-const ACL_SUBJECT_TYPES = new Set(['user', 'email', 'department']);
+const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
 
@@ -278,7 +278,7 @@ function normalizeAclEntries(value, env) {
         'ACL_SUBJECT_TYPE_UNSUPPORTED',
         'ACL subject type is not supported.',
         400,
-        'Use user, email, or department.'
+        'Use email or department.'
       );
     }
 
@@ -304,8 +304,15 @@ function normalizeAclEntries(value, env) {
 
 function normalizeAclSubjectValue(subjectType, value) {
   const normalized = String(value || '').trim();
-  if (subjectType === 'email') return normalized.toLowerCase();
+  if (subjectType === 'email') {
+    const email = normalized.toLowerCase();
+    return isValidEmailAclSubject(email) ? email : '';
+  }
   return normalized;
+}
+
+function isValidEmailAclSubject(value) {
+  return /^[^\s@]+@[^\s@]+$/.test(value);
 }
 
 async function refreshActiveRouteSnapshot(env, store, site, route, environment) {

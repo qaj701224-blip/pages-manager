@@ -158,6 +158,7 @@ test('pages v2 deploy workflows keep production manual and staging scoped to v2 
   assert.match(staging, /- 'apps\/kv-gateway\/\*\*'/);
   assert.match(staging, /- 'packages\/pages-runtime-protocol\/\*\*'/);
   assert.match(staging, /- 'packages\/wfp-client\/\*\*'/);
+  assert.match(staging, /- 'scripts\/provision-pages-v2-slots\.mjs'/);
   assert.doesNotMatch(staging, /sites\/\*\*/);
 });
 
@@ -191,11 +192,23 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-auth ${environment}`),
       `${name} renders pages-auth ${environment} template`,
     );
+    assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} prepare`));
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-router ${environment}`),
-      `${name} renders pages-router ${environment} template`,
+      `${name} renders pages-router ${environment} template after slot provisioning`,
     );
+    assert.ok(
+      workflow.indexOf(`node scripts/provision-pages-v2-slots.mjs ${environment} prepare`) <
+        workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`),
+      `${name} provisions slots before rendering router bindings`,
+    );
+    assert.ok(
+      workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`) <
+        workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy'),
+      `${name} renders router before deploying router`,
+    );
+    assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} activate`));
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/kv-gateway ${environment}`),
@@ -210,7 +223,8 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       /secrets\.(?:CLOUDFLARE_ACCOUNT_ID|PAGES_V2_D1_DATABASE_ID|PAGES_V2_ROUTE_SNAPSHOTS_KV_ID|PAGES_V2_SITE_DATA_KV_ID)/,
     );
     assert.doesNotMatch(workflow, /PAGES_EXECUTION_MODE: \$\{\{ vars\.PAGES_EXECUTION_MODE \}\}/);
-    assert.match(workflow, /PAGES_NORMAL_WORKER_SLOT_COUNT: \$\{\{ vars\.PAGES_NORMAL_WORKER_SLOT_COUNT \}\}/);
+    assert.match(workflow, /provision-pages-v2-slots\.mjs/);
+    assert.doesNotMatch(workflow, /PAGES_NORMAL_WORKER_SLOT_COUNT: \$\{\{ vars\.PAGES_NORMAL_WORKER_SLOT_COUNT \}\}/);
     assert.match(workflow, /ACCESS_KEY_ACTIVE_PEPPER_ID: pepper_2026_06/);
     assert.match(workflow, /ACCESS_KEY_PEPPERS: "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
     assert.match(workflow, /PAGES_SESSION_JWT_ACTIVE_KID: pages-session-2026-06/);
@@ -224,7 +238,9 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.doesNotMatch(
       workflow,
       new RegExp(
-        String.raw`vars\.(?:PAGES_EXECUTION_MODE|WFP_COMPATIBILITY_DATE|SSO_ALLOWED_USER_SCOPE|OAUTH_STATE_TTL_SECONDS`
+        String.raw`vars\.(?:PAGES_EXECUTION_MODE|PAGES_NORMAL_WORKER_SLOT_COUNT`
+          + String.raw`|WFP_COMPATIBILITY_DATE|SSO_AUTHORIZATION_URL|SSO_TOKEN_URL|SSO_PROFILE_URL|SSO_CLIENT_ID`
+          + String.raw`|SSO_ALLOWED_USER_SCOPE|OAUTH_STATE_TTL_SECONDS`
           + String.raw`|CLI_LOGIN_TTL_SECONDS|AUTH_SESSION_IDLE_TTL_SECONDS|AUTH_SESSION_ABSOLUTE_TTL_SECONDS`
           + String.raw`|SITE_SESSION_IDLE_TTL_SECONDS|SITE_SESSION_ABSOLUTE_TTL_SECONDS`
           + String.raw`|ROUTE_CACHE_TTL_SECONDS|SITE_SESSION_FRESHNESS_TTL_SECONDS`
@@ -232,6 +248,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       ),
     );
     assert.match(workflow, /PAGES_CAP_JWT_SECRET_202606: \$\{\{ secrets\.PAGES_CAP_JWT_SECRET_202606 \}\}/);
+    assert.match(workflow, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
@@ -258,7 +275,9 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
   assert.doesNotMatch(combined, /docker buildx?|kubectl|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
   assert.match(combined, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);
+  assert.match(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
+  assert.doesNotMatch(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ vars\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
 });
 
 test('ack preview deploy is manual and isolated from Cloudflare production deploy', () => {

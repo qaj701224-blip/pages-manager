@@ -13,6 +13,7 @@ dist/
 .dev.vars
 .pages.json
 **/.pages.json
+dev-test/
 
 ### Cloudflare / Wrangler
 .wrangler/

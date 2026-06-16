@@ -13,9 +13,13 @@ const pagesRouterWranglerPath = join(repoRoot, 'apps/pages-router/wrangler.toml'
 const kvGatewayWranglerPath = join(repoRoot, 'apps/kv-gateway/wrangler.toml');
 const pagesRouterProductionTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.production.template.toml');
 const pagesRouterStagingTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.staging.template.toml');
+const pagesAuthProductionTemplatePath = join(repoRoot, 'apps/pages-auth/wrangler.production.template.toml');
+const pagesAuthStagingTemplatePath = join(repoRoot, 'apps/pages-auth/wrangler.staging.template.toml');
 const originalRouterTemplates = new Map([
   [pagesRouterProductionTemplatePath, readFileSync(pagesRouterProductionTemplatePath, 'utf8')],
   [pagesRouterStagingTemplatePath, readFileSync(pagesRouterStagingTemplatePath, 'utf8')],
+  [pagesAuthProductionTemplatePath, readFileSync(pagesAuthProductionTemplatePath, 'utf8')],
+  [pagesAuthStagingTemplatePath, readFileSync(pagesAuthStagingTemplatePath, 'utf8')],
 ]);
 
 const baseEnv = {
@@ -26,7 +30,7 @@ const baseEnv = {
   SITE_DATA_KV_ID: 'dummy-site-data-kv',
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606',
-  PAGES_NORMAL_WORKER_SLOT_COUNT: '2',
+  PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '2',
   PAGES_SESSION_JWT_ACTIVE_KID: 'pages-session-2026-06',
   PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
   PAGES_CAP_JWT_ACTIVE_KID: 'pages-cap-2026-06',
@@ -99,6 +103,15 @@ function setRouterTemplateExecutionMode(environment, mode) {
   writeFileSync(path, content);
 }
 
+function setPagesAuthTemplateSsoTokenUrl(environment, value) {
+  const path = environment === 'staging' ? pagesAuthStagingTemplatePath : pagesAuthProductionTemplatePath;
+  const content = readFileSync(path, 'utf8').replace(
+    /^SSO_TOKEN_URL = "[^"]+"$/m,
+    `SSO_TOKEN_URL = "${value}"`,
+  );
+  writeFileSync(path, content);
+}
+
 test('generated pages v2 wrangler configs are ignored', () => {
   const result = spawnSync(
     'git',
@@ -128,12 +141,16 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /name = "pages-api"/);
   assert.match(config, /account_id = "dummy-account"/);
   assert.match(config, /workers_dev = false/);
+  assert.match(config, /pattern = "api\.pages\.xd\.team"/);
+  assert.match(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-production"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
@@ -153,10 +170,14 @@ test('staging pages-api config renders explicit staging template values', () => 
   const config = renderPagesApi('staging');
 
   assert.match(config, /name = "pages-api-staging"/);
+  assert.match(config, /pattern = "api-staging\.pages\.xd\.team"/);
+  assert.match(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
@@ -194,6 +215,8 @@ test('production pages-auth config renders explicit production auth settings onl
 
   assert.match(config, /name = "pages-auth"/);
   assert.match(config, /account_id = "dummy-account"/);
+  assert.match(config, /pattern = "auth\.pages\.xd\.team"/);
+  assert.match(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
@@ -208,14 +231,14 @@ test('production pages-auth config renders explicit production auth settings onl
     config,
     /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/,
   );
-  assert.match(config, /SSO_AUTHORIZATION_URL = "https:\/\/sso\.example\.test\/oauth\/authorize"/);
+  assert.match(config, /SSO_AUTHORIZATION_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/authorize"/);
   assert.match(
     config,
     /SSO_REDIRECT_URI = "https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/auth\/callback"/,
   );
-  assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.example\.test\/oauth\/token"/);
-  assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.example\.test\/oauth\/profile"/);
-  assert.match(config, /SSO_CLIENT_ID = "xd_pages_test"/);
+  assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
+  assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
+  assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
   assert.match(config, /SSO_ALLOWED_USER_SCOPE = "xindong"/);
   assert.match(config, /binding = "PAGES_API"/);
   assert.match(config, /service = "pages-api"/);
@@ -230,6 +253,8 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   const config = renderPagesAuth('staging');
 
   assert.match(config, /name = "pages-auth-staging"/);
+  assert.match(config, /pattern = "auth-staging\.pages\.xd\.team"/);
+  assert.match(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
@@ -237,52 +262,48 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
     config,
     /SSO_REDIRECT_URI = "https:\/\/auth-staging\.pages\.xd\.team\/\.xd-pages\/auth\/callback"/,
   );
+  assert.match(config, /SSO_AUTHORIZATION_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/authorize"/);
+  assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
+  assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
+  assert.match(config, /SSO_CLIENT_ID = "xd_pages_staging"/);
   assert.match(config, /service = "pages-api-staging"/);
 });
 
-test('pages-auth config keeps committed ttl and SSO scope defaults', () => {
+test('pages-auth config keeps committed ttl, SSO endpoints, client id, and scope defaults', () => {
   const config = renderPagesAuth('production', {
     ...baseEnv,
     AUTH_SESSION_IDLE_TTL_SECONDS: '2592000',
     SITE_SESSION_IDLE_TTL_SECONDS: '2592000',
+    SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
+    SSO_TOKEN_URL: 'https://sso.example.test/oauth/token',
+    SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
+    SSO_CLIENT_ID: 'xd_pages_test',
     SSO_ALLOWED_USER_SCOPE: 'company-all',
   });
 
   assert.match(config, /AUTH_SESSION_IDLE_TTL_SECONDS = "1209600"/);
   assert.match(config, /SITE_SESSION_IDLE_TTL_SECONDS = "604800"/);
+  assert.match(config, /SSO_AUTHORIZATION_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/authorize"/);
+  assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
+  assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
+  assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
   assert.match(config, /SSO_ALLOWED_USER_SCOPE = "xindong"/);
+  assert.doesNotMatch(config, /sso\.example\.test/);
+  assert.doesNotMatch(config, /xd_pages_test/);
   assert.doesNotMatch(config, /company-all/);
 });
 
-test('pages-auth config requires SSO config', () => {
-  for (const name of [
-    'SSO_AUTHORIZATION_URL',
-    'SSO_TOKEN_URL',
-    'SSO_PROFILE_URL',
-    'SSO_CLIENT_ID',
-  ]) {
+test('pages-auth config no longer requires GitHub SSO vars', () => {
+  for (const name of ['SSO_AUTHORIZATION_URL', 'SSO_TOKEN_URL', 'SSO_PROFILE_URL', 'SSO_CLIENT_ID']) {
     const result = runRenderer(['apps/pages-auth', 'production'], withoutEnv(name));
 
-    assert.notEqual(result.status, 0, `${name} should be required`);
-    assert.match(`${result.stderr}${result.stdout}`, new RegExp(name));
+    assert.equal(result.status, 0, `${name} should come from the committed template`);
   }
 });
 
-test('pages-auth config rejects TOML-unsafe SSO values', () => {
-  const result = runRenderer(['apps/pages-auth', 'production'], {
-    ...baseEnv,
-    SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/"bad"',
-  });
-
-  assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /SSO_AUTHORIZATION_URL/);
-});
-
-test('pages-auth config requires production SSO URLs to use HTTPS', () => {
-  const result = runRenderer(['apps/pages-auth', 'production'], {
-    ...baseEnv,
-    SSO_TOKEN_URL: 'http://sso.example.test/oauth/token',
-  });
+test('renderer validates committed production SSO URLs', () => {
+  setPagesAuthTemplateSsoTokenUrl('production', 'http://sso.example.test/oauth/token');
+  const result = runRenderer(['apps/pages-auth', 'production']);
 
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /SSO_TOKEN_URL must be an HTTPS URL/);
@@ -301,11 +322,16 @@ test('production pages-router config renders explicit production fast-path setti
 
   assert.match(config, /name = "pages-router"/);
   assert.match(config, /account_id = "dummy-account"/);
+  assert.match(config, /pattern = "\*\.pages\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "1"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL = "100"/);
   assert.match(config, /ROUTE_CACHE_TTL_SECONDS = "10"/);
   assert.match(config, /ROUTER_IP_ALLOWLIST_CIDRS = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /ROUTER_JWKS_URL = "https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/jwks\.json"/);
@@ -340,6 +366,8 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   const config = renderPagesRouter('staging');
 
   assert.match(config, /name = "pages-router-staging"/);
+  assert.match(config, /pattern = "\*-staging\.pages\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
@@ -362,7 +390,7 @@ test('pages-router config renders WFP dispatch namespace and omits slot bindings
   setRouterTemplateExecutionMode('production', 'wfp');
   const config = renderPagesRouter('production', {
     ...baseEnv,
-    PAGES_NORMAL_WORKER_SLOT_COUNT: '',
+    PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '',
   });
 
   assert.doesNotMatch(config, /SITE_SLOT_001/);
@@ -375,7 +403,7 @@ test('pages-router config can keep slot bindings in wfp mode while draining slot
   setRouterTemplateExecutionMode('production', 'wfp');
   const config = renderPagesRouter('production', {
     ...baseEnv,
-    PAGES_NORMAL_WORKER_SLOT_COUNT: '2',
+    PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '2',
   });
 
   assert.match(config, /binding = "PAGES_DISPATCH"/);
@@ -386,13 +414,13 @@ test('pages-router config can keep slot bindings in wfp mode while draining slot
   assert.match(config, /service = "pages-v2-production-slot-002"/);
 });
 
-test('pages-router config requires slot count in normal worker slot mode', () => {
+test('pages-router config requires deploy-computed binding count in normal worker slot mode', () => {
   const env = { ...baseEnv };
-  delete env.PAGES_NORMAL_WORKER_SLOT_COUNT;
+  delete env.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT;
   const result = runRenderer(['apps/pages-router', 'production'], env);
 
   assert.notEqual(result.status, 0);
-  assert.match(`${result.stderr}${result.stdout}`, /PAGES_NORMAL_WORKER_SLOT_COUNT/);
+  assert.match(`${result.stderr}${result.stdout}`, /PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT/);
 });
 
 test('pages-router config keeps committed cache and JWT ttl defaults', () => {

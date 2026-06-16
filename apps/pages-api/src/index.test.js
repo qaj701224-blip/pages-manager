@@ -62,14 +62,23 @@ test('internal user upsert is only callable through internal service host', asyn
   });
   const publicResponse = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/internal/users/upsert', {
-      user: { id: 'usr_1', ssoSubject: 'usr_1', email: 'user@example.com', employeeStatus: 'active' },
+      user: { userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active' },
       now: 1_800_000_000,
     }),
     { PAGES_ENV: 'production', PAGES_STORE: store }
   );
   const internalResponse = await worker.fetch(
     jsonRequest('https://pages-api.internal/.xd-pages/internal/users/upsert', {
-      user: { id: 'usr_1', ssoSubject: 'usr_1', email: 'USER@example.com', employeeStatus: 'active', sessionVersion: 2 },
+      user: {
+        userId: 'usr_1',
+        email: 'USER@example.com',
+        realname: '示例用户',
+        account: 'USER@example.com',
+        accountId: 'acct_1',
+        employeenum: 'user',
+        employeeStatus: 'active',
+        sessionVersion: 2,
+      },
       now: 1_800_000_000,
     }),
     { PAGES_ENV: 'production', PAGES_STORE: store }
@@ -79,6 +88,10 @@ test('internal user upsert is only callable through internal service host', asyn
   assert.equal((await publicResponse.json()).error.code, 'NOT_FOUND');
   assert.equal(internalResponse.status, 200, await internalResponse.clone().text());
   assert.equal((await store.getUser('usr_1')).email, 'user@example.com');
+  assert.equal((await store.getUser('usr_1')).realname, '示例用户');
+  assert.equal((await store.getUser('usr_1')).account, 'USER@example.com');
+  assert.equal((await store.getUser('usr_1')).accountId, 'acct_1');
+  assert.equal((await store.getUser('usr_1')).employeenum, 'user');
   assert.equal((await store.getUser('usr_1')).sessionVersion, 2);
 });
 
@@ -90,6 +103,10 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.match(stagingTemplate, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
   assert.match(productionTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(stagingTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
+  assert.match(productionTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(stagingTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(productionTemplate, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
+  assert.match(stagingTemplate, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(productionTemplate, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(stagingTemplate, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(productionTemplate, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);

@@ -47,17 +47,15 @@ test('owner visibility requires active site owner', () => {
   });
 });
 
-test('acl visibility uses allow-only OR entries for user, email, and department', () => {
+test('acl visibility uses allow-only OR entries for email and department', () => {
   const aclRoute = route({
     visibility: 'acl',
     acl: [
-      { effect: 'allow', subjectType: 'user', subjectValue: 'usr_9' },
       { effect: 'allow', subjectType: 'email', subjectValue: 'alice@example.com' },
       { effect: 'allow', subjectType: 'department', subjectValue: 'dept_design' },
     ],
   });
 
-  assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ userId: 'usr_9' })).ok, true);
   assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ email: 'alice@example.com' })).ok, true);
   assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ departments: ['dept_design'] })).ok, true);
   assert.deepEqual(
@@ -68,6 +66,32 @@ test('acl visibility uses allow-only OR entries for user, email, and department'
       status: 403,
     }
   );
+});
+
+test('acl visibility does not match internal user id subjects', () => {
+  const aclRoute = route({
+    visibility: 'acl',
+    acl: [{ effect: 'allow', subjectType: 'user', subjectValue: 'usr_9' }],
+  });
+
+  assert.deepEqual(evaluateAccessPolicy(aclRoute, activeUser({ userId: 'usr_9' })), {
+    ok: false,
+    code: 'SITE_ACCESS_FORBIDDEN',
+    status: 403,
+  });
+});
+
+test('acl visibility fails closed for empty email subjects', () => {
+  const aclRoute = route({
+    visibility: 'acl',
+    acl: [{ effect: 'allow', subjectType: 'email', subjectValue: '' }],
+  });
+
+  assert.deepEqual(evaluateAccessPolicy(aclRoute, activeUser({ email: '' })), {
+    ok: false,
+    code: 'SITE_ACCESS_FORBIDDEN',
+    status: 403,
+  });
 });
 
 test('site session is stale when site, policy, or user session version mismatches', () => {

@@ -28,7 +28,7 @@ test('builds immutable route snapshot from authority records', () => {
       artifactKind: 'worker',
       contentHash: 'sha256:abc',
     },
-    aclEntries: [{ effect: 'allow', subjectType: 'user', subjectValue: 'usr_1' }],
+    aclEntries: [{ effect: 'allow', subjectType: 'email', subjectValue: 'user@example.com' }],
   });
 
   assert.deepEqual(snapshot, {
@@ -61,7 +61,7 @@ test('builds immutable route snapshot from authority records', () => {
     routeGeneration: 2,
     routeStatus: 'active',
     cacheTier: 'fast',
-    acl: [{ effect: 'allow', subjectType: 'user', subjectValue: 'usr_1' }],
+    acl: [{ effect: 'allow', subjectType: 'email', subjectValue: 'user@example.com' }],
   });
 });
 

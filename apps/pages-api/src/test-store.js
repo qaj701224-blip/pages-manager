@@ -29,11 +29,14 @@ class TestPagesStore {
 
   async createUser(input) {
     const now = this.now();
+    const userId = input.userId || input.id;
     const record = {
-      id: input.id,
-      ssoSubject: input.ssoSubject,
+      id: userId,
       email: input.email,
-      name: input.name || null,
+      realname: input.realname || null,
+      account: input.account || null,
+      accountId: input.accountId || null,
+      employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
       sessionVersion: input.sessionVersion || 1,
       lastLoginAt: input.lastLoginAt || null,
@@ -46,15 +49,18 @@ class TestPagesStore {
   }
 
   async upsertUserFromSso(input) {
-    const existing = this.users.get(input.id) || null;
+    const userId = input.userId || input.id;
+    const existing = this.users.get(userId) || null;
     const now = input.updatedAt || this.now();
     const incomingSessionVersion = input.sessionVersion || 1;
     const statusChanged = existing && existing.employeeStatus !== input.employeeStatus;
     const record = {
-      id: input.id,
-      ssoSubject: input.ssoSubject || input.id,
+      id: userId,
       email: input.email,
-      name: input.name || existing?.name || null,
+      realname: input.realname || existing?.realname || null,
+      account: input.account || existing?.account || null,
+      accountId: input.accountId || existing?.accountId || null,
+      employeenum: input.employeenum || existing?.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
       sessionVersion: Math.max(incomingSessionVersion, existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1),
       lastLoginAt: input.lastLoginAt || now,
@@ -333,6 +339,14 @@ class TestPagesStore {
 
   async getWorkerSlot(id) {
     return cloneRecord(this.workerSlots.get(id) || null);
+  }
+
+  async listWorkerSlots(environment) {
+    return cloneRecord(
+      [...this.workerSlots.values()]
+        .filter((slot) => slot.environment === environment)
+        .sort((left, right) => left.slotNumber - right.slotNumber)
+    );
   }
 
   async assignAvailableWorkerSlot({ environment, siteId, routeId, versionId, assignedAt }) {

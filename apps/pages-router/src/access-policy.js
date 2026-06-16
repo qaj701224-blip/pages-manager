@@ -25,11 +25,16 @@ export function evaluateAccessPolicy(route, identity) {
 function aclAllows(entries = [], identity) {
   return entries.some((entry) => {
     if (!entry || entry.effect !== 'allow') return false;
-    if (entry.subjectType === 'user') return entry.subjectValue === identity.userId;
-    if (entry.subjectType === 'email') return normalizeEmail(entry.subjectValue) === normalizeEmail(identity.email);
+    if (entry.subjectType === 'email') return emailAclAllows(entry.subjectValue, identity.email);
     if (entry.subjectType === 'department') return identity.departments?.includes(entry.subjectValue);
     return false;
   });
+}
+
+function emailAclAllows(subjectValue, identityEmail) {
+  const aclEmail = normalizeEmail(subjectValue);
+  const email = normalizeEmail(identityEmail);
+  return Boolean(aclEmail && email && aclEmail === email);
 }
 
 function normalizeEmail(value) {

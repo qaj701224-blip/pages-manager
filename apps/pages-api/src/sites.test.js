@@ -32,10 +32,9 @@ test('creates a production site with owner membership and inactive route', async
 test('lists only sites visible to the authenticated actor', async () => {
   const store = await createSeededStore();
   await store.createUser({
-    id: 'usr_2',
-    ssoSubject: 'sso_2',
+    userId: 'usr_2',
     email: 'other@example.com',
-    name: 'Other User',
+    realname: 'Other User',
     employeeStatus: 'active',
   });
   await store.createSite({
@@ -241,7 +240,7 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   const put = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
       entries: [
-        { subjectType: 'user', subjectValue: 'usr_2' },
+        { subjectType: 'email', subjectValue: 'bob@example.com' },
         { subjectType: 'email', subjectValue: 'Alice@Example.COM' },
         { subjectType: 'department', subjectValue: 'dept_design' },
       ],
@@ -251,7 +250,13 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   const get = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl'), testEnv(store));
   const deny = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
-      entries: [{ subjectType: 'user', subjectValue: 'usr_2', effect: 'deny' }],
+      entries: [{ subjectType: 'email', subjectValue: 'bob@example.com', effect: 'deny' }],
+    }),
+    testEnv(store)
+  );
+  const user = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'user', subjectValue: 'usr_2' }],
     }),
     testEnv(store)
   );
@@ -261,12 +266,18 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     }),
     testEnv(store)
   );
+  const invalidEmail = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'email', subjectValue: 'not-an-email' }],
+    }),
+    testEnv(store)
+  );
 
   assert.equal(put.status, 200);
   assert.deepEqual(
     (await put.json()).aclEntries.map(({ subjectType, subjectValue, effect }) => ({ subjectType, subjectValue, effect })),
     [
-      { subjectType: 'user', subjectValue: 'usr_2', effect: 'allow' },
+      { subjectType: 'email', subjectValue: 'bob@example.com', effect: 'allow' },
       { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow' },
       { subjectType: 'department', subjectValue: 'dept_design', effect: 'allow' },
     ]
@@ -274,7 +285,7 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   assert.deepEqual(
     (await get.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue })),
     [
-      { subjectType: 'user', subjectValue: 'usr_2' },
+      { subjectType: 'email', subjectValue: 'bob@example.com' },
       { subjectType: 'email', subjectValue: 'alice@example.com' },
       { subjectType: 'department', subjectValue: 'dept_design' },
     ]
@@ -282,8 +293,12 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
   assert.equal(deny.status, 400);
   assert.equal((await deny.json()).error.code, 'ACL_EFFECT_UNSUPPORTED');
+  assert.equal(user.status, 400);
+  assert.equal((await user.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(group.status, 400);
   assert.equal((await group.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
+  assert.equal(invalidEmail.status, 400);
+  assert.equal((await invalidEmail.json()).error.code, 'ACL_SUBJECT_VALUE_INVALID');
 });
 
 test('rejects deploy-only access keys from reading site ACL entries', async () => {
@@ -331,7 +346,7 @@ test('rolls back ACL changes when active route snapshot write fails', async () =
   });
   await store.replaceSiteAclEntries(
     'site_1',
-    [{ id: 'acl_existing', subjectType: 'user', subjectValue: 'usr_existing', accessRole: 'viewer', effect: 'allow' }],
+    [{ id: 'acl_existing', subjectType: 'email', subjectValue: 'existing@example.com', accessRole: 'viewer', effect: 'allow' }],
     { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
     'production'
   );
@@ -339,7 +354,7 @@ test('rolls back ACL changes when active route snapshot write fails', async () =
 
   const response = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
-      entries: [{ subjectType: 'user', subjectValue: 'usr_new' }],
+      entries: [{ subjectType: 'email', subjectValue: 'new@example.com' }],
     }),
     testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
   );
@@ -348,7 +363,7 @@ test('rolls back ACL changes when active route snapshot write fails', async () =
   assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
   assert.deepEqual(
     (await store.listSiteAclEntries('site_1')).map(({ id, subjectValue }) => ({ id, subjectValue })),
-    [{ id: 'acl_existing', subjectValue: 'usr_existing' }]
+    [{ id: 'acl_existing', subjectValue: 'existing@example.com' }]
   );
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
 });
@@ -480,10 +495,9 @@ async function createSeededStore() {
     now: () => '2026-06-15T00:00:00.000Z',
   });
   await store.createUser({
-    id: 'usr_1',
-    ssoSubject: 'sso_1',
+    userId: 'usr_1',
     email: 'user@example.com',
-    name: 'User One',
+    realname: 'User One',
     employeeStatus: 'active',
   });
   return store;

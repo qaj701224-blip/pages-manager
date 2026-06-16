@@ -8,7 +8,7 @@ const SUPPORTED_ENVIRONMENTS = new Set(['production', 'staging']);
 const EXECUTION_MODE_APPS = new Set(['apps/pages-api', 'apps/pages-router']);
 
 const DEFAULTS = {
-  PAGES_NORMAL_WORKER_SLOT_COUNT: '',
+  PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '',
 };
 
 const REQUIRED_TOKENS_BY_APP = {
@@ -19,10 +19,6 @@ const REQUIRED_TOKENS_BY_APP = {
   ],
   'apps/pages-auth': [
     'CLOUDFLARE_ACCOUNT_ID',
-    'SSO_AUTHORIZATION_URL',
-    'SSO_TOKEN_URL',
-    'SSO_PROFILE_URL',
-    'SSO_CLIENT_ID',
   ],
   'apps/pages-router': [
     'CLOUDFLARE_ACCOUNT_ID',
@@ -38,7 +34,7 @@ const REQUIRED_TOKENS_BY_APP = {
 const OPTIONAL_TOKENS_BY_APP = {
   'apps/pages-api': [],
   'apps/pages-auth': [],
-  'apps/pages-router': ['PAGES_NORMAL_WORKER_SLOT_COUNT'],
+  'apps/pages-router': ['PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT'],
   'apps/kv-gateway': [],
 };
 
@@ -97,6 +93,7 @@ async function renderWrangler(appName, envName) {
     renderWfpDispatchNamespaceBinding(appName, envName, executionMode)
   );
 
+  assertRenderedConfigPolicy(rendered, appName);
   assertNoUnresolvedPlaceholders(rendered, templatePath);
   assertNoRuntimeSecrets(rendered, appName);
   assertEnvironmentBoundary(rendered, envName, appName);
@@ -153,7 +150,7 @@ function assertTokenPolicy(name, value) {
   if (name === 'PAGES_EXECUTION_MODE' && !/^(normal-worker-slot|wfp)$/.test(value)) {
     throw new Error(`${name} must be normal-worker-slot or wfp`);
   }
-  if (name === 'PAGES_NORMAL_WORKER_SLOT_COUNT' && value !== '') {
+  if (name === 'PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT' && value !== '') {
     assertPositiveInteger(name, value);
   }
 }
@@ -175,6 +172,23 @@ function assertCrossTokenPolicy(replacements) {
   );
 }
 
+function assertRenderedConfigPolicy(rendered, appName) {
+  if (appName !== 'apps/pages-auth') return;
+
+  for (const name of ['SSO_AUTHORIZATION_URL', 'SSO_TOKEN_URL', 'SSO_PROFILE_URL']) {
+    assertHttpsUrl(name, readTomlStringVar(rendered, name));
+  }
+  const clientId = readTomlStringVar(rendered, 'SSO_CLIENT_ID');
+  if (!/^[A-Za-z0-9_-]+$/.test(clientId)) throw new Error('SSO_CLIENT_ID must be a safe id');
+}
+
+function readTomlStringVar(rendered, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = rendered.match(new RegExp(`^${escaped} = "([^"]+)"$`, 'm'));
+  if (!match) throw new Error(`${name} is required`);
+  return match[1];
+}
+
 function readExecutionMode(rendered, appName) {
   const matches = [...rendered.matchAll(/^PAGES_EXECUTION_MODE = "([^"]+)"$/gm)];
   if (!EXECUTION_MODE_APPS.has(appName)) {
@@ -190,15 +204,15 @@ function readExecutionMode(rendered, appName) {
 
 function renderNormalWorkerSlotServices(appName, envName, replacements, executionMode) {
   if (appName !== 'apps/pages-router') return '';
-  if (executionMode !== 'normal-worker-slot' && replacements.PAGES_NORMAL_WORKER_SLOT_COUNT === '') {
+  if (executionMode !== 'normal-worker-slot' && replacements.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT === '') {
     return '';
   }
 
-  const count = Number(replacements.PAGES_NORMAL_WORKER_SLOT_COUNT);
+  const count = Number(replacements.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT);
   if (!Number.isInteger(count) || count <= 0) {
-    throw new Error('PAGES_NORMAL_WORKER_SLOT_COUNT is required when PAGES_EXECUTION_MODE=normal-worker-slot');
+    throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT is required when PAGES_EXECUTION_MODE=normal-worker-slot');
   }
-  if (count > 999) throw new Error('PAGES_NORMAL_WORKER_SLOT_COUNT must be 999 or less');
+  if (count > 999) throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT must be 999 or less');
 
   const servicePrefix = envName === 'staging' ? 'pages-v2-staging-slot' : 'pages-v2-production-slot';
   const entries = [];

@@ -195,6 +195,16 @@ test('env commands list, switch, and reject unsafe custom endpoints', async () =
   );
 });
 
+test('prints help and version for top-level CLI aliases', async () => {
+  const helpOutput = [];
+  assert.equal(await executeCommand(['--help'], { output: (line) => helpOutput.push(line) }), 0);
+  assert.match(helpOutput.join('\n'), /Usage: pages/);
+
+  const versionOutput = [];
+  assert.equal(await executeCommand(['-v'], { output: (line) => versionOutput.push(line) }), 0);
+  assert.match(versionOutput.join('\n'), /^0\.1\.0$/);
+});
+
 async function tempProject() {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-command-'));
   test.after(() => rm(dir, { recursive: true, force: true }));

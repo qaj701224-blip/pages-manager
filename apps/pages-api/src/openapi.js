@@ -83,8 +83,10 @@ export function buildOpenApi(config) {
           properties: {
             subjectType: {
               type: 'string',
-              enum: ['user', 'email', 'department'],
-              description: 'group is intentionally not enabled until organization directory semantics are stable.',
+              enum: ['email', 'department'],
+              description:
+                'People are specified by email. Internal SSO user ids are not accepted as public ACL subjects. ' +
+                'group is intentionally not enabled until organization directory semantics are stable.',
             },
             subjectValue: { type: 'string' },
             effect: {

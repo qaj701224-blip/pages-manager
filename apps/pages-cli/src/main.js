@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { executeCommand } from './commands.js';
 
 export async function main(argv = process.argv.slice(2), io = {}) {
@@ -30,7 +33,16 @@ function formatError(error) {
   return `${code}${message}${action}`;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function isCliEntrypoint(moduleUrl = import.meta.url, argvPath = process.argv[1]) {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint()) {
   const exitCode = await main();
   process.exitCode = exitCode;
 }

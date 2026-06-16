@@ -12,11 +12,14 @@ export class D1PagesStore {
 
   async createUser(input) {
     const now = this.now();
+    const userId = input.userId || input.id;
     const record = {
-      id: input.id,
-      ssoSubject: input.ssoSubject,
+      id: userId,
       email: input.email,
-      name: input.name || null,
+      realname: input.realname || null,
+      account: input.account || null,
+      accountId: input.accountId || null,
+      employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
       sessionVersion: input.sessionVersion || 1,
       lastLoginAt: input.lastLoginAt || null,
@@ -26,15 +29,17 @@ export class D1PagesStore {
     await this.db
       .prepare(
         `INSERT INTO users (
-          id, sso_subject, email, name, employee_status, session_version,
+          user_id, account, account_id, email, realname, employeenum, employee_status, session_version,
           last_login_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
-        record.ssoSubject,
+        record.account,
+        record.accountId,
         record.email,
-        record.name,
+        record.realname,
+        record.employeenum,
         record.employeeStatus,
         record.sessionVersion,
         record.lastLoginAt,
@@ -46,7 +51,8 @@ export class D1PagesStore {
   }
 
   async upsertUserFromSso(input) {
-    const existing = await this.getUser(input.id);
+    const userId = input.userId || input.id;
+    const existing = await this.getUser(userId);
     const now = input.updatedAt || this.now();
     const incomingSessionVersion = input.sessionVersion || 1;
     const statusChanged = existing && existing.employeeStatus !== input.employeeStatus;
@@ -55,10 +61,12 @@ export class D1PagesStore {
       existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1
     );
     const record = {
-      id: input.id,
-      ssoSubject: input.ssoSubject || input.id,
+      id: userId,
       email: input.email,
-      name: input.name || existing?.name || null,
+      realname: input.realname || existing?.realname || null,
+      account: input.account || existing?.account || null,
+      accountId: input.accountId || existing?.accountId || null,
+      employeenum: input.employeenum || existing?.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
       sessionVersion,
       lastLoginAt: input.lastLoginAt || now,
@@ -68,13 +76,15 @@ export class D1PagesStore {
     await this.db
       .prepare(
         `INSERT INTO users (
-          id, sso_subject, email, name, employee_status, session_version,
+          user_id, account, account_id, email, realname, employeenum, employee_status, session_version,
           last_login_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          sso_subject = excluded.sso_subject,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          account = excluded.account,
+          account_id = excluded.account_id,
           email = excluded.email,
-          name = excluded.name,
+          realname = excluded.realname,
+          employeenum = excluded.employeenum,
           employee_status = excluded.employee_status,
           session_version = ?,
           last_login_at = excluded.last_login_at,
@@ -82,9 +92,11 @@ export class D1PagesStore {
       )
       .bind(
         record.id,
-        record.ssoSubject,
+        record.account,
+        record.accountId,
         record.email,
-        record.name,
+        record.realname,
+        record.employeenum,
         record.employeeStatus,
         record.sessionVersion,
         record.lastLoginAt,
@@ -97,7 +109,7 @@ export class D1PagesStore {
   }
 
   async getUser(id) {
-    const row = await this.db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
+    const row = await this.db.prepare('SELECT * FROM users WHERE user_id = ?').bind(id).first();
     return row ? mapUser(row) : null;
   }
 
@@ -627,6 +639,18 @@ export class D1PagesStore {
     return row ? mapWorkerSlot(row) : null;
   }
 
+  async listWorkerSlots(environment) {
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM worker_slots
+        WHERE environment = ?
+        ORDER BY slot_number ASC`
+      )
+      .bind(environment)
+      .all();
+    return (result.results || []).map(mapWorkerSlot);
+  }
+
   async assignAvailableWorkerSlot({ environment, siteId, routeId, versionId, assignedAt }) {
     const slotsResult = await this.db
       .prepare(
@@ -919,10 +943,12 @@ function routesMatch(actual, expected) {
 
 function mapUser(row) {
   return {
-    id: row.id,
-    ssoSubject: row.sso_subject,
+    id: row.user_id,
     email: row.email,
-    name: row.name,
+    realname: row.realname,
+    account: row.account,
+    accountId: row.account_id,
+    employeenum: row.employeenum,
     employeeStatus: row.employee_status,
     sessionVersion: row.session_version,
     lastLoginAt: row.last_login_at,

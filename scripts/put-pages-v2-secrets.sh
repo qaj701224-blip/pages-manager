@@ -213,7 +213,7 @@ SECRET_NAMES=()
 
 case "$APP_DIR" in
   apps/pages-api)
-    SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN)
+    SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN SLACK_PAGES_ALERT_WEBHOOK_URL)
     collect_access_key_pepper_secrets
     ;;
   apps/pages-auth)

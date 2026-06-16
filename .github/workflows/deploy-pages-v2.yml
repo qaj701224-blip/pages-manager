@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pages-v2-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -59,20 +63,7 @@ jobs:
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          SSO_AUTHORIZATION_URL: ${{ vars.SSO_AUTHORIZATION_URL }}
-          SSO_TOKEN_URL: ${{ vars.SSO_TOKEN_URL }}
-          SSO_PROFILE_URL: ${{ vars.SSO_PROFILE_URL }}
-          SSO_CLIENT_ID: ${{ vars.SSO_CLIENT_ID }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-auth production
-
-      - name: Generate Pages Router Wrangler config
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
-          PAGES_NORMAL_WORKER_SLOT_COUNT: ${{ vars.PAGES_NORMAL_WORKER_SLOT_COUNT }}
-          ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
-        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router production
 
       - name: Generate Pages KV Gateway Wrangler config
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'
@@ -86,6 +77,7 @@ jobs:
         env:
           CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
           ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-api
@@ -115,7 +107,7 @@ jobs:
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/kv-gateway
 
       - name: Apply Pages API D1 migrations
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-router'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -135,6 +127,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
           ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-api
@@ -172,6 +165,21 @@ jobs:
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/kv-gateway
 
+      - name: Provision normal worker slots
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/provision-pages-v2-slots.mjs production prepare
+
+      - name: Generate Pages Router Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
+          ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
+        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router production
+
       - name: Deploy Pages Router
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
         env:
@@ -189,3 +197,10 @@ jobs:
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-router
+
+      - name: Activate normal worker slots
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/provision-pages-v2-slots.mjs production activate

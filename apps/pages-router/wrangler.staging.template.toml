@@ -4,12 +4,19 @@ compatibility_date = "2026-06-15"
 account_id = "__CLOUDFLARE_ACCOUNT_ID__"
 workers_dev = false
 
+[[routes]]
+pattern = "*-staging.pages.xd.team/*"
+zone_name = "xd.team"
+
 [vars]
 PAGES_ENV = "staging"
 PUBLIC_AUTH_BASE = "https://auth-staging.pages.xd.team"
 PUBLIC_API_BASE = "https://api-staging.pages.xd.team"
 PUBLIC_SITE_SUFFIX = "pages.xd.team"
 PAGES_EXECUTION_MODE = "normal-worker-slot"
+PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "1"
+PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"
+PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL = "100"
 ROUTE_CACHE_TTL_SECONDS = "10"
 ROUTER_IP_ALLOWLIST_CIDRS = "__ROUTER_IP_ALLOWLIST_CIDRS__"
 ROUTER_JWKS_URL = "https://auth-staging.pages.xd.team/.xd-pages/jwks.json"

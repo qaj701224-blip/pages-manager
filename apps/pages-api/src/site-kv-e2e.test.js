@@ -9,10 +9,9 @@ import { createTestPagesStore } from './test-store.js';
 test('site created by API can deploy and use router-proxied Pages KV', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await store.createUser({
-    id: 'usr_1',
-    ssoSubject: 'sso_1',
+    userId: 'usr_1',
     email: 'user@example.com',
-    name: 'User One',
+    realname: 'User One',
     employeeStatus: 'active',
   });
   const snapshots = new MemoryRouteSnapshots();

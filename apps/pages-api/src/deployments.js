@@ -4,6 +4,7 @@ import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider, normalizeArtifactBundle } from './execution-provider.js';
+import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 
 const ARTIFACT_KINDS = new Set(['static', 'spa', 'worker']);
 
@@ -155,6 +156,9 @@ async function createDeployment(request, env, config, store, actor) {
       code === 'DEPLOYMENT_CAPACITY_EXHAUSTED'
         ? 'Ask a Pages maintainer to expand platform deployment capacity.'
         : 'Retry the deployment with the same Idempotency-Key.';
+    if (code === 'DEPLOYMENT_CAPACITY_EXHAUSTED') {
+      await notifyDeploymentCapacityExhausted(env, config, { store });
+    }
     return jsonError(code, 'Deployment upload failed.', status, action);
   }
 

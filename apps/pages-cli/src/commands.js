@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { parseArgs } from './args.js';
@@ -37,6 +38,9 @@ export async function executeCommand(argv = [], options = {}) {
       return runEnv(parsed, { ...options, env, profileDir, profile, output });
     case 'help':
       output('Usage: pages <login|deploy|status|rollback|open|env> [options]');
+      return 0;
+    case 'version':
+      output(await readCliVersion());
       return 0;
     default:
       throw new Error(`UNKNOWN_COMMAND:${parsed.command}`);
@@ -286,6 +290,11 @@ function nextIdempotencyKey(context) {
 function nowIso(context) {
   if (typeof context.nowIso === 'function') return context.nowIso();
   return new Date().toISOString();
+}
+
+async function readCliVersion() {
+  const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  return packageJson.version || 'unknown';
 }
 
 function createOutput(stdout) {

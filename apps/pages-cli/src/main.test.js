@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { symlink, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { ApiError } from './api-client.js';
 import { main } from './main.js';
@@ -57,6 +62,20 @@ test('main prints API error code, message, and action', async () => {
   assert.equal(stdout.text(), '');
 });
 
+test('global symlinked bin invokes the CLI entrypoint', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-bin-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  const linkPath = path.join(dir, 'pages');
+  const mainPath = fileURLToPath(new URL('./main.js', import.meta.url));
+  await symlink(mainPath, linkPath);
+
+  const result = await runNode([linkPath, 'help']);
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Usage: pages/);
+  assert.equal(result.stderr, '');
+});
+
 function capture() {
   let value = '';
   return {
@@ -67,4 +86,25 @@ function capture() {
       return value;
     },
   };
+}
+
+function runNode(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
 }

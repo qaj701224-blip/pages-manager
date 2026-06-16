@@ -28,7 +28,7 @@ async function upsertUser(request, env, store) {
   const record = await store.upsertUserFromSso(user);
   return jsonOk({
     user: {
-      id: record.id,
+      userId: record.id,
       email: record.email,
       employeeStatus: record.employeeStatus,
       sessionVersion: record.sessionVersion,
@@ -39,17 +39,19 @@ async function upsertUser(request, env, store) {
 
 function normalizeUser(value, now) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const id = normalizeRequiredString(value.id);
-  const ssoSubject = normalizeRequiredString(value.ssoSubject) || id;
+  const userId = normalizeRequiredString(value.userId);
   const email = normalizeRequiredString(value.email).toLowerCase();
   const employeeStatus = normalizeRequiredString(value.employeeStatus).toLowerCase();
   const sessionVersion = Number.isInteger(value.sessionVersion) && value.sessionVersion > 0 ? value.sessionVersion : 1;
-  if (!id || !ssoSubject || !email || !EMPLOYEE_STATUSES.has(employeeStatus)) return null;
+  if (!userId || !email || !EMPLOYEE_STATUSES.has(employeeStatus)) return null;
   return {
-    id,
-    ssoSubject,
+    id: userId,
+    userId,
     email,
-    name: normalizeOptionalString(value.name) || null,
+    realname: normalizeOptionalString(value.realname) || null,
+    account: normalizeOptionalString(value.account) || null,
+    accountId: normalizeOptionalString(value.accountId) || null,
+    employeenum: normalizeOptionalString(value.employeenum) || null,
     employeeStatus,
     sessionVersion,
     lastLoginAt: new Date(now * 1000).toISOString(),

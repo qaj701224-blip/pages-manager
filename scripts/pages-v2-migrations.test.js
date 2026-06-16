@@ -38,6 +38,8 @@ test('pages v2 D1 migration covers authority schema tables and indexes', () => {
     'slot_id',
     'assigned_version_id',
     'last_deployed_version_id',
+    'account_id',
+    'employeenum',
   ]) {
     assert.match(migration, new RegExp(`\\b${column}\\b`));
   }

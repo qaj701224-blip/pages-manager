@@ -131,9 +131,9 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
     createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
     syncSsoUserProfile: async (profile, options) => {
-      assert.equal(profile.id, 'usr_123');
+      assert.equal(profile.userId, 'usr_123');
       assert.equal(options.now, now);
-      return { user: { id: 'usr_123' } };
+      return { user: { userId: 'usr_123' } };
     },
     fetchSsoToken: async ({ code, redirectUri }) => {
       assert.equal(code, 'oauth-code');
@@ -196,7 +196,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     id: 'usr_123',
     email: 'user@example.test',
     employeeStatus: 'active',
-    departments: ['dept_design'],
+    departments: [],
     sessionVersion: 4,
   });
 
@@ -228,31 +228,52 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
   const requests = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
-    requests.push({ url: new URL(url), init });
-    if (String(url) === 'https://sso.example.test/oauth/accessToken') {
-      assert.equal(init.method, 'POST');
-      assert.equal(init.headers['Content-Type'], 'application/x-www-form-urlencoded');
-      const form = new URLSearchParams(init.body);
-      assert.equal(form.get('code'), 'oauth-code');
-      assert.equal(form.get('client_id'), 'xd_pages_test');
-      assert.equal(form.get('client_secret'), 'test-client-secret');
-      assert.equal(form.get('grant_type'), 'authorization_code');
+    const requestUrl = new URL(url);
+    requests.push({ url: requestUrl, init });
+    if (requestUrl.origin + requestUrl.pathname === 'https://sso.example.test/oauth/accessToken') {
+      assert.equal(init.method, 'GET');
+      assert.equal(requestUrl.searchParams.get('code'), 'oauth-code');
+      assert.equal(requestUrl.searchParams.get('client_id'), 'xd_pages_test');
+      assert.equal(requestUrl.searchParams.get('client_secret'), 'test-client-secret');
+      assert.equal(requestUrl.searchParams.get('grant_type'), 'authorization_code');
+      assert.equal(requestUrl.searchParams.get('redirect_uri'), 'https://auth.pages.xd.team/.xd-pages/auth/callback');
       return Response.json({ access_token: 'sso-access-token' });
     }
-    if (String(url) === 'https://sso.example.test/oauth/profile') {
+    if (requestUrl.origin + requestUrl.pathname === 'https://sso.example.test/oauth/profile') {
       assert.equal(init.method, 'GET');
-      assert.equal(init.headers.Authorization, 'Bearer sso-access-token');
+      assert.equal(requestUrl.searchParams.get('access_token'), 'sso-access-token');
+      assert.equal(init.headers.Authorization, undefined);
       return Response.json({
-        userId: 'usr_123',
+        account: 'demo.user@example.test',
+        accountId: 'acct_demo_001',
+        ad_account: 'demo.user',
+        authWay: '13',
         email: 'USER@example.test',
         employee_status: '1',
-        departmentIds: ['dept_design'],
+        employeenum: 'demo.user',
+        fs_email: 'USER@example.test',
+        fs_id: 'fs_demo_001',
+        isPublicAccount: false,
+        job_number: '1001',
+        loginTime: 1_781_595_126_585,
+        permissions: [],
+        realname: '示例用户',
+        roles: [],
+        sort: '0',
+        st: 'ST-demo-redacted',
+        tgtId: 'TGT-demo-redacted',
+        userId: 'usr_xindong_123',
+        wechat_work: 'ww_demo_001',
+        service: 'https://auth.pages.xd.team/.xd-pages/auth/callback',
+        id: 'demo.user@example.test',
+        client_id: 'xd_pages_test',
       });
     }
     return new Response('not found', { status: 404 });
   };
 
   try {
+    let syncedProfile;
     const env = testEnv({
       SSO_TOKEN_URL: 'https://sso.example.test/oauth/accessToken',
       SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
@@ -260,6 +281,10 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
       consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
       createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
       createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+      syncSsoUserProfile: async (profile) => {
+        syncedProfile = profile;
+        return { user: { userId: profile.userId } };
+      },
     });
     const response = await handleOAuthCallback(
       new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
@@ -268,8 +293,6 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
     );
 
     assert.equal(response.status, 302, await response.clone().text());
-    assert.equal(requests[0].url.search, '');
-    assert.equal(requests[1].url.search, '');
 
     const siteCode = new URL(response.headers.get('Location')).searchParams.get('code');
     const consumedSiteCode = await consumeStoredOAuthSiteCode(oauthStorage, siteCode, {
@@ -278,10 +301,21 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
       environment: 'production',
     });
     assert.deepEqual(consumedSiteCode.user, {
-      id: 'usr_123',
+      id: 'usr_xindong_123',
       email: 'user@example.test',
       employeeStatus: 'active',
-      departments: ['dept_design'],
+      departments: [],
+      sessionVersion: 1,
+    });
+    assert.deepEqual(syncedProfile, {
+      userId: 'usr_xindong_123',
+      email: 'user@example.test',
+      realname: '示例用户',
+      account: 'demo.user@example.test',
+      accountId: 'acct_demo_001',
+      employeenum: 'demo.user',
+      employeeStatus: 'active',
+      departments: [],
       sessionVersion: 1,
     });
   } finally {
@@ -308,7 +342,7 @@ test('callback rejects profiles without explicit active employee status', async 
     fetchSsoProfile: async () => ({ id: 'usr_123', email: 'user@example.test' }),
     syncSsoUserProfile: async (profile) => {
       syncedProfile = profile;
-      return { user: { id: profile.id } };
+      return { user: { userId: profile.userId } };
     },
     createAuthSessionRecord: async () => {
       sessionCreated = true;
@@ -324,8 +358,12 @@ test('callback rejects profiles without explicit active employee status', async 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SSO_PROFILE_INACTIVE');
   assert.deepEqual(syncedProfile, {
-    id: 'usr_123',
+    userId: 'usr_123',
     email: 'user@example.test',
+    realname: null,
+    account: null,
+    accountId: null,
+    employeenum: null,
     employeeStatus: 'unknown',
     departments: [],
     sessionVersion: 1,

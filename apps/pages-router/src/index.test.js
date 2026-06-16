@@ -474,7 +474,7 @@ test('rejects acl sites when no allow entry matches', async () => {
     routes: {
       'demo.pages.xd.team': routeSnapshot({
         visibility: 'acl',
-        acl: [{ effect: 'allow', subjectType: 'user', subjectValue: 'usr_2' }],
+        acl: [{ effect: 'allow', subjectType: 'email', subjectValue: 'blocked@example.com' }],
       }),
     },
   });
@@ -501,7 +501,7 @@ test('dispatches acl sites when any allow entry matches', async () => {
       'demo.pages.xd.team': routeSnapshot({
         visibility: 'acl',
         acl: [
-          { effect: 'allow', subjectType: 'user', subjectValue: 'usr_9' },
+          { effect: 'allow', subjectType: 'email', subjectValue: 'teammate@example.com' },
           { effect: 'allow', subjectType: 'department', subjectValue: 'dept_design' },
         ],
       }),

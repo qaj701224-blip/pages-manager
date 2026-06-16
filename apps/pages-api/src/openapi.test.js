@@ -40,7 +40,7 @@ test('serves production v2-only OpenAPI skeleton', async () => {
   ]);
   assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /artifactBundle/);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
-  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['user', 'email', 'department']);
+  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email', 'department']);
   assert.doesNotMatch(serialized, /workers\.xd\.team/);
   assert.doesNotMatch(serialized, /WFP|SLOT|worker slot|execution provider|dispatch namespace|service binding/i);
   assert.doesNotMatch(serialized, /X-Pages-Token/);

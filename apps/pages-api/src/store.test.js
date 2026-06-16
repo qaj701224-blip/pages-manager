@@ -96,17 +96,19 @@ test('upsertUserFromSso creates users and bumps session version on status change
   const store = createSeededStore();
 
   const created = await store.upsertUserFromSso({
-    id: 'usr_sso',
-    ssoSubject: 'sso_usr',
+    userId: 'usr_sso',
     email: 'user@example.com',
+    realname: '示例用户',
+    account: 'user@example.com',
+    accountId: 'acct_1',
+    employeenum: 'user',
     employeeStatus: 'active',
     sessionVersion: 2,
     lastLoginAt: '2026-06-15T00:00:00.000Z',
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
   const disabled = await store.upsertUserFromSso({
-    id: 'usr_sso',
-    ssoSubject: 'sso_usr',
+    userId: 'usr_sso',
     email: 'user@example.com',
     employeeStatus: 'disabled',
     sessionVersion: 1,
@@ -115,6 +117,10 @@ test('upsertUserFromSso creates users and bumps session version on status change
   });
 
   assert.equal(created.sessionVersion, 2);
+  assert.equal(created.realname, '示例用户');
+  assert.equal(created.account, 'user@example.com');
+  assert.equal(created.accountId, 'acct_1');
+  assert.equal(created.employeenum, 'user');
   assert.equal(disabled.employeeStatus, 'disabled');
   assert.equal(disabled.sessionVersion, 3);
   assert.equal((await store.getUser('usr_sso')).lastLoginAt, '2026-06-15T00:01:00.000Z');
@@ -162,7 +168,7 @@ test('site policy changes update visibility, ACL, cache tier, and policy version
   const aclEntries = await store.replaceSiteAclEntries(
     'site_1',
     [
-      { id: 'acl_1', subjectType: 'user', subjectValue: 'usr_2', accessRole: 'viewer', effect: 'allow' },
+      { id: 'acl_1', subjectType: 'email', subjectValue: 'user@example.com', accessRole: 'viewer', effect: 'allow' },
       { id: 'acl_2', subjectType: 'department', subjectValue: 'dept_design', accessRole: 'viewer', effect: 'allow' },
     ],
     { createdBy: 'usr_1', updatedAt: '2026-06-15T00:01:00.000Z' },
@@ -172,7 +178,7 @@ test('site policy changes update visibility, ACL, cache tier, and policy version
   assert.deepEqual(
     aclEntries.map(({ id, subjectType, subjectValue, effect }) => ({ id, subjectType, subjectValue, effect })),
     [
-      { id: 'acl_1', subjectType: 'user', subjectValue: 'usr_2', effect: 'allow' },
+      { id: 'acl_1', subjectType: 'email', subjectValue: 'user@example.com', effect: 'allow' },
       { id: 'acl_2', subjectType: 'department', subjectValue: 'dept_design', effect: 'allow' },
     ]
   );
@@ -377,10 +383,9 @@ function createSeededStore() {
     now: () => '2026-06-15T00:00:00.000Z',
   });
   store.createUser({
-    id: 'usr_1',
-    ssoSubject: 'sso_1',
+    userId: 'usr_1',
     email: 'user@example.com',
-    name: 'User One',
+    realname: 'User One',
     employeeStatus: 'active',
   });
   return store;
