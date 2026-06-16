@@ -5,13 +5,13 @@ const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close|tasks?|
 const WORK_ITEM_HISTORY_RE = /(?:历史|全部|所有|已关闭|关闭的|已取消|取消的|失败|history|all|closed|cancelled|canceled|failed)/i;
 const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
   [
-    '(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
-    '(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务).*(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel)',
+    '(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
+    '(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务).*(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive)',
   ].join('|'),
   'i'
 );
 
-function isUnsupportedBulkDestructiveRequest(text = '') {
+export function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
 }
 

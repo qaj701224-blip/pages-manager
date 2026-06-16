@@ -1884,6 +1884,7 @@ test('Slack work item list only shows current user publishing jobs', async () =>
 
 test('Slack refuses bulk destructive issue requests instead of listing jobs', async () => {
   const app = createGatewayApp();
+  const agentCalls = [];
   const job = app.store.createJob({
     source: 'slack',
     requestedByType: 'user',
@@ -1911,10 +1912,26 @@ test('Slack refuses bulk destructive issue requests instead of listing jobs', as
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000133',
-          text: '关闭我名下的所有 issue',
+          text: '把我名下项目 issue 全部归档',
         },
       }),
-    })
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            analysis: {
+              intent: 'list_work_items',
+              summary: '模型误判为查看任务列表',
+              needsClarification: false,
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
   );
   const body = await json(response);
 
@@ -1923,6 +1940,7 @@ test('Slack refuses bulk destructive issue requests instead of listing jobs', as
   assert.equal(body.accepted, false);
   assert.match(body.replyText, /不能批量关闭或删除/);
   assert.equal(app.store.getJob(job.id).status, 'preview_deployed');
+  assert.equal(agentCalls.length, 0);
 });
 
 test('Slack work item list hides inactive jobs by default and shows history as read-only', async () => {

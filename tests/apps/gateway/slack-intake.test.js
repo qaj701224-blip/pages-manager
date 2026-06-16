@@ -98,7 +98,14 @@ test('classifies status command without job id as a friendly reply', () => {
 });
 
 test('classifies bulk destructive issue requests as unsupported', () => {
-  for (const text of ['关闭我名下的所有 issue', '把我的全部 PR 都关掉', '取消所有发布任务', 'delete all my issues']) {
+  for (const text of [
+    '关闭我名下的所有 issue',
+    '把我的全部 PR 都关掉',
+    '取消所有发布任务',
+    '把我名下项目 issue 全部归档',
+    'archive all my PRs',
+    'delete all my issues',
+  ]) {
     const result = classifySlackIntake(body(text));
 
     assert.equal(result.action, 'unsupported_destructive_request');
