@@ -16,7 +16,12 @@ import {
 } from '../github/review.js';
 import { readJson } from '../http/body.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../slack/http.js';
-import { classifySlackIntake, parseSlackPrNumber, slackStatusReply } from '../slack/intake.js';
+import {
+  classifySlackIntake,
+  isUnsupportedBulkDestructiveRequest,
+  parseSlackPrNumber,
+  slackStatusReply,
+} from '../slack/intake.js';
 import {
   addSlackReaction,
   buildSlackAgentReplyBlocks,
@@ -1594,6 +1599,14 @@ function shouldCloseSlackSession(intake, slackAgentAnalysis) {
   return intake.action === 'close_session' || slackAgentAnalysis?.intent === 'close_session';
 }
 
+function shouldRejectUnsupportedDestructiveSlackTurn(intake, slackAgentAnalysis) {
+  return (
+    intake.action === 'unsupported_destructive_request' ||
+    UNSUPPORTED_DESTRUCTIVE_INTENTS.has(slackAgentAnalysis?.intent) ||
+    isUnsupportedBulkDestructiveRequest(intake.text)
+  );
+}
+
 function shouldCreateSlackJob(intake, slackAgentAnalysis) {
   if (!slackAgentAnalysis) return Boolean(intake.shouldCreateJob);
   if (slackAgentAnalysis.needsClarification) return false;
@@ -2678,7 +2691,7 @@ async function processSlackEventBody(body, env, options = {}) {
         );
       }
 
-      if (UNSUPPORTED_DESTRUCTIVE_INTENTS.has(slackAgentAnalysis?.intent)) {
+      if (shouldRejectUnsupportedDestructiveSlackTurn(intake, slackAgentAnalysis)) {
         return respond(
           handleSlackAgentNonPublishingTurn({
             store,
