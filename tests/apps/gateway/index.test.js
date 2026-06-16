@@ -2087,6 +2087,114 @@ test('Slack work item list hides inactive jobs by default and shows history as r
   assert.match(staleSelect.text, /不能继续修改/);
 });
 
+test('Slack Agent list intent preserves history scope from free-form user text', async () => {
+  const app = createGatewayApp();
+  const active = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-history-active-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'active',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Active profile page',
+    summary: '可继续任务',
+  }).job;
+  app.store.patchJob(active.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+  });
+  const closed = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-history-closed-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed profile page',
+    summary: '已关闭任务',
+  }).job;
+  app.store.patchJob(closed.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    errorMessage: 'GitHub issue #66 已关闭，发布任务已停止。',
+    issueNumber: 66,
+    issueUrl: 'https://github.example/org/pages-manager/issues/66',
+    prNumber: 69,
+    prUrl: 'https://github.example/org/pages-manager/pull/69',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-history-work-items-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000136',
+          text: '历史的所有 PR 或者 issue 有哪些',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'list_work_items',
+                visibleReply: '我来查看历史的所有 PR 和 issue。',
+                summary: '查询历史的所有 PR 和 issue。',
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'list_work_items',
+                    visibleReply: '我来查看历史的所有 PR 和 issue。',
+                    summary: '查询历史的所有 PR 和 issue。',
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const blocks = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.jobs.length, 2);
+  assert.match(blocks, /Issue 已关闭/);
+  assert.match(blocks, /#69/);
+  assert.match(blocks, /重新打开 Issue/);
+});
+
 test('Slack work item list reconciles GitHub closed issues before showing actions', async () => {
   const app = createGatewayApp();
   const job = app.store.createJob({
