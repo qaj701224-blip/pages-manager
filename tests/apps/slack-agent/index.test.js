@@ -49,6 +49,14 @@ describe('slack agent', () => {
     assert.equal(analysis.needsClarification, true);
   });
 
+  it('does not turn bulk destructive issue requests into work item lists', () => {
+    const analysis = analyzeSlackRequirement({ text: '关闭我名下的所有 issue' });
+
+    assert.equal(analysis.intent, 'unsupported_destructive_request');
+    assert.equal(analysis.needsClarification, false);
+    assert.match(analysis.clarifyingQuestion, /不能批量关闭或删除/);
+  });
+
   it('requires the internal token when configured', async () => {
     const app = createSlackAgentApp({ config: { sharedSecret: 'secret' } });
     const response = await app.fetch(

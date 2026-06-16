@@ -3,6 +3,22 @@ const SITE_KEYWORDS = /(页面|网页|网站|主页|profile|portfolio|site|page|
 const LIST_WORK_ITEMS_RE =
   /^(我的|查看|看看|列出|查询).*(PR|pr|任务|发布任务|网站|项目)|^(PR|pr|任务|发布任务|网站|项目)(列表|清单)$/i;
 const SWITCH_WORK_ITEM_RE = /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:\bPR\s*#?|#)\d{1,8}\b/i;
+const UNSUPPORTED_DESTRUCTIVE_INTENT = 'unsupported_destructive_request';
+const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
+  [
+    '(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
+    '(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务).*(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel)',
+  ].join('|'),
+  'i'
+);
+
+function isUnsupportedBulkDestructiveRequest(text = '') {
+  return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
+}
+
+function unsupportedBulkDestructiveQuestion() {
+  return '我不能批量关闭或删除你名下的 GitHub issue / PR / 发布任务。请先查看可继续任务，或明确指定一个 PR / issue。';
+}
 
 export function normalizeText(value = '') {
   return String(value).replaceAll(/\s+/g, ' ').trim();
@@ -35,14 +51,24 @@ export function sessionContextFromInput(input = {}) {
 export function analyzeSlackRequirementDeterministic(input = {}) {
   const event = input.event || {};
   const text = normalizeText(input.text || event.text || input.summary || '');
-  const shouldListWorkItems = LIST_WORK_ITEMS_RE.test(text);
+  const isUnsupportedBulkDestructive = isUnsupportedBulkDestructiveRequest(text);
+  const shouldListWorkItems = !isUnsupportedBulkDestructive && LIST_WORK_ITEMS_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
   const shouldCreateOrUpdate =
-    !shouldListWorkItems && !shouldSwitchWorkItem && (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
+    !isUnsupportedBulkDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const intent = shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
 
   return {
-    intent: shouldSwitchWorkItem ? 'switch_work_item' : shouldListWorkItems ? 'list_work_items' : intent,
+    intent: isUnsupportedBulkDestructive
+      ? UNSUPPORTED_DESTRUCTIVE_INTENT
+      : shouldSwitchWorkItem
+        ? 'switch_work_item'
+        : shouldListWorkItems
+          ? 'list_work_items'
+          : intent,
     employeeSlug: input.employeeSlug || input.employee_slug || 'smoke',
     siteSlug: input.siteSlug || input.site_slug || 'profile',
     title: input.title || titleFromText(text),
@@ -50,7 +76,8 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
     sourceMessages: input.sourceMessages || input.source_messages || [],
     sessionContext: sessionContextFromInput(input),
-    needsClarification: !shouldListWorkItems && !shouldSwitchWorkItem && intent === 'clarify',
+    needsClarification: !isUnsupportedBulkDestructive && !shouldListWorkItems && !shouldSwitchWorkItem && intent === 'clarify',
+    clarifyingQuestion: isUnsupportedBulkDestructive ? unsupportedBulkDestructiveQuestion() : undefined,
   };
 }
 
@@ -113,6 +140,11 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     '如果用户询问“我的 PR / 我的任务 / 发布任务列表”，intent 返回 list_work_items，不要新建任务。',
     '如果用户明确说“继续 PR #数字 / 切换到 #数字”，intent 返回 switch_work_item，不要新建任务。',
     [
+      '如果用户要求关闭、删除、取消“所有 / 全部 / 我名下 / 我的” GitHub issue、PR 或发布任务，',
+      '这是危险批量操作；intent 必须返回 unsupported_destructive_request，不要返回 list_work_items，不要假装已执行。',
+    ].join(''),
+    '关闭 Slack 会话只适用于“关闭会话 / 结束对话 / 这个 preview 不用了”这类当前上下文操作；不要把“关闭所有 issue”理解为 close_session。',
+    [
       'summary、title、clarifyingQuestion 是给用户看的文案，必须简短清楚；禁止包含 activeJobId、activeIssueNumber、',
       'activePrNumber、activePreviewUrl、previewUrl、issueLinkCount、slackSessionId、sessionKey、job id、gateway 派生规则等内部实现细节。',
     ].join(''),
@@ -127,7 +159,8 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     ].join(' '),
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
-      'list_work_items, switch_work_item, status_query, cancel_request, close_session, confirm_preview, clarify。',
+      'list_work_items, switch_work_item, status_query, cancel_request, close_session,',
+      'unsupported_destructive_request, confirm_preview, clarify。',
     ].join(' '),
   ].join('\n');
 
