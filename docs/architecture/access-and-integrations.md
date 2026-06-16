@@ -46,6 +46,8 @@ Slack bot 全平台统一一个：
 - `apps/slack-agent` 负责对话理解。
 - `apps/slack-notifier` 负责 Slack Web API 输出。
 
+Slack runtime 是 `pages-manager` 的常驻平台服务，组件是 `pages-gateway`、`apps/slack-agent` 和 `apps/slack-notifier`。Slack 平台通过 HTTPS event / interaction 打到 `pages-gateway`，gateway 校验签名和幂等后再调用 Slack Agent。详细拓扑见 [slack-platform-runtime.md](./slack-platform-runtime.md)。
+
 Slack bot 不能绕过 gateway 创建 PR、合并或部署。Slack actor 必须通过 `(team_id, slack_user_id)` 绑定到内部用户 / 员工身份。
 
 ## GitHub
