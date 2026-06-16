@@ -189,6 +189,97 @@ test('Slack immediate replies replace working reaction with done reaction', asyn
   assert.equal(deliveries[0].payloadRedacted.workingReaction.doneReaction, 'done-e');
 });
 
+test('Slack skipped working reaction is not treated as active', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-reaction-skipped',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000101',
+          text: 'ping',
+        },
+      }),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      SLACK_REACTION_ON_RECEIVE: 'true',
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        notifierCalls.push({ url: String(url), request });
+        if (String(url).endsWith('/reaction')) {
+          return new Response(JSON.stringify({ ok: true, skipped: true, reason: 'no_target' }));
+        }
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000101' }));
+      },
+    }
+  );
+  const body = await json(response);
+  const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-reaction-skipped' }).deliveries;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'ping');
+  assert.deepEqual(
+    notifierCalls.map((call) => new URL(call.url).pathname),
+    ['/internal/slack-notifier/reaction', '/internal/slack-notifier/message']
+  );
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'failed');
+});
+
+test('Slack working reaction errors do not block message processing', async () => {
+  const app = createGatewayApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-reaction-error-continues',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000102',
+          text: 'ping',
+        },
+      }),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      SLACK_REACTION_ON_RECEIVE: 'true',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        if (String(url).endsWith('/reactions.add')) {
+          throw new Error('reaction network down');
+        }
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000102' }));
+      },
+    }
+  );
+  const body = await json(response);
+  const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-reaction-error-continues' }).deliveries;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'ping');
+  assert.deepEqual(
+    slackRequests.map((call) => call.url),
+    ['https://slack.com/api/reactions.add', 'https://slack.com/api/chat.postMessage']
+  );
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'failed');
+});
+
 test('preview completion replaces pending Slack working reactions with done reaction', async () => {
   const app = createGatewayApp();
   const jobId = await moveJobToPrCreated(app, { prNumber: 77, headSha: 'b'.repeat(40) });
@@ -799,6 +890,603 @@ test('Slack free-form turn asks for confirmation before creating an issue', asyn
   assert.equal(app.store.jobs.size, 0);
 });
 
+test('Slack free-form turn uses Slack Agent turn and updates one agent reply message', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const slackCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-card-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000113',
+          text: '我想做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        const payload = JSON.parse(request.body);
+        assert.equal(payload.agentRunId, payload.agentRun.id);
+        assert.equal(payload.slackSessionId, payload.slackSession.id);
+        assert.equal(payload.messageText, '我想做一个个人主页，突出项目经历和联系方式');
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              visibleText: '我已整理好这轮需求。',
+              events: [
+                { type: 'reply_started', sequence: 1, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+                {
+                  type: 'reply_delta',
+                  sequence: 2,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  text: '我已整理好这轮需求。',
+                },
+                {
+                  type: 'analysis_final',
+                  sequence: 3,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'create_or_update_site',
+                    siteSlug: 'profile',
+                    title: '个人主页',
+                    summary: '突出项目经历和联系方式。',
+                    needsClarification: false,
+                  },
+                },
+                { type: 'reply_completed', sequence: 4, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      async SLACK_FETCH(url, request) {
+        slackCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000113' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const postPayload = JSON.parse(slackCalls[0].request.body);
+  const updatePayload = JSON.parse(slackCalls[1].request.body);
+
+  assert.equal(response.status, 200);
+  assert.equal(agentCalls.length, 1);
+  assert.equal(agentCalls[0].url, 'http://slack-agent.test/internal/slack-agent/turn');
+  assert.equal(agentCalls[0].request.headers['X-Pages-Slack-Agent-Token'], 'agent-secret');
+  assert.equal(body.action, 'confirm_before_issue');
+  assert.equal(body.noReply, true);
+  assert.equal(body.agentReplyNotification.action, 'updated');
+  assert.equal(slackCalls.length, 2);
+  assert.match(slackCalls[0].url, /chat\.postMessage$/);
+  assert.match(slackCalls[1].url, /chat\.update$/);
+  assert.equal(postPayload.thread_ts, '1710000000.000113');
+  assert.equal(postPayload.blocks[0].type, 'section');
+  assert.ok(!postPayload.blocks.some((block) => block.type === 'header'));
+  assert.equal(updatePayload.ts, '1710000001.000113');
+  assert.match(updatePayload.text, /^<@U1>/);
+  assert.match(JSON.stringify(updatePayload.blocks), /确认创建发布任务/);
+  assert.ok(updatePayload.blocks.some((block) => block.type === 'header'));
+  assert.equal(app.store.slackAgentReplyMessages.size, 1);
+  assert.equal(app.store.agentRunEvents.size, 6);
+  assert.deepEqual(
+    [...app.store.agentRunEvents.values()].map((event) => event.type),
+    ['slack_reply_posted', 'reply_started', 'reply_delta', 'analysis_final', 'reply_completed', 'slack_reply_updated']
+  );
+});
+
+test('Slack Agent turn consumes ndjson chunks and updates one reply message progressively', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const slackCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-ndjson-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000118',
+          text: '做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_REPLY_UPDATE_INTERVAL_MS: '0',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        const payload = JSON.parse(request.body);
+        const events = [
+          { type: 'reply_started', sequence: 1, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+          {
+            type: 'reply_delta',
+            sequence: 2,
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            text: '我先整理一下：',
+          },
+          {
+            type: 'reply_delta',
+            sequence: 3,
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            text: '这是一个突出项目经历和联系方式的个人主页。',
+          },
+          {
+            type: 'analysis_final',
+            sequence: 4,
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            analysis: {
+              intent: 'create_or_update_site',
+              siteSlug: 'profile',
+              title: '个人主页',
+              summary: '突出项目经历和联系方式。',
+              needsClarification: false,
+            },
+          },
+          { type: 'reply_completed', sequence: 5, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+        ];
+        return new Response(`${events.map((event) => JSON.stringify(event)).join('\n')}\n`, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+        });
+      },
+      async SLACK_FETCH(url, request) {
+        slackCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000118' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updatePayloads = slackCalls
+    .filter((call) => call.url.endsWith('/chat.update'))
+    .map((call) => JSON.parse(call.request.body));
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'confirm_before_issue');
+  assert.equal(body.noReply, true);
+  assert.match(agentCalls[0].request.headers.Accept, /application\/x-ndjson/);
+  assert.equal(slackCalls.length, 4);
+  assert.match(slackCalls[0].url, /chat\.postMessage$/);
+  assert.equal(updatePayloads.length, 3);
+  assert.match(updatePayloads[0].text, /我先整理一下/);
+  assert.equal(updatePayloads[0].blocks[0].type, 'section');
+  assert.ok(!updatePayloads[0].blocks.some((block) => block.type === 'header'));
+  assert.match(updatePayloads[1].text, /突出项目经历和联系方式/);
+  assert.equal(updatePayloads[1].blocks[0].type, 'section');
+  assert.ok(!updatePayloads[1].blocks.some((block) => block.type === 'header'));
+  assert.match(JSON.stringify(updatePayloads[2].blocks), /确认创建发布任务/);
+  assert.ok(updatePayloads[2].blocks.some((block) => block.type === 'header'));
+  assert.deepEqual(
+    [...app.store.agentRunEvents.values()].map((event) => event.type),
+    [
+      'slack_reply_posted',
+      'reply_started',
+      'reply_delta',
+      'slack_reply_updated',
+      'reply_delta',
+      'slack_reply_updated',
+      'analysis_final',
+      'reply_completed',
+      'slack_reply_updated',
+    ]
+  );
+});
+
+test('Slack Agent reuses one agent reply card across consecutive DM turns', async () => {
+  const app = createGatewayApp();
+  const slackCalls = [];
+  const agentSessionIds = [];
+  const env = {
+    SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+    SLACK_BOT_TOKEN: 'xoxb-test',
+    async SLACK_AGENT_FETCH(_url, request) {
+      const payload = JSON.parse(request.body);
+      agentSessionIds.push(payload.slackSessionId);
+      const secondTurn = /联系方式/.test(payload.messageText);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          turn: {
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            events: [
+              { type: 'reply_started', sequence: 1, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+              {
+                type: 'reply_delta',
+                sequence: 2,
+                agentRunId: payload.agentRunId,
+                slackSessionId: payload.slackSessionId,
+                text: secondTurn ? '我会把联系方式补进需求。' : '我已整理好这轮需求。',
+              },
+              {
+                type: 'analysis_final',
+                sequence: 3,
+                agentRunId: payload.agentRunId,
+                slackSessionId: payload.slackSessionId,
+                analysis: {
+                  intent: 'create_or_update_site',
+                  siteSlug: 'profile',
+                  title: '个人主页',
+                  summary: secondTurn ? '补充联系方式。' : '突出项目经历。',
+                  needsClarification: false,
+                },
+              },
+              { type: 'reply_completed', sequence: 4, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+            ],
+          },
+        }),
+        { status: 200 }
+      );
+    },
+    async SLACK_FETCH(url, request) {
+      slackCalls.push({ url: String(url), request });
+      return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000120' }), { status: 200 });
+    },
+  };
+
+  const first = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-agent-reuse-1',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.000120',
+            text: '做一个个人主页，突出项目经历',
+          },
+        }),
+      }),
+      env
+    )
+  );
+  const second = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-agent-reuse-2',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000002.000120',
+            text: '再补充联系方式',
+          },
+        }),
+      }),
+      env
+    )
+  );
+
+  const postCount = slackCalls.filter((call) => call.url.endsWith('/chat.postMessage')).length;
+  const updatePayloads = slackCalls
+    .filter((call) => call.url.endsWith('/chat.update'))
+    .map((call) => JSON.parse(call.request.body));
+
+  assert.equal(first.slackSessionId, second.slackSessionId);
+  assert.deepEqual(agentSessionIds, [first.slackSessionId, first.slackSessionId]);
+  assert.equal(postCount, 1);
+  assert.equal(updatePayloads.length, 3);
+  assert.ok(updatePayloads.every((payload) => payload.ts === '1710000001.000120'));
+  assert.equal(app.store.slackAgentReplyMessages.size, 2);
+});
+
+test('Slack Agent turn falls back to a plain reply when the reply placeholder is skipped', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-card-skipped-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000117',
+          text: '我想做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'notifier-secret',
+      async SLACK_AGENT_FETCH(url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'create_or_update_site',
+                    siteSlug: 'profile',
+                    title: '个人主页',
+                    summary: '突出项目经历和联系方式。',
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        notifierCalls.push({ url: String(url), request });
+        if (String(url).endsWith('/agent-reply/start')) {
+          return new Response(JSON.stringify({ ok: true, skipped: true, reason: 'no_target' }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000002.000117' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'confirm_before_issue');
+  assert.notEqual(body.noReply, true);
+  assert.equal(app.store.slackAgentReplyMessages.size, 0);
+  assert.deepEqual(
+    notifierCalls.map((call) => new URL(call.url).pathname),
+    ['/internal/slack-notifier/agent-reply/start', '/internal/slack-notifier/message']
+  );
+});
+
+test('Slack Agent turn failure updates the in-thread reply message', async () => {
+  const app = createGatewayApp();
+  const slackCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-card-failed-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000114',
+          text: '我想做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_AGENT_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'model timeout' }), { status: 502 });
+      },
+      async SLACK_FETCH(url, request) {
+        slackCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000114' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updatePayload = JSON.parse(slackCalls[1].request.body);
+  const replyMessage = [...app.store.slackAgentReplyMessages.values()][0];
+  const agentRun = [...app.store.agentRuns.values()][0];
+  const eventTypes = [...app.store.agentRunEvents.values()].map((event) => event.type);
+
+  assert.equal(response.status, 502);
+  assert.equal(body.error, 'model timeout');
+  assert.equal(slackCalls.length, 2);
+  assert.match(slackCalls[0].url, /chat\.postMessage$/);
+  assert.match(slackCalls[1].url, /chat\.update$/);
+  assert.equal(updatePayload.ts, '1710000001.000114');
+  assert.match(updatePayload.text, /^<@U1>/);
+  assert.match(JSON.stringify(updatePayload.blocks), /处理失败/);
+  assert.equal(replyMessage.status, 'failed');
+  assert.equal(agentRun.status, 'failed');
+  assert.deepEqual(eventTypes, ['slack_reply_posted', 'slack_reply_failed']);
+});
+
+test('Slack Agent ndjson reply_failed updates the in-thread reply message once', async () => {
+  const app = createGatewayApp();
+  const slackCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-card-ndjson-failed-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000119',
+          text: '我想做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_AGENT_FETCH(url, request) {
+        const payload = JSON.parse(request.body);
+        const events = [
+          { type: 'reply_started', sequence: 1, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+          {
+            type: 'reply_failed',
+            sequence: 2,
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            text: '模型暂时不可用。',
+            error: 'model unavailable',
+          },
+        ];
+        return new Response(`${events.map((event) => JSON.stringify(event)).join('\n')}\n`, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+        });
+      },
+      async SLACK_FETCH(url, request) {
+        slackCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000119' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updateCalls = slackCalls.filter((call) => call.url.endsWith('/chat.update'));
+  const eventTypes = [...app.store.agentRunEvents.values()].map((event) => event.type);
+
+  assert.equal(response.status, 502);
+  assert.equal(body.error, 'model unavailable');
+  assert.equal(slackCalls.filter((call) => call.url.endsWith('/chat.postMessage')).length, 1);
+  assert.equal(updateCalls.length, 1);
+  assert.deepEqual(eventTypes, ['slack_reply_posted', 'reply_started', 'reply_failed', 'slack_reply_failed']);
+});
+
+test('Slack Agent turn failure replaces the working reaction with a failed reaction', async () => {
+  const app = createGatewayApp();
+  const slackCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-reaction-failed-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000116',
+          text: '我想做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      SLACK_REACTION_ON_RECEIVE: 'true',
+      SLACK_WORKING_REACTION: 'eyes',
+      SLACK_FAILED_REACTION: 'failed-e',
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_AGENT_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'model timeout' }), { status: 502 });
+      },
+      async SLACK_FETCH(url, request) {
+        slackCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000116' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const reactionCalls = slackCalls
+    .map((call) => ({ url: call.url, payload: JSON.parse(call.request.body) }))
+    .filter((call) => call.url.includes('/reactions.'));
+  const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-agent-turn-reaction-failed-1' }).deliveries;
+
+  assert.equal(response.status, 502);
+  assert.equal(body.error, 'model timeout');
+  assert.deepEqual(
+    reactionCalls.map((call) => [call.url, call.payload.name]),
+    [
+      ['https://slack.com/api/reactions.add', 'eyes'],
+      ['https://slack.com/api/reactions.remove', 'eyes'],
+      ['https://slack.com/api/reactions.add', 'failed-e'],
+    ]
+  );
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'failed');
+  assert.equal(deliveries[0].payloadRedacted.workingReaction.doneReaction, 'failed-e');
+});
+
+test('Slack Agent malformed turn responses fail visibly instead of recording a vague reply', async () => {
+  const app = createGatewayApp();
+  const slackCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-card-malformed-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000115',
+          text: '我想做一个个人主页，突出项目经历和联系方式',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_AGENT_FETCH() {
+        return new Response(JSON.stringify({ ok: true, turn: { events: [] } }), { status: 200 });
+      },
+      async SLACK_FETCH(url, request) {
+        slackCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000115' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updatePayload = JSON.parse(slackCalls[1].request.body);
+
+  assert.equal(response.status, 502);
+  assert.equal(body.error, 'Slack Agent turn response is missing analysis');
+  assert.equal(slackCalls.length, 2);
+  assert.match(updatePayload.text, /^<@U1>/);
+  assert.match(JSON.stringify(updatePayload.blocks), /处理失败/);
+});
+
 test('Slack confirmation draft hides internal session and job context from users', async () => {
   const app = createGatewayApp();
   const response = await app.fetch(
@@ -958,6 +1646,7 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
   });
   const formBody = new URLSearchParams({ payload }).toString();
   const workerStarts = [];
+  const slackRequests = [];
 
   const confirmResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/interactions', {
@@ -971,7 +1660,26 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
     }),
     {
       SLACK_SIGNING_SECRET: secret,
+      SLACK_BOT_TOKEN: 'xoxb-test',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        if (String(url).endsWith('/users.info')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              user: {
+                id: 'U1',
+                team_id: 'T1',
+                name: 'alice',
+                profile: { display_name: 'Alice', email: 'alice@example.test' },
+              },
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000109' }), { status: 200 });
+      },
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -983,11 +1691,103 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
 
   assert.equal(confirmResponse.status, 200);
   assert.equal(confirmed.created, true);
-  assert.match(jobBody.job.employeeSlug, /^u1-[a-z0-9]{6}$/);
+  assert.match(jobBody.job.employeeSlug, /^alice-[a-z0-9]{6}$/);
   assert.notEqual(jobBody.job.employeeSlug, 'alice');
   assert.equal(jobBody.job.siteSlug, 'brand');
   assert.equal(jobBody.job.summary, '用户希望创建一个清爽可信的个人品牌页面。');
   assert.equal(workerStarts.length, 1);
+  const chatRequests = slackRequests.filter((call) => /\/chat\.(postMessage|update)$/.test(call.url));
+  assert.equal(chatRequests.length, 2);
+  assert.equal(chatRequests[0].url, 'https://slack.com/api/chat.postMessage');
+  assert.equal(chatRequests[1].url, 'https://slack.com/api/chat.update');
+  const updatePayload = JSON.parse(chatRequests[1].request.body);
+  assert.equal(updatePayload.channel, 'D1');
+  assert.equal(updatePayload.ts, '1710000000.000109');
+  assert.match(JSON.stringify(updatePayload.blocks), /发布需求已确认/);
+  assert.doesNotMatch(JSON.stringify(updatePayload.blocks), /pages_confirm_issue/);
+});
+
+test('Slack continue modifying button updates the draft card without creating an issue', async () => {
+  const app = createGatewayApp();
+  const draftResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-freeform-continue-card-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000119',
+          text: '做一个个人网站，先突出项目经历',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              siteSlug: 'profile',
+              title: '个人网站',
+              summary: '用户希望创建突出项目经历的个人网站。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const draft = await json(draftResponse);
+  const secret = 'slack-signing-secret';
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const payload = JSON.stringify({
+    type: 'block_actions',
+    team: { id: 'T1' },
+    user: { id: 'U1' },
+    channel: { id: 'D1' },
+    message: { ts: '1710000000.000119' },
+    actions: [{ action_id: 'pages_continue_modifying', value: draft.slackSessionId }],
+  });
+  const formBody = new URLSearchParams({ payload }).toString();
+  const slackRequests = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Slack-Request-Timestamp': timestamp,
+        'X-Slack-Signature': await slackSignature(secret, timestamp, formBody),
+      },
+      body: formBody,
+    }),
+    {
+      SLACK_SIGNING_SECRET: secret,
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000000.000119' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updatePayload = JSON.parse(slackRequests[0].request.body);
+
+  assert.equal(response.status, 200);
+  assert.match(body.text, /继续回复/);
+  assert.equal(app.store.jobs.size, 0);
+  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.update');
+  assert.match(JSON.stringify(updatePayload.blocks), /继续补充需求/);
+  assert.match(JSON.stringify(updatePayload.blocks), /等待补充/);
+  assert.match(JSON.stringify(updatePayload.blocks), /pages_confirm_issue/);
 });
 
 test('Slack work item list only shows current user publishing jobs', async () => {
