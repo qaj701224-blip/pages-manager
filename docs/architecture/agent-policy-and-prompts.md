@@ -70,7 +70,7 @@ prompts/
 Slack Agent 负责“人和需求”：
 
 - 与用户在同一 Slack DM 或 thread 中持续多轮对话。
-- 支持完全自然语言输入；`/issue`、`issue:`、`page:` 只能作为兼容入口，不能作为必要入口。
+- 支持完全自然语言输入；`issue:`、`page:`、`site:` 这类前缀只能作为测试便捷入口，不能作为正式产品的必要入口。
 - 判断是否建议新建 issue。
 - 判断是否续接已有 issue / PR / preview。
 - 整理 Slack thread 成结构化需求。
