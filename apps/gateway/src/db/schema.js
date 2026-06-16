@@ -285,7 +285,7 @@ export const agentRunEvents = mysqlTable(
     createdAt: createdAt(),
   },
   (table) => ({
-    dedupeIdx: index('agent_run_events_dedupe_idx').on(table.dedupeKey),
+    dedupeUk: uniqueIndex('agent_run_events_dedupe_uk').on(table.dedupeKey),
     jobIdx: index('agent_run_events_job_idx').on(table.publishingJobId, table.createdAt),
     runIdx: index('agent_run_events_run_idx').on(table.agentRunId, table.createdAt),
   })
