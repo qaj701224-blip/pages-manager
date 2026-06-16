@@ -27,6 +27,30 @@ const CALLBACK_BRIDGES = {
 };
 
 const REVIEW_ACTIVE_JOB_STATUSES = new Set(['pr_created', 'reviewing', 'changes_requested', 'fixing', 'previewing']);
+const SLACK_ACTIVE_JOB_STATUSES = new Set([
+  'received',
+  'summarizing',
+  'issue_creating',
+  'issue_created',
+  'indexing',
+  'generating_page',
+  'patch_generated',
+  'branch_committed',
+  'pr_created',
+  'reviewing',
+  'changes_requested',
+  'fixing',
+  'previewing',
+  'preview_deployed',
+]);
+
+function fieldOrExisting(input, existing, key) {
+  return Object.hasOwn(input, key) ? input[key] : (existing?.[key] ?? null);
+}
+
+function jobKeepsSlackSessionActive(job = {}) {
+  return SLACK_ACTIVE_JOB_STATUSES.has(job.status);
+}
 
 function shaMatches(left, right) {
   if (!left || !right) return false;
@@ -632,12 +656,12 @@ export class GatewayStoreFixture {
       dmChannelId: input.dmChannelId ?? existing?.dmChannelId ?? null,
       surfaceContext: input.surfaceContext || existing?.surfaceContext || {},
       primarySlackUserId: input.primarySlackUserId,
-      ownerScopeId: input.ownerScopeId ?? existing?.ownerScopeId ?? null,
-      activeJobId: input.activeJobId ?? existing?.activeJobId ?? null,
-      activeIssueNumber: input.activeIssueNumber ?? existing?.activeIssueNumber ?? null,
-      activePrNumber: input.activePrNumber ?? existing?.activePrNumber ?? null,
-      activePreviewUrl: input.activePreviewUrl ?? existing?.activePreviewUrl ?? null,
-      activeContextExpiresAt: input.activeContextExpiresAt ?? existing?.activeContextExpiresAt ?? null,
+      ownerScopeId: fieldOrExisting(input, existing, 'ownerScopeId'),
+      activeJobId: fieldOrExisting(input, existing, 'activeJobId'),
+      activeIssueNumber: fieldOrExisting(input, existing, 'activeIssueNumber'),
+      activePrNumber: fieldOrExisting(input, existing, 'activePrNumber'),
+      activePreviewUrl: fieldOrExisting(input, existing, 'activePreviewUrl'),
+      activeContextExpiresAt: fieldOrExisting(input, existing, 'activeContextExpiresAt'),
       status: input.status || existing?.status || 'active',
       lastIntent: input.lastIntent || existing?.lastIntent || null,
       lastActiveAt: input.lastActiveAt || nowIso,
@@ -753,15 +777,17 @@ export class GatewayStoreFixture {
 
     const currentSession = this.getSlackSession(slackSessionId);
     if (currentSession) {
+      const active = jobKeepsSlackSessionActive(job);
       this.upsertSlackSession(
         {
           ...currentSession,
           status: 'active',
           closedAt: null,
-          activeJobId: job.id,
-          activeIssueNumber: link.issueNumber,
-          activePrNumber: link.prNumber,
-          activePreviewUrl: link.previewUrl,
+          activeJobId: active ? job.id : null,
+          activeIssueNumber: active ? link.issueNumber : null,
+          activePrNumber: active ? link.prNumber : null,
+          activePreviewUrl: active ? link.previewUrl : null,
+          activeContextExpiresAt: active ? currentSession.activeContextExpiresAt : null,
         },
         now
       );
@@ -885,9 +911,14 @@ export class GatewayStoreFixture {
     return run;
   }
 
+  getAgentRun(agentRunId) {
+    return this.agentRuns.get(agentRunId) || null;
+  }
+
   completeAgentRun(agentRunId, patch = {}, now = new Date()) {
     const existing = this.agentRuns.get(agentRunId);
     if (!existing) return null;
+    if (existing.status !== 'running') return existing;
     const updated = {
       ...existing,
       ...patch,
@@ -902,6 +933,7 @@ export class GatewayStoreFixture {
   failAgentRun(agentRunId, errorCode, errorMessage, now = new Date()) {
     const existing = this.agentRuns.get(agentRunId);
     if (!existing) return null;
+    if (existing.status !== 'running') return existing;
     const updated = {
       ...existing,
       status: 'failed',
@@ -912,6 +944,10 @@ export class GatewayStoreFixture {
     };
     this.agentRuns.set(agentRunId, updated);
     return updated;
+  }
+
+  clearSlackAgentLeaseForSession() {
+    return true;
   }
 
   acquireSlackAgentLease(slackSessionId, config, now = new Date()) {
