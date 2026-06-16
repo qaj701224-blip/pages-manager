@@ -98,6 +98,10 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
     siteSlug: stringOrFallback(modelAnalysis.siteSlug || modelAnalysis.site_slug, fallback.siteSlug),
     title: stringOrFallback(modelAnalysis.title, fallback.title),
     summary: stringOrFallback(modelAnalysis.summary || modelAnalysis.brief, fallback.summary),
+    visibleReply: stringOrFallback(
+      modelAnalysis.visibleReply || modelAnalysis.visible_reply,
+      fallback.visibleReply || fallback.visible_reply || ''
+    ),
     approvalMode: stringOrFallback(modelAnalysis.approvalMode || modelAnalysis.approval_mode, fallback.approvalMode),
     sourceMessages: arrayOrFallback(modelAnalysis.sourceMessages || modelAnalysis.source_messages, fallback.sourceMessages),
     clarifyingQuestion: stringOrFallback(
@@ -117,6 +121,62 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
   };
 
   return normalized;
+}
+
+export function visibleSlackAgentReply(analysis = {}) {
+  const intent = analysis.intent || 'clarify';
+  if (analysis.visibleReply || analysis.visible_reply) return analysis.visibleReply || analysis.visible_reply;
+
+  if (analysis.needsClarification) {
+    return (
+      analysis.clarifyingQuestion ||
+      analysis.clarifying_question ||
+      analysis.summary ||
+      '我需要再确认一个信息，然后再继续整理需求。'
+    );
+  }
+
+  if (intent === UNSUPPORTED_DESTRUCTIVE_INTENT) {
+    return analysis.clarifyingQuestion || analysis.summary || unsupportedBulkDestructiveQuestion();
+  }
+
+  if (intent === 'list_work_items') return '我来整理你当前可以继续处理的发布任务。';
+  if (intent === 'switch_work_item') return '我会尝试切换到你指定的任务。';
+  if (intent === 'status_query') return '我来查询当前发布进度。';
+  if (intent === 'close_session') return '收到，我会关闭当前会话。';
+  if (intent === 'cancel_request') return '收到，我先记录取消意图。';
+
+  if (['create_or_update_site', 'modify_existing_preview', 'append_requirement'].includes(intent)) {
+    return analysis.summary ? `我已整理好这轮需求：${analysis.summary}` : '我已整理好这轮需求。';
+  }
+
+  return analysis.summary || '我已记录这轮消息。';
+}
+
+export function buildSlackAgentTurn(input = {}, analysis = {}) {
+  const agentRun = input.agentRun || {};
+  const slackSession = input.slackSession || {};
+  const agentRunId = input.agentRunId || input.agent_run_id || agentRun.id || null;
+  const slackSessionId = input.slackSessionId || input.slack_session_id || slackSession.id || null;
+  const visibleText = visibleSlackAgentReply(analysis);
+  const base = {
+    agentRunId,
+    slackSessionId,
+    visibleToUser: true,
+  };
+
+  return {
+    agentRunId,
+    slackSessionId,
+    visibleText,
+    events: [
+      { ...base, type: 'reply_started', sequence: 1 },
+      { ...base, type: 'reply_delta', sequence: 2, text: visibleText },
+      { ...base, type: 'analysis_final', sequence: 3, analysis },
+      { ...base, type: 'reply_completed', sequence: 4 },
+    ],
+    analysis,
+  };
 }
 
 export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
@@ -154,9 +214,13 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     '当需求还不完整时，intent 可以是 create_or_update_site，但 needsClarification 应为 true，并用 clarifyingQuestion 给出一个简短问题。',
     '必须只返回 JSON object，不要返回 Markdown，不要包裹代码块。',
     [
-      'JSON 字段：intent, employeeSlug, siteSlug, title, summary, approvalMode,',
+      'JSON 字段：visibleReply, intent, employeeSlug, siteSlug, title, summary, approvalMode,',
       'needsClarification, clarifyingQuestion, sourceMessages。',
     ].join(' '),
+    [
+      'visibleReply 是 Slack 用户可见回复，必须自然、简短、可直接展示；',
+      '请把 visibleReply 放在 JSON object 的第一个字段，便于平台做语义分块准流式输出。',
+    ].join(''),
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
       'list_work_items, switch_work_item, status_query, cancel_request, close_session,',

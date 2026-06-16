@@ -1,8 +1,8 @@
 import { jsonResponse } from '@xd/worker-kit';
 
-import { analyzeSlackRequirementDeterministic } from './analysis.js';
+import { analyzeSlackRequirementDeterministic, buildSlackAgentTurn } from './analysis.js';
 import { readSlackAgentConfig } from './config.js';
-import { analyzeSlackRequirementWithProvider } from './model-provider.js';
+import { analyzeSlackRequirementWithProvider, streamSlackAgentTurnEvents } from './model-provider.js';
 
 async function readJson(request) {
   const text = await request.text();
@@ -32,6 +32,35 @@ export function analyzeSlackRequirement(input = {}) {
   return analyzeSlackRequirementDeterministic(input);
 }
 
+export async function runSlackAgentTurn(input = {}, options = {}) {
+  const analysis = await analyzeSlackRequirementWithProvider(input, options);
+  return buildSlackAgentTurn(input, analysis);
+}
+
+function wantsNdjson(request) {
+  return /\bapplication\/x-ndjson\b/i.test(request.headers.get('Accept') || '');
+}
+
+function ndjsonStreamResponse(events) {
+  const encoder = new globalThis.TextEncoder();
+  return new Response(
+    new globalThis.ReadableStream({
+      async start(controller) {
+        try {
+          for await (const event of events) {
+            controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          }
+        } finally {
+          controller.close();
+        }
+      },
+    }),
+    {
+      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+    }
+  );
+}
+
 export function createSlackAgentApp(options = {}) {
   const config = options.config || readSlackAgentConfig();
   const fetchImpl = options.fetchImpl || options.fetch || fetch;
@@ -55,6 +84,16 @@ export function createSlackAgentApp(options = {}) {
           const body = await readJson(request);
           const analysis = await analyzeSlackRequirementWithProvider(body, { config, fetchImpl });
           return jsonResponse({ ok: true, analysis });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-agent/turn') {
+          requireAgentAuth(request, config);
+          const body = await readJson(request);
+          if (wantsNdjson(request)) {
+            return ndjsonStreamResponse(streamSlackAgentTurnEvents(body, { config, fetchImpl }));
+          }
+          const turn = await runSlackAgentTurn(body, { config, fetchImpl });
+          return jsonResponse({ ok: true, turn, analysis: turn.analysis });
         }
 
         return jsonResponse({ error: 'Endpoint not found', method: request.method, path: url.pathname }, 404);
