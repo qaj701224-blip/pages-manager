@@ -355,7 +355,7 @@ staging 使用独立命名，例如：
 SITE_SLOT_001 -> pages-v2-staging-slot-001
 ```
 
-每次新版本发布先从池里分配一个 `available` slot，上传并验证完成后，再通过 route snapshot 把站点切到该 slot。旧 active version 的 slot 在回滚保留窗口内继续保持 `assigned`，这样二次发布不会在 route 激活前改动线上代码，回滚也能只切换 route snapshot。清理窗口结束后，reconciliation 再把不再被 active/rollback window 引用的 slot 清理回 `available`。router 的 service binding 是预先在 wrangler template 中声明的静态 binding，用户发布不需要重新部署 `pages-router`。
+每次新版本发布先从池里分配一个 `available` slot，上传并验证完成后，再通过 route snapshot 把站点切到该 slot。上传用户代码前后都必须确认该 slot Worker 的 `workers.dev` subdomain 已关闭；关闭失败时发布 fail closed，并把 slot 标记为不可分配，避免绕过 pages-router 的 IP allowlist、SSO 和 ACL。旧 active version 的 slot 在回滚保留窗口内继续保持 `assigned`，这样二次发布不会在 route 激活前改动线上代码，回滚也能只切换 route snapshot。清理窗口结束后，reconciliation 再把不再被 active/rollback window 引用的 slot 清理回 `available`。router 的 service binding 是预先在 wrangler template 中声明的静态 binding，用户发布不需要重新部署 `pages-router`。
 
 slot 状态由 D1 权威表管理：
 
@@ -378,6 +378,7 @@ Deploy Pages V2 <environment>
   2. scripts/provision-pages-v2-slots.mjs <environment> prepare
      - 读取 worker_slots 当前 available 数量和最大 slot_number。
      - available < PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE 时，从 max(slot_number)+1 创建 PAGES_NORMAL_WORKER_SLOT_EXPAND_BY 个 ordinary Workers。
+     - 创建 ordinary Worker 后必须关闭对应 `workers.dev` subdomain；关闭失败时不得写入可分配 slot。
      - 创建数量受 PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL 限制，超过则 fail closed。
      - 新 slot 写入 available_pending_router。
      - 输出 PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)。

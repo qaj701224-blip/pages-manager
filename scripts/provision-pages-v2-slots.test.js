@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   buildSlotRecord,
+  CloudflareWorkersClient,
   planNormalWorkerSlotProvisioning,
   provisionNormalWorkerSlots,
   renderSlotBindingName,
@@ -138,6 +139,29 @@ test('provisions missing slot workers, writes pending rows, and activates only a
 
   assert.equal(activated.activatedCount, 2);
   assert.deepEqual(d1.slots.map((slot) => slot.status), ['available', 'available']);
+});
+
+test('Cloudflare slot provisioner disables workers.dev for placeholder workers', async () => {
+  const requests = [];
+  const client = new CloudflareWorkersClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    fetchImpl: async (url, init = {}) => {
+      requests.push({ url: String(url), init });
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  await client.putWorker({ workerName: 'pages-v2-staging-slot-001', environment: 'staging' });
+
+  assert.equal(requests[0].init.method, 'PUT');
+  assert.match(requests[0].url, /\/workers\/scripts\/pages-v2-staging-slot-001$/);
+  assert.equal(requests[1].init.method, 'POST');
+  assert.match(
+    requests[1].url,
+    /\/workers\/services\/pages-v2-staging-slot-001\/environments\/production\/subdomain$/
+  );
+  assert.deepEqual(JSON.parse(requests[1].init.body), { enabled: false });
 });
 
 test('slot worker and binding names are stable across deploys', () => {

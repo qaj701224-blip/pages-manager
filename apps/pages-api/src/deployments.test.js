@@ -196,12 +196,64 @@ test('normal worker slot upload metadata binds Pages KV gateway to slot workers'
   );
 
   assert.equal(response.status, 201);
-  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const uploadRequestIndex = requests.findIndex((request) => request.method === 'PUT');
+  const uploadRequest = requests[uploadRequestIndex];
   assert.match(uploadRequest.url, /\/workers\/scripts\/pages-v2-production-slot-007$/);
   const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
   assert.deepEqual(metadata.bindings, [
     { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
   ]);
+  const disableSubdomainRequestIndexes = requests
+    .map((request, index) => ({ request, index }))
+    .filter(({ request }) =>
+      request.url.endsWith('/workers/services/pages-v2-production-slot-007/environments/production/subdomain')
+    )
+    .map(({ index }) => index);
+  assert.deepEqual(
+    disableSubdomainRequestIndexes.map((index) => requests[index].method),
+    ['POST', 'POST']
+  );
+  assert.ok(disableSubdomainRequestIndexes[0] < uploadRequestIndex, 'workers.dev subdomain is disabled before slot upload');
+  assert.ok(disableSubdomainRequestIndexes[1] > uploadRequestIndex, 'workers.dev subdomain is disabled after slot upload');
+  assert.deepEqual(await requests[disableSubdomainRequestIndexes[1]].json(), { enabled: false });
+});
+
+test('fails closed and disables a slot when workers.dev cannot be disabled', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    fetch: async (request) => {
+      requests.push(request);
+      if (request.url.endsWith('/workers/services/pages-v2-production-slot-007/environments/production/subdomain')) {
+        return Response.json({ success: false, errors: [{ code: 'subdomain_disable_failed' }] }, { status: 500 });
+      }
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'slot_subdomain_failed',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_UPLOAD_FAILED');
+  assert.equal(requests.some((request) => request.method === 'PUT'), false);
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'disabled');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
 });
 
 test('fails normal worker slot deployment when no slot is available', async () => {

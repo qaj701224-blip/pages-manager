@@ -213,7 +213,7 @@ class WranglerD1Client {
   }
 }
 
-class CloudflareWorkersClient {
+export class CloudflareWorkersClient {
   constructor({ accountId, apiToken, fetchImpl = globalThis.fetch, apiBaseUrl = DEFAULT_CF_API_BASE_URL }) {
     this.accountId = readRequired(accountId, 'CLOUDFLARE_ACCOUNT_ID');
     this.apiToken = readRequired(apiToken, 'CLOUDFLARE_API_TOKEN');
@@ -242,6 +242,26 @@ class CloudflareWorkersClient {
     const payload = await response.json().catch(() => null);
     if (!response.ok || payload?.success === false) {
       throw new Error(`WORKER_SLOT_CREATE_FAILED: ${workerName}`);
+    }
+    await this.disableSubdomain(workerName);
+    return payload?.result || payload;
+  }
+
+  async disableSubdomain(workerName) {
+    const response = await this.fetch(
+      `${this.apiBaseUrl}/accounts/${encodeURIComponent(this.accountId)}/workers/services/${encodeURIComponent(workerName)}/environments/production/subdomain`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ enabled: false }),
+      }
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.success === false) {
+      throw new Error(`WORKER_SLOT_SUBDOMAIN_DISABLE_FAILED: ${workerName}`);
     }
     return payload?.result || payload;
   }

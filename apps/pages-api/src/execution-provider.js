@@ -8,6 +8,7 @@ import {
 const EXECUTION_MODES = new Set(['wfp', 'normal-worker-slot']);
 const DEFAULT_EXECUTION_MODE = 'wfp';
 const DEFAULT_CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
+const WORKER_SUBDOMAIN_DISABLE_FAILED = 'WORKER_SUBDOMAIN_DISABLE_FAILED';
 
 export { normalizeArtifactBundle };
 
@@ -59,7 +60,8 @@ function createNormalWorkerSlotProvider(env, config, store) {
           });
         }
       } catch (error) {
-        await releaseSlot(store, slot.id, env);
+        const releaseStatus = error?.code === WORKER_SUBDOMAIN_DISABLE_FAILED ? 'disabled' : 'available';
+        await releaseSlot(store, slot.id, env, releaseStatus);
         throw error;
       }
 
@@ -103,6 +105,7 @@ function createOrdinaryWorkerClient(env, config) {
   return {
     async uploadWorker({ scriptName, mainModule, modules, compatibilityDate, bindings = [] }) {
       const safeBindings = normalizeWorkerBindings(bindings);
+      await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
       const metadata = {
         main_module: mainModule,
         compatibility_date: compatibilityDate || '2026-06-15',
@@ -117,7 +120,12 @@ function createOrdinaryWorkerClient(env, config) {
       for (const module of modules) {
         form.set(module.name, new Blob([module.content], { type: module.type || 'application/javascript+module' }), module.name);
       }
-      return requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'PUT', body: form });
+      const result = await requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), {
+        method: 'PUT',
+        body: form,
+      });
+      await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
+      return result;
     },
 
     async getWorker(scriptName) {
@@ -126,9 +134,9 @@ function createOrdinaryWorkerClient(env, config) {
   };
 }
 
-async function releaseSlot(store, slotId, env) {
+async function releaseSlot(store, slotId, env, status = 'available') {
   if (typeof store.releaseWorkerSlot === 'function') {
-    await store.releaseWorkerSlot(slotId, { status: 'available', updatedAt: readNow(env) });
+    await store.releaseWorkerSlot(slotId, { status, updatedAt: readNow(env) });
   }
 }
 
@@ -144,6 +152,26 @@ async function requestCloudflare(fetchImpl, apiToken, url, init) {
 
 function scriptUrl(apiBaseUrl, accountId, scriptName) {
   return `${apiBaseUrl}/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}`;
+}
+
+function subdomainUrl(apiBaseUrl, accountId, scriptName) {
+  const account = encodeURIComponent(accountId);
+  const script = encodeURIComponent(scriptName);
+  return `${apiBaseUrl}/accounts/${account}/workers/services/${script}/environments/production/subdomain`;
+}
+
+async function disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName) {
+  try {
+    return await requestCloudflare(fetchImpl, apiToken, subdomainUrl(apiBaseUrl, accountId, scriptName), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+  } catch {
+    const error = new Error(WORKER_SUBDOMAIN_DISABLE_FAILED);
+    error.code = WORKER_SUBDOMAIN_DISABLE_FAILED;
+    throw error;
+  }
 }
 
 function normalizeApiBase(value, environment) {

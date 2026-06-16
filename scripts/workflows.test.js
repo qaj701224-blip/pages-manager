@@ -258,7 +258,8 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/kv-gateway/);
     const d1DatabaseName = environment === 'staging' ? 'pages-v2-metadata-staging' : 'pages-v2-metadata';
-    assert.match(workflow, new RegExp(`wrangler d1 migrations apply ${d1DatabaseName} --remote --yes`));
+    assert.match(workflow, new RegExp(`wrangler d1 migrations apply ${d1DatabaseName} --remote`));
+    assert.doesNotMatch(workflow, /wrangler d1 migrations apply .+ --yes/);
     assert.match(workflow, /pnpm --dir apps\/pages-api exec wrangler deploy/);
     assert.match(workflow, /pnpm --dir apps\/pages-auth exec wrangler deploy/);
     assert.match(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
