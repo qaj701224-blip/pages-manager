@@ -19,6 +19,7 @@ import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../s
 import {
   classifySlackIntake,
   isUnsupportedBulkDestructiveRequest,
+  isWorkItemHistoryQuery,
   parseSlackPrNumber,
   slackStatusReply,
 } from '../slack/intake.js';
@@ -402,6 +403,21 @@ async function listReconciledSlackWorkItemsForSession(store, body, env, options 
     total: jobs.length,
     limit: displayLimit,
   };
+}
+
+function shouldIncludeInactiveWorkItems(intake = {}, slackAgentAnalysis = null) {
+  if (intake.includeInactive) return true;
+  return isWorkItemHistoryQuery(
+    [
+      intake.text,
+      slackAgentAnalysis?.visibleReply,
+      slackAgentAnalysis?.summary,
+      slackAgentAnalysis?.title,
+      slackAgentAnalysis?.clarifyingQuestion,
+    ]
+      .filter(Boolean)
+      .join('\n')
+  );
 }
 
 async function applyExecutorCallback(store, jobId, stageResult, status, patch) {
@@ -2910,24 +2926,39 @@ async function processSlackEventBody(body, env, options = {}) {
       }
 
       if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis?.intent)) {
+        const includeInactive = shouldIncludeInactiveWorkItems(intake, slackAgentAnalysis);
         const result = await listReconciledSlackWorkItemsForSession(store, body, env, {
           limit: 5,
-          includeInactive: intake.includeInactive,
+          includeInactive,
         });
         await completeSlackAgentRun(store, agentRun, {
           provider: slackAgentAnalysis?.modelProvider || 'unknown',
           model: slackAgentAnalysis?.modelName || null,
           modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
-          report: { action: 'list_work_items', accepted: false, intent: slackAgentAnalysis.intent, total: result.total },
+          report: {
+            action: 'list_work_items',
+            accepted: false,
+            intent: slackAgentAnalysis.intent,
+            includeInactive,
+            total: result.total,
+          },
         });
         return respond({
           ok: true,
           action: 'list_work_items',
           accepted: false,
-          replyText: slackWorkItemListText(result.jobs || [], { includeInactive: intake.includeInactive }),
-          blocks: slackWorkItemListBlocks(slackSession, result.jobs || [], { includeInactive: intake.includeInactive }),
+          replyText: slackWorkItemListText(result.jobs || [], { includeInactive }),
+          blocks: slackWorkItemListBlocks(slackSession, result.jobs || [], { includeInactive }),
           slackSessionId: slackSession.id,
           agentRunId: agentRun?.id,
+          jobs: (result.jobs || []).map((job) => ({
+            id: job.id,
+            status: job.status,
+            siteSlug: job.siteSlug,
+            issueNumber: job.issueNumber,
+            prNumber: job.prNumber,
+            previewUrl: job.previewUrl,
+          })),
           slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis),
         });
       }
