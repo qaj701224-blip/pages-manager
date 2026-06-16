@@ -2,6 +2,7 @@ import {
   analyzeSlackRequirementDeterministic,
   buildSlackAgentMessages,
   normalizeModelAnalysis,
+  visibleSlackAgentReply,
 } from './analysis.js';
 
 function parseJsonObject(text) {
@@ -119,6 +120,22 @@ function extractOpenAiCompatibleAnalysis(body) {
   return parseJsonObject(content) || body?.analysis || body?.data?.analysis || null;
 }
 
+function buildCompanyChatCompletionsBody(config, messages, options = {}) {
+  const requestBody = {
+    model: config.modelName || undefined,
+    messages,
+    max_tokens: config.maxOutputTokens,
+    response_format: { type: 'json_object' },
+  };
+  if (Number.isFinite(config.temperature)) {
+    requestBody.temperature = config.temperature;
+  }
+  if (options.stream) {
+    requestBody.stream = true;
+  }
+  return requestBody;
+}
+
 function extractGatewayAnalysis(body) {
   if (body?.analysis && typeof body.analysis === 'object') return body.analysis;
   if (body?.result?.analysis && typeof body.result.analysis === 'object') return body.result.analysis;
@@ -136,15 +153,7 @@ async function callCompanyOpenAiGateway({ config, messages, fetchImpl, signal })
   };
   if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
-  const requestBody = {
-    model: config.modelName || undefined,
-    messages,
-    max_tokens: config.maxOutputTokens,
-    response_format: { type: 'json_object' },
-  };
-  if (Number.isFinite(config.temperature)) {
-    requestBody.temperature = config.temperature;
-  }
+  const requestBody = buildCompanyChatCompletionsBody(config, messages);
 
   const response = await fetchImpl(companyChatCompletionsUrl(config), {
     method: 'POST',
@@ -157,6 +166,265 @@ async function callCompanyOpenAiGateway({ config, messages, fetchImpl, signal })
     throw modelError(`Slack Agent company OpenAI-compatible gateway failed: HTTP ${response.status}`, 502);
   }
   return extractOpenAiCompatibleAnalysis(body) || extractGatewayAnalysis(body);
+}
+
+async function* readTextStream(response) {
+  if (!response.body?.getReader) {
+    yield await response.text();
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    yield decoder.decode(value, { stream: true });
+  }
+  const tail = decoder.decode();
+  if (tail) yield tail;
+}
+
+function textFromContentPart(part) {
+  if (typeof part === 'string') return part;
+  if (!part || typeof part !== 'object') return '';
+  return part.text || part.content || part.value || '';
+}
+
+function textFromOpenAiContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map(textFromContentPart).join('');
+  return textFromContentPart(content);
+}
+
+function extractOpenAiStreamDelta(payload = {}) {
+  const choice = payload?.choices?.[0] || {};
+  const delta = choice.delta || {};
+  return (
+    textFromOpenAiContent(delta.content) ||
+    textFromOpenAiContent(choice.message?.content) ||
+    textFromOpenAiContent(choice.text) ||
+    textFromOpenAiContent(payload.output_text_delta) ||
+    textFromOpenAiContent(payload.delta) ||
+    ''
+  );
+}
+
+async function* readOpenAiCompatibleStreamPayloads(response) {
+  let buffer = '';
+  const flushLines = async function* (final = false) {
+    const lines = buffer.split(/\r?\n/);
+    buffer = final ? '' : lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(':')) continue;
+      const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+      if (!data || data === '[DONE]') continue;
+      try {
+        yield JSON.parse(data);
+      } catch {
+        // Ignore malformed partial transport lines; the final JSON parse below remains authoritative.
+      }
+    }
+  };
+
+  for await (const chunk of readTextStream(response)) {
+    buffer += chunk;
+    yield* flushLines(false);
+  }
+  yield* flushLines(true);
+}
+
+function decodeJsonStringEscape(raw, index) {
+  const char = raw[index];
+  const simple = {
+    '"': '"',
+    '\\': '\\',
+    '/': '/',
+    b: '\b',
+    f: '\f',
+    n: '\n',
+    r: '\r',
+    t: '\t',
+  };
+  if (Object.prototype.hasOwnProperty.call(simple, char)) {
+    return { value: simple[char], nextIndex: index };
+  }
+  if (char === 'u') {
+    const hex = raw.slice(index + 1, index + 5);
+    if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+      return { value: String.fromCharCode(Number.parseInt(hex, 16)), nextIndex: index + 4 };
+    }
+    return { value: '', nextIndex: index - 1, incomplete: true };
+  }
+  return { value: char || '', nextIndex: index };
+}
+
+function partialJsonStringValue(raw = '', key) {
+  const keyToken = `"${key}"`;
+  const keyIndex = raw.indexOf(keyToken);
+  if (keyIndex < 0) return { found: false, value: '', complete: false };
+
+  let index = keyIndex + keyToken.length;
+  while (/\s/.test(raw[index] || '')) index += 1;
+  if (raw[index] !== ':') return { found: true, value: '', complete: false };
+  index += 1;
+  while (/\s/.test(raw[index] || '')) index += 1;
+  if (raw[index] !== '"') return { found: true, value: '', complete: false };
+  index += 1;
+
+  let value = '';
+  for (; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char === '\\') {
+      const decoded = decodeJsonStringEscape(raw, index + 1);
+      if (decoded.incomplete) return { found: true, value, complete: false };
+      value += decoded.value;
+      index = decoded.nextIndex;
+      continue;
+    }
+    if (char === '"') return { found: true, value, complete: true };
+    value += char;
+  }
+
+  return { found: true, value, complete: false };
+}
+
+function partialVisibleReply(raw = '') {
+  const camel = partialJsonStringValue(raw, 'visibleReply');
+  if (camel.found) return camel;
+  return partialJsonStringValue(raw, 'visible_reply');
+}
+
+class SemanticChunker {
+  constructor(config = {}) {
+    this.pending = '';
+    this.minChars = Math.max(1, Number(config.semanticChunkMinChars) || 16);
+    this.maxChars = Math.max(this.minChars, Number(config.semanticChunkMaxChars) || 72);
+  }
+
+  push(text = '', options = {}) {
+    this.pending += String(text || '');
+    const chunks = [];
+
+    while (this.pending) {
+      const boundary = this.findBoundary(options.force);
+      if (boundary <= 0) break;
+      chunks.push(this.pending.slice(0, boundary));
+      this.pending = this.pending.slice(boundary);
+    }
+
+    return chunks;
+  }
+
+  flush() {
+    return this.push('', { force: true });
+  }
+
+  findBoundary(force = false) {
+    if (!this.pending) return 0;
+
+    const punctuation = /[。！？!?；;：:\n]/g;
+    let match;
+    while ((match = punctuation.exec(this.pending))) {
+      const end = match.index + 1;
+      if (end >= Math.min(this.minChars, 6) || force) return end;
+    }
+
+    if (this.pending.length >= this.maxChars) {
+      const window = this.pending.slice(0, this.maxChars);
+      const whitespace = Math.max(window.lastIndexOf(' '), window.lastIndexOf('\n'));
+      return whitespace >= this.minChars ? whitespace + 1 : this.maxChars;
+    }
+
+    return force ? this.pending.length : 0;
+  }
+}
+
+function splitSemanticChunks(text = '', config = {}) {
+  const chunker = new SemanticChunker(config);
+  return [...chunker.push(text), ...chunker.flush()].filter(Boolean);
+}
+
+function turnIdsFromInput(input = {}) {
+  const agentRun = input.agentRun || {};
+  const slackSession = input.slackSession || {};
+  return {
+    agentRunId: input.agentRunId || input.agent_run_id || agentRun.id || null,
+    slackSessionId: input.slackSessionId || input.slack_session_id || slackSession.id || null,
+  };
+}
+
+async function* streamCompanyOpenAiGatewayTurnEvents({ input, config, messages, fetchImpl, signal, fallbackAnalysis }) {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+
+  const response = await fetchImpl(companyChatCompletionsUrl(config), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(buildCompanyChatCompletionsBody(config, messages, { stream: true })),
+    signal,
+  });
+  if (!response.ok) {
+    throw modelError(`Slack Agent company OpenAI-compatible gateway failed: HTTP ${response.status}`, 502);
+  }
+
+  const chunker = new SemanticChunker(config);
+  let rawContent = '';
+  let lastVisibleLength = 0;
+  let emittedVisible = '';
+
+  for await (const payload of readOpenAiCompatibleStreamPayloads(response)) {
+    const delta = extractOpenAiStreamDelta(payload);
+    if (!delta) continue;
+    rawContent += delta;
+    const visible = partialVisibleReply(rawContent);
+    if (!visible.found || visible.value.length <= lastVisibleLength) continue;
+
+    const newText = visible.value.slice(lastVisibleLength);
+    lastVisibleLength = visible.value.length;
+    for (const chunk of chunker.push(newText)) {
+      emittedVisible += chunk;
+      yield { type: 'reply_delta', text: chunk };
+    }
+  }
+
+  const rawAnalysis =
+    extractOpenAiCompatibleAnalysis({ choices: [{ message: { content: rawContent } }] }) ||
+    extractGatewayAnalysis({ rawText: rawContent });
+  if (!rawAnalysis) {
+    throw modelError('Slack Agent company gateway response did not contain a JSON analysis object', 502);
+  }
+
+  const analysis = {
+    ...normalizeModelAnalysis(rawAnalysis, fallbackAnalysis, input),
+    modelProvider: config.modelProvider || 'company-agent',
+    modelName: config.modelName || null,
+    modelApiStyle: 'company-openai-compatible',
+  };
+  const finalVisible = visibleSlackAgentReply(analysis);
+  for (const chunk of chunker.flush()) {
+    emittedVisible += chunk;
+    yield { type: 'reply_delta', text: chunk };
+  }
+  if (!emittedVisible) {
+    for (const chunk of splitSemanticChunks(finalVisible, config)) {
+      emittedVisible += chunk;
+      yield { type: 'reply_delta', text: chunk };
+    }
+  }
+  yield { type: 'analysis_final', analysis };
+}
+
+async function* fallbackTurnEvents(input, options, analysis) {
+  const visibleText = visibleSlackAgentReply(analysis);
+  for (const chunk of splitSemanticChunks(visibleText, options.config || {})) {
+    yield { type: 'reply_delta', text: chunk };
+  }
+  yield { type: 'analysis_final', analysis };
 }
 
 export async function analyzeSlackRequirementWithProvider(input = {}, options = {}) {
@@ -214,6 +482,97 @@ export async function analyzeSlackRequirementWithProvider(input = {}, options = 
       error: err,
     });
     throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function* streamSlackAgentTurnEvents(input = {}, options = {}) {
+  const config = options.config || {};
+  const fallbackAnalysis = analyzeSlackRequirementDeterministic(input);
+  const ids = turnIdsFromInput(input);
+  let sequence = 1;
+  const eventBase = {
+    ...ids,
+    visibleToUser: true,
+  };
+
+  yield { ...eventBase, type: 'reply_started', sequence: sequence++ };
+
+  const emit = async function* (eventStream) {
+    for await (const event of eventStream) {
+      yield {
+        ...eventBase,
+        ...event,
+        agentRunId: event.agentRunId || eventBase.agentRunId,
+        slackSessionId: event.slackSessionId || eventBase.slackSessionId,
+        sequence: sequence++,
+      };
+    }
+  };
+
+  if (config.modelProvider === 'deterministic') {
+    const analysis = {
+      ...fallbackAnalysis,
+      modelProvider: 'deterministic',
+      modelApiStyle: 'deterministic',
+    };
+    yield* emit(fallbackTurnEvents(input, options, analysis));
+    yield { ...eventBase, type: 'reply_completed', sequence: sequence++ };
+    return;
+  }
+
+  const fetchImpl = options.fetchImpl || fetch;
+  const timeoutMs = config.requestTimeoutMs || 120_000;
+  const controller = new globalThis.AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  const messages = buildSlackAgentMessages(input, fallbackAnalysis);
+
+  try {
+    if (config.streamingEnabled === false) {
+      const analysis = await analyzeSlackRequirementWithProvider(input, options);
+      yield* emit(fallbackTurnEvents(input, options, analysis));
+    } else {
+      let finalAnalysis = null;
+      const streamingEvents = streamCompanyOpenAiGatewayTurnEvents({
+        input,
+        config,
+        messages,
+        fetchImpl,
+        signal: controller.signal,
+        fallbackAnalysis,
+      });
+      for await (const event of emit(streamingEvents)) {
+        if (event.type === 'analysis_final') finalAnalysis = event.analysis;
+        yield event;
+      }
+      logSlackAgentModelCall({
+        input,
+        config,
+        messages,
+        status: 'ok',
+        durationMs: Date.now() - startedAt,
+        analysis: finalAnalysis,
+      });
+    }
+    yield { ...eventBase, type: 'reply_completed', sequence: sequence++ };
+  } catch (err) {
+    logSlackAgentModelCall({
+      input,
+      config,
+      messages,
+      status: 'error',
+      durationMs: Date.now() - startedAt,
+      error: err,
+    });
+    yield {
+      ...eventBase,
+      type: 'reply_failed',
+      sequence: sequence++,
+      text: '这轮需求整理失败了，请稍后重试，或直接补充更具体的信息。',
+      error: err.message,
+    };
   } finally {
     clearTimeout(timeout);
   }

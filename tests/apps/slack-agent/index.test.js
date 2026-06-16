@@ -70,6 +70,59 @@ describe('slack agent', () => {
     assert.equal(response.status, 401);
   });
 
+  it('returns a turn contract with visible reply events', async () => {
+    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic' } });
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentRunId: 'agent_1',
+          slackSessionId: 'sess_1',
+          text: '创建一个个人网站，突出项目经历',
+        }),
+      })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.analysis.intent, 'create_or_update_site');
+    assert.equal(body.turn.agentRunId, 'agent_1');
+    assert.equal(body.turn.slackSessionId, 'sess_1');
+    assert.equal(body.turn.events[0].type, 'reply_started');
+    assert.equal(body.turn.events[1].type, 'reply_delta');
+    assert.equal(body.turn.events[2].type, 'analysis_final');
+    assert.match(body.turn.visibleText, /我已整理好/);
+  });
+
+  it('can stream the turn contract as ndjson events', async () => {
+    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic' } });
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+        body: JSON.stringify({
+          agentRunId: 'agent_1',
+          slackSessionId: 'sess_1',
+          text: '你好',
+        }),
+      })
+    );
+    const lines = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), 'application/x-ndjson; charset=utf-8');
+    assert.deepEqual(
+      lines.map((line) => line.type),
+      ['reply_started', 'reply_delta', 'analysis_final', 'reply_completed']
+    );
+    assert.equal(lines[2].analysis.needsClarification, true);
+  });
+
   it('prefers shared company gateway config names while keeping legacy Slack names as fallback', () => {
     const config = readSlackAgentConfig({
       AGENT_MODEL_PROVIDER: 'company-agent',
@@ -156,6 +209,83 @@ describe('slack agent', () => {
     assert.equal(body.analysis.intent, 'append_requirement');
     assert.equal(body.analysis.modelProvider, 'company-agent');
     assert.equal(body.analysis.modelApiStyle, 'company-openai-compatible');
+  });
+
+  it('streams company gateway visible replies as semantic ndjson chunks', async () => {
+    const calls = [];
+    const app = createSlackAgentApp({
+      config: {
+        modelProvider: 'company-agent',
+        gatewayUrl: 'https://agent-gateway.example/v1',
+        apiKey: 'gateway-key',
+        modelName: 'company-agent',
+        maxOutputTokens: 512,
+        requestTimeoutMs: 1000,
+        semanticChunkMinChars: 16,
+        semanticChunkMaxChars: 72,
+      },
+      async fetchImpl(url, request) {
+        calls.push({ url: String(url), request });
+        const events = [
+          { choices: [{ delta: { content: '{"visibleReply":"我先整理一下：' } }] },
+          { choices: [{ delta: { content: '这是一个突出项目经历和联系方式的个人主页。' } }] },
+          {
+            choices: [
+              {
+                delta: {
+                  content: [
+                    '","intent":"create_or_update_site","siteSlug":"profile",',
+                    '"title":"个人主页","summary":"突出项目经历和联系方式。","needsClarification":false}',
+                  ].join(''),
+                },
+              },
+            ],
+          },
+        ];
+        return new Response(
+          `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`,
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+          }
+        );
+      },
+    });
+
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+        body: JSON.stringify({
+          agentRunId: 'agent_stream_1',
+          slackSessionId: 'sess_stream_1',
+          text: '做一个个人主页，突出项目经历和联系方式',
+        }),
+      })
+    );
+    const lines = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const payload = JSON.parse(calls[0].request.body);
+    const deltas = lines.filter((line) => line.type === 'reply_delta');
+    const final = lines.find((line) => line.type === 'analysis_final');
+
+    assert.equal(response.status, 200);
+    assert.equal(calls[0].url, 'https://agent-gateway.example/v1/chat/completions');
+    assert.equal(payload.stream, true);
+    assert.deepEqual(
+      lines.map((line) => line.type),
+      ['reply_started', 'reply_delta', 'reply_delta', 'analysis_final', 'reply_completed']
+    );
+    assert.deepEqual(
+      deltas.map((line) => line.text),
+      ['我先整理一下：', '这是一个突出项目经历和联系方式的个人主页。']
+    );
+    assert.doesNotMatch(deltas.map((line) => line.text).join(''), /visibleReply|intent|siteSlug/);
+    assert.equal(final.analysis.intent, 'create_or_update_site');
+    assert.equal(final.analysis.visibleReply, '我先整理一下：这是一个突出项目经历和联系方式的个人主页。');
+    assert.equal(final.analysis.modelApiStyle, 'company-openai-compatible');
   });
 
   it('normalizes company gateway root BaseURL to /v1/chat/completions', async () => {
