@@ -6,8 +6,8 @@ const SWITCH_WORK_ITEM_RE = /(?:继续|接着|切换|选择|打开|查看|回到
 const UNSUPPORTED_DESTRUCTIVE_INTENT = 'unsupported_destructive_request';
 const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
   [
-    '(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
-    '(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务).*(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel)',
+    '(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
+    '(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务).*(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive)',
   ].join('|'),
   'i'
 );
