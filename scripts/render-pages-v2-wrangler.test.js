@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test, { afterEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,12 @@ const pagesApiWranglerPath = join(repoRoot, 'apps/pages-api/wrangler.toml');
 const pagesAuthWranglerPath = join(repoRoot, 'apps/pages-auth/wrangler.toml');
 const pagesRouterWranglerPath = join(repoRoot, 'apps/pages-router/wrangler.toml');
 const kvGatewayWranglerPath = join(repoRoot, 'apps/kv-gateway/wrangler.toml');
+const pagesRouterProductionTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.production.template.toml');
+const pagesRouterStagingTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.staging.template.toml');
+const originalRouterTemplates = new Map([
+  [pagesRouterProductionTemplatePath, readFileSync(pagesRouterProductionTemplatePath, 'utf8')],
+  [pagesRouterStagingTemplatePath, readFileSync(pagesRouterStagingTemplatePath, 'utf8')],
+]);
 
 const baseEnv = {
   ...process.env,
@@ -20,7 +26,6 @@ const baseEnv = {
   SITE_DATA_KV_ID: 'dummy-site-data-kv',
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606',
-  PAGES_EXECUTION_MODE: 'normal-worker-slot',
   PAGES_NORMAL_WORKER_SLOT_COUNT: '2',
   PAGES_SESSION_JWT_ACTIVE_KID: 'pages-session-2026-06',
   PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
@@ -38,6 +43,9 @@ afterEach(() => {
   rmSync(pagesAuthWranglerPath, { force: true });
   rmSync(pagesRouterWranglerPath, { force: true });
   rmSync(kvGatewayWranglerPath, { force: true });
+  for (const [path, content] of originalRouterTemplates.entries()) {
+    writeFileSync(path, content);
+  }
 });
 
 function renderApp(app, environment, env = baseEnv) {
@@ -80,6 +88,15 @@ function withoutEnv(name) {
   const env = { ...baseEnv };
   delete env[name];
   return env;
+}
+
+function setRouterTemplateExecutionMode(environment, mode) {
+  const path = environment === 'staging' ? pagesRouterStagingTemplatePath : pagesRouterProductionTemplatePath;
+  const content = readFileSync(path, 'utf8').replace(
+    /PAGES_EXECUTION_MODE = "(?:normal-worker-slot|wfp)"/,
+    `PAGES_EXECUTION_MODE = "${mode}"`,
+  );
+  writeFileSync(path, content);
 }
 
 test('generated pages v2 wrangler configs are ignored', () => {
@@ -156,18 +173,20 @@ test('pages-api config keeps committed WFP compatibility date', () => {
   assert.doesNotMatch(config, /2026-07-01/);
 });
 
-test('pages-api config requires resource ids and execution mode', () => {
+test('pages-api config requires resource ids and keeps template execution mode', () => {
   for (const name of [
     'CLOUDFLARE_ACCOUNT_ID',
     'D1_DATABASE_ID',
     'ROUTE_SNAPSHOTS_KV_ID',
-    'PAGES_EXECUTION_MODE',
   ]) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);
     assert.match(`${result.stderr}${result.stdout}`, new RegExp(name));
   }
+
+  const config = renderPagesApi('production', { ...baseEnv, PAGES_EXECUTION_MODE: 'wfp' });
+  assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
 });
 
 test('production pages-auth config renders explicit production auth settings only', () => {
@@ -269,11 +288,9 @@ test('pages-auth config requires production SSO URLs to use HTTPS', () => {
   assert.match(`${result.stderr}${result.stdout}`, /SSO_TOKEN_URL must be an HTTPS URL/);
 });
 
-test('pages-api config rejects invalid execution mode', () => {
-  const result = runRenderer(['apps/pages-api', 'production'], {
-    ...baseEnv,
-    PAGES_EXECUTION_MODE: 'auto',
-  });
+test('renderer rejects invalid template execution mode', () => {
+  setRouterTemplateExecutionMode('production', 'auto');
+  const result = runRenderer(['apps/pages-router', 'production']);
 
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /PAGES_EXECUTION_MODE/);
@@ -288,6 +305,7 @@ test('production pages-router config renders explicit production fast-path setti
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
+  assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(config, /ROUTE_CACHE_TTL_SECONDS = "10"/);
   assert.match(config, /ROUTER_IP_ALLOWLIST_CIDRS = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /ROUTER_JWKS_URL = "https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/jwks\.json"/);
@@ -341,9 +359,9 @@ test('staging pages-router config renders explicit staging fast-path settings', 
 });
 
 test('pages-router config renders WFP dispatch namespace and omits slot bindings in wfp mode', () => {
+  setRouterTemplateExecutionMode('production', 'wfp');
   const config = renderPagesRouter('production', {
     ...baseEnv,
-    PAGES_EXECUTION_MODE: 'wfp',
     PAGES_NORMAL_WORKER_SLOT_COUNT: '',
   });
 
@@ -354,9 +372,9 @@ test('pages-router config renders WFP dispatch namespace and omits slot bindings
 });
 
 test('pages-router config can keep slot bindings in wfp mode while draining slot routes', () => {
+  setRouterTemplateExecutionMode('production', 'wfp');
   const config = renderPagesRouter('production', {
     ...baseEnv,
-    PAGES_EXECUTION_MODE: 'wfp',
     PAGES_NORMAL_WORKER_SLOT_COUNT: '2',
   });
 
@@ -390,11 +408,10 @@ test('pages-router config keeps committed cache and JWT ttl defaults', () => {
   assert.match(config, /INTERNAL_WORKER_JWT_TTL_SECONDS = "60"/);
 });
 
-test('pages-router config requires allowlist, route snapshot store, and execution mode', () => {
+test('pages-router config requires allowlist and route snapshot store', () => {
   for (const name of [
     'ROUTER_IP_ALLOWLIST_CIDRS',
     'ROUTE_SNAPSHOTS_KV_ID',
-    'PAGES_EXECUTION_MODE',
   ]) {
     const result = runRenderer(['apps/pages-router', 'production'], withoutEnv(name));
 

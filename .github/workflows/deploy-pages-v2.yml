@@ -53,7 +53,6 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_ID: ${{ vars.PAGES_V2_D1_DATABASE_ID }}
           ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
-          PAGES_EXECUTION_MODE: ${{ vars.PAGES_EXECUTION_MODE }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-api production
 
       - name: Generate Pages Auth Wrangler config
@@ -71,7 +70,6 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
-          PAGES_EXECUTION_MODE: ${{ vars.PAGES_EXECUTION_MODE }}
           PAGES_NORMAL_WORKER_SLOT_COUNT: ${{ vars.PAGES_NORMAL_WORKER_SLOT_COUNT }}
           ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router production

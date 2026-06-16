@@ -209,7 +209,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       workflow,
       /secrets\.(?:CLOUDFLARE_ACCOUNT_ID|PAGES_V2_D1_DATABASE_ID|PAGES_V2_ROUTE_SNAPSHOTS_KV_ID|PAGES_V2_SITE_DATA_KV_ID)/,
     );
-    assert.match(workflow, /PAGES_EXECUTION_MODE: \$\{\{ vars\.PAGES_EXECUTION_MODE \}\}/);
+    assert.doesNotMatch(workflow, /PAGES_EXECUTION_MODE: \$\{\{ vars\.PAGES_EXECUTION_MODE \}\}/);
     assert.match(workflow, /PAGES_NORMAL_WORKER_SLOT_COUNT: \$\{\{ vars\.PAGES_NORMAL_WORKER_SLOT_COUNT \}\}/);
     assert.match(workflow, /ACCESS_KEY_ACTIVE_PEPPER_ID: pepper_2026_06/);
     assert.match(workflow, /ACCESS_KEY_PEPPERS: "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
@@ -224,7 +224,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.doesNotMatch(
       workflow,
       new RegExp(
-        String.raw`vars\.(?:WFP_COMPATIBILITY_DATE|SSO_ALLOWED_USER_SCOPE|OAUTH_STATE_TTL_SECONDS`
+        String.raw`vars\.(?:PAGES_EXECUTION_MODE|WFP_COMPATIBILITY_DATE|SSO_ALLOWED_USER_SCOPE|OAUTH_STATE_TTL_SECONDS`
           + String.raw`|CLI_LOGIN_TTL_SECONDS|AUTH_SESSION_IDLE_TTL_SECONDS|AUTH_SESSION_ABSOLUTE_TTL_SECONDS`
           + String.raw`|SITE_SESSION_IDLE_TTL_SECONDS|SITE_SESSION_ABSOLUTE_TTL_SECONDS`
           + String.raw`|ROUTE_CACHE_TTL_SECONDS|SITE_SESSION_FRESHNESS_TTL_SECONDS`

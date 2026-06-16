@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const SUPPORTED_APPS = new Set(['apps/pages-api', 'apps/pages-auth', 'apps/pages-router', 'apps/kv-gateway']);
 const SUPPORTED_ENVIRONMENTS = new Set(['production', 'staging']);
+const EXECUTION_MODE_APPS = new Set(['apps/pages-api', 'apps/pages-router']);
 
 const DEFAULTS = {
   PAGES_NORMAL_WORKER_SLOT_COUNT: '',
@@ -15,7 +16,6 @@ const REQUIRED_TOKENS_BY_APP = {
     'CLOUDFLARE_ACCOUNT_ID',
     'D1_DATABASE_ID',
     'ROUTE_SNAPSHOTS_KV_ID',
-    'PAGES_EXECUTION_MODE',
   ],
   'apps/pages-auth': [
     'CLOUDFLARE_ACCOUNT_ID',
@@ -28,7 +28,6 @@ const REQUIRED_TOKENS_BY_APP = {
     'CLOUDFLARE_ACCOUNT_ID',
     'ROUTER_IP_ALLOWLIST_CIDRS',
     'ROUTE_SNAPSHOTS_KV_ID',
-    'PAGES_EXECUTION_MODE',
   ],
   'apps/kv-gateway': [
     'CLOUDFLARE_ACCOUNT_ID',
@@ -88,13 +87,14 @@ async function renderWrangler(appName, envName) {
     assertTokenPolicy(token, value);
     rendered = rendered.replaceAll(`__${token}__`, value);
   }
+  const executionMode = readExecutionMode(rendered, appName);
   rendered = rendered.replaceAll(
     '__NORMAL_WORKER_SLOT_SERVICES__',
-    renderNormalWorkerSlotServices(appName, envName, replacements)
+    renderNormalWorkerSlotServices(appName, envName, replacements, executionMode)
   );
   rendered = rendered.replaceAll(
     '__WFP_DISPATCH_NAMESPACE_BINDING__',
-    renderWfpDispatchNamespaceBinding(appName, envName, replacements)
+    renderWfpDispatchNamespaceBinding(appName, envName, executionMode)
   );
 
   assertNoUnresolvedPlaceholders(rendered, templatePath);
@@ -175,9 +175,22 @@ function assertCrossTokenPolicy(replacements) {
   );
 }
 
-function renderNormalWorkerSlotServices(appName, envName, replacements) {
+function readExecutionMode(rendered, appName) {
+  const matches = [...rendered.matchAll(/^PAGES_EXECUTION_MODE = "([^"]+)"$/gm)];
+  if (!EXECUTION_MODE_APPS.has(appName)) {
+    if (matches.length > 0) throw new Error(`${appName} must not define PAGES_EXECUTION_MODE`);
+    return '';
+  }
+  if (matches.length !== 1) throw new Error(`${appName} template must define exactly one PAGES_EXECUTION_MODE`);
+
+  const mode = matches[0][1];
+  assertTokenPolicy('PAGES_EXECUTION_MODE', mode);
+  return mode;
+}
+
+function renderNormalWorkerSlotServices(appName, envName, replacements, executionMode) {
   if (appName !== 'apps/pages-router') return '';
-  if (replacements.PAGES_EXECUTION_MODE !== 'normal-worker-slot' && replacements.PAGES_NORMAL_WORKER_SLOT_COUNT === '') {
+  if (executionMode !== 'normal-worker-slot' && replacements.PAGES_NORMAL_WORKER_SLOT_COUNT === '') {
     return '';
   }
 
@@ -198,9 +211,9 @@ service = "${servicePrefix}-${slotNumber}"`);
   return entries.join('\n\n');
 }
 
-function renderWfpDispatchNamespaceBinding(appName, envName, replacements) {
+function renderWfpDispatchNamespaceBinding(appName, envName, executionMode) {
   if (appName !== 'apps/pages-router') return '';
-  if (replacements.PAGES_EXECUTION_MODE === 'normal-worker-slot') return '';
+  if (executionMode === 'normal-worker-slot') return '';
 
   const namespace = envName === 'staging' ? 'pages-staging' : 'pages-production';
   return `[[dispatch_namespaces]]
