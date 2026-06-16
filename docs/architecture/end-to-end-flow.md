@@ -100,6 +100,8 @@ sequenceDiagram
 
 如果 job 已在 `fixing`，新的 Slack 修改进入 pending 队列，避免多个 Coding Agent 并发改同一个 PR。
 
+Slack-first 主链路的 HTTP 入口、session、对话流式、notifier 和状态卡合同见 [slack-platform-runtime.md](./slack-platform-runtime.md)。GitHub webhook、Review Agent comment 监听和 preview gate 规则见 [github-automation.md](./github-automation.md)。
+
 ## 用户和站点隔离
 
 Slack session 隔离键：
