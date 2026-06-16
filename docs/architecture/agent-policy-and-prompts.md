@@ -107,28 +107,36 @@ Slack Agent 输出建议是结构化 JSON：
 
 ```json
 {
-  "intent": "create_or_update_site | new_site_request | modify_existing_preview | status_query | append_requirement | cancel_request | close_session | clarify | unknown",
+  "visibleReply": "我来查看你已关闭的 issue 和 PR。",
+  "intent": "create_or_update_site | new_site_request | modify_existing_preview | append_requirement | list_work_items | switch_work_item | reopen_work_item | status_query | cancel_request | close_session | clarify | unknown",
   "confidence": 0.0,
+  "toolCall": {
+    "name": "list_my_work_items | switch_work_item | reopen_work_item | get_current_status | close_session | unsupported_destructive_request | cancel_request | record_followup | confirm_create_issue",
+    "args": {
+      "state": "active | all | closed",
+      "kind": "issue | pr | unknown",
+      "number": 123
+    }
+  },
+  "workItemState": "active | all | closed",
   "employeeSlug": "smoke",
   "siteSlug": "profile",
   "title": "个人主页",
   "summary": "用户希望生成一个个人主页，并在 preview 中展示唯一测试信息。",
-  "issueAction": "create | append_comment | none",
-  "targetJobId": "job_xxx",
-  "targetIssueNumber": 123,
   "needsClarification": false,
   "clarifyingQuestion": "",
-  "toolRequest": {
-    "name": "createPublishingJob | appendIssueComment | getJobStatus | askClarification | none",
-    "arguments": {}
-  },
+  "sourceMessages": [],
   "safetyNotes": []
 }
 ```
 
 `employeeSlug` 只作为模型理解结果的 hint。Slack 入口创建 job 时，gateway 必须根据 Slack team / user / profile 快照派生最终归属目录，例如 `zhangsan-a1b2c3`；不能让 Slack Agent 或用户文本直接决定别人的目录。
 
-gateway 只在 `intent` 属于 `create_or_update_site` / `new_site_request` / `create_site` / `update_site` 且 `needsClarification=false` 时创建 `PublishingJob`。如果 Slack Agent 返回 `clarify`、`unknown` 或 `needsClarification=true`，gateway 只回 Slack 澄清问题并保存 `SessionMemory`。
+Slack Agent 负责决定下一步要请求哪个受控工具；gateway 负责执行工具时强制绑定当前 Slack 用户、当前 session、该用户名下的 job / issue / PR 和状态机。查询“我的任务”时 `state=active`，查询“历史 / 全部”时 `state=all`，查询“已关闭 / 已取消 / 失败”时 `state=closed`。恢复已关闭任务时使用 `reopen_work_item(kind, number)`；gateway 必须重新查询并确认对应 issue / PR 属于当前 Slack 用户且当前状态确实可恢复。即使 Agent 在 `toolCall.args` 中传入其它用户或其它 session，gateway 也必须忽略这些越权范围。
+
+gateway 只有在 `toolCall.name=confirm_create_issue`、创建类 `intent` 且 `needsClarification=false` 时展示确认卡片；真正创建 `PublishingJob` 仍必须等用户点击确认按钮。如果 Slack Agent 返回 `clarify`、`unknown` 或 `needsClarification=true`，gateway 只回 Slack 澄清问题并保存 `SessionMemory`。
+
+产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 help / ping / status、Slack / GitHub 签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底路径，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
 
 ## Coding Agent Prompt
 
