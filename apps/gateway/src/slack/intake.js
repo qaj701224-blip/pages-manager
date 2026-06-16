@@ -2,6 +2,22 @@ const JOB_ID_RE = /\bjob_[A-Za-z0-9_]+\b/;
 const PR_NUMBER_RE = /(?:\bPR\s*#?|#)(\d{1,8})\b/i;
 const SLASH_COMMAND_RE = /^\/([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i;
 const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close|tasks?|prs?|work)(?::|\s+)?([\s\S]*)?$/i;
+const WORK_ITEM_HISTORY_RE = /(?:历史|全部|所有|已关闭|关闭的|已取消|取消的|失败|history|all|closed|cancelled|canceled|failed)/i;
+const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
+  [
+    '(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
+    '(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务).*(?:关闭|关掉|删除|删掉|清理|取消|close|delete|remove|cancel)',
+  ].join('|'),
+  'i'
+);
+
+function isUnsupportedBulkDestructiveRequest(text = '') {
+  return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
+}
+
+function unsupportedBulkDestructiveReply() {
+  return '我不能批量关闭或删除你名下的 GitHub issue / PR / 发布任务。为了避免误操作，请先说「我的 PR」查看可继续任务，或明确指定一个 PR / issue 再处理。';
+}
 
 export function normalizeSlackIntakeText(text = '') {
   return String(text)
@@ -84,6 +100,16 @@ export function classifySlackIntake(body) {
     };
   }
 
+  if (isUnsupportedBulkDestructiveRequest(text)) {
+    return {
+      action: 'unsupported_destructive_request',
+      shouldCreateJob: false,
+      shouldAnalyze: false,
+      text,
+      replyText: unsupportedBulkDestructiveReply(),
+    };
+  }
+
   if (command?.command === 'cancel' || /^(cancel|取消|停止|不用了)/i.test(text)) {
     return {
       action: 'cancel',
@@ -139,6 +165,7 @@ export function classifySlackIntake(body) {
       action: 'list_work_items',
       shouldCreateJob: false,
       text,
+      includeInactive: WORK_ITEM_HISTORY_RE.test(text),
       replyText: null,
     };
   }
@@ -177,8 +204,9 @@ export function classifySlackIntake(body) {
     /\b(create|build|make|update|publish|deploy)\b/i.test(text)
   ) {
     return {
-      action: 'create_job',
-      shouldCreateJob: true,
+      action: 'agent_turn',
+      shouldCreateJob: false,
+      shouldAnalyze: true,
       text,
     };
   }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createGatewayApp } from '../../../apps/gateway/src/index.js';
+import { createGatewayApp } from '../../helpers/gateway-app.js';
 
 async function json(response) {
   return response.json();
@@ -1080,6 +1080,174 @@ test('Slack work item list only shows current user publishing jobs', async () =>
   assert.match(selected.text, /已切换到 PR #68/);
   assert.equal(session.activeJobId, owned.id);
   assert.equal(session.activePrNumber, 68);
+});
+
+test('Slack refuses bulk destructive issue requests instead of listing jobs', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'bulk-close-owned',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, { status: 'preview_deployed', issueNumber: 65, prNumber: 68 });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-bulk-close-issues-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000133',
+          text: '关闭我名下的所有 issue',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'unsupported_destructive_request');
+  assert.equal(body.accepted, false);
+  assert.match(body.replyText, /不能批量关闭或删除/);
+  assert.equal(app.store.getJob(job.id).status, 'preview_deployed');
+});
+
+test('Slack work item list hides inactive jobs by default and shows history as read-only', async () => {
+  const app = createGatewayApp();
+  const active = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'active-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'active',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Active profile page',
+    summary: '可继续任务',
+  }).job;
+  app.store.patchJob(active.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: 'https://preview.example.test/u1',
+  });
+  const closed = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'closed-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed profile page',
+    summary: '已关闭任务',
+  }).job;
+  app.store.patchJob(closed.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    errorMessage: 'GitHub issue #66 已关闭，发布任务已停止。',
+    issueNumber: 66,
+    issueUrl: 'https://github.example/org/pages-manager/issues/66',
+    prNumber: 69,
+    prUrl: 'https://github.example/org/pages-manager/pull/69',
+  });
+
+  const listResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-active-only-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000134',
+          text: '我的 PR',
+        },
+      }),
+    })
+  );
+  const listBody = await json(listResponse);
+  const defaultBlocks = JSON.stringify(listBody.blocks);
+
+  assert.equal(listBody.jobs.length, 1);
+  assert.equal(listBody.jobs[0].prNumber, 68);
+  assert.doesNotMatch(defaultBlocks, /#69/);
+
+  const historyResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-history-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000135',
+          text: '查看我的历史发布任务',
+        },
+      }),
+    })
+  );
+  const historyBody = await json(historyResponse);
+  const historyBlocks = JSON.stringify(historyBody.blocks);
+  const closedSectionIndex = historyBody.blocks.findIndex((block) => JSON.stringify(block).includes('#69'));
+  const closedActions = closedSectionIndex >= 0 ? historyBody.blocks[closedSectionIndex + 1] : null;
+
+  assert.equal(historyBody.jobs.length, 2);
+  assert.match(historyBlocks, /Issue 已关闭/);
+  assert.match(historyBlocks, /打开 Issue/);
+  assert.ok(closedSectionIndex >= 0);
+  assert.doesNotMatch(JSON.stringify(closedActions), /pages_select_work_item/);
+
+  const staleSelectResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        payload: JSON.stringify({
+          type: 'block_actions',
+          team: { id: 'T1' },
+          user: { id: 'U1' },
+          channel: { id: 'D1' },
+          message: { ts: '1710000000.000135' },
+          actions: [
+            {
+              action_id: 'pages_select_work_item',
+              value: JSON.stringify({ sessionId: historyBody.slackSessionId, jobId: closed.id }),
+            },
+          ],
+        }),
+      }).toString(),
+    })
+  );
+  const staleSelect = await json(staleSelectResponse);
+
+  assert.equal(staleSelect.response_type, 'ephemeral');
+  assert.match(staleSelect.text, /不能继续修改/);
 });
 
 test('Slack can switch the current thread to a visible PR', async () => {
@@ -2235,6 +2403,141 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.match(JSON.stringify(queuedSlackPayload.blocks), /本轮修改.*再把按钮改成黑色/);
   assert.doesNotMatch(JSON.stringify(queuedSlackPayload.blocks), /Slack Follow-up/);
   assert.equal(workerStarts.length, 1);
+
+  const rerunResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: created.jobId,
+        stageResult: 'reviewing',
+        branchName: 'sites/job-followup-fix-zhangsan-profile',
+        prNumber: 31,
+        prUrl: 'https://github.example/org/pages-manager/pull/31',
+        baseRef: 'staging',
+        headSha: '4'.repeat(40),
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request, rerun: true });
+        const body = JSON.parse(request.body);
+        assert.equal(body.job.id, created.jobId);
+        assert.equal(body.job.status, 'fixing');
+        assert.match(body.job.summary, /标题改成中文/);
+        assert.match(body.job.summary, /按钮改成黑色/);
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_fix_dispatched' } }), {
+          status: 200,
+        });
+      },
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const rerun = await json(rerunResponse);
+
+  assert.equal(rerunResponse.status, 200);
+  assert.equal(rerun.job.status, 'fixing');
+  assert.equal(rerun.queuedFollowupRerun.queuedFollowupCount, 1);
+  assert.equal(rerun.workerStart.started, true);
+  assert.equal(workerStarts.length, 2);
+});
+
+test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Agent dispatch', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, { prNumber: 61, headSha: '6'.repeat(40) });
+  app.store.moveJobToFixing(jobId, {
+    summary: [
+      '做一个 profile 页面。',
+      '',
+      '## Slack Follow-up',
+      '标题改成中文。',
+      '',
+      '## Slack Follow-up',
+      '按钮改成黑色。',
+    ].join('\n'),
+  });
+  app.store.recordAgentRunEvent(
+    {
+      publishingJobId: jobId,
+      type: 'coding_fix_dispatched',
+      stage: 'fixing',
+      status: 'dispatched',
+      text: 'round:1 Coding Agent 修复已启动。',
+      dedupeKey: `test-dispatched:${jobId}:1`,
+    },
+    new Date('2026-06-14T00:00:00.000Z')
+  );
+  app.store.recordAgentRunEvent(
+    {
+      publishingJobId: jobId,
+      type: 'slack_followup_queued',
+      stage: 'fixing',
+      status: 'queued',
+      text: '按钮改成黑色。',
+      dedupeKey: `test-queued:${jobId}:2`,
+    },
+    new Date('2026-06-14T00:00:01.000Z')
+  );
+
+  const redisCalls = [];
+  app.store.redis = {
+    async set(...args) {
+      redisCalls.push(['set', ...args]);
+      return null;
+    },
+  };
+  const workerStarts = [];
+  const slackRequests = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'reviewing',
+        branchName: 'sites/job-followup-fix-zhangsan-profile',
+        prNumber: 61,
+        prUrl: 'https://github.example/org/pages-manager/pull/61',
+        baseRef: 'staging',
+        headSha: '7'.repeat(40),
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      SLACK_BOT_TOKEN: 'test-slack-token',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.queuedFollowupRerun.skipped, true);
+  assert.equal(body.queuedFollowupRerun.reason, 'queued_followup_claimed');
+  assert.equal(workerStarts.length, 0);
+  assert.equal(slackRequests.length, 0);
+  assert.equal(redisCalls.length, 1);
+  assert.deepEqual(redisCalls[0].slice(0, 4), [
+    'set',
+    `pages-manager:coding-fix:queued-followup:${jobId}:round:2`,
+    redisCalls[0][2],
+    'PX',
+  ]);
+  assert.equal(redisCalls[0][5], 'NX');
 });
 
 test('Slack create intent in an active DM session records follow-up instead of creating another issue', async () => {
@@ -2779,6 +3082,60 @@ test('GitHub issue webhook accepts pages-manager HTML job marker', async () => {
   assert.equal(body.job.status, 'generating_page');
   assert.equal(body.job.issueNumber, 33);
   assert.equal(workerStarts.length, 1);
+});
+
+test('GitHub closed issue webhook marks the publishing job inactive', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-issue-webhook-closed',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  app.store.patchJob(createBody.job.id, {
+    status: 'preview_deployed',
+    issueNumber: 34,
+    issueUrl: 'https://github.example/org/pages-manager/issues/34',
+    prNumber: 35,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-closed-1',
+        'X-GitHub-Event': 'issues',
+      },
+      body: JSON.stringify({
+        action: 'closed',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 34,
+          html_url: 'https://github.example/org/pages-manager/issues/34',
+          body: `PublishingJob: ${createBody.job.id}`,
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.issueAction, 'job_cancelled_by_issue_closed');
+  assert.equal(body.job.status, 'cancelled');
+  assert.equal(body.job.errorCode, 'github_issue_closed');
+  assert.match(body.job.errorMessage, /issue #34 已关闭/);
 });
 
 test('late issue_created callback is idempotent after GitHub issue webhook started pages-agent', async () => {

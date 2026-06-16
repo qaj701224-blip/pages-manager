@@ -3,6 +3,16 @@ const DAY_MS = 24 * HOUR_MS;
 
 const SESSION_ID_RE = /\bsess_[A-Za-z0-9_]+\b/;
 const JOB_ID_RE = /\bjob_[A-Za-z0-9_]+\b/;
+const SESSION_INDEPENDENT_ACTIONS = new Set([
+  'help',
+  'ping',
+  'status',
+  'cancel',
+  'empty',
+  'list_work_items',
+  'switch_work_item',
+  'unsupported_destructive_request',
+]);
 
 function numberFromEnv(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -263,7 +273,7 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
 
   const userSessions = await store.findSlackSessionsForUser(actor.teamId, actor.slackUserId);
   const activeSessions = userSessions.filter((session) => isActiveSession(session, now));
-  if (activeSessions.length > 0 && ['help', 'ping', 'status', 'cancel', 'empty'].includes(intake.action)) {
+  if (activeSessions.length > 0 && SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
     const session = await store.upsertSlackSession(
       {
         ...activeSessions[0],
@@ -303,7 +313,7 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
     };
   }
 
-  if (activeSessions.length > 1 && !['help', 'ping', 'status', 'cancel', 'empty'].includes(intake.action)) {
+  if (activeSessions.length > 1 && !SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
     return {
       ambiguous: true,
       sessions: activeSessions,
@@ -314,7 +324,7 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
   }
 
   const recentSessions = userSessions.filter((session) => isRecentSession(session, now, config));
-  if (recentSessions.length > 0 && !['help', 'ping', 'status', 'cancel', 'empty'].includes(intake.action)) {
+  if (recentSessions.length > 0 && !SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
     return {
       ambiguous: true,
       sessions: recentSessions,
