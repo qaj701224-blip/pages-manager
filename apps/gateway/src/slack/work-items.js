@@ -30,6 +30,17 @@ export function isActionableSlackWorkItem(job = {}) {
   return ACTIONABLE_WORK_ITEM_STATUS_SET.has(job.status);
 }
 
+export function reopenTargetForSlackWorkItem(job = {}) {
+  if (job.status !== 'cancelled') return null;
+  if (job.errorCode === 'github_pr_closed' && job.prNumber) return 'pr';
+  if (job.errorCode === 'github_issue_closed' && job.issueNumber) return 'issue';
+  return null;
+}
+
+export function isReopenableSlackWorkItem(job = {}) {
+  return Boolean(reopenTargetForSlackWorkItem(job));
+}
+
 export function slackStatusLabel(status = '', job = {}) {
   const labels = {
     received: '整理需求',
@@ -47,6 +58,7 @@ export function slackStatusLabel(status = '', job = {}) {
     cancelled: '已取消',
   };
   if (status === 'cancelled' && job.errorCode === 'github_issue_closed') return 'Issue 已关闭';
+  if (status === 'cancelled' && job.errorCode === 'github_pr_closed') return 'PR 已关闭';
   return labels[status] || status || '处理中';
 }
 
@@ -127,6 +139,15 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
         style: 'primary',
         action_id: 'pages_select_work_item',
         value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id }),
+      });
+    } else if (options.includeInactive && isReopenableSlackWorkItem(job)) {
+      const target = reopenTargetForSlackWorkItem(job);
+      elements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: target === 'pr' ? '重新打开 PR' : '重新打开 Issue' },
+        style: 'primary',
+        action_id: 'pages_reopen_work_item',
+        value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id, target, includeInactive: true }),
       });
     }
     if (job.issueUrl) {
