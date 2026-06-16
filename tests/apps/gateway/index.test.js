@@ -1107,10 +1107,11 @@ test('Slack Agent turn consumes ndjson chunks and updates one reply message prog
   );
 });
 
-test('Slack Agent reuses one agent reply card across consecutive DM turns', async () => {
+test('Slack Agent posts a fresh reply card for each DM turn', async () => {
   const app = createGatewayApp();
   const slackCalls = [];
   const agentSessionIds = [];
+  let postIndex = 0;
   const env = {
     SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
     SLACK_BOT_TOKEN: 'xoxb-test',
@@ -1155,7 +1156,14 @@ test('Slack Agent reuses one agent reply card across consecutive DM turns', asyn
     },
     async SLACK_FETCH(url, request) {
       slackCalls.push({ url: String(url), request });
-      return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000120' }), { status: 200 });
+      if (String(url).endsWith('/chat.postMessage')) {
+        postIndex += 1;
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: `171000000${postIndex}.000120` }), {
+          status: 200,
+        });
+      }
+      const payload = JSON.parse(request.body);
+      return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: payload.ts }), { status: 200 });
     },
   };
 
@@ -1209,9 +1217,12 @@ test('Slack Agent reuses one agent reply card across consecutive DM turns', asyn
 
   assert.equal(first.slackSessionId, second.slackSessionId);
   assert.deepEqual(agentSessionIds, [first.slackSessionId, first.slackSessionId]);
-  assert.equal(postCount, 1);
-  assert.equal(updatePayloads.length, 3);
-  assert.ok(updatePayloads.every((payload) => payload.ts === '1710000001.000120'));
+  assert.equal(postCount, 2);
+  assert.equal(updatePayloads.length, 2);
+  assert.deepEqual(
+    updatePayloads.map((payload) => payload.ts),
+    ['1710000001.000120', '1710000002.000120']
+  );
   assert.equal(app.store.slackAgentReplyMessages.size, 2);
 });
 
