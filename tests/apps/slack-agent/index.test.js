@@ -50,11 +50,13 @@ describe('slack agent', () => {
   });
 
   it('does not turn bulk destructive issue requests into work item lists', () => {
-    const analysis = analyzeSlackRequirement({ text: '关闭我名下的所有 issue' });
+    for (const text of ['关闭我名下的所有 issue', '把我名下项目 issue 全部归档', 'archive all my PRs']) {
+      const analysis = analyzeSlackRequirement({ text });
 
-    assert.equal(analysis.intent, 'unsupported_destructive_request');
-    assert.equal(analysis.needsClarification, false);
-    assert.match(analysis.clarifyingQuestion, /不能批量关闭或删除/);
+      assert.equal(analysis.intent, 'unsupported_destructive_request');
+      assert.equal(analysis.needsClarification, false);
+      assert.match(analysis.clarifyingQuestion, /不能批量关闭或删除/);
+    }
   });
 
   it('requires the internal token when configured', async () => {
