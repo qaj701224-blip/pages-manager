@@ -126,6 +126,43 @@ test('upsertUserFromSso creates users and bumps session version on status change
   assert.equal((await store.getUser('usr_sso')).lastLoginAt, '2026-06-15T00:01:00.000Z');
 });
 
+test('upsertUserFromSso does not reactivate a disabled user from a stale active profile', async () => {
+  const store = createSeededStore();
+
+  await store.upsertUserFromSso({
+    userId: 'usr_sso',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    lastLoginAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  const disabled = await store.upsertUserFromSso({
+    userId: 'usr_sso',
+    email: 'user@example.com',
+    employeeStatus: 'disabled',
+    sessionVersion: 1,
+    lastLoginAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  const staleActive = await store.upsertUserFromSso({
+    userId: 'usr_sso',
+    email: 'stale@example.com',
+    realname: '旧 Profile',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    lastLoginAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+
+  assert.equal(disabled.employeeStatus, 'disabled');
+  assert.equal(staleActive.employeeStatus, 'disabled');
+  assert.equal(staleActive.email, 'user@example.com');
+  assert.equal(staleActive.realname, null);
+  assert.equal(staleActive.sessionVersion, disabled.sessionVersion);
+  assert.equal((await store.getUser('usr_sso')).employeeStatus, 'disabled');
+});
+
 test('site versions are immutable records', async () => {
   const store = createSeededStore();
   await createSite(store);
@@ -378,6 +415,44 @@ test('D1 store retries another available worker slot when CAS loses a race', asy
   assert.equal(slots.get('slot_001').status, 'available');
 });
 
+test('D1 store upserts SSO users atomically and keeps disabled users disabled', async () => {
+  const db = fakeUserDb();
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  await store.upsertUserFromSso({
+    userId: 'usr_sso',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    lastLoginAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  const disabled = await store.upsertUserFromSso({
+    userId: 'usr_sso',
+    email: 'user@example.com',
+    employeeStatus: 'disabled',
+    sessionVersion: 1,
+    lastLoginAt: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  const staleActive = await store.upsertUserFromSso({
+    userId: 'usr_sso',
+    email: 'stale@example.com',
+    realname: '旧 Profile',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    lastLoginAt: '2026-06-15T00:02:00.000Z',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+
+  assert.equal(disabled.employeeStatus, 'disabled');
+  assert.equal(staleActive.employeeStatus, 'disabled');
+  assert.equal(staleActive.email, 'user@example.com');
+  assert.equal(staleActive.realname, null);
+  assert.equal(staleActive.sessionVersion, disabled.sessionVersion);
+  assert.equal(db.selectBeforeFirstUpsert, false);
+});
+
 function createSeededStore() {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
@@ -470,4 +545,123 @@ function fakeSlotDb(slots, { loseFirstUpdate = false } = {}) {
       };
     },
   };
+}
+
+function fakeUserDb() {
+  const users = new Map();
+  const db = {
+    selectBeforeFirstUpsert: false,
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async first() {
+              assert.match(sql, /SELECT \* FROM users WHERE user_id = \?/);
+              if (users.size === 0) db.selectBeforeFirstUpsert = true;
+              return users.get(args[0]) || null;
+            },
+            async run() {
+              assert.match(sql, /INSERT INTO users/);
+              assert.match(sql, /ON CONFLICT\(user_id\) DO UPDATE/);
+              assert.match(sql, /users\.employee_status = 'disabled'/);
+              const [
+                id,
+                account,
+                accountId,
+                email,
+                realname,
+                employeenum,
+                employeeStatus,
+                sessionVersion,
+                lastLoginAt,
+                createdAt,
+                updatedAt,
+              ] = args;
+              const existing = users.get(id) || null;
+              if (!existing) {
+                users.set(
+                  id,
+                  userRow({
+                    id,
+                    account,
+                    accountId,
+                    email,
+                    realname,
+                    employeenum,
+                    employeeStatus,
+                    sessionVersion,
+                    lastLoginAt,
+                    createdAt,
+                    updatedAt,
+                  })
+                );
+                return { meta: { changes: 1 } };
+              }
+              const effectiveStatus = resolveSsoEmployeeStatus(existing.employee_status, employeeStatus);
+              const staleActiveOrUnknown = effectiveStatus === existing.employee_status && effectiveStatus !== employeeStatus;
+              users.set(
+                id,
+                userRow({
+                  id,
+                  account: staleActiveOrUnknown ? existing.account : account || existing.account,
+                  accountId: staleActiveOrUnknown ? existing.account_id : accountId || existing.account_id,
+                  email: staleActiveOrUnknown ? existing.email : email,
+                  realname: staleActiveOrUnknown ? existing.realname : realname || existing.realname,
+                  employeenum: staleActiveOrUnknown ? existing.employeenum : employeenum || existing.employeenum,
+                  employeeStatus: effectiveStatus,
+                  sessionVersion: staleActiveOrUnknown
+                    ? existing.session_version
+                    : Math.max(
+                        sessionVersion,
+                        existing.session_version + (effectiveStatus === existing.employee_status ? 0 : 1)
+                      ),
+                  lastLoginAt: staleActiveOrUnknown ? existing.last_login_at : lastLoginAt,
+                  createdAt: existing.created_at,
+                  updatedAt: staleActiveOrUnknown ? existing.updated_at : updatedAt,
+                })
+              );
+              return { meta: { changes: 1 } };
+            },
+          };
+        },
+      };
+    },
+  };
+  return db;
+}
+
+function userRow({
+  id,
+  account,
+  accountId,
+  email,
+  realname,
+  employeenum,
+  employeeStatus,
+  sessionVersion,
+  lastLoginAt,
+  createdAt,
+  updatedAt,
+}) {
+  return {
+    user_id: id,
+    account,
+    account_id: accountId,
+    email,
+    realname,
+    employeenum,
+    employee_status: employeeStatus,
+    session_version: sessionVersion,
+    last_login_at: lastLoginAt,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
+function resolveSsoEmployeeStatus(existingStatus, incomingStatus) {
+  if (existingStatus === 'left' && incomingStatus !== 'left') return existingStatus;
+  if (existingStatus === 'disabled' && (incomingStatus === 'active' || incomingStatus === 'unknown')) {
+    return existingStatus;
+  }
+  return incomingStatus;
 }

@@ -52,25 +52,19 @@ export class D1PagesStore {
 
   async upsertUserFromSso(input) {
     const userId = input.userId || input.id;
-    const existing = await this.getUser(userId);
     const now = input.updatedAt || this.now();
     const incomingSessionVersion = input.sessionVersion || 1;
-    const statusChanged = existing && existing.employeeStatus !== input.employeeStatus;
-    const sessionVersion = Math.max(
-      incomingSessionVersion,
-      existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1
-    );
     const record = {
       id: userId,
       email: input.email,
-      realname: input.realname || existing?.realname || null,
-      account: input.account || existing?.account || null,
-      accountId: input.accountId || existing?.accountId || null,
-      employeenum: input.employeenum || existing?.employeenum || null,
+      realname: input.realname || null,
+      account: input.account || null,
+      accountId: input.accountId || null,
+      employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
-      sessionVersion,
+      sessionVersion: incomingSessionVersion,
       lastLoginAt: input.lastLoginAt || now,
-      createdAt: existing?.createdAt || now,
+      createdAt: now,
       updatedAt: now,
     };
     await this.db
@@ -80,15 +74,67 @@ export class D1PagesStore {
           last_login_at, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
-          account = excluded.account,
-          account_id = excluded.account_id,
-          email = excluded.email,
-          realname = excluded.realname,
-          employeenum = excluded.employeenum,
-          employee_status = excluded.employee_status,
-          session_version = ?,
-          last_login_at = excluded.last_login_at,
-          updated_at = excluded.updated_at`
+          account = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.account
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.account
+            ELSE COALESCE(excluded.account, users.account)
+          END,
+          account_id = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.account_id
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.account_id
+            ELSE COALESCE(excluded.account_id, users.account_id)
+          END,
+          email = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.email
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.email
+            ELSE excluded.email
+          END,
+          realname = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.realname
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.realname
+            ELSE COALESCE(excluded.realname, users.realname)
+          END,
+          employeenum = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.employeenum
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.employeenum
+            ELSE COALESCE(excluded.employeenum, users.employeenum)
+          END,
+          employee_status = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.employee_status
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.employee_status
+            ELSE excluded.employee_status
+          END,
+          session_version = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.session_version
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.session_version
+            WHEN users.employee_status = CASE
+              WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.employee_status
+              WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+                THEN users.employee_status
+              ELSE excluded.employee_status
+            END
+              THEN MAX(users.session_version, excluded.session_version)
+            ELSE MAX(users.session_version + 1, excluded.session_version)
+          END,
+          last_login_at = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.last_login_at
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.last_login_at
+            ELSE excluded.last_login_at
+          END,
+          updated_at = CASE
+            WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.updated_at
+            WHEN users.employee_status = 'disabled' AND excluded.employee_status IN ('active', 'unknown')
+              THEN users.updated_at
+            ELSE excluded.updated_at
+          END`
       )
       .bind(
         record.id,
@@ -101,11 +147,10 @@ export class D1PagesStore {
         record.sessionVersion,
         record.lastLoginAt,
         record.createdAt,
-        record.updatedAt,
-        record.sessionVersion
+        record.updatedAt
       )
       .run();
-    return cloneRecord(record);
+    return this.getUser(userId);
   }
 
   async getUser(id) {

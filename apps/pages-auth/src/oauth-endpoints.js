@@ -66,19 +66,20 @@ export async function handleOAuthCallback(request, env, config) {
 
   if (!profile.userId) return jsonError('SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
 
+  let authoritativeProfile;
   try {
-    await syncSsoUserProfile(env, profile, now);
+    authoritativeProfile = mergeSyncedUserAuthority(profile, await syncSsoUserProfile(env, profile, now));
   } catch {
     return jsonError('SSO_USER_SYNC_FAILED', 'SSO user could not be synced.', 502);
   }
 
-  if (profile.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) {
+  if (authoritativeProfile.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) {
     return jsonError('SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
   }
 
   let authSession;
   try {
-    authSession = await createAuthSession(env, config, profile.userId, now);
+    authSession = await createAuthSession(env, config, authoritativeProfile.userId, now);
   } catch {
     return jsonError('AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
@@ -88,7 +89,7 @@ export async function handleOAuthCallback(request, env, config) {
     try {
       confirmToken = await createCliLoginConfirmToken(env, {
         loginId: consumedState.cliLoginId,
-        userId: profile.userId,
+        userId: authoritativeProfile.userId,
         sid: authSession.sid,
         now,
       });
@@ -115,7 +116,7 @@ export async function handleOAuthCallback(request, env, config) {
   try {
     siteCode = await createOAuthSiteCodeRecord(env, {
       stateId: consumedState.record.id,
-      user: siteCodeUserFromProfile(profile),
+      user: siteCodeUserFromProfile(authoritativeProfile),
       now,
       ttlSeconds: SITE_CODE_TTL_SECONDS,
       codeSecret: createOpaqueToken('sec'),
@@ -346,6 +347,17 @@ async function syncSsoUserProfile(env, profile, now) {
     lastLoginAt: timestamp,
     updatedAt: timestamp,
   });
+}
+
+function mergeSyncedUserAuthority(profile, syncResult) {
+  const user = syncResult?.user || syncResult || {};
+  return {
+    ...profile,
+    userId: user.userId || user.id || profile.userId,
+    email: user.email || profile.email,
+    employeeStatus: user.employeeStatus || profile.employeeStatus,
+    sessionVersion: user.sessionVersion || profile.sessionVersion,
+  };
 }
 
 function createCliLoginConfirmToken(env, { loginId, userId, sid, now }) {

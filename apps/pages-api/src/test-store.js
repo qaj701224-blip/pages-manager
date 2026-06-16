@@ -53,19 +53,24 @@ class TestPagesStore {
     const existing = this.users.get(userId) || null;
     const now = input.updatedAt || this.now();
     const incomingSessionVersion = input.sessionVersion || 1;
-    const statusChanged = existing && existing.employeeStatus !== input.employeeStatus;
+    const incomingStatus = input.employeeStatus || 'unknown';
+    const employeeStatus = resolveSsoEmployeeStatus(existing?.employeeStatus, incomingStatus);
+    const staleActiveOrUnknown = existing && employeeStatus === existing.employeeStatus && employeeStatus !== incomingStatus;
+    const statusChanged = existing && existing.employeeStatus !== employeeStatus;
     const record = {
       id: userId,
-      email: input.email,
-      realname: input.realname || existing?.realname || null,
-      account: input.account || existing?.account || null,
-      accountId: input.accountId || existing?.accountId || null,
-      employeenum: input.employeenum || existing?.employeenum || null,
-      employeeStatus: input.employeeStatus || 'unknown',
-      sessionVersion: Math.max(incomingSessionVersion, existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1),
-      lastLoginAt: input.lastLoginAt || now,
+      email: staleActiveOrUnknown ? existing.email : input.email,
+      realname: staleActiveOrUnknown ? existing.realname : input.realname || existing?.realname || null,
+      account: staleActiveOrUnknown ? existing.account : input.account || existing?.account || null,
+      accountId: staleActiveOrUnknown ? existing.accountId : input.accountId || existing?.accountId || null,
+      employeenum: staleActiveOrUnknown ? existing.employeenum : input.employeenum || existing?.employeenum || null,
+      employeeStatus,
+      sessionVersion: staleActiveOrUnknown
+        ? existing.sessionVersion
+        : Math.max(incomingSessionVersion, existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1),
+      lastLoginAt: staleActiveOrUnknown ? existing.lastLoginAt : input.lastLoginAt || now,
       createdAt: existing?.createdAt || now,
-      updatedAt: now,
+      updatedAt: staleActiveOrUnknown ? existing.updatedAt : now,
     };
     this.users.set(record.id, record);
     return cloneRecord(record);
@@ -488,6 +493,14 @@ class TestPagesStore {
       route: this.routes.get(this.routeBySiteId.get(siteId)) || null,
     };
   }
+}
+
+function resolveSsoEmployeeStatus(existingStatus, incomingStatus) {
+  if (existingStatus === 'left' && incomingStatus !== 'left') return existingStatus;
+  if (existingStatus === 'disabled' && (incomingStatus === 'active' || incomingStatus === 'unknown')) {
+    return existingStatus;
+  }
+  return incomingStatus;
 }
 
 function routesMatch(actual, expected) {
