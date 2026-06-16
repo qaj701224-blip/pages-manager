@@ -1001,11 +1001,6 @@ function shouldStartSlackAgentReplyForTurn(intake, endpoint) {
   return endpoint?.mode === 'turn' && intake.action === 'agent_turn';
 }
 
-function sameSlackReplyTarget(message = {}, thread = {}) {
-  if (!message?.messageTs || !message.channel || !thread.channelId) return false;
-  return message.channel === thread.channelId && (message.threadTs || null) === (thread.threadTs || thread.messageTs || null);
-}
-
 async function startSlackAgentReplyMessage(env, store, body, slackSession, agentRun) {
   if (!canSendSlackOutput(env) || !store?.recordSlackAgentReplyMessage || !agentRun?.id || !slackSession?.id) return null;
   const existing = store.getSlackAgentReplyMessage ? await store.getSlackAgentReplyMessage(agentRun.id) : null;
@@ -1015,44 +1010,6 @@ async function startSlackAgentReplyMessage(env, store, body, slackSession, agent
   if (!thread.channelId) return null;
 
   const text = mentionSlackUser('我已收到，正在整理需求。', slackUserIdFromBody(body, null));
-  const reusable = store.getLatestSlackAgentReplyMessageForSession
-    ? await store.getLatestSlackAgentReplyMessageForSession(slackSession.id)
-    : null;
-  if (sameSlackReplyTarget(reusable, thread)) {
-    try {
-      const updateResult = await updateSlackAgentReply(env, reusable, {
-        text,
-        status: 'running',
-        blocks: buildSlackAgentReplyBlocks(
-          { text: '我已收到，正在整理需求。' },
-          { title: '需求整理', status: 'running' }
-        ),
-      });
-      if (updateResult?.ok && !updateResult.skipped) {
-        const message = await store.recordSlackAgentReplyMessage(agentRun.id, {
-          slackSessionId: slackSession.id,
-          channel: updateResult.channel || reusable.channel || thread.channelId,
-          threadTs: reusable.threadTs || thread.threadTs || thread.messageTs || null,
-          messageTs: updateResult.ts || updateResult.messageTs || reusable.messageTs,
-          textSnapshot: '我已收到，正在整理需求。',
-          lastSequence: 1,
-          status: 'running',
-        });
-        return { ...updateResult, action: 'reused', message };
-      }
-    } catch (err) {
-      console.log(
-        JSON.stringify({
-          service: 'pages-gateway',
-          message: 'slack_agent_reply_reuse_failed',
-          slackSessionId: slackSession.id,
-          agentRunId: agentRun.id,
-          error: err.message,
-        })
-      );
-    }
-  }
-
   let result;
   try {
     result = await startSlackAgentReply(
