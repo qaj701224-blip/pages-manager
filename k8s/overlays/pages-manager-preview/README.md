@@ -91,6 +91,7 @@ callback-secrets:
 
 github-platform-secret:
   github-webhook-secret
+  github-status-token
   github-app-installation-token or github-token
 
 slack-platform-secret:

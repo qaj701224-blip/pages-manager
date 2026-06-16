@@ -114,6 +114,7 @@ function slackText(text, emoji = true) {
 
 function stageLabel(stage, job = {}) {
   const normalized = stage || job.status;
+  if (normalized === 'cancelled' && job.errorCode === 'github_issue_closed') return 'Issue 已关闭';
   const labels = {
     received: '整理需求',
     issue_creating: '创建 issue',
@@ -130,6 +131,7 @@ function stageLabel(stage, job = {}) {
     previewing: '生成 Preview',
     preview_deployed: 'Preview 已生成',
     failed: '失败',
+    cancelled: '已取消',
   };
   return labels[normalized] || normalized || '处理中';
 }
@@ -232,11 +234,30 @@ function jobActionElements(job = {}) {
   ].filter(Boolean);
 }
 
+function jobStatusLine(job = {}, options = {}) {
+  if (job.status === 'failed') return ':x: 失败';
+  if (job.status === 'cancelled' && job.errorCode === 'github_issue_closed') {
+    return ':white_check_mark: Issue 已关闭，任务已停止';
+  }
+  if (job.status === 'cancelled') return ':white_check_mark: 任务已取消';
+  return options.statusText || ':hourglass_flowing_sand: 处理中';
+}
+
+function jobContextText(job = {}, statusLine = '') {
+  if (job.status === 'cancelled' && job.errorCode === 'github_issue_closed') {
+    return `${statusLine} · 这个任务不能继续修改；可以打开 Issue 查看记录，或重新描述一个新需求。`;
+  }
+  if (job.status === 'cancelled' || job.status === 'failed') {
+    return `${statusLine} · 这个任务不能继续修改；可以重新描述一个新需求。`;
+  }
+  return `${statusLine} · 继续修改可以直接在当前对话里回复。`;
+}
+
 export function buildJobStatusBlocks(job = {}, options = {}) {
   const stage = options.stage || job.status;
   const label = stageLabel(stage, job);
   const cardTitle = truncateText(options.cardTitle || label, 180);
-  const statusLine = job.status === 'failed' ? ':x: 失败' : options.statusText || ':hourglass_flowing_sand: 处理中';
+  const statusLine = jobStatusLine(job, options);
   const finalSummary = formatFinalSummary(job, options);
   const currentChange = formatCurrentChange(job, options);
   const fields = [slackText(`*当前阶段*\n${label}`), slackText(`*站点*\n${job.siteSlug || '-'}`), ...jobLinkFields(job)];
@@ -265,7 +286,7 @@ export function buildJobStatusBlocks(job = {}, options = {}) {
       : null,
     {
       type: 'context',
-      elements: [slackText(`${statusLine} · 继续修改可以直接在当前对话里回复。`)],
+      elements: [slackText(jobContextText(job, statusLine))],
     },
   ].filter(Boolean);
   const actions = jobActionElements(job);
