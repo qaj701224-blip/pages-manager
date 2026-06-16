@@ -7,6 +7,14 @@ async function json(response) {
   return response.json();
 }
 
+function findBlockAction(blocks = [], actionId = '') {
+  for (const block of blocks) {
+    const action = block.elements?.find((element) => element.action_id === actionId);
+    if (action) return action;
+  }
+  return null;
+}
+
 async function githubSignature(secret, body) {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -2262,6 +2270,271 @@ test('Slack work item list reconciles closed GitHub issues beyond the display li
   assert.doesNotMatch(visible, /#60/);
 });
 
+test('Slack work item list reconciles GitHub closed PRs before showing actions', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'stale-github-closed-pr-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-pr-on-github',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed PR profile page',
+    summary: 'GitHub PR 已关闭，但本地状态还没同步。',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+  });
+
+  const githubRequests = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-reconcile-closed-pr-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000139',
+          text: '我的 PR',
+        },
+      }),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_STATUS_TOKEN: 'ghs_status',
+      async GITHUB_STATUS_FETCH(url) {
+        githubRequests.push(String(url));
+        if (String(url).includes('/pulls/68')) {
+          return new Response(
+            JSON.stringify({
+              number: 68,
+              state: 'closed',
+              merged: false,
+              html_url: 'https://github.example/org/pages-manager/pull/68',
+            })
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            number: 65,
+            state: 'open',
+            html_url: 'https://github.example/org/pages-manager/issues/65',
+          })
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.jobs.length, 0);
+  assert.equal(app.store.getJob(job.id).status, 'cancelled');
+  assert.equal(app.store.getJob(job.id).errorCode, 'github_pr_closed');
+  assert.ok(githubRequests.some((url) => url.includes('/issues/65')));
+  assert.ok(githubRequests.some((url) => url.includes('/pulls/68')));
+  assert.doesNotMatch(visible, /closed-pr-on-github/);
+  assert.doesNotMatch(visible, /#68/);
+});
+
+test('Slack reopen button restores a closed GitHub PR work item', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'reopen-closed-pr-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-pr',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed PR profile page',
+    summary: '已关闭 PR 需要恢复。',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'cancelled',
+    errorCode: 'github_pr_closed',
+    errorMessage: 'GitHub PR #69 已关闭，发布任务已停止。',
+    issueNumber: 66,
+    issueUrl: 'https://github.example/org/pages-manager/issues/66',
+    prNumber: 69,
+    prUrl: 'https://github.example/org/pages-manager/pull/69',
+  });
+
+  const historyResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-reopen-pr-history-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000140',
+          text: '查看我的历史发布任务',
+        },
+      }),
+    })
+  );
+  const historyBody = await json(historyResponse);
+  const historyBlocks = JSON.stringify(historyBody.blocks);
+  const reopenAction = findBlockAction(historyBody.blocks, 'pages_reopen_work_item');
+
+  assert.match(historyBlocks, /PR 已关闭/);
+  assert.match(historyBlocks, /重新打开 PR/);
+  assert.ok(reopenAction);
+
+  const githubRequests = [];
+  const reopenResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        payload: JSON.stringify({
+          type: 'block_actions',
+          team: { id: 'T1' },
+          user: { id: 'U1' },
+          channel: { id: 'D1' },
+          message: { ts: '1710000000.000140' },
+          actions: [reopenAction],
+        }),
+      }).toString(),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_APP_INSTALLATION_TOKEN: 'ghs_write',
+      async GITHUB_FETCH(url, request) {
+        githubRequests.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            number: 69,
+            state: 'open',
+            merged: false,
+            html_url: 'https://github.example/org/pages-manager/pull/69',
+          })
+        );
+      },
+    }
+  );
+  const reopenBody = await json(reopenResponse);
+  const updatedJob = app.store.getJob(job.id);
+
+  assert.equal(reopenResponse.status, 200);
+  assert.equal(reopenBody.jobId, job.id);
+  assert.equal(updatedJob.status, 'reviewing');
+  assert.equal(updatedJob.errorCode, null);
+  assert.equal(updatedJob.errorMessage, null);
+  assert.equal(githubRequests[0].request.method, 'PATCH');
+  assert.match(githubRequests[0].url, /\/pulls\/69$/);
+  assert.equal(JSON.parse(githubRequests[0].request.body).state, 'open');
+});
+
+test('Slack reopen button restores a closed GitHub issue work item', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'reopen-closed-issue-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-issue',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed issue profile page',
+    summary: '已关闭 issue 需要恢复。',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    errorMessage: 'GitHub issue #70 已关闭，发布任务已停止。',
+    issueNumber: 70,
+    issueUrl: 'https://github.example/org/pages-manager/issues/70',
+  });
+
+  const historyResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-reopen-issue-history-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000141',
+          text: '查看我的历史发布任务',
+        },
+      }),
+    })
+  );
+  const historyBody = await json(historyResponse);
+  const historyBlocks = JSON.stringify(historyBody.blocks);
+  const reopenAction = findBlockAction(historyBody.blocks, 'pages_reopen_work_item');
+
+  assert.match(historyBlocks, /Issue 已关闭/);
+  assert.match(historyBlocks, /重新打开 Issue/);
+  assert.ok(reopenAction);
+
+  const githubRequests = [];
+  const reopenResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        payload: JSON.stringify({
+          type: 'block_actions',
+          team: { id: 'T1' },
+          user: { id: 'U1' },
+          channel: { id: 'D1' },
+          message: { ts: '1710000000.000141' },
+          actions: [reopenAction],
+        }),
+      }).toString(),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_APP_INSTALLATION_TOKEN: 'ghs_write',
+      async GITHUB_FETCH(url, request) {
+        githubRequests.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            number: 70,
+            state: 'open',
+            html_url: 'https://github.example/org/pages-manager/issues/70',
+          })
+        );
+      },
+    }
+  );
+  const reopenBody = await json(reopenResponse);
+  const updatedJob = app.store.getJob(job.id);
+
+  assert.equal(reopenResponse.status, 200);
+  assert.equal(reopenBody.jobId, job.id);
+  assert.equal(updatedJob.status, 'generating_page');
+  assert.equal(updatedJob.errorCode, null);
+  assert.equal(updatedJob.errorMessage, null);
+  assert.equal(githubRequests[0].request.method, 'PATCH');
+  assert.match(githubRequests[0].url, /\/issues\/70$/);
+  assert.equal(JSON.parse(githubRequests[0].request.body).state, 'open');
+});
+
 test('Slack close session stops running agent runs before the same thread continues', async () => {
   const app = createGatewayApp();
   const session = app.store.upsertSlackSession({
@@ -4256,6 +4529,93 @@ test('GitHub closed issue webhook marks the publishing job inactive', async () =
   assert.equal(body.job.status, 'cancelled');
   assert.equal(body.job.errorCode, 'github_issue_closed');
   assert.match(body.job.errorMessage, /issue #34 已关闭/);
+});
+
+test('GitHub pull_request webhook marks closed PR inactive and restores reopened PR', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-pr-webhook-closed',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  app.store.patchJob(createBody.job.id, {
+    status: 'preview_deployed',
+    issueNumber: 34,
+    issueUrl: 'https://github.example/org/pages-manager/issues/34',
+    prNumber: 35,
+    prUrl: 'https://github.example/org/pages-manager/pull/35',
+    headSha: 'a'.repeat(40),
+  });
+
+  const closedResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-pr-closed-1',
+        'X-GitHub-Event': 'pull_request',
+      },
+      body: JSON.stringify({
+        action: 'closed',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: {
+          number: 35,
+          state: 'closed',
+          merged: false,
+          html_url: 'https://github.example/org/pages-manager/pull/35',
+          head: { sha: 'a'.repeat(40) },
+        },
+      }),
+    })
+  );
+  const closedBody = await json(closedResponse);
+
+  assert.equal(closedResponse.status, 200);
+  assert.equal(closedBody.prAction, 'job_cancelled_by_pr_closed');
+  assert.equal(closedBody.job.status, 'cancelled');
+  assert.equal(closedBody.job.errorCode, 'github_pr_closed');
+  assert.match(closedBody.job.errorMessage, /PR #35 已关闭/);
+
+  const reopenedResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-pr-reopened-1',
+        'X-GitHub-Event': 'pull_request',
+      },
+      body: JSON.stringify({
+        action: 'reopened',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: {
+          number: 35,
+          state: 'open',
+          merged: false,
+          html_url: 'https://github.example/org/pages-manager/pull/35',
+          head: { sha: 'a'.repeat(40) },
+        },
+      }),
+    })
+  );
+  const reopenedBody = await json(reopenedResponse);
+
+  assert.equal(reopenedResponse.status, 200);
+  assert.equal(reopenedBody.prAction, 'job_restored_by_pr_reopened');
+  assert.equal(reopenedBody.job.status, 'reviewing');
+  assert.equal(reopenedBody.job.errorCode, null);
+  assert.equal(reopenedBody.job.errorMessage, null);
 });
 
 test('late issue_created callback is idempotent after GitHub issue webhook started pages-agent', async () => {

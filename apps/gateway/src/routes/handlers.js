@@ -42,8 +42,10 @@ import {
   findVisibleSlackJobByPrNumber,
   inactiveSlackWorkItemReply,
   isActionableSlackWorkItem,
+  isReopenableSlackWorkItem,
   listSlackWorkItemsForSession,
   parseSlackButtonValue,
+  reopenTargetForSlackWorkItem,
   slackJobVisibleToActor,
   slackWorkItemListBlocks,
   slackWorkItemListText,
@@ -170,8 +172,33 @@ async function cancelJobForClosedGithubIssue(store, job, issue = {}) {
   });
 }
 
+async function cancelJobForClosedGithubPr(store, job, pullRequest = {}) {
+  const message = pullRequest.number
+    ? `GitHub PR #${pullRequest.number} 已关闭，发布任务已停止。`
+    : 'GitHub PR 已关闭，发布任务已停止。';
+  if (store.cancelJob) {
+    return await store.cancelJob(job.id, 'github_pr_closed', message);
+  }
+  return await store.patchJob(job.id, {
+    status: 'cancelled',
+    errorCode: 'github_pr_closed',
+    errorMessage: message,
+  });
+}
+
 function gatewayGithubConfig(env = {}) {
   const token = env.GITHUB_STATUS_TOKEN || env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
+  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
+  if (!token || !repoFullName) return null;
+  return {
+    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
+    token,
+    repoFullName,
+  };
+}
+
+function gatewayGithubWriteConfig(env = {}) {
+  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN || env.GITHUB_STATUS_TOKEN;
   const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
   if (!token || !repoFullName) return null;
   return {
@@ -184,6 +211,11 @@ function gatewayGithubConfig(env = {}) {
 function githubIssueIsClosed(issue = {}) {
   if (!issue) return false;
   return issue.state === 'closed' || Boolean(issue.closed_at);
+}
+
+function githubPullRequestIsClosed(pullRequest = {}) {
+  if (!pullRequest) return false;
+  return pullRequest.state === 'closed' && !pullRequest.merged;
 }
 
 async function fetchGithubIssueForJob(env = {}, job = {}) {
@@ -199,43 +231,148 @@ async function fetchGithubIssueForJob(env = {}, job = {}) {
   return result.body || null;
 }
 
-async function reconcileClosedGithubIssueForJob(store, env, job, options = {}) {
-  if (!job?.id || !job.issueNumber || job.status === 'cancelled') return job;
+async function fetchGithubPullRequestForJob(env = {}, job = {}) {
+  const config = gatewayGithubConfig(env);
+  if (!config || !job?.prNumber) return null;
 
-  let issue = null;
-  try {
-    issue = await fetchGithubIssueForJob(env, job);
-  } catch (err) {
-    console.log(
-      JSON.stringify({
-        service: 'pages-gateway',
-        message: 'github_issue_state_reconcile_failed',
-        jobId: job.id,
-        issueNumber: job.issueNumber,
-        error: err.message,
-      })
-    );
-    return job;
+  const { owner, repo } = parseRepoFullName(config.repoFullName);
+  const fetchImpl = env.GITHUB_STATUS_FETCH || env.GITHUB_FETCH || fetch;
+  const result = await githubRequest(fetchImpl, config, {
+    method: 'GET',
+    url: githubApiUrl(config, `/repos/${owner}/${repo}/pulls/${job.prNumber}`),
+  });
+  return result.body || null;
+}
+
+function pullRequestUrl(pullRequest = {}) {
+  return pullRequest.html_url || pullRequest.url || null;
+}
+
+function restoredStatusForReopenedGithubResource(job = {}, target = '') {
+  if (target === 'pr' || job.prNumber) return 'reviewing';
+  return 'generating_page';
+}
+
+async function restoreJobForReopenedGithubResource(store, job, target, resource = {}) {
+  const patch = {
+    status: restoredStatusForReopenedGithubResource(job, target),
+    errorCode: null,
+    errorMessage: null,
+  };
+  if (target === 'issue') {
+    patch.issueNumber = resource.number || job.issueNumber || null;
+    patch.issueUrl = issueUrl(resource) || job.issueUrl || null;
+  }
+  if (target === 'pr') {
+    patch.prNumber = resource.number || job.prNumber || null;
+    patch.prUrl = pullRequestUrl(resource) || job.prUrl || null;
+  }
+  return await store.patchJob(job.id, patch);
+}
+
+async function reopenGithubResourceForJob(env = {}, job = {}, target = '') {
+  const config = gatewayGithubWriteConfig(env);
+  if (!config) {
+    const error = new Error('GitHub write token is not configured');
+    error.status = 503;
+    throw error;
   }
 
-  if (!githubIssueIsClosed(issue)) return job;
+  const { owner, repo } = parseRepoFullName(config.repoFullName);
+  const fetchImpl = env.GITHUB_FETCH || env.GITHUB_STATUS_FETCH || fetch;
+  const number = target === 'pr' ? job.prNumber : job.issueNumber;
+  if (!number) {
+    const error = new Error(target === 'pr' ? 'PR number is missing' : 'Issue number is missing');
+    error.status = 400;
+    throw error;
+  }
+
+  const pathname = target === 'pr' ? `/repos/${owner}/${repo}/pulls/${number}` : `/repos/${owner}/${repo}/issues/${number}`;
+  const result = await githubRequest(fetchImpl, config, {
+    method: 'PATCH',
+    url: githubApiUrl(config, pathname),
+    body: { state: 'open' },
+  });
+  return result.body || null;
+}
+
+async function reconcileClosedGithubIssueForJob(store, env, job, options = {}) {
+  if (!job?.id || job.status === 'cancelled') return job;
 
   let updatedJob = job;
-  const nextIssueUrl = issueUrl(issue) || job.issueUrl || null;
-  if (nextIssueUrl !== job.issueUrl) {
-    updatedJob = await store.patchJob(job.id, { issueUrl: nextIssueUrl });
+  let issue = null;
+  if (job.issueNumber) {
+    try {
+      issue = await fetchGithubIssueForJob(env, job);
+    } catch (err) {
+      console.log(
+        JSON.stringify({
+          service: 'pages-gateway',
+          message: 'github_issue_state_reconcile_failed',
+          jobId: job.id,
+          issueNumber: job.issueNumber,
+          error: err.message,
+        })
+      );
+    }
   }
-  updatedJob = await cancelJobForClosedGithubIssue(store, updatedJob, issue);
+
+  if (githubIssueIsClosed(issue)) {
+    const nextIssueUrl = issueUrl(issue) || job.issueUrl || null;
+    if (nextIssueUrl !== job.issueUrl) {
+      updatedJob = await store.patchJob(job.id, { issueUrl: nextIssueUrl });
+    }
+    updatedJob = await cancelJobForClosedGithubIssue(store, updatedJob, issue);
+    await store.linkJobToSlackSession(updatedJob);
+
+    if (options.notifySlack) {
+      await notifySlackJobStatus(env, store, updatedJob, {
+        stage: 'cancelled',
+        cardTitle: 'Issue 已关闭',
+        text: 'GitHub issue 已关闭，当前发布任务已停止。',
+        statusText: ':white_check_mark: GitHub issue 已关闭，任务已停止。',
+        skipDuplicate: false,
+        dedupeKey: `github-issue-reconciled-closed:${updatedJob.id}:${updatedJob.issueNumber || 'unknown'}`,
+      });
+    }
+
+    return updatedJob;
+  }
+
+  let pullRequest = null;
+  if (updatedJob.prNumber) {
+    try {
+      pullRequest = await fetchGithubPullRequestForJob(env, updatedJob);
+    } catch (err) {
+      console.log(
+        JSON.stringify({
+          service: 'pages-gateway',
+          message: 'github_pr_state_reconcile_failed',
+          jobId: updatedJob.id,
+          prNumber: updatedJob.prNumber,
+          error: err.message,
+        })
+      );
+    }
+  }
+
+  if (!githubPullRequestIsClosed(pullRequest)) return updatedJob;
+
+  const nextPrUrl = pullRequestUrl(pullRequest) || updatedJob.prUrl || null;
+  if (nextPrUrl !== updatedJob.prUrl) {
+    updatedJob = await store.patchJob(updatedJob.id, { prUrl: nextPrUrl });
+  }
+  updatedJob = await cancelJobForClosedGithubPr(store, updatedJob, pullRequest);
   await store.linkJobToSlackSession(updatedJob);
 
   if (options.notifySlack) {
     await notifySlackJobStatus(env, store, updatedJob, {
       stage: 'cancelled',
-      cardTitle: 'Issue 已关闭',
-      text: 'GitHub issue 已关闭，当前发布任务已停止。',
-      statusText: ':white_check_mark: GitHub issue 已关闭，任务已停止。',
+      cardTitle: 'PR 已关闭',
+      text: 'GitHub PR 已关闭，当前发布任务已停止。',
+      statusText: ':white_check_mark: GitHub PR 已关闭，任务已停止。',
       skipDuplicate: false,
-      dedupeKey: `github-issue-reconciled-closed:${updatedJob.id}:${updatedJob.issueNumber || 'unknown'}`,
+      dedupeKey: `github-pr-reconciled-closed:${updatedJob.id}:${updatedJob.prNumber || 'unknown'}`,
     });
   }
 
@@ -303,6 +440,39 @@ async function handleGithubIssueWebhook({ body, action, store, env, result }) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'issue_number_mismatch', job });
   }
 
+  if (action === 'reopened') {
+    if (issueNumber && !job.issueNumber) {
+      job = await store.patchJob(job.id, {
+        issueNumber,
+        issueUrl: issueUrl(issue),
+      });
+    }
+
+    if (job.status === 'cancelled' && job.errorCode === 'github_issue_closed') {
+      job = await restoreJobForReopenedGithubResource(store, job, 'issue', issue);
+      await store.linkJobToSlackSession(job);
+      const workerStart = await startWorkerForJobIfConfigured(job, env);
+      const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+        stage: job.status,
+        text: 'GitHub issue 已重新打开，发布任务已恢复。',
+        statusText: ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
+        skipDuplicate: false,
+        dedupeKey: `github-issue-reopened:${job.id}:${issueNumber || 'unknown'}`,
+      });
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        issueAction: 'job_restored_by_issue_reopened',
+        job,
+        ...(workerStart ? { workerStart } : {}),
+        ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      });
+    }
+
+    return jsonResponse({ ok: true, created: true, delivery: result.delivery, issueAction: 'issue_reopened_recorded', job });
+  }
+
   if (action === 'closed') {
     if (issueNumber && !job.issueNumber) {
       job = await store.patchJob(job.id, {
@@ -360,6 +530,74 @@ async function handleGithubIssueWebhook({ body, action, store, env, result }) {
     job,
     ...(workerStart ? { workerStart } : {}),
   });
+}
+
+async function handleGithubPullRequestWebhook({ body, action, store, env, result }) {
+  if (!['closed', 'reopened'].includes(action)) {
+    return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'unsupported_pull_request_action' });
+  }
+
+  const pullRequest = body.pull_request || {};
+  const prNumber = pullRequest.number || body.number || null;
+  if (!prNumber) {
+    return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'missing_pr_number' });
+  }
+
+  let job = await store.findJobByPrNumber(prNumber, { headSha: pullRequest.head?.sha || null });
+  if (!job) {
+    return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'job_not_found', prNumber });
+  }
+
+  if (pullRequest.html_url && pullRequest.html_url !== job.prUrl) {
+    job = await store.patchJob(job.id, { prUrl: pullRequest.html_url });
+  }
+
+  if (action === 'closed') {
+    if (pullRequest.merged) {
+      return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'merged_pr', job });
+    }
+
+    job = await cancelJobForClosedGithubPr(store, job, pullRequest);
+    await store.linkJobToSlackSession(job);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+      stage: 'cancelled',
+      cardTitle: 'PR 已关闭',
+      text: 'GitHub PR 已关闭，当前发布任务已停止。',
+      statusText: ':white_check_mark: GitHub PR 已关闭，任务已停止。',
+      skipDuplicate: false,
+      dedupeKey: `github-pr-closed:${job.id}:${prNumber}`,
+    });
+    return jsonResponse({
+      ok: true,
+      created: true,
+      delivery: result.delivery,
+      prAction: 'job_cancelled_by_pr_closed',
+      job,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    });
+  }
+
+  if (job.status === 'cancelled' && job.errorCode === 'github_pr_closed') {
+    job = await restoreJobForReopenedGithubResource(store, job, 'pr', pullRequest);
+    await store.linkJobToSlackSession(job);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+      stage: job.status,
+      text: 'GitHub PR 已重新打开，发布任务已恢复。',
+      statusText: ':white_check_mark: GitHub PR 已重新打开，任务已恢复。',
+      skipDuplicate: false,
+      dedupeKey: `github-pr-reopened:${job.id}:${prNumber}`,
+    });
+    return jsonResponse({
+      ok: true,
+      created: true,
+      delivery: result.delivery,
+      prAction: 'job_restored_by_pr_reopened',
+      job,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    });
+  }
+
+  return jsonResponse({ ok: true, created: true, delivery: result.delivery, prAction: 'pr_reopened_recorded', job });
 }
 
 async function readResponseJson(response) {
@@ -3509,6 +3747,72 @@ export async function handleSlackInteractions(request, env) {
     });
   }
 
+  if (actionId === 'pages_reopen_work_item') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个任务卡片不属于当前 Slack 用户，不能重新打开。',
+      });
+    }
+
+    let job = value.jobId ? await store.getJob(value.jobId) : null;
+    if (!job || !slackJobVisibleToActor(job, body)) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个发布任务不存在，或不属于当前 Slack 用户。',
+      });
+    }
+
+    const target = value.target || reopenTargetForSlackWorkItem(job);
+    if (!isReopenableSlackWorkItem(job) || !target) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个发布任务当前不能重新打开。',
+      });
+    }
+
+    let resource = null;
+    try {
+      resource = await reopenGithubResourceForJob(env, job, target);
+    } catch (err) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: `重新打开失败：${err.message}`,
+      });
+    }
+
+    job = await restoreJobForReopenedGithubResource(store, job, target, resource || {});
+    await store.linkJobToSlackSession(job, session);
+    const workerStart = await startWorkerForJobIfConfigured(job, env);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+      stage: job.status,
+      text: target === 'pr' ? 'GitHub PR 已重新打开，发布任务已恢复。' : 'GitHub issue 已重新打开，发布任务已恢复。',
+      statusText: target === 'pr' ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。' : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
+      skipDuplicate: false,
+      dedupeKey: `slack-reopen:${target}:${job.id}:${body.trigger_id || Date.now()}`,
+      slackSessionId: session.id,
+    });
+    const refreshed = await listReconciledSlackWorkItemsForSession(store, body, env, {
+      limit: 5,
+      includeInactive: Boolean(value.includeInactive),
+    });
+    const listUpdate = await updateSlackInteractionMessage(env, body, session, {
+      text: slackWorkItemListText(refreshed.jobs || [], { includeInactive: Boolean(value.includeInactive) }),
+      blocks: slackWorkItemListBlocks(session, refreshed.jobs || [], { includeInactive: Boolean(value.includeInactive) }),
+    });
+
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: target === 'pr' ? '已重新打开 PR，继续在这个对话里回复修改意见即可。' : '已重新打开 Issue，继续在这个对话里回复修改意见即可。',
+      jobId: job.id,
+      ...(workerStart ? { workerStart } : {}),
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      ...(listUpdate ? { listUpdate } : {}),
+    });
+  }
+
   if (actionId === 'pages_close_session') {
     const sessionId = action.value || '';
     const session = await store.getSlackSession(sessionId);
@@ -3843,6 +4147,10 @@ export async function handleGithubWebhook(request, env) {
 
   if (eventName === 'issues') {
     return handleGithubIssueWebhook({ body, action, store, env, result });
+  }
+
+  if (eventName === 'pull_request') {
+    return handleGithubPullRequestWebhook({ body, action, store, env, result });
   }
 
   const siteCheckRun = normalizeSiteCheckRunWebhook(body, eventName, deliveryId, repoFullName);
