@@ -2164,6 +2164,104 @@ test('Slack work item list reconciles GitHub closed issues before showing action
   assert.doesNotMatch(historyBlocks, /pages_select_work_item/);
 });
 
+test('Slack work item list reconciles closed GitHub issues beyond the display limit', async () => {
+  const app = createGatewayApp();
+  const closed = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'stale-closed-beyond-display-limit',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-old',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed old profile page',
+    summary: '这个任务已经在 GitHub 关闭，但本地状态还没同步。',
+  }).job;
+  app.store.patchJob(closed.id, {
+    status: 'preview_deployed',
+    issueNumber: 60,
+    issueUrl: 'https://github.example/org/pages-manager/issues/60',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  for (let index = 0; index < 6; index += 1) {
+    const active = app.store.createJob({
+      source: 'slack',
+      requestedByType: 'user',
+      requestedById: 'slack:T1:U1',
+      idempotencyKey: `active-before-closed-${index}`,
+      employeeSlug: 'u1',
+      siteSlug: `active-${index}`,
+      intent: 'create_site',
+      approvalMode: 'manual_required',
+      title: `Active profile page ${index}`,
+      summary: '可继续任务',
+    }).job;
+    const patched = app.store.patchJob(active.id, {
+      status: 'preview_deployed',
+      issueNumber: 100 + index,
+      issueUrl: `https://github.example/org/pages-manager/issues/${100 + index}`,
+      prNumber: 200 + index,
+    });
+    app.store.jobs.set(patched.id, {
+      ...patched,
+      updatedAt: `2026-06-16T00:0${index}:00.000Z`,
+    });
+  }
+
+  app.store.jobs.set(closed.id, {
+    ...app.store.getJob(closed.id),
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  const githubRequests = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-reconcile-beyond-limit-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000138',
+          text: '我的 PR',
+        },
+      }),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_STATUS_TOKEN: 'ghs_status',
+      async GITHUB_STATUS_FETCH(url) {
+        const issueNumber = Number(String(url).match(/\/issues\/(\d+)$/)?.[1] || 0);
+        githubRequests.push(issueNumber);
+        return new Response(
+          JSON.stringify({
+            number: issueNumber,
+            state: issueNumber === 60 ? 'closed' : 'open',
+            closed_at: issueNumber === 60 ? '2026-06-15T08:01:25.000Z' : null,
+            html_url: `https://github.example/org/pages-manager/issues/${issueNumber}`,
+          })
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.jobs.length, 5);
+  assert.equal(app.store.getJob(closed.id).status, 'cancelled');
+  assert.equal(app.store.getJob(closed.id).errorCode, 'github_issue_closed');
+  assert.ok(githubRequests.includes(60));
+  assert.doesNotMatch(visible, /closed-old/);
+  assert.doesNotMatch(visible, /#60/);
+});
+
 test('Slack close session stops running agent runs before the same thread continues', async () => {
   const app = createGatewayApp();
   const session = app.store.upsertSlackSession({

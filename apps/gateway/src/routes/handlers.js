@@ -243,20 +243,27 @@ async function reconcileClosedGithubIssueForJob(store, env, job, options = {}) {
 }
 
 async function listReconciledSlackWorkItemsForSession(store, body, env, options = {}) {
-  const result = await listSlackWorkItemsForSession(store, body, options);
-  const jobs = [];
+  const displayLimit = Math.min(Math.max(Number(options.limit) || 5, 1), 20);
+  const reconcileLimit = options.reconcileLimit || Math.max(displayLimit, 20);
+  const result = await listSlackWorkItemsForSession(store, body, {
+    ...options,
+    limit: reconcileLimit,
+  });
+  const reconciledJobs = [];
 
   for (const job of result.jobs || []) {
     const reconciled = await reconcileClosedGithubIssueForJob(store, env, job);
     if (options.includeInactive || isActionableSlackWorkItem(reconciled)) {
-      jobs.push(reconciled);
+      reconciledJobs.push(reconciled);
     }
   }
 
+  const jobs = reconciledJobs.slice(0, displayLimit);
   return {
     ...result,
     jobs,
     total: jobs.length,
+    limit: displayLimit,
   };
 }
 
