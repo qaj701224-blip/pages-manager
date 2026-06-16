@@ -51,7 +51,7 @@ services:
       SLACK_FAILED_REACTION: ${SLACK_FAILED_REACTION:-x}
       PAGES_WORKER_START_URL: http://pages-worker:8790/internal/publishing-jobs/start
       PAGES_WORKER_SHARED_SECRET: ${PAGES_WORKER_SHARED_SECRET:?set PAGES_WORKER_SHARED_SECRET in .env.ecs}
-      SLACK_AGENT_ANALYZE_URL: http://slack-agent:8791/internal/slack-agent/analyze
+      SLACK_AGENT_TURN_URL: http://slack-agent:8791/internal/slack-agent/turn
       SLACK_AGENT_SHARED_SECRET: ${SLACK_AGENT_SHARED_SECRET:?set SLACK_AGENT_SHARED_SECRET in .env.ecs}
       SLACK_NOTIFIER_URL: http://slack-notifier:8792
       SLACK_NOTIFIER_SHARED_SECRET: ${SLACK_NOTIFIER_SHARED_SECRET:?set SLACK_NOTIFIER_SHARED_SECRET in .env.ecs}

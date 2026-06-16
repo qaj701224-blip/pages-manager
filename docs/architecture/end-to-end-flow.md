@@ -36,16 +36,18 @@ sequenceDiagram
   S->>G: POST /integrations/slack/events
   G->>DB: 记录 slack_events / session
   G->>N: 给原消息加 working reaction
-  G->>A: /internal/slack-agent/analyze
-  A-->>G: intent / summary / clarification
-  G->>DB: 写 AgentRun / SessionMemory
+  G->>N: 创建或复用轻量 Agent 对话消息
+  G->>A: /internal/slack-agent/turn
+  A-->>G: 语义分块 reply_delta / analysis_final
+  G->>DB: 写 AgentRunEvent / SessionMemory
 
   alt 信息不足
-    G->>N: 在同一 thread 回复澄清问题
+    G->>N: chat.update 同一条轻量 Agent 回复，展示澄清问题
   else 信息足够
-    G->>N: 展示确认卡片
+    G->>N: chat.update 同一条 Agent 回复，升级为确认卡片
     U->>S: 点击确认
     S->>G: POST /integrations/slack/interactions
+    G->>N: chat.update 锁定确认卡片并移除确认按钮
     G->>DB: 创建 PublishingJob
     G->>W: /internal/publishing-jobs/start
     W->>GH: 创建 / 复用 issue
@@ -92,6 +94,7 @@ sequenceDiagram
 
 - gateway 用 `SlackSession` 和 `IssueLink` 定位当前 job / issue / PR。
 - Slack Agent 只总结修改意图，不直接改代码。
+- 同一个 active session 优先复用同一条轻量 Agent 回复消息；确认前按语义片段更新正文，信息足够后才升级为确认卡；执行阶段只更新同一张状态卡，不刷多条重复卡片。
 - worker 追加 GitHub issue comment。
 - job 进入 `changes_requested` / `fixing`。
 - `pages-agent.yml(mode=fix)` 修改同一个 PR branch。
@@ -100,7 +103,7 @@ sequenceDiagram
 
 如果 job 已在 `fixing`，新的 Slack 修改进入 pending 队列，避免多个 Coding Agent 并发改同一个 PR。
 
-Slack-first 主链路的 HTTP 入口、session、对话流式、notifier 和状态卡合同见 [slack-platform-runtime.md](./slack-platform-runtime.md)。GitHub webhook、Review Agent comment 监听和 preview gate 规则见 [github-automation.md](./github-automation.md)。
+Slack-first 主链路的 HTTP 入口、session、语义分块准流式回复、notifier 和状态卡合同见 [slack-platform-runtime.md](./slack-platform-runtime.md)。GitHub webhook、Review Agent comment 监听和 preview gate 规则见 [github-automation.md](./github-automation.md)。
 
 ## 用户和站点隔离
 
