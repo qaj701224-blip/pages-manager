@@ -15,6 +15,10 @@ export function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
 }
 
+export function isWorkItemHistoryQuery(text = '') {
+  return WORK_ITEM_HISTORY_RE.test(String(text || ''));
+}
+
 function unsupportedBulkDestructiveReply() {
   return '我不能批量关闭或删除你名下的 GitHub issue / PR / 发布任务。为了避免误操作，请先说「我的 PR」查看可继续任务，或明确指定一个 PR / issue 再处理。';
 }
@@ -166,7 +170,7 @@ export function classifySlackIntake(body) {
       action: 'list_work_items',
       shouldCreateJob: false,
       text,
-      includeInactive: WORK_ITEM_HISTORY_RE.test(text),
+      includeInactive: isWorkItemHistoryQuery(text),
       replyText: null,
     };
   }
