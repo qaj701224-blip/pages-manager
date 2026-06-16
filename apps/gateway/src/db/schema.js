@@ -362,6 +362,28 @@ export const slackJobStatusMessages = mysqlTable(
   })
 );
 
+export const slackAgentReplyMessages = mysqlTable(
+  'slack_agent_reply_messages',
+  {
+    id: id('id').primaryKey(),
+    slackSessionId: id('slack_session_id').notNull(),
+    agentRunId: id('agent_run_id').notNull(),
+    channel: externalId('channel'),
+    threadTs: varchar('thread_ts', { length: 64 }),
+    messageTs: varchar('message_ts', { length: 64 }),
+    textSnapshot: text('text_snapshot'),
+    lastSequence: int('last_sequence').notNull().default(0),
+    status: varchar('status', { length: 80 }).notNull().default('running'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    agentRunUk: uniqueIndex('slack_agent_reply_messages_run_uk').on(table.agentRunId),
+    sessionIdx: index('slack_agent_reply_messages_session_idx').on(table.slackSessionId, table.updatedAt),
+    channelMessageIdx: index('slack_agent_reply_messages_channel_idx').on(table.channel, table.messageTs),
+  })
+);
+
 export const slackNotificationDedupes = mysqlTable(
   'slack_notification_dedupes',
   {

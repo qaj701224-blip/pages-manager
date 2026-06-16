@@ -216,3 +216,36 @@ export function rowToSlackJobStatusMessage(row) {
     updatedAt: toIso(row.updated_at),
   };
 }
+
+export function slackAgentReplyMessageToRow(message) {
+  return {
+    id: message.id || makeId('slackreply'),
+    slack_session_id: message.slackSessionId,
+    agent_run_id: message.agentRunId,
+    channel: message.channel,
+    thread_ts: message.threadTs,
+    message_ts: message.messageTs,
+    text_snapshot: message.textSnapshot,
+    last_sequence: message.lastSequence || 0,
+    status: message.status || 'running',
+    created_at: toDate(message.createdAt),
+    updated_at: toDate(message.updatedAt),
+  };
+}
+
+export function rowToSlackAgentReplyMessage(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    slackSessionId: row.slack_session_id,
+    agentRunId: row.agent_run_id,
+    channel: row.channel || null,
+    threadTs: row.thread_ts || null,
+    messageTs: row.message_ts || null,
+    textSnapshot: row.text_snapshot || '',
+    lastSequence: row.last_sequence || 0,
+    status: row.status || 'running',
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
