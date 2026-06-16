@@ -197,7 +197,7 @@ KV 是边缘运行时快照：
 
 ## 迁移路径
 
-MVP 可以保留现有一站点一 Worker 的兼容发布能力，但新平台模型必须抽象出 `CloudflareResourcePool`。
+当前可以保留现有一站点一 Worker 的兼容发布能力，但新平台模型必须抽象出 `CloudflareResourcePool`。
 
 建议分两步：
 

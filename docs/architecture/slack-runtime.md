@@ -15,9 +15,9 @@ pages-manager Slack runtime
   跑在 pages-manager 自己的常驻平台服务中
 ```
 
-也就是说，Slack 本身不跑在我们的 K8s，也不跑在 GitHub Actions。Slack bot 的运行逻辑跑在 `pages-manager` 的常驻服务里：本地、测试服务器和生产都跑在 K8s 的 `pages-system` namespace 或对应系统 namespace，并沿用同一套控制面 manifests。
+也就是说，Slack 本身不跑在我们的 K8s，也不跑在 GitHub Actions。Slack bot 的运行逻辑跑在 `pages-manager` 的常驻服务里：本地 K8s、ECS compose、ACK 和后续生产都应保持 `pages-gateway / slack-agent / pages-worker / slack-notifier` 这套控制面形态。
 
-当前采用 Slack HTTP Events / Interactivity 直达 K8s `pages-gateway`，不再使用 Socket Mode listener，也不保留 Socket fallback：
+当前采用 Slack HTTP Events / Interactivity 直达 `pages-gateway`，不再使用 Socket Mode listener，也不保留 Socket fallback：
 
 ```text
 Slack Events API / Interactivity
@@ -29,7 +29,7 @@ POST /integrations/slack/interactions
   ↓
 apps/gateway
   - 校验 Slack signature / timestamp
-  - 幂等接收 SlackEvent
+  - 幂等接收 Slack event 并写入 MySQL
   - 请求 slack-notifier 对原消息添加 working reaction
   - 调用 apps/slack-agent 做需求分析
   - 推进后续 issue / coding agent / PR / preview 状态
@@ -71,15 +71,15 @@ apps/slack-agent
   ↓
 pages-worker
   - 推进 issue → coding agent → patch → PR → Review Agent comments → fix → preview deploy
-  - 需要时调用 project-indexer 固定 agent context
+  - 需要时 dispatch `project-index.yml` 固定 agent context
   ↓
 slack-notifier
   - 回写 Slack 进度和结果
 ```
 
-## Namespace
+## Runtime 部署形态
 
-Slack 相关常驻服务放在系统 namespace：
+K8s 形态下，Slack 相关常驻服务放在系统 namespace：
 
 ```text
 namespace: pages-system
@@ -96,11 +96,24 @@ Actions executor 形态不需要 `pages-jobs` namespace，但仍然要保留同�
 
 Slack 不放在 `page-job-<jobId>` namespace。Job namespace 只运行一次性任务，例如 coding-agent、builder、site-check、controlled-committer、deployer。
 
+ECS compose 形态下，服务名保持一致：
+
+```text
+pages-gateway
+pages-worker
+slack-agent
+slack-notifier
+pages-mysql
+pages-redis
+```
+
+ECS 只是当前测试部署载体，不改变组件职责。
+
 ## Token 和 Secret 位置
 
 Slack token 是平台级凭据，不属于员工，也不属于站点。
 
-当前 Slack App 权限可以先拉满，不把 scope 申请作为上线阻塞项。但权限拉满不等于运行时 token 可以到处传。平台仍然必须按组件拆分 secret 注入，避免 GitHub Actions runner、job container 或 coding agent 拿到 Slack bot token。
+当前 Slack App 权限可以先拉满，不把 scope 申请作为测试阻塞项。但权限拉满不等于运行时 token 可以到处传。平台仍然必须按组件拆分 secret 注入，避免 GitHub Actions runner、job container 或 coding agent 拿到 Slack bot token。
 
 ```text
 secret ref: pages-slack-platform-secret
@@ -305,8 +318,6 @@ SlackEvent
 ## 进度回写
 
 回写 Slack 不应散落在各个 executor 任务里。
-
-富交互状态卡片、实时回写、`SlackMessageBinding`、独立 `slack-notifier` 和 K8s 多副本验收细节见 [slack-http-rich-workbench.md](./slack-http-rich-workbench.md)。本节只保留运行时边界和当前代码快照。
 
 推荐统一为：
 
