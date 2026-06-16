@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classifySlackIntake, normalizeSlackIntakeText, slackStatusReply } from '../../../apps/gateway/src/slack/intake.js';
+import {
+  classifySlackIntake,
+  normalizeSlackIntakeText,
+  parseSlackWorkItemReference,
+  slackStatusReply,
+} from '../../../apps/gateway/src/slack/intake.js';
 
 function body(text) {
   return {
@@ -119,7 +124,31 @@ test('marks explicit work item history list requests', () => {
   const result = classifySlackIntake(body('查看我的历史发布任务'));
 
   assert.equal(result.action, 'list_work_items');
+  assert.equal(result.shouldAnalyze, true);
+  assert.equal(result.workItemState, 'all');
   assert.equal(result.includeInactive, true);
+});
+
+test('marks closed work item list requests separately from all history', () => {
+  const result = classifySlackIntake(body('查看我已关闭的发布任务'));
+
+  assert.equal(result.action, 'list_work_items');
+  assert.equal(result.shouldAnalyze, true);
+  assert.equal(result.workItemState, 'closed');
+  assert.equal(result.includeInactive, true);
+});
+
+test('parses issue and PR work item references distinctly', () => {
+  assert.deepEqual(parseSlackWorkItemReference('继续 issue #60'), { kind: 'issue', number: 60 });
+  assert.deepEqual(parseSlackWorkItemReference('继续 PR #68'), { kind: 'pr', number: 68 });
+  assert.deepEqual(parseSlackWorkItemReference('继续 #70'), { kind: 'unknown', number: 70 });
+
+  const result = classifySlackIntake(body('继续 issue #60'));
+  assert.equal(result.action, 'switch_work_item');
+  assert.equal(result.shouldAnalyze, true);
+  assert.equal(result.targetKind, 'issue');
+  assert.equal(result.issueNumber, 60);
+  assert.equal(result.prNumber, null);
 });
 
 test('builds status reply from a job', () => {
