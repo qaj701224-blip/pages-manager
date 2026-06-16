@@ -366,6 +366,60 @@ test('slack notifier renders custom progress text in status cards', async () => 
   assert.match(JSON.stringify(payload.blocks), /等待 site-check 通过后再生成 Preview/);
 });
 
+test('slack notifier renders closed issue status cards as read-only', async () => {
+  const app = createSlackNotifierApp();
+  const slackRequests = [];
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/job-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        job: {
+          id: 'job_closed',
+          status: 'cancelled',
+          errorCode: 'github_issue_closed',
+          employeeSlug: 'alice',
+          siteSlug: 'profile',
+          summary: '个人主页',
+          issueUrl: 'https://github.example/org/pages-manager/issues/66',
+          slackSessionId: 'sess_1',
+          slackThread: {
+            channelId: 'C1',
+            threadTs: '1710000000.000300',
+            userId: 'U1',
+          },
+        },
+        options: {
+          stage: 'cancelled',
+          cardTitle: 'Issue 已关闭',
+        },
+      }),
+    }),
+    {
+      SLACK_BOT_TOKEN: 'xoxb-test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_FETCH(url, request) {
+        slackRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000003.000100' }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const payload = JSON.parse(slackRequests[0].request.body);
+  const blocksText = JSON.stringify(payload.blocks);
+
+  assert.equal(response.status, 200);
+  assert.match(blocksText, /Issue 已关闭/);
+  assert.match(blocksText, /任务已停止/);
+  assert.match(blocksText, /打开 Issue/);
+  assert.doesNotMatch(blocksText, /继续修改可以直接/);
+  assert.doesNotMatch(blocksText, /pages_continue_modifying/);
+});
+
 test('slack notifier posts plain Slack messages for gateway replies', async () => {
   const app = createSlackNotifierApp();
   const slackRequests = [];

@@ -2050,6 +2050,210 @@ test('Slack work item list hides inactive jobs by default and shows history as r
   assert.match(staleSelect.text, /不能继续修改/);
 });
 
+test('Slack work item list reconciles GitHub closed issues before showing actions', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'stale-github-closed-work-item',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-on-github',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed on GitHub',
+    summary: 'GitHub 已关闭但本地状态还没同步。',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    issueNumber: 66,
+    issueUrl: 'https://github.example/org/pages-manager/issues/66',
+    prNumber: 69,
+    prUrl: 'https://github.example/org/pages-manager/pull/69',
+  });
+
+  const githubRequests = [];
+  const env = {
+    GITHUB_REPO: 'org/pages-manager',
+    GITHUB_STATUS_TOKEN: 'ghs_status',
+    async GITHUB_STATUS_FETCH(url, request) {
+      githubRequests.push({ url: String(url), request });
+      return new Response(
+        JSON.stringify({
+          number: 66,
+          state: 'closed',
+          closed_at: '2026-06-16T07:00:00.000Z',
+          html_url: 'https://github.example/org/pages-manager/issues/66',
+        })
+      );
+    },
+  };
+
+  const listResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-reconcile-closed-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000136',
+          text: '我的 PR',
+        },
+      }),
+    }),
+    env
+  );
+  const listBody = await json(listResponse);
+
+  assert.equal(listResponse.status, 200);
+  assert.equal(listBody.action, 'list_work_items');
+  assert.equal(listBody.jobs.length, 0);
+  assert.equal(app.store.getJob(job.id).status, 'cancelled');
+  assert.equal(app.store.getJob(job.id).errorCode, 'github_issue_closed');
+  assert.equal(githubRequests[0].url, 'https://api.github.com/repos/org/pages-manager/issues/66');
+  assert.equal(githubRequests[0].request.headers.Authorization, 'Bearer ghs_status');
+
+  const historyResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-reconcile-closed-history-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000137',
+          text: '查看我的历史发布任务',
+        },
+      }),
+    }),
+    env
+  );
+  const historyBody = await json(historyResponse);
+  const historyBlocks = JSON.stringify(historyBody.blocks);
+
+  assert.equal(historyBody.jobs.length, 1);
+  assert.match(historyBlocks, /Issue 已关闭/);
+  assert.match(historyBlocks, /打开 Issue/);
+  assert.doesNotMatch(historyBlocks, /pages_select_work_item/);
+});
+
+test('Slack close session stops running agent runs before the same thread continues', async () => {
+  const app = createGatewayApp();
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm-thread:D1:1710000000.000140',
+    sessionTitle: 'Profile page',
+    channelId: 'D1',
+    threadTs: '1710000000.000140',
+    dmChannelId: 'D1',
+    surfaceContext: {
+      channelId: 'D1',
+      channelType: 'im',
+      messageTs: '1710000000.000140',
+      threadTs: '1710000000.000140',
+      dmChannelId: 'D1',
+    },
+    status: 'active',
+    activeContextExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'close-session-running-agent',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page',
+    summary: '个人主页',
+    slackSessionId: session.id,
+    slackSessionKey: session.sessionKey,
+    slackThread: {
+      teamId: 'T1',
+      channelId: 'D1',
+      channelType: 'im',
+      messageTs: '1710000000.000140',
+      threadTs: '1710000000.000140',
+      userId: 'U1',
+    },
+  }).job;
+  const activeJob = app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: 'https://preview.example.test/u1',
+  });
+  app.store.linkJobToSlackSession(activeJob, session);
+  const runningRun = app.store.createAgentRun({
+    agentKind: 'slack_agent',
+    slackSessionId: session.id,
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+
+  const closeResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        payload: JSON.stringify({
+          type: 'block_actions',
+          team: { id: 'T1' },
+          user: { id: 'U1' },
+          channel: { id: 'D1' },
+          message: { ts: '1710000001.000140', thread_ts: '1710000000.000140' },
+          actions: [{ action_id: 'pages_close_session', value: session.id }],
+        }),
+      }).toString(),
+    })
+  );
+  const closeBody = await json(closeResponse);
+
+  assert.equal(closeResponse.status, 200);
+  assert.match(closeBody.text, /已关闭当前会话/);
+  assert.equal(app.store.getSlackSession(session.id).status, 'closed');
+  assert.equal(app.store.getAgentRun(runningRun.id).status, 'failed');
+  assert.equal(app.store.getAgentRun(runningRun.id).errorCode, 'slack_session_closed');
+
+  const listResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-after-close-same-thread-list-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000002.000140',
+          thread_ts: '1710000000.000140',
+          text: '目前我的 PR 有几个？',
+        },
+      }),
+    })
+  );
+  const listBody = await json(listResponse);
+
+  assert.equal(listResponse.status, 200);
+  assert.notEqual(listBody.action, 'agent_busy');
+  assert.equal(listBody.action, 'list_work_items');
+  assert.equal(listBody.jobs.length, 1);
+});
+
 test('Slack can switch the current thread to a visible PR', async () => {
   const app = createGatewayApp();
   const job = app.store.createJob({

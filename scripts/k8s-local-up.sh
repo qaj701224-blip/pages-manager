@@ -63,6 +63,7 @@ apply_secret_if_any model-provider-secret \
   coding-agent-api-key "${AGENT_CODE_API_KEY:-}"
 
 apply_secret_if_any github-platform-secret \
+  github-status-token "${GITHUB_STATUS_TOKEN:-}" \
   github-app-installation-token "${GITHUB_APP_INSTALLATION_TOKEN:-}" \
   github-token "${GITHUB_TOKEN:-}" \
   github-webhook-secret "${GITHUB_WEBHOOK_SECRET:-}"

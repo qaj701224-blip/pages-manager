@@ -29,6 +29,9 @@ importers:
 
   apps/gateway:
     dependencies:
+      '@xd/git-client':
+        specifier: workspace:*
+        version: link:../../packages/git-client
       '@xd/slack-notifier-core':
         specifier: workspace:*
         version: link:../../packages/slack-notifier

@@ -30,6 +30,24 @@ spec:
                   name: github-platform-secret
                   key: github-webhook-secret
                   optional: false
+            - name: GITHUB_STATUS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-platform-secret
+                  key: github-status-token
+                  optional: true
+            - name: GITHUB_APP_INSTALLATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-platform-secret
+                  key: github-app-installation-token
+                  optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-platform-secret
+                  key: github-token
+                  optional: true
             - name: SLACK_SIGNING_SECRET
               valueFrom:
                 secretKeyRef:

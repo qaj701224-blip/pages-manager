@@ -38,6 +38,19 @@ async function postSlack(app, payload, env = {}) {
   );
 }
 
+async function postSlackInteraction(app, payload, env = {}) {
+  return json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/interactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ payload: JSON.stringify(payload) }).toString(),
+      }),
+      env
+    )
+  );
+}
+
 test('Slack sessions are isolated by user and channel thread', async () => {
   const app = createGatewayApp();
 
@@ -326,6 +339,23 @@ test('Slack Agent lease prevents concurrent runs in the same session', () => {
   assert.equal(second.agentRun.id, first.agentRun.id);
 });
 
+test('terminal Slack Agent runs are not revived by later completion', () => {
+  const store = new GatewayStoreFixture();
+  const agentRun = store.createAgentRun({
+    agentKind: 'slack_agent',
+    slackSessionId: 'sess_terminal',
+    leaseExpiresAt: '2026-06-12T00:03:00.000Z',
+  });
+
+  const failed = store.failAgentRun(agentRun.id, 'slack_session_closed', 'Slack session was closed');
+  const completed = store.completeAgentRun(agentRun.id, { report: { action: 'late_completion' } });
+
+  assert.equal(failed.status, 'failed');
+  assert.equal(completed.status, 'failed');
+  assert.equal(completed.errorCode, 'slack_session_closed');
+  assert.equal(completed.report.action, undefined);
+});
+
 test('executor callbacks keep IssueLink and SlackSession active target in sync', async () => {
   const app = createGatewayApp();
   const created = await postSlack(
@@ -431,4 +461,108 @@ test('closed Slack session is reactivated when the same thread starts a new job'
   assert.equal(session.status, 'active');
   assert.equal(session.closedAt, null);
   assert.equal(session.activeJobId, reopened.jobId);
+});
+
+test('Slack close button clears a running Agent lease before the next thread message', async () => {
+  const app = createGatewayApp();
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-button-1',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个个人主页',
+    })
+  );
+  const running = app.store.createAgentRun({
+    agentKind: 'slack_agent',
+    slackSessionId: created.slackSessionId,
+    leaseExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+
+  const closed = await postSlackInteraction(app, {
+    type: 'block_actions',
+    team: { id: 'T1' },
+    user: { id: 'U1' },
+    actions: [{ action_id: 'pages_close_session', value: created.slackSessionId }],
+  });
+  const next = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-button-2',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000001.000100',
+      threadTs: '1710000000.000100',
+      text: '我的 PR',
+    })
+  );
+
+  assert.match(closed.text, /已关闭/);
+  assert.equal(app.store.getAgentRun(running.id).status, 'failed');
+  assert.equal(app.store.getAgentRun(running.id).errorCode, 'slack_session_closed');
+  assert.equal(next.action, 'list_work_items');
+  assert.notEqual(next.action, 'agent_busy');
+});
+
+test('late Slack Agent result after close does not create a stale job', async () => {
+  const app = createGatewayApp();
+  let resolveStarted;
+  let resolveAgentResponse;
+  const agentStarted = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  const agentResponse = new Promise((resolve) => {
+    resolveAgentResponse = resolve;
+  });
+  const agentFetch = async (_url, init = {}) => {
+    const payload = JSON.parse(init.body || '{}');
+    resolveStarted(payload);
+    return await agentResponse;
+  };
+
+  const turnPromise = postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-late-close-1',
+      channel: 'C1',
+      channelType: 'channel',
+      ts: '1710000000.000100',
+      text: '做一个活动主页',
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'https://slack-agent.test/analyze',
+      SLACK_AGENT_FETCH: agentFetch,
+    }
+  );
+  const agentPayload = await agentStarted;
+
+  await postSlackInteraction(app, {
+    type: 'block_actions',
+    team: { id: 'T1' },
+    user: { id: 'U1' },
+    actions: [{ action_id: 'pages_close_session', value: agentPayload.slackSessionId }],
+  });
+  resolveAgentResponse(
+    new Response(
+      JSON.stringify({
+        analysis: {
+          intent: 'create_or_update_site',
+          summary: '做一个不应该落库的旧活动主页',
+          siteSlug: 'campaign',
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
+  );
+
+  const result = await turnPromise;
+  const agentRun = app.store.getAgentRun(agentPayload.agentRunId);
+
+  assert.equal(result.action, 'slack_agent_turn_cancelled');
+  assert.equal(result.noReply, true);
+  assert.equal(agentRun.status, 'failed');
+  assert.equal(agentRun.errorCode, 'slack_session_closed');
+  assert.equal(app.store.listJobs().total, 0);
 });
