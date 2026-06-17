@@ -75,11 +75,16 @@ apps/gateway/src/
   routes/slack-routes.js
   routes/github-routes.js
   routes/internal-routes.js
+  control-plane/context.js
+  control-plane/health-handlers.js
   control-plane/handlers.js
+  publishing/api-handlers.js
+  publishing/worker-dispatcher.js
   http/body.js
   http/router.js
   slack/http.js
   slack/intake.js
+  slack/job-input.js
   slack/notifier.js
   slack/session.js
   slack/text.js
@@ -97,7 +102,7 @@ apps/gateway/src/
   utils/crypto.js
 ```
 
-`routes/` 现在只负责 HTTP 路由分组注册；`control-plane/handlers.js` 承接 AI 发布控制面的运行时 orchestration。后续如果继续拆，可以把其中的 Slack Agent turn、GitHub webhook、Review gate、PublishingJob follow-up 再下沉到各自 domain service。
+`routes/` 现在只负责 HTTP 路由分组注册；`control-plane/` 保留 Slack / GitHub / Review gate 的运行时 orchestration 和通用上下文；`publishing/` 承接 PublishingJob API 输入归一化和 worker 调度。后续如果继续拆，可以把其中的 Slack Agent turn、GitHub webhook、Review gate、PublishingJob follow-up 再下沉到各自 domain service。
 
 ### Worker 目录结构
 

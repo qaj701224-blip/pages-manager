@@ -1,4 +1,4 @@
-import { handleHealth, handleReady } from '../control-plane/handlers.js';
+import { handleHealth, handleReady } from '../control-plane/health-handlers.js';
 
 export function registerHealthRoutes(router) {
   router.get('/health', handleHealth);
