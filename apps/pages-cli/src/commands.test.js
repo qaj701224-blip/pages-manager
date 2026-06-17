@@ -273,30 +273,30 @@ test('access set updates visibility and replaces allow list entries', async () =
       secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
       fetch: fakeFetch(calls, [
         { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'org' } }] },
-        { site: { id: 'site_1', slug: 'demo', defaultVisibility: 'acl', route: { visibility: 'acl' } } },
         {
           aclEntries: [
             { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow', accessRole: 'viewer' },
             { subjectType: 'department', subjectValue: '心动/技术平台部', effect: 'allow', accessRole: 'viewer' },
           ],
         },
+        { site: { id: 'site_1', slug: 'demo', defaultVisibility: 'acl', route: { visibility: 'acl' } } },
       ]),
       output: (line) => output.push(line),
     }
   );
 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
-  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1');
-  assert.equal(calls[1].method, 'PATCH');
-  assert.deepEqual(await calls[1].json(), { visibility: 'acl' });
-  assert.equal(calls[2].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl');
-  assert.equal(calls[2].method, 'PUT');
-  assert.deepEqual(await calls[2].json(), {
+  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl');
+  assert.equal(calls[1].method, 'PUT');
+  assert.deepEqual(await calls[1].json(), {
     entries: [
       { subjectType: 'email', subjectValue: 'alice@example.com' },
       { subjectType: 'department', subjectValue: '心动/技术平台部' },
     ],
   });
+  assert.equal(calls[2].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1');
+  assert.equal(calls[2].method, 'PATCH');
+  assert.deepEqual(await calls[2].json(), { visibility: 'acl' });
   assert.deepEqual(JSON.parse(output[0]), {
     ok: true,
     schemaVersion: 1,
@@ -306,6 +306,28 @@ test('access set updates visibility and replaces allow list entries', async () =
     emails: ['alice@example.com'],
     departments: ['心动/技术平台部'],
   });
+});
+
+test('access set does not enable acl visibility when acl replacement fails', async () => {
+  const calls = [];
+
+  await assert.rejects(
+    () =>
+      executeCommand(['access', 'set', 'demo', '--visibility', 'acl', '--email', 'alice@example.com'], {
+        env: {},
+        secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+        fetch: fakeFetch(calls, [
+          { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'org' } }] },
+          { status: 503, body: { error: { code: 'ROUTE_SNAPSHOT_WRITE_FAILED', message: 'snapshot failed' } } },
+        ]),
+        output: () => {},
+      }),
+    { code: 'ROUTE_SNAPSHOT_WRITE_FAILED' }
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl');
+  assert.equal(calls[1].method, 'PUT');
 });
 
 test('access grant and revoke change allow list entries incrementally', async () => {
