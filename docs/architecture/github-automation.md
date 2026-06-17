@@ -12,11 +12,11 @@
 
 | 能力                                       | 代码位置                                                                                                    |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| GitHub webhook HTTP 入口                   | `apps/gateway/src/routes/handlers.js`                                                                       |
+| GitHub webhook HTTP 入口                   | `apps/gateway/src/routes/github-routes.js`、`apps/gateway/src/control-plane/handlers.js`                     |
 | GitHub webhook 事件解析                    | `apps/gateway/src/github/webhook.js`                                                                        |
 | Review Agent allowlist / 分类              | `apps/gateway/src/github/review.js`                                                                         |
 | GitHub delivery / review / site-check 入库 | `apps/gateway/src/db/repositories/github-deliveries.js`、`apps/gateway/src/db/repositories/review-gates.js` |
-| GitHub issue / workflow dispatch           | `apps/worker/src/orchestrator.js`、`packages/git-client/src/`                                               |
+| GitHub issue / workflow dispatch           | `apps/worker/src/jobs/issue-and-index.js`、`apps/worker/src/jobs/coding-agent.js`、`packages/git-client/src/` |
 | Coding Agent workflow                      | `.github/workflows/pages-agent.yml`                                                                         |
 | Project index workflow                     | `.github/workflows/project-index.yml`                                                                       |
 | 站点 required check                        | `.github/workflows/site-check.yml`                                                                          |

@@ -11,8 +11,8 @@ pages-manager/
 │   ├── kv-gateway/        # KV/runtime 相关 Worker
 │   ├── xdads-302/         # 现有 302 Worker
 │   ├── pages-sdk/         # 对外 pages SDK
-│   ├── gateway/           # 平台控制面 HTTP 服务
-│   ├── worker/            # 发布任务调度 worker
+│   ├── gateway/           # AI 发布控制面 HTTP 服务
+│   ├── worker/            # 发布任务执行推进器
 │   ├── slack-agent/       # 常驻 Slack Agent
 │   └── slack-notifier/    # Slack Web API 输出服务
 ├── packages/
@@ -48,7 +48,15 @@ pages-manager/
 apps/gateway/src/
 ├── index.js                  # app factory 和路由注册
 ├── dev.js                    # Node dev server；只接受 MySQL runtime store
-├── routes/handlers.js        # HTTP handlers
+├── routes/
+│   ├── register.js           # 统一注册 HTTP 路由
+│   ├── health-routes.js
+│   ├── publishing-routes.js
+│   ├── slack-routes.js
+│   ├── github-routes.js
+│   └── internal-routes.js
+├── control-plane/
+│   └── handlers.js           # AI 发布控制面 orchestration；后续继续向 domain service 收敛
 ├── http/
 │   ├── body.js
 │   └── router.js
@@ -75,6 +83,26 @@ apps/gateway/src/
 ```
 
 Gateway 运行态只使用 `MySqlGatewayStore`。`gateway-store.js` 里保留的 `Map` 是单进程缓存，用于减少同一请求链路内重复对象构造；MySQL 仍是最终事实来源。不要重新引入文件 store、内存 store、SQLite 或 PVC snapshot。
+
+## Worker 内部结构
+
+`apps/worker` 是发布任务执行推进器，不保存 Slack 会话真相，也不直接发 Slack。HTTP app 只暴露内部 job start endpoint，具体执行步骤按 job 拆分：
+
+```text
+apps/worker/src/
+├── index.js
+├── dev.js
+├── config.js
+├── orchestrator.js              # 根据 job.status 分发到具体 job step
+├── jobs/
+│   ├── issue-and-index.js       # 创建 / 复用 issue，dispatch project-index
+│   ├── coding-agent.js          # dispatch pages-agent initial / fix
+│   └── preview.js               # dispatch pages-preview 或 local_deploy preview
+└── integrations/
+    └── gateway-client.js        # executor callback -> gateway
+```
+
+后续接入 XD Pages / WFP 时，`pages-api-client.js` 应进入 `apps/worker/src/integrations/`，由 preview / publish job step 调用；不要让 `apps/gateway` 直接持有 WFP / Cloudflare 部署细节。
 
 ## 站点目录和 PR 边界
 
