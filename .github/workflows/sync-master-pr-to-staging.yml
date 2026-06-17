@@ -68,13 +68,18 @@ jobs:
                 ;;
             esac
             case "$path" in
-              apps/server/* | .github/workflows/deploy-staging.yml | scripts/render-server-config.mjs)
+              apps/server/* | packages/ip-guard/* | packages/worker-kit/* | \
+              scripts/gen-wrangler.sh | package.json | pnpm-lock.yaml | \
+              .github/workflows/deploy-staging.yml)
                 v1_changed=true
                 ;;
             esac
             case "$path" in
-              apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | packages/wfp-client/* | \
-              .github/workflows/deploy-pages-v2-staging.yml | scripts/pages-v2-* | docs/人工配置待办.md)
+              apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | \
+              packages/ip-guard/* | packages/pages-runtime-protocol/* | packages/worker-kit/* | packages/wfp-client/* | \
+              scripts/render-pages-v2-wrangler.mjs | scripts/provision-pages-v2-slots.mjs | \
+              scripts/put-pages-v2-secrets.sh | package.json | pnpm-lock.yaml | \
+              .github/workflows/deploy-pages-v2-staging.yml | docs/人工配置待办.md)
                 v2_changed=true
                 ;;
             esac

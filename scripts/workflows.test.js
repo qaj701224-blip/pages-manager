@@ -10,6 +10,10 @@ function readWorkflow(path) {
   return readFileSync(join(repoRoot, path), 'utf8');
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 const deployWorkflows = [
   ['production', '.github/workflows/deploy.yml'],
   ['staging', '.github/workflows/deploy-staging.yml'],
@@ -313,6 +317,42 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
   assert.match(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.doesNotMatch(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ vars\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
+});
+
+test('staging sync explicitly dispatches deploy workflows for deploy-affecting paths', () => {
+  const workflow = readWorkflow('.github/workflows/sync-master-pr-to-staging.yml');
+
+  for (const path of [
+    'apps/server/*',
+    'packages/ip-guard/*',
+    'packages/worker-kit/*',
+    'scripts/gen-wrangler.sh',
+    'package.json',
+    'pnpm-lock.yaml',
+    '.github/workflows/deploy-staging.yml',
+  ]) {
+    assert.match(workflow, new RegExp(escapeRegExp(path)), `v1 staging sync watches ${path}`);
+  }
+  assert.doesNotMatch(workflow, /scripts\/render-server-config\.mjs/, 'v1 staging sync must use the real wrangler script');
+
+  for (const path of [
+    'apps/pages-api/*',
+    'apps/pages-auth/*',
+    'apps/pages-router/*',
+    'apps/kv-gateway/*',
+    'packages/ip-guard/*',
+    'packages/pages-runtime-protocol/*',
+    'packages/worker-kit/*',
+    'packages/wfp-client/*',
+    'scripts/render-pages-v2-wrangler.mjs',
+    'scripts/provision-pages-v2-slots.mjs',
+    'scripts/put-pages-v2-secrets.sh',
+    'package.json',
+    'pnpm-lock.yaml',
+    '.github/workflows/deploy-pages-v2-staging.yml',
+  ]) {
+    assert.match(workflow, new RegExp(escapeRegExp(path)), `v2 staging sync watches ${path}`);
+  }
 });
 
 test('ack preview deploy is manual and isolated from Cloudflare production deploy', () => {
