@@ -107,7 +107,7 @@ export async function handleCliLoginPoll(request, env, config) {
 
 export async function handleCliLoginConfirm(request, env, config) {
   if (request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
-  if (!isSameOriginConfirmation(request, config)) {
+  if (hasForbiddenConfirmationSource(request, config)) {
     return jsonError('CLI_LOGIN_CONFIRM_ORIGIN_FORBIDDEN', 'CLI login confirmation origin is not allowed.', 403);
   }
 
@@ -254,18 +254,20 @@ async function verifyCliLoginConfirmToken(token, env, { loginId, user }) {
   }
 }
 
-function isSameOriginConfirmation(request, config) {
+function hasForbiddenConfirmationSource(request, config) {
   const expectedOrigin = readOrigin(config?.authBase);
-  if (!expectedOrigin) return false;
+  if (!expectedOrigin) return true;
 
   const origin = request.headers.get('Origin');
-  if (origin) return origin === expectedOrigin;
+  if (origin) return origin !== expectedOrigin;
 
   const referer = request.headers.get('Referer');
-  if (referer) return readOrigin(referer) === expectedOrigin;
+  if (referer) return readOrigin(referer) !== expectedOrigin;
 
   const secFetchSite = request.headers.get('Sec-Fetch-Site');
-  return secFetchSite === 'same-origin' || secFetchSite === 'none';
+  if (secFetchSite) return secFetchSite !== 'same-origin' && secFetchSite !== 'none';
+
+  return false;
 }
 
 function readOrigin(value) {

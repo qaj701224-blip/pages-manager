@@ -106,7 +106,7 @@ export async function handleOAuthCallback(request, env, config) {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
-        'Referrer-Policy': 'no-referrer',
+        'Referrer-Policy': 'same-origin',
       },
     });
     response.headers.set(

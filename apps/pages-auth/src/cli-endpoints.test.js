@@ -246,6 +246,47 @@ test('confirm accepts same-origin Referer when Origin header is missing', async 
   });
 });
 
+test('confirm accepts valid token when browser omits optional source headers', async () => {
+  let confirmedInput;
+  const env = testEnv({
+    confirmCliLoginRecord: async (input, options) => {
+      confirmedInput = { input, options };
+      return { record: { status: 'confirmed' } };
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_test' },
+    },
+    env
+  );
+  const confirmToken = await signConfirmToken(env, { loginId: 'cli_test', userId: 'usr_123', sid: 'sid_test' });
+
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }).split(';', 1)[0],
+      },
+      body: new URLSearchParams({ loginId: 'cli_test', deviceCode: '12345678', confirmToken }).toString(),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(confirmedInput, {
+    input: { loginId: 'cli_test', deviceCode: '12345678', userId: 'usr_123' },
+    options: { now },
+  });
+});
+
 test('confirm rejects hostile Referer when Origin header is missing', async () => {
   let confirmed = false;
   const env = testEnv({
