@@ -20,6 +20,17 @@ const baseConfig = {
   cleanupRetentionSeconds: 7 * 24 * 60 * 60,
 };
 
+test('slot record ids are environment-scoped while binding names stay router-local', () => {
+  const staging = buildSlotRecord({ environment: 'staging', slotNumber: 1 });
+  const production = buildSlotRecord({ environment: 'production', slotNumber: 1 });
+
+  assert.equal(staging.id, 'slot_staging_001');
+  assert.equal(production.id, 'slot_production_001');
+  assert.notEqual(staging.id, production.id);
+  assert.equal(staging.bindingName, 'SITE_SLOT_001');
+  assert.equal(production.bindingName, 'SITE_SLOT_001');
+});
+
 test('plans initial normal-worker-slot expansion from an empty D1 table', () => {
   const plan = planNormalWorkerSlotProvisioning([], baseConfig);
 
@@ -128,8 +139,8 @@ test('provisions missing slot workers, writes pending rows, and activates only a
   assert.deepEqual(
     d1.slots.map((slot) => [slot.id, slot.bindingName, slot.status]),
     [
-      ['slot_001', 'SITE_SLOT_001', 'available_pending_router'],
-      ['slot_002', 'SITE_SLOT_002', 'available_pending_router'],
+      ['slot_staging_001', 'SITE_SLOT_001', 'available_pending_router'],
+      ['slot_staging_002', 'SITE_SLOT_002', 'available_pending_router'],
     ]
   );
 
@@ -225,17 +236,17 @@ test('plans cleanup only for inactive retained slots after the retention window'
 
   const plan = planNormalWorkerSlotCleanup({
     slots,
-    activeRoutes: [{ slotId: 'slot_002', activeVersionId: 'ver_active' }],
+    activeRoutes: [{ slotId: 'slot_staging_002', activeVersionId: 'ver_active' }],
     config: baseConfig,
     now: '2026-06-17T12:00:00.000Z',
   });
 
   assert.deepEqual(
     plan.cleanupSlots.map((slot) => slot.id),
-    ['slot_001', 'slot_004']
+    ['slot_staging_001', 'slot_staging_004']
   );
-  assert.equal(plan.retainedSlots.find((slot) => slot.id === 'slot_002').reason, 'active');
-  assert.equal(plan.retainedSlots.find((slot) => slot.id === 'slot_003').reason, 'retention_window');
+  assert.equal(plan.retainedSlots.find((slot) => slot.id === 'slot_staging_002').reason, 'active');
+  assert.equal(plan.retainedSlots.find((slot) => slot.id === 'slot_staging_003').reason, 'retention_window');
 });
 
 test('cleanup overwrites inactive retained slot with placeholder before releasing it', async () => {
@@ -256,12 +267,12 @@ test('cleanup overwrites inactive retained slot with placeholder before releasin
     now: '2026-06-17T12:00:00.000Z',
   });
 
-  assert.deepEqual(result.cleanedSlotIds, ['slot_001']);
+  assert.deepEqual(result.cleanedSlotIds, ['slot_staging_001']);
   assert.deepEqual(result.failedSlotIds, []);
   assert.deepEqual(calls, [
-    ['mark', 'slot_001'],
+    ['mark', 'slot_staging_001'],
     ['putWorker', 'pages-v2-staging-slot-001', 'staging'],
-    ['release', 'slot_001'],
+    ['release', 'slot_staging_001'],
   ]);
   assert.equal(d1.slots[0].status, 'available');
   assert.equal(d1.slots[0].assignedVersionId, null);
@@ -286,7 +297,7 @@ test('cleanup leaves slot cleanup_pending when placeholder overwrite fails', asy
   });
 
   assert.deepEqual(result.cleanedSlotIds, []);
-  assert.deepEqual(result.failedSlotIds, ['slot_001']);
+  assert.deepEqual(result.failedSlotIds, ['slot_staging_001']);
   assert.equal(d1.slots[0].status, 'cleanup_pending');
   assert.equal(d1.slots[0].assignedVersionId, 'ver_old');
 });

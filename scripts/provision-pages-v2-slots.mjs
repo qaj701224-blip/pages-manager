@@ -25,7 +25,7 @@ export function renderSlotBindingName(slotNumber) {
 export function buildSlotRecord({ environment, slotNumber, status = 'available_pending_router', now = new Date().toISOString() }) {
   const number = Number(slotNumber);
   return {
-    id: `slot_${formatSlotNumber(number)}`,
+    id: `slot_${environment}_${formatSlotNumber(number)}`,
     environment,
     slotNumber: number,
     workerName: renderSlotWorkerName(environment, number),
