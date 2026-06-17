@@ -119,14 +119,14 @@ test('script rejects unknown target values', () => {
   assert.match(`${result.stderr}${result.stdout}`, /PAGES_DEMO_TARGET must be staging or production/);
 });
 
-test('vue demo is a regular spa without v1 Pages KV SDK usage', () => {
+test('legacy staging demo script does not enable v1 Pages KV', () => {
   const home = readFileSync(join(repoRoot, 'demos/vue-app/src/views/Home.vue'), 'utf8');
   const packageJson = JSON.parse(readFileSync(join(repoRoot, 'demos/vue-app/package.json'), 'utf8'));
   const demoReadme = readFileSync(join(repoRoot, 'demos/README.md'), 'utf8');
   const script = readFileSync(scriptPath, 'utf8');
 
-  assert.doesNotMatch(home, /apps\/pages-sdk|createPagesClient|PagesSDKError|Pages KV/);
-  assert.equal(packageJson.dependencies['@xd/pages-sdk'], undefined);
-  assert.doesNotMatch(demoReadme, /kv=true|Pages KV panel|@xd\/pages-sdk|Pages KV 面板/);
-  assert.doesNotMatch(script, /pnpm --filter @xd\/pages-sdk build/);
+  assert.match(home, /createPagesClient|Pages KV/);
+  assert.equal(packageJson.dependencies['@xd/pages-sdk'], 'file:../../apps/pages-sdk');
+  assert.match(demoReadme, /Pages KV smoke test/);
+  assert.doesNotMatch(script, /kv=true|--kv|PAGES_KV/);
 });

@@ -27,6 +27,7 @@ Environment:
   PAGES_V2_DEMO_TARGET      Optional. Defaults to staging. Overridden by --target.
   PAGES_V2_DEMO_SLUG        Optional. Defaults to demo-vue-app. Overridden by --slug.
   PAGES_V2_DEMO_VISIBILITY  Optional. Defaults to internal. Overridden by --visibility.
+  PAGES_CLI_BIN             Optional. Defaults to pages.
   PAGES_DEMO_SKIP_INSTALL   Optional. Set true to skip dependency install before build.
 
 EOF
@@ -139,6 +140,8 @@ run_cmd() {
 install_and_build_vue() {
   local dir="$REPO_ROOT/demos/vue-app"
 
+  run_cmd pnpm --filter @xd/pages-sdk build
+
   if [[ "${PAGES_DEMO_SKIP_INSTALL:-false}" != "true" ]]; then
     if [[ -f "$dir/package-lock.json" ]]; then
       run_cmd npm --prefix "$dir" ci
@@ -158,7 +161,7 @@ deploy_vue() {
   local output url
   output="$(
     cd "$REPO_ROOT/demos/vue-app"
-    PAGES_CLI_ENV="$PAGES_V2_DEMO_TARGET" node "$REPO_ROOT/apps/pages-cli/src/main.js" \
+    PAGES_CLI_ENV="$PAGES_V2_DEMO_TARGET" "${PAGES_CLI_BIN:-pages}" \
       deploy dist "$PAGES_V2_DEMO_SLUG" \
       --env "$PAGES_V2_DEMO_TARGET" \
       --visibility "$PAGES_V2_DEMO_VISIBILITY" \
