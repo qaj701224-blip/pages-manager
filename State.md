@@ -86,6 +86,8 @@ apps/gateway/src/
   slack/delivery.js
   slack/http.js
   slack/intake.js
+  slack/intents.js
+  slack/issue-confirmation.js
   slack/job-input.js
   slack/job-binding.js
   slack/notifier.js
