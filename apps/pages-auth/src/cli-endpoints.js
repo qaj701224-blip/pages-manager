@@ -108,7 +108,7 @@ export async function handleCliLoginPoll(request, env, config) {
 export async function handleCliLoginConfirm(request, env, config) {
   if (request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
   if (!isSameOriginConfirmation(request, config)) {
-    return jsonError('CLI_LOGIN_CONFIRM_FORBIDDEN', 'CLI login confirmation is not allowed.', 403);
+    return jsonError('CLI_LOGIN_CONFIRM_ORIGIN_FORBIDDEN', 'CLI login confirmation origin is not allowed.', 403);
   }
 
   let body;
@@ -132,7 +132,7 @@ export async function handleCliLoginConfirm(request, env, config) {
 
   const confirmTokenOk = await verifyCliLoginConfirmToken(confirmToken, env, { loginId, user });
   if (!confirmTokenOk) {
-    return jsonError('CLI_LOGIN_CONFIRM_FORBIDDEN', 'CLI login confirmation is not allowed.', 403);
+    return jsonError('CLI_LOGIN_CONFIRM_TOKEN_FORBIDDEN', 'CLI login confirmation token is not allowed.', 403);
   }
 
   try {
@@ -255,14 +255,25 @@ async function verifyCliLoginConfirmToken(token, env, { loginId, user }) {
 }
 
 function isSameOriginConfirmation(request, config) {
-  const expectedOrigin = config?.authBase;
+  const expectedOrigin = readOrigin(config?.authBase);
   if (!expectedOrigin) return false;
 
   const origin = request.headers.get('Origin');
   if (origin) return origin === expectedOrigin;
 
+  const referer = request.headers.get('Referer');
+  if (referer) return readOrigin(referer) === expectedOrigin;
+
   const secFetchSite = request.headers.get('Sec-Fetch-Site');
   return secFetchSite === 'same-origin' || secFetchSite === 'none';
+}
+
+function readOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
 }
 
 function readCookie(cookieHeader, name) {
