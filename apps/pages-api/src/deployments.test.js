@@ -437,6 +437,59 @@ test('deploys through normal worker slot mode without exposing provider to the r
   ]);
 });
 
+test('releases the previous normal worker slot after a successful replacement deployment', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  await store.createWorkerSlot({
+    id: 'slot_008',
+    environment: 'production',
+    slotNumber: 8,
+    workerName: 'pages-v2-production-slot-008',
+    bindingName: 'SITE_SLOT_008',
+    status: 'available',
+  });
+  const env = testEnv(store, createSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    NORMAL_WORKER_SLOT_PROVIDER: {
+      upload: async () => null,
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_first' }),
+    env
+  );
+  const replacement = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      { 'Idempotency-Key': 'slot_second' }
+    ),
+    env
+  );
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_retired_slot' }),
+    env
+  );
+
+  assert.equal(replacement.status, 201);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'available');
+  assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, null);
+  assert.equal((await store.getWorkerSlot('slot_008')).status, 'assigned');
+  assert.equal((await store.getWorkerSlot('slot_008')).assignedVersionId, 'ver_2');
+  assert.equal(rollback.status, 409);
+  assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
+});
+
 test('normal worker slot upload metadata binds Pages KV gateway to slot workers', async () => {
   const store = await createSeededStore();
   await store.createWorkerSlot({
@@ -583,6 +636,55 @@ test('fails closed and disables a slot when workers.dev cannot be disabled', asy
   assert.equal(response.status, 502);
   assert.equal((await response.json()).error.code, 'DEPLOYMENT_UPLOAD_FAILED');
   assert.equal(requests.some((request) => request.method === 'PUT'), false);
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'disabled');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
+test('deletes uploaded slot worker when post-upload workers.dev disable fails', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  let subdomainCalls = 0;
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    fetch: async (request) => {
+      requests.push(request.clone());
+      if (request.url.endsWith('/workers/services/pages-v2-production-slot-007/environments/production/subdomain')) {
+        subdomainCalls += 1;
+        if (subdomainCalls === 2) {
+          return Response.json({ success: false, errors: [{ code: 'subdomain_disable_failed' }] }, { status: 500 });
+        }
+      }
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'slot_subdomain_failed_after_upload',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_UPLOAD_FAILED');
+  assert.ok(requests.some((request) => request.method === 'PUT'), 'slot Worker was uploaded before failure');
+  assert.ok(
+    requests.some(
+      (request) =>
+        request.method === 'DELETE' && request.url.endsWith('/workers/scripts/pages-v2-production-slot-007')
+    ),
+    'uploaded slot Worker should be deleted when workers.dev cannot be confirmed disabled'
+  );
   assert.equal((await store.getWorkerSlot('slot_007')).status, 'disabled');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
 });
@@ -879,6 +981,40 @@ test('rolls back to an existing immutable version and writes a new route snapsho
   assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').routeGeneration, 3);
 });
 
+test('rejects rollback when requested site does not match the version site', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, snapshots);
+  await store.createSite({
+    id: 'site_2',
+    slug: 'other',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_2',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_2',
+    hostname: 'other.pages.xd.team',
+  });
+  await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    env
+  );
+
+  const rollback = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback',
+      { siteSlug: 'other' },
+      { 'Idempotency-Key': 'rb_wrong_site' }
+    ),
+    env
+  );
+
+  assert.equal(rollback.status, 409);
+  assert.equal((await rollback.json()).error.code, 'ROLLBACK_SITE_MISMATCH');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
+  assert.equal((await store.getRouteBySiteId('site_2')).activeVersionId, null);
+});
+
 test('marks deployment failed when route snapshot write fails and replays failed terminal state', async () => {
   const store = await createSeededStore();
   const deletedWorkers = [];
@@ -1021,6 +1157,118 @@ test('cleans uploaded workers and marks deployments failed when post-upload pers
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
   assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
+});
+
+test('marks deployment failed when pre-upload status write fails without uploading', async () => {
+  const store = await createSeededStore();
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  let failNextUploadingWrite = true;
+  store.updateDeployment = async (id, patch) => {
+    if (patch.status === 'uploading' && failNextUploadingWrite) {
+      failNextUploadingWrite = false;
+      throw new Error('D1 unavailable');
+    }
+    return originalUpdateDeployment(id, patch);
+  };
+  const uploadedWorkers = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => {
+        uploadedWorkers.push(workerName);
+        return { artifactRef: `wfp://test/${workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'pre_upload_state_fail',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.deepEqual(uploadedWorkers, []);
+  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
+test('reconciles deployment success when final status write fails after route commit', async () => {
+  const store = await createSeededStore();
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  let failNextSucceededWrite = true;
+  store.updateDeployment = async (id, patch) => {
+    if (patch.status === 'succeeded' && failNextSucceededWrite) {
+      failNextSucceededWrite = false;
+      throw new Error('D1 unavailable');
+    }
+    return originalUpdateDeployment(id, patch);
+  };
+  const env = testEnv(store, createSnapshotStore());
+  const request = jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    'Idempotency-Key': 'final_state_fail',
+  });
+
+  const response = await worker.fetch(request, env);
+  const body = await response.json();
+  const statusBeforePoll = await store.getDeployment('dep_1');
+  const polled = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_1'), env);
+  const pollBody = await polled.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(body.deployment.status, 'succeeded');
+  assert.equal(body.deployment.versionId, 'ver_1');
+  assert.equal(statusBeforePoll.status, 'activating');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
+  assert.equal(polled.status, 200);
+  assert.equal(pollBody.deployment.status, 'succeeded');
+  assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
+});
+
+test('reconciles rollback success when final status write fails after route commit', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+  await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    env
+  );
+  await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      { 'Idempotency-Key': 'deploy_2' }
+    ),
+    env
+  );
+  const originalUpdateDeployment = store.updateDeployment.bind(store);
+  let failNextRollbackSucceededWrite = true;
+  store.updateDeployment = async (id, patch) => {
+    if (id === 'dep_3' && patch.status === 'succeeded' && failNextRollbackSucceededWrite) {
+      failNextRollbackSucceededWrite = false;
+      throw new Error('D1 unavailable');
+    }
+    return originalUpdateDeployment(id, patch);
+  };
+
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_final_fail' }),
+    env
+  );
+  const body = await rollback.json();
+  const statusBeforePoll = await store.getDeployment('dep_3');
+  const polled = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_3'), env);
+
+  assert.equal(rollback.status, 201);
+  assert.equal(body.deployment.status, 'succeeded');
+  assert.equal(body.deployment.versionId, 'ver_1');
+  assert.equal(statusBeforePoll.status, 'pending');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
+  assert.equal((await polled.json()).deployment.status, 'succeeded');
+  assert.equal((await store.getDeployment('dep_3')).status, 'succeeded');
 });
 
 test('fails deployment activation without clobbering a concurrently changed route', async () => {

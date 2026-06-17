@@ -99,6 +99,19 @@ export function buildOpenApi(config) {
             },
           },
         },
+        RollbackRequest: {
+          type: 'object',
+          properties: {
+            siteId: {
+              type: 'string',
+              description: 'Optional guardrail. If provided, the target version must belong to this site id.',
+            },
+            siteSlug: {
+              type: 'string',
+              description: 'Optional guardrail. If provided, the target version must belong to this site slug.',
+            },
+          },
+        },
         SiteVisibility: {
           type: 'string',
           enum: ['internal', 'org', 'acl', 'owner', 'disabled'],
@@ -390,6 +403,25 @@ export function buildOpenApi(config) {
           parameters: [
             { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
             { name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } },
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/RollbackRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'INVALID_JSON',
+            'SITE_NOT_FOUND',
+            'VERSION_NOT_FOUND',
+            'ROLLBACK_FORBIDDEN',
+            'ROLLBACK_SITE_MISMATCH',
+            'ROLLBACK_VERSION_UNAVAILABLE',
+            'ROUTE_ACTIVATION_CONFLICT',
+            'ROUTE_SNAPSHOT_WRITE_FAILED',
+            'IDEMPOTENCY_CONFLICT',
           ],
           responses: {
             201: { description: 'Rollback deployment created' },

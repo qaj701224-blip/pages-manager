@@ -19,7 +19,7 @@ export async function handleDeploymentsApi(request, env, config, store) {
   }
 
   const deploymentId = matchDeploymentId(url.pathname);
-  if (deploymentId && request.method === 'GET') return getDeployment(store, auth.actor, deploymentId, config.environment);
+  if (deploymentId && request.method === 'GET') return getDeployment(store, auth.actor, deploymentId, config.environment, env);
   if (deploymentId) return methodNotAllowed();
 
   return null;
@@ -148,7 +148,8 @@ async function createDeployment(request, env, config, store, actor) {
 
   if (deploymentResult.kind === 'conflict') return idempotencyConflict();
   if (deploymentResult.kind === 'existing') {
-    return jsonOk(await deploymentEnvelope(store, deploymentResult.deployment, {}, config.environment));
+    const reconciled = await reconcileCommittedDeployment(store, deploymentResult.deployment, config.environment, env);
+    return jsonOk(await deploymentEnvelope(store, reconciled, {}, config.environment));
   }
 
   const deployment = deploymentResult.deployment;
@@ -172,7 +173,12 @@ async function createDeployment(request, env, config, store, actor) {
     );
   }
 
-  await store.updateDeployment(deployment.id, { status: 'uploading' });
+  try {
+    await store.updateDeployment(deployment.id, { status: 'uploading' });
+  } catch {
+    await markDeploymentStateWriteFailed(store, deployment.id, { env });
+    return deploymentStateWriteFailed();
+  }
   let uploaded;
   try {
     uploaded = await provider.upload({
@@ -314,11 +320,18 @@ async function createDeployment(request, env, config, store, actor) {
     );
   }
 
-  const completed = await store.updateDeployment(deployment.id, {
-    status: 'succeeded',
-    versionId: version.id,
-    completedAt: readNow(env),
-  });
+  await releaseRetiredNormalWorkerSlot(store, previousRoute, version, env);
+  const completedAt = readNow(env);
+  let completed;
+  try {
+    completed = await store.updateDeployment(deployment.id, {
+      status: 'succeeded',
+      versionId: version.id,
+      completedAt,
+    });
+  } catch {
+    completed = synthesizeSucceededDeployment(deployment, { versionId: version.id, completedAt });
+  }
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
@@ -415,14 +428,15 @@ function normalizeAssetPath(value) {
   return `/${normalized}`;
 }
 
-async function getDeployment(store, actor, deploymentId, environment) {
-  const deployment = await store.getDeployment(deploymentId, environment);
+async function getDeployment(store, actor, deploymentId, environment, env) {
+  let deployment = await store.getDeployment(deploymentId, environment);
   if (!deployment) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
   if (!actorCanReadSite(actor, deployment.siteId)) {
     return jsonError('DEPLOYMENT_READ_FORBIDDEN', 'Actor cannot read this deployment.', 403, 'Use a token with read:site scope.');
   }
   const site = await store.getSiteForUser(deployment.siteId, actor.userId, actor, environment);
   if (!site) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
+  deployment = await reconcileCommittedDeployment(store, deployment, environment, env);
   return jsonOk(await deploymentEnvelope(store, deployment, {}, environment));
 }
 
@@ -430,8 +444,17 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   const idempotencyKey = readIdempotencyKey(request);
   if (!idempotencyKey) return idempotencyKeyRequired();
 
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
   const version = await store.getSiteVersion(versionId, config.environment);
   if (!version) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
+  const requestedSiteError = await validateRequestedRollbackSite(store, version, body, config.environment);
+  if (requestedSiteError) return requestedSiteError;
   if (!actorCanDeploy(actor, version.siteId, 'rollback:site')) {
     return jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
   }
@@ -441,7 +464,12 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   const versionAvailabilityError = await validateRollbackVersion(store, version, config.environment);
   if (versionAvailabilityError) return versionAvailabilityError;
   const currentRoute = await store.getRouteBySiteId(site.id, config.environment);
-  const requestHash = await canonicalRequestHash({ operation: 'rollback', versionId });
+  const requestHash = await canonicalRequestHash({
+    operation: 'rollback',
+    versionId,
+    siteId: body.siteId || null,
+    siteSlug: body.siteSlug || null,
+  });
   const deploymentResult = await store.createDeploymentForIdempotency({
     id: nextId(env, 'dep'),
     environment: config.environment,
@@ -461,7 +489,8 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
 
   if (deploymentResult.kind === 'conflict') return idempotencyConflict();
   if (deploymentResult.kind === 'existing') {
-    return jsonOk(await deploymentEnvelope(store, deploymentResult.deployment, {}, config.environment));
+    const reconciled = await reconcileCommittedDeployment(store, deploymentResult.deployment, config.environment, env);
+    return jsonOk(await deploymentEnvelope(store, reconciled, {}, config.environment));
   }
 
   const route = await store.activateSiteVersion(
@@ -516,14 +545,47 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     );
   }
 
-  const completed = await store.updateDeployment(deploymentResult.deployment.id, {
-    status: 'succeeded',
-    versionId: version.id,
-    previousVersionId: currentRoute.activeVersionId,
-    completedAt: readNow(env),
-  });
+  await releaseRetiredNormalWorkerSlot(store, currentRoute, version, env);
+  const completedAt = readNow(env);
+  let completed;
+  try {
+    completed = await store.updateDeployment(deploymentResult.deployment.id, {
+      status: 'succeeded',
+      versionId: version.id,
+      previousVersionId: currentRoute.activeVersionId,
+      completedAt,
+    });
+  } catch {
+    completed = synthesizeSucceededDeployment(deploymentResult.deployment, {
+      versionId: version.id,
+      previousVersionId: currentRoute.activeVersionId,
+      completedAt,
+    });
+  }
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
+}
+
+async function validateRequestedRollbackSite(store, version, body, environment) {
+  const siteId = typeof body.siteId === 'string' ? body.siteId.trim() : '';
+  if (siteId && siteId !== version.siteId) return rollbackSiteMismatch();
+
+  const siteSlug = typeof body.siteSlug === 'string' ? body.siteSlug.trim().toLowerCase() : '';
+  if (!siteSlug) return null;
+  if (typeof store.findSiteBySlug !== 'function') return null;
+  const requestedSite = await store.findSiteBySlug(environment, siteSlug);
+  if (!requestedSite) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
+  if (requestedSite.id !== version.siteId) return rollbackSiteMismatch();
+  return null;
+}
+
+function rollbackSiteMismatch() {
+  return jsonError(
+    'ROLLBACK_SITE_MISMATCH',
+    'Rollback version does not belong to the requested site.',
+    409,
+    'Check the site name and version id.'
+  );
 }
 
 async function resolveDeploySite(store, actor, environment, { siteId, siteSlug }) {
@@ -643,6 +705,52 @@ async function cleanupUploadedWorker(provider, uploaded) {
   } catch {
     // Best-effort cleanup must not hide the original deployment failure.
   }
+}
+
+async function releaseRetiredNormalWorkerSlot(store, previousRoute, activeVersion, env) {
+  if (!previousRoute?.slotId || !activeVersion?.id || previousRoute.activeVersionId === activeVersion.id) return;
+  if (previousRoute.executionProvider !== 'normal-worker-slot') return;
+  if (typeof store.releaseWorkerSlot !== 'function') return;
+  try {
+    await store.releaseWorkerSlot(previousRoute.slotId, { status: 'available', updatedAt: readNow(env) });
+  } catch {
+    // Slot reconciliation is best-effort; route activation has already committed.
+  }
+}
+
+async function reconcileCommittedDeployment(store, deployment, environment, env) {
+  if (!deployment || deployment.status === 'succeeded' || deployment.status === 'failed') return deployment;
+  if (!deployment.siteId || !deployment.versionId) return deployment;
+
+  const version = await store.getSiteVersion(deployment.versionId, environment);
+  const route = await store.getRouteBySiteId(deployment.siteId, environment);
+  const routeCommitted = route?.activeVersionId === deployment.versionId;
+  const deploymentOwnsVersion = version?.deploymentId === deployment.id;
+  const rollbackCommitted = deployment.operation === 'rollback' && Boolean(version) && routeCommitted;
+  if (!routeCommitted || (!deploymentOwnsVersion && !rollbackCommitted)) {
+    return deployment;
+  }
+
+  const patch = {
+    status: 'succeeded',
+    versionId: deployment.versionId,
+    completedAt: deployment.completedAt || readNow(env),
+  };
+  try {
+    return (await store.updateDeployment(deployment.id, patch)) || synthesizeSucceededDeployment(deployment, patch);
+  } catch {
+    return synthesizeSucceededDeployment(deployment, patch);
+  }
+}
+
+function synthesizeSucceededDeployment(deployment, patch) {
+  return {
+    ...deployment,
+    ...patch,
+    status: 'succeeded',
+    errorCode: null,
+    errorMessage: null,
+  };
 }
 
 async function markDeploymentStateWriteFailed(store, deploymentId, { env, versionId = null } = {}) {

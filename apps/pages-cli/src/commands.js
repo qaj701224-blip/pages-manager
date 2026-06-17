@@ -130,6 +130,11 @@ async function runLogin(parsed, context) {
     nowSeconds: context.nowSeconds,
     nowIso: context.nowIso,
     output,
+    onChallenge: parsed.flags.json
+      ? (challenge) => {
+          context.output(JSON.stringify({ ok: true, schemaVersion: 1, type: 'login_challenge', ...challenge }));
+        }
+      : null,
     noOpen: Boolean(parsed.flags.noOpen),
     pollIntervalMs: context.pollIntervalMs,
   });
@@ -313,7 +318,7 @@ async function runRollback(parsed, context) {
   const result = await client.requestApi(
     'POST',
     `/.xd-pages/api/versions/${encodeURIComponent(versionId)}/rollback`,
-    {},
+    { siteSlug: site },
     {
       idempotencyKey: nextIdempotencyKey(context),
     }

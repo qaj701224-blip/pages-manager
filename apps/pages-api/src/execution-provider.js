@@ -173,7 +173,12 @@ function createOrdinaryWorkerClient(env, config) {
         method: 'PUT',
         body: form,
       });
-      await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
+      try {
+        await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
+      } catch (error) {
+        await deleteWorkerScript(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
+        throw error;
+      }
       return result;
     },
 
@@ -181,6 +186,14 @@ function createOrdinaryWorkerClient(env, config) {
       return requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'GET' });
     },
   };
+}
+
+async function deleteWorkerScript(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName) {
+  try {
+    await requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'DELETE' });
+  } catch {
+    // The caller still fails closed by disabling the slot record; manual cleanup can retry by worker name.
+  }
 }
 
 async function uploadAssets({

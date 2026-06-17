@@ -32,6 +32,10 @@ test('serves production XD Pages OpenAPI skeleton', async () => {
     body.paths['/.xd-pages/api/deployments'].post.requestBody.content['application/json'].schema.$ref,
     '#/components/schemas/DeploymentRequest'
   );
+  assert.equal(
+    body.paths['/.xd-pages/api/versions/{id}/rollback'].post.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/RollbackRequest'
+  );
   assert.ok(body.paths['/.xd-pages/api/deployments'].post.requestBody.content['multipart/form-data']);
   assert.match(JSON.stringify(body.components.schemas.StaticAssetDeploymentRequest), /assetManifest/);
   assert.match(JSON.stringify(body.components.schemas.StaticAssetDeploymentRequest), /file-/);

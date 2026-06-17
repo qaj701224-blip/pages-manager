@@ -46,6 +46,7 @@ export async function loginWithBrowser({
   nowSeconds = () => Math.floor(Date.now() / 1000),
   nowIso = () => new Date().toISOString(),
   output = () => {},
+  onChallenge = null,
   noOpen = false,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   maxPolls = DEFAULT_MAX_POLLS,
@@ -64,6 +65,15 @@ export async function loginWithBrowser({
   assertLoginStart(start);
   output(`设备码：${start.deviceCode}`);
   output(`打开浏览器：${start.browserUrl}`);
+  if (typeof onChallenge === 'function') {
+    await onChallenge({
+      environment: config.environment,
+      credentialType: 'cli_token',
+      deviceCode: start.deviceCode,
+      browserUrl: start.browserUrl,
+      expiresAt: start.expiresAt,
+    });
+  }
 
   if (nowSeconds() >= start.expiresAt) throw new Error('CLI_LOGIN_EXPIRED');
   if (!noOpen) await openBrowser(start.browserUrl);

@@ -184,6 +184,7 @@ test('status, sites, rollback, and open use explicit site names', async () => {
   assert.deepEqual(JSON.parse(output[0]).site, { id: 'site_1', slug: 'docs', environment: 'production' });
   assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
   assert.equal(calls[2].url, 'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback');
+  assert.deepEqual(await calls[2].json(), { siteSlug: 'docs' });
   assert.equal(calls[2].headers.get('Idempotency-Key'), 'rb_1');
   assert.deepEqual(openOutput, ['https://docs-staging.pages.xd.team']);
 });
@@ -209,6 +210,56 @@ test('auth whoami uses API validation and env list stays user-facing only', asyn
   assert.equal(calls[0].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
   assert.equal(JSON.parse(output[0]).actor.accessKeyId, 'ak_1');
   assert.deepEqual(envOutput, ['production', 'staging']);
+});
+
+test('login --json emits browser challenge before polling', async () => {
+  const calls = [];
+  const output = [];
+  const writes = [];
+
+  await executeCommand(['login', '--json', '--no-open'], {
+    env: {},
+    secretStore: {
+      set: async (environment, credential) => writes.push({ environment, credential }),
+    },
+    fetch: fakeFetch(calls, [
+      {
+        loginId: 'cli_1',
+        loginSecret: 'sec_1',
+        deviceCode: '12345678',
+        browserUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_1',
+        expiresAt: 2_000,
+      },
+      { status: 'confirmed', cliToken: 'cli_token_secret', expiresAt: 3_000 },
+    ]),
+    sleep: async () => {},
+    nowSeconds: () => 1_000,
+    nowIso: () => '2026-06-15T00:00:00.000Z',
+    output: (line) => output.push(line),
+  });
+
+  const lines = output.map((line) => JSON.parse(line));
+  assert.equal(calls[0].url, 'https://auth.pages.xd.team/.xd-pages/cli/login/start');
+  assert.equal(calls[1].url, 'https://auth.pages.xd.team/.xd-pages/cli/login/poll');
+  assert.deepEqual(lines[0], {
+    ok: true,
+    schemaVersion: 1,
+    type: 'login_challenge',
+    environment: 'production',
+    credentialType: 'cli_token',
+    deviceCode: '12345678',
+    browserUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_1',
+    expiresAt: 2_000,
+  });
+  assert.deepEqual(lines[1], {
+    ok: true,
+    schemaVersion: 1,
+    environment: 'production',
+    credentialType: 'cli_token',
+  });
+  assert.equal(output.join('\n').includes('sec_1'), false);
+  assert.equal(output.join('\n').includes('cli_token_secret'), false);
+  assert.equal(writes[0].credential.value, 'cli_token_secret');
 });
 
 test('access set updates visibility and replaces allow list entries', async () => {
