@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const SUPPORTED_ENVIRONMENTS = new Set(['production', 'staging']);
-const SUPPORTED_PHASES = new Set(['prepare', 'activate']);
+const SUPPORTED_PHASES = new Set(['plan', 'prepare', 'activate']);
 const DEFAULT_CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const PLACEHOLDER_WORKER_MODULE = `export default {
   fetch() {
@@ -78,6 +78,22 @@ export function planNormalWorkerSlotProvisioning(slots, config) {
 }
 
 export async function provisionNormalWorkerSlots({ phase, config, d1, cloudflare, env = process.env }) {
+  if (phase === 'plan') {
+    const slots = await d1.listWorkerSlots(config.environment);
+    if (config.executionMode && config.executionMode !== 'normal-worker-slot') {
+      const bindingCount = maxSlotNumber(slots, config.environment);
+      return {
+        phase,
+        dryRun: true,
+        availableCount: slots.filter((slot) => slot.environment === config.environment && slot.status === 'available').length,
+        previousBindingCount: bindingCount,
+        bindingCount,
+        createSlotNumbers: [],
+      };
+    }
+    return { phase, dryRun: true, ...planNormalWorkerSlotProvisioning(slots, config) };
+  }
+
   if (phase === 'activate') {
     if ((config.bindingCount === undefined || config.bindingCount === '') && config.executionMode !== 'normal-worker-slot') {
       return { phase, bindingCount: 0, activatedCount: 0 };
@@ -288,10 +304,13 @@ async function main() {
     databaseName: readTomlValue(pagesApiTemplate, 'database_name'),
     env: process.env,
   });
-  const cloudflare = new CloudflareWorkersClient({
-    accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
-    apiToken: process.env.CLOUDFLARE_API_TOKEN,
-  });
+  const cloudflare =
+    phase === 'plan'
+      ? null
+      : new CloudflareWorkersClient({
+          accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+          apiToken: process.env.CLOUDFLARE_API_TOKEN,
+        });
   const result = await provisionNormalWorkerSlots({ phase, config, d1, cloudflare });
   console.log(JSON.stringify(result, null, 2));
 }
@@ -382,7 +401,7 @@ function readRequired(value, name) {
 }
 
 function usage() {
-  console.error('Usage: node scripts/provision-pages-v2-slots.mjs <production|staging> <prepare|activate>');
+  console.error('Usage: node scripts/provision-pages-v2-slots.mjs <production|staging> <plan|prepare|activate>');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

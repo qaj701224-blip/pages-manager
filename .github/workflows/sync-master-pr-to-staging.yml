@@ -79,7 +79,8 @@ jobs:
               packages/ip-guard/* | packages/pages-runtime-protocol/* | packages/worker-kit/* | packages/wfp-client/* | \
               scripts/render-pages-v2-wrangler.mjs | scripts/provision-pages-v2-slots.mjs | \
               scripts/put-pages-v2-secrets.sh | package.json | pnpm-lock.yaml | \
-              .github/workflows/deploy-pages-v2-staging.yml | docs/人工配置待办.md)
+              .github/workflows/deploy-pages-v2-staging.yml | .github/workflows/expand-pages-router-slots.yml | \
+              docs/人工配置待办.md)
                 v2_changed=true
                 ;;
             esac

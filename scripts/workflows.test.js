@@ -319,6 +319,50 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
   assert.doesNotMatch(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ vars\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
 });
 
+test('router slot expansion workflow is manual and only touches router slot resources', () => {
+  const workflow = readWorkflow('.github/workflows/expand-pages-router-slots.yml');
+  const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
+
+  assert.match(workflow, /^name: Expand XD Pages Router Slots$/m);
+  assert.match(triggers, /^ {2}workflow_dispatch:/m, 'router slot expansion is manual');
+  assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'router slot expansion has no push or PR trigger');
+  assert.match(workflow, /environment:[\s\S]*type: choice[\s\S]*- staging[\s\S]*- production/);
+  assert.match(workflow, /dry_run:[\s\S]*type: boolean[\s\S]*default: true/);
+  assert.match(workflow, /environment: \$\{\{ inputs\.environment \}\}/);
+  assert.match(workflow, /concurrency:\n {2}group: pages-router-slots-\$\{\{ inputs\.environment \}\}/);
+  assert.match(
+    workflow,
+    new RegExp(
+      String.raw`node --test scripts/provision-pages-v2-slots\.test\.js `
+        + String.raw`scripts/render-pages-v2-wrangler\.test\.js apps/pages-router/src/\*\.test\.js`,
+    ),
+  );
+  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" plan/);
+  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" prepare/);
+  assert.match(workflow, /node scripts\/render-pages-v2-wrangler\.mjs apps\/pages-router "\$TARGET_ENV"/);
+  assert.match(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
+  assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
+  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" activate/);
+  assert.ok(
+    workflow.indexOf('node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" prepare') <
+      workflow.indexOf('node scripts/render-pages-v2-wrangler.mjs apps/pages-router "$TARGET_ENV"'),
+    'prepare happens before router config rendering',
+  );
+  assert.ok(
+    workflow.indexOf('node scripts/render-pages-v2-wrangler.mjs apps/pages-router "$TARGET_ENV"') <
+      workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy'),
+    'router config renders before deploy',
+  );
+  assert.ok(
+    workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy') <
+      workflow.indexOf('node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" activate'),
+    'slots activate only after router deploy',
+  );
+  assert.doesNotMatch(workflow, /pnpm --dir apps\/pages-api exec wrangler deploy/);
+  assert.doesNotMatch(workflow, /pnpm --dir apps\/pages-auth exec wrangler deploy/);
+  assert.doesNotMatch(workflow, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
+});
+
 test('staging sync explicitly dispatches deploy workflows for deploy-affecting paths', () => {
   const workflow = readWorkflow('.github/workflows/sync-master-pr-to-staging.yml');
 
@@ -350,6 +394,7 @@ test('staging sync explicitly dispatches deploy workflows for deploy-affecting p
     'package.json',
     'pnpm-lock.yaml',
     '.github/workflows/deploy-pages-v2-staging.yml',
+    '.github/workflows/expand-pages-router-slots.yml',
   ]) {
     assert.match(workflow, new RegExp(escapeRegExp(path)), `v2 staging sync watches ${path}`);
   }

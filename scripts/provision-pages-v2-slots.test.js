@@ -141,6 +141,49 @@ test('provisions missing slot workers, writes pending rows, and activates only a
   assert.deepEqual(d1.slots.map((slot) => slot.status), ['available', 'available']);
 });
 
+test('plan phase computes slot expansion without writing Cloudflare or D1', async () => {
+  const calls = [];
+  const githubEnvWrites = [];
+  const d1 = {
+    async listWorkerSlots() {
+      return [];
+    },
+    async insertPendingWorkerSlot() {
+      throw new Error('plan must not insert slots');
+    },
+    async activatePendingWorkerSlots() {
+      throw new Error('plan must not activate slots');
+    },
+  };
+  const cloudflare = {
+    async putWorker() {
+      throw new Error('plan must not create workers');
+    },
+  };
+
+  const result = await provisionNormalWorkerSlots({
+    phase: 'plan',
+    config: baseConfig,
+    d1,
+    cloudflare,
+    env: {
+      GITHUB_ENV: {
+        async write(value) {
+          githubEnvWrites.push(value);
+        },
+      },
+      appendFile: async (...args) => calls.push(args),
+    },
+  });
+
+  assert.equal(result.phase, 'plan');
+  assert.equal(result.dryRun, true);
+  assert.deepEqual(result.createSlotNumbers, [1, 2]);
+  assert.equal(result.bindingCount, 2);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(githubEnvWrites, []);
+});
+
 test('Cloudflare slot provisioner disables workers.dev for placeholder workers', async () => {
   const requests = [];
   const client = new CloudflareWorkersClient({
