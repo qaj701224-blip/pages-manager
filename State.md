@@ -82,6 +82,7 @@ apps/gateway/src/
   publishing/worker-dispatcher.js
   http/body.js
   http/router.js
+  slack/agent-turn.js
   slack/http.js
   slack/intake.js
   slack/job-input.js
