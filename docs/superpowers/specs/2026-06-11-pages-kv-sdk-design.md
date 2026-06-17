@@ -9,7 +9,7 @@
 ## 目标
 
 - 发布一个可供业务 SPA 安装的 npm 包 `@xd/pages-sdk`。
-- 支持业务浏览器代码通过 `@xd/pages-sdk/browser` 执行 KV `get`、`put`、`delete`。
+- 支持业务浏览器代码通过 `@xd/pages-sdk/browser` 执行 KV `get`、`set`、`delete`。
 - 支持自定义 `_worker.js` 通过 `@xd/pages-sdk/worker` 使用同一套 KV 能力。
 - pages-manager 生成的 SPA Worker 内置平台 runtime endpoint，并复用 SDK worker adapter 逻辑。
 - KV 能力第一版必须显式 opt-in，例如部署参数 `kv=true`；未开启的站点不注入 gateway binding、capability 或 browser runtime endpoint。
@@ -140,7 +140,7 @@ KV endpoint 全部使用 POST：
 
 ```text
 POST /.xd-pages/runtime/v1/kv/get
-POST /.xd-pages/runtime/v1/kv/put
+POST /.xd-pages/runtime/v1/kv/set
 POST /.xd-pages/runtime/v1/kv/delete
 ```
 
@@ -381,7 +381,7 @@ payload 第一版不加 `exp`，避免引入续签机制：
   "siteId": "q2-report",
   "siteUuid": "4b4c8e8361ef4b47b64f5c20a7db7c47",
   "siteGeneration": 1,
-  "scope": ["kv:get", "kv:put", "kv:delete"],
+  "scope": ["kv:get", "kv:set", "kv:delete"],
   "iat": 1781111111,
   "nbf": 1781111111,
   "jti": "cap_01hx..."
@@ -447,7 +447,7 @@ key registry 必须将 `kid` 绑定到预期 `alg` 和 key type。gateway 需要
 
 ```text
 POST /v1/kv/get
-POST /v1/kv/put
+POST /v1/kv/set
 POST /v1/kv/delete
 ```
 
@@ -457,7 +457,7 @@ gateway 处理流程：
 flowchart TD
   Req["service binding request"] --> Route{"path"}
   Route -->|/v1/kv/get| Get["get handler"]
-  Route -->|/v1/kv/put| Put["put handler"]
+  Route -->|/v1/kv/set| Set["set handler"]
   Route -->|/v1/kv/delete| Del["delete handler"]
   Route -->|other| NotFound["404 JSON"]
 
@@ -472,7 +472,7 @@ flowchart TD
   Scope --> Body["parse JSON body"]
   Body --> Key["validate user key"]
   Key --> Storage["buildStorageKey"]
-  Storage --> KV["env.SITE_DATA get/put/delete"]
+  Storage --> KV["env.SITE_DATA get/set/delete"]
   KV --> Resp["JSON envelope"]
 ```
 
@@ -570,7 +570,7 @@ import { createPagesClient } from "@xd/pages-sdk/browser";
 const pages = createPagesClient();
 
 const config = await pages.kv.get("app/config", { type: "json" });
-await pages.kv.put("drafts/123", { title: "hello" });
+await pages.kv.set("drafts/123", { title: "hello" });
 await pages.kv.delete("drafts/123");
 ```
 
@@ -585,7 +585,7 @@ createPagesClient(options?: {
 }): {
   kv: {
     get<T = unknown>(key: string, options?: { type?: KVType }): Promise<T | string | null>;
-    put(key: string, value: unknown, options?: { type?: KVType; expirationTtl?: number }): Promise<void>;
+    set(key: string, value: unknown, options?: { type?: KVType; expirationTtl?: number }): Promise<void>;
     delete(key: string): Promise<void>;
   };
 }
@@ -672,14 +672,14 @@ export const RUNTIME = {
   VERSION: "v1",
   BASE_PATH: "/.xd-pages/runtime/v1",
   KV_GET_PATH: "/.xd-pages/runtime/v1/kv/get",
-  KV_PUT_PATH: "/.xd-pages/runtime/v1/kv/put",
+  KV_SET_PATH: "/.xd-pages/runtime/v1/kv/set",
   KV_DELETE_PATH: "/.xd-pages/runtime/v1/kv/delete",
 };
 
 export const GATEWAY = {
   BASE_PATH: "/v1",
   KV_GET_PATH: "/v1/kv/get",
-  KV_PUT_PATH: "/v1/kv/put",
+  KV_SET_PATH: "/v1/kv/set",
   KV_DELETE_PATH: "/v1/kv/delete",
 };
 
@@ -768,7 +768,7 @@ value 不做额外平台大小限制，遵循 Cloudflare KV 最大 value 25 MiB�
 ```js
 // 公开写接口，任何访问者都能改本站数据。
 if (url.pathname === "/set") {
-  await pages.kv.put(url.searchParams.get("key"), url.searchParams.get("value"));
+  await pages.kv.set(url.searchParams.get("key"), url.searchParams.get("value"));
   return new Response("ok");
 }
 ```
@@ -802,7 +802,7 @@ gateway 可记录结构化日志：
 
 ```json
 {
-  "event": "pages.kv.put",
+  "event": "pages.kv.set",
   "environment": "production",
   "siteId": "q2-report",
   "jti": "cap_...",

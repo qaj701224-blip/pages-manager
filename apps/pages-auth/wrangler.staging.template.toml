@@ -1,0 +1,50 @@
+name = "pages-auth-staging"
+main = "src/index.js"
+compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
+
+[[routes]]
+pattern = "auth-staging.pages.xd.team/*"
+zone_name = "xd.team"
+
+[vars]
+PAGES_ENV = "staging"
+PUBLIC_AUTH_BASE = "https://auth-staging.pages.xd.team"
+PUBLIC_API_BASE = "https://api-staging.pages.xd.team"
+PUBLIC_SITE_SUFFIX = "pages.xd.team"
+OAUTH_STATE_TTL_SECONDS = "300"
+CLI_LOGIN_TTL_SECONDS = "600"
+AUTH_SESSION_IDLE_TTL_SECONDS = "1209600"
+AUTH_SESSION_ABSOLUTE_TTL_SECONDS = "2592000"
+SITE_SESSION_IDLE_TTL_SECONDS = "604800"
+SITE_SESSION_ABSOLUTE_TTL_SECONDS = "2592000"
+PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"
+PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"
+SSO_AUTHORIZATION_URL = "https://sso.security.xindong.com/cas/oauth2.0/authorize"
+SSO_REDIRECT_URI = "https://auth-staging.pages.xd.team/.xd-pages/auth/callback"
+SSO_TOKEN_URL = "https://sso.security.xindong.com/cas/oauth2.0/accessToken"
+SSO_PROFILE_URL = "https://sso.security.xindong.com/cas/oauth2.0/profile"
+SSO_CLIENT_ID = "xd_pages_staging"
+SSO_ALLOWED_USER_SCOPE = "xindong"
+
+[[d1_databases]]
+binding = "PAGES_METADATA"
+database_name = "pages-v2-metadata-staging"
+database_id = "__D1_DATABASE_ID__"
+
+[[durable_objects.bindings]]
+name = "OAUTH_STATES"
+class_name = "OAuthStateDO"
+
+[[durable_objects.bindings]]
+name = "CLI_LOGINS"
+class_name = "CliLoginDO"
+
+[[durable_objects.bindings]]
+name = "AUTH_SESSIONS"
+class_name = "AuthSessionDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["OAuthStateDO", "CliLoginDO", "AuthSessionDO"]

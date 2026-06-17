@@ -11,9 +11,11 @@ import {
   buildOkEnvelope,
   buildStorageKey,
   encodeUserKey,
+  isReservedSiteSlug,
   isValidSiteSlug,
   isValidSiteUuid,
   parseKvEnabled,
+  validateSiteSlug,
   validateKvType,
   validateTtl,
   validateUserKey,
@@ -22,7 +24,8 @@ import {
 test('exports stable runtime, gateway, header, binding and error constants', () => {
   assert.equal(RUNTIME.BASE_PATH, '/.xd-pages/runtime/v1');
   assert.equal(RUNTIME.KV_GET_PATH, '/.xd-pages/runtime/v1/kv/get');
-  assert.equal(GATEWAY.KV_PUT_PATH, '/v1/kv/put');
+  assert.equal(RUNTIME.KV_SET_PATH, '/.xd-pages/runtime/v1/kv/set');
+  assert.equal(GATEWAY.KV_SET_PATH, '/v1/kv/set');
   assert.equal(HEADERS.RUNTIME_REQUEST, 'X-XD-Pages-Runtime');
   assert.equal(BINDINGS.KV_GATEWAY, 'XD_PAGES_KV_GATEWAY');
   assert.equal(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'INVALID_RUNTIME_RESPONSE');
@@ -57,6 +60,20 @@ test('siteSlug matches deploy handler name semantics', () => {
   assert.equal(isValidSiteSlug('-q2-report'), false);
   assert.equal(isValidSiteSlug('q2-report-'), false);
   assert.equal(isValidSiteSlug('q2_report'), false);
+});
+
+test('siteSlug reserves platform names consistently across control and data plane', () => {
+  assert.equal(isReservedSiteSlug('api'), true);
+  assert.equal(isReservedSiteSlug('auth-staging'), true);
+  assert.equal(isReservedSiteSlug('router'), true);
+  assert.equal(isReservedSiteSlug('kv-gateway'), true);
+  assert.equal(isReservedSiteSlug('login'), true);
+  assert.equal(isReservedSiteSlug('docs'), false);
+  assert.equal(validateSiteSlug('docs', { environment: 'production' }).ok, true);
+  assert.equal(validateSiteSlug('docs-staging', { environment: 'production' }).error.code, 'RESERVED_SLUG');
+  assert.equal(validateSiteSlug('docs-staging', { environment: 'staging' }).ok, true);
+  assert.equal(validateSiteSlug('kv-gateway', { environment: 'production' }).error.code, 'RESERVED_SLUG');
+  assert.equal(validateSiteSlug(`a${'b'.repeat(49)}1`, { environment: 'production' }).error.code, 'INVALID_SLUG');
 });
 
 test('user key validation rejects empty, reserved and oversized keys', () => {

@@ -15,9 +15,6 @@ DOMAIN_LABEL = "__DOMAIN_LABEL__"
 WORKER_PREFIX = "__WORKER_PREFIX__"
 WORKERS_DEV_SUBDOMAIN = "__WORKERS_DEV_SUBDOMAIN__"
 IP_ALLOWLIST = "__IP_ALLOWLIST__"
-KV_GATEWAY_SERVICE = "__KV_GATEWAY_SERVICE__"
-PAGES_CAP_JWT_ACTIVE_KID = "__PAGES_CAP_JWT_ACTIVE_KID__"
-PAGES_CAP_JWT_KEYS = "__PAGES_CAP_JWT_KEYS__"
 
 [[rules]]
 type = "Text"
@@ -35,6 +32,3 @@ custom_domain = true
 # Runtime secrets, set outside the repository:
 # npx wrangler secret put CF_ZONE_ID_NEW
 # npx wrangler secret put CF_API_TOKEN
-
-# KV capability secrets, set outside the repository:
-# npx wrangler secret put PAGES_CAP_JWT_SECRET_202606

@@ -13,6 +13,7 @@ dist/
 .dev.vars
 .pages.json
 **/.pages.json
+dev-test/
 
 ### Cloudflare / Wrangler
 .wrangler/
@@ -21,6 +22,9 @@ dist/
 apps/server/wrangler.toml
 apps/kv-gateway/wrangler.toml
 apps/xdads-302/wrangler.toml
+apps/pages-api/wrangler.toml
+apps/pages-auth/wrangler.toml
+apps/pages-router/wrangler.toml
 
 ### Claude Code (local settings, not shared)
 .claude/settings.local.json

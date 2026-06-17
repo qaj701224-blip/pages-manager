@@ -13,8 +13,9 @@ test('PAGES_RUNTIME_SOURCE is self-contained runtime source text', () => {
 test('PAGES_RUNTIME_SOURCE handles valid get requests', async () => {
   const { handlePagesRuntimeRequest } = loadInlineRuntime();
   let captured;
-  const response = await handlePagesRuntimeRequest(runtimeRequest('/.xd-pages/runtime/v1/kv/get'), {
-    XD_PAGES_KV_CAPABILITY: 'capability-token',
+  const response = await handlePagesRuntimeRequest(runtimeRequest('/.xd-pages/runtime/v1/kv/get', {
+    headers: { 'CF-Platform-KV-Capability': 'request-capability-token' },
+  }), {
     XD_PAGES_KV_GATEWAY: {
       fetch: async (request) => {
         captured = request;
@@ -27,7 +28,7 @@ test('PAGES_RUNTIME_SOURCE handles valid get requests', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/get');
-  assert.equal(captured.headers.get('Authorization'), 'Bearer capability-token');
+  assert.equal(captured.headers.get('Authorization'), 'Bearer request-capability-token');
   assert.deepEqual(await captured.json(), { key: 'app/config', type: 'json' });
   assert.deepEqual(await response.json(), { ok: true, found: true, value: { enabled: true } });
 });

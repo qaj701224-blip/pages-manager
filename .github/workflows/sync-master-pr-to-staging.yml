@@ -22,6 +22,8 @@ jobs:
     outputs:
       skip: ${{ steps.inspect.outputs.skip }}
       skipReason: ${{ steps.inspect.outputs.skipReason }}
+      v1Changed: ${{ steps.inspect.outputs.v1Changed }}
+      v2Changed: ${{ steps.inspect.outputs.v2Changed }}
     steps:
       - name: Inspect PR scope
         id: inspect
@@ -56,11 +58,30 @@ jobs:
 
           files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
           platform_changed=false
+          v1_changed=false
+          v2_changed=false
           while IFS= read -r path; do
             case "$path" in
               "" | sites/*) ;;
               *)
                 platform_changed=true
+                ;;
+            esac
+            case "$path" in
+              apps/server/* | packages/ip-guard/* | packages/worker-kit/* | \
+              scripts/gen-wrangler.sh | package.json | pnpm-lock.yaml | \
+              .github/workflows/deploy-staging.yml)
+                v1_changed=true
+                ;;
+            esac
+            case "$path" in
+              apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | \
+              packages/ip-guard/* | packages/pages-runtime-protocol/* | packages/worker-kit/* | packages/wfp-client/* | \
+              scripts/render-pages-v2-wrangler.mjs | scripts/provision-pages-v2-slots.mjs | \
+              scripts/put-pages-v2-secrets.sh | package.json | pnpm-lock.yaml | \
+              .github/workflows/deploy-pages-v2-staging.yml | .github/workflows/expand-pages-router-slots.yml | \
+              docs/人工配置待办.md)
+                v2_changed=true
                 ;;
             esac
           done <<< "$files"
@@ -73,6 +94,8 @@ jobs:
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "skipReason=" >> "$GITHUB_OUTPUT"
+          echo "v1Changed=${v1_changed}" >> "$GITHUB_OUTPUT"
+          echo "v2Changed=${v2_changed}" >> "$GITHUB_OUTPUT"
 
       - name: Report skipped PR
         if: steps.inspect.outputs.skip == 'true'
@@ -97,6 +120,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          V1_CHANGED: ${{ needs.inspect.outputs.v1Changed }}
+          V2_CHANGED: ${{ needs.inspect.outputs.v2Changed }}
         run: |
           set -euo pipefail
 
@@ -178,32 +203,71 @@ jobs:
           fi
 
           deploy_head_sha="$(git rev-parse HEAD)"
-          dispatch_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          gh workflow run deploy-staging.yml --repo "$GITHUB_REPOSITORY" --ref staging -f component=all
 
-          run_id=""
-          run_url=""
-          for _ in {1..30}; do
-            run_line="$(gh run list \
-              --repo "$GITHUB_REPOSITORY" \
-              --workflow deploy-staging.yml \
-              --branch staging \
-              --event workflow_dispatch \
-              --limit 20 \
-              --json databaseId,createdAt,headSha,url \
-              --jq ".[] | select(.headSha == \"${deploy_head_sha}\" and .createdAt >= \"${dispatch_started_at}\") | [.databaseId, .url] | @tsv" \
-              | head -n 1)"
-            if [[ -n "$run_line" ]]; then
-              IFS=$'\t' read -r run_id run_url <<< "$run_line"
-              break
+          if [[ "$V1_CHANGED" == "true" ]]; then
+            v1_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run deploy-staging.yml --repo "$GITHUB_REPOSITORY" --ref staging
+
+            v1_run_id=""
+            v1_run_url=""
+            for _ in {1..30}; do
+              v1_run_line="$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow deploy-staging.yml \
+                --branch staging \
+                --event workflow_dispatch \
+                --limit 20 \
+                --json databaseId,createdAt,headSha,url \
+                --jq ".[] | select(.headSha == \"${deploy_head_sha}\" and .createdAt >= \"${v1_started_at}\") | [.databaseId, .url] | @tsv" \
+                | head -n 1)"
+              if [[ -n "$v1_run_line" ]]; then
+                IFS=$'\t' read -r v1_run_id v1_run_url <<< "$v1_run_line"
+                break
+              fi
+              sleep 5
+            done
+
+            if [[ -z "$v1_run_id" ]]; then
+              echo "Deploy Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
+              exit 1
             fi
-            sleep 5
-          done
 
-          if [[ -z "$run_id" ]]; then
-            echo "Deploy Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
-            exit 1
+            echo "Waiting for Deploy Staging run: ${v1_run_url}"
+            gh run watch "$v1_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
           fi
 
-          echo "Waiting for Deploy Staging run: ${run_url}"
-          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          if [[ "$V2_CHANGED" == "true" ]]; then
+            v2_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run deploy-pages-v2-staging.yml --repo "$GITHUB_REPOSITORY" --ref staging -f component=all
+
+            v2_run_id=""
+            v2_run_url=""
+            for _ in {1..30}; do
+              v2_run_line="$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow deploy-pages-v2-staging.yml \
+                --branch staging \
+                --event workflow_dispatch \
+                --limit 20 \
+                --json databaseId,createdAt,headSha,url \
+                --jq ".[] | select(.headSha == \"${deploy_head_sha}\" and .createdAt >= \"${v2_started_at}\") | [.databaseId, .url] | @tsv" \
+                | head -n 1)"
+              if [[ -n "$v2_run_line" ]]; then
+                IFS=$'\t' read -r v2_run_id v2_run_url <<< "$v2_run_line"
+                break
+              fi
+              sleep 5
+            done
+
+            if [[ -z "$v2_run_id" ]]; then
+              echo "Deploy XD Pages Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
+              exit 1
+            fi
+
+            echo "Waiting for Deploy XD Pages Staging run: ${v2_run_url}"
+            gh run watch "$v2_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+          fi
+
+          if [[ "$V1_CHANGED" != "true" && "$V2_CHANGED" != "true" ]]; then
+            echo "No staging deployment workflow is required for the changed files."
+          fi

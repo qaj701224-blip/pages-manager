@@ -28,8 +28,6 @@ Environment:
   PAGES_DEMO_ALLOW_NON_STAGING
                            Optional. Set true only for a nonstandard PAGES_API.
 
-Note:
-  vue-app is deployed with kv=true to exercise the browser Pages KV SDK.
 EOF
 }
 
@@ -111,14 +109,6 @@ demo_preset() {
   esac
 }
 
-demo_kv_enabled() {
-  case "$1" in
-    vue-app) printf 'true' ;;
-    html-img | nuxt-app | api-demo) printf 'false' ;;
-    *) die "unknown demo id: $1" ;;
-  esac
-}
-
 demo_dir() {
   case "$1" in
     html-img) printf 'demos/html-img' ;;
@@ -169,15 +159,14 @@ print_plan() {
   printf 'PAGES_API=%s\n' "$PAGES_API"
   printf 'PAGES_DEMO_PREFIX=%s\n' "$PAGES_DEMO_PREFIX"
   printf '\n'
-  printf '%-24s %-8s %-5s %s\n' 'site' 'preset' 'kv' 'source'
+  printf '%-24s %-8s %s\n' 'site' 'preset' 'source'
   while IFS= read -r demo; do
-    local name preset kv_enabled source
+    local name preset source
     name="$(demo_site_name "$demo")"
     preset="$(demo_preset "$demo")"
-    kv_enabled="$(demo_kv_enabled "$demo")"
     source="$(demo_dir "$demo")"
     validate_site_name "$name"
-    printf '%-24s %-8s %-5s %s\n' "$name" "$preset" "$kv_enabled" "$source"
+    printf '%-24s %-8s %s\n' "$name" "$preset" "$source"
   done < <(selected_demos)
 }
 
@@ -216,7 +205,6 @@ prepare_demo_dir() {
       printf '%s/demos/html-img' "$REPO_ROOT"
       ;;
     vue-app)
-      run_cmd pnpm --filter @xd/pages-sdk build
       install_and_build "$REPO_ROOT/demos/vue-app" build
       printf '%s/demos/vue-app/dist' "$REPO_ROOT"
       ;;
@@ -260,9 +248,6 @@ deploy_dir() {
   curl_args+=(-F "name=${site}")
   curl_args+=(-F "preset=${preset}")
   curl_args+=(-F "ip_restrict=true")
-  if [[ "$(demo_kv_enabled "$demo")" == "true" ]]; then
-    curl_args+=(-F "kv=true")
-  fi
 
   local count=0
   while IFS= read -r -d '' file; do

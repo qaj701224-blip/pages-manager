@@ -13,16 +13,8 @@ const BASE_SPEC = {
       `。平台保留名称不能作为用户站点名: ${RESERVED_SITE_NAMES.join(', ')}` +
       '\n\n域名格式: `https://{name}.workers.xd.team`' +
       '\n\n部署必须携带 `X-Pages-Token` 请求头或 `token` 表单字段。同一 token 可覆盖自己创建的同名站点，无需先删除；不同 token 不能互相覆盖。' +
-      '\n\n## Pages KV v1' +
-      '\n\n`kv=true` 是显式 opt-in，仅支持 `spa` 和 `worker` preset；未传、`false` 或 `kv=false` 均不开启，非法值会被拒绝，`static + kv=true` 会返回 400。' +
-      '\n\nBrowser SDK 入口为 `@xd/pages-sdk/browser`，通过同源 POST runtime endpoint 访问本站 KV：' +
-      '`POST /.xd-pages/runtime/v1/kv/get`、`POST /.xd-pages/runtime/v1/kv/put`、' +
-      '`POST /.xd-pages/runtime/v1/kv/delete`。公开 assets 不会让 KV runtime 公开；' +
-      'v1 runtime KV 仍受平台 IP allowlist 保护。v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。' +
-      '\n\nWorker SDK 入口为 `@xd/pages-sdk/worker`。worker preset 开启 `kv=true` 后，' +
-      '`_worker.js` 会收到本站 KV 能力；owner 代码可以误用或泄露自己的能力，平台只强制跨站前缀隔离。' +
-      '如果 `_worker.js` import 任何 npm 包（包括 `@xd/pages-sdk/worker`），业务构建必须先 bundle/打包，' +
-      '再上传给 pages-manager；pages-manager 不会打包 `_worker.js`。' +
+      '\n\n## Pages KV' +
+      '\n\nv1 不再提供 Pages KV。传 `kv=true` 会返回 400；KV 能力由 v2 `pages.xd.team` 平台提供。' +
       '\n\n## Token 身份标记' +
       '\n\n部署、列表、站点详情和删除请求都必须携带 `X-Pages-Token` 请求头或等价 token 参数，用于标记部署者身份。' +
       '格式: `pages_你的邮箱`（如 `pages_zhangsan@xd.com`）。' +
@@ -43,16 +35,10 @@ const BASE_SPEC = {
           '上传文件并发布为一个站点 Worker。请求体为 multipart/form-data，包含站点名、preset 和所有要部署的文件。' +
           '\n\n使用 worker preset 时，上传文件中必须包含一个 filename=_worker.js 的文件作为 Worker 入口脚本。' +
           '该脚本可通过 env.ASSETS.fetch(request) 访问同时上传的其他静态文件。' +
-          '如果 `_worker.js` import npm 包（例如 `@xd/pages-sdk/worker`），' +
+          '如果 `_worker.js` import npm 包，' +
           '业务构建必须先 bundle/打包成可直接运行的 Worker module，pages-manager 不会打包 `_worker.js`。' +
           '\n\n站点名即 URL 前缀（如 name=my-app → https://my-app.workers.xd.team）。部署前应询问用户想要的站点名，且不能使用平台保留名称。' +
-          '\n\n**Pages KV**: 传 `kv=true` 可为 `spa` 和 `worker` preset 显式开启站点级 KV。' +
-          '`static + kv=true` 会被拒绝；未传、`false` 或 `kv=false` 均不开启。' +
-          'Browser SDK 使用 `@xd/pages-sdk/browser` 访问同源 POST runtime endpoint: ' +
-          '`POST /.xd-pages/runtime/v1/kv/get`、`POST /.xd-pages/runtime/v1/kv/put`、' +
-          '`POST /.xd-pages/runtime/v1/kv/delete`。' +
-          '公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。' +
-          'worker preset 开启后，owner `_worker.js` 会收到本站 KV 能力；平台只强制跨站前缀隔离，无法阻止 owner 代码误用或泄露自己的能力。' +
+          '\n\n**Pages KV**: v1 不再提供 Pages KV。不要传 `kv=true`；如传入会返回 400。KV 能力由 v2 `pages.xd.team` 平台提供。' +
           '\n\n**Token 必填**: 部署必须携带 X-Pages-Token 请求头，或在表单字段 token 中提供部署者 token。未携带 token 时返回 400。' +
           '\n\n**归属保护**: 同名站点已被其他 token 占用时，返回 409 错误。同一 token 可覆盖自己的站点。' +
           '\n\n**部署记录**: 部署成功后，AI 应在项目目录写入 `.pages.json` 文件记录部署信息（name、url、devUrl、preset、token、updatedAt），' +
@@ -99,17 +85,6 @@ const BASE_SPEC = {
                       '但需在 _worker.js 中自行调用 x-libs.ip-guard。' +
                       '传 false 会被拒绝。',
                   },
-                  kv: {
-                    type: 'string',
-                    enum: ['true', 'false'],
-                    default: 'false',
-                    description:
-                      'Pages KV 显式开关。`kv=true` 仅支持 spa/worker preset，static + kv=true 会被拒绝；' +
-                      '未传、`false` 或 `kv=false` 均不开启，其他值会返回 400。' +
-                      '开启后 browser SDK `@xd/pages-sdk/browser` 通过同源 POST `/.xd-pages/runtime/v1/kv/*` 访问站点级 KV；' +
-                      'worker SDK `@xd/pages-sdk/worker` 可在 worker preset 的 `_worker.js` 中使用。' +
-                      'runtime KV 仍受平台 IP 白名单保护；worker preset owner code can misuse/leak its own KV capability，平台只做跨站前缀隔离。',
-                  },
                   'file-*': {
                     type: 'string',
                     format: 'binary',
@@ -138,7 +113,6 @@ const BASE_SPEC = {
                       devUrl: 'https://pages-q2-report.xd-cf-2022.workers.dev',
                       fileCount: 42,
                       preset: 'static',
-                      kv: false,
                     },
                   },
                 },
@@ -196,13 +170,14 @@ const BASE_SPEC = {
                       hint: 'kv 仅支持 true 或 false',
                     },
                   },
-                  staticKv: {
-                    summary: 'static preset 不支持 KV',
+                  kvNotSupported: {
+                    summary: 'v1 不支持 Pages KV',
                     value: {
-                      error: 'static preset 暂不支持 kv',
-                      field: 'preset',
-                      value: 'static',
-                      hint: 'kv=true 目前仅支持 spa 或 worker preset',
+                      error: 'v1 Pages KV 已下线',
+                      code: 'KV_NOT_SUPPORTED',
+                      field: 'kv',
+                      value: 'true',
+                      hint: 'v1 workers.xd.team 不再提供 Pages KV；请使用 v2 pages.xd.team 的 KV 能力',
                     },
                   },
                   missingWorker: {
@@ -459,13 +434,9 @@ const BASE_SPEC = {
           fileCount: { type: 'integer', description: '部署的文件数量（不含 _worker.js）' },
           preset: { type: 'string', enum: ['static', 'spa', 'worker'] },
           ipRestrict: { type: 'boolean', description: '是否已开启 IP 内网限制' },
-          kv: { type: 'boolean', description: '是否已为本站开启 Pages KV。只有 `kv=true` 且 preset 为 spa/worker 时为 true。' },
           warning: {
             type: 'string',
-            description:
-              '提醒信息（例如 worker preset 需调用 IP 限制 helper；' +
-              'worker preset 使用 `@xd/pages-sdk/worker` 时需先 bundle/打包，' +
-              '且 owner code can misuse/leak its own KV capability）。',
+            description: '提醒信息（例如 worker preset 需调用 IP 限制 helper）。',
           },
         },
       },
@@ -476,7 +447,7 @@ const BASE_SPEC = {
           url: { type: 'string', format: 'uri' },
           preset: { type: 'string', enum: ['static', 'spa', 'worker'] },
           ipRestrict: { type: 'boolean', description: '是否开启 IP 内网限制' },
-          kvEnabled: { type: 'boolean', description: '是否已为本站开启 Pages KV' },
+          kvEnabled: { type: 'boolean', description: 'v1 不再提供 Pages KV；该字段保留兼容，始终为 false。' },
           updatedAt: { type: 'string', format: 'date-time' },
         },
       },
@@ -490,7 +461,7 @@ const BASE_SPEC = {
           devUrl: { type: 'string', format: 'uri', description: 'workers.dev 备用地址' },
           fileCount: { type: 'integer' },
           ipRestrict: { type: 'boolean', description: '是否开启 IP 内网限制' },
-          kvEnabled: { type: 'boolean', description: '是否已为本站开启 Pages KV' },
+          kvEnabled: { type: 'boolean', description: 'v1 不再提供 Pages KV；该字段保留兼容，始终为 false。' },
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
         },
@@ -585,33 +556,6 @@ const BASE_SPEC = {
       usage: 'const blocked = checkIP(request, env); if (blocked) return blocked;',
       source: ENV_GUARD_SOURCE,
     },
-    'pages-kv': {
-      description:
-        '`kv=true` 仅支持 spa/worker preset，static + kv=true 会被拒绝。' +
-        'Browser runtime endpoint 为同源 POST only：POST /.xd-pages/runtime/v1/kv/get、' +
-        'POST /.xd-pages/runtime/v1/kv/put、POST /.xd-pages/runtime/v1/kv/delete。' +
-        '公开 assets 不会让 KV runtime 公开；v1 runtime KV 仍受平台 IP 白名单保护。' +
-        'worker preset owner code can misuse/leak its own KV capability；平台只强制跨站前缀隔离（cross-site prefix isolation）。' +
-        'v1 browser KV 是站点级能力，不是用户级隔离，不要存高度敏感数据。',
-      browserUsage: [
-        "import { createPagesClient } from '@xd/pages-sdk/browser';",
-        '',
-        'const pages = createPagesClient();',
-        "const config = await pages.kv.get('app/config', { type: 'json' });",
-        "await pages.kv.put('drafts/123', { title: 'hello' });",
-        "await pages.kv.delete('drafts/123');",
-      ].join('\n'),
-      workerUsage: [
-        "import { createPagesRuntime } from '@xd/pages-sdk/worker';",
-        '',
-        'export default {',
-        '  async fetch(request, env) {',
-        '    const pages = createPagesRuntime({ env });',
-        "    return Response.json(await pages.kv.get('app/config'));",
-        '  },',
-        '};',
-      ].join('\n'),
-    },
   },
   'x-scripts': {
     description:
@@ -619,7 +563,7 @@ const BASE_SPEC = {
       '脚本通过环境变量 PAGES_TOKEN 传递身份 token，PAGES_API 可覆盖 API 地址。',
     deploy: {
       filename: 'pages-deploy.sh',
-      description: '部署脚本: pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--kv]',
+      description: '部署脚本: pages-deploy.sh <name> <dir> [--preset static|spa|worker]',
       usage: 'PAGES_TOKEN=pages_xxx@xd.com bash pages-deploy.sh my-site ./dist --preset static',
       source: [
         '#!/usr/bin/env bash',
@@ -628,20 +572,18 @@ const BASE_SPEC = {
         'NAME="${1:-}"',
         'DIR="${2:-}"',
         'PRESET="static"',
-        'KV="false"',
         'API="${PAGES_API:-https://api.workers.xd.team}"',
         '',
         'shift 2 2>/dev/null || true',
         'while [[ $# -gt 0 ]]; do',
         '  case "$1" in',
         '    --preset) PRESET="${2:-static}"; shift 2 ;;',
-        '    --kv) KV="true"; shift ;;',
         '    *) shift ;;',
         '  esac',
         'done',
         '',
         'if [ -z "$NAME" ] || [ -z "$DIR" ]; then',
-        '  echo "用法: pages-deploy.sh <name> <dir> [--preset static|spa|worker] [--kv]"',
+        '  echo "用法: pages-deploy.sh <name> <dir> [--preset static|spa|worker]"',
         '  exit 1',
         'fi',
         '',
@@ -661,7 +603,6 @@ const BASE_SPEC = {
         'CURL_ARGS+=(-F "name=${NAME}")',
         'CURL_ARGS+=(-F "preset=${PRESET}")',
         'CURL_ARGS+=(-F "ip_restrict=true")',
-        'CURL_ARGS+=(-F "kv=${KV}")',
         '',
         'COUNT=0',
         "while IFS= read -r -d '' file; do",
@@ -675,7 +616,7 @@ const BASE_SPEC = {
         '  exit 1',
         'fi',
         '',
-        'echo "正在部署 ${DIR} → ${NAME} (${PRESET}, kv=${KV}, ${COUNT} 个文件)..."',
+        'echo "正在部署 ${DIR} → ${NAME} (${PRESET}, ${COUNT} 个文件)..."',
         '',
         'RESPONSE=$(curl "${CURL_ARGS[@]}" "${API}/deploy")',
         'HTTP_CODE=$(echo "$RESPONSE" | tail -1)',
@@ -687,7 +628,6 @@ const BASE_SPEC = {
         '  echo "✅ 已发布: ${URL}"',
         '  echo "   文件数: ${COUNT}"',
         '  echo "   类型: ${PRESET}"',
-        '  echo "   KV: ${KV}"',
         'else',
         '  echo ""',
         '  echo "❌ 部署失败 (HTTP ${HTTP_CODE})"',

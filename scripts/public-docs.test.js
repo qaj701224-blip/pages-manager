@@ -48,7 +48,7 @@ test('README deploy script examples include PAGES_TOKEN', () => {
   }
 });
 
-test('each public doc documents Pages KV SDK usage and avoids private capability text', () => {
+test('each public doc says v1 Pages KV is retired and avoids private capability text', () => {
   const docs = [
     ['README.md', readDoc('README.md')],
     ['API.md', readDoc('API.md')],
@@ -56,26 +56,15 @@ test('each public doc documents Pages KV SDK usage and avoids private capability
   ];
 
   for (const [name, doc] of docs) {
-    assert.match(doc, /kv=true/, `${name} documents kv=true opt-in`);
-    assert.match(doc, /spa.*worker|worker.*spa/, `${name} documents spa/worker support`);
-    assert.match(doc, /static \+ kv=true|static.*拒绝/, `${name} documents static kv rejection`);
-    assert.match(doc, /\/\.xd-pages\/runtime\/v1/, `${name} documents runtime path`);
-    assert.match(doc, /@xd\/pages-sdk\/browser/, `${name} documents browser SDK entry`);
-    assert.match(doc, /@xd\/pages-sdk\/worker/, `${name} documents worker SDK entry`);
-    assert.match(doc, /worker preset[\s\S]*(bundle|打包)|(?:bundle|打包)[\s\S]*worker preset/, `${name} documents worker bundling`);
+    assert.match(doc, /v1.*不再提供 Pages KV|Pages KV.*迁入 v2/, `${name} documents v1 KV retirement`);
+    assert.doesNotMatch(doc, /KV 能力.*平台规划|后续 v2 `pages\.xd\.team`/, `${name} does not describe v2 KV as future-only`);
+    assert.doesNotMatch(doc, /static \+ kv=true/, `${name} no longer documents v1 static KV rejection`);
+    assert.doesNotMatch(doc, /\/\.xd-pages\/runtime\/v1/, `${name} does not document retired runtime path`);
+    assert.doesNotMatch(doc, /@xd\/pages-sdk\/browser/, `${name} does not document retired browser SDK entry`);
+    assert.doesNotMatch(doc, /@xd\/pages-sdk\/worker/, `${name} does not document retired worker SDK entry`);
 
-    if (name === 'README.md') {
-      assert.doesNotMatch(
-        doc,
-        /PAGES_CAP_JWT_SECRET_(?!EXAMPLE\b)[A-Z0-9_]+/,
-        `${name} mentions only placeholder capability secret env names`,
-      );
-    } else {
-      assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention internal JWT secret env`);
-    }
-    if (name !== 'README.md') {
-      assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention platform KV namespace env`);
-    }
+    assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention internal JWT secret env`);
+    assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention platform KV namespace env`);
     assert.doesNotMatch(doc, /capability\.jwt/, `${name} does not include capability example`);
   }
 });
@@ -83,14 +72,14 @@ test('each public doc documents Pages KV SDK usage and avoids private capability
 test('README local deployment commands use package scripts or wrangler directly', () => {
   const readme = readDoc('README.md');
 
-  assert.match(readme, /JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE/);
+  assert.doesNotMatch(readme, /JWT_SIGNING_SECRET_ENV=PAGES_CAP_JWT_SECRET_EXAMPLE/);
   assert.doesNotMatch(readme, /JWT_SIGNING_SECRET_ENV=JWT_SIGNING_SECRET_EXAMPLE/);
-  assert.match(readme, /PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example/);
-  assert.match(readme, /export PAGES_CAP_JWT_ACTIVE_KID/);
-  assert.match(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
+  assert.doesNotMatch(readme, /PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example/);
+  assert.doesNotMatch(readme, /export PAGES_CAP_JWT_ACTIVE_KID/);
+  assert.doesNotMatch(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
   assert.match(readme, /pnpm --dir apps\/server run deploy/);
   assert.doesNotMatch(readme, /pnpm --dir apps\/server deploy\b/);
-  assert.match(readme, /scripts\/put-capability-secrets\.sh apps\/server/);
+  assert.doesNotMatch(readme, /scripts\/put-capability-secrets\.sh apps\/server/);
   assert.doesNotMatch(readme, /pnpm --dir apps\/kv-gateway deploy/);
 });
 

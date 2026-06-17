@@ -1,0 +1,47 @@
+name = "pages-router"
+main = "src/index.js"
+compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
+
+[[routes]]
+pattern = "*.pages.xd.team/*"
+zone_name = "xd.team"
+
+[vars]
+PAGES_ENV = "production"
+PUBLIC_AUTH_BASE = "https://auth.pages.xd.team"
+PUBLIC_API_BASE = "https://api.pages.xd.team"
+PUBLIC_SITE_SUFFIX = "pages.xd.team"
+PAGES_EXECUTION_MODE = "normal-worker-slot"
+PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"
+PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"
+PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL = "100"
+PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS = "0"
+ROUTE_CACHE_TTL_SECONDS = "10"
+ROUTER_IP_ALLOWLIST_CIDRS = "__ROUTER_IP_ALLOWLIST_CIDRS__"
+ROUTER_JWKS_URL = "https://auth.pages.xd.team/.xd-pages/jwks.json"
+PAGES_SESSION_JWT_ISSUER = "pages-router"
+PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"
+PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"
+PAGES_CAP_JWT_ACTIVE_KID = "pages-cap-2026-06"
+PAGES_CAP_JWT_KEYS = "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"
+SITE_SESSION_IDLE_TTL_SECONDS = "604800"
+SITE_SESSION_FRESHNESS_TTL_SECONDS = "900"
+INTERNAL_WORKER_JWT_TTL_SECONDS = "60"
+
+[[services]]
+binding = "PAGES_AUTH"
+service = "pages-auth"
+
+[[services]]
+binding = "XD_PAGES_KV_GATEWAY"
+service = "pages-kv-gateway"
+
+__NORMAL_WORKER_SLOT_SERVICES__
+
+[[kv_namespaces]]
+binding = "ROUTE_SNAPSHOTS"
+id = "__ROUTE_SNAPSHOTS_KV_ID__"
+
+__WFP_DISPATCH_NAMESPACE_BINDING__

@@ -32,20 +32,16 @@ test('renderSkill rewrites production defaults for staging', () => {
   assert.doesNotMatch(rendered, /https:\/\/api\.workers\.xd\.team/);
 });
 
-test('skill public output documents Pages KV SDK usage and boundaries', () => {
+test('skill public output says v1 Pages KV is retired without SDK usage', () => {
   const skill = readFileSync(join(repoRoot, 'pages-deploy.skill.md'), 'utf8');
   const rendered = renderSkill(skill, getPublicConfig(new Request('https://api.workers.xd.team/skill.md'), {}));
 
-  assert.match(rendered, /kv=true/);
-  assert.match(rendered, /static \+ kv=true|static.*拒绝/);
-  assert.match(rendered, /@xd\/pages-sdk\/browser/);
-  assert.match(rendered, /@xd\/pages-sdk\/worker/);
-  assert.match(rendered, /\/\.xd-pages\/runtime\/v1/);
-  assert.match(rendered, /worker preset/);
-  assert.match(rendered, /bundle|打包/);
-  assert.match(rendered, /IP 白名单/);
-  assert.match(rendered, /前缀隔离|prefix isolation/);
-  assert.match(rendered, /高度敏感|highly sensitive/);
+  assert.match(rendered, /v1 不再提供 Pages KV|Pages KV 已迁入 v2/);
+  assert.doesNotMatch(rendered, /@xd\/pages-sdk\/browser/);
+  assert.doesNotMatch(rendered, /@xd\/pages-sdk\/worker/);
+  assert.doesNotMatch(rendered, /\/\.xd-pages\/runtime\/v1/);
+  assert.doesNotMatch(rendered, /前缀隔离|prefix isolation/);
+  assert.doesNotMatch(rendered, /高度敏感|highly sensitive/);
 
   assert.doesNotMatch(rendered, /PAGES_CAP_JWT_SECRET/);
   assert.doesNotMatch(rendered, /SITE_DATA_KV_NAMESPACE_ID/);

@@ -1,4 +1,3 @@
-import { parseKvEnabled } from '@xd/pages-runtime-protocol';
 import { jsonResponse } from '@xd/worker-kit';
 
 import {
@@ -9,7 +8,6 @@ import {
   bindRoute,
   enableSubdomain,
 } from '../lib/cf-api.js';
-import { signKvCapability } from '../lib/kv-capability.js';
 import { isReservedSiteName, RESERVED_SITE_NAMES, SITE_NAME_PATTERN, SITE_NAME_RE } from '../lib/site-names.js';
 
 const VALID_PRESETS = ['static', 'spa', 'worker'];
@@ -84,8 +82,7 @@ export async function handleDeploy(request, env) {
   }
 
   const kvValue = form.get('kv');
-  const kv = parseKvEnabled(kvValue);
-  if (kv.error) {
+  if (kvValue !== null && kvValue !== 'true' && kvValue !== 'false') {
     return jsonResponse(
       {
         error: '无效的 kv 参数',
@@ -96,17 +93,19 @@ export async function handleDeploy(request, env) {
       400
     );
   }
-  if (kv.enabled && preset === 'static') {
+  if (kvValue === 'true') {
     return jsonResponse(
       {
-        error: 'static preset 暂不支持 kv',
-        field: 'preset',
-        value: preset,
-        hint: 'kv=true 目前仅支持 spa 或 worker preset',
+        error: 'v1 Pages KV 已下线',
+        code: 'KV_NOT_SUPPORTED',
+        field: 'kv',
+        value: kvValue,
+        hint: 'v1 workers.xd.team 不再提供 Pages KV；请使用 v2 pages.xd.team 的 KV 能力',
       },
       400
     );
   }
+  const kvEnabled = false;
 
   let workerCode = null;
   const fileEntries = [];
@@ -163,28 +162,6 @@ export async function handleDeploy(request, env) {
   const hostname = `${name}${env.DOMAIN_LABEL}.${env.DOMAIN_BASE}`;
   const siteUuid = existing?.siteUuid || crypto.randomUUID().replaceAll('-', '');
   const siteGeneration = Number(existing?.siteGeneration || 0) + 1;
-  const kvOptions = {};
-
-  if (kv.enabled) {
-    kvOptions.kv = {
-      enabled: true,
-      gatewayService: env.KV_GATEWAY_SERVICE,
-      siteId: name,
-      siteUuid,
-      envName: env.PUBLIC_ENVIRONMENT,
-      capability: await signKvCapability(
-        {
-          siteId: name,
-          siteUuid,
-          siteGeneration,
-          envName: env.PUBLIC_ENVIRONMENT,
-          now: Math.floor(Date.now() / 1000),
-          jti: `cap_${crypto.randomUUID().replaceAll('-', '')}`,
-        },
-        env
-      ),
-    };
-  }
 
   const { manifest, fileMap } = await buildManifest(fileEntries);
 
@@ -208,8 +185,7 @@ export async function handleDeploy(request, env) {
     preset,
     workerCode,
     ipRestrict,
-    env.IP_ALLOWLIST,
-    kvOptions
+    env.IP_ALLOWLIST
   );
   console.log('deploy result:', JSON.stringify({ ok: Boolean(deployResult) }));
 
@@ -229,7 +205,7 @@ export async function handleDeploy(request, env) {
     devUrl,
     fileCount: fileEntries.length,
     ipRestrict,
-    kvEnabled: kv.enabled,
+    kvEnabled,
     siteUuid,
     siteGeneration,
     token: userToken,
@@ -241,7 +217,7 @@ export async function handleDeploy(request, env) {
       url: metadata.url,
       preset,
       ipRestrict,
-      kvEnabled: kv.enabled,
+      kvEnabled,
       siteUuid,
       siteGeneration,
       updatedAt: now,
@@ -257,20 +233,12 @@ export async function handleDeploy(request, env) {
     fileCount: fileEntries.length,
     preset,
     ipRestrict,
-    kv: kv.enabled,
   };
   const warnings = [];
   if (ipRestrict && preset === 'worker') {
     warnings.push(
       'worker preset 已注入 env.IP_ALLOWLIST，但不会改写 _worker.js。' +
         '请在 _worker.js 中调用 GET /openapi.json 中 x-libs.ip-guard 的 checkIP(request, env)。'
-    );
-  }
-  if (kv.enabled && preset === 'worker') {
-    warnings.push(
-      'worker preset 开启 kv=true 后，_worker.js 会收到本站 KV capability。' +
-        '如果代码 import @xd/pages-sdk/worker，必须在上传前完成打包；' +
-        '平台无法阻止站点 owner 代码暴露自己的 KV capability。'
     );
   }
   if (warnings.length) result.warning = warnings.join(' ');

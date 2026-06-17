@@ -1,0 +1,44 @@
+name = "pages-api-staging"
+main = "src/index.js"
+compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
+
+[[routes]]
+pattern = "api-staging.pages.xd.team/*"
+zone_name = "xd.team"
+
+[vars]
+PAGES_ENV = "staging"
+PUBLIC_API_BASE = "https://api-staging.pages.xd.team"
+PUBLIC_AUTH_BASE = "https://auth-staging.pages.xd.team"
+PUBLIC_SITE_SUFFIX = "pages.xd.team"
+PAGES_EXECUTION_MODE = "normal-worker-slot"
+PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"
+WFP_DISPATCH_NAMESPACE = "pages-staging"
+WFP_COMPATIBILITY_DATE = "2026-06-15"
+SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"
+ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"
+ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"
+IP_ALLOWLIST = "__IP_ALLOWLIST__"
+
+[[d1_databases]]
+binding = "PAGES_METADATA"
+database_name = "pages-v2-metadata-staging"
+database_id = "__D1_DATABASE_ID__"
+
+[[kv_namespaces]]
+binding = "ROUTE_SNAPSHOTS"
+id = "__ROUTE_SNAPSHOTS_KV_ID__"
+
+[[durable_objects.bindings]]
+name = "ROUTE_POINTER_LOCKS"
+class_name = "RoutePointerDO"
+
+[[services]]
+binding = "PAGES_AUTH"
+service = "pages-auth-staging"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoutePointerDO"]

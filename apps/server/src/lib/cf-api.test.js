@@ -25,14 +25,14 @@ test('worker preset binds IP_ALLOWLIST even when ipRestrict is false', () => {
   ]);
 });
 
-test('kv disabled does not bind gateway or capability', () => {
+test('v1 worker metadata does not bind KV gateway or capability', () => {
   const metadata = buildWorkerMetadata('completion-jwt', 'spa', false, '127.0.0.1');
 
   assert.equal(metadata.bindings.some((binding) => binding.name === 'XD_PAGES_KV_GATEWAY'), false);
   assert.equal(metadata.bindings.some((binding) => binding.name === 'XD_PAGES_KV_CAPABILITY'), false);
 });
 
-test('kv enabled binds gateway, site identifiers, env and capability', () => {
+test('v1 worker metadata ignores legacy KV options', () => {
   const metadata = buildWorkerMetadata('completion-jwt', 'spa', false, '127.0.0.1', {
     kv: {
       enabled: true,
@@ -44,31 +44,7 @@ test('kv enabled binds gateway, site identifiers, env and capability', () => {
     },
   });
 
-  assert.deepEqual(metadata.bindings, [
-    { type: 'assets', name: 'ASSETS' },
-    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
-    { type: 'plain_text', name: 'XD_PAGES_SITE_ID', text: 'demo' },
-    { type: 'plain_text', name: 'XD_PAGES_SITE_UUID', text: '4b4c8e8361ef4b47b64f5c20a7db7c47' },
-    { type: 'plain_text', name: 'XD_PAGES_ENV', text: 'staging' },
-    { type: 'secret_text', name: 'XD_PAGES_KV_CAPABILITY', text: 'capability.jwt' },
-  ]);
-});
-
-test('kv capability binding is not plain text metadata', () => {
-  const metadata = buildWorkerMetadata('completion-jwt', 'spa', false, '127.0.0.1', {
-    kv: {
-      enabled: true,
-      gatewayService: 'pages-kv-gateway',
-      siteId: 'demo',
-      siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
-      envName: 'staging',
-      capability: 'capability.jwt',
-    },
-  });
-
-  const capabilityBinding = metadata.bindings.find((binding) => binding.name === 'XD_PAGES_KV_CAPABILITY');
-
-  assert.equal(capabilityBinding?.type, 'secret_text');
+  assert.deepEqual(metadata.bindings, [{ type: 'assets', name: 'ASSETS' }]);
 });
 
 test('static preset still compiles the allowlist into the generated guard', () => {
@@ -78,7 +54,7 @@ test('static preset still compiles the allowlist into the generated guard', () =
   assert.match(code, /checkIP\(request\)/);
 });
 
-test('static preset with kv options does not generate runtime support', () => {
+test('static preset with legacy KV options does not generate runtime support', () => {
   const code = buildWorkerCode('static', null, false, '127.0.0.1', {
     kv: {
       enabled: true,
@@ -94,7 +70,7 @@ test('static preset with kv options does not generate runtime support', () => {
   assert.doesNotMatch(code, /\/\.xd-pages\/runtime\/v1/);
 });
 
-test('spa kv worker applies IP allowlist even when ipRestrict is false', () => {
+test('spa preset with legacy KV options does not generate runtime support', () => {
   const code = buildWorkerCode('spa', null, false, '127.0.0.1', {
     kv: {
       enabled: true,
@@ -106,34 +82,15 @@ test('spa kv worker applies IP allowlist even when ipRestrict is false', () => {
     },
   });
 
-  assert.match(code, /handlePagesRuntimeRequest/);
   assert.match(code, /function checkIP/);
-  assert.match(code, /const denied = checkIP\(request\);if\(denied\)return denied;/);
   assert.match(code, /const b=checkIP\(request\);if\(b\)return b;/);
+  assert.doesNotMatch(code, /handlePagesRuntimeRequest/);
+  assert.doesNotMatch(code, /\/\.xd-pages\/runtime\/v1/);
   assert.doesNotMatch(code, /from\s+['"]@xd\//);
   assert.doesNotMatch(code, /import\(['"]@xd\//);
-  assert.ok(code.indexOf('/.xd-pages/runtime/v1') < code.indexOf('env.ASSETS.fetch'));
-  assert.ok(code.indexOf('handlePagesRuntimeRequest') < code.indexOf('env.ASSETS.fetch'));
 });
 
-test('restricted spa kv worker applies IP allowlist to runtime and assets', () => {
-  const code = buildWorkerCode('spa', null, true, '127.0.0.1', {
-    kv: {
-      enabled: true,
-      gatewayService: 'pages-kv-gateway',
-      siteId: 'demo',
-      siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
-      envName: 'staging',
-      capability: 'capability.jwt',
-    },
-  });
-
-  assert.match(code, /function checkIP/);
-  assert.match(code, /const denied = checkIP\(request\);if\(denied\)return denied;/);
-  assert.match(code, /const b=checkIP\(request\);if\(b\)return b;/);
-});
-
-test('worker preset with kv keeps user worker code unchanged while metadata has kv bindings', () => {
+test('worker preset with legacy KV options keeps user worker code unchanged without KV bindings', () => {
   const userWorkerCode = 'export default { async fetch() { return new Response("ok"); } };';
   const options = {
     kv: {
@@ -150,8 +107,8 @@ test('worker preset with kv keeps user worker code unchanged while metadata has 
   const code = buildWorkerCode('worker', userWorkerCode, false, '', options);
 
   assert.equal(code, userWorkerCode);
-  assert.ok(metadata.bindings.some((binding) => binding.name === 'XD_PAGES_KV_GATEWAY'));
-  assert.ok(metadata.bindings.some((binding) => binding.name === 'XD_PAGES_KV_CAPABILITY'));
+  assert.equal(metadata.bindings.some((binding) => binding.name === 'XD_PAGES_KV_GATEWAY'), false);
+  assert.equal(metadata.bindings.some((binding) => binding.name === 'XD_PAGES_KV_CAPABILITY'), false);
 });
 
 test('deleteScript rejects platform worker names even when they use the site prefix', async () => {
@@ -159,4 +116,12 @@ test('deleteScript rejects platform worker names even when they use the site pre
   await assert.rejects(() => deleteScript('token', 'account', 'pages-manager-staging'), /平台保留 Worker/);
   await assert.rejects(() => deleteScript('token', 'account', 'pages-kv-gateway'), /平台保留 Worker/);
   await assert.rejects(() => deleteScript('token', 'account', 'pages-kv-gateway-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-api'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-api-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-auth'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-auth-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-router'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-router-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-v2-production-slot-001'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-v2-staging-slot-001'), /平台保留 Worker/);
 });

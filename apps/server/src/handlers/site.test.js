@@ -123,7 +123,7 @@ test('site detail exposes only public fields', async () => {
     devUrl: 'https://pages-demo.xd-cf-2022.workers.dev',
     fileCount: 12,
     ipRestrict: true,
-    kvEnabled: true,
+    kvEnabled: false,
     createdAt: '2026-06-11T00:00:00.000Z',
     updatedAt: '2026-06-12T00:00:00.000Z',
   });
@@ -154,6 +154,7 @@ test('site delete rejects a token that does not own the site before deleting Clo
 });
 
 test('site delete rejects platform reserved names before deleting Cloudflare resources', async () => {
+  const reservedNames = ['kv-gateway', 'auth', 'router', 'v2-production-slot-001', 'v2-staging-slot-001'];
   const fetchCalls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -162,22 +163,24 @@ test('site delete rejects platform reserved names before deleting Cloudflare res
   };
 
   try {
-    const response = await handleDeleteSite(
-      siteRequest('/site/kv-gateway', 'pages_owner@xd.com'),
-      {
-        SITES: {
-          async get() {
-            throw new Error('reserved names must not read metadata');
+    for (const name of reservedNames) {
+      const response = await handleDeleteSite(
+        siteRequest(`/site/${name}`, 'pages_owner@xd.com'),
+        {
+          SITES: {
+            async get() {
+              throw new Error('reserved names must not read metadata');
+            },
           },
         },
-      },
-      { name: 'kv-gateway' }
-    );
-    const body = await response.json();
+        { name }
+      );
+      const body = await response.json();
 
-    assert.equal(response.status, 403);
-    assert.equal(body.error, '站点名称为平台保留名称');
-    assert.equal(body.name, 'kv-gateway');
+      assert.equal(response.status, 403);
+      assert.equal(body.error, '站点名称为平台保留名称');
+      assert.equal(body.name, name);
+    }
     assert.equal(fetchCalls.length, 0);
   } finally {
     globalThis.fetch = originalFetch;

@@ -10,146 +10,88 @@
     </section>
 
     <section class="kv-panel" aria-labelledby="kv-title">
-      <div class="panel-heading">
-        <div>
-          <h2 id="kv-title">Pages KV 测试</h2>
-          <p>站点级 KV 读写面板。</p>
-        </div>
-        <span class="mode-badge">{{ kvType }}</span>
-      </div>
-
-      <div class="form-grid">
-        <label class="field field-wide">
-          <span>Key</span>
-          <input v-model.trim="kvKey" type="text" spellcheck="false" />
-        </label>
-
-        <label class="field">
-          <span>Value Type</span>
-          <select v-model="kvType">
-            <option value="json">json</option>
-            <option value="text">text</option>
-          </select>
-        </label>
-      </div>
+      <h2 id="kv-title">Pages KV</h2>
+      <p>发布到 XD Pages 后，可在这里验证浏览器 SDK 的 KV get / set / delete 链路。</p>
 
       <label class="field">
-        <span>Value</span>
-        <textarea v-model="kvValue" rows="8" spellcheck="false" />
+        Key
+        <input v-model="kvKey" autocomplete="off" spellcheck="false" />
+      </label>
+
+      <label class="field">
+        Value
+        <textarea v-model="kvValue" rows="5" spellcheck="false" />
       </label>
 
       <div class="button-row">
-        <button type="button" :disabled="isBusy" @click="readKv">Read</button>
-        <button type="button" :disabled="isBusy" @click="writeKv">Write</button>
-        <button type="button" :disabled="isBusy" @click="deleteKv">Delete</button>
-        <button type="button" :disabled="isBusy" @click="resetSample">Sample</button>
+        <button type="button" :disabled="kvBusy" @click="saveKv">Set</button>
+        <button type="button" :disabled="kvBusy" @click="loadKv">Get</button>
+        <button type="button" :disabled="kvBusy" class="danger" @click="deleteKv">Delete</button>
       </div>
 
-      <p class="status-line" :class="statusClass">{{ statusText }}</p>
-      <pre v-if="resultText" class="result-box">{{ resultText }}</pre>
+      <p class="kv-status" :data-state="kvState">{{ kvStatus }}</p>
     </section>
   </main>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue';
-import { createPagesClient, PagesSDKError } from '../../../../apps/pages-sdk/dist/browser.js';
+import { ref } from 'vue';
+import { createPagesClient, PagesSDKError } from '@xd/pages-sdk/browser';
 
-const pages = createPagesClient();
 const count = ref(0);
+const pages = createPagesClient();
 const kvKey = ref('demo/vue-app/message');
-const kvType = ref('json');
-const kvValue = ref('');
-const resultText = ref('');
-const statusText = ref('等待操作');
-const statusKind = ref('idle');
-const busyAction = ref('');
+const kvValue = ref(JSON.stringify({ message: 'hello from XD Pages KV' }, null, 2));
+const kvBusy = ref(false);
+const kvStatus = ref('等待操作');
+const kvState = ref('idle');
 
-const isBusy = computed(() => busyAction.value !== '');
-const statusClass = computed(() => ({
-  'is-error': statusKind.value === 'error',
-  'is-success': statusKind.value === 'success',
-}));
-
-resetSample();
-
-function resetSample() {
-  kvType.value = 'json';
-  kvValue.value = JSON.stringify(
-    {
-      message: 'hello from vue demo',
-      updatedAt: new Date().toISOString(),
-    },
-    null,
-    2
-  );
-  resultText.value = '';
-  setStatus('已填入示例 JSON', 'idle');
+async function runKvAction(action, successMessage) {
+  kvBusy.value = true;
+  kvState.value = 'idle';
+  kvStatus.value = '请求中...';
+  try {
+    await action();
+    kvState.value = 'ok';
+    kvStatus.value = successMessage;
+  } catch (error) {
+    kvState.value = 'error';
+    kvStatus.value = formatKvError(error);
+  } finally {
+    kvBusy.value = false;
+  }
 }
 
-async function readKv() {
-  await runKvAction('read', async () => {
-    const value = await pages.kv.get(kvKey.value, { type: kvType.value });
-    resultText.value = formatValue(value);
-    setStatus(value === null ? '读取成功：key 不存在' : '读取成功', 'success');
-  });
+async function saveKv() {
+  await runKvAction(async () => {
+    await pages.kv.set(kvKey.value.trim(), parseKvValue(kvValue.value));
+  }, '写入成功');
 }
 
-async function writeKv() {
-  await runKvAction('write', async () => {
-    await pages.kv.put(kvKey.value, parseInputValue(), { type: kvType.value });
-    resultText.value = '';
-    setStatus('写入成功', 'success');
-  });
+async function loadKv() {
+  await runKvAction(async () => {
+    const value = await pages.kv.get(kvKey.value.trim());
+    kvValue.value = value === null ? '' : JSON.stringify(value, null, 2);
+  }, '读取成功');
 }
 
 async function deleteKv() {
-  await runKvAction('delete', async () => {
-    await pages.kv.delete(kvKey.value);
-    resultText.value = '';
-    setStatus('删除成功', 'success');
-  });
+  await runKvAction(async () => {
+    await pages.kv.delete(kvKey.value.trim());
+    kvValue.value = '';
+  }, '删除成功');
 }
 
-async function runKvAction(action, task) {
-  if (!kvKey.value) {
-    setStatus('Key 不能为空', 'error');
-    return;
-  }
-
-  busyAction.value = action;
-  setStatus(`${action} 中...`, 'idle');
-  try {
-    await task();
-  } catch (error) {
-    setStatus(describeError(error), 'error');
-  } finally {
-    busyAction.value = '';
-  }
+function parseKvValue(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return JSON.parse(trimmed);
 }
 
-function parseInputValue() {
-  if (kvType.value === 'text') return kvValue.value;
-  return JSON.parse(kvValue.value);
-}
-
-function formatValue(value) {
-  if (value === null) return 'null';
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-}
-
-function describeError(error) {
-  if (error instanceof PagesSDKError) {
-    const status = error.status ? ` HTTP ${error.status}` : '';
-    return `${error.code}${status}: ${error.message}`;
-  }
-  if (error instanceof SyntaxError) return `JSON 格式错误: ${error.message}`;
-  return error instanceof Error ? error.message : String(error);
-}
-
-function setStatus(message, kind) {
-  statusText.value = message;
-  statusKind.value = kind;
+function formatKvError(error) {
+  if (error instanceof SyntaxError) return 'Value 必须是合法 JSON';
+  if (error instanceof PagesSDKError) return `${error.code}: ${error.message}`;
+  return error instanceof Error ? error.message : 'KV 请求失败';
 }
 </script>
 
@@ -158,94 +100,50 @@ function setStatus(message, kind) {
   max-width: 760px;
 }
 
-.intro-panel,
-.kv-panel {
+.intro-panel {
   margin-bottom: 24px;
 }
 
-.counter-row,
-.button-row,
-.panel-heading,
-.form-grid {
-  display: flex;
-  gap: 12px;
+.kv-panel {
+  border-top: 1px solid #e2e8f0;
+  display: grid;
+  gap: 14px;
+  padding-top: 24px;
 }
 
-.counter-row,
-.panel-heading {
+.counter-row {
+  display: flex;
+  gap: 12px;
   align-items: center;
   justify-content: space-between;
 }
 
-.kv-panel {
-  border: 1px solid #d7dde7;
-  border-radius: 8px;
-  padding: 18px;
-  background: #f8fafc;
-}
-
-.panel-heading {
-  margin-bottom: 16px;
-}
-
-.panel-heading h2 {
-  margin: 0 0 6px;
-}
-
-.panel-heading p {
-  margin: 0;
-  color: #475569;
-}
-
-.mode-badge {
-  min-width: 52px;
-  border-radius: 999px;
-  padding: 4px 10px;
-  background: #1f2937;
-  color: white;
-  text-align: center;
-  font-size: 13px;
-}
-
-.form-grid {
-  align-items: end;
-  margin-bottom: 12px;
-}
-
 .field {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+  display: grid;
   gap: 6px;
-  margin-bottom: 12px;
-}
-
-.field-wide {
-  flex: 2;
-}
-
-.field span {
-  color: #334155;
-  font-size: 13px;
   font-weight: 600;
 }
 
 input,
-select,
 textarea {
   box-sizing: border-box;
   width: 100%;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
   padding: 9px 10px;
-  background: white;
   color: #0f172a;
   font: inherit;
 }
 
 textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 button {
@@ -259,44 +157,38 @@ button {
   font: inherit;
 }
 
+button.danger {
+  border-color: #b91c1c;
+  background: #b91c1c;
+}
+
 button:disabled {
-  cursor: not-allowed;
+  cursor: wait;
   opacity: 0.55;
 }
 
-.status-line {
-  min-height: 22px;
+.kv-status {
+  min-height: 24px;
+  margin: 0;
   color: #475569;
 }
 
-.status-line.is-success {
-  color: #047857;
+.kv-status[data-state='ok'] {
+  color: #166534;
 }
 
-.status-line.is-error {
-  color: #b42318;
-}
-
-.result-box {
-  overflow: auto;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 12px;
-  background: #0f172a;
-  color: #e2e8f0;
+.kv-status[data-state='error'] {
+  color: #b91c1c;
 }
 
 @media (max-width: 640px) {
-  .counter-row,
-  .button-row,
-  .panel-heading,
-  .form-grid {
+  .counter-row {
     align-items: stretch;
     flex-direction: column;
   }
 
   button {
-    width: 100%;
+    flex: 1 1 100%;
   }
 }
 </style>

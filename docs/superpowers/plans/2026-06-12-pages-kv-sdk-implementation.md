@@ -1,5 +1,7 @@
 # Pages KV SDK Implementation Plan
 
+> Obsolete: 本计划记录的是早期 Pages KV SDK 实施方案。当前 v2 设计已调整为 `pages.xd.team` 新平台独立持有 `apps/kv-gateway`，v1 `apps/server` 不再签发 capability、部署 gateway 或提供 Pages KV。后续以 `docs/pages-v2-wfp-architecture.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a publishable `@xd/pages-sdk` plus a KV gateway and pages-manager integration so `kv=true` SPA and Worker sites can read, write, and delete site-scoped KV through a stable SDK.
@@ -92,7 +94,7 @@ import {
 test('exports stable runtime, gateway, header, binding and error constants', () => {
   assert.equal(RUNTIME.BASE_PATH, '/.xd-pages/runtime/v1');
   assert.equal(RUNTIME.KV_GET_PATH, '/.xd-pages/runtime/v1/kv/get');
-  assert.equal(GATEWAY.KV_PUT_PATH, '/v1/kv/put');
+  assert.equal(GATEWAY.KV_SET_PATH, '/v1/kv/set');
   assert.equal(HEADERS.RUNTIME_REQUEST, 'X-XD-Pages-Runtime');
   assert.equal(BINDINGS.KV_GATEWAY, 'XD_PAGES_KV_GATEWAY');
   assert.equal(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'INVALID_RUNTIME_RESPONSE');
@@ -206,14 +208,14 @@ export const RUNTIME = {
   VERSION: 'v1',
   BASE_PATH: '/.xd-pages/runtime/v1',
   KV_GET_PATH: '/.xd-pages/runtime/v1/kv/get',
-  KV_PUT_PATH: '/.xd-pages/runtime/v1/kv/put',
+  KV_SET_PATH: '/.xd-pages/runtime/v1/kv/set',
   KV_DELETE_PATH: '/.xd-pages/runtime/v1/kv/delete',
 };
 
 export const GATEWAY = {
   BASE_PATH: '/v1',
   KV_GET_PATH: '/v1/kv/get',
-  KV_PUT_PATH: '/v1/kv/put',
+  KV_SET_PATH: '/v1/kv/set',
   KV_DELETE_PATH: '/v1/kv/delete',
 };
 
@@ -475,11 +477,11 @@ test('browser put and delete use POST envelopes', async () => {
     },
   });
 
-  await client.kv.put('drafts/1', 'hello', { type: 'text', expirationTtl: 3600 });
+  await client.kv.set('drafts/1', 'hello', { type: 'text', expirationTtl: 3600 });
   await client.kv.delete('drafts/1');
 
   assert.deepEqual(bodies, [
-    { url: '/.xd-pages/runtime/v1/kv/put', body: { key: 'drafts/1', type: 'text', value: 'hello', expirationTtl: 3600 } },
+    { url: '/.xd-pages/runtime/v1/kv/set', body: { key: 'drafts/1', type: 'text', value: 'hello', expirationTtl: 3600 } },
     { url: '/.xd-pages/runtime/v1/kv/delete', body: { key: 'drafts/1' } },
   ]);
 });
@@ -651,7 +653,7 @@ export function createPagesClient(options?: {
 }): {
   kv: {
     get<T = unknown>(key: string, options?: { type?: KVType }): Promise<T | string | null>;
-    put(key: string, value: unknown, options?: { type?: KVType; expirationTtl?: number }): Promise<void>;
+    set(key: string, value: unknown, options?: { type?: KVType; expirationTtl?: number }): Promise<void>;
     delete(key: string): Promise<void>;
   };
 };
@@ -661,7 +663,7 @@ export function createPagesRuntime(options: {
 }): {
   kv: {
     get<T = unknown>(key: string, options?: { type?: KVType }): Promise<T | string | null>;
-    put(key: string, value: unknown, options?: { type?: KVType; expirationTtl?: number }): Promise<void>;
+    set(key: string, value: unknown, options?: { type?: KVType; expirationTtl?: number }): Promise<void>;
     delete(key: string): Promise<void>;
   };
 };
@@ -817,7 +819,7 @@ test('verifyCapability rejects alg mismatch, unknown kid, env mismatch and missi
   await assert.rejects(() => verifyCapability(`Bearer ${token}`, env, { requiredScope: 'kv:get', now: 2 }), /alg/);
   await assert.rejects(() => verifyCapability('Bearer bad.token.value', env, { requiredScope: 'kv:get', now: 2 }), /capability/i);
 
-  const noPut = await createHs256Jwt({
+  const noSet = await createHs256Jwt({
     kid: 'prod-hs-2026-06',
     secret: 'test-secret',
     payload: {
@@ -829,10 +831,10 @@ test('verifyCapability rejects alg mismatch, unknown kid, env mismatch and missi
       scope: ['kv:get'],
       iat: 1,
       nbf: 1,
-      jti: 'cap_no_put',
+      jti: 'cap_no_set',
     },
   });
-  await assert.rejects(() => verifyCapability(`Bearer ${noPut}`, env, { requiredScope: 'kv:put', now: 2 }), /scope/);
+  await assert.rejects(() => verifyCapability(`Bearer ${noSet}`, env, { requiredScope: 'kv:set', now: 2 }), /scope/);
 });
 ```
 
@@ -855,7 +857,7 @@ import test from 'node:test';
 import gateway from './index.js';
 import { createHs256Jwt } from './auth.js';
 
-async function token(scope = ['kv:get', 'kv:put', 'kv:delete']) {
+async function token(scope = ['kv:get', 'kv:set', 'kv:delete']) {
   return createHs256Jwt({
     kid: 'prod-hs-2026-06',
     secret: 'test-secret',
@@ -915,7 +917,7 @@ test('get reads only the JWT-derived site prefix', async () => {
 test('put stores text and ttl metadata under prefixed key', async () => {
   const kv = new Map();
   const response = await gateway.fetch(
-    await post('/v1/kv/put', { key: 'drafts/1', type: 'text', value: 'hello', expirationTtl: 3600 }, await token()),
+    await post('/v1/kv/set', { key: 'drafts/1', type: 'text', value: 'hello', expirationTtl: 3600 }, await token()),
     env(kv)
   );
 
@@ -940,7 +942,7 @@ test('provider value-too-large errors are standardized', async () => {
     throw new Error('KV PUT failed: value length of 26214401 exceeds limit');
   };
 
-  const response = await gateway.fetch(await post('/v1/kv/put', { key: 'x', value: 'y' }, await token()), brokenEnv);
+  const response = await gateway.fetch(await post('/v1/kv/set', { key: 'x', value: 'y' }, await token()), brokenEnv);
   assert.equal(response.status, 413);
   assert.equal((await response.json()).error.code, 'KV_VALUE_TOO_LARGE');
 });
@@ -950,7 +952,7 @@ test('provider value-too-large errors are standardized', async () => {
 
 Implement `apps/kv-gateway/src/index.js`:
 
-- Route only `POST /v1/kv/get`, `POST /v1/kv/put`, and `POST /v1/kv/delete`.
+- Route only `POST /v1/kv/get`, `POST /v1/kv/set`, and `POST /v1/kv/delete`.
 - Use `verifyCapability(request.headers.get('Authorization'), env, { requiredScope })`.
 - Parse JSON body and map bad JSON to `INVALID_JSON`.
 - Validate key/type/ttl through `@xd/pages-runtime-protocol`.
@@ -1194,7 +1196,7 @@ test('signKvCapability signs with active kid and does not add exp', async () => 
   assert.equal(payload.env, 'production');
   assert.equal(payload.siteId, 'q2-report');
   assert.equal(payload.siteUuid, '4b4c8e8361ef4b47b64f5c20a7db7c47');
-  assert.deepEqual(payload.scope, ['kv:get', 'kv:put', 'kv:delete']);
+  assert.deepEqual(payload.scope, ['kv:get', 'kv:set', 'kv:delete']);
   assert.equal(payload.exp, undefined);
 });
 ```
@@ -1455,7 +1457,7 @@ import { createPagesClient } from '@xd/pages-sdk/browser';
 
 const pages = createPagesClient();
 const config = await pages.kv.get('app/config', { type: 'json' });
-await pages.kv.put('drafts/123', { title: 'hello' });
+await pages.kv.set('drafts/123', { title: 'hello' });
 await pages.kv.delete('drafts/123');
 ```
 
