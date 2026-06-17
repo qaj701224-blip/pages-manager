@@ -67,12 +67,15 @@ apps/gateway/src/
 │   └── router.js
 ├── slack/
 │   ├── agent-turn.js          # gateway -> slack-agent 调用、语义分块回复和 Agent 回复消息更新
+│   ├── delivery.js            # Slack delivery、reaction、profile lookup 和通用输出 helper
 │   ├── http.js               # Slack signature / raw body
 │   ├── intake.js             # Slack event intake
 │   ├── job-input.js          # Slack -> PublishingJob 输入派生
+│   ├── job-binding.js         # SlackSession 与 PublishingJob 绑定
 │   ├── notifier.js           # gateway -> slack-notifier adapter
 │   ├── session.js            # SlackSession / IssueLink / follow-up
 │   ├── text.js
+│   ├── work-item-reconciler.js # Slack 任务列表前的 GitHub 状态校准
 │   └── work-items.js
 ├── github/
 │   ├── review.js             # Review Agent allowlist / classification
