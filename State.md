@@ -83,7 +83,9 @@ apps/gateway/src/
   http/body.js
   http/router.js
   slack/agent-turn.js
+  slack/agent-run-records.js
   slack/delivery.js
+  slack/followup.js
   slack/http.js
   slack/intake.js
   slack/intents.js
@@ -108,7 +110,7 @@ apps/gateway/src/
   utils/crypto.js
 ```
 
-`routes/` 现在只负责 HTTP 路由分组注册；`control-plane/` 保留 Slack / GitHub / Review gate 的运行时 orchestration 和通用上下文；`publishing/` 承接 PublishingJob API 输入归一化和 worker 调度。后续如果继续拆，可以把其中的 Slack Agent turn、GitHub webhook、Review gate、PublishingJob follow-up 再下沉到各自 domain service。
+`routes/` 现在只负责 HTTP 路由分组注册；`control-plane/` 保留 Slack / GitHub / Review gate 的运行时 orchestration 和通用上下文；`publishing/` 承接 PublishingJob API 输入归一化和 worker 调度；Slack Agent turn、AgentRun 记录、issue 确认卡片、follow-up 修复派发、任务列表校准等 Slack domain logic 已下沉到 `slack/`。
 
 ### Worker 目录结构
 

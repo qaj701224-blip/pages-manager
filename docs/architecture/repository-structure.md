@@ -67,7 +67,9 @@ apps/gateway/src/
 │   └── router.js
 ├── slack/
 │   ├── agent-turn.js          # gateway -> slack-agent 调用、语义分块回复和 Agent 回复消息更新
+│   ├── agent-run-records.js   # Slack AgentRun 完成 / 失败记录和分析结果脱敏
 │   ├── delivery.js            # Slack delivery、reaction、profile lookup 和通用输出 helper
+│   ├── followup.js            # 追加修改、排队修复和 follow-up 状态卡
 │   ├── http.js               # Slack signature / raw body
 │   ├── intake.js             # Slack event intake
 │   ├── intents.js            # Slack Agent intent 常量
