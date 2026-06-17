@@ -332,6 +332,8 @@ async function createDeployment(request, env, config, store, actor) {
     completed = synthesizeSucceededDeployment(deployment, { versionId: version.id, completedAt });
   }
 
+  await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env);
+
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
 }
 
@@ -702,6 +704,23 @@ async function cleanupUploadedWorker(provider, uploaded) {
     await provider.delete(uploaded);
   } catch {
     // Best-effort cleanup must not hide the original deployment failure.
+  }
+}
+
+async function cleanupPreviousNormalWorkerSlot(provider, previousRoute, activeRoute, env) {
+  if (typeof provider?.cleanupRetainedSlot !== 'function') return;
+  if (previousRoute?.executionProvider !== 'normal-worker-slot') return;
+  if (!previousRoute.slotId || !previousRoute.activeVersionId) return;
+  if (previousRoute.slotId === activeRoute?.slotId) return;
+  try {
+    await provider.cleanupRetainedSlot({
+      slotId: previousRoute.slotId,
+      versionId: previousRoute.activeVersionId,
+      activeSlotId: activeRoute?.slotId || null,
+      updatedAt: readNow(env),
+    });
+  } catch {
+    // Slot cleanup is a capacity optimization. It must fail closed without changing the successful route commit.
   }
 }
 

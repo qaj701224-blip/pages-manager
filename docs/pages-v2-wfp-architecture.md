@@ -317,14 +317,21 @@ PAGES_EXECUTION_MODE=normal-worker-slot | wfp
 当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，router template 固定声明部署期 slot 扩容策略：
 
 ```text
-PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE=1
-PAGES_NORMAL_WORKER_SLOT_EXPAND_BY=2
+production:
+  PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE=1
+  PAGES_NORMAL_WORKER_SLOT_EXPAND_BY=2
+
+staging:
+  PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE=20
+  PAGES_NORMAL_WORKER_SLOT_EXPAND_BY=20
+
 PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL=100
+PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0
 ```
 
-这些值不是用户发布参数，也不是 GitHub Environment Var。部署脚本 `scripts/provision-pages-v2-slots.mjs` 会在 router 部署前读取 D1 `worker_slots`，当 `available < MIN_AVAILABLE` 时按 `EXPAND_BY` 创建缺失 slot Worker，并受 `MAX_TOTAL` fail closed 保护。脚本随后计算实际需要全量绑定的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)`，通过 `$GITHUB_ENV` 传给 `scripts/render-pages-v2-wrangler.mjs`。router 渲染必须绑定 `SITE_SLOT_001..SITE_SLOT_N` 的完整历史范围，不能只绑定本次新增 slot。
+这些值不是用户发布参数，也不是 GitHub Environment Var。部署脚本 `scripts/provision-pages-v2-slots.mjs` 会在 router 部署前读取 D1 `worker_slots`，当 `available < MIN_AVAILABLE` 时按 `EXPAND_BY` 创建缺失 slot Worker，并受 `MAX_TOTAL` fail closed 保护。脚本随后计算实际需要全量绑定的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)`，通过 `$GITHUB_ENV` 传给 `scripts/render-pages-v2-wrangler.mjs`。router 渲染必须绑定 `SITE_SLOT_001..SITE_SLOT_N` 的完整历史范围，不能只绑定本次新增 slot。`PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0` 表示普通 Worker slot 模式不承诺旧版本回滚，非 active 旧 slot 可以立即清理复用。
 
-`PAGES_EXECUTION_MODE` 不放 GitHub Environment Vars；当前默认值直接写在 `apps/pages-api/wrangler.*.template.toml` 和 `apps/pages-router/wrangler.*.template.toml`。切到 `wfp` 必须走 PR 修改对应 template。`PAGES_EXECUTION_MODE=wfp` 时可以没有 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`；但如果仍有 active / rollback window 内的 route snapshot 指向 `service-binding` slot，部署脚本必须继续提供原全量 binding count 并部署同时持有 WFP dispatch namespace 与 slot bindings 的 router，直到这些 slot route 全部迁移或释放。
+`PAGES_EXECUTION_MODE` 不放 GitHub Environment Vars；当前默认值直接写在 `apps/pages-api/wrangler.*.template.toml` 和 `apps/pages-router/wrangler.*.template.toml`。切到 `wfp` 必须走 PR 修改对应 template。`PAGES_EXECUTION_MODE=wfp` 时可以没有 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`；但如果仍有 active route 指向 `service-binding` slot，部署脚本必须继续提供原全量 binding count 并部署同时持有 WFP dispatch namespace 与 slot bindings 的 router，直到这些 slot route 全部迁移或释放。
 
 不建议再增加 `DEFAULT_EXECUTION_PROVIDER`、`ALLOWED_EXECUTION_PROVIDERS`、`NORMAL_WORKER_NEW_DEPLOY_ENABLED` 这类组合开关。原因是这些开关会把“默认值、允许值、是否新建普通 Worker”拆成多个状态，容易出现互相矛盾的配置。第一版用一个 mode 表达平台当前策略；更细粒度的灰度或站点例外写入 D1 权威表，由管理员 API 或后台任务管理，不暴露给普通用户。
 
@@ -356,7 +363,16 @@ staging 使用独立命名，例如：
 SITE_SLOT_001 -> pages-v2-staging-slot-001
 ```
 
-每次新版本发布先从池里分配一个 `available` slot，上传并验证完成后，再通过 route snapshot 把站点切到该 slot。上传用户代码前后都必须确认该 slot Worker 的 `workers.dev` subdomain 已关闭；关闭失败时发布 fail closed，并把 slot 标记为不可分配，避免绕过 pages-router 的 IP allowlist、SSO 和 ACL。旧 active version 的 slot 在回滚保留窗口内继续保持 `assigned`，这样二次发布不会在 route 激活前改动线上代码，回滚也能只切换 route snapshot。清理窗口结束后，reconciliation 再把不再被 active/rollback window 引用的 slot 清理回 `available`。router 的 service binding 是预先在 wrangler template 中声明的静态 binding，用户发布不需要重新部署 `pages-router`。
+每次新版本发布先从池里分配一个 `available` slot，上传并验证完成后，再通过 route snapshot 把站点切到该 slot。上传用户代码前后都必须确认该 slot Worker 的 `workers.dev` subdomain 已关闭；关闭失败时发布 fail closed，并把 slot 标记为不可分配，避免绕过 pages-router 的 IP allowlist、SSO 和 ACL。新版本 route snapshot 成功写入后，上一版 slot 不再保留用于回滚；`pages-api` 会把上一版 slot 标记为 `cleanup_pending`，覆盖成安全 placeholder，再释放回 `available` 供其它站点复用。若清理失败，发布仍保持成功，但旧 slot 停在 `cleanup_pending`，后续只能由维护 workflow 重试清理，不能被新发布分配。
+
+用户发布成功后会自动清理上一版普通 Worker slot。下面的手动维护入口只用于 dry-run 检查、重试清理 `cleanup_pending`，以及处理历史遗留的非 active slot：
+
+```text
+scripts/provision-pages-v2-slots.mjs <environment> cleanup-plan
+scripts/provision-pages-v2-slots.mjs <environment> cleanup
+```
+
+清理候选必须同时满足：`worker_slots.status = assigned | cleanup_pending`、不被当前 active route 的 `slot_id` 或 `active_version_id` 引用、`assigned_version_id` 存在，并且 `assigned_at` 已早于 `PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS` 对应的 cutoff。当前 cutoff 为 0 秒，意味着非 active 旧 slot 可立即进入清理。`cleanup_pending` 表示已经进入清理流程，可以重试。执行顺序必须是：先用 D1 条件更新把 `assigned` 标记为 `cleanup_pending`，再把 slot Worker 覆盖成安全 placeholder 并关闭 `workers.dev`，最后再次确认没有 active route 引用后释放为 `available`。Cloudflare 覆盖失败时 slot 保持 `cleanup_pending`，不能回到 `available`，避免复用仍带旧站点代码的 Worker。
 
 slot 状态由 D1 权威表管理：
 
@@ -365,7 +381,7 @@ slot 状态由 D1 权威表管理：
 | `provisioning` | 扩容 workflow 正在创建普通 Worker | 否 |
 | `available_pending_router` | Worker 已创建，但 router 尚未部署包含对应 service binding 的版本 | 否 |
 | `available` | Worker 和 router binding 均就绪 | 是 |
-| `assigned` | 已被某个站点版本占用，可能是 active 或 rollback window 内版本 | 否 |
+| `assigned` | 已被某个站点版本占用，通常是 active 版本；非 active 旧版本会尽快进入清理 | 否 |
 | `disabled` | 手动停用或健康检查失败 | 否 |
 | `cleanup_pending` | 站点删除后等待清理或保留期结束 | 否 |
 
@@ -396,7 +412,7 @@ XD Pages deploy workflow <environment>
 - WFP：`pages-router` 通过 dispatch namespace 按 user Worker name 获取执行目标。
 - slot：`pages-router` 通过 route snapshot 中的 `dispatch.bindingName` 调静态 service binding。
 
-其它架构保持一致：SSO、ACL、route snapshot、KV gateway capability、审计、header/cookie 清洗和发布/回滚状态机都走同一套平台逻辑。WFP 开通后，新增站点默认使用 `wfp`；已在 slot 上的试点版本可以继续保留到回滚窗口结束，也可以通过一次显式管理员迁移重新发布到 WFP。切到 `wfp` 时不要立刻去掉 slot bindings，除非 D1 和 route snapshot 已确认不存在任何 active / rollback window 内的 `normal-worker-slot` 版本。第一版不强制立即迁移，因为 slot 数量不大，保留兼容路径更利于平稳上线和回滚。
+其它架构保持一致：SSO、ACL、route snapshot、KV gateway capability、审计、header/cookie 清洗和发布状态机都走同一套平台逻辑。WFP 开通后，新增站点默认使用 `wfp`；已在 slot 上的试点站点可以通过一次显式管理员迁移重新发布到 WFP。切到 `wfp` 时不要立刻去掉 slot bindings，除非 D1 和 route snapshot 已确认不存在任何 active `normal-worker-slot` route。第一版不强制立即迁移，因为 slot 数量不大，保留兼容路径更利于平稳上线。
 
 ### 心动 SSO 应用配置
 
@@ -610,7 +626,9 @@ secrets:
 
 router 不需要 Cloudflare API token。router 只能 dispatch 到当前环境的 WFP namespace 或当前环境预绑定的 slot service binding。`ROUTER_IP_ALLOWLIST_CIDRS` 是第一版强制配置；缺失或格式错误时 router 必须 fail closed。当前实现用统一的 `PAGES_SESSION_JWT_*` registry 签发和校验 `site_session` 与 `internal_worker_jwt`，通过 `PAGES_SESSION_JWT_ISSUER`、`purpose`、`aud`、`kid` 和 `env` 区分用途；不要再配置独立的 `INTERNAL_JWT_*` 或 `SESSION_SIGNING_*` 名称，避免文档和 wrangler template 串线。
 
-router wrangler 渲染阶段会从 template 读取 `PAGES_EXECUTION_MODE`，并从部署脚本输出读取 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`。当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，`PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 必填，用于生成 `SITE_SLOT_001..N` service binding；当 `PAGES_EXECUTION_MODE=wfp` 时，这个值可为空，也可以保留为正整数，用于让 router 在 WFP 新发布之外继续服务尚未排空的 slot route。生成后的 router 业务逻辑不依赖扩容阈值。binding count 必须和 D1 `worker_slots` 当前环境历史最大 `slot_number` 保持一致；扩容时先创建缺失 slot 并写入 `available_pending_router`，再重新渲染并部署对应环境 router，router 部署与 secret 注入成功后才能把新 slot 标记为 `available`。确认不存在 active / rollback window 内的 slot route 后，才可以让部署脚本输出空 binding count 并重新部署 router 去掉 slot bindings。
+router wrangler 渲染阶段会从 template 读取 `PAGES_EXECUTION_MODE`，并从部署脚本输出读取 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`。当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，`PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 必填，用于生成 `SITE_SLOT_001..N` service binding；当 `PAGES_EXECUTION_MODE=wfp` 时，这个值可为空，也可以保留为正整数，用于让 router 在 WFP 新发布之外继续服务尚未排空的 slot route。生成后的 router 业务逻辑不依赖扩容阈值。binding count 必须和 D1 `worker_slots` 当前环境历史最大 `slot_number` 保持一致；扩容时先创建缺失 slot 并写入 `available_pending_router`，再重新渲染并部署对应环境 router，router 部署与 secret 注入成功后才能把新 slot 标记为 `available`。确认不存在 active slot route 后，才可以让部署脚本输出空 binding count 并重新部署 router 去掉 slot bindings。
+
+slot cleanup 不会减少 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`。被清理的 slot Worker 仍保留稳定 Worker 名和 router service binding，只是内容被重置为安全 placeholder，D1 状态回到 `available`，供后续发布复用。
 
 #### pages-kv-gateway
 
@@ -951,7 +969,7 @@ unique(environment, binding_name)
 unique(environment, worker_name)
 ```
 
-`worker_slots` 是普通 Worker slot 池的权威表。`pages-api` 分配 slot 时必须在 D1 transaction / CAS 中把 `available` 改成 `assigned`，并写入目标 `site_id`、`route_id` 和 `version_id`。同一站点后续 deploy 不覆盖当前 active slot，而是分配新的 available slot；旧 slot 在回滚/审计窗口内保留。删除站点或回滚窗口结束后，slot 先进入 `cleanup_pending`；清理完成后才回到 `available`。
+`worker_slots` 是普通 Worker slot 池的权威表。`pages-api` 分配 slot 时必须在 D1 transaction / CAS 中把 `available` 改成 `assigned`，并写入目标 `site_id`、`route_id` 和 `version_id`。同一站点后续 deploy 不覆盖当前 active slot，而是分配新的 available slot；新 route 激活并写入 snapshot 后，旧 slot 立即进入 cleanup 流程。删除站点或清理失败后，slot 先进入或保持 `cleanup_pending`；清理完成后才回到 `available`。
 
 #### deployments
 
@@ -1543,7 +1561,7 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
 - `succeeded` 写入失败：deployment 可由 reconciliation job 修正为 `succeeded` 或 `failed_with_active_route`。
 - 已上传但未激活的 user Worker / assets 第一版可由 failed deployment、非 active version、WFP 命名规则或 slot `last_deployed_version_id` 推导为 orphan；后续 reconciliation 负责延迟 GC，不立即删除，避免误删正在回滚的版本。若需要更强可观测性，再补显式 orphan 标记表。
 
-回滚不是修改历史 version 内容，而是复用同一套 active route 切换流程，把 `active_version_id`、`worker_name`、`execution_provider` 和 dispatch target 切回目标 version，并 bump `route_generation`。slot 模式下，回滚到旧版本前需要确认该旧版本仍存在可执行 artifact；如果 slot 已被新代码覆盖且没有保留旧 artifact，必须先重新部署目标 version 到同一 slot，再激活 route。所有 deploy / rollback 必须写审计。
+回滚不是修改历史 version 内容，而是复用同一套 active route 切换流程，把 `active_version_id`、`worker_name`、`execution_provider` 和 dispatch target 切回目标 version，并 bump `route_generation`。普通 Worker slot 模式不承诺历史版本回滚：旧 slot 会在新版本成功后被清理并复用，回滚到已释放的 slot 版本必须返回 `ROLLBACK_VERSION_UNAVAILABLE`。WFP 模式若保留不可变执行 artifact，可以继续支持回滚。所有 deploy / rollback 必须写审计。
 
 ## 域名和路由
 
@@ -2562,7 +2580,7 @@ pages deploy ./dist foo
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | route snapshot              | 对比 D1 `route_generation`、KV pointer 和 immutable snapshot，修复缺失或过期 pointer                                                      |
 | deployment                  | 修正卡在 `activating` / `uploaded` 的状态，补齐 terminal response                                                                         |
-| worker slot                 | 对比 `worker_slots`、router binding 和 Cloudflare ordinary Worker，发现 `available_pending_router` 卡住、assigned 但无 active route、长期未使用等状态 |
+| worker slot                 | 对比 `worker_slots`、router binding 和 Cloudflare ordinary Worker，发现 `available_pending_router` 卡住、assigned 但无 active route、长期未使用等状态；当前由 `expand-pages-router-slots.yml` 的 `operation=cleanup` 手动触发清理 |
 | orphan user worker / assets | reconciliation 根据 failed deployment、非 active version、WFP 命名规则、slot 状态和审计引用推导 orphan；后续可升级为显式标记表和 mark-and-sweep 清理 |
 | key registry                | 检查 active/draining/retired key 与最大 token TTL 是否匹配                                                                                |
 
@@ -2646,7 +2664,7 @@ publish -> activate -> drain -> retire
 | assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike，准备 R2/asset store 备选                       |
 | WFP 暂未开通                | 首发无法使用目标执行面           | 使用 `normal-worker-slot` 兼容层，用户 API 不变，后续切换默认 mode   |
 | slot binding 数量上限       | 普通 Worker slot 需要 router 静态 binding | 预留小规模池、容量告警、人工扩容 workflow，WFP 开通后停止扩张 |
-| slot 过早清理               | rollback window 内 slot 被释放会导致旧版本无法直接切回 | `worker_slots.assigned_version_id` 与 active/rollback window 对齐，清理只由 reconciliation 执行 |
+| slot 误清理 active 版本      | active slot 被释放会导致当前站点不可访问 | 清理前后都用 D1 条件确认没有 active route 引用该 slot 或 version；失败时保持 `cleanup_pending`，不回到 `available` |
 | 新 wildcard 配置风险        | `*.pages.xd.team` 是 v2 核心入口 | staging 验证、DNS/证书/route 静态校验、快速回滚                      |
 | production 自动部署风险     | 当前项目要求生产手动部署         | CI 继续保持 production manual                                        |
 

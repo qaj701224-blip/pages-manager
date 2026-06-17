@@ -14,6 +14,11 @@ const ASSETS_WORKER_MODULE = `export default {
     return env.ASSETS.fetch(request);
   },
 };`;
+const PLACEHOLDER_WORKER_MODULE = `export default {
+  fetch() {
+    return new Response('XD Pages slot is not assigned.', { status: 404 });
+  },
+};`;
 
 export { normalizeArtifactBundle };
 
@@ -94,6 +99,34 @@ function createNormalWorkerSlotProvider(env, config, store) {
       if (input?.slotId) await releaseSlot(store, input.slotId, env);
       if (injectedProvider?.delete) return injectedProvider.delete(input);
       return null;
+    },
+
+    async cleanupRetainedSlot(input) {
+      if (!input?.slotId || !input?.versionId || input.slotId === input.activeSlotId) return null;
+      if (
+        typeof store.markWorkerSlotCleanupPending !== 'function' ||
+        typeof store.releaseCleanupWorkerSlot !== 'function'
+      ) {
+        return null;
+      }
+      const slot = await store.markWorkerSlotCleanupPending(input.slotId, {
+        expectedVersionId: input.versionId,
+        updatedAt: readNow(env),
+      });
+      if (!slot) return null;
+
+      if (injectedProvider?.cleanupRetainedSlot) {
+        await injectedProvider.cleanupRetainedSlot({ ...input, slot });
+      } else {
+        await getClient().putPlaceholderWorker({
+          scriptName: slot.workerName,
+          compatibilityDate: env.WFP_COMPATIBILITY_DATE,
+        });
+      }
+      return store.releaseCleanupWorkerSlot(slot.id, {
+        expectedVersionId: slot.assignedVersionId || input.versionId,
+        updatedAt: readNow(env),
+      });
     },
   };
 
@@ -184,6 +217,24 @@ function createOrdinaryWorkerClient(env, config) {
 
     async getWorker(scriptName) {
       return requestCloudflareOk(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'GET' });
+    },
+
+    async putPlaceholderWorker({ scriptName, compatibilityDate }) {
+      await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
+      const metadata = {
+        main_module: 'worker.mjs',
+        compatibility_date: compatibilityDate || '2026-06-15',
+        tags: ['pages-v2', config.environment, 'normal-worker-slot', 'placeholder'],
+      };
+      const form = new FormData();
+      form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.set('worker.mjs', new Blob([PLACEHOLDER_WORKER_MODULE], { type: 'application/javascript+module' }), 'worker.mjs');
+      const result = await requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), {
+        method: 'PUT',
+        body: form,
+      });
+      await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
+      return result;
     },
   };
 }

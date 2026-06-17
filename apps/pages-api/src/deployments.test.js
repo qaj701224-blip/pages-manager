@@ -441,7 +441,66 @@ test('deploys through normal worker slot mode without exposing provider to the r
   ]);
 });
 
-test('keeps previous normal worker slots assigned so retained versions can rollback', async () => {
+test('releases previous normal worker slot after replacement deploy succeeds', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  await store.createWorkerSlot({
+    id: 'slot_008',
+    environment: 'production',
+    slotNumber: 8,
+    workerName: 'pages-v2-production-slot-008',
+    bindingName: 'SITE_SLOT_008',
+    status: 'available',
+  });
+  const events = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    NORMAL_WORKER_SLOT_PROVIDER: {
+      upload: async () => null,
+      verify: async () => ({ ok: true }),
+      cleanupRetainedSlot: async ({ slot }) => {
+        events.push(['cleanup', slot.id, slot.assignedVersionId]);
+      },
+    },
+  });
+
+  await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_first' }),
+    env
+  );
+  const replacement = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      { 'Idempotency-Key': 'slot_second' }
+    ),
+    env
+  );
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_retired_slot' }),
+    env
+  );
+
+  assert.equal(replacement.status, 201);
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'available');
+  assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, null);
+  assert.equal((await store.getWorkerSlot('slot_007')).lastDeployedVersionId, 'ver_1');
+  assert.equal((await store.getWorkerSlot('slot_008')).status, 'assigned');
+  assert.equal((await store.getWorkerSlot('slot_008')).assignedVersionId, 'ver_2');
+  assert.equal(rollback.status, 409);
+  assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
+  assert.deepEqual(events, [['cleanup', 'slot_007', 'ver_1']]);
+});
+
+test('keeps replacement deployment succeeded when previous slot cleanup fails closed', async () => {
   const store = await createSeededStore();
   await store.createWorkerSlot({
     id: 'slot_007',
@@ -464,6 +523,9 @@ test('keeps previous normal worker slots assigned so retained versions can rollb
     NORMAL_WORKER_SLOT_PROVIDER: {
       upload: async () => null,
       verify: async () => ({ ok: true }),
+      cleanupRetainedSlot: async () => {
+        throw new Error('cleanup failed');
+      },
     },
   });
 
@@ -479,18 +541,12 @@ test('keeps previous normal worker slots assigned so retained versions can rollb
     ),
     env
   );
-  const rollback = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_retired_slot' }),
-    env
-  );
 
   assert.equal(replacement.status, 201);
-  assert.equal((await store.getWorkerSlot('slot_007')).status, 'assigned');
+  assert.equal((await store.getDeployment('dep_2')).status, 'succeeded');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'cleanup_pending');
   assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, 'ver_1');
-  assert.equal((await store.getWorkerSlot('slot_008')).status, 'assigned');
-  assert.equal((await store.getWorkerSlot('slot_008')).assignedVersionId, 'ver_2');
-  assert.equal(rollback.status, 201);
-  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
 });
 
 test('normal worker slot upload metadata binds Pages KV gateway to slot workers', async () => {

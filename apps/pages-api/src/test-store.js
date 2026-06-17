@@ -434,6 +434,29 @@ class TestPagesStore {
     return cloneRecord(slot);
   }
 
+  async markWorkerSlotCleanupPending(id, { expectedVersionId, updatedAt } = {}) {
+    const slot = this.workerSlots.get(id);
+    if (!slot || slot.status !== 'assigned' || slot.assignedVersionId !== expectedVersionId) return null;
+    if (this.activeRouteReferencesSlot(slot)) return null;
+    slot.status = 'cleanup_pending';
+    slot.updatedAt = updatedAt || this.now();
+    return cloneRecord(slot);
+  }
+
+  async releaseCleanupWorkerSlot(id, { expectedVersionId, updatedAt } = {}) {
+    const slot = this.workerSlots.get(id);
+    if (!slot || slot.status !== 'cleanup_pending' || slot.assignedVersionId !== expectedVersionId) return null;
+    if (this.activeRouteReferencesSlot(slot)) return null;
+    slot.status = 'available';
+    slot.lastDeployedVersionId ||= expectedVersionId;
+    slot.assignedSiteId = null;
+    slot.assignedRouteId = null;
+    slot.assignedVersionId = null;
+    slot.assignedAt = null;
+    slot.updatedAt = updatedAt || this.now();
+    return cloneRecord(slot);
+  }
+
   async createAccessKey(input) {
     if ('plaintext' in input) throw new Error('ACCESS_KEY_PLAINTEXT_FORBIDDEN');
     if (this.accessKeys.has(input.id)) throw new Error('ACCESS_KEY_EXISTS');
@@ -544,6 +567,14 @@ class TestPagesStore {
       ...site,
       route: this.routes.get(this.routeBySiteId.get(siteId)) || null,
     };
+  }
+
+  activeRouteReferencesSlot(slot) {
+    for (const route of this.routes.values()) {
+      if (route.environment !== slot.environment || route.routeStatus !== 'active') continue;
+      if (route.slotId === slot.id || route.activeVersionId === slot.assignedVersionId) return true;
+    }
+    return false;
   }
 }
 

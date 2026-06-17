@@ -809,6 +809,64 @@ export class D1PagesStore {
     return this.getWorkerSlot(id);
   }
 
+  async markWorkerSlotCleanupPending(id, { expectedVersionId, updatedAt } = {}) {
+    if (!expectedVersionId) return null;
+    const now = updatedAt || this.now();
+    const result = await this.db
+      .prepare(
+        `UPDATE worker_slots
+        SET status = 'cleanup_pending', updated_at = ?
+        WHERE id = ?
+          AND status = 'assigned'
+          AND assigned_version_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE site_routes.environment = worker_slots.environment
+              AND site_routes.route_status = 'active'
+              AND (
+                site_routes.slot_id = worker_slots.id
+                OR site_routes.active_version_id = worker_slots.assigned_version_id
+              )
+          )`
+      )
+      .bind(now, id, expectedVersionId)
+      .run();
+    if (result?.meta?.changes === 0) return null;
+    return this.getWorkerSlot(id);
+  }
+
+  async releaseCleanupWorkerSlot(id, { expectedVersionId, updatedAt } = {}) {
+    if (!expectedVersionId) return null;
+    const now = updatedAt || this.now();
+    const result = await this.db
+      .prepare(
+        `UPDATE worker_slots
+        SET status = 'available',
+          assigned_site_id = NULL,
+          assigned_route_id = NULL,
+          assigned_version_id = NULL,
+          assigned_at = NULL,
+          last_deployed_version_id = COALESCE(last_deployed_version_id, ?),
+          updated_at = ?
+        WHERE id = ?
+          AND status = 'cleanup_pending'
+          AND assigned_version_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE site_routes.environment = worker_slots.environment
+              AND site_routes.route_status = 'active'
+              AND (
+                site_routes.slot_id = worker_slots.id
+                OR site_routes.active_version_id = worker_slots.assigned_version_id
+              )
+          )`
+      )
+      .bind(expectedVersionId, now, id, expectedVersionId)
+      .run();
+    if (result?.meta?.changes === 0) return null;
+    return this.getWorkerSlot(id);
+  }
+
   async createAccessKey(input) {
     if ('plaintext' in input) throw new Error('ACCESS_KEY_PLAINTEXT_FORBIDDEN');
     const now = this.now();

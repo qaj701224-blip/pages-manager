@@ -151,7 +151,7 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.match(productionTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(stagingTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(productionTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
-  assert.match(stagingTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(stagingTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(productionTemplate, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(stagingTemplate, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(productionTemplate, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);

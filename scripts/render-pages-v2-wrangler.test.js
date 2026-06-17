@@ -180,7 +180,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
-  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
@@ -391,6 +391,8 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(
     config,
     /ROUTER_JWKS_URL = "https:\/\/auth-staging\.pages\.xd\.team\/\.xd-pages\/jwks\.json"/,

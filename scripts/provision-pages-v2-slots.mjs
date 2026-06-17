@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const SUPPORTED_ENVIRONMENTS = new Set(['production', 'staging']);
-const SUPPORTED_PHASES = new Set(['plan', 'prepare', 'activate']);
+const SUPPORTED_PHASES = new Set(['plan', 'prepare', 'activate', 'cleanup-plan', 'cleanup']);
 const DEFAULT_CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const PLACEHOLDER_WORKER_MODULE = `export default {
   fetch() {
@@ -77,7 +77,88 @@ export function planNormalWorkerSlotProvisioning(slots, config) {
   };
 }
 
+export function planNormalWorkerSlotCleanup({ slots, activeRoutes = [], config, now = new Date().toISOString() }) {
+  const activeSlotIds = new Set(activeRoutes.map((route) => route.slotId || route.slot_id).filter(Boolean));
+  const activeVersionIds = new Set(activeRoutes.map((route) => route.activeVersionId || route.active_version_id).filter(Boolean));
+  const cutoffMs = Date.parse(now) - config.cleanupRetentionSeconds * 1000;
+  if (!Number.isFinite(cutoffMs)) throw new Error('PAGES_NORMAL_WORKER_SLOT_CLEANUP_NOW_INVALID');
+
+  const cleanupSlots = [];
+  const retainedSlots = [];
+  for (const slot of slots.filter((candidate) => candidate.environment === config.environment).map(normalizeSlot)) {
+    if (slot.status !== 'assigned' && slot.status !== 'cleanup_pending') continue;
+    if (activeSlotIds.has(slot.id) || activeVersionIds.has(slot.assignedVersionId)) {
+      retainedSlots.push({ ...slot, reason: 'active' });
+      continue;
+    }
+    if (!slot.assignedVersionId) {
+      retainedSlots.push({ ...slot, reason: 'missing_version' });
+      continue;
+    }
+    if (slot.status === 'cleanup_pending') {
+      cleanupSlots.push(slot);
+      continue;
+    }
+    const assignedAtMs = Date.parse(slot.assignedAt || '');
+    if (!Number.isFinite(assignedAtMs)) {
+      retainedSlots.push({ ...slot, reason: 'missing_assigned_at' });
+      continue;
+    }
+    if (assignedAtMs > cutoffMs) {
+      retainedSlots.push({ ...slot, reason: 'retention_window' });
+      continue;
+    }
+    cleanupSlots.push(slot);
+  }
+  return {
+    cleanupRetentionSeconds: config.cleanupRetentionSeconds,
+    cleanupSlots,
+    retainedSlots,
+  };
+}
+
+export async function cleanupNormalWorkerSlots({ config, d1, cloudflare, now = new Date().toISOString(), dryRun = false }) {
+  const slots = await d1.listWorkerSlots(config.environment);
+  const activeRoutes = typeof d1.listActiveSlotReferences === 'function'
+    ? await d1.listActiveSlotReferences(config.environment)
+    : [];
+  const plan = planNormalWorkerSlotCleanup({ slots, activeRoutes, config, now });
+  if (dryRun) {
+    return cleanupResult({ phase: 'cleanup-plan', dryRun: true, plan });
+  }
+
+  const cleanedSlotIds = [];
+  const failedSlotIds = [];
+  const skippedSlotIds = [];
+  for (const slot of plan.cleanupSlots) {
+    const pending =
+      slot.status === 'cleanup_pending'
+        ? slot
+        : await d1.markWorkerSlotCleanupPending({ ...slot, environment: config.environment, cutoff: cutoffIso(now, config) });
+    if (!pending) {
+      skippedSlotIds.push(slot.id);
+      continue;
+    }
+    try {
+      await cloudflare.putWorker({ workerName: pending.workerName, environment: config.environment });
+      const released = await d1.releaseCleanupWorkerSlot({ ...pending, environment: config.environment });
+      if (!released || released.status !== 'available') {
+        failedSlotIds.push(slot.id);
+        continue;
+      }
+      cleanedSlotIds.push(slot.id);
+    } catch {
+      failedSlotIds.push(slot.id);
+    }
+  }
+  return cleanupResult({ phase: 'cleanup', dryRun: false, plan, cleanedSlotIds, failedSlotIds, skippedSlotIds });
+}
+
 export async function provisionNormalWorkerSlots({ phase, config, d1, cloudflare, env = process.env }) {
+  if (phase === 'cleanup-plan' || phase === 'cleanup') {
+    return cleanupNormalWorkerSlots({ config, d1, cloudflare, dryRun: phase === 'cleanup-plan' });
+  }
+
   if (phase === 'plan') {
     const slots = await d1.listWorkerSlots(config.environment);
     if (config.executionMode && config.executionMode !== 'normal-worker-slot') {
@@ -153,6 +234,10 @@ export function parseSlotCapacityConfig(templateText, environment) {
       readTemplateVar(templateText, 'PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL'),
       'PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL'
     ),
+    cleanupRetentionSeconds: assertNonNegativeInteger(
+      readTemplateVar(templateText, 'PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS'),
+      'PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS'
+    ),
   };
 }
 
@@ -167,14 +252,17 @@ class WranglerD1Client {
     const results = await this.execute(
       `SELECT * FROM worker_slots WHERE environment = ${sqlString(environment)} ORDER BY slot_number ASC`
     );
-    return results.map((row) => ({
-      id: row.id,
-      environment: row.environment,
-      slotNumber: row.slot_number,
-      workerName: row.worker_name,
-      bindingName: row.binding_name,
-      status: row.status,
-    }));
+    return results.map(mapSlotRow);
+  }
+
+  async listActiveSlotReferences(environment) {
+    return this.execute(
+      `SELECT slot_id, active_version_id
+        FROM site_routes
+        WHERE environment = ${sqlString(environment)}
+          AND route_status = 'active'
+          AND (slot_id IS NOT NULL OR active_version_id IS NOT NULL)`
+    );
   }
 
   async insertPendingWorkerSlot(slot) {
@@ -210,6 +298,74 @@ class WranglerD1Client {
           AND slot_number <= ${Number(maxSlotNumber)}`
     );
     return Number(rows[0]?.count || 0);
+  }
+
+  async markWorkerSlotCleanupPending(slot) {
+    await this.execute(
+      `UPDATE worker_slots
+        SET status = 'cleanup_pending',
+          updated_at = ${sqlString(new Date().toISOString())},
+          notes = 'cleanup pending by pages v2 slot cleanup'
+        WHERE id = ${sqlString(slot.id)}
+          AND environment = ${sqlString(slot.environment)}
+          AND status = 'assigned'
+          AND assigned_version_id = ${sqlString(slot.assignedVersionId)}
+          AND assigned_at <= ${sqlString(slot.cutoff)}
+          AND NOT EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE site_routes.environment = worker_slots.environment
+              AND site_routes.route_status = 'active'
+              AND (
+                site_routes.slot_id = worker_slots.id
+                OR site_routes.active_version_id = worker_slots.assigned_version_id
+              )
+          )`
+    );
+    return this.getCleanupPendingSlot(slot);
+  }
+
+  async releaseCleanupWorkerSlot(slot) {
+    await this.execute(
+      `UPDATE worker_slots
+        SET status = 'available',
+          assigned_site_id = NULL,
+          assigned_route_id = NULL,
+          assigned_version_id = NULL,
+          assigned_at = NULL,
+          last_deployed_version_id = COALESCE(last_deployed_version_id, ${sqlString(slot.assignedVersionId)}),
+          updated_at = ${sqlString(new Date().toISOString())},
+          notes = 'cleaned by pages v2 slot cleanup'
+        WHERE id = ${sqlString(slot.id)}
+          AND environment = ${sqlString(slot.environment)}
+          AND status = 'cleanup_pending'
+          AND NOT EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE site_routes.environment = worker_slots.environment
+              AND site_routes.route_status = 'active'
+              AND (
+                site_routes.slot_id = worker_slots.id
+                OR site_routes.active_version_id = ${sqlString(slot.assignedVersionId)}
+              )
+          )`
+    );
+    const rows = await this.execute(
+      `SELECT * FROM worker_slots
+        WHERE id = ${sqlString(slot.id)}
+          AND environment = ${sqlString(slot.environment)}
+        LIMIT 1`
+    );
+    return rows[0] ? mapSlotRow(rows[0]) : null;
+  }
+
+  async getCleanupPendingSlot(slot) {
+    const rows = await this.execute(
+      `SELECT * FROM worker_slots
+        WHERE id = ${sqlString(slot.id)}
+          AND environment = ${sqlString(slot.environment)}
+          AND status = 'cleanup_pending'
+        LIMIT 1`
+    );
+    return rows[0] ? mapSlotRow(rows[0]) : null;
   }
 
   async execute(command) {
@@ -305,7 +461,7 @@ async function main() {
     env: process.env,
   });
   const cloudflare =
-    phase === 'plan'
+    phase === 'plan' || phase === 'cleanup-plan'
       ? null
       : new CloudflareWorkersClient({
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
@@ -321,7 +477,18 @@ function normalizeSlot(slot) {
     slotNumber: Number(slot.slotNumber ?? slot.slot_number),
     environment: slot.environment,
     status: slot.status,
+    workerName: slot.workerName ?? slot.worker_name,
+    bindingName: slot.bindingName ?? slot.binding_name,
+    assignedSiteId: slot.assignedSiteId ?? slot.assigned_site_id ?? null,
+    assignedRouteId: slot.assignedRouteId ?? slot.assigned_route_id ?? null,
+    assignedVersionId: slot.assignedVersionId ?? slot.assigned_version_id ?? null,
+    assignedAt: slot.assignedAt ?? slot.assigned_at ?? null,
+    lastDeployedVersionId: slot.lastDeployedVersionId ?? slot.last_deployed_version_id ?? null,
   };
+}
+
+function mapSlotRow(row) {
+  return normalizeSlot(row);
 }
 
 function maxSlotNumber(slots, environment) {
@@ -342,6 +509,12 @@ function assertPositiveInteger(value, name) {
   return parsed;
 }
 
+function assertNonNegativeInteger(value, name) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative integer`);
+  return parsed;
+}
+
 function readTemplateVar(templateText, name) {
   return readTomlValue(templateText, name);
 }
@@ -354,6 +527,32 @@ function readTomlValue(templateText, name) {
 
 function sqlString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function cutoffIso(now, config) {
+  const cutoffMs = Date.parse(now) - config.cleanupRetentionSeconds * 1000;
+  if (!Number.isFinite(cutoffMs)) throw new Error('PAGES_NORMAL_WORKER_SLOT_CLEANUP_NOW_INVALID');
+  return new Date(cutoffMs).toISOString();
+}
+
+function cleanupResult({
+  phase,
+  dryRun,
+  plan,
+  cleanedSlotIds = [],
+  failedSlotIds = [],
+  skippedSlotIds = [],
+}) {
+  return {
+    phase,
+    dryRun,
+    cleanupRetentionSeconds: plan.cleanupRetentionSeconds,
+    cleanupSlotIds: plan.cleanupSlots.map((slot) => slot.id),
+    retainedSlots: plan.retainedSlots.map((slot) => ({ id: slot.id, reason: slot.reason })),
+    cleanedSlotIds,
+    failedSlotIds,
+    skippedSlotIds,
+  };
 }
 
 function extractWranglerResults(stdout) {
@@ -401,7 +600,7 @@ function readRequired(value, name) {
 }
 
 function usage() {
-  console.error('Usage: node scripts/provision-pages-v2-slots.mjs <production|staging> <plan|prepare|activate>');
+  console.error('Usage: node scripts/provision-pages-v2-slots.mjs <production|staging> <plan|prepare|activate|cleanup-plan|cleanup>');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

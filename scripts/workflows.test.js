@@ -327,6 +327,7 @@ test('router slot expansion workflow is manual and only touches router slot reso
   assert.match(triggers, /^ {2}workflow_dispatch:/m, 'router slot expansion is manual');
   assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'router slot expansion has no push or PR trigger');
   assert.match(workflow, /environment:[\s\S]*type: choice[\s\S]*- staging[\s\S]*- production/);
+  assert.match(workflow, /operation:[\s\S]*type: choice[\s\S]*- expand[\s\S]*- cleanup/);
   assert.match(workflow, /dry_run:[\s\S]*type: boolean[\s\S]*default: true/);
   assert.match(workflow, /environment: \$\{\{ inputs\.environment \}\}/);
   assert.match(workflow, /concurrency:\n {2}group: pages-router-slots-\$\{\{ inputs\.environment \}\}/);
@@ -338,7 +339,9 @@ test('router slot expansion workflow is manual and only touches router slot reso
     ),
   );
   assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" plan/);
+  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" cleanup-plan/);
   assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" prepare/);
+  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" cleanup/);
   assert.match(workflow, /node scripts\/render-pages-v2-wrangler\.mjs apps\/pages-router "\$TARGET_ENV"/);
   assert.match(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
   assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);

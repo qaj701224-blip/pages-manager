@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   buildSlotRecord,
   CloudflareWorkersClient,
+  cleanupNormalWorkerSlots,
+  planNormalWorkerSlotCleanup,
   planNormalWorkerSlotProvisioning,
   provisionNormalWorkerSlots,
   renderSlotBindingName,
@@ -15,6 +17,7 @@ const baseConfig = {
   minAvailable: 1,
   expandBy: 2,
   maxTotal: 100,
+  cleanupRetentionSeconds: 7 * 24 * 60 * 60,
 };
 
 test('plans initial normal-worker-slot expansion from an empty D1 table', () => {
@@ -207,8 +210,137 @@ test('Cloudflare slot provisioner disables workers.dev for placeholder workers',
   assert.deepEqual(JSON.parse(requests[1].init.body), { enabled: false });
 });
 
+test('plans cleanup only for inactive retained slots after the retention window', () => {
+  const slots = [
+    retainedSlot({ slotNumber: 1, assignedVersionId: 'ver_old', assignedAt: '2026-06-01T00:00:00.000Z' }),
+    retainedSlot({ slotNumber: 2, assignedVersionId: 'ver_active', assignedAt: '2026-06-01T00:00:00.000Z' }),
+    retainedSlot({ slotNumber: 3, assignedVersionId: 'ver_fresh', assignedAt: '2026-06-17T11:00:00.000Z' }),
+    retainedSlot({
+      slotNumber: 4,
+      status: 'cleanup_pending',
+      assignedVersionId: 'ver_pending',
+      assignedAt: '2026-06-01T00:00:00.000Z',
+    }),
+  ];
+
+  const plan = planNormalWorkerSlotCleanup({
+    slots,
+    activeRoutes: [{ slotId: 'slot_002', activeVersionId: 'ver_active' }],
+    config: baseConfig,
+    now: '2026-06-17T12:00:00.000Z',
+  });
+
+  assert.deepEqual(
+    plan.cleanupSlots.map((slot) => slot.id),
+    ['slot_001', 'slot_004']
+  );
+  assert.equal(plan.retainedSlots.find((slot) => slot.id === 'slot_002').reason, 'active');
+  assert.equal(plan.retainedSlots.find((slot) => slot.id === 'slot_003').reason, 'retention_window');
+});
+
+test('cleanup overwrites inactive retained slot with placeholder before releasing it', async () => {
+  const calls = [];
+  const d1 = cleanupD1([
+    retainedSlot({ slotNumber: 1, assignedVersionId: 'ver_old', assignedAt: '2026-06-01T00:00:00.000Z' }),
+  ], calls);
+  const cloudflare = {
+    async putWorker({ workerName, environment }) {
+      calls.push(['putWorker', workerName, environment]);
+    },
+  };
+
+  const result = await cleanupNormalWorkerSlots({
+    config: baseConfig,
+    d1,
+    cloudflare,
+    now: '2026-06-17T12:00:00.000Z',
+  });
+
+  assert.deepEqual(result.cleanedSlotIds, ['slot_001']);
+  assert.deepEqual(result.failedSlotIds, []);
+  assert.deepEqual(calls, [
+    ['mark', 'slot_001'],
+    ['putWorker', 'pages-v2-staging-slot-001', 'staging'],
+    ['release', 'slot_001'],
+  ]);
+  assert.equal(d1.slots[0].status, 'available');
+  assert.equal(d1.slots[0].assignedVersionId, null);
+  assert.equal(d1.slots[0].lastDeployedVersionId, 'ver_old');
+});
+
+test('cleanup leaves slot cleanup_pending when placeholder overwrite fails', async () => {
+  const d1 = cleanupD1([
+    retainedSlot({ slotNumber: 1, assignedVersionId: 'ver_old', assignedAt: '2026-06-01T00:00:00.000Z' }),
+  ]);
+  const cloudflare = {
+    async putWorker() {
+      throw new Error('cloudflare failed');
+    },
+  };
+
+  const result = await cleanupNormalWorkerSlots({
+    config: baseConfig,
+    d1,
+    cloudflare,
+    now: '2026-06-17T12:00:00.000Z',
+  });
+
+  assert.deepEqual(result.cleanedSlotIds, []);
+  assert.deepEqual(result.failedSlotIds, ['slot_001']);
+  assert.equal(d1.slots[0].status, 'cleanup_pending');
+  assert.equal(d1.slots[0].assignedVersionId, 'ver_old');
+});
+
 test('slot worker and binding names are stable across deploys', () => {
   assert.equal(renderSlotWorkerName('production', 7), 'pages-v2-production-slot-007');
   assert.equal(renderSlotWorkerName('staging', 7), 'pages-v2-staging-slot-007');
   assert.equal(renderSlotBindingName(7), 'SITE_SLOT_007');
 });
+
+function retainedSlot({
+  slotNumber,
+  status = 'assigned',
+  assignedVersionId,
+  assignedAt,
+}) {
+  const slot = buildSlotRecord({ environment: 'staging', slotNumber, status });
+  return {
+    ...slot,
+    assignedSiteId: 'site_1',
+    assignedRouteId: 'route_1',
+    assignedVersionId,
+    assignedAt,
+    lastDeployedVersionId: assignedVersionId,
+  };
+}
+
+function cleanupD1(slots, calls = []) {
+  return {
+    slots,
+    async listWorkerSlots() {
+      return this.slots;
+    },
+    async listActiveSlotReferences() {
+      return [];
+    },
+    async markWorkerSlotCleanupPending(slot) {
+      calls.push(['mark', slot.id]);
+      const current = this.slots.find((candidate) => candidate.id === slot.id);
+      if (!current || current.status === 'available') return null;
+      current.status = 'cleanup_pending';
+      return current;
+    },
+    async releaseCleanupWorkerSlot(slot) {
+      calls.push(['release', slot.id]);
+      const current = this.slots.find((candidate) => candidate.id === slot.id);
+      if (!current || current.status !== 'cleanup_pending') return null;
+      current.status = 'available';
+      current.lastDeployedVersionId = current.assignedVersionId;
+      current.assignedSiteId = null;
+      current.assignedRouteId = null;
+      current.assignedVersionId = null;
+      current.assignedAt = null;
+      return current;
+    },
+  };
+}
