@@ -369,6 +369,10 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
     )
   );
   assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
+  const assetUpload = requests.find((request) => request.url.includes('/workers/assets/upload?base64=true'));
+  const assetUploadForm = await assetUpload.formData();
+  assert.equal(assetUploadForm.get('hash_index').type, 'text/html');
+  assert.equal(await assetUploadForm.get('hash_index').text(), 'aGVsbG8=');
   const uploadRequest = requests.find((request) => request.method === 'PUT');
   const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
   assert.deepEqual(metadata.bindings, [
@@ -592,6 +596,10 @@ test('normal worker slot static asset deployment uses Cloudflare assets upload s
     requests.some((request) => request.url.includes('/workers/scripts/pages-v2-production-slot-007/assets-upload-session'))
   );
   assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
+  const assetUpload = requests.find((request) => request.url.includes('/workers/assets/upload?base64=true'));
+  const assetUploadForm = await assetUpload.formData();
+  assert.equal(assetUploadForm.get('hash_index').type, 'text/html');
+  assert.equal(await assetUploadForm.get('hash_index').text(), 'aGVsbG8=');
   const uploadRequest = requests.find((request) => request.method === 'PUT');
   const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
   assert.deepEqual(metadata.bindings, [

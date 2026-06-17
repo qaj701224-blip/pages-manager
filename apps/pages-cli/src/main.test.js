@@ -89,6 +89,27 @@ test('main prints JSON error envelopes when --json is requested', async () => {
   });
 });
 
+test('main keeps command-specific SITE_REQUIRED actions', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const exitCode = await main(['status'], {
+    stdout,
+    stderr,
+    env: {},
+    commandRunner: async () => {
+      const error = new Error('缺少站点名。');
+      error.code = 'SITE_REQUIRED';
+      error.action = '请使用 pages status <站点名>。';
+      throw error;
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.text(), /SITE_REQUIRED/);
+  assert.match(stderr.text(), /pages status <站点名>/);
+  assert.doesNotMatch(stderr.text(), /pages deploy \.\/dist demo/);
+});
+
 test('global symlinked bin invokes the CLI entrypoint', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-bin-'));
   test.after(() => rm(dir, { recursive: true, force: true }));

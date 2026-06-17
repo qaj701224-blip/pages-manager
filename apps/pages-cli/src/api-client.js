@@ -104,11 +104,13 @@ async function readResponsePayload(response) {
   try {
     return JSON.parse(text);
   } catch {
+    const contentType = response.headers.get('Content-Type') || 'unknown';
     throw new ApiError({
       status: response.status,
       code: 'INVALID_JSON_RESPONSE',
-      message: 'Server returned invalid JSON.',
-      action: 'Retry the request or contact the Pages platform owner.',
+      message: `服务返回了非 JSON 响应（HTTP ${response.status}，Content-Type: ${contentType}）。`,
+      action:
+        '请确认当前环境和服务域名是否正确；可运行 pages env 查看，staging 测试请加 --env staging 或先运行 pages env use staging。',
     });
   }
 }

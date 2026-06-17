@@ -155,7 +155,7 @@ async function uploadAssets({ fetch, apiToken, baseUrl, accountId, scriptResourc
     for (const hash of bucket) {
       const file = fileMap.get(hash);
       if (!file) continue;
-      form.set(hash, new Blob([bytesToBase64(file.bytes)]), hash);
+      form.set(hash, new Blob([bytesToBase64(file.bytes)], { type: file.contentType || 'application/octet-stream' }), hash);
     }
     const result = await requestCloudflare(fetch, session.jwt, assetUploadUrl(baseUrl, accountId), {
       method: 'POST',

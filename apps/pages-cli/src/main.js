@@ -36,7 +36,7 @@ function formatError(error) {
 
 function formatErrorJson(error) {
   if (!error || typeof error !== 'object') {
-    return JSON.stringify({ ok: false, schemaVersion: 1, error: { code: 'CLI_ERROR', message: String(error) } });
+    return JSON.stringify({ ok: false, schemaVersion: 1, error: { code: 'CLI_ERROR', message: String(error) } }, null, 2);
   }
   const localized = localizeError(error);
   const payload = {
@@ -48,7 +48,7 @@ function formatErrorJson(error) {
     },
   };
   if (localized.action) payload.error.action = localized.action;
-  return JSON.stringify(payload);
+  return JSON.stringify(payload, null, 2);
 }
 
 function localizeError(error) {
@@ -62,15 +62,15 @@ function localizeError(error) {
     },
     SITE_REQUIRED: {
       message: '缺少站点名。',
-      action: '请传入站点名，例如 pages deploy ./dist demo。',
+      action: localizedAction(error, '请传入站点名，例如 pages deploy ./dist demo。'),
     },
     SITE_SLUG_REQUIRED: {
       message: '缺少站点名。',
-      action: '请传入站点名，例如 pages deploy ./dist demo。',
+      action: localizedAction(error, '请传入站点名，例如 pages deploy ./dist demo。'),
     },
     SITE_NOT_FOUND: {
       message: error.message && /^未找到/.test(error.message) ? error.message : '未找到站点。',
-      action: '请确认站点名和当前环境；如果使用 access key，请确认它绑定的是这个站点。',
+      action: localizedAction(error, '请确认站点名和当前环境；如果使用 access key，请确认它绑定的是这个站点。'),
     },
     SITE_VISIBILITY_INVALID: {
       message: '站点可见性无效。',
@@ -104,6 +104,10 @@ function localizeError(error) {
     message: error.message || code,
     action: error.action,
   };
+}
+
+function localizedAction(error, fallback) {
+  return error.action && /[\u4e00-\u9fff]/.test(error.action) ? error.action : fallback;
 }
 
 function wantsJson(argv) {

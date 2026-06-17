@@ -161,13 +161,14 @@ test('status, sites, rollback, and open use explicit site names', async () => {
     fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'docs', environment: 'production' }] }]),
     output: (line) => output.push(line),
   });
+  const siteInfoOutput = [];
   await executeCommand(['sites', 'info', 'docs'], {
     cwd: dir,
     env: {},
     profile: productionProfile(),
     secretStore: fakeSecretStore({ type: 'access_key', value: 'xdp_prod_ak_1_secret' }),
     fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'docs', environment: 'production' }] }]),
-    output: () => {},
+    output: (line) => siteInfoOutput.push(line),
   });
   await executeCommand(['rollback', 'docs', 'ver_1'], {
     cwd: dir,
@@ -187,10 +188,128 @@ test('status, sites, rollback, and open use explicit site names', async () => {
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
   assert.deepEqual(JSON.parse(output[0]).site, { id: 'site_1', slug: 'docs', environment: 'production' });
   assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.match(siteInfoOutput.join('\n'), /站点名：docs/);
   assert.equal(calls[2].url, 'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback');
   assert.deepEqual(await calls[2].json(), { siteSlug: 'docs' });
   assert.equal(calls[2].headers.get('Idempotency-Key'), 'rb_1');
   assert.deepEqual(openOutput, ['https://docs-staging.pages.xd.team']);
+});
+
+test('sites list defaults to a summary and supports detailed JSON', async () => {
+  const sites = [
+    {
+      id: 'site_1',
+      slug: 'docs',
+      environment: 'staging',
+      defaultVisibility: 'org',
+      url: 'https://docs-staging.pages.xd.team',
+      route: {
+        id: 'route_1',
+        hostname: 'docs-staging.pages.xd.team',
+        status: 'active',
+        runtime: 'worker',
+        activeVersionId: 'ver_1',
+        visibility: 'org',
+      },
+      createdAt: '2026-06-17T00:00:00.000Z',
+    },
+  ];
+  const summaryOutput = [];
+  const summaryJsonOutput = [];
+  const detailsJsonOutput = [];
+
+  await executeCommand(['sites'], {
+    env: {},
+    profile: { activeEnvironment: 'staging', environments: {} },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch([], [{ sites }]),
+    output: (line) => summaryOutput.push(line),
+  });
+  await executeCommand(['sites', '--json'], {
+    env: {},
+    profile: { activeEnvironment: 'staging', environments: {} },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch([], [{ sites }]),
+    output: (line) => summaryJsonOutput.push(line),
+  });
+  await executeCommand(['sites', '--details', '--json'], {
+    env: {},
+    profile: { activeEnvironment: 'staging', environments: {} },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch([], [{ sites }]),
+    output: (line) => detailsJsonOutput.push(line),
+  });
+
+  assert.match(summaryOutput.join('\n'), /站点名\s+环境\s+访问范围\s+状态\s+URL/);
+  assert.match(summaryOutput.join('\n'), /docs\s+staging\s+org\s+active\s+https:\/\/docs-staging\.pages\.xd\.team/);
+  assert.doesNotMatch(summaryOutput.join('\n'), /route_1/);
+
+  assert.deepEqual(JSON.parse(summaryJsonOutput.join('\n')), {
+    ok: true,
+    schemaVersion: 1,
+    environment: 'staging',
+    sites: [
+      {
+        site: 'docs',
+        environment: 'staging',
+        visibility: 'org',
+        status: 'active',
+        url: 'https://docs-staging.pages.xd.team',
+      },
+    ],
+  });
+  assert.match(summaryJsonOutput.join('\n'), /\n {2}"sites": \[/);
+
+  assert.equal(JSON.parse(detailsJsonOutput.join('\n')).sites[0].route.id, 'route_1');
+});
+
+test('site lookup suggests the closest slug when a name is mistyped', async () => {
+  await assert.rejects(
+    () =>
+      executeCommand(['sites', 'info', 'xtq-html-test'], {
+        env: {},
+        profile: { activeEnvironment: 'staging', environments: {} },
+        secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+        fetch: fakeFetch([], [{ sites: [{ id: 'site_1', slug: 'xtq-hml-test', environment: 'staging' }] }]),
+        output: () => {},
+      }),
+    {
+      code: 'SITE_NOT_FOUND',
+      action: '未找到 xtq-html-test。你是不是想查看 xtq-hml-test？',
+    }
+  );
+});
+
+test('auth status and logout can target an environment without switching profile', async () => {
+  const deleted = [];
+  const statusOutput = [];
+
+  await executeCommand(['auth', 'status', '--env', 'staging', '--json'], {
+    env: {},
+    profile: productionProfile(),
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'staging_cli_token' }),
+    output: (line) => statusOutput.push(line),
+  });
+  await executeCommand(['auth', 'logout', '--env', 'staging'], {
+    env: {},
+    profile: productionProfile(),
+    profileDir: await tempProject(),
+    secretStore: {
+      get: async () => null,
+      set: async () => {},
+      delete: async (environment) => deleted.push(environment),
+    },
+    output: () => {},
+  });
+
+  assert.deepEqual(JSON.parse(statusOutput.join('\n')), {
+    ok: true,
+    schemaVersion: 1,
+    environment: 'staging',
+    authenticated: true,
+    credentialType: 'cli_token',
+  });
+  assert.deepEqual(deleted, ['staging']);
 });
 
 test('auth whoami uses API validation and env list stays user-facing only', async () => {

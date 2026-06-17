@@ -30,6 +30,8 @@ const DEPLOY_FLAGS = new Set([
   'saveConfig',
 ]);
 const API_READ_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
+const SITES_FLAGS = new Set(['env', 'accessKey', 'json', 'help', 'details']);
+const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'accessKey']);
 const STATUS_FLAGS = new Set(['env', 'deployment', 'accessKey', 'json', 'help']);
 const ROLLBACK_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
 const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'accessKey']);
@@ -303,7 +305,7 @@ async function runStatus(parsed, context) {
   const site = readSingleSiteArg(parsed, 'STATUS_USAGE_INVALID', '请使用 pages status <站点名>。');
   const result = await readSiteBySlug(client, site);
   if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
-  context.output(JSON.stringify(result));
+  outputSiteStatus(context.output, config.environment, result.site);
   return 0;
 }
 
@@ -354,8 +356,15 @@ async function runSites(parsed, context) {
   if (subcommand === 'list') {
     assertNoPositionals(child, 'SITES_LIST_USAGE_INVALID', 'pages sites list 不接受位置参数。');
     const result = await client.requestApi('GET', '/.xd-pages/api/sites');
-    if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
-    context.output(JSON.stringify(result));
+    const payload = parsed.flags.details
+      ? { environment: config.environment, ...result }
+      : { environment: config.environment, sites: summarizeSites(result.sites || []) };
+    if (outputJsonResult(parsed, context, payload)) return 0;
+    if (parsed.flags.details) {
+      context.output(formatJson(payload));
+    } else {
+      outputSitesSummary(context.output, payload.sites);
+    }
     return 0;
   }
 
@@ -363,7 +372,7 @@ async function runSites(parsed, context) {
     const site = readSingleSiteArg(child, 'SITES_INFO_USAGE_INVALID', '请使用 pages sites info <站点名>。');
     const result = await readSiteBySlug(client, site);
     if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
-    context.output(JSON.stringify(result));
+    outputSiteInfo(context.output, config.environment, result.site);
     return 0;
   }
 
@@ -551,7 +560,7 @@ function allowedFlagsForCommand(parsed) {
   if (parsed.command === 'status') return STATUS_FLAGS;
   if (parsed.command === 'rollback') return ROLLBACK_FLAGS;
   if (parsed.command === 'open') return OPEN_FLAGS;
-  if (parsed.command === 'sites') return API_READ_FLAGS;
+  if (parsed.command === 'sites') return SITES_FLAGS;
   if (parsed.command === 'access') return ACCESS_FLAGS;
   if (parsed.command === 'auth') return allowedAuthFlags(parsed);
   if (parsed.command === 'env') return allowedEnvFlags(parsed);
@@ -561,7 +570,7 @@ function allowedFlagsForCommand(parsed) {
 function allowedAuthFlags(parsed) {
   const subcommand = parsed.positional[0] || 'status';
   if (subcommand === 'login') return LOGIN_FLAGS;
-  if (subcommand === 'status' || subcommand === 'logout') return ENV_FLAGS;
+  if (subcommand === 'status' || subcommand === 'logout') return AUTH_ENV_FLAGS;
   if (subcommand === 'whoami') return API_READ_FLAGS;
   return API_READ_FLAGS;
 }
@@ -599,7 +608,14 @@ async function readSiteBySlug(client, slug) {
   const result = await client.requestApi('GET', '/.xd-pages/api/sites');
   const site = Array.isArray(result?.sites) ? result.sites.find((candidate) => candidate.slug === slug) : null;
   if (!site) {
-    throw usageError('SITE_NOT_FOUND', `未找到站点：${slug}`, '请确认站点名和当前环境；如果使用 access key，请确认它绑定的是这个站点。');
+    const suggestion = suggestClosestSlug(slug, result?.sites || []);
+    throw usageError(
+      'SITE_NOT_FOUND',
+      `未找到站点：${slug}`,
+      suggestion
+        ? `未找到 ${slug}。你是不是想查看 ${suggestion}？`
+        : '请确认站点名和当前环境；如果使用 access key，请确认它绑定的是这个站点。'
+    );
   }
   return { site };
 }
@@ -776,6 +792,75 @@ function readSiteVisibility(site) {
   return site?.route?.visibility || site?.defaultVisibility || null;
 }
 
+function summarizeSites(sites = []) {
+  return sites.map((site) => ({
+    site: site.slug,
+    environment: site.environment,
+    visibility: readSiteVisibility(site),
+    status: site?.route?.status || 'created',
+    url: site.url || (site?.route?.hostname ? `https://${site.route.hostname}` : null),
+  }));
+}
+
+function outputSitesSummary(output, sites) {
+  if (!sites.length) {
+    output('暂无站点。');
+    return;
+  }
+  output(['站点名', '环境', '访问范围', '状态', 'URL'].join('\t'));
+  for (const site of sites) {
+    output([site.site, site.environment, site.visibility || '-', site.status || '-', site.url || '-'].join('\t'));
+  }
+}
+
+function outputSiteInfo(output, environment, site) {
+  output(`站点名：${site.slug}`);
+  output(`环境：${site.environment || environment}`);
+  output(`访问范围：${readSiteVisibility(site) || '-'}`);
+  output(`状态：${site?.route?.status || 'created'}`);
+  if (site.url || site?.route?.hostname) output(`URL ${site.url || `https://${site.route.hostname}`}`);
+  output(`创建时间：${site.createdAt || '-'}`);
+  output(`更新时间：${site.updatedAt || '-'}`);
+}
+
+function outputSiteStatus(output, environment, site) {
+  output(`站点名：${site.slug}`);
+  output(`环境：${site.environment || environment}`);
+  output(`运行状态：${site?.route?.status || 'created'}`);
+  output(`运行时：${site?.route?.runtime || '-'}`);
+  output(`访问范围：${readSiteVisibility(site) || '-'}`);
+  output(`版本：${site?.route?.activeVersionId || '-'}`);
+  if (site.url || site?.route?.hostname) output(`URL ${site.url || `https://${site.route.hostname}`}`);
+}
+
+function suggestClosestSlug(slug, sites = []) {
+  let best = null;
+  for (const site of sites) {
+    if (!site?.slug) continue;
+    const distance = levenshteinDistance(slug, site.slug);
+    if (!best || distance < best.distance) best = { slug: site.slug, distance };
+  }
+  if (!best) return null;
+  const threshold = Math.max(2, Math.floor(String(slug || '').length * 0.25));
+  return best.distance <= threshold ? best.slug : null;
+}
+
+function levenshteinDistance(left, right) {
+  const a = String(left || '');
+  const b = String(right || '');
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const substitution = previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, substitution);
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[b.length];
+}
+
 function summarizeAccessEntries(aclEntries = []) {
   const emails = [];
   const departments = [];
@@ -839,17 +924,21 @@ function nextIdempotencyKey(context) {
 
 function outputJsonResult(parsed, context, payload) {
   if (!parsed.flags.json) return false;
-  context.output(JSON.stringify({ ok: true, schemaVersion: 1, ...payload }));
+  context.output(formatJson({ ok: true, schemaVersion: 1, ...payload }));
   return true;
 }
 
 function outputHelp(parsed, output) {
   const topic = parsed.command === 'help' ? parsed.positional[0] : parsed.command;
   if (parsed.flags.json) {
-    output(JSON.stringify({ ok: true, schemaVersion: 1, help: helpJson(topic || 'overview') }));
+    output(formatJson({ ok: true, schemaVersion: 1, help: helpJson(topic || 'overview') }));
     return;
   }
   output(helpText(topic || 'overview'));
+}
+
+function formatJson(value) {
+  return JSON.stringify(value, null, 2);
 }
 
 function helpText(topic) {
@@ -916,6 +1005,7 @@ function helpText(topic) {
 选项：
   --env <production|staging>                目标环境。
   --access-key <key>                        只在本次命令中使用的 access key。
+  --details                                 sites list 输出完整站点详情；默认只显示概要。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }

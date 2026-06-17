@@ -106,3 +106,29 @@ test('API client turns safe error envelopes into ApiError', async () => {
     }
   );
 });
+
+test('API client explains non-JSON responses with HTTP context', async () => {
+  const client = createApiClient({
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    fetch: async () =>
+      new Response('<!doctype html><title>not found</title>', {
+        status: 404,
+        statusText: 'Not Found',
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      }),
+  });
+
+  await assert.rejects(
+    () => client.requestAuth('POST', '/.xd-pages/cli/login/start'),
+    (error) => {
+      assert.equal(error instanceof ApiError, true);
+      assert.equal(error.status, 404);
+      assert.equal(error.code, 'INVALID_JSON_RESPONSE');
+      assert.match(error.message, /HTTP 404/);
+      assert.match(error.message, /text\/html/);
+      assert.match(error.action, /pages env/);
+      return true;
+    }
+  );
+});

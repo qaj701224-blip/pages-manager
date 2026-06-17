@@ -178,6 +178,9 @@ test('uploadUserWorker can upload static assets before deploying thin assets wor
   assert.ok(requests[0].url.endsWith('/scripts/pages-v2-docs-ver-1/assets-upload-session'));
   assert.equal(requests[1].method, 'POST');
   assert.ok(requests[1].url.includes('/workers/assets/upload?base64=true'));
+  const assetUploadForm = await requests[1].formData();
+  assert.equal(assetUploadForm.get('hash_index').type, 'text/html');
+  assert.equal(await assetUploadForm.get('hash_index').text(), 'aGVsbG8=');
   const deployed = requests.find((request) => request.method === 'PUT');
   const form = await deployed.formData();
   assert.deepEqual(JSON.parse(await form.get('metadata').text()), {
