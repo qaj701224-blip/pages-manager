@@ -1,20 +1,8 @@
 import { jsonResponse } from '@xd/worker-kit';
 
-import {
-  handleCreatePublishingJob,
-  handleExecutorCallback,
-  handleGetPublishingJob,
-  handleGetPublishingJobEvents,
-  handleGithubWebhook,
-  handleHealth,
-  handleListPublishingJobs,
-  handleReady,
-  handleReviewGateReconcile,
-  handleSlackEvents,
-  handleSlackInteractions,
-} from './routes/handlers.js';
 import { MySqlGatewayStore } from './db/gateway-store.js';
 import { Router } from './http/router.js';
+import { registerGatewayRoutes } from './routes/register.js';
 
 function logSlackHttpFailure(request, url, err) {
   if (!url.pathname.startsWith('/integrations/slack/')) return;
@@ -47,17 +35,7 @@ export function createGatewayApp(options = {}) {
     return store;
   }
 
-  router.get('/health', handleHealth);
-  router.get('/ready', handleReady);
-  router.post('/api/publishing-jobs', handleCreatePublishingJob);
-  router.get('/api/publishing-jobs', handleListPublishingJobs);
-  router.get('/api/publishing-jobs/:jobId', handleGetPublishingJob);
-  router.get('/api/publishing-jobs/:jobId/events', handleGetPublishingJobEvents);
-  router.post('/integrations/slack/events', handleSlackEvents);
-  router.post('/integrations/slack/interactions', handleSlackInteractions);
-  router.post('/internal/executor-callback', handleExecutorCallback);
-  router.post('/internal/review-gate/reconcile', handleReviewGateReconcile);
-  router.post('/integrations/github/webhook', handleGithubWebhook);
+  registerGatewayRoutes(router);
 
   return {
     get store() {
