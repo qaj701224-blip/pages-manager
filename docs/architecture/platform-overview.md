@@ -39,7 +39,7 @@ MySQL + Redis
   ↓
 apps/slack-agent / apps/worker / apps/slack-notifier
   - slack-agent 负责对话理解
-  - worker 负责编排 GitHub issue / workflow / preview
+  - worker 作为 job runner 推进 GitHub issue / workflow / preview
   - slack-notifier 负责 Slack Web API 输出
   ↓
 GitHub Actions
@@ -66,9 +66,9 @@ redis
 
 | 组件                  | 职责                                                                       | 不能做                                                    |
 | --------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `apps/gateway`        | HTTP 入口、验签、幂等、session、job 状态机、webhook、callback、Review gate | 长时间编码、直接跑构建、保存 secret 明文                  |
+| `apps/gateway`        | AI 发布控制面：HTTP 入口、验签、幂等、session、job 状态机、webhook、callback、Review gate | 长时间编码、直接跑构建、保存 secret 明文、直接管理 WFP / 站点 ACL |
 | `apps/slack-agent`    | 自由对话、需求整理、澄清、续接已有任务、输出结构化 intent                  | 写代码、创建 PR、部署、读取 GitHub/Cloudflare token       |
-| `apps/worker`         | 创建 / 复用 issue、dispatch workflow、触发 preview、回调 gateway           | 直接发 Slack、执行 Coding Agent、绕过 gateway 写状态      |
+| `apps/worker`         | job runner：创建 / 复用 issue、dispatch workflow、触发 preview、回调 gateway | 直接发 Slack、执行 Coding Agent、绕过 gateway 写状态      |
 | `apps/slack-notifier` | `chat.postMessage`、`chat.update`、reaction、用户 profile 查询             | 创建 issue、调 Coding Agent、读取 GitHub/Cloudflare token |
 | GitHub Actions        | Coding Agent、站点校验、PR 创建 / 更新、site-check                         | 常驻监听 Slack/GitHub、持有 Slack bot token、部署平台 Pod |
 | `apps/server`         | 现有 Cloudflare `/deploy`、`/list` 等发布能力                              | 作为 Slack / GitHub 控制面真相源                          |
