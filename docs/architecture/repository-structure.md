@@ -66,6 +66,7 @@ apps/gateway/src/
 │   ├── body.js
 │   └── router.js
 ├── slack/
+│   ├── agent-turn.js          # gateway -> slack-agent 调用、语义分块回复和 Agent 回复消息更新
 │   ├── http.js               # Slack signature / raw body
 │   ├── intake.js             # Slack event intake
 │   ├── job-input.js          # Slack -> PublishingJob 输入派生
