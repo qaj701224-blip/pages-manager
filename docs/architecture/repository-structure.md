@@ -70,6 +70,8 @@ apps/gateway/src/
 │   ├── delivery.js            # Slack delivery、reaction、profile lookup 和通用输出 helper
 │   ├── http.js               # Slack signature / raw body
 │   ├── intake.js             # Slack event intake
+│   ├── intents.js            # Slack Agent intent 常量
+│   ├── issue-confirmation.js # issue 创建确认卡片和交互 payload
 │   ├── job-input.js          # Slack -> PublishingJob 输入派生
 │   ├── job-binding.js         # SlackSession 与 PublishingJob 绑定
 │   ├── notifier.js           # gateway -> slack-notifier adapter
