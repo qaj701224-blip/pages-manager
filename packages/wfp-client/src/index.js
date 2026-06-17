@@ -125,7 +125,7 @@ export function createWfpClient({
     },
 
     async getUserWorker(scriptName) {
-      return requestCloudflare(fetch, apiToken, scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)), {
+      return requestCloudflareOk(fetch, apiToken, scriptUrl(baseUrl, account, namespace, validateScriptName(scriptName)), {
         method: 'GET',
       });
     },
@@ -254,6 +254,29 @@ async function requestCloudflare(fetch, apiToken, url, init) {
   return payload?.result ?? payload;
 }
 
+async function requestCloudflareOk(fetch, apiToken, url, init) {
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${apiToken}`);
+  const response = await fetch(
+    new Request(url, {
+      ...init,
+      headers,
+    })
+  );
+  if (response.ok) {
+    return {
+      status: response.status,
+      contentType: response.headers.get('Content-Type') || '',
+    };
+  }
+
+  const payload = await readJsonIfPossible(response);
+  throw new WfpApiError({
+    status: response.status,
+    message: redactCloudflareError(payload, apiToken),
+  });
+}
+
 async function readJson(response) {
   const text = await response.text();
   if (!text) return null;
@@ -265,6 +288,16 @@ async function readJson(response) {
       code: 'WFP_API_INVALID_JSON',
       message: 'Cloudflare API returned invalid JSON.',
     });
+  }
+}
+
+async function readJsonIfPossible(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 

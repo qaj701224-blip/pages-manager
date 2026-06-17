@@ -557,6 +557,9 @@ test('normal worker slot static asset deployment uses Cloudflare assets upload s
     CF_API_TOKEN: 'cf_secret_token',
     fetch: async (request) => {
       requests.push(request.clone());
+      if (request.method === 'GET' && request.url.endsWith('/workers/scripts/pages-v2-production-slot-007')) {
+        return multipartWorkerScriptResponse();
+      }
       if (request.url.includes('/assets-upload-session')) {
         return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [['hash_index']] } });
       }
@@ -1610,6 +1613,24 @@ function workerBundle(content) {
     mainModule: 'worker.mjs',
     modules: [{ name: 'worker.mjs', content, type: 'application/javascript+module' }],
   };
+}
+
+function multipartWorkerScriptResponse() {
+  return new Response(
+    [
+      '--form-boundary',
+      'Content-Disposition: form-data; name="worker.mjs"; filename="worker.mjs"',
+      'Content-Type: application/javascript+module',
+      '',
+      'export default {};',
+      '--form-boundary--',
+      '',
+    ].join('\r\n'),
+    {
+      status: 200,
+      headers: { 'Content-Type': 'multipart/form-data; boundary=form-boundary' },
+    }
+  );
 }
 
 function testSlackWebhookUrl() {

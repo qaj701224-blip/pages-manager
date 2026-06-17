@@ -183,7 +183,7 @@ function createOrdinaryWorkerClient(env, config) {
     },
 
     async getWorker(scriptName) {
-      return requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'GET' });
+      return requestCloudflareOk(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'GET' });
     },
   };
 }
@@ -291,6 +291,17 @@ async function requestCloudflare(fetchImpl, apiToken, url, init) {
   const payload = text ? JSON.parse(text) : null;
   if (!response.ok || payload?.success === false) throw new Error('CLOUDFLARE_WORKER_API_ERROR');
   return payload?.result ?? payload;
+}
+
+async function requestCloudflareOk(fetchImpl, apiToken, url, init) {
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${apiToken}`);
+  const response = await fetchImpl(new Request(url, { ...init, headers }));
+  if (!response.ok) throw new Error('CLOUDFLARE_WORKER_API_ERROR');
+  return {
+    status: response.status,
+    contentType: response.headers.get('Content-Type') || '',
+  };
 }
 
 function scriptUrl(apiBaseUrl, accountId, scriptName) {

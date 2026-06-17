@@ -205,6 +205,7 @@ test('get and delete user worker use dispatch namespace script endpoint', async 
     apiBaseUrl: 'https://api.cloudflare.com/client/v4',
     fetch: async (request) => {
       calls.push(request);
+      if (request.method === 'GET') return multipartWorkerScriptResponse();
       return Response.json({ success: true, result: { id: 'pages-v2-staging-docs-ver-1' } });
     },
   });
@@ -255,3 +256,21 @@ test('validateScriptName rejects unsafe script names', () => {
   assert.throws(() => validateScriptName('../secret'), /WFP_SCRIPT_NAME_INVALID/);
   assert.throws(() => validateScriptName('pages v2'), /WFP_SCRIPT_NAME_INVALID/);
 });
+
+function multipartWorkerScriptResponse() {
+  return new Response(
+    [
+      '--form-boundary',
+      'Content-Disposition: form-data; name="worker.mjs"; filename="worker.mjs"',
+      'Content-Type: application/javascript+module',
+      '',
+      'export default {};',
+      '--form-boundary--',
+      '',
+    ].join('\r\n'),
+    {
+      status: 200,
+      headers: { 'Content-Type': 'multipart/form-data; boundary=form-boundary' },
+    }
+  );
+}
