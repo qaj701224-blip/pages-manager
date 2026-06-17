@@ -56,13 +56,19 @@ apps/gateway/src/
 │   ├── github-routes.js
 │   └── internal-routes.js
 ├── control-plane/
-│   └── handlers.js           # AI 发布控制面 orchestration；后续继续向 domain service 收敛
+│   ├── context.js            # store / required / internal callback token 等通用控制面上下文
+│   ├── health-handlers.js    # health / ready
+│   └── handlers.js           # Slack / GitHub / Review gate orchestration；后续继续向 domain service 收敛
+├── publishing/
+│   ├── api-handlers.js       # PublishingJob HTTP API
+│   └── worker-dispatcher.js  # gateway -> worker start adapter
 ├── http/
 │   ├── body.js
 │   └── router.js
 ├── slack/
 │   ├── http.js               # Slack signature / raw body
 │   ├── intake.js             # Slack event intake
+│   ├── job-input.js          # Slack -> PublishingJob 输入派生
 │   ├── notifier.js           # gateway -> slack-notifier adapter
 │   ├── session.js            # SlackSession / IssueLink / follow-up
 │   ├── text.js

@@ -3,7 +3,7 @@ import {
   handleGetPublishingJob,
   handleGetPublishingJobEvents,
   handleListPublishingJobs,
-} from '../control-plane/handlers.js';
+} from '../publishing/api-handlers.js';
 
 export function registerPublishingRoutes(router) {
   router.post('/api/publishing-jobs', handleCreatePublishingJob);
