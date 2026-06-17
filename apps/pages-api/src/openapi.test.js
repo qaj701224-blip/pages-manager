@@ -30,9 +30,16 @@ test('serves production XD Pages OpenAPI skeleton', async () => {
     body.paths['/.xd-pages/api/deployments'].post.requestBody.content['application/json'].schema.$ref,
     '#/components/schemas/DeploymentRequest'
   );
+  assert.ok(body.paths['/.xd-pages/api/deployments'].post.requestBody.content['multipart/form-data']);
+  assert.match(JSON.stringify(body.components.schemas.StaticAssetDeploymentRequest), /assetManifest/);
+  assert.match(JSON.stringify(body.components.schemas.StaticAssetDeploymentRequest), /file-/);
   assert.deepEqual(body.paths['/.xd-pages/api/deployments'].post['x-error-codes'], [
     'ARTIFACT_BUNDLE_REQUIRED',
     'ARTIFACT_BUNDLE_INVALID',
+    'ASSET_MANIFEST_REQUIRED',
+    'ASSET_MANIFEST_INVALID',
+    'ASSET_FILES_REQUIRED',
+    'INVALID_MULTIPART',
     'PAYLOAD_TOO_LARGE',
     'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
     'DEPLOYMENT_UPLOAD_FAILED',

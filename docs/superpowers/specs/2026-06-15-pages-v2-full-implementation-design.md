@@ -1,5 +1,7 @@
 # pages-manager v2 完整实现设计
 
+> **已废弃 / Superseded:** 本设计保留为历史记录，不再代表当前 XD Pages 架构和 CLI 契约。当前方案以 `docs/pages-v2-wfp-architecture.md` 和 `docs/superpowers/plans/2026-06-17-xd-pages-clean-break-cli-api-router.md` 为准：用户侧产品名统一为 XD Pages；第一版 visibility 使用 `internal|org|acl|owner|disabled`，`public` 保留给未来公网 exposure；CLI 不使用 `.pages.json` 自动项目绑定，也不公开 `--slug` / `--site`。
+
 ## 背景
 
 `pages-manager` v1 继续服务 `*.workers.xd.team`，现有 `apps/server`、旧 API、旧 skill 和旧发布链路不因 v2 改动而变化。

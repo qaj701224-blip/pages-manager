@@ -82,6 +82,112 @@ test('uploads and verifies WFP worker before route activation', async () => {
   assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
 });
 
+test('creates static deployment from multipart asset artifact without worker bundle', async () => {
+  const store = await createSeededStore();
+  const uploads = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async (input) => {
+        uploads.push({
+          artifactKind: input.artifactKind,
+          assetManifest: input.assetManifest,
+          assetFiles: input.assetFiles.map((file) => ({
+            path: file.path,
+            contentType: file.contentType,
+            size: file.bytes.byteLength,
+          })),
+          artifactBundle: input.artifactBundle,
+        });
+        return { artifactRef: `assets://test/${input.workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const response = await worker.fetch(
+    multipartDeployRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        artifactKind: 'spa',
+        contentHash: 'sha256:asset',
+        assetManifest: {
+          '/index.html': {
+            hash: 'hash_index',
+            size: '<h1>Hello</h1>'.length,
+            content_type: 'text/html; charset=utf-8',
+          },
+        },
+        files: [{ field: 'file-0', filename: 'index.html', content: '<h1>Hello</h1>', type: 'text/html' }],
+      },
+      { 'Idempotency-Key': 'asset_deploy' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.deepEqual(uploads, [
+    {
+      artifactKind: 'spa',
+      assetManifest: {
+        '/index.html': {
+          hash: 'hash_index',
+          size: '<h1>Hello</h1>'.length,
+          content_type: 'text/html; charset=utf-8',
+        },
+      },
+      assetFiles: [{ path: '/index.html', contentType: 'text/html', size: '<h1>Hello</h1>'.length }],
+      artifactBundle: undefined,
+    },
+  ]);
+  assert.equal((await store.getSiteVersion('ver_1')).artifactKind, 'spa');
+  assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'assets://test/pages-v2-docs-ver-1');
+});
+
+test('rejects multipart asset artifacts with unsafe or incomplete file manifests', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  const traversal = await worker.fetch(
+    multipartDeployRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        artifactKind: 'static',
+        contentHash: 'sha256:asset',
+        assetManifest: {
+          '/../secret.txt': { hash: 'hash_secret', size: 5, content_type: 'text/plain' },
+        },
+        files: [{ field: 'file-0', filename: '../secret.txt', content: 'hello', type: 'text/plain' }],
+      },
+      { 'Idempotency-Key': 'asset_traversal' }
+    ),
+    env
+  );
+  const missing = await worker.fetch(
+    multipartDeployRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        artifactKind: 'static',
+        contentHash: 'sha256:asset',
+        assetManifest: {
+          '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
+        },
+        files: [],
+      },
+      { 'Idempotency-Key': 'asset_missing' }
+    ),
+    env
+  );
+
+  assert.equal(traversal.status, 400);
+  assert.equal((await traversal.json()).error.code, 'ASSET_MANIFEST_INVALID');
+  assert.equal(missing.status, 400);
+  assert.equal((await missing.json()).error.code, 'ASSET_FILES_REQUIRED');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
 test('deployments can target an existing site by user-visible slug', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
@@ -219,6 +325,62 @@ test('WFP upload metadata binds Pages KV gateway to user workers', async () => {
   ]);
 });
 
+test('WFP static asset deployment uses Cloudflare assets upload session and ASSETS binding', async () => {
+  const store = await createSeededStore();
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: undefined,
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    WFP_DISPATCH_NAMESPACE: 'pages-production',
+    fetch: async (request) => {
+      requests.push(request.clone());
+      if (request.url.includes('/assets-upload-session')) {
+        return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [['hash_index']] } });
+      }
+      if (request.url.includes('/workers/assets/upload')) {
+        return Response.json({ success: true, result: { jwt: 'completion-jwt' } });
+      }
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    multipartDeployRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        artifactKind: 'spa',
+        contentHash: 'sha256:asset',
+        assetManifest: {
+          '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
+        },
+        files: [{ field: 'file-0', filename: 'index.html', content: 'hello', type: 'text/html' }],
+      },
+      { 'Idempotency-Key': 'wfp_assets' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.ok(
+    requests.some((request) =>
+      request.url.includes('/workers/dispatch/namespaces/pages-production/scripts/pages-v2-docs-ver-1/assets-upload-session')
+    )
+  );
+  assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'assets', name: 'ASSETS' },
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+  ]);
+  assert.deepEqual(metadata.assets, {
+    jwt: 'completion-jwt',
+    config: { not_found_handling: 'single-page-application', run_worker_first: true },
+  });
+});
+
 test('deploys through normal worker slot mode without exposing provider to the request', async () => {
   const store = await createSeededStore();
   await store.createWorkerSlot({
@@ -324,6 +486,67 @@ test('normal worker slot upload metadata binds Pages KV gateway to slot workers'
   assert.ok(disableSubdomainRequestIndexes[0] < uploadRequestIndex, 'workers.dev subdomain is disabled before slot upload');
   assert.ok(disableSubdomainRequestIndexes[1] > uploadRequestIndex, 'workers.dev subdomain is disabled after slot upload');
   assert.deepEqual(await requests[disableSubdomainRequestIndexes[1]].json(), { enabled: false });
+});
+
+test('normal worker slot static asset deployment uses Cloudflare assets upload session and ASSETS binding', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    fetch: async (request) => {
+      requests.push(request.clone());
+      if (request.url.includes('/assets-upload-session')) {
+        return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [['hash_index']] } });
+      }
+      if (request.url.includes('/workers/assets/upload')) {
+        return Response.json({ success: true, result: { jwt: 'completion-jwt' } });
+      }
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    multipartDeployRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        artifactKind: 'static',
+        contentHash: 'sha256:asset',
+        assetManifest: {
+          '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
+        },
+        files: [{ field: 'file-0', filename: 'index.html', content: 'hello', type: 'text/html' }],
+      },
+      { 'Idempotency-Key': 'slot_assets' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.ok(
+    requests.some((request) => request.url.includes('/workers/scripts/pages-v2-production-slot-007/assets-upload-session'))
+  );
+  assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'assets', name: 'ASSETS' },
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+  ]);
+  assert.deepEqual(metadata.assets, {
+    jwt: 'completion-jwt',
+    config: { not_found_handling: '404-page', run_worker_first: true },
+  });
 });
 
 test('fails closed and disables a slot when workers.dev cannot be disabled', async () => {
@@ -1105,6 +1328,26 @@ function jsonRequest(url, body, headers = {}) {
       ...headers,
     },
     body: JSON.stringify(body),
+  });
+}
+
+function multipartDeployRequest(url, fields, headers = {}) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (key === 'files') continue;
+    form.set(key, key === 'assetManifest' ? JSON.stringify(value) : String(value));
+  }
+  for (const file of fields.files || []) {
+    form.set(file.field, new Blob([file.content], { type: file.type || 'application/octet-stream' }), file.filename);
+  }
+  return new Request(url, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
+      ...headers,
+    },
+    body: form,
   });
 }
 

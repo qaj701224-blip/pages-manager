@@ -9,6 +9,11 @@ const EXECUTION_MODES = new Set(['wfp', 'normal-worker-slot']);
 const DEFAULT_EXECUTION_MODE = 'wfp';
 const DEFAULT_CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const WORKER_SUBDOMAIN_DISABLE_FAILED = 'WORKER_SUBDOMAIN_DISABLE_FAILED';
+const ASSETS_WORKER_MODULE = `export default {
+  fetch(request, env) {
+    return env.ASSETS.fetch(request);
+  },
+};`;
 
 export { normalizeArtifactBundle };
 
@@ -53,8 +58,11 @@ function createNormalWorkerSlotProvider(env, config, store) {
         } else {
           await getClient().uploadWorker({
             scriptName: slot.workerName,
-            mainModule: input.artifactBundle.mainModule,
-            modules: input.artifactBundle.modules,
+            mainModule: input.artifactBundle?.mainModule,
+            modules: input.artifactBundle?.modules,
+            artifactKind: input.artifactKind,
+            assetManifest: input.assetManifest,
+            assetFiles: input.assetFiles,
             compatibilityDate: env.WFP_COMPATIBILITY_DATE,
             bindings: [kvGatewayServiceBinding(config.environment)],
           });
@@ -103,21 +111,62 @@ function createOrdinaryWorkerClient(env, config) {
   if (typeof fetchImpl !== 'function') throw new Error('fetch is required');
 
   return {
-    async uploadWorker({ scriptName, mainModule, modules, compatibilityDate, bindings = [] }) {
+    async uploadWorker({
+      scriptName,
+      mainModule,
+      modules,
+      artifactKind,
+      assetManifest,
+      assetFiles,
+      compatibilityDate,
+      bindings = [],
+    }) {
       const safeBindings = normalizeWorkerBindings(bindings);
       await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
+      const usesAssets = artifactKind === 'static' || artifactKind === 'spa';
+      let safeMainModule = mainModule;
+      let safeModules = modules;
+      let assetMetadata = null;
+
+      if (usesAssets) {
+        const completionJwt = await uploadAssets({
+          fetchImpl,
+          apiToken,
+          apiBaseUrl,
+          accountId,
+          scriptResourceUrl: scriptUrl(apiBaseUrl, accountId, scriptName),
+          artifactKind,
+          assetManifest,
+          assetFiles,
+        });
+        safeMainModule = 'worker.mjs';
+        safeModules = [
+          {
+            name: 'worker.mjs',
+            content: ASSETS_WORKER_MODULE,
+            type: 'application/javascript+module',
+          },
+        ];
+        assetMetadata = {
+          jwt: completionJwt,
+          config: assetConfigForKind(artifactKind),
+        };
+      }
+
       const metadata = {
-        main_module: mainModule,
+        main_module: safeMainModule,
         compatibility_date: compatibilityDate || '2026-06-15',
         tags: ['pages-v2', config.environment, 'normal-worker-slot'],
       };
-      if (safeBindings.length > 0) metadata.bindings = safeBindings;
+      const metadataBindings = assetMetadata ? [{ type: 'assets', name: 'ASSETS' }, ...safeBindings] : safeBindings;
+      if (metadataBindings.length > 0) metadata.bindings = metadataBindings;
+      if (assetMetadata) metadata.assets = assetMetadata;
       const form = new FormData();
       form.set(
         'metadata',
         new Blob([JSON.stringify(metadata)], { type: 'application/json' })
       );
-      for (const module of modules) {
+      for (const module of safeModules) {
         form.set(module.name, new Blob([module.content], { type: module.type || 'application/javascript+module' }), module.name);
       }
       const result = await requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), {
@@ -132,6 +181,87 @@ function createOrdinaryWorkerClient(env, config) {
       return requestCloudflare(fetchImpl, apiToken, scriptUrl(apiBaseUrl, accountId, scriptName), { method: 'GET' });
     },
   };
+}
+
+async function uploadAssets({
+  fetchImpl,
+  apiToken,
+  apiBaseUrl,
+  accountId,
+  scriptResourceUrl,
+  artifactKind,
+  assetManifest,
+  assetFiles,
+}) {
+  validateAssetInput({ artifactKind, assetManifest, assetFiles });
+  const session = await requestCloudflare(fetchImpl, apiToken, `${scriptResourceUrl}/assets-upload-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manifest: assetManifest }),
+  });
+
+  if (!Array.isArray(session?.buckets) || session.buckets.length === 0) return session.jwt;
+
+  let completionJwt = session.jwt;
+  const fileMap = assetFileMap(assetManifest, assetFiles);
+  for (const bucket of session.buckets) {
+    const form = new FormData();
+    for (const hash of bucket) {
+      const file = fileMap.get(hash);
+      if (!file) continue;
+      form.set(hash, new Blob([bytesToBase64(file.bytes)]), hash);
+    }
+    const result = await requestCloudflare(fetchImpl, session.jwt, assetUploadUrl(apiBaseUrl, accountId), {
+      method: 'POST',
+      body: form,
+    });
+    if (result?.jwt) completionJwt = result.jwt;
+  }
+  return completionJwt;
+}
+
+function validateAssetInput({ artifactKind, assetManifest, assetFiles }) {
+  if (artifactKind !== 'static' && artifactKind !== 'spa') throw new Error('ASSET_ARTIFACT_KIND_INVALID');
+  if (!assetManifest || typeof assetManifest !== 'object' || Array.isArray(assetManifest)) {
+    throw new Error('ASSET_MANIFEST_INVALID');
+  }
+  if (!Array.isArray(assetFiles) || assetFiles.length === 0) throw new Error('ASSET_FILES_REQUIRED');
+}
+
+function assetFileMap(assetManifest, assetFiles) {
+  const map = new Map();
+  for (const file of assetFiles) {
+    const path = normalizeAssetPath(file.path);
+    const hash = assetManifest[path]?.hash;
+    if (!hash) continue;
+    map.set(hash, file);
+  }
+  return map;
+}
+
+function normalizeAssetPath(value) {
+  return `/${String(value || '').replaceAll('\\', '/').replace(/^\/+/, '')}`;
+}
+
+function assetConfigForKind(kind) {
+  return {
+    not_found_handling: kind === 'spa' ? 'single-page-application' : '404-page',
+    run_worker_first: true,
+  };
+}
+
+function assetUploadUrl(apiBaseUrl, accountId) {
+  return `${apiBaseUrl}/accounts/${encodeURIComponent(accountId)}/workers/assets/upload?base64=true`;
+}
+
+function bytesToBase64(bytes) {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  let binary = '';
+  const chunkSize = 8192;
+  for (let index = 0; index < u8.length; index += chunkSize) {
+    binary += String.fromCharCode(...u8.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 async function releaseSlot(store, slotId, env, status = 'available') {

@@ -42,7 +42,9 @@ async function createDeployment(request, env, config, store, actor) {
 
   let body;
   try {
-    body = await readJsonBody(request, { maxBytes: 1024 * 1024 });
+    body = isMultipartRequest(request)
+      ? await readMultipartDeploymentBody(request)
+      : await readJsonBody(request, { maxBytes: 1024 * 1024 });
   } catch (error) {
     if (error?.code === 'JSON_BODY_TOO_LARGE') {
       return jsonError(
@@ -50,6 +52,17 @@ async function createDeployment(request, env, config, store, actor) {
         'Deployment payload is too large.',
         413,
         'Reduce artifact size or use an asset store backed deployment path.'
+      );
+    }
+    if (error?.code === 'ASSET_MANIFEST_INVALID') {
+      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Send a valid assetManifest field.');
+    }
+    if (isMultipartRequest(request)) {
+      return jsonError(
+        'INVALID_MULTIPART',
+        'Invalid multipart body.',
+        400,
+        'Send multipart/form-data with assetManifest and files.'
       );
     }
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
@@ -61,6 +74,8 @@ async function createDeployment(request, env, config, store, actor) {
   const contentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
   let artifactBundle;
+  let assetManifest;
+  let assetFiles;
 
   if (!requestedSiteId && !requestedSiteSlug) {
     return jsonError('SITE_REQUIRED', 'Site is required.', 400, 'Pass siteId or siteSlug.');
@@ -71,13 +86,31 @@ async function createDeployment(request, env, config, store, actor) {
   if (!contentHash.startsWith('sha256:')) {
     return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
   }
-  try {
-    artifactBundle = normalizeArtifactBundle({ artifactKind, contentHash, artifactBundle: body.artifactBundle });
-  } catch (error) {
-    if (error?.message === 'ARTIFACT_BUNDLE_REQUIRED') {
-      return jsonError('ARTIFACT_BUNDLE_REQUIRED', 'artifactBundle is required.', 400, 'Send an artifact bundle.');
+  if (artifactKind === 'worker') {
+    try {
+      artifactBundle = normalizeArtifactBundle({ artifactKind, contentHash, artifactBundle: body.artifactBundle });
+    } catch (error) {
+      if (error?.message === 'ARTIFACT_BUNDLE_REQUIRED') {
+        return jsonError('ARTIFACT_BUNDLE_REQUIRED', 'artifactBundle is required.', 400, 'Send an artifact bundle.');
+      }
+      return jsonError('ARTIFACT_BUNDLE_INVALID', 'Artifact bundle is invalid.', 400, 'Send a valid artifact bundle.');
     }
-    return jsonError('ARTIFACT_BUNDLE_INVALID', 'Artifact bundle is invalid.', 400, 'Send a valid artifact bundle.');
+  } else {
+    assetManifest = body.assetManifest;
+    assetFiles = body.assetFiles;
+    if (!assetManifest || typeof assetManifest !== 'object' || Array.isArray(assetManifest)) {
+      return jsonError('ASSET_MANIFEST_REQUIRED', 'assetManifest is required.', 400, 'Send a multipart static asset artifact.');
+    }
+    if (!Array.isArray(assetFiles) || assetFiles.length === 0) {
+      return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload at least one asset file.');
+    }
+    const assetFileError = validateAssetFiles(assetManifest, assetFiles);
+    if (assetFileError === 'ASSET_MANIFEST_INVALID') {
+      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Send a valid assetManifest field.');
+    }
+    if (assetFileError === 'ASSET_FILES_REQUIRED') {
+      return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload every file listed in assetManifest.');
+    }
   }
   const site = await resolveDeploySite(store, actor, config.environment, {
     siteId: requestedSiteId,
@@ -95,6 +128,7 @@ async function createDeployment(request, env, config, store, actor) {
     artifactKind,
     contentHash,
     artifactBundle,
+    assetManifest,
     source,
   });
   const deploymentResult = await store.createDeploymentForIdempotency({
@@ -148,6 +182,8 @@ async function createDeployment(request, env, config, store, actor) {
       artifactKind,
       contentHash,
       artifactBundle,
+      assetManifest,
+      assetFiles,
     });
   } catch (error) {
     const code = publicProviderErrorCode(error, 'upload');
@@ -285,6 +321,98 @@ async function createDeployment(request, env, config, store, actor) {
   });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
+}
+
+function isMultipartRequest(request) {
+  const mediaType = (request.headers.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase();
+  return mediaType === 'multipart/form-data';
+}
+
+async function readMultipartDeploymentBody(request) {
+  const form = await request.formData();
+  const assetManifest = parseAssetManifest(form.get('assetManifest'));
+  const assetFiles = [];
+  validateAssetManifestPaths(assetManifest);
+  for (const [key, value] of form.entries()) {
+    if (!key.startsWith('file-') || !(value instanceof File)) continue;
+    const path = normalizeAssetPath(value.name || key);
+    validateAssetPath(path);
+    const manifestEntry = assetManifest[path];
+    const bytes = new Uint8Array(await value.arrayBuffer());
+    assetFiles.push({
+      path,
+      bytes,
+      contentType: value.type || manifestEntry?.content_type || 'application/octet-stream',
+    });
+  }
+
+  return {
+    siteId: form.get('siteId'),
+    siteSlug: form.get('siteSlug') ?? form.get('slug'),
+    artifactKind: form.get('artifactKind'),
+    contentHash: form.get('contentHash'),
+    source: form.get('source') || 'api',
+    assetManifest,
+    assetFiles: assetFiles.sort((left, right) => left.path.localeCompare(right.path)),
+  };
+}
+
+function parseAssetManifest(value) {
+  if (typeof value !== 'string' || value === '') {
+    const error = new Error('ASSET_MANIFEST_INVALID');
+    error.code = 'ASSET_MANIFEST_INVALID';
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid');
+    return parsed;
+  } catch {
+    const error = new Error('ASSET_MANIFEST_INVALID');
+    error.code = 'ASSET_MANIFEST_INVALID';
+    throw error;
+  }
+}
+
+function validateAssetManifestPaths(manifest) {
+  for (const [path, entry] of Object.entries(manifest)) {
+    validateAssetPath(path);
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throwAssetManifestInvalid();
+    if (typeof entry.hash !== 'string' || entry.hash === '') throwAssetManifestInvalid();
+    if (!Number.isFinite(Number(entry.size)) || Number(entry.size) < 0) throwAssetManifestInvalid();
+  }
+}
+
+function validateAssetFiles(manifest, files) {
+  const filesByPath = new Map();
+  for (const file of files) {
+    const entry = manifest[file.path];
+    if (!entry) return 'ASSET_MANIFEST_INVALID';
+    if (Number(entry.size) !== file.bytes.byteLength) return 'ASSET_MANIFEST_INVALID';
+    filesByPath.set(file.path, file);
+  }
+  for (const path of Object.keys(manifest)) {
+    if (!filesByPath.has(path)) return 'ASSET_FILES_REQUIRED';
+  }
+  return null;
+}
+
+function validateAssetPath(path) {
+  const parts = String(path || '').split('/');
+  if (!path || !path.startsWith('/') || path.includes('\0') || parts.includes('..')) throwAssetManifestInvalid();
+}
+
+function throwAssetManifestInvalid() {
+  const error = new Error('ASSET_MANIFEST_INVALID');
+  error.code = 'ASSET_MANIFEST_INVALID';
+  throw error;
+}
+
+function normalizeAssetPath(value) {
+  const normalized = String(value || '')
+    .replaceAll('\\', '/')
+    .replace(/^\/+/, '');
+  return `/${normalized}`;
 }
 
 async function getDeployment(store, actor, deploymentId, environment) {

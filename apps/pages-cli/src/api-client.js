@@ -28,10 +28,45 @@ export function createApiClient({ apiBaseUrl, authBaseUrl, credential = null, fe
         idempotencyKey: options.idempotencyKey,
       });
     },
+    requestApiForm(method, path, form, options = {}) {
+      if (!credential?.value) {
+        throw new ApiError({
+          status: 401,
+          code: 'PAGES_CREDENTIAL_REQUIRED',
+          message: 'Pages credential is required.',
+          action: 'Run `pages login` and retry.',
+        });
+      }
+      return requestForm(fetch, buildUrl(apiBaseUrl, path), {
+        method,
+        form,
+        bearer: credential.value,
+        idempotencyKey: options.idempotencyKey,
+      });
+    },
     requestAuth(method, path, body) {
       return requestJson(fetch, buildUrl(authBaseUrl, path), { method, body });
     },
   };
+}
+
+async function requestForm(fetch, url, { method, form, bearer, idempotencyKey }) {
+  const headers = new Headers();
+  if (bearer) headers.set('Authorization', `Bearer ${bearer}`);
+  if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey);
+
+  const response = await fetch(new Request(url, { method, headers, body: form }));
+  const payload = await readResponsePayload(response);
+  if (!response.ok) {
+    const error = payload?.error || {};
+    throw new ApiError({
+      status: response.status,
+      code: error.code || `HTTP_${response.status}`,
+      message: error.message || response.statusText,
+      action: error.action,
+    });
+  }
+  return payload;
 }
 
 async function requestJson(fetch, url, { method, body, bearer, idempotencyKey }) {

@@ -37,7 +37,7 @@ export function buildOpenApi(config) {
           required: ['name', 'content'],
           properties: {
             name: { type: 'string', examples: ['worker.mjs'] },
-            content: { type: 'string', description: 'ES module source generated or read by the CLI.' },
+            content: { type: 'string', description: 'ES module source read by the CLI for custom Worker deploys.' },
             type: { type: 'string', examples: ['application/javascript+module'] },
           },
         },
@@ -45,7 +45,7 @@ export function buildOpenApi(config) {
           type: 'object',
           required: ['kind', 'mainModule', 'modules'],
           properties: {
-            kind: { type: 'string', enum: ['static', 'spa', 'worker'] },
+            kind: { type: 'string', enum: ['worker'] },
             mainModule: { type: 'string', examples: ['worker.mjs'] },
             modules: {
               type: 'array',
@@ -67,10 +67,36 @@ export function buildOpenApi(config) {
               type: 'string',
               description: 'User-visible site slug. Unique within one environment and preferred for CLI/agent deploys.',
             },
-            artifactKind: { type: 'string', enum: ['static', 'spa', 'worker'] },
+            artifactKind: { type: 'string', enum: ['worker'] },
             contentHash: { type: 'string', pattern: '^sha256:' },
             artifactBundle: { $ref: '#/components/schemas/ArtifactBundle' },
             source: { type: 'string', examples: ['cli'] },
+          },
+        },
+        StaticAssetDeploymentRequest: {
+          type: 'object',
+          required: ['artifactKind', 'contentHash', 'assetManifest'],
+          anyOf: [{ required: ['siteId'] }, { required: ['siteSlug'] }],
+          properties: {
+            siteId: { type: 'string' },
+            siteSlug: { type: 'string' },
+            artifactKind: { type: 'string', enum: ['static', 'spa'] },
+            contentHash: { type: 'string', pattern: '^sha256:' },
+            source: { type: 'string', examples: ['cli'] },
+            assetManifest: {
+              type: 'string',
+              description:
+                'JSON object keyed by absolute asset path. Each value contains hash, size, and content_type. ' +
+                'Static and SPA deploys use multipart files named file-0, file-1, ... with each filename set to ' +
+                'the relative asset path.',
+            },
+            assetFileCount: { type: 'string' },
+            assetSizeBytes: { type: 'string' },
+            'file-0': {
+              type: 'string',
+              format: 'binary',
+              description: 'First asset file. Additional files use file-1, file-2, ...',
+            },
           },
         },
         SiteVisibility: {
@@ -256,11 +282,18 @@ export function buildOpenApi(config) {
               'application/json': {
                 schema: { $ref: '#/components/schemas/DeploymentRequest' },
               },
+              'multipart/form-data': {
+                schema: { $ref: '#/components/schemas/StaticAssetDeploymentRequest' },
+              },
             },
           },
           'x-error-codes': [
             'ARTIFACT_BUNDLE_REQUIRED',
             'ARTIFACT_BUNDLE_INVALID',
+            'ASSET_MANIFEST_REQUIRED',
+            'ASSET_MANIFEST_INVALID',
+            'ASSET_FILES_REQUIRED',
+            'INVALID_MULTIPART',
             'PAYLOAD_TOO_LARGE',
             'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
             'DEPLOYMENT_UPLOAD_FAILED',

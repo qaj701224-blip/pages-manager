@@ -9,8 +9,11 @@ export function createDeploymentProvider(env, config) {
     async upload(input) {
       return client.uploadUserWorker({
         scriptName: input.workerName,
-        mainModule: input.artifactBundle.mainModule,
-        modules: input.artifactBundle.modules,
+        mainModule: input.artifactBundle?.mainModule,
+        modules: input.artifactBundle?.modules,
+        artifactKind: input.artifactKind,
+        assetManifest: input.assetManifest,
+        assetFiles: input.assetFiles,
         compatibilityDate: env.WFP_COMPATIBILITY_DATE,
         tags: ['pages-v2', config.environment, input.site.slug],
         bindings: [kvGatewayServiceBinding(config.environment)],

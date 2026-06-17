@@ -34,10 +34,14 @@ test('deploy requires positional dir and site, then creates and deploys with a C
   assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
   assert.equal(calls[1].headers.get('Authorization'), 'Bearer cli_token_secret');
   assert.equal(calls[1].headers.get('Idempotency-Key'), 'idem_1');
-  const deployBody = await calls[1].json();
-  assert.equal(deployBody.siteSlug, 'docs');
-  assert.equal(deployBody.artifactKind, 'spa');
-  assert.equal(deployBody.artifactBundle.modules[0].content.includes(dir), false);
+  assert.match(calls[1].headers.get('Content-Type'), /^multipart\/form-data; boundary=/);
+  const deployForm = await calls[1].formData();
+  assert.equal(deployForm.get('siteSlug'), 'docs');
+  assert.equal(deployForm.get('artifactKind'), 'spa');
+  assert.equal(deployForm.has('artifactBundle'), false);
+  assert.equal(deployForm.has('assetManifest'), true);
+  assert.deepEqual(Object.keys(JSON.parse(deployForm.get('assetManifest'))), ['/index.html']);
+  assert.equal(await deployForm.get('file-0').text(), '<h1>Hello</h1>');
   assert.match(output.join('\n'), /站点名：docs/);
   assert.match(output.join('\n'), /dep_1/);
 });
@@ -73,7 +77,7 @@ test('deploy uses explicit access key as a one-shot credential without local sec
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
   assert.equal(calls[0].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
-  assert.equal((await calls[0].json()).siteSlug, 'docs');
+  assert.equal((await calls[0].formData()).get('siteSlug'), 'docs');
   assert.deepEqual(JSON.parse(output.join('\n')), {
     ok: true,
     schemaVersion: 1,
@@ -119,9 +123,9 @@ test('deploy reads explicit one-shot command config and lets CLI args override i
 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
   assert.deepEqual(await calls[0].json(), { slug: 'from-args', visibility: 'owner' });
-  const deployBody = await calls[1].json();
-  assert.equal(deployBody.siteSlug, 'from-args');
-  assert.equal(deployBody.artifactKind, 'static');
+  const deployForm = await calls[1].formData();
+  assert.equal(deployForm.get('siteSlug'), 'from-args');
+  assert.equal(deployForm.get('artifactKind'), 'static');
 });
 
 test('rejects removed project binding flags and invalid visibility', async () => {
@@ -213,6 +217,24 @@ test('local commands reject unused access keys', async () => {
   });
   await assert.rejects(() => executeCommand(['env', 'list', '--access-key', 'x'], { output: () => {} }), {
     code: 'ACCESS_KEY_NOT_USED',
+  });
+});
+
+test('commands reject unknown flags and extra positional arguments', async () => {
+  await assert.rejects(() => executeCommand(['deploy', '.', 'docs', '--print', '1'], { output: () => {} }), {
+    code: 'OPTION_UNKNOWN',
+  });
+  await assert.rejects(() => executeCommand(['sites', 'list', '--visibility', 'org'], { output: () => {} }), {
+    code: 'OPTION_UNKNOWN',
+  });
+  await assert.rejects(() => executeCommand(['version', 'extra'], { output: () => {} }), {
+    code: 'VERSION_USAGE_INVALID',
+  });
+  await assert.rejects(() => executeCommand(['env', 'use', 'staging', 'extra'], { output: () => {} }), {
+    code: 'ENV_USAGE_INVALID',
+  });
+  await assert.rejects(() => executeCommand(['help', 'deploy', 'extra'], { output: () => {} }), {
+    code: 'HELP_USAGE_INVALID',
   });
 });
 

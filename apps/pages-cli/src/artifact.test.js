@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   MAX_STATIC_ARTIFACT_BYTES,
   MAX_STATIC_ARTIFACT_FILES,
+  buildAssetArtifact,
   buildArtifactBundle,
   hashArtifact,
   inferArtifactKind,
@@ -73,41 +74,49 @@ test('buildArtifactBundle returns worker module content without absolute paths',
   });
 });
 
-test('buildArtifactBundle generates static and SPA worker modules from files', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-bundle-'));
+test('buildAssetArtifact returns a manifest and raw files without generated worker source', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-asset-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, 'index.html'), '<div id="app"></div>');
   await writeFile(path.join(dir, 'style.css'), 'body { color: red; }');
   await writeFile(path.join(dir, 'pages.config.json'), '{"secret":"ignored"}');
 
-  const bundle = await buildArtifactBundle(dir, 'spa');
+  const artifact = await buildAssetArtifact(dir, 'spa');
 
-  assert.equal(bundle.kind, 'spa');
-  assert.equal(bundle.mainModule, 'worker.mjs');
-  assert.equal(bundle.modules.length, 1);
-  assert.equal(bundle.modules[0].name, 'worker.mjs');
-  assert.equal(bundle.modules[0].type, 'application/javascript+module');
-  assert.match(bundle.modules[0].content, /index\.html/);
-  assert.match(bundle.modules[0].content, /style\.css/);
-  assert.match(bundle.modules[0].content, /spaFallback/);
-  assert.equal(bundle.modules[0].content.includes(dir), false);
-  assert.equal(bundle.modules[0].content.includes('pages.config.json'), false);
+  assert.equal(artifact.kind, 'spa');
+  assert.equal(artifact.fileCount, 2);
+  assert.equal(artifact.sizeBytes, '<div id="app"></div>'.length + 'body { color: red; }'.length);
+  assert.deepEqual(Object.keys(artifact.manifest), ['/index.html', '/style.css']);
+  assert.equal(artifact.manifest['/index.html'].content_type, 'text/html; charset=utf-8');
+  assert.equal(artifact.files.length, 2);
+  assert.equal(artifact.files[0].relativePath.includes(dir), false);
+  assert.equal(JSON.stringify(artifact).includes('spaFallback'), false);
+  assert.equal(JSON.stringify(artifact).includes('base64'), false);
 });
 
-test('buildArtifactBundle rejects static bundles above first-version limits', async () => {
+test('buildArtifactBundle rejects static and SPA artifacts because assets use multipart upload', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-no-generated-worker-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), '<div id="app"></div>');
+
+  await assert.rejects(() => buildArtifactBundle(dir, 'spa'), /STATIC_ASSET_MULTIPART_REQUIRED/);
+  await assert.rejects(() => buildArtifactBundle(dir, 'static'), /STATIC_ASSET_MULTIPART_REQUIRED/);
+});
+
+test('buildAssetArtifact rejects static bundles above asset upload limits', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-limit-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, 'index.html'), 'x'.repeat(MAX_STATIC_ARTIFACT_BYTES + 1));
 
-  await assert.rejects(() => buildArtifactBundle(dir, 'static'), /ARTIFACT_BUNDLE_TOO_LARGE/);
+  await assert.rejects(() => buildAssetArtifact(dir, 'static'), /ARTIFACT_BUNDLE_TOO_LARGE/);
 });
 
-test('buildArtifactBundle rejects too many static files', async () => {
+test('buildAssetArtifact rejects too many static files', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-file-limit-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
   for (let index = 0; index <= MAX_STATIC_ARTIFACT_FILES; index += 1) {
     await writeFile(path.join(dir, `${index}.txt`), 'x');
   }
 
-  await assert.rejects(() => buildArtifactBundle(dir, 'static'), /ARTIFACT_FILE_COUNT_LIMIT_EXCEEDED/);
+  await assert.rejects(() => buildAssetArtifact(dir, 'static'), /ARTIFACT_FILE_COUNT_LIMIT_EXCEEDED/);
 });

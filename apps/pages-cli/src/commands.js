@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { parseArgs } from './args.js';
 import { createApiClient } from './api-client.js';
-import { buildArtifactBundle, hashArtifact, inferArtifactKind } from './artifact.js';
+import { buildAssetArtifact, buildArtifactBundle, hashArtifact, inferArtifactKind } from './artifact.js';
 import { readCommandConfig } from './command-config.js';
 import { FIXED_ENVIRONMENTS, readCliConfig, resolveEnvironment } from './config.js';
 import { loginWithAccessKey, loginWithBrowser } from './login.js';
@@ -14,9 +14,31 @@ import { createSecretStore } from './secret-store.js';
 const VALID_VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const VALID_ARTIFACT_KINDS = new Set(['static', 'spa', 'worker']);
 const USER_ENVIRONMENTS = ['production', 'staging'];
+const HELP_FLAGS = new Set(['help', 'json', 'accessKey']);
+const VERSION_FLAGS = new Set(['help', 'accessKey']);
+const LOGIN_FLAGS = new Set(['env', 'accessKey', 'noOpen', 'json', 'help']);
+const DEPLOY_FLAGS = new Set([
+  'env',
+  'visibility',
+  'artifactKind',
+  'accessKey',
+  'config',
+  'json',
+  'help',
+  'slug',
+  'site',
+  'saveConfig',
+]);
+const API_READ_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
+const STATUS_FLAGS = new Set(['env', 'deployment', 'accessKey', 'json', 'help']);
+const ROLLBACK_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
+const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'accessKey']);
+const ENV_FLAGS = new Set(['json', 'help', 'accessKey']);
+const ENV_CUSTOM_FLAGS = new Set(['api', 'auth', 'siteDomainSuffix', 'json', 'help', 'accessKey']);
 
 export async function executeCommand(argv = [], options = {}) {
   const parsed = parseArgs(argv);
+  validateCommandUsage(parsed);
   const output = options.output || createOutput(options.stdout);
   if (parsed.command === 'help' || parsed.flags.help) {
     assertAccessKeyNotUsed(parsed);
@@ -25,6 +47,7 @@ export async function executeCommand(argv = [], options = {}) {
   }
   if (parsed.command === 'version') {
     assertAccessKeyNotUsed(parsed);
+    assertNoPositionals(parsed, 'VERSION_USAGE_INVALID', 'pages version 不接受位置参数。');
     output(await readCliVersion());
     return 0;
   }
@@ -193,19 +216,31 @@ async function runDeploy(parsed, context) {
   }
 
   const artifact = await hashArtifact(targetPath);
-  const artifactBundle = await buildArtifactBundle(targetPath, artifactKind);
-  const deployed = await client.requestApi(
-    'POST',
-    '/.xd-pages/api/deployments',
-    {
-      siteSlug,
-      artifactKind,
-      contentHash: artifact.contentHash,
-      artifactBundle,
-      source: 'cli',
-    },
-    { idempotencyKey: nextIdempotencyKey(context) }
-  );
+  const deployed =
+    artifactKind === 'worker'
+      ? await client.requestApi(
+          'POST',
+          '/.xd-pages/api/deployments',
+          {
+            siteSlug,
+            artifactKind,
+            contentHash: artifact.contentHash,
+            artifactBundle: await buildArtifactBundle(targetPath, artifactKind),
+            source: 'cli',
+          },
+          { idempotencyKey: nextIdempotencyKey(context) }
+        )
+      : await client.requestApiForm(
+          'POST',
+          '/.xd-pages/api/deployments',
+          await buildAssetDeploymentForm({
+            siteSlug,
+            artifactKind,
+            contentHash: artifact.contentHash,
+            targetPath,
+          }),
+          { idempotencyKey: nextIdempotencyKey(context) }
+        );
 
   const url = deployed.route?.hostname ? `https://${deployed.route.hostname}` : siteUrlForSlug(siteSlug, config);
   if (
@@ -225,6 +260,23 @@ async function runDeploy(parsed, context) {
   context.output(`部署：${deployed.deployment?.id || 'created'} ${deployed.deployment?.status || ''}`.trim());
   if (url) context.output(`URL ${url}`);
   return 0;
+}
+
+async function buildAssetDeploymentForm({ siteSlug, artifactKind, contentHash, targetPath }) {
+  const artifact = await buildAssetArtifact(targetPath, artifactKind);
+  const form = new FormData();
+  form.set('siteSlug', siteSlug);
+  form.set('artifactKind', artifactKind);
+  form.set('contentHash', contentHash);
+  form.set('source', 'cli');
+  form.set('assetManifest', JSON.stringify(artifact.manifest));
+  form.set('assetFileCount', String(artifact.fileCount));
+  form.set('assetSizeBytes', String(artifact.sizeBytes));
+
+  artifact.files.forEach((file, index) => {
+    form.set(`file-${index}`, new Blob([file.bytes], { type: file.contentType }), file.relativePath);
+  });
+  return form;
 }
 
 async function runStatus(parsed, context) {
@@ -313,12 +365,18 @@ async function runSites(parsed, context) {
 async function runEnv(parsed, context) {
   const subcommand = parsed.positional[0] || 'list';
   if (subcommand === 'list') {
+    if (parsed.positional.length !== 1 && parsed.positional.length !== 0) {
+      throw usageError('ENV_USAGE_INVALID', 'env list 参数无效。', '请使用 pages env list。');
+    }
     if (outputJsonResult(parsed, context, { environments: USER_ENVIRONMENTS })) return 0;
     for (const name of USER_ENVIRONMENTS) context.output(name);
     return 0;
   }
 
   if (subcommand === 'use') {
+    if (parsed.positional.length !== 2) {
+      throw usageError('ENV_USAGE_INVALID', 'env use 参数无效。', '请使用 pages env use <production|staging>。');
+    }
     const environment = resolveEnvironment(parsed.positional[1]);
     if (!USER_ENVIRONMENTS.includes(environment) && environment !== 'custom') {
       throw usageError('ENVIRONMENT_INVALID', '环境无效。', '请使用 production 或 staging。');
@@ -333,6 +391,9 @@ async function runEnv(parsed, context) {
   }
 
   if (subcommand === 'set' && parsed.positional[1] === 'custom') {
+    if (parsed.positional.length !== 2) {
+      throw usageError('ENV_USAGE_INVALID', 'env set custom 参数无效。', '请使用 pages env set custom。');
+    }
     const custom = readCliConfig(context.env, {
       environment: 'custom',
       apiBaseUrl: parsed.flags.api,
@@ -353,6 +414,57 @@ async function runEnv(parsed, context) {
   }
 
   throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 pages env list 或 pages env use <环境>。');
+}
+
+function validateCommandUsage(parsed) {
+  const allowed = allowedFlagsForCommand(parsed);
+  if (allowed) assertOnlyAllowedFlags(parsed, allowed);
+  if (parsed.command === 'help' && parsed.positional.length > 1) {
+    throw usageError('HELP_USAGE_INVALID', 'help 参数无效。', '请使用 pages help 或 pages help <命令>。');
+  }
+}
+
+function allowedFlagsForCommand(parsed) {
+  if (parsed.command === 'help') return HELP_FLAGS;
+  if (parsed.command === 'version') return VERSION_FLAGS;
+  if (parsed.command === 'login') return LOGIN_FLAGS;
+  if (parsed.command === 'deploy') return DEPLOY_FLAGS;
+  if (parsed.command === 'status') return STATUS_FLAGS;
+  if (parsed.command === 'rollback') return ROLLBACK_FLAGS;
+  if (parsed.command === 'open') return OPEN_FLAGS;
+  if (parsed.command === 'sites') return API_READ_FLAGS;
+  if (parsed.command === 'auth') return allowedAuthFlags(parsed);
+  if (parsed.command === 'env') return allowedEnvFlags(parsed);
+  return null;
+}
+
+function allowedAuthFlags(parsed) {
+  const subcommand = parsed.positional[0] || 'status';
+  if (subcommand === 'login') return LOGIN_FLAGS;
+  if (subcommand === 'status' || subcommand === 'logout') return ENV_FLAGS;
+  if (subcommand === 'whoami') return API_READ_FLAGS;
+  return API_READ_FLAGS;
+}
+
+function allowedEnvFlags(parsed) {
+  if (parsed.positional[0] === 'set' && parsed.positional[1] === 'custom') return ENV_CUSTOM_FLAGS;
+  return ENV_FLAGS;
+}
+
+function assertOnlyAllowedFlags(parsed, allowed) {
+  for (const flag of Object.keys(parsed.flags)) {
+    if (allowed.has(flag)) continue;
+    throw usageError('OPTION_UNKNOWN', `未知选项：--${displayFlagName(flag)}`, helpActionForCommand(parsed.command));
+  }
+}
+
+function displayFlagName(flag) {
+  return flag.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
+}
+
+function helpActionForCommand(command) {
+  if (command && command !== 'help' && command !== 'version') return `请运行 pages help ${command} 查看可用选项。`;
+  return '请运行 pages help 查看可用选项。';
 }
 
 async function readSiteBySlug(client, slug) {

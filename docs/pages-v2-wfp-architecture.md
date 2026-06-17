@@ -1491,18 +1491,22 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
 
 ```text
 1. pages-api 校验 actor、scope、site 权限、idempotency key 和 payload limit。
-2. 规范化并校验 artifactBundle。
+2. 规范化并校验发布 artifact：
+     custom Worker: JSON artifactBundle，包含 mainModule / modules。
+     static / SPA: multipart assetManifest + file-* 文件，不接受 generated-worker bundle。
 3. 计算 effective execution mode：
      site.execution_mode_override ?? PAGES_EXECUTION_MODE。
 4. D1 创建 deployments(status=pending)。
 5. status=uploading。
 6. 调用 execution provider：
      wfp:
-       上传 user Worker 到目标环境 dispatch namespace。
+       custom Worker 上传 user Worker 到目标环境 dispatch namespace。
+       static / SPA 先走 Cloudflare Assets upload session 上传文件，再部署一个薄 assets Worker。
        artifact_ref 形如 wfp://{namespace}/{workerName}。
      normal-worker-slot:
        找到或分配该站点的 available slot。
-       覆盖对应 ordinary Worker slot 代码。
+       custom Worker 覆盖对应 ordinary Worker slot 代码。
+       static / SPA 先走普通 Worker assets upload session 上传文件，再覆盖对应 ordinary Worker slot。
        artifact_ref 形如 slot://{environment}/{slotId}/{workerName}。
 7. status=uploaded。
 8. provider verify：
@@ -2283,12 +2287,14 @@ pages login
 
 pages deploy ./dist foo --visibility org
   -> CLI 调 pages-api /.xd-pages/api/deployments
-  -> CLI 计算 artifact hash，并生成 artifactBundle
-     custom Worker: 读取入口模块内容
-     static / SPA: 生成 worker.mjs，内嵌 base64 asset map
+  -> CLI 计算 artifact hash
+     custom Worker: JSON 发送 artifactBundle，读取入口模块内容
+     static / SPA: multipart 发送 assetManifest 和 file-* 文件，filename 保留相对路径
   -> pages-api 校验 CLI token 和发布权限
-  -> pages-api 规范化 artifactBundle，校验 kind/mainModule/modules
-     artifactBundle 必填，并参与 idempotency request hash
+  -> pages-api 规范化发布 artifact
+     custom Worker: 校验 artifactBundle kind/mainModule/modules
+     static / SPA: 校验 assetManifest、路径安全和文件集合
+     contentHash + artifact 元数据参与 idempotency request hash
   -> pages-api 按 PAGES_EXECUTION_MODE 上传到内部执行面
   -> pages-api verify 后创建 immutable version
   -> pages-api 通过发布状态机切换 active route 和 route snapshot
@@ -2449,31 +2455,28 @@ user.kv:
 
 ## 静态站点和 SPA
 
-v2 需要验证当前 execution mode 对 static/spa assets 的支持边界；这不影响 v1 Workers Assets 发布链路。当前 M5 闭环采用“CLI 生成 user Worker 模块”的方式先打通发布路径：
+静态站点和 SPA 是 XD Pages 的默认发布形态。第一版不再使用 generated-worker，不把 dist 文件 base64 内嵌到 `worker.mjs`。CLI 采用文件级 multipart 上传，服务端内部使用 Cloudflare Assets upload session 和薄 assets Worker 承载静态资源。
 
-```json
-{
-  "kind": "static|spa|worker",
-  "mainModule": "worker.mjs",
-  "modules": [
-    {
-      "name": "worker.mjs",
-      "type": "application/javascript+module",
-      "content": "export default { ... }"
-    }
-  ]
-}
+```text
+pages deploy ./dist foo
+  -> CLI 遍历 dist，排除 .git、node_modules、.DS_Store 和显式配置文件
+  -> CLI 生成 assetManifest：/{path} -> hash / size / content_type
+  -> CLI 以 multipart/form-data 上传：
+       artifactKind = static | spa
+       contentHash = sha256:...
+       assetManifest = JSON string
+       file-0 / file-1 / ...，每个 filename 是相对路径
+  -> pages-api 校验 manifest 和文件路径
+  -> execution provider 调 Cloudflare assets-upload-session
+  -> 上传缺失 asset bucket
+  -> 部署薄 Worker：fetch(request, env) => env.ASSETS.fetch(request)
 ```
 
-custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。static / SPA 发布时，CLI 遍历目录并排除 `.git`、`node_modules`、`.DS_Store` 和显式约定的本地配置文件，生成一个 `worker.mjs`：文件内容以 base64 asset map 内嵌，static 按 path 返回文件，SPA 在未命中时 fallback 到 `index.html`。这个 bundle 不包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `--config` 文件内容。
+custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module，通过 JSON artifactBundle 上传。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。static / SPA 的 multipart 内容不能包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `--config` 文件内容。
 
-`pages-api` 只接受必填的 `artifactBundle` 后调用内部 execution provider 上传，不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。当前 API JSON body 上限是 1 MiB，CLI 首版 static / SPA generated-worker 路径限制原始文件总量不超过 512 KiB、文件数不超过 1000；超限时 CLI 提前失败，API 对超大请求返回 `PAYLOAD_TOO_LARGE` / 413。大站点、多二进制资产和长期缓存优化应演进到 R2 / asset store 或 Cloudflare 原生 asset 能力，但 CLI 命令和 deploy API 的用户心智保持不变。
+`pages-api` 不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。worker artifact 的 JSON body 上限是 1 MiB；static / SPA 的 CLI 侧第一版限制为原始文件总量不超过 50 MiB、文件数不超过 5000。超限时 CLI 提前失败。底层未来如果从 Cloudflare Assets 调整到 R2 或其它 asset store，应由服务端 provider 演进，用户命令仍保持 `pages deploy ./dist foo`。
 
-建议实现时准备两种路径：
-
-1. 小型 static / SPA：继续由平台生成 user Worker 模块，适合文档、demo 和轻量内部工具。
-2. 中大型 static / SPA：将静态资产放入 R2 或专用 asset store，由 generated user Worker 或 router asset layer 读取。
-3. 如果 Cloudflare 后续提供更合适的 WFP assets 组合能力，可以替换服务端实现；CLI 仍只暴露 `pages deploy ./dist foo`。
+这条路径不提供“失败后回退 generated-worker”。如果 asset upload session、asset bucket 上传或 Worker assets binding 失败，发布必须失败并返回明确错误，避免同一命令在不同部署中产生不同运行形态。
 
 无论采用哪种路径，对用户暴露的心智保持一致：
 

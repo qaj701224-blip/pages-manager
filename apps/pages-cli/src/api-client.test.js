@@ -29,6 +29,36 @@ test('API client sends bearer credential and JSON body with idempotency key', as
   assert.deepEqual(await request.json(), { siteId: 'site_1' });
 });
 
+test('API client sends bearer credential and multipart body without JSON content type', async () => {
+  const calls = [];
+  const client = createApiClient({
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    credential: { type: 'cli_token', value: 'cli_secret' },
+    fetch: async (request) => {
+      calls.push(request);
+      return Response.json({ ok: true });
+    },
+  });
+  const form = new FormData();
+  form.set('siteSlug', 'docs');
+  form.set('file-0', new Blob(['hello'], { type: 'text/plain' }), 'index.txt');
+
+  assert.deepEqual(
+    await client.requestApiForm('POST', '/.xd-pages/api/deployments', form, { idempotencyKey: 'idem_form' }),
+    { ok: true }
+  );
+
+  const request = calls[0];
+  assert.equal(request.url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
+  assert.equal(request.headers.get('Authorization'), 'Bearer cli_secret');
+  assert.equal(request.headers.get('Idempotency-Key'), 'idem_form');
+  assert.match(request.headers.get('Content-Type'), /^multipart\/form-data; boundary=/);
+  const received = await request.formData();
+  assert.equal(received.get('siteSlug'), 'docs');
+  assert.equal(await received.get('file-0').text(), 'hello');
+});
+
 test('API client calls auth base without bearer for login endpoints', async () => {
   const calls = [];
   const client = createApiClient({

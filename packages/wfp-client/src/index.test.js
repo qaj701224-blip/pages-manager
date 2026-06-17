@@ -138,6 +138,64 @@ test('uploadUserWorker sends multipart metadata and module to dispatch namespace
   assert.equal(form.get('worker.mjs').type, 'application/javascript+module');
 });
 
+test('uploadUserWorker can upload static assets before deploying thin assets worker', async () => {
+  const requests = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'pages-production',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      requests.push(request.clone());
+      if (request.url.endsWith('/assets-upload-session')) {
+        return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [['hash_index']] } });
+      }
+      if (request.url.includes('/workers/assets/upload')) {
+        return Response.json({ success: true, result: { jwt: 'completion-jwt' } });
+      }
+      return Response.json({ success: true, result: { id: 'pages-v2-docs-ver-1' } });
+    },
+  });
+
+  const result = await client.uploadUserWorker({
+    scriptName: 'pages-v2-docs-ver-1',
+    artifactKind: 'spa',
+    assetManifest: {
+      '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
+    },
+    assetFiles: [{ path: '/index.html', bytes: new globalThis.TextEncoder().encode('hello'), contentType: 'text/html' }],
+    compatibilityDate: '2026-06-15',
+    tags: ['pages-v2', 'production'],
+    bindings: [{ type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' }],
+  });
+
+  assert.deepEqual(result, {
+    scriptName: 'pages-v2-docs-ver-1',
+    dispatchNamespace: 'pages-production',
+    artifactRef: 'wfp://pages-production/pages-v2-docs-ver-1',
+  });
+  assert.equal(requests[0].method, 'POST');
+  assert.ok(requests[0].url.endsWith('/scripts/pages-v2-docs-ver-1/assets-upload-session'));
+  assert.equal(requests[1].method, 'POST');
+  assert.ok(requests[1].url.includes('/workers/assets/upload?base64=true'));
+  const deployed = requests.find((request) => request.method === 'PUT');
+  const form = await deployed.formData();
+  assert.deepEqual(JSON.parse(await form.get('metadata').text()), {
+    main_module: 'worker.mjs',
+    compatibility_date: '2026-06-15',
+    tags: ['pages-v2', 'production'],
+    bindings: [
+      { type: 'assets', name: 'ASSETS' },
+      { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+    ],
+    assets: {
+      jwt: 'completion-jwt',
+      config: { not_found_handling: 'single-page-application', run_worker_first: true },
+    },
+  });
+  assert.match(await form.get('worker.mjs').text(), /env\.ASSETS\.fetch/);
+});
+
 test('get and delete user worker use dispatch namespace script endpoint', async () => {
   const calls = [];
   const client = createWfpClient({
