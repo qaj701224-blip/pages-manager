@@ -1,6 +1,6 @@
 # pages-manager 当前状态
 
-更新时间：2026-06-16
+更新时间：2026-06-17
 
 当前分支：`feat/slack-preview-gateway`
 
@@ -69,7 +69,13 @@
 apps/gateway/src/
   index.js
   dev.js
-  routes/handlers.js
+  routes/register.js
+  routes/health-routes.js
+  routes/publishing-routes.js
+  routes/slack-routes.js
+  routes/github-routes.js
+  routes/internal-routes.js
+  control-plane/handlers.js
   http/body.js
   http/router.js
   slack/http.js
@@ -90,6 +96,24 @@ apps/gateway/src/
   db/repositories/*.js
   utils/crypto.js
 ```
+
+`routes/` 现在只负责 HTTP 路由分组注册；`control-plane/handlers.js` 承接 AI 发布控制面的运行时 orchestration。后续如果继续拆，可以把其中的 Slack Agent turn、GitHub webhook、Review gate、PublishingJob follow-up 再下沉到各自 domain service。
+
+### Worker 目录结构
+
+```text
+apps/worker/src/
+  index.js
+  dev.js
+  config.js
+  orchestrator.js
+  jobs/issue-and-index.js
+  jobs/coding-agent.js
+  jobs/preview.js
+  integrations/gateway-client.js
+```
+
+`orchestrator.js` 只根据 `job.status` 分发执行步骤；创建 issue、触发 Coding Agent、发布 preview、回调 gateway 已拆到独立文件。
 
 ### DB-only 运行态
 

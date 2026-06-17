@@ -23,6 +23,13 @@ v1 位于 `apps/server`，服务旧 `workers.xd.team` 链路。v1 只做 legacy 
 - `packages/pages-runtime-protocol/`：runtime 协议共享定义。
 - `packages/worker-kit/`、`packages/ip-guard/`：Worker 公共工具。
 - `apps/server/`：v1 legacy 管理 API Worker，仅维护旧 `workers.xd.team` 链路。
+- `apps/gateway/src/`：平台控制面，接收 Slack Events、Slack Interactivity、GitHub webhook、executor callback 和内部 API。
+- `apps/worker/src/`：发布任务调度 worker，按 jobs / integrations 拆分 issue、Coding Agent、preview 和 gateway callback。
+- `apps/slack-agent/src/`：常驻 Slack Agent，负责自由对话、需求整理、会话续接，不写代码。
+- `apps/slack-notifier/src/`：Slack Web API 输出服务，负责 reaction、thread 回复和 Block Kit 状态卡。
+- `packages/git-client/`：GitHub API helper。
+- `packages/slack-notifier/`：Slack notifier shared Block Kit / Web API helper。
+- `packages/workflow-core/`：PublishingJob、PlatformDevItem 状态机、ID 和事件 helper。
 - `.github/workflows/`：CI、staging、production 和用户站点发布 workflow。
 - `docs/`：文档索引、架构、运维、安全和 ADR。
 
