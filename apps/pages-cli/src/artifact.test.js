@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -92,6 +93,20 @@ test('buildAssetArtifact returns a manifest and raw files without generated work
   assert.equal(artifact.files[0].relativePath.includes(dir), false);
   assert.equal(JSON.stringify(artifact).includes('spaFallback'), false);
   assert.equal(JSON.stringify(artifact).includes('base64'), false);
+});
+
+test('buildAssetArtifact versions asset hashes with content type to avoid stale remote MIME reuse', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-asset-hash-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  const content = '<div id="app"></div>';
+  await writeFile(path.join(dir, 'index.html'), content);
+  await writeFile(path.join(dir, 'same.txt'), content);
+
+  const artifact = await buildAssetArtifact(dir, 'spa');
+  const legacyContentHash = createHash('sha256').update(content).digest('hex').slice(0, 32);
+
+  assert.notEqual(artifact.manifest['/index.html'].hash, legacyContentHash);
+  assert.notEqual(artifact.manifest['/index.html'].hash, artifact.manifest['/same.txt'].hash);
 });
 
 test('buildArtifactBundle rejects static and SPA artifacts because assets use multipart upload', async () => {

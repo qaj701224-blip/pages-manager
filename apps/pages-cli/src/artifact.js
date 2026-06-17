@@ -81,7 +81,7 @@ export async function buildAssetArtifact(targetPath, artifactKind) {
     const key = `/${file.relativePath}`;
     const contentType = contentTypeFor(file.relativePath);
     manifest[key] = {
-      hash: hashBytes(bytes),
+      hash: hashAsset(bytes, contentType),
       size: bytes.byteLength,
       content_type: contentType,
     };
@@ -151,6 +151,12 @@ function contentTypeFor(relativePath) {
   return 'application/octet-stream';
 }
 
-function hashBytes(bytes) {
-  return createHash('sha256').update(bytes).digest('hex').slice(0, 32);
+function hashAsset(bytes, contentType) {
+  return createHash('sha256')
+    .update('xd-pages-asset-v2\0')
+    .update(contentType)
+    .update('\0')
+    .update(bytes)
+    .digest('hex')
+    .slice(0, 32);
 }
