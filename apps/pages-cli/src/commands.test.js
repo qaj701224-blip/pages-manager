@@ -55,6 +55,7 @@ test('deploy uses explicit access key as a one-shot credential without local sec
   await executeCommand(['deploy', '.', 'docs', '--access-key', 'xdp_prod_ak_1_secret', '--json'], {
     cwd: dir,
     env: {},
+    profile: productionProfile(),
     secretStore: {
       get: async () => {
         throw new Error('secret store should not be read');
@@ -155,6 +156,7 @@ test('status, sites, rollback, and open use explicit site names', async () => {
   await executeCommand(['status', 'docs', '--json'], {
     cwd: dir,
     env: {},
+    profile: productionProfile(),
     secretStore: fakeSecretStore({ type: 'access_key', value: 'xdp_prod_ak_1_secret' }),
     fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'docs', environment: 'production' }] }]),
     output: (line) => output.push(line),
@@ -162,6 +164,7 @@ test('status, sites, rollback, and open use explicit site names', async () => {
   await executeCommand(['sites', 'info', 'docs'], {
     cwd: dir,
     env: {},
+    profile: productionProfile(),
     secretStore: fakeSecretStore({ type: 'access_key', value: 'xdp_prod_ak_1_secret' }),
     fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'docs', environment: 'production' }] }]),
     output: () => {},
@@ -169,6 +172,7 @@ test('status, sites, rollback, and open use explicit site names', async () => {
   await executeCommand(['rollback', 'docs', 'ver_1'], {
     cwd: dir,
     env: {},
+    profile: productionProfile(),
     secretStore: fakeSecretStore({ type: 'access_key', value: 'xdp_prod_ak_1_secret' }),
     fetch: fakeFetch(calls, [{ deployment: { id: 'dep_2', status: 'succeeded' } }]),
     idempotencyKey: () => 'rb_1',
@@ -195,6 +199,7 @@ test('auth whoami uses API validation and env list stays user-facing only', asyn
 
   await executeCommand(['auth', 'whoami', '--access-key', 'xdp_prod_ak_1_secret', '--json'], {
     env: {},
+    profile: productionProfile(),
     fetch: fakeFetch(calls, [
       {
         environment: 'production',
@@ -255,6 +260,7 @@ test('login --json emits browser challenge before polling', async () => {
 
   await executeCommand(['login', '--json', '--no-open'], {
     env: {},
+    profile: productionProfile(),
     secretStore: {
       set: async (environment, credential) => writes.push({ environment, credential }),
     },
@@ -306,6 +312,7 @@ test('access set updates visibility and replaces allow list entries', async () =
     ['access', 'set', 'demo', '--visibility', 'acl', '--email', 'Alice@Example.COM', '--department', ' 心动/技术平台部 ', '--json'],
     {
       env: {},
+      profile: productionProfile(),
       secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
       fetch: fakeFetch(calls, [
         { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'org' } }] },
@@ -351,6 +358,7 @@ test('access set does not enable acl visibility when acl replacement fails', asy
     () =>
       executeCommand(['access', 'set', 'demo', '--visibility', 'acl', '--email', 'alice@example.com'], {
         env: {},
+        profile: productionProfile(),
         secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
         fetch: fakeFetch(calls, [
           { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'org' } }] },
@@ -372,6 +380,7 @@ test('access grant and revoke change allow list entries incrementally', async ()
 
   await executeCommand(['access', 'grant', 'demo', '--email', 'Bob@Example.COM', '--department', '心动/技术平台部'], {
     env: {},
+    profile: productionProfile(),
     secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
     fetch: fakeFetch(grantCalls, [
       { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'acl' } }] },
@@ -387,6 +396,7 @@ test('access grant and revoke change allow list entries incrementally', async ()
 
   await executeCommand(['access', 'revoke', 'demo', '--department', '心动/技术平台部'], {
     env: {},
+    profile: productionProfile(),
     secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
     fetch: fakeFetch(revokeCalls, [
       { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'acl' } }] },
@@ -538,5 +548,12 @@ function fakeSecretStore(credential) {
     get: async () => credential,
     set: async () => {},
     delete: async () => {},
+  };
+}
+
+function productionProfile() {
+  return {
+    activeEnvironment: 'production',
+    environments: {},
   };
 }
