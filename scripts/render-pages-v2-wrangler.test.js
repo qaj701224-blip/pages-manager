@@ -142,8 +142,9 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /name = "pages-api"/);
   assert.match(config, /account_id = "dummy-account"/);
   assert.match(config, /workers_dev = false/);
-  assert.match(config, /pattern = "api\.pages\.xd\.team"/);
-  assert.match(config, /custom_domain = true/);
+  assert.match(config, /pattern = "api\.pages\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
@@ -172,8 +173,9 @@ test('staging pages-api config renders explicit staging template values', () => 
   const config = renderPagesApi('staging');
 
   assert.match(config, /name = "pages-api-staging"/);
-  assert.match(config, /pattern = "api-staging\.pages\.xd\.team"/);
-  assert.match(config, /custom_domain = true/);
+  assert.match(config, /pattern = "api-staging\.pages\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
@@ -219,8 +221,9 @@ test('production pages-auth config renders explicit production auth settings onl
 
   assert.match(config, /name = "pages-auth"/);
   assert.match(config, /account_id = "dummy-account"/);
-  assert.match(config, /pattern = "auth\.pages\.xd\.team"/);
-  assert.match(config, /custom_domain = true/);
+  assert.match(config, /pattern = "auth\.pages\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
@@ -260,8 +263,9 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   const config = renderPagesAuth('staging');
 
   assert.match(config, /name = "pages-auth-staging"/);
-  assert.match(config, /pattern = "auth-staging\.pages\.xd\.team"/);
-  assert.match(config, /custom_domain = true/);
+  assert.match(config, /pattern = "auth-staging\.pages\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);

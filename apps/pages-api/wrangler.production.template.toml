@@ -5,8 +5,8 @@ account_id = "__CLOUDFLARE_ACCOUNT_ID__"
 workers_dev = false
 
 [[routes]]
-pattern = "api.pages.xd.team"
-custom_domain = true
+pattern = "api.pages.xd.team/*"
+zone_name = "xd.team"
 
 [vars]
 PAGES_ENV = "production"
