@@ -116,4 +116,12 @@ test('deleteScript rejects platform worker names even when they use the site pre
   await assert.rejects(() => deleteScript('token', 'account', 'pages-manager-staging'), /平台保留 Worker/);
   await assert.rejects(() => deleteScript('token', 'account', 'pages-kv-gateway'), /平台保留 Worker/);
   await assert.rejects(() => deleteScript('token', 'account', 'pages-kv-gateway-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-api'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-api-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-auth'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-auth-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-router'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-router-staging'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-v2-production-slot-001'), /平台保留 Worker/);
+  await assert.rejects(() => deleteScript('token', 'account', 'pages-v2-staging-slot-001'), /平台保留 Worker/);
 });

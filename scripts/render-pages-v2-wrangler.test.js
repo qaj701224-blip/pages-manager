@@ -349,8 +349,8 @@ test('production pages-router config renders explicit production fast-path setti
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
-  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "1"/);
-  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"/);
+  assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL = "100"/);
   assert.match(config, /ROUTE_CACHE_TTL_SECONDS = "10"/);
   assert.match(config, /ROUTER_IP_ALLOWLIST_CIDRS = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);

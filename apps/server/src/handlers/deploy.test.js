@@ -92,7 +92,20 @@ test('deploy conflict response does not expose existing owner token', async () =
 });
 
 test('deploy rejects platform reserved site names before touching storage or Cloudflare', async () => {
-  const reservedNames = ['api', 'api-staging', 'manager', 'manager-staging', 'kv-gateway', 'kv-gateway-staging'];
+  const reservedNames = [
+    'api',
+    'api-staging',
+    'manager',
+    'manager-staging',
+    'kv-gateway',
+    'kv-gateway-staging',
+    'auth',
+    'auth-staging',
+    'router',
+    'router-staging',
+    'v2-production-slot-001',
+    'v2-staging-slot-001',
+  ];
   const fetchCalls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {

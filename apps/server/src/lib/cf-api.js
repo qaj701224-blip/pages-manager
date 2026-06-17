@@ -275,12 +275,19 @@ export async function deleteScript(token, accountId, scriptName) {
     throw new Error(`安全拦截：拒绝删除非 pages- 前缀的 Worker "${scriptName}"`);
   }
   const protectedScriptNames = new Set([
+    'pages-api',
+    'pages-api-staging',
+    'pages-auth',
+    'pages-auth-staging',
     'pages-manager',
     'pages-manager-staging',
     'pages-kv-gateway',
     'pages-kv-gateway-staging',
+    'pages-router',
+    'pages-router-staging',
   ]);
-  if (protectedScriptNames.has(scriptName)) {
+  const protectedScriptPrefixes = ['pages-v2-production-slot-', 'pages-v2-staging-slot-'];
+  if (protectedScriptNames.has(scriptName) || protectedScriptPrefixes.some((prefix) => scriptName.startsWith(prefix))) {
     throw new Error(`安全拦截：拒绝删除平台保留 Worker "${scriptName}"`);
   }
   return cfFetch(`/accounts/${accountId}/workers/scripts/${scriptName}?force=true`, token, {
