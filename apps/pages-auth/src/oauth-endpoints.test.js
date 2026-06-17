@@ -11,7 +11,7 @@ import {
   createStoredSession,
 } from './do-storage.js';
 import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
-import { verifySessionJwt } from './jwt.js';
+import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const now = 1_800_000_000;
 
@@ -100,6 +100,59 @@ test('authorize returns provider-unconfigured before creating state when SSO con
   assert.equal(createCalled, false);
 });
 
+test('authorize with an existing auth session creates a site code without redirecting to SSO', async () => {
+  const oauthStorage = createFakeStorage();
+  let requestedUserId;
+  const env = testEnv({
+    createOAuthStateRecord: (input) => createStoredOAuthState(oauthStorage, input),
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    getUserForAuthSession: async (userId) => {
+      requestedUserId = userId;
+      return {
+        id: userId,
+        email: 'user@example.test',
+        employeeStatus: 'active',
+        sessionVersion: 7,
+      };
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_auth' },
+    },
+    env
+  );
+
+  const response = await handleOAuthAuthorize(
+    new Request(
+      'https://auth.pages.xd.team/.xd-pages/auth/authorize?' +
+        'site_host=demo.pages.xd.team&return_to=https://demo.pages.xd.team/private',
+      {
+        headers: {
+          Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }),
+          Accept: 'text/html',
+        },
+      }
+    ),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(requestedUserId, 'usr_123');
+  const location = new URL(response.headers.get('Location'));
+  assert.equal(location.origin + location.pathname, 'https://demo.pages.xd.team/.xd-pages/auth/callback');
+  assert.match(location.searchParams.get('code'), /^ost_/);
+  assert.equal(location.searchParams.get('return_to'), 'https://demo.pages.xd.team/private');
+  assert.equal(location.origin, 'https://demo.pages.xd.team');
+});
+
 test('callback without code or state returns safe error without echoing OAuth values', async () => {
   const env = testEnv();
   const response = await handleOAuthCallback(
@@ -112,6 +165,24 @@ test('callback without code or state returns safe error without echoing OAuth va
   const text = await response.text();
   assert.equal(text.includes('oauth-code'), false);
   assert.equal(JSON.parse(text).error.code, 'OAUTH_CALLBACK_INVALID');
+});
+
+test('callback errors render a friendly browser page for navigations', async () => {
+  const env = testEnv();
+  const response = await handleOAuthCallback(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code', {
+      headers: { Accept: 'text/html' },
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 400);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  const text = await response.text();
+  assert.match(text, /XD Pages/);
+  assert.match(text, /无法完成登录/);
+  assert.equal(text.includes('oauth-code'), false);
 });
 
 test('callback consumes state once, calls SSO hooks, sets auth_session cookie, and redirects to site callback', async () => {

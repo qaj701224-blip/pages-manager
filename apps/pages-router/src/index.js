@@ -2,6 +2,7 @@ import { isAllowedIP } from '@xd/ip-guard';
 import { GATEWAY, HEADERS, RUNTIME } from '@xd/pages-runtime-protocol';
 import { jsonResponse } from '@xd/worker-kit';
 
+import { browserPageResponse, wantsHtml } from '../../pages-auth/src/browser-pages.js';
 import { buildSiteSessionCookie } from '../../pages-auth/src/cookies.js';
 import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
 import { evaluateAccessPolicy } from './access-policy.js';
@@ -455,7 +456,7 @@ async function handleSiteAuthCallback(request, env, route) {
   try {
     consumed = await consumeSiteCode(env, { code, siteHost: route.hostname });
   } catch {
-    return errorResponse('SITE_AUTH_CODE_INVALID', 'Site auth code is invalid.', 400);
+    return handleSiteAuthCodeInvalid(request, env, route);
   }
 
   const identity = identityFromSiteCode(route, consumed.user);
@@ -522,6 +523,30 @@ async function consumeSiteCode(env, { code, siteHost }) {
   return response.json();
 }
 
+function handleSiteAuthCodeInvalid(request, env, route) {
+  if (wantsHtml(request)) {
+    const url = new URL(request.url);
+    if (url.searchParams.get('auth_recovery') !== '1') {
+      return redirectToAuth(request, env, route, 'SITE_AUTH_CODE_INVALID', {
+        returnTo: recoveryReturnTo(url, route.hostname),
+        authRecovery: true,
+      });
+    }
+
+    return browserPageResponse({
+      title: '无法完成登录',
+      message: '这次登录凭证已经失效或被使用。请重新打开站点，系统会重新验证你的访问权限。',
+      detail: '如果你刚刚调整过访问权限，请等待几秒后再试。',
+      status: 400,
+      actionHref: `https://${route.hostname}/`,
+      actionLabel: '重新打开站点',
+      tone: 'danger',
+    });
+  }
+
+  return errorResponse('SITE_AUTH_CODE_INVALID', 'Site auth code is invalid.', 400);
+}
+
 function identityFromSiteCode(route, user = {}) {
   return {
     userId: user.id,
@@ -540,6 +565,17 @@ function validateSiteReturnTo(value, hostname) {
     throw new Error('Invalid site return URL');
   }
   return url.toString();
+}
+
+function recoveryReturnTo(url, hostname) {
+  try {
+    const returnTo = validateSiteReturnTo(url.searchParams.get('return_to') || '', hostname);
+    const parsed = new URL(returnTo);
+    if (parsed.pathname === SITE_AUTH_CALLBACK_PATH) throw new Error('Callback URL cannot be a return target');
+    return parsed.toString();
+  } catch {
+    return `https://${hostname}/`;
+  }
 }
 
 function readSiteSessionTtlSeconds(env) {
@@ -571,7 +607,7 @@ function readInternalWorkerJwtTtlSeconds(env) {
   return value;
 }
 
-function redirectToAuth(request, env, route, reason) {
+function redirectToAuth(request, env, route, reason, options = {}) {
   let authBase;
   try {
     authBase = new URL(env.PUBLIC_AUTH_BASE);
@@ -584,8 +620,9 @@ function redirectToAuth(request, env, route, reason) {
 
   const redirect = new URL('/.xd-pages/auth/authorize', authBase);
   redirect.searchParams.set('site_host', route.hostname);
-  redirect.searchParams.set('return_to', request.url);
+  redirect.searchParams.set('return_to', options.returnTo || request.url);
   redirect.searchParams.set('reason', reason);
+  if (options.authRecovery) redirect.searchParams.set('auth_recovery', '1');
   return new Response(null, {
     status: 302,
     headers: {

@@ -1,4 +1,5 @@
-import { buildAuthSessionCookie } from './cookies.js';
+import { browserPageResponse, wantsHtml } from './browser-pages.js';
+import { AUTH_SESSION_COOKIE, buildAuthSessionCookie } from './cookies.js';
 import { createOpaqueToken } from './id.js';
 import { jsonError, readJsonBody, safeRedirect } from './http.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
@@ -12,39 +13,43 @@ const CLI_LOGIN_CONFIRM_TTL_SECONDS = 600;
 const ACTIVE_EMPLOYEE_STATUS = 'active';
 
 export async function handleOAuthAuthorize(request, env, config) {
-  if (request.method !== 'GET') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
-  if (!config.ssoAuthorizationUrl || !config.ssoClientId) {
-    return jsonError('SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
-  }
+  if (request.method !== 'GET') return authError(request, 'METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
 
   const now = readNow(env);
   const stateInput = buildOAuthStateInput(new URL(request.url), config, now);
-  if (!stateInput) return jsonError('OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
+  if (!stateInput) return authError(request, 'OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
+
+  const sessionRedirect = await tryAuthorizeSiteFromAuthSession(request, env, config, stateInput, now);
+  if (sessionRedirect) return sessionRedirect;
+
+  if (!config.ssoAuthorizationUrl || !config.ssoClientId) {
+    return authError(request, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
+  }
 
   let created;
   try {
     created = await createOAuthStateRecord(env, stateInput);
   } catch {
-    return jsonError('OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
+    return authError(request, 'OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
   }
 
   try {
     return safeRedirect(buildSsoAuthorizeUrl(config, created.publicState), 302);
   } catch {
-    return jsonError('SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
+    return authError(request, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
   }
 }
 
 export async function handleOAuthCallback(request, env, config) {
-  if (request.method !== 'GET') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  if (request.method !== 'GET') return authError(request, 'METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
 
   const url = new URL(request.url);
   const code = requiredQuery(url, 'code');
   const publicState = requiredQuery(url, 'state');
-  if (!code || !publicState) return jsonError('OAUTH_CALLBACK_INVALID', 'OAuth callback request is invalid.', 400);
+  if (!code || !publicState) return authError(request, 'OAUTH_CALLBACK_INVALID', 'OAuth callback request is invalid.', 400);
 
   if (!ssoExchangeIsConfigured(env, config)) {
-    return jsonError('SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
+    return authError(request, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
   }
 
   const now = readNow(env);
@@ -52,7 +57,7 @@ export async function handleOAuthCallback(request, env, config) {
   try {
     consumedState = await consumeOAuthStateRecord(env, publicState, { now, environment: config.environment });
   } catch (error) {
-    return jsonError('OAUTH_STATE_INVALID', 'OAuth state is invalid.', statusForStateError(error));
+    return authError(request, 'OAUTH_STATE_INVALID', 'OAuth state is invalid.', statusForStateError(error));
   }
 
   let profile;
@@ -62,30 +67,30 @@ export async function handleOAuthCallback(request, env, config) {
     const rawProfile = await fetchSsoProfile(env, config, { accessToken });
     profile = normalizeSsoProfile(rawProfile);
     if (!ssoProfileMatchesAllowedScope(rawProfile, profile, config.ssoAllowedUserScope)) {
-      return jsonError('SSO_PROFILE_SCOPE_FORBIDDEN', 'SSO profile is outside the allowed user scope.', 403);
+      return authError(request, 'SSO_PROFILE_SCOPE_FORBIDDEN', 'SSO profile is outside the allowed user scope.', 403);
     }
   } catch {
-    return jsonError('SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502);
+    return authError(request, 'SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502);
   }
 
-  if (!profile.userId) return jsonError('SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
+  if (!profile.userId) return authError(request, 'SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
 
   let authoritativeProfile;
   try {
     authoritativeProfile = mergeSyncedUserAuthority(profile, await syncSsoUserProfile(env, profile, now));
   } catch {
-    return jsonError('SSO_USER_SYNC_FAILED', 'SSO user could not be synced.', 502);
+    return authError(request, 'SSO_USER_SYNC_FAILED', 'SSO user could not be synced.', 502);
   }
 
   if (authoritativeProfile.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) {
-    return jsonError('SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
+    return authError(request, 'SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
   }
 
   let authSession;
   try {
     authSession = await createAuthSession(env, config, authoritativeProfile.userId, now);
   } catch {
-    return jsonError('AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
+    return authError(request, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
 
   if (consumedState.kind === 'cli') {
@@ -98,7 +103,7 @@ export async function handleOAuthCallback(request, env, config) {
         now,
       });
     } catch {
-      return jsonError('CLI_LOGIN_CONFIRM_CREATE_FAILED', 'CLI login confirmation could not be created.', 500);
+      return authError(request, 'CLI_LOGIN_CONFIRM_CREATE_FAILED', 'CLI login confirmation could not be created.', 500);
     }
 
     const response = new Response(buildCliLoginConfirmationHtml(consumedState.cliLoginId, config, confirmToken), {
@@ -116,25 +121,16 @@ export async function handleOAuthCallback(request, env, config) {
     return response;
   }
 
-  let siteCode;
   try {
-    siteCode = await createOAuthSiteCodeRecord(env, {
-      stateId: consumedState.record.id,
-      user: siteCodeUserFromProfile(authoritativeProfile),
-      now,
-      ttlSeconds: SITE_CODE_TTL_SECONDS,
-      codeSecret: createOpaqueToken('sec'),
-    });
+    const response = await createSiteCodeRedirectResponse(env, consumedState, authoritativeProfile, now);
+    response.headers.set(
+      'Set-Cookie',
+      buildAuthSessionCookie(authSession.token, { maxAgeSeconds: config.authSessionIdleTtlSeconds })
+    );
+    return response;
   } catch {
-    return jsonError('AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
+    return authError(request, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
-
-  const response = safeRedirect(buildSiteCallbackUrl(consumedState.siteHost, siteCode.siteCode), 302);
-  response.headers.set(
-    'Set-Cookie',
-    buildAuthSessionCookie(authSession.token, { maxAgeSeconds: config.authSessionIdleTtlSeconds })
-  );
-  return response;
 }
 
 export async function handleInternalConsumeSiteCode(request, env) {
@@ -237,10 +233,12 @@ function buildOAuthStateInput(url, config, now) {
   const siteHost = requiredQuery(url, 'site_host');
   const returnTo = requiredQuery(url, 'return_to');
   if (!siteHost || !returnTo) return null;
+  const recoveryAttempt = requiredQuery(url, 'auth_recovery') === '1';
   return {
     environment: config.environment,
     siteHost,
     returnTo,
+    ...(recoveryAttempt ? { recoveryAttempt: true } : {}),
     now,
     ttlSeconds: config.oauthStateTtlSeconds,
     stateId: createOpaqueToken('ost'),
@@ -279,6 +277,39 @@ async function createOAuthSiteCodeRecord(env, input) {
   const response = await stub.fetch(jsonDoRequest('https://oauth-state-do/create-site-code', input));
   if (!response.ok) throw new Error('OAuth site code create failed');
   return response.json();
+}
+
+async function tryAuthorizeSiteFromAuthSession(request, env, config, stateInput, now) {
+  if (stateInput.cliLoginId) return null;
+
+  const user = await readAuthSessionUserProfile(request, env, now);
+  if (!user || user.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) return null;
+
+  let created;
+  let consumedState;
+  try {
+    created = await createOAuthStateRecord(env, stateInput);
+    consumedState = await consumeOAuthStateRecord(env, created.publicState, { now, environment: config.environment });
+    return createSiteCodeRedirectResponse(env, consumedState, user, now);
+  } catch {
+    return null;
+  }
+}
+
+async function createSiteCodeRedirectResponse(env, consumedState, profile, now) {
+  const siteCode = await createOAuthSiteCodeRecord(env, {
+    stateId: consumedState.record.id,
+    user: siteCodeUserFromProfile(profile),
+    now,
+    ttlSeconds: SITE_CODE_TTL_SECONDS,
+    codeSecret: createOpaqueToken('sec'),
+  });
+  return safeRedirect(
+    buildSiteCallbackUrl(consumedState.siteHost, siteCode.siteCode, consumedState.returnTo, {
+      recoveryAttempt: consumedState.recoveryAttempt,
+    }),
+    302
+  );
 }
 
 async function consumeOAuthSiteCodeRecord(env, siteCode, options) {
@@ -353,6 +384,42 @@ async function syncSsoUserProfile(env, profile, now) {
   });
 }
 
+async function readAuthSessionUserProfile(request, env, now) {
+  const token = readCookie(request.headers.get('Cookie'), AUTH_SESSION_COOKIE);
+  if (!token) return null;
+
+  let payload;
+  try {
+    payload = await verifySessionJwt(token, env, {
+      purpose: 'auth_session',
+      audience: AUTH_SESSION_AUDIENCE,
+      now,
+    });
+  } catch {
+    return null;
+  }
+
+  const userId = payload.sub;
+  let user;
+  try {
+    user =
+      typeof env?.getUserForAuthSession === 'function'
+        ? await env.getUserForAuthSession(userId)
+        : await createPagesStore(env).getUser(userId);
+  } catch {
+    return null;
+  }
+  if (!user) return null;
+
+  return {
+    userId: user.userId || user.id || userId,
+    email: user.email || '',
+    employeeStatus: user.employeeStatus || 'unknown',
+    departments: Array.isArray(user.departments) ? user.departments : [],
+    sessionVersion: user.sessionVersion || 1,
+  };
+}
+
 function mergeSyncedUserAuthority(profile, syncResult) {
   const user = syncResult?.user || syncResult || {};
   return {
@@ -381,9 +448,11 @@ function createCliLoginConfirmToken(env, { loginId, userId, sid, now }) {
   );
 }
 
-function buildSiteCallbackUrl(siteHost, siteCode) {
+function buildSiteCallbackUrl(siteHost, siteCode, returnTo, { recoveryAttempt = false } = {}) {
   const url = new URL(`https://${siteHost}/.xd-pages/auth/callback`);
   url.searchParams.set('code', siteCode);
+  if (returnTo) url.searchParams.set('return_to', returnTo);
+  if (recoveryAttempt) url.searchParams.set('auth_recovery', '1');
   return url.toString();
 }
 
@@ -403,6 +472,35 @@ function jsonDoRequest(url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+function authError(request, code, message, status, action) {
+  if (!wantsHtml(request)) return jsonError(code, message, status, action);
+  return browserPageResponse({
+    title: '无法完成登录',
+    message: '身份验证没有完成，请重新打开站点或稍后再试。',
+    detail: `错误代码：${code}`,
+    status,
+    actionHref: authBaseForRequest(request),
+    actionLabel: '返回认证入口',
+    tone: 'danger',
+  });
+}
+
+function authBaseForRequest(request) {
+  const url = new URL(request.url);
+  return `${url.origin}/.xd-pages/auth/authorize`;
+}
+
+function readCookie(cookieHeader, name) {
+  for (const part of String(cookieHeader || '').split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator < 0) continue;
+    if (trimmed.slice(0, separator) === name) return trimmed.slice(separator + 1);
+  }
+  return '';
 }
 
 function buildCliLoginConfirmationHtml(loginId, config, confirmToken) {

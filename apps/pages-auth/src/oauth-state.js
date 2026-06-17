@@ -6,6 +6,7 @@ export async function createOAuthState({
   siteHost,
   returnTo,
   cliLoginId,
+  recoveryAttempt = false,
   now,
   ttlSeconds,
   stateId = createOpaqueToken('ost'),
@@ -29,6 +30,7 @@ export async function createOAuthState({
       returnTo: normalizedReturnTo,
       cliLoginId: normalizedCliLoginId,
       deviceCode: null,
+      recoveryAttempt: kind === 'site' ? Boolean(recoveryAttempt) : false,
       secretHash: await sha256Hex(stateSecret),
       issuedAt: now,
       expiresAt: now + ttlSeconds,
@@ -64,6 +66,7 @@ export async function consumeOAuthState(publicState, record, { now, environment 
     returnTo: record.returnTo,
     siteHost: record.siteHost,
     cliLoginId: record.cliLoginId,
+    recoveryAttempt: Boolean(record.recoveryAttempt),
     environment: record.environment,
   };
 }

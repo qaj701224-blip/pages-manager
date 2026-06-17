@@ -334,6 +334,69 @@ test('consumes auth callback site code and sets host-only site_session before re
   assert.deepEqual(payload.departments, ['dept_design']);
 });
 
+test('recovers an invalid browser site auth callback by restarting auth once', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org' }),
+    },
+    consumeSiteCode: async () => {
+      throw new Error('invalid site code');
+    },
+  });
+  const response = await worker.fetch(
+    new Request(
+      'https://demo.pages.xd.team/.xd-pages/auth/callback?code=ost_bad.site-secret&' +
+        'return_to=https%3A%2F%2Fdemo.pages.xd.team%2Fprivate',
+      {
+        headers: {
+          'CF-Connecting-IP': '10.1.2.3',
+          Accept: 'text/html',
+        },
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  const location = new URL(response.headers.get('Location'));
+  assert.equal(location.origin + location.pathname, 'https://auth.pages.xd.team/.xd-pages/auth/authorize');
+  assert.equal(location.searchParams.get('site_host'), 'demo.pages.xd.team');
+  assert.equal(location.searchParams.get('return_to'), 'https://demo.pages.xd.team/private');
+  assert.equal(location.searchParams.get('reason'), 'SITE_AUTH_CODE_INVALID');
+  assert.equal(location.searchParams.get('auth_recovery'), '1');
+});
+
+test('shows a friendly browser page when recovered site auth callback still fails', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org' }),
+    },
+    consumeSiteCode: async () => {
+      throw new Error('invalid site code');
+    },
+  });
+  const response = await worker.fetch(
+    new Request(
+      'https://demo.pages.xd.team/.xd-pages/auth/callback?code=ost_bad.site-secret&' +
+        'return_to=https%3A%2F%2Fdemo.pages.xd.team%2Fprivate&auth_recovery=1',
+      {
+        headers: {
+          'CF-Connecting-IP': '10.1.2.3',
+          Accept: 'text/html',
+        },
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 400);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  const text = await response.text();
+  assert.match(text, /XD Pages/);
+  assert.match(text, /无法完成登录/);
+  assert.equal(text.includes('ost_bad'), false);
+});
+
 test('redirects protected org sites to auth when site_session is missing', async () => {
   const env = routeEnv({
     routes: {

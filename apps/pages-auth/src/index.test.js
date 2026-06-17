@@ -158,7 +158,8 @@ test('routes OAuth authorize and callback public endpoints', async () => {
   assert.equal(callbackResponse.status, 302);
   assert.equal(
     callbackResponse.headers.get('Location'),
-    'https://demo.pages.xd.team/.xd-pages/auth/callback?code=ost_test.site-secret'
+    'https://demo.pages.xd.team/.xd-pages/auth/callback?code=ost_test.site-secret&' +
+      'return_to=https%3A%2F%2Fdemo.pages.xd.team%2Fapp'
   );
   assert.match(callbackResponse.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });
