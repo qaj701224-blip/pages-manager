@@ -212,6 +212,42 @@ test('auth whoami uses API validation and env list stays user-facing only', asyn
   assert.deepEqual(envOutput, ['production', 'staging']);
 });
 
+test('env current reports active environment details', async () => {
+  const output = [];
+  const profile = { activeEnvironment: 'staging', environments: {} };
+
+  await executeCommand(['env'], {
+    env: {},
+    profile,
+    output: (line) => output.push(line),
+  });
+
+  assert.deepEqual(output, [
+    '当前环境：staging',
+    'API：https://api-staging.pages.xd.team',
+    '认证：https://auth-staging.pages.xd.team',
+    '站点域名：*-staging.pages.xd.team',
+    '来源：本地 profile',
+  ]);
+
+  const jsonOutput = [];
+  await executeCommand(['env', 'current', '--json'], {
+    env: {},
+    profile,
+    output: (line) => jsonOutput.push(line),
+  });
+
+  assert.deepEqual(JSON.parse(jsonOutput[0]), {
+    ok: true,
+    schemaVersion: 1,
+    activeEnvironment: 'staging',
+    source: 'profile',
+    apiBaseUrl: 'https://api-staging.pages.xd.team',
+    authBaseUrl: 'https://auth-staging.pages.xd.team',
+    siteUrlExample: 'https://<site>-staging.pages.xd.team',
+  });
+});
+
 test('login --json emits browser challenge before polling', async () => {
   const calls = [];
   const output = [];

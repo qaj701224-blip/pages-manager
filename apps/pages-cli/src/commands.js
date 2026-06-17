@@ -463,7 +463,26 @@ async function runAccess(parsed, context) {
 }
 
 async function runEnv(parsed, context) {
-  const subcommand = parsed.positional[0] || 'list';
+  const subcommand = parsed.positional[0] || 'current';
+  if (subcommand === 'current') {
+    assertNoPositionals({ ...parsed, positional: parsed.positional.slice(1) }, 'ENV_USAGE_INVALID', 'env current 参数无效。');
+    const config = readConfigForCommand(parsed, context);
+    const payload = {
+      activeEnvironment: config.environment,
+      source: readEnvironmentSource(context),
+      apiBaseUrl: config.apiBaseUrl,
+      authBaseUrl: config.authBaseUrl,
+      siteUrlExample: siteUrlExampleForConfig(config),
+    };
+    if (outputJsonResult(parsed, context, payload)) return 0;
+    context.output(`当前环境：${payload.activeEnvironment}`);
+    context.output(`API：${payload.apiBaseUrl}`);
+    context.output(`认证：${payload.authBaseUrl}`);
+    context.output(`站点域名：${siteDomainPatternForConfig(config)}`);
+    context.output(`来源：${displayEnvironmentSource(payload.source)}`);
+    return 0;
+  }
+
   if (subcommand === 'list') {
     if (parsed.positional.length !== 1 && parsed.positional.length !== 0) {
       throw usageError('ENV_USAGE_INVALID', 'env list 参数无效。', '请使用 pages env list。');
@@ -513,7 +532,7 @@ async function runEnv(parsed, context) {
     return 0;
   }
 
-  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 pages env list 或 pages env use <环境>。');
+  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 pages env、pages env list 或 pages env use <环境>。');
 }
 
 function validateCommandUsage(parsed) {
@@ -638,6 +657,30 @@ function siteUrlForSlug(slug, config) {
   if (!normalized) throw usageError('SITE_REQUIRED', '缺少站点名。', '请传入站点名。');
   if (config.environment === 'staging') return `https://${normalized}-staging.${config.siteDomainSuffix}`;
   return `https://${normalized}.${config.siteDomainSuffix}`;
+}
+
+function siteUrlExampleForConfig(config) {
+  if (config.environment === 'staging') return `https://<site>-staging.${config.siteDomainSuffix}`;
+  return `https://<site>.${config.siteDomainSuffix}`;
+}
+
+function siteDomainPatternForConfig(config) {
+  if (config.environment === 'staging') return `*-staging.${config.siteDomainSuffix}`;
+  return `*.${config.siteDomainSuffix}`;
+}
+
+function readEnvironmentSource(context) {
+  if (context.env.PAGES_CLI_ENV) return 'env:PAGES_CLI_ENV';
+  if (context.profile?.activeEnvironment) return 'profile';
+  if (context.env.PAGES_ENV) return 'env:PAGES_ENV';
+  return 'default';
+}
+
+function displayEnvironmentSource(source) {
+  if (source === 'profile') return '本地 profile';
+  if (source === 'env:PAGES_CLI_ENV') return '环境变量 PAGES_CLI_ENV';
+  if (source === 'env:PAGES_ENV') return '环境变量 PAGES_ENV';
+  return '默认值';
 }
 
 function normalizeSiteSlug(value) {
@@ -930,11 +973,13 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'env') {
-    return `用法：pages env <list|use> [选项]
+    return `用法：pages env [current|list|use] [选项]
 
 管理本地 CLI 环境选择。
 
 命令：
+  pages env
+  pages env current
   pages env list
   pages env use <production|staging>
 

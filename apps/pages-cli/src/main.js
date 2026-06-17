@@ -90,7 +90,7 @@ function localizeError(error) {
     },
     ENV_COMMAND_INVALID: {
       message: 'env 命令不完整或无效。',
-      action: '请使用 pages env list 或 pages env use <production|staging>。',
+      action: '请使用 pages env、pages env list 或 pages env use <production|staging>。',
     },
     UNKNOWN_COMMAND: {
       message: command ? `未知命令：${command}` : '未知命令。',
