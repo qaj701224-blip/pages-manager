@@ -5,6 +5,8 @@ import {
   updateSlackAgentReply,
 } from './notifier.js';
 import { slackUserIdFromBody, surfaceForSlackBody } from './session.js';
+import { canSendSlackOutput, shouldPostSlackResultReply } from './delivery.js';
+import { slackThreadForSession } from './job-binding.js';
 
 const SLACK_AGENT_REPLY_START_TEXT = '正在整理需求...';
 
@@ -12,32 +14,6 @@ function hasActiveSlackTarget(slackSession) {
   return Boolean(
     slackSession?.activeJobId || slackSession?.activeIssueNumber || slackSession?.activePrNumber || slackSession?.activePreviewUrl
   );
-}
-
-function canSendSlackOutput(env = {}) {
-  const hasNotifierUrl = Boolean(env.SLACK_NOTIFIER_URL || env.PAGES_SLACK_NOTIFIER_URL);
-  const hasNotifierSecret = Boolean(env.SLACK_NOTIFIER_SHARED_SECRET || env.PAGES_SLACK_NOTIFIER_SHARED_SECRET);
-  return Boolean(env.SLACK_BOT_TOKEN || (hasNotifierUrl && hasNotifierSecret));
-}
-
-function shouldPostSlackResultReply(result = {}) {
-  if (!result.replyText) return false;
-  if (result.reply === false || result.noReply) return false;
-  if (result.action === 'ignored_untracked_thread_message') return false;
-  return true;
-}
-
-function slackThreadForSession(session = {}, fallback = {}) {
-  const surface = session.surfaceContext || {};
-  return {
-    ...(fallback || {}),
-    teamId: session.teamId || fallback.teamId || null,
-    channelId: session.channelId || surface.channelId || fallback.channelId || null,
-    channelType: surface.channelType || fallback.channelType || (session.dmChannelId ? 'im' : null),
-    messageTs: surface.messageTs || fallback.messageTs || session.threadTs || null,
-    threadTs: session.threadTs || surface.threadTs || fallback.threadTs || null,
-    userId: session.primarySlackUserId || fallback.userId || null,
-  };
 }
 
 function slackAgentEndpoint(env = {}) {
