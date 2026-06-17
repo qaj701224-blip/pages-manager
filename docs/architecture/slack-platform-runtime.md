@@ -34,16 +34,16 @@ Slack 体验分成两层：
 | Slack HTTP Events        | `apps/gateway/src/index.js`              | `POST /integrations/slack/events`                                                                       |
 | Slack Interactivity      | `apps/gateway/src/index.js`              | `POST /integrations/slack/interactions`                                                                 |
 | Slack signature 校验     | `apps/gateway/src/slack/http.js`         | 基于 raw body、timestamp、signing secret 校验                                                           |
-| URL verification         | `apps/gateway/src/routes/handlers.js`    | 返回 Slack challenge                                                                                    |
+| URL verification         | `apps/gateway/src/control-plane/handlers.js` | 返回 Slack challenge                                                                               |
 | DM / channel thread 会话 | `apps/gateway/src/slack/session.js`      | `SlackSession` 按 Slack user、thread 和 active context 隔离                                             |
 | Slack intake 分类        | `apps/gateway/src/slack/intake.js`       | help、ping、status、自然语言需求、续接修改等前置分类                                                    |
 | 基础状态卡片             | `packages/slack-notifier/src/index.js`   | Block Kit 展示 stage、job、issue、PR、preview                                                           |
 | 原地更新卡片             | `packages/slack-notifier/src/index.js`   | 首次 `chat.postMessage`，后续 `chat.update`                                                             |
 | 独立 notifier app        | `apps/slack-notifier/src/index.js`       | 内部 HTTP endpoint，正式 K8s 路径持有 bot token                                                         |
 | gateway notifier adapter | `apps/gateway/src/slack/notifier.js`     | 调独立 notifier；本地无 URL 时走 fallback                                                               |
-| 基础按钮                 | `apps/gateway/src/routes/handlers.js`    | 确认创建、继续修改、查看链接、选择旧任务、关闭会话                                                      |
+| 基础按钮                 | `apps/gateway/src/control-plane/handlers.js` | 确认创建、继续修改、查看链接、选择旧任务、关闭会话                                                 |
 | Agent turn               | `apps/slack-agent/src/index.js`          | `/internal/slack-agent/turn` 已有基础合同；NDJSON 路径可流式输出事件；`analyze` 仅作为旧测试 / 兼容路径 |
-| Gateway turn adapter     | `apps/gateway/src/routes/handlers.js`    | 优先请求 NDJSON，能消费 `reply_delta` 并节流更新同一条 Agent 回复                                       |
+| Gateway turn adapter     | `apps/gateway/src/control-plane/handlers.js` | 优先请求 NDJSON，能消费 `reply_delta` 并节流更新同一条 Agent 回复                                  |
 | Provider 语义分块        | `apps/slack-agent/src/model-provider.js` | 公司 OpenAI-compatible streaming 响应中只抽取 `visibleReply`，聚合成短句 / 语义片段                     |
 
 当前还不是正式版：
