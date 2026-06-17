@@ -248,7 +248,7 @@ async function verifyCliLoginConfirmToken(token, env, { loginId, user }) {
       audience: CLI_LOGIN_CONFIRM_AUDIENCE,
       now: readNow(env),
     });
-    return payload.sub === user.userId && payload.sid === user.sid && payload.loginId === loginId;
+    return payload.sub === user.userId && payload.loginId === loginId;
   } catch {
     return false;
   }

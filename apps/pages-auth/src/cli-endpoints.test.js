@@ -101,6 +101,48 @@ test('confirm requires auth_session and manually entered device code', async () 
   });
 });
 
+test('confirm allows an existing same-user auth session when SSO rotates the session id', async () => {
+  let confirmedInput;
+  const env = testEnv({
+    confirmCliLoginRecord: async (input, options) => {
+      confirmedInput = { input, options };
+      return { record: { status: 'confirmed' } };
+    },
+  });
+  const existingAuthToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_existing' },
+    },
+    env
+  );
+  const confirmToken = await signConfirmToken(env, { loginId: 'cli_test', userId: 'usr_123', sid: 'sid_rotated' });
+
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Origin: 'https://auth.pages.xd.team',
+        Cookie: buildAuthSessionCookie(existingAuthToken, { maxAgeSeconds: 600 }).split(';', 1)[0],
+      },
+      body: new URLSearchParams({ loginId: 'cli_test', deviceCode: '12345678', confirmToken }).toString(),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(confirmedInput, {
+    input: { loginId: 'cli_test', deviceCode: '12345678', userId: 'usr_123' },
+    options: { now },
+  });
+});
+
 test('confirm rejects requests without auth_session before touching CLI transaction', async () => {
   let confirmed = false;
   const env = testEnv({
@@ -190,6 +232,49 @@ test('confirm rejects missing confirmation token before touching CLI transaction
         Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }).split(';', 1)[0],
       },
       body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678' }),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONFIRM_FORBIDDEN');
+  assert.equal(confirmed, false);
+});
+
+test('confirm rejects confirmation tokens issued for a different user', async () => {
+  let confirmed = false;
+  const env = testEnv({
+    confirmCliLoginRecord: async () => {
+      confirmed = true;
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_current',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_current' },
+    },
+    env
+  );
+  const confirmToken = await signConfirmToken(env, {
+    loginId: 'cli_test',
+    userId: 'usr_other',
+    sid: 'sid_other',
+  });
+
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Origin: 'https://auth.pages.xd.team',
+        Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }).split(';', 1)[0],
+      },
+      body: new URLSearchParams({ loginId: 'cli_test', deviceCode: '12345678', confirmToken }).toString(),
     }),
     env,
     readAuthConfig(env)

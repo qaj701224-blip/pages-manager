@@ -1172,9 +1172,15 @@ https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id={loginId}
 
 - CLI 在终端显示短码，例如 `12345678`，并展示 environment、auth host 和请求 scope。
 - 浏览器 SSO 成功后，页面必须明确提示“正在授权 pages CLI”，并要求用户手动输入终端短码，再确认 environment、auth host 和 scope。
-- 浏览器确认表单必须带服务端签发的短 TTL confirm token，绑定 `cli_login_id`、当前 `auth_session.sid` 和用户；确认 POST 必须校验 exact `Origin` / same-origin fetch metadata，防止其它 `*.pages.xd.team` 子站 CSRF 自动确认。
+- 浏览器确认表单必须带服务端签发的短 TTL confirm token，绑定 `cli_login_id` 和当前登录用户；确认 POST 必须校验 exact `Origin` / same-origin fetch metadata，防止其它 `*.pages.xd.team` 子站 CSRF 自动确认。
 - 用户未确认短码前，`CliLoginDO` 不能写入 completed user，也不能让 CLI 领取 token。
 - 后续如果改成本机 loopback callback，也应配合 PKCE / nonce，把浏览器回调绑定到本地 CLI。
+
+首版保留设备码是为了给“浏览器 SSO 登录”和“发起登录的 CLI 进程”建立显式配对证明，避免攻击者生成 CLI login URL 后诱导已登录用户点击并把 CLI token 领走。设备码不能进入 URL 或日志，只能显示在发起登录的终端中。
+
+已知体验问题：当前浏览器轮询登录链路容易受到浏览器已有 `auth_session`、SSO callback 新建 session、并发登录窗口等因素影响。如果 confirmation token 过度绑定某一次 `auth_session.sid`，同一用户也可能因为 session id 轮换而确认失败。实现层应把 CLI confirmation token 绑定到 `loginId` 和当前登录用户，保留同源校验和短 TTL；不应把 sid 当作唯一可用的配对条件。
+
+后续优化方向：把默认登录路径升级为本机 loopback callback + PKCE。CLI 本地启动临时 callback server，浏览器完成 SSO 后直接回调 CLI，服务端通过 PKCE / nonce 绑定本地进程；设备码保留为 SSH、远程开发机、无浏览器环境或 loopback 不可用时的 fallback。这样可以减少手动输入，同时不降低 CLI token 领取安全性。
 
 #### UserSessionDO
 
