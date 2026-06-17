@@ -15,6 +15,8 @@ import {
   normalizeSiteCheckRunWebhook,
 } from '../github/review.js';
 import { readJson } from '../http/body.js';
+import { getStore, required, verifyInternalCallbackToken } from './context.js';
+import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../slack/http.js';
 import {
   classifySlackIntake,
@@ -38,6 +40,7 @@ import {
 } from '../slack/notifier.js';
 import { selectSlackSession, slackActorFromBody, slackUserIdFromBody, surfaceForSlackBody } from '../slack/session.js';
 import { compactUserFacingText, redactSecretLikeText } from '../slack/text.js';
+import { slackJobInput, stableSlugHash } from '../slack/job-input.js';
 import {
   normalizeSlackWorkItemQueryState,
   slackWorkItemIncludesInactive,
@@ -134,24 +137,6 @@ const REVIEW_FALLBACK_AGENT_LOGIN = 'pages-review-watchdog';
 const DEFAULT_REVIEW_AGENT_TIMEOUT_SECONDS = 180;
 const AGENT_EVENT_CODING_FIX_DISPATCHED = 'coding_fix_dispatched';
 const AGENT_EVENT_SLACK_FOLLOWUP_QUEUED = 'slack_followup_queued';
-
-function required(value, name) {
-  if (value === undefined || value === null || value === '') {
-    const error = new Error(`${name} is required`);
-    error.status = 400;
-    throw error;
-  }
-  return value;
-}
-
-function verifyInternalCallbackToken(request, env) {
-  if (!env.INTERNAL_CALLBACK_TOKEN) return null;
-
-  const token = request.headers.get('X-Pages-Callback-Token');
-  if (token === env.INTERNAL_CALLBACK_TOKEN) return null;
-
-  return jsonResponse({ error: 'Invalid callback token' }, 401);
-}
 
 function isUnaddressedChannelThreadMessage(body = {}) {
   const event = body.event || {};
@@ -710,30 +695,6 @@ async function handleGithubPullRequestWebhook({ body, action, store, env, result
   return jsonResponse({ ok: true, created: true, delivery: result.delivery, prAction: 'pr_reopened_recorded', job });
 }
 
-async function readResponseJson(response) {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
-function getStore(env) {
-  if (!env.store) {
-    env.store = env.GATEWAY_STORE || globalThis.__PAGES_GATEWAY_STORE__;
-  }
-  if (!env.store) {
-    const error = new Error('Gateway store is not configured');
-    error.status = 500;
-    throw error;
-  }
-  return env.store;
-}
-
-function shouldStartWorkerForJob(job) {
-  return job.status === 'received' || job.status === 'generating_page' || job.status === 'fixing' || job.status === 'previewing';
-}
-
 function shouldDispatchPreviewForReview(updatedJob, normalized, gate) {
   if (!updatedJob || updatedJob.previewUrl || !gate.canPreview) return false;
   if (!['review_summary', 'issue_comment'].includes(normalized.sourceType)) return false;
@@ -981,44 +942,6 @@ async function reconcileReviewGateForJob(store, job, env, nowMs = Date.now()) {
     ...(slack.slackStatusNotification ? { slackStatusNotification: slack.slackStatusNotification } : {}),
     ...(slack.slackNotification ? { slackNotification: slack.slackNotification } : {}),
   };
-}
-
-async function startWorkerForJobIfConfigured(job, env) {
-  if (!env.PAGES_WORKER_START_URL || !shouldStartWorkerForJob(job)) return null;
-
-  const headers = {
-    'Content-Type': 'application/json',
-  };
-
-  if (env.PAGES_WORKER_SHARED_SECRET) {
-    headers['X-Pages-Worker-Token'] = env.PAGES_WORKER_SHARED_SECRET;
-  }
-
-  const fetchImpl = env.WORKER_FETCH || fetch;
-  const response = await fetchImpl(env.PAGES_WORKER_START_URL, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ job }),
-  });
-  const body = await readResponseJson(response);
-
-  if (!response.ok || body?.ok === false) {
-    return {
-      started: false,
-      error: body?.error || response.statusText || `HTTP ${response.status}`,
-    };
-  }
-
-  const result = {
-    started: true,
-    response: body,
-  };
-  const store = env.store || env.GATEWAY_STORE || globalThis.__PAGES_GATEWAY_STORE__;
-  if (job.status === 'fixing' && store) {
-    result.dispatchEvent = await recordCodingFixDispatch(store, job, result);
-  }
-
-  return result;
 }
 
 function slackAgentEndpoint(env = {}) {
@@ -1492,119 +1415,6 @@ async function runSlackAgentTurnIfConfigured(body, intake, env, context = {}) {
   }
 }
 
-function actorFromHeaders(request, fallback = {}) {
-  return {
-    requestedByType: request.headers.get('X-Pages-Actor-Type') || fallback.requestedByType || 'user',
-    requestedById: request.headers.get('X-Pages-Actor-Id') || fallback.requestedById,
-  };
-}
-
-function normalizePublishingJobInput(body, request) {
-  const actor = actorFromHeaders(request, body);
-  const idempotencyKey = request.headers.get('Idempotency-Key') || body.idempotencyKey || body.idempotency_key || body.requestId;
-
-  return {
-    source: body.source || 'api',
-    requestedByType: actor.requestedByType,
-    requestedById: required(actor.requestedById, 'requestedById'),
-    idempotencyKey: required(idempotencyKey, 'idempotencyKey'),
-    employeeSlug: required(body.employeeSlug || body.employee_slug, 'employeeSlug'),
-    siteSlug: required(body.siteSlug || body.site_slug, 'siteSlug'),
-    siteProjectId: body.siteProjectId || body.site_project_id || null,
-    ownerScopeId: body.ownerScopeId || body.owner_scope_id || null,
-    employeeId: body.employeeId || body.employee_id || null,
-    intent: body.intent || 'create_site',
-    approvalMode: body.approvalMode || body.approval_mode || 'manual_required',
-    title: body.title,
-    summary: body.summary || body.brief || '',
-    brief: body.brief,
-    requesterProfile: body.requesterProfile || body.requester_profile || null,
-  };
-}
-
-function stableSlugHash(value = '') {
-  let hash = 2166136261;
-  for (const char of String(value || '')) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36).padStart(6, '0').slice(0, 6);
-}
-
-function slugSegment(value, fallback, maxLength = 48) {
-  const normalized = String(value || '')
-    .toLowerCase()
-    .normalize('NFKD')
-    .replaceAll(/[\u0300-\u036f]/g, '')
-    .replaceAll(/[^a-z0-9]+/g, '-')
-    .replaceAll(/^-+|-+$/g, '')
-    .replaceAll(/-{2,}/g, '-');
-  const slug = normalized || fallback;
-  return slug.slice(0, maxLength).replaceAll(/-+$/g, '') || fallback;
-}
-
-function requesterSlugBase(profileInput = {}, slackUserId) {
-  const profile = profileInput || {};
-  const email = String(profile.email || '')
-    .trim()
-    .toLowerCase();
-  if (email.includes('@')) return email.split('@')[0].split('+')[0];
-  return profile.displayName || profile.display_name || profile.realName || profile.real_name || profile.name || slackUserId;
-}
-
-function employeeSlugForSlack({ teamId, slackUserId, requesterProfile }) {
-  const identityKey = `${teamId || 'unknown-team'}:${slackUserId || 'unknown-user'}`;
-  const suffix = stableSlugHash(identityKey);
-  const base = slugSegment(requesterSlugBase(requesterProfile, slackUserId), 'slack-user', 40);
-  return `${base}-${suffix}`;
-}
-
-function siteSlugForSlack(analysis = {}, body = {}) {
-  return slugSegment(analysis.siteSlug || analysis.site_slug || body.siteSlug || body.site_slug || 'profile', 'profile', 72);
-}
-
-function slackJobInput(body) {
-  const event = body.event || {};
-  const analysis = body.slackAgentAnalysis || {};
-  const slackSession = body.slackSession || null;
-  const teamId = body.team_id || body.team?.id || 'unknown-team';
-  const slackUserId = slackUserIdFromBody(body);
-  const intake = body.intake || classifySlackIntake(body);
-  const surface = surfaceForSlackBody(body);
-  const text = intake.text || event.text || body.text || '';
-  const idempotencyKey =
-    body.idempotencyKey ||
-    body.idempotency_key ||
-    body.event_id ||
-    body.trigger_id ||
-    `${teamId}:${event.ts || body.event_ts || Date.now()}`;
-  const requesterProfile = body.requesterProfile || body.requester_profile || null;
-
-  return {
-    source: 'slack',
-    requestedByType: 'user',
-    requestedById: `slack:${teamId}:${slackUserId}`,
-    idempotencyKey,
-    employeeSlug: employeeSlugForSlack({ teamId, slackUserId, requesterProfile }),
-    siteSlug: siteSlugForSlack(analysis, body),
-    intent: analysis.intent || 'create_site',
-    approvalMode: analysis.approvalMode || body.approvalMode || body.approval_mode || 'manual_required',
-    title: body.title || analysis.title || text.slice(0, 80) || 'Slack publishing request',
-    summary: body.summary || analysis.summary || text,
-    requesterProfile,
-    slackSessionId: slackSession?.id || body.slackSessionId || null,
-    slackSessionKey: slackSession?.sessionKey || body.slackSessionKey || null,
-    slackThread: {
-      teamId,
-      channelId: surface.channelId,
-      channelType: surface.channelType,
-      messageTs: surface.messageTs,
-      threadTs: surface.threadTs,
-      userId: slackUserId,
-    },
-  };
-}
-
 const CREATE_JOB_INTENTS = new Set(['create_or_update_site', 'new_site_request', 'create_site', 'update_site']);
 const FOLLOWUP_INTENTS = new Set(['modify_existing_preview', 'append_requirement']);
 const NON_FOLLOWUP_ACTIONS = new Set([
@@ -1749,21 +1559,6 @@ function queuedFollowupsAfterLastFixDispatch(events = [], summary = '') {
     .filter((event) => event.type === AGENT_EVENT_SLACK_FOLLOWUP_QUEUED)
     .sort((left, right) => agentEventTime(left) - agentEventTime(right))
     .slice(-(currentRound - lastDispatchRound));
-}
-
-async function recordCodingFixDispatch(store, job, workerStart) {
-  if (!workerStart?.started || !store?.recordAgentRunEvent || job?.status !== 'fixing') return null;
-
-  const round = followupRoundFromSummary(job.summary);
-  return await store.recordAgentRunEvent({
-    publishingJobId: job.id,
-    slackSessionId: job.slackSessionId || null,
-    type: AGENT_EVENT_CODING_FIX_DISPATCHED,
-    stage: 'fixing',
-    status: 'dispatched',
-    text: `round:${Math.max(1, Number(round) || 1)} Coding Agent 修复已启动。`,
-    dedupeKey: `coding-fix-dispatched:${job.id}:${job.updatedAt || Date.now()}:${Math.max(1, Number(round) || 1)}`,
-  });
 }
 
 async function recordQueuedSlackFollowup(store, job, slackSession, feedback, agentRun) {
@@ -3731,72 +3526,6 @@ async function failRunningSlackAgentRunsForClosedSession(store, slackSessionId, 
   }
   await store.clearSlackAgentLeaseForSession?.(slackSessionId);
   return failed;
-}
-
-export async function handleHealth(_request, env = {}) {
-  const store = getStore(env);
-  return jsonResponse({
-    status: 'ok',
-    service: 'pages-gateway',
-    storeBackend: store.backend || env.PAGES_STORE_BACKEND || 'memory',
-  });
-}
-
-export async function handleReady(_request, env = {}) {
-  const store = getStore(env);
-
-  try {
-    const health = store.health ? await store.health() : { ok: true, backend: store.backend || 'unknown' };
-    return jsonResponse({
-      status: 'ready',
-      service: 'pages-gateway',
-      storeBackend: health.backend || store.backend || env.PAGES_STORE_BACKEND || 'memory',
-    });
-  } catch (error) {
-    return jsonResponse(
-      {
-        status: 'not_ready',
-        service: 'pages-gateway',
-        storeBackend: store.backend || env.PAGES_STORE_BACKEND || 'unknown',
-        error: error.message,
-      },
-      503
-    );
-  }
-}
-
-export async function handleCreatePublishingJob(request, env) {
-  const store = getStore(env);
-  const body = await readJson(request);
-  const { job, created } = await store.createJob(normalizePublishingJobInput(body, request));
-  const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
-
-  return jsonResponse({ job, created, ...(workerStart ? { workerStart } : {}) }, created ? 201 : 200);
-}
-
-export async function handleListPublishingJobs(request, env) {
-  const url = new URL(request.url);
-  const result = await getStore(env).listJobs({
-    status: url.searchParams.get('status') || undefined,
-    source: url.searchParams.get('source') || undefined,
-    q: url.searchParams.get('q') || undefined,
-    limit: url.searchParams.get('limit') || undefined,
-    offset: url.searchParams.get('offset') || undefined,
-  });
-
-  return jsonResponse(result);
-}
-
-export async function handleGetPublishingJob(_request, env, params) {
-  const job = await getStore(env).getJob(params.jobId);
-  if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
-  return jsonResponse({ job });
-}
-
-export async function handleGetPublishingJobEvents(_request, env, params) {
-  const store = getStore(env);
-  if (!(await store.getJob(params.jobId))) return jsonResponse({ error: 'PublishingJob not found' }, 404);
-  return jsonResponse({ events: await store.listEvents(params.jobId) });
 }
 
 export async function handleSlackEvents(request, env) {

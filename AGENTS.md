@@ -24,12 +24,19 @@ v1 位于 `apps/server`，服务旧 `workers.xd.team` 链路。v1 只做 legacy 
 - `packages/worker-kit/`、`packages/ip-guard/`：Worker 公共工具。
 - `apps/server/`：v1 legacy 管理 API Worker，仅维护旧 `workers.xd.team` 链路。
 - `apps/gateway/src/`：平台控制面，接收 Slack Events、Slack Interactivity、GitHub webhook、executor callback 和内部 API。
+- `apps/gateway/src/routes/`：gateway HTTP 路由注册，按 health / publishing / Slack / GitHub / internal lane 拆分。
+- `apps/gateway/src/control-plane/`：AI 发布控制面 orchestration，承接 Slack、GitHub、Review gate 的运行时处理和通用上下文。
+- `apps/gateway/src/publishing/`：PublishingJob HTTP API、输入归一化和 worker 调度 adapter。
+- `apps/gateway/src/slack/`：Slack 验签、会话、消息解析、状态卡 adapter。
+- `apps/gateway/src/github/`：GitHub webhook 和 Review Agent comment 归一化。
+- `apps/gateway/src/db/`：MySQL / Redis runtime store、Drizzle schema、rows、repositories。
 - `apps/worker/src/`：发布任务调度 worker，按 jobs / integrations 拆分 issue、Coding Agent、preview 和 gateway callback。
 - `apps/slack-agent/src/`：常驻 Slack Agent，负责自由对话、需求整理、会话续接，不写代码。
 - `apps/slack-notifier/src/`：Slack Web API 输出服务，负责 reaction、thread 回复和 Block Kit 状态卡。
 - `packages/git-client/`：GitHub API helper。
 - `packages/slack-notifier/`：Slack notifier shared Block Kit / Web API helper。
 - `packages/workflow-core/`：PublishingJob、PlatformDevItem 状态机、ID 和事件 helper。
+- `tests/`：所有单元测试和脚本测试，测试 helper 不属于运行时架构。
 - `.github/workflows/`：CI、staging、production 和用户站点发布 workflow。
 - `docs/`：文档索引、架构、运维、安全和 ADR。
 
