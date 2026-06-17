@@ -67,6 +67,7 @@ apps/gateway/src/
 │   └── router.js
 ├── slack/
 │   ├── agent-turn.js          # gateway -> slack-agent 调用、语义分块回复和 Agent 回复消息更新
+│   ├── agent-tool-call.js     # Slack Agent toolCall 解析和别名归一化
 │   ├── agent-run-records.js   # Slack AgentRun 完成 / 失败记录和分析结果脱敏
 │   ├── delivery.js            # Slack delivery、reaction、profile lookup 和通用输出 helper
 │   ├── followup.js            # 追加修改、排队修复和 follow-up 状态卡
@@ -80,6 +81,7 @@ apps/gateway/src/
 │   ├── session.js            # SlackSession / IssueLink / follow-up
 │   ├── text.js
 │   ├── work-item-reconciler.js # Slack 任务列表前的 GitHub 状态校准
+│   ├── work-item-tools.js    # Slack Agent 任务查询 / 切换 / 重新打开 tool handler
 │   └── work-items.js
 ├── github/
 │   ├── review.js             # Review Agent allowlist / classification
