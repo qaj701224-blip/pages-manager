@@ -67,8 +67,8 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /gh run watch "\$ci_run_id"[\s\S]*--exit-status/);
   assert.match(workflow, /git push origin "HEAD:staging"/);
   assert.match(workflow, /git push origin ":refs\/heads\/\$\{sync_branch\}"/);
-  assert.match(workflow, /gh workflow run deploy-staging\.yml[\s\S]*--ref staging[\s\S]*component=all/);
-  assert.match(workflow, /gh run list[\s\S]*deploy-staging\.yml/);
+  assert.match(workflow, /gh workflow run deploy-pages-v2-staging\.yml[\s\S]*--ref staging[\s\S]*component=all/);
+  assert.match(workflow, /gh run list[\s\S]*deploy-pages-v2-staging\.yml/);
   assert.match(workflow, /gh run watch "\$run_id"[\s\S]*--exit-status/);
   assert.doesNotMatch(workflow, /force-with-lease|git push --force/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
@@ -77,7 +77,7 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(policy, /项目类 PR 指向 `master`/);
   assert.match(policy, /staging-sync\/pr-<number>-<sha>/);
   assert.match(policy, /required status check/);
-  assert.match(policy, /dispatch `Deploy Staging`/);
-  assert.match(policy, /等待 `Deploy Staging` 完成/);
+  assert.match(policy, /dispatch `Deploy XD Pages Staging`/);
+  assert.match(policy, /等待 `Deploy XD Pages Staging` 完成/);
   assert.match(policy, /纯 `sites\/\*\*` 用户站点 PR/);
 });

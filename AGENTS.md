@@ -41,7 +41,7 @@ pnpm test
 
 - 默认流向是 `feature branch -> PR to master -> sync to staging preview -> merge to master`
 - 不要从 `staging` 向 `master` 发起晋级 PR；`staging` 可能包含尚未合入 `master` 的其它 PR 代码
-- 如果项目类 PR 直接提交到 `master`，`Sync Master PR To Staging` workflow 必须在 PR ready 后把 PR head 提前 merge 到 `staging`，并显式 dispatch `Deploy Staging` 做预览验证；纯 `sites/**` 用户站点 PR 跳过这条同步
+- 如果项目类 PR 直接提交到 `master`，`Sync Master PR To Staging` workflow 必须在 PR ready 后把 PR head 提前 merge 到 `staging`，并显式 dispatch `Deploy XD Pages Staging` 做预览验证；纯 `sites/**` 用户站点 PR 跳过这条同步
 - `staging` 被废弃 PR 污染时，由维护者确认没有活跃 preview 后重新对齐 `master`，再重新触发需要验证的 PR
 - 不要双向随意 cherry-pick 多个 workflow / k8s commit，避免把 preview-only 代码带入主线
 
@@ -58,7 +58,7 @@ pnpm test
 
 CI/CD 隔离要求：
 
-- 平台本体部署包括 `deploy-staging.yml`、`deploy.yml`、`deploy-ack-preview.yml`，只能构建 / 部署平台 Worker、ACK 镜像和 K8s Deployment
+- 平台本体部署包括 `deploy-staging.yml`、`deploy.yml`、`deploy-pages-v2-staging.yml`、`deploy-pages-v2.yml`、`deploy-ack-preview.yml`，只能构建 / 部署平台 Worker、ACK 镜像和 K8s Deployment
 - 用户站点发布执行器包括 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml`、`site-check.yml`，只能处理 `PublishingJob`、`sites/<employee>/<site>/`、生成 PR 和 preview
 - 用户站点发布 workflow 禁止使用 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、production Wrangler token 或 ACK namespace 权限
 - 自动生成的 `sites/**` PR 不得修改 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档

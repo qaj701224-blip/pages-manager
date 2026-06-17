@@ -179,14 +179,14 @@ jobs:
 
           deploy_head_sha="$(git rev-parse HEAD)"
           dispatch_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          gh workflow run deploy-staging.yml --repo "$GITHUB_REPOSITORY" --ref staging -f component=all
+          gh workflow run deploy-pages-v2-staging.yml --repo "$GITHUB_REPOSITORY" --ref staging -f component=all
 
           run_id=""
           run_url=""
           for _ in {1..30}; do
             run_line="$(gh run list \
               --repo "$GITHUB_REPOSITORY" \
-              --workflow deploy-staging.yml \
+              --workflow deploy-pages-v2-staging.yml \
               --branch staging \
               --event workflow_dispatch \
               --limit 20 \
@@ -201,9 +201,9 @@ jobs:
           done
 
           if [[ -z "$run_id" ]]; then
-            echo "Deploy Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
+            echo "Deploy XD Pages Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
             exit 1
           fi
 
-          echo "Waiting for Deploy Staging run: ${run_url}"
+          echo "Waiting for Deploy XD Pages Staging run: ${run_url}"
           gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
