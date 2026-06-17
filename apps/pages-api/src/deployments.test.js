@@ -437,7 +437,7 @@ test('deploys through normal worker slot mode without exposing provider to the r
   ]);
 });
 
-test('releases the previous normal worker slot after a successful replacement deployment', async () => {
+test('keeps previous normal worker slots assigned so retained versions can rollback', async () => {
   const store = await createSeededStore();
   await store.createWorkerSlot({
     id: 'slot_007',
@@ -481,13 +481,12 @@ test('releases the previous normal worker slot after a successful replacement de
   );
 
   assert.equal(replacement.status, 201);
-  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
-  assert.equal((await store.getWorkerSlot('slot_007')).status, 'available');
-  assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, null);
+  assert.equal((await store.getWorkerSlot('slot_007')).status, 'assigned');
+  assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, 'ver_1');
   assert.equal((await store.getWorkerSlot('slot_008')).status, 'assigned');
   assert.equal((await store.getWorkerSlot('slot_008')).assignedVersionId, 'ver_2');
-  assert.equal(rollback.status, 409);
-  assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
+  assert.equal(rollback.status, 201);
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
 });
 
 test('normal worker slot upload metadata binds Pages KV gateway to slot workers', async () => {

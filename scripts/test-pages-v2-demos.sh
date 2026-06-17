@@ -19,14 +19,14 @@ Options:
   --env-file <path>   Load environment variables from a specific file. Defaults to .env.
   --target <env>      Target environment: staging or production. Defaults to staging.
   --slug <slug>       v2 site slug. Defaults to demo-vue-app.
-  --visibility <mode> Site visibility for first creation. Defaults to public.
+  --visibility <mode> Site visibility for first creation. Defaults to internal.
   -h, --help          Show this help.
 
 Environment:
   PAGES_ACCESS_KEY          Optional. Used by pages CLI for non-interactive deploys.
   PAGES_V2_DEMO_TARGET      Optional. Defaults to staging. Overridden by --target.
   PAGES_V2_DEMO_SLUG        Optional. Defaults to demo-vue-app. Overridden by --slug.
-  PAGES_V2_DEMO_VISIBILITY  Optional. Defaults to public. Overridden by --visibility.
+  PAGES_V2_DEMO_VISIBILITY  Optional. Defaults to internal. Overridden by --visibility.
   PAGES_DEMO_SKIP_INSTALL   Optional. Set true to skip dependency install before build.
 
 EOF
@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --visibility)
       VISIBILITY_ARG="${2:-}"
-      [[ -n "$VISIBILITY_ARG" ]] || die "--visibility requires public, org, acl, owner, or disabled"
+      [[ -n "$VISIBILITY_ARG" ]] || die "--visibility requires internal, org, acl, owner, or disabled"
       shift 2
       ;;
     -h | --help)
@@ -82,7 +82,7 @@ fi
 
 PAGES_V2_DEMO_TARGET="${TARGET_ARG:-${PAGES_V2_DEMO_TARGET:-staging}}"
 PAGES_V2_DEMO_SLUG="${SLUG_ARG:-${PAGES_V2_DEMO_SLUG:-demo-vue-app}}"
-PAGES_V2_DEMO_VISIBILITY="${VISIBILITY_ARG:-${PAGES_V2_DEMO_VISIBILITY:-public}}"
+PAGES_V2_DEMO_VISIBILITY="${VISIBILITY_ARG:-${PAGES_V2_DEMO_VISIBILITY:-internal}}"
 
 case "$PAGES_V2_DEMO_TARGET" in
   staging)
@@ -113,8 +113,8 @@ validate_slug() {
 
 validate_visibility() {
   case "$1" in
-    public | org | acl | owner | disabled) ;;
-    *) die "PAGES_V2_DEMO_VISIBILITY must be public, org, acl, owner, or disabled" ;;
+    internal | org | acl | owner | disabled) ;;
+    *) die "PAGES_V2_DEMO_VISIBILITY must be internal, org, acl, owner, or disabled" ;;
   esac
 }
 
@@ -159,9 +159,8 @@ deploy_vue() {
   output="$(
     cd "$REPO_ROOT/demos/vue-app"
     PAGES_CLI_ENV="$PAGES_V2_DEMO_TARGET" node "$REPO_ROOT/apps/pages-cli/src/main.js" \
-      deploy dist \
+      deploy dist "$PAGES_V2_DEMO_SLUG" \
       --env "$PAGES_V2_DEMO_TARGET" \
-      --slug "$PAGES_V2_DEMO_SLUG" \
       --visibility "$PAGES_V2_DEMO_VISIBILITY" \
       --artifact-kind spa
   )" || {

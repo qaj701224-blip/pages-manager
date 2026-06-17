@@ -320,7 +320,6 @@ async function createDeployment(request, env, config, store, actor) {
     );
   }
 
-  await releaseRetiredNormalWorkerSlot(store, previousRoute, version, env);
   const completedAt = readNow(env);
   let completed;
   try {
@@ -545,7 +544,6 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
     );
   }
 
-  await releaseRetiredNormalWorkerSlot(store, currentRoute, version, env);
   const completedAt = readNow(env);
   let completed;
   try {
@@ -704,17 +702,6 @@ async function cleanupUploadedWorker(provider, uploaded) {
     await provider.delete(uploaded);
   } catch {
     // Best-effort cleanup must not hide the original deployment failure.
-  }
-}
-
-async function releaseRetiredNormalWorkerSlot(store, previousRoute, activeVersion, env) {
-  if (!previousRoute?.slotId || !activeVersion?.id || previousRoute.activeVersionId === activeVersion.id) return;
-  if (previousRoute.executionProvider !== 'normal-worker-slot') return;
-  if (typeof store.releaseWorkerSlot !== 'function') return;
-  try {
-    await store.releaseWorkerSlot(previousRoute.slotId, { status: 'available', updatedAt: readNow(env) });
-  } catch {
-    // Slot reconciliation is best-effort; route activation has already committed.
   }
 }
 

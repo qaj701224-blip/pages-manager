@@ -48,6 +48,7 @@ test('dry-run plans v2 staging vue demo without requiring legacy token', () => {
   assert.match(result.stdout, /PAGES_V2_DEMO_TARGET=staging/);
   assert.match(result.stdout, /PAGES_V2_API=https:\/\/api-staging\.pages\.xd\.team/);
   assert.match(result.stdout, /PAGES_V2_SITE=https:\/\/demo-vue-app-staging\.pages\.xd\.team/);
+  assert.match(result.stdout, /PAGES_V2_DEMO_VISIBILITY=internal/);
   assert.match(result.stdout, /demo-vue-app\s+spa\s+demos\/vue-app/);
   assert.doesNotMatch(result.stdout, /PAGES_TOKEN|workers\.xd\.team|pages_demo@xd\.com/);
   assert.doesNotMatch(result.stderr, /PAGES_TOKEN|workers\.xd\.team|pages_demo@xd\.com/);
@@ -81,6 +82,8 @@ test('script invokes v2 CLI instead of legacy Pages API', () => {
   assert.match(script, /apps\/pages-cli\/src\/main\.js/);
   assert.match(script, /--artifact-kind spa/);
   assert.match(script, /PAGES_CLI_ENV="\$PAGES_V2_DEMO_TARGET"/);
+  assert.match(script, /deploy dist "\$PAGES_V2_DEMO_SLUG"/);
+  assert.doesNotMatch(script, /--slug "\$PAGES_V2_DEMO_SLUG"/);
   assert.doesNotMatch(script, /X-Pages-Token|PAGES_TOKEN|api-staging\.workers\.xd\.team|\/deploy/);
 
   assert.match(demoReadme, /scripts\/test-pages-v2-demos\.sh/);
