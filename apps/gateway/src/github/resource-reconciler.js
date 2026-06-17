@@ -1,8 +1,6 @@
 import { githubApiUrl, githubRequest, parseRepoFullName } from '@xd/git-client';
 
 import { notifySlackJobStatus } from '../slack/notifier.js';
-import { normalizeSlackWorkItemQueryState, slackWorkItemIncludesInactive } from '../slack/work-item-query.js';
-import { isActionableSlackWorkItem, listSlackWorkItemsForSession } from '../slack/work-items.js';
 import { issueUrl } from './webhook.js';
 
 export async function cancelJobForClosedGithubIssue(store, job, issue = {}) {
@@ -224,33 +222,4 @@ export async function reconcileClosedGithubIssueForJob(store, env, job, options 
   }
 
   return updatedJob;
-}
-
-export async function listReconciledSlackWorkItemsForSession(store, body, env, options = {}) {
-  const displayLimit = Math.min(Math.max(Number(options.limit) || 5, 1), 20);
-  const reconcileLimit = options.reconcileLimit || Math.max(displayLimit, 20);
-  const workItemState = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
-  const result = await listSlackWorkItemsForSession(store, body, {
-    ...options,
-    limit: reconcileLimit,
-    workItemState,
-  });
-  const reconciledJobs = [];
-
-  for (const job of result.jobs || []) {
-    const reconciled = await reconcileClosedGithubIssueForJob(store, env, job);
-    const actionable = isActionableSlackWorkItem(reconciled);
-    if (workItemState === 'closed' ? !actionable : slackWorkItemIncludesInactive(workItemState) || actionable) {
-      reconciledJobs.push(reconciled);
-    }
-  }
-
-  const jobs = reconciledJobs.slice(0, displayLimit);
-  return {
-    ...result,
-    jobs,
-    total: jobs.length,
-    limit: displayLimit,
-    workItemState,
-  };
 }
