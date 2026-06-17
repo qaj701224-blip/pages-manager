@@ -500,7 +500,7 @@ GET /cas/oauth2.0/profile?access_token=...
 | `account_id` | `accountId` / `account_id` | 当前系统推送帐号对应 ID；用于身份排查和后续目录对齐，不作为权限判断。 |
 | `employeenum` | `employeenum` / `employeeNum` / `employee_num` | 员工账号；用于身份排查和后续组织目录对齐，不作为权限判断。 |
 | `employeeStatus` | `employee_status` / `employeeStatus` | `1` / `active` 映射为 `active`；`0` / `disabled` / `inactive` 映射为 `disabled`；`left` / `leave` / `departed` 映射为 `left`；其它为 `unknown`。 |
-| `departments` | `departments` / `departmentIds` / `department_ids` | 如果 SSO profile 明确返回部门数组则透传到 site code / session；当前联调 profile 通常不返回部门，公开 API 第一版不开放 department ACL，后续通过组织搜索/目录接口补齐。 |
+| `departments` | `departments` / `departmentIds` / `department_ids` | 如果 SSO profile 明确返回部门数组则透传到 site code / session；当前联调 profile 通常不返回部门，部门 ACL 需要后续通过组织搜索/目录接口补齐用户部门路径。 |
 | `sessionVersion` | `sessionVersion` / `session_version` | 缺失时平台默认 `1`。 |
 
 `account`、`account_id`、`employeenum`、`realname` 可以进入 `users` 表，因为它们是常用身份排查字段，且不改变权限判断。`users` 表不再同时保存 `id` 和 `sso_subject` 两个等价字段，避免同一 SSO `userId` 出现两套名字。`fs_id`、`wechat_work`、`ad_account`、`job_number` 暂不进入核心 `users` 表；如果后续要长期使用，应单独设计 `user_identities` 或组织目录同步表。`st`、`tgtId` 是 CAS ticket 类敏感字段，不能持久化到平台业务库，也不能透传给 User Worker。
@@ -1005,8 +1005,8 @@ site_members
 site_acl_entries
   id                  -- acl_xxx
   site_id
-  subject_type        -- 第一版公开 API 只开放 email；department / group 为未来预留
-  subject_value       -- 邮箱；未来可扩展稳定 department id/path
+  subject_type        -- email / department；group 为未来预留
+  subject_value       -- 邮箱；或完整部门路径，例如 心动/技术平台部
   access_role         -- viewer / editor
   effect              -- allow；第一版不支持 deny
   created_by
@@ -1018,13 +1018,15 @@ site_acl_entries
 ```text
 allow if:
   user.email in ACL(email)
+  OR user.department_path == ACL(department)
+  OR user.department_path startsWith ACL(department) + "/"
 ```
 
-同一站点可添加多条 ACL entry，例如“指定多个邮箱”。命中任意一条 allow entry 即可访问；没有命中则拒绝。用户侧指定某个人时必须填写邮箱，不填写 SSO `userId`、`accountId`、工号、企微 ID 或其它内部身份字段。
+同一站点可添加多条 ACL entry，例如“指定多个邮箱”和“指定一个部门路径”。命中任意一条 allow entry 即可访问；没有命中则拒绝。用户侧指定某个人时必须填写邮箱，不填写 SSO `userId`、`accountId`、工号、企微 ID 或其它内部身份字段。
 
-第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。当前公开 API 只开放 `email`；`department`、`group` 和内部 `user` subject type 先保留为未来方向，不阻塞 MVP。`owner`、session subject、审计归因仍使用平台内部 `userId`，但不作为用户可填写的 ACL subject。
+第一版不支持 `deny`、排除用户、`AND` 条件、部门内角色条件、嵌套表达式或策略语言。当前公开 API 开放 `email` 和 `department`；`group` 和内部 `user` subject type 先保留为未来方向，不阻塞 MVP。`owner`、session subject、审计归因仍使用平台内部 `userId`，但不作为用户可填写的 ACL subject。
 
-`department` 只有在组织系统能提供稳定、不可复用 ID、成员快照版本和可控刷新 TTL 后才应在生产开放。启用后，成员变更必须能触发 `policyVersion` 或 `sessionVersion` 失效。`group` 等更复杂主体等组织目录语义稳定后再评审。
+`department` 第一版使用组织目录返回的部门路径字符串，并按路径前缀包含子部门。因为部门名称/path 可能调整，平台必须把组织目录查询结果作为短 TTL 的会话属性，不把站点 KV 当作用户数据库；后续如果组织系统能提供稳定、不可复用 department id 和成员快照版本，应优先迁移到稳定 id。成员变更或部门路径变化至少要能通过重新登录、site_session 过期或后续目录刷新让权限生效。`group` 等更复杂主体等组织目录语义稳定后再评审。
 
 #### access_keys
 
@@ -1774,7 +1776,7 @@ if visibility == owner:
   deny non-owner
 
 if visibility == acl:
-  allow if any ACL email entry matches
+  allow if any ACL email or department path entry matches
 
 otherwise:
   deny
@@ -2219,6 +2221,8 @@ pages env use staging
 | `PATCH`  | `/.xd-pages/api/sites/{id}`             | owner CLI token / api_session          | 修改 visibility，bump `policyVersion`，刷新 snapshot  |
 | `GET`    | `/.xd-pages/api/sites/{id}/acl`         | CLI token / api_session                | 返回站点 ACL，不返回 token 或 session                 |
 | `PUT`    | `/.xd-pages/api/sites/{id}/acl`         | owner CLI token / api_session          | allow-only 全量替换 ACL，bump `policyVersion`         |
+| `POST`   | `/.xd-pages/api/sites/{id}/acl/entries` | owner CLI token / api_session          | 增量 grant 邮箱或部门路径，bump `policyVersion`       |
+| `DELETE` | `/.xd-pages/api/sites/{id}/acl/entries` | owner CLI token / api_session          | 增量 revoke 邮箱或部门路径，bump `policyVersion`      |
 | `POST`   | `/.xd-pages/api/deployments`            | CLI token / access key                 | 必须带 `Idempotency-Key`；返回 deployment 状态        |
 | `GET`    | `/.xd-pages/api/deployments/{id}`       | CLI token / `read:site` access key     | 用于轮询 deploy 状态                                  |
 | `POST`   | `/.xd-pages/api/versions/{id}/rollback` | CLI token / access key                 | 必须带 `Idempotency-Key`；走同一发布状态机            |
@@ -2606,7 +2610,7 @@ publish -> activate -> drain -> retire
 ### 阶段 3：子站 SSO 与 ACL
 
 - 支持 `acl` 和 `owner` visibility。
-- 支持 allow-only OR ACL：第一版公开 API 只开放 `email`，`owner` 使用内部 user id 判断。
+- 支持 allow-only OR ACL：第一版公开 API 开放 `email` 和 `department` path，`owner` 使用内部 user id 判断。
 - `group`、`deny`、条件表达式、collaborator 管理和策略语言进入后续阶段，等组织目录和权限语义稳定后再开放。
 - 完成更细的 user/session revocation、risk policy 和管理 UI 入口。
 

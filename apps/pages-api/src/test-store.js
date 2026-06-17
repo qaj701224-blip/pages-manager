@@ -217,6 +217,58 @@ class TestPagesStore {
     return cloneRecord(nextEntries);
   }
 
+  async addSiteAclEntries(siteId, entries, { createdBy, updatedAt }, environment) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    const site = this.sites.get(siteId);
+    if (!site || !route) return [];
+    if (environment && route.environment !== environment) return [];
+
+    const existing = this.siteAclEntries.get(siteId) || [];
+    const existingKeys = new Set(existing.map(siteAclEntryKey));
+    const now = updatedAt || this.now();
+    const nextEntries = [...existing];
+    for (const entry of entries) {
+      if (existingKeys.has(siteAclEntryKey(entry))) continue;
+      existingKeys.add(siteAclEntryKey(entry));
+      nextEntries.push({
+        id: entry.id,
+        siteId,
+        subjectType: entry.subjectType,
+        subjectValue: entry.subjectValue,
+        accessRole: entry.accessRole,
+        effect: entry.effect,
+        createdBy,
+        createdAt: now,
+      });
+    }
+    if (nextEntries.length === existing.length) return cloneRecord(existing);
+
+    this.siteAclEntries.set(siteId, nextEntries);
+    site.updatedAt = now;
+    route.policyVersion += 1;
+    route.updatedAt = now;
+    return cloneRecord(nextEntries);
+  }
+
+  async removeSiteAclEntries(siteId, entries, { updatedAt }, environment) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    const site = this.sites.get(siteId);
+    if (!site || !route) return [];
+    if (environment && route.environment !== environment) return [];
+
+    const removedKeys = new Set(entries.map(siteAclEntryKey));
+    const existing = this.siteAclEntries.get(siteId) || [];
+    const nextEntries = existing.filter((entry) => !removedKeys.has(siteAclEntryKey(entry)));
+    if (nextEntries.length === existing.length) return cloneRecord(existing);
+
+    const now = updatedAt || this.now();
+    this.siteAclEntries.set(siteId, nextEntries);
+    site.updatedAt = now;
+    route.policyVersion += 1;
+    route.updatedAt = now;
+    return cloneRecord(nextEntries);
+  }
+
   async restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment) {
     return this.restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, null, environment);
   }
@@ -519,6 +571,10 @@ function routesMatch(actual, expected) {
     actual.routeGeneration === expected.routeGeneration &&
     actual.routeStatus === expected.routeStatus
   );
+}
+
+function siteAclEntryKey(entry) {
+  return `${entry.effect}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole}`;
 }
 
 function routeActivationMatches(actual, expected) {

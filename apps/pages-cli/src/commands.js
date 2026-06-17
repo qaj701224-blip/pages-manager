@@ -33,6 +33,7 @@ const API_READ_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
 const STATUS_FLAGS = new Set(['env', 'deployment', 'accessKey', 'json', 'help']);
 const ROLLBACK_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
 const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'accessKey']);
+const ACCESS_FLAGS = new Set(['env', 'visibility', 'email', 'department', 'accessKey', 'json', 'help']);
 const ENV_FLAGS = new Set(['json', 'help', 'accessKey']);
 const ENV_CUSTOM_FLAGS = new Set(['api', 'auth', 'siteDomainSuffix', 'json', 'help', 'accessKey']);
 
@@ -72,6 +73,8 @@ export async function executeCommand(argv = [], options = {}) {
       return runOpen(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'sites':
       return runSites(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'access':
+      return runAccess(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'env':
       assertAccessKeyNotUsed(parsed);
       return runEnv(parsed, { ...options, env, profileDir, profile, output });
@@ -362,6 +365,97 @@ async function runSites(parsed, context) {
   throw usageError('SITES_COMMAND_INVALID', 'sites 命令无效。', '请使用 pages sites list 或 pages sites info <站点名>。');
 }
 
+async function runAccess(parsed, context) {
+  const subcommand = parsed.positional[0] || 'get';
+  const child = { ...parsed, positional: parsed.positional.slice(1) };
+  const config = readConfigForCommand(parsed, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
+
+  if (subcommand === 'get') {
+    assertFlagsAbsent(parsed, ['visibility', 'email', 'department'], 'ACCESS_GET_USAGE_INVALID', 'access get 不接受访问范围设置参数。');
+    const siteSlug = readSingleSiteArg(child, 'ACCESS_GET_USAGE_INVALID', '请使用 pages access get <站点名>。');
+    const { site } = await readSiteBySlug(client, siteSlug);
+    const result = await client.requestApi('GET', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}/acl`);
+    const summary = summarizeAccessEntries(result.aclEntries || []);
+    return outputAccessResult(parsed, context, {
+      environment: config.environment,
+      site: site.slug,
+      visibility: readSiteVisibility(site),
+      ...summary,
+    });
+  }
+
+  if (subcommand === 'set') {
+    const siteSlug = readSingleSiteArg(child, 'ACCESS_SET_USAGE_INVALID', '请使用 pages access set <站点名> --visibility <范围>。');
+    const visibility = normalizeVisibility(parsed.flags.visibility);
+    if (!visibility) {
+      if (parsed.flags.visibility !== undefined) {
+        throw usageError('ACCESS_VISIBILITY_INVALID', '访问范围无效。', '请使用 internal、org、acl、owner 或 disabled。');
+      }
+      throw usageError('ACCESS_VISIBILITY_REQUIRED', '缺少访问范围。', '请传入 --visibility internal|org|acl|owner|disabled。');
+    }
+    const requested = readAccessEntryFlags(parsed, { requireEntry: false });
+    if (visibility !== 'acl' && requested.entries.length > 0) {
+      throw usageError('ACCESS_ENTRIES_UNUSED', '当前访问范围不使用邮箱或部门名单。', '只有 --visibility acl 可以同时传 --email 或 --department。');
+    }
+
+    const { site } = await readSiteBySlug(client, siteSlug);
+    const updated = await client.requestApi('PATCH', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}`, { visibility });
+    let summary = { emails: [], departments: [], aclEntries: [] };
+    if (visibility === 'acl') {
+      const result = await client.requestApi('PUT', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}/acl`, {
+        entries: requested.entries,
+      });
+      summary = summarizeAccessEntries(result.aclEntries || []);
+    }
+    return outputAccessResult(parsed, context, {
+      environment: config.environment,
+      site: updated.site?.slug || site.slug,
+      visibility,
+      emails: summary.emails,
+      departments: summary.departments,
+    });
+  }
+
+  if (subcommand === 'grant' || subcommand === 'revoke') {
+    assertFlagsAbsent(
+      parsed,
+      ['visibility'],
+      subcommand === 'grant' ? 'ACCESS_GRANT_USAGE_INVALID' : 'ACCESS_REVOKE_USAGE_INVALID',
+      `access ${subcommand} 不接受 --visibility。`
+    );
+    const siteSlug = readSingleSiteArg(
+      child,
+      subcommand === 'grant' ? 'ACCESS_GRANT_USAGE_INVALID' : 'ACCESS_REVOKE_USAGE_INVALID',
+      `请使用 pages access ${subcommand} <站点名> --email <邮箱> 或 --department <部门路径>。`
+    );
+    const requested = readAccessEntryFlags(parsed, { requireEntry: true });
+    const { site } = await readSiteBySlug(client, siteSlug);
+    if (readSiteVisibility(site) !== 'acl') {
+      throw usageError('ACCESS_VISIBILITY_NOT_ACL', '站点当前不是 acl 访问范围。', firstAclSetAction(siteSlug, requested));
+    }
+    const method = subcommand === 'grant' ? 'POST' : 'DELETE';
+    const result = await client.requestApi(method, `/.xd-pages/api/sites/${encodeURIComponent(site.id)}/acl/entries`, {
+      entries: requested.entries,
+    });
+    const summary = summarizeAccessEntries(result.aclEntries || []);
+    return outputAccessResult(parsed, context, {
+      environment: config.environment,
+      site: site.slug,
+      visibility: 'acl',
+      emails: summary.emails,
+      departments: summary.departments,
+    });
+  }
+
+  throw usageError(
+    'ACCESS_COMMAND_INVALID',
+    'access 命令无效。',
+    '请使用 pages access get、set、grant 或 revoke。'
+  );
+}
+
 async function runEnv(parsed, context) {
   const subcommand = parsed.positional[0] || 'list';
   if (subcommand === 'list') {
@@ -433,6 +527,7 @@ function allowedFlagsForCommand(parsed) {
   if (parsed.command === 'rollback') return ROLLBACK_FLAGS;
   if (parsed.command === 'open') return OPEN_FLAGS;
   if (parsed.command === 'sites') return API_READ_FLAGS;
+  if (parsed.command === 'access') return ACCESS_FLAGS;
   if (parsed.command === 'auth') return allowedAuthFlags(parsed);
   if (parsed.command === 'env') return allowedEnvFlags(parsed);
   return null;
@@ -455,6 +550,14 @@ function assertOnlyAllowedFlags(parsed, allowed) {
   for (const flag of Object.keys(parsed.flags)) {
     if (allowed.has(flag)) continue;
     throw usageError('OPTION_UNKNOWN', `未知选项：--${displayFlagName(flag)}`, helpActionForCommand(parsed.command));
+  }
+}
+
+function assertFlagsAbsent(parsed, flags, code, message) {
+  for (const flag of flags) {
+    if (parsed.flags[flag] !== undefined) {
+      throw usageError(code, message, '请运行 pages help access 查看用法。');
+    }
   }
 }
 
@@ -549,6 +652,113 @@ function readSingleSiteArg(parsed, code, action) {
   return site;
 }
 
+function normalizeVisibility(value) {
+  const visibility = typeof value === 'string' ? value.trim() : '';
+  return VALID_VISIBILITIES.has(visibility) ? visibility : '';
+}
+
+function readAccessEntryFlags(parsed, { requireEntry }) {
+  const emails = normalizeRepeatedFlag(parsed.flags.email).map(normalizeEmail);
+  const departments = normalizeRepeatedFlag(parsed.flags.department).map(normalizeDepartmentPath);
+  if (emails.some((email) => !isValidEmail(email))) {
+    throw usageError('ACCESS_EMAIL_INVALID', '邮箱格式无效。', '请传入完整邮箱，例如 --email user@xd.com。');
+  }
+  if (departments.some((department) => !department)) {
+    throw usageError('ACCESS_DEPARTMENT_INVALID', '部门路径无效。', '请传入完整部门路径，例如 --department "心动/技术平台部"。');
+  }
+
+  const entries = [];
+  const seen = new Set();
+  for (const email of emails) addAccessEntry(entries, seen, 'email', email);
+  for (const department of departments) addAccessEntry(entries, seen, 'department', department);
+  if (requireEntry && entries.length === 0) {
+    throw usageError('ACCESS_ENTRIES_REQUIRED', '缺少授权对象。', '请传入 --email <邮箱> 或 --department <部门路径>。');
+  }
+  return {
+    entries,
+    emails: entries.filter((entry) => entry.subjectType === 'email').map((entry) => entry.subjectValue),
+    departments: entries.filter((entry) => entry.subjectType === 'department').map((entry) => entry.subjectValue),
+  };
+}
+
+function addAccessEntry(entries, seen, subjectType, subjectValue) {
+  const key = `${subjectType}:${subjectValue}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  entries.push({ subjectType, subjectValue });
+}
+
+function normalizeRepeatedFlag(value) {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function normalizeEmail(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+$/.test(value);
+}
+
+function normalizeDepartmentPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw || hasControlCharacter(raw)) return '';
+  const parts = raw
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return '';
+  const normalized = parts.join('/');
+  if (normalized.length > 256 || parts.some((part) => part.length > 80)) return '';
+  return normalized;
+}
+
+function hasControlCharacter(value) {
+  return [...value].some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+}
+
+function readSiteVisibility(site) {
+  return site?.route?.visibility || site?.defaultVisibility || null;
+}
+
+function summarizeAccessEntries(aclEntries = []) {
+  const emails = [];
+  const departments = [];
+  const seen = new Set();
+  for (const entry of aclEntries) {
+    if (!entry || entry.effect !== 'allow') continue;
+    const key = `${entry.subjectType}:${entry.subjectValue}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (entry.subjectType === 'email') emails.push(entry.subjectValue);
+    if (entry.subjectType === 'department') departments.push(entry.subjectValue);
+  }
+  return { emails, departments };
+}
+
+function firstAclSetAction(siteSlug, requested) {
+  const email = requested.emails[0];
+  if (email) return `请先运行 pages access set ${siteSlug} --visibility acl --email ${email}。`;
+  const department = requested.departments[0];
+  if (department) return `请先运行 pages access set ${siteSlug} --visibility acl --department "${department}"。`;
+  return `请先运行 pages access set ${siteSlug} --visibility acl --email user@xd.com。`;
+}
+
+function outputAccessResult(parsed, context, payload) {
+  if (outputJsonResult(parsed, context, payload)) return 0;
+  context.output(`站点名：${payload.site}`);
+  context.output(`访问范围：${payload.visibility}`);
+  context.output(`邮箱：${payload.emails.length ? payload.emails.join(', ') : '-'}`);
+  context.output(`部门：${payload.departments.length ? payload.departments.join(', ') : '-'}`);
+  return 0;
+}
+
 function assertNoPositionals(parsed, code, message) {
   if (parsed.positional.length > 0) throw usageError(code, message, '运行 pages help 查看用法。');
 }
@@ -568,7 +778,7 @@ function assertAccessKeyNotUsed(parsed) {
     throw usageError(
       'ACCESS_KEY_NOT_USED',
       '当前命令不会使用 access key。',
-      '请只在 login、deploy、status、sites、rollback 或 auth whoami 等需要访问 API 的命令中传 --access-key。'
+      '请只在 login、deploy、status、sites、access、rollback 或 auth whoami 等需要访问 API 的命令中传 --access-key。'
     );
   }
 }
@@ -660,6 +870,37 @@ function helpText(topic) {
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
+  if (topic === 'access') {
+    return `用法：pages access get <站点名> [选项]
+      pages access set <站点名> --visibility <范围> [--email <邮箱>] [--department <部门路径>]
+      pages access grant <站点名> [--email <邮箱>] [--department <部门路径>]
+      pages access revoke <站点名> [--email <邮箱>] [--department <部门路径>]
+
+查看或调整站点访问范围。
+
+访问范围：
+  internal   公司网络内免登录访问。
+  org        公司网络内，需公司 SSO active 用户。
+  acl        公司网络内，需命中邮箱或部门授权；owner 隐式可访问。
+  owner      公司网络内，仅 active owner 可访问。
+  disabled   暂停访问。
+
+选项：
+  --env <production|staging>                目标环境。
+  --visibility <internal|org|acl|owner|disabled>
+                                            set 命令使用；设置站点访问范围。
+  --email <邮箱>                            可重复传入；acl 访问范围下授权邮箱。
+  --department <部门路径>                   可重复传入；acl 访问范围下授权部门及子部门。
+  --access-key <key>                        只在本次命令中使用的 access key。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。
+
+示例：
+  pages access get demo
+  pages access set demo --visibility acl --email user@xd.com --department "心动/技术平台部"
+  pages access grant demo --email another@xd.com
+  pages access revoke demo --department "心动/技术平台部"`;
+  }
   if (topic === 'rollback') {
     return `用法：pages rollback <站点名> <version-id> [选项]
 
@@ -704,6 +945,7 @@ function helpText(topic) {
   status      查看站点或部署状态。
   sites       查看站点列表或详情。
   rollback    回滚到不可变版本 ID。
+  access      查看或调整站点访问范围。
   open        打开或打印站点地址。
   env         查看或切换环境。
 
@@ -721,7 +963,7 @@ function helpText(topic) {
 function helpJson(topic) {
   return {
     topic,
-    commands: ['login', 'auth', 'deploy', 'status', 'sites', 'rollback', 'open', 'env'],
+    commands: ['login', 'auth', 'deploy', 'status', 'sites', 'rollback', 'access', 'open', 'env'],
     commandHelp: 'pages help <命令>',
     jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };

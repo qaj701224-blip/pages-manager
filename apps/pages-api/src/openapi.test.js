@@ -19,6 +19,8 @@ test('serves production XD Pages OpenAPI skeleton', async () => {
   assert.ok(body.paths['/.xd-pages/api/sites']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
   assert.ok(body.paths['/.xd-pages/api/deployments']);
@@ -52,7 +54,7 @@ test('serves production XD Pages OpenAPI skeleton', async () => {
   assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /artifactBundle/);
   assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /siteSlug/);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
-  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email']);
+  assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email', 'department']);
   assert.deepEqual(body.components.schemas.SiteVisibility.enum, ['internal', 'org', 'acl', 'owner', 'disabled']);
   assert.doesNotMatch(
     serialized,

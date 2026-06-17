@@ -119,10 +119,11 @@ export function buildOpenApi(config) {
           properties: {
             subjectType: {
               type: 'string',
-              enum: ['email'],
+              enum: ['email', 'department'],
               description:
-                'People are specified by email. Internal SSO user ids are not accepted as public ACL subjects. ' +
-                'department and group are intentionally not enabled until organization directory semantics are stable.',
+                'People are specified by email. Departments are specified by full department path and include subdepartments. ' +
+                'Internal SSO user ids, account ids, employee numbers, and group subjects are not accepted as public ' +
+                'ACL subjects.',
             },
             subjectValue: { type: 'string' },
             effect: {
@@ -231,6 +232,64 @@ export function buildOpenApi(config) {
           ],
           responses: {
             200: { description: 'ACL entries replaced' },
+            400: { description: 'Invalid ACL request' },
+            403: { description: 'Only the site owner can manage site ACL' },
+            404: { description: 'Site not found' },
+            503: { description: 'Route snapshot write failed' },
+          },
+        },
+      },
+      '/.xd-pages/api/sites/{id}/acl/entries': {
+        post: {
+          summary: 'Grant additional site ACL entries using allow-only OR semantics',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteAclReplaceRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'ACL_ENTRIES_INVALID',
+            'ACL_EFFECT_UNSUPPORTED',
+            'ACL_ROLE_UNSUPPORTED',
+            'ACL_SUBJECT_TYPE_UNSUPPORTED',
+            'ACL_SUBJECT_VALUE_INVALID',
+            'SITE_POLICY_FORBIDDEN',
+            'ROUTE_SNAPSHOT_WRITE_FAILED',
+          ],
+          responses: {
+            200: { description: 'ACL entries granted' },
+            400: { description: 'Invalid ACL request' },
+            403: { description: 'Only the site owner can manage site ACL' },
+            404: { description: 'Site not found' },
+            503: { description: 'Route snapshot write failed' },
+          },
+        },
+        delete: {
+          summary: 'Revoke site ACL entries incrementally',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteAclReplaceRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'ACL_ENTRIES_INVALID',
+            'ACL_EFFECT_UNSUPPORTED',
+            'ACL_ROLE_UNSUPPORTED',
+            'ACL_SUBJECT_TYPE_UNSUPPORTED',
+            'ACL_SUBJECT_VALUE_INVALID',
+            'SITE_POLICY_FORBIDDEN',
+            'ROUTE_SNAPSHOT_WRITE_FAILED',
+          ],
+          responses: {
+            200: { description: 'ACL entries revoked' },
             400: { description: 'Invalid ACL request' },
             403: { description: 'Only the site owner can manage site ACL' },
             404: { description: 'Site not found' },

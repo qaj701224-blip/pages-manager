@@ -211,6 +211,112 @@ test('auth whoami uses API validation and env list stays user-facing only', asyn
   assert.deepEqual(envOutput, ['production', 'staging']);
 });
 
+test('access set updates visibility and replaces allow list entries', async () => {
+  const calls = [];
+  const output = [];
+
+  await executeCommand(
+    ['access', 'set', 'demo', '--visibility', 'acl', '--email', 'Alice@Example.COM', '--department', ' 心动/技术平台部 ', '--json'],
+    {
+      env: {},
+      secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+      fetch: fakeFetch(calls, [
+        { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'org' } }] },
+        { site: { id: 'site_1', slug: 'demo', defaultVisibility: 'acl', route: { visibility: 'acl' } } },
+        {
+          aclEntries: [
+            { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow', accessRole: 'viewer' },
+            { subjectType: 'department', subjectValue: '心动/技术平台部', effect: 'allow', accessRole: 'viewer' },
+          ],
+        },
+      ]),
+      output: (line) => output.push(line),
+    }
+  );
+
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1');
+  assert.equal(calls[1].method, 'PATCH');
+  assert.deepEqual(await calls[1].json(), { visibility: 'acl' });
+  assert.equal(calls[2].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl');
+  assert.equal(calls[2].method, 'PUT');
+  assert.deepEqual(await calls[2].json(), {
+    entries: [
+      { subjectType: 'email', subjectValue: 'alice@example.com' },
+      { subjectType: 'department', subjectValue: '心动/技术平台部' },
+    ],
+  });
+  assert.deepEqual(JSON.parse(output[0]), {
+    ok: true,
+    schemaVersion: 1,
+    environment: 'production',
+    site: 'demo',
+    visibility: 'acl',
+    emails: ['alice@example.com'],
+    departments: ['心动/技术平台部'],
+  });
+});
+
+test('access grant and revoke change allow list entries incrementally', async () => {
+  const grantCalls = [];
+  const revokeCalls = [];
+
+  await executeCommand(['access', 'grant', 'demo', '--email', 'Bob@Example.COM', '--department', '心动/技术平台部'], {
+    env: {},
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(grantCalls, [
+      { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'acl' } }] },
+      {
+        aclEntries: [
+          { subjectType: 'email', subjectValue: 'bob@example.com', effect: 'allow', accessRole: 'viewer' },
+          { subjectType: 'department', subjectValue: '心动/技术平台部', effect: 'allow', accessRole: 'viewer' },
+        ],
+      },
+    ]),
+    output: () => {},
+  });
+
+  await executeCommand(['access', 'revoke', 'demo', '--department', '心动/技术平台部'], {
+    env: {},
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(revokeCalls, [
+      { sites: [{ id: 'site_1', slug: 'demo', environment: 'production', route: { visibility: 'acl' } }] },
+      { aclEntries: [{ subjectType: 'email', subjectValue: 'bob@example.com', effect: 'allow', accessRole: 'viewer' }] },
+    ]),
+    output: () => {},
+  });
+
+  assert.equal(grantCalls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl/entries');
+  assert.equal(grantCalls[1].method, 'POST');
+  assert.deepEqual(await grantCalls[1].json(), {
+    entries: [
+      { subjectType: 'email', subjectValue: 'bob@example.com' },
+      { subjectType: 'department', subjectValue: '心动/技术平台部' },
+    ],
+  });
+  assert.equal(revokeCalls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl/entries');
+  assert.equal(revokeCalls[1].method, 'DELETE');
+  assert.deepEqual(await revokeCalls[1].json(), {
+    entries: [{ subjectType: 'department', subjectValue: '心动/技术平台部' }],
+  });
+});
+
+test('access grant explains that the site must use acl visibility first', async () => {
+  await assert.rejects(
+    () =>
+      executeCommand(['access', 'grant', 'demo', '--email', 'user@example.com'], {
+        env: {},
+        secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+        fetch: fakeFetch([], [{ sites: [{ id: 'site_1', slug: 'demo', route: { visibility: 'org' } }] }]),
+        output: () => {},
+      }),
+    {
+      code: 'ACCESS_VISIBILITY_NOT_ACL',
+      action: '请先运行 pages access set demo --visibility acl --email user@example.com。',
+    }
+  );
+});
+
 test('local commands reject unused access keys', async () => {
   await assert.rejects(() => executeCommand(['version', '--access-key', 'x'], { output: () => {} }), {
     code: 'ACCESS_KEY_NOT_USED',
@@ -279,6 +385,20 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     );
     assert.doesNotMatch(text, /WFP|slot|dispatch namespace|service binding/i);
   }
+});
+
+test('prints command-specific access help with Chinese visibility wording', async () => {
+  const output = [];
+
+  assert.equal(await executeCommand(['help', 'access'], { output: (line) => output.push(line) }), 0);
+
+  const text = output.join('\n');
+  assert.match(text, /用法：pages access get <站点名>/);
+  assert.match(text, /pages access set <站点名> --visibility <范围>/);
+  assert.match(text, /pages access grant <站点名>/);
+  assert.match(text, /公司网络内，需命中邮箱或部门授权/);
+  assert.match(text, /--department <部门路径>/);
+  assert.doesNotMatch(text, /ACL 表|site_acl_entries|WFP|slot|v2/i);
 });
 
 async function tempProject() {

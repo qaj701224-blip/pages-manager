@@ -258,6 +258,7 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
       entries: [
         { subjectType: 'email', subjectValue: 'bob@example.com' },
         { subjectType: 'email', subjectValue: 'Alice@Example.COM' },
+        { subjectType: 'department', subjectValue: ' 心动/技术平台部 ' },
       ],
     }),
     testEnv(store)
@@ -281,12 +282,6 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     }),
     testEnv(store)
   );
-  const department = await worker.fetch(
-    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
-      entries: [{ subjectType: 'department', subjectValue: 'dept_design' }],
-    }),
-    testEnv(store)
-  );
   const departmentName = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
       entries: [{ subjectType: 'department_name', subjectValue: '平台' }],
@@ -306,6 +301,7 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     [
       { subjectType: 'email', subjectValue: 'bob@example.com', effect: 'allow' },
       { subjectType: 'email', subjectValue: 'alice@example.com', effect: 'allow' },
+      { subjectType: 'department', subjectValue: '心动/技术平台部', effect: 'allow' },
     ]
   );
   assert.deepEqual(
@@ -313,6 +309,7 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
     [
       { subjectType: 'email', subjectValue: 'bob@example.com' },
       { subjectType: 'email', subjectValue: 'alice@example.com' },
+      { subjectType: 'department', subjectValue: '心动/技术平台部' },
     ]
   );
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
@@ -322,12 +319,69 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   assert.equal((await user.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(group.status, 400);
   assert.equal((await group.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
-  assert.equal(department.status, 400);
-  assert.equal((await department.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(departmentName.status, 400);
   assert.equal((await departmentName.json()).error.code, 'ACL_SUBJECT_TYPE_UNSUPPORTED');
   assert.equal(invalidEmail.status, 400);
   assert.equal((await invalidEmail.json()).error.code, 'ACL_SUBJECT_VALUE_INVALID');
+});
+
+test('grants and revokes site ACL entries incrementally', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await store.replaceSiteAclEntries(
+    site.id,
+    [{ id: 'acl_existing', subjectType: 'email', subjectValue: 'alice@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  await activateSite(store, site.id, { visibility: 'acl' });
+  const snapshots = createSnapshotStore();
+
+  const grant = await worker.fetch(
+    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl/entries', {
+      entries: [
+        { subjectType: 'email', subjectValue: 'alice@example.com' },
+        { subjectType: 'email', subjectValue: 'Bob@Example.COM' },
+        { subjectType: 'department', subjectValue: '心动/技术平台部' },
+      ],
+    }),
+    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+  const revoke = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl/entries', {
+      entries: [
+        { subjectType: 'email', subjectValue: 'alice@example.com' },
+        { subjectType: 'department', subjectValue: '心动/技术平台部' },
+      ],
+    }),
+    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(grant.status, 200);
+  assert.deepEqual(
+    (await grant.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue })),
+    [
+      { subjectType: 'email', subjectValue: 'alice@example.com' },
+      { subjectType: 'email', subjectValue: 'bob@example.com' },
+      { subjectType: 'department', subjectValue: '心动/技术平台部' },
+    ]
+  );
+  assert.equal(revoke.status, 200);
+  assert.deepEqual(
+    (await revoke.json()).aclEntries.map(({ subjectType, subjectValue }) => ({ subjectType, subjectValue })),
+    [{ subjectType: 'email', subjectValue: 'bob@example.com' }]
+  );
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 4);
+  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').policyVersion, 4);
 });
 
 test('rejects deploy-only access keys from reading site ACL entries', async () => {

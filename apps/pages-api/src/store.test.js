@@ -233,6 +233,53 @@ test('site policy changes update visibility, ACL, cache tier, and policy version
   assert.equal((await store.getSite('site_1')).defaultVisibility, 'disabled');
 });
 
+test('site ACL incremental helpers dedupe entries and update policy version only on changes', async () => {
+  const store = createSeededStore();
+  await createSite(store);
+  await store.replaceSiteAclEntries(
+    'site_1',
+    [{ id: 'acl_1', subjectType: 'email', subjectValue: 'user@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:01:00.000Z' },
+    'production'
+  );
+
+  const granted = await store.addSiteAclEntries(
+    'site_1',
+    [
+      { id: 'acl_duplicate', subjectType: 'email', subjectValue: 'user@example.com', accessRole: 'viewer', effect: 'allow' },
+      { id: 'acl_2', subjectType: 'department', subjectValue: '心动/技术平台部', accessRole: 'viewer', effect: 'allow' },
+    ],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:02:00.000Z' },
+    'production'
+  );
+  const duplicateGrant = await store.addSiteAclEntries(
+    'site_1',
+    [{ id: 'acl_duplicate_2', subjectType: 'department', subjectValue: '心动/技术平台部', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:03:00.000Z' },
+    'production'
+  );
+  const revoked = await store.removeSiteAclEntries(
+    'site_1',
+    [{ id: 'ignored', subjectType: 'email', subjectValue: 'user@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { updatedAt: '2026-06-15T00:04:00.000Z' },
+    'production'
+  );
+
+  assert.deepEqual(
+    granted.map(({ id, subjectType, subjectValue }) => ({ id, subjectType, subjectValue })),
+    [
+      { id: 'acl_1', subjectType: 'email', subjectValue: 'user@example.com' },
+      { id: 'acl_2', subjectType: 'department', subjectValue: '心动/技术平台部' },
+    ]
+  );
+  assert.deepEqual(duplicateGrant, granted);
+  assert.deepEqual(
+    revoked.map(({ id, subjectType, subjectValue }) => ({ id, subjectType, subjectValue })),
+    [{ id: 'acl_2', subjectType: 'department', subjectValue: '心动/技术平台部' }]
+  );
+  assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 4);
+});
+
 test('conditional restore helpers do not clobber newer route state', async () => {
   const store = createSeededStore();
   await createSite(store);

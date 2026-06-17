@@ -51,9 +51,14 @@ pages deploy --config pages.config.json${envFlag}
 pages status <site>${envFlag}
 pages open <site>${envFlag}
 pages rollback <site> <version-id>${envFlag}
+pages access get <site>${envFlag}
+pages access set <site>${envFlag} --visibility acl --email user@xd.com
+pages access grant <site>${envFlag} --department "心动/技术平台部"
+pages access revoke <site>${envFlag} --email user@xd.com
 \`\`\`
 
 可见性只使用：\`internal\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。第一版所有可见性都受公司网络 / VPN / 办公网出口 IP allowlist 约束。
+\`acl\` 使用邮箱和完整部门路径授权，部门路径默认包含子部门；站点 owner 在非 \`disabled\` 状态下隐式可访问。
 \`--config <file>\` 是一次性输入，不自动发现、不写回、不保存到本地 profile，且不能包含 token、access key、cookie 或 secret。
 使用 \`--access-key <key>\` 时 access key 只对本次命令生效，CLI 不应把它写入本地状态。
 
@@ -97,6 +102,9 @@ pages deploy --config pages.config.json${envFlag}
 pages status demo${envFlag}
 pages open demo${envFlag}
 pages rollback demo <version-id>${envFlag}
+pages access get demo${envFlag}
+pages access set demo${envFlag} --visibility acl --email user@xd.com
+pages access grant demo${envFlag} --department "心动/技术平台部"
 \`\`\`
 
 CI 使用显式 \`--access-key <key>\` 和站点名位置参数，不要在仓库中保存 access key 或 CLI token。
@@ -107,6 +115,7 @@ CI 使用显式 \`--access-key <key>\` 和站点名位置参数，不要在仓�
 - 发布必须通过强认证。
 - 子站访问由 router 执行 IP allowlist、visibility、SSO 和 ACL。
 - \`internal\` 表示公司网络内匿名可访问，不代表互联网公开。
+- \`acl\` 支持邮箱和部门路径 OR 授权；部门路径授权包含子部门。
 - User Worker 不会收到平台 session cookie 或平台 secret。
 - 平台能力通过独立 capability 和 gateway 暴露，不能把 router 注入的身份 token 当作通用能力凭证。
 `;

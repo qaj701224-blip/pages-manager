@@ -65,19 +65,20 @@ test('active owner is implicitly allowed for acl visibility', () => {
   assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ userId: 'owner_1' })).ok, true);
 });
 
-test('acl visibility uses allow-only OR entries for email and internal department snapshot entries', () => {
+test('acl visibility uses allow-only OR entries for email and department path snapshot entries', () => {
   const aclRoute = route({
     visibility: 'acl',
     acl: [
       { effect: 'allow', subjectType: 'email', subjectValue: 'alice@example.com' },
-      { effect: 'allow', subjectType: 'department', subjectValue: 'dept_design' },
+      { effect: 'allow', subjectType: 'department', subjectValue: '心动/技术平台部' },
     ],
   });
 
   assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ email: 'alice@example.com' })).ok, true);
-  assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ departments: ['dept_design'] })).ok, true);
+  assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ departments: ['心动/技术平台部'] })).ok, true);
+  assert.equal(evaluateAccessPolicy(aclRoute, activeUser({ departments: ['心动/技术平台部/前端组'] })).ok, true);
   assert.deepEqual(
-    evaluateAccessPolicy(aclRoute, activeUser({ userId: 'usr_2', email: 'bob@example.com', departments: ['dept_eng'] })),
+    evaluateAccessPolicy(aclRoute, activeUser({ userId: 'usr_2', email: 'bob@example.com', departments: ['心动/技术平台'] })),
     {
       ok: false,
       code: 'SITE_ACCESS_FORBIDDEN',

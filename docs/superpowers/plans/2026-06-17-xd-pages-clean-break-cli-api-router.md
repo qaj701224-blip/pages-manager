@@ -112,7 +112,7 @@ if visibility == owner:
   deny non-owner
 
 if visibility == acl:
-  allow if any ACL email entry matches
+  allow if any ACL email or department path entry matches
 
 otherwise:
   deny
@@ -374,9 +374,9 @@ return aclAllows(route.acl, identity) ? { ok: true, user: identity } : denied('S
 
 Do not allow owner through `disabled`.
 
-- [ ] **Step 3: Keep department ACL internal-only or remove from exposed tests**
+- [ ] **Step 3: Keep ACL public subjects narrow**
 
-If department matching remains in router as future-capable internal logic, update test names so they do not imply public API support. Public API first release only accepts `email`.
+Public API first release accepts `email` and `department` path subjects only. Keep `user`, `group`, `deny`, and policy expressions out of the public contract.
 
 - [ ] **Step 4: Run router tests**
 

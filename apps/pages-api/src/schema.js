@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export function createSchemaSql() {
   return [
@@ -181,6 +181,8 @@ export function createSchemaSql() {
       ON deployments(idempotency_scope, idempotency_key)`,
     `CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site
       ON site_acl_entries(site_id, created_at)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject
+      ON site_acl_entries(site_id, subject_type, subject_value, access_role, effect)`,
     `CREATE INDEX IF NOT EXISTS idx_access_keys_owner
       ON access_keys(owner_user_id)`,
     `CREATE INDEX IF NOT EXISTS idx_audit_events_site_created

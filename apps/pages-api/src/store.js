@@ -403,6 +403,76 @@ export class D1PagesStore {
     return this.listSiteAclEntries(siteId);
   }
 
+  async addSiteAclEntries(siteId, entries, { createdBy, updatedAt }, environment) {
+    if (!(await this.getRouteBySiteId(siteId, environment))) return [];
+    const existing = await this.listSiteAclEntries(siteId);
+    const existingKeys = new Set(existing.map(siteAclEntryKey));
+    const entriesToInsert = entries.filter((entry) => !existingKeys.has(siteAclEntryKey(entry)));
+    if (entriesToInsert.length === 0) return existing;
+
+    const now = updatedAt || this.now();
+    const statements = [
+      this.db
+        .prepare(`UPDATE sites SET updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+        .bind(...(environment ? [now, siteId, environment] : [now, siteId])),
+      this.db
+        .prepare(
+          `UPDATE site_routes
+          SET policy_version = policy_version + 1, updated_at = ?
+          WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+        )
+        .bind(...(environment ? [now, siteId, environment] : [now, siteId])),
+    ];
+    for (const entry of entriesToInsert) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO site_acl_entries (
+              id, site_id, subject_type, subject_value, access_role,
+              effect, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .bind(entry.id, siteId, entry.subjectType, entry.subjectValue, entry.accessRole, entry.effect, createdBy, now)
+      );
+    }
+    await this.db.batch(statements);
+    return this.listSiteAclEntries(siteId);
+  }
+
+  async removeSiteAclEntries(siteId, entries, { updatedAt }, environment) {
+    if (!(await this.getRouteBySiteId(siteId, environment))) return [];
+    const existing = await this.listSiteAclEntries(siteId);
+    const removedKeys = new Set(entries.map(siteAclEntryKey));
+    if (existing.every((entry) => !removedKeys.has(siteAclEntryKey(entry)))) return existing;
+
+    const now = updatedAt || this.now();
+    const conditions = entries
+      .map(() => '(subject_type = ? AND subject_value = ? AND access_role = ? AND effect = ?)')
+      .join(' OR ');
+    const deleteBinds = entries.flatMap((entry) => [
+      entry.subjectType,
+      entry.subjectValue,
+      entry.accessRole,
+      entry.effect,
+    ]);
+    await this.db.batch([
+      this.db
+        .prepare(`DELETE FROM site_acl_entries WHERE site_id = ? AND (${conditions})`)
+        .bind(siteId, ...deleteBinds),
+      this.db
+        .prepare(`UPDATE sites SET updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+        .bind(...(environment ? [now, siteId, environment] : [now, siteId])),
+      this.db
+        .prepare(
+          `UPDATE site_routes
+          SET policy_version = policy_version + 1, updated_at = ?
+          WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+        )
+        .bind(...(environment ? [now, siteId, environment] : [now, siteId])),
+    ]);
+    return this.listSiteAclEntries(siteId);
+  }
+
   async restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment) {
     return this.restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, null, environment);
   }
@@ -984,6 +1054,10 @@ function routesMatch(actual, expected) {
     actual.routeGeneration === expected.routeGeneration &&
     actual.routeStatus === expected.routeStatus
   );
+}
+
+function siteAclEntryKey(entry) {
+  return `${entry.effect}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole}`;
 }
 
 function mapUser(row) {

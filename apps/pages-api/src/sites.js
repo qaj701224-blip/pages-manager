@@ -6,7 +6,7 @@ import { newHexId, newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
-const ACL_SUBJECT_TYPES = new Set(['email']);
+const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
@@ -19,6 +19,13 @@ export async function handleSitesApi(request, env, config, store) {
   if (url.pathname === '/.xd-pages/api/sites') {
     if (request.method === 'GET') return listSites(store, auth.actor, config.environment);
     if (request.method === 'POST') return createSite(request, env, config, store, auth.actor);
+    return methodNotAllowed();
+  }
+
+  const aclEntriesSiteId = matchSiteAclEntries(url.pathname);
+  if (aclEntriesSiteId) {
+    if (request.method === 'POST') return grantSiteAclEntries(request, env, config, store, auth.actor, aclEntriesSiteId);
+    if (request.method === 'DELETE') return revokeSiteAclEntries(request, env, config, store, auth.actor, aclEntriesSiteId);
     return methodNotAllowed();
   }
 
@@ -133,6 +140,79 @@ async function replaceSiteAcl(request, env, config, store, actor, siteId) {
   if (snapshotError) {
     await restoreSiteAclAfterSnapshotFailure(store, site.id, previousAclEntries, previousRoute, site, route, config.environment);
     return snapshotError;
+  }
+
+  return jsonOk({ aclEntries: aclEntries.map(formatAclEntry) });
+}
+
+async function grantSiteAclEntries(request, env, config, store, actor, siteId) {
+  const site = await getOwnerSite(store, actor, siteId, config.environment);
+  if (site instanceof Response) return site;
+  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
+  const previousAclEntries = await store.listSiteAclEntries(site.id);
+
+  const normalized = await readAndNormalizeAclEntries(request, env);
+  if (normalized instanceof Response) return normalized;
+
+  const mergedCount = countMergedAclEntries(previousAclEntries, normalized);
+  if (mergedCount > MAX_ACL_ENTRIES) {
+    return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'A site can have at most 200 ACL entries.');
+  }
+
+  const aclEntries = await store.addSiteAclEntries(
+    site.id,
+    normalized,
+    {
+      createdBy: actor.userId,
+      updatedAt: readNow(env),
+    },
+    config.environment
+  );
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (!aclEntrySetsEqual(previousAclEntries, aclEntries)) {
+    const snapshotError = await refreshActiveRouteSnapshot(env, store, site, route, config.environment);
+    if (snapshotError) {
+      await restoreSiteAclAfterSnapshotFailure(
+        store,
+        site.id,
+        previousAclEntries,
+        previousRoute,
+        site,
+        route,
+        config.environment
+      );
+      return snapshotError;
+    }
+  }
+
+  return jsonOk({ aclEntries: aclEntries.map(formatAclEntry) });
+}
+
+async function revokeSiteAclEntries(request, env, config, store, actor, siteId) {
+  const site = await getOwnerSite(store, actor, siteId, config.environment);
+  if (site instanceof Response) return site;
+  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
+  const previousAclEntries = await store.listSiteAclEntries(site.id);
+
+  const normalized = await readAndNormalizeAclEntries(request, env);
+  if (normalized instanceof Response) return normalized;
+
+  const aclEntries = await store.removeSiteAclEntries(site.id, normalized, { updatedAt: readNow(env) }, config.environment);
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (!aclEntrySetsEqual(previousAclEntries, aclEntries)) {
+    const snapshotError = await refreshActiveRouteSnapshot(env, store, site, route, config.environment);
+    if (snapshotError) {
+      await restoreSiteAclAfterSnapshotFailure(
+        store,
+        site.id,
+        previousAclEntries,
+        previousRoute,
+        site,
+        route,
+        config.environment
+      );
+      return snapshotError;
+    }
   }
 
   return jsonOk({ aclEntries: aclEntries.map(formatAclEntry) });
@@ -279,7 +359,7 @@ function normalizeAclEntries(value, env) {
         'ACL_SUBJECT_TYPE_UNSUPPORTED',
         'ACL subject type is not supported.',
         400,
-        'Use email. Department ACLs require organization directory sync and are not enabled in the first release.'
+        'Use email or department.'
       );
     }
 
@@ -303,17 +383,63 @@ function normalizeAclEntries(value, env) {
   return [...deduped.values()];
 }
 
+async function readAndNormalizeAclEntries(request, env) {
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 64 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+  return normalizeAclEntries(body.entries, env);
+}
+
 function normalizeAclSubjectValue(subjectType, value) {
   const normalized = String(value || '').trim();
   if (subjectType === 'email') {
     const email = normalized.toLowerCase();
     return isValidEmailAclSubject(email) ? email : '';
   }
-  return normalized;
+  if (subjectType === 'department') return normalizeDepartmentPath(normalized);
+  return '';
 }
 
 function isValidEmailAclSubject(value) {
   return /^[^\s@]+@[^\s@]+$/.test(value);
+}
+
+function normalizeDepartmentPath(value) {
+  if (!value || hasControlCharacter(value)) return '';
+  const parts = value
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return '';
+  const path = parts.join('/');
+  if (path.length > 256 || parts.some((part) => part.length > 80)) return '';
+  return path;
+}
+
+function hasControlCharacter(value) {
+  return [...value].some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+}
+
+function countMergedAclEntries(existing, incoming) {
+  const keys = new Set(existing.map(aclEntryKey));
+  for (const entry of incoming) keys.add(aclEntryKey(entry));
+  return keys.size;
+}
+
+function aclEntrySetsEqual(left, right) {
+  if (left.length !== right.length) return false;
+  const keys = new Set(left.map(aclEntryKey));
+  return right.every((entry) => keys.has(aclEntryKey(entry)));
+}
+
+function aclEntryKey(entry) {
+  return `${entry.effect || 'allow'}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole || 'viewer'}`;
 }
 
 async function refreshActiveRouteSnapshot(env, store, site, route, environment) {
@@ -372,6 +498,11 @@ function normalizeSlug(value) {
 
 function matchSiteAcl(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/acl$/);
+  return match ? match[1] : null;
+}
+
+function matchSiteAclEntries(pathname) {
+  const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/acl\/entries$/);
   return match ? match[1] : null;
 }
 

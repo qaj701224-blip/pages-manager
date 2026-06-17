@@ -25,7 +25,7 @@ function aclAllows(entries = [], identity) {
   return entries.some((entry) => {
     if (!entry || entry.effect !== 'allow') return false;
     if (entry.subjectType === 'email') return emailAclAllows(entry.subjectValue, identity.email);
-    if (entry.subjectType === 'department') return identity.departments?.includes(entry.subjectValue);
+    if (entry.subjectType === 'department') return departmentAclAllows(entry.subjectValue, identity.departments);
     return false;
   });
 }
@@ -40,6 +40,23 @@ function normalizeEmail(value) {
   return String(value || '')
     .trim()
     .toLowerCase();
+}
+
+function departmentAclAllows(subjectValue, identityDepartments = []) {
+  const aclPath = normalizeDepartmentPath(subjectValue);
+  if (!aclPath) return false;
+  return identityDepartments.some((department) => {
+    const userPath = normalizeDepartmentPath(department);
+    return userPath === aclPath || userPath.startsWith(`${aclPath}/`);
+  });
+}
+
+function normalizeDepartmentPath(value) {
+  return String(value || '')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/');
 }
 
 function denied(code, status) {
