@@ -83,12 +83,15 @@ apps/gateway/src/
   http/body.js
   http/router.js
   slack/agent-turn.js
+  slack/delivery.js
   slack/http.js
   slack/intake.js
   slack/job-input.js
+  slack/job-binding.js
   slack/notifier.js
   slack/session.js
   slack/text.js
+  slack/work-item-reconciler.js
   slack/work-items.js
   github/review.js
   github/webhook.js
