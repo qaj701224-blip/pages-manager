@@ -81,15 +81,6 @@ export async function handleOAuthCallback(request, env, config) {
     const accessToken = normalizeAccessToken(token);
     const rawProfile = await fetchSsoProfile(env, config, { accessToken });
     profile = normalizeSsoProfile(rawProfile);
-    if (!ssoProfileMatchesAllowedScope(rawProfile, profile, config.ssoAllowedUserScope)) {
-      return authError(
-        request,
-        config,
-        'SSO_PROFILE_SCOPE_FORBIDDEN',
-        'SSO profile is outside the allowed user scope.',
-        403
-      );
-    }
   } catch {
     return authError(request, config, 'SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502);
   }
@@ -808,7 +799,7 @@ function normalizeSsoProfile(profile) {
   const userId = normalizeUserId(profile);
   return {
     userId,
-    email: normalizeOptionalString(profile?.email).toLowerCase(),
+    email: normalizeProfileEmail(profile),
     realname: normalizeOptionalString(profile?.realname ?? profile?.name) || null,
     account: normalizeOptionalString(profile?.account) || null,
     accountId: normalizeOptionalString(profile?.accountId ?? profile?.account_id) || null,
@@ -817,36 +808,6 @@ function normalizeSsoProfile(profile) {
     departments: normalizeDepartments(profile?.departments ?? profile?.departmentIds ?? profile?.department_ids),
     sessionVersion: normalizeSessionVersion(profile?.sessionVersion ?? profile?.session_version),
   };
-}
-
-function ssoProfileMatchesAllowedScope(rawProfile, profile, allowedScope) {
-  const scope = normalizeOptionalString(allowedScope).toLowerCase();
-  if (!scope) return true;
-
-  const candidates = scopeCandidates(rawProfile).map((value) => value.toLowerCase());
-  if (candidates.includes(scope)) return true;
-
-  if (scope === 'xindong') {
-    return [profile.email, rawProfile?.account, rawProfile?.fs_email]
-      .map((value) => normalizeOptionalString(value).toLowerCase())
-      .some((email) => email.endsWith('@xd.com') || email.endsWith('@xindong.com'));
-  }
-
-  return false;
-}
-
-function scopeCandidates(profile) {
-  const values = [];
-  for (const key of ['scope', 'userScope', 'user_scope', 'allowedUserScope', 'allowed_user_scope', 'tenant', 'organization']) {
-    const value = profile?.[key];
-    if (typeof value === 'string') values.push(...value.split(/[\s,]+/).filter(Boolean));
-    if (Array.isArray(value)) values.push(...value.filter((item) => typeof item === 'string'));
-  }
-  for (const key of ['permissions', 'roles']) {
-    const value = profile?.[key];
-    if (Array.isArray(value)) values.push(...value.filter((item) => typeof item === 'string'));
-  }
-  return values;
 }
 
 function normalizeDepartments(value) {
@@ -867,6 +828,14 @@ function siteCodeUserFromProfile(profile) {
 function normalizeUserId(profile) {
   const userId = profile?.userId || profile?.id || profile?.sub;
   return typeof userId === 'string' && userId !== '' ? userId : null;
+}
+
+function normalizeProfileEmail(profile) {
+  for (const value of [profile?.email, profile?.fs_email, profile?.account, profile?.id, profile?.sub]) {
+    const normalized = normalizeOptionalString(value).toLowerCase();
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return normalized;
+  }
+  return '';
 }
 
 function normalizeOptionalString(value) {

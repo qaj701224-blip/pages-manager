@@ -463,7 +463,7 @@ SSO_TOKEN_URL
 SSO_PROFILE_URL
 ```
 
-`SSO_REDIRECT_URI` 和 `SSO_ALLOWED_USER_SCOPE` 是 Git 可审查的环境常量，当前写在 auth wrangler template 中；`SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
+`SSO_REDIRECT_URI` 是 Git 可审查的环境常量，当前写在 auth wrangler template 中；`SSO_CLIENT_SECRET` 必须是 Worker secret / GitHub Environment Secret，不能放 `vars`、wrangler template、CLI config 或文档示例。
 
 生产和 staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 必须使用 HTTPS；只有 `PAGES_ENV=local` 允许 HTTP 本地 SSO mock。心动 SSO 当前 OAuth 接口形态是：
 
@@ -590,7 +590,7 @@ secrets:
 
 production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `--config` 文件。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
-SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先校验 `SSO_ALLOWED_USER_SCOPE`，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。scope 校验优先使用 SSO profile 明确返回的 `scope` / `user_scope` / `roles` / `permissions` 等范围信号；当前 `xindong` 第一版也接受公司邮箱域作为兜底信号。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
+SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先成功换取 SSO profile，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。SSO profile 成功返回代表用户已通过 `xd_pages` / `xd_pages_staging` 应用授权；XD Pages 不再用本地邮箱域或 `xindong` 字符串二次缩窄允许人群。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `pages login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
 
 #### pages-router
 
@@ -695,7 +695,6 @@ SITE_SESSION_ABSOLUTE_TTL_SECONDS
 SITE_SESSION_FRESHNESS_TTL_SECONDS
 ROUTE_CACHE_TTL_SECONDS
 INTERNAL_WORKER_JWT_TTL_SECONDS
-SSO_ALLOWED_USER_SCOPE
 ```
 
 `CF_API_BASE_URL` 只用于本地测试或特殊网络环境；生产和 staging 默认不配置，使用 Cloudflare 官方 API base。若生产或 staging 因代理需求必须覆盖，也只能覆盖到 `https://api.cloudflare.com/client/v4` 这一官方 host，不能指向任意第三方域名。

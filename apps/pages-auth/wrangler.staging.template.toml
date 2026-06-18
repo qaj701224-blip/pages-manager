@@ -26,7 +26,6 @@ SSO_REDIRECT_URI = "https://auth-staging.pages.xd.team/.xd-pages/auth/callback"
 SSO_TOKEN_URL = "https://sso.security.xindong.com/cas/oauth2.0/accessToken"
 SSO_PROFILE_URL = "https://sso.security.xindong.com/cas/oauth2.0/profile"
 SSO_CLIENT_ID = "xd_pages_staging"
-SSO_ALLOWED_USER_SCOPE = "xindong"
 
 [[d1_databases]]
 binding = "PAGES_METADATA"
