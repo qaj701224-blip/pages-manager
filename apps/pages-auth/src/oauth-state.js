@@ -6,6 +6,7 @@ export async function createOAuthState({
   siteHost,
   returnTo,
   cliLoginId,
+  deviceCode,
   recoveryAttempt = false,
   now,
   ttlSeconds,
@@ -19,6 +20,7 @@ export async function createOAuthState({
   const normalizedSiteHost = kind === 'site' ? validateSiteHost(siteHost, environment) : null;
   const normalizedReturnTo = kind === 'site' ? validateReturnTo(returnTo, normalizedSiteHost) : null;
   const normalizedCliLoginId = kind === 'cli' ? normalizeRequiredString(cliLoginId, 'cliLoginId') : null;
+  const normalizedDeviceCode = kind === 'cli' ? normalizeDeviceCode(deviceCode) : null;
 
   return {
     publicState: `${stateId}.${stateSecret}`,
@@ -29,7 +31,7 @@ export async function createOAuthState({
       siteHost: normalizedSiteHost,
       returnTo: normalizedReturnTo,
       cliLoginId: normalizedCliLoginId,
-      deviceCode: null,
+      deviceCode: normalizedDeviceCode,
       recoveryAttempt: kind === 'site' ? Boolean(recoveryAttempt) : false,
       secretHash: await sha256Hex(stateSecret),
       issuedAt: now,
@@ -66,6 +68,7 @@ export async function consumeOAuthState(publicState, record, { now, environment 
     returnTo: record.returnTo,
     siteHost: record.siteHost,
     cliLoginId: record.cliLoginId,
+    deviceCode: record.deviceCode,
     recoveryAttempt: Boolean(record.recoveryAttempt),
     environment: record.environment,
   };
@@ -168,6 +171,12 @@ function normalizeRequiredString(value, label) {
 
 function normalizeOptionalString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeDeviceCode(value) {
+  const deviceCode = normalizeRequiredString(value, 'deviceCode');
+  if (!/^[0-9]{8}$/.test(deviceCode)) throw new Error('OAuth state invalid: deviceCode must be 8 digits');
+  return deviceCode;
 }
 
 function validateSiteHost(siteHost, environment) {

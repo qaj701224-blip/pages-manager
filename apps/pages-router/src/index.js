@@ -43,7 +43,7 @@ export default {
     const runtimeGatewayPath = runtimeGatewayPathFor(url.pathname);
 
     if (url.pathname === SITE_AUTH_CALLBACK_PATH) {
-      const routeResult = await readUsableRoute(env, host.hostname, environment);
+      const routeResult = await readUsableRoute(request, env, host.hostname, environment);
       if (!routeResult.ok) return routeResult.response;
       return handleSiteAuthCallback(request, env, routeResult.route);
     }
@@ -52,7 +52,7 @@ export default {
       return errorResponse('PLATFORM_PATH_RESERVED', 'This platform path is not dispatched to user workers.', 404);
     }
 
-    const routeResult = await readUsableRoute(env, host.hostname, environment);
+    const routeResult = await readUsableRoute(request, env, host.hostname, environment);
     if (!routeResult.ok) return routeResult.response;
     const route = routeResult.route;
 
@@ -63,6 +63,7 @@ export default {
     const policy = evaluateAccessPolicy(route, identity);
     if (!policy.ok) {
       if (policy.status === 302) return redirectToAuth(request, env, route, policy.code);
+      if (wantsHtml(request)) return siteAccessDeniedPage(request, route, policy.code, policy.status);
       return errorResponse(policy.code, 'Site access denied.', policy.status);
     }
 
@@ -83,28 +84,104 @@ export default {
   },
 };
 
-async function readUsableRoute(env, hostname, environment) {
+async function readUsableRoute(request, env, hostname, environment) {
   let route;
   try {
     route = await readRouteSnapshot(env, hostname, environment);
   } catch {
-    return { ok: false, response: errorResponse('ROUTE_SNAPSHOT_INVALID', 'Route snapshot is invalid.', 503) };
+    return {
+      ok: false,
+      response: routeErrorResponse(request, {
+        code: 'ROUTE_SNAPSHOT_INVALID',
+        message: 'Route snapshot is invalid.',
+        status: 503,
+        hostname,
+      }),
+    };
   }
-  if (!route) return { ok: false, response: errorResponse('ROUTE_NOT_FOUND', 'Site route not found.', 404) };
+  if (!route) {
+    return {
+      ok: false,
+      response: routeErrorResponse(request, {
+        code: 'ROUTE_NOT_FOUND',
+        message: 'Site route not found.',
+        status: 404,
+        hostname,
+      }),
+    };
+  }
   if (route.environment !== environment || route.hostname !== hostname) {
     return {
       ok: false,
-      response: errorResponse('ROUTE_ENV_MISMATCH', 'Route environment does not match router environment.', 403),
+      response: routeErrorResponse(request, {
+        code: 'ROUTE_ENV_MISMATCH',
+        message: 'Route environment does not match router environment.',
+        status: 403,
+        hostname,
+      }),
     };
   }
   if (route.routeStatus !== 'active' || !routeRuntimeIsActive(route.runtime)) {
-    return { ok: false, response: errorResponse('ROUTE_INACTIVE', 'Site route is not active.', 404) };
+    return {
+      ok: false,
+      response: routeErrorResponse(request, {
+        code: 'ROUTE_INACTIVE',
+        message: 'Site route is not active.',
+        status: 404,
+        hostname,
+      }),
+    };
   }
   if (!isValidRouteWorkerName(route.workerName, environment)) {
-    return { ok: false, response: errorResponse('ROUTE_WORKER_INVALID', 'Route worker target is invalid.', 403) };
+    return {
+      ok: false,
+      response: routeErrorResponse(request, {
+        code: 'ROUTE_WORKER_INVALID',
+        message: 'Route worker target is invalid.',
+        status: 403,
+        hostname,
+      }),
+    };
   }
 
   return { ok: true, route };
+}
+
+function routeErrorResponse(request, { code, message, status, hostname }) {
+  if (!wantsHtml(request)) return errorResponse(code, message, status);
+  const page = routeErrorCopy(code);
+  return browserPageResponse({
+    title: page.title,
+    message: page.message,
+    detail: `状态详情：${code}`,
+    status,
+    actionHref: `https://${hostname}/`,
+    actionLabel: '重新打开站点',
+    statusLabel: page.statusLabel,
+    tone: 'danger',
+  });
+}
+
+function routeErrorCopy(code) {
+  if (code === 'ROUTE_NOT_FOUND') {
+    return {
+      title: '站点没有找到',
+      message: '这个站点还没有发布，或者路由已经被移除。请确认访问地址是否正确。',
+      statusLabel: '站点不存在',
+    };
+  }
+  if (code === 'ROUTE_INACTIVE') {
+    return {
+      title: '站点暂时不可访问',
+      message: '这个站点当前没有可用的发布版本。请稍后再试，或联系站点管理员确认发布状态。',
+      statusLabel: '站点未启用',
+    };
+  }
+  return {
+    title: '站点暂时无法打开',
+    message: '站点路由暂时无法确认。请稍后再试，或联系站点管理员检查发布状态。',
+    statusLabel: '路由异常',
+  };
 }
 
 function routeRuntimeIsActive(runtime) {
@@ -534,17 +611,58 @@ function handleSiteAuthCodeInvalid(request, env, route) {
     }
 
     return browserPageResponse({
-      title: '无法完成登录',
-      message: '这次登录凭证已经失效或被使用。请重新打开站点，系统会重新验证你的访问权限。',
+      title: '访问验证没有完成',
+      message: '这次验证凭证已经失效或已经使用过。重新打开站点会自动再次发起验证。',
       detail: '如果你刚刚调整过访问权限，请等待几秒后再试。',
       status: 400,
       actionHref: `https://${route.hostname}/`,
       actionLabel: '重新打开站点',
+      statusLabel: '需要重新验证',
       tone: 'danger',
     });
   }
 
   return errorResponse('SITE_AUTH_CODE_INVALID', 'Site auth code is invalid.', 400);
+}
+
+function siteAccessDeniedPage(request, route, code, status) {
+  const href = `https://${route.hostname}/`;
+  const page = siteAccessDeniedCopy(code);
+  return browserPageResponse({
+    title: page.title,
+    message: page.message,
+    detail: page.detail,
+    status,
+    actionHref: href,
+    actionLabel: '重新打开站点',
+    statusLabel: page.statusLabel,
+    tone: 'danger',
+  });
+}
+
+function siteAccessDeniedCopy(code) {
+  if (code === 'SITE_DISABLED') {
+    return {
+      title: '站点暂时不可访问',
+      message: '这个站点当前没有开放访问。你可以稍后再试，或联系站点管理员确认是否已经启用。',
+      detail: '状态详情：SITE_DISABLED',
+      statusLabel: '站点已停用',
+    };
+  }
+  if (code === 'SITE_POLICY_INVALID') {
+    return {
+      title: '站点访问配置需要确认',
+      message: '这个站点的访问策略暂时无法确认。请联系站点管理员检查访问范围配置。',
+      detail: '状态详情：SITE_POLICY_INVALID',
+      statusLabel: '访问策略异常',
+    };
+  }
+  return {
+    title: '你暂时没有访问权限',
+    message: '当前账号还没有被加入这个站点的访问名单。如果你认为应该可以访问，请联系站点管理员开通权限。',
+    detail: '状态详情：SITE_ACCESS_FORBIDDEN',
+    statusLabel: '没有访问权限',
+  };
 }
 
 function identityFromSiteCode(route, user = {}) {

@@ -2,6 +2,7 @@ import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { AUTH_SESSION_COOKIE } from './cookies.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import { browserPageResponse } from './browser-pages.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
@@ -141,12 +142,13 @@ export async function handleCliLoginConfirm(request, env, config) {
     return jsonError('CLI_LOGIN_CONFIRM_FAILED', 'CLI login could not be confirmed.', 400);
   }
 
-  return new Response('CLI login confirmed. You can return to the terminal.', {
+  return browserPageResponse({
+    title: 'CLI 登录已完成',
+    message: '可以关闭这个浏览器页面，回到终端继续使用 XD Pages。',
+    detail: '这次授权只会用于刚刚发起登录的终端窗口。',
     status: 200,
-    headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-store',
-    },
+    statusLabel: '已授权',
+    tone: 'success',
   });
 }
 

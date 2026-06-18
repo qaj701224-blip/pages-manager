@@ -11,6 +11,7 @@ import {
   createStoredCliLogin,
   createStoredOAuthState,
   createStoredSession,
+  readStoredCliLoginForAuthorize,
   refreshStoredSession,
   revokeStoredSession,
 } from './do-storage.js';
@@ -159,6 +160,33 @@ test('CLI login consume requires login secret and only succeeds once', async () 
   await assert.rejects(
     () => consumeStoredCliLogin(storage, { loginId: 'cli_test', loginSecret: 'login-secret' }, { now: now + 4 }),
     /already consumed/
+  );
+});
+
+test('reads pending CLI login device code for OAuth authorize without requiring login secret', async () => {
+  const storage = createFakeStorage();
+  await createStoredCliLogin(storage, {
+    environment: 'production',
+    now,
+    ttlSeconds: 600,
+    loginId: 'cli_test',
+    loginSecret: 'login-secret',
+    deviceCode: '12345678',
+  });
+
+  const record = await readStoredCliLoginForAuthorize(storage, { loginId: 'cli_test' }, { now: now + 1 });
+
+  assert.deepEqual(record, {
+    status: 'pending',
+    environment: 'production',
+    deviceCode: '12345678',
+    expiresAt: now + 600,
+  });
+
+  await confirmStoredCliLogin(storage, { deviceCode: '12345678', userId: 'usr_123' }, { now: now + 2 });
+  await assert.rejects(
+    () => readStoredCliLoginForAuthorize(storage, { loginId: 'cli_test' }, { now: now + 3 }),
+    /status is confirmed/
   );
 });
 

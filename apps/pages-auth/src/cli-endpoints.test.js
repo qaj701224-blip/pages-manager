@@ -7,6 +7,24 @@ import { buildCliLoginBrowserUrl, handleCliLoginConfirm, handleCliLoginPoll, han
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const now = 1_800_000_000;
+const coolToneFragments = [
+  '#12b3a8',
+  '#2563eb',
+  '#f5f7fb',
+  '#101828',
+  '#5b677a',
+  '#dfe7f2',
+  '#c8d4e4',
+  '#334155',
+  '#475569',
+  '#0f172a',
+  '#718096',
+  '#263244',
+  '15, 23, 42',
+  '37, 99, 235',
+  '200, 212, 228',
+  'var(--blue)',
+];
 
 test('starts CLI login transaction with browser URL on current auth base', async () => {
   const env = testEnv({
@@ -44,6 +62,35 @@ test('starts CLI login transaction with browser URL on current auth base', async
   });
   assert.equal(new URL(body.browserUrl).searchParams.has('device_code'), false);
   assert.equal(JSON.stringify(body).includes('secretHash'), false);
+});
+
+test('starts CLI login transaction without placing device code in browser URL', async () => {
+  const env = testEnv({
+    createCliLoginRecord: async (input) => ({
+      loginId: input.loginId,
+      loginSecret: input.loginSecret,
+      deviceCode: '87654321',
+      record: {
+        id: input.loginId,
+        status: 'pending',
+        environment: 'production',
+        expiresAt: now + 600,
+      },
+    }),
+  });
+  const response = await handleCliLoginStart(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/start', { method: 'POST' }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.deviceCode, '87654321');
+  const browserUrl = new URL(body.browserUrl);
+  assert.equal(browserUrl.searchParams.get('cli_login_id'), body.loginId);
+  assert.equal(browserUrl.searchParams.has('device_code'), false);
+  assert.equal(browserUrl.toString().includes('87654321'), false);
 });
 
 test('builds local CLI login browser URL from auth base instead of API host', () => {
@@ -95,6 +142,13 @@ test('confirm requires auth_session and manually entered device code', async () 
   );
 
   assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  const text = await response.clone().text();
+  assert.match(text, /CLI 登录已完成/);
+  assert.match(text, /可以关闭这个浏览器页面，回到终端继续使用 XD Pages/);
+  assert.match(text, /状态：已授权/);
+  assertNoCoolToneFragments(text);
+  assert.equal(text.includes(confirmToken), false);
   assert.deepEqual(confirmedInput, {
     input: { loginId: 'cli_test', deviceCode: '12345678', userId: 'usr_123' },
     options: { now },
@@ -137,6 +191,7 @@ test('confirm allows an existing same-user auth session when SSO rotates the ses
   );
 
   assert.equal(response.status, 200, await response.clone().text());
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
   assert.deepEqual(confirmedInput, {
     input: { loginId: 'cli_test', deviceCode: '12345678', userId: 'usr_123' },
     options: { now },
@@ -542,6 +597,12 @@ test('poll maps Durable Object consumed responses to CLI_LOGIN_CONSUMED', async 
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONSUMED');
 });
+
+function assertNoCoolToneFragments(text) {
+  for (const fragment of coolToneFragments) {
+    assert.equal(text.includes(fragment), false, `unexpected cool tone fragment: ${fragment}`);
+  }
+}
 
 function pollRequest(loginId, loginSecret) {
   return new Request('https://auth.pages.xd.team/.xd-pages/cli/login/poll', {

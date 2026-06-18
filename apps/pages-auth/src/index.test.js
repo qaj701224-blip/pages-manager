@@ -376,6 +376,23 @@ test('CliLoginDO confirms and consumes login transactions without leaking secret
   assert.equal(pendingResponse.status, 200);
   assert.deepEqual(await pendingResponse.json(), { status: 'pending', expiresAt: 1_800_000_600 });
 
+  const authorizeReadResponse = await durableObject.fetch(
+    jsonRequest('https://cli-login-do/read-for-authorize', {
+      loginId: 'cli_test',
+      now: 1_800_000_001,
+    })
+  );
+
+  assert.equal(authorizeReadResponse.status, 200);
+  const authorizeReadText = await authorizeReadResponse.text();
+  assert.equal(authorizeReadText.includes('secretHash'), false);
+  assert.deepEqual(JSON.parse(authorizeReadText), {
+    status: 'pending',
+    environment: 'production',
+    deviceCode: '12345678',
+    expiresAt: 1_800_000_600,
+  });
+
   const confirmResponse = await durableObject.fetch(
     jsonRequest('https://cli-login-do/confirm', {
       deviceCode: '12345678',

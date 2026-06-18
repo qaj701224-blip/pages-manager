@@ -130,6 +130,17 @@ export async function peekStoredCliLogin(storage, input, options) {
   };
 }
 
+export async function readStoredCliLoginForAuthorize(storage, input, options) {
+  const record = await storage.get(SINGLE_RECORD_KEY);
+  assertCliLoginAuthorizeAllowed(record, input, options);
+  return {
+    status: record.status,
+    environment: record.environment,
+    deviceCode: record.deviceCode,
+    expiresAt: record.expiresAt,
+  };
+}
+
 export async function createStoredSession(storage, input) {
   const record = createSessionRecord(input);
   await storage.put(sessionKey(record.sid), record);
@@ -181,6 +192,15 @@ async function assertCliLoginPollAllowed(record, input, { now }) {
 
   const actualHash = await sha256Hex(input.loginSecret);
   if (!constantTimeEqualHex(record.secretHash, actualHash)) throw new Error('CLI login invalid: secret mismatch');
+}
+
+function assertCliLoginAuthorizeAllowed(record, input, { now }) {
+  if (!record || typeof record !== 'object') throw new Error('CLI login invalid: missing record');
+  if (record.id !== input.loginId) throw new Error('CLI login invalid: unknown login id');
+  if (!Number.isInteger(now) || now < 0) throw new Error('CLI login invalid: now must be a non-negative integer');
+  if (!Number.isFinite(record.expiresAt) || record.expiresAt <= now) throw new Error('CLI login invalid: expired');
+  if (record.status !== 'pending') throw new Error(`CLI login invalid: status is ${record.status}`);
+  if (!/^[0-9]{8}$/.test(record.deviceCode || '')) throw new Error('CLI login invalid: device code is invalid');
 }
 
 async function runStorageTransaction(storage, callback) {

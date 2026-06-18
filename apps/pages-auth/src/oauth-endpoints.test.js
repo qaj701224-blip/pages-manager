@@ -14,6 +14,24 @@ import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js'
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const now = 1_800_000_000;
+const coolToneFragments = [
+  '#12b3a8',
+  '#2563eb',
+  '#f5f7fb',
+  '#101828',
+  '#5b677a',
+  '#dfe7f2',
+  '#c8d4e4',
+  '#334155',
+  '#475569',
+  '#0f172a',
+  '#718096',
+  '#263244',
+  '15, 23, 42',
+  '37, 99, 235',
+  '200, 212, 228',
+  'var(--blue)',
+];
 
 test('authorize redirects to SSO with client id, redirect uri, response type, and opaque state', async () => {
   let createdInput;
@@ -100,6 +118,55 @@ test('authorize returns provider-unconfigured before creating state when SSO con
   assert.equal(createCalled, false);
 });
 
+test('authorize for CLI login stores the server-side device code in OAuth state', async () => {
+  let createdInput;
+  const env = testEnv({
+    readCliLoginRecordForAuthorize: async ({ loginId }, options) => {
+      assert.equal(loginId, 'cli_test');
+      assert.equal(options.now, now);
+      return {
+        status: 'pending',
+        environment: 'production',
+        deviceCode: '12345678',
+        expiresAt: now + 600,
+      };
+    },
+    createOAuthStateRecord: async (input) => {
+      createdInput = input;
+      return {
+        publicState: 'ost_test.state-secret',
+        record: {
+          id: 'ost_test',
+          kind: 'cli',
+          cliLoginId: input.cliLoginId,
+          deviceCode: input.deviceCode,
+          expiresAt: input.now + input.ttlSeconds,
+        },
+      };
+    },
+  });
+
+  const response = await handleOAuthAuthorize(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_test'),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.deepEqual(createdInput, {
+    environment: 'production',
+    cliLoginId: 'cli_test',
+    deviceCode: '12345678',
+    now,
+    ttlSeconds: 300,
+    stateId: createdInput.stateId,
+    stateSecret: createdInput.stateSecret,
+  });
+  const location = response.headers.get('Location');
+  assert.equal(location.includes('cli_test'), false);
+  assert.equal(location.includes('12345678'), false);
+});
+
 test('authorize with an existing auth session creates a site code without redirecting to SSO', async () => {
   const oauthStorage = createFakeStorage();
   let requestedUserId;
@@ -181,8 +248,29 @@ test('callback errors render a friendly browser page for navigations', async () 
   assert.match(response.headers.get('Content-Type'), /text\/html/);
   const text = await response.text();
   assert.match(text, /XD Pages/);
-  assert.match(text, /无法完成登录/);
+  assert.match(text, /登录没有完成/);
+  assert.match(text, /这次登录链接可能已经过期或已经使用过/);
+  assert.match(text, /重新打开站点或重新执行登录操作即可再次验证/);
+  assert.match(text, /状态：需要重新验证/);
+  assert.doesNotMatch(text, /身份验证没有完成/);
+  assertNoCoolToneFragments(text);
   assert.equal(text.includes('oauth-code'), false);
+});
+
+test('callback browser errors link back to configured auth base', async () => {
+  const env = testEnv();
+  const response = await handleOAuthCallback(
+    new Request('https://unexpected.example.test/.xd-pages/auth/callback?code=oauth-code', {
+      headers: { Accept: 'text/html' },
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 400);
+  const text = await response.text();
+  assert.match(text, /href="https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/auth\/authorize"/);
+  assert.equal(text.includes('unexpected.example.test/.xd-pages/auth/authorize'), false);
 });
 
 test('callback consumes state once, calls SSO hooks, sets auth_session cookie, and redirects to site callback', async () => {
@@ -604,6 +692,7 @@ test('CLI OAuth callback shows manual device confirmation and does not create a 
   const created = await createStoredOAuthState(oauthStorage, {
     environment: 'production',
     cliLoginId: 'cli_test',
+    deviceCode: '12345678',
     now,
     ttlSeconds: 300,
     stateId: 'ost_test',
@@ -629,13 +718,21 @@ test('CLI OAuth callback shows manual device confirmation and does not create a 
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(response.headers.get('Referrer-Policy'), 'same-origin');
   const text = await response.text();
-  assert.match(text, /Confirm Pages CLI Login/);
+  assert.match(text, /XD Pages CLI 登录确认/);
+  assert.match(text, /--brand: #f37022/);
+  assertNoCoolToneFragments(text);
   assert.match(text, /production/);
   assert.match(text, /https:\/\/auth\.pages\.xd\.team/);
   assert.match(text, /cli_token/);
   assert.match(text, /name="loginId" value="cli_test"/);
   assert.match(text, /name="confirmToken" value="[^"]+"/);
-  assert.match(text, /name="deviceCode"/);
+  assert.match(text, /设备码/);
+  assert.match(text, /12345678/);
+  assert.match(text, /name="deviceCode" value="12345678"/);
+  assert.doesNotMatch(text, /inputmode="numeric"/);
+  assert.match(text, /确认授权/);
+  assert.equal(text.includes('state-secret'), false);
+  assert.equal(text.includes('sso-access-token'), false);
   const confirmToken = text.match(/name="confirmToken" value="([^"]+)"/)[1];
   const authToken = response.headers.get('Set-Cookie').split(';', 1)[0].split('=', 2)[1];
   const authPayload = await verifySessionJwt(authToken, env, {
@@ -654,6 +751,12 @@ test('CLI OAuth callback shows manual device confirmation and does not create a 
   assert.equal(siteCodeCreated, false);
   assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });
+
+function assertNoCoolToneFragments(text) {
+  for (const fragment of coolToneFragments) {
+    assert.equal(text.includes(fragment), false, `unexpected cool tone fragment: ${fragment}`);
+  }
+}
 
 test('callback returns provider-unconfigured error when SSO hooks are absent', async () => {
   const oauthStorage = createFakeStorage();
