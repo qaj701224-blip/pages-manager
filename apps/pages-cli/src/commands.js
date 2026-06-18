@@ -1118,8 +1118,22 @@ function usageError(code, message, action) {
 }
 
 async function readCliVersion() {
-  const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const packageJson = JSON.parse(await readFirstExistingPackageJson());
   return packageJson.version || 'unknown';
+}
+
+async function readFirstExistingPackageJson() {
+  const candidates = [new URL('./package.json', import.meta.url), new URL('../package.json', import.meta.url)];
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      return await readFile(candidate, 'utf8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 function createOutput(stdout) {
