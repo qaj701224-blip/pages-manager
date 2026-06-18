@@ -592,7 +592,7 @@ test('callback refuses stale active SSO profiles when the authority store keeps 
   assert.equal(sessionCreated, false);
 });
 
-test('callback rejects profiles outside the configured SSO user scope before creating sessions', async () => {
+test('callback accepts active SSO profiles from non-xindong email domains', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
   const created = await createStoredOAuthState(oauthStorage, {
@@ -604,25 +604,20 @@ test('callback rejects profiles outside the configured SSO user scope before cre
     stateId: 'ost_test',
     stateSecret: 'state-secret',
   });
-  let synced = false;
-  let sessionCreated = false;
+  let syncedProfile;
   const env = testEnv({
-    SSO_ALLOWED_USER_SCOPE: 'xindong',
     consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
     createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
-    createAuthSessionRecord: async (input) => {
-      sessionCreated = true;
-      return createStoredSession(sessionStorage, input);
-    },
-    syncSsoUserProfile: async () => {
-      synced = true;
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile) => {
+      syncedProfile = profile;
+      return { user: { userId: profile.userId, email: profile.email, employeeStatus: profile.employeeStatus } };
     },
     fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
     fetchSsoProfile: async () => ({
-      userId: 'usr_external_123',
-      email: 'user@example.test',
+      userId: 'usr_mandy',
+      email: 'mandy.shen@starforce.tw',
       employee_status: '1',
-      scope: 'external',
     }),
   });
 
@@ -632,10 +627,50 @@ test('callback rejects profiles outside the configured SSO user scope before cre
     readAuthConfig(env)
   );
 
-  assert.equal(response.status, 403);
-  assert.equal((await response.json()).error.code, 'SSO_PROFILE_SCOPE_FORBIDDEN');
-  assert.equal(synced, false);
-  assert.equal(sessionCreated, false);
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(new URL(response.headers.get('Location')).origin, 'https://demo.pages.xd.team');
+  assert.equal(syncedProfile.email, 'mandy.shen@starforce.tw');
+  assert.equal(syncedProfile.employeeStatus, 'active');
+});
+
+test('callback normalizes email when the company email only appears in profile id', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let syncedProfile;
+  const env = testEnv({
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile) => {
+      syncedProfile = profile;
+      return { user: { userId: profile.userId, email: profile.email } };
+    },
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_xindong_123',
+      id: 'User@XD.com',
+      employee_status: '1',
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(new URL(response.headers.get('Location')).origin, 'https://demo.pages.xd.team');
+  assert.equal(syncedProfile.email, 'user@xd.com');
 });
 
 test('callback rejects profiles without explicit active employee status', async () => {

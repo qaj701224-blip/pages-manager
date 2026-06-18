@@ -521,7 +521,6 @@ Ensure `wrangler.template.toml` includes placeholders:
 
 ```text
 SSO_REDIRECT_URI
-SSO_ALLOWED_USER_SCOPE
 ```
 
 Keep `SSO_CLIENT_SECRET` out of vars.

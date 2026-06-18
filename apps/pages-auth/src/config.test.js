@@ -18,7 +18,6 @@ test('reads production auth config from placeholders-safe env', () => {
     SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
     SSO_CLIENT_ID: 'xd_pages_test',
     SSO_CLIENT_SECRET: 'test-client-secret',
-    SSO_ALLOWED_USER_SCOPE: 'xd',
   });
 
   assert.equal(config.environment, 'production');
@@ -35,7 +34,6 @@ test('reads production auth config from placeholders-safe env', () => {
   assert.equal(config.ssoProfileUrl, 'https://sso.example.test/oauth/profile');
   assert.equal(config.ssoClientId, 'xd_pages_test');
   assert.equal(config.ssoClientSecret, 'test-client-secret');
-  assert.equal(config.ssoAllowedUserScope, 'xd');
 });
 
 test('reads local auth config for SSO development', () => {

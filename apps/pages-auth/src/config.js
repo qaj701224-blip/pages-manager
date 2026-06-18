@@ -44,7 +44,6 @@ export function readAuthConfig(env = {}) {
     ssoProfileUrl: readOptionalSsoUrl(env.SSO_PROFILE_URL, 'SSO profile URL', environment),
     ssoClientId: readOptionalString(env.SSO_CLIENT_ID),
     ssoClientSecret: readOptionalString(env.SSO_CLIENT_SECRET),
-    ssoAllowedUserScope: readOptionalString(env.SSO_ALLOWED_USER_SCOPE),
     oauthStateTtlSeconds: readPositiveInteger(env.OAUTH_STATE_TTL_SECONDS, 300, TTL_ENV_NAMES.oauthStateTtlSeconds),
     cliLoginTtlSeconds: readPositiveInteger(env.CLI_LOGIN_TTL_SECONDS, 600, TTL_ENV_NAMES.cliLoginTtlSeconds),
     authSessionIdleTtlSeconds: readPositiveInteger(

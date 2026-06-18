@@ -246,7 +246,7 @@ test('production pages-auth config renders explicit production auth settings onl
   assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
-  assert.match(config, /SSO_ALLOWED_USER_SCOPE = "xindong"/);
+  assert.doesNotMatch(config, /SSO_ALLOWED_USER_SCOPE/);
   assert.match(config, /binding = "PAGES_METADATA"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
@@ -282,7 +282,7 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.doesNotMatch(config, /service = "pages-api-staging"/);
 });
 
-test('pages-auth config keeps committed ttl, SSO endpoints, client id, and scope defaults', () => {
+test('pages-auth config keeps committed ttl, SSO endpoints, and client id defaults', () => {
   const config = renderPagesAuth('production', {
     ...baseEnv,
     AUTH_SESSION_IDLE_TTL_SECONDS: '2592000',
@@ -291,7 +291,6 @@ test('pages-auth config keeps committed ttl, SSO endpoints, client id, and scope
     SSO_TOKEN_URL: 'https://sso.example.test/oauth/token',
     SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
     SSO_CLIENT_ID: 'xd_pages_test',
-    SSO_ALLOWED_USER_SCOPE: 'company-all',
   });
 
   assert.match(config, /AUTH_SESSION_IDLE_TTL_SECONDS = "1209600"/);
@@ -300,10 +299,9 @@ test('pages-auth config keeps committed ttl, SSO endpoints, client id, and scope
   assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
-  assert.match(config, /SSO_ALLOWED_USER_SCOPE = "xindong"/);
+  assert.doesNotMatch(config, /SSO_ALLOWED_USER_SCOPE/);
   assert.doesNotMatch(config, /sso\.example\.test/);
   assert.doesNotMatch(config, /xd_pages_test/);
-  assert.doesNotMatch(config, /company-all/);
 });
 
 test('pages-auth config no longer requires GitHub SSO vars', () => {
