@@ -5,6 +5,25 @@ import { verifyCapability } from '../../kv-gateway/src/auth.js';
 import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
 import worker from './index.js';
 
+const coolToneFragments = [
+  '#12b3a8',
+  '#2563eb',
+  '#f5f7fb',
+  '#101828',
+  '#5b677a',
+  '#dfe7f2',
+  '#c8d4e4',
+  '#334155',
+  '#475569',
+  '#0f172a',
+  '#718096',
+  '#263244',
+  '15, 23, 42',
+  '37, 99, 235',
+  '200, 212, 228',
+  'var(--blue)',
+];
+
 test('fails closed before route lookup when IP allowlist is missing', async () => {
   const env = routeEnv({ ROUTER_IP_ALLOWLIST_CIDRS: undefined });
   const response = await worker.fetch(new Request('https://demo.pages.xd.team/'), env);
@@ -78,6 +97,31 @@ test('rejects platform reserved paths before dispatch', async () => {
 
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.code, 'PLATFORM_PATH_RESERVED');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('shows a friendly browser page when the site route is not found', async () => {
+  const env = routeEnv({
+    routes: {},
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Accept: 'text/html',
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  const text = await response.text();
+  assert.match(text, /站点没有找到/);
+  assert.match(text, /这个站点还没有发布，或者路由已经被移除/);
+  assert.match(text, /状态：站点不存在/);
+  assertNoCoolToneFragments(text);
+  assert.equal(text.includes('ROUTE_NOT_FOUND'), true);
   assert.equal(env.dispatchCount, 0);
 });
 
@@ -393,7 +437,11 @@ test('shows a friendly browser page when recovered site auth callback still fail
   assert.match(response.headers.get('Content-Type'), /text\/html/);
   const text = await response.text();
   assert.match(text, /XD Pages/);
-  assert.match(text, /无法完成登录/);
+  assert.match(text, /访问验证没有完成/);
+  assert.match(text, /这次验证凭证已经失效或已经使用过/);
+  assert.match(text, /重新打开站点会自动再次发起验证/);
+  assert.match(text, /状态：需要重新验证/);
+  assertNoCoolToneFragments(text);
   assert.equal(text.includes('ost_bad'), false);
 });
 
@@ -438,6 +486,35 @@ test('rejects disabled sites before dispatch even with a valid site_session', as
   assert.equal(env.dispatchCount, 0);
 });
 
+test('shows a friendly browser page for disabled sites', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'disabled' }),
+    },
+  });
+  const session = await siteSession({ audience: 'demo.pages.xd.team', siteId: 'site_demo' });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Accept: 'text/html',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  const text = await response.text();
+  assert.match(text, /站点暂时不可访问/);
+  assert.match(text, /这个站点当前没有开放访问/);
+  assert.match(text, /状态：站点已停用/);
+  assertNoCoolToneFragments(text);
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
 test('fails closed when route snapshot has an unknown visibility', async () => {
   const env = routeEnv({
     routes: {
@@ -451,6 +528,33 @@ test('fails closed when route snapshot has an unknown visibility', async () => {
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SITE_POLICY_INVALID');
+  assert.equal(env.dispatchGetCount, 0);
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('shows a friendly browser page when site access policy is invalid', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'public' }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Accept: 'text/html',
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  const text = await response.text();
+  assert.match(text, /站点访问配置需要确认/);
+  assert.match(text, /这个站点的访问策略暂时无法确认/);
+  assert.match(text, /状态：访问策略异常/);
+  assertNoCoolToneFragments(text);
   assert.equal(env.dispatchGetCount, 0);
   assert.equal(env.dispatchCount, 0);
 });
@@ -506,6 +610,39 @@ test('rejects org sites for inactive employees', async () => {
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SITE_ACCESS_FORBIDDEN');
+  assert.equal(env.dispatchCount, 0);
+});
+
+test('shows a friendly browser page when the signed-in user has no site access', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'owner', ownerUserId: 'owner_1' }),
+    },
+  });
+  const session = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    userId: 'usr_2',
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Accept: 'text/html',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  const text = await response.text();
+  assert.match(text, /你暂时没有访问权限/);
+  assert.match(text, /当前账号还没有被加入这个站点的访问名单/);
+  assert.match(text, /联系站点管理员开通权限/);
+  assert.match(text, /状态：没有访问权限/);
+  assertNoCoolToneFragments(text);
   assert.equal(env.dispatchCount, 0);
 });
 
@@ -877,6 +1014,12 @@ test('dispatches normal worker slot routes through static service binding', asyn
   assert.equal(env.dispatchGetCount, 0);
   assert.equal(env.slotDispatchCount, 1);
 });
+
+function assertNoCoolToneFragments(text) {
+  for (const fragment of coolToneFragments) {
+    assert.equal(text.includes(fragment), false, `unexpected cool tone fragment: ${fragment}`);
+  }
+}
 
 function routeSnapshot(overrides = {}) {
   return {

@@ -31,6 +31,7 @@ test('creates OAuth state for CLI login without site redirect fields', async () 
   const tx = await createOAuthState({
     environment: 'production',
     cliLoginId: 'cli_test',
+    deviceCode: '12345678',
     now,
     ttlSeconds: 300,
     stateId: 'ost_state',
@@ -39,9 +40,14 @@ test('creates OAuth state for CLI login without site redirect fields', async () 
 
   assert.equal(tx.record.kind, 'cli');
   assert.equal(tx.record.cliLoginId, 'cli_test');
-  assert.equal(tx.record.deviceCode, null);
+  assert.equal(tx.record.deviceCode, '12345678');
   assert.equal(tx.record.siteHost, null);
   assert.equal(tx.record.returnTo, null);
+
+  const consumed = await consumeOAuthState(tx.publicState, tx.record, { now: now + 1, environment: 'production' });
+  assert.equal(consumed.kind, 'cli');
+  assert.equal(consumed.cliLoginId, 'cli_test');
+  assert.equal(consumed.deviceCode, '12345678');
 });
 
 test('rejects open redirects and cross-environment site hosts', async () => {
