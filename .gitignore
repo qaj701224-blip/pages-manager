@@ -7,6 +7,12 @@ dist/
 .nuxt/
 .output/
 
+### XD Pages skill build output
+apps/pages-cli/dist/
+apps/pages-sdk/dist/
+apps/pages-skill/dist/
+apps/pages-skill/.xd-skill/
+
 ### Secrets & local env
 .env
 .staging.env
