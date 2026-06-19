@@ -142,6 +142,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /name = "pages-api"/);
   assert.match(config, /account_id = "dummy-account"/);
   assert.match(config, /workers_dev = false/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
   assert.match(config, /pattern = "api\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.doesNotMatch(config, /custom_domain = true/);
@@ -173,6 +174,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   const config = renderPagesApi('staging');
 
   assert.match(config, /name = "pages-api-staging"/);
+  assert.doesNotMatch(config, /\[observability/);
   assert.match(config, /pattern = "api-staging\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.doesNotMatch(config, /custom_domain = true/);
@@ -221,6 +223,7 @@ test('production pages-auth config renders explicit production auth settings onl
 
   assert.match(config, /name = "pages-auth"/);
   assert.match(config, /account_id = "dummy-account"/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
   assert.match(config, /pattern = "auth\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.doesNotMatch(config, /custom_domain = true/);
@@ -263,6 +266,7 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   const config = renderPagesAuth('staging');
 
   assert.match(config, /name = "pages-auth-staging"/);
+  assert.doesNotMatch(config, /\[observability/);
   assert.match(config, /pattern = "auth-staging\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.doesNotMatch(config, /custom_domain = true/);
@@ -340,6 +344,7 @@ test('production pages-router config renders explicit production fast-path setti
 
   assert.match(config, /name = "pages-router"/);
   assert.match(config, /account_id = "dummy-account"/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
   assert.match(config, /pattern = "\*\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.match(config, /PAGES_ENV = "production"/);
@@ -384,6 +389,7 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   const config = renderPagesRouter('staging');
 
   assert.match(config, /name = "pages-router-staging"/);
+  assert.doesNotMatch(config, /\[observability/);
   assert.match(config, /pattern = "\*-staging\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.match(config, /PAGES_ENV = "staging"/);
@@ -474,6 +480,7 @@ test('production kv-gateway config renders explicit production site data setting
   assert.match(config, /name = "pages-kv-gateway"/);
   assert.match(config, /account_id = "dummy-account"/);
   assert.match(config, /workers_dev = false/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PAGES_CAP_JWT_ACTIVE_KID = "pages-cap-2026-06"/);
   assert.match(config, /PAGES_CAP_JWT_KEYS = "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"/);
@@ -490,6 +497,7 @@ test('staging kv-gateway config renders explicit staging site data settings', ()
 
   assert.match(config, /name = "pages-kv-gateway-staging"/);
   assert.match(config, /PAGES_ENV = "staging"/);
+  assert.doesNotMatch(config, /\[observability/);
   assert.doesNotMatch(config, /name = "pages-kv-gateway"/);
 });
 
