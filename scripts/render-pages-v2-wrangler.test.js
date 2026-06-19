@@ -223,7 +223,7 @@ test('production pages-auth config renders explicit production auth settings onl
 
   assert.match(config, /name = "pages-auth"/);
   assert.match(config, /account_id = "dummy-account"/);
-  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1\ninvocation_logs = false/);
   assert.match(config, /pattern = "auth\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.doesNotMatch(config, /custom_domain = true/);
