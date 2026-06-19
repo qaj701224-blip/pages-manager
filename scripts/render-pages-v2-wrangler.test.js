@@ -344,7 +344,7 @@ test('production pages-router config renders explicit production fast-path setti
 
   assert.match(config, /name = "pages-router"/);
   assert.match(config, /account_id = "dummy-account"/);
-  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1\ninvocation_logs = false/);
   assert.match(config, /pattern = "\*\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.match(config, /PAGES_ENV = "production"/);
