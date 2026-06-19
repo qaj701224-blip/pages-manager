@@ -1,5 +1,5 @@
 import { isAllowedIP } from '@xd/ip-guard';
-import { GATEWAY, HEADERS, RUNTIME } from '@xd/pages-runtime-protocol';
+import { GATEWAY, HEADERS, RUNTIME, scopeForDataOperation } from '@xd/pages-runtime-protocol';
 import { jsonResponse } from '@xd/worker-kit';
 
 import { browserPageResponse, wantsHtml } from '../../pages-auth/src/browser-pages.js';
@@ -24,9 +24,15 @@ const KV_CAPABILITY_ISSUER = 'pages-v2';
 const KV_CAPABILITY_AUDIENCE = 'pages-kv-gateway';
 const DEFAULT_KV_CAPABILITY_TTL_SECONDS = 60;
 const RUNTIME_GATEWAY_PATHS = new Map([
-  [RUNTIME.KV_GET_PATH, GATEWAY.KV_GET_PATH],
-  [RUNTIME.KV_SET_PATH, GATEWAY.KV_SET_PATH],
-  [RUNTIME.KV_DELETE_PATH, GATEWAY.KV_DELETE_PATH],
+  [RUNTIME.KV_GET_PATH, legacyRuntimeRoute(GATEWAY.KV_GET_PATH)],
+  [RUNTIME.KV_SET_PATH, legacyRuntimeRoute(GATEWAY.KV_SET_PATH)],
+  [RUNTIME.KV_DELETE_PATH, legacyRuntimeRoute(GATEWAY.KV_DELETE_PATH)],
+  [RUNTIME.DATA_SITE_GET_PATH, dataRuntimeRoute(GATEWAY.DATA_SITE_GET_PATH, 'site', 'get')],
+  [RUNTIME.DATA_SITE_SET_PATH, dataRuntimeRoute(GATEWAY.DATA_SITE_SET_PATH, 'site', 'set')],
+  [RUNTIME.DATA_SITE_DELETE_PATH, dataRuntimeRoute(GATEWAY.DATA_SITE_DELETE_PATH, 'site', 'delete')],
+  [RUNTIME.DATA_USER_GET_PATH, dataRuntimeRoute(GATEWAY.DATA_USER_GET_PATH, 'user', 'get')],
+  [RUNTIME.DATA_USER_SET_PATH, dataRuntimeRoute(GATEWAY.DATA_USER_SET_PATH, 'user', 'set')],
+  [RUNTIME.DATA_USER_DELETE_PATH, dataRuntimeRoute(GATEWAY.DATA_USER_DELETE_PATH, 'user', 'delete')],
 ]);
 
 export default {
@@ -341,7 +347,18 @@ async function buildPlatformHeaders(route, env, identity) {
     'CF-Platform-Trace-Id': traceId,
   };
   if (route.kv?.enabled) {
-    headers['CF-Platform-KV-Capability'] = await signKvCapability(route, env, identity, traceId);
+    headers['CF-Platform-Data-Site-Capability'] = await signKvCapability(route, env, identity, traceId, {
+      dataScope: 'site',
+      scope: dataScopes(route, 'site'),
+    });
+    headers['CF-Platform-Data-User-Capability'] = await signKvCapability(route, env, identity, traceId, {
+      dataScope: 'user',
+      scope: dataScopes(route, 'user'),
+    });
+    headers['CF-Platform-KV-Capability'] = await signKvCapability(route, env, identity, traceId, {
+      legacy: true,
+      scope: legacyKvScopes(route),
+    });
   }
   return headers;
 }
@@ -369,7 +386,7 @@ async function signInternalWorkerJwt(route, env, identity, traceId) {
   );
 }
 
-async function handleRuntimeGatewayRequest(request, env, route, identity, gatewayPath) {
+async function handleRuntimeGatewayRequest(request, env, route, identity, runtimeRoute) {
   if (!route.kv?.enabled) return errorResponse('RUNTIME_NOT_ENABLED', 'Runtime API is not enabled for this site.', 404);
   if (request.method !== 'POST') return errorResponse('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
   if (request.headers.get(HEADERS.RUNTIME_REQUEST) !== '1') {
@@ -384,7 +401,7 @@ async function handleRuntimeGatewayRequest(request, env, route, identity, gatewa
 
   let capability;
   try {
-    capability = await signKvCapability(route, env, identity, crypto.randomUUID());
+    capability = await signKvCapability(route, env, identity, crypto.randomUUID(), runtimeCapabilityOptions(route, runtimeRoute));
   } catch {
     return errorResponse('RUNTIME_CAPABILITY_CREATE_FAILED', 'Runtime capability could not be created.', 500);
   }
@@ -394,7 +411,7 @@ async function handleRuntimeGatewayRequest(request, env, route, identity, gatewa
   headers.set('Content-Type', request.headers.get('Content-Type') || 'application/json');
   const body = await request.text();
   const gatewayResponse = await env.XD_PAGES_KV_GATEWAY.fetch(
-    new Request(`https://pages-kv-gateway.local${gatewayPath}`, {
+    new Request(`https://pages-kv-gateway.local${runtimeRoute.gatewayPath}`, {
       method: 'POST',
       headers,
       body,
@@ -405,6 +422,14 @@ async function handleRuntimeGatewayRequest(request, env, route, identity, gatewa
 
 function runtimeGatewayPathFor(pathname) {
   return RUNTIME_GATEWAY_PATHS.get(pathname) || null;
+}
+
+function legacyRuntimeRoute(gatewayPath) {
+  return { gatewayPath, legacy: true, scope: null };
+}
+
+function dataRuntimeRoute(gatewayPath, dataScope, operation) {
+  return { gatewayPath, dataScope, operation };
 }
 
 function runtimeOriginAllowed(request) {
@@ -419,9 +444,18 @@ function runtimeOriginAllowed(request) {
 
 function sanitizeRuntimeGatewayResponse(response) {
   const headers = new Headers(response.headers);
-  headers.delete('Authorization');
-  headers.delete('CF-Platform-KV-Capability');
-  headers.delete('Set-Cookie');
+  for (const name of [...headers.keys()]) {
+    const lower = name.toLowerCase();
+    if (
+      lower === 'authorization' ||
+      lower === 'set-cookie' ||
+      lower.startsWith('cf-platform-') ||
+      lower.startsWith('x-pages-') ||
+      lower.startsWith('x-xd-pages-')
+    ) {
+      headers.delete(name);
+    }
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -429,35 +463,65 @@ function sanitizeRuntimeGatewayResponse(response) {
   });
 }
 
-async function signKvCapability(route, env, identity, traceId) {
-  if (typeof env.signKvCapability === 'function') return env.signKvCapability({ route, identity, traceId });
+async function signKvCapability(route, env, identity, traceId, options = {}) {
+  if (typeof env.signKvCapability === 'function') return env.signKvCapability({ route, identity, traceId, options });
   const activeKid = readRequired(env.PAGES_CAP_JWT_ACTIVE_KID, 'PAGES_CAP_JWT_ACTIVE_KID');
   const registry = parseJwtKeyRegistry(env.PAGES_CAP_JWT_KEYS, env, 'PAGES_CAP_JWT_KEYS', 'PAGES_CAP_JWT_SECRET_');
   const key = registry.get(activeKid);
   if (!key) throw new Error('PAGES_CAP_JWT_ACTIVE_KID is not present in PAGES_CAP_JWT_KEYS');
   const now = readNowSeconds(env);
   const ttl = readKvCapabilityTtlSeconds(env);
+  const subject = options.dataScope === 'site' ? 'anonymous' : identity?.userId || 'anonymous';
+  const anonymous = options.dataScope === 'site' ? true : !identity;
+  const payload = {
+    iss: KV_CAPABILITY_ISSUER,
+    aud: KV_CAPABILITY_AUDIENCE,
+    env: route.environment,
+    siteId: route.slug,
+    siteUuid: route.siteUuid,
+    routeId: route.routeId,
+    versionId: route.activeVersionId,
+    policyVersion: route.policyVersion,
+    sub: subject,
+    anonymous,
+    scope: options.scope || legacyKvScopes(route),
+    traceId,
+    iat: now,
+    nbf: now,
+    exp: now + ttl,
+  };
+
+  if (!options.legacy) {
+    payload.apiVersion = 2;
+    payload.dataScope = options.dataScope || 'site';
+  }
+
   return createHs256Jwt({
     kid: activeKid,
     secret: key.secret,
-    payload: {
-      iss: KV_CAPABILITY_ISSUER,
-      aud: KV_CAPABILITY_AUDIENCE,
-      env: route.environment,
-      siteId: route.slug,
-      siteUuid: route.siteUuid,
-      routeId: route.routeId,
-      versionId: route.activeVersionId,
-      policyVersion: route.policyVersion,
-      sub: identity?.userId || 'anonymous',
-      anonymous: !identity,
-      scope: Array.isArray(route.kv?.scopes) ? route.kv.scopes : [],
-      traceId,
-      iat: now,
-      nbf: now,
-      exp: now + ttl,
-    },
+    payload,
   });
+}
+
+function legacyKvScopes(route) {
+  return Array.isArray(route.kv?.scopes) ? route.kv.scopes : [];
+}
+
+function dataScopes(route, dataScope) {
+  const operations = new Set();
+  for (const scope of legacyKvScopes(route)) {
+    if (scope === 'kv:get') operations.add('get');
+    if (scope === 'kv:set') operations.add('set');
+    if (scope === 'kv:delete') operations.add('delete');
+  }
+  return [...operations].map((operation) => scopeForDataOperation(dataScope, operation));
+}
+
+function runtimeCapabilityOptions(route, runtimeRoute) {
+  if (runtimeRoute.legacy) return runtimeRoute;
+  const allowedScope = scopeForDataOperation(runtimeRoute.dataScope, runtimeRoute.operation);
+  const scope = dataScopes(route, runtimeRoute.dataScope).includes(allowedScope) ? [allowedScope] : [];
+  return { ...runtimeRoute, scope };
 }
 
 function readKvCapabilityTtlSeconds(env) {

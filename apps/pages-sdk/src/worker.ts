@@ -1,22 +1,42 @@
 import { ERROR_CODES, GATEWAY } from './protocol.js';
 import { createHandlePagesRuntimeRequest } from './adapter-core.js';
 import { PagesSDKError } from './errors.js';
-import type { KVType, PagesKV, PagesPlatformContext, PagesRuntimeEnv } from './types.js';
+import type { KVType, PagesDataStore, PagesPlatformContext, PagesRuntimeEnv } from './types.js';
 
 export { PagesSDKError } from './errors.js';
 export type { KVType, PagesPlatformContext, PagesRuntimeEnv } from './types.js';
 
 const GATEWAY_ORIGIN = 'https://pages-kv-gateway.local';
 const KV_CAPABILITY_HEADER = 'CF-Platform-KV-Capability';
+const DATA_SITE_CAPABILITY_HEADER = 'CF-Platform-Data-Site-Capability';
+const DATA_USER_CAPABILITY_HEADER = 'CF-Platform-Data-User-Capability';
 const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const SITE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 const SITE_UUID_RE = /^[0-9a-f]{32}$/;
 
-export function createPagesRuntime(options: { env: PagesRuntimeEnv; request?: Request }): { kv: PagesKV } {
+export function createPagesRuntime(options: { env: PagesRuntimeEnv; request?: Request }): {
+  data: { site: PagesDataStore; user: PagesDataStore };
+  /** @deprecated Use pages.data.site instead. */
+  kv: PagesDataStore;
+} {
   const { env, request } = options;
-  const capability = readKvCapability(env, request);
+  const dataSitePaths = {
+    get: GATEWAY.DATA_SITE_GET_PATH,
+    set: GATEWAY.DATA_SITE_SET_PATH,
+    delete: GATEWAY.DATA_SITE_DELETE_PATH,
+  };
+  const dataUserPaths = {
+    get: GATEWAY.DATA_USER_GET_PATH,
+    set: GATEWAY.DATA_USER_SET_PATH,
+    delete: GATEWAY.DATA_USER_DELETE_PATH,
+  };
+  const legacyPaths = {
+    get: GATEWAY.KV_GET_PATH,
+    set: GATEWAY.KV_SET_PATH,
+    delete: GATEWAY.KV_DELETE_PATH,
+  };
 
-  async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
+  async function post(path: string, body: unknown, capability: string): Promise<Record<string, unknown>> {
     const response = await env.XD_PAGES_KV_GATEWAY.fetch(
       new Request(`${GATEWAY_ORIGIN}${path}`, {
         method: 'POST',
@@ -31,10 +51,26 @@ export function createPagesRuntime(options: { env: PagesRuntimeEnv; request?: Re
     return readEnvelope(response);
   }
 
+  const data = {
+    site: createDataStore(post, readSiteDataEndpoint(env, request, dataSitePaths, legacyPaths)),
+    user: createDataStore(post, readDataEndpoint(readUserDataCapability(request), dataUserPaths)),
+  };
+  const kv = createDataStore(post, readDataEndpoint(readLegacyKvCapability(env, request), legacyPaths));
+
+  return { data, kv };
+}
+
+type GatewayPaths = { get: string; set: string; delete: string };
+
+function createDataStore(
+  post: (path: string, body: unknown, capability: string) => Promise<Record<string, unknown>>,
+  readEndpoint: () => { capability: string; paths: GatewayPaths }
+): PagesDataStore {
   async function get<T = unknown>(key: string, getOptions?: { type?: 'json' }): Promise<T | null>;
   async function get(key: string, getOptions: { type: 'text' }): Promise<string | null>;
   async function get<T = unknown>(key: string, getOptions: { type?: KVType } = {}): Promise<T | string | null> {
-    const envelope = await post(GATEWAY.KV_GET_PATH, { key, type: getOptions.type ?? 'json' });
+    const endpoint = readEndpoint();
+    const envelope = await post(endpoint.paths.get, { key, type: getOptions.type ?? 'json' }, endpoint.capability);
     if (typeof envelope.found !== 'boolean') {
       throw new PagesSDKError(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'Invalid runtime response');
     }
@@ -53,19 +89,50 @@ export function createPagesRuntime(options: { env: PagesRuntimeEnv; request?: Re
       type: setOptions.type ?? 'json',
     };
     if (setOptions.expirationTtl !== undefined) body.expirationTtl = setOptions.expirationTtl;
-    await post(GATEWAY.KV_SET_PATH, body);
+    const endpoint = readEndpoint();
+    await post(endpoint.paths.set, body, endpoint.capability);
   }
 
   async function deleteKey(key: string): Promise<void> {
-    await post(GATEWAY.KV_DELETE_PATH, { key });
+    const endpoint = readEndpoint();
+    await post(endpoint.paths.delete, { key }, endpoint.capability);
   }
 
-  return { kv: { get, set, delete: deleteKey } };
+  return { get, set, delete: deleteKey };
 }
 
-function readKvCapability(env: PagesRuntimeEnv, request?: Request): string {
-  const value = env.XD_PAGES_KV_CAPABILITY || request?.headers.get(KV_CAPABILITY_HEADER) || '';
-  if (!value) throw new PagesSDKError(ERROR_CODES.INVALID_PLATFORM_CONTEXT, 'KV capability is missing');
+function readLegacyKvCapability(env: PagesRuntimeEnv, request?: Request): () => string {
+  return () => requireCapability(env.XD_PAGES_KV_CAPABILITY || request?.headers.get(KV_CAPABILITY_HEADER), 'KV capability is missing');
+}
+
+function readUserDataCapability(request?: Request): () => string {
+  return () => requireCapability(request?.headers.get(DATA_USER_CAPABILITY_HEADER), 'User data capability is missing');
+}
+
+function readDataEndpoint(readCapability: () => string, paths: GatewayPaths): () => { capability: string; paths: GatewayPaths } {
+  return () => ({ capability: readCapability(), paths });
+}
+
+function readSiteDataEndpoint(
+  env: PagesRuntimeEnv,
+  request: Request | undefined,
+  dataSitePaths: GatewayPaths,
+  legacyPaths: GatewayPaths
+): () => { capability: string; paths: GatewayPaths } {
+  return () => {
+    const requestSiteCapability = request?.headers.get(DATA_SITE_CAPABILITY_HEADER);
+    if (requestSiteCapability) return { capability: requestSiteCapability, paths: dataSitePaths };
+    if (env.XD_PAGES_DATA_SITE_CAPABILITY) {
+      return { capability: env.XD_PAGES_DATA_SITE_CAPABILITY, paths: dataSitePaths };
+    }
+    const legacyCapability = env.XD_PAGES_KV_CAPABILITY || request?.headers.get(KV_CAPABILITY_HEADER);
+    if (legacyCapability) return { capability: legacyCapability, paths: legacyPaths };
+    return { capability: requireCapability(undefined, 'Site data capability is missing'), paths: dataSitePaths };
+  };
+}
+
+function requireCapability(value: string | null | undefined, message: string): string {
+  if (!value) throw new PagesSDKError(ERROR_CODES.INVALID_PLATFORM_CONTEXT, message);
   return value;
 }
 

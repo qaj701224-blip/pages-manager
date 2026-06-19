@@ -1,4 +1,4 @@
-import { isValidSiteSlug, isValidSiteUuid } from '@xd/pages-runtime-protocol';
+import { isValidSiteSlug, isValidSiteUuid, isValidUserId } from '@xd/pages-runtime-protocol';
 
 const JWT_ISSUER = 'pages-v2';
 const JWT_AUDIENCE = 'pages-kv-gateway';
@@ -49,7 +49,11 @@ export async function createHs256Jwt({ kid, secret, payload, header = {} }) {
   return `${signingInput}.${base64UrlEncodeBytes(signature)}`;
 }
 
-export async function verifyCapability(authorization, env, { requiredScope, now = Math.floor(Date.now() / 1000) } = {}) {
+export async function verifyCapability(
+  authorization,
+  env,
+  { requiredScope, requiredDataScope, now = Math.floor(Date.now() / 1000) } = {}
+) {
   if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
     throw new Error('Capability invalid: missing bearer authorization');
   }
@@ -76,11 +80,11 @@ export async function verifyCapability(authorization, env, { requiredScope, now 
     throw new Error('Capability invalid: invalid signature');
   }
 
-  validateClaims(payload, env, requiredScope, now);
+  validateClaims(payload, env, requiredScope, requiredDataScope, now);
   return payload;
 }
 
-function validateClaims(claims, env, requiredScope, now) {
+function validateClaims(claims, env, requiredScope, requiredDataScope, now) {
   if (!claims || typeof claims !== 'object' || Array.isArray(claims)) {
     throw new Error('Capability invalid: invalid claims');
   }
@@ -91,6 +95,7 @@ function validateClaims(claims, env, requiredScope, now) {
   if (!expectedEnv || claims.env !== expectedEnv) throw new Error('Capability invalid: environment mismatch');
   if (!isValidSiteSlug(claims.siteId)) throw new Error('Capability invalid: invalid site id');
   if (!isValidSiteUuid(claims.siteUuid)) throw new Error('Capability invalid: invalid site UUID');
+  normalizeAndValidateDataScope(claims, requiredDataScope);
 
   if (!Array.isArray(claims.scope) || !claims.scope.includes(requiredScope)) {
     throw new Error('Capability scope denied: missing required scope');
@@ -114,6 +119,37 @@ function validateClaims(claims, env, requiredScope, now) {
 
   if (claims.exp - claims.iat > MAX_CAPABILITY_TTL_SECONDS) {
     throw new Error('Capability invalid: exp exceeds max ttl');
+  }
+}
+
+function normalizeAndValidateDataScope(claims, requiredDataScope) {
+  if (!requiredDataScope) return;
+
+  if (requiredDataScope === 'legacy-site') {
+    if (claims.dataScope === undefined) {
+      claims.dataScope = 'site';
+      return;
+    }
+    if (claims.dataScope === 'site') return;
+    throw new Error('Capability invalid: data scope mismatch');
+  }
+
+  if (claims.dataScope === undefined) throw new Error('Capability invalid: data scope mismatch');
+  if (claims.apiVersion !== 2) throw new Error('Capability invalid: data api version is invalid');
+  if (claims.dataScope !== requiredDataScope) throw new Error('Capability invalid: data scope mismatch');
+
+  if (claims.anonymous !== true && claims.anonymous !== false) {
+    throw new Error('Capability invalid: anonymous claim is invalid');
+  }
+
+  if (requiredDataScope === 'user') {
+    if (claims.anonymous) {
+      if (claims.sub !== 'anonymous') throw new Error('Capability invalid: anonymous user subject is invalid');
+      return;
+    }
+    if (!isValidUserId(claims.sub) || claims.sub === 'anonymous') {
+      throw new Error('Capability invalid: user subject is invalid');
+    }
   }
 }
 

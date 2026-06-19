@@ -31,6 +31,20 @@ function claims(overrides = {}) {
   };
 }
 
+function dataClaims(dataScope, overrides = {}) {
+  return claims({
+    apiVersion: 2,
+    dataScope,
+    sub: dataScope === 'user' ? 'usr_123' : 'anonymous',
+    anonymous: dataScope !== 'user',
+    scope:
+      dataScope === 'user'
+        ? ['data:user:get', 'data:user:set', 'data:user:delete']
+        : ['data:site:get', 'data:site:set', 'data:site:delete'],
+    ...overrides,
+  });
+}
+
 async function token(payload = claims(), options = {}) {
   return createHs256Jwt({
     kid: 'prod-hs-2026-06',
@@ -73,6 +87,76 @@ test('valid HS256 token verifies and returns claims', async () => {
   assert.equal(verified.siteId, 'q2-report');
   assert.equal(verified.siteUuid, siteUuid);
   assert.equal(verified.jti, 'capability-1');
+});
+
+test('valid site data capability requires matching data scope', async () => {
+  const jwt = await token(dataClaims('site'));
+
+  const verified = await verifyCapability(`Bearer ${jwt}`, testEnv(), {
+    requiredScope: 'data:site:get',
+    requiredDataScope: 'site',
+    now,
+  });
+
+  assert.equal(verified.dataScope, 'site');
+  assert.equal(verified.sub, 'anonymous');
+});
+
+test('rejects data capability when path data scope does not match', async () => {
+  const jwt = await token(dataClaims('site'));
+
+  await assert.rejects(
+    verifyCapability(`Bearer ${jwt}`, testEnv(), {
+      requiredScope: 'data:user:get',
+      requiredDataScope: 'user',
+      now,
+    }),
+    /data scope/i
+  );
+});
+
+test('legacy capability verifies only for legacy site data paths', async () => {
+  const jwt = await token();
+
+  const verified = await verifyCapability(`Bearer ${jwt}`, testEnv(), {
+    requiredScope: 'kv:get',
+    requiredDataScope: 'legacy-site',
+    now,
+  });
+
+  assert.equal(verified.dataScope, 'site');
+  await assert.rejects(
+    verifyCapability(`Bearer ${jwt}`, testEnv(), {
+      requiredScope: 'data:site:get',
+      requiredDataScope: 'site',
+      now,
+    }),
+    /data scope/i
+  );
+});
+
+test('rejects malformed user data subject claims', async () => {
+  const anonymousUser = await token(dataClaims('user', { sub: 'anonymous', anonymous: true }));
+
+  const verified = await verifyCapability(`Bearer ${anonymousUser}`, testEnv(), {
+    requiredScope: 'data:user:get',
+    requiredDataScope: 'user',
+    now,
+  });
+
+  assert.equal(verified.anonymous, true);
+  await assert.rejects(
+    verifyCapability(
+      `Bearer ${await token(dataClaims('user', { sub: 'user@example.com', anonymous: false }))}`,
+      testEnv(),
+      {
+        requiredScope: 'data:user:get',
+        requiredDataScope: 'user',
+        now,
+      }
+    ),
+    /subject|user/i
+  );
 });
 
 test('valid HS256 token verifies against v2 PAGES_ENV', async () => {

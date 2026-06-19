@@ -9,7 +9,7 @@ import {
   validateUserKey,
 } from './protocol.js';
 import { PagesSDKError } from './errors.js';
-import type { KVType, PagesRuntimeEnv } from './types.js';
+import type { KVType, PagesDataStore, PagesRuntimeEnv } from './types.js';
 
 type RuntimeFactory = typeof import('./worker.js').createPagesRuntime;
 
@@ -61,41 +61,59 @@ export function createHandlePagesRuntimeRequest(createPagesRuntime: RuntimeFacto
 
     try {
       const runtime = createPagesRuntime({ env, request });
-      if (action === 'get') {
+      const store = storeForAction(runtime, action);
+      if (action.operation === 'get') {
         const type = validateKvType(body.value.type);
         if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
         const value =
           type.value === 'text'
-            ? await runtime.kv.get(key.value, { type: 'text' })
-            : await runtime.kv.get(key.value, { type: 'json' });
-        return jsonResponse(buildOkEnvelope(value === null ? { found: false } : { found: true, value }));
+            ? await store.get(key.value, { type: 'text' })
+            : await store.get(key.value, { type: 'json' });
+        return runtimeResponse(buildOkEnvelope(value === null ? { found: false } : { found: true, value }), action);
       }
 
-      if (action === 'set') {
+      if (action.operation === 'set') {
         const type = validateKvType(body.value.type);
         if (!type.ok) return errorResponse(type.error.code, type.error.message, 400);
         const ttl = validateTtl(body.value.expirationTtl);
         if (!ttl.ok) return errorResponse(ttl.error.code, ttl.error.message, 400);
-        await runtime.kv.set(key.value, body.value.value, { type: type.value as KVType, expirationTtl: ttl.value });
-        return jsonResponse(buildOkEnvelope());
+        await store.set(key.value, body.value.value, { type: type.value as KVType, expirationTtl: ttl.value });
+        return runtimeResponse(buildOkEnvelope(), action);
       }
 
-      await runtime.kv.delete(key.value);
-      return jsonResponse(buildOkEnvelope());
+      await store.delete(key.value);
+      return runtimeResponse(buildOkEnvelope(), action);
     } catch (error) {
       if (error instanceof PagesSDKError) {
         return errorResponse(error.code, error.message, error.status || 500);
       }
-      return errorResponse(ERROR_CODES.KV_FAILED, 'KV request failed', 500);
+      return errorResponse(ERROR_CODES.KV_FAILED, 'Data request failed', 500);
     }
   };
 }
 
-function getRuntimeAction(pathname: string): 'get' | 'set' | 'delete' | null {
-  if (pathname === RUNTIME.KV_GET_PATH) return 'get';
-  if (pathname === RUNTIME.KV_SET_PATH) return 'set';
-  if (pathname === RUNTIME.KV_DELETE_PATH) return 'delete';
+type RuntimeAction = {
+  operation: 'get' | 'set' | 'delete';
+  dataScope: 'legacy-site' | 'site' | 'user';
+};
+
+function getRuntimeAction(pathname: string): RuntimeAction | null {
+  if (pathname === RUNTIME.KV_GET_PATH) return { operation: 'get', dataScope: 'legacy-site' };
+  if (pathname === RUNTIME.KV_SET_PATH) return { operation: 'set', dataScope: 'legacy-site' };
+  if (pathname === RUNTIME.KV_DELETE_PATH) return { operation: 'delete', dataScope: 'legacy-site' };
+  if (pathname === RUNTIME.DATA_SITE_GET_PATH) return { operation: 'get', dataScope: 'site' };
+  if (pathname === RUNTIME.DATA_SITE_SET_PATH) return { operation: 'set', dataScope: 'site' };
+  if (pathname === RUNTIME.DATA_SITE_DELETE_PATH) return { operation: 'delete', dataScope: 'site' };
+  if (pathname === RUNTIME.DATA_USER_GET_PATH) return { operation: 'get', dataScope: 'user' };
+  if (pathname === RUNTIME.DATA_USER_SET_PATH) return { operation: 'set', dataScope: 'user' };
+  if (pathname === RUNTIME.DATA_USER_DELETE_PATH) return { operation: 'delete', dataScope: 'user' };
   return null;
+}
+
+function storeForAction(runtime: ReturnType<RuntimeFactory>, action: RuntimeAction): PagesDataStore {
+  if (action.dataScope === 'user') return runtime.data.user;
+  if (action.dataScope === 'site') return runtime.data.site;
+  return runtime.kv;
 }
 
 function originFromHeader(origin: string): string | null {
@@ -128,6 +146,12 @@ async function parseBody(request: Request): Promise<
 
 function errorResponse(code: string, message: string, status: number): Response {
   return jsonResponse(buildErrorEnvelope(code, message), status);
+}
+
+function runtimeResponse(body: unknown, action: RuntimeAction, status = 200): Response {
+  const response = jsonResponse(body, status);
+  if (action.dataScope === 'legacy-site') response.headers.set('Deprecation', 'true');
+  return response;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

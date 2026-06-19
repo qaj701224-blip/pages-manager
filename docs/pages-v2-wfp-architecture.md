@@ -2389,15 +2389,15 @@ baseline egress policy：
 
 当前 SDK 提供 `readPlatformContext(request)` 读取 router 注入的最小上下文，并校验 `CF-Platform-*` headers 与 `internal_worker_jwt` claims 的一致性。它不会返回 raw JWT 或 capability；User Worker 不能把该 helper 的返回值当作平台能力，也不能用它绕过 gateway scope。由于第一版 internal JWT 使用 router 持有的 HS256 session key，User Worker 侧不持有验签 secret；未来如果升级为非对称签名和 JWKS，再把该 helper 升级为真正的 cryptographic verify。
 
-## Pages KV 与平台能力
+## XD Pages Data 与平台能力
 
-现有 `apps/kv-gateway` 代码改为 v2-owned gateway，不再由 v1 `apps/server` 签发或部署：
+现有 `apps/kv-gateway` 代码改为 v2-owned data gateway，不再由 v1 `apps/server` 签发或部署：
 
 ```text
 User Worker / generated SPA runtime
   -> capability
-  -> kv-gateway
-  -> 真实 KV namespace
+  -> pages-kv-gateway
+  -> SITE_DATA KV namespace
 ```
 
 第一版统一开放 `get` / `set` / `delete` 三个动作。对外 API 命名使用 `set`，不使用 `put`；gateway 内部仍可以调用 Cloudflare KV 的 `put()` 实现写入。
@@ -2410,76 +2410,81 @@ Browser request
   -> User Worker
      headers:
        CF-Platform-Auth: <internal_worker_jwt>
-       CF-Platform-KV-Capability: <short_lived_capability>
+       CF-Platform-Data-Site-Capability: <short_lived_site_data_capability>
+       CF-Platform-Data-User-Capability: <short_lived_user_data_capability>
+       CF-Platform-KV-Capability: <deprecated_short_lived_site_data_capability>
      binding:
        XD_PAGES_KV_GATEWAY
   -> pages-kv-gateway
   -> SITE_DATA KV
 ```
 
-普通 Worker slot 和 WFP user Worker 都使用同一套 SDK contract。slot 模式下，slot Worker 的上传 metadata 写入 `XD_PAGES_KV_GATEWAY` service binding；WFP 模式下，user Worker 上传到 dispatch namespace 时同样写入 gateway service binding。User Worker 不长期保存 capability，router 每次 dispatch 前按 route snapshot 和请求上下文签发短 TTL `CF-Platform-KV-Capability`，scope 来自 snapshot 中的 `kv.scopes`。
+普通 Worker slot 和 WFP user Worker 都使用同一套 SDK contract。slot 模式下，slot Worker 的上传 metadata 写入 `XD_PAGES_KV_GATEWAY` service binding；WFP 模式下，user Worker 上传到 dispatch namespace 时同样写入 gateway service binding。User Worker 不长期保存 capability，router 每次 dispatch 前按 route snapshot 和请求上下文分别签发短 TTL site data capability 与 user data capability。`pages.data.site` 可以使用请求级 site data capability 或受控 env site capability；如果只有 legacy capability，`pages.data.site` 只能作为 site-level 兼容 fallback 走 legacy `/kv/*` 路径。`pages.data.user` 必须只使用当前请求注入的 user data capability。legacy `CF-Platform-KV-Capability` 只服务 deprecated `pages.kv` / `/kv/*` site-level 兼容路径。
 
 `pages-kv-gateway` 必须校验：
 
 - capability `iss`、`aud`、`kid`、签名算法和环境。
 - `exp` / `nbf` / `iat`，TTL 应控制在几十秒到几分钟内，默认按请求级短 TTL。
-- `siteUuid`、`routeId`、`versionId`、scope 和 method/path 是否匹配。
-- `kv:get` 只能读，`kv:set` 只能写，`kv:delete` 只能删。
+- `siteUuid`、`routeId`、`versionId`、`dataScope`、`apiVersion`、scope 和 method/path 是否匹配。
+- `data:site:get` / `data:user:get` 只能读，`data:site:set` / `data:user:set` 只能写，`data:site:delete` / `data:user:delete` 只能删。
+- legacy `kv:get` / `kv:set` / `kv:delete` 只能落到 site-level 兼容路径。
 - key prefix 只能落在平台推导出的当前站点 namespace 下。
 
-Browser SDK 路径不把 gateway token 暴露给浏览器，而是走 router 保留路径 proxy：
+`pages-router` 从 route snapshot 现有 `kv.scopes` 派生 `data:*` scope：`kv:get` 对应 `data:*:get`，`kv:set` 对应 `data:*:set`，`kv:delete` 对应 `data:*:delete`。只读站点不能因为改用 `/data/site/*` 或 `/data/user/*` 新路径获得写权限。
+
+Browser SDK 不把 gateway token 暴露给浏览器，而是走 router 保留路径 proxy。router 返回浏览器前必须清理所有平台 capability/header，包括 `Authorization`、`CF-Platform-*`、`X-Pages-*`、`X-XD-Pages-*` 和 `Set-Cookie`。新代码使用 `pages.data.site` / `pages.data.user`：
 
 ```text
-pages.kv.get(key)    -> POST   /.xd-pages/runtime/v1/kv/get    { key, type }
-pages.kv.set(key,v)  -> POST   /.xd-pages/runtime/v1/kv/set    { key, value, type, expirationTtl? }
-pages.kv.delete(key) -> POST   /.xd-pages/runtime/v1/kv/delete { key }
+pages.data.site.get(key)    -> POST   /.xd-pages/runtime/v1/data/site/get    { key, type }
+pages.data.site.set(key,v)  -> POST   /.xd-pages/runtime/v1/data/site/set    { key, value, type, expirationTtl? }
+pages.data.site.delete(key) -> POST   /.xd-pages/runtime/v1/data/site/delete { key }
+
+pages.data.user.get(key)    -> POST   /.xd-pages/runtime/v1/data/user/get    { key, type }
+pages.data.user.set(key,v)  -> POST   /.xd-pages/runtime/v1/data/user/set    { key, value, type, expirationTtl? }
+pages.data.user.delete(key) -> POST   /.xd-pages/runtime/v1/data/user/delete { key }
 ```
 
-`pages-router` 收到 `/.xd-pages/runtime/v1/kv/*` 时先走平台门禁、site_session / visibility / ACL 校验、CSRF / Origin 策略和 payload 限制，再由 router 生成 gateway capability 并调用 `pages-kv-gateway`。浏览器请求永远不能直接访问 `kv-gateway.pages.xd.team`，也不能看到 `CF-Platform-KV-Capability`。
+`/.xd-pages/runtime/v1/kv/*` 是 deprecated legacy site-level 兼容路径，只等价于 `pages.data.site`，不能根据 body 里的 `scope` 或 `userId` 切换到 user data。
+legacy runtime 响应只对浏览器暴露标准 `Deprecation` header；`X-XD-Pages-*` 仍按平台私有头清理。
+
+`pages-router` 收到 runtime data 请求时先走平台门禁、site_session / visibility / ACL 校验、CSRF / Origin 策略和 payload 限制，再由 router 生成 gateway capability 并调用 `pages-kv-gateway`。浏览器请求永远不能直接访问 `kv-gateway.pages.xd.team`，也不能看到 gateway capability。
 
 v2 需要调整：
 
 - capability issuer 使用 v2 身份，例如 `pages-v2`，不能继续使用 v1 `pages-manager`。
 - capability 的 subject 应绑定 site UUID、version 或 worker identity。
-- capability 不包含用户身份；用户身份由 `CF-Platform-Auth` 表示。
+- user data capability 可以包含最小化的稳定 `userId` / `anonymous` subject，用于 gateway 推导 user data 前缀；不得包含 email、SSO token、session token 或其它 PII。
 - 浏览器仍不能直接拿 gateway token 或 capability。
 
-### site scope 与 user scope
+### site data 与 user data
 
-当前 Pages KV 是站点级能力，安全边界是 `siteUuid`：
+`pages.data.site` 是站点级能力，安全边界是 `siteUuid`：
 
 ```text
-site.kv:
+site data:
   s/{slug}--{siteUuid}/k/{key}
 ```
 
 `slug` 只用于可读性和排查，不能作为隔离锚点；删除同名站点后新建站点必须得到新的 `siteUuid`，因此不会继承旧 KV 前缀。这适合存站点配置、共享草稿、轻量状态和站点级缓存，但不应被当作用户数据库。业务代码自行约定 `users/{userId}/...` 前缀不能形成平台级隔离，因为 userId 可能来自浏览器、业务参数或不可信 Worker 代码。
 
-如果未来需要用户级数据隔离，应在 SDK/API 层显式引入 `user` scope：
+用户级数据隔离由 `pages.data.user` 显式表达：
 
 ```ts
-pages.site.kv.get('app/config');
-pages.user.kv.get('settings');
+pages.data.site.get('app/config');
+pages.data.user.get('settings');
 ```
 
 对应存储前缀由平台推导：
 
 ```text
-site.kv:
+site data:
   s/{slug}--{siteUuid}/k/{key}
 
-user.kv:
+user data:
   s/{slug}--{siteUuid}/u/{userId}/k/{key}
 ```
 
-`userId` 必须来自 `pages-router` 注入的 `CF-Platform-Auth` 签名身份，不能由浏览器、SDK 调用方或 User Worker 自行传入。第一版 user scope 只建议支持当前登录用户自己的 `get` / `set` / `delete`，不支持 list、管理员读取他人数据、团队空间或共享用户组空间。
-
-该能力不阻塞 v2 SSO / router / execution provider 主架构。推荐顺序：
-
-1. 先完成 SSO、`pages-router` 和内部 JWT。
-2. 再扩展 `kv-gateway` capability 与 key prefix。
-3. 再在 SDK 中暴露 `pages.site.kv` / `pages.user.kv`。
-4. 最后补访问审计、文档和上线说明。
+`userId` 必须来自 `pages-router` 注入的签名身份，不能由浏览器、SDK 调用方或 User Worker 自行传入，也不能使用 email。第一版 user data 只支持当前登录用户自己的 `get` / `set` / `delete`，不支持 list、管理员读取他人数据、团队空间或共享用户组空间。匿名 `pages.data.user.get()` 返回 `null`；匿名 `set` / `delete` 返回 `USER_REQUIRED`。
 
 ## 静态站点和 SPA
 

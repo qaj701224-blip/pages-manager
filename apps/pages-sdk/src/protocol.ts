@@ -1,14 +1,28 @@
+/* global TextEncoder */
+
 export const RUNTIME = {
   BASE_PATH: '/.xd-pages/runtime/v1',
   KV_GET_PATH: '/.xd-pages/runtime/v1/kv/get',
   KV_SET_PATH: '/.xd-pages/runtime/v1/kv/set',
   KV_DELETE_PATH: '/.xd-pages/runtime/v1/kv/delete',
+  DATA_SITE_GET_PATH: '/.xd-pages/runtime/v1/data/site/get',
+  DATA_SITE_SET_PATH: '/.xd-pages/runtime/v1/data/site/set',
+  DATA_SITE_DELETE_PATH: '/.xd-pages/runtime/v1/data/site/delete',
+  DATA_USER_GET_PATH: '/.xd-pages/runtime/v1/data/user/get',
+  DATA_USER_SET_PATH: '/.xd-pages/runtime/v1/data/user/set',
+  DATA_USER_DELETE_PATH: '/.xd-pages/runtime/v1/data/user/delete',
 };
 
 export const GATEWAY = {
   KV_GET_PATH: '/v1/kv/get',
   KV_SET_PATH: '/v1/kv/set',
   KV_DELETE_PATH: '/v1/kv/delete',
+  DATA_SITE_GET_PATH: '/v1/data/site/get',
+  DATA_SITE_SET_PATH: '/v1/data/site/set',
+  DATA_SITE_DELETE_PATH: '/v1/data/site/delete',
+  DATA_USER_GET_PATH: '/v1/data/user/get',
+  DATA_USER_SET_PATH: '/v1/data/user/set',
+  DATA_USER_DELETE_PATH: '/v1/data/user/delete',
 };
 
 export const HEADERS = {
@@ -26,6 +40,7 @@ export const ERROR_CODES = {
   FORBIDDEN: 'FORBIDDEN',
   INVALID_PLATFORM_CONTEXT: 'INVALID_PLATFORM_CONTEXT',
   INVALID_RUNTIME_RESPONSE: 'INVALID_RUNTIME_RESPONSE',
+  USER_REQUIRED: 'USER_REQUIRED',
 };
 
 const MAX_USER_KEY_BYTES = 256;
@@ -55,7 +70,7 @@ export function validateUserKey(key: unknown):
   ) {
     return {
       ok: false,
-      error: { code: ERROR_CODES.INVALID_KEY, message: 'Invalid KV key' },
+      error: { code: ERROR_CODES.INVALID_KEY, message: 'Invalid data key' },
     };
   }
 
@@ -69,7 +84,7 @@ export function validateKvType(type: unknown = 'json'):
 
   return {
     ok: false,
-    error: { code: ERROR_CODES.INVALID_TYPE, message: 'Invalid KV value type' },
+    error: { code: ERROR_CODES.INVALID_TYPE, message: 'Invalid data value type' },
   };
 }
 
@@ -87,7 +102,7 @@ export function validateTtl(expirationTtl: unknown):
 
   return {
     ok: false,
-    error: { code: ERROR_CODES.INVALID_TTL, message: 'Invalid KV expiration TTL' },
+    error: { code: ERROR_CODES.INVALID_TTL, message: 'Invalid data expiration TTL' },
   };
 }
 
