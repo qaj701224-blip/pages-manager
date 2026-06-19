@@ -4,6 +4,11 @@ compatibility_date = "2026-06-15"
 account_id = "__CLOUDFLARE_ACCOUNT_ID__"
 workers_dev = false
 
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false
+
 [[routes]]
 pattern = "auth.pages.xd.team/*"
 zone_name = "xd.team"
