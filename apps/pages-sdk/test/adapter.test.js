@@ -131,6 +131,100 @@ test('handlePagesRuntimeRequest dispatches valid get requests', async () => {
   assert.deepEqual(await responseJson(response), { ok: true, found: true, value: 'ok' });
 });
 
+test('handlePagesRuntimeRequest forwards legacy deprecation header without private deprecated marker', async () => {
+  const response = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/kv/get'),
+    {
+      XD_PAGES_KV_CAPABILITY: 'legacy-env-capability',
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async () =>
+          Response.json(
+            { ok: true, found: true, value: 'ok' },
+            {
+              headers: {
+                Deprecation: 'true',
+                'X-XD-Pages-Deprecated': 'kv-runtime',
+              },
+            }
+          ),
+      },
+    },
+    { checkAccess: async () => null }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Deprecation'), 'true');
+  assert.equal(response.headers.get('X-XD-Pages-Deprecated'), null);
+});
+
+test('handlePagesRuntimeRequest dispatches site and user data requests', async () => {
+  const calls = [];
+  const requestHeaders = {
+    'CF-Platform-Data-Site-Capability': 'site-request-capability',
+    'CF-Platform-Data-User-Capability': 'user-request-capability',
+  };
+  const dispatchEnv = {
+    XD_PAGES_KV_GATEWAY: {
+      fetch: async (request) => {
+        calls.push({
+          url: request.url,
+          authorization: request.headers.get('Authorization'),
+          body: await request.json(),
+        });
+        return Response.json({ ok: true, found: false, value: null });
+      },
+    },
+  };
+
+  const siteResponse = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/data/site/get', { headers: requestHeaders }),
+    dispatchEnv,
+    { checkAccess: async () => null }
+  );
+  const userResponse = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/data/user/get', { headers: requestHeaders }),
+    dispatchEnv,
+    { checkAccess: async () => null }
+  );
+
+  assert.equal(siteResponse.status, 200);
+  assert.equal(userResponse.status, 200);
+  assert.deepEqual(calls, [
+    {
+      url: 'https://pages-kv-gateway.local/v1/data/site/get',
+      authorization: 'Bearer site-request-capability',
+      body: { key: 'app/config', type: 'json' },
+    },
+    {
+      url: 'https://pages-kv-gateway.local/v1/data/user/get',
+      authorization: 'Bearer user-request-capability',
+      body: { key: 'app/config', type: 'json' },
+    },
+  ]);
+});
+
+test('handlePagesRuntimeRequest uses legacy path for site data requests with only legacy capability', async () => {
+  let captured;
+  const response = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/data/site/get'),
+    {
+      XD_PAGES_KV_CAPABILITY: 'legacy-env-capability',
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (request) => {
+          captured = request;
+          return Response.json({ ok: true, found: true, value: 'legacy-ok' });
+        },
+      },
+    },
+    { checkAccess: async () => null }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/get');
+  assert.equal(captured.headers.get('Authorization'), 'Bearer legacy-env-capability');
+  assert.deepEqual(await responseJson(response), { ok: true, found: true, value: 'legacy-ok' });
+});
+
 test('handlePagesRuntimeRequest returns checkAccess responses without dispatching', async () => {
   let dispatched = false;
   const response = await handlePagesRuntimeRequest(

@@ -33,6 +33,91 @@ test('PAGES_RUNTIME_SOURCE handles valid get requests', async () => {
   assert.deepEqual(await response.json(), { ok: true, found: true, value: { enabled: true } });
 });
 
+test('PAGES_RUNTIME_SOURCE handles site and user data capabilities', async () => {
+  const { handlePagesRuntimeRequest } = loadInlineRuntime();
+  const calls = [];
+  const headers = {
+    'CF-Platform-Data-Site-Capability': 'site-request-capability',
+    'CF-Platform-Data-User-Capability': 'user-request-capability',
+  };
+  const env = {
+    XD_PAGES_KV_GATEWAY: {
+      fetch: async (request) => {
+        calls.push({
+          url: request.url,
+          authorization: request.headers.get('Authorization'),
+          body: await request.json(),
+        });
+        return Response.json({ ok: true, found: false, value: null });
+      },
+    },
+  };
+
+  const siteResponse = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/data/site/get', { headers }),
+    env,
+    { checkAccess: async () => null }
+  );
+  const userResponse = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/data/user/get', { headers }),
+    env,
+    { checkAccess: async () => null }
+  );
+
+  assert.equal(siteResponse.status, 200);
+  assert.equal(userResponse.status, 200);
+  assert.deepEqual(calls, [
+    {
+      url: 'https://pages-kv-gateway.local/v1/data/site/get',
+      authorization: 'Bearer site-request-capability',
+      body: { key: 'app/config', type: 'json' },
+    },
+    {
+      url: 'https://pages-kv-gateway.local/v1/data/user/get',
+      authorization: 'Bearer user-request-capability',
+      body: { key: 'app/config', type: 'json' },
+    },
+  ]);
+});
+
+test('PAGES_RUNTIME_SOURCE uses legacy path for site data when only legacy capability exists', async () => {
+  const { handlePagesRuntimeRequest } = loadInlineRuntime();
+  let captured;
+  const response = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/data/site/get'),
+    {
+      XD_PAGES_KV_CAPABILITY: 'legacy-env-capability',
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (request) => {
+          captured = request;
+          return Response.json({ ok: true, found: true, value: 'legacy-ok' }, { headers: { Deprecation: 'true' } });
+        },
+      },
+    },
+    { checkAccess: async () => null }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Deprecation'), 'true');
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/get');
+  assert.equal(captured.headers.get('Authorization'), 'Bearer legacy-env-capability');
+  assert.deepEqual(await response.json(), { ok: true, found: true, value: 'legacy-ok' });
+});
+
+test('PAGES_RUNTIME_SOURCE validates data requests with data wording', async () => {
+  const { handlePagesRuntimeRequest } = loadInlineRuntime();
+  const response = await handlePagesRuntimeRequest(
+    runtimeRequest('/.xd-pages/runtime/v1/data/user/get', {
+      body: JSON.stringify({ key: '.xd-pages/runtime', type: 'binary' }),
+    }),
+    {},
+    { checkAccess: async () => null }
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual((await response.json()).error, { code: 'INVALID_KEY', message: 'Invalid data key' });
+});
+
 test('PAGES_RUNTIME_SOURCE returns null for non-runtime paths and fails closed without access checks', async () => {
   const { handlePagesRuntimeRequest } = loadInlineRuntime();
 

@@ -2,10 +2,10 @@
 
 import { createPagesClient } from '../vendor/xd-pages-sdk/browser.js';
 
-const KV_KEY = 'smoke/latest-message';
+const DATA_KEY = 'smoke/latest-message';
 const pages = createPagesClient();
 
-const form = document.querySelector('#kv-form');
+const form = document.querySelector('#data-form');
 const input = document.querySelector('#message');
 const readButton = document.querySelector('#read');
 const deleteButton = document.querySelector('#delete');
@@ -35,19 +35,19 @@ form.addEventListener('submit', (event) => {
     message: input.value,
     updatedAt: new Date().toISOString(),
   };
-  run('KV set', async () => {
-    await pages.kv.set(KV_KEY, value);
-    return { key: KV_KEY, value };
+  run('Site data set', async () => {
+    await pages.data.site.set(DATA_KEY, value);
+    return { key: DATA_KEY, value };
   });
 });
 
 readButton.addEventListener('click', () => {
-  run('KV get', async () => ({ key: KV_KEY, value: await pages.kv.get(KV_KEY) }));
+  run('Site data get', async () => ({ key: DATA_KEY, value: await pages.data.site.get(DATA_KEY) }));
 });
 
 deleteButton.addEventListener('click', () => {
-  run('KV delete', async () => {
-    await pages.kv.delete(KV_KEY);
-    return { key: KV_KEY, deleted: true };
+  run('Site data delete', async () => {
+    await pages.data.site.delete(DATA_KEY);
+    return { key: DATA_KEY, deleted: true };
   });
 });

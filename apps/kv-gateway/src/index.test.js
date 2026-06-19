@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildStorageKey } from '@xd/pages-runtime-protocol';
+import { buildStorageKey, buildUserStorageKey } from '@xd/pages-runtime-protocol';
 import worker from './index.js';
 import { createHs256Jwt } from './auth.js';
 
@@ -58,6 +58,20 @@ function claims(overrides = {}) {
   };
 }
 
+function dataClaims(dataScope, overrides = {}) {
+  return claims({
+    apiVersion: 2,
+    dataScope,
+    sub: dataScope === 'user' ? 'usr_123' : 'anonymous',
+    anonymous: dataScope !== 'user',
+    scope:
+      dataScope === 'user'
+        ? ['data:user:get', 'data:user:set', 'data:user:delete']
+        : ['data:site:get', 'data:site:set', 'data:site:delete'],
+    ...overrides,
+  });
+}
+
 async function authHeader(payload = claims()) {
   const jwt = await createHs256Jwt({ kid: 'prod-hs-2026-06', secret: 'test-secret', payload });
   return `Bearer ${jwt}`;
@@ -95,6 +109,152 @@ test('get reads only JWT-derived prefix and ignores body siteId', async () => {
   assert.deepEqual(await json(response), { ok: true, key: 'app/config', found: true, value: { theme: 'light' } });
 });
 
+test('legacy kv get remains site-level and returns deprecation headers', async () => {
+  const gatewayEnv = env();
+  const siteKey = buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/config' });
+  const userKey = buildUserStorageKey({ siteSlug: siteId, siteUuid, userId: 'usr_123', userKey: 'app/config' });
+  gatewayEnv.SITE_DATA.values.set(siteKey, JSON.stringify({ scope: 'site' }));
+  gatewayEnv.SITE_DATA.values.set(userKey, JSON.stringify({ scope: 'user' }));
+
+  const response = await worker.fetch(
+    await request('/v1/kv/get', { key: 'app/config' }, { authorization: await authHeader() }),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Deprecation'), 'true');
+  assert.equal(response.headers.get('X-XD-Pages-Deprecated'), 'kv-runtime');
+  assert.deepEqual(await json(response), { ok: true, key: 'app/config', found: true, value: { scope: 'site' } });
+});
+
+test('site data and user data capabilities cannot cross gateway paths', async () => {
+  const gatewayEnv = env();
+  const siteToUser = await worker.fetch(
+    await request('/v1/data/user/get', { key: 'app/config' }, { authorization: await authHeader(dataClaims('site')) }),
+    gatewayEnv
+  );
+  const userToSite = await worker.fetch(
+    await request('/v1/data/site/get', { key: 'app/config' }, { authorization: await authHeader(dataClaims('user')) }),
+    gatewayEnv
+  );
+  const userToLegacy = await worker.fetch(
+    await request('/v1/kv/get', { key: 'app/config' }, { authorization: await authHeader(dataClaims('user')) }),
+    gatewayEnv
+  );
+
+  assert.equal(siteToUser.status, 403);
+  assert.equal((await json(siteToUser)).error.code, 'CAPABILITY_SCOPE_DENIED');
+  assert.equal(userToSite.status, 403);
+  assert.equal((await json(userToSite)).error.code, 'CAPABILITY_SCOPE_DENIED');
+  assert.equal(userToLegacy.status, 403);
+  assert.equal((await json(userToLegacy)).error.code, 'CAPABILITY_SCOPE_DENIED');
+});
+
+test('user data reads only claims subject and ignores body userId and scope', async () => {
+  const gatewayEnv = env();
+  const userKey = buildUserStorageKey({ siteSlug: siteId, siteUuid, userId: 'usr_123', userKey: 'draft' });
+  const evilKey = buildUserStorageKey({ siteSlug: siteId, siteUuid, userId: 'usr_evil', userKey: 'draft' });
+  gatewayEnv.SITE_DATA.values.set(userKey, JSON.stringify({ owner: 'claims' }));
+  gatewayEnv.SITE_DATA.values.set(evilKey, JSON.stringify({ owner: 'body' }));
+
+  const response = await worker.fetch(
+    await request(
+      '/v1/data/user/get',
+      { key: 'draft', userId: 'usr_evil', scope: 'site' },
+      { authorization: await authHeader(dataClaims('user')) }
+    ),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await json(response), { ok: true, key: 'draft', found: true, value: { owner: 'claims' } });
+});
+
+test('user data writes under claims subject prefix', async () => {
+  const gatewayEnv = env();
+
+  const response = await worker.fetch(
+    await request(
+      '/v1/data/user/set',
+      { key: 'draft', value: { title: 'hello' }, userId: 'usr_evil' },
+      { authorization: await authHeader(dataClaims('user')) }
+    ),
+    gatewayEnv
+  );
+
+  const storageKey = buildUserStorageKey({ siteSlug: siteId, siteUuid, userId: 'usr_123', userKey: 'draft' });
+  assert.equal(response.status, 200);
+  assert.equal(gatewayEnv.SITE_DATA.puts[0].key, storageKey);
+  assert.deepEqual(gatewayEnv.SITE_DATA.puts[0].options.metadata.userId, 'usr_123');
+});
+
+test('anonymous user data get returns null and writes fail with USER_REQUIRED', async () => {
+  const gatewayEnv = env();
+  const anonymousClaims = dataClaims('user', {
+    sub: 'anonymous',
+    anonymous: true,
+    scope: ['data:user:get', 'data:user:set', 'data:user:delete'],
+  });
+
+  const getResponse = await worker.fetch(
+    await request('/v1/data/user/get', { key: 'draft' }, { authorization: await authHeader(anonymousClaims) }),
+    gatewayEnv
+  );
+  const setResponse = await worker.fetch(
+    await request(
+      '/v1/data/user/set',
+      { key: 'draft', value: { title: 'hello' } },
+      { authorization: await authHeader(anonymousClaims) }
+    ),
+    gatewayEnv
+  );
+  const deleteResponse = await worker.fetch(
+    await request('/v1/data/user/delete', { key: 'draft' }, { authorization: await authHeader(anonymousClaims) }),
+    gatewayEnv
+  );
+
+  assert.equal(getResponse.status, 200);
+  assert.deepEqual(await json(getResponse), { ok: true, key: 'draft', found: false, value: null });
+  assert.equal(setResponse.status, 401);
+  assert.equal((await json(setResponse)).error.code, 'USER_REQUIRED');
+  assert.equal(deleteResponse.status, 401);
+  assert.equal((await json(deleteResponse)).error.code, 'USER_REQUIRED');
+  assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
+  assert.equal(gatewayEnv.SITE_DATA.deletes.length, 0);
+});
+
+test('overlong user data storage keys return INVALID_KEY envelopes', async () => {
+  const gatewayEnv = env();
+  const userClaims = dataClaims('user', {
+    siteId: 'a'.repeat(50),
+    sub: 'u'.repeat(128),
+  });
+  const authorization = await authHeader(userClaims);
+  const key = '中'.repeat(80);
+
+  const getResponse = await worker.fetch(
+    await request('/v1/data/user/get', { key }, { authorization }),
+    gatewayEnv
+  );
+  const setResponse = await worker.fetch(
+    await request('/v1/data/user/set', { key, value: { title: 'hello' } }, { authorization }),
+    gatewayEnv
+  );
+  const deleteResponse = await worker.fetch(
+    await request('/v1/data/user/delete', { key }, { authorization }),
+    gatewayEnv
+  );
+
+  assert.equal(getResponse.status, 400);
+  assert.deepEqual((await json(getResponse)).error, { code: 'INVALID_KEY', message: 'Invalid data key' });
+  assert.equal(setResponse.status, 400);
+  assert.deepEqual((await json(setResponse)).error, { code: 'INVALID_KEY', message: 'Invalid data key' });
+  assert.equal(deleteResponse.status, 400);
+  assert.deepEqual((await json(deleteResponse)).error, { code: 'INVALID_KEY', message: 'Invalid data key' });
+  assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
+  assert.equal(gatewayEnv.SITE_DATA.deletes.length, 0);
+});
+
 test('set stores text and ttl metadata under prefixed key', async () => {
   const gatewayEnv = env();
 
@@ -130,7 +290,7 @@ test('set rejects missing json value before writing', async () => {
   );
 
   assert.equal(response.status, 400);
-  assert.equal((await json(response)).error.code, 'INVALID_JSON');
+  assert.deepEqual((await json(response)).error, { code: 'INVALID_JSON', message: 'Missing data value' });
   assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
 });
 
@@ -143,7 +303,7 @@ test('set rejects missing text value before writing', async () => {
   );
 
   assert.equal(response.status, 400);
-  assert.equal((await json(response)).error.code, 'INVALID_JSON');
+  assert.deepEqual((await json(response)).error, { code: 'INVALID_JSON', message: 'Missing data value' });
   assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
 });
 
@@ -156,7 +316,7 @@ test('set rejects null text value before writing', async () => {
   );
 
   assert.equal(response.status, 400);
-  assert.equal((await json(response)).error.code, 'INVALID_JSON');
+  assert.deepEqual((await json(response)).error, { code: 'INVALID_JSON', message: 'Invalid text data value' });
   assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
 });
 
@@ -182,7 +342,7 @@ test('provider value-too-large errors are standardized', async () => {
   );
 
   assert.equal(response.status, 413);
-  assert.equal((await json(response)).error.code, 'KV_VALUE_TOO_LARGE');
+  assert.deepEqual((await json(response)).error, { code: 'KV_VALUE_TOO_LARGE', message: 'Data value is too large' });
 });
 
 test('provider value-size errors are standardized', async () => {
@@ -245,7 +405,10 @@ test('JSON decode failure returns KV_DECODE_FAILED', async () => {
   );
 
   assert.equal(response.status, 500);
-  assert.equal((await json(response)).error.code, 'KV_DECODE_FAILED');
+  assert.deepEqual((await json(response)).error, {
+    code: 'KV_DECODE_FAILED',
+    message: 'Data value could not be decoded',
+  });
 });
 
 test('path and method handling use JSON envelopes', async () => {

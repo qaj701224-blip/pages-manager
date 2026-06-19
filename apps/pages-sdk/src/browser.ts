@@ -1,11 +1,11 @@
 import { ERROR_CODES, HEADERS, RUNTIME } from './protocol.js';
 import { PagesSDKError } from './errors.js';
-import type { KVType, PagesKV } from './types.js';
+import type { KVType, PagesClient, PagesDataStore } from './types.js';
 
 export { PagesSDKError } from './errors.js';
 export type { KVType } from './types.js';
 
-export function createPagesClient(options: { basePath?: string; fetch?: typeof fetch } = {}): { kv: PagesKV } {
+export function createPagesClient(options: { basePath?: string; fetch?: typeof fetch } = {}): PagesClient {
   const fetchFn = options.fetch ?? globalThis.fetch;
   const basePath = options.basePath ?? RUNTIME.BASE_PATH;
 
@@ -22,10 +22,35 @@ export function createPagesClient(options: { basePath?: string; fetch?: typeof f
     return readEnvelope(response);
   }
 
+  const legacySite = createDataStore(post, {
+    get: '/kv/get',
+    set: '/kv/set',
+    delete: '/kv/delete',
+  });
+  const data = {
+    site: createDataStore(post, {
+      get: '/data/site/get',
+      set: '/data/site/set',
+      delete: '/data/site/delete',
+    }),
+    user: createDataStore(post, {
+      get: '/data/user/get',
+      set: '/data/user/set',
+      delete: '/data/user/delete',
+    }),
+  };
+
+  return { data, kv: legacySite };
+}
+
+function createDataStore(
+  post: (path: string, body: unknown) => Promise<Record<string, unknown>>,
+  paths: { get: string; set: string; delete: string }
+): PagesDataStore {
   async function get<T = unknown>(key: string, getOptions?: { type?: 'json' }): Promise<T | null>;
   async function get(key: string, getOptions: { type: 'text' }): Promise<string | null>;
   async function get<T = unknown>(key: string, getOptions: { type?: KVType } = {}): Promise<T | string | null> {
-    const envelope = await post('/kv/get', { key, type: getOptions.type ?? 'json' });
+    const envelope = await post(paths.get, { key, type: getOptions.type ?? 'json' });
     if (typeof envelope.found !== 'boolean') {
       throw new PagesSDKError(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'Invalid runtime response');
     }
@@ -44,14 +69,14 @@ export function createPagesClient(options: { basePath?: string; fetch?: typeof f
       type: setOptions.type ?? 'json',
     };
     if (setOptions.expirationTtl !== undefined) body.expirationTtl = setOptions.expirationTtl;
-    await post('/kv/set', body);
+    await post(paths.set, body);
   }
 
   async function deleteKey(key: string): Promise<void> {
-    await post('/kv/delete', { key });
+    await post(paths.delete, { key });
   }
 
-  return { kv: { get, set, delete: deleteKey } };
+  return { get, set, delete: deleteKey };
 }
 
 async function readEnvelope(response: Response): Promise<Record<string, unknown>> {

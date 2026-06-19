@@ -7,6 +7,8 @@ test('detects platform reserved paths', () => {
   assert.equal(isPlatformPath('/.xd-pages'), true);
   assert.equal(isPlatformPath('/.xd-pages/auth/callback'), true);
   assert.equal(isPlatformPath('/.xd-pages/runtime/v1/kv/get'), true);
+  assert.equal(isPlatformPath('/.xd-pages/runtime/v1/data/site/get'), true);
+  assert.equal(isPlatformPath('/.xd-pages/runtime/v1/data/user/get'), true);
   assert.equal(isPlatformPath('/.xd-pages/health'), true);
 });
 

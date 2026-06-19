@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import kvGatewayWorker from '../../kv-gateway/src/index.js';
 import { verifyCapability } from '../../kv-gateway/src/auth.js';
 import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
 import worker from './index.js';
@@ -136,7 +137,21 @@ test('proxies browser runtime KV requests through gateway without dispatching us
     XD_PAGES_KV_GATEWAY: {
       async fetch(request) {
         gatewayRequest = request;
-        return Response.json({ ok: true, found: true, value: { theme: 'dark' } });
+        return Response.json(
+          { ok: true, found: true, value: { theme: 'dark' } },
+          {
+            headers: {
+              Deprecation: 'true',
+              Authorization: 'Bearer leaked',
+              'CF-Platform-KV-Capability': 'leaked',
+              'CF-Platform-Data-Site-Capability': 'leaked',
+              'CF-Platform-Data-User-Capability': 'leaked',
+              'X-Pages-Token': 'leaked',
+              'X-XD-Pages-Trace-Id': 'leaked',
+              'Set-Cookie': '__Host-pages_site_session=leaked; Path=/; Secure',
+            },
+          }
+        );
       },
     },
   });
@@ -156,6 +171,14 @@ test('proxies browser runtime KV requests through gateway without dispatching us
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, found: true, value: { theme: 'dark' } });
+  assert.equal(response.headers.get('Deprecation'), 'true');
+  assert.equal(response.headers.get('Authorization'), null);
+  assert.equal(response.headers.get('CF-Platform-KV-Capability'), null);
+  assert.equal(response.headers.get('CF-Platform-Data-Site-Capability'), null);
+  assert.equal(response.headers.get('CF-Platform-Data-User-Capability'), null);
+  assert.equal(response.headers.get('X-Pages-Token'), null);
+  assert.equal(response.headers.get('X-XD-Pages-Trace-Id'), null);
+  assert.equal(response.headers.get('Set-Cookie'), null);
   assert.equal(env.dispatchCount, 0);
   assert.equal(gatewayRequest.url, 'https://pages-kv-gateway.local/v1/kv/get');
   assert.equal(gatewayRequest.headers.get('CF-Platform-KV-Capability'), null);
@@ -165,6 +188,238 @@ test('proxies browser runtime KV requests through gateway without dispatching us
   });
   assert.equal(claims.siteId, 'demo');
   assert.equal(claims.siteUuid, '4b4c8e8361ef4b47b64f5c20a7db7c47');
+});
+
+test('proxies browser site data runtime requests with site data capability', async () => {
+  let gatewayRequest;
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set', 'kv:delete'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        gatewayRequest = request;
+        return Response.json({ ok: true, found: true, value: { theme: 'dark' } });
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/site/get', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+      },
+      body: JSON.stringify({ key: 'app/config' }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, found: true, value: { theme: 'dark' } });
+  assert.equal(response.headers.get('Authorization'), null);
+  assert.equal(response.headers.get('CF-Platform-KV-Capability'), null);
+  assert.equal(response.headers.get('CF-Platform-Data-Site-Capability'), null);
+  assert.equal(response.headers.get('CF-Platform-Data-User-Capability'), null);
+  assert.equal(response.headers.get('X-Pages-Token'), null);
+  assert.equal(response.headers.get('X-XD-Pages-Trace-Id'), null);
+  assert.equal(response.headers.get('Set-Cookie'), null);
+  assert.equal(gatewayRequest.url, 'https://pages-kv-gateway.local/v1/data/site/get');
+  const claims = await verifyCapability(gatewayRequest.headers.get('Authorization'), gatewayEnv(), {
+    requiredScope: 'data:site:get',
+    requiredDataScope: 'site',
+    now: 1_700_000_000,
+  });
+  assert.equal(claims.dataScope, 'site');
+  assert.equal(claims.sub, 'anonymous');
+});
+
+test('proxies browser user data runtime requests with request identity capability', async () => {
+  let gatewayRequest;
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'org',
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set', 'kv:delete'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        gatewayRequest = request;
+        return Response.json({ ok: true, found: true, value: { title: 'hello' } });
+      },
+    },
+  });
+  const session = await siteSession({ audience: 'demo.pages.xd.team', userId: 'usr_1' });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/user/get', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+      body: JSON.stringify({ key: 'draft', userId: 'usr_evil' }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, found: true, value: { title: 'hello' } });
+  assert.equal(gatewayRequest.url, 'https://pages-kv-gateway.local/v1/data/user/get');
+  const claims = await verifyCapability(gatewayRequest.headers.get('Authorization'), gatewayEnv(), {
+    requiredScope: 'data:user:get',
+    requiredDataScope: 'user',
+    now: 1_700_000_000,
+  });
+  assert.equal(claims.dataScope, 'user');
+  assert.equal(claims.sub, 'usr_1');
+  assert.equal(claims.anonymous, false);
+});
+
+test('protected user data runtime requests redirect before gateway when session is missing', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'org',
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch() {
+        throw new Error('gateway should not be called');
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/user/get', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+      },
+      body: JSON.stringify({ key: 'draft' }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get('Location'), /reason=SITE_SESSION_REQUIRED/);
+});
+
+test('browser data write requests do not receive write scope from read-only route snapshots', async () => {
+  const captured = [];
+  const session = await siteSession({ audience: 'demo.pages.xd.team', userId: 'usr_1' });
+  const readOnlyGatewayEnv = gatewayEnv({ nowSeconds: () => 1_700_000_000 });
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'org',
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        captured.push(request);
+        return kvGatewayWorker.fetch(request, readOnlyGatewayEnv);
+      },
+    },
+  });
+
+  const siteResponse = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/site/set', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+      body: JSON.stringify({ key: 'app/config', value: { theme: 'dark' } }),
+    }),
+    env
+  );
+  const userResponse = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/user/set', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+      body: JSON.stringify({ key: 'draft', value: { title: 'hello' } }),
+    }),
+    env
+  );
+
+  assert.equal(siteResponse.status, 403);
+  assert.equal(userResponse.status, 403);
+  assert.equal((await siteResponse.json()).error.code, 'CAPABILITY_SCOPE_DENIED');
+  assert.equal((await userResponse.json()).error.code, 'CAPABILITY_SCOPE_DENIED');
+  assert.equal(captured.length, 2);
+  await assert.rejects(
+    verifyCapability(captured[0].headers.get('Authorization'), gatewayEnv(), {
+      requiredScope: 'data:site:set',
+      requiredDataScope: 'site',
+      now: 1_700_000_000,
+    }),
+    /scope/i
+  );
+  await assert.rejects(
+    verifyCapability(captured[1].headers.get('Authorization'), gatewayEnv(), {
+      requiredScope: 'data:user:set',
+      requiredDataScope: 'user',
+      now: 1_700_000_000,
+    }),
+    /scope/i
+  );
+});
+
+test('anonymous browser user data writes return USER_REQUIRED through gateway', async () => {
+  const env = routeEnv({
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:set'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        return kvGatewayWorker.fetch(request, gatewayEnv());
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/user/set', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+      },
+      body: JSON.stringify({ key: 'draft', value: { title: 'hello' } }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error.code, 'USER_REQUIRED');
 });
 
 test('rejects browser runtime KV requests with cross-site origin', async () => {
@@ -253,6 +508,100 @@ test('injects a short-lived KV capability into user worker requests for kv-enabl
   assert.equal(claims.siteId, 'demo');
   assert.equal(claims.env, 'production');
   assert.equal(claims.exp - claims.iat, 60);
+});
+
+test('injects separated site and user data capabilities into user worker requests', async () => {
+  const session = await siteSession({ audience: 'demo.pages.xd.team', userId: 'usr_1' });
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'org',
+        kv: { enabled: true, scopes: ['kv:get', 'kv:set', 'kv:delete'] },
+      }),
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  const siteCapability = env.dispatchedRequest.headers.get('CF-Platform-Data-Site-Capability');
+  const userCapability = env.dispatchedRequest.headers.get('CF-Platform-Data-User-Capability');
+  const siteClaims = await verifyCapability(`Bearer ${siteCapability}`, gatewayEnv(), {
+    requiredScope: 'data:site:set',
+    requiredDataScope: 'site',
+    now: 1_700_000_000,
+  });
+  const userClaims = await verifyCapability(`Bearer ${userCapability}`, gatewayEnv(), {
+    requiredScope: 'data:user:set',
+    requiredDataScope: 'user',
+    now: 1_700_000_000,
+  });
+
+  assert.equal(siteClaims.dataScope, 'site');
+  assert.equal(siteClaims.sub, 'anonymous');
+  assert.equal(siteClaims.anonymous, true);
+  assert.equal(userClaims.dataScope, 'user');
+  assert.equal(userClaims.sub, 'usr_1');
+});
+
+test('data capabilities injected into user workers inherit legacy kv scopes', async () => {
+  const session = await siteSession({ audience: 'demo.pages.xd.team', userId: 'usr_1' });
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'org',
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  const siteCapability = env.dispatchedRequest.headers.get('CF-Platform-Data-Site-Capability');
+  const userCapability = env.dispatchedRequest.headers.get('CF-Platform-Data-User-Capability');
+  await verifyCapability(`Bearer ${siteCapability}`, gatewayEnv(), {
+    requiredScope: 'data:site:get',
+    requiredDataScope: 'site',
+    now: 1_700_000_000,
+  });
+  await verifyCapability(`Bearer ${userCapability}`, gatewayEnv(), {
+    requiredScope: 'data:user:get',
+    requiredDataScope: 'user',
+    now: 1_700_000_000,
+  });
+  await assert.rejects(
+    verifyCapability(`Bearer ${siteCapability}`, gatewayEnv(), {
+      requiredScope: 'data:site:set',
+      requiredDataScope: 'site',
+      now: 1_700_000_000,
+    }),
+    /scope/i
+  );
+  await assert.rejects(
+    verifyCapability(`Bearer ${userCapability}`, gatewayEnv(), {
+      requiredScope: 'data:user:set',
+      requiredDataScope: 'user',
+      now: 1_700_000_000,
+    }),
+    /scope/i
+  );
 });
 
 test('reads route snapshots from KV pointer records when lookupRoute is absent', async () => {
@@ -1157,12 +1506,20 @@ function routeEnv(overrides = {}) {
   return env;
 }
 
-function gatewayEnv() {
-  return {
+function gatewayEnv(overrides = {}) {
+  const env = {
     XD_PAGES_ENV: 'production',
     PAGES_CAP_JWT_KEYS: 'cap-hs-2026-06:HS256:PAGES_CAP_JWT_SECRET_TEST',
     PAGES_CAP_JWT_SECRET_TEST: 'test-capability-secret',
+    SITE_DATA: {
+      async get() {
+        return null;
+      },
+      async put() {},
+      async delete() {},
+    },
   };
+  return { ...env, ...overrides };
 }
 
 function kvRouteSnapshots(records) {

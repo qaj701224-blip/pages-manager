@@ -15,8 +15,28 @@ export function createPagesClient(options = {}) {
         });
         return readEnvelope(response);
     }
+    const legacySite = createDataStore(post, {
+        get: '/kv/get',
+        set: '/kv/set',
+        delete: '/kv/delete',
+    });
+    const data = {
+        site: createDataStore(post, {
+            get: '/data/site/get',
+            set: '/data/site/set',
+            delete: '/data/site/delete',
+        }),
+        user: createDataStore(post, {
+            get: '/data/user/get',
+            set: '/data/user/set',
+            delete: '/data/user/delete',
+        }),
+    };
+    return { data, kv: legacySite };
+}
+function createDataStore(post, paths) {
     async function get(key, getOptions = {}) {
-        const envelope = await post('/kv/get', { key, type: getOptions.type ?? 'json' });
+        const envelope = await post(paths.get, { key, type: getOptions.type ?? 'json' });
         if (typeof envelope.found !== 'boolean') {
             throw new PagesSDKError(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'Invalid runtime response');
         }
@@ -32,12 +52,12 @@ export function createPagesClient(options = {}) {
         };
         if (setOptions.expirationTtl !== undefined)
             body.expirationTtl = setOptions.expirationTtl;
-        await post('/kv/set', body);
+        await post(paths.set, body);
     }
     async function deleteKey(key) {
-        await post('/kv/delete', { key });
+        await post(paths.delete, { key });
     }
-    return { kv: { get, set, delete: deleteKey } };
+    return { get, set, delete: deleteKey };
 }
 async function readEnvelope(response) {
     let envelope;

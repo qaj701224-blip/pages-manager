@@ -28,10 +28,11 @@ import { PAGES_RUNTIME_SOURCE } from '@xd/pages-sdk/internal/runtime-source';
 
 const kvType: KVType = 'json';
 const client = createPagesClient();
-const defaultValue: Promise<unknown | null> = client.kv.get('app/config');
-const jsonValue: Promise<{ theme: string } | null> = client.kv.get<{ theme: string }>('app/config', { type: kvType });
-const textValue: Promise<string | null> = client.kv.get('app/text', { type: 'text' });
-const browserSetValue: Promise<void> = client.kv.set('app/config', { theme: 'dark' });
+const defaultValue: Promise<unknown | null> = client.data.site.get('app/config');
+const jsonValue: Promise<{ theme: string } | null> = client.data.site.get<{ theme: string }>('app/config', { type: kvType });
+const textValue: Promise<string | null> = client.data.user.get('app/text', { type: 'text' });
+const browserSetValue: Promise<void> = client.data.user.set('app/config', { theme: 'dark' });
+const legacyBrowserValue: Promise<unknown | null> = client.kv.get('app/config');
 
 const env: PagesRuntimeEnv = {
   XD_PAGES_KV_CAPABILITY: 'capability-token',
@@ -39,9 +40,10 @@ const env: PagesRuntimeEnv = {
 };
 const runtime = createPagesRuntime({ env });
 const context: PagesPlatformContext | null = readPlatformContext(new Request('https://site.example/app'));
-const runtimeJsonValue: Promise<{ enabled: boolean } | null> = runtime.kv.get<{ enabled: boolean }>('app/config');
-const runtimeTextValue: Promise<string | null> = runtime.kv.get('app/text', { type: 'text' });
-const runtimeSetValue: Promise<void> = runtime.kv.set('app/config', { enabled: true });
+const runtimeJsonValue: Promise<{ enabled: boolean } | null> = runtime.data.site.get<{ enabled: boolean }>('app/config');
+const runtimeTextValue: Promise<string | null> = runtime.data.user.get('app/text', { type: 'text' });
+const runtimeSetValue: Promise<void> = runtime.data.site.set('app/config', { enabled: true });
+const legacyRuntimeValue: Promise<unknown | null> = runtime.kv.get('app/config');
 const maybeResponse: Promise<Response | null> = handlePagesRuntimeRequest(new Request('https://site.example/app'), env);
 const runtimeSource: string = PAGES_RUNTIME_SOURCE;
 
@@ -49,9 +51,11 @@ void defaultValue;
 void jsonValue;
 void textValue;
 void browserSetValue;
+void legacyBrowserValue;
 void runtimeJsonValue;
 void runtimeTextValue;
 void runtimeSetValue;
+void legacyRuntimeValue;
 void maybeResponse;
 void runtimeSource;
 void context;

@@ -3,6 +3,46 @@ import test from 'node:test';
 
 import { PagesSDKError, createPagesClient } from '../dist/browser.js';
 
+test('createPagesClient().data.site.get posts to the site data runtime get endpoint', async () => {
+  let captured;
+  const client = createPagesClient({
+    fetch: async (url, init) => {
+      captured = { url, init };
+      return Response.json({ ok: true, found: true, value: { theme: 'dark' } });
+    },
+  });
+
+  const value = await client.data.site.get('app/config');
+
+  assert.deepEqual(value, { theme: 'dark' });
+  assert.equal(captured.url, '/.xd-pages/runtime/v1/data/site/get');
+  assert.equal(captured.init.method, 'POST');
+  assert.equal(captured.init.headers['Content-Type'], 'application/json');
+  assert.equal(captured.init.headers['X-XD-Pages-Runtime'], '1');
+  assert.deepEqual(JSON.parse(captured.init.body), { key: 'app/config', type: 'json' });
+});
+
+test('createPagesClient().data.user.set posts to the user data runtime set endpoint', async () => {
+  let captured;
+  const client = createPagesClient({
+    fetch: async (url, init) => {
+      captured = { url, init };
+      return Response.json({ ok: true });
+    },
+  });
+
+  await client.data.user.set('draft', { title: 'hello' }, { expirationTtl: 60 });
+
+  assert.equal(captured.url, '/.xd-pages/runtime/v1/data/user/set');
+  assert.equal(captured.init.method, 'POST');
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    key: 'draft',
+    value: { title: 'hello' },
+    type: 'json',
+    expirationTtl: 60,
+  });
+});
+
 test("createPagesClient().kv.get posts to the runtime get endpoint and returns value", async () => {
   let captured;
   const client = createPagesClient({
@@ -85,13 +125,13 @@ test('createPagesClient throws PagesSDKError for non-JSON runtime response', asy
 
 test('createPagesClient throws runtime error envelopes with code and message', async () => {
   const client = createPagesClient({
-    fetch: async () => Response.json({ ok: false, error: { code: 'KV_FAILED', message: 'KV failed' } }, { status: 502 }),
+    fetch: async () => Response.json({ ok: false, error: { code: 'KV_FAILED', message: 'Data failed' } }, { status: 502 }),
   });
 
   await assert.rejects(() => client.kv.get('app/config'), (error) => {
     assert.ok(error instanceof PagesSDKError);
     assert.equal(error.code, 'KV_FAILED');
-    assert.equal(error.message, 'KV failed');
+    assert.equal(error.message, 'Data failed');
     assert.equal(error.status, 502);
     return true;
   });

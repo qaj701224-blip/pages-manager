@@ -10,11 +10,13 @@ import {
   buildErrorEnvelope,
   buildOkEnvelope,
   buildStorageKey,
+  buildUserStorageKey,
   encodeUserKey,
   isReservedSiteSlug,
   isValidSiteSlug,
   isValidSiteUuid,
   parseKvEnabled,
+  scopeForDataOperation,
   validateSiteSlug,
   validateKvType,
   validateTtl,
@@ -26,9 +28,16 @@ test('exports stable runtime, gateway, header, binding and error constants', () 
   assert.equal(RUNTIME.KV_GET_PATH, '/.xd-pages/runtime/v1/kv/get');
   assert.equal(RUNTIME.KV_SET_PATH, '/.xd-pages/runtime/v1/kv/set');
   assert.equal(GATEWAY.KV_SET_PATH, '/v1/kv/set');
+  assert.equal(RUNTIME.DATA_SITE_GET_PATH, '/.xd-pages/runtime/v1/data/site/get');
+  assert.equal(RUNTIME.DATA_USER_SET_PATH, '/.xd-pages/runtime/v1/data/user/set');
+  assert.equal(GATEWAY.DATA_SITE_DELETE_PATH, '/v1/data/site/delete');
+  assert.equal(GATEWAY.DATA_USER_GET_PATH, '/v1/data/user/get');
   assert.equal(HEADERS.RUNTIME_REQUEST, 'X-XD-Pages-Runtime');
   assert.equal(BINDINGS.KV_GATEWAY, 'XD_PAGES_KV_GATEWAY');
   assert.equal(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'INVALID_RUNTIME_RESPONSE');
+  assert.equal(ERROR_CODES.USER_REQUIRED, 'USER_REQUIRED');
+  assert.equal(scopeForDataOperation('site', 'get'), 'data:site:get');
+  assert.equal(scopeForDataOperation('user', 'delete'), 'data:user:delete');
 });
 
 test('parseKvEnabled is explicit and fail closed', () => {
@@ -106,6 +115,35 @@ test('user key encoding is base64url and reversible at storage-key boundary', ()
   assert.equal(key, 's/q2-report--4b4c8e8361ef4b47b64f5c20a7db7c47/k/YS9iIGMl5Lit5paH');
 });
 
+test('user data storage key is isolated by platform user id', () => {
+  const siteUuid = '4b4c8e8361ef4b47b64f5c20a7db7c47';
+  const siteKey = buildStorageKey({
+    siteSlug: 'q2-report',
+    siteUuid,
+    userKey: 'prefs/theme',
+  });
+  const userKey = buildUserStorageKey({
+    siteSlug: 'q2-report',
+    siteUuid,
+    userId: 'usr_123',
+    userKey: 'prefs/theme',
+  });
+
+  assert.equal(siteKey, `s/q2-report--${siteUuid}/k/cHJlZnMvdGhlbWU`);
+  assert.equal(userKey, `s/q2-report--${siteUuid}/u/usr_123/k/cHJlZnMvdGhlbWU`);
+  assert.notEqual(siteKey, userKey);
+  assert.throws(
+    () =>
+      buildUserStorageKey({
+        siteSlug: 'q2-report',
+        siteUuid,
+        userId: 'user@example.com',
+        userKey: 'prefs/theme',
+      }),
+    /Invalid user id/
+  );
+});
+
 test('storage key validates slug, UUID and final Cloudflare KV key length', () => {
   assert.throws(
     () => buildStorageKey({ siteSlug: 'Bad', siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47', userKey: 'ok' }),
@@ -140,8 +178,8 @@ test('type and ttl validation match runtime contract', () => {
 test('JSON envelopes are stable', () => {
   assert.deepEqual(buildOkEnvelope({ key: 'x' }), { ok: true, key: 'x' });
   assert.deepEqual(buildOkEnvelope({ ok: false, key: 'x' }), { ok: true, key: 'x' });
-  assert.deepEqual(buildErrorEnvelope('INVALID_KEY', 'Invalid KV key'), {
+  assert.deepEqual(buildErrorEnvelope('INVALID_KEY', 'Invalid data key'), {
     ok: false,
-    error: { code: 'INVALID_KEY', message: 'Invalid KV key' },
+    error: { code: 'INVALID_KEY', message: 'Invalid data key' },
   });
 });
