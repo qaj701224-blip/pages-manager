@@ -383,6 +383,42 @@ test('rejects v2 publishPlan with duplicate part names or undeclared uploads', a
   assert.equal(await store.getSiteVersion('ver_1'), null);
 });
 
+test('rejects v2 publishPlan asset paths that match the upload denylist', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'auto',
+          resolvedFallback: 'not-found',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: '404-page' },
+        },
+        assetManifest: [
+          {
+            path: '/.env',
+            partName: 'asset-file-0',
+            size: 'SECRET=bad'.length,
+            contentType: 'text/plain',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: '.env', content: 'SECRET=bad', type: 'text/plain' }],
+      },
+      { 'Idempotency-Key': 'publish_plan_denylist' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'ASSET_MANIFEST_INVALID');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
 test('rejects explicit fallback for worker-only publishPlan', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(

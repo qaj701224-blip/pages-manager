@@ -11,6 +11,8 @@ const MAX_DEPLOYMENT_UPLOAD_BYTES = 50 * 1024 * 1024;
 const DEPLOYMENT_SHAPES = new Set(['assets-only', 'worker-only', 'worker-with-assets']);
 const ROUTING_MODES = new Set(['assets-only', 'worker-only', 'worker-first']);
 const FALLBACK_MODES = new Set(['auto', 'index', 'not-found']);
+const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
+const DENYLISTED_EXTENSIONS = new Set(['.pem', '.key']);
 const CONTROL_ASSET_PATHS = new Set([
   '/_worker.js',
   '/_headers',
@@ -487,6 +489,7 @@ function normalizePublishAssetManifest(value) {
     partNames.add(partName);
     validateAssetPath(path);
     if (CONTROL_ASSET_PATHS.has(path)) throwCoded('ASSET_MANIFEST_INVALID');
+    if (denylistCodeForAssetPath(path)) throwCoded('ASSET_MANIFEST_INVALID');
     if (!isShortHash(entry.hash)) throwCoded('ASSET_MANIFEST_INVALID');
     if (!Number.isFinite(Number(entry.size)) || Number(entry.size) < 0) throwCoded('ASSET_MANIFEST_INVALID');
     return {
@@ -773,6 +776,19 @@ function validateAssetFiles(manifest, files) {
 function validateAssetPath(path) {
   const parts = String(path || '').split('/');
   if (!path || !path.startsWith('/') || path.includes('\0') || parts.includes('..')) throwAssetManifestInvalid();
+}
+
+function denylistCodeForAssetPath(assetPath) {
+  const normalized = String(assetPath || '').replaceAll('\\', '/').replace(/^\/+/, '');
+  const basename = normalized.split('/').at(-1) || '';
+  const extension = basename.includes('.') ? `.${basename.split('.').at(-1).toLowerCase()}` : '';
+  if (DENYLISTED_BASENAMES.has(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.env(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.dev\.vars(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^wrangler(\..*)?\.toml$/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (DENYLISTED_EXTENSIONS.has(extension)) return 'PACKAGE_DENYLISTED_FILE';
+  if (normalized === '.github' || normalized.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
+  return null;
 }
 
 function normalizeManifestAssetPath(value) {

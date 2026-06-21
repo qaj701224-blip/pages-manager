@@ -168,6 +168,17 @@ test('createUploadPlan rejects static bundles above asset upload limits', async 
   await assert.rejects(() => createUploadPlan(dir, decision), /ARTIFACT_BUNDLE_TOO_LARGE/);
 });
 
+test('createUploadPlan counts worker module bytes in upload limits', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-worker-assets-limit-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), 'x'.repeat(MAX_STATIC_ARTIFACT_BYTES - 2));
+  await writeFile(path.join(dir, '_worker.js'), 'export default {};');
+
+  const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
+
+  await assert.rejects(() => createUploadPlan(dir, decision), /ARTIFACT_BUNDLE_TOO_LARGE/);
+});
+
 test('createUploadPlan rejects too many static files', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-file-limit-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
@@ -204,6 +215,19 @@ test('createUploadPlan rejects symlinks escaping source', async () => {
   const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
 
   await assert.rejects(() => createUploadPlan(dir, decision), /DETECT_SYMLINK_OUTSIDE_SOURCE/);
+});
+
+test('createUploadPlan rejects symlinks resolving into ignored source trees', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-symlink-ignored-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, '.git'));
+  await writeFile(path.join(dir, '.git', 'config'), 'secret');
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await symlink(path.join(dir, '.git', 'config'), path.join(dir, 'public-config.txt'));
+
+  const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
+
+  await assert.rejects(() => createUploadPlan(dir, decision), /PACKAGE_DENYLISTED_FILE/);
 });
 
 function hashAsset(bytes, contentType) {

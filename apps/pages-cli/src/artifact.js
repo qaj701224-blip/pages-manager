@@ -110,6 +110,10 @@ export async function createUploadPlan(targetPath, decision) {
   if (assetFiles.length > MAX_STATIC_ARTIFACT_FILES) throw new Error('ARTIFACT_FILE_COUNT_LIMIT_EXCEEDED');
 
   const workerModules = await workerModulesForDirectory(absolute, decision);
+  for (const module of workerModules) {
+    sizeBytes += module.size;
+    if (sizeBytes > MAX_STATIC_ARTIFACT_BYTES) throw new Error('ARTIFACT_BUNDLE_TOO_LARGE');
+  }
   const hashFiles = [
     ...assetFiles.map((file) => ({ relativePath: file.relativePath, contentType: file.contentType, bytes: file.bytes })),
     ...workerModules.map((module) => ({
@@ -205,6 +209,17 @@ async function scanDirectoryInner(root, dir, output, options) {
         if (options.failOnDenylist) throw new Error('DETECT_SYMLINK_OUTSIDE_SOURCE');
         output.diagnostics.push({
           code: 'DETECT_SYMLINK_OUTSIDE_SOURCE',
+          severity: 'danger',
+          stage: 'package',
+          path: relativePath,
+        });
+        continue;
+      }
+      const resolvedRelativePath = path.relative(rootReal, resolved).split(path.sep).join('/');
+      if (isIgnoredPath(resolvedRelativePath) || denylistCodeFor(resolvedRelativePath)) {
+        if (options.failOnDenylist) throw new Error('PACKAGE_DENYLISTED_FILE');
+        output.diagnostics.push({
+          code: 'PACKAGE_DENYLISTED_FILE',
           severity: 'danger',
           stage: 'package',
           path: relativePath,
@@ -400,6 +415,13 @@ function denylistCodeFor(relativePath) {
   if (DENYLISTED_EXTENSIONS.has(extension)) return 'PACKAGE_DENYLISTED_FILE';
   if (normalized === '.github' || normalized.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
   return null;
+}
+
+function isIgnoredPath(relativePath) {
+  return relativePath
+    .replaceAll('\\', '/')
+    .split('/')
+    .some((segment) => SAFE_IGNORED_NAMES.has(segment));
 }
 
 function isInsidePath(root, target) {
