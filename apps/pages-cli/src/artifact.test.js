@@ -222,7 +222,7 @@ test('createUploadPlan rejects unbundled relative Worker imports', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-worker-import-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
-  await writeFile(path.join(dir, '_worker.js'), 'import "./handler.mjs";\nexport default {};');
+  await writeFile(path.join(dir, '_worker.js'), 'import{ok}from"./handler.mjs";\nexport{ok}from"./handler.mjs";');
   await writeFile(path.join(dir, 'handler.mjs'), 'export const ok = true;');
 
   const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });

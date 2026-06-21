@@ -1059,7 +1059,7 @@ async function deploymentEnvelope(store, deployment, preloaded = {}, environment
     deployment: formatDeployment(deployment),
     version: version ? formatVersion(version) : null,
     route: route ? formatRoute(route) : null,
-    decision: preloaded.decision ? formatDecision(preloaded.decision) : null,
+    decision: preloaded.decision ? formatDecision(preloaded.decision) : formatVersionDecision(version),
   };
 }
 
@@ -1104,6 +1104,7 @@ function formatDecision(decision) {
 }
 
 function formatVersionDecision(version) {
+  if (!version) return null;
   if (!version.deploymentShape && !version.routingMode) return null;
   return {
     deploymentShape: version.deploymentShape || null,

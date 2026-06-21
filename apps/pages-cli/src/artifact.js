@@ -467,8 +467,8 @@ function hasSpaRedirectRule(content) {
 function assertNoUnbundledRelativeImports(content) {
   const withoutComments = stripJavaScriptComments(content);
   const patterns = [
-    /(?:^|[;\n\r])\s*import\s+(?:[^'"]*?\s+from\s*)?(['"])(\.{1,2}\/[^'"]+)\1/gms,
-    /(?:^|[;\n\r])\s*export\s+(?:\*|{[^}]*})(?:\s+as\s+\w+)?\s+from\s+(['"])(\.{1,2}\/[^'"]+)\1/gms,
+    /(?:^|[;\n\r])\s*import(?:\s+[^'"]*?\s+from\s*|\s*[^'"]*?from\s*|\s*)(['"])(\.{1,2}\/[^'"]+)\1/gms,
+    /(?:^|[;\n\r])\s*export\s+(?:\*|{[^}]*})(?:\s+as\s+\w+)?\s*from\s*(['"])(\.{1,2}\/[^'"]+)\1/gms,
     /\bimport\s*\(\s*(['"])(\.{1,2}\/[^'"]+)\1/gms,
   ];
   if (patterns.some((pattern) => pattern.test(withoutComments))) {

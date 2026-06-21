@@ -1381,7 +1381,15 @@ test('deployment idempotency replays same request and rejects changed request', 
 
   assert.equal(first.status, 201);
   assert.equal(replay.status, 200);
-  assert.equal((await replay.json()).deployment.id, 'dep_1');
+  const replayBody = await replay.json();
+  assert.equal(replayBody.deployment.id, 'dep_1');
+  assert.deepEqual(replayBody.decision, replayBody.version.decision);
+  assert.deepEqual(replayBody.decision, {
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+  });
   assert.equal(conflict.status, 409);
   assert.equal((await conflict.json()).error.code, 'IDEMPOTENCY_CONFLICT');
   assert.equal(bundleConflict.status, 409);
