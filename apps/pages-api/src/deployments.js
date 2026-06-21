@@ -781,13 +781,15 @@ function validateAssetPath(path) {
 function denylistCodeForAssetPath(assetPath) {
   const normalized = String(assetPath || '').replaceAll('\\', '/').replace(/^\/+/, '');
   const basename = normalized.split('/').at(-1) || '';
+  const comparable = normalized.toLowerCase();
+  const comparableBasename = basename.toLowerCase();
   const extension = basename.includes('.') ? `.${basename.split('.').at(-1).toLowerCase()}` : '';
-  if (DENYLISTED_BASENAMES.has(basename)) return 'PACKAGE_DENYLISTED_FILE';
-  if (/^\.env(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
-  if (/^\.dev\.vars(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
-  if (/^wrangler(\..*)?\.toml$/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (DENYLISTED_BASENAMES.has(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.env(\.|$)/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.dev\.vars(\.|$)/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^wrangler(\..*)?\.toml$/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
   if (DENYLISTED_EXTENSIONS.has(extension)) return 'PACKAGE_DENYLISTED_FILE';
-  if (normalized === '.github' || normalized.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
+  if (comparable === '.github' || comparable.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
   return null;
 }
 

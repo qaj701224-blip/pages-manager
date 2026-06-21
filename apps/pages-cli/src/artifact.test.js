@@ -51,6 +51,14 @@ test('detectPublishTarget treats JavaScript file targets as worker-only', async 
   await assert.rejects(() => detectPublishTarget(path.join(dir, 'worker.ts')), /WORKER_TYPESCRIPT_UNSUPPORTED/);
 });
 
+test('detectPublishTarget rejects non-worker single file targets', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-file-static-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+
+  await assert.rejects(() => detectPublishTarget(path.join(dir, 'index.html')), /STATIC_ARTIFACT_DIRECTORY_REQUIRED/);
+});
+
 test('createUploadPlan packages worker-only file targets without absolute paths', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-worker-plan-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
@@ -76,6 +84,17 @@ test('createUploadPlan packages worker-only file targets without absolute paths'
     },
   ]);
   assert.equal(JSON.stringify(plan).includes(dir), false);
+});
+
+test('createUploadPlan rejects worker-only file targets above upload limits', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-worker-file-limit-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  const workerPath = path.join(dir, 'worker.mjs');
+  await writeFile(workerPath, 'x'.repeat(MAX_STATIC_ARTIFACT_BYTES + 1));
+
+  const decision = await detectPublishTarget(workerPath);
+
+  await assert.rejects(() => createUploadPlan(workerPath, decision), /ARTIFACT_BUNDLE_TOO_LARGE/);
 });
 
 test('detectPublishTarget treats static and app behavior as fallback decisions', async () => {
@@ -107,6 +126,26 @@ test('detectPublishTarget prefers not-found for multi-page static exports', asyn
   assert.equal(decision.deploymentShape, 'assets-only');
   assert.equal(decision.resolvedFallback, 'not-found');
   assert.equal(decision.routingMode, 'assets-only');
+});
+
+test('detectPublishTarget only treats SPA _redirects rewrites as index fallback signals', async () => {
+  const spa = await mkdtemp(path.join(tmpdir(), 'pages-cli-redirects-spa-'));
+  const redirects = await mkdtemp(path.join(tmpdir(), 'pages-cli-redirects-ordinary-'));
+  test.after(() => rm(spa, { recursive: true, force: true }));
+  test.after(() => rm(redirects, { recursive: true, force: true }));
+  await writeFile(path.join(spa, 'index.html'), '<div id="app"></div>');
+  await writeFile(path.join(spa, '_redirects'), '/* /index.html 200\n');
+  await writeFile(path.join(redirects, 'index.html'), '<div id="app"></div>');
+  await writeFile(path.join(redirects, 'about.html'), '<h1>About</h1>');
+  await writeFile(path.join(redirects, '_redirects'), '/old /new 301\n');
+
+  const spaDecision = await detectPublishTarget(spa, { requestedFallback: 'auto' });
+  const ordinaryDecision = await detectPublishTarget(redirects, { requestedFallback: 'auto' });
+
+  assert.equal(spaDecision.resolvedFallback, 'index');
+  assert.ok(spaDecision.signals.some((signal) => signal.code === 'EXPLICIT_INDEX_REWRITE_FOUND'));
+  assert.equal(ordinaryDecision.resolvedFallback, 'not-found');
+  assert.equal(ordinaryDecision.signals.some((signal) => signal.code === 'EXPLICIT_INDEX_REWRITE_FOUND'), false);
 });
 
 test('detectPublishTarget recognizes top-level _worker.js as Worker with Assets', async () => {
@@ -179,6 +218,18 @@ test('createUploadPlan counts worker module bytes in upload limits', async () =>
   await assert.rejects(() => createUploadPlan(dir, decision), /ARTIFACT_BUNDLE_TOO_LARGE/);
 });
 
+test('createUploadPlan rejects unbundled relative Worker imports', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-worker-import-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeFile(path.join(dir, '_worker.js'), 'import "./handler.mjs";\nexport default {};');
+  await writeFile(path.join(dir, 'handler.mjs'), 'export const ok = true;');
+
+  const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
+
+  await assert.rejects(() => createUploadPlan(dir, decision), /WORKER_UNBUNDLED_IMPORT_UNSUPPORTED/);
+});
+
 test('createUploadPlan rejects too many static files', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-static-file-limit-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
@@ -197,6 +248,17 @@ test('createUploadPlan excludes control files and rejects denylisted files', asy
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
   await writeFile(path.join(dir, '_redirects'), '/* /index.html 200');
   await writeFile(path.join(dir, '.env'), 'SECRET=bad');
+
+  const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
+
+  await assert.rejects(() => createUploadPlan(dir, decision), /PACKAGE_DENYLISTED_FILE/);
+});
+
+test('createUploadPlan rejects denylisted files case-insensitively', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-denylist-case-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeFile(path.join(dir, '.ENV'), 'SECRET=bad');
 
   const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
 
@@ -228,6 +290,19 @@ test('createUploadPlan rejects symlinks resolving into ignored source trees', as
   const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
 
   await assert.rejects(() => createUploadPlan(dir, decision), /PACKAGE_DENYLISTED_FILE/);
+});
+
+test('createUploadPlan rejects symlinked directories inside source', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-symlink-dir-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, 'assets'));
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeFile(path.join(dir, 'assets', 'app.js'), 'console.log("ok");');
+  await symlink(path.join(dir, 'assets'), path.join(dir, 'linked-assets'));
+
+  const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
+
+  await assert.rejects(() => createUploadPlan(dir, decision), /DETECT_SYMLINK_DIRECTORY_UNSUPPORTED/);
 });
 
 function hashAsset(bytes, contentType) {

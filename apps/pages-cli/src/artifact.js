@@ -158,8 +158,8 @@ async function collectDirectoryFiles(root, dir) {
 function detectFileTarget(absolute, requestedFallback) {
   const extension = path.extname(absolute).toLowerCase();
   if (extension === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
-  if (requestedFallback !== 'auto') throw new Error('FALLBACK_REQUIRES_ASSETS');
   if (extension === '.js' || extension === '.mjs') {
+    if (requestedFallback !== 'auto') throw new Error('FALLBACK_REQUIRES_ASSETS');
     return {
       deploymentShape: 'worker-only',
       requestedFallback,
@@ -172,17 +172,7 @@ function detectFileTarget(absolute, requestedFallback) {
       diagnostics: [],
     };
   }
-  return {
-    deploymentShape: 'assets-only',
-    requestedFallback,
-    resolvedFallback: requestedFallback === 'index' ? 'index' : 'not-found',
-    routingMode: 'assets-only',
-    workerEntry: null,
-    confidence: 'low',
-    source: requestedFallback === 'auto' ? 'auto' : 'explicit',
-    signals: [{ code: 'FILE_TARGET', path: path.basename(absolute) }],
-    diagnostics: [],
-  };
+  throw new Error('STATIC_ARTIFACT_DIRECTORY_REQUIRED');
 }
 
 async function scanDirectory(root, options = {}) {
@@ -228,7 +218,13 @@ async function scanDirectoryInner(root, dir, output, options) {
       }
       const resolvedStats = await stat(absolutePath);
       if (resolvedStats.isDirectory()) {
-        await scanDirectoryInner(root, absolutePath, output, options);
+        if (options.failOnDenylist) throw new Error('DETECT_SYMLINK_DIRECTORY_UNSUPPORTED');
+        output.diagnostics.push({
+          code: 'DETECT_SYMLINK_DIRECTORY_UNSUPPORTED',
+          severity: 'danger',
+          stage: 'package',
+          path: relativePath,
+        });
         continue;
       }
       if (!resolvedStats.isFile()) continue;
@@ -255,7 +251,7 @@ async function scanDirectoryInner(root, dir, output, options) {
     const control = isControlFile(relativePath);
     output.files.push({ absolutePath, relativePath, control });
     if (control) {
-      output.controlSignals.push(controlSignalFor(relativePath));
+      output.controlSignals.push(await controlSignalFor(absolutePath, relativePath));
     }
   }
 }
@@ -312,9 +308,11 @@ async function createFileUploadPlan(absolute, decision) {
   if (decision.deploymentShape !== 'worker-only') throw new Error('STATIC_ARTIFACT_DIRECTORY_REQUIRED');
   const bundle = await buildWorkerBundle(absolute);
   const bytes = Buffer.from(bundle.modules[0].content);
+  if (bytes.byteLength > MAX_STATIC_ARTIFACT_BYTES) throw new Error('ARTIFACT_BUNDLE_TOO_LARGE');
+  const hashFiles = [{ relativePath: bundle.mainModule, contentType: 'application/javascript+module', bytes }];
   return {
     publishPlan: publishPlanFromDecision(decision),
-    contentHash: hashUploadPlan([{ relativePath: bundle.mainModule, contentType: 'application/javascript+module', bytes }], decision),
+    contentHash: hashUploadPlan(hashFiles, decision),
     fileCount: 1,
     sizeBytes: bytes.byteLength,
     assetManifest: [],
@@ -338,11 +336,13 @@ async function workerModulesForDirectory(root, decision) {
   if (!decision.workerEntry) return [];
   const absolutePath = path.join(root, decision.workerEntry);
   const bytes = await readFile(absolutePath);
+  const content = bytes.toString('utf8');
+  assertNoUnbundledRelativeImports(content);
   return [
     {
       moduleName: decision.workerEntry,
       partName: 'worker-main',
-      content: bytes.toString('utf8'),
+      content,
       contentType: 'application/javascript+module',
       hash: hashAsset(bytes, 'application/javascript+module'),
       size: bytes.byteLength,
@@ -399,21 +399,26 @@ function isControlFile(relativePath) {
   return !relativePath.includes('/') && CONTROL_FILE_NAMES.has(relativePath);
 }
 
-function controlSignalFor(relativePath) {
-  if (relativePath === '_redirects') return { path: relativePath, kind: 'redirects', effect: 'fallback-index' };
+async function controlSignalFor(absolutePath, relativePath) {
+  if (relativePath === '_redirects') {
+    const content = await readFile(absolutePath, 'utf8');
+    return { path: relativePath, kind: 'redirects', effect: hasSpaRedirectRule(content) ? 'fallback-index' : 'ignored' };
+  }
   return { path: relativePath, kind: relativePath.replace(/^_/, ''), effect: 'ignored' };
 }
 
 function denylistCodeFor(relativePath) {
   const normalized = relativePath.replaceAll('\\', '/');
+  const comparable = normalized.toLowerCase();
   const basename = path.posix.basename(normalized);
+  const comparableBasename = basename.toLowerCase();
   const extension = path.posix.extname(basename).toLowerCase();
-  if (DENYLISTED_BASENAMES.has(basename)) return 'PACKAGE_DENYLISTED_FILE';
-  if (/^\.env(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
-  if (/^\.dev\.vars(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
-  if (/^wrangler(\..*)?\.toml$/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (DENYLISTED_BASENAMES.has(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.env(\.|$)/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.dev\.vars(\.|$)/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^wrangler(\..*)?\.toml$/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
   if (DENYLISTED_EXTENSIONS.has(extension)) return 'PACKAGE_DENYLISTED_FILE';
-  if (normalized === '.github' || normalized.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
+  if (comparable === '.github' || comparable.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
   return null;
 }
 
@@ -434,16 +439,93 @@ async function buildWorkerBundle(absolutePath) {
   if (!stats.isFile()) throw new Error('WORKER_ARTIFACT_FILE_REQUIRED');
   if (path.extname(absolutePath).toLowerCase() === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
   const name = path.basename(absolutePath);
+  const content = await readFile(absolutePath, 'utf8');
+  assertNoUnbundledRelativeImports(content);
   return {
     mainModule: name,
     modules: [
       {
         name,
-        content: await readFile(absolutePath, 'utf8'),
+        content,
         type: 'application/javascript+module',
       },
     ],
   };
+}
+
+function hasSpaRedirectRule(content) {
+  return String(content || '')
+    .split(/\r?\n/)
+    .some((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return false;
+      const [from, to, status] = trimmed.split(/\s+/);
+      return from === '/*' && to === '/index.html' && /^200!?$/.test(status || '');
+    });
+}
+
+function assertNoUnbundledRelativeImports(content) {
+  const withoutComments = stripJavaScriptComments(content);
+  const patterns = [
+    /(?:^|[;\n\r])\s*import\s+(?:[^'"]*?\s+from\s*)?(['"])(\.{1,2}\/[^'"]+)\1/gms,
+    /(?:^|[;\n\r])\s*export\s+(?:\*|{[^}]*})(?:\s+as\s+\w+)?\s+from\s+(['"])(\.{1,2}\/[^'"]+)\1/gms,
+    /\bimport\s*\(\s*(['"])(\.{1,2}\/[^'"]+)\1/gms,
+  ];
+  if (patterns.some((pattern) => pattern.test(withoutComments))) {
+    throw new Error('WORKER_UNBUNDLED_IMPORT_UNSUPPORTED');
+  }
+}
+
+function stripJavaScriptComments(content) {
+  let output = '';
+  let index = 0;
+  let quote = null;
+  while (index < content.length) {
+    const char = content[index];
+    const next = content[index + 1];
+    if (quote) {
+      output += char;
+      if (char === '\\') {
+        output += next || '';
+        index += 2;
+        continue;
+      }
+      if (char === quote) quote = null;
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      output += char;
+      index += 1;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      output += '  ';
+      index += 2;
+      while (index < content.length && content[index] !== '\n') {
+        output += ' ';
+        index += 1;
+      }
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      output += '  ';
+      index += 2;
+      while (index < content.length && !(content[index] === '*' && content[index + 1] === '/')) {
+        output += content[index] === '\n' ? '\n' : ' ';
+        index += 1;
+      }
+      if (index < content.length) {
+        output += '  ';
+        index += 2;
+      }
+      continue;
+    }
+    output += char;
+    index += 1;
+  }
+  return output;
 }
 
 function contentTypeFor(relativePath) {

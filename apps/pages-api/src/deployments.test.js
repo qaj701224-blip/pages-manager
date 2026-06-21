@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import test from 'node:test';
 
 import worker from './index.js';
@@ -417,6 +418,45 @@ test('rejects v2 publishPlan asset paths that match the upload denylist', async 
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, 'ASSET_MANIFEST_INVALID');
   assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('rejects v2 publishPlan asset paths that match the upload denylist case-insensitively', async () => {
+  const env = testEnv(await createSeededStore(), createSnapshotStore());
+  const deniedPaths = ['/.ENV', '/Wrangler.toml', '/.GitHub/workflows/deploy.yml'];
+
+  for (const [index, assetPath] of deniedPaths.entries()) {
+    const response = await worker.fetch(
+      publishPlanMultipartRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        {
+          siteId: 'site_1',
+          requestedFallback: 'auto',
+          publishPlan: {
+            deploymentShape: 'assets-only',
+            requestedFallback: 'auto',
+            resolvedFallback: 'not-found',
+            routingMode: 'assets-only',
+            workerEntry: null,
+            assetsConfig: { notFoundHandling: '404-page' },
+          },
+          assetManifest: [
+            {
+              path: assetPath,
+              partName: 'asset-file-0',
+              size: 'SECRET=bad'.length,
+              contentType: 'text/plain',
+            },
+          ],
+          files: [{ field: 'asset-file-0', filename: path.basename(assetPath), content: 'SECRET=bad', type: 'text/plain' }],
+        },
+        { 'Idempotency-Key': `publish_plan_denylist_case_${index}` }
+      ),
+      env
+    );
+
+    assert.equal(response.status, 400, assetPath);
+    assert.equal((await response.json()).error.code, 'ASSET_MANIFEST_INVALID');
+  }
 });
 
 test('rejects explicit fallback for worker-only publishPlan', async () => {
