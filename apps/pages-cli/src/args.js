@@ -1,4 +1,4 @@
-const BOOLEAN_FLAGS = new Set(['no-open', 'print', 'json', 'help', 'save-config', 'details']);
+const BOOLEAN_FLAGS = new Set(['no-open', 'print', 'json', 'help', 'save-config', 'details', 'dry-run']);
 
 export function parseArgs(argv = []) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {

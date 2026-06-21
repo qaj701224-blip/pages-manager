@@ -109,8 +109,7 @@ async function readResponsePayload(response) {
       status: response.status,
       code: 'INVALID_JSON_RESPONSE',
       message: `服务返回了非 JSON 响应（HTTP ${response.status}，Content-Type: ${contentType}）。`,
-      action:
-        '请确认当前环境和服务域名是否正确；可运行 pages env 查看，staging 测试请加 --env staging 或先运行 pages env use staging。',
+      action: '请确认 CLI 登录状态、服务地址和网络访问是否正确；如果是内部测试环境，请按维护文档切换环境后重试。',
     });
   }
 }

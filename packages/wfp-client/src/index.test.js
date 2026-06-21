@@ -159,7 +159,13 @@ test('uploadUserWorker can upload static assets before deploying thin assets wor
 
   const result = await client.uploadUserWorker({
     scriptName: 'pages-v2-docs-ver-1',
-    artifactKind: 'spa',
+    decision: {
+      deploymentShape: 'assets-only',
+      requestedFallback: 'auto',
+      resolvedFallback: 'index',
+      routingMode: 'assets-only',
+      workerEntry: null,
+    },
     assetManifest: {
       '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
     },
@@ -193,7 +199,7 @@ test('uploadUserWorker can upload static assets before deploying thin assets wor
     ],
     assets: {
       jwt: 'completion-jwt',
-      config: { not_found_handling: 'single-page-application', run_worker_first: true },
+      config: { not_found_handling: 'single-page-application' },
     },
   });
   assert.match(await form.get('worker.mjs').text(), /env\.ASSETS\.fetch/);

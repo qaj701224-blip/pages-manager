@@ -12,6 +12,16 @@ export async function canonicalRequestHash(value) {
   return `sha256:${await sha256Hex(canonicalJson(value))}`;
 }
 
+export async function sha256HexForText(value) {
+  return sha256Hex(String(value));
+}
+
+export async function sha256HexForBytes(bytes) {
+  const input = bytes instanceof Uint8Array ? bytes : encoder.encode(String(bytes));
+  const digest = await crypto.subtle.digest('SHA-256', input);
+  return bytesToHex(new Uint8Array(digest));
+}
+
 export async function hashAccessKey(plaintext, pepper) {
   const key = await crypto.subtle.importKey('raw', encoder.encode(pepper), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(String(plaintext)));

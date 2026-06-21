@@ -127,7 +127,8 @@ test('API client explains non-JSON responses with HTTP context', async () => {
       assert.equal(error.code, 'INVALID_JSON_RESPONSE');
       assert.match(error.message, /HTTP 404/);
       assert.match(error.message, /text\/html/);
-      assert.match(error.action, /pages env/);
+      assert.match(error.action, /服务地址和网络访问/);
+      assert.doesNotMatch(error.action, /pages env|--env/);
       return true;
     }
   );

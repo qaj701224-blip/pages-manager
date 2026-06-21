@@ -6,7 +6,7 @@ export async function authenticateApiRequest(request, env, store, config, now = 
   if (request.headers.has('X-Pages-Token')) {
     return authError(
       'LEGACY_TOKEN_UNSUPPORTED',
-      'X-Pages-Token is not supported by XD Pages.',
+      'Legacy Pages token headers are not supported by XD Pages.',
       400,
       'Run `pages login` or use an XD Pages access key.'
     );

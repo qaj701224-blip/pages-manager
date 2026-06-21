@@ -128,8 +128,8 @@ print_plan() {
   printf 'PAGES_V2_SITE=%s\n' "$PAGES_V2_SITE"
   printf 'PAGES_V2_DEMO_VISIBILITY=%s\n' "$PAGES_V2_DEMO_VISIBILITY"
   printf '\n'
-  printf '%-24s %-8s %s\n' 'site' 'preset' 'source'
-  printf '%-24s %-8s %s\n' "$PAGES_V2_DEMO_SLUG" 'spa' 'demos/vue-app'
+  printf '%-24s %-12s %s\n' 'site' 'fallback' 'source'
+  printf '%-24s %-12s %s\n' "$PAGES_V2_DEMO_SLUG" 'auto' 'demos/vue-app'
 }
 
 run_cmd() {
@@ -164,8 +164,7 @@ deploy_vue() {
     PAGES_CLI_ENV="$PAGES_V2_DEMO_TARGET" "${PAGES_CLI_BIN:-pages}" \
       deploy dist "$PAGES_V2_DEMO_SLUG" \
       --env "$PAGES_V2_DEMO_TARGET" \
-      --visibility "$PAGES_V2_DEMO_VISIBILITY" \
-      --artifact-kind spa
+      --visibility "$PAGES_V2_DEMO_VISIBILITY"
   )" || {
     printf '%s\n' "$output" >&2
     return 1

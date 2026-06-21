@@ -1,260 +1,115 @@
-# Pages Worker API
+# XD Pages API
 
-内部静态站点托管服务。通过 HTTP API 将本地文件发布到 `{name}.workers.xd.team`。
+XD Pages 的发布入口是 `pages` CLI。普通用户、AI agent 和 CI 不需要手写部署 HTTP 请求；CLI 会自动识别目录、打包资源、上传文件并把服务端返回的部署结果解释给用户。
 
 ## Base URL
 
-```
-https://api.workers.xd.team
-```
+生产：
 
-## 访问控制
-
-管理 API 仅限公司内网 IP 访问（基于 `CF-Connecting-IP` 白名单）。
-
-`X-Pages-Token` / `PAGES_TOKEN` 是站点归属标记，不是强认证。`/deploy`、`/list`、`/site/:name` 查询和删除都必须携带 token。
-
-- `/deploy` 必须携带 `X-Pages-Token: pages_你的邮箱` 请求头，或使用 `token` 表单字段作为备选方式；未携带 token 会返回 `400`。
-- 同名站点已有 owner token 时，只有携带原 token 的请求可以覆盖部署；携带不同 token 会返回 `409`。
-- `/list` 必须携带 token，只返回当前 token 名下站点，且不会返回 token 字段。
-- `/site/:name` 查询和删除必须携带 token，只允许操作当前 token 名下站点；token 不匹配会返回 `403`，查询响应不会返回站点 token。
-
----
-
-## 端点
-
-### POST /deploy
-
-部署站点。上传文件并发布到 `{name}.workers.xd.team`。
-
-**Content-Type**: `multipart/form-data`
-
-**Token 归属**:
-
-部署必须携带部署者 token，优先通过 `X-Pages-Token` 请求头传递，例如 `pages_zhangsan@xd.com`。也可用表单字段 `token` 作为备选方式。同一 token 可重复覆盖自己的同名站点；如果同名站点已由其他 token 创建，使用不同 token 会返回 `409`。
-
-**表单字段**:
-
-| 字段     | 类型   | 必须 | 说明                                                  |
-| -------- | ------ | ---- | ----------------------------------------------------- |
-| `name`   | string | 是   | 站点名称，规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/` |
-| `preset` | string | 否   | `static`（默认）/ `spa` / `worker`                    |
-| `token`  | string | 否   | 部署者 token，备选方式；优先使用必填的 `X-Pages-Token` 请求头 |
-| `ip_restrict` | string | 否 | 当前版本固定开启；只能不传或传 `true`，传 `false` 会返回 `400` |
-| `file-*` | file   | 是   | 要部署的文件，`filename` 为相对路径                   |
-
-**preset 说明**:
-
-| preset   | 行为                                           | 适用场景                     |
-| -------- | ---------------------------------------------- | ---------------------------- |
-| `static` | 按路径匹配文件，404 返回 404 页面              | HTML 报告、文档站            |
-| `spa`    | 路径未匹配时回退到 `index.html`                | Vue / React / Angular 等 SPA |
-| `worker` | 使用上传的 `_worker.js` 作为自定义 Worker 脚本 | SSR、API 代理、动态渲染      |
-
-**Pages KV**:
-
-v1 不再提供 Pages KV。`workers.xd.team` 的 `POST /deploy` 传 `kv=true` 会返回 `400 KV_NOT_SUPPORTED`；KV 能力由 v2 `pages.xd.team` 平台提供。
-
-**worker preset 说明**:
-
-使用 `worker` preset 时，表单中必须包含一个 `filename=_worker.js` 的文件。该文件作为 Worker 入口脚本部署，可通过 `env.ASSETS` 访问同时上传的其他静态文件。
-
-如果 `_worker.js` import npm 包，业务构建必须先 bundle/打包；pages-manager 不会对 `_worker.js` 做依赖打包。
-
-`_worker.js` 基本结构:
-
-```js
-export default {
-  async fetch(request, env) {
-    // 自定义逻辑：服务端请求、动态渲染等
-    const data = await fetch('https://api.example.com/data').then((r) => r.json());
-
-    // 返回动态 HTML
-    return new Response(`<h1>${data.title}</h1>`, {
-      headers: { 'content-type': 'text/html; charset=utf-8' },
-    });
-
-    // 或回退到静态资源
-    // return env.ASSETS.fetch(request);
-  },
-};
+```text
+https://api.pages.xd.team
 ```
 
-**成功响应** `200`:
+staging：
 
-```json
-{
-  "status": "ok",
-  "name": "q2-report",
-  "url": "https://q2-report.workers.xd.team",
-  "fileCount": 42,
-  "preset": "static"
-}
+```text
+https://api-staging.pages.xd.team
 ```
 
-**错误响应** `400`:
-
-```json
-{ "error": "无效的站点名称。要求: 小写字母、数字、连字符，2-50 字符" }
-```
-
-缺少部署者 token 时：
-
-```json
-{
-  "error": "缺少部署者 token",
-  "field": "token",
-  "hint": "请通过 X-Pages-Token 请求头或 token 表单字段提供部署者 token"
-}
-```
-
-**错误响应** `409`:
-
-同名站点已归属于其他 token，当前请求 token 不匹配。
-
-```json
-{
-  "error": "站点名称已被占用",
-  "field": "name",
-  "name": "q2-report",
-  "hint": "该名称已被其他部署者使用，请换一个名称或使用原 token"
-}
-```
-
-**curl 示例**:
+## 推荐入口
 
 ```bash
-# 部署静态站点
-curl -X POST https://api.workers.xd.team/deploy \
-  -H "X-Pages-Token: pages_zhangsan@xd.com" \
-  -F "name=q2-report" \
-  -F "preset=static" \
-  -F "file-0=@dist/index.html;filename=index.html" \
-  -F "file-1=@dist/style.css;filename=style.css"
-
-# 部署 SPA（Vue/React 构建产物）
-curl -X POST https://api.workers.xd.team/deploy \
-  -H "X-Pages-Token: pages_zhangsan@xd.com" \
-  -F "name=my-app" \
-  -F "preset=spa" \
-  -F "file-0=@dist/index.html;filename=index.html" \
-  -F "file-1=@dist/assets/index.js;filename=assets/index.js" \
-  -F "file-2=@dist/assets/style.css;filename=assets/style.css"
-
-# 部署自定义 Worker（SSR）
-curl -X POST https://api.workers.xd.team/deploy \
-  -H "X-Pages-Token: pages_zhangsan@xd.com" \
-  -F "name=my-ssr" \
-  -F "preset=worker" \
-  -F "file-0=@_worker.js;filename=_worker.js" \
-  -F "file-1=@public/favicon.ico;filename=favicon.ico"
+pages login
+pages detect ./dist --json
+pages deploy ./dist demo --dry-run --json
+pages deploy ./dist demo --visibility org
+pages status demo
+pages open demo
+pages rollback demo <version-id>
 ```
 
----
+CI 或 AI agent 可以使用发布 token：
 
-### GET /list
+```bash
+pages deploy ./dist demo --token <token> --json
+```
 
-列出当前 token 名下的已部署站点。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；响应不会返回站点 token、`siteUuid`、`siteGeneration` 等内部字段。
-
-**成功响应** `200`:
+配置文件只保存非敏感发布意图：
 
 ```json
 {
-  "sites": [
-    {
-      "name": "q2-report",
-      "url": "https://q2-report.workers.xd.team",
-      "preset": "static",
-      "ipRestrict": true,
-      "kvEnabled": false,
-      "updatedAt": "2026-05-13T10:00:00.000Z"
-    }
-  ],
-  "filtered": true
+  "site": "demo",
+  "source": "./dist",
+  "fallback": "auto",
+  "worker": {
+    "entry": "./worker.mjs"
+  }
 }
 ```
 
----
+保存为项目根目录的 `pages.config.json` 后，可以直接运行 `pages deploy`；也可以用 `--config <file>` 显式指定其它配置文件。命令行位置参数和 flag 会覆盖配置文件里的同名发布意图。
 
-### GET /site/:name
+`fallback` 表达静态资源未命中时的行为：`auto` 由 CLI 自动判断，`index` 返回 `/index.html`，`not-found` 返回 404 或自定义 404 页面。
 
-查询当前 token 名下的单个站点详情。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；token 不匹配时返回 `403`。成功响应不会返回站点 token。
-响应只返回公开字段，不返回 `siteUuid`、`siteGeneration` 等内部字段。
+## 管理 API
 
-**成功响应** `200`:
+管理 API 供 CLI 调用。除 `/openapi.json`、`/skill.md`、`/readme.md` 外，接口需要认证并受公司网络 / VPN / 办公网出口 IP allowlist 约束。
+
+重要规则：
+
+- 认证和上传协议由 CLI 管理，用户和 AI 不手写认证 header。
+- 不把发布 token、CLI token、cookie、SSO code 或 secret 写入项目文件、日志、README、截图或聊天消息。
+- 站点名使用小写字母、数字和连字符。
+- 部署请求带 `Idempotency-Key`，重试同一请求会返回同一部署结果，内容变化需要新的 key。
+- 发布请求的 multipart payload 是 CLI 内部协议，不作为用户或 AI 的手写 API。
+
+## 常用端点
+
+### GET `/openapi.json`
+
+返回当前环境 OpenAPI 文档。
+
+### POST `/.xd-pages/api/deployments`
+
+创建部署。请求体由 CLI 生成，不建议手写。
+
+服务端会校验上传 payload，并返回部署、版本、路由和解析后的 fallback。响应可能包含：
 
 ```json
 {
-  "name": "q2-report",
-  "preset": "static",
-  "scriptName": "pages-q2-report",
-  "url": "https://q2-report.workers.xd.team",
-  "fileCount": 42,
-  "ipRestrict": true,
-  "kvEnabled": false,
-  "createdAt": "2026-05-13T10:00:00.000Z",
-  "updatedAt": "2026-05-13T12:00:00.000Z"
+  "deployment": { "id": "dep_example", "status": "succeeded" },
+  "version": { "id": "ver_example" },
+  "route": { "hostname": "demo.pages.xd.team" },
+  "decision": {
+    "requestedFallback": "auto",
+    "resolvedFallback": "index"
+  }
 }
 ```
 
-**错误响应** `404`:
+真实 JSON 还会包含给 CLI 和 CI 使用的机器可读解析字段；普通用户不需要手写或选择这些字段。
 
-```json
-{ "error": "站点不存在" }
-```
+### GET `/.xd-pages/api/deployments/{id}`
 
----
+查询部署状态。发布 token 需要具备读取站点权限。
 
-### DELETE /site/:name
+### POST `/.xd-pages/api/versions/{id}/rollback`
 
-删除当前 token 名下的站点及其 Worker。必须通过 `X-Pages-Token` 请求头或 `token` 查询参数提供部署者 token；token 不匹配时返回 `403`。
+回滚到一个已存在版本。请求体可包含 `siteSlug` 作为防误操作校验。
 
-**成功响应** `200`:
+### GET / PATCH `/.xd-pages/api/sites/{id}`
 
-```json
-{
-  "status": "ok",
-  "name": "q2-report",
-  "message": "站点 q2-report 已删除"
-}
-```
+查询或更新站点策略。可见性支持 `internal`、`org`、`acl`、`owner`、`disabled`。
 
-**错误响应** `404`:
+### ACL 端点
 
-```json
-{ "error": "站点不存在" }
-```
+- `GET / .xd-pages/api/sites/{id}/acl`
+- `PUT / .xd-pages/api/sites/{id}/acl`
+- `POST / .xd-pages/api/sites/{id}/acl/entries`
+- `DELETE / .xd-pages/api/sites/{id}/acl/entries`
 
----
+ACL subject 支持邮箱和完整部门路径；部门授权包含子部门。
 
-### GET /health
+## Pages KV
 
-健康检查。
-
-**响应** `200`:
-
-```json
-{ "status": "ok" }
-```
-
----
-
-## 错误格式
-
-所有错误响应统一格式:
-
-```json
-{
-  "error": "错误描述",
-  "errors": [{ "code": 10000, "message": "详细信息" }]
-}
-```
-
-`errors` 字段仅在 Cloudflare API 返回错误时存在。
-
-## 约束
-
-- **站点名称**: 小写字母、数字、连字符，2-50 字符，首尾不能是连字符；`api`、`api-staging`、`manager`、`manager-staging`、`kv-gateway`、`kv-gateway-staging` 为平台保留名称
-- **部署 URL**: `https://{name}.workers.xd.team`
-- **Worker 名称**: `pages-{name}`（内部使用，用户不需要关心）
-- **重复部署**: 同一 token 可直接覆盖自己的同名站点，无需先删除；已有 owner token 的站点不允许不同 token 覆盖
+旧版 Pages KV 已退休。需要 runtime helper 或 KV 相关能力时，按 `@xd/pages-sdk` 和当前平台文档接入，不要使用旧部署参数。

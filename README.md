@@ -1,242 +1,106 @@
-# Pages — 内部站点托管服务
+# XD Pages
 
-基于 Cloudflare Workers 的轻量 Web 托管平台。零基础设施（无 ECS / Nginx / OSS），管理服务本身也是一个 CF Worker，通过 CF API 直接管理站点 Worker 的生命周期。
+XD Pages 是基于 Cloudflare Workers 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `pages` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
 
-## 架构
-
-### 完整流程
-
-```
-┌──────────┐    ① 分发 skill 文件
-│  管理员   │──────────────────────► pages-deploy.skill.md → 团队成员
-└──────────┘
-
-┌──────────┐    ② 首次使用                    ┌──────────────────┐
-│  用户    │──► AI 读取 skill ───────────────► │  api.workers     │
-│ (运营/   │    │                              │  .xd.team        │
-│  开发)   │    │  curl /openapi.json          │                  │
-└──────────┘    │  • 同步 deploy.sh            │  返回 API spec   │
-                │  • 同步 manage.sh            │  + 脚本源码      │
-                │  → 写入 ~/.xd-pages/         │  + IP 限制代码   │
-                │                              └──────────────────┘
-                │  设置 Token
-                │  • 询问邮箱 → 生成 pages_邮箱
-                │  • 保存到 AI 记忆
-                │
-                │    ③ 部署站点
-                │  检查 .pages.json ── 存在 → 复用已有站点名（更新）
-                │                   └─ 不存在 → 询问用户想要的名字
-                │
-                │  自动判断类型
-                │  • 有 _worker.js     → worker
-                │  • Vue/React/Angular → spa
-                │  • 纯 HTML/文档      → static
-                │
-                │  执行部署
-                │    │
-                │    ▼
-                │  归属检查（token 比对）── 被占用 → 409 提示换名
-                │    │ 通过
-                │    ▼
-                │  ┌────────────────────────────────────┐
-                │  │     Cloudflare API 三步部署          │
-                │  │  SHA-256 指纹 → 注册上传会话         │
-                │  │  按批次上传文件（跳过已存在的）        │
-                │  │  部署 Worker（自动注入 MIME + IP 限制）│
-                │  └────────────────────────────────────┘
-                │    │
-                │    ▼
-                │  绑定域名 + 启用 workers.dev
-                │  写入站点 metadata + 项目目录 .pages.json
-                │    │
-                │    ▼
-                │  ✅ 返回:
-                │     • https://{name}.workers.xd.team
-                │     • https://pages-{name}.xd-cf-2022.workers.dev (备用)
-                │
-                │
-┌───────────────────────────────────────────────────┐
-│                   自动更新机制                      │
-│                                                   │
-│  管理员更新服务端 → 部署 → openapi.json 更新       │
-│                              │                    │
-│                    AI 每次会话自动 fetch            │
-│                              ▼                    │
-│               • 脚本自动覆盖更新                    │
-│               • API 规则即时生效                    │
-│               • IP 白名单同步                      │
-│               • 版本变化时提醒用户更新 skill 文件    │
-│                                                   │
-│  唯一需要手动更新的：skill 文件本身（流程变化时）    │
-└───────────────────────────────────────────────────┘
-```
-
-## 站点类型
-
-| preset   | 行为                                   | 适用场景                     |
-| -------- | -------------------------------------- | ---------------------------- |
-| `static` | 按路径匹配文件，404 返回 404 页面      | HTML 报告、文档站、数据看板  |
-| `spa`    | 路径未匹配时回退到 `index.html`        | Vue / React / Angular 等 SPA |
-| `worker` | 使用上传的 `_worker.js` 作为自定义入口 | SSR、API 代理、动态渲染      |
-
-## Pages KV
-
-v1 不再提供 Pages KV。`workers.xd.team` 的 `POST /deploy` 传 `kv=true` 会返回 `400 KV_NOT_SUPPORTED`；KV 能力由 v2 `pages.xd.team` 平台提供。
-
-## 使用方式
-
-### CLI 脚本
+## 用户使用
 
 ```bash
-# 部署静态站点
-PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/deploy.sh my-report ./dist
-
-# 部署 SPA
-PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/deploy.sh my-app ./dist --preset spa
-
-# 部署自定义 Worker（目录需包含 _worker.js）
-PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/deploy.sh my-ssr ./project --preset worker
-
-# 管理
-PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/manage.sh list
-PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/manage.sh info my-report
-PAGES_TOKEN=pages_zhangsan@xd.com bash scripts/manage.sh delete my-report
+pages login
+pages detect ./dist --json
+pages deploy ./dist demo --dry-run --json
+pages deploy ./dist demo --visibility org
+pages status demo
+pages open demo
+pages rollback demo <version-id>
 ```
 
-### HTTP API
-
-直接调用管理服务 API，详见 [API.md](./API.md)。
+CI 或 AI agent 可以使用发布 token：
 
 ```bash
-curl -X POST https://api.workers.xd.team/deploy \
-  -H "X-Pages-Token: pages_zhangsan@xd.com" \
-  -F "name=my-report" \
-  -F "preset=static" \
-  -F "file-0=@dist/index.html;filename=index.html"
+pages deploy ./dist demo --token <token> --json
 ```
 
-### AI Skill
+CLI 会自动识别发布目录：
 
-AI 读取 [pages-deploy.skill.md](./pages-deploy.skill.md) 后自动执行部署:
+- 普通构建目录直接发布为静态资源。
+- 单入口前端应用会自动使用 `/index.html` 作为未命中回退。
+- 多页面导出、文档站或包含 `404.html` 的目录默认按 404 行为处理。
+- 需要自定义请求逻辑时，通过配置文件指定 Worker 入口。
 
+配置文件只保存非敏感发布意图：
+
+```json
+{
+  "site": "demo",
+  "source": "./dist",
+  "fallback": "auto",
+  "worker": {
+    "entry": "./worker.mjs"
+  }
+}
 ```
-用户: 把当前目录下的 dist 文件夹发布到 pages，名字叫 q2-report
-AI:   ✅ 已发布: https://q2-report.workers.xd.team
-```
 
-## 域名规则
+保存为项目根目录的 `pages.config.json` 后，可以直接运行 `pages deploy`；也可以用 `--config <file>` 显式指定其它配置文件。命令行位置参数和 flag 会覆盖配置文件里的同名发布意图。
 
-```
-{name}.workers.xd.team
-```
+`fallback` 可取 `auto`、`index`、`not-found`。普通用户优先使用默认 `auto`；只有需要明确控制深链刷新行为时才显式设置。
 
-| 站点名      | 访问地址                             |
-| ----------- | ------------------------------------ |
-| `q2-report` | `https://q2-report.workers.xd.team`  |
-| `my-app`    | `https://my-app.workers.xd.team`     |
-| `demo-api`  | `https://demo-api.workers.xd.team`   |
+更多 API 边界见 [API.md](./API.md)。设计说明见 [docs/adr/0001-pages-v2-artifact-detection.md](./docs/adr/0001-pages-v2-artifact-detection.md)。
 
-站点名规则: `/^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/`；`api`、`api-staging`、`manager`、`manager-staging`、`kv-gateway`、`kv-gateway-staging` 为平台保留名称，不能作为用户站点名。
+## 安全边界
 
-## 安全
+- 发布必须通过 CLI token 或发布 token 强认证。
+- 除 `/openapi.json`、`/skill.md`、`/readme.md` 外，管理 API 受公司网络 / VPN / 办公网出口 IP allowlist 约束。
+- 子站访问由 router 执行 IP allowlist、visibility、SSO 和 ACL。
+- `internal` 表示公司网络内匿名可访问，不代表互联网公开。
+- `acl` 支持邮箱和完整部门路径授权，部门路径默认包含子部门。
+- 发布 token、CLI token、cookie、SSO code、Cloudflare token 和平台能力不得写入项目文件、日志、README、截图或聊天消息。
 
-- **IP 白名单**: 管理 API（除 `/openapi.json`、`/skill.md`、`/readme.md` 公开端点外）限制公司内网 IP 访问（CF-Connecting-IP），真实白名单由 `IP_ALLOWLIST` 在部署环境中配置；当前版本所有子站请求也必须限制 IP，`ip_restrict=false` 会被拒绝；static/spa 子站会自动注入限制，worker 子站会注入 `env.IP_ALLOWLIST`，需在 `_worker.js` 中调用检查逻辑
-- **Token**: `X-Pages-Token` 用于站点归属标记，不是强认证；`/deploy`、`/list`、`/site/:name` 查询和删除必须携带 token，`/list` 和 `/site/:name` 查询不会返回 token 字段
-- **Worker Secret**: `CF_API_TOKEN` 是运行时高权限 token 绑定名，必须通过 `wrangler secret put CF_API_TOKEN` 设置，不提交到 Git；GitHub Actions 中使用同名 Environment Secret `CF_API_TOKEN` 写入该 Worker Secret，`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 调用 Cloudflare
-- **后续**: 可叠加 Cloudflare Access (SSO) 实现身份认证
+## 核心目录
 
-## 基础设施
-
-### 使用
-
-| 组件         | 说明                                                    |
-| ------------ | ------------------------------------------------------- |
-| CF 账户      | 通过部署环境变量 `CLOUDFLARE_ACCOUNT_ID` 配置            |
-| 域名         | `workers.xd.team`（xd.team partial zone，DNS 在 DNSPod）|
-| 管理 Worker  | `pages-manager`，绑定 `api.workers.xd.team`             |
-| Workers KV   | 管理服务站点 metadata 存储，namespace ID 由环境变量配置  |
-| CF API Token | Workers Scripts Write + Workers Routes Write + KV Write |
-
-### 不需要
-
-| 砍掉           | 替代方案                  |
-| -------------- | ------------------------- |
-| ~~ECS~~        | 管理服务 → CF Worker      |
-| ~~Nginx~~      | 静态/SPA → Workers Assets |
-| ~~OSS~~        | 文件存储 → Workers Assets |
-| ~~ALB~~        | 负载均衡 → CF Edge        |
-| ~~通配符证书~~ | → CF Advanced Certificate |
-
-## 文件结构
-
-```
+```text
 pages-manager/
-├── README.md
-├── API.md
-├── pages-deploy.skill.md
-├── pnpm-workspace.yaml
-├── apps/
-│   ├── server/
-│   │   ├── wrangler.template.toml
-│   │   ├── package.json
-│   │   └── src/
-│   │       ├── index.js
-│   │       ├── router.js
-│   │       ├── lib/
-│   │       │   ├── cf-api.js
-│   │       │   └── public-config.js
-│   │       └── handlers/
-│   │           ├── deploy.js
-│   │           ├── site.js
-│   │           ├── list.js
-│   │           └── health.js
-│   ├── pages-sdk/
-│   │   ├── package.json
-│   │   └── src/
-│   └── xdads-302/
-│       ├── wrangler.template.toml
-│       ├── package.json
-│       └── index.js
-├── packages/
-│   ├── ip-guard/
-│   ├── worker-kit/
-│   └── pages-runtime-protocol/
-├── scripts/
-│   ├── gen-wrangler.sh
-│   ├── deploy.sh
-│   ├── manage.sh
-│   └── migrate-domain.sh
-└── demos/
+├── apps/pages-api/      # v2 管理 API Worker
+├── apps/pages-cli/      # 用户和 agent 使用的 CLI
+├── apps/pages-router/   # 子站访问 router
+├── apps/pages-auth/     # 登录和认证相关 Worker
+├── apps/pages-sdk/      # runtime helper SDK
+├── apps/pages-skill/    # 发布给 AI agent 的 XD Pages skill
+├── packages/wfp-client/ # 平台执行客户端
+├── packages/worker-kit/
+├── packages/ip-guard/
+├── docs/
+└── scripts/
 ```
 
-## 开发与部署
+## 开发
 
 ```bash
 pnpm install
-
-# 本地开发管理 Worker
-pnpm --dir apps/server dev
-
-# 生成本地 Wrangler 配置后部署管理 Worker。
-# 下方全部是占位示例；真实值放本地 shell、GitHub Environment Secrets/Vars 或 Wrangler secrets。
-CLOUDFLARE_ACCOUNT_ID=example-account-id \
-SITES_KV_NAMESPACE_ID=example-kv-namespace-id \
-IP_ALLOWLIST=127.0.0.1,::1 \
-scripts/gen-wrangler.sh apps/server production
-pnpm --dir apps/server run deploy
-printf '%s' '<runtime-cloudflare-api-token>' | pnpm --dir apps/server exec wrangler secret put CF_API_TOKEN
-printf '%s' '<zone-id>' | pnpm --dir apps/server exec wrangler secret put CF_ZONE_ID_NEW
+pnpm lint
+pnpm test
 ```
 
-staging 使用同一套命令，把最后一个参数改为 `staging`，并使用 staging 的站点 metadata KV namespace。production GitHub Actions 只允许手动触发；staging push 到 `staging` 分支会按 `component=all` 全量自动部署 staging。手动触发 `Deploy Staging` / `Deploy Production` 时可用 `component=all | server` 选择部署入口。
+环境要求：
 
-真实 `apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、`.dev.vars`、`.env` 和 `.pages.json` 不提交到 Git。GitHub Actions 部署时会根据 Environment Secrets/Vars 生成 `apps/server/wrangler.toml`。
+- Node.js `>=22.12.0`
+- pnpm `>=9.15.0`
 
-## 路线图
+不要提交 `.env`、`.staging.env`、`apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、demo 目录里的 `.pages.json`，也不要在测试或文档中写真实 Cloudflare 资源 ID、token 或账号信息。
 
-| 阶段     | 内容                                             | 状态      |
-| -------- | ------------------------------------------------ | --------- |
-| **v1**   | 管理 Worker + static/spa preset + CLI + AI Skill | ✅ 已完成 |
-| **v1.5** | worker preset（自定义 Worker / SSR）             | ✅ 已完成 |
-| **v2**   | Cloudflare Access + SSO                          | 待开发    |
-| **v3**   | 管理面板 (Web UI)                                | 待定      |
+## 部署
+
+平台部署规则见 [docs/deployment-branch-policy.md](./docs/deployment-branch-policy.md)。
+
+常用维护命令：
+
+```bash
+pnpm --dir apps/pages-api test
+pnpm --dir apps/pages-cli test
+pnpm --dir apps/pages-skill build
+```
+
+production 部署必须人工在 GitHub Actions 中手动触发；改动 workflow 时必须确认 push/PR 不会自动部署 production。
+
+## Pages KV
+
+v1 不再提供 Pages KV。需要 runtime helper 或 KV 相关能力时，按 `@xd/pages-sdk` 和当前平台文档接入，不要使用旧部署参数。

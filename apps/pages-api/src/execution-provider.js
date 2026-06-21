@@ -2,7 +2,7 @@ import { normalizeWorkerBindings } from '../../../packages/wfp-client/src/index.
 import {
   createDeploymentProvider as createWfpDeploymentProvider,
   kvGatewayServiceBinding,
-  normalizeArtifactBundle,
+  normalizeWorkerBundle,
 } from './wfp-provider.js';
 
 const EXECUTION_MODES = new Set(['wfp', 'normal-worker-slot']);
@@ -20,7 +20,7 @@ const PLACEHOLDER_WORKER_MODULE = `export default {
   },
 };`;
 
-export { normalizeArtifactBundle };
+export { normalizeWorkerBundle };
 
 export function readExecutionMode(env = {}, site = {}) {
   const mode = site.executionModeOverride || env.PAGES_EXECUTION_MODE || DEFAULT_EXECUTION_MODE;
@@ -65,7 +65,7 @@ function createNormalWorkerSlotProvider(env, config, store) {
             scriptName: slot.workerName,
             mainModule: input.artifactBundle?.mainModule,
             modules: input.artifactBundle?.modules,
-            artifactKind: input.artifactKind,
+            decision: input.decision,
             assetManifest: input.assetManifest,
             assetFiles: input.assetFiles,
             compatibilityDate: env.WFP_COMPATIBILITY_DATE,
@@ -148,7 +148,7 @@ function createOrdinaryWorkerClient(env, config) {
       scriptName,
       mainModule,
       modules,
-      artifactKind,
+      decision,
       assetManifest,
       assetFiles,
       compatibilityDate,
@@ -156,7 +156,8 @@ function createOrdinaryWorkerClient(env, config) {
     }) {
       const safeBindings = normalizeWorkerBindings(bindings);
       await disableWorkerSubdomain(fetchImpl, apiToken, apiBaseUrl, accountId, scriptName);
-      const usesAssets = artifactKind === 'static' || artifactKind === 'spa';
+      const usesAssets = decisionRequiresAssets(decision);
+      const usesUserWorker = decisionRequiresWorker(decision);
       let safeMainModule = mainModule;
       let safeModules = modules;
       let assetMetadata = null;
@@ -168,21 +169,23 @@ function createOrdinaryWorkerClient(env, config) {
           apiBaseUrl,
           accountId,
           scriptResourceUrl: scriptUrl(apiBaseUrl, accountId, scriptName),
-          artifactKind,
+          decision,
           assetManifest,
           assetFiles,
         });
-        safeMainModule = 'worker.mjs';
-        safeModules = [
-          {
-            name: 'worker.mjs',
-            content: ASSETS_WORKER_MODULE,
-            type: 'application/javascript+module',
-          },
-        ];
+        if (!usesUserWorker) {
+          safeMainModule = 'worker.mjs';
+          safeModules = [
+            {
+              name: 'worker.mjs',
+              content: ASSETS_WORKER_MODULE,
+              type: 'application/javascript+module',
+            },
+          ];
+        }
         assetMetadata = {
           jwt: completionJwt,
-          config: assetConfigForKind(artifactKind),
+          config: assetConfigForDecision(decision),
         };
       }
 
@@ -253,11 +256,11 @@ async function uploadAssets({
   apiBaseUrl,
   accountId,
   scriptResourceUrl,
-  artifactKind,
+  decision,
   assetManifest,
   assetFiles,
 }) {
-  validateAssetInput({ artifactKind, assetManifest, assetFiles });
+  validateAssetInput({ decision, assetManifest, assetFiles });
   const session = await requestCloudflare(fetchImpl, apiToken, `${scriptResourceUrl}/assets-upload-session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -284,8 +287,8 @@ async function uploadAssets({
   return completionJwt;
 }
 
-function validateAssetInput({ artifactKind, assetManifest, assetFiles }) {
-  if (artifactKind !== 'static' && artifactKind !== 'spa') throw new Error('ASSET_ARTIFACT_KIND_INVALID');
+function validateAssetInput({ decision, assetManifest, assetFiles }) {
+  if (!decisionRequiresAssets(decision)) throw new Error('ASSET_UPLOAD_PLAN_INVALID');
   if (!assetManifest || typeof assetManifest !== 'object' || Array.isArray(assetManifest)) {
     throw new Error('ASSET_MANIFEST_INVALID');
   }
@@ -307,11 +310,20 @@ function normalizeAssetPath(value) {
   return `/${String(value || '').replaceAll('\\', '/').replace(/^\/+/, '')}`;
 }
 
-function assetConfigForKind(kind) {
+function assetConfigForDecision(decision) {
+  if (!decisionRequiresAssets(decision)) throw new Error('ASSET_UPLOAD_PLAN_INVALID');
   return {
-    not_found_handling: kind === 'spa' ? 'single-page-application' : '404-page',
-    run_worker_first: true,
+    not_found_handling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+    ...(decision.routingMode === 'worker-first' ? { run_worker_first: true } : {}),
   };
+}
+
+function decisionRequiresAssets(decision) {
+  return decision?.deploymentShape === 'assets-only' || decision?.deploymentShape === 'worker-with-assets';
+}
+
+function decisionRequiresWorker(decision) {
+  return decision?.deploymentShape === 'worker-only' || decision?.deploymentShape === 'worker-with-assets';
 }
 
 function assetUploadUrl(apiBaseUrl, accountId) {

@@ -17,16 +17,16 @@ description: 围绕内置 pages-cli 和 @xd/pages-sdk 使用 XD Pages：发布�
 3. 执行具体操作前先运行对应的 `help`，以 CLI 输出作为参数和用法的权威来源。
 4. 不要优先使用环境里的 `pages`，避免使用到旧版本 CLI。
 5. 修改导入 `@xd/pages-sdk` 的应用代码前，先读 `references/sdk.md`。
-6. 处理登录、access key 或生成配置时，按 `references/cli.md` 的 CLI 流程执行。
+6. 处理登录、发布 token 或生成配置时，按 `references/cli.md` 的 CLI 流程执行。
 
 ## 使用原则
 
 - 内置 CLI 能完成的操作，使用内置 CLI。
 - 不要引导用户把内置 CLI 全局安装；全局副本可能滞后于当前 skill。
-- 除非用户明确要求使用 staging，否则发布时不要传 `--env`；让 CLI 使用默认目标。
-- 凭证只通过 CLI 支持的登录流程或 `--access-key <key>` 传入。
-- 不要把 access key、CLI token、cookie、SSO code 或 secret 写入源码、配置、日志、文档、截图或聊天内容。
-- agent 或 CI 场景可以使用 CLI help 中支持的 access key 参数；需要解析输出时使用 CLI help 中支持的 JSON 输出参数。
+- 不主动切换目标环境；普通发布让 CLI 使用默认目标，内部测试环境按维护流程处理。
+- 凭证只通过 CLI 支持的登录流程或 `--token <token>` 传入。
+- 不要把发布 token、CLI token、cookie、SSO code 或 secret 写入源码、配置、日志、文档、截图或聊天内容。
+- agent 或 CI 场景可以使用 CLI help 中支持的发布 token 参数；需要解析输出时使用 CLI help 中支持的 JSON 输出参数。
 
 ## 内置工具
 

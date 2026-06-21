@@ -15,6 +15,10 @@ const slotIdMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0003_environment_scoped_worker_slot_ids.sql'),
   'utf8'
 );
+const resolvedMetadataMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0004_pages_v2_resolved_deployment_metadata.sql'),
+  'utf8'
+);
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -50,6 +54,7 @@ test('pages v2 D1 migration covers authority schema tables and indexes', () => {
 
   assert.match(migration, /idx_worker_slots_environment_number/);
   assert.match(migration, /idx_deployments_idempotency/);
+  assert.doesNotMatch(schema, /\bartifact_kind\b/);
 });
 
 test('slot id migration scopes legacy worker slot ids by environment', () => {
@@ -60,3 +65,19 @@ test('slot id migration scopes legacy worker slot ids by environment', () => {
   assert.match(slotIdMigration, /WHERE id GLOB 'slot_\[0-9\]\[0-9\]\[0-9\]'/);
   assert.doesNotMatch(slotIdMigration, /DROP TABLE/i);
 });
+
+test('resolved deployment metadata migration removes artifact kind storage', () => {
+  assert.match(resolvedMetadataMigration, /CREATE TABLE site_versions_next \(/);
+  assert.match(resolvedMetadataMigration, /\bdeployment_shape TEXT NOT NULL\b/);
+  assert.match(resolvedMetadataMigration, /\brequested_fallback TEXT NOT NULL\b/);
+  assert.match(resolvedMetadataMigration, /\brouting_mode TEXT NOT NULL\b/);
+  assert.match(resolvedMetadataMigration, /SELECT[\s\S]+CASE artifact_kind[\s\S]+FROM site_versions/);
+  assert.match(resolvedMetadataMigration, /DROP TABLE site_versions/);
+  assert.match(resolvedMetadataMigration, /ALTER TABLE site_versions_next RENAME TO site_versions/);
+  assert.doesNotMatch(tableDefinition(resolvedMetadataMigration, 'site_versions_next'), /\bartifact_kind\b/);
+});
+
+function tableDefinition(sql, tableName) {
+  const match = sql.match(new RegExp(`CREATE TABLE ${tableName} \\([\\s\\S]*?\\n\\);`));
+  return match?.[0] || '';
+}

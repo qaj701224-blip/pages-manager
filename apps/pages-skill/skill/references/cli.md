@@ -30,17 +30,17 @@ node tools/pages-cli/main.js help login
 
 1. 先根据用户意图选择命令，例如发布、查看状态、回滚、打开 URL 或调整访问规则。
 2. 运行该命令的 `help`，按 help 输出决定位置参数和选项。
-3. 发布时默认不要传 `--env`；除非用户明确要求使用 staging，才允许传 `--env staging`。
+3. 不主动切换目标环境；普通发布让 CLI 使用默认目标，内部测试环境按维护流程处理。
 4. 需要机器可读结果时，使用 help 中支持的 JSON 输出参数。
-5. 不方便交互登录的 agent 或 CI 场景，可以使用 help 中支持的 access key 参数。
+5. 不方便交互登录的 agent 或 CI 场景，可以使用 help 中支持的发布 token 参数。
 6. 遇到错误时，优先按 CLI 输出的错误码、提示和建议动作处理。
 
 ## 登录和凭证
 
 - 优先使用 CLI help 中的登录命令完成交互登录。
-- agent 或 CI 场景可以通过 CLI help 中支持的 access key 参数传入凭证。
-- 除非用户明确要求通过 CLI 登录命令保存凭证，否则不要把 access key 写入本地状态。
-- 不要打印、持久化、提交、截图或引用 access key、CLI token、cookie、SSO code 或 secret。
+- agent 或 CI 场景可以通过 CLI help 中支持的发布 token 参数传入凭证。
+- 除非用户明确要求通过 CLI 登录命令保存凭证，否则不要把发布 token 写入本地状态。
+- 不要打印、持久化、提交、截图或引用发布 token、CLI token、cookie、SSO code 或 secret。
 - 不要把凭证发送到用户未确认的自定义 endpoint。
 
 ## 配置

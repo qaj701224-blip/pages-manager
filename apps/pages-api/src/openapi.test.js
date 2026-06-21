@@ -26,25 +26,26 @@ test('serves production XD Pages OpenAPI skeleton', async () => {
   assert.ok(body.paths['/.xd-pages/api/deployments']);
   assert.ok(body.paths['/.xd-pages/api/deployments/{id}']);
   assert.ok(body.paths['/.xd-pages/api/versions/{id}/rollback']);
-  assert.ok(body.components.schemas.DeploymentRequest);
-  assert.ok(body.components.schemas.ArtifactBundle);
-  assert.equal(
-    body.paths['/.xd-pages/api/deployments'].post.requestBody.content['application/json'].schema.$ref,
-    '#/components/schemas/DeploymentRequest'
-  );
+  assert.ok(body.components.schemas.CliManagedDeploymentRequest);
+  assert.ok(body.components.schemas.DeploymentDecision);
+  assert.equal(body.paths['/.xd-pages/api/deployments'].post.requestBody.content['application/json'], undefined);
   assert.equal(
     body.paths['/.xd-pages/api/versions/{id}/rollback'].post.requestBody.content['application/json'].schema.$ref,
     '#/components/schemas/RollbackRequest'
   );
   assert.ok(body.paths['/.xd-pages/api/deployments'].post.requestBody.content['multipart/form-data']);
-  assert.match(JSON.stringify(body.components.schemas.StaticAssetDeploymentRequest), /assetManifest/);
-  assert.match(JSON.stringify(body.components.schemas.StaticAssetDeploymentRequest), /file-/);
+  assert.equal(
+    body.paths['/.xd-pages/api/deployments'].post.requestBody.content['multipart/form-data'].schema.$ref,
+    '#/components/schemas/CliManagedDeploymentRequest'
+  );
   assert.deepEqual(body.paths['/.xd-pages/api/deployments'].post['x-error-codes'], [
-    'ARTIFACT_BUNDLE_REQUIRED',
-    'ARTIFACT_BUNDLE_INVALID',
-    'ASSET_MANIFEST_REQUIRED',
     'ASSET_MANIFEST_INVALID',
     'ASSET_FILES_REQUIRED',
+    'CLI_UPLOAD_PROTOCOL_REQUIRED',
+    'CONTENT_HASH_MISMATCH',
+    'PUBLISH_PLAN_INVALID',
+    'PUBLISH_PLAN_VERSION_UNSUPPORTED',
+    'FALLBACK_REQUIRES_ASSETS',
     'INVALID_MULTIPART',
     'PAYLOAD_TOO_LARGE',
     'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
@@ -55,11 +56,11 @@ test('serves production XD Pages OpenAPI skeleton', async () => {
     'ROUTE_SNAPSHOT_WRITE_FAILED',
     'IDEMPOTENCY_CONFLICT',
   ]);
-  assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /artifactBundle/);
-  assert.match(JSON.stringify(body.components.schemas.DeploymentRequest), /siteSlug/);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email', 'department']);
   assert.deepEqual(body.components.schemas.SiteVisibility.enum, ['internal', 'org', 'acl', 'owner', 'disabled']);
+  assert.equal(serialized.includes('artifactKind'), false);
+  assert.equal(serialized.includes('publishPlan'), false);
   assert.doesNotMatch(
     serialized,
     new RegExp(
@@ -92,8 +93,9 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   const body = await response.text();
   assert.match(body, /name: pages/);
   assert.match(body, /pages login/);
+  assert.match(body, /pages detect <dir> --json/);
   assert.match(body, /pages deploy <dir> <site>/);
-  assert.match(body, /--access-key <access-key>/);
+  assert.match(body, /--token <token>/);
   assert.match(body, /--config pages\.config\.json/);
   assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);
@@ -104,7 +106,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
         `${['--save', '-config'].join('')}|${['\\.pages', '\\.json'].join('')}|PAGES_ACCESS_KEY|\`public\``
     )
   );
-  assert.doesNotMatch(body, /curl|X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
+  assert.doesNotMatch(body, /--access-key|curl|X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
 });
 
@@ -117,10 +119,12 @@ test('serves readme docs without legacy API addresses', async () => {
   assert.match(response.headers.get('Content-Type'), /text\/markdown/);
   const body = await response.text();
   assert.match(body, /api-staging\.pages\.xd\.team/);
-  assert.match(body, /pages login --env staging/);
-  assert.match(body, /pages deploy \.\/dist demo --env staging --visibility org/);
-  assert.match(body, /--access-key <key>/);
+  assert.match(body, /pages login/);
+  assert.match(body, /pages detect \.\/dist --json/);
+  assert.match(body, /pages deploy \.\/dist demo --visibility org/);
+  assert.match(body, /--token <token>/);
   assert.match(body, /--config <file>/);
+  assert.doesNotMatch(body, /--access-key|--env|pages env|Environment/);
   assert.doesNotMatch(
     body,
     new RegExp(

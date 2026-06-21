@@ -25,8 +25,8 @@ test('builds immutable route snapshot from authority records', () => {
     },
     version: {
       id: 'ver_1',
-      artifactKind: 'worker',
       contentHash: 'sha256:abc',
+      ...workerOnlyDecision(),
     },
     aclEntries: [{ effect: 'allow', subjectType: 'email', subjectValue: 'user@example.com' }],
   });
@@ -54,8 +54,10 @@ test('builds immutable route snapshot from authority records', () => {
       scopes: ['kv:get', 'kv:set', 'kv:delete'],
     },
     activeVersionId: 'ver_1',
-    artifactKind: 'worker',
     contentHash: 'sha256:abc',
+    deploymentShape: 'worker-only',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
     visibility: 'org',
     policyVersion: 1,
     routeGeneration: 2,
@@ -84,8 +86,8 @@ test('writes immutable snapshot and pointer records', async () => {
     },
     version: {
       id: 'ver_1',
-      artifactKind: 'worker',
       contentHash: 'sha256:abc',
+      ...workerOnlyDecision(),
     },
   });
 
@@ -136,8 +138,8 @@ test('does not overwrite a newer route pointer with a stale snapshot', async () 
     },
     version: {
       id: 'ver_1',
-      artifactKind: 'worker',
       contentHash: 'sha256:abc',
+      ...workerOnlyDecision(),
     },
   });
 
@@ -187,8 +189,8 @@ test('RoutePointerDO serializes pointer writes and rejects stale snapshots from 
     },
     version: {
       id: 'ver_2',
-      artifactKind: 'worker',
       contentHash: 'sha256:def',
+      ...workerOnlyDecision(),
     },
   });
   const staleSnapshot = buildRouteSnapshot({
@@ -205,8 +207,8 @@ test('RoutePointerDO serializes pointer writes and rejects stale snapshots from 
     },
     version: {
       id: 'ver_1',
-      artifactKind: 'worker',
       contentHash: 'sha256:abc',
+      ...workerOnlyDecision(),
     },
   });
 
@@ -243,8 +245,8 @@ test('RoutePointerDO treats KV pointer write as the route commit point', async (
     },
     version: {
       id: 'ver_1',
-      artifactKind: 'worker',
       contentHash: 'sha256:abc',
+      ...workerOnlyDecision(),
     },
   });
 
@@ -277,5 +279,14 @@ function createDoState({ failPut = false } = {}) {
         records.set(key, value);
       },
     },
+  };
+}
+
+function workerOnlyDecision() {
+  return {
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
   };
 }

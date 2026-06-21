@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export function createSchemaSql() {
   return [
@@ -57,9 +57,18 @@ export function createSchemaSql() {
       dispatch_type TEXT,
       dispatch_binding_name TEXT,
       slot_id TEXT,
-      artifact_kind TEXT NOT NULL,
       artifact_ref TEXT NOT NULL,
       content_hash TEXT NOT NULL,
+      deployment_shape TEXT NOT NULL,
+      requested_fallback TEXT NOT NULL,
+      resolved_fallback TEXT,
+      routing_mode TEXT NOT NULL,
+      worker_entry TEXT,
+      assets_config_json TEXT,
+      worker_modules_json TEXT,
+      asset_manifest_json TEXT,
+      canonical_content_hash TEXT,
+      artifact_availability TEXT NOT NULL DEFAULT 'active',
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL
     )`,

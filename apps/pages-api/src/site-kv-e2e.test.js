@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import kvGatewayWorker from '../../kv-gateway/src/index.js';
@@ -45,14 +46,9 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
   );
   const siteBody = await createSite.json();
   const deploy = await apiWorker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      {
-        siteId: siteBody.site.id,
-        artifactKind: 'worker',
-        contentHash: 'sha256:abc',
-        artifactBundle: workerBundle('export default {};'),
-      },
+      { siteId: siteBody.site.id, workerContent: 'export default {};' },
       { 'Idempotency-Key': 'deploy_docs' }
     ),
     apiEnv
@@ -135,11 +131,93 @@ function jsonRequest(url, body, headers = {}) {
   });
 }
 
-function workerBundle(content) {
+function deploymentRequest(url, { siteId, workerContent }, headers = {}) {
+  const moduleName = 'worker.mjs';
+  const contentType = 'application/javascript+module';
+  const bytes = Buffer.from(workerContent);
+  const decision = {
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    workerEntry: moduleName,
+  };
+  const metadata = {
+    schemaVersion: 1,
+    siteId,
+    requestedFallback: 'auto',
+    source: 'cli',
+    contentHash: hashUploadPlan([{ relativePath: moduleName, contentType, bytes }], decision),
+    publishPlan: {
+      ...decision,
+      workerMainModuleName: moduleName,
+    },
+    assetManifest: [],
+    workerMainModuleName: moduleName,
+    workerModules: [
+      {
+        moduleName,
+        partName: 'worker-main',
+        hash: hashAsset(bytes, contentType),
+        size: bytes.byteLength,
+        contentType,
+      },
+    ],
+    controlSignals: [],
+  };
+  const form = new FormData();
+  form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
+  form.set('worker-main', new Blob([workerContent], { type: contentType }), moduleName);
+
+  return new Request(url, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
+      ...headers,
+    },
+    body: form,
+  });
+}
+
+function hashAsset(bytes, contentType) {
+  return createHash('sha256')
+    .update('xd-pages-asset-v2\0')
+    .update(contentType)
+    .update('\0')
+    .update(bytes)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function hashUploadPlan(files, decision) {
+  const hash = createHash('sha256');
+  hash.update('xd-pages-upload-plan-v1\0');
+  hash.update(JSON.stringify(publishPlanFromDecision(decision)));
+  hash.update('\0');
+  for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    hash.update('file\0');
+    hash.update(file.relativePath);
+    hash.update('\0');
+    hash.update(String(file.bytes.byteLength));
+    hash.update('\0');
+    hash.update(file.contentType);
+    hash.update('\0');
+    hash.update(file.bytes);
+    hash.update('\0');
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function publishPlanFromDecision(decision) {
   return {
-    kind: 'worker',
-    mainModule: 'worker.mjs',
-    modules: [{ name: 'worker.mjs', content, type: 'application/javascript+module' }],
+    deploymentShape: decision.deploymentShape,
+    requestedFallback: decision.requestedFallback,
+    resolvedFallback: decision.resolvedFallback,
+    routingMode: decision.routingMode,
+    workerEntry: decision.workerEntry,
+    workerMainModuleName: decision.workerEntry,
+    assetsConfig: null,
   };
 }
 

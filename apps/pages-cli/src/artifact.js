@@ -1,8 +1,19 @@
 import { createHash } from 'node:crypto';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 const IGNORED_NAMES = new Set(['.git', 'node_modules', 'pages.config.json', '.DS_Store']);
+const CONTROL_FILE_NAMES = new Set([
+  '_worker.js',
+  '_headers',
+  '_redirects',
+  '_routes.json',
+  '.assetsignore',
+  'pages.config.json',
+]);
+const SAFE_IGNORED_NAMES = new Set(['.git', 'node_modules', '.DS_Store']);
+const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
+const DENYLISTED_EXTENSIONS = new Set(['.pem', '.key']);
 export const MAX_STATIC_ARTIFACT_BYTES = 50 * 1024 * 1024;
 export const MAX_STATIC_ARTIFACT_FILES = 5000;
 
@@ -34,70 +45,90 @@ export async function hashArtifact(targetPath) {
   };
 }
 
-export async function inferArtifactKind(targetPath) {
+export async function detectPublishTarget(targetPath, options = {}) {
+  const requestedFallback = options.requestedFallback || 'auto';
+  if (!['auto', 'index', 'not-found'].includes(requestedFallback)) throw new Error('FALLBACK_INVALID');
   const absolute = path.resolve(targetPath);
   const stats = await stat(absolute);
-  if (stats.isFile()) {
-    const extension = path.extname(absolute).toLowerCase();
-    if (extension === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
-    if (extension === '.js' || extension === '.mjs') return 'worker';
-    return 'static';
-  }
+  if (stats.isFile()) return detectFileTarget(absolute, requestedFallback);
+  if (!stats.isDirectory()) throw new Error('DETECT_TARGET_NOT_FOUND');
 
-  try {
-    const indexStats = await stat(path.join(absolute, 'index.html'));
-    if (indexStats.isFile()) return 'spa';
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
-  return 'static';
+  const entries = await scanDirectory(absolute);
+  const workerEntry = resolveWorkerEntry(entries, options.workerEntry);
+  const publicAssets = entries.files.filter((file) => !file.control && file.relativePath !== workerEntry);
+  const deploymentShape = workerEntry ? (publicAssets.length > 0 ? 'worker-with-assets' : 'worker-only') : 'assets-only';
+  const resolvedFallback = resolveFallback({ requestedFallback, deploymentShape, entries, publicAssets });
+
+  return {
+    deploymentShape,
+    requestedFallback,
+    resolvedFallback,
+    routingMode: deploymentShape === 'worker-with-assets' ? 'worker-first' : deploymentShape,
+    workerEntry,
+    confidence: confidenceFor({ requestedFallback, resolvedFallback, entries }),
+    source: requestedFallback === 'auto' ? 'auto' : 'explicit',
+    signals: entries.signals,
+    diagnostics: entries.diagnostics,
+  };
 }
 
-export async function buildArtifactBundle(targetPath, artifactKind) {
-  const kind = artifactKind || (await inferArtifactKind(targetPath));
-  const absolute = path.resolve(targetPath);
-  if (kind === 'worker') return buildWorkerBundle(absolute);
-  if (kind === 'static' || kind === 'spa') throw new Error('STATIC_ASSET_MULTIPART_REQUIRED');
-  throw new Error('ARTIFACT_KIND_INVALID');
-}
-
-export async function buildAssetArtifact(targetPath, artifactKind) {
-  const kind = artifactKind || (await inferArtifactKind(targetPath));
-  if (kind !== 'static' && kind !== 'spa') throw new Error('STATIC_ARTIFACT_KIND_REQUIRED');
+export async function createUploadPlan(targetPath, decision) {
   const absolute = path.resolve(targetPath);
   const stats = await stat(absolute);
-  if (!stats.isDirectory()) throw new Error('STATIC_ARTIFACT_DIRECTORY_REQUIRED');
+  if (stats.isFile()) return createFileUploadPlan(absolute, decision);
+  if (!stats.isDirectory()) throw new Error('DETECT_TARGET_NOT_FOUND');
 
-  const files = await collectDirectoryFiles(absolute, absolute);
-  if (files.length > MAX_STATIC_ARTIFACT_FILES) throw new Error('ARTIFACT_FILE_COUNT_LIMIT_EXCEEDED');
+  const entries = await scanDirectory(absolute, { failOnDenylist: true });
+  const publicFiles = entries.files.filter((file) => !file.control && file.relativePath !== decision.workerEntry);
+  if (decision.deploymentShape !== 'worker-only' && publicFiles.length === 0) {
+    throw new Error('PACKAGE_NO_PUBLIC_ASSETS_AFTER_EXCLUDES');
+  }
 
-  const manifest = {};
+  const assetManifest = [];
   const assetFiles = [];
   let sizeBytes = 0;
-  for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+  for (const [index, file] of publicFiles.sort(compareRelativePath).entries()) {
     const bytes = await readFile(file.absolutePath);
     sizeBytes += bytes.byteLength;
     if (sizeBytes > MAX_STATIC_ARTIFACT_BYTES) throw new Error('ARTIFACT_BUNDLE_TOO_LARGE');
-    const key = `/${file.relativePath}`;
     const contentType = contentTypeFor(file.relativePath);
-    manifest[key] = {
+    const partName = `asset-file-${index}`;
+    assetManifest.push({
+      path: `/${file.relativePath}`,
+      partName,
       hash: hashAsset(bytes, contentType),
       size: bytes.byteLength,
-      content_type: contentType,
-    };
+      contentType,
+    });
     assetFiles.push({
       relativePath: file.relativePath,
+      partName,
       bytes,
       contentType,
     });
   }
+  if (assetFiles.length > MAX_STATIC_ARTIFACT_FILES) throw new Error('ARTIFACT_FILE_COUNT_LIMIT_EXCEEDED');
+
+  const workerModules = await workerModulesForDirectory(absolute, decision);
+  const hashFiles = [
+    ...assetFiles.map((file) => ({ relativePath: file.relativePath, contentType: file.contentType, bytes: file.bytes })),
+    ...workerModules.map((module) => ({
+      relativePath: module.moduleName,
+      contentType: module.contentType,
+      bytes: Buffer.from(module.content),
+    })),
+  ];
 
   return {
-    kind,
-    manifest,
-    files: assetFiles,
+    publishPlan: publishPlanFromDecision(decision),
+    contentHash: hashUploadPlan(hashFiles, decision),
     fileCount: assetFiles.length,
     sizeBytes,
+    assetManifest,
+    assetFiles,
+    workerMainModuleName: decision.workerEntry,
+    workerModules,
+    controlSignals: entries.controlSignals,
   };
 }
 
@@ -120,13 +151,268 @@ async function collectDirectoryFiles(root, dir) {
   return files;
 }
 
+function detectFileTarget(absolute, requestedFallback) {
+  const extension = path.extname(absolute).toLowerCase();
+  if (extension === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
+  if (requestedFallback !== 'auto') throw new Error('FALLBACK_REQUIRES_ASSETS');
+  if (extension === '.js' || extension === '.mjs') {
+    return {
+      deploymentShape: 'worker-only',
+      requestedFallback,
+      resolvedFallback: null,
+      routingMode: 'worker-only',
+      workerEntry: path.basename(absolute),
+      confidence: 'high',
+      source: 'auto',
+      signals: [{ code: 'WORKER_FILE_TARGET', path: path.basename(absolute) }],
+      diagnostics: [],
+    };
+  }
+  return {
+    deploymentShape: 'assets-only',
+    requestedFallback,
+    resolvedFallback: requestedFallback === 'index' ? 'index' : 'not-found',
+    routingMode: 'assets-only',
+    workerEntry: null,
+    confidence: 'low',
+    source: requestedFallback === 'auto' ? 'auto' : 'explicit',
+    signals: [{ code: 'FILE_TARGET', path: path.basename(absolute) }],
+    diagnostics: [],
+  };
+}
+
+async function scanDirectory(root, options = {}) {
+  const files = [];
+  const signals = [];
+  const diagnostics = [];
+  const controlSignals = [];
+  await scanDirectoryInner(root, root, { files, signals, diagnostics, controlSignals }, options);
+  addDirectorySignals(files, signals, controlSignals);
+  return { files, signals, diagnostics, controlSignals };
+}
+
+async function scanDirectoryInner(root, dir, output, options) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (SAFE_IGNORED_NAMES.has(entry.name)) continue;
+    const absolutePath = path.join(dir, entry.name);
+    const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
+    const entryStats = await lstat(absolutePath);
+    if (entryStats.isSymbolicLink()) {
+      const resolved = await realpath(absolutePath);
+      const rootReal = await realpath(root);
+      if (!isInsidePath(rootReal, resolved)) {
+        if (options.failOnDenylist) throw new Error('DETECT_SYMLINK_OUTSIDE_SOURCE');
+        output.diagnostics.push({
+          code: 'DETECT_SYMLINK_OUTSIDE_SOURCE',
+          severity: 'danger',
+          stage: 'package',
+          path: relativePath,
+        });
+        continue;
+      }
+      const resolvedStats = await stat(absolutePath);
+      if (resolvedStats.isDirectory()) {
+        await scanDirectoryInner(root, absolutePath, output, options);
+        continue;
+      }
+      if (!resolvedStats.isFile()) continue;
+    }
+    if (entry.isDirectory()) {
+      await scanDirectoryInner(root, absolutePath, output, options);
+      continue;
+    }
+    const isFile = entry.isFile() || entryStats.isSymbolicLink();
+    if (!isFile) continue;
+
+    const denylistCode = denylistCodeFor(relativePath);
+    if (denylistCode) {
+      if (options.failOnDenylist) throw new Error(denylistCode);
+      output.diagnostics.push({
+        code: denylistCode,
+        severity: 'danger',
+        stage: 'package',
+        path: relativePath,
+      });
+      continue;
+    }
+
+    const control = isControlFile(relativePath);
+    output.files.push({ absolutePath, relativePath, control });
+    if (control) {
+      output.controlSignals.push(controlSignalFor(relativePath));
+    }
+  }
+}
+
+function addDirectorySignals(files, signals, controlSignals) {
+  if (files.some((file) => file.relativePath === 'index.html')) {
+    signals.push({ code: 'ROOT_INDEX_HTML_FOUND', path: 'index.html' });
+  }
+  if (files.some((file) => file.relativePath === '404.html')) {
+    signals.push({ code: 'STATIC_EXPORT_SIGNALS_FOUND', path: '404.html' });
+  }
+  const htmlFiles = files.filter((file) => !file.control && file.relativePath.endsWith('.html'));
+  if (htmlFiles.length === 1 && htmlFiles[0].relativePath === 'index.html') signals.push({ code: 'SINGLE_HTML_ENTRY' });
+  if (htmlFiles.length > 1) signals.push({ code: 'STATIC_EXPORT_SIGNALS_FOUND' });
+  if (controlSignals.some((signal) => signal.effect === 'fallback-index')) signals.push({ code: 'EXPLICIT_INDEX_REWRITE_FOUND' });
+}
+
+function resolveWorkerEntry(entries, workerEntry) {
+  if (workerEntry) {
+    const normalized = normalizeRelativeEntry(workerEntry);
+    const match = entries.files.find((file) => file.relativePath === normalized);
+    if (!match) throw new Error('WORKER_ENTRY_NOT_FOUND');
+    return normalized;
+  }
+  return entries.files.some((file) => file.relativePath === '_worker.js') ? '_worker.js' : null;
+}
+
+function resolveFallback({ requestedFallback, deploymentShape, entries, publicAssets }) {
+  if (deploymentShape === 'worker-only') {
+    if (requestedFallback !== 'auto') throw new Error('FALLBACK_REQUIRES_ASSETS');
+    return null;
+  }
+  if (requestedFallback === 'index') {
+    if (!entries.files.some((file) => file.relativePath === 'index.html')) throw new Error('FALLBACK_INDEX_REQUIRES_INDEX_HTML');
+    return 'index';
+  }
+  if (requestedFallback === 'not-found') return 'not-found';
+  if (entries.signals.some((signal) => signal.code === 'STATIC_EXPORT_SIGNALS_FOUND')) return 'not-found';
+  if (entries.signals.some((signal) => signal.code === 'EXPLICIT_INDEX_REWRITE_FOUND')) return 'index';
+  const htmlFiles = publicAssets.filter((file) => file.relativePath.endsWith('.html'));
+  if (htmlFiles.length === 1 && htmlFiles[0].relativePath === 'index.html') return 'index';
+  return 'not-found';
+}
+
+function confidenceFor({ requestedFallback, resolvedFallback, entries }) {
+  if (requestedFallback !== 'auto') return 'high';
+  if (entries.signals.some((signal) => signal.code === 'EXPLICIT_INDEX_REWRITE_FOUND')) return 'high';
+  if (entries.signals.some((signal) => signal.code === 'STATIC_EXPORT_SIGNALS_FOUND')) return 'high';
+  if (resolvedFallback === 'index') return 'medium';
+  return 'low';
+}
+
+async function createFileUploadPlan(absolute, decision) {
+  if (decision.deploymentShape !== 'worker-only') throw new Error('STATIC_ARTIFACT_DIRECTORY_REQUIRED');
+  const bundle = await buildWorkerBundle(absolute);
+  const bytes = Buffer.from(bundle.modules[0].content);
+  return {
+    publishPlan: publishPlanFromDecision(decision),
+    contentHash: hashUploadPlan([{ relativePath: bundle.mainModule, contentType: 'application/javascript+module', bytes }], decision),
+    fileCount: 1,
+    sizeBytes: bytes.byteLength,
+    assetManifest: [],
+    assetFiles: [],
+    workerMainModuleName: bundle.mainModule,
+    workerModules: [
+      {
+        moduleName: bundle.mainModule,
+        partName: 'worker-main',
+        content: bundle.modules[0].content,
+        contentType: 'application/javascript+module',
+        hash: hashAsset(bytes, 'application/javascript+module'),
+        size: bytes.byteLength,
+      },
+    ],
+    controlSignals: [],
+  };
+}
+
+async function workerModulesForDirectory(root, decision) {
+  if (!decision.workerEntry) return [];
+  const absolutePath = path.join(root, decision.workerEntry);
+  const bytes = await readFile(absolutePath);
+  return [
+    {
+      moduleName: decision.workerEntry,
+      partName: 'worker-main',
+      content: bytes.toString('utf8'),
+      contentType: 'application/javascript+module',
+      hash: hashAsset(bytes, 'application/javascript+module'),
+      size: bytes.byteLength,
+    },
+  ];
+}
+
+function publishPlanFromDecision(decision) {
+  return {
+    deploymentShape: decision.deploymentShape,
+    requestedFallback: decision.requestedFallback,
+    resolvedFallback: decision.resolvedFallback,
+    routingMode: decision.routingMode,
+    workerEntry: decision.workerEntry,
+    workerMainModuleName: decision.workerEntry,
+    assetsConfig: decision.resolvedFallback
+      ? {
+          notFoundHandling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+        }
+      : null,
+  };
+}
+
+function hashUploadPlan(files, decision) {
+  const hash = createHash('sha256');
+  hash.update('xd-pages-upload-plan-v1\0');
+  hash.update(JSON.stringify(publishPlanFromDecision(decision)));
+  hash.update('\0');
+  for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    hash.update('file\0');
+    hash.update(file.relativePath);
+    hash.update('\0');
+    hash.update(String(file.bytes.byteLength));
+    hash.update('\0');
+    hash.update(file.contentType || 'application/octet-stream');
+    hash.update('\0');
+    hash.update(file.bytes);
+    hash.update('\0');
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function compareRelativePath(left, right) {
+  return left.relativePath.localeCompare(right.relativePath);
+}
+
+function normalizeRelativeEntry(value) {
+  const normalized = String(value || '').replaceAll('\\', '/').replace(/^\.\/+/, '');
+  if (!normalized || path.isAbsolute(normalized) || normalized.split('/').includes('..')) throw new Error('WORKER_ENTRY_INVALID');
+  return normalized;
+}
+
+function isControlFile(relativePath) {
+  return !relativePath.includes('/') && CONTROL_FILE_NAMES.has(relativePath);
+}
+
+function controlSignalFor(relativePath) {
+  if (relativePath === '_redirects') return { path: relativePath, kind: 'redirects', effect: 'fallback-index' };
+  return { path: relativePath, kind: relativePath.replace(/^_/, ''), effect: 'ignored' };
+}
+
+function denylistCodeFor(relativePath) {
+  const normalized = relativePath.replaceAll('\\', '/');
+  const basename = path.posix.basename(normalized);
+  const extension = path.posix.extname(basename).toLowerCase();
+  if (DENYLISTED_BASENAMES.has(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.env(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.dev\.vars(\.|$)/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^wrangler(\..*)?\.toml$/.test(basename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (DENYLISTED_EXTENSIONS.has(extension)) return 'PACKAGE_DENYLISTED_FILE';
+  if (normalized === '.github' || normalized.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
+  return null;
+}
+
+function isInsidePath(root, target) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 async function buildWorkerBundle(absolutePath) {
   const stats = await stat(absolutePath);
   if (!stats.isFile()) throw new Error('WORKER_ARTIFACT_FILE_REQUIRED');
   if (path.extname(absolutePath).toLowerCase() === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
   const name = path.basename(absolutePath);
   return {
-    kind: 'worker',
     mainModule: name,
     modules: [
       {
