@@ -7,7 +7,9 @@ import { createDeploymentProvider, normalizeWorkerBundle } from './execution-pro
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 
 const encoder = new globalThis.TextEncoder();
+const utf8Decoder = new globalThis.TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const MAX_DEPLOYMENT_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_DEPLOYMENT_METADATA_BYTES = 4 * 1024 * 1024;
 const DEPLOYMENT_SHAPES = new Set(['assets-only', 'worker-only', 'worker-with-assets']);
 const ROUTING_MODES = new Set(['assets-only', 'worker-only', 'worker-first']);
 const FALLBACK_MODES = new Set(['auto', 'index', 'not-found']);
@@ -424,19 +426,20 @@ function isMultipartRequest(request) {
 }
 
 async function readMultipartDeploymentBody(request) {
+  assertContentLengthWithinUploadLimit(request);
   const form = await request.formData();
   if (form.has('metadata')) return readPublishPlanMultipartBody(form);
   throwCoded('CLI_UPLOAD_PROTOCOL_REQUIRED');
 }
 
 async function readPublishPlanMultipartBody(form) {
-  const metadata = await parseSingleMetadata(form);
+  const { metadata, sizeBytes: metadataSizeBytes } = await parseSingleMetadata(form);
   if (metadata.schemaVersion !== 1) throwCoded('PUBLISH_PLAN_VERSION_UNSUPPORTED');
 
   const assetManifest = normalizePublishAssetManifest(metadata.assetManifest || []);
   const workerModules = normalizePublishWorkerModules(metadata.workerModules || []);
   const declaredParts = collectDeclaredPartNames(assetManifest, workerModules);
-  const uploadedParts = await collectUploadedParts(form);
+  const uploadedParts = await collectUploadedParts(form, metadataSizeBytes);
   validateUploadedParts(declaredParts, uploadedParts);
   await validateUploadedHashes({ assetManifest, workerModules, uploadedParts });
   const decision = normalizePublishPlanDecision({
@@ -464,13 +467,26 @@ async function parseSingleMetadata(form) {
   if (values.length !== 1) throwCoded('PUBLISH_PLAN_INVALID');
   const value = values[0];
   let text;
-  if (value instanceof File) text = await value.text();
-  else if (typeof value === 'string') text = value;
+  let sizeBytes;
+  if (value instanceof File) {
+    const bytes = new Uint8Array(await value.arrayBuffer());
+    sizeBytes = bytes.byteLength;
+    if (sizeBytes > MAX_DEPLOYMENT_METADATA_BYTES || sizeBytes > MAX_DEPLOYMENT_UPLOAD_BYTES) {
+      throwCoded('PAYLOAD_TOO_LARGE');
+    }
+    text = decodeUtf8(bytes);
+  } else if (typeof value === 'string') {
+    text = value;
+    sizeBytes = encoder.encode(value).byteLength;
+    if (sizeBytes > MAX_DEPLOYMENT_METADATA_BYTES || sizeBytes > MAX_DEPLOYMENT_UPLOAD_BYTES) {
+      throwCoded('PAYLOAD_TOO_LARGE');
+    }
+  }
   else throwCoded('PUBLISH_PLAN_INVALID');
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid');
-    return parsed;
+    return { metadata: parsed, sizeBytes };
   } catch {
     throwCoded('PUBLISH_PLAN_INVALID');
   }
@@ -555,9 +571,9 @@ function collectDeclaredPartNames(assetManifest, workerModules) {
   return parts;
 }
 
-async function collectUploadedParts(form) {
+async function collectUploadedParts(form, initialSize = 0) {
   const uploaded = new Map();
-  let totalSize = 0;
+  let totalSize = initialSize;
   for (const [key, value] of form.entries()) {
     if (key === 'metadata') continue;
     if (!(value instanceof File)) throwCoded('PUBLISH_PLAN_INVALID');
@@ -684,7 +700,7 @@ async function artifactBundleForProvider(metadata, workerModules, uploadedParts)
     if (uploaded.bytes.byteLength !== module.size) throwCoded('PUBLISH_PLAN_INVALID');
     modules.push({
       name: module.moduleName,
-      content: await uploaded.file.text(),
+      content: decodeUtf8(uploaded.bytes),
       type: module.contentType || uploaded.contentType || 'application/javascript+module',
     });
   }
@@ -692,6 +708,23 @@ async function artifactBundleForProvider(metadata, workerModules, uploadedParts)
     mainModule,
     modules,
   };
+}
+
+function assertContentLengthWithinUploadLimit(request) {
+  const raw = request.headers.get('Content-Length');
+  if (!raw) return;
+  const contentLength = Number(raw);
+  if (Number.isFinite(contentLength) && contentLength > MAX_DEPLOYMENT_UPLOAD_BYTES + MAX_DEPLOYMENT_METADATA_BYTES) {
+    throwCoded('PAYLOAD_TOO_LARGE');
+  }
+}
+
+function decodeUtf8(bytes) {
+  try {
+    return utf8Decoder.decode(bytes);
+  } catch {
+    throwCoded('PUBLISH_PLAN_INVALID');
+  }
 }
 
 async function canonicalDeploymentContentHash({ decision, assetFiles = [], artifactBundle }) {

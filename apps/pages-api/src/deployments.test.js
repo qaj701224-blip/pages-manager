@@ -308,6 +308,67 @@ test('accepts v2 worker-with-assets publishPlan and builds Worker bundle plus as
   ]);
 });
 
+test('rejects Worker module uploads that are not valid UTF-8', async () => {
+  const store = await createSeededStore();
+  const invalidWorkerBytes = new Uint8Array([0xff, 0xfe, 0xfd]);
+  const decodedReplacementBytes = new globalThis.TextEncoder().encode(
+    new globalThis.TextDecoder('utf-8').decode(invalidWorkerBytes)
+  );
+  const decision = {
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    workerEntry: 'worker.mjs',
+  };
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        source: 'cli',
+        publishPlan: {
+          ...decision,
+          workerEntry: 'worker.mjs',
+          workerMainModuleName: 'worker.mjs',
+          assetsConfig: null,
+        },
+        workerModules: [
+          {
+            moduleName: 'worker.mjs',
+            partName: 'worker-main',
+            size: invalidWorkerBytes.byteLength,
+            contentType: 'application/javascript+module',
+          },
+        ],
+        worker: {
+          field: 'worker-main',
+          filename: 'worker.mjs',
+          content: invalidWorkerBytes,
+          type: 'application/javascript+module',
+        },
+        expectedContentHash: hashUploadPlan(
+          [
+            {
+              relativePath: 'worker.mjs',
+              contentType: 'application/javascript+module',
+              bytes: decodedReplacementBytes,
+            },
+          ],
+          decision
+        ),
+      },
+      { 'Idempotency-Key': 'publish_plan_invalid_worker_utf8' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'PUBLISH_PLAN_INVALID');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
 test('rejects v2 publishPlan with duplicate part names or undeclared uploads', async () => {
   const store = await createSeededStore();
   const env = testEnv(store, createSnapshotStore());
@@ -1421,6 +1482,48 @@ test('returns payload-too-large for oversized deployment bodies', async () => {
       deployPayload({ moduleContent: 'a'.repeat(50 * 1024 * 1024 + 1) }),
       { 'Idempotency-Key': 'too_large' }
     ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error.code, 'PAYLOAD_TOO_LARGE');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('returns payload-too-large when publish metadata exceeds upload limit', async () => {
+  const store = await createSeededStore();
+  const form = new FormData();
+  const metadata = JSON.stringify({
+    schemaVersion: 1,
+    siteId: 'site_1',
+    requestedFallback: 'auto',
+    source: 'cli',
+    contentHash: 'sha256:metadata',
+    publishPlan: {
+      deploymentShape: 'assets-only',
+      requestedFallback: 'auto',
+      resolvedFallback: 'not-found',
+      routingMode: 'assets-only',
+      workerEntry: null,
+      workerMainModuleName: null,
+      assetsConfig: { notFoundHandling: '404-page' },
+    },
+    assetManifest: [],
+    workerModules: [],
+    controlSignals: ['x'.repeat(50 * 1024 * 1024)],
+  });
+  form.set('metadata', new Blob([metadata], { type: 'application/json' }), 'metadata.json');
+
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/deployments', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer cli-token',
+        'CF-Connecting-IP': '10.1.2.3',
+        'Idempotency-Key': 'metadata_too_large',
+      },
+      body: form,
+    }),
     testEnv(store, createSnapshotStore())
   );
 

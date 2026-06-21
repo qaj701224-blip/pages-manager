@@ -174,6 +174,22 @@ test('detectPublishTarget does not auto-detect ordinary worker files in director
   assert.equal(decision.workerEntry, null);
 });
 
+test('detectPublishTarget rejects explicit worker entries that are not JavaScript modules', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-worker-entry-type-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeFile(path.join(dir, 'worker.ts'), 'export default {};');
+
+  await assert.rejects(
+    () => detectPublishTarget(dir, { requestedFallback: 'auto', workerEntry: 'index.html' }),
+    /WORKER_ENTRY_FILE_UNSUPPORTED/
+  );
+  await assert.rejects(
+    () => detectPublishTarget(dir, { requestedFallback: 'auto', workerEntry: 'worker.ts' }),
+    /WORKER_TYPESCRIPT_UNSUPPORTED/
+  );
+});
+
 test('createUploadPlan returns multipart assets with content-type-versioned hashes', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-upload-plan-asset-'));
   test.after(() => rm(dir, { recursive: true, force: true }));

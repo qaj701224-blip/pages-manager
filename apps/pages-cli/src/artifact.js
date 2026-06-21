@@ -274,6 +274,7 @@ function resolveWorkerEntry(entries, workerEntry) {
     const normalized = normalizeRelativeEntry(workerEntry);
     const match = entries.files.find((file) => file.relativePath === normalized);
     if (!match) throw new Error('WORKER_ENTRY_NOT_FOUND');
+    assertWorkerEntryExtension(normalized);
     return normalized;
   }
   return entries.files.some((file) => file.relativePath === '_worker.js') ? '_worker.js' : null;
@@ -393,6 +394,12 @@ function normalizeRelativeEntry(value) {
   const normalized = String(value || '').replaceAll('\\', '/').replace(/^\.\/+/, '');
   if (!normalized || path.isAbsolute(normalized) || normalized.split('/').includes('..')) throw new Error('WORKER_ENTRY_INVALID');
   return normalized;
+}
+
+function assertWorkerEntryExtension(relativePath) {
+  const extension = path.extname(relativePath).toLowerCase();
+  if (extension === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
+  if (extension !== '.js' && extension !== '.mjs') throw new Error('WORKER_ENTRY_FILE_UNSUPPORTED');
 }
 
 function isControlFile(relativePath) {
