@@ -110,6 +110,23 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
 });
 
+test('serves staging skill with explicit staging CLI environment', async () => {
+  const response = await worker.fetch(new Request('https://api-staging.pages.xd.team/skill.md'), {
+    PAGES_ENV: 'staging',
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /pages env staging/);
+  assert.match(body, /pages login --env staging/);
+  assert.match(body, /pages detect <dir> --json/);
+  assert.match(body, /pages deploy <dir> <site> --env staging --dry-run --json/);
+  assert.match(body, /pages deploy <dir> <site> --env staging --visibility org/);
+  assert.match(body, /pages deploy <dir> <site> --env staging --token <token> --json/);
+  assert.doesNotMatch(body, /api\.pages\.xd\.team(?![\\w.-])/);
+  assert.doesNotMatch(body, /workers\.xd\.team/);
+});
+
 test('serves readme docs without legacy API addresses', async () => {
   const response = await worker.fetch(new Request('https://api-staging.pages.xd.team/readme.md'), {
     PAGES_ENV: 'staging',

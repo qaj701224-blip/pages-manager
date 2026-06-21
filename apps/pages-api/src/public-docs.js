@@ -9,6 +9,11 @@ export function markdownResponse(body) {
 }
 
 export function buildSkill(config) {
+  const staging = config.environment === 'staging';
+  const envSetup = staging
+    ? `\n当前文档来自 staging API。执行会联网或会修改远端状态的命令时必须显式使用 \`--env staging\`，或先运行：\n\n\`\`\`bash\npages env staging\n\`\`\`\n`
+    : '';
+  const envFlag = staging ? ' --env staging' : '';
   return `---
 name: pages
 description: Deploy XD Pages sites through the local CLI with automatic artifact detection.
@@ -24,19 +29,20 @@ version: 0.1.0
 - API: \`${config.apiBaseUrl}\`
 - Auth: \`${config.authBaseUrl}\`
 - Site suffix: \`${config.siteDomainSuffix}\`
+${envSetup}
 
 ## 登录
 
 优先使用浏览器登录：
 
 \`\`\`bash
-pages login
+pages login${envFlag}
 \`\`\`
 
 CI 或 agent 环境使用平台签发的发布 token：
 
 \`\`\`bash
-pages deploy <dir> <site> --token <token> --json
+pages deploy <dir> <site>${envFlag} --token <token> --json
 \`\`\`
 
 不要把 CLI token、发布 token、cookie、SSO code 或平台能力写入项目文件、日志、README、截图或聊天消息。
@@ -45,16 +51,16 @@ pages deploy <dir> <site> --token <token> --json
 
 \`\`\`bash
 pages detect <dir> --json
-pages deploy <dir> <site> --dry-run --json
-pages deploy <dir> <site> --visibility org
-pages deploy --config pages.config.json
-pages status <site>
-pages open <site>
-pages rollback <site> <version-id>
-pages access get <site>
-pages access set <site> --visibility acl --email user@xd.com
-pages access grant <site> --department "心动/技术平台部"
-pages access revoke <site> --email user@xd.com
+pages deploy <dir> <site>${envFlag} --dry-run --json
+pages deploy <dir> <site>${envFlag} --visibility org
+pages deploy${envFlag} --config pages.config.json
+pages status <site>${envFlag}
+pages open <site>${envFlag}
+pages rollback <site> <version-id>${envFlag}
+pages access get <site>${envFlag}
+pages access set <site>${envFlag} --visibility acl --email user@xd.com
+pages access grant <site>${envFlag} --department "心动/技术平台部"
+pages access revoke <site>${envFlag} --email user@xd.com
 \`\`\`
 
 可见性只使用：\`internal\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。第一版所有可见性都受公司网络 / VPN / 办公网出口 IP allowlist 约束。

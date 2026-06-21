@@ -698,9 +698,9 @@ function siteAccessDeniedPage(request, route, code, status) {
     detail: page.detail,
     status,
     actionHref: href,
-    actionLabel: '重新打开站点',
+    actionLabel: page.actionLabel || '重新打开站点',
     statusLabel: page.statusLabel,
-    tone: 'danger',
+    tone: page.tone || 'danger',
   });
 }
 
@@ -709,8 +709,10 @@ function siteAccessDeniedCopy(code) {
     return {
       title: '站点暂时不可访问',
       message: '这个站点当前没有开放访问。你可以稍后再试，或联系站点管理员确认是否已经启用。',
-      detail: '状态详情：SITE_DISABLED',
-      statusLabel: '站点已停用',
+      detail: '',
+      statusLabel: '暂停访问',
+      actionLabel: '刷新页面',
+      tone: 'default',
     };
   }
   if (code === 'SITE_POLICY_INVALID') {
