@@ -64,7 +64,8 @@ export function createWfpClient({
       const { scriptName, mainModule, modules, compatibilityDate, tags = [], bindings = [] } = input || {};
       const safeScriptName = validateScriptName(scriptName);
       const safeBindings = normalizeWorkerBindings(bindings);
-      const usesAssets = input?.artifactKind === 'static' || input?.artifactKind === 'spa';
+      const usesAssets = decisionRequiresAssets(input?.decision);
+      const usesUserWorker = decisionRequiresWorker(input?.decision);
       let safeMainModule = mainModule;
       let safeModules = modules;
       let assetMetadata = null;
@@ -76,21 +77,25 @@ export function createWfpClient({
           baseUrl,
           accountId: account,
           scriptResourceUrl: scriptUrl(baseUrl, account, namespace, safeScriptName),
-          artifactKind: input.artifactKind,
+          decision: input.decision,
           assetManifest: input.assetManifest,
           assetFiles: input.assetFiles,
         });
-        safeMainModule = 'worker.mjs';
-        safeModules = [
-          {
-            name: 'worker.mjs',
-            content: ASSETS_WORKER_MODULE,
-            type: 'application/javascript+module',
-          },
-        ];
+        if (!usesUserWorker) {
+          safeMainModule = 'worker.mjs';
+          safeModules = [
+            {
+              name: 'worker.mjs',
+              content: ASSETS_WORKER_MODULE,
+              type: 'application/javascript+module',
+            },
+          ];
+        } else {
+          validateModules({ mainModule, modules });
+        }
         assetMetadata = {
           jwt: completionJwt,
-          config: assetConfigForKind(input.artifactKind),
+          config: assetConfigForDecision(input.decision),
         };
       } else {
         validateModules({ mainModule, modules });
@@ -138,8 +143,17 @@ export function createWfpClient({
   };
 }
 
-async function uploadAssets({ fetch, apiToken, baseUrl, accountId, scriptResourceUrl, artifactKind, assetManifest, assetFiles }) {
-  validateAssetInput({ artifactKind, assetManifest, assetFiles });
+async function uploadAssets({
+  fetch,
+  apiToken,
+  baseUrl,
+  accountId,
+  scriptResourceUrl,
+  decision,
+  assetManifest,
+  assetFiles,
+}) {
+  validateAssetInput({ decision, assetManifest, assetFiles });
   const session = await requestCloudflare(fetch, apiToken, `${scriptResourceUrl}/assets-upload-session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -166,8 +180,8 @@ async function uploadAssets({ fetch, apiToken, baseUrl, accountId, scriptResourc
   return completionJwt;
 }
 
-function validateAssetInput({ artifactKind, assetManifest, assetFiles }) {
-  if (artifactKind !== 'static' && artifactKind !== 'spa') throw new Error('ASSET_ARTIFACT_KIND_INVALID');
+function validateAssetInput({ decision, assetManifest, assetFiles }) {
+  if (!decisionRequiresAssets(decision)) throw new Error('ASSET_UPLOAD_PLAN_INVALID');
   if (!assetManifest || typeof assetManifest !== 'object' || Array.isArray(assetManifest)) {
     throw new Error('ASSET_MANIFEST_INVALID');
   }
@@ -189,11 +203,20 @@ function normalizeAssetPath(value) {
   return `/${String(value || '').replaceAll('\\', '/').replace(/^\/+/, '')}`;
 }
 
-function assetConfigForKind(kind) {
+function assetConfigForDecision(decision) {
+  if (!decisionRequiresAssets(decision)) throw new Error('ASSET_UPLOAD_PLAN_INVALID');
   return {
-    not_found_handling: kind === 'spa' ? 'single-page-application' : '404-page',
-    run_worker_first: true,
+    not_found_handling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+    ...(decision.routingMode === 'worker-first' ? { run_worker_first: true } : {}),
   };
+}
+
+function decisionRequiresAssets(decision) {
+  return decision?.deploymentShape === 'assets-only' || decision?.deploymentShape === 'worker-with-assets';
+}
+
+function decisionRequiresWorker(decision) {
+  return decision?.deploymentShape === 'worker-only' || decision?.deploymentShape === 'worker-with-assets';
 }
 
 function assetUploadUrl(baseUrl, accountId) {

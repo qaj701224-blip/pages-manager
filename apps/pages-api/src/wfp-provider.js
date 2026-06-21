@@ -11,7 +11,7 @@ export function createDeploymentProvider(env, config) {
         scriptName: input.workerName,
         mainModule: input.artifactBundle?.mainModule,
         modules: input.artifactBundle?.modules,
-        artifactKind: input.artifactKind,
+        decision: input.decision,
         assetManifest: input.assetManifest,
         assetFiles: input.assetFiles,
         compatibilityDate: env.WFP_COMPATIBILITY_DATE,
@@ -60,17 +60,14 @@ function withWfpMetadata(provider) {
   };
 }
 
-export function normalizeArtifactBundle(input) {
-  const bundle = input.artifactBundle;
+export function normalizeWorkerBundle(bundle) {
   if (bundle === undefined || bundle === null) throw new Error('ARTIFACT_BUNDLE_REQUIRED');
   if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) throw new Error('ARTIFACT_BUNDLE_INVALID');
-  if (bundle.kind !== input.artifactKind) throw new Error('ARTIFACT_BUNDLE_KIND_MISMATCH');
   if (typeof bundle.mainModule !== 'string' || bundle.mainModule === '') throw new Error('ARTIFACT_BUNDLE_MAIN_INVALID');
   if (!Array.isArray(bundle.modules) || bundle.modules.length === 0) throw new Error('ARTIFACT_BUNDLE_MODULES_INVALID');
   if (!bundle.modules.some((module) => module.name === bundle.mainModule)) throw new Error('ARTIFACT_BUNDLE_MAIN_MISSING');
 
   return {
-    kind: bundle.kind,
     mainModule: bundle.mainModule,
     modules: bundle.modules.map((module) => normalizeModule(module)),
   };

@@ -526,9 +526,18 @@ export class D1PagesStore {
       dispatchType: input.dispatchType || dispatchTypeFromExecutionProvider(input.executionProvider),
       dispatchBindingName: input.dispatchBindingName || null,
       slotId: input.slotId || null,
-      artifactKind: input.artifactKind,
       artifactRef: input.artifactRef,
       contentHash: input.contentHash,
+      deploymentShape: input.deploymentShape,
+      requestedFallback: input.requestedFallback,
+      resolvedFallback: input.resolvedFallback || null,
+      routingMode: input.routingMode,
+      workerEntry: input.workerEntry || null,
+      assetsConfigJson: input.assetsConfigJson ?? null,
+      workerModulesJson: input.workerModulesJson ?? null,
+      assetManifestJson: input.assetManifestJson ?? null,
+      canonicalContentHash: input.canonicalContentHash || input.contentHash,
+      artifactAvailability: input.artifactAvailability || 'active',
       createdBy: input.createdBy,
       createdAt: now,
     };
@@ -536,9 +545,12 @@ export class D1PagesStore {
       .prepare(
         `INSERT INTO site_versions (
           id, site_id, deployment_id, worker_name, runtime, execution_provider,
-          dispatch_type, dispatch_binding_name, slot_id, artifact_kind,
-          artifact_ref, content_hash, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          dispatch_type, dispatch_binding_name, slot_id,
+          artifact_ref, content_hash, deployment_shape, requested_fallback,
+          resolved_fallback, routing_mode, worker_entry, assets_config_json,
+          worker_modules_json, asset_manifest_json, canonical_content_hash,
+          artifact_availability, created_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -550,9 +562,18 @@ export class D1PagesStore {
         record.dispatchType,
         record.dispatchBindingName,
         record.slotId,
-        record.artifactKind,
         record.artifactRef,
         record.contentHash,
+        record.deploymentShape,
+        record.requestedFallback,
+        record.resolvedFallback,
+        record.routingMode,
+        record.workerEntry,
+        stringifyJsonColumn(record.assetsConfigJson),
+        stringifyJsonColumn(record.workerModulesJson),
+        stringifyJsonColumn(record.assetManifestJson),
+        record.canonicalContentHash,
+        record.artifactAvailability,
         record.createdBy,
         record.createdAt
       )
@@ -1096,6 +1117,19 @@ export function cloneRecord(record) {
   return record == null ? null : JSON.parse(JSON.stringify(record));
 }
 
+function stringifyJsonColumn(value) {
+  return value == null ? null : JSON.stringify(value);
+}
+
+function parseJsonColumn(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 function routesMatch(actual, expected) {
   if (!actual || !expected) return false;
   return (
@@ -1234,9 +1268,18 @@ function mapSiteVersion(row) {
     dispatchType: row.dispatch_type || dispatchTypeFromExecutionProvider(row.execution_provider || row.runtime),
     dispatchBindingName: row.dispatch_binding_name || null,
     slotId: row.slot_id || null,
-    artifactKind: row.artifact_kind,
     artifactRef: row.artifact_ref,
     contentHash: row.content_hash,
+    deploymentShape: row.deployment_shape || null,
+    requestedFallback: row.requested_fallback || null,
+    resolvedFallback: row.resolved_fallback || null,
+    routingMode: row.routing_mode || null,
+    workerEntry: row.worker_entry || null,
+    assetsConfigJson: parseJsonColumn(row.assets_config_json),
+    workerModulesJson: parseJsonColumn(row.worker_modules_json),
+    assetManifestJson: parseJsonColumn(row.asset_manifest_json),
+    canonicalContentHash: row.canonical_content_hash || row.content_hash,
+    artifactAvailability: row.artifact_availability || 'active',
     createdBy: row.created_by,
     createdAt: row.created_at,
   };

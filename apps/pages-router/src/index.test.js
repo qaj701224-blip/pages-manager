@@ -858,8 +858,9 @@ test('shows a friendly browser page for disabled sites', async () => {
   const text = await response.text();
   assert.match(text, /站点暂时不可访问/);
   assert.match(text, /这个站点当前没有开放访问/);
-  assert.match(text, /状态：站点已停用/);
+  assert.match(text, /状态：暂停访问/);
   assertNoCoolToneFragments(text);
+  assert.equal(text.includes('SITE_DISABLED'), false);
   assert.equal(env.dispatchGetCount, 0);
   assert.equal(env.dispatchCount, 0);
 });

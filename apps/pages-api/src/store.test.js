@@ -173,9 +173,12 @@ test('site versions are immutable records', async () => {
     deploymentId: 'dep_1',
     workerName: 'pages-v2-site-1',
     runtime: 'wfp',
-    artifactKind: 'worker',
     artifactRef: 'dispatch/pages-v2-site-1',
     contentHash: 'sha256:abc',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
     createdBy: 'usr_1',
   });
   version.workerName = 'mutated';
@@ -189,13 +192,58 @@ test('site versions are immutable records', async () => {
         deploymentId: 'dep_2',
         workerName: 'pages-v2-site-2',
         runtime: 'wfp',
-        artifactKind: 'worker',
         artifactRef: 'dispatch/pages-v2-site-2',
         contentHash: 'sha256:def',
+        deploymentShape: 'worker-only',
+        requestedFallback: 'auto',
+        resolvedFallback: null,
+        routingMode: 'worker-only',
         createdBy: 'usr_1',
       }),
     /VERSION_EXISTS/
   );
+});
+
+test('site versions persist resolved deployment metadata', async () => {
+  const store = createSeededStore();
+  await createSite(store);
+
+  await store.createSiteVersion({
+    id: 'ver_meta',
+    siteId: 'site_1',
+    deploymentId: 'dep_meta',
+    workerName: 'pages-v2-docs-ver-meta',
+    runtime: 'worker',
+    executionProvider: 'normal-worker-slot',
+    dispatchType: 'service-binding',
+    dispatchBindingName: 'PAGES_SLOT_001',
+    slotId: 'slot_001',
+    artifactRef: 'slot://production/slot_001/pages-v2-docs-ver-meta/ver_meta',
+    contentHash: 'sha256:abc',
+    deploymentShape: 'worker-with-assets',
+    requestedFallback: 'auto',
+    resolvedFallback: 'not-found',
+    routingMode: 'worker-first',
+    workerEntry: '_worker.js',
+    assetsConfigJson: { not_found_handling: '404-page', run_worker_first: true },
+    workerModulesJson: [{ moduleName: '_worker.js', size: 18 }],
+    assetManifestJson: [{ path: '/index.html', size: 5 }],
+    canonicalContentHash: 'sha256:canonical',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+
+  const version = await store.getSiteVersion('ver_meta');
+  assert.equal(version.deploymentShape, 'worker-with-assets');
+  assert.equal(version.requestedFallback, 'auto');
+  assert.equal(version.resolvedFallback, 'not-found');
+  assert.equal(version.routingMode, 'worker-first');
+  assert.equal(version.workerEntry, '_worker.js');
+  assert.deepEqual(version.assetsConfigJson, { not_found_handling: '404-page', run_worker_first: true });
+  assert.deepEqual(version.workerModulesJson, [{ moduleName: '_worker.js', size: 18 }]);
+  assert.deepEqual(version.assetManifestJson, [{ path: '/index.html', size: 5 }]);
+  assert.equal(version.canonicalContentHash, 'sha256:canonical');
+  assert.equal(version.artifactAvailability, 'active');
 });
 
 test('site policy changes update visibility, ACL, cache tier, and policy version', async () => {

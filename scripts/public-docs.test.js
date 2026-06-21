@@ -10,41 +10,60 @@ function readDoc(path) {
   return readFileSync(join(repoRoot, path), 'utf8');
 }
 
-test('API.md documents deploy token ownership and 409 conflicts', () => {
+test('API.md documents CLI-managed deployment boundary', () => {
   const api = readDoc('API.md');
 
-  assert.match(api, /X-Pages-Token/);
-  assert.match(api, /部署必须携带/);
-  assert.match(api, /同名站点/);
-  assert.match(api, /409/);
-  assert.match(api, /使用原 token/);
-  assert.match(api, /查询响应不会返回站点 token/);
-  assert.match(api, /成功响应不会返回站点 token/);
-  assert.doesNotMatch(api, /新站点可不携带 token/);
-  assert.doesNotMatch(api, /无需额外认证/);
+  assert.match(api, /pages detect \.\/dist --json/);
+  assert.match(api, /pages deploy \.\/dist demo --dry-run --json/);
+  assert.match(api, /fallback/);
+  assert.match(api, /CLI 内部协议/);
+  assert.doesNotMatch(api, /X-Pages-Token/);
+  assert.doesNotMatch(api, /preset/);
+  assert.doesNotMatch(api, /api\.workers\.xd\.team/);
 });
 
-test('public deploy curl examples include X-Pages-Token', () => {
+test('public docs recommend pages CLI instead of legacy deploy curl', () => {
   const docs = [readDoc('API.md'), readDoc('README.md')].join('\n');
-  const deployCommandCount = (docs.match(/curl -X POST https:\/\/api\.workers\.xd\.team\/deploy/g) || []).length;
-  const deployTokenHeaderCount = (docs.match(/-H "X-Pages-Token: pages_[^"]+"/g) || []).length;
 
-  assert.ok(deployCommandCount >= 4);
-  assert.equal(deployTokenHeaderCount, deployCommandCount);
+  assert.match(docs, /pages deploy \.\/dist demo/);
+  assert.match(docs, /pages detect \.\/dist --json/);
+  assert.doesNotMatch(docs, /curl -X POST https:\/\/api\.workers\.xd\.team\/deploy/);
+  assert.doesNotMatch(docs, /X-Pages-Token/);
 });
 
-test('README deploy script examples include PAGES_TOKEN', () => {
+test('README deploy examples use pages CLI and automatic detection', () => {
   const readme = readDoc('README.md');
-  const deployScriptCommands = readme.match(/(?:PAGES_TOKEN=[^\s]+ )?bash scripts\/deploy\.sh [^\n]+/g) || [];
-  const manageScriptCommands = readme.match(/(?:PAGES_TOKEN=[^\s]+ )?bash scripts\/manage\.sh (?:list|info|delete)[^\n]*/g) || [];
 
-  assert.equal(deployScriptCommands.length, 3);
-  for (const command of deployScriptCommands) {
-    assert.match(command, /^PAGES_TOKEN=pages_[^\s]+ bash scripts\/deploy\.sh /);
-  }
-  assert.equal(manageScriptCommands.length, 3);
-  for (const command of manageScriptCommands) {
-    assert.match(command, /^PAGES_TOKEN=pages_[^\s]+ bash scripts\/manage\.sh /);
+  assert.match(readme, /pages deploy \.\/dist demo --visibility org/);
+  assert.match(readme, /fallback/);
+  assert.match(readme, /"worker": \{/);
+  assert.match(readme, /"entry": "\.\/worker\.mjs"/);
+  assert.doesNotMatch(readme, /PAGES_TOKEN/);
+  assert.doesNotMatch(readme, /--preset/);
+  assert.doesNotMatch(readme, /artifactKind/);
+});
+
+test('public docs describe config discovery without platform internals', () => {
+  const docs = [
+    ['API.md', readDoc('API.md')],
+    ['README.md', readDoc('README.md').split('## 核心目录')[0]],
+    ['pages-deploy.skill.md', readDoc('pages-deploy.skill.md')],
+  ];
+
+  for (const [name, doc] of docs) {
+    assert.match(doc, /pages\.config\.json/, `${name} mentions the standard config file`);
+    assert.doesNotMatch(doc, /不自动发现/, `${name} does not contradict config auto-discovery`);
+    assert.doesNotMatch(
+      doc,
+      /--access-key|--env|pages env|"environment"/,
+      `${name} keeps hidden options out of user docs`
+    );
+    assert.doesNotMatch(
+      doc,
+      /artifactKind|--artifact-kind|--preset|\bpreset\b/,
+      `${name} avoids artifact-kind and preset vocabulary`
+    );
+    assert.doesNotMatch(doc, /WFP|slot|dispatch namespace|service binding/i, `${name} avoids platform internals`);
   }
 });
 
@@ -56,8 +75,8 @@ test('each public doc says v1 Pages KV is retired and avoids private capability 
   ];
 
   for (const [name, doc] of docs) {
-    assert.match(doc, /v1.*不再提供 Pages KV|Pages KV.*迁入 v2/, `${name} documents v1 KV retirement`);
-    assert.doesNotMatch(doc, /KV 能力.*平台规划|后续 v2 `pages\.xd\.team`/, `${name} does not describe v2 KV as future-only`);
+    assert.match(doc, /旧版 Pages KV 已退休|runtime helper 或 KV/, `${name} documents old KV retirement`);
+    assert.doesNotMatch(doc, /KV 能力.*平台规划|后续 v2 `pages\.xd\.team`/, `${name} does not describe KV as future-only`);
     assert.doesNotMatch(doc, /static \+ kv=true/, `${name} no longer documents v1 static KV rejection`);
     assert.doesNotMatch(doc, /\/\.xd-pages\/runtime\/v1/, `${name} does not document retired runtime path`);
     assert.doesNotMatch(doc, /@xd\/pages-sdk\/browser/, `${name} does not document retired browser SDK entry`);
@@ -77,7 +96,7 @@ test('README local deployment commands use package scripts or wrangler directly'
   assert.doesNotMatch(readme, /PAGES_CAP_JWT_ACTIVE_KID=prod-hs-example/);
   assert.doesNotMatch(readme, /export PAGES_CAP_JWT_ACTIVE_KID/);
   assert.doesNotMatch(readme, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
-  assert.match(readme, /pnpm --dir apps\/server run deploy/);
+  assert.match(readme, /pnpm --dir apps\/pages-api test/);
   assert.doesNotMatch(readme, /pnpm --dir apps\/server deploy\b/);
   assert.doesNotMatch(readme, /scripts\/put-capability-secrets\.sh apps\/server/);
   assert.doesNotMatch(readme, /pnpm --dir apps\/kv-gateway deploy/);

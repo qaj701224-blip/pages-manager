@@ -288,6 +288,7 @@ class TestPagesStore {
 
   async createSiteVersion(input) {
     if (this.siteVersions.has(input.id)) throw new Error('VERSION_EXISTS');
+    validateResolvedDeploymentMetadata(input);
     const record = {
       id: input.id,
       siteId: input.siteId,
@@ -298,9 +299,18 @@ class TestPagesStore {
       dispatchType: input.dispatchType || dispatchTypeFromExecutionProvider(input.executionProvider || input.runtime),
       dispatchBindingName: input.dispatchBindingName || null,
       slotId: input.slotId || null,
-      artifactKind: input.artifactKind,
       artifactRef: input.artifactRef,
       contentHash: input.contentHash,
+      deploymentShape: input.deploymentShape,
+      requestedFallback: input.requestedFallback,
+      resolvedFallback: input.resolvedFallback || null,
+      routingMode: input.routingMode,
+      workerEntry: input.workerEntry || null,
+      assetsConfigJson: input.assetsConfigJson ?? null,
+      workerModulesJson: input.workerModulesJson ?? null,
+      assetManifestJson: input.assetManifestJson ?? null,
+      canonicalContentHash: input.canonicalContentHash || input.contentHash,
+      artifactAvailability: input.artifactAvailability || 'active',
       createdBy: input.createdBy,
       createdAt: this.now(),
     };
@@ -606,6 +616,12 @@ function routesMatch(actual, expected) {
 
 function siteAclEntryKey(entry) {
   return `${entry.effect}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole}`;
+}
+
+function validateResolvedDeploymentMetadata(input) {
+  if (!input.deploymentShape || !input.requestedFallback || !input.routingMode) {
+    throw new Error('VERSION_DEPLOYMENT_METADATA_REQUIRED');
+  }
 }
 
 function routeActivationMatches(actual, expected) {

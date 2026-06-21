@@ -1,12 +1,28 @@
 import { authenticateApiRequest } from './auth.js';
-import { canonicalRequestHash } from './crypto.js';
-import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { canonicalRequestHash, sha256HexForBytes } from './crypto.js';
+import { jsonError, jsonOk } from './http.js';
 import { newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
-import { createDeploymentProvider, normalizeArtifactBundle } from './execution-provider.js';
+import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 
-const ARTIFACT_KINDS = new Set(['static', 'spa', 'worker']);
+const encoder = new globalThis.TextEncoder();
+const utf8Decoder = new globalThis.TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const MAX_DEPLOYMENT_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_DEPLOYMENT_METADATA_BYTES = 4 * 1024 * 1024;
+const DEPLOYMENT_SHAPES = new Set(['assets-only', 'worker-only', 'worker-with-assets']);
+const ROUTING_MODES = new Set(['assets-only', 'worker-only', 'worker-first']);
+const FALLBACK_MODES = new Set(['auto', 'index', 'not-found']);
+const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
+const DENYLISTED_EXTENSIONS = new Set(['.pem', '.key']);
+const CONTROL_ASSET_PATHS = new Set([
+  '/_worker.js',
+  '/_headers',
+  '/_redirects',
+  '/_routes.json',
+  '/.assetsignore',
+  '/pages.config.json',
+]);
 
 export async function handleDeploymentsApi(request, env, config, store) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -39,14 +55,13 @@ export async function handleVersionsApi(request, env, config, store) {
 async function createDeployment(request, env, config, store, actor) {
   const idempotencyKey = readIdempotencyKey(request);
   if (!idempotencyKey) return idempotencyKeyRequired();
+  if (!isMultipartRequest(request)) return cliUploadProtocolRequired();
 
   let body;
   try {
-    body = isMultipartRequest(request)
-      ? await readMultipartDeploymentBody(request)
-      : await readJsonBody(request, { maxBytes: 1024 * 1024 });
+    body = await readMultipartDeploymentBody(request);
   } catch (error) {
-    if (error?.code === 'JSON_BODY_TOO_LARGE') {
+    if (error?.code === 'PAYLOAD_TOO_LARGE') {
       return jsonError(
         'PAYLOAD_TOO_LARGE',
         'Deployment payload is too large.',
@@ -57,49 +72,76 @@ async function createDeployment(request, env, config, store, actor) {
     if (error?.code === 'ASSET_MANIFEST_INVALID') {
       return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Send a valid assetManifest field.');
     }
-    if (isMultipartRequest(request)) {
+    if (error?.code === 'ASSET_FILES_REQUIRED') {
+      return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload every file listed in assetManifest.');
+    }
+    if (error?.code === 'FALLBACK_REQUIRES_ASSETS') {
       return jsonError(
-        'INVALID_MULTIPART',
-        'Invalid multipart body.',
+        'FALLBACK_REQUIRES_ASSETS',
+        'Fallback can only be set for deployments with assets.',
         400,
-        'Send multipart/form-data with assetManifest and files.'
+        'Remove fallback for worker-only deployments or upload assets.'
       );
     }
-    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+    if (error?.code === 'FALLBACK_INDEX_REQUIRES_INDEX_HTML') {
+      return jsonError(
+        'FALLBACK_INDEX_REQUIRES_INDEX_HTML',
+        'Index fallback requires /index.html.',
+        400,
+        'Upload index.html or use --fallback not-found.'
+      );
+    }
+    if (error?.code === 'PUBLISH_PLAN_VERSION_UNSUPPORTED') {
+      return jsonError(
+        'PUBLISH_PLAN_VERSION_UNSUPPORTED',
+        'Publish plan version is unsupported.',
+        400,
+        'Upgrade the XD Pages CLI and retry.'
+      );
+    }
+    if (error?.code === 'PUBLISH_PLAN_INVALID') {
+      return jsonError('PUBLISH_PLAN_INVALID', 'Publish plan is invalid.', 400, 'Run pages deploy --dry-run and retry.');
+    }
+    if (error?.code === 'CONTENT_HASH_MISMATCH') {
+      return jsonError(
+        'CONTENT_HASH_MISMATCH',
+        'Content hash does not match uploaded files.',
+        400,
+        'Run pages deploy --dry-run and retry.'
+      );
+    }
+    if (error?.code === 'CLI_UPLOAD_PROTOCOL_REQUIRED') return cliUploadProtocolRequired();
+    return jsonError('INVALID_MULTIPART', 'Invalid multipart body.', 400, 'Run pages deploy --dry-run and retry.');
   }
 
   const requestedSiteId = normalizeOptionalString(body.siteId);
   const requestedSiteSlug = normalizeOptionalSlug(body.siteSlug ?? body.slug);
-  const artifactKind = typeof body.artifactKind === 'string' ? body.artifactKind : '';
-  const contentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
+  const clientContentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
+  const decision = body.decision;
   let artifactBundle;
   let assetManifest;
   let assetFiles;
+  let canonicalContentHash;
 
   if (!requestedSiteId && !requestedSiteSlug) {
     return jsonError('SITE_REQUIRED', 'Site is required.', 400, 'Pass siteId or siteSlug.');
   }
-  if (!ARTIFACT_KINDS.has(artifactKind)) {
-    return jsonError('ARTIFACT_KIND_INVALID', 'Artifact kind is invalid.', 400, 'Use static, spa, or worker.');
-  }
-  if (!contentHash.startsWith('sha256:')) {
+  if (!clientContentHash.startsWith('sha256:')) {
     return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
   }
-  if (artifactKind === 'worker') {
+  if (decisionRequiresWorker(decision)) {
     try {
-      artifactBundle = normalizeArtifactBundle({ artifactKind, contentHash, artifactBundle: body.artifactBundle });
-    } catch (error) {
-      if (error?.message === 'ARTIFACT_BUNDLE_REQUIRED') {
-        return jsonError('ARTIFACT_BUNDLE_REQUIRED', 'artifactBundle is required.', 400, 'Send an artifact bundle.');
-      }
-      return jsonError('ARTIFACT_BUNDLE_INVALID', 'Artifact bundle is invalid.', 400, 'Send a valid artifact bundle.');
+      artifactBundle = normalizeWorkerBundle(body.artifactBundle);
+    } catch {
+      return jsonError('PUBLISH_PLAN_INVALID', 'Publish plan is invalid.', 400, 'Run pages deploy --dry-run and retry.');
     }
-  } else {
+  }
+  if (decisionRequiresAssets(decision)) {
     assetManifest = body.assetManifest;
     assetFiles = body.assetFiles;
     if (!assetManifest || typeof assetManifest !== 'object' || Array.isArray(assetManifest)) {
-      return jsonError('ASSET_MANIFEST_REQUIRED', 'assetManifest is required.', 400, 'Send a multipart static asset artifact.');
+      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Run pages deploy --dry-run and retry.');
     }
     if (!Array.isArray(assetFiles) || assetFiles.length === 0) {
       return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload at least one asset file.');
@@ -111,6 +153,25 @@ async function createDeployment(request, env, config, store, actor) {
     if (assetFileError === 'ASSET_FILES_REQUIRED') {
       return jsonError('ASSET_FILES_REQUIRED', 'Asset files are required.', 400, 'Upload every file listed in assetManifest.');
     }
+  }
+  try {
+    canonicalContentHash = await canonicalDeploymentContentHash({ decision, assetManifest, assetFiles, artifactBundle });
+  } catch (error) {
+    if (error?.code === 'ASSET_MANIFEST_INVALID') {
+      return jsonError('ASSET_MANIFEST_INVALID', 'Asset manifest is invalid.', 400, 'Run pages deploy --dry-run and retry.');
+    }
+    if (error?.code === 'PUBLISH_PLAN_INVALID') {
+      return jsonError('PUBLISH_PLAN_INVALID', 'Publish plan is invalid.', 400, 'Run pages deploy --dry-run and retry.');
+    }
+    throw error;
+  }
+  if (clientContentHash !== canonicalContentHash) {
+    return jsonError(
+      'CONTENT_HASH_MISMATCH',
+      'Content hash does not match uploaded files.',
+      400,
+      'Run pages deploy --dry-run and retry.'
+    );
   }
   const site = await resolveDeploySite(store, actor, config.environment, {
     siteId: requestedSiteId,
@@ -125,8 +186,8 @@ async function createDeployment(request, env, config, store, actor) {
   const requestHash = await canonicalRequestHash({
     operation: 'deploy',
     siteId,
-    artifactKind,
-    contentHash,
+    decision,
+    contentHash: canonicalContentHash,
     artifactBundle,
     assetManifest,
     source,
@@ -185,8 +246,8 @@ async function createDeployment(request, env, config, store, actor) {
       site,
       workerName: plannedWorkerName,
       versionId,
-      artifactKind,
-      contentHash,
+      decision,
+      contentHash: canonicalContentHash,
       artifactBundle,
       assetManifest,
       assetFiles,
@@ -253,9 +314,31 @@ async function createDeployment(request, env, config, store, actor) {
       dispatchType: uploaded.dispatchType || 'dispatch-namespace',
       dispatchBindingName: uploaded.dispatchBindingName || null,
       slotId: uploaded.slotId || null,
-      artifactKind,
       artifactRef: uploaded.artifactRef,
-      contentHash,
+      contentHash: canonicalContentHash,
+      deploymentShape: decision.deploymentShape,
+      requestedFallback: decision.requestedFallback,
+      resolvedFallback: decision.resolvedFallback,
+      routingMode: decision.routingMode,
+      workerEntry: decision.workerEntry,
+      assetsConfigJson: assetsConfigForDecisionStorage(decision),
+      workerModulesJson: artifactBundle
+        ? artifactBundle.modules.map((module) => ({
+            moduleName: module.name,
+            contentType: module.type,
+            size: module.content.length,
+          }))
+        : null,
+      assetManifestJson: assetManifest
+        ? Object.entries(assetManifest).map(([assetPath, entry]) => ({
+            path: assetPath,
+            hash: entry.hash,
+            size: Number(entry.size),
+            contentType: entry.content_type || null,
+          }))
+        : null,
+      canonicalContentHash,
+      artifactAvailability: 'active',
       createdBy: actor.userId,
     });
     previousRoute = await store.getRouteBySiteId(siteId, config.environment);
@@ -334,7 +417,7 @@ async function createDeployment(request, env, config, store, actor) {
 
   await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env);
 
-  return jsonOk(await deploymentEnvelope(store, completed, { version, route }), 201);
+  return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision }), 201);
 }
 
 function isMultipartRequest(request) {
@@ -343,58 +426,370 @@ function isMultipartRequest(request) {
 }
 
 async function readMultipartDeploymentBody(request) {
+  assertContentLengthWithinUploadLimit(request);
   const form = await request.formData();
-  const assetManifest = parseAssetManifest(form.get('assetManifest'));
-  const assetFiles = [];
-  validateAssetManifestPaths(assetManifest);
-  for (const [key, value] of form.entries()) {
-    if (!key.startsWith('file-') || !(value instanceof File)) continue;
-    const path = normalizeAssetPath(value.name || key);
-    validateAssetPath(path);
-    const manifestEntry = assetManifest[path];
-    const bytes = new Uint8Array(await value.arrayBuffer());
-    assetFiles.push({
-      path,
-      bytes,
-      contentType: value.type || manifestEntry?.content_type || 'application/octet-stream',
-    });
-  }
+  if (form.has('metadata')) return readPublishPlanMultipartBody(form);
+  throwCoded('CLI_UPLOAD_PROTOCOL_REQUIRED');
+}
+
+async function readPublishPlanMultipartBody(form) {
+  const { metadata, sizeBytes: metadataSizeBytes } = await parseSingleMetadata(form);
+  if (metadata.schemaVersion !== 1) throwCoded('PUBLISH_PLAN_VERSION_UNSUPPORTED');
+
+  const assetManifest = normalizePublishAssetManifest(metadata.assetManifest || []);
+  const workerModules = normalizePublishWorkerModules(metadata.workerModules || []);
+  const declaredParts = collectDeclaredPartNames(assetManifest, workerModules);
+  const uploadedParts = await collectUploadedParts(form, metadataSizeBytes);
+  validateUploadedParts(declaredParts, uploadedParts);
+  await validateUploadedHashes({ assetManifest, workerModules, uploadedParts });
+  const decision = normalizePublishPlanDecision({
+    publishPlan: metadata.publishPlan,
+    requestedFallback: metadata.requestedFallback,
+    assetManifest,
+    workerModules,
+  });
 
   return {
-    siteId: form.get('siteId'),
-    siteSlug: form.get('siteSlug') ?? form.get('slug'),
-    artifactKind: form.get('artifactKind'),
-    contentHash: form.get('contentHash'),
-    source: form.get('source') || 'api',
-    assetManifest,
-    assetFiles: assetFiles.sort((left, right) => left.path.localeCompare(right.path)),
+    siteId: metadata.siteId,
+    siteSlug: metadata.siteSlug,
+    source: typeof metadata.source === 'string' && metadata.source.trim() ? metadata.source.trim() : 'cli',
+    contentHash: typeof metadata.contentHash === 'string' ? metadata.contentHash : '',
+    decision,
+    publishPlan: metadata.publishPlan,
+    assetManifest: assetManifestObjectForProvider(assetManifest),
+    assetFiles: await assetFilesForProvider(assetManifest, uploadedParts),
+    artifactBundle: await artifactBundleForProvider(metadata, workerModules, uploadedParts),
   };
 }
 
-function parseAssetManifest(value) {
-  if (typeof value !== 'string' || value === '') {
-    const error = new Error('ASSET_MANIFEST_INVALID');
-    error.code = 'ASSET_MANIFEST_INVALID';
-    throw error;
+async function parseSingleMetadata(form) {
+  const values = form.getAll('metadata');
+  if (values.length !== 1) throwCoded('PUBLISH_PLAN_INVALID');
+  const value = values[0];
+  let text;
+  let sizeBytes;
+  if (value instanceof File) {
+    const bytes = new Uint8Array(await value.arrayBuffer());
+    sizeBytes = bytes.byteLength;
+    if (sizeBytes > MAX_DEPLOYMENT_METADATA_BYTES || sizeBytes > MAX_DEPLOYMENT_UPLOAD_BYTES) {
+      throwCoded('PAYLOAD_TOO_LARGE');
+    }
+    text = decodeUtf8(bytes);
+  } else if (typeof value === 'string') {
+    text = value;
+    sizeBytes = encoder.encode(value).byteLength;
+    if (sizeBytes > MAX_DEPLOYMENT_METADATA_BYTES || sizeBytes > MAX_DEPLOYMENT_UPLOAD_BYTES) {
+      throwCoded('PAYLOAD_TOO_LARGE');
+    }
   }
+  else throwCoded('PUBLISH_PLAN_INVALID');
   try {
-    const parsed = JSON.parse(value);
+    const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid');
-    return parsed;
+    return { metadata: parsed, sizeBytes };
   } catch {
-    const error = new Error('ASSET_MANIFEST_INVALID');
-    error.code = 'ASSET_MANIFEST_INVALID';
-    throw error;
+    throwCoded('PUBLISH_PLAN_INVALID');
   }
 }
 
-function validateAssetManifestPaths(manifest) {
-  for (const [path, entry] of Object.entries(manifest)) {
+function normalizePublishAssetManifest(value) {
+  if (!Array.isArray(value)) throwCoded('ASSET_MANIFEST_INVALID');
+  const paths = new Set();
+  const partNames = new Set();
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throwCoded('ASSET_MANIFEST_INVALID');
+    const path = normalizeManifestAssetPath(entry.path);
+    const partName = normalizePartName(entry.partName);
+    if (paths.has(path) || partNames.has(partName)) throwCoded('PUBLISH_PLAN_INVALID');
+    paths.add(path);
+    partNames.add(partName);
     validateAssetPath(path);
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throwAssetManifestInvalid();
-    if (typeof entry.hash !== 'string' || entry.hash === '') throwAssetManifestInvalid();
-    if (!Number.isFinite(Number(entry.size)) || Number(entry.size) < 0) throwAssetManifestInvalid();
+    if (CONTROL_ASSET_PATHS.has(path)) throwCoded('ASSET_MANIFEST_INVALID');
+    if (denylistCodeForAssetPath(path)) throwCoded('ASSET_MANIFEST_INVALID');
+    if (!isShortHash(entry.hash)) throwCoded('ASSET_MANIFEST_INVALID');
+    if (!Number.isFinite(Number(entry.size)) || Number(entry.size) < 0) throwCoded('ASSET_MANIFEST_INVALID');
+    return {
+      path,
+      partName,
+      hash: entry.hash,
+      size: Number(entry.size),
+      contentType: normalizeContentType(entry.contentType) || 'application/octet-stream',
+    };
+  });
+}
+
+function normalizePublishWorkerModules(value) {
+  if (!Array.isArray(value)) throwCoded('PUBLISH_PLAN_INVALID');
+  const moduleNames = new Set();
+  const partNames = new Set();
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throwCoded('PUBLISH_PLAN_INVALID');
+    const moduleName = normalizeModuleName(entry.moduleName);
+    const partName = normalizePartName(entry.partName);
+    if (moduleNames.has(moduleName) || partNames.has(partName)) throwCoded('PUBLISH_PLAN_INVALID');
+    moduleNames.add(moduleName);
+    partNames.add(partName);
+    if (!isShortHash(entry.hash)) throwCoded('PUBLISH_PLAN_INVALID');
+    if (!Number.isFinite(Number(entry.size)) || Number(entry.size) < 0) throwCoded('PUBLISH_PLAN_INVALID');
+    return {
+      moduleName,
+      partName,
+      hash: entry.hash,
+      size: Number(entry.size),
+      contentType: normalizeContentType(entry.contentType) || 'application/javascript+module',
+    };
+  });
+}
+
+async function validateUploadedHashes({ assetManifest, workerModules, uploadedParts }) {
+  for (const asset of assetManifest) {
+    const uploaded = uploadedParts.get(asset.partName);
+    if (!uploaded) throwCoded('ASSET_FILES_REQUIRED');
+    if (uploaded.bytes.byteLength !== asset.size) throwCoded('ASSET_MANIFEST_INVALID');
+    const actualHash = await hashUploadedAsset(uploaded.bytes, asset.contentType);
+    if (actualHash !== asset.hash) throwCoded('ASSET_MANIFEST_INVALID');
   }
+  for (const module of workerModules) {
+    const uploaded = uploadedParts.get(module.partName);
+    if (!uploaded) throwCoded('PUBLISH_PLAN_INVALID');
+    if (uploaded.bytes.byteLength !== module.size) throwCoded('PUBLISH_PLAN_INVALID');
+    const actualHash = await hashUploadedAsset(uploaded.bytes, module.contentType);
+    if (actualHash !== module.hash) throwCoded('PUBLISH_PLAN_INVALID');
+  }
+}
+
+function collectDeclaredPartNames(assetManifest, workerModules) {
+  const parts = new Map();
+  for (const asset of assetManifest) {
+    if (parts.has(asset.partName)) throwCoded('PUBLISH_PLAN_INVALID');
+    parts.set(asset.partName, { partType: 'asset', entry: asset });
+  }
+  for (const module of workerModules) {
+    if (parts.has(module.partName)) throwCoded('PUBLISH_PLAN_INVALID');
+    parts.set(module.partName, { partType: 'worker', entry: module });
+  }
+  return parts;
+}
+
+async function collectUploadedParts(form, initialSize = 0) {
+  const uploaded = new Map();
+  let totalSize = initialSize;
+  for (const [key, value] of form.entries()) {
+    if (key === 'metadata') continue;
+    if (!(value instanceof File)) throwCoded('PUBLISH_PLAN_INVALID');
+    if (uploaded.has(key)) throwCoded('PUBLISH_PLAN_INVALID');
+    const bytes = new Uint8Array(await value.arrayBuffer());
+    totalSize += bytes.byteLength;
+    if (totalSize > MAX_DEPLOYMENT_UPLOAD_BYTES) throwCoded('PAYLOAD_TOO_LARGE');
+    uploaded.set(key, {
+      file: value,
+      bytes,
+      contentType: value.type || 'application/octet-stream',
+    });
+  }
+  return uploaded;
+}
+
+function validateUploadedParts(declaredParts, uploadedParts) {
+  for (const name of uploadedParts.keys()) {
+    if (!declaredParts.has(name)) throwCoded('PUBLISH_PLAN_INVALID');
+  }
+  for (const name of declaredParts.keys()) {
+    if (!uploadedParts.has(name)) throwCoded('ASSET_FILES_REQUIRED');
+  }
+}
+
+function normalizePublishPlanDecision({ publishPlan, requestedFallback, assetManifest, workerModules }) {
+  if (!publishPlan || typeof publishPlan !== 'object' || Array.isArray(publishPlan)) throwCoded('PUBLISH_PLAN_INVALID');
+  const deploymentShape = normalizeEnum(publishPlan.deploymentShape, DEPLOYMENT_SHAPES);
+  const requested = normalizeEnum(publishPlan.requestedFallback || requestedFallback || 'auto', FALLBACK_MODES);
+  const metadataRequested = requestedFallback === undefined ? requested : normalizeEnum(requestedFallback, FALLBACK_MODES);
+  if (metadataRequested !== requested) throwCoded('PUBLISH_PLAN_INVALID');
+
+  const hasAssets = assetManifest.length > 0;
+  const hasWorker = workerModules.length > 0;
+  const payloadShape = payloadShapeForParts({ hasAssets, hasWorker });
+  if (!payloadShape || payloadShape !== deploymentShape) throwCoded('PUBLISH_PLAN_INVALID');
+
+  const expectedRoutingMode =
+    deploymentShape === 'worker-with-assets' ? 'worker-first' : deploymentShape === 'worker-only' ? 'worker-only' : 'assets-only';
+  if (!ROUTING_MODES.has(publishPlan.routingMode) || publishPlan.routingMode !== expectedRoutingMode) {
+    throwCoded('PUBLISH_PLAN_INVALID');
+  }
+
+  if (deploymentShape === 'worker-only') {
+    if (requested !== 'auto' || publishPlan.resolvedFallback !== null) throwCoded('FALLBACK_REQUIRES_ASSETS');
+  } else if (publishPlan.resolvedFallback !== 'index' && publishPlan.resolvedFallback !== 'not-found') {
+    throwCoded('PUBLISH_PLAN_INVALID');
+  }
+  if (publishPlan.resolvedFallback === 'index' && !assetManifest.some((asset) => asset.path === '/index.html')) {
+    throwCoded('FALLBACK_INDEX_REQUIRES_INDEX_HTML');
+  }
+
+  const workerEntry =
+    deploymentShape === 'assets-only'
+      ? null
+      : normalizeModuleName(publishPlan.workerMainModuleName || publishPlan.workerEntry || '');
+  if (deploymentShape === 'assets-only' && (publishPlan.workerEntry || publishPlan.workerMainModuleName)) {
+    throwCoded('PUBLISH_PLAN_INVALID');
+  }
+  if (workerEntry && !workerModules.some((module) => module.moduleName === workerEntry)) throwCoded('PUBLISH_PLAN_INVALID');
+
+  const expectedNotFoundHandling = publishPlan.resolvedFallback === 'index' ? 'single-page-application' : '404-page';
+  const assetsConfig = deploymentShape === 'worker-only' ? null : { notFoundHandling: expectedNotFoundHandling };
+  if (publishPlan.assetsConfig?.notFoundHandling && publishPlan.assetsConfig.notFoundHandling !== expectedNotFoundHandling) {
+    throwCoded('PUBLISH_PLAN_INVALID');
+  }
+
+  return {
+    deploymentShape,
+    requestedFallback: requested,
+    resolvedFallback: deploymentShape === 'worker-only' ? null : publishPlan.resolvedFallback,
+    routingMode: publishPlan.routingMode,
+    workerEntry,
+    assetsConfig,
+  };
+}
+
+function assetManifestObjectForProvider(assetManifest) {
+  if (assetManifest.length === 0) return undefined;
+  return Object.fromEntries(
+    assetManifest.map((asset) => [
+      asset.path,
+      {
+        hash: asset.hash,
+        size: asset.size,
+        content_type: asset.contentType,
+      },
+    ])
+  );
+}
+
+function payloadShapeForParts({ hasAssets, hasWorker }) {
+  if (hasAssets && hasWorker) return 'worker-with-assets';
+  if (hasWorker) return 'worker-only';
+  if (hasAssets) return 'assets-only';
+  return null;
+}
+
+async function assetFilesForProvider(assetManifest, uploadedParts) {
+  const files = [];
+  for (const asset of assetManifest) {
+    const uploaded = uploadedParts.get(asset.partName);
+    if (!uploaded) throwCoded('ASSET_FILES_REQUIRED');
+    if (uploaded.bytes.byteLength !== asset.size) throwCoded('ASSET_MANIFEST_INVALID');
+    files.push({
+      path: asset.path,
+      bytes: uploaded.bytes,
+      contentType: asset.contentType || uploaded.contentType,
+    });
+  }
+  return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function artifactBundleForProvider(metadata, workerModules, uploadedParts) {
+  if (workerModules.length === 0) return undefined;
+  const mainModule = normalizeModuleName(
+    metadata.workerMainModuleName || metadata.publishPlan?.workerMainModuleName || metadata.publishPlan?.workerEntry
+  );
+  if (!workerModules.some((module) => module.moduleName === mainModule)) throwCoded('PUBLISH_PLAN_INVALID');
+  const modules = [];
+  for (const module of workerModules) {
+    const uploaded = uploadedParts.get(module.partName);
+    if (!uploaded) throwCoded('PUBLISH_PLAN_INVALID');
+    if (uploaded.bytes.byteLength !== module.size) throwCoded('PUBLISH_PLAN_INVALID');
+    modules.push({
+      name: module.moduleName,
+      content: decodeUtf8(uploaded.bytes),
+      type: module.contentType || uploaded.contentType || 'application/javascript+module',
+    });
+  }
+  return {
+    mainModule,
+    modules,
+  };
+}
+
+function assertContentLengthWithinUploadLimit(request) {
+  const raw = request.headers.get('Content-Length');
+  if (!raw) return;
+  const contentLength = Number(raw);
+  if (Number.isFinite(contentLength) && contentLength > MAX_DEPLOYMENT_UPLOAD_BYTES + MAX_DEPLOYMENT_METADATA_BYTES) {
+    throwCoded('PAYLOAD_TOO_LARGE');
+  }
+}
+
+function decodeUtf8(bytes) {
+  try {
+    return utf8Decoder.decode(bytes);
+  } catch {
+    throwCoded('PUBLISH_PLAN_INVALID');
+  }
+}
+
+async function canonicalDeploymentContentHash({ decision, assetFiles = [], artifactBundle }) {
+  if (!decision || !DEPLOYMENT_SHAPES.has(decision.deploymentShape)) throwCoded('PUBLISH_PLAN_INVALID');
+  const files = [];
+  for (const file of assetFiles || []) {
+    files.push({
+      relativePath: file.path.replace(/^\/+/, ''),
+      contentType: file.contentType || 'application/octet-stream',
+      bytes: file.bytes,
+    });
+  }
+  for (const module of artifactBundle?.modules || []) {
+    files.push({
+      relativePath: module.name,
+      contentType: module.type || 'application/javascript+module',
+      bytes: encoder.encode(module.content),
+    });
+  }
+
+  const chunks = ['xd-pages-upload-plan-v1\0', JSON.stringify(publishPlanFromDecision(decision)), '\0'];
+  for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    chunks.push('file\0', file.relativePath, '\0', String(file.bytes.byteLength), '\0', file.contentType, '\0');
+    chunks.push(file.bytes);
+    chunks.push('\0');
+  }
+  return `sha256:${await sha256HexForBytes(concatHashChunks(chunks))}`;
+}
+
+function publishPlanFromDecision(decision) {
+  return {
+    deploymentShape: decision.deploymentShape,
+    requestedFallback: decision.requestedFallback,
+    resolvedFallback: decision.resolvedFallback,
+    routingMode: decision.routingMode,
+    workerEntry: decision.workerEntry,
+    workerMainModuleName: decision.workerEntry,
+    assetsConfig: decision.resolvedFallback
+      ? {
+          notFoundHandling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+        }
+      : null,
+  };
+}
+
+async function hashUploadedAsset(bytes, contentType) {
+  return (
+    await sha256HexForBytes(concatHashChunks(['xd-pages-asset-v2\0', contentType || 'application/octet-stream', '\0', bytes]))
+  ).slice(0, 32);
+}
+
+function concatHashChunks(chunks) {
+  const encoded = chunks.map((chunk) => (chunk instanceof Uint8Array ? chunk : encoder.encode(String(chunk))));
+  const totalLength = encoded.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of encoded) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
+function isShortHash(value) {
+  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 }
 
 function validateAssetFiles(manifest, files) {
@@ -414,6 +809,65 @@ function validateAssetFiles(manifest, files) {
 function validateAssetPath(path) {
   const parts = String(path || '').split('/');
   if (!path || !path.startsWith('/') || path.includes('\0') || parts.includes('..')) throwAssetManifestInvalid();
+}
+
+function denylistCodeForAssetPath(assetPath) {
+  const normalized = String(assetPath || '').replaceAll('\\', '/').replace(/^\/+/, '');
+  const basename = normalized.split('/').at(-1) || '';
+  const comparable = normalized.toLowerCase();
+  const comparableBasename = basename.toLowerCase();
+  const extension = basename.includes('.') ? `.${basename.split('.').at(-1).toLowerCase()}` : '';
+  if (DENYLISTED_BASENAMES.has(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.env(\.|$)/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^\.dev\.vars(\.|$)/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (/^wrangler(\..*)?\.toml$/.test(comparableBasename)) return 'PACKAGE_DENYLISTED_FILE';
+  if (DENYLISTED_EXTENSIONS.has(extension)) return 'PACKAGE_DENYLISTED_FILE';
+  if (comparable === '.github' || comparable.startsWith('.github/')) return 'PACKAGE_DENYLISTED_FILE';
+  return null;
+}
+
+function normalizeManifestAssetPath(value) {
+  const path = normalizeAssetPath(value);
+  if (path === '/') throwCoded('ASSET_MANIFEST_INVALID');
+  return path;
+}
+
+function normalizeModuleName(value) {
+  const normalized = String(value || '').replaceAll('\\', '/').replace(/^\.\/+/, '');
+  const parts = normalized.split('/');
+  if (!normalized || normalized.startsWith('/') || normalized.includes('\0') || parts.includes('..')) {
+    throwCoded('PUBLISH_PLAN_INVALID');
+  }
+  return normalized;
+}
+
+function normalizePartName(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized.includes('\0') || normalized.length > 128) throwCoded('PUBLISH_PLAN_INVALID');
+  return normalized;
+}
+
+function normalizeContentType(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeEnum(value, values) {
+  if (typeof value !== 'string' || !values.has(value)) throwCoded('PUBLISH_PLAN_INVALID');
+  return value;
+}
+
+function decisionRequiresWorker(decision) {
+  return decision?.deploymentShape === 'worker-only' || decision?.deploymentShape === 'worker-with-assets';
+}
+
+function decisionRequiresAssets(decision) {
+  return decision?.deploymentShape === 'assets-only' || decision?.deploymentShape === 'worker-with-assets';
+}
+
+function throwCoded(code) {
+  const error = new Error(code);
+  error.code = code;
+  throw error;
 }
 
 function throwAssetManifestInvalid() {
@@ -447,7 +901,7 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
 
   let body;
   try {
-    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+    body = await readOptionalJsonBody(request, { maxBytes: 32 * 1024 });
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
@@ -638,6 +1092,7 @@ async function deploymentEnvelope(store, deployment, preloaded = {}, environment
     deployment: formatDeployment(deployment),
     version: version ? formatVersion(version) : null,
     route: route ? formatRoute(route) : null,
+    decision: preloaded.decision ? formatDecision(preloaded.decision) : formatVersionDecision(version),
   };
 }
 
@@ -665,9 +1120,38 @@ function formatVersion(version) {
     siteId: version.siteId,
     deploymentId: version.deploymentId,
     runtime: version.runtime,
-    artifactKind: version.artifactKind,
     contentHash: version.contentHash,
+    decision: formatVersionDecision(version),
+    workerEntry: version.workerEntry || null,
     createdAt: version.createdAt,
+  };
+}
+
+function formatDecision(decision) {
+  return {
+    deploymentShape: decision.deploymentShape,
+    requestedFallback: decision.requestedFallback,
+    resolvedFallback: decision.resolvedFallback,
+    routingMode: decision.routingMode,
+  };
+}
+
+function formatVersionDecision(version) {
+  if (!version) return null;
+  if (!version.deploymentShape && !version.routingMode) return null;
+  return {
+    deploymentShape: version.deploymentShape || null,
+    requestedFallback: version.requestedFallback || null,
+    resolvedFallback: version.resolvedFallback || null,
+    routingMode: version.routingMode || null,
+  };
+}
+
+function assetsConfigForDecisionStorage(decision) {
+  if (!decisionRequiresAssets(decision)) return null;
+  return {
+    not_found_handling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+    ...(decision.routingMode === 'worker-first' ? { run_worker_first: true } : {}),
   };
 }
 
@@ -855,6 +1339,15 @@ function readNow(env) {
   return new Date().toISOString();
 }
 
+async function readOptionalJsonBody(request, { maxBytes }) {
+  const text = await request.text();
+  if (encoder.encode(text).byteLength > maxBytes) throw new Error('JSON body is too large');
+  if (!text.trim()) return {};
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON object is required');
+  return parsed;
+}
+
 function authErrorResponse(error) {
   return jsonError(error.code, error.message, error.status, error.action);
 }
@@ -869,6 +1362,15 @@ function idempotencyConflict() {
     'Idempotency-Key was already used with a different request.',
     409,
     'Retry with the original request or use a new Idempotency-Key.'
+  );
+}
+
+function cliUploadProtocolRequired() {
+  return jsonError(
+    'CLI_UPLOAD_PROTOCOL_REQUIRED',
+    'Deployment uploads must be generated by the XD Pages CLI.',
+    400,
+    'Run `pages deploy` or `pages deploy --dry-run --json` and retry.'
   );
 }
 

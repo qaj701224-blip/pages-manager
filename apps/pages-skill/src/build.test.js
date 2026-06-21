@@ -44,11 +44,12 @@ test('buildPagesSkill assembles xd-pages skill with bundled CLI and SDK outputs'
     assert.ok(!JSON.stringify(sdkManifest).includes('scripts'));
 
     const docs = await readSkillDocs(outDir);
-    assert.match(docs, /除非用户明确要求使用 staging，否则发布时不要传 `--env`/);
-    assert.doesNotMatch(docs, /--env staging --access-key|--env staging --json|deploy .*--env staging|目标环境；默认 production/);
+    assert.match(docs, /不主动切换目标环境/);
+    assert.doesNotMatch(docs, /--env|pages env|目标环境；默认 production/);
     assert.match(docs, /node tools\/pages-cli\/main\.js help deploy/);
     assert.match(docs, /tools\/pages-cli\/main\.js help deploy/);
-    assert.match(docs, /不要把 access key 写入本地状态/);
+    assert.match(docs, /不要把发布 token 写入本地状态/);
+    assert.doesNotMatch(docs, /--access-key/);
     assert.match(docs, /tools\/pages-sdk\/README\.md/);
     assert.match(docs, /tools\/pages-sdk\/package\.json/);
     assert.match(docs, /npm i -g @xd-skill\/cli/);

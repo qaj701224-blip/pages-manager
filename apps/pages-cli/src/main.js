@@ -58,7 +58,7 @@ function localizeError(error) {
   const known = {
     PAGES_CREDENTIAL_REQUIRED: {
       message: '缺少 Pages 登录凭证。',
-      action: '请先运行 pages login；CI/agent 可以显式传 --access-key <key>。',
+      action: '请先运行 pages login；CI/agent 可以显式传 --token <token>。',
     },
     SITE_REQUIRED: {
       message: '缺少站点名。',
@@ -70,15 +70,11 @@ function localizeError(error) {
     },
     SITE_NOT_FOUND: {
       message: error.message && /^未找到/.test(error.message) ? error.message : '未找到站点。',
-      action: localizedAction(error, '请确认站点名和当前环境；如果使用 access key，请确认它绑定的是这个站点。'),
+      action: localizedAction(error, '请确认站点名和当前环境；如果使用发布 token，请确认它绑定的是这个站点。'),
     },
     SITE_VISIBILITY_INVALID: {
       message: '站点可见性无效。',
       action: '请使用 internal、org、acl、owner 或 disabled。',
-    },
-    ARTIFACT_KIND_INVALID: {
-      message: 'artifact 类型无效。',
-      action: '请使用 static、spa 或 worker。',
     },
     VERSION_REQUIRED: {
       message: '缺少版本 ID。',
@@ -90,7 +86,7 @@ function localizeError(error) {
     },
     ENV_COMMAND_INVALID: {
       message: 'env 命令不完整或无效。',
-      action: '请使用 pages env、pages env list 或 pages env use <production|staging>。',
+      action: '请使用 pages env、pages env list 或 pages env <production|staging>。',
     },
     UNKNOWN_COMMAND: {
       message: command ? `未知命令：${command}` : '未知命令。',

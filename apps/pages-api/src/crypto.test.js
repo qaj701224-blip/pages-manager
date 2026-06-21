@@ -7,17 +7,21 @@ import {
   createAccessKeyPlaintext,
   hashAccessKey,
   parseAccessKeyPlaintext,
+  sha256HexForBytes,
+  sha256HexForText,
 } from './crypto.js';
+
+const encoder = new globalThis.TextEncoder();
 
 test('canonical request hash is stable for object key ordering', async () => {
   const left = await canonicalRequestHash({
     siteId: 'site_1',
-    artifact: { kind: 'worker', files: ['b.js', 'a.js'] },
+    deployment: { shape: 'worker-only', files: ['b.js', 'a.js'] },
     visibility: 'org',
   });
   const right = await canonicalRequestHash({
     visibility: 'org',
-    artifact: { files: ['b.js', 'a.js'], kind: 'worker' },
+    deployment: { files: ['b.js', 'a.js'], shape: 'worker-only' },
     siteId: 'site_1',
   });
 
@@ -34,6 +38,14 @@ test('hashAccessKey uses HMAC pepper and constant-time hex comparison', async ()
   assert.notEqual(first, differentPepper);
   assert.equal(constantTimeEqualHex(first, second), true);
   assert.equal(constantTimeEqualHex(first, differentPepper), false);
+});
+
+test('sha256 helpers hash text and uploaded bytes', async () => {
+  const textHash = await sha256HexForText('hello');
+  const bytesHash = await sha256HexForBytes(encoder.encode('hello'));
+
+  assert.equal(textHash, '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+  assert.equal(bytesHash, textHash);
 });
 
 test('access key plaintext carries non-authoritative environment hint and key id', () => {

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
 import test from 'node:test';
 
 import worker from './index.js';
@@ -16,7 +18,7 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   const snapshots = createSnapshotStore();
 
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         ...deployPayload(),
@@ -34,7 +36,7 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   assert.equal(body.deployment.versionId, 'ver_1');
   assertNoPublicExecutionDetails(body);
   assert.equal(body.route.routeGeneration, 1);
-  assert.equal((await store.getSiteVersion('ver_1')).contentHash, 'sha256:abc');
+  assert.match((await store.getSiteVersion('ver_1')).contentHash, /^sha256:[a-f0-9]{64}$/);
   assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'wfp://test/pages-v2-docs-ver-1');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
   const pointer = snapshots.read('production:route_pointer:docs.pages.xd.team');
@@ -61,11 +63,10 @@ test('uploads and verifies WFP worker before route activation', async () => {
   });
 
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         siteId: 'site_1',
-        artifactKind: 'worker',
         contentHash: 'sha256:abc',
         artifactBundle: workerBundle('export default {};'),
       },
@@ -89,7 +90,6 @@ test('creates static deployment from multipart asset artifact without worker bun
     WFP_PROVIDER: {
       upload: async (input) => {
         uploads.push({
-          artifactKind: input.artifactKind,
           assetManifest: input.assetManifest,
           assetFiles: input.assetFiles.map((file) => ({
             path: file.path,
@@ -105,11 +105,10 @@ test('creates static deployment from multipart asset artifact without worker bun
   });
 
   const response = await worker.fetch(
-    multipartDeployRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         siteId: 'site_1',
-        artifactKind: 'spa',
         contentHash: 'sha256:asset',
         assetManifest: {
           '/index.html': {
@@ -128,20 +127,492 @@ test('creates static deployment from multipart asset artifact without worker bun
   assert.equal(response.status, 201, await response.clone().text());
   assert.deepEqual(uploads, [
     {
-      artifactKind: 'spa',
       assetManifest: {
         '/index.html': {
-          hash: 'hash_index',
+          hash: hashAsset(Buffer.from('<h1>Hello</h1>'), 'text/html'),
           size: '<h1>Hello</h1>'.length,
-          content_type: 'text/html; charset=utf-8',
+          content_type: 'text/html',
         },
       },
       assetFiles: [{ path: '/index.html', contentType: 'text/html', size: '<h1>Hello</h1>'.length }],
       artifactBundle: undefined,
     },
   ]);
-  assert.equal((await store.getSiteVersion('ver_1')).artifactKind, 'spa');
   assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'assets://test/pages-v2-docs-ver-1');
+});
+
+test('accepts v2 publishPlan multipart metadata and passes resolved decision to provider', async () => {
+  const store = await createSeededStore();
+  const uploads = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async (input) => {
+        uploads.push({
+          decision: input.decision,
+          assetManifest: input.assetManifest,
+          assetFiles: input.assetFiles.map((file) => ({
+            path: file.path,
+            contentType: file.contentType,
+            size: file.bytes.byteLength,
+          })),
+          artifactBundle: input.artifactBundle,
+        });
+        return { artifactRef: `assets://test/${input.workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        source: 'cli',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'auto',
+          resolvedFallback: 'index',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: 'single-page-application' },
+        },
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' }],
+      },
+      { 'Idempotency-Key': 'publish_plan_ok' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.deepEqual(uploads, [
+    {
+      decision: {
+        deploymentShape: 'assets-only',
+        requestedFallback: 'auto',
+        resolvedFallback: 'index',
+        routingMode: 'assets-only',
+        workerEntry: null,
+        assetsConfig: { notFoundHandling: 'single-page-application' },
+      },
+      assetManifest: {
+        '/index.html': {
+          hash: hashAsset(Buffer.from('hello'), 'text/html; charset=utf-8'),
+          size: 5,
+          content_type: 'text/html; charset=utf-8',
+        },
+      },
+      assetFiles: [{ path: '/index.html', contentType: 'text/html; charset=utf-8', size: 5 }],
+      artifactBundle: undefined,
+    },
+  ]);
+  const body = await response.json();
+  assert.equal(body.decision.deploymentShape, 'assets-only');
+  assert.equal(body.decision.resolvedFallback, 'index');
+  assert.deepEqual(body.version.decision, {
+    deploymentShape: 'assets-only',
+    requestedFallback: 'auto',
+    resolvedFallback: 'index',
+    routingMode: 'assets-only',
+  });
+  assertNoPublicExecutionDetails(body);
+});
+
+test('accepts v2 worker-with-assets publishPlan and builds Worker bundle plus assets', async () => {
+  const store = await createSeededStore();
+  const uploads = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async (input) => {
+        uploads.push({
+          decision: input.decision,
+          mainModule: input.artifactBundle?.mainModule,
+          modules: input.artifactBundle?.modules.map((module) => module.name),
+          assetPaths: Object.keys(input.assetManifest || {}),
+        });
+        return { artifactRef: `worker-assets://test/${input.workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteSlug: 'docs',
+        requestedFallback: 'auto',
+        source: 'cli',
+        publishPlan: {
+          deploymentShape: 'worker-with-assets',
+          requestedFallback: 'auto',
+          resolvedFallback: 'not-found',
+          routingMode: 'worker-first',
+          workerEntry: '_worker.js',
+          workerMainModuleName: '_worker.js',
+          assetsConfig: { notFoundHandling: '404-page' },
+        },
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+        ],
+        workerModules: [
+          {
+            moduleName: '_worker.js',
+            partName: 'worker-main',
+            size: 18,
+            contentType: 'application/javascript+module',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' }],
+        worker: {
+          field: 'worker-main',
+          filename: '_worker.js',
+          content: 'export default {};',
+          type: 'application/javascript+module',
+        },
+      },
+      { 'Idempotency-Key': 'publish_plan_worker_assets' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.deepEqual(uploads, [
+    {
+      decision: {
+        deploymentShape: 'worker-with-assets',
+        requestedFallback: 'auto',
+        resolvedFallback: 'not-found',
+        routingMode: 'worker-first',
+        workerEntry: '_worker.js',
+        assetsConfig: { notFoundHandling: '404-page' },
+      },
+      mainModule: '_worker.js',
+      modules: ['_worker.js'],
+      assetPaths: ['/index.html'],
+    },
+  ]);
+});
+
+test('rejects Worker module uploads that are not valid UTF-8', async () => {
+  const store = await createSeededStore();
+  const invalidWorkerBytes = new Uint8Array([0xff, 0xfe, 0xfd]);
+  const decodedReplacementBytes = new globalThis.TextEncoder().encode(
+    new globalThis.TextDecoder('utf-8').decode(invalidWorkerBytes)
+  );
+  const decision = {
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    workerEntry: 'worker.mjs',
+  };
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        source: 'cli',
+        publishPlan: {
+          ...decision,
+          workerEntry: 'worker.mjs',
+          workerMainModuleName: 'worker.mjs',
+          assetsConfig: null,
+        },
+        workerModules: [
+          {
+            moduleName: 'worker.mjs',
+            partName: 'worker-main',
+            size: invalidWorkerBytes.byteLength,
+            contentType: 'application/javascript+module',
+          },
+        ],
+        worker: {
+          field: 'worker-main',
+          filename: 'worker.mjs',
+          content: invalidWorkerBytes,
+          type: 'application/javascript+module',
+        },
+        expectedContentHash: hashUploadPlan(
+          [
+            {
+              relativePath: 'worker.mjs',
+              contentType: 'application/javascript+module',
+              bytes: decodedReplacementBytes,
+            },
+          ],
+          decision
+        ),
+      },
+      { 'Idempotency-Key': 'publish_plan_invalid_worker_utf8' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'PUBLISH_PLAN_INVALID');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('rejects v2 publishPlan with duplicate part names or undeclared uploads', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  const duplicate = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        contentHash: 'sha256:asset',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'auto',
+          resolvedFallback: 'index',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: 'single-page-application' },
+        },
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            hash: 'hash_index',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+          { path: '/app.js', partName: 'asset-file-0', hash: 'hash_app', size: 5, contentType: 'text/javascript' },
+        ],
+        files: [{ field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' }],
+      },
+      { 'Idempotency-Key': 'publish_plan_duplicate' }
+    ),
+    env
+  );
+  const undeclared = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        contentHash: 'sha256:asset',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'auto',
+          resolvedFallback: 'index',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: 'single-page-application' },
+        },
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            hash: 'hash_index',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+        ],
+        files: [
+          { field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' },
+          { field: 'asset-file-1', filename: 'app.js', content: 'hello', type: 'text/javascript' },
+        ],
+      },
+      { 'Idempotency-Key': 'publish_plan_undeclared' }
+    ),
+    env
+  );
+
+  assert.equal(duplicate.status, 400);
+  assert.equal((await duplicate.json()).error.code, 'PUBLISH_PLAN_INVALID');
+  assert.equal(undeclared.status, 400);
+  assert.equal((await undeclared.json()).error.code, 'PUBLISH_PLAN_INVALID');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('rejects v2 publishPlan asset paths that match the upload denylist', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'auto',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'auto',
+          resolvedFallback: 'not-found',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: '404-page' },
+        },
+        assetManifest: [
+          {
+            path: '/.env',
+            partName: 'asset-file-0',
+            size: 'SECRET=bad'.length,
+            contentType: 'text/plain',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: '.env', content: 'SECRET=bad', type: 'text/plain' }],
+      },
+      { 'Idempotency-Key': 'publish_plan_denylist' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'ASSET_MANIFEST_INVALID');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('rejects v2 publishPlan asset paths that match the upload denylist case-insensitively', async () => {
+  const env = testEnv(await createSeededStore(), createSnapshotStore());
+  const deniedPaths = ['/.ENV', '/Wrangler.toml', '/.GitHub/workflows/deploy.yml'];
+
+  for (const [index, assetPath] of deniedPaths.entries()) {
+    const response = await worker.fetch(
+      publishPlanMultipartRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        {
+          siteId: 'site_1',
+          requestedFallback: 'auto',
+          publishPlan: {
+            deploymentShape: 'assets-only',
+            requestedFallback: 'auto',
+            resolvedFallback: 'not-found',
+            routingMode: 'assets-only',
+            workerEntry: null,
+            assetsConfig: { notFoundHandling: '404-page' },
+          },
+          assetManifest: [
+            {
+              path: assetPath,
+              partName: 'asset-file-0',
+              size: 'SECRET=bad'.length,
+              contentType: 'text/plain',
+            },
+          ],
+          files: [{ field: 'asset-file-0', filename: path.basename(assetPath), content: 'SECRET=bad', type: 'text/plain' }],
+        },
+        { 'Idempotency-Key': `publish_plan_denylist_case_${index}` }
+      ),
+      env
+    );
+
+    assert.equal(response.status, 400, assetPath);
+    assert.equal((await response.json()).error.code, 'ASSET_MANIFEST_INVALID');
+  }
+});
+
+test('rejects explicit fallback for worker-only publishPlan', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'index',
+        contentHash: 'sha256:worker',
+        publishPlan: {
+          deploymentShape: 'worker-only',
+          requestedFallback: 'index',
+          resolvedFallback: null,
+          routingMode: 'worker-only',
+          workerEntry: 'worker.mjs',
+          workerMainModuleName: 'worker.mjs',
+        },
+        workerModules: [
+          {
+            moduleName: 'worker.mjs',
+            partName: 'worker-main',
+            hash: 'hash_worker',
+            size: 18,
+            contentType: 'application/javascript+module',
+          },
+        ],
+        worker: {
+          field: 'worker-main',
+          filename: 'worker.mjs',
+          content: 'export default {};',
+          type: 'application/javascript+module',
+        },
+      },
+      { 'Idempotency-Key': 'fallback_worker_only' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'FALLBACK_REQUIRES_ASSETS');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('rejects index fallback publishPlan when index.html is not uploaded', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'index',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'index',
+          resolvedFallback: 'index',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: 'single-page-application' },
+        },
+        assetManifest: [
+          {
+            path: '/app.js',
+            partName: 'asset-file-0',
+            size: 5,
+            contentType: 'text/javascript; charset=utf-8',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: 'app.js', content: 'hello', type: 'text/javascript; charset=utf-8' }],
+      },
+      { 'Idempotency-Key': 'fallback_index_missing_index' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'FALLBACK_INDEX_REQUIRES_INDEX_HTML');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('rejects v2 publishPlan when content hash does not match uploaded bytes', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ expectedContentHash: `sha256:${'0'.repeat(64)}` }),
+      { 'Idempotency-Key': 'content_hash_mismatch' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'CONTENT_HASH_MISMATCH');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
 });
 
 test('rejects multipart asset artifacts with unsafe or incomplete file manifests', async () => {
@@ -149,11 +620,11 @@ test('rejects multipart asset artifacts with unsafe or incomplete file manifests
   const env = testEnv(store, createSnapshotStore());
 
   const traversal = await worker.fetch(
-    multipartDeployRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         siteId: 'site_1',
-        artifactKind: 'static',
+        requestedFallback: 'not-found',
         contentHash: 'sha256:asset',
         assetManifest: {
           '/../secret.txt': { hash: 'hash_secret', size: 5, content_type: 'text/plain' },
@@ -165,15 +636,27 @@ test('rejects multipart asset artifacts with unsafe or incomplete file manifests
     env
   );
   const missing = await worker.fetch(
-    multipartDeployRequest(
+    publishPlanMultipartRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         siteId: 'site_1',
-        artifactKind: 'static',
-        contentHash: 'sha256:asset',
-        assetManifest: {
-          '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
+        requestedFallback: 'not-found',
+        publishPlan: {
+          deploymentShape: 'assets-only',
+          requestedFallback: 'not-found',
+          resolvedFallback: 'not-found',
+          routingMode: 'assets-only',
+          workerEntry: null,
+          assetsConfig: { notFoundHandling: '404-page' },
         },
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+        ],
         files: [],
       },
       { 'Idempotency-Key': 'asset_missing' }
@@ -191,7 +674,7 @@ test('rejects multipart asset artifacts with unsafe or incomplete file manifests
 test('deployments can target an existing site by user-visible slug', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       deployPayload({ siteId: undefined, siteSlug: 'Docs' }),
       { 'Idempotency-Key': 'slug_deploy' }
@@ -223,14 +706,14 @@ test('access keys can deploy by slug only when the resolved site matches their s
   const env = testEnv(store, createSnapshotStore());
 
   const allowed = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
       Authorization: `Bearer ${matchingKey}`,
       'Idempotency-Key': 'slug_access_key_ok',
     }),
     env
   );
   const denied = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
       Authorization: `Bearer ${otherSiteKey}`,
       'Idempotency-Key': 'slug_access_key_denied',
     }),
@@ -282,7 +765,7 @@ test('uses bounded WFP worker names for valid long slugs', async () => {
   });
 
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       deployPayload({ siteId: 'site_long' }),
       { 'Idempotency-Key': 'long_slug' }
@@ -311,7 +794,7 @@ test('WFP upload metadata binds Pages KV gateway to user workers', async () => {
   });
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'wfp_binding',
     }),
     env
@@ -328,6 +811,7 @@ test('WFP upload metadata binds Pages KV gateway to user workers', async () => {
 test('WFP static asset deployment uses Cloudflare assets upload session and ASSETS binding', async () => {
   const store = await createSeededStore();
   const requests = [];
+  const assetHash = hashAsset(Buffer.from('hello'), 'text/html');
   const env = testEnv(store, createSnapshotStore(), {
     WFP_PROVIDER: undefined,
     CF_ACCOUNT_ID: 'account_1',
@@ -336,7 +820,7 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
     fetch: async (request) => {
       requests.push(request.clone());
       if (request.url.includes('/assets-upload-session')) {
-        return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [['hash_index']] } });
+        return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [[assetHash]] } });
       }
       if (request.url.includes('/workers/assets/upload')) {
         return Response.json({ success: true, result: { jwt: 'completion-jwt' } });
@@ -346,11 +830,10 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
   });
 
   const response = await worker.fetch(
-    multipartDeployRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         siteId: 'site_1',
-        artifactKind: 'spa',
         contentHash: 'sha256:asset',
         assetManifest: {
           '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
@@ -371,8 +854,8 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
   assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
   const assetUpload = requests.find((request) => request.url.includes('/workers/assets/upload?base64=true'));
   const assetUploadForm = await assetUpload.formData();
-  assert.equal(assetUploadForm.get('hash_index').type, 'text/html');
-  assert.equal(await assetUploadForm.get('hash_index').text(), 'aGVsbG8=');
+  assert.equal(assetUploadForm.get(assetHash).type, 'text/html');
+  assert.equal(await assetUploadForm.get(assetHash).text(), 'aGVsbG8=');
   const uploadRequest = requests.find((request) => request.method === 'PUT');
   const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
   assert.deepEqual(metadata.bindings, [
@@ -381,7 +864,7 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
   ]);
   assert.deepEqual(metadata.assets, {
     jwt: 'completion-jwt',
-    config: { not_found_handling: 'single-page-application', run_worker_first: true },
+    config: { not_found_handling: 'single-page-application' },
   });
 });
 
@@ -410,7 +893,7 @@ test('deploys through normal worker slot mode without exposing provider to the r
   });
 
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         ...deployPayload(),
@@ -472,13 +955,13 @@ test('releases previous normal worker slot after replacement deploy succeeds', a
   });
 
   await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_first' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_first' }),
     env
   );
   const replacement = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
       { 'Idempotency-Key': 'slot_second' }
     ),
     env
@@ -530,13 +1013,13 @@ test('keeps replacement deployment succeeded when previous slot cleanup fails cl
   });
 
   await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_first' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_first' }),
     env
   );
   const replacement = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
       { 'Idempotency-Key': 'slot_second' }
     ),
     env
@@ -571,7 +1054,7 @@ test('normal worker slot upload metadata binds Pages KV gateway to slot workers'
   });
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'slot_binding',
     }),
     env
@@ -611,6 +1094,75 @@ test('normal worker slot static asset deployment uses Cloudflare assets upload s
     status: 'available',
   });
   const requests = [];
+  const assetHash = hashAsset(Buffer.from('hello'), 'text/html');
+  const env = testEnv(store, createSnapshotStore(), {
+    PAGES_EXECUTION_MODE: 'normal-worker-slot',
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    fetch: async (request) => {
+      requests.push(request.clone());
+      if (request.method === 'GET' && request.url.endsWith('/workers/scripts/pages-v2-production-slot-007')) {
+        return multipartWorkerScriptResponse();
+      }
+      if (request.url.includes('/assets-upload-session')) {
+        return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [[assetHash]] } });
+      }
+      if (request.url.includes('/workers/assets/upload')) {
+        return Response.json({ success: true, result: { jwt: 'completion-jwt' } });
+      }
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteId: 'site_1',
+        requestedFallback: 'not-found',
+        contentHash: 'sha256:asset',
+        assetManifest: {
+          '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
+        },
+        files: [{ field: 'file-0', filename: 'index.html', content: 'hello', type: 'text/html' }],
+      },
+      { 'Idempotency-Key': 'slot_assets' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.ok(
+    requests.some((request) => request.url.includes('/workers/scripts/pages-v2-production-slot-007/assets-upload-session'))
+  );
+  assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
+  const assetUpload = requests.find((request) => request.url.includes('/workers/assets/upload?base64=true'));
+  const assetUploadForm = await assetUpload.formData();
+  assert.equal(assetUploadForm.get(assetHash).type, 'text/html');
+  assert.equal(await assetUploadForm.get(assetHash).text(), 'aGVsbG8=');
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'assets', name: 'ASSETS' },
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+  ]);
+  assert.deepEqual(metadata.assets, {
+    jwt: 'completion-jwt',
+    config: { not_found_handling: '404-page' },
+  });
+});
+
+test('normal worker slot worker-with-assets deployment keeps user worker and runs it before assets', async () => {
+  const store = await createSeededStore();
+  await store.createWorkerSlot({
+    id: 'slot_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  const requests = [];
   const env = testEnv(store, createSnapshotStore(), {
     PAGES_EXECUTION_MODE: 'normal-worker-slot',
     CF_ACCOUNT_ID: 'account_1',
@@ -631,37 +1183,55 @@ test('normal worker slot static asset deployment uses Cloudflare assets upload s
   });
 
   const response = await worker.fetch(
-    multipartDeployRequest(
+    publishPlanMultipartRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
         siteId: 'site_1',
-        artifactKind: 'static',
-        contentHash: 'sha256:asset',
-        assetManifest: {
-          '/index.html': { hash: 'hash_index', size: 5, content_type: 'text/html; charset=utf-8' },
+        requestedFallback: 'auto',
+        publishPlan: {
+          deploymentShape: 'worker-with-assets',
+          requestedFallback: 'auto',
+          resolvedFallback: 'not-found',
+          routingMode: 'worker-first',
+          workerEntry: '_worker.js',
+          workerMainModuleName: '_worker.js',
+          assetsConfig: { notFoundHandling: '404-page' },
         },
-        files: [{ field: 'file-0', filename: 'index.html', content: 'hello', type: 'text/html' }],
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+        ],
+        workerModules: [
+          {
+            moduleName: '_worker.js',
+            partName: 'worker-main',
+            size: 18,
+            contentType: 'application/javascript+module',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' }],
+        worker: {
+          field: 'worker-main',
+          filename: '_worker.js',
+          content: 'export default {};',
+          type: 'application/javascript+module',
+        },
       },
-      { 'Idempotency-Key': 'slot_assets' }
+      { 'Idempotency-Key': 'slot_worker_assets' }
     ),
     env
   );
 
   assert.equal(response.status, 201, await response.clone().text());
-  assert.ok(
-    requests.some((request) => request.url.includes('/workers/scripts/pages-v2-production-slot-007/assets-upload-session'))
-  );
-  assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
-  const assetUpload = requests.find((request) => request.url.includes('/workers/assets/upload?base64=true'));
-  const assetUploadForm = await assetUpload.formData();
-  assert.equal(assetUploadForm.get('hash_index').type, 'text/html');
-  assert.equal(await assetUploadForm.get('hash_index').text(), 'aGVsbG8=');
   const uploadRequest = requests.find((request) => request.method === 'PUT');
-  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
-  assert.deepEqual(metadata.bindings, [
-    { type: 'assets', name: 'ASSETS' },
-    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
-  ]);
+  const uploadForm = await uploadRequest.formData();
+  const metadata = JSON.parse(await uploadForm.get('metadata').text());
+  assert.equal(metadata.main_module, '_worker.js');
+  assert.equal(await uploadForm.get('_worker.js').text(), 'export default {};');
   assert.deepEqual(metadata.assets, {
     jwt: 'completion-jwt',
     config: { not_found_handling: '404-page', run_worker_first: true },
@@ -693,7 +1263,7 @@ test('fails closed and disables a slot when workers.dev cannot be disabled', asy
   });
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'slot_subdomain_failed',
     }),
     env
@@ -735,7 +1305,7 @@ test('deletes uploaded slot worker when post-upload workers.dev disable fails', 
   });
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'slot_subdomain_failed_after_upload',
     }),
     env
@@ -758,7 +1328,7 @@ test('deletes uploaded slot worker when post-upload workers.dev disable fails', 
 test('fails normal worker slot deployment when no slot is available', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_full' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_full' }),
     testEnv(store, createSnapshotStore(), { PAGES_EXECUTION_MODE: 'normal-worker-slot' })
   );
 
@@ -789,7 +1359,7 @@ test('notifies Slack with an actions URL button when normal worker slot capacity
   const slackRequests = [];
   const webhookUrl = testSlackWebhookUrl();
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_notify' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'slot_notify' }),
     testEnv(store, createSnapshotStore(), {
       PAGES_EXECUTION_MODE: 'normal-worker-slot',
       PAGES_NORMAL_WORKER_SLOT_EXPAND_BY: '2',
@@ -825,7 +1395,7 @@ test('notifies Slack with an actions URL button when normal worker slot capacity
 test('does not mask capacity response when Slack notification fails', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'slot_notify_fail',
     }),
     testEnv(store, createSnapshotStore(), {
@@ -846,23 +1416,23 @@ test('deployment idempotency replays same request and rejects changed request', 
   const env = testEnv(store, snapshots);
 
   const first = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
     env
   );
   const replay = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'idem_1' }),
     env
   );
   const conflict = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
       { 'Idempotency-Key': 'idem_1' }
     ),
     env
   );
   const bundleConflict = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       deployPayload({ moduleContent: 'export default { fetch() { return new Response("changed"); } };' }),
       { 'Idempotency-Key': 'idem_1' }
@@ -872,7 +1442,15 @@ test('deployment idempotency replays same request and rejects changed request', 
 
   assert.equal(first.status, 201);
   assert.equal(replay.status, 200);
-  assert.equal((await replay.json()).deployment.id, 'dep_1');
+  const replayBody = await replay.json();
+  assert.equal(replayBody.deployment.id, 'dep_1');
+  assert.deepEqual(replayBody.decision, replayBody.version.decision);
+  assert.deepEqual(replayBody.decision, {
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+  });
   assert.equal(conflict.status, 409);
   assert.equal((await conflict.json()).error.code, 'IDEMPOTENCY_CONFLICT');
   assert.equal(bundleConflict.status, 409);
@@ -880,30 +1458,72 @@ test('deployment idempotency replays same request and rejects changed request', 
   assert.equal(await store.getSiteVersion('ver_2'), null);
 });
 
-test('requires artifactBundle for deployments', async () => {
+test('rejects hand-written JSON deployment uploads', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
     jsonRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc' },
+      { siteId: 'site_1', contentHash: 'sha256:abc' },
       { 'Idempotency-Key': 'missing_bundle' }
     ),
     testEnv(store, createSnapshotStore())
   );
 
   assert.equal(response.status, 400);
-  assert.equal((await response.json()).error.code, 'ARTIFACT_BUNDLE_REQUIRED');
+  assert.equal((await response.json()).error.code, 'CLI_UPLOAD_PROTOCOL_REQUIRED');
   assert.equal(await store.getSiteVersion('ver_1'), null);
 });
 
 test('returns payload-too-large for oversized deployment bodies', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ moduleContent: 'a'.repeat(1024 * 1024) }),
+      deployPayload({ moduleContent: 'a'.repeat(50 * 1024 * 1024 + 1) }),
       { 'Idempotency-Key': 'too_large' }
     ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error.code, 'PAYLOAD_TOO_LARGE');
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
+test('returns payload-too-large when publish metadata exceeds upload limit', async () => {
+  const store = await createSeededStore();
+  const form = new FormData();
+  const metadata = JSON.stringify({
+    schemaVersion: 1,
+    siteId: 'site_1',
+    requestedFallback: 'auto',
+    source: 'cli',
+    contentHash: 'sha256:metadata',
+    publishPlan: {
+      deploymentShape: 'assets-only',
+      requestedFallback: 'auto',
+      resolvedFallback: 'not-found',
+      routingMode: 'assets-only',
+      workerEntry: null,
+      workerMainModuleName: null,
+      assetsConfig: { notFoundHandling: '404-page' },
+    },
+    assetManifest: [],
+    workerModules: [],
+    controlSignals: ['x'.repeat(50 * 1024 * 1024)],
+  });
+  form.set('metadata', new Blob([metadata], { type: 'application/json' }), 'metadata.json');
+
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/deployments', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer cli-token',
+        'CF-Connecting-IP': '10.1.2.3',
+        'Idempotency-Key': 'metadata_too_large',
+      },
+      body: form,
+    }),
     testEnv(store, createSnapshotStore())
   );
 
@@ -984,7 +1604,7 @@ test('enforces deploy and rollback access key scopes separately', async () => {
   const rollbackOnlyKey = await seedAccessKey(store, 'ak_rollback', ['rollback:site']);
 
   const deployWithRollbackOnly = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       Authorization: `Bearer ${rollbackOnlyKey}`,
       'Idempotency-Key': 'deploy_rollback_only',
     }),
@@ -992,7 +1612,7 @@ test('enforces deploy and rollback access key scopes separately', async () => {
   );
 
   await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
     env
   );
   const rollbackWithDeployOnly = await worker.fetch(
@@ -1018,17 +1638,21 @@ test('rolls back to an existing immutable version and writes a new route snapsho
   const snapshots = createSnapshotStore();
   const env = testEnv(store, snapshots);
 
-  await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
-    env
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+      env
+    )
   );
-  await worker.fetch(
-    jsonRequest(
-      'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
-      { 'Idempotency-Key': 'deploy_2' }
-    ),
-    env
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+        { 'Idempotency-Key': 'deploy_2' }
+      ),
+      env
+    )
   );
 
   const rollback = await worker.fetch(
@@ -1036,14 +1660,17 @@ test('rolls back to an existing immutable version and writes a new route snapsho
     env
   );
 
-  assert.equal(rollback.status, 201);
+  assert.equal(rollback.status, 201, await rollback.clone().text());
   const body = await rollback.json();
   assert.equal(body.deployment.operation, 'rollback');
   assert.equal(body.deployment.previousVersionId, 'ver_2');
   assert.equal(body.route.activeVersionId, 'ver_1');
   assert.equal(body.route.routeGeneration, 3);
-  assert.equal((await store.getSiteVersion('ver_1')).contentHash, 'sha256:abc');
-  assert.equal((await store.getSiteVersion('ver_2')).contentHash, 'sha256:def');
+  const rolledBackVersion = await store.getSiteVersion('ver_1');
+  const replacementVersion = await store.getSiteVersion('ver_2');
+  assert.match(rolledBackVersion.contentHash, /^sha256:[a-f0-9]{64}$/);
+  assert.match(replacementVersion.contentHash, /^sha256:[a-f0-9]{64}$/);
+  assert.notEqual(rolledBackVersion.contentHash, replacementVersion.contentHash);
   assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').routeGeneration, 3);
 });
 
@@ -1062,7 +1689,7 @@ test('rejects rollback when requested site does not match the version site', asy
     hostname: 'other.pages.xd.team',
   });
   await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
     env
   );
 
@@ -1092,7 +1719,7 @@ test('marks deployment failed when route snapshot write fails and replays failed
     },
   });
   const request = () =>
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'snapshot_fail' });
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'snapshot_fail' });
 
   const first = await worker.fetch(request(), env);
   const replay = await worker.fetch(request(), env);
@@ -1144,9 +1771,9 @@ test('marks deployment failed when WFP upload fails without creating active vers
   });
 
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc', artifactBundle: workerBundle('export default {};') },
+      deployPayload({ moduleContent: 'export default {};' }),
       { 'Idempotency-Key': 'wfp_upload_fail' }
     ),
     env
@@ -1175,9 +1802,9 @@ test('marks deployment failed when WFP verify fails without creating active vers
   });
 
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc', artifactBundle: workerBundle('export default {};') },
+      deployPayload({ moduleContent: 'export default {};' }),
       { 'Idempotency-Key': 'wfp_verify_fail' }
     ),
     env
@@ -1208,7 +1835,7 @@ test('cleans uploaded workers and marks deployments failed when post-upload pers
   });
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'persist_fail',
     }),
     env
@@ -1248,7 +1875,7 @@ test('marks deployment failed when pre-upload status write fails without uploadi
   });
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'pre_upload_state_fail',
     }),
     env
@@ -1275,7 +1902,7 @@ test('reconciles deployment success when final status write fails after route co
     return originalUpdateDeployment(id, patch);
   };
   const env = testEnv(store, createSnapshotStore());
-  const request = jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+  const request = deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
     'Idempotency-Key': 'final_state_fail',
   });
 
@@ -1299,13 +1926,13 @@ test('reconciles rollback success when final status write fails after route comm
   const store = await createSeededStore();
   const env = testEnv(store, createSnapshotStore());
   await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
     env
   );
   await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
       { 'Idempotency-Key': 'deploy_2' }
     ),
     env
@@ -1371,7 +1998,7 @@ test('fails deployment activation without clobbering a concurrently changed rout
   });
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'activation_race',
     }),
     env
@@ -1396,9 +2023,9 @@ test('fails deployment when production WFP namespace points at staging', async (
   });
 
   const response = await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      { siteId: 'site_1', artifactKind: 'worker', contentHash: 'sha256:abc', artifactBundle: workerBundle('export default {};') },
+      deployPayload({ moduleContent: 'export default {};' }),
       { 'Idempotency-Key': 'wfp_config_fail' }
     ),
     env
@@ -1417,13 +2044,13 @@ test('keeps previous active route when rollback snapshot write fails', async () 
   const env = testEnv(store, createSnapshotStore());
 
   await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
     env
   );
   await worker.fetch(
-    jsonRequest(
+    deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ contentHash: 'sha256:def', moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
       { 'Idempotency-Key': 'deploy_2' }
     ),
     env
@@ -1458,7 +2085,7 @@ test('rejects rollback to a version from a failed deployment', async () => {
   });
 
   const failedDeploy = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'failed_version',
     }),
     env
@@ -1497,7 +2124,7 @@ test('rejects rollback to a released normal worker slot version', async () => {
   });
 
   const failedDeploy = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
       'Idempotency-Key': 'failed_slot_version',
     }),
     env
@@ -1592,9 +2219,16 @@ function assertNoPublicExecutionDetails(body) {
   assert.equal('executionProvider' in (body.version || {}), false);
   assert.equal('executionProvider' in (body.route || {}), false);
   assert.equal('dispatchBindingName' in (body.route || {}), false);
+  assert.equal('artifactKind' in (body.version || {}), false);
+  assert.equal('artifactKind' in body, false);
   assert.doesNotMatch(serialized, /pages-v2-(?:production|staging)-slot-\d+/);
   assert.doesNotMatch(serialized, /SITE_SLOT_\d+/);
-  assert.doesNotMatch(serialized, /normal-worker-slot|executionProvider|dispatchBindingName/);
+  assert.doesNotMatch(serialized, /normal-worker-slot|executionProvider|dispatchBindingName|artifactKind/);
+}
+
+async function assertDeployOk(response) {
+  assert.equal(response.status, 201, await response.clone().text());
+  return response;
 }
 
 async function seedAccessKey(store, keyId, scopes, siteId = 'site_1') {
@@ -1633,26 +2267,50 @@ function failingSnapshotStore() {
 }
 
 function jsonRequest(url, body, headers = {}) {
+  const hasBody = body !== undefined;
   return new Request(url, {
-    method: 'POST',
+    method: hasBody ? 'POST' : 'GET',
     headers: {
-      'Content-Type': 'application/json',
       Authorization: 'Bearer cli-token',
       'CF-Connecting-IP': '10.1.2.3',
+      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...headers,
     },
-    body: JSON.stringify(body),
+    body: hasBody ? JSON.stringify(body) : undefined,
   });
 }
 
-function multipartDeployRequest(url, fields, headers = {}) {
+function deploymentRequest(url, fields, headers = {}) {
+  const normalized = normalizeDeploymentFields(fields);
+  return publishPlanMultipartRequest(url, normalized, headers);
+}
+
+function publishPlanMultipartRequest(url, fields, headers = {}) {
+  const normalized = normalizeDeploymentFields(fields);
   const form = new FormData();
-  for (const [key, value] of Object.entries(fields)) {
-    if (key === 'files') continue;
-    form.set(key, key === 'assetManifest' ? JSON.stringify(value) : String(value));
-  }
-  for (const file of fields.files || []) {
+  const metadata = {
+    schemaVersion: normalized.schemaVersion || 1,
+    siteId: normalized.siteId,
+    siteSlug: normalized.siteSlug,
+    requestedFallback: normalized.requestedFallback,
+    source: normalized.source || 'cli',
+    contentHash: normalized.contentHash,
+    publishPlan: normalized.publishPlan,
+    assetManifest: normalized.assetManifest || [],
+    workerMainModuleName: normalized.workerMainModuleName || normalized.publishPlan?.workerMainModuleName,
+    workerModules: normalized.workerModules || [],
+    controlSignals: normalized.controlSignals || [],
+  };
+  form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
+  for (const file of normalized.files || []) {
     form.set(file.field, new Blob([file.content], { type: file.type || 'application/octet-stream' }), file.filename);
+  }
+  if (normalized.worker) {
+    form.set(
+      normalized.worker.field,
+      new Blob([normalized.worker.content], { type: normalized.worker.type || 'application/javascript+module' }),
+      normalized.worker.filename
+    );
   }
   return new Request(url, {
     method: 'POST',
@@ -1665,6 +2323,170 @@ function multipartDeployRequest(url, fields, headers = {}) {
   });
 }
 
+function normalizeDeploymentFields(fields) {
+  if (fields.publishPlan) return normalizePublishPlanFields(fields);
+  if (fields.assetManifest || fields.files?.length) return normalizeAssetOnlyFields(fields);
+  return normalizeWorkerOnlyFields(fields);
+}
+
+function normalizeWorkerOnlyFields(fields) {
+  const bundle = fields.artifactBundle || workerBundle(fields.moduleContent || 'export default {};');
+  const mainModule = bundle.mainModule || bundle.modules?.[0]?.name || 'worker.mjs';
+  const main = bundle.modules.find((module) => module.name === mainModule) || bundle.modules[0];
+  const content = main?.content || 'export default {};';
+  const type = main?.type || 'application/javascript+module';
+  const worker = {
+    field: 'worker-main',
+    filename: mainModule,
+    content,
+    type,
+  };
+  const bytes = Buffer.from(content);
+  const decision = {
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    workerEntry: mainModule,
+  };
+  return {
+    ...fields,
+    requestedFallback: fields.requestedFallback || 'auto',
+    publishPlan: {
+      ...decision,
+      workerMainModuleName: mainModule,
+    },
+    workerModules: [
+      {
+        moduleName: mainModule,
+        partName: worker.field,
+        hash: hashAsset(bytes, type),
+        size: bytes.byteLength,
+        contentType: type,
+      },
+    ],
+    worker,
+    assetManifest: [],
+    files: [],
+    contentHash: fields.expectedContentHash || hashUploadPlan([{ relativePath: mainModule, contentType: type, bytes }], decision),
+  };
+}
+
+function normalizeAssetOnlyFields(fields) {
+  const files = fields.files || [];
+  const assets = files.map((file, index) => {
+    const path = normalizeAssetPathFromFilename(file.filename);
+    const contentType = file.type || fields.assetManifest?.[path]?.content_type || 'application/octet-stream';
+    const bytes = Buffer.from(file.content);
+    return {
+      path,
+      partName: file.field || `asset-file-${index}`,
+      hash: hashAsset(bytes, contentType),
+      size: bytes.byteLength,
+      contentType,
+      file: {
+        ...file,
+        field: file.field || `asset-file-${index}`,
+        type: contentType,
+      },
+    };
+  });
+  const resolvedFallback = fields.requestedFallback === 'not-found' ? 'not-found' : 'index';
+  const decision = {
+    deploymentShape: 'assets-only',
+    requestedFallback: fields.requestedFallback || (resolvedFallback === 'index' ? 'index' : 'not-found'),
+    resolvedFallback,
+    routingMode: 'assets-only',
+    workerEntry: null,
+  };
+  return {
+    ...fields,
+    requestedFallback: fields.requestedFallback || decision.requestedFallback,
+    publishPlan: {
+      ...decision,
+      workerMainModuleName: null,
+      assetsConfig: { notFoundHandling: resolvedFallback === 'index' ? 'single-page-application' : '404-page' },
+    },
+    assetManifest: assets.map(({ file: _file, ...asset }) => asset),
+    files: assets.map((asset) => asset.file),
+    workerModules: [],
+    contentHash:
+      fields.expectedContentHash ||
+      hashUploadPlan(
+        assets.map((asset) => ({
+          relativePath: asset.path.replace(/^\/+/, ''),
+          contentType: asset.contentType,
+          bytes: Buffer.from(asset.file.content),
+        })),
+        decision
+      ),
+  };
+}
+
+function normalizePublishPlanFields(fields) {
+  const assets = (fields.assetManifest || []).map((asset) => {
+    const file = (fields.files || []).find((candidate) => candidate.field === asset.partName) || {};
+    const contentType = asset.contentType || file.type || 'application/octet-stream';
+    const bytes = Buffer.from(file.content || '');
+    return {
+      ...asset,
+      hash: asset.keepHash ? asset.hash : hashAsset(bytes, contentType),
+      size: asset.size ?? bytes.byteLength,
+      contentType,
+    };
+  });
+  const workerModules = (fields.workerModules || []).map((module) => {
+    const worker =
+      fields.worker && fields.worker.field === module.partName
+        ? fields.worker
+        : (fields.workerParts || []).find((candidate) => candidate.field === module.partName) || {};
+    const contentType = module.contentType || worker.type || 'application/javascript+module';
+    const bytes = Buffer.from(worker.content || '');
+    return {
+      ...module,
+      hash: module.keepHash ? module.hash : hashAsset(bytes, contentType),
+      size: module.size ?? bytes.byteLength,
+      contentType,
+    };
+  });
+  const files = (fields.files || []).map((file) => {
+    const asset = assets.find((entry) => entry.partName === file.field);
+    return { ...file, type: asset?.contentType || file.type };
+  });
+  const decision = {
+    deploymentShape: fields.publishPlan.deploymentShape,
+    requestedFallback: fields.publishPlan.requestedFallback,
+    resolvedFallback: fields.publishPlan.resolvedFallback,
+    routingMode: fields.publishPlan.routingMode,
+    workerEntry: fields.publishPlan.workerMainModuleName || fields.publishPlan.workerEntry || null,
+  };
+  const hashFiles = [
+    ...assets.map((asset) => {
+      const file = files.find((candidate) => candidate.field === asset.partName) || {};
+      return {
+        relativePath: asset.path.replace(/^\/+/, ''),
+        contentType: asset.contentType,
+        bytes: Buffer.from(file.content || ''),
+      };
+    }),
+    ...workerModules.map((module) => {
+      const worker = fields.worker && fields.worker.field === module.partName ? fields.worker : {};
+      return {
+        relativePath: module.moduleName,
+        contentType: module.contentType,
+        bytes: Buffer.from(worker.content || ''),
+      };
+    }),
+  ];
+  return {
+    ...fields,
+    assetManifest: assets,
+    files,
+    workerModules,
+    contentHash: fields.expectedContentHash || hashUploadPlan(hashFiles, decision),
+  };
+}
+
 function authRequest(url, headers = {}) {
   return new Request(url, {
     headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
@@ -1673,10 +2495,58 @@ function authRequest(url, headers = {}) {
 
 function workerBundle(content) {
   return {
-    kind: 'worker',
     mainModule: 'worker.mjs',
     modules: [{ name: 'worker.mjs', content, type: 'application/javascript+module' }],
   };
+}
+
+function hashAsset(bytes, contentType) {
+  return createHash('sha256')
+    .update('xd-pages-asset-v2\0')
+    .update(contentType || 'application/octet-stream')
+    .update('\0')
+    .update(bytes)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function hashUploadPlan(files, decision) {
+  const hash = createHash('sha256');
+  hash.update('xd-pages-upload-plan-v1\0');
+  hash.update(JSON.stringify(publishPlanFromDecision(decision)));
+  hash.update('\0');
+  for (const file of files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    hash.update('file\0');
+    hash.update(file.relativePath);
+    hash.update('\0');
+    hash.update(String(file.bytes.byteLength));
+    hash.update('\0');
+    hash.update(file.contentType || 'application/octet-stream');
+    hash.update('\0');
+    hash.update(file.bytes);
+    hash.update('\0');
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function publishPlanFromDecision(decision) {
+  return {
+    deploymentShape: decision.deploymentShape,
+    requestedFallback: decision.requestedFallback,
+    resolvedFallback: decision.resolvedFallback,
+    routingMode: decision.routingMode,
+    workerEntry: decision.workerEntry,
+    workerMainModuleName: decision.workerEntry,
+    assetsConfig: decision.resolvedFallback
+      ? {
+          notFoundHandling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+        }
+      : null,
+  };
+}
+
+function normalizeAssetPathFromFilename(filename) {
+  return `/${String(filename || 'index.html').replaceAll('\\', '/').replace(/^\/+/, '')}`;
 }
 
 function multipartWorkerScriptResponse() {
@@ -1707,7 +2577,6 @@ function deployPayload(overrides = {}) {
     overrides.moduleContent || `export default { fetch() { return new Response(${JSON.stringify(contentHash)}); } };`;
   const payload = {
     siteId: 'site_1',
-    artifactKind: 'worker',
     contentHash,
     artifactBundle: overrides.artifactBundle || workerBundle(moduleContent),
   };

@@ -329,7 +329,7 @@ PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL=100
 PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0
 ```
 
-这些值不是用户发布参数，也不是 GitHub Environment Var。部署脚本 `scripts/provision-pages-v2-slots.mjs` 会在 router 部署前读取 D1 `worker_slots`，当 `available < MIN_AVAILABLE` 时按 `EXPAND_BY` 创建缺失 slot Worker，并受 `MAX_TOTAL` fail closed 保护。脚本随后计算实际需要全量绑定的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)`，通过 `$GITHUB_ENV` 传给 `scripts/render-pages-v2-wrangler.mjs`。router 渲染必须绑定 `SITE_SLOT_001..SITE_SLOT_N` 的完整历史范围，不能只绑定本次新增 slot。`PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0` 表示普通 Worker slot 模式不承诺旧版本回滚，非 active 旧 slot 可以立即清理复用。
+这些值不是用户发布参数，也不是 GitHub Environment Var。部署脚本 `scripts/provision-pages-v2-slots.mjs` 会在 router 部署前读取 D1 `worker_slots`，当 `available < MIN_AVAILABLE` 时按 `EXPAND_BY` 创建缺失 slot Worker，并受 `MAX_TOTAL` fail closed 保护。脚本随后计算实际需要全量绑定的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)`，通过 `$GITHUB_ENV` 传给 `scripts/render-pages-v2-wrangler.mjs`。router 渲染必须绑定 `SITE_SLOT_001..SITE_SLOT_N` 的完整历史范围，不能只绑定本次新增 slot。`PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0` 表示普通 Worker slot 不作为历史版本归档；非 active 旧 slot 可以立即清理复用。DR 0003 讨论的 artifact store 是低优先级长期候选，未采纳前历史回滚仍是 provider best-effort。
 
 `PAGES_EXECUTION_MODE` 不放 GitHub Environment Vars；当前默认值直接写在 `apps/pages-api/wrangler.*.template.toml` 和 `apps/pages-router/wrangler.*.template.toml`。切到 `wfp` 必须走 PR 修改对应 template。`PAGES_EXECUTION_MODE=wfp` 时可以没有 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`；但如果仍有 active route 指向 `service-binding` slot，部署脚本必须继续提供原全量 binding count 并部署同时持有 WFP dispatch namespace 与 slot bindings 的 router，直到这些 slot route 全部迁移或释放。
 
@@ -930,9 +930,18 @@ site_versions
   dispatch_type       -- dispatch-namespace / service-binding
   dispatch_binding_name -- slot 模式记录激活时 binding；WFP 模式为 null
   slot_id             -- slot 模式记录占用 slot；WFP 模式为 null
-  artifact_kind       -- static / spa / worker
-  artifact_ref        -- wfp://...、slot://...、r2://... 等内部 artifact 引用
+  artifact_ref        -- 当前执行面 provider 引用，例如 wfp://... 或 slot://...
   content_hash
+  deployment_shape    -- assets-only / worker-only / worker-with-assets
+  requested_fallback  -- auto / index / not-found
+  resolved_fallback   -- index / not-found / null
+  routing_mode        -- assets-only / worker-only / worker-first
+  worker_entry
+  assets_config_json
+  worker_modules_json
+  asset_manifest_json
+  canonical_content_hash
+  artifact_availability
   created_by
   created_at
 ```
@@ -1286,8 +1295,10 @@ KV key 必须带环境前缀，避免 staging/prod 串环境：
     "scopes": ["kv:get", "kv:set", "kv:delete"]
   },
   "activeVersionId": "ver_42",
-  "artifactKind": "spa",
   "contentHash": "sha256:...",
+  "deploymentShape": "assets-only",
+  "resolvedFallback": "index",
+  "routingMode": "assets-only",
   "visibility": "org",
   "policyVersion": 12,
   "routeGeneration": 42,
@@ -1560,7 +1571,7 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
 - `succeeded` 写入失败：deployment 可由 reconciliation job 修正为 `succeeded` 或 `failed_with_active_route`。
 - 已上传但未激活的 user Worker / assets 第一版可由 failed deployment、非 active version、WFP 命名规则或 slot `last_deployed_version_id` 推导为 orphan；后续 reconciliation 负责延迟 GC，不立即删除，避免误删正在回滚的版本。若需要更强可观测性，再补显式 orphan 标记表。
 
-回滚不是修改历史 version 内容，而是复用同一套 active route 切换流程，把 `active_version_id`、`worker_name`、`execution_provider` 和 dispatch target 切回目标 version，并 bump `route_generation`。普通 Worker slot 模式不承诺历史版本回滚：旧 slot 会在新版本成功后被清理并复用，回滚到已释放的 slot 版本必须返回 `ROLLBACK_VERSION_UNAVAILABLE`。WFP 模式若保留不可变执行 artifact，可以继续支持回滚。所有 deploy / rollback 必须写审计。
+回滚不是修改历史 version 内容，而是复用同一套 active route 切换流程，并 bump `route_generation`。当前 MVP 回滚是 provider best-effort：如果目标 version 的 provider artifact 或旧执行目标仍可用，可以直接把 `active_version_id`、`worker_name`、`execution_provider` 和 dispatch target 切回目标 version；如果普通 Worker slot 已释放或 provider artifact 不可用，则返回 `ROLLBACK_VERSION_UNAVAILABLE`，且不能覆盖当前 active version。未来若采纳 DR 0003，可升级为从 R2 source artifact 重新 materialize 一个新的执行目标，再激活 route。所有 deploy / rollback 必须写审计。
 
 ## 域名和路由
 
@@ -2052,8 +2063,8 @@ CLI 使用 XD Pages 平台签发的 token，不直接持有心动 SSO `access_to
 
 - `pages login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
 - `pages login --env staging` 登录 staging；默认登录 production。
-- `pages login --access-key <key>` 先调用 `/.xd-pages/api/auth/whoami` 验证该 access key 有效，再保存到本地 secret store。
-- 其它需要访问 API 的命令支持全局 `--access-key <key>`；它只用于本次命令，不保存、不读取本地登录态。
+- `pages login --token <token>` 先调用 `/.xd-pages/api/auth/whoami` 验证该 access key 有效，再保存到本地 secret store。
+- 其它需要访问 API 的命令支持全局 `--token <token>`；它只用于本次命令，不保存、不读取本地登录态。
 - CLI token 支持过期、scope、吊销和本地安全存储。
 - CI 默认使用 `access key`，不使用个人浏览器 session。`service token` 只有在后续需要组织级机器人身份时再单独设计，不混入 MVP。
 - CLI token、access key 和本地 profile 必须按 environment 隔离保存，staging token 不能调用 production API。
@@ -2111,11 +2122,11 @@ Windows fallback 文件没有 `chmod 0600` 语义，CLI 必须检查 ACL：只�
 access key 有两种使用方式：
 
 ```bash
-pages login --access-key <key>
-pages deploy ./dist foo --access-key <key> --json
+pages login --token <token>
+pages deploy ./dist foo --token <token> --json
 ```
 
-本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `pages login --access-key <key>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--access-key <key>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。access key 不能创建站点；CI / agent 使用 access key 部署时显式传站点名，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
+本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `pages login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。access key 不能创建站点；CI / agent 使用 access key 部署时显式传站点名，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
 
 #### Global config
 
@@ -2152,7 +2163,7 @@ CLI 可以支持：
 
 ```bash
 pages env list
-pages env use staging
+pages env staging
 ```
 
 用户侧 `pages env list` 只展示 `production` / `staging`。`custom` 是开发保留项，可以由测试或开发命令显式启用，但不在普通 help 和用户文档主路径中展示。内置 `production` / `staging` 是固定环境，不能被本地 profile、环境变量或普通 override 改写。`custom` 只允许指向 loopback：
@@ -2188,9 +2199,12 @@ XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不�
 {
   "environment": "production",
   "site": "foo",
-  "dir": "./dist",
+  "source": "./dist",
   "visibility": "org",
-  "artifactKind": "spa"
+  "fallback": "auto",
+  "worker": {
+    "entry": "./worker.mjs"
+  }
 }
 ```
 
@@ -2199,20 +2213,20 @@ XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不�
 CLI 日常命令契约建议：
 
 ```bash
-pages login [--env staging] [--access-key <key>] [--no-open]
+pages login [--env staging] [--token <token>] [--no-open]
 pages auth status [--env staging]
 pages auth whoami [--env staging]
 pages auth logout [--env staging]
 pages deploy ./dist foo --visibility org
 pages deploy --config pages.config.json
-pages deploy ./dist foo --access-key <key> --json
+pages deploy ./dist foo --token <token> --json
 pages status foo
 pages rollback foo ver_xxx
 pages open foo [--print]
 pages sites list
 pages sites info foo
 pages env list
-pages env use staging
+pages env staging
 ```
 
 配置优先级从高到低：
@@ -2227,7 +2241,7 @@ pages env use staging
 凭证优先级从高到低：
 
 ```text
-显式 --access-key <key>，仅本次命令生效
+显式 --token <token>，仅本次命令生效
   > 当前 environment 的本地 secret store
   > 提示用户 pages login
 ```
@@ -2336,7 +2350,7 @@ pages deploy ./dist foo --visibility org --env staging
 ### CI / Agent
 
 ```text
-pages deploy ./dist foo --access-key <key> --json
+pages deploy ./dist foo --token <token> --json
 ```
 
 access key 要求：
@@ -2492,21 +2506,22 @@ user data:
 ```text
 pages deploy ./dist foo
   -> CLI 遍历 dist，排除 .git、node_modules、.DS_Store 和显式配置文件
-  -> CLI 生成 assetManifest：/{path} -> hash / size / content_type
+  -> CLI 自动解析 deploymentShape、requestedFallback、resolvedFallback、routingMode
+  -> CLI 生成 publishPlan、assetManifest 和 contentHash
   -> CLI 以 multipart/form-data 上传：
-       artifactKind = static | spa
-       contentHash = sha256:...
-       assetManifest = JSON string
-       file-0 / file-1 / ...，每个 filename 是相对路径
-  -> pages-api 校验 manifest 和文件路径
+       metadata = JSON({ publishPlan, assetManifest[], workerModules[], contentHash, ... })
+       asset-file-0 / asset-file-1 / ...，每个 filename 是相对路径
+       worker-main（如果有自定义 Worker entry）
+  -> pages-api 校验 publishPlan、manifest、partName、hash、fallback 与文件路径
   -> execution provider 调 Cloudflare assets-upload-session
   -> 上传缺失 asset bucket
-  -> 部署薄 Worker：fetch(request, env) => env.ASSETS.fetch(request)
+  -> assets-only 部署薄 Worker：fetch(request, env) => env.ASSETS.fetch(request)
+  -> worker-with-assets 部署用户 Worker + ASSETS binding，并启用 worker-first routing
 ```
 
-custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module，通过 JSON artifactBundle 上传。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。static / SPA 的 multipart 内容不能包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `--config` 文件内容。
+custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module，通过 multipart worker module 上传。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。multipart metadata 和文件内容不能包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `--config` 文件内容。
 
-`pages-api` 不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。worker artifact 的 JSON body 上限是 1 MiB；static / SPA 的 CLI 侧第一版限制为原始文件总量不超过 50 MiB、文件数不超过 5000。超限时 CLI 提前失败。底层未来如果从 Cloudflare Assets 调整到 R2 或其它 asset store，应由服务端 provider 演进，用户命令仍保持 `pages deploy ./dist foo`。
+`pages-api` 不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。worker artifact 的 JSON body 上限是 1 MiB；static / SPA 的 CLI 侧第一版限制为原始文件总量不超过 50 MiB、文件数不超过 5000。超限时 CLI 提前失败。DR 0003 讨论的 R2 + D1 artifact store 是长期候选能力；当前发布链路仍以 provider materialization 和 D1 版本索引为准，用户命令保持 `pages deploy ./dist foo`。
 
 这条路径不提供“失败后回退 generated-worker”。如果 asset upload session、asset bucket 上传或 Worker assets binding 失败，发布必须失败并返回明确错误，避免同一命令在不同部署中产生不同运行形态。
 
@@ -2616,7 +2631,7 @@ publish -> activate -> drain -> retire
 
 - 新增 `pages-auth`。
 - 新增 `pages-api` 的登录态校验和 access key。
-- CLI 支持 `pages login`、`login_id + login_secret` 轮询、`pages login --access-key <key>` 保存凭证，以及 API 命令的单次 `--access-key <key>`。
+- CLI 支持 `pages login`、`login_id + login_secret` 轮询、`pages login --token <token>` 保存凭证，以及 API 命令的单次 `--token <token>`。
 - AI skill 改为只调用 XD Pages CLI。
 - 现有 `apps/server` 继续服务旧版 `workers.xd.team`，新架构不改旧版 API、skill、README 或发布行为。
 
@@ -2665,7 +2680,7 @@ publish -> activate -> drain -> retire
 | User Worker 设置父域 cookie | 可污染 sibling 子站或平台 host   | 只允许 host-only cookie，拒绝父域 Domain                             |
 | internal JWT 被当能力凭证   | User Worker 可复制短期 JWT       | 平台能力使用独立 capability，不信 internal JWT                       |
 | 旧版/新架构心智混淆        | 用户可能以为 XD Pages 会接管旧域名 | 文档、CLI help、错误提示和 skill 明确 `workers` 是旧版、`pages` 是新架构 |
-| assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike，准备 R2/asset store 备选                       |
+| assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike；DR 0003 的 R2 artifact store 作为低优先级长期候选，不阻塞当前 MVP |
 | WFP 暂未开通                | 首发无法使用目标执行面           | 使用 `normal-worker-slot` 兼容层，用户 API 不变，后续切换默认 mode   |
 | slot binding 数量上限       | 普通 Worker slot 需要 router 静态 binding | 预留小规模池、容量告警、人工扩容 workflow，WFP 开通后停止扩张 |
 | slot 误清理 active 版本      | active slot 被释放会导致当前站点不可访问 | 清理前后都用 D1 条件确认没有 active route 引用该 slot 或 version；失败时保持 `cleanup_pending`，不回到 `available` |

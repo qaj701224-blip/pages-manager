@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { parseArgs } from './args.js';
 import { createApiClient } from './api-client.js';
-import { buildAssetArtifact, buildArtifactBundle, hashArtifact, inferArtifactKind } from './artifact.js';
+import { createUploadPlan, detectPublishTarget } from './artifact.js';
 import { readCommandConfig } from './command-config.js';
 import { FIXED_ENVIRONMENTS, readCliConfig, resolveEnvironment } from './config.js';
 import { loginWithAccessKey, loginWithBrowser } from './login.js';
@@ -12,15 +12,17 @@ import { loadProfile, resolveProfileDir, saveProfile as saveProfileFile } from '
 import { createSecretStore } from './secret-store.js';
 
 const VALID_VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
-const VALID_ARTIFACT_KINDS = new Set(['static', 'spa', 'worker']);
 const USER_ENVIRONMENTS = ['production', 'staging'];
-const HELP_FLAGS = new Set(['help', 'json', 'accessKey']);
-const VERSION_FLAGS = new Set(['help', 'accessKey']);
-const LOGIN_FLAGS = new Set(['env', 'accessKey', 'noOpen', 'json', 'help']);
+const HELP_FLAGS = new Set(['help', 'json', 'token', 'accessKey']);
+const VERSION_FLAGS = new Set(['help', 'token', 'accessKey']);
+const LOGIN_FLAGS = new Set(['env', 'token', 'accessKey', 'noOpen', 'json', 'help']);
 const DEPLOY_FLAGS = new Set([
   'env',
   'visibility',
-  'artifactKind',
+  'fallback',
+  'workerEntry',
+  'dryRun',
+  'token',
   'accessKey',
   'config',
   'json',
@@ -29,27 +31,29 @@ const DEPLOY_FLAGS = new Set([
   'site',
   'saveConfig',
 ]);
-const API_READ_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
-const SITES_FLAGS = new Set(['env', 'accessKey', 'json', 'help', 'details']);
-const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'accessKey']);
-const STATUS_FLAGS = new Set(['env', 'deployment', 'accessKey', 'json', 'help']);
-const ROLLBACK_FLAGS = new Set(['env', 'accessKey', 'json', 'help']);
-const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'accessKey']);
-const ACCESS_FLAGS = new Set(['env', 'visibility', 'email', 'department', 'accessKey', 'json', 'help']);
-const ENV_FLAGS = new Set(['json', 'help', 'accessKey']);
-const ENV_CUSTOM_FLAGS = new Set(['api', 'auth', 'siteDomainSuffix', 'json', 'help', 'accessKey']);
+const DETECT_FLAGS = new Set(['config', 'fallback', 'workerEntry', 'json', 'help']);
+const API_READ_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
+const SITES_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help', 'details']);
+const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'token', 'accessKey']);
+const STATUS_FLAGS = new Set(['env', 'deployment', 'token', 'accessKey', 'json', 'help']);
+const ROLLBACK_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
+const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'token', 'accessKey']);
+const ACCESS_FLAGS = new Set(['env', 'visibility', 'email', 'department', 'token', 'accessKey', 'json', 'help']);
+const ENV_FLAGS = new Set(['json', 'help', 'token', 'accessKey']);
+const ENV_CUSTOM_FLAGS = new Set(['api', 'auth', 'siteDomainSuffix', 'json', 'help', 'token', 'accessKey']);
+const DEPRECATED_HIDDEN_TOKEN_FLAGS = new Set(['accessKey']);
 
 export async function executeCommand(argv = [], options = {}) {
   const parsed = parseArgs(argv);
   validateCommandUsage(parsed);
   const output = options.output || createOutput(options.stdout);
   if (parsed.command === 'help' || parsed.flags.help) {
-    assertAccessKeyNotUsed(parsed);
+    assertTokenNotUsed(parsed);
     outputHelp(parsed, output);
     return 0;
   }
   if (parsed.command === 'version') {
-    assertAccessKeyNotUsed(parsed);
+    assertTokenNotUsed(parsed);
     assertNoPositionals(parsed, 'VERSION_USAGE_INVALID', 'pages version 不接受位置参数。');
     output(await readCliVersion());
     return 0;
@@ -65,8 +69,14 @@ export async function executeCommand(argv = [], options = {}) {
       return runLogin(parsed, { ...options, env, profileDir, profile, output });
     case 'auth':
       return runAuth(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'whoami':
+      return runWhoami(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'logout':
+      return runAuthLogout(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'deploy':
       return runDeploy(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'detect':
+      return runDetect(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'status':
       return runStatus(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'rollback':
@@ -78,7 +88,7 @@ export async function executeCommand(argv = [], options = {}) {
     case 'access':
       return runAccess(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'env':
-      assertAccessKeyNotUsed(parsed);
+      assertTokenNotUsed(parsed);
       return runEnv(parsed, { ...options, env, profileDir, profile, output });
     default:
       throw new Error(`UNKNOWN_COMMAND:${parsed.command}`);
@@ -106,10 +116,11 @@ async function runLogin(parsed, context) {
   const saveProfile = (profile) => saveProfileFile(context.profileDir, profile);
   const output = parsed.flags.json ? () => {} : context.output;
 
-  if (parsed.flags.accessKey) {
+  const token = readOneShotToken(parsed);
+  if (token) {
     await loginWithAccessKey({
       config,
-      accessKey: parsed.flags.accessKey,
+      accessKey: token,
       secretStore,
       profile: context.profile,
       saveProfile,
@@ -145,7 +156,7 @@ async function runLogin(parsed, context) {
 }
 
 async function runAuthStatus(parsed, context) {
-  assertAccessKeyNotUsed(parsed);
+  assertTokenNotUsed(parsed);
   assertNoPositionals(parsed, 'AUTH_STATUS_USAGE_INVALID', 'pages auth status 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
@@ -171,7 +182,7 @@ async function runWhoami(parsed, context) {
 }
 
 async function runAuthLogout(parsed, context) {
-  assertAccessKeyNotUsed(parsed);
+  assertTokenNotUsed(parsed);
   assertNoPositionals(parsed, 'AUTH_LOGOUT_USAGE_INVALID', 'pages auth logout 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
@@ -192,72 +203,161 @@ async function runAuthLogout(parsed, context) {
   return 0;
 }
 
+async function runDetect(parsed, context) {
+  if (parsed.positional.length > 1) {
+    throw usageError('DETECT_USAGE_INVALID', 'detect 参数过多。', '请使用 pages detect <目录>。');
+  }
+  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: true });
+  const dirInput = parsed.positional[0] || commandConfig?.source || commandConfig?.dir || '.';
+  const requestedFallback = parsed.flags.fallback || commandConfig?.fallback || 'auto';
+  const workerEntry = parsed.flags.workerEntry || commandConfig?.worker?.entry || null;
+  const targetPath = path.resolve(context.cwd, dirInput);
+  const decision = await detectPublishTarget(targetPath, { requestedFallback, workerEntry });
+  const payload = preflightEnvelope({
+    mode: 'detect',
+    target: { source: dirInput, kind: 'directory', requestedFallback, workerEntry },
+    decision,
+    checks: {
+      localDetectionPassed: true,
+      packageChecked: false,
+      canPackage: null,
+      remoteChecked: false,
+      canDeploy: null,
+      canDeployScope: 'none',
+    },
+    sideEffects: { willDeploy: false },
+  });
+  if (parsed.flags.json) {
+    context.output(JSON.stringify(payload));
+    return 0;
+  }
+  outputHumanDetection(context.output, dirInput, decision);
+  return 0;
+}
+
 async function runDeploy(parsed, context) {
   rejectRemovedProjectFlags(parsed);
-  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd });
+  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: true });
   const config = readConfigForCommand(parsed, { ...context, commandConfig });
-  const credential = await resolveCredential(config.environment, context, parsed);
-  const client = createClient(config, credential, context);
   if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 pages deploy <目录> <站点名>。');
 
-  const dirInput = parsed.positional[0] || commandConfig?.dir;
+  const dirInput = parsed.positional[0] || commandConfig?.source || commandConfig?.dir;
   const siteSlug = normalizeSiteSlug(parsed.positional[1] || commandConfig?.site);
-  if (!dirInput) throw usageError('DIR_REQUIRED', '缺少发布目录。', '请使用 pages deploy <目录> <站点名>，或通过 --config <file> 提供 dir。');
-  if (!siteSlug) throw usageError('SITE_REQUIRED', '缺少站点名。', '请使用 pages deploy <目录> <站点名>，或通过 --config <file> 提供 site。');
+  if (!dirInput) {
+    throw usageError(
+      'DIR_REQUIRED',
+      '缺少发布目录。',
+      '请使用 pages deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 source。'
+    );
+  }
+  if (!siteSlug) {
+    throw usageError(
+      'SITE_REQUIRED',
+      '缺少站点名。',
+      '请使用 pages deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 site。'
+    );
+  }
 
   const targetPath = path.resolve(context.cwd, dirInput);
-  const artifactKind = parsed.flags.artifactKind || commandConfig?.artifactKind || (await inferArtifactKind(targetPath));
-  if (!VALID_ARTIFACT_KINDS.has(artifactKind)) {
-    throw usageError('ARTIFACT_KIND_INVALID', 'artifact 类型无效。', '请使用 static、spa 或 worker。');
+  const requestedFallback = parsed.flags.fallback || commandConfig?.fallback || 'auto';
+  const workerEntry = parsed.flags.workerEntry || commandConfig?.worker?.entry || null;
+  outputProgress(parsed, context, '检查发布目录...');
+  const decision = await detectPublishTarget(targetPath, { requestedFallback, workerEntry });
+  const uploadPlan = await createUploadPlan(targetPath, decision);
+  outputProgress(parsed, context, `检查发布目录完成：${uploadPlan.fileCount} files / ${formatBytes(uploadPlan.sizeBytes)}`);
+  outputProgress(parsed, context, `识别结果：${humanDeploymentLabel(decision)}`);
+  outputProgress(parsed, context, `找不到文件时：${humanFallbackLabel(decision.resolvedFallback)}`);
+  if (parsed.flags.dryRun) {
+    const payload = preflightEnvelope({
+      mode: 'dry-run',
+      site: siteSlug,
+      target: { source: dirInput, kind: 'directory', requestedFallback, workerEntry },
+      decision,
+      uploadPlan,
+      checks: {
+        localDetectionPassed: true,
+        packageChecked: true,
+        canPackage: true,
+        remoteChecked: false,
+        canDeploy: null,
+        canDeployScope: 'local',
+      },
+      sideEffects: {
+        willDeploy: false,
+        siteCreated: false,
+        deploymentCreated: false,
+        filesUploaded: false,
+        routeChanged: false,
+      },
+    });
+    if (parsed.flags.json) {
+      context.output(JSON.stringify(payload));
+      return 0;
+    }
+    outputHumanDryRun(context.output, dirInput, siteSlug, decision, uploadPlan);
+    return 0;
   }
+
+  outputProgress(parsed, context, '准备凭证...');
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
 
   const requestedVisibility = parsed.flags.visibility || commandConfig?.visibility;
   if (requestedVisibility && !VALID_VISIBILITIES.has(requestedVisibility)) {
     throw usageError('SITE_VISIBILITY_INVALID', '站点可见性无效。', '请使用 internal、org、acl、owner 或 disabled。');
   }
 
+  let siteCreated = false;
   if (credential.type !== 'access_key') {
+    outputProgress(parsed, context, '准备站点...');
     const visibility = requestedVisibility || 'org';
     try {
       await client.requestApi('POST', '/.xd-pages/api/sites', { slug: siteSlug, visibility });
+      siteCreated = true;
     } catch (error) {
       if (error?.code !== 'SITE_SLUG_CONFLICT') throw error;
     }
   }
 
-  const artifact = await hashArtifact(targetPath);
-  const deployed =
-    artifactKind === 'worker'
-      ? await client.requestApi(
-          'POST',
-          '/.xd-pages/api/deployments',
-          {
-            siteSlug,
-            artifactKind,
-            contentHash: artifact.contentHash,
-            artifactBundle: await buildArtifactBundle(targetPath, artifactKind),
-            source: 'cli',
-          },
-          { idempotencyKey: nextIdempotencyKey(context) }
-        )
-      : await client.requestApiForm(
-          'POST',
-          '/.xd-pages/api/deployments',
-          await buildAssetDeploymentForm({
-            siteSlug,
-            artifactKind,
-            contentHash: artifact.contentHash,
-            targetPath,
-          }),
-          { idempotencyKey: nextIdempotencyKey(context) }
-        );
+  outputProgress(parsed, context, '上传并发布...');
+  const deployed = await client.requestApiForm(
+    'POST',
+    '/.xd-pages/api/deployments',
+    buildPublishPlanDeploymentForm({ siteSlug, uploadPlan }),
+    { idempotencyKey: nextIdempotencyKey(context) }
+  );
 
   const url = deployed.route?.hostname ? `https://${deployed.route.hostname}` : siteUrlForSlug(siteSlug, config);
+  const finalDecision = decisionSummaryFromResponse(deployed.decision) || decisionSummary(decision);
   if (
     outputJsonResult(parsed, context, {
+      type: 'deploy',
+      mode: 'deploy',
       environment: config.environment,
       site: siteSlug,
-      artifactKind,
+      target: { source: dirInput, kind: 'directory', requestedFallback, workerEntry },
+      decision: finalDecision,
+      uploadPlanSummary: uploadPlanSummary(uploadPlan),
+      checks: {
+        localDetectionPassed: true,
+        packageChecked: true,
+        canPackage: true,
+        remoteChecked: true,
+        canDeploy: true,
+        canDeployScope: 'remote-deploy',
+      },
+      sideEffects: {
+        willDeploy: true,
+        siteCreated,
+        deploymentCreated: true,
+        filesUploaded: uploadPlan.fileCount > 0 || uploadPlan.workerModules.length > 0,
+        routeChanged: true,
+      },
+      signals: decision.signals || [],
+      diagnostics: {
+        warnings: (decision.diagnostics || []).filter((diagnostic) => diagnostic.severity !== 'error'),
+        errors: (decision.diagnostics || []).filter((diagnostic) => diagnostic.severity === 'error'),
+      },
       deployment: deployed.deployment || null,
       version: deployed.version || null,
       route: deployed.route || null,
@@ -267,29 +367,101 @@ async function runDeploy(parsed, context) {
     return 0;
   }
   context.output(`站点名：${siteSlug}`);
+  context.output(`识别结果：${humanDeploymentLabel(decision)}`);
+  context.output(`找不到文件时：${humanFallbackLabel(decision.resolvedFallback)}`);
   context.output(`部署：${deployed.deployment?.id || 'created'} ${deployed.deployment?.status || ''}`.trim());
-  if (url) context.output(`URL ${url}`);
+  if (url) context.output(`发布完成：${url}`);
   return 0;
 }
 
-async function buildAssetDeploymentForm({ siteSlug, artifactKind, contentHash, targetPath }) {
-  const artifact = await buildAssetArtifact(targetPath, artifactKind);
+function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan }) {
   const form = new FormData();
-  form.set('siteSlug', siteSlug);
-  form.set('artifactKind', artifactKind);
-  form.set('contentHash', contentHash);
-  form.set('source', 'cli');
-  form.set('assetManifest', JSON.stringify(artifact.manifest));
-  form.set('assetFileCount', String(artifact.fileCount));
-  form.set('assetSizeBytes', String(artifact.sizeBytes));
-
-  artifact.files.forEach((file, index) => {
-    form.set(`file-${index}`, new Blob([file.bytes], { type: file.contentType }), file.relativePath);
-  });
+  const metadata = {
+    schemaVersion: 1,
+    siteSlug,
+    requestedFallback: uploadPlan.publishPlan.requestedFallback,
+    source: 'cli',
+    contentHash: uploadPlan.contentHash,
+    publishPlan: uploadPlan.publishPlan,
+    assetManifest: uploadPlan.assetManifest,
+    workerMainModuleName: uploadPlan.workerMainModuleName,
+    workerModules: uploadPlan.workerModules.map(({ moduleName, partName, hash, size, contentType }) => ({
+      moduleName,
+      partName,
+      hash,
+      size,
+      contentType,
+    })),
+    controlSignals: uploadPlan.controlSignals,
+  };
+  form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
+  for (const file of uploadPlan.assetFiles) {
+    form.set(file.partName, new Blob([file.bytes], { type: file.contentType }), file.relativePath);
+  }
+  for (const module of uploadPlan.workerModules) {
+    form.set(module.partName, new Blob([module.content], { type: module.contentType }), module.moduleName);
+  }
   return form;
 }
 
+function preflightEnvelope({ mode, site, target, decision, uploadPlan, checks, sideEffects }) {
+  const payload = {
+    ok: true,
+    schemaVersion: 1,
+    type: 'preflight',
+    mode,
+    ...(site ? { site } : {}),
+    target,
+    decision: decisionSummary(decision),
+    checks,
+    sideEffects,
+    signals: decision.signals || [],
+    diagnostics: {
+      warnings: (decision.diagnostics || []).filter((diagnostic) => diagnostic.severity !== 'error'),
+      errors: (decision.diagnostics || []).filter((diagnostic) => diagnostic.severity === 'error'),
+    },
+  };
+  if (uploadPlan) {
+    payload.uploadPlanSummary = uploadPlanSummary(uploadPlan);
+  }
+  return payload;
+}
+
+function uploadPlanSummary(uploadPlan) {
+  return {
+    contentHash: uploadPlan.contentHash,
+    fileCount: uploadPlan.fileCount,
+    sizeBytes: uploadPlan.sizeBytes,
+    assetControlFilesExcluded: (uploadPlan.controlSignals || []).map((signal) => signal.path),
+  };
+}
+
+function decisionSummary(decision) {
+  return {
+    deploymentShape: decision.deploymentShape,
+    requestedFallback: decision.requestedFallback,
+    resolvedFallback: decision.resolvedFallback,
+    routingMode: decision.routingMode,
+    confidence: decision.confidence,
+    source: decision.source,
+  };
+}
+
+function decisionSummaryFromResponse(decision) {
+  if (!decision) return null;
+  return {
+    deploymentShape: decision.deploymentShape,
+    requestedFallback: decision.requestedFallback,
+    resolvedFallback: decision.resolvedFallback,
+    routingMode: decision.routingMode,
+    confidence: undefined,
+    source: 'api',
+  };
+}
+
 async function runStatus(parsed, context) {
+  if (!parsed.flags.deployment && parsed.positional.length === 0) return runAuthStatus(parsed, context);
+
   const config = readConfigForCommand(parsed, context);
   const credential = await resolveCredential(config.environment, context, parsed);
   const client = createClient(config, credential, context);
@@ -332,7 +504,7 @@ async function runRollback(parsed, context) {
 }
 
 async function runOpen(parsed, context) {
-  assertAccessKeyNotUsed(parsed);
+  assertTokenNotUsed(parsed);
   const config = readConfigForCommand(parsed, context);
   const site = readSingleSiteArg(parsed, 'OPEN_USAGE_INVALID', '请使用 pages open <站点名>。');
   const url = siteUrlForSlug(site, config);
@@ -492,6 +664,10 @@ async function runEnv(parsed, context) {
     return 0;
   }
 
+  if (USER_ENVIRONMENTS.includes(subcommand) && parsed.positional.length === 1) {
+    return switchEnvironment(parsed, context, resolveEnvironment(subcommand));
+  }
+
   if (subcommand === 'list') {
     if (parsed.positional.length !== 1 && parsed.positional.length !== 0) {
       throw usageError('ENV_USAGE_INVALID', 'env list 参数无效。', '请使用 pages env list。');
@@ -503,19 +679,13 @@ async function runEnv(parsed, context) {
 
   if (subcommand === 'use') {
     if (parsed.positional.length !== 2) {
-      throw usageError('ENV_USAGE_INVALID', 'env use 参数无效。', '请使用 pages env use <production|staging>。');
+      throw usageError('ENV_USAGE_INVALID', 'env use 参数无效。', '请使用 pages env <production|staging>。');
     }
     const environment = resolveEnvironment(parsed.positional[1]);
     if (!USER_ENVIRONMENTS.includes(environment) && environment !== 'custom') {
       throw usageError('ENVIRONMENT_INVALID', '环境无效。', '请使用 production 或 staging。');
     }
-    await saveProfileFile(context.profileDir, {
-      ...context.profile,
-      activeEnvironment: environment,
-    });
-    if (outputJsonResult(parsed, context, { activeEnvironment: environment })) return 0;
-    context.output(`当前环境：${environment}`);
-    return 0;
+    return switchEnvironment(parsed, context, environment);
   }
 
   if (subcommand === 'set' && parsed.positional[1] === 'custom') {
@@ -541,7 +711,20 @@ async function runEnv(parsed, context) {
     return 0;
   }
 
-  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 pages env、pages env list 或 pages env use <环境>。');
+  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 pages env、pages env list 或 pages env <环境>。');
+}
+
+async function switchEnvironment(parsed, context, environment) {
+  if (!USER_ENVIRONMENTS.includes(environment) && environment !== 'custom') {
+    throw usageError('ENVIRONMENT_INVALID', '环境无效。', '请使用 production 或 staging。');
+  }
+  await saveProfileFile(context.profileDir, {
+    ...context.profile,
+    activeEnvironment: environment,
+  });
+  if (outputJsonResult(parsed, context, { activeEnvironment: environment })) return 0;
+  context.output(`当前环境：${environment}`);
+  return 0;
 }
 
 function validateCommandUsage(parsed) {
@@ -557,6 +740,9 @@ function allowedFlagsForCommand(parsed) {
   if (parsed.command === 'version') return VERSION_FLAGS;
   if (parsed.command === 'login') return LOGIN_FLAGS;
   if (parsed.command === 'deploy') return DEPLOY_FLAGS;
+  if (parsed.command === 'detect') return DETECT_FLAGS;
+  if (parsed.command === 'whoami') return API_READ_FLAGS;
+  if (parsed.command === 'logout') return AUTH_ENV_FLAGS;
   if (parsed.command === 'status') return STATUS_FLAGS;
   if (parsed.command === 'rollback') return ROLLBACK_FLAGS;
   if (parsed.command === 'open') return OPEN_FLAGS;
@@ -614,7 +800,7 @@ async function readSiteBySlug(client, slug) {
       `未找到站点：${slug}`,
       suggestion
         ? `未找到 ${slug}。你是不是想查看 ${suggestion}？`
-        : '请确认站点名和当前环境；如果使用 access key，请确认它绑定的是这个站点。'
+        : '请确认站点名和当前环境；如果使用发布 token，请确认它绑定的是这个站点。'
     );
   }
   return { site };
@@ -640,11 +826,21 @@ function readConfigForCommand(parsed, context) {
   return readCliConfig(context.env, { environment: requestedEnvironment });
 }
 
+function readOneShotToken(parsed) {
+  if (parsed.flags.token) return parsed.flags.token;
+  // Kept only for old scripts. Public help and docs teach --token.
+  for (const flag of DEPRECATED_HIDDEN_TOKEN_FLAGS) {
+    if (parsed.flags[flag]) return parsed.flags[flag];
+  }
+  return null;
+}
+
 async function resolveCredential(environment, context, parsed) {
-  if (parsed.flags.accessKey) {
+  const token = readOneShotToken(parsed);
+  if (token) {
     return {
       type: 'access_key',
-      value: parsed.flags.accessKey,
+      value: token,
     };
   }
   if (context.env.PAGES_ACCESS_KEY) {
@@ -833,6 +1029,44 @@ function outputSiteStatus(output, environment, site) {
   if (site.url || site?.route?.hostname) output(`URL ${site.url || `https://${site.route.hostname}`}`);
 }
 
+function outputHumanDetection(output, source, decision) {
+  output(`发布目录：${source}`);
+  output(`识别结果：${humanDeploymentLabel(decision)}`);
+  output(`找不到文件时：${humanFallbackLabel(decision.resolvedFallback)}`);
+  output(`置信度：${decision.confidence}`);
+  for (const diagnostic of decision.diagnostics || []) {
+    output(`提示：${diagnostic.message || diagnostic.code}`);
+  }
+}
+
+function outputHumanDryRun(output, source, site, decision, uploadPlan) {
+  output('本地预演，不会创建站点、不会创建 deployment、不会上传文件，也不会检查远端权限或站点名。');
+  output(`站点名：${site}`);
+  output(`检查发布目录完成：${uploadPlan.fileCount} files / ${formatBytes(uploadPlan.sizeBytes)}`);
+  output(`发布目录：${source}`);
+  output(`识别结果：${humanDeploymentLabel(decision)}`);
+  output(`找不到文件时：${humanFallbackLabel(decision.resolvedFallback)}`);
+  output('本地打包预演通过。');
+}
+
+function humanDeploymentLabel(decision) {
+  if (decision.deploymentShape === 'worker-only') return 'Worker';
+  if (decision.deploymentShape === 'worker-with-assets') return 'Worker + 静态资源';
+  return '静态资源目录';
+}
+
+function humanFallbackLabel(value) {
+  if (value === 'index') return '返回 /index.html';
+  if (value === 'not-found') return '返回 404.html 或 404';
+  return '由 Worker 处理';
+}
+
+function formatBytes(value) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
 function suggestClosestSlug(slug, sites = []) {
   let best = null;
   for (const site of sites) {
@@ -902,17 +1136,17 @@ function rejectRemovedProjectFlags(parsed) {
     throw usageError(
       'OPTION_UNSUPPORTED',
       '该参数不再支持。',
-      '请使用位置参数：pages deploy <目录> <站点名>；配置文件请显式使用 --config <file>。'
+      '请使用位置参数：pages deploy <目录> <站点名>；也可以在当前目录放 pages.config.json 或显式传 --config <file>。'
     );
   }
 }
 
-function assertAccessKeyNotUsed(parsed) {
-  if (parsed.flags.accessKey) {
+function assertTokenNotUsed(parsed) {
+  if (readOneShotToken(parsed)) {
     throw usageError(
       'ACCESS_KEY_NOT_USED',
-      '当前命令不会使用 access key。',
-      '请只在 login、deploy、status、sites、access、rollback 或 auth whoami 等需要访问 API 的命令中传 --access-key。'
+      '当前命令不会使用 token。',
+      '请只在 login、deploy、status、sites、access、rollback 或 whoami 等需要访问 API 的命令中传 --token。'
     );
   }
 }
@@ -926,6 +1160,10 @@ function outputJsonResult(parsed, context, payload) {
   if (!parsed.flags.json) return false;
   context.output(formatJson({ ok: true, schemaVersion: 1, ...payload }));
   return true;
+}
+
+function outputProgress(parsed, context, line) {
+  if (!parsed.flags.json) context.output(line);
 }
 
 function outputHelp(parsed, output) {
@@ -946,54 +1184,83 @@ function helpText(topic) {
     return `用法：pages deploy <目录> <站点名> [选项]
       pages deploy --config <file> [选项]
 
-发布 static 站点、SPA 或自定义 Worker 到 XD Pages。
+发布目录到 XD Pages。CLI 会自动判断发布方式。
 
 选项：
-  --env <production|staging>                目标环境；默认 production。
   --visibility <internal|org|acl|owner|disabled>
                                             创建站点时的初始可见性；默认 org。
-  --artifact-kind <static|spa|worker>       覆盖 artifact 类型自动识别。
-  --access-key <key>                        只在本次命令中使用的 access key，不写入本地。
-  --config <file>                           一次性读取发布参数，不自动发现、不写回。
+  --fallback <auto|index|not-found>         设置找不到文件时的行为；默认 auto。
+  --worker-entry <file>                     指定发布目录内的 Worker 入口。
+  --dry-run                                 只做本地预演，不创建站点、不上传文件。
+  --token <token>                           只在本次命令中使用的发布 token，不写入本地。
+  --config <file>                           一次性读取发布参数；未指定时会读取当前目录的 pages.config.json。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。
 
 示例：
   pages deploy ./dist demo --visibility org
-  pages deploy ./dist demo --env staging --access-key <access-key> --json
+  pages deploy ./dist demo --token <token> --json
   pages deploy --config pages.config.json
 
 说明：
   站点名使用位置参数；CLI 不读取隐藏项目绑定文件。
-  --config 文件只保存非敏感发布参数，例如 environment、site、dir、visibility、artifactKind。
+  pages.config.json 或 --config 文件只保存非敏感发布参数，例如 site、source、visibility、fallback、worker.entry。
   CLI 不暴露底层执行平台细节。`;
+  }
+  if (topic === 'detect') {
+    return `用法：pages detect <目录> [选项]
+
+本地识别发布目录，不登录、不联网、不上传文件。
+
+选项：
+  --fallback <auto|index|not-found>         设置找不到文件时的行为；默认 auto。
+  --worker-entry <file>                     指定发布目录内的 Worker 入口。
+  --config <file>                           一次性读取发布参数。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
   }
   if (topic === 'login' || topic === 'auth') {
     return `用法：pages login [选项]
-      pages auth login [选项]
-      pages auth status [选项]
-      pages auth whoami [选项]
-      pages auth logout [选项]
+      pages status [选项]
+      pages whoami [选项]
+      pages logout [选项]
 
 登录、查看或退出 XD Pages CLI。
 
 选项：
-  --env <production|staging>                目标环境；默认 production。
-  --access-key <key>                        显式保存已有 access key，保存前会先校验 whoami。
+  --token <token>                           显式保存已有发布 token，保存前会先校验 whoami。
   --no-open                                 只打印浏览器地址，不自动打开。
   --json                                    输出稳定 JSON，不输出 secret。
   --help                                    显示帮助。`;
   }
   if (topic === 'status') {
-    return `用法：pages status <站点名> [选项]
+    return `用法：pages status [站点名] [选项]
 
-查看站点状态。
+查看登录状态、站点状态或部署状态。
 
 选项：
-  --env <production|staging>                目标环境。
   --deployment <deployment_id>              按部署 ID 查看部署状态。
-  --access-key <key>                        只在本次命令中使用的 access key。
+  --token <token>                           只在本次命令中使用的发布 token。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
+  }
+  if (topic === 'whoami') {
+    return `用法：pages whoami [选项]
+
+查看当前凭证身份。
+
+选项：
+  --token <token>                           只在本次命令中使用的发布 token。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
+  }
+  if (topic === 'logout') {
+    return `用法：pages logout [选项]
+
+退出本地登录。
+
+选项：
+  --json                                    输出稳定 JSON，不输出 secret。
   --help                                    显示帮助。`;
   }
   if (topic === 'sites') {
@@ -1003,8 +1270,7 @@ function helpText(topic) {
 查看站点列表或站点详情。
 
 选项：
-  --env <production|staging>                目标环境。
-  --access-key <key>                        只在本次命令中使用的 access key。
+  --token <token>                           只在本次命令中使用的发布 token。
   --details                                 sites list 输出完整站点详情；默认只显示概要。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
@@ -1025,12 +1291,11 @@ function helpText(topic) {
   disabled   暂停访问。
 
 选项：
-  --env <production|staging>                目标环境。
   --visibility <internal|org|acl|owner|disabled>
                                             set 命令使用；设置站点访问范围。
   --email <邮箱>                            可重复传入；acl 访问范围下授权邮箱。
   --department <部门路径>                   可重复传入；acl 访问范围下授权部门及子部门。
-  --access-key <key>                        只在本次命令中使用的 access key。
+  --token <token>                           只在本次命令中使用的发布 token。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。
 
@@ -1043,11 +1308,10 @@ function helpText(topic) {
   if (topic === 'rollback') {
     return `用法：pages rollback <站点名> <version-id> [选项]
 
-回滚站点到一个已存在的不可变版本。普通 Worker slot 站点如果服务端不支持回滚，命令会返回可操作错误。
+回滚站点到一个已存在的不可变版本。如果当前站点类型不支持回滚，命令会返回可操作错误。
 
 选项：
-  --env <production|staging>                目标环境。
-  --access-key <key>                        只在本次命令中使用的 access key。
+  --token <token>                           只在本次命令中使用的发布 token。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
@@ -1057,13 +1321,12 @@ function helpText(topic) {
 打开或打印站点地址。
 
 选项：
-  --env <production|staging>                目标环境。
   --print                                   只打印 URL，不打开浏览器。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
   if (topic === 'env') {
-    return `用法：pages env [current|list|use] [选项]
+    return `用法：pages env [current|list|production|staging] [选项]
 
 管理本地 CLI 环境选择。
 
@@ -1071,7 +1334,8 @@ function helpText(topic) {
   pages env
   pages env current
   pages env list
-  pages env use <production|staging>
+  pages env production
+  pages env staging
 
 选项：
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
@@ -1080,19 +1344,19 @@ function helpText(topic) {
   return `用法：pages <命令> [选项]
 
 命令：
-  login       通过浏览器 SSO 登录，或显式保存 access key。
-  auth        查看登录状态、whoami 或退出登录。
-  deploy      发布 static 站点、SPA 或自定义 Worker。
-  status      查看站点或部署状态。
+  login       通过浏览器 SSO 登录，或显式保存发布 token。
+  logout      退出本地登录。
+  whoami      查看当前凭证身份。
+  detect      本地识别发布目录。
+  deploy      发布目录到 XD Pages，自动判断发布方式。
+  status      查看登录状态、站点或部署状态。
   sites       查看站点列表或详情。
   rollback    回滚到不可变版本 ID。
   access      查看或调整站点访问范围。
   open        打开或打印站点地址。
-  env         查看或切换环境。
 
 全局选项：
-  --env <production|staging>                目标环境。
-  --access-key <key>                        API 命令的一次性 access key。
+  --token <token>                           API 命令的一次性发布 token。
   --json                                    在支持的命令中输出稳定 JSON，适合 AI agent 和 CI。
   --help, -h                                显示帮助。
   --version, -v                             显示 CLI 版本。
@@ -1104,7 +1368,7 @@ function helpText(topic) {
 function helpJson(topic) {
   return {
     topic,
-    commands: ['login', 'auth', 'deploy', 'status', 'sites', 'rollback', 'access', 'open', 'env'],
+    commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'rollback', 'access', 'open'],
     commandHelp: 'pages help <命令>',
     jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };

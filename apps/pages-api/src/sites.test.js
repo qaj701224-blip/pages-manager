@@ -606,9 +606,12 @@ async function activateSite(store, siteId, overrides = {}) {
     deploymentId: 'dep_1',
     workerName: 'pages-v2-docs-ver-1',
     runtime: 'wfp',
-    artifactKind: 'worker',
     artifactRef: 'wfp://test/pages-v2-docs-ver-1',
     contentHash: 'sha256:abc',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
     createdBy: 'usr_1',
   });
   return store.activateSiteVersion(
