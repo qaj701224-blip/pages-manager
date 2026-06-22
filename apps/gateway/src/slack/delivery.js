@@ -11,7 +11,7 @@ import { slackUserIdFromBody, surfaceForSlackBody } from './session.js';
 export function canSendSlackOutput(env = {}) {
   const hasNotifierUrl = Boolean(env.SLACK_NOTIFIER_URL || env.PAGES_SLACK_NOTIFIER_URL);
   const hasNotifierSecret = Boolean(env.SLACK_NOTIFIER_SHARED_SECRET || env.PAGES_SLACK_NOTIFIER_SHARED_SECRET);
-  return Boolean(env.SLACK_BOT_TOKEN || (hasNotifierUrl && hasNotifierSecret));
+  return Boolean(hasNotifierUrl && hasNotifierSecret);
 }
 
 export function shouldPostSlackResultReply(result = {}) {
@@ -148,14 +148,6 @@ export function slackDeliveryPatchForResult(result = {}, overrides = {}) {
   };
 }
 
-function slackApiMethodUrl(env = {}, method) {
-  if (env.SLACK_API_BASE_URL) {
-    return `${String(env.SLACK_API_BASE_URL).replace(/\/+$/, '')}/${method}`;
-  }
-
-  return String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, `/${method}`);
-}
-
 function remoteSlackNotifierUrl(env = {}, path) {
   const base = env.SLACK_NOTIFIER_URL || env.PAGES_SLACK_NOTIFIER_URL;
   if (!base) return null;
@@ -191,7 +183,7 @@ async function fetchSlackRequesterProfileFromNotifier(env = {}, slackUserId) {
   const token = remoteSlackNotifierToken(env);
   if (!url || !token || !slackUserId) return null;
 
-  const fetchImpl = env.SLACK_NOTIFIER_FETCH || env.SLACK_FETCH || fetch;
+  const fetchImpl = env.SLACK_NOTIFIER_FETCH || fetch;
   const response = await fetchImpl(url, {
     method: 'POST',
     headers: {
@@ -227,46 +219,7 @@ export async function fetchSlackRequesterProfile(env = {}, body = {}) {
   const notifierProfile = await fetchSlackRequesterProfileFromNotifier(env, slackUserId);
   if (notifierProfile) return notifierProfile;
 
-  if (!env.SLACK_BOT_TOKEN) return requesterProfileFromSlackUser(body, { id: slackUserId });
-
-  const fetchImpl = env.SLACK_PROFILE_FETCH || env.SLACK_FETCH || fetch;
-  let response;
-  let payload;
-  try {
-    response = await fetchImpl(slackApiMethodUrl(env, 'users.info'), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
-        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
-      },
-      body: new URLSearchParams({ user: slackUserId }).toString(),
-    });
-    payload = await response.json().catch(() => null);
-  } catch (error) {
-    console.log(
-      JSON.stringify({
-        service: 'pages-gateway',
-        message: 'slack_user_profile_lookup_failed',
-        slackUserId,
-        error: error.message,
-      })
-    );
-    return requesterProfileFromSlackUser(body, { id: slackUserId });
-  }
-
-  if (!response.ok || payload?.ok === false || !payload?.user) {
-    console.log(
-      JSON.stringify({
-        service: 'pages-gateway',
-        message: 'slack_user_profile_lookup_failed',
-        slackUserId,
-        error: payload?.error || response.statusText || `HTTP ${response.status}`,
-      })
-    );
-    return requesterProfileFromSlackUser(body, { id: slackUserId });
-  }
-
-  return requesterProfileFromSlackUser(body, payload.user);
+  return requesterProfileFromSlackUser(body, { id: slackUserId });
 }
 
 export async function addWorkingReactionForSlackEvent(env, body = {}) {

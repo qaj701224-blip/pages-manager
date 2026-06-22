@@ -1,22 +1,3 @@
-function slackApiUrl(env = {}, method = 'chat.postMessage') {
-  if (env.SLACK_API_BASE_URL) {
-    return `${String(env.SLACK_API_BASE_URL).replace(/\/+$/, '')}/${method}`;
-  }
-
-  if (method === 'chat.update') {
-    return (
-      env.SLACK_UPDATE_API_URL ||
-      String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, '/chat.update')
-    );
-  }
-
-  if (method !== 'chat.postMessage') {
-    return String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, `/${method}`);
-  }
-
-  return env.SLACK_POST_API_URL || env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage';
-}
-
 function slackTargetForJob(job) {
   const thread = job?.slackThread;
   if (!thread?.channelId) return null;
@@ -39,14 +20,6 @@ export function mentionSlackUser(text, userId) {
   if (!mention) return text;
   if (String(text).startsWith(mention)) return text;
   return `${mention} ${text}`;
-}
-
-async function readSlackResponse(response) {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
 }
 
 function truncateText(value = '', max = 1800) {
@@ -347,73 +320,8 @@ export function buildSlackAgentReplyBlocks(reply = {}, options = {}) {
   return blocks;
 }
 
-export async function startSlackAgentReply(env, target = {}, options = {}) {
-  if (!target.channel || !env.SLACK_BOT_TOKEN) return null;
-  const text = options.text || target.text || '我正在整理这轮需求。';
-  return postSlackMessage(env, {
-    channel: target.channel,
-    thread_ts: target.thread_ts || target.threadTs || undefined,
-    text,
-    blocks: options.blocks || buildSlackAgentReplyBlocks({ text }, { status: options.status || 'running' }),
-  });
-}
-
-export async function updateSlackAgentReply(env, message = {}, options = {}) {
-  if (!message.channel || !message.messageTs || !env.SLACK_BOT_TOKEN) return null;
-  const text = options.text || message.textSnapshot || '我已更新这轮需求整理。';
-  return updateSlackMessage(env, {
-    channel: message.channel,
-    ts: message.messageTs,
-    text,
-    blocks: options.blocks || buildSlackAgentReplyBlocks({ text }, { status: options.status || message.status || 'completed' }),
-  });
-}
-
-async function callSlackApi(env, method, payload) {
-  if (!env.SLACK_BOT_TOKEN) return null;
-  const fetchImpl = env.SLACK_FETCH || fetch;
-  const response = await fetchImpl(slackApiUrl(env, method), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
-      'Content-Type': 'application/json; charset=utf-8',
-    },
-    body: JSON.stringify(payload),
-  });
-  const body = await readSlackResponse(response);
-
-  if (!response.ok || body?.ok === false) {
-    return {
-      ok: false,
-      error: body?.error || response.statusText || `HTTP ${response.status}`,
-    };
-  }
-
-  return {
-    ok: true,
-    channel: body?.channel || payload.channel,
-    ts: body?.ts || payload.ts || null,
-  };
-}
-
 export function buildSlackStatusText(job = {}, stage) {
   return mentionSlackUser(`Pages 发布进度：${stageLabel(stage, job)}`, job.slackThread?.userId);
-}
-
-export async function postSlackMessage(env, payload) {
-  return callSlackApi(env, 'chat.postMessage', payload);
-}
-
-export async function updateSlackMessage(env, payload) {
-  return callSlackApi(env, 'chat.update', payload);
-}
-
-export async function addSlackReaction(env, payload) {
-  return callSlackApi(env, 'reactions.add', payload);
-}
-
-export async function removeSlackReaction(env, payload) {
-  return callSlackApi(env, 'reactions.remove', payload);
 }
 
 function formatReviewLocation(comment = {}) {
@@ -499,51 +407,17 @@ export function notificationTextForReviewAction(reviewAction, payload = {}) {
   return null;
 }
 
-export async function notifySlackJob(env, store, job, text, key) {
-  if (!text || !job?.id) return null;
-  const target = slackTargetForJob(job);
-  if (!target || !env.SLACK_BOT_TOKEN) return null;
-  if (store?.hasSlackNotification && (await store.hasSlackNotification(job.id, key))) {
-    return { skipped: true, reason: 'duplicate', key };
-  }
-
-  const fetchImpl = env.SLACK_FETCH || fetch;
-  const result = await callSlackApi({ ...env, SLACK_FETCH: fetchImpl }, 'chat.postMessage', {
-    ...target,
-    text: mentionSlackUser(text, job.slackThread?.userId),
-  });
-
-  if (!result?.ok) {
-    return {
-      ok: false,
-      key,
-      error: result?.error || 'Slack request failed',
-    };
-  }
-
-  await store?.recordSlackNotification?.(job.id, key);
-  return {
-    ok: true,
-    key,
-    channel: result.channel || target.channel,
-    ts: result.ts || null,
-  };
-}
-
-export async function notifySlackJobStatus(env, store, job, options = {}) {
+export function prepareSlackJobStatusNotification(store, job, options = {}) {
   if (!job?.id) return null;
   const target = slackTargetForJob(job);
-  if (!target || !env.SLACK_BOT_TOKEN) return null;
+  if (!target) return null;
 
   const stage = options.stage || job.status;
   const dedupeKey = options.dedupeKey || `job-status:${job.id}:${stage}`;
   const slackSessionId = options.slackSessionId || job.slackSessionId || null;
   const scopeKey = options.scopeKey || (slackSessionId ? `session:${slackSessionId}` : 'job');
-  const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id, { scopeKey }) : null;
-  const fallbackExisting =
-    !existing && scopeKey !== 'job' && store?.getSlackJobStatusMessage
-      ? await store.getSlackJobStatusMessage(job.id, { scopeKey: 'job' })
-      : null;
+  const existing = options.existingMessage || null;
+  const fallbackExisting = options.fallbackExistingMessage || null;
   const reusableFallback = sameSlackStatusTarget(fallbackExisting, job) ? fallbackExisting : null;
   const existingMessage = existing || reusableFallback;
   if (existingMessage?.messageTs && isStaleStageUpdate(existingMessage.stage, stage) && options.allowRegression !== true) {
@@ -552,21 +426,6 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
   if (existingMessage?.messageTs && existingMessage.stage === stage && options.skipDuplicate !== false) {
     return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existingMessage };
   }
-
-  const progress = store?.recordAgentRunEvent
-    ? await store.recordAgentRunEvent({
-        publishingJobId: job.id,
-        slackSessionId,
-        agentRunId: options.agentRunId || null,
-        type: options.type || 'job_progress',
-        stage,
-        text: options.text || stageLabel(stage, job),
-        status: options.status || job.status || 'running',
-        dedupeKey,
-        slackChannelId: target.channel,
-        slackThreadTs: target.thread_ts || null,
-      })
-    : null;
 
   const blocks = buildJobStatusBlocks(job, {
     stage,
@@ -577,50 +436,35 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
     currentChange: options.currentChange,
   });
   const text = buildSlackStatusText(job, stage);
-  let result;
 
-  if (existingMessage?.messageTs) {
-    result = await updateSlackMessage(env, {
-      channel: existingMessage.channel || target.channel,
-      ts: existingMessage.messageTs,
-      text,
-      blocks,
-    });
-  } else {
-    result = await postSlackMessage(env, {
-      ...target,
-      text,
-      blocks,
-    });
-  }
-
-  if (!result?.ok) {
-    return {
-      ok: false,
-      key: dedupeKey,
-      error: result?.error || 'Slack request failed',
-      event: progress?.event || null,
-    };
-  }
-
-  const message = store?.recordSlackJobStatusMessage
-    ? await store.recordSlackJobStatusMessage(job.id, {
+  return {
+    key: dedupeKey,
+    stage,
+    slackSessionId,
+    scopeKey,
+    existingMessage,
+    action: existingMessage?.messageTs ? 'update' : 'post',
+    target,
+    payload: existingMessage?.messageTs
+      ? {
+          channel: existingMessage.channel || target.channel,
+          ts: existingMessage.messageTs,
+          text,
+          blocks,
+        }
+      : {
+          ...target,
+          text,
+          blocks,
+        },
+    message: {
         slackSessionId,
         scopeKey,
-        channel: result.channel || target.channel,
+        channel: existingMessage?.channel || target.channel,
         threadTs: target.thread_ts || null,
-        messageTs: result.ts || existingMessage?.messageTs || null,
+        messageTs: existingMessage?.messageTs || null,
         stage,
         status: job.status,
-      })
-    : null;
-  return {
-    ok: true,
-    key: dedupeKey,
-    action: existingMessage?.messageTs ? 'updated' : 'posted',
-    channel: result.channel || target.channel,
-    ts: result.ts || existingMessage?.messageTs || null,
-    message,
-    event: progress?.event || null,
+      },
   };
 }
