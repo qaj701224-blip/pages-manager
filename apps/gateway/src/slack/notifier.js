@@ -6,14 +6,6 @@ import {
   mentionSlackUser,
   notificationTextForCallback,
   notificationTextForReviewAction,
-  addSlackReaction as addSlackReactionDirect,
-  notifySlackJob as notifySlackJobDirect,
-  notifySlackJobStatus as notifySlackJobStatusDirect,
-  postSlackMessage as postSlackMessageDirect,
-  removeSlackReaction as removeSlackReactionDirect,
-  startSlackAgentReply as startSlackAgentReplyDirect,
-  updateSlackMessage as updateSlackMessageDirect,
-  updateSlackAgentReply as updateSlackAgentReplyDirect,
 } from '@xd/slack-notifier-core';
 
 function remoteNotifierUrl(env = {}, path) {
@@ -76,7 +68,13 @@ function sameSlackStatusTarget(message = {}, job = {}) {
 
 async function callRemoteNotifier(env, path, payload) {
   const url = remoteNotifierUrl(env, path);
-  if (!url) return null;
+  if (!url) {
+    return {
+      ok: false,
+      error: 'Slack notifier URL is required',
+      status: 500,
+    };
+  }
 
   if (!remoteNotifierToken(env)) {
     return {
@@ -86,7 +84,7 @@ async function callRemoteNotifier(env, path, payload) {
     };
   }
 
-  const fetchImpl = env.SLACK_NOTIFIER_FETCH || env.SLACK_FETCH || fetch;
+  const fetchImpl = env.SLACK_NOTIFIER_FETCH || fetch;
   const response = await fetchImpl(url, {
     method: 'POST',
     headers: remoteNotifierHeaders(env),
@@ -116,58 +114,30 @@ export {
 };
 
 export async function startSlackAgentReply(env, target, options = {}) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/agent-reply/start')) {
-    return startSlackAgentReplyDirect(env, target, options);
-  }
-
   return callRemoteNotifier(env, '/internal/slack-notifier/agent-reply/start', { target, options });
 }
 
 export async function updateSlackAgentReply(env, message, options = {}) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/agent-reply/update')) {
-    return updateSlackAgentReplyDirect(env, message, options);
-  }
-
   return callRemoteNotifier(env, '/internal/slack-notifier/agent-reply/update', { message, options });
 }
 
 export async function postSlackMessage(env, payload) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/message')) {
-    return postSlackMessageDirect(env, payload);
-  }
-
   return callRemoteNotifier(env, '/internal/slack-notifier/message', { payload });
 }
 
 export async function updateSlackMessage(env, payload) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/update')) {
-    return updateSlackMessageDirect(env, payload);
-  }
-
   return callRemoteNotifier(env, '/internal/slack-notifier/update', { payload });
 }
 
 export async function addSlackReaction(env, payload) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/reaction')) {
-    return addSlackReactionDirect(env, payload);
-  }
-
   return callRemoteNotifier(env, '/internal/slack-notifier/reaction', { payload });
 }
 
 export async function removeSlackReaction(env, payload) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/reaction-remove')) {
-    return removeSlackReactionDirect(env, payload);
-  }
-
   return callRemoteNotifier(env, '/internal/slack-notifier/reaction-remove', { payload });
 }
 
 export async function notifySlackJob(env, store, job, text, key) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/job-message')) {
-    return notifySlackJobDirect(env, store, job, text, key);
-  }
-
   if (!text || !job?.id) return null;
   if (store?.hasSlackNotification && (await store.hasSlackNotification(job.id, key))) {
     return { skipped: true, reason: 'duplicate', key };
@@ -181,10 +151,6 @@ export async function notifySlackJob(env, store, job, text, key) {
 }
 
 export async function notifySlackJobStatus(env, store, job, options = {}) {
-  if (!remoteNotifierUrl(env, '/internal/slack-notifier/job-status')) {
-    return notifySlackJobStatusDirect(env, store, job, options);
-  }
-
   if (!job?.id) return null;
 
   const stage = options.stage || job.status;

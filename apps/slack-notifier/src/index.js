@@ -1,12 +1,7 @@
 import {
-  addSlackReaction,
-  notifySlackJob,
-  notifySlackJobStatus,
-  postSlackMessage,
-  removeSlackReaction,
-  startSlackAgentReply,
-  updateSlackMessage,
-  updateSlackAgentReply,
+  buildSlackAgentReplyBlocks,
+  mentionSlackUser,
+  prepareSlackJobStatusNotification,
 } from '@xd/slack-notifier-core';
 import { jsonResponse } from '@xd/worker-kit';
 
@@ -79,7 +74,169 @@ function slackApiUrl(env = {}, method) {
   if (env.SLACK_API_BASE_URL) {
     return `${String(env.SLACK_API_BASE_URL).replace(/\/+$/, '')}/${method}`;
   }
+  if (method === 'chat.postMessage') {
+    return env.SLACK_POST_API_URL || env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage';
+  }
+  if (method === 'chat.update') {
+    return (
+      env.SLACK_UPDATE_API_URL ||
+      String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, '/chat.update')
+    );
+  }
   return String(env.SLACK_API_URL || 'https://slack.com/api/chat.postMessage').replace(/\/chat\.postMessage$/, `/${method}`);
+}
+
+async function readSlackResponse(response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function missingSlackBotTokenError() {
+  return { ok: false, error: 'Slack bot token is not configured' };
+}
+
+async function callSlackApi(env, method, payload) {
+  if (!env.SLACK_BOT_TOKEN) return missingSlackBotTokenError();
+  const fetchImpl = env.SLACK_FETCH || fetch;
+  const response = await fetchImpl(slackApiUrl(env, method), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify(payload),
+  });
+  const body = await readSlackResponse(response);
+
+  if (!response.ok || body?.ok === false) {
+    return {
+      ok: false,
+      error: body?.error || response.statusText || `HTTP ${response.status}`,
+    };
+  }
+
+  return {
+    ok: true,
+    channel: body?.channel || payload.channel,
+    ts: body?.ts || payload.ts || null,
+  };
+}
+
+async function postSlackMessage(env, payload) {
+  return callSlackApi(env, 'chat.postMessage', payload);
+}
+
+async function updateSlackMessage(env, payload) {
+  return callSlackApi(env, 'chat.update', payload);
+}
+
+async function addSlackReaction(env, payload) {
+  return callSlackApi(env, 'reactions.add', payload);
+}
+
+async function removeSlackReaction(env, payload) {
+  return callSlackApi(env, 'reactions.remove', payload);
+}
+
+async function startSlackAgentReply(env, target = {}, options = {}) {
+  if (!target.channel) return null;
+  const text = options.text || target.text || '我正在整理这轮需求。';
+  return postSlackMessage(env, {
+    channel: target.channel,
+    thread_ts: target.thread_ts || target.threadTs || undefined,
+    text,
+    blocks: options.blocks || buildSlackAgentReplyBlocks({ text }, { status: options.status || 'running' }),
+  });
+}
+
+async function updateSlackAgentReply(env, message = {}, options = {}) {
+  if (!message.channel || !message.messageTs) return null;
+  const text = options.text || message.textSnapshot || '我已更新这轮需求整理。';
+  return updateSlackMessage(env, {
+    channel: message.channel,
+    ts: message.messageTs,
+    text,
+    blocks: options.blocks || buildSlackAgentReplyBlocks({ text }, { status: options.status || message.status || 'completed' }),
+  });
+}
+
+async function notifySlackJobMessage(env, store, job, text, key) {
+  if (!text || !job?.id) return null;
+  const target = job?.slackThread?.channelId
+    ? {
+        channel: job.slackThread.channelId,
+        thread_ts: job.slackThread.threadTs || undefined,
+      }
+    : null;
+  if (!target) return null;
+  if (store?.hasSlackNotification && (await store.hasSlackNotification(job.id, key))) {
+    return { skipped: true, reason: 'duplicate', key };
+  }
+
+  const result = await postSlackMessage(env, {
+    ...target,
+    text: mentionSlackUser(text, job.slackThread?.userId),
+  });
+
+  if (!result?.ok) {
+    return {
+      ok: false,
+      key,
+      error: result?.error || 'Slack request failed',
+    };
+  }
+
+  await store?.recordSlackNotification?.(job.id, key);
+  return {
+    ok: true,
+    key,
+    channel: result.channel || target.channel,
+    ts: result.ts || null,
+  };
+}
+
+async function notifySlackJobStatus(env, store, job, options = {}, existingMessage = null) {
+  const prepared = prepareSlackJobStatusNotification(null, job, { ...options, existingMessage });
+  if (!prepared) return null;
+  if (prepared.skipped) return prepared;
+
+  const result =
+    prepared.action === 'update'
+      ? await updateSlackMessage(env, prepared.payload)
+      : await postSlackMessage(env, prepared.payload);
+
+  if (!result?.ok) {
+    return {
+      ok: false,
+      key: prepared.key,
+      error: result?.error || 'Slack request failed',
+    };
+  }
+
+  const message = store?.recordSlackJobStatusMessage
+    ? await store.recordSlackJobStatusMessage(job.id, {
+        ...prepared.message,
+        channel: result.channel || prepared.message.channel,
+        messageTs: result.ts || prepared.message.messageTs,
+      })
+    : {
+        ...prepared.message,
+        channel: result.channel || prepared.message.channel,
+        messageTs: result.ts || prepared.message.messageTs,
+        jobId: job.id,
+      };
+
+  return {
+    ok: true,
+    key: prepared.key,
+    action: prepared.action === 'update' ? 'updated' : 'posted',
+    channel: result.channel || prepared.target.channel,
+    ts: result.ts || prepared.message.messageTs || null,
+    message,
+  };
 }
 
 function normalizeSlackUserProfile(user = {}) {
@@ -97,7 +254,7 @@ function normalizeSlackUserProfile(user = {}) {
 
 async function fetchSlackUserProfile(env = {}, userId) {
   if (!env.SLACK_BOT_TOKEN) {
-    return { ok: false, error: 'Slack bot token is not configured' };
+    return missingSlackBotTokenError();
   }
   if (!userId) {
     return { ok: false, error: 'Slack user id is required' };
@@ -127,6 +284,11 @@ async function fetchSlackUserProfile(env = {}, userId) {
   };
 }
 
+function slackDeliveryResponse(result) {
+  const body = result || { ok: true, skipped: true, reason: 'no_target' };
+  return jsonResponse(body, body?.ok === false ? 502 : 200);
+}
+
 export function createSlackNotifierApp() {
   return {
     async fetch(request, env = {}) {
@@ -150,51 +312,52 @@ export function createSlackNotifierApp() {
             env,
             transientStatusStore(body.existingMessage || null),
             body.job,
-            body.options || {}
+            body.options || {},
+            body.existingMessage || null
           );
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/job-message') {
           const body = await readJson(request);
-          const result = await notifySlackJob(env, transientMessageStore(), body.job, body.text, body.key);
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          const result = await notifySlackJobMessage(env, transientMessageStore(), body.job, body.text, body.key);
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/message') {
           const body = await readJson(request);
           const result = await postSlackMessage(env, body.payload || {});
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/update') {
           const body = await readJson(request);
           const result = await updateSlackMessage(env, body.payload || {});
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/agent-reply/start') {
           const body = await readJson(request);
           const result = await startSlackAgentReply(env, body.target || {}, body.options || {});
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/agent-reply/update') {
           const body = await readJson(request);
           const result = await updateSlackAgentReply(env, body.message || {}, body.options || {});
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/reaction') {
           const body = await readJson(request);
           const result = await addSlackReaction(env, body.payload || {});
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/reaction-remove') {
           const body = await readJson(request);
           const result = await removeSlackReaction(env, body.payload || {});
-          return jsonResponse(result || { ok: true, skipped: true, reason: 'no_target' });
+          return slackDeliveryResponse(result);
         }
 
         if (request.method === 'POST' && url.pathname === '/internal/slack-notifier/user-info') {
