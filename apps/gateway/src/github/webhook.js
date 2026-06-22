@@ -1,14 +1,36 @@
 import { parseJsonText } from '../http/body.js';
 import { bytesToHex, timingSafeEqualString } from '../utils/crypto.js';
 
+function flagFromEnv(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase())) return true;
+  if (['0', 'false', 'no', 'off'].includes(String(value).toLowerCase())) return false;
+  return null;
+}
+
+function shouldRequireGithubWebhookSignature(env = {}) {
+  const configured = flagFromEnv(env.GITHUB_WEBHOOK_SIGNATURE_REQUIRED);
+  if (configured !== null) return configured;
+  return env.NODE_ENV === 'production';
+}
+
+function unauthorized(message) {
+  const error = new Error(message);
+  error.status = 401;
+  return error;
+}
+
 export async function verifyGithubWebhookSignature(request, env, rawBody) {
-  if (!env.GITHUB_WEBHOOK_SECRET) return;
+  if (!env.GITHUB_WEBHOOK_SECRET) {
+    if (shouldRequireGithubWebhookSignature(env)) {
+      throw unauthorized('GitHub webhook secret is not configured');
+    }
+    return;
+  }
 
   const header = request.headers.get('X-Hub-Signature-256') || '';
   if (!header.startsWith('sha256=')) {
-    const error = new Error('Missing GitHub webhook signature');
-    error.status = 401;
-    throw error;
+    throw unauthorized('Missing GitHub webhook signature');
   }
 
   const key = await crypto.subtle.importKey(
@@ -22,9 +44,7 @@ export async function verifyGithubWebhookSignature(request, env, rawBody) {
   const expected = `sha256=${bytesToHex(digest)}`;
 
   if (!timingSafeEqualString(header, expected)) {
-    const error = new Error('Invalid GitHub webhook signature');
-    error.status = 401;
-    throw error;
+    throw unauthorized('Invalid GitHub webhook signature');
   }
 }
 

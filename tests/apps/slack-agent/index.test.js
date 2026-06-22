@@ -101,12 +101,27 @@ describe('slack agent', () => {
     assert.equal(response.status, 401);
   });
 
+  it('fails closed when the internal shared secret is missing', async () => {
+    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic', sharedSecret: '' } });
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '创建页面' }),
+      })
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 500);
+    assert.equal(body.error, 'Slack agent shared secret is not configured');
+  });
+
   it('returns a turn contract with visible reply events', async () => {
-    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic' } });
+    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic', sharedSecret: 'secret' } });
     const response = await app.fetch(
       new Request('http://localhost/internal/slack-agent/turn', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
         body: JSON.stringify({
           agentRunId: 'agent_1',
           slackSessionId: 'sess_1',
@@ -128,11 +143,15 @@ describe('slack agent', () => {
   });
 
   it('can stream the turn contract as ndjson events', async () => {
-    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic' } });
+    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic', sharedSecret: 'secret' } });
     const response = await app.fetch(
       new Request('http://localhost/internal/slack-agent/turn', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+          'X-Pages-Slack-Agent-Token': 'secret',
+        },
         body: JSON.stringify({
           agentRunId: 'agent_1',
           slackSessionId: 'sess_1',
@@ -195,6 +214,7 @@ describe('slack agent', () => {
         modelName: 'company-agent',
         maxOutputTokens: 512,
         requestTimeoutMs: 1000,
+        sharedSecret: 'secret',
       },
       async fetchImpl(url, request) {
         calls.push({ url: String(url), request });
@@ -223,7 +243,7 @@ describe('slack agent', () => {
     const response = await app.fetch(
       new Request('http://localhost/internal/slack-agent/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
         body: JSON.stringify({ text: '再加一个项目经历区域' }),
       })
     );
@@ -254,6 +274,7 @@ describe('slack agent', () => {
         requestTimeoutMs: 1000,
         semanticChunkMinChars: 16,
         semanticChunkMaxChars: 72,
+        sharedSecret: 'secret',
       },
       async fetchImpl(url, request) {
         calls.push({ url: String(url), request });
@@ -283,7 +304,11 @@ describe('slack agent', () => {
     const response = await app.fetch(
       new Request('http://localhost/internal/slack-agent/turn', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+          'X-Pages-Slack-Agent-Token': 'secret',
+        },
         body: JSON.stringify({
           agentRunId: 'agent_stream_1',
           slackSessionId: 'sess_stream_1',
@@ -325,6 +350,7 @@ describe('slack agent', () => {
         apiKey: 'gateway-key',
         modelName: 'company-agent',
         requestTimeoutMs: 1000,
+        sharedSecret: 'secret',
       },
       async fetchImpl(url) {
         calls.push(String(url));
@@ -340,7 +366,7 @@ describe('slack agent', () => {
     await app.fetch(
       new Request('http://localhost/internal/slack-agent/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
         body: JSON.stringify({ text: '你好' }),
       })
     );
@@ -356,6 +382,7 @@ describe('slack agent', () => {
         apiKey: 'gateway-key',
         modelName: 'company-agent',
         requestTimeoutMs: 1000,
+        sharedSecret: 'secret',
       },
       async fetchImpl() {
         return new Response(
@@ -381,7 +408,7 @@ describe('slack agent', () => {
     const response = await app.fetch(
       new Request('http://localhost/internal/slack-agent/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
         body: JSON.stringify({ text: '先聊聊我的个人主页' }),
       })
     );
@@ -419,6 +446,7 @@ describe('slack agent', () => {
           apiKey: 'exact-agent-secret',
           modelName: 'codex/gpt-5.5',
           requestTimeoutMs: 1000,
+          sharedSecret: 'secret',
         },
         async fetchImpl() {
           return new Response(
@@ -443,7 +471,7 @@ describe('slack agent', () => {
       const response = await app.fetch(
         new Request('http://localhost/internal/slack-agent/analyze', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
           body: JSON.stringify({
             text: '你好 token=abc123 xoxb-1234567890-secret',
             event: {

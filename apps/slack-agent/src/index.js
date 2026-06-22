@@ -18,7 +18,11 @@ async function readJson(request) {
 }
 
 function requireAgentAuth(request, config) {
-  if (!config.sharedSecret) return;
+  if (!config.sharedSecret) {
+    const error = new Error('Slack agent shared secret is not configured');
+    error.status = 500;
+    throw error;
+  }
 
   const token = request.headers.get('X-Pages-Slack-Agent-Token');
   if (token !== config.sharedSecret) {
