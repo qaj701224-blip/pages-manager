@@ -10,6 +10,21 @@ import { eventToRow, jobToRow, rowToEvent, rowToJob } from '../rows/publishing-j
 import { execute, limitOffsetSql, queryPlaceholders, upsertRow } from '../sql.js';
 
 const REVIEW_ACTIVE_JOB_STATUSES = new Set(['pr_created', 'reviewing', 'changes_requested', 'fixing', 'previewing']);
+const LIKE_SEARCH_FIELDS = [
+  'LOWER(id)',
+  'LOWER(title)',
+  'LOWER(summary)',
+  'LOWER(employee_slug)',
+  'LOWER(site_slug)',
+  'LOWER(requested_by_id)',
+  'CAST(issue_number AS CHAR)',
+  'CAST(pr_number AS CHAR)',
+  'LOWER(preview_url)',
+];
+
+function escapeLikeSearch(value) {
+  return String(value).replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+}
 
 function shaMatches(left, right) {
   if (!left || !right) return false;
@@ -100,21 +115,9 @@ export const publishingJobRepositoryMethods = {
       params.push(String(options.source));
     }
     if (options.q) {
-      const like = `%${String(options.q).trim().toLowerCase()}%`;
-      where.push(
-        [
-          'LOWER(id) LIKE ?',
-          'LOWER(title) LIKE ?',
-          'LOWER(summary) LIKE ?',
-          'LOWER(employee_slug) LIKE ?',
-          'LOWER(site_slug) LIKE ?',
-          'LOWER(requested_by_id) LIKE ?',
-          'CAST(issue_number AS CHAR) LIKE ?',
-          'CAST(pr_number AS CHAR) LIKE ?',
-          'LOWER(preview_url) LIKE ?',
-        ].join(' OR ')
-      );
-      params.push(like, like, like, like, like, like, like, like, like);
+      const like = `%${escapeLikeSearch(String(options.q).trim().toLowerCase())}%`;
+      where.push(LIKE_SEARCH_FIELDS.map((field) => `${field} LIKE ? ESCAPE '\\\\'`).join(' OR '));
+      params.push(...LIKE_SEARCH_FIELDS.map(() => like));
     }
 
     const whereSql = where.length ? `WHERE ${where.map((item) => `(${item})`).join(' AND ')}` : '';

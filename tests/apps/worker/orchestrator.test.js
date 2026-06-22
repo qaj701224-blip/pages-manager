@@ -52,6 +52,16 @@ test('worker config defaults generated work to staging base ref', () => {
   assert.equal(workerConfig.workerCallbackUrl, 'http://localhost:8788/internal/executor-callback');
 });
 
+test('worker config keeps legacy preview deploy IP restriction enabled', () => {
+  const workerConfig = readWorkerConfig({
+    GITHUB_APP_INSTALLATION_TOKEN: 'ghs_test',
+    GITHUB_REPO: 'org/pages-manager',
+    PAGES_PREVIEW_IP_RESTRICT: 'false',
+  });
+
+  assert.equal(workerConfig.previewIpRestrict, true);
+});
+
 test('worker config can enable smoke PR reuse', () => {
   const workerConfig = readWorkerConfig({
     GITHUB_APP_INSTALLATION_TOKEN: 'ghs_test',

@@ -550,16 +550,18 @@ test('MySQL gateway store uses sanitized pagination SQL for list queries', async
     async end() {},
   });
 
-  await store.listJobs({ q: 'profile', limit: 500, offset: -1 });
+  await store.listJobs({ q: 'profile_%\\', limit: 500, offset: -1 });
   await store.listGithubDeliveries({ eventName: 'issues', limit: 20, offset: 5 });
   await store.listSlackDeliveries({ publishingJobId: 'job_db_status', limit: 100, offset: 0 });
 
   const selectCalls = calls.filter((call) => /ORDER BY updated_at DESC/.test(call.sql));
   assert.equal(selectCalls.length, 3);
   assert.match(selectCalls[0].sql, /LIMIT 200 OFFSET 0$/);
+  assert.match(selectCalls[0].sql, /LIKE \? ESCAPE '\\\\'/);
   assert.match(selectCalls[1].sql, /LIMIT 20 OFFSET 5$/);
   assert.match(selectCalls[2].sql, /LIMIT 100 OFFSET 0$/);
   assert.equal(selectCalls[0].params.length, 9);
+  assert.ok(selectCalls[0].params.every((param) => param === '%profile\\_\\%\\\\%'));
   assert.deepEqual(selectCalls[1].params, ['issues']);
   assert.deepEqual(selectCalls[2].params, ['job_db_status']);
 });
