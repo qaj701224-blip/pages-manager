@@ -500,6 +500,63 @@ test('API creates a PublishingJob without requiring GitHub repo user permissions
   assert.equal(body.job.status, 'received');
 });
 
+test('PublishingJob API fails closed when production API token is missing', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/api/publishing-jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'api-token-missing',
+        'X-Pages-Actor-Id': 'usr_1',
+      },
+      body: JSON.stringify({ employeeSlug: 'alice', siteSlug: 'profile' }),
+    }),
+    { NODE_ENV: 'production' }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 500);
+  assert.equal(body.error, 'Gateway API token is not configured');
+});
+
+test('PublishingJob API enforces the internal API token when configured', async () => {
+  const app = createGatewayApp();
+  const invalid = await app.fetch(
+    new Request('http://gateway.test/api/publishing-jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'api-token-invalid',
+        'X-Pages-Actor-Id': 'usr_1',
+        'X-Pages-Gateway-Token': 'wrong',
+      },
+      body: JSON.stringify({ employeeSlug: 'alice', siteSlug: 'profile' }),
+    }),
+    { PAGES_GATEWAY_API_TOKEN: 'secret' }
+  );
+
+  assert.equal(invalid.status, 401);
+
+  const valid = await app.fetch(
+    new Request('http://gateway.test/api/publishing-jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'api-token-valid',
+        'X-Pages-Actor-Id': 'usr_1',
+        'X-Pages-Gateway-Token': 'secret',
+      },
+      body: JSON.stringify({ employeeSlug: 'alice', siteSlug: 'profile' }),
+    }),
+    { PAGES_GATEWAY_API_TOKEN: 'secret' }
+  );
+  const body = await json(valid);
+
+  assert.equal(valid.status, 201);
+  assert.equal(body.job.employeeSlug, 'alice');
+});
+
 test('gateway readiness checks the runtime store', async () => {
   const app = createGatewayApp({
     store: {
@@ -3561,6 +3618,25 @@ test('Slack free-form turn redacts token-like content from gateway session memor
   assert.match(JSON.stringify(memory), /\[REDACTED_API_KEY\]/);
 });
 
+test('executor callback fails closed when production callback token is missing', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: 'job_missing',
+        stageResult: 'issue_created',
+      }),
+    }),
+    { NODE_ENV: 'production' }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 500);
+  assert.equal(body.error, 'Internal callback token is not configured');
+});
+
 test('executor callbacks update the source Slack status card without extra progress messages', async () => {
   const app = createGatewayApp();
   const notifierCalls = [];
@@ -6544,4 +6620,27 @@ test('GitHub webhook signature is enforced when configured', async () => {
     { GITHUB_WEBHOOK_SECRET: 'secret' }
   );
   assert.equal(signed.status, 200);
+});
+
+test('GitHub webhook fails closed when production webhook secret is missing', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-missing-secret',
+        'X-GitHub-Event': 'ping',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+      }),
+    }),
+    { NODE_ENV: 'production' }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 401);
+  assert.equal(body.error, 'GitHub webhook secret is not configured');
 });

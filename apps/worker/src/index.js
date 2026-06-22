@@ -16,7 +16,11 @@ async function readJson(request) {
 }
 
 function requireWorkerAuth(request, config) {
-  if (!config.workerSharedSecret) return;
+  if (!config.workerSharedSecret) {
+    const error = new Error('Worker shared secret is not configured');
+    error.status = 500;
+    throw error;
+  }
 
   const token = request.headers.get('X-Pages-Worker-Token');
   if (token !== config.workerSharedSecret) {

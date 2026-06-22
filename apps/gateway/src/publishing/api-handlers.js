@@ -1,7 +1,7 @@
 import { jsonResponse } from '@xd/worker-kit';
 
 import { readJson } from '../http/body.js';
-import { getStore, required } from '../control-plane/context.js';
+import { getStore, required, verifyGatewayApiToken } from '../control-plane/context.js';
 import { startWorkerForJobIfConfigured } from './worker-dispatcher.js';
 
 function actorFromHeaders(request, fallback = {}) {
@@ -35,6 +35,9 @@ function normalizePublishingJobInput(body, request) {
 }
 
 export async function handleCreatePublishingJob(request, env) {
+  const authError = verifyGatewayApiToken(request, env);
+  if (authError) return authError;
+
   const store = getStore(env);
   const body = await readJson(request);
   const { job, created } = await store.createJob(normalizePublishingJobInput(body, request));
@@ -44,6 +47,9 @@ export async function handleCreatePublishingJob(request, env) {
 }
 
 export async function handleListPublishingJobs(request, env) {
+  const authError = verifyGatewayApiToken(request, env);
+  if (authError) return authError;
+
   const url = new URL(request.url);
   const result = await getStore(env).listJobs({
     status: url.searchParams.get('status') || undefined,
@@ -56,13 +62,19 @@ export async function handleListPublishingJobs(request, env) {
   return jsonResponse(result);
 }
 
-export async function handleGetPublishingJob(_request, env, params) {
+export async function handleGetPublishingJob(request, env, params) {
+  const authError = verifyGatewayApiToken(request, env);
+  if (authError) return authError;
+
   const job = await getStore(env).getJob(params.jobId);
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   return jsonResponse({ job });
 }
 
-export async function handleGetPublishingJobEvents(_request, env, params) {
+export async function handleGetPublishingJobEvents(request, env, params) {
+  const authError = verifyGatewayApiToken(request, env);
+  if (authError) return authError;
+
   const store = getStore(env);
   if (!(await store.getJob(params.jobId))) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   return jsonResponse({ events: await store.listEvents(params.jobId) });

@@ -18,6 +18,12 @@ spec:
                   name: callback-secrets
                   key: internal-callback-token
                   optional: false
+            - name: PAGES_GATEWAY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: callback-secrets
+                  key: pages-gateway-api-token
+                  optional: false
             - name: PAGES_WORKER_SHARED_SECRET
               valueFrom:
                 secretKeyRef:
