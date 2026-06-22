@@ -92,6 +92,26 @@ test('slack notifier returns json errors for delivery failures', async () => {
   assert.equal(body.error, 'Slack request failed');
 });
 
+test('slack notifier fails Slack deliveries when bot token is missing', async () => {
+  const app = createSlackNotifierApp();
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/message', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({ payload: { channel: 'C1', text: 'hello' } }),
+    }),
+    { SLACK_NOTIFIER_SHARED_SECRET: 'secret' }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 502);
+  assert.equal(body.ok, false);
+  assert.equal(body.error, 'Slack bot token is not configured');
+});
+
 test('slack notifier fetches Slack user profile through internal endpoint', async () => {
   const app = createSlackNotifierApp();
   const slackRequests = [];
@@ -202,6 +222,41 @@ test('slack notifier updates an existing status card', async () => {
   assert.match(JSON.stringify(payload.blocks), /最终需求/);
   assert.doesNotMatch(JSON.stringify(payload.blocks), /preview_deployed/);
   assert.equal(body.message.messageTs, '1710000001.000100');
+});
+
+test('slack notifier fails status cards when bot token is missing', async () => {
+  const app = createSlackNotifierApp();
+  const response = await app.fetch(
+    new Request('http://slack-notifier.test/internal/slack-notifier/job-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pages-Slack-Notifier-Token': 'secret',
+      },
+      body: JSON.stringify({
+        job: {
+          id: 'job_1',
+          status: 'preview_deployed',
+          employeeSlug: 'alice',
+          siteSlug: 'profile',
+          summary: '个人主页',
+          previewUrl: 'https://preview.example.test',
+          slackThread: {
+            channelId: 'C1',
+            threadTs: '1710000000.000100',
+            userId: 'U1',
+          },
+        },
+        options: { stage: 'preview_deployed' },
+      }),
+    }),
+    { SLACK_NOTIFIER_SHARED_SECRET: 'secret' }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 502);
+  assert.equal(body.ok, false);
+  assert.equal(body.error, 'Slack bot token is not configured');
 });
 
 test('slack notifier skips stale status card regressions', async () => {
