@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createGatewayApp as createRuntimeGatewayApp } from '../../../apps/gateway/src/index.js';
 import { createGatewayApp } from '../../helpers/gateway-app.js';
 
 async function json(response) {
@@ -594,6 +595,24 @@ test('gateway readiness fails closed when store health fails', async () => {
   assert.equal(body.status, 'not_ready');
   assert.equal(body.storeBackend, 'mysql');
   assert.equal(body.error, 'database unavailable');
+});
+
+test('gateway returns JSON when runtime store initialization fails', async () => {
+  const app = createRuntimeGatewayApp();
+  const response = await app.fetch(new Request('http://gateway.test/health'), {});
+  const body = await json(response);
+
+  assert.equal(response.status, 500);
+  assert.match(body.error, /DATABASE_URL, MYSQL_ADDR, or MYSQL_HOST\+MYSQL_PORT is required/);
+});
+
+test('gateway does not initialize runtime store for unknown routes', async () => {
+  const app = createRuntimeGatewayApp();
+  const response = await app.fetch(new Request('http://gateway.test/not-found'), {});
+  const body = await json(response);
+
+  assert.equal(response.status, 404);
+  assert.equal(body.error, 'Endpoint not found');
 });
 
 test('API create is idempotent by actor and idempotency key', async () => {

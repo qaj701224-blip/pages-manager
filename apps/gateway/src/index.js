@@ -29,7 +29,10 @@ export function createGatewayApp(options = {}) {
 
   async function resolveStore(env) {
     if (!storePromise) {
-      storePromise = MySqlGatewayStore.create(env);
+      storePromise = MySqlGatewayStore.create(env).catch((error) => {
+        storePromise = null;
+        throw error;
+      });
     }
     store = await storePromise;
     return store;
@@ -42,7 +45,6 @@ export function createGatewayApp(options = {}) {
       return store;
     },
     async fetch(request, env = {}, ctx = {}) {
-      const requestStore = await resolveStore(env);
       const url = new URL(request.url);
       const match = router.match(request.method, url.pathname);
 
@@ -51,6 +53,7 @@ export function createGatewayApp(options = {}) {
       }
 
       try {
+        const requestStore = await resolveStore(env);
         return await match.handler(request, { ...env, waitUntil: ctx.waitUntil?.bind(ctx), store: requestStore }, match.params);
       } catch (err) {
         logSlackHttpFailure(request, url, err);
