@@ -15,6 +15,78 @@ function findBlockAction(blocks = [], actionId = '') {
   return null;
 }
 
+function readRequestJson(request = {}) {
+  return request.body ? JSON.parse(request.body) : {};
+}
+
+function notifierResponse(body = {}, status = 200) {
+  return new Response(JSON.stringify(body), { status });
+}
+
+function defaultSlackNotifierResponse(call, index) {
+  const payload = call.body?.payload || {};
+  const target = call.body?.target || {};
+  const message = call.body?.message || {};
+  const job = call.body?.job || {};
+  const options = call.body?.options || {};
+  const existingMessage = call.body?.existingMessage || null;
+  const channel =
+    payload.channel || target.channel || message.channel || existingMessage?.channel || job.slackThread?.channelId || 'D1';
+  const ts = payload.ts || message.messageTs || existingMessage?.messageTs || `171000000${index}.000100`;
+
+  if (call.path === '/internal/slack-notifier/job-status') {
+    return notifierResponse({
+      ok: true,
+      action: existingMessage?.messageTs ? 'updated' : 'posted',
+      channel,
+      ts,
+      message: {
+        channel,
+        threadTs: job.slackThread?.threadTs || existingMessage?.threadTs || null,
+        messageTs: ts,
+        stage: options.stage || job.status,
+        status: job.status,
+      },
+    });
+  }
+
+  if (call.path === '/internal/slack-notifier/user-info') {
+    return notifierResponse({
+      ok: true,
+      profile: {
+        source: 'slack.users.info',
+        slackTeamId: 'T1',
+        slackUserId: call.body?.user || call.body?.userId || call.body?.slackUserId || 'U1',
+        name: 'zhangsan',
+        displayName: '张三',
+        realName: 'Zhang San',
+        email: 'zhangsan@example.com',
+      },
+    });
+  }
+
+  return notifierResponse({ ok: true, channel, ts });
+}
+
+function mockSlackNotifier(calls = [], options = {}) {
+  return {
+    SLACK_NOTIFIER_URL: options.url || 'http://slack-notifier.test',
+    SLACK_NOTIFIER_SHARED_SECRET: options.secret || 'test-slack-notifier-secret',
+    async SLACK_NOTIFIER_FETCH(url, request) {
+      const call = {
+        url: String(url),
+        path: new URL(String(url)).pathname,
+        request,
+        body: readRequestJson(request),
+      };
+      calls.push(call);
+      const custom = options.handle ? await options.handle(call) : null;
+      if (custom) return custom;
+      return defaultSlackNotifierResponse(call, calls.length);
+    },
+  };
+}
+
 async function githubSignature(secret, body) {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -109,6 +181,7 @@ async function moveJobToPrCreated(app, options = {}) {
 
 test('Slack bot events do not receive working reactions', async () => {
   const app = createGatewayApp();
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -130,10 +203,7 @@ test('Slack bot events do not receive working reactions', async () => {
     {
       SLACK_EVENTS_PROCESSING_MODE: 'sync',
       SLACK_REACTION_ON_RECEIVE: 'true',
-      SLACK_BOT_TOKEN: 'xoxb-test',
-      async SLACK_FETCH() {
-        throw new Error('bot events should not call Slack API');
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
@@ -141,11 +211,12 @@ test('Slack bot events do not receive working reactions', async () => {
   assert.equal(response.status, 200);
   assert.equal(body.action, 'ignored_slack_event');
   assert.equal(body.reason, 'ignored_bot_event');
+  assert.equal(notifierCalls.length, 0);
 });
 
 test('Slack immediate replies replace working reaction with done reaction', async () => {
   const app = createGatewayApp();
-  const slackRequests = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -168,29 +239,23 @@ test('Slack immediate replies replace working reaction with done reaction', asyn
       SLACK_REACTION_ON_RECEIVE: 'true',
       SLACK_WORKING_REACTION: 'eyes',
       SLACK_DONE_REACTION: 'done-e',
-      SLACK_BOT_TOKEN: 'xoxb-test',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const reactionCalls = slackRequests
-    .map((call) => ({ url: call.url, payload: JSON.parse(call.request.body) }))
-    .filter((call) => call.url.includes('/reactions.'));
+  const reactionCalls = notifierCalls.filter((call) =>
+    ['/internal/slack-notifier/reaction', '/internal/slack-notifier/reaction-remove'].includes(call.path)
+  );
   const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-reaction-done' }).deliveries;
 
   assert.equal(response.status, 200);
   assert.equal(body.action, 'ping');
   assert.deepEqual(
-    reactionCalls.map((call) => [call.url, call.payload.name]),
+    reactionCalls.map((call) => [call.path, call.body.payload.name]),
     [
-      ['https://slack.com/api/reactions.add', 'eyes'],
-      ['https://slack.com/api/reactions.remove', 'eyes'],
-      ['https://slack.com/api/reactions.add', 'done-e'],
+      ['/internal/slack-notifier/reaction', 'eyes'],
+      ['/internal/slack-notifier/reaction-remove', 'eyes'],
+      ['/internal/slack-notifier/reaction', 'done-e'],
     ]
   );
   assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'done');
@@ -245,7 +310,7 @@ test('Slack skipped working reaction is not treated as active', async () => {
 
 test('Slack working reaction errors do not block message processing', async () => {
   const app = createGatewayApp();
-  const slackRequests = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -266,14 +331,14 @@ test('Slack working reaction errors do not block message processing', async () =
     {
       SLACK_EVENTS_PROCESSING_MODE: 'sync',
       SLACK_REACTION_ON_RECEIVE: 'true',
-      SLACK_BOT_TOKEN: 'xoxb-test',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        if (String(url).endsWith('/reactions.add')) {
-          throw new Error('reaction network down');
-        }
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000102' }));
-      },
+      ...mockSlackNotifier(notifierCalls, {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/reaction') {
+            throw new Error('reaction network down');
+          }
+          return null;
+        },
+      }),
     }
   );
   const body = await json(response);
@@ -282,8 +347,8 @@ test('Slack working reaction errors do not block message processing', async () =
   assert.equal(response.status, 200);
   assert.equal(body.action, 'ping');
   assert.deepEqual(
-    slackRequests.map((call) => call.url),
-    ['https://slack.com/api/reactions.add', 'https://slack.com/api/chat.postMessage']
+    notifierCalls.map((call) => call.path),
+    ['/internal/slack-notifier/reaction', '/internal/slack-notifier/message']
   );
   assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'failed');
 });
@@ -312,7 +377,7 @@ test('preview completion replaces pending Slack working reactions with done reac
     },
   });
 
-  const slackRequests = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/internal/executor-callback', {
       method: 'POST',
@@ -324,25 +389,23 @@ test('preview completion replaces pending Slack working reactions with done reac
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'xoxb-test',
       SLACK_DONE_REACTION: 'done-e',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const reactionCalls = slackRequests.map((call) => ({ url: call.url, payload: JSON.parse(call.request.body) }));
+  const reactionCalls = notifierCalls.filter((call) =>
+    ['/internal/slack-notifier/reaction', '/internal/slack-notifier/reaction-remove'].includes(call.path)
+  );
   const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-job-reaction-done' }).deliveries;
 
   assert.equal(response.status, 200);
   assert.equal(body.slackReactionSettlement.settledCount, 1);
   assert.deepEqual(
-    reactionCalls.map((call) => [call.url, call.payload.name]),
+    reactionCalls.map((call) => [call.path, call.body.payload.name]),
     [
-      ['https://slack.com/api/reactions.remove', 'eyes'],
-      ['https://slack.com/api/reactions.add', 'done-e'],
+      ['/internal/slack-notifier/reaction-remove', 'eyes'],
+      ['/internal/slack-notifier/reaction', 'done-e'],
     ]
   );
   assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'done');
@@ -381,7 +444,7 @@ test('preview completion also settles working reactions linked by Slack session'
     },
   });
 
-  const slackRequests = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/internal/executor-callback', {
       method: 'POST',
@@ -393,12 +456,8 @@ test('preview completion also settles working reactions linked by Slack session'
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'xoxb-test',
       SLACK_DONE_REACTION: 'done-e',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
@@ -406,7 +465,12 @@ test('preview completion also settles working reactions linked by Slack session'
 
   assert.equal(response.status, 200);
   assert.equal(body.slackReactionSettlement.settledCount, 1);
-  assert.equal(slackRequests.filter((call) => call.url.includes('/reactions.')).length, 2);
+  assert.equal(
+    notifierCalls.filter((call) =>
+      ['/internal/slack-notifier/reaction', '/internal/slack-notifier/reaction-remove'].includes(call.path)
+    ).length,
+    2
+  );
   assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'done');
   assert.equal(deliveries[0].payloadRedacted.workingReaction.doneReaction, 'done-e');
 });
@@ -577,10 +641,9 @@ test('Slack event creates a slack-sourced job', async () => {
   assert.equal(deliveries.deliveries[0].threadTs, '1710000000.000100');
 });
 
-test('Slack event snapshots requester profile when bot token can read Slack user info', async () => {
+test('Slack event snapshots requester profile through slack-notifier user-info', async () => {
   const app = createGatewayApp();
-  const profileCalls = [];
-  const slackMessages = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -599,42 +662,36 @@ test('Slack event snapshots requester profile when bot token can read Slack user
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_PROFILE_FETCH(url, request) {
-        profileCalls.push({ url: String(url), request });
-        assert.equal(String(url), 'https://slack.com/api/users.info');
-        assert.equal(new URLSearchParams(request.body).get('user'), 'U1');
-        return new Response(
-          JSON.stringify({
+      ...mockSlackNotifier(notifierCalls, {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/user-info') {
+            assert.equal(call.body.user, 'U1');
+            return notifierResponse({
             ok: true,
-            user: {
-              id: 'U1',
-              team_id: 'T1',
-              name: 'zhangsan',
               profile: {
-                display_name: '张三',
-                real_name: 'Zhang San',
+                source: 'slack.users.info',
+                slackTeamId: 'T1',
+                slackUserId: 'U1',
+              name: 'zhangsan',
+                displayName: '张三',
+                realName: 'Zhang San',
                 email: 'zhangsan@example.com',
               },
-            },
-          }),
-          { status: 200 }
-        );
-      },
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000106' }), {
-          status: 200,
-        });
-      },
+            });
+          }
+          return null;
+        },
+      }),
     }
   );
   const body = await json(response);
   const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${body.jobId}`)));
+  const profileCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/user-info');
+  const statusCalls = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status');
 
   assert.equal(response.status, 200);
-  assert.equal(profileCalls.length, 1);
-  assert.equal(slackMessages.length, 1);
+  assert.ok(profileCall);
+  assert.equal(statusCalls.length, 1);
   assert.match(jobBody.job.employeeSlug, /^zhangsan-[a-z0-9]{6}$/);
   assert.deepEqual(jobBody.job.requesterProfile, {
     source: 'slack.users.info',
@@ -724,7 +781,7 @@ test('Slack event can snapshot requester profile through slack-notifier', async 
 test('Slack event can use Slack Agent analysis before creating a job', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
-  const slackMessages = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -745,10 +802,6 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
     {
       SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
       SLACK_AGENT_SHARED_SECRET: 'agent-secret',
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_PROFILE_FETCH() {
-        return new Response(JSON.stringify({ ok: true, user: { id: 'U1', profile: {} } }), { status: 200 });
-      },
       async SLACK_AGENT_FETCH(url, request) {
         agentCalls.push({ url: String(url), request });
         assert.equal(request.headers['X-Pages-Slack-Agent-Token'], 'agent-secret');
@@ -771,23 +824,37 @@ test('Slack event can use Slack Agent analysis before creating a job', async () 
           { status: 200 }
         );
       },
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000101' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls, {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/user-info') {
+            return notifierResponse({
+              ok: true,
+              profile: {
+                source: 'slack.users.info',
+                slackTeamId: 'T1',
+                slackUserId: 'U1',
+                name: null,
+                displayName: null,
+                realName: null,
+                email: null,
+              },
+            });
+          }
+          return null;
+        },
+      }),
     }
   );
 
   const body = await json(response);
   const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${body.jobId}`)));
+  const statusCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/job-status');
 
   assert.equal(response.status, 200);
   assert.equal(agentCalls.length, 1);
   assert.equal(body.slackAgentAnalysis.summary, 'Agent summary');
   assert.equal(body.slackStatusNotification.ok, true);
-  assert.match(JSON.stringify(JSON.parse(slackMessages[0].request.body).blocks), /Agent summary/);
+  assert.match(statusCall.body.job.summary, /Agent summary/);
   assert.match(jobBody.job.employeeSlug, /^u1-[a-z0-9]{6}$/);
   assert.notEqual(jobBody.job.employeeSlug, 'alice');
   assert.equal(jobBody.job.siteSlug, 'portfolio');
@@ -901,7 +968,7 @@ test('Slack free-form turn asks for confirmation before creating an issue', asyn
 test('Slack free-form turn uses Slack Agent turn and updates one agent reply message', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
-  const slackCalls = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -923,7 +990,6 @@ test('Slack free-form turn uses Slack Agent turn and updates one agent reply mes
       SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
       SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
       SLACK_AGENT_SHARED_SECRET: 'agent-secret',
-      SLACK_BOT_TOKEN: 'xoxb-test',
       async SLACK_AGENT_FETCH(url, request) {
         agentCalls.push({ url: String(url), request });
         const payload = JSON.parse(request.body);
@@ -966,15 +1032,12 @@ test('Slack free-form turn uses Slack Agent turn and updates one agent reply mes
           { status: 200 }
         );
       },
-      async SLACK_FETCH(url, request) {
-        slackCalls.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000113' }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const postPayload = JSON.parse(slackCalls[0].request.body);
-  const updatePayload = JSON.parse(slackCalls[1].request.body);
+  const startCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/agent-reply/start');
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/agent-reply/update');
 
   assert.equal(response.status, 200);
   assert.equal(agentCalls.length, 1);
@@ -983,18 +1046,19 @@ test('Slack free-form turn uses Slack Agent turn and updates one agent reply mes
   assert.equal(body.action, 'confirm_before_issue');
   assert.equal(body.noReply, true);
   assert.equal(body.agentReplyNotification.action, 'updated');
-  assert.equal(slackCalls.length, 2);
-  assert.match(slackCalls[0].url, /chat\.postMessage$/);
-  assert.match(slackCalls[1].url, /chat\.update$/);
-  assert.doesNotMatch(postPayload.text, /我已收到/);
-  assert.match(postPayload.text, /正在整理需求/);
-  assert.equal(postPayload.thread_ts, '1710000000.000113');
-  assert.equal(postPayload.blocks[0].type, 'section');
-  assert.ok(!postPayload.blocks.some((block) => block.type === 'header'));
-  assert.equal(updatePayload.ts, '1710000001.000113');
-  assert.match(updatePayload.text, /^<@U1>/);
-  assert.match(JSON.stringify(updatePayload.blocks), /确认创建发布任务/);
-  assert.ok(updatePayload.blocks.some((block) => block.type === 'header'));
+  assert.deepEqual(
+    notifierCalls.map((call) => call.path),
+    ['/internal/slack-notifier/agent-reply/start', '/internal/slack-notifier/agent-reply/update']
+  );
+  assert.doesNotMatch(startCall.body.target.text, /我已收到/);
+  assert.match(startCall.body.target.text, /正在整理需求/);
+  assert.equal(startCall.body.target.thread_ts, '1710000000.000113');
+  assert.equal(startCall.body.options.blocks[0].type, 'section');
+  assert.ok(!startCall.body.options.blocks.some((block) => block.type === 'header'));
+  assert.equal(updateCall.body.message.messageTs, '1710000001.000100');
+  assert.match(updateCall.body.options.text, /^<@U1>/);
+  assert.match(JSON.stringify(updateCall.body.options.blocks), /确认创建发布任务/);
+  assert.ok(updateCall.body.options.blocks.some((block) => block.type === 'header'));
   assert.equal(app.store.slackAgentReplyMessages.size, 1);
   assert.equal(app.store.agentRunEvents.size, 6);
   assert.deepEqual(
@@ -1006,7 +1070,7 @@ test('Slack free-form turn uses Slack Agent turn and updates one agent reply mes
 test('Slack Agent turn consumes ndjson chunks and updates one reply message progressively', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
-  const slackCalls = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -1027,7 +1091,6 @@ test('Slack Agent turn consumes ndjson chunks and updates one reply message prog
     {
       SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
       SLACK_AGENT_REPLY_UPDATE_INTERVAL_MS: '0',
-      SLACK_BOT_TOKEN: 'xoxb-test',
       async SLACK_AGENT_FETCH(url, request) {
         agentCalls.push({ url: String(url), request });
         const payload = JSON.parse(request.body);
@@ -1067,32 +1130,27 @@ test('Slack Agent turn consumes ndjson chunks and updates one reply message prog
           headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
         });
       },
-      async SLACK_FETCH(url, request) {
-        slackCalls.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000118' }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const updatePayloads = slackCalls
-    .filter((call) => call.url.endsWith('/chat.update'))
-    .map((call) => JSON.parse(call.request.body));
+  const updateCalls = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/agent-reply/update');
 
   assert.equal(response.status, 200);
   assert.equal(body.action, 'confirm_before_issue');
   assert.equal(body.noReply, true);
   assert.match(agentCalls[0].request.headers.Accept, /application\/x-ndjson/);
-  assert.equal(slackCalls.length, 4);
-  assert.match(slackCalls[0].url, /chat\.postMessage$/);
-  assert.equal(updatePayloads.length, 3);
-  assert.match(updatePayloads[0].text, /我先整理一下/);
-  assert.equal(updatePayloads[0].blocks[0].type, 'section');
-  assert.ok(!updatePayloads[0].blocks.some((block) => block.type === 'header'));
-  assert.match(updatePayloads[1].text, /突出项目经历和联系方式/);
-  assert.equal(updatePayloads[1].blocks[0].type, 'section');
-  assert.ok(!updatePayloads[1].blocks.some((block) => block.type === 'header'));
-  assert.match(JSON.stringify(updatePayloads[2].blocks), /确认创建发布任务/);
-  assert.ok(updatePayloads[2].blocks.some((block) => block.type === 'header'));
+  assert.equal(notifierCalls.length, 4);
+  assert.equal(notifierCalls[0].path, '/internal/slack-notifier/agent-reply/start');
+  assert.equal(updateCalls.length, 3);
+  assert.match(updateCalls[0].body.options.text, /我先整理一下/);
+  assert.equal(updateCalls[0].body.options.blocks[0].type, 'section');
+  assert.ok(!updateCalls[0].body.options.blocks.some((block) => block.type === 'header'));
+  assert.match(updateCalls[1].body.options.text, /突出项目经历和联系方式/);
+  assert.equal(updateCalls[1].body.options.blocks[0].type, 'section');
+  assert.ok(!updateCalls[1].body.options.blocks.some((block) => block.type === 'header'));
+  assert.match(JSON.stringify(updateCalls[2].body.options.blocks), /确认创建发布任务/);
+  assert.ok(updateCalls[2].body.options.blocks.some((block) => block.type === 'header'));
   assert.deepEqual(
     [...app.store.agentRunEvents.values()].map((event) => event.type),
     [
@@ -1111,12 +1169,10 @@ test('Slack Agent turn consumes ndjson chunks and updates one reply message prog
 
 test('Slack Agent posts fresh reply cards for requirement drafting turns', async () => {
   const app = createGatewayApp();
-  const slackCalls = [];
+  const notifierCalls = [];
   const agentSessionIds = [];
-  let postIndex = 0;
   const env = {
     SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
-    SLACK_BOT_TOKEN: 'xoxb-test',
     async SLACK_AGENT_FETCH(_url, request) {
       const payload = JSON.parse(request.body);
       agentSessionIds.push(payload.slackSessionId);
@@ -1156,17 +1212,7 @@ test('Slack Agent posts fresh reply cards for requirement drafting turns', async
         { status: 200 }
       );
     },
-    async SLACK_FETCH(url, request) {
-      slackCalls.push({ url: String(url), request });
-      if (String(url).endsWith('/chat.postMessage')) {
-        postIndex += 1;
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: `171000000${postIndex}.000120` }), {
-          status: 200,
-        });
-      }
-      const payload = JSON.parse(request.body);
-      return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: payload.ts }), { status: 200 });
-    },
+    ...mockSlackNotifier(notifierCalls),
   };
 
   const first = await json(
@@ -1212,18 +1258,16 @@ test('Slack Agent posts fresh reply cards for requirement drafting turns', async
     )
   );
 
-  const postCount = slackCalls.filter((call) => call.url.endsWith('/chat.postMessage')).length;
-  const updatePayloads = slackCalls
-    .filter((call) => call.url.endsWith('/chat.update'))
-    .map((call) => JSON.parse(call.request.body));
+  const startCalls = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/agent-reply/start');
+  const updateCalls = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/agent-reply/update');
 
   assert.equal(first.slackSessionId, second.slackSessionId);
   assert.deepEqual(agentSessionIds, [first.slackSessionId, first.slackSessionId]);
-  assert.equal(postCount, 2);
-  assert.equal(updatePayloads.length, 2);
+  assert.equal(startCalls.length, 2);
+  assert.equal(updateCalls.length, 2);
   assert.deepEqual(
-    updatePayloads.map((payload) => payload.ts),
-    ['1710000001.000120', '1710000002.000120']
+    updateCalls.map((call) => call.body.message.messageTs),
+    ['1710000001.000100', '1710000003.000100']
   );
   assert.equal(app.store.slackAgentReplyMessages.size, 2);
 });
@@ -1303,7 +1347,7 @@ test('Slack Agent turn falls back to a plain reply when the reply placeholder is
 
 test('Slack Agent turn failure updates the in-thread reply message', async () => {
   const app = createGatewayApp();
-  const slackCalls = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -1323,30 +1367,27 @@ test('Slack Agent turn failure updates the in-thread reply message', async () =>
     }),
     {
       SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
-      SLACK_BOT_TOKEN: 'xoxb-test',
       async SLACK_AGENT_FETCH() {
         return new Response(JSON.stringify({ ok: false, error: 'model timeout' }), { status: 502 });
       },
-      async SLACK_FETCH(url, request) {
-        slackCalls.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000114' }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const updatePayload = JSON.parse(slackCalls[1].request.body);
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/agent-reply/update');
   const replyMessage = [...app.store.slackAgentReplyMessages.values()][0];
   const agentRun = [...app.store.agentRuns.values()][0];
   const eventTypes = [...app.store.agentRunEvents.values()].map((event) => event.type);
 
   assert.equal(response.status, 502);
   assert.equal(body.error, 'model timeout');
-  assert.equal(slackCalls.length, 2);
-  assert.match(slackCalls[0].url, /chat\.postMessage$/);
-  assert.match(slackCalls[1].url, /chat\.update$/);
-  assert.equal(updatePayload.ts, '1710000001.000114');
-  assert.match(updatePayload.text, /^<@U1>/);
-  assert.match(JSON.stringify(updatePayload.blocks), /处理失败/);
+  assert.deepEqual(
+    notifierCalls.map((call) => call.path),
+    ['/internal/slack-notifier/agent-reply/start', '/internal/slack-notifier/agent-reply/update']
+  );
+  assert.equal(updateCall.body.message.messageTs, '1710000001.000100');
+  assert.match(updateCall.body.options.text, /^<@U1>/);
+  assert.match(JSON.stringify(updateCall.body.options.blocks), /处理失败/);
   assert.equal(replyMessage.status, 'failed');
   assert.equal(agentRun.status, 'failed');
   assert.deepEqual(eventTypes, ['slack_reply_posted', 'slack_reply_failed']);
@@ -1354,7 +1395,7 @@ test('Slack Agent turn failure updates the in-thread reply message', async () =>
 
 test('Slack Agent ndjson reply_failed updates the in-thread reply message once', async () => {
   const app = createGatewayApp();
-  const slackCalls = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -1374,7 +1415,6 @@ test('Slack Agent ndjson reply_failed updates the in-thread reply message once',
     }),
     {
       SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
-      SLACK_BOT_TOKEN: 'xoxb-test',
       async SLACK_AGENT_FETCH(url, request) {
         const payload = JSON.parse(request.body);
         const events = [
@@ -1393,26 +1433,23 @@ test('Slack Agent ndjson reply_failed updates the in-thread reply message once',
           headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
         });
       },
-      async SLACK_FETCH(url, request) {
-        slackCalls.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000119' }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const updateCalls = slackCalls.filter((call) => call.url.endsWith('/chat.update'));
+  const updateCalls = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/agent-reply/update');
   const eventTypes = [...app.store.agentRunEvents.values()].map((event) => event.type);
 
   assert.equal(response.status, 502);
   assert.equal(body.error, 'model unavailable');
-  assert.equal(slackCalls.filter((call) => call.url.endsWith('/chat.postMessage')).length, 1);
+  assert.equal(notifierCalls.filter((call) => call.path === '/internal/slack-notifier/agent-reply/start').length, 1);
   assert.equal(updateCalls.length, 1);
   assert.deepEqual(eventTypes, ['slack_reply_posted', 'reply_started', 'reply_failed', 'slack_reply_failed']);
 });
 
 test('Slack Agent turn failure replaces the working reaction with a failed reaction', async () => {
   const app = createGatewayApp();
-  const slackCalls = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -1436,30 +1473,26 @@ test('Slack Agent turn failure replaces the working reaction with a failed react
       SLACK_WORKING_REACTION: 'eyes',
       SLACK_FAILED_REACTION: 'failed-e',
       SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
-      SLACK_BOT_TOKEN: 'xoxb-test',
       async SLACK_AGENT_FETCH() {
         return new Response(JSON.stringify({ ok: false, error: 'model timeout' }), { status: 502 });
       },
-      async SLACK_FETCH(url, request) {
-        slackCalls.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000116' }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const reactionCalls = slackCalls
-    .map((call) => ({ url: call.url, payload: JSON.parse(call.request.body) }))
-    .filter((call) => call.url.includes('/reactions.'));
+  const reactionCalls = notifierCalls.filter((call) =>
+    ['/internal/slack-notifier/reaction', '/internal/slack-notifier/reaction-remove'].includes(call.path)
+  );
   const deliveries = app.store.listSlackDeliveries({ eventId: 'Ev-agent-turn-reaction-failed-1' }).deliveries;
 
   assert.equal(response.status, 502);
   assert.equal(body.error, 'model timeout');
   assert.deepEqual(
-    reactionCalls.map((call) => [call.url, call.payload.name]),
+    reactionCalls.map((call) => [call.path, call.body.payload.name]),
     [
-      ['https://slack.com/api/reactions.add', 'eyes'],
-      ['https://slack.com/api/reactions.remove', 'eyes'],
-      ['https://slack.com/api/reactions.add', 'failed-e'],
+      ['/internal/slack-notifier/reaction', 'eyes'],
+      ['/internal/slack-notifier/reaction-remove', 'eyes'],
+      ['/internal/slack-notifier/reaction', 'failed-e'],
     ]
   );
   assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'failed');
@@ -1468,7 +1501,7 @@ test('Slack Agent turn failure replaces the working reaction with a failed react
 
 test('Slack Agent malformed turn responses fail visibly instead of recording a vague reply', async () => {
   const app = createGatewayApp();
-  const slackCalls = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -1488,24 +1521,20 @@ test('Slack Agent malformed turn responses fail visibly instead of recording a v
     }),
     {
       SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
-      SLACK_BOT_TOKEN: 'xoxb-test',
       async SLACK_AGENT_FETCH() {
         return new Response(JSON.stringify({ ok: true, turn: { events: [] } }), { status: 200 });
       },
-      async SLACK_FETCH(url, request) {
-        slackCalls.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000115' }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const updatePayload = JSON.parse(slackCalls[1].request.body);
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/agent-reply/update');
 
   assert.equal(response.status, 502);
   assert.equal(body.error, 'Slack Agent turn response is missing analysis');
-  assert.equal(slackCalls.length, 2);
-  assert.match(updatePayload.text, /^<@U1>/);
-  assert.match(JSON.stringify(updatePayload.blocks), /处理失败/);
+  assert.equal(notifierCalls.length, 2);
+  assert.match(updateCall.body.options.text, /^<@U1>/);
+  assert.match(JSON.stringify(updateCall.body.options.blocks), /处理失败/);
 });
 
 test('Slack confirmation draft hides internal session and job context from users', async () => {
@@ -1667,7 +1696,7 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
   });
   const formBody = new URLSearchParams({ payload }).toString();
   const workerStarts = [];
-  const slackRequests = [];
+  const notifierCalls = [];
 
   const confirmResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/interactions', {
@@ -1681,26 +1710,26 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
     }),
     {
       SLACK_SIGNING_SECRET: secret,
-      SLACK_BOT_TOKEN: 'xoxb-test',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        if (String(url).endsWith('/users.info')) {
-          return new Response(
-            JSON.stringify({
+      ...mockSlackNotifier(notifierCalls, {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/user-info') {
+            return notifierResponse({
               ok: true,
-              user: {
-                id: 'U1',
-                team_id: 'T1',
+              profile: {
+                source: 'slack.users.info',
+                slackTeamId: 'T1',
+                slackUserId: 'U1',
                 name: 'alice',
-                profile: { display_name: 'Alice', email: 'alice@example.test' },
+                displayName: 'Alice',
+                realName: null,
+                email: 'alice@example.test',
               },
-            }),
-            { status: 200 }
-          );
-        }
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000109' }), { status: 200 });
-      },
+            });
+          }
+          return null;
+        },
+      }),
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -1717,15 +1746,19 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
   assert.equal(jobBody.job.siteSlug, 'brand');
   assert.equal(jobBody.job.summary, '用户希望创建一个清爽可信的个人品牌页面。');
   assert.equal(workerStarts.length, 1);
-  const chatRequests = slackRequests.filter((call) => /\/chat\.(postMessage|update)$/.test(call.url));
-  assert.equal(chatRequests.length, 2);
-  assert.equal(chatRequests[0].url, 'https://slack.com/api/chat.postMessage');
-  assert.equal(chatRequests[1].url, 'https://slack.com/api/chat.update');
-  const updatePayload = JSON.parse(chatRequests[1].request.body);
-  assert.equal(updatePayload.channel, 'D1');
-  assert.equal(updatePayload.ts, '1710000000.000109');
-  assert.match(JSON.stringify(updatePayload.blocks), /发布需求已确认/);
-  assert.doesNotMatch(JSON.stringify(updatePayload.blocks), /pages_confirm_issue/);
+  assert.deepEqual(
+    notifierCalls.map((call) => call.path),
+    [
+      '/internal/slack-notifier/user-info',
+      '/internal/slack-notifier/job-status',
+      '/internal/slack-notifier/update',
+    ]
+  );
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  assert.equal(updateCall.body.payload.channel, 'D1');
+  assert.equal(updateCall.body.payload.ts, '1710000000.000109');
+  assert.match(JSON.stringify(updateCall.body.payload.blocks), /发布需求已确认/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload.blocks), /pages_confirm_issue/);
 });
 
 test('Slack continue modifying button updates the draft card without creating an issue', async () => {
@@ -1778,7 +1811,7 @@ test('Slack continue modifying button updates the draft card without creating an
     actions: [{ action_id: 'pages_continue_modifying', value: draft.slackSessionId }],
   });
   const formBody = new URLSearchParams({ payload }).toString();
-  const slackRequests = [];
+  const notifierCalls = [];
 
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/interactions', {
@@ -1792,23 +1825,21 @@ test('Slack continue modifying button updates the draft card without creating an
     }),
     {
       SLACK_SIGNING_SECRET: secret,
-      SLACK_BOT_TOKEN: 'xoxb-test',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000000.000119' }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const updatePayload = JSON.parse(slackRequests[0].request.body);
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
 
   assert.equal(response.status, 200);
   assert.match(body.text, /继续回复/);
   assert.equal(app.store.jobs.size, 0);
-  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.update');
-  assert.match(JSON.stringify(updatePayload.blocks), /继续补充需求/);
-  assert.match(JSON.stringify(updatePayload.blocks), /等待补充/);
-  assert.match(JSON.stringify(updatePayload.blocks), /pages_confirm_issue/);
+  assert.equal(notifierCalls.length, 1);
+  assert.equal(updateCall.body.payload.channel, 'D1');
+  assert.equal(updateCall.body.payload.ts, '1710000000.000119');
+  assert.match(JSON.stringify(updateCall.body.payload.blocks), /继续补充需求/);
+  assert.match(JSON.stringify(updateCall.body.payload.blocks), /等待补充/);
+  assert.match(JSON.stringify(updateCall.body.payload.blocks), /pages_confirm_issue/);
 });
 
 test('Slack work item list only shows current user publishing jobs', async () => {
@@ -3367,7 +3398,7 @@ test('Slack switch posts a new scoped card when the existing job card belongs to
     stage: 'preview_deployed',
     status: 'preview_deployed',
   });
-  const slackRequests = [];
+  const notifierCalls = [];
 
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
@@ -3387,28 +3418,41 @@ test('Slack switch posts a new scoped card when the existing job card belongs to
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D-new', ts: '1710000000.000134' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls, {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/job-status') {
+            return notifierResponse({
+              ok: true,
+              action: 'posted',
+              channel: 'D-new',
+              ts: '1710000000.000134',
+              message: {
+                channel: 'D-new',
+                threadTs: '1710000000.000133',
+                messageTs: '1710000000.000134',
+                stage: 'preview_deployed',
+                status: 'preview_deployed',
+              },
+            });
+          }
+          return null;
+        },
+      }),
     }
   );
   const body = await json(response);
-  const payload = JSON.parse(slackRequests[0].request.body);
+  const statusCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/job-status');
   const scopedMessage = app.store.getSlackJobStatusMessage(job.id, { slackSessionId: body.slackSessionId });
   const oldMessage = app.store.getSlackJobStatusMessage(job.id);
 
   assert.equal(response.status, 200);
   assert.equal(body.action, 'switch_work_item');
   assert.equal(body.noReply, true);
-  assert.equal(slackRequests.length, 1);
-  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.postMessage');
-  assert.equal(payload.channel, 'D-new');
-  assert.equal(payload.thread_ts, '1710000000.000133');
-  assert.equal(payload.ts, undefined);
+  assert.equal(notifierCalls.length, 1);
+  assert.equal(statusCall.body.job.slackThread.channelId, 'D-new');
+  assert.equal(statusCall.body.job.slackThread.threadTs, '1710000000.000133');
+  assert.equal(statusCall.body.existingMessage, null);
+  assert.equal(statusCall.body.options.slackSessionId, body.slackSessionId);
   assert.equal(scopedMessage.channel, 'D-new');
   assert.equal(scopedMessage.threadTs, '1710000000.000133');
   assert.equal(scopedMessage.messageTs, '1710000000.000134');
@@ -3519,7 +3563,7 @@ test('Slack free-form turn redacts token-like content from gateway session memor
 
 test('executor callbacks update the source Slack status card without extra progress messages', async () => {
   const app = createGatewayApp();
-  const slackMessages = [];
+  const notifierCalls = [];
   const createResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -3536,7 +3580,8 @@ test('executor callbacks update the source Slack status card without extra progr
           text: 'issue: 帮我创建 profile 页面',
         },
       }),
-    })
+    }),
+    mockSlackNotifier(notifierCalls)
   );
   const created = await json(createResponse);
 
@@ -3552,32 +3597,23 @@ test('executor callbacks update the source Slack status card without extra progr
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
       SLACK_USER_PROFILE_LOOKUP: 'false',
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        assert.equal(request.headers.Authorization, 'Bearer test-slack-token');
-        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000100' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
+  const statusCalls = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status');
+  const latestStatusCall = statusCalls.at(-1);
 
   assert.equal(response.status, 200);
   assert.equal(body.slackStatusNotification.ok, true);
-  assert.equal(body.slackStatusNotification.action, 'posted');
+  assert.equal(body.slackStatusNotification.action, 'updated');
   assert.equal(body.slackNotification, undefined);
-  assert.equal(slackMessages.length, 1);
-  const statusPayload = JSON.parse(slackMessages[0].request.body);
-  assert.equal(slackMessages[0].url, 'https://slack.com/api/chat.postMessage');
-  assert.equal(statusPayload.channel, 'C1');
-  assert.equal(statusPayload.thread_ts, '1710000000.000200');
-  assert.match(statusPayload.text, /^<@U1> Pages 发布进度/);
-  assert.ok(Array.isArray(statusPayload.blocks));
-  assert.match(JSON.stringify(statusPayload.blocks), /Issue 已创建/);
-  assert.match(JSON.stringify(statusPayload.blocks), /查看 Issue/);
+  assert.equal(statusCalls.length, 2);
+  assert.equal(latestStatusCall.body.job.slackThread.channelId, 'C1');
+  assert.equal(latestStatusCall.body.job.slackThread.threadTs, '1710000000.000200');
+  assert.equal(latestStatusCall.body.options.stage, 'issue_created');
+  assert.match(latestStatusCall.body.options.text, /已创建 GitHub issue/);
   assert.equal(body.job.issueUrl, 'https://github.example/org/pages-manager/issues/8');
 
   const duplicate = await app.fetch(
@@ -3592,10 +3628,14 @@ test('executor callbacks update the source Slack status card without extra progr
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH() {
-        throw new Error('duplicate callback should not post to Slack');
-      },
+      ...mockSlackNotifier([], {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/job-status') {
+            throw new Error('duplicate callback should not post to Slack');
+          }
+          return null;
+        },
+      }),
     }
   );
   const duplicateBody = await json(duplicate);
@@ -3605,7 +3645,7 @@ test('executor callbacks update the source Slack status card without extra progr
 
 test('executor callbacks update the Slack status card in place', async () => {
   const app = createGatewayApp();
-  const slackMessages = [];
+  const notifierCalls = [];
   const createResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -3624,19 +3664,13 @@ test('executor callbacks update the Slack status card in place', async () => {
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
       SLACK_USER_PROFILE_LOOKUP: 'false',
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000210' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const created = await json(createResponse);
   assert.equal(created.slackStatusNotification.action, 'posted');
-  assert.equal(slackMessages.length, 1);
+  assert.equal(notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').length, 1);
 
   const response = await app.fetch(
     new Request('http://gateway.test/internal/executor-callback', {
@@ -3650,31 +3684,25 @@ test('executor callbacks update the Slack status card in place', async () => {
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000210' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const updatePayload = JSON.parse(slackMessages[1].request.body);
+  const statusCalls = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status');
+  const updateCall = statusCalls[1];
 
   assert.equal(response.status, 200);
   assert.equal(body.slackStatusNotification.action, 'updated');
-  assert.equal(slackMessages[1].url, 'https://slack.com/api/chat.update');
-  assert.equal(updatePayload.channel, 'C1');
-  assert.equal(updatePayload.ts, '1710000001.000210');
-  assert.ok(Array.isArray(updatePayload.blocks));
-  assert.match(JSON.stringify(updatePayload.blocks), /Issue 已创建/);
-  assert.match(JSON.stringify(updatePayload.blocks), /https:\/\/github.example\/org\/pages-manager\/issues\/18/);
+  assert.equal(updateCall.body.existingMessage.channel, 'C1');
+  assert.equal(updateCall.body.existingMessage.messageTs, '1710000001.000100');
+  assert.equal(updateCall.body.options.stage, 'issue_created');
+  assert.match(updateCall.body.options.text, /已创建 GitHub issue/);
+  assert.equal(updateCall.body.job.issueUrl, 'https://github.example/org/pages-manager/issues/18');
 });
 
 test('preview_deployed status card includes the preview link', async () => {
   const app = createGatewayApp();
-  const slackMessages = [];
+  const notifierCalls = [];
   const createResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -3691,7 +3719,8 @@ test('preview_deployed status card includes the preview link', async () => {
           text: 'issue: 帮我创建 profile 页面',
         },
       }),
-    })
+    }),
+    mockSlackNotifier(notifierCalls)
   );
   const created = await json(createResponse);
 
@@ -3733,24 +3762,18 @@ test('preview_deployed status card includes the preview link', async () => {
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000220' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const updatePayload = JSON.parse(slackMessages[0].request.body);
+  const statusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
 
   assert.equal(response.status, 200);
   assert.equal(body.slackStatusNotification.action, 'updated');
-  assert.equal(slackMessages[0].url, 'https://slack.com/api/chat.update');
-  assert.match(JSON.stringify(updatePayload.blocks), /Preview 已生成/);
-  assert.match(JSON.stringify(updatePayload.blocks), /https:\/\/preview.example.test/);
-  assert.match(JSON.stringify(updatePayload.blocks), /打开 Preview/);
+  assert.ok(statusCall.body.existingMessage.messageTs);
+  assert.equal(statusCall.body.options.stage, 'preview_deployed');
+  assert.match(statusCall.body.options.text, /Preview 已生成/);
+  assert.equal(statusCall.body.job.previewUrl, 'https://preview.example.test');
 });
 
 test('Slack help and ping messages do not create jobs', async () => {
@@ -4234,7 +4257,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
 
   const workerStarts = [];
   const agentCalls = [];
-  const slackRequests = [];
+  const notifierCalls = [];
   const followupResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -4298,18 +4321,12 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
           status: 200,
         });
       },
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const followup = await json(followupResponse);
   const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${created.jobId}`)));
-  const slackPayload = JSON.parse(slackRequests[0].request.body);
+  const followupStatusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
 
   assert.equal(followupResponse.status, 200);
   assert.equal(agentCalls[0].url, 'http://slack-agent.test/internal/slack-agent/turn');
@@ -4317,12 +4334,11 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(followup.jobId, created.jobId);
   assert.equal(followup.noReply, true);
   assert.equal(followup.slackStatusNotification.action, 'updated');
-  assert.ok(!slackRequests.some((request) => request.url.endsWith('/chat.postMessage')));
-  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.update');
-  assert.match(JSON.stringify(slackPayload.blocks), /第 1 轮修改处理中/);
-  assert.match(JSON.stringify(slackPayload.blocks), /最终需求/);
-  assert.match(JSON.stringify(slackPayload.blocks), /本轮修改.*把标题改成中文/);
-  assert.doesNotMatch(JSON.stringify(slackPayload.blocks), /Slack Follow-up/);
+  assert.equal(followupStatusCall.body.existingMessage.messageTs, '1710000001.000100');
+  assert.equal(followupStatusCall.body.options.cardTitle, '第 1 轮修改处理中');
+  assert.match(followupStatusCall.body.options.finalSummary, /帮我创建 profile 页面/);
+  assert.match(followupStatusCall.body.options.currentChange, /本轮修改.*把标题改成中文/);
+  assert.doesNotMatch(followupStatusCall.body.options.finalSummary, /Slack Follow-up/);
   assert.equal(jobBody.job.status, 'fixing');
   assert.equal(jobBody.job.previewUrl, null);
   assert.equal(agentCalls.length, 1);
@@ -4367,25 +4383,19 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
         workerStarts.push({ queued: true });
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       },
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const queued = await json(queuedResponse);
-  const queuedSlackPayload = JSON.parse(slackRequests.at(-1).request.body);
+  const queuedStatusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
 
   assert.equal(queuedResponse.status, 200);
   assert.equal(queued.action, 'followup_fix_queued');
   assert.equal(queued.noReply, true);
-  assert.match(JSON.stringify(queuedSlackPayload.blocks), /第 2 轮修改已排队/);
-  assert.match(JSON.stringify(queuedSlackPayload.blocks), /最终需求/);
-  assert.match(JSON.stringify(queuedSlackPayload.blocks), /本轮修改.*再把按钮改成黑色/);
-  assert.doesNotMatch(JSON.stringify(queuedSlackPayload.blocks), /Slack Follow-up/);
+  assert.equal(queuedStatusCall.body.options.cardTitle, '第 2 轮修改已排队');
+  assert.match(queuedStatusCall.body.options.finalSummary, /帮我创建 profile 页面/);
+  assert.match(queuedStatusCall.body.options.currentChange, /本轮修改.*再把按钮改成黑色/);
+  assert.doesNotMatch(queuedStatusCall.body.options.finalSummary, /Slack Follow-up/);
   assert.equal(workerStarts.length, 1);
 
   const rerunResponse = await app.fetch(
@@ -4415,13 +4425,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
           status: 200,
         });
       },
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000100' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const rerun = await json(rerunResponse);
@@ -4469,7 +4473,7 @@ test('Slack active job clarification still replies without creating an agent pla
   );
   assert.equal(issueResponse.status, 200);
 
-  const slackRequests = [];
+  const notifierCalls = [];
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -4490,7 +4494,6 @@ test('Slack active job clarification still replies without creating an agent pla
     }),
     {
       SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
-      SLACK_BOT_TOKEN: 'test-slack-token',
       async SLACK_AGENT_FETCH(_url, request) {
         const payload = JSON.parse(request.body);
         return new Response(
@@ -4519,24 +4522,18 @@ test('Slack active job clarification still replies without creating an agent pla
           { status: 200 }
         );
       },
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000011.000150' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const payload = JSON.parse(slackRequests[0].request.body);
+  const messageCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
 
   assert.equal(response.status, 200);
   assert.equal(body.action, 'clarification_needed');
-  assert.equal(slackRequests.length, 1);
-  assert.equal(slackRequests[0].url, 'https://slack.com/api/chat.postMessage');
-  assert.match(payload.text, /^<@U1>/);
-  assert.match(payload.text, /偏技术成果还是业务影响/);
-  assert.doesNotMatch(payload.text, /正在整理需求/);
+  assert.equal(notifierCalls.length, 1);
+  assert.match(messageCall.body.payload.text, /^<@U1>/);
+  assert.match(messageCall.body.payload.text, /偏技术成果还是业务影响/);
+  assert.doesNotMatch(messageCall.body.payload.text, /正在整理需求/);
   assert.equal(app.store.slackAgentReplyMessages.size, 0);
 });
 
@@ -4585,7 +4582,7 @@ test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Ag
     },
   };
   const workerStarts = [];
-  const slackRequests = [];
+  const notifierCalls = [];
 
   const response = await app.fetch(
     new Request('http://gateway.test/internal/executor-callback', {
@@ -4607,11 +4604,7 @@ test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Ag
         workerStarts.push({ url: String(url), request });
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       },
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackRequests.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
@@ -4620,7 +4613,7 @@ test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Ag
   assert.equal(body.queuedFollowupRerun.skipped, true);
   assert.equal(body.queuedFollowupRerun.reason, 'queued_followup_claimed');
   assert.equal(workerStarts.length, 0);
-  assert.equal(slackRequests.length, 0);
+  assert.equal(notifierCalls.length, 0);
   assert.equal(redisCalls.length, 1);
   assert.deepEqual(redisCalls[0].slice(0, 4), [
     'set',
@@ -6314,7 +6307,7 @@ test('GitHub Review Agent approval can recover from changes_requested when gate 
 
 test('GitHub Review Agent blocking comment updates Slack status card', async () => {
   const app = createGatewayApp();
-  const slackMessages = [];
+  const notifierCalls = [];
   const createResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -6331,7 +6324,8 @@ test('GitHub Review Agent blocking comment updates Slack status card', async () 
           text: 'issue: 帮我创建 profile 页面',
         },
       }),
-    })
+    }),
+    mockSlackNotifier(notifierCalls)
   );
   const created = await json(createResponse);
   const headSha = 'e'.repeat(40);
@@ -6379,28 +6373,24 @@ test('GitHub Review Agent blocking comment updates Slack status card', async () 
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000002.000100' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
+  const statusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
 
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'changes_requested');
   assert.equal(body.slackStatusNotification.ok, true);
   assert.equal(body.slackNotification, undefined);
-  assert.equal(slackMessages.length, 1);
-  assert.match(JSON.stringify(JSON.parse(slackMessages[0].request.body).blocks), /等待修复 Review 意见/);
+  assert.equal(statusCall.body.options.stage, 'changes_requested');
+  assert.match(statusCall.body.options.text, /blocking comment/);
+  assert.match(statusCall.body.options.text, /暂停 Preview/);
 });
 
 test('GitHub Review Agent suggestion comment updates Slack status card without blocking preview', async () => {
   const app = createGatewayApp();
-  const slackMessages = [];
+  const notifierCalls = [];
   const createResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -6417,7 +6407,8 @@ test('GitHub Review Agent suggestion comment updates Slack status card without b
           text: 'issue: 帮我创建 profile 页面',
         },
       }),
-    })
+    }),
+    mockSlackNotifier(notifierCalls)
   );
   const created = await json(createResponse);
   const headSha = 'f'.repeat(40);
@@ -6467,17 +6458,11 @@ test('GitHub Review Agent suggestion comment updates Slack status card without b
       }),
     }),
     {
-      SLACK_BOT_TOKEN: 'test-slack-token',
-      async SLACK_FETCH(url, request) {
-        slackMessages.push({ url: String(url), request });
-        return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000003.000100' }), {
-          status: 200,
-        });
-      },
+      ...mockSlackNotifier(notifierCalls),
     }
   );
   const body = await json(response);
-  const statusPayload = JSON.parse(slackMessages[0].request.body);
+  const statusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
 
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'reviewing');
@@ -6486,8 +6471,9 @@ test('GitHub Review Agent suggestion comment updates Slack status card without b
   assert.equal(body.job.status, 'reviewing');
   assert.equal(body.slackStatusNotification.ok, true);
   assert.equal(body.slackNotification, undefined);
-  assert.equal(slackMessages.length, 1);
-  assert.match(JSON.stringify(statusPayload.blocks), /等待 Agent Review/);
+  assert.equal(statusCall.body.options.stage, 'reviewing');
+  assert.match(statusCall.body.options.text, /suggestion/);
+  assert.match(statusCall.body.options.text, /不阻塞 Preview/);
 });
 
 test('GitHub webhook ignores untrusted review agents and deduplicates deliveries', async () => {
