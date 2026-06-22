@@ -34,8 +34,9 @@
 
 <!-- 不涉及的项写 N/A + 简短理由。 -->
 
-- 是否影响 `/deploy`、`/list`、`/site/:name` 或 token 逻辑：
-- 是否影响 `openapi.json`、`skill.md`、`README.md`、`API.md`：
+- 是否影响 v2 `/.xd-pages/api/*`、CLI token、access key 或 api_session 逻辑：
+- 是否影响 v1 legacy `/deploy`、`/list`、`/site/:name` 或 `X-Pages-Token` 逻辑：
+- 是否影响 `apps/pages-api/src/openapi.js`、`skill.md`、`README.md`、`docs/api-boundary.md`：
 - 是否影响 `pages-deploy.sh` / `pages-manage.sh` 下发脚本：
 
 ## Self-review Checklist
@@ -46,7 +47,7 @@
 - [ ] 没有在公开响应、日志、文档或测试里泄露用户 token / Cloudflare 资源真实值
 - [ ] staging / production 配置没有串环境
 - [ ] production 仍然只通过 GitHub Actions 手动部署
-- [ ] OpenAPI / skill / README / API.md 与真实行为一致
+- [ ] `apps/pages-api/src/openapi.js` / skill / README / docs/api-boundary.md 与真实行为一致
 - [ ] 行为变更已有 focused `node:test` 覆盖
 - [ ] 已跑 `pnpm lint`
 - [ ] 已跑 `pnpm test`

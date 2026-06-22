@@ -1,8 +1,31 @@
-# XD Pages
+# pages-manager
 
-XD Pages 是基于 Cloudflare Workers 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `pages` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
+`pages-manager` 是 XD Pages 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `pages` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
 
-## 用户使用
+v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 维护，后续不再作为新能力的设计目标。
+
+## 架构一览
+
+```text
+用户 / AI / CI
+  -> pages CLI
+  -> apps/pages-api       管理 API、部署编排、站点与版本数据
+  -> apps/pages-auth      登录、SSO、session 和 token 相关能力
+  -> apps/pages-router    子站访问入口、visibility、ACL、路由快照
+  -> apps/kv-gateway      runtime data/KV 能力的受控网关
+  -> Cloudflare WFP / Workers / D1 / KV
+```
+
+核心包：
+
+- `apps/pages-cli/`：用户和 agent 使用的 CLI。
+- `apps/pages-skill/`：随 CLI 发布给 AI agent 的 XD Pages skill。
+- `apps/pages-sdk/`：站点 runtime helper。
+- `packages/wfp-client/`：Cloudflare Workers for Platforms 客户端。
+- `packages/pages-runtime-protocol/`：runtime 协议共享定义。
+- `packages/worker-kit/`、`packages/ip-guard/`：Worker 公共工具。
+
+## 用户入口
 
 ```bash
 pages login
@@ -44,18 +67,18 @@ CLI 会自动识别发布目录：
 
 `fallback` 可取 `auto`、`index`、`not-found`。普通用户优先使用默认 `auto`；只有需要明确控制深链刷新行为时才显式设置。
 
-更多 API 边界见 [API.md](./API.md)。设计说明见 [docs/adr/0001-pages-v2-artifact-detection.md](./docs/adr/0001-pages-v2-artifact-detection.md)。
+更多 API 边界见 [docs/api-boundary.md](./docs/api-boundary.md)。文档索引和真相源矩阵见 [docs/README.md](./docs/README.md)。
 
 ## 安全边界
 
 - 发布必须通过 CLI token 或发布 token 强认证。
-- 除 `/openapi.json`、`/skill.md`、`/readme.md` 外，管理 API 受公司网络 / VPN / 办公网出口 IP allowlist 约束。
+- 除 `/skill.md`、`/readme.md` 外，管理 API 受公司网络 / VPN / 办公网出口 IP allowlist 约束。
 - 子站访问由 router 执行 IP allowlist、visibility、SSO 和 ACL。
 - `internal` 表示公司网络内匿名可访问，不代表互联网公开。
 - `acl` 支持邮箱和完整部门路径授权，部门路径默认包含子部门。
 - 发布 token、CLI token、cookie、SSO code、Cloudflare token 和平台能力不得写入项目文件、日志、README、截图或聊天消息。
 
-## 核心目录
+## 代码目录
 
 ```text
 pages-manager/
@@ -70,6 +93,13 @@ pages-manager/
 ├── packages/ip-guard/
 ├── docs/
 └── scripts/
+```
+
+legacy v1 目录：
+
+```text
+apps/server/              # v1 管理 API Worker，仅维护旧 workers.xd.team 链路
+pages-deploy.skill.md     # v1 文件名兼容入口，内容指向当前 XD Pages skill
 ```
 
 ## 开发
@@ -89,7 +119,7 @@ pnpm test
 
 ## 部署
 
-平台部署规则见 [docs/deployment-branch-policy.md](./docs/deployment-branch-policy.md)。
+平台部署规则见 [docs/deployment-branch-policy.md](./docs/deployment-branch-policy.md)。v2 架构入口见 [docs/pages-v2-wfp-architecture.md](./docs/pages-v2-wfp-architecture.md)。
 
 常用维护命令：
 

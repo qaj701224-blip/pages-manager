@@ -56,7 +56,7 @@
 | `server/src/router.js` | 修复 HEAD 请求不匹配 GET 路由导致 404 的问题 |
 | `pages-deploy.skill.md` | 域名引用更新 |
 | `scripts/deploy.sh` / `manage.sh` | 默认 API 地址更新 |
-| `README.md` / `API.md` | 文档域名全量更新 |
+| `README.md` / API 边界文档 | 文档域名全量更新 |
 | `xdads-302/` | 新增 308 跳转 Worker |
 | `scripts/migrate-domain.sh` | 一次性迁移脚本，批量创建 Workers Route + 更新 KV 记录 |
 

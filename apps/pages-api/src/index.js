@@ -3,7 +3,6 @@ import { readApiConfig } from './config.js';
 import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
 import { jsonError, jsonOk } from './http.js';
 import { handleInternalApi } from './internal.js';
-import { buildOpenApi } from './openapi.js';
 import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
@@ -42,10 +41,6 @@ export default {
         service: 'pages-api',
         environment: config.environment,
       });
-    }
-
-    if (url.pathname === '/openapi.json' || url.pathname === '/.xd-pages/api/openapi.json') {
-      return jsonOk(buildOpenApi(config));
     }
 
     if (url.pathname === '/skill.md') return markdownResponse(buildSkill(config));
@@ -126,7 +121,6 @@ function requiresIpAllowlist(url) {
   if (url.hostname.endsWith('.internal')) return false;
   const pathname = url.pathname;
   if (pathname === '/.xd-pages/health') return false;
-  if (pathname === '/openapi.json' || pathname === '/.xd-pages/api/openapi.json') return false;
   if (pathname === '/skill.md' || pathname === '/readme.md') return false;
   return true;
 }
