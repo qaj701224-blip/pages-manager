@@ -77,6 +77,21 @@ test('worker app enforces worker shared secret', async () => {
   assert.equal(response.status, 401);
 });
 
+test('worker app fails closed when worker shared secret is missing', async () => {
+  const app = createWorkerApp({ config: { ...config(), workerSharedSecret: '' } });
+  const response = await app.fetch(
+    new Request('http://worker.test/internal/publishing-jobs/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job: baseJob }),
+    })
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 500);
+  assert.equal(body.error, 'Worker shared secret is not configured');
+});
+
 test('issue_only mode creates issue and skips workflow dispatch', async () => {
   const requests = [];
   const result = await runWorkerForJob(baseJob, { ...config(), executorMode: 'issue_only' }, {
