@@ -324,14 +324,50 @@ sites/<employeeSlug>/<siteSlug>/
 - 确认长期公网入口方案，避免依赖临时反代。
 - 在 ACK/ACR lane 可达性解决后，再恢复 ACK 自动部署验证。
 
-## 9. 最近本地验证
+## 9. 本次 session 收尾
+
+本次 session 主要完成 gateway Slack 控制面代码结构继续拆分，并对拆分后的产品边界做了 review。
+
+本地新增提交，均未 push：
+
+```text
+7af9647 refactor(gateway): 拆分 Slack 确认卡片和意图常量
+aa4cb4f refactor(gateway): 拆分 Slack follow-up 和 AgentRun 记录
+d068027 refactor(gateway): 拆分 Slack 任务工具处理
+```
+
+本次拆分结果：
+
+- `control-plane/handlers.js` 从约 2641 行降到 1875 行，继续保留为 Slack / GitHub / Review gate orchestration 入口。
+- `slack/intents.js`：集中维护 Slack Agent intent 常量。
+- `slack/issue-confirmation.js`：承接 issue 创建确认卡片、确认态卡片、继续补充卡片和交互 payload。
+- `slack/agent-run-records.js`：承接 Slack AgentRun 完成 / 失败记录、模型信息 patch 和分析结果脱敏。
+- `slack/followup.js`：承接同一个 Slack session 里的追加修改、排队修复、follow-up 状态卡和 Review 后继续修复派发。
+- `slack/agent-tool-call.js`：承接 Slack Agent toolCall 名称、参数和别名归一化。
+- `slack/work-item-tools.js`：承接“我的任务 / 继续 PR 或 Issue / 重新打开已关闭任务”的受控 tool handler。
+
+产品边界保持不变：
+
+- Slack Agent 主导自由对话、需求整理、任务查询和续接。
+- Gateway 负责权限、session、用户隔离、幂等、状态机和受控 tool 执行。
+- Coding Agent 仍由 GitHub Actions 执行，不进入常驻 gateway。
+- Slack 状态卡继续作为用户操作引导和任务状态呈现，不承担代码执行逻辑。
+- 本次没有改 Cloudflare / KV 既有发布底座，也没有改 workflow 或部署配置。
+
+代码 review 结论：
+
+- 未发现 P0 / P1 问题。
+- 当前拆分是模块边界优化，行为应保持一致。
+- 后续如果继续拆，优先考虑把 `control-plane/handlers.js` 里的 GitHub webhook / Review gate orchestration 继续下沉到 `github/` 或独立 review gate service 文件。
+
+## 10. 最近本地验证
 
 代码改造后已验证过：
 
 ```text
+git diff --check
 corepack pnpm lint
 corepack pnpm test
-git diff --check
 ```
 
-文档对齐后需要重新运行上述命令。
+全量测试结果：`440 passed`。
