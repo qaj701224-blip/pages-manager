@@ -13,6 +13,10 @@ apps/pages-sdk/dist/
 apps/pages-skill/dist/
 apps/pages-skill/.xd-skill/
 
+### xd-skill local installs
+.agents/
+.xd-skill-hub/
+
 ### Secrets & local env
 .env
 .staging.env
