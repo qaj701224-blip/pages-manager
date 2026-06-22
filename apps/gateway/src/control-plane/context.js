@@ -1,5 +1,7 @@
 import { jsonResponse } from '@xd/worker-kit';
 
+import { timingSafeEqualString } from '../utils/crypto.js';
+
 function flagFromEnv(value) {
   if (value === undefined || value === null || value === '') return null;
   if (['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase())) return true;
@@ -43,7 +45,7 @@ export function verifyInternalCallbackToken(request, env) {
   }
 
   const token = request.headers.get('X-Pages-Callback-Token');
-  if (token === env.INTERNAL_CALLBACK_TOKEN) return null;
+  if (timingSafeEqualString(token || '', env.INTERNAL_CALLBACK_TOKEN)) return null;
 
   return jsonResponse({ error: 'Invalid callback token' }, 401);
 }
@@ -58,7 +60,7 @@ export function verifyGatewayApiToken(request, env) {
   }
 
   const token = request.headers.get('X-Pages-Gateway-Token') || request.headers.get('X-Pages-Internal-Token');
-  if (token === expected) return null;
+  if (timingSafeEqualString(token || '', expected)) return null;
 
   return jsonResponse({ error: 'Invalid gateway API token' }, 401);
 }

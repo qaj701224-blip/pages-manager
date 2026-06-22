@@ -9,7 +9,7 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
-    "test": "corepack pnpm --filter @xd/pages-sdk build && node --test \"apps/*/src/**/*.test.js\" \"apps/pages-sdk/test/**/*.test.js\" \"packages/**/*.test.js\" \"scripts/**/*.test.js\" \"tests/**/*.test.js\"",
+    "test": "node apps/pages-sdk/node_modules/typescript/bin/tsc -p apps/pages-sdk/tsconfig.json && node --test \"apps/*/src/**/*.test.js\" \"apps/pages-sdk/test/**/*.test.js\" \"packages/**/*.test.js\" \"scripts/**/*.test.js\" \"tests/**/*.test.js\"",
     "db:generate": "corepack pnpm --filter @xd/gateway drizzle:generate",
     "db:migrate": "corepack pnpm --filter @xd/gateway drizzle:migrate",
     "db:setup": "corepack pnpm --filter @xd/gateway setup-db",
