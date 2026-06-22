@@ -209,7 +209,7 @@ JSON API 返回诊断字段时应放在 `error` envelope 内；浏览器 HTML �
 
 - 不删除或重命名现有 `error.code`、`error.message` 或 `error.action`。
 - 不要求旧客户端理解 `reason`、`step`、`requestId`、`retryable` 或 `details`。
-- 在对应实现发布前，不要在 public OpenAPI 或用户文档里宣称这些可选诊断字段已可用。
+- 在对应实现发布前，不要在开发期 OpenAPI 合约或用户文档里宣称这些可选诊断字段已可用。
 - 错误示例中不要编码环境专属 secret、provider URL 或私有资源 id。
 - 本 ADR 不实现运行时代码变更，也不改变当前线上错误响应；后续实现 PR 应按阶段修改对应代码和测试。
 

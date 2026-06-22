@@ -398,9 +398,17 @@ test('staging sync explicitly dispatches deploy workflows for deploy-affecting p
     'pnpm-lock.yaml',
     '.github/workflows/deploy-pages-v2-staging.yml',
     '.github/workflows/expand-pages-router-slots.yml',
+    'docs/README.md',
+    'docs/api-boundary.md',
+    'docs/pages-v2-wfp-architecture.md',
+    'docs/architecture/*',
+    'docs/operations/*',
+    'docs/security/*',
+    'docs/adr/*',
   ]) {
     assert.match(workflow, new RegExp(escapeRegExp(path)), `v2 staging sync watches ${path}`);
   }
+  assert.doesNotMatch(workflow, /docs\/人工配置待办\.md/, 'deleted manual config todo must not be watched');
 });
 
 test('ack preview deploy is manual and isolated from Cloudflare production deploy', () => {

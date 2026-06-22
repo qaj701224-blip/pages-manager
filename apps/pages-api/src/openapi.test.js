@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from './index.js';
+import { buildOpenApi } from './openapi.js';
 
-test('serves production XD Pages OpenAPI skeleton', async () => {
-  const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/api/openapi.json'), {
-    PAGES_ENV: 'production',
+test('builds production XD Pages OpenAPI skeleton for development checks', () => {
+  const body = buildOpenApi({
+    environment: 'production',
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    siteDomainSuffix: 'pages.xd.team',
   });
-
-  assert.equal(response.status, 200);
-  const body = await response.json();
   const serialized = JSON.stringify(body);
 
   assert.equal(body.openapi, '3.1.0');
@@ -74,13 +75,49 @@ test('serves production XD Pages OpenAPI skeleton', async () => {
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);
 });
 
-test('serves public OpenAPI at top-level docs path', async () => {
-  const response = await worker.fetch(new Request('https://api.pages.xd.team/openapi.json'), {
+test('does not serve OpenAPI as public pages-api routes', async () => {
+  for (const path of ['/openapi.json', '/.xd-pages/api/openapi.json']) {
+    const publicResponse = await worker.fetch(new Request(`https://api.pages.xd.team${path}`), {
+      PAGES_ENV: 'production',
+      IP_ALLOWLIST: '10.0.0.0/8',
+    });
+
+    assert.equal(publicResponse.status, 403);
+    assert.equal((await publicResponse.json()).error.code, 'IP_NOT_ALLOWED');
+
+    const response = await worker.fetch(new Request(`https://api.pages.xd.team${path}`, {
+      headers: { 'CF-Connecting-IP': '10.1.2.3' },
+    }), {
+      PAGES_ENV: 'production',
+      IP_ALLOWLIST: '10.0.0.0/8',
+    });
+
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error.code, 'NOT_FOUND');
+  }
+});
+
+test('staging OpenAPI contract uses staging server URL without v1 addresses', () => {
+  const body = buildOpenApi({
+    environment: 'staging',
+    apiBaseUrl: 'https://api-staging.pages.xd.team',
+    authBaseUrl: 'https://auth-staging.pages.xd.team',
+    siteDomainSuffix: 'pages.xd.team',
+  });
+
+  assert.deepEqual(body.servers, [{ url: 'https://api-staging.pages.xd.team' }]);
+  assert.doesNotMatch(JSON.stringify(body), /workers\.xd\.team/);
+});
+
+test('legacy token headers are rejected before route matching', async () => {
+  const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
+    headers: { 'X-Pages-Token': 'legacy' },
+  }), {
     PAGES_ENV: 'production',
   });
 
-  assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).servers, [{ url: 'https://api.pages.xd.team' }]);
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'LEGACY_TOKEN_UNSUPPORTED');
 });
 
 test('serves CLI-only skill without legacy API instructions', async () => {
@@ -150,27 +187,4 @@ test('serves readme docs without legacy API addresses', async () => {
     )
   );
   assert.doesNotMatch(body, /X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
-});
-
-test('OpenAPI rejects legacy token headers', async () => {
-  const response = await worker.fetch(
-    new Request('https://api.pages.xd.team/.xd-pages/api/openapi.json', {
-      headers: { 'X-Pages-Token': 'legacy' },
-    }),
-    {
-      PAGES_ENV: 'production',
-    }
-  );
-
-  assert.equal(response.status, 400);
-  assert.equal((await response.json()).error.code, 'LEGACY_TOKEN_UNSUPPORTED');
-});
-
-test('serves staging OpenAPI server URL without v1 addresses', async () => {
-  const response = await worker.fetch(new Request('https://api-staging.pages.xd.team/.xd-pages/api/openapi.json'), {
-    PAGES_ENV: 'staging',
-  });
-
-  assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).servers, [{ url: 'https://api-staging.pages.xd.team' }]);
 });

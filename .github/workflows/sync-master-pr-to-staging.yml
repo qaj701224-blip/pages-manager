@@ -80,7 +80,8 @@ jobs:
               scripts/render-pages-v2-wrangler.mjs | scripts/provision-pages-v2-slots.mjs | \
               scripts/put-pages-v2-secrets.sh | package.json | pnpm-lock.yaml | \
               .github/workflows/deploy-pages-v2-staging.yml | .github/workflows/expand-pages-router-slots.yml | \
-              docs/人工配置待办.md)
+              docs/README.md | docs/api-boundary.md | docs/pages-v2-wfp-architecture.md | \
+              docs/architecture/* | docs/operations/* | docs/security/* | docs/adr/*)
                 v2_changed=true
                 ;;
             esac

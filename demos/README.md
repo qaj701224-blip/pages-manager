@@ -134,7 +134,9 @@ This keeps production deployment fast while still allowing demos to validate rea
 
 ## Worker Preset IP Guard
 
-`api-demo/_worker.js` includes the same `checkIP(request, env)` pattern exposed by `/openapi.json` under `x-libs.ip-guard`.
+This section is v1 legacy guidance for `workers.xd.team` demos. It does not apply to XD Pages v2: v2 does not expose `/openapi.json`.
+
+`api-demo/_worker.js` includes the same `checkIP(request, env)` pattern exposed by the v1 `/openapi.json` under `x-libs.ip-guard`.
 
 This matters because `worker` preset deployments receive `env.IP_ALLOWLIST`, but Pages Manager does not rewrite user `_worker.js` files. A custom Worker must call the guard explicitly near the start of `fetch()`:
 
