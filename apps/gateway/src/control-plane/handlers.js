@@ -140,6 +140,7 @@ import {
   nextRepoQuestionContext,
   platformDraftFromRepoQuestionContext,
   repoQuestionActionBlocks,
+  repoEvidenceDetailsFromContext,
 } from '../slack/repo-question.js';
 
 function isUnaddressedChannelThreadMessage(body = {}) {
@@ -1711,29 +1712,123 @@ export async function handleSlackInteractions(request, env) {
         text: '当前会话还没有可继续深挖的仓库问答。',
       });
     }
-    const result = await answerRepoQuestion(env, {
-      question: `继续深挖：${lastTurn.question}`,
-      sessionMemory,
-      deepDive: true,
+    runSlackBackground(env, async () => {
+      try {
+        const result = await answerRepoQuestion(env, {
+          question: `继续深挖：${lastTurn.question}`,
+          sessionMemory,
+          deepDive: true,
+        });
+        const replyText = redactSecretLikeText(result.replyText);
+        await store.updateSessionMemory(session.id, {
+          summary: sessionMemory.summary || lastTurn.question,
+          lastAgentResponse: replyText,
+          repoQuestionContext: nextRepoQuestionContext(sessionMemory.repoQuestionContext || {}, {
+            ...result,
+            replyText,
+          }),
+        });
+        await postSlackInteractionThreadReply(env, body, session, replyText);
+      } catch (err) {
+        console.log(
+          JSON.stringify({
+            service: 'pages-gateway',
+            message: 'slack_repo_deep_dive_failed',
+            slackSessionId: session.id,
+            error: err.message,
+          })
+        );
+        await postSlackInteractionThreadReply(env, body, session, '继续深挖失败了，可以稍后重试或补充更具体的问题。');
+      }
     });
-    const replyText = redactSecretLikeText(result.replyText);
-    await store.updateSessionMemory(session.id, {
-      summary: sessionMemory.summary || lastTurn.question,
-      lastAgentResponse: replyText,
-      repoQuestionContext: nextRepoQuestionContext(sessionMemory.repoQuestionContext || {}, {
-        ...result,
-        replyText,
-      }),
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: '收到，我会继续深挖，稍后把结果发到当前对话。',
+      action: 'repo_question_deep_dive_queued',
+      accepted: true,
+      slackSessionId: session.id,
     });
+  }
+
+  if (actionId === 'pages_repo_view_evidence') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个仓库问答不属于当前 Slack 用户，不能查看依据。',
+      });
+    }
+    const sessionMemory = (await store.getSessionMemory?.(session.id)) || {};
+    const replyText = redactSecretLikeText(repoEvidenceDetailsFromContext(sessionMemory));
     const threadReply = await postSlackInteractionThreadReply(env, body, session, replyText);
     return slackAckResponse({
       response_type: 'ephemeral',
-      text: '已继续深挖，并把结果发到当前对话。',
-      action: 'repo_question_deep_dive',
+      text: '已把本轮依据片段发到当前对话。',
+      action: 'repo_question_view_evidence',
       accepted: true,
       slackSessionId: session.id,
-      evidenceCount: result.evidence?.length || 0,
       ...(threadReply ? { threadReply } : {}),
+    });
+  }
+
+  if (actionId === 'pages_repo_generate_plan') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个仓库问答不属于当前 Slack 用户，不能生成改造方案。',
+      });
+    }
+    const sessionMemory = (await store.getSessionMemory?.(session.id)) || {};
+    const lastTurn = Array.isArray(sessionMemory.repoQuestionContext?.turns)
+      ? sessionMemory.repoQuestionContext.turns.at(-1)
+      : null;
+    if (!lastTurn?.question) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话还没有可生成方案的仓库问答。',
+      });
+    }
+    runSlackBackground(env, async () => {
+      try {
+        const result = await answerRepoQuestion(env, {
+          question: `生成改造方案：${lastTurn.question}`,
+          sessionMemory,
+          mode: 'implementation_plan',
+          plan: true,
+        });
+        const replyText = redactSecretLikeText(result.replyText);
+        const repoQuestionContext = nextRepoQuestionContext(sessionMemory.repoQuestionContext || {}, {
+          ...result,
+          replyText,
+        });
+        await store.updateSessionMemory(session.id, {
+          summary: sessionMemory.summary || lastTurn.question,
+          lastAgentResponse: replyText,
+          repoQuestionContext,
+        });
+        const blocks = repoQuestionActionBlocks(session, result, { allowCreateIssueAction: true });
+        await postSlackInteractionThreadReply(env, body, session, replyText, { blocks });
+      } catch (err) {
+        console.log(
+          JSON.stringify({
+            service: 'pages-gateway',
+            message: 'slack_repo_generate_plan_failed',
+            slackSessionId: session.id,
+            error: err.message,
+          })
+        );
+        await postSlackInteractionThreadReply(env, body, session, '生成改造方案失败了，可以稍后重试或补充更具体的问题。');
+      }
+    });
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: '收到，我会生成改造方案，稍后发到当前对话。',
+      action: 'repo_question_generate_plan_queued',
+      accepted: true,
+      slackSessionId: session.id,
     });
   }
 
