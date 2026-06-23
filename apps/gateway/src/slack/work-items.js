@@ -38,30 +38,36 @@ export const INACTIVE_WORK_ITEM_STATUSES = ['approved', 'merged', 'deployed', 'f
 
 const ACTIONABLE_WORK_ITEM_STATUS_SET = new Set(ACTIONABLE_WORK_ITEM_STATUSES);
 
+function isSlackWorkItemRecord(job) {
+  return Boolean(job && typeof job === 'object');
+}
+
 export function slackJobVisibleToActor(job, body) {
-  if (!job) return true;
+  if (!isSlackWorkItemRecord(job)) return false;
   const actor = slackActorFromBody(body);
   return job.source === 'slack' && job.requestedById === actor.requestedById;
 }
 
 function workItemKind(job = {}) {
-  return job.workItemKind || (job.githubIssueNumber !== undefined ? 'platform_dev' : 'site_publishing');
+  const item = job || {};
+  return item.workItemKind || (item.githubIssueNumber !== undefined ? 'platform_dev' : 'site_publishing');
 }
 
 export function isActionableSlackWorkItem(job = {}) {
-  return ACTIONABLE_WORK_ITEM_STATUS_SET.has(job.status);
+  return ACTIONABLE_WORK_ITEM_STATUS_SET.has((job || {}).status);
 }
 
 export function reopenTargetForSlackWorkItem(job = {}) {
+  const item = job || {};
   if (workItemKind(job) === 'platform_dev') {
-    if (job.status !== 'closed_unmerged' && job.status !== 'cancelled' && job.status !== 'failed') return null;
-    if (job.githubPrNumber || job.prNumber) return 'pr';
-    if (job.githubIssueNumber || job.issueNumber) return 'issue';
+    if (item.status !== 'closed_unmerged' && item.status !== 'cancelled' && item.status !== 'failed') return null;
+    if (item.githubPrNumber || item.prNumber) return 'pr';
+    if (item.githubIssueNumber || item.issueNumber) return 'issue';
     return null;
   }
-  if (job.status !== 'cancelled') return null;
-  if (job.errorCode === 'github_pr_closed' && job.prNumber) return 'pr';
-  if (job.errorCode === 'github_issue_closed' && job.issueNumber) return 'issue';
+  if (item.status !== 'cancelled') return null;
+  if (item.errorCode === 'github_pr_closed' && item.prNumber) return 'pr';
+  if (item.errorCode === 'github_issue_closed' && item.issueNumber) return 'issue';
   return null;
 }
 
@@ -70,6 +76,7 @@ export function isReopenableSlackWorkItem(job = {}) {
 }
 
 export function slackStatusLabel(status = '', job = {}) {
+  const item = job || {};
   const labels = {
     received: '整理需求',
     issue_creating: '创建 Issue',
@@ -95,13 +102,14 @@ export function slackStatusLabel(status = '', job = {}) {
     ready_to_merge: '可合并',
     closed_unmerged: '已关闭',
   };
-  if (status === 'cancelled' && job.errorCode === 'github_issue_closed') return 'Issue 已关闭';
-  if (status === 'cancelled' && job.errorCode === 'github_pr_closed') return 'PR 已关闭';
+  if (status === 'cancelled' && item.errorCode === 'github_issue_closed') return 'Issue 已关闭';
+  if (status === 'cancelled' && item.errorCode === 'github_pr_closed') return 'PR 已关闭';
   return labels[status] || status || '处理中';
 }
 
 export function inactiveSlackWorkItemReply(job = {}) {
-  const label = slackStatusLabel(job.status, job);
+  const item = job || {};
+  const label = slackStatusLabel(item.status, item);
   const target = workItemKind(job) === 'platform_dev' ? '平台需求' : '发布任务';
   const reopenHint = isReopenableSlackWorkItem(job)
     ? '可以说「查看我已关闭的任务」，然后在卡片里点击「重新打开」。'
@@ -127,55 +135,59 @@ export function parseSlackButtonValue(value = '') {
 }
 
 function workItemLine(job = {}) {
-  const kind = workItemKind(job);
+  const item = job || {};
+  const kind = workItemKind(item);
   const title =
     kind === 'platform_dev'
-      ? userFacingPlatformTitle({ title: job.title, summary: job.summary })
-      : compactUserFacingText(job.title || job.siteSlug || '未命名任务').slice(0, 80);
+      ? userFacingPlatformTitle({ title: item.title, summary: item.summary })
+      : compactUserFacingText(item.title || item.siteSlug || '未命名任务').slice(0, 80);
   const parts = [
     `*${title}*`,
     kind === 'platform_dev'
-      ? `类型：${platformIssueTypeLabel(job.issueType)} · 风险：${platformRiskLabel(job.risk)}`
-      : `站点：${job.siteSlug || '-'}`,
-    `状态：${slackStatusLabel(job.status, job)}`,
+      ? `类型：${platformIssueTypeLabel(item.issueType)} · 风险：${platformRiskLabel(item.risk)}`
+      : `站点：${item.siteSlug || '-'}`,
+    `状态：${slackStatusLabel(item.status, item)}`,
   ];
-  if (kind === 'platform_dev' && Array.isArray(job.areas) && job.areas.length) {
-    const areaLabels = Array.from(new Set(job.areas.map((area) => platformAreaLabel(area))));
+  if (kind === 'platform_dev' && Array.isArray(item.areas) && item.areas.length) {
+    const areaLabels = Array.from(new Set(item.areas.map((area) => platformAreaLabel(area))));
     parts.push(`范围：${areaLabels.join('、')}`);
   }
-  if (job.issueNumber) parts.push(`Issue：#${job.issueNumber}`);
-  if (job.prNumber) parts.push(`PR：#${job.prNumber}`);
-  if (job.previewUrl) parts.push('Preview：已生成');
+  if (item.issueNumber) parts.push(`Issue：#${item.issueNumber}`);
+  if (item.prNumber) parts.push(`PR：#${item.prNumber}`);
+  if (item.previewUrl) parts.push('Preview：已生成');
   return parts.join('\n');
 }
 
 export function slackWorkItemTargetLabel(job = {}) {
-  if (job.prNumber) return `PR #${job.prNumber}`;
-  if (job.issueNumber) return `Issue #${job.issueNumber}`;
+  const item = job || {};
+  if (item.prNumber) return `PR #${item.prNumber}`;
+  if (item.issueNumber) return `Issue #${item.issueNumber}`;
   return workItemKind(job) === 'platform_dev' ? '这个平台需求' : '这个发布任务';
 }
 
 export function slackWorkItemListText(jobs = [], options = {}) {
+  const visibleJobs = jobs.filter(isSlackWorkItemRecord);
   const state = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
-  const hasPlatformDev = jobs.some((job) => workItemKind(job) === 'platform_dev');
+  const hasPlatformDev = visibleJobs.some((job) => workItemKind(job) === 'platform_dev');
   const target = hasPlatformDev ? '任务' : '发布任务';
-  if (!jobs.length) {
+  if (!visibleJobs.length) {
     if (state === 'closed') return '我还没有找到你已关闭、已取消或失败的任务。';
     return '我还没有找到你的任务。可以先描述一个个人网站或平台改造需求，我会整理后等你确认创建。';
   }
-  if (state === 'closed') return `找到你最近的 ${jobs.length} 个已关闭、已取消或失败的${target}。可恢复的任务会显示「重新打开」。`;
-  if (state === 'all') return `找到你最近的 ${jobs.length} 个${target}。已关闭、已取消或失败的任务只展示状态，不会继续修改。`;
-  return `找到你最近的 ${jobs.length} 个${target}。选择一个后，这个对话会继续围绕它修改。`;
+  if (state === 'closed') return `找到你最近的 ${visibleJobs.length} 个已关闭、已取消或失败的${target}。可恢复的任务会显示「重新打开」。`;
+  if (state === 'all') return `找到你最近的 ${visibleJobs.length} 个${target}。已关闭、已取消或失败的任务只展示状态，不会继续修改。`;
+  return `找到你最近的 ${visibleJobs.length} 个${target}。选择一个后，这个对话会继续围绕它修改。`;
 }
 
 export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
+  const visibleJobs = jobs.filter(isSlackWorkItemRecord);
   const state = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
-  const hasPlatformDev = jobs.some((job) => workItemKind(job) === 'platform_dev');
-  if (!jobs.length) {
+  const hasPlatformDev = visibleJobs.some((job) => workItemKind(job) === 'platform_dev');
+  if (!visibleJobs.length) {
     return [
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: slackWorkItemListText(jobs, options) },
+        text: { type: 'mrkdwn', text: slackWorkItemListText(visibleJobs, options) },
       },
     ];
   }
@@ -203,7 +215,7 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
     },
   ];
 
-  for (const job of jobs.slice(0, 6)) {
+  for (const job of visibleJobs.slice(0, 6)) {
     const elements = [];
     if (isActionableSlackWorkItem(job)) {
       elements.push({
@@ -275,11 +287,14 @@ export async function listSlackWorkItemsForSession(store, body, options = {}) {
           : options.statuses,
   };
   if (store.listWorkItemsForSlackUser) {
-    return store.listWorkItemsForSlackUser(actor.teamId, actor.slackUserId, queryOptions);
+    const result = await store.listWorkItemsForSlackUser(actor.teamId, actor.slackUserId, queryOptions);
+    const jobs = (result.jobs || []).filter(isSlackWorkItemRecord);
+    return { ...result, jobs, total: jobs.length };
   }
   const result = await store.listJobs({ source: 'slack', limit: queryOptions.limit || 20 });
   const requestedById = actor.requestedById;
   const jobs = (result.jobs || [])
+    .filter(isSlackWorkItemRecord)
     .filter((job) => job.requestedById === requestedById)
     .filter((job) => !queryOptions.statuses?.length || queryOptions.statuses.includes(job.status))
     .slice(0, queryOptions.limit || 5);

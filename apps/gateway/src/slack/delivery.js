@@ -118,7 +118,7 @@ function slackReactionName(value, fallback) {
 function slackResultType(result = {}) {
   if (result.action === 'close_session') return 'session_closed';
   if (result.action === 'clarification_needed') return 'clarification_requested';
-  if (result.action === 'status' || result.action === 'status_query') return 'status_returned';
+  if (['status', 'status_query', 'diagnose_work_item'].includes(result.action)) return 'status_returned';
   if (result.action === 'list_work_items' || String(result.action || '').startsWith('switch_work_item')) return 'status_returned';
   if (String(result.action || '').startsWith('followup_')) return 'followup_appended';
   if (result.platformDevItemId || result.workItemKind === 'platform_dev') {

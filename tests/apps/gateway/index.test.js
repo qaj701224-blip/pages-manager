@@ -1243,6 +1243,73 @@ test('Slack Agent turn consumes ndjson chunks and updates one reply message prog
   );
 });
 
+test('Slack query turns use reaction-only progress before posting the result', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const notifierCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-query-no-placeholder-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001131',
+          text: '当前会话有哪些？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              visibleText: '我来查一下当前会话。',
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    visibleReply: '我来查一下当前会话。',
+                    intent: 'list_work_items',
+                    toolCall: { name: 'list_my_work_items', args: { state: 'active' } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(agentCalls.length, 1);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.noReply, undefined);
+  assert.equal(notifierCalls.some((call) => call.path === '/internal/slack-notifier/agent-reply/start'), false);
+  assert.equal(notifierCalls.filter((call) => call.path === '/internal/slack-notifier/message').length, 1);
+  assert.doesNotMatch(JSON.stringify(notifierCalls), /正在整理需求/);
+});
+
 test('Slack Agent posts fresh reply cards for requirement drafting turns', async () => {
   const app = createGatewayApp();
   const notifierCalls = [];
@@ -2008,6 +2075,42 @@ test('Slack work item list only shows current user publishing jobs', async () =>
   assert.match(selected.text, /已切换到 PR #68/);
   assert.equal(session.activeJobId, owned.id);
   assert.equal(session.activePrNumber, 68);
+});
+
+test('Slack work item list skips stale missing work items instead of failing', async () => {
+  const app = createGatewayApp();
+  app.store.listWorkItemsForSlackUser = () => ({
+    jobs: [null, undefined],
+    total: 2,
+    limit: 5,
+    offset: 0,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-list-stale-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.00013005',
+          text: '我的 PR',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.accepted, false);
+  assert.deepEqual(body.jobs, []);
+  assert.match(body.replyText, /还没有找到你的任务/);
 });
 
 test('Slack work item list shows platform tasks without preview wording', async () => {
@@ -4189,11 +4292,13 @@ test('Slack status message reads an existing job without creating a new one', as
   const body = await json(statusResponse);
 
   assert.equal(statusResponse.status, 200);
-  assert.equal(body.action, 'status');
+  assert.equal(body.action, 'diagnose_work_item');
   assert.equal(body.accepted, false);
-  assert.equal(body.jobId, undefined);
+  assert.equal(body.jobId, created.jobId);
   assert.doesNotMatch(body.replyText, /job_[A-Za-z0-9_]+/);
-  assert.match(body.replyText, /状态：received/);
+  assert.match(body.replyText, /当前状态：整理需求/);
+  assert.match(body.replyText, /最近阶段：整理需求/);
+  assert.match(body.replyText, /建议操作：/);
 });
 
 test('Slack event can start the worker without requiring user GitHub permissions', async () => {
