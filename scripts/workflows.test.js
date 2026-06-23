@@ -167,6 +167,32 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.doesNotMatch(siteCheck, /\bpnpm lint\b|\bpnpm test\b|wrangler|kubectl|docker build|ACR_|KUBE_CONFIG_B64/);
 });
 
+test('staging sync classifies files before generated site branch skip', () => {
+  const workflow = readWorkflow('.github/workflows/sync-master-pr-to-staging.yml');
+  const fileListIndex = workflow.indexOf('files="$(gh api --paginate');
+  const mixedPrIndex = workflow.indexOf('Mixed PRs are not supported:');
+  const siteBranchSkipIndex = workflow.indexOf(
+    'head branch is a generated user-site branch and PR only touches sites/**',
+  );
+
+  assert.notEqual(fileListIndex, -1, 'staging sync reads PR file list');
+  assert.notEqual(mixedPrIndex, -1, 'staging sync rejects mixed PRs');
+  assert.notEqual(siteBranchSkipIndex, -1, 'staging sync still reports generated site branch skips');
+  assert.ok(
+    fileListIndex < siteBranchSkipIndex,
+    'generated site branch skip must happen after file classification',
+  );
+  assert.ok(
+    mixedPrIndex < siteBranchSkipIndex,
+    'mixed platform/site PRs must fail before generated branch skip can apply',
+  );
+  assert.doesNotMatch(
+    workflow,
+    /if \[\[ "\$HEAD_REF" == sites\/\* \]\]; then\s+echo "skip=true"[\s\S]*?exit 0\s+fi\s+files="\$\(gh api/,
+    'generated site branch name must not skip before reading PR files',
+  );
+});
+
 test('user-triggered publishing executor workflows stay separate from platform deploys', () => {
   for (const [name, path] of publishingExecutorWorkflows) {
     const workflow = readWorkflow(path);
