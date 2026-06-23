@@ -28,16 +28,20 @@ test('branch policy documents master PR preview sync and CI lane isolation', () 
     assert.match(doc, /project-index\.yml/);
     assert.match(doc, /pages-agent\.yml/);
     assert.match(doc, /pages-preview\.yml/);
-    assert.match(doc, /site-check\.yml/);
     assert.match(doc, /KUBE_CONFIG_B64/);
     assert.match(doc, /sites\/<employee/);
     assert.match(doc, /\.github\/\*\*/);
     assert.match(doc, /k8s\/\*\*/);
   }
+
+  assert.match(agents, /pr-classify\.yml/);
+  assert.match(agents, /pr-platform\.yml/);
+  assert.match(agents, /pr-site\.yml/);
 });
 
 test('master PR sync workflow merges project PR heads to staging and skips user-site PRs', () => {
   const workflow = readDoc('.github/workflows/sync-master-pr-to-staging.yml');
+  const compatibilityCi = readDoc('.github/workflows/ci.yml');
   const policy = readDoc('docs/deployment-branch-policy.md');
 
   assert.match(workflow, /^name: Sync Master PR To Staging$/m);
@@ -52,6 +56,12 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /run: \|\n\s+echo "Skipped staging sync:/);
   assert.match(workflow, /gh api --paginate/);
   assert.match(workflow, /HEAD_REF.*sites\/\*/);
+  assert.match(workflow, /site_changed=false/);
+  assert.match(workflow, /platform_changed=false/);
+  assert.match(
+    workflow,
+    /Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs\./,
+  );
   assert.match(workflow, /PR only touches sites\/\*\*/);
   assert.match(workflow, /concurrency:[\s\S]*sync-master-pr-to-staging/);
   assert.match(workflow, /ref: staging/);
@@ -83,6 +93,15 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /gh run watch "\$v2_run_id"[\s\S]*--exit-status/);
   assert.doesNotMatch(workflow, /force-with-lease|git push --force/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
+
+  assert.match(compatibilityCi, /^name: CI$/m);
+  assert.match(compatibilityCi, /Compatibility workflow for staging sync during the PR lane split\./);
+  assert.match(compatibilityCi, /^\s*workflow_dispatch:/m);
+  assert.doesNotMatch(compatibilityCi, /^\s*pull_request:/m);
+  assert.doesNotMatch(compatibilityCi, /^\s*push:/m);
+  assert.match(compatibilityCi, /jobs:[\s\S]*check:/);
+  assert.match(compatibilityCi, /pnpm lint/);
+  assert.match(compatibilityCi, /pnpm test/);
 
   assert.match(policy, /Master PR 同步 Staging 预览/);
   assert.match(policy, /项目类 PR 指向 `master`/);

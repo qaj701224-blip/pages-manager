@@ -50,19 +50,18 @@ jobs:
             exit 0
           fi
 
-          if [[ "$HEAD_REF" == sites/* ]]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "skipReason=head branch is a generated user-site branch" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
+          site_changed=false
           platform_changed=false
           v1_changed=false
           v2_changed=false
           while IFS= read -r path; do
             case "$path" in
-              "" | sites/*) ;;
+              "")
+                ;;
+              sites/*)
+                site_changed=true
+                ;;
               *)
                 platform_changed=true
                 ;;
@@ -87,9 +86,18 @@ jobs:
             esac
           done <<< "$files"
 
+          if [[ "$site_changed" == "true" && "$platform_changed" == "true" ]]; then
+            echo "Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs." >&2
+            exit 1
+          fi
+
           if [[ "$platform_changed" != "true" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "skipReason=PR only touches sites/**" >> "$GITHUB_OUTPUT"
+            if [[ "$HEAD_REF" == sites/* ]]; then
+              echo "skipReason=head branch is a generated user-site branch and PR only touches sites/**" >> "$GITHUB_OUTPUT"
+            else
+              echo "skipReason=PR only touches sites/**" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 

@@ -358,16 +358,22 @@ jobs:
             return 1
           }
 
+          post_status "pending" "PR Classify" "PR lane classification dispatched"
           post_status "pending" "check" "Project CI dispatched by Pages Agent"
-          post_status "pending" "pages-generated-site-check" "Generated site validation dispatched"
+          post_status "pending" "site-check" "Generated site validation dispatched"
           post_status "pending" "pages-user-flow" "Generated site publishing checks are running"
 
-          gh workflow run ci.yml \
+          gh workflow run pr-classify.yml \
             --ref "$BRANCH_NAME" \
             -f baseSha="$BASE_SHA" \
             -f headSha="$HEAD_SHA" \
             -f allowedPath="$ALLOWED_PATH"
-          gh workflow run site-check.yml \
+          gh workflow run pr-platform.yml \
+            --ref "$BRANCH_NAME" \
+            -f baseSha="$BASE_SHA" \
+            -f headSha="$HEAD_SHA" \
+            -f allowedPath="$ALLOWED_PATH"
+          gh workflow run pr-site.yml \
             --ref "$BRANCH_NAME" \
             -f baseRef="$BASE_REF" \
             -f baseSha="$BASE_SHA" \
@@ -375,8 +381,9 @@ jobs:
             -f allowedPath="$ALLOWED_PATH"
 
           checks_failed=0
-          wait_for_run ci.yml check || checks_failed=1
-          wait_for_run site-check.yml pages-generated-site-check || checks_failed=1
+          wait_for_run pr-classify.yml "PR Classify" || checks_failed=1
+          wait_for_run pr-platform.yml check || checks_failed=1
+          wait_for_run pr-site.yml site-check || checks_failed=1
 
           if [[ "$checks_failed" == "0" ]]; then
             post_status "success" "pages-user-flow" "Generated site publishing checks passed"

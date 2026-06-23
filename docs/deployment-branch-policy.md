@@ -20,7 +20,7 @@ feature branch
 - 默认所有 feature、fix、docs、ci、build 分支 PR 到 `master`。
 - `staging` 只作为 preview 分支，不从 `staging` 向 `master` 发起晋级 PR。
 - 项目类 PR 指向 `master` 后，`Sync Master PR To Staging` workflow 必须在 PR ready 后把 PR head 提前 merge 到 `staging`，用于 staging preview / validation。
-- 纯 `sites/**` 用户站点 PR 不触发 master PR -> staging 同步；用户站点 PR 继续走 `site-check` 门禁。
+- 纯 `sites/**` 用户站点 PR 不触发 master PR -> staging 同步；用户站点 PR 继续走 `pr-site.yml` 门禁。
 - `staging` 可以领先或不同于 `master`，这种差异代表当前 preview 状态，不代表可晋级主线。
 - 如果 `staging` 被已关闭或废弃 PR 污染，由维护者在确认没有活跃 preview 后把 `staging` 重新对齐 `master`，再重新触发需要验证的 PR。
 
@@ -44,7 +44,9 @@ base: master
 - 如果 PR 修改了平台路径，例如 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**` 或 Dockerfile，则从 `origin/staging` 创建临时工作分支。
 - workflow 使用全量历史 fetch PR head，并确认 fetch 到的 commit 与 PR head sha 一致。
 - 在临时工作分支上 merge PR head；冲突时 workflow 失败，作者需要先 rebase / merge `staging` 后再重试。
-- merge 成功后先 push 到 `staging-sync/pr-<number>-<sha>` 临时分支，并 dispatch `CI` 在该 merge commit 上运行 `check`。
+- merge 成功后先 push 到 `staging-sync/pr-<number>-<sha>` 临时分支，并 dispatch 默认分支已注册的兼容 `CI`
+  workflow（`.github/workflows/ci.yml`）在该 merge commit 上运行 `check`。PR / master push 的平台校验由
+  `pr-platform.yml` 承接，`ci.yml` 只保留给 staging sync 的迁移期手动校验。
 - `check` 成功后再把同一个已验证 commit push 到 `staging`，满足 `staging` ruleset 的 required status check。
 - 临时分支只用于让 GitHub Actions 给待同步 commit 产生 required check，成功或失败后由 workflow 清理。
 - 由于 GitHub `GITHUB_TOKEN` 产生的 push 不会自动触发后续 push workflow，同步 workflow 必须显式 dispatch `Deploy XD Pages Staging`。
@@ -56,7 +58,7 @@ base: master
 - workflow 只使用 GitHub `GITHUB_TOKEN`，不引入额外 bot token。
 - workflow 必须串行执行，避免多个 master PR 同时改写 `staging`。
 - 如果 PR head 无法干净 merge 到 `staging`，workflow 必须失败，转人工处理冲突。
-- 如果 `CI` 在临时同步分支上失败，workflow 不会更新 `staging`。
+- 如果 `Platform CI` 在临时同步分支上失败，workflow 不会更新 `staging`。
 - 如果仓库规则不允许 `GITHUB_TOKEN` dispatch workflow，`Deploy XD Pages Staging` 不会被触发；需要允许 Actions workflow dispatch，或改用 GitHub App token。
 
 ## Staging Preview 整理流程
@@ -78,6 +80,8 @@ base: master
 平台本体部署 workflow：
 
 ```text
+.github/workflows/pr-classify.yml
+.github/workflows/pr-platform.yml
 .github/workflows/deploy-staging.yml
 .github/workflows/deploy-pages-v2-staging.yml
 .github/workflows/deploy.yml
@@ -108,8 +112,8 @@ KUBE_CONFIG_B64
 ```text
 .github/workflows/project-index.yml
 .github/workflows/pages-agent.yml
+.github/workflows/pr-site.yml
 .github/workflows/pages-preview.yml
-.github/workflows/site-check.yml
 ```
 
 职责：

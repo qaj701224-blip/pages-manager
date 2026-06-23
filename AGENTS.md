@@ -84,8 +84,10 @@ v1 legacy 隔离要求：
 
 CI/CD 隔离要求：
 
+- 所有 PR 先由 `pr-classify.yml` 按目录分类：只改 `sites/<employee>/<site>/` 是个人站点线，只改非 `sites/**` 是平台线，同时改两者的 mixed PR 不支持，必须拆分。
+- 平台代码 PR 走 `pr-platform.yml`（Platform CI），个人站点 PR 走 `pr-site.yml`；自动站点 PR 还会由 `pages-agent.yml` 显式 dispatch `pr-classify.yml`、`pr-platform.yml` 和 `pr-site.yml`。
 - 平台本体部署包括 `deploy-staging.yml`、`deploy.yml`、`deploy-pages-v2-staging.yml`、`deploy-pages-v2.yml`、`deploy-ack-preview.yml`，只能构建 / 部署平台 Worker、ACK 镜像和 K8s Deployment。
-- 用户站点发布执行器包括 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml`、`site-check.yml`，只能处理 `PublishingJob`、`sites/<employee>/<site>/`、生成 PR 和 preview。
+- 用户站点发布执行器包括 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml`、`pr-site.yml`，只能处理 `PublishingJob`、`sites/<employee>/<site>/`、生成 PR 和 preview。
 - 用户站点发布 workflow 禁止使用 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、production Wrangler token 或 ACK namespace 权限。
 - 自动生成的 `sites/**` PR 不得修改 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档。
 

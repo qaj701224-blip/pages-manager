@@ -1,0 +1,133 @@
+name: PR Classify
+
+# Required PR gate. It makes the lane visible and rejects mixed platform/site PRs.
+on:
+  workflow_dispatch:
+    inputs:
+      baseSha:
+        description: Optional immutable base SHA for generated site diff
+        required: false
+        type: string
+      headSha:
+        description: Optional expected head SHA for generated site diff
+        required: false
+        type: string
+      allowedPath:
+        description: Optional generated site root, for example sites/employee/site
+        required: false
+        type: string
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  classify:
+    name: PR Classify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify PR lane
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_BASE_SHA: ${{ inputs.baseSha }}
+          INPUT_HEAD_SHA: ${{ inputs.headSha }}
+          INPUT_ALLOWED_PATH: ${{ inputs.allowedPath }}
+          REF_NAME: ${{ github.ref_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ -z "${INPUT_BASE_SHA:-}" || -z "${INPUT_HEAD_SHA:-}" ]]; then
+              echo "workflow_dispatch requires baseSha and headSha for deterministic classification" >&2
+              exit 1
+            fi
+            if [[ ! "$INPUT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "baseSha must be a full commit SHA" >&2
+              exit 1
+            fi
+            if [[ ! "$INPUT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "headSha must be a full commit SHA" >&2
+              exit 1
+            fi
+            base="$INPUT_BASE_SHA"
+            head="$INPUT_HEAD_SHA"
+            head_ref="$REF_NAME"
+          else
+            base="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+            head="$PR_HEAD_SHA"
+            head_ref="$PR_HEAD_REF"
+          fi
+
+          changed="$(git diff --name-only "$base" "$head")"
+          echo "$changed"
+
+          site_changed=false
+          platform_changed=false
+          while IFS= read -r path; do
+            [[ -z "$path" ]] && continue
+            case "$path" in
+              sites/*)
+                site_changed=true
+                ;;
+              *)
+                platform_changed=true
+                ;;
+            esac
+          done <<< "$changed"
+
+          if [[ "$site_changed" == "true" && "$platform_changed" == "true" ]]; then
+            echo "Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs." >&2
+            exit 1
+          fi
+
+          if [[ "$site_changed" != "true" && "$platform_changed" != "true" ]]; then
+            echo "lane=none"
+            exit 0
+          fi
+
+          if [[ "$site_changed" == "true" ]]; then
+            if echo "$changed" | grep -Ev '^(sites/[^/]+/[^/]+/|$)' >/tmp/non-site-paths; then
+              echo "Site PRs may only modify files under sites/<employeeSlug>/<siteSlug>/:" >&2
+              cat /tmp/non-site-paths >&2
+              exit 1
+            fi
+
+            site_roots="$(echo "$changed" | awk -F/ '$1 == "sites" { print $1 "/" $2 "/" $3 }' | sort -u)"
+            count="$(echo "$site_roots" | sed '/^$/d' | wc -l | tr -d ' ')"
+            if [[ "$count" != "1" ]]; then
+              echo "Site PRs must modify exactly one site root:" >&2
+              echo "$site_roots" >&2
+              exit 1
+            fi
+
+            if [[ -n "${INPUT_ALLOWED_PATH:-}" && "$site_roots" != "$INPUT_ALLOWED_PATH" ]]; then
+              echo "Site PR must only modify expected site root: $INPUT_ALLOWED_PATH" >&2
+              echo "$site_roots" >&2
+              exit 1
+            fi
+
+            if [[ -n "$head_ref" && "$head_ref" == sites/* ]]; then
+              echo "origin=site-agent"
+            else
+              echo "origin=manual"
+            fi
+            echo "lane=site"
+            echo "site_root=$site_roots"
+            exit 0
+          fi
+
+          if [[ -n "$head_ref" && "$head_ref" == feat/platform-* ]]; then
+            echo "origin=platform-agent"
+          else
+            echo "origin=manual"
+          fi
+          echo "lane=platform"
