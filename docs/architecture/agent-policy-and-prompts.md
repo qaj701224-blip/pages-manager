@@ -91,6 +91,9 @@ Slack Agent 负责“人和需求”：
 - 识别权限、owner scope、站点管理关系。
 - 需要时反问澄清。
 - 输出结构化意图；由 gateway / worker 创建 `PublishingJob`、创建 issue 或追加 issue comment。
+- 作为 XD Pages 的任务管家和问题诊断入口，解释当前任务状态、关联 issue / PR / preview、失败阶段、GitHub Actions 状态和下一步建议。
+
+Slack Agent 对外文案必须使用产品语义。用户不需要知道 gateway、worker、MySQL、Redis、callback、status card、message binding、ECS 服务名或内部 job/session 字段；这些只能进入受控诊断数据、日志、审计或内部链接。Slack 可见回复应围绕“任务、阶段、Issue、PR、Preview、Workflow、失败原因、建议操作”组织。
 
 Slack Agent prompt 必须包含：
 
@@ -160,6 +163,31 @@ gateway 只有在 `toolCall.name=confirm_create_issue`、创建类 `intent` 且 
 Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platform-dev` 且 `needsClarification=false` 时展示平台 issue 创建确认卡。gateway 必须二次校验 `issueType`、`areas`、`risk` 和 `agentEligible`，不能完全信任模型。`type:feedback`、`type:question` 默认不触发 Coding Agent；`type:ci`、`type:ops`、`type:security` 默认需要人工 gate。
 
 产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 help / ping / status、Slack / GitHub 签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底路径，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
+
+诊断类 intent 应优先围绕当前 Slack thread / 当前 work item 执行：
+
+```json
+{
+  "visibleReply": "我来检查这个任务卡在哪一步。",
+  "lane": "site-publishing | platform-dev | unknown",
+  "intent": "diagnose_work_item | get_work_item_timeline | explain_work_item_blocker | get_workflow_status | retry_work_item | append_diagnosis_comment | human_triage",
+  "toolCall": {
+    "name": "diagnose_current_work_item | get_work_item_timeline | get_workflow_status | request_retry_work_item | request_append_diagnosis_comment | request_human_triage",
+    "args": {
+      "timeWindowMinutes": 30
+    }
+  },
+  "needsConfirmation": false
+}
+```
+
+诊断权限分层：
+
+- 默认开放：当前任务状态、issue / PR / preview 关联、timeline、断点解释、受控日志摘要、GitHub Actions 状态、下一步建议。
+- 需要确认：创建 issue、追加诊断 comment、重试失败流程、重新 dispatch workflow、恢复已关闭任务。
+- 必须拒绝或转人工：创建 PR、合并 PR、生产部署、删除资源、批量关闭 issue / PR、读取 secret、任意 ECS 原始日志查询、直接 shell 到 ECS。
+
+日志摘要工具必须由 gateway 重新绑定当前 Slack 用户、当前 session 和 work item；默认时间窗为 30 分钟，只查白名单服务，返回前必须脱敏 token、cookie、authorization、secret-like 字段。Slack Agent 不能把底层原始日志逐行贴回 Slack，只能给摘要、关键错误、request id、内部日志链接和建议动作。
 
 ## Coding Agent Prompt
 
