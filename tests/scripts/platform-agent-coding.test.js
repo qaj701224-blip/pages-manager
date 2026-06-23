@@ -112,6 +112,19 @@ test('treats CI, ops, and security work as high risk even when declared risk is 
   );
 });
 
+test('rejects question and feedback issues before calling Platform Coding Agent', async () => {
+  await assert.rejects(
+    () =>
+      runPlatformCodingAgent({
+        env: { ...env, ISSUE_TYPE: 'type:question', RISK: 'risk:low' },
+        fetchImpl: async () => {
+          throw new Error('fetch should not be called');
+        },
+      }),
+    /not code-eligible/
+  );
+});
+
 test('allows high risk platform coding after gate approval', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-approved-'));
   const previousCwd = process.cwd();
@@ -247,6 +260,44 @@ test('allows high-risk repository paths after gate approval', async () => {
     const caddyfile = await readFile(path.join(dir, 'deploy/ecs/Caddyfile'), 'utf8');
     assert.match(workflow, /Platform Agent/);
     assert.match(caddyfile, /respond "ok"/);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('writes a missing-files diagnostic when model output has no generated files', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-missing-files-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await assert.rejects(
+      () =>
+        runPlatformCodingAgent({
+          env,
+          async fetchImpl() {
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: JSON.stringify({
+                        summary: '这是一个仓库问答，不需要修改文件。',
+                      }),
+                    },
+                  },
+                ],
+              }),
+              { status: 200 }
+            );
+          },
+        }),
+      /did not include files/
+    );
+
+    const diagnostic = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-debug.json'), 'utf8'));
+    assert.equal(diagnostic.reason, 'missing_files');
+    assert.equal(diagnostic.platformDevItemId, 'pdev_abc123');
   } finally {
     process.chdir(previousCwd);
     await rm(dir, { recursive: true, force: true });

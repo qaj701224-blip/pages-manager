@@ -113,6 +113,10 @@ jobs:
           [[ "$ISSUE_TYPE" =~ ^type:(dev|bug|docs|feedback|question|ci|ops|security)$ ]]
           [[ "$RISK" =~ ^risk:(low|medium|high)$ ]]
           [[ "$GATE_APPROVED" =~ ^(true|false)$ ]]
+          if [[ "$ISSUE_TYPE" =~ ^type:(feedback|question)$ ]]; then
+            echo "Question/feedback issues are records only and must not dispatch Platform Agent." >&2
+            exit 1
+          fi
           effective_risk="$RISK"
           if [[ "$ISSUE_TYPE" =~ ^type:(ci|ops|security)$ ]]; then
             effective_risk="risk:high"

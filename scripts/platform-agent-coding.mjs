@@ -75,6 +75,8 @@ function stripCodeFence(value) {
   return fence ? fence[1].trim() : text;
 }
 
+const NON_CODING_ISSUE_TYPES = new Set(['type:feedback', 'type:question']);
+
 async function readResponseJson(response) {
   const text = await response.text();
   if (!text) return {};
@@ -178,6 +180,11 @@ function validateContext(context) {
   }
   if (!/^type:(dev|bug|docs|feedback|question|ci|ops|security)$/.test(context.issueType)) {
     throw new Error('ISSUE_TYPE is invalid');
+  }
+  if (NON_CODING_ISSUE_TYPES.has(context.issueType)) {
+    throw new Error(
+      `${context.issueType} is not code-eligible; keep it as a GitHub issue record without dispatching Platform Agent`
+    );
   }
   if (!/^risk:(low|medium|high)$/.test(context.risk)) {
     throw new Error('RISK is invalid');
@@ -350,7 +357,13 @@ function generatedFilesFromResult(result, context, seen = new Set(), depth = 0) 
 }
 
 function validateGeneratedFiles(files, context = {}) {
-  if (!files.length) throw new Error('Platform Coding Agent response did not include files');
+  if (!files.length) {
+    const error = new Error(
+      'Platform Coding Agent response did not include files; check whether this is a question/diagnosis request or needs a clearer code-change goal'
+    );
+    error.code = 'missing_files';
+    throw error;
+  }
 
   const seen = new Set();
   return files.map((file) => {
@@ -417,7 +430,8 @@ export async function runPlatformCodingAgent(options = {}) {
   try {
     files = validateGeneratedFiles(files, context);
   } catch (error) {
-    writeDiagnostic({ body, modelResult, context, reason: 'invalid_files' });
+    const reason = error.code === 'missing_files' ? 'missing_files' : 'invalid_files';
+    writeDiagnostic({ body, modelResult, context, reason });
     throw error;
   }
   writeGeneratedFiles(files);

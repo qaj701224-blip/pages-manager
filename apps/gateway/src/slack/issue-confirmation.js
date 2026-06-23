@@ -13,6 +13,7 @@ const INTERNAL_PLATFORM_TERMS = new RegExp(
   ].join('|'),
   'i'
 );
+const NON_CODING_PLATFORM_ISSUE_TYPES = new Set(['type:feedback', 'type:question']);
 
 function userFacingSlackSummary(analysis = {}, fallback = '') {
   const sourceMessages = Array.isArray(analysis.sourceMessages || analysis.source_messages)
@@ -187,6 +188,10 @@ export function slackPlatformIssueConfirmationText(slackAgentAnalysis = {}) {
   const summary = userFacingPlatformSummary(slackAgentAnalysis);
   const issueType = normalizePlatformIssueType(slackAgentAnalysis.issueType || slackAgentAnalysis.issue_type);
   const risk = normalizePlatformRisk(slackAgentAnalysis.risk, issueType);
+  const agentEligible =
+    !NON_CODING_PLATFORM_ISSUE_TYPES.has(issueType) &&
+    slackAgentAnalysis.agentEligible !== false &&
+    slackAgentAnalysis.agent_eligible !== false;
   const areas = normalizePlatformAreas(
     slackAgentAnalysis.areas || slackAgentAnalysis.areaLabels || slackAgentAnalysis.area_labels
   );
@@ -201,9 +206,11 @@ export function slackPlatformIssueConfirmationText(slackAgentAnalysis = {}) {
     '',
     `需求：${summary}`,
     '',
-    risk === 'risk:high'
-      ? '下一步：点击「确认创建平台需求」后，会先创建 GitHub issue，并等待人工确认后再进入自动开发。'
-      : '下一步：点击「确认创建平台需求」后，会创建 GitHub issue，并按策略进入后续处理。',
+    !agentEligible
+      ? '下一步：点击「确认创建平台需求」后，只会创建 GitHub issue 作为记录，不会启动自动开发。'
+      : risk === 'risk:high'
+        ? '下一步：点击「确认创建平台需求」后，会先创建 GitHub issue，并等待人工确认后再进入自动开发。'
+        : '下一步：点击「确认创建平台需求」后，会创建 GitHub issue，并按策略进入后续处理。',
   ];
   return lines.join('\n');
 }
@@ -214,6 +221,10 @@ export function slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAna
   const summary = userFacingPlatformSummary(slackAgentAnalysis);
   const issueType = normalizePlatformIssueType(slackAgentAnalysis.issueType || slackAgentAnalysis.issue_type);
   const risk = normalizePlatformRisk(slackAgentAnalysis.risk, issueType);
+  const agentEligible =
+    !NON_CODING_PLATFORM_ISSUE_TYPES.has(issueType) &&
+    slackAgentAnalysis.agentEligible !== false &&
+    slackAgentAnalysis.agent_eligible !== false;
   const areas = normalizePlatformAreas(
     slackAgentAnalysis.areas || slackAgentAnalysis.areaLabels || slackAgentAnalysis.area_labels
   );
@@ -221,9 +232,11 @@ export function slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAna
   const status = options.statusLabel || '待确认';
   const contextText =
     options.contextText ||
-    (risk === 'risk:high'
-      ? '确认后会先创建 GitHub issue；高风险需求需要人工确认后再进入自动开发。'
-      : '确认后会创建 GitHub issue；后续进度会在当前对话更新。');
+    (!agentEligible
+      ? '确认后只会创建 GitHub issue 作为记录，不会启动自动开发。'
+      : risk === 'risk:high'
+        ? '确认后会先创建 GitHub issue；高风险需求需要人工确认后再进入自动开发。'
+        : '确认后会创建 GitHub issue；后续进度会在当前对话更新。');
 
   const blocks = [
     {
