@@ -1,5 +1,4 @@
 .git
-.github
 .wrangler
 **/.workerd
 **/node_modules
