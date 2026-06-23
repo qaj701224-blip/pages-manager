@@ -199,12 +199,290 @@ gateway 必须校验：
 | Event                         | 用途                                               |
 | ----------------------------- | -------------------------------------------------- |
 | `issues`                      | issue 创建 / 编辑后触发后续 workflow               |
+| `pull_request`                | PR opened / synchronize / closed / merged 状态推进和合并公告 |
 | `issue_comment`               | Review Agent summary、人工状态指令、issue 追加需求 |
 | `pull_request_review`         | Review Agent 或人工 review 总结                    |
 | `pull_request_review_comment` | Review Agent inline comment                        |
 | `check_run`                   | site-check / CI 结果和 Review gate                 |
 
 delivery 写入 `github_webhook_deliveries`，Review Agent comment 写入 `review_agent_comments`，site-check 写入 `site_check_runs`。这些都是 MySQL 真相源。
+
+## Merge Announcement Agent
+
+目标：每次 PR 合并后，由平台机器人在固定 Slack 频道发一条类似发布简报的富文本消息，内容包含 PR 链接、标题、作者、合并人、影响范围和 3-5 条中文摘要。摘要可以由 Agent 生成，但触发、权限、幂等和投递仍由 gateway / slack-notifier 控制。
+
+这不是用户对话，也不是 Coding Agent。它是 GitHub webhook 触发的系统型 `AgentRun`：
+
+```text
+GitHub pull_request.closed + merged=true
+  -> gateway 校验 signature / delivery 幂等 / repo allowlist
+  -> gateway 读取 PR payload + 必要的 GitHub API 补充信息
+  -> gateway 创建 merge_announcement AgentRun
+  -> slack-agent 生成结构化中文摘要
+  -> gateway 校验摘要 JSON / 脱敏 / 截断 / 兜底
+  -> slack-notifier chat.postMessage 到固定频道
+  -> gateway 记录 Slack message binding / notification attempt
+```
+
+### 触发条件
+
+只在这些条件同时满足时发送：
+
+- `X-GitHub-Event=pull_request`。
+- `body.action=closed`。
+- `body.pull_request.merged=true`。
+- `repository.full_name` 命中允许的 repo，默认只允许 `GITHUB_REPO`。
+- 目标 PR base ref 命中配置，默认 `master`；需要 staging 或其它分支时显式配置。
+- 不是 delivery 重放；`github_webhook_deliveries` 对同一个 `delivery_id` 必须只创建一次。
+- 同一个 `repo + pr_number + merge_commit_sha` 只能成功发送一条公告。
+
+不触发：
+
+- PR 关闭但未合并。
+- draft / synchronize / reopened / ready_for_review。
+- workflow 把 PR head merge 到 `staging` 做 preview 的同步 commit。那是预览验证，不是最终合并公告。
+- GitHub Actions runner 内部直接调用 Slack。runner 不持有 Slack token，也不绕过 gateway 幂等。
+
+### 运行边界
+
+职责分工：
+
+| 组件 | 职责 |
+| --- | --- |
+| `pages-gateway` | 接收 GitHub webhook、判断是否需要公告、创建系统 `AgentRun`、校验 Agent 输出、调用 notifier |
+| `apps/slack-agent` | 根据受控上下文生成中文摘要 JSON，不读取 Slack token，不访问 GitHub 写权限 |
+| `apps/slack-notifier` | 持有 `SLACK_BOT_TOKEN`，执行 `chat.postMessage`，处理 Slack API 错误 |
+| MySQL | 保存 webhook delivery、AgentRun、AgentRunEvent、Slack message binding / notification attempt |
+
+Agent 只做摘要，不做这些事：
+
+- 不决定是否发送公告。
+- 不决定发到哪个频道。
+- 不读取或改写 GitHub PR。
+- 不调用 Slack Web API。
+- 不输出 secret、token、完整 diff、内部 prompt 或 provider 原始响应。
+
+### Agent 输入
+
+gateway 给 `slack-agent` 的输入必须是已经裁剪和脱敏后的结构化 JSON。不要把完整 PR diff、完整 commit log 或全部 review 线程直接塞进 prompt。
+
+建议字段：
+
+```json
+{
+  "task": "merge_announcement_summary",
+  "repoFullName": "xindong/pages-manager",
+  "prNumber": 276,
+  "prTitle": "fix(desktop): 修复更新公告 UTF-8 分片乱码",
+  "prUrl": "https://github.com/xindong/pages-manager/pull/276",
+  "baseRef": "master",
+  "headRef": "fix/release-note-utf8",
+  "authorLogin": "alice",
+  "mergedByLogin": "bob",
+  "mergeCommitSha": "abc123...",
+  "labels": ["fix", "desktop"],
+  "changedFiles": [
+    "apps/desktop/src/update-notes.js",
+    "tests/update-notes.test.js"
+  ],
+  "additions": 120,
+  "deletions": 24,
+  "prBodyExcerpt": "用户反馈 0.0.122 更新公告中文乱码...",
+  "commitSubjects": [
+    "fix(desktop): stream decode release notes as utf8",
+    "test(desktop): cover split utf8 chunks"
+  ],
+  "reviewSummary": "CI passed; review resolved.",
+  "knownRisk": "影响 release note 拉取与展示，不改变发布流程。"
+}
+```
+
+裁剪规则：
+
+- `prBodyExcerpt` 建议不超过 2000 字符。
+- `commitSubjects` 最多 20 条。
+- `changedFiles` 最多 50 条；超过时按目录聚合，例如 `apps/desktop/** 12 files`。
+- 不传 patch 内容；如后续确实需要 diff 摘要，先由 gateway 用文件路径和统计信息做二次摘要。
+- 所有输入先走 secret-like 脱敏：Slack token、GitHub token、Cloudflare token、OpenAI key、cookie、session、`.env` 片段都替换为 `[REDACTED]`。
+
+### Agent 输出合同
+
+`slack-agent` 必须返回严格 JSON。gateway 只消费 JSON 字段，不从自然语言里反解析。
+
+建议 schema：
+
+```json
+{
+  "headline": "修复更新公告中文乱码",
+  "summaryBullets": [
+    "改用 StringDecoder('utf8') 对 CDN JSON 响应做流式解码，保留跨 chunk 的多字节字符。",
+    "非 200、网络错误、超时和 JSON parse 失败仍保持静默返回 null，由调用方决定展示方式。",
+    "新增回归测试，覆盖中文字符被拆在两个网络 chunk 之间的场景。"
+  ],
+  "impact": "影响桌面端更新公告读取与展示。",
+  "risk": "低风险；不改变更新检查和发布流程。",
+  "audience": "desktop",
+  "tags": ["fix", "desktop", "utf8"]
+}
+```
+
+校验规则：
+
+- `headline` 必填，最长 80 个中文字符左右。
+- `summaryBullets` 必填，3-5 条，每条最长 180 个中文字符左右。
+- `impact` 和 `risk` 可为空，但为空时 gateway 用规则兜底。
+- `tags` 最多 5 个。
+- 输出不能包含 Markdown 表格、HTML、代码块、原始 token、完整 stack trace 或 provider debug 字段。
+- JSON parse 失败、字段缺失、内容过长或命中 secret-like pattern 时，gateway 丢弃 Agent 输出并走 deterministic fallback。
+
+deterministic fallback 示例：
+
+```text
+headline = PR title 去掉 type/scope 后的主体
+summaryBullets = [
+  "合并了 PR 标题对应的改动。",
+  "变更范围：按 changedFiles 聚合出的目录。",
+  "详情请查看 PR 描述和 diff。"
+]
+impact = "影响范围请以 PR 描述和 changed files 为准。"
+risk = "未生成 Agent 风险摘要。"
+```
+
+### Slack 富文本消息
+
+Slack 消息使用 Block Kit，而不是只发纯文本。`text` 字段仍要有完整 fallback，便于通知预览和搜索。
+
+推荐 blocks：
+
+```json
+[
+  {
+    "type": "header",
+    "text": { "type": "plain_text", "text": "PR 已合并" }
+  },
+  {
+    "type": "section",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*XDMaker 合并了 PR #276: fix(desktop): 修复更新公告 UTF-8 分片乱码*"
+    }
+  },
+  {
+    "type": "section",
+    "text": {
+      "type": "mrkdwn",
+      "text": "这次修的是桌面端更新公告中文乱码问题：\n• 改用 UTF-8 流式解码...\n• 保持错误兜底策略不变...\n• 新增跨 chunk 中文回归测试..."
+    }
+  },
+  {
+    "type": "context",
+    "elements": [
+      { "type": "mrkdwn", "text": "作者 alice · 合并 bob · master · abc1234" }
+    ]
+  },
+  {
+    "type": "actions",
+    "elements": [
+      {
+        "type": "button",
+        "text": { "type": "plain_text", "text": "查看 PR" },
+        "url": "https://github.com/xindong/pages-manager/pull/276",
+        "action_id": "open_pr"
+      }
+    ]
+  }
+]
+```
+
+格式要求：
+
+- 中文摘要用 `mrkdwn` bullet；不要用 Slack `rich_text` block 作为第一版。`rich_text` 难测、兼容性更差，`section + mrkdwn` 已能实现截图里的富文本效果。
+- 单条消息控制在 Slack block 限制内；摘要过长时截断并提示“更多见 PR”。
+- 频道公告不 `@channel` / `@here`。如需 mention 负责人，必须有显式配置，默认关闭。
+- 对于从 Slack 用户触发的平台开发 PR，可以在公告里展示 Slack display name，但不能暴露 `slack_session_id`、内部 job id 或用户邮箱。
+
+### 幂等和数据模型
+
+必须有独立的 merge announcement 幂等键：
+
+```text
+merge-announcement:<repo_full_name>:<pr_number>:<merge_commit_sha>
+```
+
+建议落库方式：
+
+- 如果已有通用 `SlackNotificationAttempt` / `SlackMessageBinding`，新增 `message_kind=merge_announcement`。
+- 如果当前实现还没有统一 binding，可先复用现有 slack notification 记录表，但 key 必须包含 `repo + pr + merge sha`。
+- 记录 `channel_id`、`message_ts`、`repo_full_name`、`pr_number`、`merge_commit_sha`、`agent_run_id`、`status`、`error_code`。
+
+重放策略：
+
+- GitHub webhook delivery 重放：直接返回已处理结果，不重复创建 AgentRun。
+- Agent 失败后重试：同一个幂等键只能有一条最终 Slack 消息；可以重跑 Agent 更新待发送 payload，但不能重复投递。
+- Slack `chat.postMessage` 返回超时但实际可能成功时，优先查询/依赖 notification attempt 状态；不能盲目再发一条相同公告。
+
+### 失败兜底
+
+失败不能影响 PR 合并状态，也不能回滚 work item：
+
+- GitHub webhook 已收到但 Agent 超时：使用 deterministic fallback 发送公告，并在内部事件里标记 `summary_source=fallback_timeout`。
+- Agent 输出不合法：使用 fallback，记录 `summary_source=fallback_invalid_agent_output`。
+- Slack channel 未配置：不发送，记录 `skipped=missing_channel`，webhook 仍返回 200。
+- Slack API 失败：记录 notification attempt，按 notifier 策略重试或 dead-letter；不改变 `PublishingJob` / `PlatformDevItem` 状态。
+- `pull_request` payload 缺少关键字段：只要 `repo + pr_number + pr_url/title` 足够，就发简化公告；不够则跳过并记录原因。
+
+### 配置项
+
+gateway：
+
+| 变量 | 用途 |
+| --- | --- |
+| `MERGE_ANNOUNCEMENT_ENABLED` | 是否启用 merge 频道公告，默认 `false` |
+| `MERGE_ANNOUNCEMENT_CHANNEL_ID` | 固定 Slack 频道 ID，例如 `C0123` |
+| `MERGE_ANNOUNCEMENT_BASE_REFS` | 允许公告的 base refs，默认 `master` |
+| `MERGE_ANNOUNCEMENT_AGENT_ENABLED` | 是否调用 Agent 生成摘要，默认跟随 enabled；关闭时只用 fallback |
+| `MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS` | 是否包含 `sites/**` 用户站点 PR，默认 `false`，避免个人站点变更刷公共频道 |
+| `MERGE_ANNOUNCEMENT_MENTION_USER_IDS` | 可选固定 mention 列表，默认空 |
+
+`slack-agent`：
+
+| 变量 | 用途 |
+| --- | --- |
+| `SLACK_AGENT_MERGE_SUMMARY_MODEL` | 可选，merge 摘要专用模型；不配则使用 Slack Agent 默认模型 |
+| `SLACK_AGENT_MERGE_SUMMARY_TIMEOUT_SECONDS` | 摘要超时，建议 20-30 秒 |
+
+配置原则：
+
+- Slack 频道 ID 不是 secret，可以放 vars / config；`SLACK_BOT_TOKEN` 仍只进 `slack-notifier` secret。
+- Agent 模型 key 只进 `apps/slack-agent`，不能进 GitHub Actions。
+- GitHub token 只在 gateway/worker 的受控 GitHub API 路径使用，不能传给 `slack-agent` prompt。
+
+### 实现落点
+
+建议最小实现路径：
+
+1. 在 `apps/gateway/src/github/resource-webhooks.js` 的 `handleGithubPullRequestWebhook` 中识别 `closed + merged`。
+2. 新增 `apps/gateway/src/github/merge-announcement.js`，封装触发判断、PR payload 归一化、幂等 key 和 fallback。
+3. 新增 gateway 到 `slack-agent` 的内部调用模式，例如 `task=merge_announcement_summary`；复用现有 provider、脱敏和 JSON 校验 helper。
+4. 新增 `apps/gateway/src/slack/merge-announcement-notifier.js`，构建 Block Kit 并通过 `postSlackMessage` 调 `slack-notifier`。
+5. 在 store 增加或复用 notification/binding 记录，保存 `message_kind=merge_announcement` 和幂等 key。
+6. 补测试：webhook 触发、未合并不触发、重复 delivery 不重复、Agent 失败 fallback、Slack payload blocks、配置关闭跳过。
+
+不要把这件事放进 `.github/workflows/*`：
+
+- workflow 不应该持有 Slack bot token。
+- workflow merge 事件不如 webhook 权威，且容易把 staging preview merge 和最终 master merge 混在一起。
+- webhook 已经有 delivery 幂等、repo allowlist、状态机和 notifier adapter。
+
+### 验收标准
+
+- 合并 `master` PR 后，目标频道出现一条且只有一条公告。
+- 公告包含 PR 标题、链接、作者、合并人、base ref、短 sha 和 3-5 条中文摘要。
+- Agent 超时或输出非法时仍能发 fallback 公告。
+- 重放同一个 GitHub delivery、重复收到同一 PR merge webhook，不会重复发频道消息。
+- 未合并关闭、staging sync、配置外 base ref、配置关闭时不发公告。
+- 公告内容不包含 token、cookie、session、`.env` 值、内部 job id 或 Slack session id。
+- `pnpm test` 或定向 `node:test` 覆盖新增 helper 和 webhook 分支。
 
 ## Review Agent Gate
 
