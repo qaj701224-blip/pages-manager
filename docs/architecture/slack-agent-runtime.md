@@ -93,7 +93,7 @@ answer_repo_question
 ## Repo 只读问答
 
 Repo 问答是 Slack Agent 的独立查询能力，详细边界见 [slack-agent-repo-question.md](./slack-agent-repo-question.md)。
-本文件只保留 runtime 入口、状态机和消息投递约束。
+runtime 上分成 `/internal/slack-agent/repo-plan` 和 `/internal/slack-agent/repo-answer`：前者由 Agent 规划只读 `repo_tree / repo_search / repo_read` 范围，后者基于 gateway 裁剪后的 evidence 生成 Slack 回复。gateway 只负责安全执行、权限收口、长度限制和确认入口，不用关键词规则替 Agent 做产品语义判断。
 
 ## Turn 协议
 

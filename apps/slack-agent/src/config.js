@@ -26,6 +26,9 @@ export function readSlackAgentConfig(env = process.env) {
     requestTimeoutMs: Number(env.SLACK_AGENT_REQUEST_TIMEOUT_SECONDS || 120) * 1000,
     mergeSummaryModel: env.SLACK_AGENT_MERGE_SUMMARY_MODEL || '',
     mergeSummaryTimeoutMs: Number(env.SLACK_AGENT_MERGE_SUMMARY_TIMEOUT_SECONDS || 30) * 1000,
+    repoPlanModel: env.SLACK_AGENT_REPO_PLAN_MODEL || '',
+    repoPlanTimeoutMs:
+      Number(env.SLACK_AGENT_REPO_PLAN_TIMEOUT_SECONDS || env.SLACK_AGENT_REPO_ANSWER_TIMEOUT_SECONDS || 30) * 1000,
     repoAnswerModel: env.SLACK_AGENT_REPO_ANSWER_MODEL || '',
     repoAnswerTimeoutMs: Number(env.SLACK_AGENT_REPO_ANSWER_TIMEOUT_SECONDS || 45) * 1000,
     streamingEnabled: optionalBoolean(firstSet(env.AGENT_MODEL_STREAMING, env.SLACK_AGENT_MODEL_STREAMING), true),
