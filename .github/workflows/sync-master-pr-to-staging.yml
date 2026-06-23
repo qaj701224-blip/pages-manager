@@ -57,12 +57,17 @@ jobs:
           fi
 
           files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
+          site_changed=false
           platform_changed=false
           v1_changed=false
           v2_changed=false
           while IFS= read -r path; do
             case "$path" in
-              "" | sites/*) ;;
+              "")
+                ;;
+              sites/*)
+                site_changed=true
+                ;;
               *)
                 platform_changed=true
                 ;;
@@ -86,6 +91,11 @@ jobs:
                 ;;
             esac
           done <<< "$files"
+
+          if [[ "$site_changed" == "true" && "$platform_changed" == "true" ]]; then
+            echo "Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs." >&2
+            exit 1
+          fi
 
           if [[ "$platform_changed" != "true" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"

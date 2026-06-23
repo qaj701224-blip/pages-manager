@@ -55,6 +55,12 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /run: \|\n\s+echo "Skipped staging sync:/);
   assert.match(workflow, /gh api --paginate/);
   assert.match(workflow, /HEAD_REF.*sites\/\*/);
+  assert.match(workflow, /site_changed=false/);
+  assert.match(workflow, /platform_changed=false/);
+  assert.match(
+    workflow,
+    /Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs\./,
+  );
   assert.match(workflow, /PR only touches sites\/\*\*/);
   assert.match(workflow, /concurrency:[\s\S]*sync-master-pr-to-staging/);
   assert.match(workflow, /ref: staging/);
