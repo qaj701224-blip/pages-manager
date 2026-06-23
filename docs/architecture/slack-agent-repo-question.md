@@ -14,6 +14,7 @@ Platform Dev 场景必须支持“先问清楚当前实现，再决定是否改�
 - 如果检索不足以回答，应说明“我没有找到足够依据”，而不是编造。
 - 如果用户随后明确说“按这个改 / 创建 issue / 修复它”，才转入 Platform Dev Lane。
 - 语义归类由 Slack Agent 的模型输出负责；gateway 不用字符串关键词替模型做产品判断，只校验工具名、权限、幂等和 side effect 是否需要确认。代码中的 deterministic 规则只服务本地测试、smoke 和模型不可用兜底。
+- Slack Agent 不承诺“完整读取全仓库”。对用户只能表达“基于当前相关 repo evidence”，并在依据不足时说明限制。
 
 ## 工具边界
 
@@ -35,5 +36,14 @@ Slack 用户提问
 ```
 
 当前实现使用受控递归检索：排除 `.git`、`node_modules`、`.env*`、secret/token/cookie/private-key 相关路径和构建产物，只读取受支持的文本文件，按问题词、路径和内容打分选择少量依据文件。gateway 只把文件路径、行号和短 excerpt 发给 `apps/slack-agent` 的 `/internal/slack-agent/repo-answer`，由模型基于 evidence 生成回答；如果该接口未配置或失败，则返回本地确定性摘要。ECS 镜像 / 远端构建目录必须包含 `apps`、`packages`、`docs`、`scripts` 和 `.github`，否则线上无法回答 workflow / 文档类问题。
+
+`session_memories.repo_question_context_json` 保存同一 Slack session 的 repo 问答上下文。它只记录最近问题、答案摘要、evidence path、模式和时间，不保存完整源码或原始日志。二次追问时 gateway 会把上一轮问题、摘要和 evidence path 作为上下文交给 `/repo-answer`，并优先把上一轮 evidence 及其相邻模块纳入候选检索。
+
+每次 repo 问答回复会带两个受控动作：
+
+- 继续深挖：仍是只读查询，扩大 evidence 数量和 excerpt 数量，把结果发回当前 Slack thread。
+- 按这个方案创建需求：只把上一轮答案整理成 Platform Dev confirmation card；真正创建 GitHub issue 仍需用户点击确认按钮。
+
+ECS 运行时必须设置 `PAGES_REPO_ROOT=/app`，让 gateway 从容器内完整 repo snapshot 检索。否则如果进程 cwd 落在某个 package 目录，repo 问答会只能看到局部代码，导致回答缺失 workflow / docs / scripts 证据。
 
 企业级目标应继续升级为 repo index + 多轮 search/read，让 Agent 可以先检索、再读取更具体文件、再回答。无论底层检索如何演进，对用户都保持同一心智：问问题得到答案，提改造才创建 issue。

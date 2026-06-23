@@ -1,0 +1,1 @@
+ALTER TABLE `session_memories` ADD `repo_question_context_json` json;

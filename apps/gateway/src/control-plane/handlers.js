@@ -135,7 +135,12 @@ import {
   handleSlackReopenWorkItemTool,
   handleSlackSwitchWorkItemTool,
 } from '../slack/work-item-tools.js';
-import { answerRepoQuestion } from '../slack/repo-question.js';
+import {
+  answerRepoQuestion,
+  nextRepoQuestionContext,
+  platformDraftFromRepoQuestionContext,
+  repoQuestionActionBlocks,
+} from '../slack/repo-question.js';
 
 function isUnaddressedChannelThreadMessage(body = {}) {
   const event = body.event || {};
@@ -1064,13 +1069,19 @@ async function handleSlackRepoQuestionTool({
   toolArgs = {},
 }) {
   const question = toolArgs.question || toolArgs.query || slackAgentAnalysis?.summary || intake.text;
-  const result = await answerRepoQuestion(env, { question, text: intake.text });
+  const result = await answerRepoQuestion(env, { question, text: intake.text, sessionMemory });
   const replyText = redactSecretLikeText(result.replyText);
+  const repoQuestionContext = nextRepoQuestionContext(sessionMemory?.repoQuestionContext || {}, {
+    ...result,
+    replyText,
+  });
+  const blocks = repoQuestionActionBlocks(slackSession, result);
 
   if (slackSession?.id && store.updateSessionMemory) {
     await store.updateSessionMemory(slackSession.id, {
       summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
       lastAgentResponse: replyText,
+      repoQuestionContext,
     });
   }
   await completeSlackAgentRun(store, agentRun, {
@@ -1086,6 +1097,7 @@ async function handleSlackRepoQuestionTool({
   return {
     ...result,
     replyText,
+    ...(blocks ? { blocks } : {}),
     slackSessionId: slackSession?.id,
     agentRunId: agentRun?.id,
     ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
@@ -1677,6 +1689,95 @@ export async function handleSlackInteractions(request, env) {
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
       ...(workerStart ? { workerStart } : {}),
       ...(confirmationCardUpdate ? { confirmationCardUpdate } : {}),
+    });
+  }
+
+  if (actionId === 'pages_repo_deep_dive') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个仓库问答不属于当前 Slack 用户，不能继续深挖。',
+      });
+    }
+    const sessionMemory = (await store.getSessionMemory?.(session.id)) || {};
+    const lastTurn = Array.isArray(sessionMemory.repoQuestionContext?.turns)
+      ? sessionMemory.repoQuestionContext.turns.at(-1)
+      : null;
+    if (!lastTurn?.question) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话还没有可继续深挖的仓库问答。',
+      });
+    }
+    const result = await answerRepoQuestion(env, {
+      question: `继续深挖：${lastTurn.question}`,
+      sessionMemory,
+      deepDive: true,
+    });
+    const replyText = redactSecretLikeText(result.replyText);
+    await store.updateSessionMemory(session.id, {
+      summary: sessionMemory.summary || lastTurn.question,
+      lastAgentResponse: replyText,
+      repoQuestionContext: nextRepoQuestionContext(sessionMemory.repoQuestionContext || {}, {
+        ...result,
+        replyText,
+      }),
+    });
+    const threadReply = await postSlackInteractionThreadReply(env, body, session, replyText);
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: '已继续深挖，并把结果发到当前对话。',
+      action: 'repo_question_deep_dive',
+      accepted: true,
+      slackSessionId: session.id,
+      evidenceCount: result.evidence?.length || 0,
+      ...(threadReply ? { threadReply } : {}),
+    });
+  }
+
+  if (actionId === 'pages_repo_create_platform_issue') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个仓库问答不属于当前 Slack 用户，不能创建需求。',
+      });
+    }
+    if (session.activeWorkItemId || session.activeJobId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话已经在处理中。继续回复修改意见即可。',
+      });
+    }
+    const sessionMemory = (await store.getSessionMemory?.(session.id)) || {};
+    const draft = platformDraftFromRepoQuestionContext(sessionMemory);
+    if (!draft) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话还没有可转换的平台需求。',
+      });
+    }
+    await store.updateSessionMemory(session.id, {
+      summary: redactSecretLikeText(draft.summary || sessionMemory.summary || ''),
+      requirements: redactSlackAnalysis(draft),
+      lastAgentResponse: slackPlatformIssueConfirmationText(draft),
+      pendingQuestions: [],
+      repoQuestionContext: sessionMemory.repoQuestionContext || {},
+    });
+    const cardUpdate = await updateSlackInteractionMessage(env, body, session, {
+      text: slackPlatformIssueConfirmationText(draft),
+      blocks: slackPlatformIssueConfirmationBlocks(session, draft),
+    });
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: '已整理成平台需求，请在卡片上确认后再创建 GitHub issue。',
+      action: 'repo_question_platform_issue_draft',
+      accepted: false,
+      slackSessionId: session.id,
+      ...(cardUpdate ? { cardUpdate } : {}),
     });
   }
 

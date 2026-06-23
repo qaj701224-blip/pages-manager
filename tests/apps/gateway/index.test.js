@@ -1407,6 +1407,229 @@ test('Slack repo questions answer from repo context without creating platform is
   assert.doesNotMatch(JSON.stringify(notifierCalls), /正在整理需求/);
 });
 
+test('Slack repo question follow-ups include previous evidence context', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const notifierCalls = [];
+  const env = {
+    SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+    SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+    PAGES_REPO_ROOT: process.cwd(),
+    async SLACK_AGENT_FETCH(url, request) {
+      const payload = JSON.parse(request.body);
+      agentCalls.push({ url: String(url), body: payload });
+      if (String(url).endsWith('/repo-answer')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            answer: {
+              source: 'agent',
+              answerText:
+                payload.context?.previousQuestion
+                  ? '我会沿用上一轮 evidence，继续说明 session memory 和 repo 问答上下文。'
+                  : 'Slack 对话上下文保存在 session memory 中。',
+              citedPaths: ['apps/gateway/src/db/schema.js'],
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          turn: {
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            events: [
+              {
+                type: 'analysis_final',
+                sequence: 1,
+                agentRunId: payload.agentRunId,
+                slackSessionId: payload.slackSessionId,
+                analysis: {
+                  lane: 'repo-question',
+                  intent: 'repo_question',
+                  toolCall: { name: 'answer_repo_question', args: { question: payload.messageText } },
+                  needsClarification: false,
+                },
+              },
+            ],
+          },
+        }),
+        { status: 200 }
+      );
+    },
+    ...mockSlackNotifier(notifierCalls),
+  };
+
+  const first = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-repo-followup-1',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.0001134',
+            text: 'Slack session 是怎么保存的？',
+          },
+        }),
+      }),
+      env
+    )
+  );
+  const second = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-repo-followup-2',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.0001135',
+            text: '那如果要实现得更完整，应该改哪里？',
+          },
+        }),
+      }),
+      env
+    )
+  );
+  const repoAnswerCalls = agentCalls.filter((call) => call.url.endsWith('/repo-answer'));
+  const secondRepoAnswer = repoAnswerCalls[1].body;
+  const memory = app.store.getSessionMemory(first.slackSessionId);
+
+  assert.equal(first.slackSessionId, second.slackSessionId);
+  assert.equal(second.action, 'answer_repo_question');
+  assert.equal(repoAnswerCalls.length, 2);
+  assert.match(secondRepoAnswer.context.previousQuestion, /Slack session/);
+  assert.ok(secondRepoAnswer.context.previousEvidencePaths.length > 0);
+  assert.match(secondRepoAnswer.question, /上一轮问题/);
+  assert.equal(memory.repoQuestionContext.turns.length, 2);
+  assert.equal(app.store.platformDevItems.size, 0);
+});
+
+test('Slack repo answer deep dive action posts more evidence without creating an issue', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    channelId: 'D1',
+    dmChannelId: 'D1',
+  });
+  app.store.updateSessionMemory(session.id, {
+    repoQuestionContext: {
+      turns: [
+        {
+          question: 'Slack Agent 如何读取 repo 代码？',
+          answerSummary: 'gateway 做受控 repo evidence 检索。',
+          evidencePaths: ['apps/gateway/src/slack/repo-question.js'],
+          mode: 'normal',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      lastEvidencePaths: ['apps/gateway/src/slack/repo-question.js'],
+      openQuestions: [],
+    },
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'block_actions',
+        team: { id: 'T1' },
+        user: { id: 'U1' },
+        channel: { id: 'D1' },
+        container: { channel_id: 'D1', message_ts: '1710000000.000200' },
+        message: { ts: '1710000000.000200', thread_ts: '1710000000.000100' },
+        actions: [{ action_id: 'pages_repo_deep_dive', value: JSON.stringify({ sessionId: session.id }) }],
+      }),
+    }),
+    {
+      PAGES_REPO_ROOT: process.cwd(),
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  const messageCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
+  const memory = app.store.getSessionMemory(session.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'repo_question_deep_dive');
+  assert.equal(app.store.platformDevItems.size, 0);
+  assert.ok(messageCall);
+  assert.match(messageCall.body.payload.text, /依据/);
+  assert.equal(memory.repoQuestionContext.turns.at(-1).mode, 'deep_dive');
+});
+
+test('Slack repo answer can be converted into a platform issue confirmation card only', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    channelId: 'D1',
+    dmChannelId: 'D1',
+  });
+  app.store.updateSessionMemory(session.id, {
+    repoQuestionContext: {
+      turns: [
+        {
+          question: '让 Slack Agent 支持 repo 问答上下文',
+          answerSummary: '需要在 session memory 中保存 repo question context，并由 gateway 提供受控 evidence。',
+          evidencePaths: ['apps/gateway/src/slack/repo-question.js', 'apps/gateway/src/control-plane/handlers.js'],
+          mode: 'deep_dive',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      lastEvidencePaths: ['apps/gateway/src/slack/repo-question.js'],
+      openQuestions: [],
+    },
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'block_actions',
+        team: { id: 'T1' },
+        user: { id: 'U1' },
+        channel: { id: 'D1' },
+        container: { channel_id: 'D1', message_ts: '1710000000.000201' },
+        message: { ts: '1710000000.000201', thread_ts: '1710000000.000100' },
+        actions: [{ action_id: 'pages_repo_create_platform_issue', value: JSON.stringify({ sessionId: session.id }) }],
+      }),
+    }),
+    mockSlackNotifier(notifierCalls)
+  );
+  const body = await json(response);
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  const memory = app.store.getSessionMemory(session.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'repo_question_platform_issue_draft');
+  assert.equal(app.store.platformDevItems.size, 0);
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /确认平台需求|pages_confirm_platform_issue/);
+  assert.equal(memory.requirements.lane, 'platform-dev');
+  assert.equal(memory.requirements.toolCall.name, 'confirm_platform_issue');
+});
+
 test('Slack repo question intent overrides conflicting create-platform tool call', async () => {
   const app = createGatewayApp();
   const agentCalls = [];

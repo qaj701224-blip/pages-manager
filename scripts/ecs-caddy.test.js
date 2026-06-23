@@ -40,3 +40,11 @@ test('ECS node-service image includes repo question context paths', () => {
     assert.doesNotMatch(dockerignore, new RegExp(`(^|\\n)${path.replaceAll('.', '\\.')}(\\n|$)`), `does not ignore ${path}`);
   }
 });
+
+test('ECS gateway scans the full repo snapshot for Slack repo questions', () => {
+  const compose = readRepoFile('docker-compose.ecs.yml');
+  const envExample = readRepoFile('.env.ecs.example');
+
+  assert.match(compose, /pages-gateway:[\s\S]*PAGES_REPO_ROOT: \$\{PAGES_REPO_ROOT:-\/app\}/);
+  assert.match(envExample, /^PAGES_REPO_ROOT=\/app$/m);
+});
