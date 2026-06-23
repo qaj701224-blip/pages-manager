@@ -386,6 +386,7 @@ export const sessionMemories = mysqlTable(
     requirementsJson: json('requirements_json'),
     pendingQuestionsJson: json('pending_questions_json'),
     preferencesJson: json('preferences_json'),
+    repoQuestionContextJson: json('repo_question_context_json'),
     lastPreviewFeedback: text('last_preview_feedback'),
     lastAgentResponse: text('last_agent_response'),
     createdAt: createdAt(),

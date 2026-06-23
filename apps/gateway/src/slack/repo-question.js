@@ -7,9 +7,12 @@ import { redactSecretLikeText } from './text.js';
 const DEFAULT_REPO_ROOT = path.resolve(process.cwd());
 const MAX_FILE_BYTES = 180_000;
 const MAX_EVIDENCE_FILES = 5;
+const MAX_DEEP_EVIDENCE_FILES = 10;
 const MAX_REPO_FILES = 1_500;
 const MAX_SEARCH_BYTES = 12_000_000;
 const MAX_EVIDENCE_EXCERPTS = 2;
+const MAX_DEEP_EVIDENCE_EXCERPTS = 3;
+const MAX_REPO_CONTEXT_TURNS = 5;
 
 const BLOCKED_PATH_RE = new RegExp(
   [
@@ -70,8 +73,14 @@ const TOPIC_FILES = [
   },
 ];
 
-function sanitizeQuestion(question = '') {
-  return redactSecretLikeText(String(question || '').replaceAll(/\s+/g, ' ').trim()).slice(0, 240);
+function sanitizeQuestion(question = '', maxLength = 240) {
+  return redactSecretLikeText(String(question || '').replaceAll(/\s+/g, ' ').trim()).slice(0, maxLength);
+}
+
+function truncateBlockText(text = '', maxLength = 2900) {
+  const value = redactSecretLikeText(String(text || '').trim());
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1).trim()}…`;
 }
 
 function repoRootFromEnv(env = {}) {
@@ -184,6 +193,87 @@ function termsFromQuestion(question = '') {
     .slice(0, 36);
 }
 
+function repoQuestionContextFromMemory(sessionMemory = {}) {
+  const context = sessionMemory?.repoQuestionContext || {};
+  const turns = Array.isArray(context.turns) ? context.turns.filter((turn) => turn && typeof turn === 'object') : [];
+  return {
+    turns: turns.slice(-MAX_REPO_CONTEXT_TURNS),
+    lastEvidencePaths: Array.isArray(context.lastEvidencePaths) ? context.lastEvidencePaths.filter(Boolean).slice(0, 12) : [],
+    openQuestions: Array.isArray(context.openQuestions) ? context.openQuestions.filter(Boolean).slice(0, 5) : [],
+  };
+}
+
+function latestRepoQuestionTurn(sessionMemory = {}) {
+  const turns = repoQuestionContextFromMemory(sessionMemory).turns;
+  return turns.length ? turns[turns.length - 1] : null;
+}
+
+function looksLikeRepoFollowup(question = '') {
+  return /(这个|这些|上面|刚才|继续|完整|详细|具体|如果要|怎么改|怎么做|如何实现|实现|方案|还有|那|它|前面)/i.test(
+    question
+  );
+}
+
+function wantsDeepRepoAnswer(question = '', input = {}) {
+  if (input.deepDive || input.mode === 'deep_dive') return true;
+  return /(完整|详细|深入|深挖|继续|具体|怎么改|怎么做|如何实现|实现方案|落地|代码层面|测试|风险)/i.test(question);
+}
+
+function effectiveQuestionForRepoSearch(question = '', sessionMemory = {}, input = {}) {
+  const sanitized = sanitizeQuestion(question);
+  const lastTurn = latestRepoQuestionTurn(sessionMemory);
+  if (!lastTurn || (!looksLikeRepoFollowup(sanitized) && !input.deepDive)) return sanitized;
+
+  const parts = [
+    `上一轮问题：${lastTurn.question || ''}`,
+    lastTurn.answerSummary ? `上一轮结论：${lastTurn.answerSummary}` : '',
+    Array.isArray(lastTurn.evidencePaths) && lastTurn.evidencePaths.length
+      ? `上一轮依据：${lastTurn.evidencePaths.join(', ')}`
+      : '',
+    `本轮追问：${sanitized}`,
+  ].filter(Boolean);
+  return sanitizeQuestion(parts.join('。'), 900);
+}
+
+function relatedPathsForEvidencePath(relativePath = '') {
+  const pathValue = String(relativePath || '').replaceAll('\\', '/');
+  const related = new Set();
+  if (/apps\/gateway\/src\/db\/schema\.js$/.test(pathValue)) {
+    related.add('apps/gateway/src/db/repositories/slack-sessions.js');
+    related.add('apps/gateway/src/db/rows/slack-row.js');
+    related.add('tests/helpers/gateway-store-fixture.js');
+  }
+  if (/apps\/gateway\/src\/db\/repositories\//.test(pathValue)) {
+    related.add('apps/gateway/src/db/schema.js');
+    related.add('apps/gateway/src/db/rows/slack-row.js');
+    related.add('apps/gateway/src/db/repositories/index.js');
+  }
+  if (/apps\/gateway\/src\/control-plane\/handlers\.js$/.test(pathValue)) {
+    related.add('apps/gateway/src/slack/agent-tool-call.js');
+    related.add('apps/gateway/src/slack/repo-question.js');
+    related.add('tests/apps/gateway/index.test.js');
+  }
+  if (/apps\/gateway\/src\/slack\/repo-question\.js$/.test(pathValue)) {
+    related.add('apps/gateway/src/control-plane/handlers.js');
+    related.add('apps/slack-agent/src/model-provider.js');
+    related.add('tests/apps/gateway/index.test.js');
+  }
+  if (/apps\/slack-agent\/src\/analysis\.js$/.test(pathValue)) {
+    related.add('apps/slack-agent/src/model-provider.js');
+    related.add('tests/apps/slack-agent/index.test.js');
+  }
+  if (/\.github\/workflows\//.test(pathValue)) {
+    related.add('docs/architecture/github-automation.md');
+    related.add('scripts/workflows.test.js');
+  }
+  if (/docker-compose\.ecs\.yml$|Dockerfile|deploy-ecs|deploy\/ecs\//.test(pathValue)) {
+    related.add('Dockerfile.node-service');
+    related.add('docker-compose.ecs.yml');
+    related.add('scripts/ecs-caddy.test.js');
+  }
+  return [...related];
+}
+
 function countOccurrences(text = '', term = '') {
   const value = text.toLowerCase();
   const needle = String(term || '').toLowerCase();
@@ -212,9 +302,10 @@ function scoreFile(file, terms = [], seedScore = 0) {
   return score;
 }
 
-function evidenceFromFile(file, question = '', terms = termsFromQuestion(question)) {
+function evidenceFromFile(file, question = '', terms = termsFromQuestion(question), options = {}) {
   const lines = file.text.split('\n');
   const matches = [];
+  const maxExcerpts = options.maxExcerpts || MAX_EVIDENCE_EXCERPTS;
   for (let index = 0; index < lines.length; index += 1) {
     if (!lineMatchesTerms(lines[index], terms)) continue;
     const start = Math.max(0, index - 1);
@@ -223,7 +314,7 @@ function evidenceFromFile(file, question = '', terms = termsFromQuestion(questio
       line: index + 1,
       excerpt: redactSecretLikeText(lines.slice(start, end).join('\n').trim()).slice(0, 700),
     });
-    if (matches.length >= 2) break;
+    if (matches.length >= maxExcerpts) break;
   }
 
   if (!matches.length) {
@@ -242,9 +333,14 @@ function evidenceFromFile(file, question = '', terms = termsFromQuestion(questio
   };
 }
 
-async function searchRepoEvidence(repoRoot, question) {
+async function searchRepoEvidence(repoRoot, question, options = {}) {
   const terms = termsFromQuestion(question);
   const seedPaths = new Set(keywordCandidates(question));
+  for (const evidencePath of options.previousEvidencePaths || []) {
+    if (!isSafeRelativePath(evidencePath)) continue;
+    seedPaths.add(evidencePath);
+    for (const relatedPath of relatedPathsForEvidencePath(evidencePath)) seedPaths.add(relatedPath);
+  }
   const paths = new Set([...seedPaths, ...(await listSafeRepoFiles(repoRoot))]);
   const scored = [];
   let searchedBytes = 0;
@@ -261,8 +357,8 @@ async function searchRepoEvidence(repoRoot, question) {
 
   return scored
     .sort((left, right) => right.score - left.score || left.file.path.localeCompare(right.file.path))
-    .slice(0, MAX_EVIDENCE_FILES)
-    .map(({ file }) => evidenceFromFile(file, question, terms));
+    .slice(0, options.maxEvidenceFiles || MAX_EVIDENCE_FILES)
+    .map(({ file }) => evidenceFromFile(file, question, terms, options));
 }
 
 function fileRole(relativePath = '') {
@@ -279,8 +375,8 @@ function fileRole(relativePath = '') {
   return '包含和问题相关的实现或约束。';
 }
 
-function evidenceSummary(evidence = []) {
-  const items = evidence.filter((item) => item.matches?.length).slice(0, MAX_EVIDENCE_FILES);
+function evidenceSummary(evidence = [], limit = MAX_EVIDENCE_FILES) {
+  const items = evidence.filter((item) => item.matches?.length).slice(0, limit);
   if (!items.length) return '';
   return items.map((item) => `- \`${item.path}\`：${fileRole(item.path)}`).join('\n');
 }
@@ -325,10 +421,10 @@ function answerFromEvidence(question, evidence) {
     : '我没有在当前仓库 snapshot 里找到足够依据。可能需要补充关键词，或确认线上 gateway 是否挂载了完整 repo snapshot。';
 }
 
-function evidenceText(evidence = []) {
+function evidenceText(evidence = [], limit = MAX_EVIDENCE_FILES) {
   const lines = evidence
     .filter((item) => item.matches?.length)
-    .slice(0, MAX_EVIDENCE_FILES)
+    .slice(0, limit)
     .map((item) => {
       const first = item.matches[0];
       return `- \`${item.path}:${first.line}\``;
@@ -343,21 +439,32 @@ function slackAgentRepoAnswerEndpoint(env = {}) {
   return null;
 }
 
-function evidenceForAgent(evidence = []) {
+function evidenceForAgent(evidence = [], options = {}) {
   return evidence
     .filter((item) => item.path && item.matches?.length)
-    .slice(0, MAX_EVIDENCE_FILES)
+    .slice(0, options.maxEvidenceFiles || MAX_EVIDENCE_FILES)
     .map((item) => ({
       path: item.path,
       lines: item.matches.map((match) => match.line).filter(Boolean),
       excerpts: item.matches
         .map((match) => match.excerpt)
         .filter(Boolean)
-        .slice(0, MAX_EVIDENCE_EXCERPTS),
+        .slice(0, options.maxExcerpts || MAX_EVIDENCE_EXCERPTS),
     }));
 }
 
-async function askSlackAgentRepoAnswer(env = {}, { question, evidence } = {}) {
+function repoAnswerContextForAgent(sessionMemory = {}) {
+  const lastTurn = latestRepoQuestionTurn(sessionMemory);
+  if (!lastTurn) return null;
+  return {
+    previousQuestion: lastTurn.question || '',
+    previousAnswerSummary: lastTurn.answerSummary || '',
+    previousEvidencePaths: Array.isArray(lastTurn.evidencePaths) ? lastTurn.evidencePaths.slice(0, 10) : [],
+    openQuestions: repoQuestionContextFromMemory(sessionMemory).openQuestions,
+  };
+}
+
+async function askSlackAgentRepoAnswer(env = {}, { question, originalQuestion, evidence, sessionMemory, mode, options } = {}) {
   const endpoint = slackAgentRepoAnswerEndpoint(env);
   if (!endpoint || !env.SLACK_AGENT_SHARED_SECRET) return null;
 
@@ -370,7 +477,10 @@ async function askSlackAgentRepoAnswer(env = {}, { question, evidence } = {}) {
     },
     body: JSON.stringify({
       question,
-      evidence: evidenceForAgent(evidence),
+      originalQuestion: originalQuestion || question,
+      mode: mode || 'normal',
+      context: repoAnswerContextForAgent(sessionMemory),
+      evidence: evidenceForAgent(evidence, options),
     }),
   });
   const text = await response.text();
@@ -390,14 +500,31 @@ async function askSlackAgentRepoAnswer(env = {}, { question, evidence } = {}) {
 
 export async function answerRepoQuestion(env = {}, input = {}) {
   const question = sanitizeQuestion(input.question || input.text || input.query || '');
+  const sessionMemory = input.sessionMemory || null;
+  const deepDive = wantsDeepRepoAnswer(question, input);
+  const mode = deepDive ? 'deep_dive' : 'normal';
+  const effectiveQuestion = effectiveQuestionForRepoSearch(question, sessionMemory, input);
+  const previousEvidencePaths = repoQuestionContextFromMemory(sessionMemory).lastEvidencePaths;
+  const evidenceOptions = {
+    maxEvidenceFiles: deepDive ? MAX_DEEP_EVIDENCE_FILES : MAX_EVIDENCE_FILES,
+    maxExcerpts: deepDive ? MAX_DEEP_EVIDENCE_EXCERPTS : MAX_EVIDENCE_EXCERPTS,
+    previousEvidencePaths,
+  };
   const repoRoot = repoRootFromEnv(env);
-  const evidence = await searchRepoEvidence(repoRoot, question);
-  let answer = answerFromEvidence(question, evidence);
+  const evidence = await searchRepoEvidence(repoRoot, effectiveQuestion, evidenceOptions);
+  let answer = answerFromEvidence(effectiveQuestion, evidence);
   let answerSource = 'deterministic';
   let agentAnswerError = null;
 
   try {
-    const agentAnswer = await askSlackAgentRepoAnswer(env, { question, evidence });
+    const agentAnswer = await askSlackAgentRepoAnswer(env, {
+      question: effectiveQuestion,
+      originalQuestion: question,
+      evidence,
+      sessionMemory,
+      mode,
+      options: evidenceOptions,
+    });
     if (agentAnswer?.answerText) {
       answer = agentAnswer.answerText;
       answerSource = agentAnswer.source || 'agent';
@@ -418,12 +545,119 @@ export async function answerRepoQuestion(env = {}, input = {}) {
     action: 'answer_repo_question',
     accepted: true,
     question,
+    effectiveQuestion,
+    mode,
     answerSource,
     ...(agentAnswerError ? { agentAnswerError } : {}),
-    replyText: redactSecretLikeText(`${answer}${evidenceText(evidence)}`),
+    replyText: redactSecretLikeText(`${answer}${evidenceText(evidence, evidenceOptions.maxEvidenceFiles)}`),
     evidence: evidence.map((item) => ({
       path: item.path,
       lines: item.matches.map((match) => match.line),
     })),
+  };
+}
+
+function summarizeRepoAnswerForMemory(replyText = '') {
+  return redactSecretLikeText(String(replyText || '').replace(/\n\n依据：[\s\S]*$/u, '').replaceAll(/\s+/g, ' ').trim()).slice(
+    0,
+    700
+  );
+}
+
+export function nextRepoQuestionContext(previousContext = {}, result = {}) {
+  const context = repoQuestionContextFromMemory({ repoQuestionContext: previousContext });
+  const evidencePaths = (result.evidence || []).map((item) => item.path).filter(Boolean).slice(0, 12);
+  const turn = {
+    question: sanitizeQuestion(result.question || ''),
+    effectiveQuestion: sanitizeQuestion(result.effectiveQuestion || result.question || ''),
+    answerSummary: summarizeRepoAnswerForMemory(result.replyText || ''),
+    evidencePaths,
+    mode: result.mode || 'normal',
+    createdAt: new Date().toISOString(),
+  };
+  return {
+    ...context,
+    turns: [...context.turns, turn].slice(-MAX_REPO_CONTEXT_TURNS),
+    lastEvidencePaths: evidencePaths.length ? evidencePaths : context.lastEvidencePaths,
+    openQuestions: [],
+  };
+}
+
+export function repoQuestionActionBlocks(slackSession, result = {}) {
+  const sessionId = slackSession?.id || '';
+  if (!sessionId) return null;
+  const evidencePaths = (result.evidence || []).map((item) => item.path).filter(Boolean);
+  const contextText = evidencePaths.length
+    ? `基于 ${Math.min(evidencePaths.length, result.mode === 'deep_dive' ? MAX_DEEP_EVIDENCE_FILES : MAX_EVIDENCE_FILES)} 个相关文件生成。`
+    : '当前仓库 evidence 不足，可以继续补充关键词。';
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: truncateBlockText(result.replyText || '我找到了当前仓库里和这个问题相关的实现依据。'),
+      },
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: contextText,
+        },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '继续深挖' },
+          action_id: 'pages_repo_deep_dive',
+          value: JSON.stringify({ sessionId }).slice(0, 1900),
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '按这个方案创建需求' },
+          style: 'primary',
+          action_id: 'pages_repo_create_platform_issue',
+          value: JSON.stringify({ sessionId }).slice(0, 1900),
+        },
+      ],
+    },
+  ];
+}
+
+export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
+  const lastTurn = latestRepoQuestionTurn(sessionMemory);
+  if (!lastTurn) return null;
+  const titleSource = lastTurn.question || '基于仓库问答创建改造需求';
+  const evidence = Array.isArray(lastTurn.evidencePaths) ? lastTurn.evidencePaths : [];
+  const internalSummaryLines = [
+    `用户基于仓库问答希望继续推进：${titleSource}`,
+    lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
+    evidence.length ? `相关依据：${evidence.slice(0, 8).join(', ')}` : '',
+  ].filter(Boolean);
+  const visibleSummaryLines = [
+    `基于刚才的仓库问答，继续推进这个改造：${titleSource}`,
+    lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
+    evidence.length ? '相关实现依据已记录，创建 Issue 后会进入需求上下文。' : '',
+  ].filter(Boolean);
+  const text = `${titleSource}\n${internalSummaryLines.join('\n')}`;
+  return {
+    visibleReply: '我整理成一个待确认的平台需求。',
+    lane: 'platform-dev',
+    intent: 'create_platform_issue',
+    toolCall: { name: 'confirm_platform_issue', args: {} },
+    issueType: 'type:dev',
+    areas: ['area:platform'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+    title: titleSource.length > 80 ? `${titleSource.slice(0, 77)}...` : titleSource,
+    summary: visibleSummaryLines.join('\n').slice(0, 1800),
+    needsClarification: false,
+    sourceMessages: [text],
+    safetyNotes: ['由 repo 问答结果转为待确认需求；创建 issue 前仍需用户点击确认。'],
   };
 }

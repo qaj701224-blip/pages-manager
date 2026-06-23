@@ -4,7 +4,11 @@ import { describe, it } from 'node:test';
 import { readSlackAgentConfig } from '../../../apps/slack-agent/src/config.js';
 import { analyzeSlackRequirement, createSlackAgentApp } from '../../../apps/slack-agent/src/index.js';
 import { redactSlackAgentLogValue } from '../../../apps/slack-agent/src/model-provider.js';
-import { analyzeSlackRequirementDeterministic, normalizeModelAnalysis } from '../../../apps/slack-agent/src/analysis.js';
+import {
+  analyzeSlackRequirementDeterministic,
+  buildSlackAgentMessages,
+  normalizeModelAnalysis,
+} from '../../../apps/slack-agent/src/analysis.js';
 
 describe('slack agent', () => {
   it('summarizes create or update site requests', () => {
@@ -76,6 +80,36 @@ describe('slack agent', () => {
       name: 'answer_repo_question',
       args: { question: '如果后续要修改 CI workflow，会影响原先 CF 那条线吗？' },
     });
+  });
+
+  it('keeps implementation plan questions as repo consultation before explicit confirmation', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '如果要支持 Slack Agent 读取当前 repo 代码，应该怎么实现？',
+    });
+
+    assert.equal(analysis.lane, 'repo-question');
+    assert.equal(analysis.intent, 'repo_question');
+    assert.deepEqual(analysis.toolCall, {
+      name: 'answer_repo_question',
+      args: { question: '如果要支持 Slack Agent 读取当前 repo 代码，应该怎么实现？' },
+    });
+  });
+
+  it('tells the model to treat conditional implementation language as consultation', () => {
+    const fallback = analyzeSlackRequirementDeterministic({
+      text: '如果要支持 Slack Agent 读取当前 repo 代码，应该怎么实现？',
+    });
+    const messages = buildSlackAgentMessages(
+      {
+        text: '如果要支持 Slack Agent 读取当前 repo 代码，应该怎么实现？',
+      },
+      fallback
+    );
+
+    assert.match(messages[0].content, /语气判断必须优先于关键词/);
+    assert.match(messages[0].content, /如果要支持/);
+    assert.match(messages[0].content, /这是咨询或设计讨论/);
+    assert.match(messages[0].content, /只有用户明确说/);
   });
 
   it('derives tool calls from model intent instead of deterministic fallback intent', () => {
