@@ -38,6 +38,16 @@ function slackWorkItemJobResponse(job = {}) {
   };
 }
 
+function slackWorkItemListMemory(jobs = [], result = {}, workItemState = 'active') {
+  return {
+    action: 'list_work_items',
+    workItemState,
+    total: Number(result.total || jobs.length || 0),
+    shown: jobs.map(slackWorkItemJobResponse),
+    createdAt: new Date().toISOString(),
+  };
+}
+
 function slackWorkItemStateFromTool(intake = {}, slackAgentAnalysis = {}, toolArgs = {}) {
   const explicit =
     toolArgs.state ||
@@ -72,6 +82,16 @@ export async function handleSlackListWorkItemsTool({
     workItemState,
     includeInactive,
   });
+  const jobs = result.jobs || [];
+  const replyText = slackWorkItemListText(jobs, { workItemState, includeInactive });
+  if (slackSession?.id && store.updateSessionMemory) {
+    const previousSummary = slackAgentAnalysis?.summary || intake.text || '';
+    await store.updateSessionMemory(slackSession.id, {
+      summary: previousSummary,
+      lastAgentResponse: replyText,
+      lastWorkItemList: slackWorkItemListMemory(jobs, result, workItemState),
+    });
+  }
   await completeSlackAgentRun(store, agentRun, {
     ...slackAgentRunModelPatch(slackAgentAnalysis),
     report: {
@@ -86,12 +106,12 @@ export async function handleSlackListWorkItemsTool({
     ok: true,
     action: 'list_work_items',
     accepted: false,
-    replyText: slackWorkItemListText(result.jobs || [], { workItemState, includeInactive }),
-    blocks: slackWorkItemListBlocks(slackSession, result.jobs || [], { workItemState, includeInactive }),
+    replyText,
+    blocks: slackWorkItemListBlocks(slackSession, jobs, { workItemState, includeInactive }),
     slackSessionId: slackSession.id,
     agentRunId: agentRun?.id,
     workItemState,
-    jobs: (result.jobs || []).map(slackWorkItemJobResponse),
+    jobs: jobs.map(slackWorkItemJobResponse),
     ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
   };
 }

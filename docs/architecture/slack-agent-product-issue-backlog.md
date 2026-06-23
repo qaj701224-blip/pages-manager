@@ -43,7 +43,7 @@ Slack Agent 的目标不是一个“个人站点发布助手”，而是 pages-m
 
 ### 1. 查询个人 Issue / PR 时 gateway 报错
 
-当前进展：已修复基础容错。`list_my_work_items` 会过滤 stale / missing work item，列表渲染前也会跳过空项；全部为空时返回空态，不再让 Slack 只显示失败表情。
+当前进展：已修复基础容错和 issue 列表范围。`list_my_work_items` 会过滤 stale / missing work item，列表渲染前也会跳过空项；全部为空时返回空态，不再让 Slack 只显示失败表情。用户明确问“我的 issue 有哪几个 / 多少个”时默认查询全部可见 issue，而不是只查可继续任务；列表结果会写入会话记忆，后续“只有这一个么 / 还有吗”沿用上一轮列表范围继续查询。
 
 用户问题：
 
@@ -70,6 +70,8 @@ ECS 日志结论：
 - `list_my_work_items` 必须容忍 stale link、缺失 job、缺失 platform item
 - 列表渲染前过滤 `null / undefined`
 - 找不到任务时返回空态文案，而不是后台异常
+- 明确询问 issue 数量或清单时返回当前用户可见的全部 issue / PR 状态，不要求用户先说“历史”或“全部”
+- 对上一轮列表的短追问必须沿用列表上下文，不重新澄清“哪个对象”
 - 失败时给用户一个简短可理解的结果，例如“暂时没查到可继续的任务，我已记录这次查询失败”
 - gateway 日志补充 eventId、sessionId、tool name、stack，便于排障
 
