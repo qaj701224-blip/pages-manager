@@ -80,25 +80,7 @@ jobs:
               changed="$(git diff --name-only "$PUSH_BEFORE_SHA" "$PUSH_HEAD_SHA")"
             fi
             echo "$changed"
-
-            site_changed=false
-            platform_changed=false
-            while IFS= read -r path; do
-              [[ -z "$path" ]] && continue
-              case "$path" in
-                sites/*)
-                  site_changed=true
-                  ;;
-                *)
-                  platform_changed=true
-                  ;;
-              esac
-            done <<< "$changed"
-
-            if [[ "$site_changed" == "true" && "$platform_changed" == "true" ]]; then
-              echo "Mixed pushes are not supported: split personal site changes and PageManager platform changes into separate PRs." >&2
-              exit 1
-            fi
+            platform_changed=true
           elif [[ "$EVENT_NAME" == "workflow_dispatch" &&
             -n "${INPUT_BASE_SHA:-}" &&
             -n "${INPUT_HEAD_SHA:-}" &&

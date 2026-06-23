@@ -119,9 +119,7 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.ok(ci.includes(
     'Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs.',
   ));
-  assert.ok(ci.includes(
-    'Mixed pushes are not supported: split personal site changes and PageManager platform changes into separate PRs.',
-  ));
+  assert.match(ci, /elif \[\[ "\$EVENT_NAME" == "push" \]\]; then[\s\S]*platform_changed=true/);
   assert.match(ci, /Skip platform CI for personal-site-only changes/);
   assert.match(ci, /Personal-site-only PR; PR Classify and Site Check own validation\./);
   assert.match(ci, /workflow_dispatch:[\s\S]*baseSha:[\s\S]*headSha:[\s\S]*allowedPath:/);
