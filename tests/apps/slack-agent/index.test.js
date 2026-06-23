@@ -407,6 +407,66 @@ describe('slack agent', () => {
     assert.match(modelPayload.messages[1].content, /repo_question_answer/);
   });
 
+  it('plans repo research before gateway reads files', async () => {
+    const calls = [];
+    const app = createSlackAgentApp({
+      config: {
+        modelProvider: 'company-agent',
+        gatewayUrl: 'https://agent-gateway.example/v1',
+        apiKey: 'gateway-key',
+        modelName: 'company-agent',
+        maxOutputTokens: 512,
+        repoPlanTimeoutMs: 1000,
+        sharedSecret: 'secret',
+      },
+      async fetchImpl(url, request) {
+        calls.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    mode: 'deep_dive',
+                    queries: ['Slack session persistence'],
+                    readPaths: ['apps/gateway/src/db/schema.js', 'apps/gateway/src/slack/session.js'],
+                    rationale: '需要读取 session schema 和选择逻辑。',
+                    suggestedNextAction: 'none',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/repo-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
+        body: JSON.stringify({
+          question: 'Slack session 是怎么保存的？',
+          mode: 'deep_dive',
+          repoTree: {
+            files: ['apps/gateway/src/db/schema.js', 'apps/gateway/src/slack/session.js'],
+          },
+        }),
+      })
+    );
+    const body = await response.json();
+    const modelPayload = JSON.parse(calls[0].request.body);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.plan.source, 'agent');
+    assert.deepEqual(body.plan.queries, ['Slack session persistence']);
+    assert.deepEqual(body.plan.readPaths, ['apps/gateway/src/db/schema.js', 'apps/gateway/src/slack/session.js']);
+    assert.equal(calls[0].url, 'https://agent-gateway.example/v1/chat/completions');
+    assert.match(modelPayload.messages[1].content, /repo_research_plan/);
+  });
+
   it('prefers shared company gateway config names while keeping legacy Slack names as fallback', () => {
     const config = readSlackAgentConfig({
       AGENT_MODEL_PROVIDER: 'company-agent',

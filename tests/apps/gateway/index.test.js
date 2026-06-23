@@ -5,7 +5,11 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createGatewayApp as createRuntimeGatewayApp } from '../../../apps/gateway/src/index.js';
-import { answerRepoQuestion } from '../../../apps/gateway/src/slack/repo-question.js';
+import {
+  answerRepoQuestion,
+  platformDraftFromRepoQuestionContext,
+  repoQuestionActionBlocks,
+} from '../../../apps/gateway/src/slack/repo-question.js';
 import { createGatewayApp } from '../../helpers/gateway-app.js';
 
 async function json(response) {
@@ -22,6 +26,20 @@ function findBlockAction(blocks = [], actionId = '') {
 
 function readRequestJson(request = {}) {
   return request.body ? JSON.parse(request.body) : {};
+}
+
+async function fetchAndDrainWaitUntil(app, request, env = {}) {
+  const waitUntilPromises = [];
+  const response = await app.fetch(request, env, {
+    waitUntil(promise) {
+      waitUntilPromises.push(promise);
+    },
+  });
+  return {
+    response,
+    waitUntil: () => Promise.all(waitUntilPromises),
+    waitUntilCount: waitUntilPromises.length,
+  };
 }
 
 function notifierResponse(body = {}, status = 200) {
@@ -1405,6 +1423,10 @@ test('Slack repo questions answer from repo context without creating platform is
   assert.match(payloadText, /session_memories/);
   assert.match(payloadText, /apps\/gateway\/src\/db\/schema\.js/);
   assert.doesNotMatch(JSON.stringify(notifierCalls), /正在整理需求/);
+  assert.match(JSON.stringify(messageCall.body.payload.blocks), /pages_repo_deep_dive/);
+  assert.match(JSON.stringify(messageCall.body.payload.blocks), /pages_repo_view_evidence/);
+  assert.match(JSON.stringify(messageCall.body.payload.blocks), /pages_repo_generate_plan/);
+  assert.doesNotMatch(JSON.stringify(messageCall.body.payload.blocks), /pages_repo_create_platform_issue/);
 });
 
 test('Slack repo question follow-ups include previous evidence context', async () => {
@@ -1544,7 +1566,8 @@ test('Slack repo answer deep dive action posts more evidence without creating an
     },
   });
 
-  const response = await app.fetch(
+  const { response, waitUntil, waitUntilCount } = await fetchAndDrainWaitUntil(
+    app,
     new Request('http://gateway.test/integrations/slack/interactions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1564,15 +1587,173 @@ test('Slack repo answer deep dive action posts more evidence without creating an
     }
   );
   const body = await json(response);
+  assert.equal(body.action, 'repo_question_deep_dive_queued');
+  assert.equal(waitUntilCount, 1);
+  await waitUntil();
   const messageCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
   const memory = app.store.getSessionMemory(session.id);
 
   assert.equal(response.status, 200);
-  assert.equal(body.action, 'repo_question_deep_dive');
   assert.equal(app.store.platformDevItems.size, 0);
   assert.ok(messageCall);
   assert.match(messageCall.body.payload.text, /依据/);
   assert.equal(memory.repoQuestionContext.turns.at(-1).mode, 'deep_dive');
+});
+
+test('Slack repo answer view evidence action posts bounded snippets without creating an issue', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    channelId: 'D1',
+    dmChannelId: 'D1',
+  });
+  app.store.updateSessionMemory(session.id, {
+    repoQuestionContext: {
+      turns: [
+        {
+          question: 'Slack session 是怎么保存的？',
+          answerSummary: 'Slack session 写入 session memory。',
+          evidencePaths: ['apps/gateway/src/db/schema.js'],
+          evidenceSnippets: [
+            {
+              path: 'apps/gateway/src/db/schema.js',
+              line: 386,
+              excerpt: 'export const sessionMemories = mysqlTable("session_memories", { repoQuestionContextJson: json(...) });',
+            },
+          ],
+          mode: 'normal',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      lastEvidencePaths: ['apps/gateway/src/db/schema.js'],
+      openQuestions: [],
+    },
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'block_actions',
+        team: { id: 'T1' },
+        user: { id: 'U1' },
+        channel: { id: 'D1' },
+        container: { channel_id: 'D1', message_ts: '1710000000.000202' },
+        message: { ts: '1710000000.000202', thread_ts: '1710000000.000100' },
+        actions: [{ action_id: 'pages_repo_view_evidence', value: JSON.stringify({ sessionId: session.id }) }],
+      }),
+    }),
+    mockSlackNotifier(notifierCalls)
+  );
+  const body = await json(response);
+  const messageCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'repo_question_view_evidence');
+  assert.equal(app.store.platformDevItems.size, 0);
+  assert.match(messageCall.body.payload.text, /不是完整文件/);
+  assert.match(messageCall.body.payload.text, /session_memories/);
+  assert.doesNotMatch(JSON.stringify(notifierCalls), /确认平台需求|pages_confirm_platform_issue/);
+});
+
+test('Slack repo answer generate plan action allows creating a platform draft only after the plan', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    channelId: 'D1',
+    dmChannelId: 'D1',
+  });
+  app.store.updateSessionMemory(session.id, {
+    repoQuestionContext: {
+      turns: [
+        {
+          question: 'Slack Agent 如何读取 repo 代码？',
+          answerSummary: '需要 repo search/read tool loop。',
+          evidencePaths: ['apps/gateway/src/slack/repo-question.js'],
+          mode: 'normal',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      lastEvidencePaths: ['apps/gateway/src/slack/repo-question.js'],
+      openQuestions: [],
+    },
+  });
+
+  const { response, waitUntil, waitUntilCount } = await fetchAndDrainWaitUntil(
+    app,
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'block_actions',
+        team: { id: 'T1' },
+        user: { id: 'U1' },
+        channel: { id: 'D1' },
+        container: { channel_id: 'D1', message_ts: '1710000000.000203' },
+        message: { ts: '1710000000.000203', thread_ts: '1710000000.000100' },
+        actions: [{ action_id: 'pages_repo_generate_plan', value: JSON.stringify({ sessionId: session.id }) }],
+      }),
+    }),
+    {
+      PAGES_REPO_ROOT: process.cwd(),
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  assert.equal(body.action, 'repo_question_generate_plan_queued');
+  assert.equal(waitUntilCount, 1);
+  assert.equal(notifierCalls.some((call) => call.path === '/internal/slack-notifier/message'), false);
+  await waitUntil();
+  const messageCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
+  const memory = app.store.getSessionMemory(session.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(app.store.platformDevItems.size, 0);
+  assert.equal(memory.repoQuestionContext.turns.at(-1).mode, 'implementation_plan');
+  assert.match(JSON.stringify(messageCall.body.payload.blocks), /pages_repo_create_platform_issue/);
+});
+
+test('Slack repo answer blocks hide create action unless the user generated a plan', () => {
+  const result = {
+    replyText: '改造方案摘要',
+    mode: 'implementation_plan',
+    suggestedNextAction: 'create_platform_issue',
+    evidence: [{ path: 'apps/gateway/src/slack/repo-question.js' }],
+  };
+  const defaultBlocks = JSON.stringify(repoQuestionActionBlocks({ id: 'sess_repo_1' }, result));
+  const planBlocks = JSON.stringify(repoQuestionActionBlocks({ id: 'sess_repo_1' }, result, { allowCreateIssueAction: true }));
+
+  assert.doesNotMatch(defaultBlocks, /pages_repo_create_platform_issue/);
+  assert.match(planBlocks, /pages_repo_create_platform_issue/);
+});
+
+test('Slack repo answer platform draft preserves high-risk CI and deploy scope', () => {
+  const draft = platformDraftFromRepoQuestionContext({
+    repoQuestionContext: {
+      turns: [
+        {
+          question: '如果要修改 CI workflow 和 ECS 部署脚本，应该怎么做？',
+          answerSummary: '需要改 GitHub Actions、ECS Caddy 和部署脚本。',
+          evidencePaths: ['.github/workflows/platform-agent.yml', 'deploy/ecs/Caddyfile', 'scripts/deploy-ecs.sh'],
+          mode: 'implementation_plan',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    },
+  });
+
+  assert.equal(draft.issueType, 'type:ci');
+  assert.equal(draft.risk, 'risk:high');
+  assert.equal(draft.requiresHumanGate, true);
+  assert.ok(draft.areas.includes('area:ci'));
+  assert.ok(draft.areas.includes('area:ops'));
 });
 
 test('Slack repo answer can be converted into a platform issue confirmation card only', async () => {
@@ -1797,6 +1978,20 @@ test('repo question tool can ask Slack Agent to synthesize evidence answers', as
           body: JSON.parse(request.body),
           token: request.headers['X-Pages-Slack-Agent-Token'],
         });
+        if (String(url).endsWith('/repo-plan')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              plan: {
+                mode: 'normal',
+                queries: ['Slack session persistence'],
+                readPaths: ['apps/gateway/src/db/schema.js'],
+                suggestedNextAction: 'none',
+              },
+            }),
+            { status: 200 }
+          );
+        }
         return new Response(
           JSON.stringify({
             ok: true,
@@ -1815,10 +2010,79 @@ test('repo question tool can ask Slack Agent to synthesize evidence answers', as
 
   assert.equal(result.answerSource, 'agent');
   assert.match(result.replyText, /repo evidence/);
-  assert.equal(agentCalls.length, 1);
-  assert.equal(agentCalls[0].url, 'http://slack-agent.test/internal/slack-agent/repo-answer');
+  assert.equal(agentCalls.length, 2);
+  assert.equal(agentCalls[0].url, 'http://slack-agent.test/internal/slack-agent/repo-plan');
+  assert.equal(agentCalls[1].url, 'http://slack-agent.test/internal/slack-agent/repo-answer');
   assert.equal(agentCalls[0].token, 'agent-secret');
-  assert.equal(agentCalls[0].body.evidence[0].path, 'apps/gateway/src/db/schema.js');
+  assert.equal(agentCalls[1].token, 'agent-secret');
+  assert.equal(agentCalls[1].body.evidence[0].path, 'apps/gateway/src/db/schema.js');
+});
+
+test('repo question deep dive lets Slack Agent re-plan after observing evidence', async () => {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-manager-repo-loop-'));
+  await fs.mkdir(path.join(repoRoot, 'apps', 'gateway', 'src', 'db'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'apps', 'gateway', 'src', 'control-plane'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, 'apps', 'gateway', 'src', 'db', 'schema.js'),
+    'export const slackSessions = mysqlTable("slack_sessions", { sessionKey: varchar("session_key") });\n'
+  );
+  await fs.writeFile(
+    path.join(repoRoot, 'apps', 'gateway', 'src', 'control-plane', 'handlers.js'),
+    'export async function handleSlackInteractions() { return answerRepoQuestion(); }\n'
+  );
+  const agentCalls = [];
+
+  const result = await answerRepoQuestion(
+    {
+      PAGES_REPO_ROOT: repoRoot,
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH(url, request) {
+        const body = JSON.parse(request.body);
+        agentCalls.push({ url: String(url), body });
+        if (String(url).endsWith('/repo-plan')) {
+          const secondRound = Boolean(body.observations?.evidence?.length);
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              plan: {
+                mode: 'deep_dive',
+                queries: secondRound ? ['interaction handler answerRepoQuestion'] : ['slack session schema'],
+                readPaths: secondRound
+                  ? ['apps/gateway/src/control-plane/handlers.js']
+                  : ['apps/gateway/src/db/schema.js'],
+                suggestedNextAction: 'none',
+              },
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            answer: {
+              source: 'agent',
+              answerText: '已结合 schema 和 interaction handler 生成深挖回答。',
+              citedPaths: ['apps/gateway/src/db/schema.js', 'apps/gateway/src/control-plane/handlers.js'],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    },
+    { question: 'Slack session 是怎么保存并在交互里继续使用的？', deepDive: true }
+  );
+
+  const planCalls = agentCalls.filter((call) => call.url.endsWith('/repo-plan'));
+  const answerCall = agentCalls.find((call) => call.url.endsWith('/repo-answer'));
+
+  assert.equal(result.mode, 'deep_dive');
+  assert.equal(planCalls.length, 2);
+  assert.ok(planCalls[1].body.observations.evidence.length > 0);
+  assert.deepEqual(
+    answerCall.body.evidence.map((item) => item.path),
+    ['apps/gateway/src/db/schema.js', 'apps/gateway/src/control-plane/handlers.js']
+  );
 });
 
 test('Slack Agent posts fresh reply cards for requirement drafting turns', async () => {

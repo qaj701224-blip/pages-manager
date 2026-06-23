@@ -61,7 +61,7 @@ export function interactionChannelType(channelId, session = null) {
   return null;
 }
 
-export async function postSlackInteractionThreadReply(env, body = {}, session = null, text = '') {
+export async function postSlackInteractionThreadReply(env, body = {}, session = null, text = '', options = {}) {
   if (!canSendSlackOutput(env) || !text) return null;
   const channel = interactionChannelId(body, session);
   if (!channel) return null;
@@ -69,6 +69,7 @@ export async function postSlackInteractionThreadReply(env, body = {}, session = 
     channel,
     thread_ts: interactionThreadTs(body, session) || undefined,
     text: mentionSlackUser(text, slackUserIdFromBody(body, null)),
+    ...(options.blocks ? { blocks: options.blocks } : {}),
   });
 }
 
