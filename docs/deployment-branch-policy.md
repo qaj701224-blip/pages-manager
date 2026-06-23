@@ -44,7 +44,7 @@ base: master
 - 如果 PR 修改了平台路径，例如 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**` 或 Dockerfile，则从 `origin/staging` 创建临时工作分支。
 - workflow 使用全量历史 fetch PR head，并确认 fetch 到的 commit 与 PR head sha 一致。
 - 在临时工作分支上 merge PR head；冲突时 workflow 失败，作者需要先 rebase / merge `staging` 后再重试。
-- merge 成功后先 push 到 `staging-sync/pr-<number>-<sha>` 临时分支，并 dispatch 默认分支已有的 `ci.yml` 在该 merge commit 上运行 `check`。CI 分拆合入后，`ci.yml` 的内容由 `pr-platform.yml` 承接，但迁移期仍使用默认分支已注册的 workflow id。
+- merge 成功后先 push 到 `staging-sync/pr-<number>-<sha>` 临时分支，并 dispatch 已注册的 `Platform CI` workflow（`.github/workflows/pr-platform.yml`）在该 merge commit 上运行 `check`。该临时分支包含 PR 的 workflow rename 结果，不能再 dispatch 已被 rename 掉的 `ci.yml`。
 - `check` 成功后再把同一个已验证 commit push 到 `staging`，满足 `staging` ruleset 的 required status check。
 - 临时分支只用于让 GitHub Actions 给待同步 commit 产生 required check，成功或失败后由 workflow 清理。
 - 由于 GitHub `GITHUB_TOKEN` 产生的 push 不会自动触发后续 push workflow，同步 workflow 必须显式 dispatch `Deploy XD Pages Staging`。
