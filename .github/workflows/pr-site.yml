@@ -1,6 +1,6 @@
 name: Site Check
 
-# User-site PR guard only. Platform code PRs are validated by CI.
+# Personal site PR guard only. Platform code PRs are validated by PR Classify and Platform CI.
 on:
   workflow_dispatch:
     inputs:
@@ -75,7 +75,7 @@ jobs:
           changed="$(git diff --name-only "$base" "$head")"
           echo "$changed"
           if echo "$changed" | grep -Ev '^(sites/[^/]+/[^/]+/|$)' >/tmp/non-site-paths; then
-            echo "PR touched paths outside a single site:" >&2
+            echo "Site Check only accepts personal site PRs. Split PageManager platform changes into a separate PR:" >&2
             cat /tmp/non-site-paths >&2
             exit 1
           fi
@@ -91,9 +91,11 @@ jobs:
             echo "$site_roots" >&2
             exit 1
           fi
+          echo "SITE_ROOT=$site_roots" >> "$GITHUB_ENV"
 
       - name: Placeholder schema check
         shell: bash
         run: |
           set -euo pipefail
-          find sites -maxdepth 4 -path '*/site.json' -type f -print -exec node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' {} \;
+          test -n "${SITE_ROOT:-}"
+          find "$SITE_ROOT" -maxdepth 2 -path '*/site.json' -type f -print -exec node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' {} \;

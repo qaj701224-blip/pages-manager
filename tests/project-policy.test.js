@@ -28,12 +28,15 @@ test('branch policy documents master PR preview sync and CI lane isolation', () 
     assert.match(doc, /project-index\.yml/);
     assert.match(doc, /pages-agent\.yml/);
     assert.match(doc, /pages-preview\.yml/);
-    assert.match(doc, /site-check\.yml/);
     assert.match(doc, /KUBE_CONFIG_B64/);
     assert.match(doc, /sites\/<employee/);
     assert.match(doc, /\.github\/\*\*/);
     assert.match(doc, /k8s\/\*\*/);
   }
+
+  assert.match(agents, /pr-classify\.yml/);
+  assert.match(agents, /pr-platform\.yml/);
+  assert.match(agents, /pr-site\.yml/);
 });
 
 test('master PR sync workflow merges project PR heads to staging and skips user-site PRs', () => {
@@ -62,8 +65,8 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /git merge --no-ff "\$pr_ref"/);
   assert.match(workflow, /sync_branch="staging-sync\/pr-\$\{PR_NUMBER\}-\$\{short_sha\}"/);
   assert.match(workflow, /git push origin "HEAD:refs\/heads\/\$\{sync_branch\}"/);
-  assert.match(workflow, /gh workflow run ci\.yml[\s\S]*--ref "\$sync_branch"/);
-  assert.match(workflow, /gh run list[\s\S]*--workflow ci\.yml[\s\S]*--branch "\$sync_branch"/);
+  assert.match(workflow, /gh workflow run pr-platform\.yml[\s\S]*--ref "\$sync_branch"/);
+  assert.match(workflow, /gh run list[\s\S]*--workflow pr-platform\.yml[\s\S]*--branch "\$sync_branch"/);
   assert.match(workflow, /gh run watch "\$ci_run_id"[\s\S]*--exit-status/);
   assert.match(workflow, /git push origin "HEAD:staging"/);
   assert.match(workflow, /git push origin ":refs\/heads\/\$\{sync_branch\}"/);

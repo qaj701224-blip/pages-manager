@@ -160,14 +160,14 @@ jobs:
             git push origin "HEAD:refs/heads/${sync_branch}"
 
             ci_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$sync_branch"
+            gh workflow run pr-platform.yml --repo "$GITHUB_REPOSITORY" --ref "$sync_branch"
 
             ci_run_id=""
             ci_run_url=""
             for _ in {1..60}; do
               ci_run_line="$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
-                --workflow ci.yml \
+                --workflow pr-platform.yml \
                 --branch "$sync_branch" \
                 --event workflow_dispatch \
                 --limit 20 \

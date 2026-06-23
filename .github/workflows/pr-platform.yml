@@ -1,6 +1,6 @@
-name: CI
+name: Platform CI
 
-# Platform CI only. Generated user-site PRs under sites/** are validated by Site Check.
+# PageManager platform CI. Personal site PRs are validated by PR Classify and Site Check.
 on:
   workflow_dispatch:
     inputs:
@@ -19,8 +19,6 @@ on:
   pull_request:
   push:
     branches: [master]
-    paths-ignore:
-      - 'sites/**'
 
 permissions:
   contents: read
@@ -43,15 +41,63 @@ jobs:
           INPUT_ALLOWED_PATH: ${{ inputs.allowedPath }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          site_changed=false
           platform_changed=true
 
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             changed="$(git diff --name-only "$PR_BASE_SHA" "$PR_HEAD_SHA")"
             echo "$changed"
-            if [[ -n "$changed" ]] && ! grep -Ev '^(sites/|$)' <<<"$changed" >/dev/null; then
+
+            site_changed=false
+            platform_changed=false
+            while IFS= read -r path; do
+              [[ -z "$path" ]] && continue
+              case "$path" in
+                sites/*)
+                  site_changed=true
+                  ;;
+                *)
+                  platform_changed=true
+                  ;;
+              esac
+            done <<< "$changed"
+
+            if [[ "$site_changed" == "true" && "$platform_changed" == "true" ]]; then
+              echo "Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs." >&2
+              exit 1
+            fi
+            if [[ "$site_changed" == "true" && "$platform_changed" != "true" ]]; then
               platform_changed=false
+            fi
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            if [[ "$PUSH_BEFORE_SHA" =~ ^0{40}$ ]]; then
+              changed="$(git diff-tree --no-commit-id --name-only -r "$PUSH_HEAD_SHA")"
+            else
+              changed="$(git diff --name-only "$PUSH_BEFORE_SHA" "$PUSH_HEAD_SHA")"
+            fi
+            echo "$changed"
+
+            site_changed=false
+            platform_changed=false
+            while IFS= read -r path; do
+              [[ -z "$path" ]] && continue
+              case "$path" in
+                sites/*)
+                  site_changed=true
+                  ;;
+                *)
+                  platform_changed=true
+                  ;;
+              esac
+            done <<< "$changed"
+
+            if [[ "$site_changed" == "true" && "$platform_changed" == "true" ]]; then
+              echo "Mixed pushes are not supported: split personal site changes and PageManager platform changes into separate PRs." >&2
+              exit 1
             fi
           elif [[ "$EVENT_NAME" == "workflow_dispatch" &&
             -n "${INPUT_BASE_SHA:-}" &&
@@ -63,26 +109,35 @@ jobs:
               changed="$(git diff --name-only "$INPUT_BASE_SHA" "$INPUT_HEAD_SHA")"
               echo "$changed"
               site_only=true
+              site_changed=false
+              platform_changed=false
               while IFS= read -r path; do
                 [[ -z "$path" ]] && continue
                 case "$path" in
-                  "$INPUT_ALLOWED_PATH"/*) ;;
+                  "$INPUT_ALLOWED_PATH"/*)
+                    site_changed=true
+                    ;;
                   *)
+                    platform_changed=true
                     site_only=false
-                    break
                     ;;
                 esac
               done <<< "$changed"
+              if [[ "$site_changed" == "true" && "$platform_changed" == "true" ]]; then
+                echo "Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs." >&2
+                exit 1
+              fi
               if [[ -n "$changed" && "$site_only" == "true" ]]; then
                 platform_changed=false
               fi
             fi
           fi
+          echo "site_changed=$site_changed" >> "$GITHUB_OUTPUT"
           echo "platform_changed=$platform_changed" >> "$GITHUB_OUTPUT"
 
-      - name: Skip platform CI for user-site-only changes
+      - name: Skip platform CI for personal-site-only changes
         if: steps.changes.outputs.platform_changed != 'true'
-        run: echo "User-site-only PR; Site Check owns validation."
+        run: echo "Personal-site-only PR; PR Classify and Site Check own validation."
 
       - uses: pnpm/action-setup@v6
         if: steps.changes.outputs.platform_changed == 'true'

@@ -29,18 +29,21 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /Dispatch required PR checks/);
   assert.match(workflow, /post_status\(\)/);
   assert.match(workflow, /wait_for_run\(\)/);
-  assert.match(workflow, /gh workflow run ci\.yml[\s\S]*--ref "\$BRANCH_NAME"/);
-  assert.match(workflow, /gh workflow run site-check\.yml/);
+  assert.match(workflow, /gh workflow run pr-classify\.yml[\s\S]*--ref "\$BRANCH_NAME"/);
+  assert.match(workflow, /gh workflow run pr-platform\.yml[\s\S]*--ref "\$BRANCH_NAME"/);
+  assert.match(workflow, /gh workflow run pr-site\.yml/);
   assert.match(workflow, /-f baseRef="\$BASE_REF"/);
   assert.match(workflow, /-f baseSha="\$BASE_SHA"/);
   assert.match(workflow, /-f headSha="\$HEAD_SHA"/);
   assert.match(workflow, /-f allowedPath="\$ALLOWED_PATH"/);
   assert.match(workflow, /repos\/\$GITHUB_REPOSITORY\/statuses\/\$HEAD_SHA/);
+  assert.match(workflow, /post_status "pending" "pr-classify" "PR lane classification dispatched"/);
   assert.match(workflow, /post_status "pending" "check" "Project CI dispatched by Pages Agent"/);
   assert.match(workflow, /post_status "pending" "pages-generated-site-check"/);
   assert.match(workflow, /post_status "pending" "pages-user-flow"/);
-  assert.match(workflow, /wait_for_run ci\.yml check/);
-  assert.match(workflow, /wait_for_run site-check\.yml pages-generated-site-check/);
+  assert.match(workflow, /wait_for_run pr-classify\.yml pr-classify/);
+  assert.match(workflow, /wait_for_run pr-platform\.yml check/);
+  assert.match(workflow, /wait_for_run pr-site\.yml pages-generated-site-check/);
   assert.match(workflow, /post_status "success" "pages-user-flow"/);
   assert.match(workflow, /post_status "failure" "pages-user-flow"/);
   assert.match(workflow, /post_status "success" "\$context"/);
@@ -60,9 +63,17 @@ test('pages-preview workflow keeps deploy API ip restriction compatible', async 
 });
 
 test('ci and site-check support gateway-dispatched generated PR checks', async () => {
-  const ci = await readFile(path.join(root, '.github/workflows/ci.yml'), 'utf8');
-  const siteCheck = await readFile(path.join(root, '.github/workflows/site-check.yml'), 'utf8');
+  const classify = await readFile(path.join(root, '.github/workflows/pr-classify.yml'), 'utf8');
+  const ci = await readFile(path.join(root, '.github/workflows/pr-platform.yml'), 'utf8');
+  const siteCheck = await readFile(path.join(root, '.github/workflows/pr-site.yml'), 'utf8');
 
+  assert.match(classify, /^\s*workflow_dispatch:/m);
+  assert.match(classify, /baseSha:/);
+  assert.match(classify, /headSha:/);
+  assert.match(classify, /allowedPath:/);
+  assert.match(classify, /Mixed PRs are not supported/);
+  assert.match(classify, /echo "lane=site"/);
+  assert.match(classify, /echo "origin=site-agent"/);
   assert.match(ci, /^\s*workflow_dispatch:/m);
   assert.match(ci, /baseSha:/);
   assert.match(ci, /headSha:/);
@@ -77,6 +88,7 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   assert.match(ci, /INPUT_HEAD_SHA: \$\{\{ inputs\.headSha \}\}/);
   assert.match(ci, /INPUT_ALLOWED_PATH: \$\{\{ inputs\.allowedPath \}\}/);
   assert.match(ci, /site_only=true/);
+  assert.match(ci, /Mixed PRs are not supported/);
   assert.match(siteCheck, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
   assert.match(siteCheck, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
   assert.match(siteCheck, /baseSha must be a full commit SHA/);

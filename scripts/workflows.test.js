@@ -87,23 +87,50 @@ test('deploy workflows keep production manual and separate wrangler token from r
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
 });
 
-test('platform CI and staging deploy ignore generated user-site only changes', () => {
-  const ci = readWorkflow('.github/workflows/ci.yml');
+test('PR classification, platform CI, and site check keep platform and site lanes separate', () => {
+  const classify = readWorkflow('.github/workflows/pr-classify.yml');
+  const ci = readWorkflow('.github/workflows/pr-platform.yml');
   const staging = readWorkflow('.github/workflows/deploy-staging.yml');
-  const siteCheck = readWorkflow('.github/workflows/site-check.yml');
+  const siteCheck = readWorkflow('.github/workflows/pr-site.yml');
 
-  assert.match(ci, /Platform CI only\. Generated user-site PRs under sites\/\*\* are validated by Site Check\./);
+  assert.match(classify, /^name: PR Classify$/m);
+  assert.match(classify, /Required PR gate\. It makes the lane visible and rejects mixed platform\/site PRs\./);
+  assert.match(classify, /^\s*workflow_dispatch:/m);
+  assert.match(classify, /^\s*pull_request:/m);
+  assert.doesNotMatch(classify, /^\s*push:/m);
+  assert.ok(classify.includes(
+    'Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs.',
+  ));
+  assert.match(classify, /Site PRs must modify exactly one site root/);
+  assert.match(classify, /Site PR must only modify expected site root/);
+  assert.match(classify, /echo "lane=site"/);
+  assert.match(classify, /echo "lane=platform"/);
+  assert.match(classify, /echo "origin=site-agent"/);
+  assert.match(classify, /echo "origin=platform-agent"/);
+  assert.match(classify, /echo "origin=manual"/);
+
+  assert.match(ci, /^name: Platform CI$/m);
+  assert.match(ci, /PageManager platform CI\. Personal site PRs are validated by PR Classify and Site Check\./);
   assert.match(ci, /\n {2}pull_request:\n {2}push:/);
-  assert.match(ci, /\n {2}push:\n {4}branches: \[master\]\n {4}paths-ignore:\n {6}- 'sites\/\*\*'/);
+  assert.doesNotMatch(ci, /paths-ignore:/);
   assert.match(ci, /name: Detect platform changes/);
+  assert.match(ci, /site_changed=false/);
   assert.match(ci, /platform_changed=false/);
-  assert.match(ci, /Skip platform CI for user-site-only changes/);
-  assert.match(ci, /User-site-only PR; Site Check owns validation\./);
+  assert.ok(ci.includes(
+    'Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs.',
+  ));
+  assert.ok(ci.includes(
+    'Mixed pushes are not supported: split personal site changes and PageManager platform changes into separate PRs.',
+  ));
+  assert.match(ci, /Skip platform CI for personal-site-only changes/);
+  assert.match(ci, /Personal-site-only PR; PR Classify and Site Check own validation\./);
   assert.match(ci, /workflow_dispatch:[\s\S]*baseSha:[\s\S]*headSha:[\s\S]*allowedPath:/);
   assert.match(ci, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
   assert.match(ci, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
   assert.match(ci, /INPUT_HEAD_SHA: \$\{\{ inputs\.headSha \}\}/);
   assert.match(ci, /INPUT_ALLOWED_PATH: \$\{\{ inputs\.allowedPath \}\}/);
+  assert.match(ci, /PUSH_BEFORE_SHA: \$\{\{ github\.event\.before \}\}/);
+  assert.match(ci, /PUSH_HEAD_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(ci, /"\$INPUT_ALLOWED_PATH"\/\*/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm lint/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm test/);
@@ -116,8 +143,11 @@ test('platform CI and staging deploy ignore generated user-site only changes', (
   assert.doesNotMatch(staging, /paths-ignore:/);
   assert.doesNotMatch(staging, /apps\/pages-api|apps\/pages-auth|apps\/pages-router|apps\/kv-gateway/);
 
-  assert.match(siteCheck, /User-site PR guard only\. Platform code PRs are validated by CI\./);
+  assert.match(siteCheck, /Personal site PR guard only\. Platform code PRs are validated by PR Classify and Platform CI\./);
   assert.match(siteCheck, /\n {2}pull_request:\n {4}paths:\n {6}- sites\/\*\*/);
+  assert.match(siteCheck, /Site Check only accepts personal site PRs\. Split PageManager platform changes into a separate PR:/);
+  assert.match(siteCheck, /SITE_ROOT=\$site_roots/);
+  assert.match(siteCheck, /find "\$SITE_ROOT"/);
   assert.doesNotMatch(siteCheck, /\bpnpm lint\b|\bpnpm test\b|wrangler|kubectl|docker build|ACR_|KUBE_CONFIG_B64/);
 });
 
