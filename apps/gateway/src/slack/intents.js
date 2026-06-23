@@ -5,6 +5,7 @@ export const NON_FOLLOWUP_ACTIONS = new Set([
   'help',
   'ping',
   'status',
+  'diagnose_work_item',
   'cancel',
   'close_session',
   'empty',

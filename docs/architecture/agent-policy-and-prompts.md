@@ -164,15 +164,15 @@ Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platf
 
 产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 help / ping / status、Slack / GitHub 签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底路径，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
 
-诊断类 intent 应优先围绕当前 Slack thread / 当前 work item 执行：
+诊断类 intent 应优先围绕当前 Slack thread / 当前 work item 执行。自然语言里的“能不能重试 / 追加诊断 / 转人工排查”也先返回诊断报告和受控按钮；真正执行重试、写 Issue comment 或记录人工排查请求，只能来自按钮交互。
 
 ```json
 {
   "visibleReply": "我来检查这个任务卡在哪一步。",
   "lane": "site-publishing | platform-dev | unknown",
-  "intent": "diagnose_work_item | get_work_item_timeline | explain_work_item_blocker | get_workflow_status | retry_work_item | append_diagnosis_comment | human_triage",
+  "intent": "diagnose_work_item | get_work_item_timeline | explain_work_item_blocker | get_workflow_status",
   "toolCall": {
-    "name": "diagnose_current_work_item | get_work_item_timeline | get_workflow_status | request_retry_work_item | request_append_diagnosis_comment | request_human_triage",
+    "name": "diagnose_current_work_item | get_work_item_timeline | get_workflow_status",
     "args": {
       "timeWindowMinutes": 30
     }

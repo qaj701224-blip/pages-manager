@@ -88,7 +88,7 @@ test('routes natural create or update messages to the Slack Agent', () => {
 test('classifies status messages with job id', () => {
   const result = classifySlackIntake(body('状态 job_abc123'));
 
-  assert.equal(result.action, 'status');
+  assert.equal(result.action, 'diagnose_work_item');
   assert.equal(result.shouldCreateJob, false);
   assert.equal(result.jobId, 'job_abc123');
 });
@@ -96,10 +96,20 @@ test('classifies status messages with job id', () => {
 test('classifies status command without job id as a friendly reply', () => {
   const result = classifySlackIntake(body('status:'));
 
-  assert.equal(result.action, 'status');
+  assert.equal(result.action, 'diagnose_work_item');
   assert.equal(result.shouldCreateJob, false);
   assert.equal(result.jobId, null);
   assert.equal(result.replyText, null);
+});
+
+test('keeps natural diagnosis questions as agent turns', () => {
+  for (const text of ['为什么 issue 创建了 PR 没出来？', '这个任务卡在哪？', '帮我查一下这个 job 的日志', '能不能重试？']) {
+    const result = classifySlackIntake(body(text));
+
+    assert.equal(result.action, 'agent_turn');
+    assert.equal(result.shouldCreateJob, false);
+    assert.equal(result.shouldAnalyze, true);
+  }
 });
 
 test('classifies bulk destructive issue requests as unsupported', () => {

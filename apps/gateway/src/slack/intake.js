@@ -166,7 +166,7 @@ export function classifySlackIntake(body) {
   if (command?.command === 'status') {
     const commandJobId = command.args.match(JOB_ID_RE)?.[0] || null;
     return {
-      action: 'status',
+      action: 'diagnose_work_item',
       shouldCreateJob: false,
       text,
       jobId: commandJobId,
@@ -209,7 +209,7 @@ export function classifySlackIntake(body) {
 
   if (jobId && /(status|状态|进度|查询|查看|看一下)/i.test(text)) {
     return {
-      action: 'status',
+      action: 'diagnose_work_item',
       shouldCreateJob: false,
       text,
       jobId,
