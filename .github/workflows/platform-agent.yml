@@ -208,7 +208,7 @@ jobs:
             echo "Refusing to commit generated build artifacts." >&2
             exit 1
           fi
-          sensitive_paths="$(git diff --name-only | grep -E '^(\.github/|k8s/|docker/|Dockerfile($|\.)|scripts/(deploy|k8s|put-)|.*(/deploy|/k8s))' || true)"
+          sensitive_paths="$(git diff --name-only | grep -E '^(\.github/|k8s/|deploy/|docker/|Dockerfile($|\.)|scripts/(deploy|k8s|put-)|.*(/deploy|/k8s))' || true)"
           if [[ -n "$sensitive_paths" && ( "${EFFECTIVE_RISK:-$RISK}" != "risk:high" || "$GATE_APPROVED" != "true" ) ]]; then
             echo "High-risk paths require gate-approved Platform Dev work:" >&2
             echo "$sensitive_paths" >&2

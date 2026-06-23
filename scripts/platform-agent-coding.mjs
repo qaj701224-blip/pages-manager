@@ -282,6 +282,7 @@ function requiresHighRiskGateForPath(path) {
   return (
     path.startsWith('.github/') ||
     path.startsWith('k8s/') ||
+    path.startsWith('deploy/') ||
     path.startsWith('docker/') ||
     path === 'Dockerfile' ||
     path.startsWith('Dockerfile.') ||

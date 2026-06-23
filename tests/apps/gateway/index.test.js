@@ -2010,6 +2010,151 @@ test('Slack work item list only shows current user publishing jobs', async () =>
   assert.equal(session.activePrNumber, 68);
 });
 
+test('Slack work item list shows platform tasks without preview wording', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-work-item-list-copy',
+    title: '调整 gateway worker mysql 流程',
+    summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
+    issueType: 'type:ci',
+    areas: ['area:gateway', 'area:worker', 'area:ci'],
+    risk: 'risk:high',
+    agentEligible: true,
+    requiresHumanGate: true,
+    gateStatus: 'pending',
+  });
+  app.store.patchPlatformDevItem(item.id, {
+    githubIssueNumber: 72,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/72',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-platform-work-items-list-copy-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001301',
+          text: '我的任务',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.jobs.length, 1);
+  assert.equal(body.jobs[0].id, item.id);
+  assert.match(visible, /你的任务/);
+  assert.match(visible, /自动化流程调整/);
+  assert.match(visible, /高，需要人工确认/);
+  assert.doesNotMatch(visible, /你的发布任务|PR \/ Preview/);
+  assert.doesNotMatch(visible, /type:ci|risk:high|area:gateway|area:worker/);
+});
+
+test('Slack Agent can switch to a platform issue without site publishing status card', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-switch-platform-issue',
+    title: '平台需求',
+    summary: '通过 Slack 切换平台需求。',
+    issueType: 'type:dev',
+    areas: ['area:slack'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  });
+  const itemWithIssue = app.store.patchPlatformDevItem(item.id, {
+    githubIssueNumber: 72,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/72',
+  });
+  app.store.upsertSlackSession({
+    id: 'sess_platform_switch',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  app.store.linkPlatformDevItemToSlackSession(itemWithIssue, app.store.getSlackSession('sess_platform_switch'));
+  const notifierCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-switch-platform-issue-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001302',
+          text: '继续 issue #72',
+        },
+      }),
+    }),
+    {
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        notifierCalls.push({ url: String(url), body: readRequestJson(request) });
+        return notifierResponse({ ok: true, channel: 'D1', ts: '1710000001.000200' });
+      },
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'switch_work_item',
+                visibleReply: '我来切换到这个平台需求。',
+                summary: '切换到 issue #72。',
+                toolCall: { name: 'switch_work_item', args: { kind: 'issue', number: 72 } },
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const session = app.store.getSlackSession(body.slackSessionId);
+  const payload = JSON.stringify(notifierCalls.map((call) => call.body));
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'switch_work_item');
+  assert.equal(body.workItemKind, 'platform_dev');
+  assert.equal(body.workItemId, item.id);
+  assert.equal(session.activeWorkItemKind, 'platform_dev');
+  assert.equal(session.activeWorkItemId, item.id);
+  assert.equal(session.activeJobId, null);
+  assert.match(payload, /Pages 平台需求进度/);
+  assert.doesNotMatch(payload, /Preview 已生成|发布需求/);
+});
+
 test('Slack refuses bulk destructive issue requests instead of listing jobs', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
@@ -3163,6 +3308,98 @@ test('Slack Agent can reopen a visible closed issue through a scoped tool call',
   assert.equal(updatedJob.errorCode, null);
   assert.equal(githubRequests.length, 1);
   assert.match(githubRequests[0].url, /\/issues\/70$/);
+});
+
+test('Slack Agent reopens platform issues through platform recovery without site publishing state', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-reopen-platform-issue',
+    title: '已关闭平台需求',
+    summary: '平台需求已关闭。',
+    issueType: 'type:dev',
+    areas: ['area:slack'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  });
+  const itemWithIssue = app.store.updatePlatformDevItem(item.id, 'issue_created', {
+    githubIssueNumber: 73,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/73',
+  });
+  const closedItem = app.store.updatePlatformDevItem(itemWithIssue.id, 'closed_unmerged');
+  app.store.upsertSlackSession({
+    id: 'sess_platform_reopen',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  app.store.linkPlatformDevItemToSlackSession(closedItem, app.store.getSlackSession('sess_platform_reopen'));
+  const githubRequests = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-reopen-platform-issue-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001421',
+          text: '重新打开 issue #73',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_APP_INSTALLATION_TOKEN: 'ghs_write',
+      async GITHUB_FETCH(url, request) {
+        githubRequests.push({ url: String(url), request });
+        return new Response(JSON.stringify({ number: 73, state: 'open' }));
+      },
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'reopen_work_item',
+                visibleReply: '我来恢复这个平台需求。',
+                summary: '恢复 issue #73。',
+                toolCall: { name: 'reopen_work_item', args: { kind: 'issue', number: 73 } },
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const updatedItem = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'reopen_work_item');
+  assert.equal(body.workItemKind, 'platform_dev');
+  assert.equal(body.workItemId, item.id);
+  assert.match(body.replyText, /平台需求/);
+  assert.equal(updatedItem.status, 'agent_queued');
+  assert.equal(updatedItem.errorCode, null);
+  assert.equal(githubRequests.length, 1);
+  assert.match(githubRequests[0].url, /\/issues\/73$/);
 });
 
 test('Slack close session stops running agent runs before the same thread continues', async () => {

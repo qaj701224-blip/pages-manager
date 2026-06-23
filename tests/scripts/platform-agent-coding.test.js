@@ -181,6 +181,40 @@ test('rejects high-risk repository paths without gate approval', async () => {
   }
 });
 
+test('rejects root deploy paths without gate approval', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-deploy-path-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await assert.rejects(
+      () =>
+        runPlatformCodingAgent({
+          env,
+          async fetchImpl() {
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: JSON.stringify({
+                        files: [{ path: 'deploy/ecs/Caddyfile', content: ':80 {\n  respond "ok"\n}\n' }],
+                      }),
+                    },
+                  },
+                ],
+              }),
+              { status: 200 }
+            );
+          },
+        }),
+      /high-risk gate approval/
+    );
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('allows high-risk repository paths after gate approval', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-sensitive-approved-'));
   const previousCwd = process.cwd();
@@ -195,7 +229,10 @@ test('allows high-risk repository paths after gate approval', async () => {
               {
                 message: {
                   content: JSON.stringify({
-                    files: [{ path: '.github/workflows/platform-agent.yml', content: 'name: Platform Agent\n' }],
+                    files: [
+                      { path: '.github/workflows/platform-agent.yml', content: 'name: Platform Agent\n' },
+                      { path: 'deploy/ecs/Caddyfile', content: ':80 {\n  respond "ok"\n}\n' },
+                    ],
                   }),
                 },
               },
@@ -207,7 +244,9 @@ test('allows high-risk repository paths after gate approval', async () => {
     });
 
     const workflow = await readFile(path.join(dir, '.github/workflows/platform-agent.yml'), 'utf8');
+    const caddyfile = await readFile(path.join(dir, 'deploy/ecs/Caddyfile'), 'utf8');
     assert.match(workflow, /Platform Agent/);
+    assert.match(caddyfile, /respond "ok"/);
   } finally {
     process.chdir(previousCwd);
     await rm(dir, { recursive: true, force: true });

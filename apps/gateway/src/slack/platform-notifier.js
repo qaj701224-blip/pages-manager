@@ -1,6 +1,5 @@
 import { postSlackMessage, updateSlackMessage } from './notifier.js';
 import {
-  platformAreaLabel,
   platformIssueTypeLabel,
   platformRiskLabel,
   userFacingPlatformSummary,
@@ -141,11 +140,9 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
     summary: item.summary || item.title || label,
   });
   const summary = userFacingPlatformSummary({ summary: options.finalSummary || item.summary }, item.title || '暂无摘要');
-  const areaLabels = Array.from(new Set((item.areas || []).map((area) => platformAreaLabel(area))));
   const fields = [
     { type: 'mrkdwn', text: `*当前阶段*\n${label}` },
     { type: 'mrkdwn', text: `*类型*\n${platformIssueTypeLabel(item.issueType)}` },
-    { type: 'mrkdwn', text: `*范围*\n${areaLabels.join('、') || '-'}` },
     { type: 'mrkdwn', text: `*风险*\n${platformRiskLabel(item.risk)}` },
     ...linkFields(item),
   ];

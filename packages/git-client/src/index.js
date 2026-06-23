@@ -356,6 +356,27 @@ export function buildFollowupIssueComment(job, options = {}) {
   ].join('\n');
 }
 
+export function buildPlatformDevFollowupComment(item, options = {}) {
+  return [
+    '## 追加说明',
+    '',
+    safeText(options.feedback || item.summary || item.brief, '未提供追加说明。'),
+    '',
+    '## 自动化策略',
+    '',
+    `- mode: ${options.mode || 'fix'}`,
+    `- risk: ${item.risk || 'risk:medium'}`,
+    `- gateApproved: ${options.gateApproved ? 'true' : 'false'}`,
+    '',
+    '## 自动化元数据',
+    '',
+    '```text',
+    ...platformDevAutomationMetadataLines(item, options),
+    `Agent mode: ${options.mode || 'fix'}`,
+    '```',
+  ].join('\n');
+}
+
 export function buildProjectIndexInputs(job, options = {}) {
   return {
     publishingJobId: job.id,
@@ -476,6 +497,17 @@ export async function appendFollowupIssueComment(fetchImpl, config, job, options
     config,
     job.issueNumber,
     buildFollowupIssueComment(job, { ...options, mode: options.mode || 'fix' })
+  );
+}
+
+export async function appendPlatformDevFollowupIssueComment(fetchImpl, config, item, options = {}) {
+  const issueNumber = options.issueNumber || item.githubIssueNumber;
+  if (!issueNumber) return null;
+  return createIssueComment(
+    fetchImpl,
+    config,
+    issueNumber,
+    buildPlatformDevFollowupComment(item, { ...options, mode: options.mode || 'fix' })
   );
 }
 

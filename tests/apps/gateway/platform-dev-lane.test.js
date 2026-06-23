@@ -7,6 +7,7 @@ import {
   slackPlatformIssueConfirmationText,
 } from '../../../apps/gateway/src/slack/issue-confirmation.js';
 import { notifySlackPlatformDevStatus } from '../../../apps/gateway/src/slack/platform-notifier.js';
+import { slackWorkItemListBlocks } from '../../../apps/gateway/src/slack/work-items.js';
 import { platformDevItemMarker } from '../../../packages/git-client/src/index.js';
 import { createGatewayApp } from '../../helpers/gateway-app.js';
 
@@ -84,6 +85,51 @@ function deterministicSlackAgentEnv() {
     SLACK_AGENT_SHARED_SECRET: 'agent-secret',
     SLACK_AGENT_FETCH: (url, request) => agent.fetch(new Request(url, request)),
   };
+}
+
+function createOpenPlatformPr(app, options = {}) {
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: options.idempotencyKey || `platform-pr-${options.prNumber || 90}`,
+    title: options.title || '平台需求',
+    summary: options.summary || '平台需求',
+    issueType: options.issueType || 'type:dev',
+    areas: options.areas || ['area:platform'],
+    risk: options.risk || 'risk:medium',
+    agentEligible: options.agentEligible ?? true,
+    requiresHumanGate: options.requiresHumanGate ?? false,
+    gateStatus: options.gateStatus || 'not_required',
+    slackSessionId: options.slackSessionId || 'sess_platform_pr',
+    slackSessionKey: 'dm:D1',
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  app.store.upsertSlackSession({
+    id: options.slackSessionId || 'sess_platform_pr',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    channelId: 'D1',
+    dmChannelId: 'D1',
+    threadTs: '1710000000.000100',
+    activeContextExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: 'active',
+  });
+  let updated = app.store.updatePlatformDevItem(item.id, 'issue_created', {
+    githubIssueNumber: options.issueNumber || 80,
+    githubIssueUrl: `https://github.example/org/pages-manager/issues/${options.issueNumber || 80}`,
+  });
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_queued');
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_running');
+  updated = app.store.updatePlatformDevItem(updated.id, 'branch_committed');
+  updated = app.store.updatePlatformDevItem(updated.id, 'pr_created', {
+    githubPrNumber: options.prNumber || 90,
+    githubPrUrl: `https://github.example/org/pages-manager/pull/${options.prNumber || 90}`,
+    branchName: options.branchName || 'platform/item-pdev',
+    headSha: options.headSha || 'b'.repeat(40),
+  });
+  app.store.linkPlatformDevItemToSlackSession(updated, app.store.getSlackSession(options.slackSessionId || 'sess_platform_pr'));
+  return updated;
 }
 
 test('Slack platform request shows platform confirmation instead of site publishing confirmation', async () => {
@@ -277,6 +323,35 @@ test('platform status notification uses product labels instead of raw internal l
   assert.match(payload, /高，需要人工确认/);
   assert.doesNotMatch(payload, /type:ci|risk:high|area:gateway|area:worker/);
   assert.doesNotMatch(payload, /\b(gateway|worker|mysql)\b/i);
+});
+
+test('platform task list uses product labels instead of raw internal labels', () => {
+  const blocks = slackWorkItemListBlocks(
+    { id: 'sess_list' },
+    [
+      {
+        id: 'pdev_list',
+        workItemKind: 'platform_dev',
+        status: 'gate_pending',
+        title: '调整 gateway worker mysql 流程',
+        summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
+        issueType: 'type:ci',
+        risk: 'risk:high',
+        areas: ['area:gateway', 'area:worker', 'area:ci'],
+        issueNumber: 77,
+      },
+    ]
+  );
+  const payload = JSON.stringify(blocks);
+
+  assert.match(payload, /自动化流程调整/);
+  assert.match(payload, /高，需要人工确认/);
+  assert.match(payload, /平台入口/);
+  assert.match(payload, /后台处理/);
+  assert.match(payload, /自动化流程/);
+  assert.doesNotMatch(payload, /type:ci|risk:high|area:gateway|area:worker/);
+  assert.doesNotMatch(payload, /\b(gateway|worker|mysql)\b/i);
+  assert.doesNotMatch(payload, /你的发布任务|PR \/ Preview/);
 });
 
 test('platform failure notification filters internal substrate terms from error copy', async () => {
@@ -527,6 +602,283 @@ test('platform executor callback updates PlatformDevItem PR state', async () => 
   assert.equal(body.item.status, 'pr_created');
   assert.equal(body.item.githubPrNumber, 44);
   assert.equal(app.store.findPlatformDevItemByPrNumber(44).id, item.id);
+});
+
+test('Slack follow-up on an active platform PR dispatches a fix round', async () => {
+  const app = createGatewayApp();
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-followup-pr',
+    issueNumber: 81,
+    prNumber: 91,
+    slackSessionId: 'sess_platform_followup',
+  });
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(slackEvent('继续修改：文案再克制一些', 'Ev-platform-followup-1')),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true, result: { action: 'platform_agent_fix_dispatched' } }), {
+          status: 200,
+        });
+      },
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'modify_existing_preview',
+                summary: '文案再克制一些',
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'platform_followup_fix_dispatched');
+  assert.equal(updated.status, 'agent_queued');
+  assert.match(updated.summary, /Slack Follow-up/);
+  assert.equal(workerCalls.length, 1);
+  assert.equal(workerCalls[0].body.workItemKind, 'platform_dev');
+  assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+});
+
+test('platform CI failure dispatches an automatic fix round', async () => {
+  const app = createGatewayApp();
+  const headSha = 'c'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-fix',
+    issueNumber: 82,
+    prNumber: 92,
+    headSha,
+    slackSessionId: 'sess_platform_ci_fix',
+  });
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-failure',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9201,
+          node_id: 'SCR_PLATFORM_9201',
+          name: 'site-check',
+          status: 'completed',
+          conclusion: 'failure',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 92 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_fix_dispatched');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
+  assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+});
+
+test('platform blocking review dispatches an automatic fix round', async () => {
+  const app = createGatewayApp();
+  const headSha = 'd'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-review-fix',
+    issueNumber: 83,
+    prNumber: 93,
+    headSha,
+    slackSessionId: 'sess_platform_review_fix',
+  });
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-review-blocking',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 93, head: { sha: headSha } },
+        review: {
+          id: 9301,
+          node_id: 'PRR_PLATFORM_9301',
+          state: 'changes_requested',
+          body: '必须修复阻塞问题。',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_review_fix_dispatched');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
+  assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+});
+
+test('stale platform CI failure does not regress an active fix round', async () => {
+  const app = createGatewayApp();
+  const headSha = 'e'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-stale',
+    issueNumber: 84,
+    prNumber: 94,
+    headSha,
+    slackSessionId: 'sess_platform_ci_stale',
+  });
+  const queued = app.store.updatePlatformDevItem(item.id, 'agent_queued');
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-stale',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9401,
+          node_id: 'SCR_PLATFORM_9401',
+          name: 'site-check',
+          status: 'completed',
+          conclusion: 'failure',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 94 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(queued.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_stale_ignored');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 0);
+});
+
+test('stale platform blocking review does not regress an active fix round', async () => {
+  const app = createGatewayApp();
+  const headSha = 'f'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-review-stale',
+    issueNumber: 85,
+    prNumber: 95,
+    headSha,
+    slackSessionId: 'sess_platform_review_stale',
+  });
+  const queued = app.store.updatePlatformDevItem(item.id, 'agent_queued');
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-review-stale',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 95, head: { sha: headSha } },
+        review: {
+          id: 9501,
+          node_id: 'PRR_PLATFORM_9501',
+          state: 'changes_requested',
+          body: '旧 review 阻塞意见。',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(queued.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_review_stale_ignored');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 0);
 });
 
 test('GitHub issue webhook recognizes PlatformDev marker', async () => {
