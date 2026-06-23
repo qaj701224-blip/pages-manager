@@ -7,6 +7,7 @@ import {
 import { slackUserIdFromBody, surfaceForSlackBody } from './session.js';
 import { canSendSlackOutput, shouldPostSlackResultReply } from './delivery.js';
 import { slackThreadForSession } from './job-binding.js';
+import { buildConversationContext } from './conversation-context.js';
 
 const SLACK_AGENT_REPLY_START_TEXT = '正在整理需求...';
 const SHORT_QUERY_TURN_RE = new RegExp(
@@ -54,6 +55,13 @@ function slackAgentRequestPayload(body, intake, context = {}) {
     siteSlug: body.siteSlug || body.site_slug,
     slackSession,
     sessionMemory: context.sessionMemory || null,
+    conversationContext:
+      context.conversationContext ||
+      buildConversationContext({
+        slackSession,
+        sessionMemory: context.sessionMemory || {},
+        intake,
+      }),
     issueLinks: context.issueLinks || [],
     activeIssueLink: context.issueLinks?.[0] || null,
     agentRun,

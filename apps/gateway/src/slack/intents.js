@@ -13,6 +13,7 @@ export const NON_FOLLOWUP_ACTIONS = new Set([
   'unsupported_destructive_request',
   'repo_question',
   'answer_repo_question',
+  'repeat_previous_message',
 ]);
 export const LIST_WORK_ITEM_INTENTS = new Set(['list_work_items']);
 export const SWITCH_WORK_ITEM_INTENTS = new Set(['switch_work_item']);
