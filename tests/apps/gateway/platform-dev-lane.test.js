@@ -503,6 +503,48 @@ test('append diagnosis button writes a scoped GitHub issue comment', async () =>
   assert.doesNotMatch(githubCalls[0].body.body, /\b(gateway|worker|mysql|status card)\b/i);
 });
 
+test('append diagnosis button does not use status-only GitHub token for issue comments', async () => {
+  const app = createGatewayApp();
+  const githubCalls = [];
+  const item = createOpenPlatformPr(app, {
+    slackSessionId: 'sess_diagnosis_append_status_token',
+    issueType: 'type:ci',
+    risk: 'risk:high',
+  });
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        interaction(
+          'pages_request_append_diagnosis',
+          JSON.stringify({
+            sessionId: 'sess_diagnosis_append_status_token',
+            workItemKind: 'platform_dev',
+            workItemId: item.id,
+          })
+        )
+      ),
+    }),
+    {
+      ...notifierEnv(),
+      GITHUB_REPOSITORY: 'org/pages-manager',
+      GITHUB_STATUS_TOKEN: 'status-token',
+      async GITHUB_FETCH(url, request) {
+        githubCalls.push({ url: String(url), body: JSON.parse(request.body), request });
+        return new Response(JSON.stringify({ id: 125 }), { status: 201 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'append_diagnosis_comment_failed');
+  assert.equal(body.accepted, false);
+  assert.match(body.text, /GitHub 写入暂未配置/);
+  assert.equal(githubCalls.length, 0);
+});
+
 test('retry diagnosis button dispatches a scoped platform fix round', async () => {
   const app = createGatewayApp();
   const workerCalls = [];
