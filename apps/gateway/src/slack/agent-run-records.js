@@ -18,6 +18,7 @@ export function slackAgentRunModelPatch(slackAgentAnalysis) {
     provider: slackAgentAnalysis?.modelProvider || (slackAgentAnalysis ? 'unknown' : 'deterministic'),
     model: slackAgentAnalysis?.modelName || null,
     modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+    policyVersion: slackAgentAnalysis?.policyVersion || slackAgentAnalysis?.policy_version || null,
   };
 }
 

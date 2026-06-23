@@ -42,6 +42,7 @@ function createDefaultSessionMemory(sessionId, now = new Date()) {
     pendingQuestions: [],
     preferences: {},
     repoQuestionContext: {},
+    conversationContext: {},
     lastPreviewFeedback: null,
     lastAgentResponse: null,
     createdAt: nowIso,
