@@ -135,6 +135,7 @@ import {
   handleSlackReopenWorkItemTool,
   handleSlackSwitchWorkItemTool,
 } from '../slack/work-item-tools.js';
+import { answerRepoQuestion } from '../slack/repo-question.js';
 
 function isUnaddressedChannelThreadMessage(body = {}) {
   const event = body.event || {};
@@ -154,6 +155,14 @@ async function existingSlackThreadSession(store, body = {}) {
 
 function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
   if (!slackAgentAnalysis) return null;
+
+  if (shouldRejectUnsupportedDestructiveSlackTurn(intake, slackAgentAnalysis)) {
+    return { name: 'unsupported_destructive_request', args: {} };
+  }
+
+  if (['repo_question', 'architecture_question', 'platform_question'].includes(slackAgentAnalysis.intent)) {
+    return { name: 'answer_repo_question', args: { question: intake.text } };
+  }
 
   const explicitName = slackAgentToolName(slackAgentAnalysis);
   if (explicitName) {
@@ -177,9 +186,6 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
     ].includes(slackAgentAnalysis.intent)
   ) {
     return { name: 'diagnose_current_work_item', args: {} };
-  }
-  if (shouldRejectUnsupportedDestructiveSlackTurn(intake, slackAgentAnalysis)) {
-    return { name: 'unsupported_destructive_request', args: {} };
   }
   if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis.intent)) {
     return { name: 'list_my_work_items', args: { state: slackAgentWorkItemState(intake, slackAgentAnalysis) } };
@@ -309,6 +315,8 @@ async function handleSlackAgentToolCall(context) {
       });
     case 'list_my_work_items':
       return handleSlackListWorkItemsTool({ ...context, toolArgs: toolCall.args || {} });
+    case 'answer_repo_question':
+      return handleSlackRepoQuestionTool({ ...context, toolArgs: toolCall.args || {} });
     case 'switch_work_item':
       return handleSlackSwitchWorkItemTool({ ...context, toolArgs: toolCall.args || {} });
     case 'reopen_work_item':
@@ -1043,6 +1051,45 @@ function retryWorkItemReplyText(result = {}) {
   if (result.reason === 'fix_attempts_exhausted') return '自动修复次数已达到上限，需要人工查看 Issue / PR 后再继续。';
   if (result.reason) return `重试暂未启动：${result.reason}`;
   return '重试暂未启动，请稍后再试或转人工排查。';
+}
+
+async function handleSlackRepoQuestionTool({
+  store,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const question = toolArgs.question || toolArgs.query || slackAgentAnalysis?.summary || intake.text;
+  const result = await answerRepoQuestion(env, { question, text: intake.text });
+  const replyText = redactSecretLikeText(result.replyText);
+
+  if (slackSession?.id && store.updateSessionMemory) {
+    await store.updateSessionMemory(slackSession.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+      lastAgentResponse: replyText,
+    });
+  }
+  await completeSlackAgentRun(store, agentRun, {
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action: 'answer_repo_question',
+      accepted: true,
+      intent: slackAgentAnalysis?.intent || intake.action,
+      evidenceCount: result.evidence?.length || 0,
+    },
+  });
+
+  return {
+    ...result,
+    replyText,
+    slackSessionId: slackSession?.id,
+    agentRunId: agentRun?.id,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+  };
 }
 
 async function handleSlackWorkItemDiagnosisTool({

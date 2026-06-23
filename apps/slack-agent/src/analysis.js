@@ -10,6 +10,25 @@ const REOPEN_WORK_ITEM_RE =
   /(?:重新打开|恢复|重开|reopen).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
 const DIAGNOSIS_QUERY_RE =
   /(为什么|为啥|原因|失败|没成功|没有成功|没出来|卡住|卡在哪|卡在|诊断|排查|查一下|看一下|重试|查.*(?:日志|log|workflow|actions))/i;
+const QUESTION_CUE_RE =
+  /(?:\?|？|怎么|如何|怎样|哪里|在哪|是什么|为啥|为什么|解释|说明|是否|会不会|能否|可以.*吗|是不是|有没有|影响|关系)/i;
+const EXECUTION_CUE_RE =
+  /(?:开始|直接|马上|现在).*(?:改|修改|修复|实现|创建|部署|提交|push)|(?:帮我|请).*(?:改|修改|修复|实现|创建|部署|提交|push)|(?:创建|新建).*(?:issue|需求|任务)/i;
+const REPO_QUESTION_RE = new RegExp(
+  [
+    '怎么|如何|怎样|哪里|在哪|是什么|为啥|为什么|解释|说明',
+    '架构|实现|代码|保存|存储|读取|触发|调用|流程|状态机',
+    '数据结构|schema|表|字段|repo|repository|code|影响|关系|边界',
+  ].join('|'),
+  'i'
+);
+const REPO_QUESTION_SUBJECT_RE = new RegExp(
+  [
+    'pages-manager|平台|仓库|repo|repository|代码|code|Slack|bot|机器人',
+    'session|sessions|会话|对话|workflow|Actions|GitHub|issue|PR|数据库|MySQL|状态机|架构',
+  ].join('|'),
+  'i'
+);
 const ISSUE_NUMBER_RE = /(?:issue|issues|需求|任务)\s*#?\s*(\d{1,8})\b/i;
 const PR_NUMBER_RE = /\b(?:PR|pull\s*request|pull-request|pullrequest)\s*#?\s*(\d{1,8})\b/i;
 const BARE_WORK_ITEM_NUMBER_RE = /#(\d{1,8})\b/;
@@ -72,6 +91,9 @@ function toolCallForIntent(intent, text = '') {
     return { name: 'reopen_work_item', args: reference ? { kind: reference.kind, number: reference.number } : {} };
   }
   if (intent === 'diagnose_work_item') return { name: 'diagnose_current_work_item', args: { timeWindowMinutes: 30 } };
+  if (['repo_question', 'architecture_question', 'platform_question'].includes(intent)) {
+    return { name: 'answer_repo_question', args: { question: text } };
+  }
   if (intent === 'status_query') return { name: 'get_current_status', args: {} };
   if (intent === 'close_session') return { name: 'close_session', args: {} };
   if (intent === 'cancel_request') return { name: 'cancel_request', args: {} };
@@ -149,17 +171,27 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
   const shouldDiagnoseWorkItem =
     !isUnsupportedBulkDestructive && !shouldListWorkItems && !shouldSwitchWorkItem && DIAGNOSIS_QUERY_RE.test(text);
+  const shouldAnswerRepoQuestion =
+    !isUnsupportedBulkDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    !shouldDiagnoseWorkItem &&
+    (PLATFORM_KEYWORDS.test(text) || REPO_QUESTION_SUBJECT_RE.test(text)) &&
+    (REPO_QUESTION_RE.test(text) || QUESTION_CUE_RE.test(text)) &&
+    !EXECUTION_CUE_RE.test(text);
   const shouldCreateOrUpdate =
     !isUnsupportedBulkDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
+    !shouldAnswerRepoQuestion &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const shouldCreatePlatform =
     !isUnsupportedBulkDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
+    !shouldAnswerRepoQuestion &&
     PLATFORM_KEYWORDS.test(text) &&
     (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
   const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
@@ -173,10 +205,18 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
           ? 'list_work_items'
           : shouldDiagnoseWorkItem
             ? 'diagnose_work_item'
+            : shouldAnswerRepoQuestion
+              ? 'repo_question'
             : intent;
 
   return {
-    lane: shouldCreatePlatform ? 'platform-dev' : shouldCreateOrUpdate ? 'site-publishing' : 'unknown',
+    lane: shouldAnswerRepoQuestion
+      ? 'repo-question'
+      : shouldCreatePlatform
+        ? 'platform-dev'
+        : shouldCreateOrUpdate
+          ? 'site-publishing'
+          : 'unknown',
     intent: finalIntent,
     employeeSlug: input.employeeSlug || input.employee_slug || 'smoke',
     siteSlug: input.siteSlug || input.site_slug || 'profile',
@@ -197,6 +237,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
       !shouldListWorkItems &&
       !shouldSwitchWorkItem &&
       !shouldDiagnoseWorkItem &&
+      !shouldAnswerRepoQuestion &&
       intent === 'clarify',
     clarifyingQuestion: isUnsupportedBulkDestructive ? unsupportedBulkDestructiveQuestion() : undefined,
   };
@@ -223,7 +264,16 @@ function normalizeToolCall(value, fallbackToolCall = null) {
   return { name, args };
 }
 
+function shouldForceIntentToolCall(intent = '') {
+  return ['repo_question', 'architecture_question', 'platform_question'].includes(intent);
+}
+
 export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {}) {
+  const modelIntent = stringOrFallback(modelAnalysis.intent, fallback.intent);
+  const toolCallFallbackText = input.text || input.event?.text || modelAnalysis.summary || fallback.summary || '';
+  const inferredToolCall = modelAnalysis.intent
+    ? toolCallForIntent(modelIntent, toolCallFallbackText)
+    : fallback.toolCall || toolCallForIntent(fallback.intent, fallback.summary);
   const modelToolCall =
     modelAnalysis.toolCall ||
     modelAnalysis.tool_call ||
@@ -235,7 +285,7 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
       : null);
   const normalized = {
     ...fallback,
-    intent: stringOrFallback(modelAnalysis.intent, fallback.intent),
+    intent: modelIntent,
     lane: stringOrFallback(modelAnalysis.lane, fallback.lane || 'unknown'),
     confidence: typeof modelAnalysis.confidence === 'number' ? modelAnalysis.confidence : fallback.confidence,
     employeeSlug: stringOrFallback(modelAnalysis.employeeSlug || modelAnalysis.employee_slug, fallback.employeeSlug),
@@ -261,7 +311,7 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
       modelAnalysis.workItemState || modelAnalysis.work_item_state,
       fallback.workItemState || workItemStateFromText(input.text || input.event?.text || fallback.summary || '')
     ),
-    toolCall: normalizeToolCall(modelToolCall, fallback.toolCall || toolCallForIntent(fallback.intent, fallback.summary)),
+    toolCall: shouldForceIntentToolCall(modelIntent) ? inferredToolCall : normalizeToolCall(modelToolCall, inferredToolCall),
     visibleReply: stringOrFallback(
       modelAnalysis.visibleReply || modelAnalysis.visible_reply,
       fallback.visibleReply || fallback.visible_reply || ''
@@ -308,6 +358,7 @@ export function visibleSlackAgentReply(analysis = {}) {
   if (intent === 'switch_work_item') return '我会尝试切换到你指定的任务。';
   if (intent === 'reopen_work_item') return '我会尝试恢复你指定的 Issue 或 PR。';
   if (intent === 'status_query') return '我来查询当前发布进度。';
+  if (['repo_question', 'architecture_question', 'platform_question'].includes(intent)) return '我来查一下当前仓库实现。';
   if (intent === 'close_session') return '收到，我会关闭当前会话。';
   if (intent === 'cancel_request') return '收到，我先记录取消意图。';
 
@@ -392,6 +443,11 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
       '权限、状态机、通知、部署脚本或仓库代码时，lane 必须是 platform-dev，intent 返回 create_platform_issue，',
       'toolCall.name 返回 confirm_platform_issue。',
     ].join(''),
+    [
+      '当用户询问 pages-manager 当前实现、代码位置、数据如何保存、workflow 如何触发、架构细节或为什么这样设计时，',
+      'lane 必须是 repo-question，intent 返回 repo_question，toolCall.name 返回 answer_repo_question；',
+      '不要创建 issue，不要返回 confirm_platform_issue。',
+    ].join(''),
     'Platform Dev Lane 下必须给出 issueType、areas、risk、agentEligible、requiresHumanGate。',
     [
       'type:feedback 和 type:question 默认 agentEligible=false；type:ci、type:ops、type:security 默认',
@@ -414,7 +470,7 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     [
       'toolCall.name 可选：list_my_work_items, switch_work_item, reopen_work_item, get_current_status,',
       'diagnose_current_work_item, close_session, unsupported_destructive_request, cancel_request, record_followup,',
-      'confirm_create_issue, confirm_platform_issue。',
+      'answer_repo_question, confirm_create_issue, confirm_platform_issue。',
     ].join(' '),
     [
       '不要请求查询或操作其它 Slack 用户、其它 session 或其它人的 GitHub issue / PR；',
@@ -436,7 +492,8 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
       'list_work_items, switch_work_item, reopen_work_item, diagnose_work_item, get_work_item_timeline,',
-      'explain_work_item_blocker, get_workflow_status, retry_work_item, append_diagnosis_comment, human_triage,',
+      'explain_work_item_blocker, get_workflow_status, repo_question, architecture_question, retry_work_item,',
+      'append_diagnosis_comment, human_triage,',
       'status_query, cancel_request, close_session, unsupported_destructive_request, confirm_preview, clarify。',
     ].join(' '),
   ].join('\n');
