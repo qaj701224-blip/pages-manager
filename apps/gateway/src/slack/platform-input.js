@@ -63,18 +63,20 @@ export function platformDevInput(body = {}) {
     `${teamId}:${event.ts || body.event_ts || Date.now()}`;
   const issueType = normalizePlatformIssueType(analysis.issueType || analysis.issue_type || body.issueType || body.issue_type);
   const risk = normalizePlatformRisk(analysis.risk || body.risk, issueType);
-  const agentEligible =
+  const modelAgentEligible =
     typeof analysis.agentEligible === 'boolean'
       ? analysis.agentEligible
       : typeof analysis.agent_eligible === 'boolean'
         ? analysis.agent_eligible
-        : !FEEDBACK_TYPE_SET.has(issueType);
-  const requiresHumanGate =
+        : true;
+  const agentEligible = FEEDBACK_TYPE_SET.has(issueType) ? false : modelAgentEligible;
+  const modelRequiresHumanGate =
     typeof analysis.requiresHumanGate === 'boolean'
       ? analysis.requiresHumanGate
       : typeof analysis.requires_human_gate === 'boolean'
         ? analysis.requires_human_gate
         : risk === 'risk:high' || HIGH_RISK_TYPE_SET.has(issueType);
+  const requiresHumanGate = FEEDBACK_TYPE_SET.has(issueType) ? false : modelRequiresHumanGate;
   const requesterProfile = body.requesterProfile || body.requester_profile || null;
 
   return {

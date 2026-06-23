@@ -6,6 +6,7 @@ import {
   slackPlatformIssueConfirmationBlocks,
   slackPlatformIssueConfirmationText,
 } from '../../../apps/gateway/src/slack/issue-confirmation.js';
+import { platformDevInput } from '../../../apps/gateway/src/slack/platform-input.js';
 import { notifySlackPlatformDevStatus } from '../../../apps/gateway/src/slack/platform-notifier.js';
 import { slackWorkItemListBlocks } from '../../../apps/gateway/src/slack/work-items.js';
 import { platformDevItemMarker } from '../../../packages/git-client/src/index.js';
@@ -139,6 +140,52 @@ function latestSlackStatusBlocks(notifierCalls = []) {
     .at(-1);
   return JSON.stringify(call?.body?.payload?.blocks || []);
 }
+
+test('platform question input cannot be forced into agent dispatch by model output', () => {
+  const input = platformDevInput({
+    team_id: 'T1',
+    event_id: 'Ev-platform-question',
+    event: {
+      type: 'message',
+      user: 'U1',
+      channel: 'D1',
+      channel_type: 'im',
+      ts: '1710000000.000100',
+      text: '目前这个对话的 sessions 是保存在哪里？',
+    },
+    slackAgentAnalysis: {
+      lane: 'platform-dev',
+      intent: 'create_platform_issue',
+      issueType: 'type:question',
+      risk: 'risk:medium',
+      agentEligible: true,
+      requiresHumanGate: true,
+      summary: '目前这个对话的 sessions 是保存在哪里？',
+    },
+  });
+
+  assert.equal(input.issueType, 'type:question');
+  assert.equal(input.agentEligible, false);
+  assert.equal(input.requiresHumanGate, false);
+  assert.equal(input.gateStatus, 'not_required');
+});
+
+test('platform question confirmation card does not promise automatic development', () => {
+  const analysis = {
+    title: '目前这个对话的 sessions 是保存在哪里？',
+    summary: '目前这个对话的 sessions 是保存在哪里？',
+    issueType: 'type:question',
+    risk: 'risk:medium',
+    agentEligible: true,
+  };
+  const text = slackPlatformIssueConfirmationText(analysis);
+  const blocks = slackPlatformIssueConfirmationBlocks({ id: 'sess_question' }, analysis);
+  const serializedBlocks = JSON.stringify(blocks);
+
+  assert.match(text, /不会启动自动开发/);
+  assert.match(serializedBlocks, /不会启动自动开发/);
+  assert.doesNotMatch(text, /进入后续处理/);
+});
 
 test('Slack platform request shows platform confirmation instead of site publishing confirmation', async () => {
   const app = createGatewayApp();
