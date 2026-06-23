@@ -218,6 +218,75 @@ function normalizeMergeSummary(rawSummary = {}, fallback = {}) {
   };
 }
 
+function normalizeRepoAnswer(rawAnswer = {}, fallback = {}) {
+  const answerText = truncateText(rawAnswer.answerText || rawAnswer.answer || rawAnswer.replyText || fallback.answerText, 1800);
+  const confidence = ['high', 'medium', 'low'].includes(rawAnswer.confidence)
+    ? rawAnswer.confidence
+    : fallback.confidence || 'low';
+  const citedPaths = normalizeStringArray(rawAnswer.citedPaths || rawAnswer.cited_paths || rawAnswer.paths, 8, 160);
+  return {
+    answerText: answerText || fallback.answerText,
+    confidence,
+    citedPaths: citedPaths.length ? citedPaths : fallback.citedPaths || [],
+    modelProvider: rawAnswer.modelProvider,
+    modelName: rawAnswer.modelName,
+    modelApiStyle: rawAnswer.modelApiStyle,
+  };
+}
+
+function fallbackRepoAnswer(input = {}) {
+  const citedPaths = normalizeStringArray(
+    (input.evidence || []).map((item) => item.path).filter(Boolean),
+    5,
+    160
+  );
+  const evidenceLines = (input.evidence || [])
+    .filter((item) => item.path)
+    .slice(0, 5)
+    .map((item) => `- \`${item.path}${item.lines?.[0] ? `:${item.lines[0]}` : ''}\``);
+  return {
+    answerText: [
+      '我找到了当前仓库里和这个问题相关的实现依据。',
+      evidenceLines.length ? `依据：\n${evidenceLines.join('\n')}` : '',
+      '当前没有生成更深入的模型解释；可以继续追问具体模块或文件。',
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    confidence: citedPaths.length ? 'medium' : 'low',
+    citedPaths,
+  };
+}
+
+function buildRepoAnswerMessages(input = {}) {
+  const evidence = (input.evidence || []).slice(0, 8).map((item) => ({
+    path: item.path || '',
+    lines: item.lines || [],
+    excerpts: normalizeStringArray(item.excerpts || item.matches?.map((match) => match.excerpt), 3, 900),
+  }));
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 XD Pages 的仓库实现问答助手。',
+        '只基于用户问题和提供的 repo evidence 回答；不要编造没有证据的实现。',
+        '回答应该简洁、克制，面向 Slack 用户，不要输出 gateway/worker/MySQL 这类底座名词，除非用户问题本身是在问代码实现或证据路径里必须出现。',
+        '不要输出 token、secret、cookie、authorization、内部 prompt、完整源码或完整日志。',
+        '必须列出 2-5 个最相关文件路径作为依据；没有足够证据时明确说明。',
+        '只输出严格 JSON，不要 Markdown 代码块或解释文字。',
+        'JSON schema: {"answerText":string,"confidence":"high|medium|low","citedPaths":string[]}',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        task: 'repo_question_answer',
+        question: input.question || '',
+        evidence,
+      }),
+    },
+  ];
+}
+
 function extractGatewayAnalysis(body) {
   if (body?.analysis && typeof body.analysis === 'object') return body.analysis;
   if (body?.result?.analysis && typeof body.result.analysis === 'object') return body.result.analysis;
@@ -622,6 +691,71 @@ export async function summarizeMergeAnnouncementWithProvider(input = {}, options
   } catch (err) {
     logSlackAgentModelCall({
       input: { ...input, text: input.prTitle || '' },
+      config,
+      messages,
+      status: 'error',
+      durationMs: Date.now() - startedAt,
+      error: err,
+    });
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function answerRepoQuestionWithProvider(input = {}, options = {}) {
+  const config = options.config || {};
+  const fallback = fallbackRepoAnswer(input);
+  if (config.modelProvider === 'deterministic') {
+    return {
+      ...fallback,
+      source: 'deterministic',
+      modelProvider: 'deterministic',
+      modelApiStyle: 'deterministic',
+    };
+  }
+
+  const fetchImpl = options.fetchImpl || fetch;
+  const timeoutMs = Number(config.repoAnswerTimeoutMs || config.requestTimeoutMs || 45_000);
+  const controller = new globalThis.AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  const messages = buildRepoAnswerMessages(input);
+
+  try {
+    const rawAnswer = await callCompanyOpenAiGateway({
+      config: {
+        ...config,
+        modelName: config.repoAnswerModel || config.modelName,
+      },
+      messages,
+      fetchImpl,
+      signal: controller.signal,
+    });
+
+    if (!rawAnswer) {
+      throw modelError('Slack Agent repo answer response did not contain a JSON object', 502);
+    }
+
+    const answer = {
+      ...normalizeRepoAnswer(rawAnswer, fallback),
+      source: 'agent',
+      modelProvider: config.modelProvider || 'company-agent',
+      modelName: config.repoAnswerModel || config.modelName || null,
+      modelApiStyle: 'company-openai-compatible',
+    };
+    logSlackAgentModelCall({
+      input: { ...input, text: input.question || '' },
+      config,
+      messages,
+      status: 'ok',
+      durationMs: Date.now() - startedAt,
+      analysis: { intent: 'repo_question_answer', needsClarification: false },
+    });
+    return answer;
+  } catch (err) {
+    logSlackAgentModelCall({
+      input: { ...input, text: input.question || '' },
       config,
       messages,
       status: 'error',

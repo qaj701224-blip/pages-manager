@@ -78,6 +78,7 @@ get_workflow_status
 request_retry_work_item
 request_append_diagnosis_comment
 request_human_triage
+answer_repo_question
 ```
 
 这些工具也不能绕过 gateway 权限、幂等和状态机。Slack Agent 可以主导“下一步做什么”，但 gateway 必须在执行时重新计算当前 Slack 用户、当前 session、该用户名下的 job / issue / PR 范围；Agent 传入其它用户、其它 session 或其它人的 GitHub 编号时不能生效。
@@ -87,6 +88,11 @@ request_human_triage
 ## 任务诊断体验
 
 任务诊断是 Slack Agent 的独立产品能力，详细边界见 [slack-agent-diagnostics.md](./slack-agent-diagnostics.md)。
+本文件只保留 runtime 入口、状态机和消息投递约束。
+
+## Repo 只读问答
+
+Repo 问答是 Slack Agent 的独立查询能力，详细边界见 [slack-agent-repo-question.md](./slack-agent-repo-question.md)。
 本文件只保留 runtime 入口、状态机和消息投递约束。
 
 ## Turn 协议

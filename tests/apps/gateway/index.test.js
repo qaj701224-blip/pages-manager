@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { createGatewayApp as createRuntimeGatewayApp } from '../../../apps/gateway/src/index.js';
+import { answerRepoQuestion } from '../../../apps/gateway/src/slack/repo-question.js';
 import { createGatewayApp } from '../../helpers/gateway-app.js';
 
 async function json(response) {
@@ -1310,6 +1314,290 @@ test('Slack query turns use reaction-only progress before posting the result', a
   assert.doesNotMatch(JSON.stringify(notifierCalls), /正在整理需求/);
 });
 
+test('Slack repo questions answer from repo context without creating platform issues', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const notifierCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-repo-question-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001132',
+          text: '目前这种对话的 sessions 是怎么保存的？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      PAGES_REPO_ROOT: process.cwd(),
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        if (String(url).endsWith('/repo-answer')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              answer: {
+                source: 'agent',
+                answerText:
+                  'Slack 对话会持久化到 `slack_sessions`，对话摘要和最近回复保存在 `session_memories`。',
+                citedPaths: ['apps/gateway/src/db/schema.js'],
+              },
+            }),
+            { status: 200 }
+          );
+        }
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              visibleText: '我来查一下当前仓库实现。',
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    visibleReply: '我来查一下当前仓库实现。',
+                    lane: 'repo-question',
+                    intent: 'repo_question',
+                    toolCall: {
+                      name: 'answer_repo_question',
+                      args: { question: '目前这种对话的 sessions 是怎么保存的？' },
+                    },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  const messageCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
+  const payloadText = messageCall?.body?.payload?.text || '';
+
+  assert.equal(response.status, 200);
+  assert.equal(agentCalls.filter((call) => call.url.endsWith('/turn')).length, 1);
+  assert.equal(agentCalls.filter((call) => call.url.endsWith('/repo-answer')).length, 1);
+  assert.equal(body.action, 'answer_repo_question');
+  assert.equal(body.accepted, true);
+  assert.equal(app.store.platformDevItems.size, 0);
+  assert.equal(notifierCalls.some((call) => call.path === '/internal/slack-notifier/agent-reply/start'), false);
+  assert.equal(notifierCalls.some((call) => JSON.stringify(call.body).includes('确认平台需求')), false);
+  assert.match(payloadText, /slack_sessions/);
+  assert.match(payloadText, /session_memories/);
+  assert.match(payloadText, /apps\/gateway\/src\/db\/schema\.js/);
+  assert.doesNotMatch(JSON.stringify(notifierCalls), /正在整理需求/);
+});
+
+test('Slack repo question intent overrides conflicting create-platform tool call', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const notifierCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-turn-repo-question-conflict-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001133',
+          text: '如果后续修改 CI workflow，会影响原先 CF 那条线吗？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      PAGES_REPO_ROOT: process.cwd(),
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        if (String(url).endsWith('/repo-answer')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              answer: {
+                source: 'agent',
+                answerText: '这属于仓库实现咨询，当前只查询 CI 和站点发布边界，不创建需求。',
+                citedPaths: ['docs/architecture/github-automation.md'],
+              },
+            }),
+            { status: 200 }
+          );
+        }
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    lane: 'repo-question',
+                    intent: 'repo_question',
+                    toolCall: { name: 'confirm_platform_issue', args: { title: '错误创建需求' } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  const payloadText = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message')?.body?.payload?.text || '';
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'answer_repo_question');
+  assert.equal(app.store.platformDevItems.size, 0);
+  assert.equal(agentCalls.filter((call) => call.url.endsWith('/repo-answer')).length, 1);
+  assert.match(payloadText, /仓库实现咨询/);
+  assert.doesNotMatch(JSON.stringify(notifierCalls), /确认平台需求|错误创建需求/);
+});
+
+test('repo question tool searches controlled repo files without reading secrets', async () => {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-manager-repo-question-'));
+  await fs.mkdir(path.join(repoRoot, 'custom', 'runtime'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, 'custom', 'runtime', 'conversation-store.js'),
+    [
+      'export function persistConversationSession(session) {',
+      '  return db.insert(slack_sessions).values({ sessionKey: session.key });',
+      '}',
+    ].join('\n')
+  );
+  await fs.writeFile(path.join(repoRoot, '.env.local'), 'SLACK_BOT_TOKEN=xoxb-secret\n');
+
+  const result = await answerRepoQuestion(
+    { PAGES_REPO_ROOT: repoRoot },
+    { question: 'Slack conversation session 是怎么保存的？' }
+  );
+
+  assert.equal(result.accepted, true);
+  assert.match(result.replyText, /custom\/runtime\/conversation-store\.js/);
+  assert.doesNotMatch(result.replyText, /xoxb-secret/);
+  assert.equal(result.evidence.some((item) => item.path === '.env.local'), false);
+});
+
+test('repo question tool redacts token-like content before sending evidence to Slack Agent', async () => {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-manager-repo-redact-'));
+  await fs.mkdir(path.join(repoRoot, 'docs'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, 'docs', 'slack-session.md'),
+    [
+      'Slack session 存储说明。',
+      'debug token=ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+      'session_memories 保存摘要。',
+    ].join('\n')
+  );
+  const agentCalls = [];
+
+  const result = await answerRepoQuestion(
+    {
+      PAGES_REPO_ROOT: repoRoot,
+      SLACK_AGENT_REPO_ANSWER_URL: 'http://slack-agent.test/internal/slack-agent/repo-answer',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            answer: {
+              source: 'agent',
+              answerText: 'Slack session 的摘要保存在 `session_memories`，未展示任何 token。',
+              citedPaths: ['docs/slack-session.md'],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    },
+    { question: 'Slack session 是怎么保存的？Bearer abcdefghijklmnopqrstuvwxyz' }
+  );
+
+  const serializedEvidence = JSON.stringify(agentCalls[0].body);
+  assert.equal(result.answerSource, 'agent');
+  assert.doesNotMatch(serializedEvidence, /ghp_abcdefghijklmnopqrstuvwxyz|Bearer abcdefghijklmnopqrstuvwxyz/);
+  assert.match(serializedEvidence, /REDACTED_/);
+  assert.doesNotMatch(result.replyText, /ghp_abcdefghijklmnopqrstuvwxyz|Bearer abcdefghijklmnopqrstuvwxyz/);
+});
+
+test('repo question tool can ask Slack Agent to synthesize evidence answers', async () => {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-manager-repo-answer-'));
+  await fs.mkdir(path.join(repoRoot, 'apps', 'gateway', 'src', 'db'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, 'apps', 'gateway', 'src', 'db', 'schema.js'),
+    'export const slackSessions = mysqlTable("slack_sessions", { sessionKey: varchar("session_key") });\n'
+  );
+  const agentCalls = [];
+
+  const result = await answerRepoQuestion(
+    {
+      PAGES_REPO_ROOT: repoRoot,
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({
+          url: String(url),
+          body: JSON.parse(request.body),
+          token: request.headers['X-Pages-Slack-Agent-Token'],
+        });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            answer: {
+              source: 'agent',
+              answerText: 'Slack 会话持久化在 `slack_sessions`，这由 repo evidence 里的 schema 定义支撑。',
+              citedPaths: ['apps/gateway/src/db/schema.js'],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    },
+    { question: 'Slack session 是怎么保存的？' }
+  );
+
+  assert.equal(result.answerSource, 'agent');
+  assert.match(result.replyText, /repo evidence/);
+  assert.equal(agentCalls.length, 1);
+  assert.equal(agentCalls[0].url, 'http://slack-agent.test/internal/slack-agent/repo-answer');
+  assert.equal(agentCalls[0].token, 'agent-secret');
+  assert.equal(agentCalls[0].body.evidence[0].path, 'apps/gateway/src/db/schema.js');
+});
+
 test('Slack Agent posts fresh reply cards for requirement drafting turns', async () => {
   const app = createGatewayApp();
   const notifierCalls = [];
@@ -2317,6 +2605,53 @@ test('Slack refuses bulk destructive issue requests instead of listing jobs', as
   assert.match(body.replyText, /不能批量关闭或删除/);
   assert.equal(app.store.getJob(job.id).status, 'preview_deployed');
   assert.equal(agentCalls.length, 0);
+});
+
+test('Slack refuses bulk destructive requests even when model misroutes them as repo questions', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-bulk-close-repo-question-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001331',
+          text: '解释一下怎么把我名下所有 issue 都删除',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            analysis: {
+              lane: 'repo-question',
+              intent: 'repo_question',
+              toolCall: { name: 'answer_repo_question', args: { question: '误判为仓库咨询' } },
+              needsClarification: false,
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'unsupported_destructive_request');
+  assert.equal(body.accepted, false);
+  assert.equal(agentCalls.filter((call) => call.url.endsWith('/repo-answer')).length, 0);
 });
 
 test('Slack work item list hides inactive jobs by default and shows history as read-only', async () => {
@@ -5873,7 +6208,10 @@ test('GitHub merged PR webhook uses Slack Agent merge summary when configured', 
   assert.match(visibleText, /补齐任务诊断入口/);
   assert.match(visibleText, /未改变生产部署路径/);
   assert.doesNotMatch(visibleText, /\b(gateway|worker|mysql|status card|job id|callback)\b/i);
-  assert.equal([...app.store.agentRuns.values()].find((run) => run.agentKind === 'merge_announcement')?.report.summarySource, 'agent');
+  assert.equal(
+    [...app.store.agentRuns.values()].find((run) => run.agentKind === 'merge_announcement')?.report.summarySource,
+    'agent'
+  );
 });
 
 test('GitHub merged PR webhook falls back when Slack Agent merge summary fails', async () => {
@@ -5898,7 +6236,10 @@ test('GitHub merged PR webhook falls back when Slack Agent merge summary fails',
   assert.equal(response.status, 200);
   assert.equal(body.mergeAnnouncement.queued, true);
   assert.match(visibleText, /合并了 PR #82/);
-  assert.equal(events.some((event) => event.stage === 'summary_fallback' && /model timeout|Gateway Timeout/.test(event.text)), true);
+  assert.equal(
+    events.some((event) => event.stage === 'summary_fallback' && /model timeout|Gateway Timeout/.test(event.text)),
+    true
+  );
   assert.equal(events.some((event) => event.stage === 'sent'), true);
 });
 

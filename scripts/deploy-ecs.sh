@@ -127,7 +127,6 @@ echo "[ecs] sync source to remote build dir"
   COPYFILE_DISABLE=1 tar \
     --no-xattrs \
     --exclude='.git' \
-    --exclude='.github' \
     --exclude='.wrangler' \
     --exclude='node_modules' \
     --exclude='*/node_modules' \
@@ -238,6 +237,9 @@ RUN rm -rf /app/apps /app/packages /app/node_modules /app/package.json /app/pnpm
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps ./apps
 COPY packages ./packages
+COPY docs ./docs
+COPY scripts ./scripts
+COPY .github ./.github
 RUN pnpm install --frozen-lockfile --prod --offline
 CMD ["sh", "-c", "pnpm --filter @xd/${PAGES_SERVICE} dev"]
 DOCKERFILE

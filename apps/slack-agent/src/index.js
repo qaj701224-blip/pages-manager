@@ -3,6 +3,7 @@ import { jsonResponse } from '@xd/worker-kit';
 import { analyzeSlackRequirementDeterministic, buildSlackAgentTurn } from './analysis.js';
 import { readSlackAgentConfig } from './config.js';
 import {
+  answerRepoQuestionWithProvider,
   analyzeSlackRequirementWithProvider,
   streamSlackAgentTurnEvents,
   summarizeMergeAnnouncementWithProvider,
@@ -109,6 +110,13 @@ export function createSlackAgentApp(options = {}) {
           const body = await readJson(request);
           const summary = await summarizeMergeAnnouncementWithProvider(body, { config, fetchImpl });
           return jsonResponse({ ok: true, summary });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-agent/repo-answer') {
+          requireAgentAuth(request, config);
+          const body = await readJson(request);
+          const answer = await answerRepoQuestionWithProvider(body, { config, fetchImpl });
+          return jsonResponse({ ok: true, answer });
         }
 
         return jsonResponse({ error: 'Endpoint not found', method: request.method, path: url.pathname }, 404);

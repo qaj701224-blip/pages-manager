@@ -578,6 +578,7 @@ flowchart TD
 | 模糊闲聊 / 信息不足                   | 进入 Slack Agent；回复澄清问题，不创建 job / issue                          |
 | pages-manager 开发需求 / bug / 文档   | 创建 `lane:platform-dev` issue；符合策略时进入 Agent 开发                   |
 | 产品意见 / 反馈                       | 创建或更新 `type:feedback` issue；默认不直接改代码                          |
+| repo 实现 / 架构咨询                  | 进入只读 repo 问答；检索当前仓库代码和文档后直接回答，不创建 issue           |
 | CI/CD / K8s / secret 相关诉求         | 创建高风险 issue；默认 `agent:blocked`，等待人工 gate                       |
 | 查询我的任务 / PR                     | Slack Agent 请求 `list_my_work_items`；gateway 只返回当前用户可见任务       |
 | 查询历史 / 全部任务                   | `state=all`，返回当前用户 active + inactive 任务                            |
@@ -591,7 +592,7 @@ flowchart TD
 | `关闭会话` / `结束对话`               | 关闭当前选中的 session                                                      |
 | `这个任务不用了` / `归档这个 preview` | 关闭当前 active WorkItemLink 或转人工确认                                   |
 
-只有 Slack Agent 明确返回创建类 intent / `confirm_create_issue`，且 `needsClarification=false`，并且用户点击确认后，gateway 才能创建 `PublishingJob` 或 `lane:platform-dev` issue。
+只有 Slack Agent 明确返回创建类 intent / `confirm_create_issue`，且 `needsClarification=false`，并且用户点击确认后，gateway 才能创建 `PublishingJob` 或 `lane:platform-dev` issue。咨询类 `repo_question` / `architecture_question` 不能展示创建确认卡；如果答案暴露出可改进点，只能给出“创建修复需求”的后续动作，由用户再次确认后才进入 Platform Dev Lane。
 
 Platform Dev Lane 的确认卡片必须展示：
 
@@ -614,6 +615,7 @@ Platform Dev Lane 的确认卡片必须展示：
 - 确认后进入执行阶段，由 lane 对应的进度消息接管：Site Publishing Lane 对用户展示站点需求、PR / preview、阻塞原因和下一步；Platform Dev Lane 对用户展示 issue / PR / CI / review / merge 进度。用户后续继续在同一 thread 回复，会更新同一个工作项并触发 fix round 或排队。
 - 已有 active job / issue / PR 后，修改类消息不再创建“正在整理需求”的 Agent 占位回复；Agent 对用户修改意图的理解进入进度消息的“本轮修改 / 最终需求”。如果 Agent 需要追问、解释、返回查询结果或说明无法处理，仍然在同一 thread 里直接回复用户。
 - 每条用户输入的即时反馈优先用 reaction 表示：收到时加 working reaction，完成时换成 done，失败时换成 failed。文字消息只承载真正的信息，不重复刷“我已收到”。
+- repo 问答和任务诊断属于查询类体验，只使用 reaction 表示处理中，不创建“正在整理需求...”占位消息。回复应是一条克制的答案，包含 2-5 个最相关文件路径作为依据；不泄露 secret、原始日志或内部 token。
 - PR 合并后的固定频道公告属于 GitHub webhook 触发的系统里程碑消息，不继承用户 Slack session。webhook 只负责校验、登记 pending / 幂等键并快速返回，摘要生成和 Slack 投递在后台执行。它可以复用 Slack Agent 的摘要能力生成中文富文本摘要，但触发判断、幂等、脱敏、频道选择和 `chat.postMessage` 仍由 gateway / slack-notifier 控制；详细合同见 [github-automation.md](./github-automation.md#merge-announcement-agent)。
 
 ```text
