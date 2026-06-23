@@ -86,65 +86,8 @@ request_human_triage
 
 ## 任务诊断体验
 
-Slack Agent 必须优先解决任务执行的黑盒感。用户可以自由提问：
-
-```text
-这个任务现在怎么样？
-为什么 issue 没创建成功？
-issue 创建了，为什么 PR 没出来？
-帮我查一下这个任务最近卡在哪里。
-能不能重试？
-```
-
-系统执行时必须按权限分层：
-
-- 默认开放：查询当前任务状态、issue / PR / preview 关联、任务 timeline、卡住阶段解释、受控日志摘要、GitHub Actions 状态和下一步建议。
-- 需要确认：创建 issue、追加诊断 comment 到 issue、重试失败流程、重新 dispatch workflow、恢复已关闭任务。
-- 必须收口：创建 PR、合并 PR、生产部署、删除资源、批量关闭 issue / PR、读取 secret、任意查询 ECS 原始日志、直接 shell 到 ECS。
-
-诊断报告面向用户，而不是面向底层系统。推荐回复形态：
-
-```text
-这个任务卡在 PR 创建前。
-当前状态：Issue 已创建
-Issue：#123
-最近阶段：Workflow 已请求启动
-失败原因：GitHub Actions dispatch 返回 403，可能是 token 权限不足。
-关联日志：最近 30 分钟有 1 条匹配错误。
-建议操作：可以重试，或把诊断结果追加到 Issue。
-```
-
-诊断报告至少包含：
-
-- 当前用户可理解状态。
-- 关联 Issue / PR / Preview / Workflow。
-- 最近成功阶段和当前阻塞阶段。
-- 失败原因或无法判断原因。
-- 受控日志摘要或 request id。
-- 可执行的下一步按钮。
-
-诊断内部可以关联这些事实，但默认不把内部字段名展示给用户：
-
-- Slack 消息是否进入入口服务。
-- 是否成功创建 Slack 会话。
-- 是否生成站点发布任务或平台研发任务。
-- issue 创建是否成功，以及失败属于 GitHub API、权限、label、repo 配置还是输入校验。
-- issue 创建后是否进入下一阶段。
-- project index 是否完成。
-- pages-agent workflow 是否 dispatch。
-- branch / PR / preview 是否创建。
-- callback 是否回到平台。
-- 状态机是否卡住或收到过期 callback。
-
-日志摘要能力不能做成通用日志搜索框。默认只围绕当前 Slack thread、当前任务、issue 或 PR 查询；默认时间窗为最近 30 分钟，可在确认后扩大到 2 小时；服务范围必须白名单化，例如 `pages-gateway`、`pages-worker`、`slack-agent`；返回 Slack 前必须脱敏 token、cookie、authorization、secret-like 字段。Slack 只展示摘要、关键错误、request id 和内部日志系统链接，不刷大段原始日志。
-
-推荐按钮：
-
-- 查看 Issue。
-- 查看 Workflow。
-- 重试。
-- 追加诊断到 Issue。
-- 转人工排查。
+任务诊断是 Slack Agent 的独立产品能力，详细边界见 [slack-agent-diagnostics.md](./slack-agent-diagnostics.md)。
+本文件只保留 runtime 入口、状态机和消息投递约束。
 
 ## Turn 协议
 
