@@ -448,6 +448,11 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
       'lane 必须是 repo-question，intent 返回 repo_question，toolCall.name 返回 answer_repo_question；',
       '不要创建 issue，不要返回 confirm_platform_issue。',
     ].join(''),
+    [
+      '语气判断必须优先于关键词：如果用户说“如果要支持 / 应该怎么实现 / 从产品角度看 / 方案是什么 / 会不会影响”，',
+      '这是咨询或设计讨论，即使包含“支持、实现、修改、CI、部署、repo”等词，也应返回 repo_question 或 architecture_question。',
+      '只有用户明确说“开始改 / 帮我实现 / 请修改 / 直接创建 issue / 按这个方案创建需求”时，才返回 create_platform_issue。',
+    ].join(''),
     'Platform Dev Lane 下必须给出 issueType、areas、risk、agentEligible、requiresHumanGate。',
     [
       'type:feedback 和 type:question 默认 agentEligible=false；type:ci、type:ops、type:security 默认',
