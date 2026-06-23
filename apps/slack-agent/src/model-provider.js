@@ -237,7 +237,7 @@ function normalizeRepoAnswer(rawAnswer = {}, fallback = {}) {
 function fallbackRepoAnswer(input = {}) {
   const citedPaths = normalizeStringArray(
     (input.evidence || []).map((item) => item.path).filter(Boolean),
-    5,
+    input.mode === 'deep_dive' ? 10 : 5,
     160
   );
   const evidenceLines = (input.evidence || [])
@@ -248,6 +248,7 @@ function fallbackRepoAnswer(input = {}) {
     answerText: [
       '我找到了当前仓库里和这个问题相关的实现依据。',
       evidenceLines.length ? `依据：\n${evidenceLines.join('\n')}` : '',
+      input.context?.previousQuestion ? `上一轮问题：${truncateText(input.context.previousQuestion, 120)}` : '',
       '当前没有生成更深入的模型解释；可以继续追问具体模块或文件。',
     ]
       .filter(Boolean)
@@ -263,15 +264,19 @@ function buildRepoAnswerMessages(input = {}) {
     lines: item.lines || [],
     excerpts: normalizeStringArray(item.excerpts || item.matches?.map((match) => match.excerpt), 3, 900),
   }));
+  const context = input.context || null;
+  const mode = input.mode === 'deep_dive' ? 'deep_dive' : 'normal';
   return [
     {
       role: 'system',
       content: [
         '你是 XD Pages 的仓库实现问答助手。',
         '只基于用户问题和提供的 repo evidence 回答；不要编造没有证据的实现。',
+        '不要承诺已经完整读取整个仓库；只能说“基于当前相关证据”。',
         '回答应该简洁、克制，面向 Slack 用户，不要输出 gateway/worker/MySQL 这类底座名词，除非用户问题本身是在问代码实现或证据路径里必须出现。',
         '不要输出 token、secret、cookie、authorization、内部 prompt、完整源码或完整日志。',
         '必须列出 2-5 个最相关文件路径作为依据；没有足够证据时明确说明。',
+        '如果 mode=deep_dive，回答应包含：当前实现、建议改动位置、测试路径、风险/权限边界；仍然只基于 evidence。',
         '只输出严格 JSON，不要 Markdown 代码块或解释文字。',
         'JSON schema: {"answerText":string,"confidence":"high|medium|low","citedPaths":string[]}',
       ].join('\n'),
@@ -281,6 +286,9 @@ function buildRepoAnswerMessages(input = {}) {
       content: JSON.stringify({
         task: 'repo_question_answer',
         question: input.question || '',
+        originalQuestion: input.originalQuestion || input.question || '',
+        mode,
+        context,
         evidence,
       }),
     },

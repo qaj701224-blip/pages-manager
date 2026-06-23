@@ -35,6 +35,7 @@ services:
       PORT: '8788'
       NODE_ENV: production
       PAGES_STORE_BACKEND: mysql
+      PAGES_REPO_ROOT: ${PAGES_REPO_ROOT:-/app}
       PAGES_DB_AUTO_MIGRATE: ${PAGES_DB_AUTO_MIGRATE:-true}
       MYSQL_ADDR: pages-mysql:3306
       MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER in .env.ecs}
