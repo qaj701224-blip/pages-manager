@@ -140,6 +140,7 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
     summary: item.summary || item.title || label,
   });
   const summary = userFacingPlatformSummary({ summary: options.finalSummary || item.summary }, item.title || '暂无摘要');
+  const currentChange = String(options.currentChange || '').trim();
   const fields = [
     { type: 'mrkdwn', text: `*当前阶段*\n${label}` },
     { type: 'mrkdwn', text: `*类型*\n${platformIssueTypeLabel(item.issueType)}` },
@@ -151,6 +152,7 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
     { type: 'section', text: { type: 'mrkdwn', text: `*${title.slice(0, 180)}*` } },
     { type: 'section', fields: fields.slice(0, 10) },
     { type: 'section', text: { type: 'mrkdwn', text: `*需求摘要*\n${summary.slice(0, 1000)}` } },
+    ...(currentChange ? [{ type: 'section', text: { type: 'mrkdwn', text: `*本轮补充*\n${currentChange.slice(0, 800)}` } }] : []),
     { type: 'context', elements: [{ type: 'mrkdwn', text: contextText(item, statusText) }] },
   ];
   const actions = [

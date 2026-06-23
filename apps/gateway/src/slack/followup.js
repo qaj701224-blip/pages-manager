@@ -1,5 +1,11 @@
+import { appendPlatformDevFollowupIssueComment } from '@xd/git-client';
+
 import { reconcileClosedGithubIssueForJob } from '../github/resource-reconciler.js';
-import { dispatchPlatformDevFixIfNeeded, PLATFORM_SLACK_FOLLOWUP_QUEUED_EVENT } from '../platform-dev/automation.js';
+import {
+  dispatchPlatformDevFixIfNeeded,
+  platformWorkerStartErrorText,
+  PLATFORM_SLACK_FOLLOWUP_QUEUED_EVENT,
+} from '../platform-dev/automation.js';
 import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
 import { notifySlackJobStatus } from './notifier.js';
 import { notifySlackPlatformDevStatus } from './platform-notifier.js';
@@ -244,6 +250,67 @@ function platformFollowupCardSummary(feedback = '') {
   return text ? `本轮补充：${text}` : '本轮补充已记录。';
 }
 
+function githubWriteConfigForFollowup(env = {}) {
+  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN || env.GITHUB_STATUS_TOKEN;
+  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
+  if (!token || !repoFullName) return null;
+  return {
+    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
+    token,
+    repoFullName,
+  };
+}
+
+async function appendPlatformFollowupIssueCommentIfPossible(env, item, feedback) {
+  if (!item?.githubIssueNumber) return { skipped: true, reason: 'missing_issue' };
+  const config = githubWriteConfigForFollowup(env);
+  if (!config) return { skipped: true, reason: 'github_not_configured' };
+
+  try {
+    const comment = await appendPlatformDevFollowupIssueComment(
+      env.GITHUB_FETCH || env.GITHUB_STATUS_FETCH || fetch,
+      config,
+      item,
+      {
+        feedback,
+        issueNumber: item.githubIssueNumber,
+        mode: 'followup',
+        gateApproved: item.gateStatus === 'approved' || item.requiresHumanGate === false,
+      }
+    );
+    return { ok: true, comment };
+  } catch (err) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'platform_followup_issue_comment_failed',
+        itemId: item.id,
+        issueNumber: item.githubIssueNumber,
+        error: err.message,
+      })
+    );
+    return { ok: false, error: err.message };
+  }
+}
+
+function issueSyncStatusText(issueSync, item) {
+  if (issueSync?.ok) return `已追加到 GitHub issue #${item.githubIssueNumber}。`;
+  if (issueSync?.skipped && issueSync.reason === 'missing_issue') return '已记录补充，等待 GitHub issue 创建完成后继续处理。';
+  if (issueSync?.skipped && issueSync.reason === 'github_not_configured') return '已记录补充，但 GitHub 写入暂未配置。';
+  if (issueSync?.ok === false) return `已记录补充，但写入 GitHub issue 失败：${issueSync.error}`;
+  return '已记录补充。';
+}
+
+function platformFollowupReplyText(issueSync, fixDispatch) {
+  const startError =
+    fixDispatch?.workerStart?.started === false ? platformWorkerStartErrorText(fixDispatch.workerStart.error) : '';
+  if (issueSync?.ok && fixDispatch?.workerStart?.started) return '收到，已追加到 Issue，并启动新一轮修改。';
+  if (issueSync?.ok && startError) return `收到，已追加到 Issue。${startError}`;
+  if (issueSync?.ok) return '收到，已追加到 Issue。';
+  if (startError) return `收到，补充已记录。${startError}`;
+  return '收到，补充已记录。';
+}
+
 async function handleSlackPlatformDevFollowup({
   store,
   env,
@@ -303,6 +370,7 @@ async function handleSlackPlatformDevFollowup({
 
   let updatedItem = await store.patchPlatformDevItem(item.id, patch);
   await store.linkPlatformDevItemToSlackSession(updatedItem, slackSession);
+  const issueSync = await appendPlatformFollowupIssueCommentIfPossible(env, updatedItem, feedback);
   let action = 'platform_followup_recorded';
   let replyText = '收到，已记录这轮补充。';
   let fixDispatch = null;
@@ -326,29 +394,34 @@ async function handleSlackPlatformDevFollowup({
     }
     slackStatusNotification = await notifySlackPlatformDevStatus(env, store, updatedItem, {
       stage: item.status,
-      text: '已记录新的补充，当前处理结束后会继续修改。',
-      statusText: ':hourglass_flowing_sand: 已记录新的补充。',
+      text: `${issueSyncStatusText(issueSync, updatedItem)}当前处理结束后会继续修改。`,
+      statusText: issueSync?.ok
+        ? ':hourglass_flowing_sand: 已追加到 Issue，等待当前处理结束。'
+        : ':hourglass_flowing_sand: 已记录补充，等待当前处理结束。',
       finalSummary: finalRequirementCardSummary(updatedItem.summary),
+      currentChange: platformFollowupCardSummary(feedback),
       skipDuplicate: false,
       slackSessionId: slackSession.id,
       dedupeKey: `platform-followup-queued:${updatedItem.id}:${agentRun?.id || Date.now()}`,
     });
     action = 'platform_followup_queued';
-    replyText = '收到，已追加；当前处理结束后会继续修改。';
+    replyText = issueSync?.ok ? '收到，已追加到 Issue；当前处理结束后会继续修改。' : '收到，已记录；当前处理结束后会继续修改。';
   } else if (canDispatchFixForPlatformDevItem(updatedItem)) {
     fixDispatch = await dispatchPlatformDevFixIfNeeded(store, updatedItem, env, {
       trigger: 'slack_followup',
       force: true,
+      currentChange: platformFollowupCardSummary(feedback),
+      issueSyncText: issueSyncStatusText(issueSync, updatedItem),
     });
     updatedItem = fixDispatch?.item || updatedItem;
     slackStatusNotification = fixDispatch?.slackStatusNotification || null;
     action = fixDispatch?.workerStart?.started ? 'platform_followup_fix_dispatched' : 'platform_followup_fix_ready';
-    replyText = fixDispatch?.workerStart?.started ? '收到，已启动新一轮修改。' : '收到，已记录，等待启动修改。';
+    replyText = platformFollowupReplyText(issueSync, fixDispatch);
   } else {
     slackStatusNotification = await notifySlackPlatformDevStatus(env, store, updatedItem, {
       stage: updatedItem.status,
-      text: '已记录新的补充。',
-      statusText: ':white_check_mark: 已记录。',
+      text: issueSyncStatusText(issueSync, updatedItem),
+      statusText: issueSync?.ok ? ':white_check_mark: 已追加到 Issue。' : ':white_check_mark: 已记录补充。',
       finalSummary: finalRequirementCardSummary(updatedItem.summary),
       currentChange: platformFollowupCardSummary(feedback),
       skipDuplicate: false,
@@ -377,6 +450,8 @@ async function handleSlackPlatformDevFollowup({
       slackSessionId: slackSession.id,
       workerStarted: fixDispatch?.workerStart?.started ?? null,
       workerError: fixDispatch?.workerStart?.error || null,
+      issueCommented: issueSync?.ok || false,
+      issueCommentError: issueSync?.error || null,
     })
   );
 
@@ -390,11 +465,10 @@ async function handleSlackPlatformDevFollowup({
     slackSessionId: slackSession.id,
     agentRunId: agentRun?.id,
     replyText,
-    noReply: [
-      'platform_followup_fix_dispatched',
-      'platform_followup_fix_ready',
-      'platform_followup_queued',
-    ].includes(action),
+    noReply:
+      Boolean(slackStatusNotification?.ok) &&
+      !issueSync?.error &&
+      !(fixDispatch?.workerStart && fixDispatch.workerStart.started === false),
     item: updatedItem,
     ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
     ...(slackStatusNotification ? { slackStatusNotification } : {}),
