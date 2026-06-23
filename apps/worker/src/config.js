@@ -17,6 +17,7 @@ export function readWorkerConfig(env = process.env) {
     prMode: env.PAGES_PR_MODE || 'per_job',
     smokePrBranch: env.PAGES_SMOKE_PR_BRANCH || '',
     workflowRef: env.PAGES_WORKFLOW_REF || env.GITHUB_REF_NAME || 'master',
+    platformWorkflowRef: env.PAGES_PLATFORM_WORKFLOW_REF || env.GITHUB_REF_NAME || 'master',
     baseRef: env.PAGES_BASE_REF || env.PAGES_PR_BASE_REF || 'staging',
     platformBaseRef: env.PAGES_PLATFORM_BASE_REF || env.PAGES_PLATFORM_PR_BASE_REF || 'master',
     previewMode: env.PAGES_PREVIEW_MODE || 'actions',

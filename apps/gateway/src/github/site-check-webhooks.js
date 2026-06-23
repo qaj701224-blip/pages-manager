@@ -1,5 +1,6 @@
 import { jsonResponse } from '@xd/worker-kit';
 
+import { dispatchPlatformDevFixIfNeeded, dispatchQueuedPlatformDevFollowupIfNeeded } from '../platform-dev/automation.js';
 import { notifySlackPlainProgress } from '../slack/delivery.js';
 import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/notifier.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
@@ -21,6 +22,20 @@ async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
   return current;
 }
 
+function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}) {
+  if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion === 'success') {
+    return platformItem.status === 'review_blocked' ? 'review_blocked' : 'ready_to_merge';
+  }
+  if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion && siteCheckRun.conclusion !== 'success') {
+    return 'ci_failed';
+  }
+  return 'ci_running';
+}
+
+function shouldIgnoreStalePlatformCheck(platformItem = {}, nextStatus = '') {
+  return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
+}
+
 export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }) {
   const storedRun = await store.recordSiteCheckRun(siteCheckRun);
   const fullHeadSha = siteCheckRun.headSha && siteCheckRun.headSha.length === 40 ? siteCheckRun.headSha : null;
@@ -29,30 +44,53 @@ export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, r
     : null;
   if (platformItem) {
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
-    let nextStatus = 'ci_running';
-    if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion === 'success') {
-      nextStatus = platformItem.status === 'review_blocked' ? 'review_blocked' : 'ready_to_merge';
-    } else if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion && siteCheckRun.conclusion !== 'success') {
-      nextStatus = 'ci_failed';
+    const nextStatus = platformCheckStatusForRun(platformItem, siteCheckRun);
+    if (shouldIgnoreStalePlatformCheck(platformItem, nextStatus)) {
+      const patched = fullHeadSha ? await store.patchPlatformDevItem(platformItem.id, patch) : platformItem;
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        reviewAction: 'platform_ci_stale_ignored',
+        siteCheckRun: storedRun.run,
+        siteCheckRunCreated: storedRun.created,
+        item: patched,
+      });
     }
     platformItem =
       platformItem.status === nextStatus
         ? await store.patchPlatformDevItem(platformItem.id, patch)
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
     await store.linkPlatformDevItemToSlackSession(platformItem);
-    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, platformItem, {
-      stage: nextStatus,
-      text: platformNotificationText(nextStatus, platformItem) || 'CI 状态已更新。',
-      skipDuplicate: false,
-    });
+    const autoFix =
+      nextStatus === 'ci_failed'
+        ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, { trigger: 'ci_failed' })
+        : await dispatchQueuedPlatformDevFollowupIfNeeded(store, platformItem, env);
+    if (autoFix?.item) platformItem = autoFix.item;
+    const slackStatusNotification = autoFix?.slackStatusNotification
+      ? autoFix.slackStatusNotification
+      : await notifySlackPlatformDevStatus(env, store, platformItem, {
+          stage: nextStatus,
+          text: platformNotificationText(nextStatus, platformItem) || 'CI 状态已更新。',
+          skipDuplicate: false,
+        });
     return jsonResponse({
       ok: true,
       created: true,
       delivery: result.delivery,
-      reviewAction: 'platform_ci_recorded',
+      reviewAction: autoFix?.workerStart?.started ? 'platform_ci_fix_dispatched' : 'platform_ci_recorded',
       siteCheckRun: storedRun.run,
       siteCheckRunCreated: storedRun.created,
       item: platformItem,
+      ...(autoFix
+        ? {
+            autoFix: {
+              skipped: autoFix.skipped || false,
+              reason: autoFix.reason || null,
+              workerStarted: autoFix.workerStart?.started ?? null,
+            },
+          }
+        : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
     });
   }

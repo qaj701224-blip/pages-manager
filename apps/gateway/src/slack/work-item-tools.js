@@ -2,12 +2,14 @@ import {
   reconcileClosedGithubIssueForJob,
   reopenGithubResourceForJob,
   restoreJobForReopenedGithubResource,
+  restorePlatformDevItemForReopenedGithubResource,
 } from '../github/resource-reconciler.js';
-import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
+import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { parseSlackWorkItemReference } from './intake.js';
 import { completeSlackAgentRun, redactSlackAnalysis, slackAgentRunModelPatch } from './agent-run-records.js';
-import { activateJobForSlackSession } from './job-binding.js';
+import { activateJobForSlackSession, slackThreadForSession } from './job-binding.js';
 import { notifySlackJobStatus } from './notifier.js';
+import { notifySlackPlatformDevStatus } from './platform-notifier.js';
 import { listReconciledSlackWorkItemsForSession } from './work-item-reconciler.js';
 import {
   normalizeSlackWorkItemQueryState,
@@ -142,7 +144,9 @@ export async function handleSlackSwitchWorkItemTool({
 }) {
   const reference = slackWorkItemReferenceFromTool(intake, slackAgentAnalysis, toolArgs);
   let job = reference ? await findVisibleSlackJobByReference(store, body, reference) : null;
-  job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
+  if (job?.workItemKind !== 'platform_dev') {
+    job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
+  }
   const targetLabel =
     reference?.kind === 'issue'
       ? `Issue #${reference.number}`
@@ -196,6 +200,41 @@ export async function handleSlackSwitchWorkItemTool({
     };
   }
 
+  if (job.workItemKind === 'platform_dev') {
+    const activeItem = await store.patchPlatformDevItem(job.id, {
+      slackSessionId: slackSession.id,
+      slackSessionKey: slackSession.sessionKey,
+      slackThread: slackThreadForSession(slackSession, job.slackThread || {}),
+    });
+    await store.linkPlatformDevItemToSlackSession(activeItem, slackSession);
+    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, activeItem, {
+      stage: activeItem.status,
+      text: '已切换到这个平台需求。',
+      statusText: ':white_check_mark: 已切换到这个需求。',
+      skipDuplicate: false,
+      slackSessionId: slackSession.id,
+    });
+    await completeSlackAgentRun(store, agentRun, {
+      workItemKind: 'platform_dev',
+      workItemId: activeItem.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: { action: 'switch_work_item', accepted: true, intent: slackAgentAnalysis?.intent || intake.action, reference },
+    });
+    return {
+      ok: true,
+      action: 'switch_work_item',
+      accepted: true,
+      workItemKind: 'platform_dev',
+      workItemId: activeItem.id,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      replyText: '已切换到这个平台需求，继续在这里补充即可。',
+      noReply: Boolean(slackStatusNotification?.ok),
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    };
+  }
+
   const activeJob = await activateJobForSlackSession(store, job, slackSession);
   const slackStatusNotification = await notifySlackJobStatus(env, store, activeJob, {
     stage: activeJob.status,
@@ -236,7 +275,9 @@ export async function handleSlackReopenWorkItemTool({
 }) {
   const reference = slackWorkItemReferenceFromTool(intake, slackAgentAnalysis, toolArgs);
   let job = reference ? await findVisibleSlackJobByReference(store, body, reference) : null;
-  job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
+  if (job?.workItemKind !== 'platform_dev') {
+    job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
+  }
   const targetLabel =
     reference?.kind === 'issue'
       ? `Issue #${reference.number}`
@@ -272,6 +313,79 @@ export async function handleSlackReopenWorkItemTool({
   }
 
   const target = reopenTargetForSlackWorkItem(job);
+  if (job.workItemKind === 'platform_dev') {
+    if (!isReopenableSlackWorkItem(job) || !target) {
+      await complete({
+        accepted: false,
+        reason: 'not_reopenable',
+        workItemKind: 'platform_dev',
+        workItemId: job.id,
+        status: job.status,
+      });
+      return {
+        ok: true,
+        action: 'reopen_work_item_not_reopenable',
+        accepted: false,
+        workItemKind: 'platform_dev',
+        workItemId: job.id,
+        replyText: inactiveSlackWorkItemReply(job),
+        slackSessionId: slackSession.id,
+        agentRunId: agentRun?.id,
+        ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+      };
+    }
+    let resource = null;
+    try {
+      resource = await reopenGithubResourceForJob(env, job, target);
+    } catch (err) {
+      await complete({
+        accepted: false,
+        reason: 'github_reopen_failed',
+        workItemKind: 'platform_dev',
+        workItemId: job.id,
+        error: err.message,
+      });
+      return {
+        ok: true,
+        action: 'reopen_work_item_failed',
+        accepted: false,
+        workItemKind: 'platform_dev',
+        workItemId: job.id,
+        replyText: `重新打开失败：${err.message}`,
+        slackSessionId: slackSession.id,
+        agentRunId: agentRun?.id,
+        ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+      };
+    }
+    job = await restorePlatformDevItemForReopenedGithubResource(store, job, target, resource || {});
+    await store.linkPlatformDevItemToSlackSession(job, slackSession);
+    const workerStart = await startWorkerForPlatformDevItemIfConfigured(job, env);
+    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, job, {
+      stage: job.status,
+      text: target === 'pr' ? 'GitHub PR 已重新打开，任务已恢复。' : 'GitHub issue 已重新打开，任务已恢复。',
+      statusText:
+        target === 'pr'
+          ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。'
+          : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
+      skipDuplicate: false,
+      slackSessionId: slackSession.id,
+      dedupeKey: `slack-agent-platform-reopen:${target}:${job.id}:${agentRun?.id || Date.now()}`,
+    });
+    return {
+      ok: true,
+      action: 'reopen_work_item',
+      accepted: true,
+      workItemKind: 'platform_dev',
+      workItemId: job.id,
+      replyText: target === 'pr' ? '已重新打开 PR，平台需求会继续处理。' : '已重新打开 Issue，平台需求会继续处理。',
+      noReply: Boolean(slackStatusNotification?.ok),
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+      ...(workerStart ? { workerStart } : {}),
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    };
+  }
   if (!isReopenableSlackWorkItem(job) || !target) {
     await complete({ accepted: false, reason: 'not_reopenable', status: job.status }, { jobId: job.id });
     return {

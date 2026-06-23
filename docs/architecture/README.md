@@ -11,8 +11,10 @@
 | [platform-dev-lane.md](./platform-dev-lane.md)                     | Slack 创建 / 分流 pages-manager 自身 issue，并驱动平台代码 PR 的产品和权限边界     |
 | [repository-structure.md](./repository-structure.md)               | 当前 monorepo 目录、gateway 内部结构、站点 PR 和平台 PR 边界                       |
 | [slack-platform-runtime.md](./slack-platform-runtime.md)           | Slack HTTP Events / Interactivity、常驻 Agent、语义分块准流式回复、notifier、session 和进度消息 / message binding |
+| [slack-agent-runtime.md](./slack-agent-runtime.md)                 | Slack Agent turn 协议、语义分块准流式回复、进度消息、notifier 和 FAQ               |
 | [github-automation.md](./github-automation.md)                     | GitHub Enterprise、分支策略、Actions executor、webhook、Review Agent、runtime 配置 |
-| [db-schema-v0.md](./db-schema-v0.md)                               | MySQL / Redis / Drizzle schema、repository 分层和迁移规则                          |
+| [db-schema.md](./db-schema.md)                                     | MySQL / Redis / Drizzle schema、repository 分层和迁移规则                          |
+| [db-schema-tables.md](./db-schema-tables.md)                       | DB 表结构详表、字段、索引和迁移期兼容说明                                          |
 | [workers-and-k8s.md](./workers-and-k8s.md)                         | `pages-worker`、GitHub Actions executor、后续 K8s Job executor 的职责边界          |
 | [site-lifecycle-and-naming.md](./site-lifecycle-and-naming.md)     | 一个员工多个站点时的 slug、目录、hostname 和生命周期规则                           |
 | [site-check.md](./site-check.md)                                   | 站点 PR 的 deterministic check、路径隔离、schema、secret scan                      |
@@ -38,7 +40,7 @@
 ## 文档收敛规则
 
 - GitHub 相关规则只写在 [github-automation.md](./github-automation.md)。
-- Slack 运行、session、语义分块准流式回复和进度消息 / message binding 只写在 [slack-platform-runtime.md](./slack-platform-runtime.md)。
+- Slack 运行入口、session 和数据模型写在 [slack-platform-runtime.md](./slack-platform-runtime.md)；Agent turn 协议、语义分块准流式回复和进度消息 / message binding 细节写在 [slack-agent-runtime.md](./slack-agent-runtime.md)。
 - Cloudflare 和 KV 相关文档保留，不和 Slack / GitHub / DB 设计混写。
 - `docs/superpowers/` 中同事保留的 KV SDK 设计 / 实施文档不作为当前架构真相源，但不能因本次 Slack / gateway 文档收敛被删除。
 - 历史计划、临时测试、阶段性设计 review 不再保留为架构真相源。

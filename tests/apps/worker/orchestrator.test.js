@@ -37,8 +37,10 @@ const platformItem = {
 function config() {
   return {
     executorMode: 'actions',
-    workflowRef: 'master',
+    workflowRef: 'staging',
+    platformWorkflowRef: 'master',
     baseRef: 'staging',
+    platformBaseRef: 'master',
     previewHostnamePattern: 'pr-{prNumber}-{employeeSlug}-{siteSlug}-staging.workers.xd.team',
     callbackUrl: 'http://gateway.test/internal/executor-callback',
     callbackToken: 'callback-secret',
@@ -57,6 +59,7 @@ test('worker config defaults generated work to staging base ref', () => {
   });
 
   assert.equal(workerConfig.workflowRef, 'master');
+  assert.equal(workerConfig.platformWorkflowRef, 'master');
   assert.equal(workerConfig.baseRef, 'staging');
   assert.equal(workerConfig.platformBaseRef, 'master');
   assert.equal(workerConfig.prMode, 'per_job');
@@ -66,6 +69,18 @@ test('worker config defaults generated work to staging base ref', () => {
   assert.equal(workerConfig.previewIpRestrict, true);
   assert.equal(workerConfig.callbackUrl, 'http://localhost:8788/internal/executor-callback');
   assert.equal(workerConfig.workerCallbackUrl, 'http://localhost:8788/internal/executor-callback');
+});
+
+test('worker config keeps platform workflow ref separate from site workflow ref', () => {
+  const workerConfig = readWorkerConfig({
+    GITHUB_APP_INSTALLATION_TOKEN: 'ghs_test',
+    GITHUB_REPO: 'org/pages-manager',
+    PAGES_WORKFLOW_REF: 'staging',
+    PAGES_PLATFORM_WORKFLOW_REF: 'master',
+  });
+
+  assert.equal(workerConfig.workflowRef, 'staging');
+  assert.equal(workerConfig.platformWorkflowRef, 'master');
 });
 
 test('platform dev item creates issue and dispatches platform-agent workflow', async () => {
@@ -205,6 +220,71 @@ test('platform dev high risk item dispatches platform-agent workflow after gate 
   );
 
   assert.equal(result.action, 'platform_issue_created_and_agent_dispatched');
+  assert.deepEqual(
+    callbacks.map((payload) => payload.stageResult),
+    ['agent_queued', 'agent_running']
+  );
+});
+
+test('platform dev fix item appends issue comment and dispatches platform-agent fix workflow', async () => {
+  const callbacks = [];
+  const result = await runWorkerForWorkItem(
+    {
+      workItemKind: 'platform_dev',
+      platformDevItem: {
+        ...platformItem,
+        status: 'agent_queued',
+        githubIssueNumber: 32,
+        githubIssueUrl: 'https://github.example/issues/32',
+        githubPrNumber: 45,
+        githubPrUrl: 'https://github.example/pulls/45',
+        branchName: 'platform/item-pdev-123',
+        summary: '初始需求\n\n## Slack Follow-up\n\n继续收紧文案。',
+      },
+    },
+    config(),
+    {
+      async fetchImpl(url, request) {
+        if (String(url).includes('/search/issues')) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  number: 32,
+                  html_url: 'https://github.example/issues/32',
+                  body: 'PlatformDevItem: pdev_123',
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        if (String(url).endsWith('/repos/org/pages-manager/issues/32/comments')) {
+          const body = JSON.parse(request.body).body;
+          assert.match(body, /追加说明/);
+          assert.match(body, /Agent mode: fix/);
+          return new Response(JSON.stringify({ id: 901, html_url: 'https://github.example/issues/32#comment-901' }), {
+            status: 201,
+          });
+        }
+        if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
+          const body = JSON.parse(request.body);
+          assert.equal(body.inputs.mode, 'fix');
+          assert.equal(body.inputs.branchName, 'platform/item-pdev-123');
+          assert.equal(body.inputs.issueNumber, '32');
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`Unexpected request ${request.method} ${url}`);
+      },
+      async postExecutorCallback(fetchImpl, cfg, payload) {
+        callbacks.push(payload);
+        return { ok: true };
+      },
+    }
+  );
+
+  assert.equal(result.action, 'platform_agent_fix_dispatched');
+  assert.equal(result.issueComment.id, 901);
   assert.deepEqual(
     callbacks.map((payload) => payload.stageResult),
     ['agent_queued', 'agent_running']
@@ -411,7 +491,7 @@ test('received job creates or reuses issue then dispatches project index workflo
 
       if (String(url).endsWith('/actions/workflows/project-index.yml/dispatches')) {
         const body = JSON.parse(request.body);
-        assert.equal(body.ref, 'master');
+        assert.equal(body.ref, 'staging');
         assert.equal(body.inputs.publishingJobId, 'job_123');
         assert.equal(body.inputs.allowedPath, 'sites/zhangsan/profile');
         assert.equal(body.inputs.baseRef, 'staging');
@@ -446,7 +526,7 @@ test('generating_page job dispatches pages-agent workflow', async () => {
         );
         assert.equal(request.method, 'POST');
         assert.deepEqual(JSON.parse(request.body), {
-          ref: 'master',
+          ref: 'staging',
           inputs: {
             publishingJobId: 'job_123',
             mode: 'initial',
@@ -519,7 +599,7 @@ test('fixing job appends issue comment and dispatches pages-agent fix mode on th
 
         if (String(url).endsWith('/actions/workflows/pages-agent.yml/dispatches')) {
           assert.deepEqual(JSON.parse(request.body), {
-            ref: 'master',
+            ref: 'staging',
             inputs: {
               publishingJobId: 'job_123',
               mode: 'fix',
@@ -565,7 +645,7 @@ test('previewing job dispatches pages-preview workflow', async () => {
         );
         assert.equal(request.method, 'POST');
         assert.deepEqual(JSON.parse(request.body), {
-          ref: 'master',
+          ref: 'staging',
           inputs: {
             publishingJobId: 'job_123',
             prNumber: '12',
