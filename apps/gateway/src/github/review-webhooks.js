@@ -3,10 +3,45 @@ import { jsonResponse } from '@xd/worker-kit';
 import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
 import { notifySlackPlainProgress } from '../slack/delivery.js';
 import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/notifier.js';
+import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { previewGateForPr, shouldDispatchPreviewForReview, shouldReportSiteCheckWaiting } from './review-gate.js';
 
 export async function handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result }) {
   const reviewComment = await store.recordReviewAgentComment(normalized);
+  let platformItem = store.findPlatformDevItemByPrNumber
+    ? await store.findPlatformDevItemByPrNumber(normalized.prNumber, { headSha: normalized.headSha })
+    : null;
+  if (platformItem) {
+    const fullHeadSha = normalized.headSha && normalized.headSha.length === 40 ? normalized.headSha : null;
+    const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
+    const nextStatus =
+      normalized.classification === 'blocking' || normalized.classification === 'unknown'
+        ? 'review_blocked'
+        : platformItem.status === 'pr_created' || platformItem.status === 'ci_running'
+          ? 'review_waiting'
+          : platformItem.status;
+    platformItem =
+      platformItem.status === nextStatus
+        ? await store.patchPlatformDevItem(platformItem.id, patch)
+        : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
+    await store.linkPlatformDevItemToSlackSession(platformItem);
+    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, platformItem, {
+      stage: nextStatus,
+      text: platformNotificationText(nextStatus, platformItem) || 'Review 状态已更新。',
+      skipDuplicate: false,
+    });
+    return jsonResponse({
+      ok: true,
+      created: true,
+      delivery: result.delivery,
+      reviewAction: 'platform_review_recorded',
+      reviewComment: reviewComment.comment,
+      reviewCommentCreated: reviewComment.created,
+      item: platformItem,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    });
+  }
+
   const job = await store.findJobByPrNumber(normalized.prNumber, { headSha: normalized.headSha });
   const gate = await previewGateForPr(
     store,

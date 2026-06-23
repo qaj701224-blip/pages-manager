@@ -21,6 +21,35 @@ describe('slack agent', () => {
     assert.match(analysis.summary, /个人网站/);
   });
 
+  it('routes pages-manager repository changes to platform dev lane', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '通过 Slack 创建 pages-manager 自身的开发 issue，并让 GitHub PR 进度回写到 Slack',
+    });
+
+    assert.equal(analysis.lane, 'platform-dev');
+    assert.equal(analysis.intent, 'create_platform_issue');
+    assert.equal(analysis.toolCall.name, 'confirm_platform_issue');
+    assert.equal(analysis.issueType, 'type:dev');
+    assert.deepEqual(analysis.areas, ['area:github', 'area:slack']);
+    assert.equal(analysis.risk, 'risk:medium');
+    assert.equal(analysis.agentEligible, true);
+    assert.equal(analysis.requiresHumanGate, false);
+  });
+
+  it('marks CI and ops platform requests as high risk with human gate', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '修改 pages-manager 的 CI workflow 和 ECS 部署脚本',
+    });
+
+    assert.equal(analysis.lane, 'platform-dev');
+    assert.equal(analysis.intent, 'create_platform_issue');
+    assert.equal(analysis.issueType, 'type:ci');
+    assert.equal(analysis.risk, 'risk:high');
+    assert.equal(analysis.requiresHumanGate, true);
+    assert.ok(analysis.areas.includes('area:ci'));
+    assert.ok(analysis.areas.includes('area:ops'));
+  });
+
   it('returns a scoped tool call for closed work item queries', () => {
     const analysis = analyzeSlackRequirement({ text: '查看我已关闭的发布任务' });
 

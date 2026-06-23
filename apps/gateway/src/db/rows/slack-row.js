@@ -28,6 +28,9 @@ export function slackDeliveryToRow(delivery) {
     slack_user_id: delivery.slackUserId,
     slack_session_id: delivery.slackSessionId,
     publishing_job_id: delivery.publishingJobId,
+    work_item_kind: delivery.workItemKind || null,
+    work_item_id: delivery.workItemId || null,
+    platform_dev_item_id: delivery.platformDevItemId || null,
     agent_run_id: delivery.agentRunId,
     payload_redacted_json: toDbJson(delivery.payloadRedacted || delivery.payloadRedactedJson || null),
     payload_hash: delivery.payloadHash || null,
@@ -58,6 +61,9 @@ export function rowToSlackDelivery(row) {
     slackUserId: row.slack_user_id || null,
     slackSessionId: row.slack_session_id || null,
     publishingJobId: row.publishing_job_id || null,
+    workItemKind: row.work_item_kind || null,
+    workItemId: row.work_item_id || null,
+    platformDevItemId: row.platform_dev_item_id || null,
     agentRunId: row.agent_run_id || null,
     payloadRedacted: fromDbJson(row.payload_redacted_json, null),
     payloadHash: row.payload_hash || null,
@@ -80,6 +86,8 @@ export function sessionToRow(session) {
     primary_slack_user_id: session.primarySlackUserId,
     owner_scope_id: session.ownerScopeId,
     active_job_id: session.activeJobId,
+    active_work_item_kind: session.activeWorkItemKind || null,
+    active_work_item_id: session.activeWorkItemId || null,
     active_issue_number: session.activeIssueNumber,
     active_pr_number: session.activePrNumber,
     active_preview_url: session.activePreviewUrl,
@@ -107,6 +115,8 @@ export function rowToSession(row) {
     primarySlackUserId: row.primary_slack_user_id,
     ownerScopeId: row.owner_scope_id || null,
     activeJobId: row.active_job_id || null,
+    activeWorkItemKind: row.active_work_item_kind || null,
+    activeWorkItemId: row.active_work_item_id || null,
     activeIssueNumber: row.active_issue_number ?? null,
     activePrNumber: row.active_pr_number ?? null,
     activePreviewUrl: row.active_preview_url || null,
@@ -184,6 +194,45 @@ export function rowToIssueLink(row) {
   };
 }
 
+export function workItemLinkToRow(link) {
+  return {
+    id: link.id,
+    work_item_kind: link.workItemKind,
+    work_item_id: link.workItemId,
+    slack_session_id: link.slackSessionId,
+    publishing_job_id: link.publishingJobId || null,
+    platform_dev_item_id: link.platformDevItemId || null,
+    issue_number: link.issueNumber,
+    pr_number: link.prNumber,
+    branch_name: link.branchName,
+    preview_url: link.previewUrl,
+    head_sha: link.headSha,
+    relationship: link.relationship || 'primary',
+    created_at: toDate(link.createdAt),
+    updated_at: toDate(link.updatedAt),
+  };
+}
+
+export function rowToWorkItemLink(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    workItemKind: row.work_item_kind,
+    workItemId: row.work_item_id,
+    slackSessionId: row.slack_session_id || null,
+    publishingJobId: row.publishing_job_id || null,
+    platformDevItemId: row.platform_dev_item_id || null,
+    issueNumber: row.issue_number ?? null,
+    prNumber: row.pr_number ?? null,
+    branchName: row.branch_name || null,
+    previewUrl: row.preview_url || null,
+    headSha: row.head_sha || null,
+    relationship: row.relationship || 'primary',
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
 export function slackJobStatusMessageToRow(message) {
   return {
     id: message.id || makeId('slackmsg'),
@@ -207,6 +256,47 @@ export function rowToSlackJobStatusMessage(row) {
     jobId: row.job_id,
     slackSessionId: row.slack_session_id || null,
     scopeKey: row.scope_key || 'job',
+    channel: row.channel || null,
+    threadTs: row.thread_ts || null,
+    messageTs: row.message_ts || null,
+    stage: row.stage || null,
+    status: row.status || null,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+export function workItemStatusScopeKey(input = {}) {
+  if (input.scopeKey) return String(input.scopeKey);
+  if (input.slackSessionId) return `session:${input.slackSessionId}`;
+  return 'work-item';
+}
+
+export function slackWorkItemStatusMessageToRow(message) {
+  return {
+    id: message.id || makeId('slackmsg'),
+    work_item_kind: message.workItemKind,
+    work_item_id: message.workItemId,
+    slack_session_id: message.slackSessionId || null,
+    scope_key: message.scopeKey || 'work-item',
+    channel: message.channel,
+    thread_ts: message.threadTs,
+    message_ts: message.messageTs,
+    stage: message.stage,
+    status: message.status,
+    created_at: toDate(message.createdAt),
+    updated_at: toDate(message.updatedAt),
+  };
+}
+
+export function rowToSlackWorkItemStatusMessage(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    workItemKind: row.work_item_kind,
+    workItemId: row.work_item_id,
+    slackSessionId: row.slack_session_id || null,
+    scopeKey: row.scope_key || 'work-item',
     channel: row.channel || null,
     threadTs: row.thread_ts || null,
     messageTs: row.message_ts || null,

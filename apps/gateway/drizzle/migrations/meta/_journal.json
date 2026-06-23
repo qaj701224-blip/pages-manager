@@ -50,6 +50,13 @@
       "when": 1781583303868,
       "tag": "0006_whole_namorita",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1782192000000,
+      "tag": "0007_platform_dev_lane",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { readWorkerConfig } from '../../../apps/worker/src/config.js';
 import { createWorkerApp } from '../../../apps/worker/src/index.js';
-import { runWorkerForJob } from '../../../apps/worker/src/orchestrator.js';
+import { runWorkerForJob, runWorkerForWorkItem } from '../../../apps/worker/src/orchestrator.js';
 
 const baseJob = {
   id: 'job_123',
@@ -17,6 +17,21 @@ const baseJob = {
   status: 'received',
   title: 'Profile page',
   summary: 'Create a personal profile page.',
+};
+
+const platformItem = {
+  id: 'pdev_123',
+  source: 'slack',
+  requestedByType: 'user',
+  requestedById: 'slack:T1:U1',
+  status: 'received',
+  title: '支持 Slack 创建平台开发 issue',
+  summary: '通过 Slack 创建 pages-manager 自身开发 issue，并跟踪 PR 进度。',
+  issueType: 'type:dev',
+  areas: ['area:gateway', 'area:github'],
+  risk: 'risk:medium',
+  agentEligible: true,
+  requiresHumanGate: false,
 };
 
 function config() {
@@ -43,6 +58,7 @@ test('worker config defaults generated work to staging base ref', () => {
 
   assert.equal(workerConfig.workflowRef, 'master');
   assert.equal(workerConfig.baseRef, 'staging');
+  assert.equal(workerConfig.platformBaseRef, 'master');
   assert.equal(workerConfig.prMode, 'per_job');
   assert.equal(workerConfig.previewMode, 'actions');
   assert.equal(workerConfig.previewSiteNamePattern, 'pm-pr-{prNumber}-{employeeSlug}-{siteSlug}');
@@ -50,6 +66,149 @@ test('worker config defaults generated work to staging base ref', () => {
   assert.equal(workerConfig.previewIpRestrict, true);
   assert.equal(workerConfig.callbackUrl, 'http://localhost:8788/internal/executor-callback');
   assert.equal(workerConfig.workerCallbackUrl, 'http://localhost:8788/internal/executor-callback');
+});
+
+test('platform dev item creates issue and dispatches platform-agent workflow', async () => {
+  const requests = [];
+  const callbacks = [];
+  const result = await runWorkerForWorkItem(
+    { workItemKind: 'platform_dev', platformDevItem: platformItem },
+    config(),
+    {
+      async fetchImpl(url, request) {
+        requests.push({ url: String(url), request });
+        if (String(url).includes('/search/issues')) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (String(url).endsWith('/repos/org/pages-manager/issues')) {
+          const body = JSON.parse(request.body).body;
+          assert.match(body, /PlatformDevItem: pdev_123/);
+          assert.match(body, /Lane: platform-dev/);
+          return new Response(JSON.stringify({ number: 31, html_url: 'https://github.example/issues/31' }), {
+            status: 201,
+          });
+        }
+        if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
+          const body = JSON.parse(request.body);
+          assert.equal(body.ref, 'master');
+          assert.equal(body.inputs.platformDevItemId, 'pdev_123');
+          assert.equal(body.inputs.issueNumber, '31');
+          assert.equal(body.inputs.issueType, 'type:dev');
+          assert.equal(body.inputs.gateApproved, 'true');
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`Unexpected request ${request.method} ${url}`);
+      },
+      async postExecutorCallback(fetchImpl, cfg, payload) {
+        callbacks.push(payload);
+        return { ok: true };
+      },
+    }
+  );
+
+  assert.equal(result.action, 'platform_issue_created_and_agent_dispatched');
+  assert.equal(result.issueNumber, 31);
+  assert.equal(result.workflow.workflowId, 'platform-agent.yml');
+  assert.deepEqual(
+    callbacks.map((payload) => payload.stageResult),
+    ['issue_created', 'agent_running']
+  );
+  assert.equal(requests.length, 3);
+});
+
+test('platform dev high risk item creates issue and waits for gate', async () => {
+  const callbacks = [];
+  const result = await runWorkerForWorkItem(
+    {
+      workItemKind: 'platform_dev',
+      platformDevItem: {
+        ...platformItem,
+        issueType: 'type:ci',
+        risk: 'risk:high',
+        requiresHumanGate: true,
+      },
+    },
+    config(),
+    {
+      async fetchImpl(url, request) {
+        if (String(url).includes('/search/issues')) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (String(url).endsWith('/repos/org/pages-manager/issues')) {
+          return new Response(JSON.stringify({ number: 32, html_url: 'https://github.example/issues/32' }), {
+            status: 201,
+          });
+        }
+        throw new Error(`Unexpected request ${request.method} ${url}`);
+      },
+      async postExecutorCallback(fetchImpl, cfg, payload) {
+        callbacks.push(payload);
+        return { ok: true };
+      },
+    }
+  );
+
+  assert.equal(result.action, 'platform_issue_created_waiting_for_gate');
+  assert.deepEqual(
+    callbacks.map((payload) => payload.stageResult),
+    ['gate_pending']
+  );
+});
+
+test('platform dev high risk item dispatches platform-agent workflow after gate approval', async () => {
+  const callbacks = [];
+  const result = await runWorkerForWorkItem(
+    {
+      workItemKind: 'platform_dev',
+      platformDevItem: {
+        ...platformItem,
+        issueType: 'type:ci',
+        risk: 'risk:high',
+        requiresHumanGate: true,
+        gateStatus: 'approved',
+        status: 'agent_queued',
+        githubIssueNumber: 32,
+        githubIssueUrl: 'https://github.example/issues/32',
+      },
+    },
+    config(),
+    {
+      async fetchImpl(url, request) {
+        if (String(url).includes('/search/issues')) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  number: 32,
+                  html_url: 'https://github.example/issues/32',
+                  body: 'PlatformDevItem: pdev_123',
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
+          const body = JSON.parse(request.body);
+          assert.equal(body.inputs.risk, 'risk:high');
+          assert.equal(body.inputs.gateApproved, 'true');
+          assert.equal(body.inputs.issueNumber, '32');
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`Unexpected request ${request.method} ${url}`);
+      },
+      async postExecutorCallback(fetchImpl, cfg, payload) {
+        callbacks.push(payload);
+        return { ok: true };
+      },
+    }
+  );
+
+  assert.equal(result.action, 'platform_issue_created_and_agent_dispatched');
+  assert.deepEqual(
+    callbacks.map((payload) => payload.stageResult),
+    ['agent_queued', 'agent_running']
+  );
 });
 
 test('worker config keeps legacy preview deploy IP restriction enabled', () => {

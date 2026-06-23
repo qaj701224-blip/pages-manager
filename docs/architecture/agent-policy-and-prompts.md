@@ -32,7 +32,7 @@ SLACK_AGENT_API_KEY=<Slack Agent runtime secret>
 AGENT_CODE_API_KEY=<Coding Agent runtime secret, not mounted into Slack Agent>
 ```
 
-`apps/slack-agent` 会把公司网关 BaseURL 归一化到 `/v1/chat/completions`，请求体使用标准 OpenAI chat completions 形态，`messages` 中携带当前 Slack 输入、session/memory/IssueLink 上下文和 JSON 输出要求。公司网关内部如何选择底层模型，不进入 pages-manager 的配置面。
+`apps/slack-agent` 会把公司网关 BaseURL 归一化到 `/v1/chat/completions`，请求体使用标准 OpenAI chat completions 形态，`messages` 中携带当前 Slack 输入、session/memory/WorkItemLink 上下文和 JSON 输出要求。公司网关内部如何选择底层模型，不进入 pages-manager 的配置面。
 
 Issue 创建不是由模型直接完成。当前和长期设计都应保持：
 
@@ -45,6 +45,18 @@ apps/worker 使用平台 GitHub App / token 创建或复用 issue
 ```
 
 公司 Agent Gateway 可以参与“起草 issue 标题、正文、验收标准、上下文摘要”，但不能直接持有 GitHub write token 去创建 issue。真正的 GitHub API 写操作必须由平台 worker / controlled committer 这类受控组件执行。
+
+当前 Slack Agent 需要区分两条 lane：
+
+```text
+site-publishing
+  目标：员工个人站点
+  约束：只能修改 sites/<employeeSlug>/<siteSlug>/
+
+platform-dev
+  目标：pages-manager 自身研发 issue / PR
+  约束：repo 全目录可改，但按 issue type、risk gate、CI、review 和 GitHub Rulesets 控制
+```
 
 ## 推荐目录
 
@@ -73,6 +85,8 @@ Slack Agent 负责“人和需求”：
 - 支持完全自然语言输入；`issue:`、`page:`、`site:` 这类前缀只能作为测试便捷入口，不能作为正式产品的必要入口。
 - 判断是否建议新建 issue。
 - 判断是否续接已有 issue / PR / preview。
+- 判断用户诉求属于 Site Publishing Lane 还是 Platform Dev Lane。
+- Platform Dev Lane 下输出 issue type、area、risk 和是否建议自动开发。
 - 整理 Slack thread 成结构化需求。
 - 识别权限、owner scope、站点管理关系。
 - 需要时反问澄清。
@@ -83,10 +97,11 @@ Slack Agent prompt 必须包含：
 ```text
 company-publishing-policy
 issue-template-policy
+platform-dev-issue-policy
 permission-policy
 secret-handling-policy
 SlackSession summary
-IssueLink / active job / active preview
+WorkItemLink / active work item / active preview
 current Slack message
 conversation summary
 active pending questions
@@ -108,10 +123,11 @@ Slack Agent 输出建议是结构化 JSON：
 ```json
 {
   "visibleReply": "我来查看你已关闭的 issue 和 PR。",
-  "intent": "create_or_update_site | new_site_request | modify_existing_preview | append_requirement | list_work_items | switch_work_item | reopen_work_item | status_query | cancel_request | close_session | clarify | unknown",
+  "lane": "site-publishing | platform-dev | support | unknown",
+  "intent": "create_or_update_site | new_site_request | modify_existing_preview | append_requirement | create_platform_issue | platform_feedback | platform_question | list_work_items | switch_work_item | reopen_work_item | status_query | cancel_request | close_session | clarify | unknown",
   "confidence": 0.0,
   "toolCall": {
-    "name": "list_my_work_items | switch_work_item | reopen_work_item | get_current_status | close_session | unsupported_destructive_request | cancel_request | record_followup | confirm_create_issue",
+    "name": "list_my_work_items | switch_work_item | reopen_work_item | get_current_status | close_session | unsupported_destructive_request | cancel_request | record_followup | confirm_create_issue | confirm_platform_issue",
     "args": {
       "state": "active | all | closed",
       "kind": "issue | pr | unknown",
@@ -121,6 +137,11 @@ Slack Agent 输出建议是结构化 JSON：
   "workItemState": "active | all | closed",
   "employeeSlug": "smoke",
   "siteSlug": "profile",
+  "issueType": "type:dev | type:bug | type:docs | type:feedback | type:question | type:ci | type:ops | type:security",
+  "areas": ["area:gateway", "area:docs"],
+  "risk": "risk:low | risk:medium | risk:high",
+  "agentEligible": true,
+  "requiresHumanGate": false,
   "title": "个人主页",
   "summary": "用户希望生成一个个人主页，并在 preview 中展示唯一测试信息。",
   "needsClarification": false,
@@ -136,6 +157,8 @@ Slack Agent 负责决定下一步要请求哪个受控工具；gateway 负责执
 
 gateway 只有在 `toolCall.name=confirm_create_issue`、创建类 `intent` 且 `needsClarification=false` 时展示确认卡片；真正创建 `PublishingJob` 仍必须等用户点击确认按钮。如果 Slack Agent 返回 `clarify`、`unknown` 或 `needsClarification=true`，gateway 只回 Slack 澄清问题并保存 `SessionMemory`。
 
+Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platform-dev` 且 `needsClarification=false` 时展示平台 issue 创建确认卡。gateway 必须二次校验 `issueType`、`areas`、`risk` 和 `agentEligible`，不能完全信任模型。`type:feedback`、`type:question` 默认不触发 Coding Agent；`type:ci`、`type:ops`、`type:security` 默认需要人工 gate。
+
 产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 help / ping / status、Slack / GitHub 签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底路径，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
 
 ## Coding Agent Prompt
@@ -146,7 +169,7 @@ Coding Agent 负责“代码和 PR”：
 - 读取 session summary。
 - 读取 project index。
 - 读取 review comments。
-- 在 `allowedPath` 下生成 patch。
+- 在当前 lane 的允许范围内生成 patch。
 - 修复 Review Agent blocking comments。
 
 Coding Agent prompt 必须包含：
@@ -158,17 +181,21 @@ secret-handling-policy
 site-isolation-policy
 issue body
 session summary
-allowedPath
-current site files
+lane
+Site Publishing Lane: allowedPath / current site files
+Platform Dev Lane: issue type / area / risk / changed-area policy
+issue type / area / risk
 review comments when mode=fix
 ```
 
 Coding Agent prompt 必须明确禁止：
 
 ```text
-不要修改 allowedPath 之外的文件
-不要修改 apps/**、packages/**、.github/**、k8s/**、templates/**、scripts/**
-不要扩大 allowedPath
+Site Publishing Lane: 不要修改 allowedPath 之外的文件
+Site Publishing Lane: 不要修改 apps/**、packages/**、.github/**、k8s/**、templates/**、scripts/**
+Platform Dev Lane: 可以修改 repo 全目录内与 issue 直接相关的文件，但必须声明风险和验证路径
+Platform Dev Lane: .github/**、k8s/**、Dockerfile、部署脚本、secret、production deploy 相关改动必须标记高风险并等待人工 gate
+不要扩大当前 lane 的权限边界
 不要提交 dist/**、node_modules、缓存或大文件
 不要读取或输出 Slack token、Cloudflare token、GitHub token
 不要 merge PR
@@ -180,7 +207,8 @@ Coding Agent 输出合同：
 
 ```text
 workspace patch
-generated files under allowedPath
+Site Publishing Lane: generated files under allowedPath
+Platform Dev Lane: changed files with risk summary
 summary of changes
 test/build notes
 ```
@@ -188,6 +216,8 @@ test/build notes
 它不能直接持有 repo push token。受控 committer 在 diff validator 通过后，才可以使用 GitHub App token 创建 branch / commit / PR。
 
 ## Issue 规范
+
+### Site Publishing Lane
 
 平台生成 issue body 使用稳定结构，方便 Slack Agent 续接、Coding Agent 读取、review/debug 追踪：
 
@@ -249,6 +279,63 @@ Platform deployment: out of scope
 
 后续 Slack 修改意见必须追加 issue comment，而不是只留在 Slack。
 
+### Platform Dev Lane
+
+Platform Dev Lane issue 使用独立模板，避免把站点目录隔离规则错误套到平台自身开发：
+
+````md
+<!-- pages-manager:platform-dev -->
+
+## 类型
+
+type:dev
+
+## 背景 / 用户原话
+
+Slack 需求摘要。
+
+## 目标
+
+要让 pages-manager 达成的产品或工程结果。
+
+## 范围
+
+- Lane: platform-dev
+- Areas: area:gateway, area:docs
+- Repo 范围：全目录，按 risk gate 约束
+
+## 验收标准
+
+- 可验证行为。
+- 必须通过的测试 / CI。
+
+## 风险
+
+risk:medium
+
+## 自动化策略
+
+- agentEligible: true
+- requiresHumanGate: false
+
+## Slack 回写
+
+- Team: `T123`
+- Channel: `C123`
+- Thread: `1710000000.000100`
+
+## 自动化元数据
+
+```text
+Lane: platform-dev
+IssueType: type:dev
+Areas: area:gateway, area:docs
+Risk: risk:medium
+```
+````
+
+Platform Dev Lane 后续 Slack 补充也必须追加 issue comment，并同步更新原 Slack thread 状态。
+
 ## Secret 和 Token 规则
 
 token 本身不进入 prompt、issue、PR、Slack 消息或生成页面。
@@ -273,9 +360,9 @@ token 本身不进入 prompt、issue、PR、Slack 消息或生成页面。
 转人工
 ```
 
-## Path Guard
+## Site Publishing Path Guard
 
-每个 job 必须有单一 `allowedPath`：
+Site Publishing Lane 的每个 `PublishingJob` 必须有单一 `allowedPath`：
 
 ```text
 sites/<employeeSlug>/<siteSlug>
@@ -293,7 +380,7 @@ PR body 包含 PublishingJob / Target / Allowed path / Requester
 pages-site-policy 通过
 ```
 
-任何触碰平台代码的自动 PR 都必须失败：
+Site Publishing Lane 中，任何触碰平台代码的自动 PR 都必须失败：
 
 ```text
 apps/**
@@ -304,7 +391,7 @@ templates/**
 scripts/**
 ```
 
-这些路径只能走人工 review 的平台变更流程。
+这些路径只能走 Platform Dev Lane 或人工 review 的平台变更流程。Platform Dev Lane 不使用 `allowedPath=sites/...` 作为主约束，而是使用 issue type、risk gate、CI 和 review 控制 repo 全目录改动。
 
 ## Review Fix Loop
 
@@ -320,7 +407,8 @@ classification = blocking | suggestion | note | unknown
 
 处理规则：
 
-- `blocking`：触发 `pages-agent.yml(mode=fix)`，修同一个 PR branch。
+- Site Publishing Lane 的 `blocking`：触发 `pages-agent.yml(mode=fix)`，修同一个 PR branch。
+- Platform Dev Lane 的 `blocking`：触发 `platform-agent.yml(mode=fix)` 或转人工，取决于 issue type、risk 和 gate 状态。
 - `suggestion`：可记录，可选择是否修复，但不默认阻塞 preview。
 - `note`：无 blocking 时允许 preview。
 - `unknown`：不自动放行，转人工或等待更明确 review。
@@ -335,19 +423,14 @@ same PR branch
 Slack progress notification
 ```
 
-## 当前阶段与长期形态
+## 企业级基线
 
-当前阶段可以先：
-
-- 使用规则分类 + 简单 Agent adapter。
-- policy / prompt 模板可以用 repo 内 Markdown 作为源文件，但每次运行绑定的 `PolicyVersion` / `PromptVersion`、hash 和 source ref 必须落 MySQL。
-- 用 MySQL + Redis + Drizzle 跑本地 smoke；gateway 运行态只保留 DB store。
-- 用 GitHub Actions 跑 Coding Agent。
-
-长期需要：
+Agent policy / prompt 不按最小实现降级。即使当前 executor 仍跑在 GitHub Actions，以下能力也属于企业级基线：
 
 - policy versioning。
 - prompt versioning。
 - DB 持久化 `PolicyVersion` / `PromptVersion` / `AgentRun`，每次 Slack Agent 和 Coding Agent 调用都记录 prompt version/hash、policy version/hash。
-- 每轮 `AgentRun` 记录输入摘要 hash、结构化输出 hash；Coding Agent 额外记录输出 patch hash、`allowedPath` 和使用的 review comments。
-- `site-check` 失败报告可以进入 Coding Agent fix 输入，但 Coding Agent 不能修改 `.github/workflows/site-check.yml`、gateway、worker 或其它平台代码来绕过规则。
+- 每轮 `AgentRun` 记录输入摘要 hash、结构化输出 hash；Coding Agent 额外记录输出 patch hash、lane、Site Publishing `allowedPath` 或 Platform Dev risk summary，以及使用的 review comments。
+- Site Publishing Lane 的 `site-check` 失败报告可以进入 Coding Agent fix 输入，但 Coding Agent 不能修改 `.github/workflows/site-check.yml`、gateway、worker 或其它平台代码来绕过规则。
+- Platform Dev Lane 的 Agent 输入必须包含 issue type、area、risk、gate 状态、PR head SHA、review 摘要和允许动作；不能只靠自然语言 prompt 约束修改范围。
+- GitHub Actions 可以继续作为当前 Coding Agent executor 载体，但必须通过 gateway callback、DB 状态机、policy / prompt 版本和审计记录形成完整闭环。

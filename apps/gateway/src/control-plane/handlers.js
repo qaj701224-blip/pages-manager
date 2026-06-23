@@ -29,7 +29,7 @@ import {
 import { readJson } from '../http/body.js';
 import { getStore, required, verifyInternalCallbackToken } from './context.js';
 import { applyExecutorCallback, CALLBACK_STAGE_RESULTS } from '../publishing/callback-rules.js';
-import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
+import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../slack/http.js';
 import {
   classifySlackIntake,
@@ -84,10 +84,17 @@ import {
   slackIssueConfirmationText,
   slackIssueConfirmedBlocks,
   slackIssueConfirmedText,
+  confirmedSlackPlatformBodyFromInteraction,
   slackIssueWaitingMoreBlocks,
   slackIssueWaitingMoreText,
+  hasConfirmablePlatformDraft,
+  slackPlatformIssueConfirmationBlocks,
+  slackPlatformIssueConfirmationText,
+  slackPlatformIssueConfirmedBlocks,
+  slackPlatformIssueConfirmedText,
 } from '../slack/issue-confirmation.js';
 import {
+  CREATE_PLATFORM_INTENTS,
   CREATE_JOB_INTENTS,
   FOLLOWUP_INTENTS,
   LIST_WORK_ITEM_INTENTS,
@@ -95,6 +102,8 @@ import {
   SWITCH_WORK_ITEM_INTENTS,
   UNSUPPORTED_DESTRUCTIVE_INTENTS,
 } from '../slack/intents.js';
+import { platformDevInput } from '../slack/platform-input.js';
+import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { listReconciledSlackWorkItemsForSession } from '../slack/work-item-reconciler.js';
 import {
   inactiveSlackWorkItemReply,
@@ -108,7 +117,12 @@ import {
   slackWorkItemListText,
   unsupportedDestructiveRequestReply,
 } from '../slack/work-items.js';
-import { activeJobForSlackSession, dispatchQueuedFollowupFixIfNeeded, handleSlackFollowup } from '../slack/followup.js';
+import {
+  activeJobForSlackSession,
+  activeWorkItemForSlackSession,
+  dispatchQueuedFollowupFixIfNeeded,
+  handleSlackFollowup,
+} from '../slack/followup.js';
 import {
   handleSlackListWorkItemsTool,
   handleSlackReopenWorkItemTool,
@@ -159,12 +173,19 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
   if (shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis, slackSession)) {
     return { name: 'confirm_create_issue', args: {} };
   }
+  if (shouldAskBeforeCreatingPlatformIssue(intake, slackAgentAnalysis, slackSession)) {
+    return { name: 'confirm_platform_issue', args: {} };
+  }
   return null;
 }
 
 function hasActiveSlackTarget(slackSession) {
   return Boolean(
-    slackSession?.activeJobId || slackSession?.activeIssueNumber || slackSession?.activePrNumber || slackSession?.activePreviewUrl
+    slackSession?.activeJobId ||
+      slackSession?.activeWorkItemId ||
+      slackSession?.activeIssueNumber ||
+      slackSession?.activePrNumber ||
+      slackSession?.activePreviewUrl
   );
 }
 
@@ -207,11 +228,32 @@ function shouldCreateSlackJob(intake, slackAgentAnalysis) {
   return CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent);
 }
 
+function isPlatformDevAnalysis(slackAgentAnalysis = {}) {
+  const lane = String(slackAgentAnalysis?.lane || '').replace('_', '-');
+  return lane === 'platform-dev' || CREATE_PLATFORM_INTENTS.has(slackAgentAnalysis?.intent);
+}
+
+function shouldCreatePlatformDevItem(intake, slackAgentAnalysis) {
+  if (!slackAgentAnalysis) return false;
+  if (slackAgentAnalysis.needsClarification) return false;
+  return isPlatformDevAnalysis(slackAgentAnalysis) && CREATE_PLATFORM_INTENTS.has(slackAgentAnalysis.intent);
+}
+
 function shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis, slackSession) {
   if (!slackAgentAnalysis || slackAgentAnalysis.needsClarification) return false;
+  if (isPlatformDevAnalysis(slackAgentAnalysis)) return false;
   if (!CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent)) return false;
   if (intake.command) return false;
   if (!['agent_turn', 'create_job'].includes(intake.action)) return false;
+  if (hasActiveSlackTarget(slackSession)) return false;
+  return true;
+}
+
+function shouldAskBeforeCreatingPlatformIssue(intake, slackAgentAnalysis, slackSession) {
+  if (!slackAgentAnalysis || slackAgentAnalysis.needsClarification) return false;
+  if (!shouldCreatePlatformDevItem(intake, slackAgentAnalysis)) return false;
+  if (intake.command) return false;
+  if (!['agent_turn', 'create_platform_issue'].includes(intake.action)) return false;
   if (hasActiveSlackTarget(slackSession)) return false;
   return true;
 }
@@ -222,7 +264,9 @@ async function handleSlackAgentToolCall(context) {
   if (!toolCall?.name) return null;
   if (
     slackAgentAnalysis?.needsClarification &&
-    ['confirm_create_issue', 'record_followup', 'switch_work_item', 'reopen_work_item'].includes(toolCall.name)
+    ['confirm_create_issue', 'confirm_platform_issue', 'record_followup', 'switch_work_item', 'reopen_work_item'].includes(
+      toolCall.name
+    )
   ) {
     return null;
   }
@@ -259,6 +303,14 @@ async function handleSlackAgentToolCall(context) {
         action: 'confirm_before_issue',
         replyText: slackIssueConfirmationText(slackAgentAnalysis),
         blocks: slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis),
+        preferReplyText: true,
+      });
+    case 'confirm_platform_issue':
+      return handleSlackAgentNonPublishingTurn({
+        ...context,
+        action: 'confirm_before_platform_issue',
+        replyText: slackPlatformIssueConfirmationText(slackAgentAnalysis),
+        blocks: slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAnalysis),
         preferReplyText: true,
       });
     default:
@@ -440,7 +492,7 @@ async function processSlackEventBody(body, env, options = {}) {
     let statusJob = intake.jobId
       ? await store.getJob(intake.jobId)
       : slackSession
-        ? await activeJobForSlackSession(store, slackSession)
+        ? await activeWorkItemForSlackSession(store, slackSession)
         : null;
     if (statusJob && !slackJobVisibleToActor(statusJob, body)) {
       await completeSlackAgentRun(store, agentRun, {
@@ -451,6 +503,19 @@ async function processSlackEventBody(body, env, options = {}) {
         action: 'forbidden_cross_user_job',
         accepted: false,
         replyText: '这个发布任务不属于当前 Slack 用户，不能查看状态。',
+        ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+        ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      });
+    }
+    if (statusJob?.workItemKind === 'platform_dev') {
+      await completeSlackAgentRun(store, agentRun, {
+        report: { action: intake.action, workItemKind: 'platform_dev', workItemId: statusJob.id },
+      });
+      return respond({
+        ok: true,
+        action: intake.action,
+        accepted: false,
+        replyText: platformNotificationText(statusJob.status, statusJob) || `当前平台需求状态：${statusJob.status}`,
         ...(slackSession ? { slackSessionId: slackSession.id } : {}),
         ...(agentRun ? { agentRunId: agentRun.id } : {}),
       });
@@ -563,6 +628,94 @@ async function processSlackEventBody(body, env, options = {}) {
           preferReplyText: true,
         })
       );
+    }
+
+    if (shouldAskBeforeCreatingPlatformIssue(intake, slackAgentAnalysis, slackSession)) {
+      return respond(
+        handleSlackAgentNonPublishingTurn({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+          action: 'confirm_before_platform_issue',
+          replyText: slackPlatformIssueConfirmationText(slackAgentAnalysis),
+          blocks: slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAnalysis),
+          preferReplyText: true,
+        })
+      );
+    }
+
+    if (shouldCreatePlatformDevItem(intake, slackAgentAnalysis)) {
+      const redactedIntake = { ...intake, text: redactSecretLikeText(intake.text) };
+      const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
+      await store.updateSessionMemory(slackSession.id, {
+        summary: redactedSlackAgentAnalysis?.summary || redactedIntake.text,
+        requirements: redactedSlackAgentAnalysis || { text: redactedIntake.text, action: redactedIntake.action },
+        lastAgentResponse: null,
+        pendingQuestions: [],
+      });
+      const requesterProfile = await fetchSlackRequesterProfile(env, body);
+      const { item, created } = await store.createPlatformDevItem(
+        platformDevInput({
+          ...body,
+          intake: redactedIntake,
+          slackAgentAnalysis: redactedSlackAgentAnalysis,
+          slackSession,
+          requesterProfile,
+        })
+      );
+      const workItemLink = await store.linkPlatformDevItemToSlackSession(item, slackSession);
+      const initialStage = item.requiresHumanGate ? 'gate_pending' : 'received';
+      const slackStatusNotification = created
+        ? await notifySlackPlatformDevStatus(env, store, item, {
+            stage: initialStage,
+            text: item.requiresHumanGate ? '平台需求已记录，等待人工确认。' : '平台需求已进入处理队列。',
+            statusText: item.requiresHumanGate
+              ? ':hourglass_flowing_sand: 已记录，等待人工确认。'
+              : ':hourglass_flowing_sand: 正在创建 GitHub issue...',
+          })
+        : null;
+      const workerStart = created ? await startWorkerForPlatformDevItemIfConfigured(item, env) : null;
+      await completeSlackAgentRun(store, agentRun, {
+        workItemKind: 'platform_dev',
+        workItemId: item.id,
+        ...slackAgentRunModelPatch(slackAgentAnalysis),
+        report: {
+          action: 'create_platform_issue',
+          accepted: true,
+          slackAgentUsed: Boolean(slackAgentAnalysis),
+          intent: slackAgentAnalysis?.intent || null,
+          modelApiStyle: slackAgentAnalysis?.modelApiStyle || null,
+        },
+      });
+      console.log(
+        JSON.stringify({
+          service: 'pages-gateway',
+          message: 'slack_platform_dev_item_created',
+          itemId: item.id,
+          created,
+          slackSessionId: slackSession.id,
+          workerStarted: workerStart?.started ?? null,
+          workerError: workerStart?.error || null,
+        })
+      );
+      return respond({
+        ok: true,
+        action: 'create_platform_issue',
+        accepted: true,
+        platformDevItemId: item.id,
+        workItemKind: 'platform_dev',
+        workItemId: item.id,
+        slackSessionId: slackSession.id,
+        agentRunId: agentRun?.id,
+        workItemLink,
+        created,
+        ...(slackStatusNotification ? { slackStatusNotification } : {}),
+        ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
+        ...(workerStart ? { workerStart } : {}),
+      });
     }
 
     if (!shouldCreateSlackJob(intake, slackAgentAnalysis)) {
@@ -685,6 +838,34 @@ async function handleCloseSlackSession({ store, intake, slackSession, sessionMem
 }
 
 async function handleSlackAgentStatusQuery({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+  const activeWorkItem = await activeWorkItemForSlackSession(store, slackSession);
+  if (activeWorkItem?.workItemKind === 'platform_dev') {
+    const replyText = platformNotificationText(activeWorkItem.status, activeWorkItem) || `当前平台需求状态：${activeWorkItem.status}`;
+    await store.updateSessionMemory(slackSession.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory.summary || intake.text),
+      lastAgentResponse: replyText,
+    });
+    await completeSlackAgentRun(store, agentRun, {
+      workItemKind: 'platform_dev',
+      workItemId: activeWorkItem.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'status_query',
+        accepted: false,
+        intent: slackAgentAnalysis?.intent || null,
+      },
+    });
+    return {
+      ok: true,
+      action: 'status_query',
+      accepted: false,
+      replyText,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
   const job = await reconcileClosedGithubIssueForJob(store, env, await activeJobForSlackSession(store, slackSession), {
     notifySlack: true,
   });
@@ -892,6 +1073,82 @@ export async function handleSlackInteractions(request, env) {
     });
   }
 
+  if (actionId === 'pages_confirm_platform_issue') {
+    const sessionId = action.value || '';
+    const session = await store.getSlackSession(sessionId);
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个会话不属于当前 Slack 用户，不能创建平台需求。',
+      });
+    }
+
+    if (session.activeWorkItemId || session.activeJobId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话已经在处理中。继续回复修改意见即可。',
+      });
+    }
+
+    const sessionMemory = await store.getSessionMemory(session.id);
+    const slackAgentAnalysis = {
+      ...draftAnalysisFromMemory(sessionMemory),
+      ...(sessionMemory.requirements || {}),
+      lane: 'platform-dev',
+    };
+    if (!hasConfirmablePlatformDraft(slackAgentAnalysis)) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '当前会话还没有可确认的平台需求。请先继续补充想改造的产品目标或代码范围。',
+      });
+    }
+
+    const requesterProfile = await fetchSlackRequesterProfile(
+      env,
+      confirmedSlackPlatformBodyFromInteraction(body, session, slackAgentAnalysis)
+    );
+    const { item, created } = await store.createPlatformDevItem(
+      platformDevInput(confirmedSlackPlatformBodyFromInteraction(body, session, slackAgentAnalysis, requesterProfile))
+    );
+    const workItemLink = await store.linkPlatformDevItemToSlackSession(item, session);
+    await store.updateSessionMemory(session.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis.summary || sessionMemory.summary),
+      requirements: redactSlackAnalysis({ ...slackAgentAnalysis, lane: 'platform-dev' }),
+      lastAgentResponse: '已确认创建平台需求。',
+      pendingQuestions: [],
+    });
+
+    const initialStage = item.requiresHumanGate ? 'gate_pending' : 'received';
+    const slackStatusNotification = created
+      ? await notifySlackPlatformDevStatus(env, store, item, {
+          stage: initialStage,
+          text: item.requiresHumanGate ? '平台需求已确认，等待人工确认。' : '平台需求已确认，正在创建 GitHub issue。',
+          statusText: item.requiresHumanGate
+            ? ':hourglass_flowing_sand: 已确认，等待人工确认。'
+            : ':hourglass_flowing_sand: 已确认，正在创建 GitHub issue...',
+          skipDuplicate: false,
+        })
+      : null;
+    const workerStart = created ? await startWorkerForPlatformDevItemIfConfigured(item, env) : null;
+    const confirmationCardUpdate = await updateSlackInteractionMessage(env, body, session, {
+      text: slackPlatformIssueConfirmedText(slackAgentAnalysis),
+      blocks: slackPlatformIssueConfirmedBlocks(session, slackAgentAnalysis),
+    });
+
+    return slackAckResponse({
+      ok: true,
+      ...(created ? {} : { response_type: 'ephemeral', text: '这个平台需求已经确认过，继续在当前会话补充即可。' }),
+      platformDevItemId: item.id,
+      workItemKind: 'platform_dev',
+      workItemId: item.id,
+      workItemLink,
+      created,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      ...(workerStart ? { workerStart } : {}),
+      ...(confirmationCardUpdate ? { confirmationCardUpdate } : {}),
+    });
+  }
+
   if (actionId === 'pages_select_work_item') {
     const value = parseSlackButtonValue(action.value);
     const session = await store.getSlackSession(value.sessionId || '');
@@ -899,6 +1156,32 @@ export async function handleSlackInteractions(request, env) {
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '这个任务卡片不属于当前 Slack 用户，不能切换。',
+      });
+    }
+
+    if (value.workItemKind === 'platform_dev') {
+      const item = value.jobId ? await store.getPlatformDevItem(value.jobId) : null;
+      if (!item || !slackJobVisibleToActor(item, body)) {
+        return slackAckResponse({
+          response_type: 'ephemeral',
+          text: '这个平台需求不存在，或不属于当前 Slack 用户。',
+        });
+      }
+      const activeItem = await store.patchPlatformDevItem(item.id, {
+        slackSessionId: session.id,
+        slackSessionKey: session.sessionKey,
+      });
+      await store.linkPlatformDevItemToSlackSession(activeItem, session);
+      await notifySlackPlatformDevStatus(env, store, activeItem, {
+        stage: activeItem.status,
+        text: '已切换到这个平台需求。',
+        statusText: ':white_check_mark: 已切换到这个需求。',
+        skipDuplicate: false,
+        slackSessionId: session.id,
+      });
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '已切换到这个平台需求，继续在这个对话里补充即可。',
       });
     }
 
@@ -929,6 +1212,108 @@ export async function handleSlackInteractions(request, env) {
     return slackAckResponse({
       response_type: 'ephemeral',
       text: `已切换到 ${slackWorkItemTargetLabel(activeJob)}，继续在这个对话里回复修改意见即可。`,
+    });
+  }
+
+  if (actionId === 'pages_approve_platform_gate' || actionId === 'pages_reject_platform_gate') {
+    const value = parseSlackButtonValue(action.value);
+    const itemId = value.workItemId || value.platformDevItemId || value.jobId || '';
+    const session = value.sessionId ? await store.getSlackSession(value.sessionId) : null;
+    const item = itemId ? await store.getPlatformDevItem(itemId) : null;
+    if (!item || !slackJobVisibleToActor(item, body)) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求不存在，或不属于当前 Slack 用户。',
+      });
+    }
+    if (session && (session.teamId !== teamId || session.primarySlackUserId !== slackUserId)) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个确认操作不属于当前 Slack 用户。',
+      });
+    }
+    if (!item.requiresHumanGate) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求不需要人工确认。',
+      });
+    }
+    if (item.gateStatus === 'approved' && actionId === 'pages_approve_platform_gate') {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求已经批准，正在继续处理。',
+      });
+    }
+    if (['rejected', 'cancelled', 'expired'].includes(item.gateStatus || '')) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求的人工确认已经结束，不能重复操作。',
+      });
+    }
+
+    const gateType = value.gateType || 'risk';
+    if (actionId === 'pages_reject_platform_gate') {
+      const gate = store.decideWorkItemGate
+        ? await store.decideWorkItemGate('platform_dev', item.id, gateType, {
+            status: 'rejected',
+            decidedBy: `slack:${teamId}:${slackUserId}`,
+            reason: item.gateReason || '人工拒绝自动开发。',
+          })
+        : null;
+      const rejected = await store.updatePlatformDevItem(item.id, 'closed_unmerged', {
+        gateStatus: 'rejected',
+        gateReason: item.gateReason || '人工拒绝自动开发。',
+      });
+      await store.linkPlatformDevItemToSlackSession(rejected, session || undefined);
+      const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, rejected, {
+        stage: 'closed_unmerged',
+        text: '人工确认未通过，这个需求不会进入自动开发。',
+        statusText: ':white_check_mark: 已停止自动开发。',
+        skipDuplicate: false,
+        slackSessionId: session?.id || rejected.slackSessionId || null,
+      });
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '已记录：这个平台需求不会进入自动开发。',
+        gate,
+        platformDevItemId: rejected.id,
+        ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      });
+    }
+
+    const gate = store.decideWorkItemGate
+      ? await store.decideWorkItemGate('platform_dev', item.id, gateType, {
+          status: 'approved',
+          decidedBy: `slack:${teamId}:${slackUserId}`,
+          reason: item.gateReason || '人工批准自动开发。',
+        })
+      : null;
+    let approved = await store.patchPlatformDevItem(item.id, {
+      gateStatus: 'approved',
+      gateReason: item.gateReason || '人工批准自动开发。',
+    });
+    if (approved.status === 'gate_pending') {
+      approved = await store.updatePlatformDevItem(approved.id, 'agent_queued', {
+        gateStatus: 'approved',
+        gateReason: approved.gateReason,
+      });
+    }
+    await store.linkPlatformDevItemToSlackSession(approved, session || undefined);
+    const workerStart = await startWorkerForPlatformDevItemIfConfigured(approved, env);
+    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, approved, {
+      stage: approved.status,
+      text: '人工确认已通过，正在进入后续处理。',
+      statusText: ':white_check_mark: 已批准自动开发。',
+      skipDuplicate: false,
+      slackSessionId: session?.id || approved.slackSessionId || null,
+    });
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: workerStart?.started ? '已批准，自动开发已启动。' : '已批准，后续处理已排队。',
+      gate,
+      platformDevItemId: approved.id,
+      ...(workerStart ? { workerStart } : {}),
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
     });
   }
 
@@ -1086,6 +1471,10 @@ export async function handleExecutorCallback(request, env) {
   if (authError) return authError;
 
   const body = await readJson(request);
+  if ((body.workItemKind || body.work_item_kind) === 'platform_dev' || body.platformDevItemId || body.platform_dev_item_id) {
+    return handlePlatformDevExecutorCallback(body, env);
+  }
+
   const jobId = required(body.publishingJobId || body.publishing_job_id, 'publishingJobId');
 
   if (body.status === 'failed') {
@@ -1197,6 +1586,92 @@ export async function handleExecutorCallback(request, env) {
     ...(slackStatusNotification ? { slackStatusNotification } : {}),
     ...(slackNotification ? { slackNotification } : {}),
     ...(slackReactionSettlement ? { slackReactionSettlement } : {}),
+  });
+}
+
+const PLATFORM_CALLBACK_STATUS = {
+  issue_created: 'issue_created',
+  gate_pending: 'gate_pending',
+  agent_queued: 'agent_queued',
+  agent_running: 'agent_running',
+  branch_committed: 'branch_committed',
+  pr_created: 'pr_created',
+  ci_running: 'ci_running',
+  ci_failed: 'ci_failed',
+  review_waiting: 'review_waiting',
+  review_blocked: 'review_blocked',
+  ready_to_merge: 'ready_to_merge',
+  merged: 'merged',
+  closed_unmerged: 'closed_unmerged',
+};
+
+function platformDevPatchFromCallback(body = {}) {
+  return {
+    githubIssueNumber: body.issueNumber || body.issue_number || body.githubIssueNumber || body.github_issue_number || undefined,
+    githubIssueUrl: body.issueUrl || body.issue_url || body.githubIssueUrl || body.github_issue_url || undefined,
+    githubPrNumber: body.prNumber || body.pr_number || body.githubPrNumber || body.github_pr_number || undefined,
+    githubPrUrl: body.prUrl || body.pr_url || body.githubPrUrl || body.github_pr_url || undefined,
+    branchName: body.branchName || body.branch_name || undefined,
+    headSha: body.headSha || body.head_sha || undefined,
+    errorCode: body.errorCode || body.error_code || undefined,
+    errorMessage: body.errorMessage || body.error_message || undefined,
+  };
+}
+
+function compactPatch(patch = {}) {
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+}
+
+async function handlePlatformDevExecutorCallback(body, env) {
+  const store = getStore(env);
+  const itemId = required(
+    body.platformDevItemId || body.platform_dev_item_id || body.workItemId || body.work_item_id,
+    'platformDevItemId'
+  );
+
+  if (body.status === 'failed') {
+    const item = await store.failPlatformDevItem(
+      itemId,
+      body.errorCode || body.error_code,
+      body.errorMessage || body.error_message
+    );
+    if (!item) return jsonResponse({ error: 'PlatformDevItem not found' }, 404);
+    await store.linkPlatformDevItemToSlackSession(item);
+    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, item, {
+      stage: 'failed',
+      text: item.errorMessage || item.errorCode || '平台需求处理失败',
+      statusText: ':x: 平台需求处理失败',
+      skipDuplicate: false,
+    });
+    return jsonResponse({
+      item,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    });
+  }
+
+  const stageResult = required(body.stageResult || body.stage_result, 'stageResult');
+  const status = PLATFORM_CALLBACK_STATUS[stageResult];
+  if (!status) return jsonResponse({ error: 'Unsupported platform stageResult', stageResult }, 400);
+
+  let item = await store.getPlatformDevItem(itemId);
+  if (!item) return jsonResponse({ error: 'PlatformDevItem not found' }, 404);
+
+  const patch = compactPatch(platformDevPatchFromCallback(body));
+  if (item.status === status) {
+    item = await store.patchPlatformDevItem(item.id, patch);
+  } else {
+    item = await store.updatePlatformDevItem(item.id, status, patch);
+  }
+  await store.linkPlatformDevItemToSlackSession(item);
+  const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, item, {
+    stage: stageResult,
+    text: platformNotificationText(stageResult, item) || `平台需求进入：${item.status}`,
+    skipDuplicate: false,
+  });
+
+  return jsonResponse({
+    item,
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
   });
 }
 
