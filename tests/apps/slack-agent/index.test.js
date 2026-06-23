@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import { readSlackAgentConfig } from '../../../apps/slack-agent/src/config.js';
 import { analyzeSlackRequirement, createSlackAgentApp } from '../../../apps/slack-agent/src/index.js';
 import { redactSlackAgentLogValue } from '../../../apps/slack-agent/src/model-provider.js';
+import { analyzeSlackRequirementDeterministic, normalizeModelAnalysis } from '../../../apps/slack-agent/src/analysis.js';
 
 describe('slack agent', () => {
   it('summarizes create or update site requests', () => {
@@ -48,6 +49,81 @@ describe('slack agent', () => {
     assert.equal(analysis.requiresHumanGate, true);
     assert.ok(analysis.areas.includes('area:ci'));
     assert.ok(analysis.areas.includes('area:ops'));
+  });
+
+  it('routes repo implementation questions to read-only repo answer tool', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '目前这种对话的 sessions 是怎么保存的？',
+    });
+
+    assert.equal(analysis.lane, 'repo-question');
+    assert.equal(analysis.intent, 'repo_question');
+    assert.equal(analysis.needsClarification, false);
+    assert.deepEqual(analysis.toolCall, {
+      name: 'answer_repo_question',
+      args: { question: '目前这种对话的 sessions 是怎么保存的？' },
+    });
+  });
+
+  it('keeps consultative repo questions out of platform issue creation even with change words', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '如果后续要修改 CI workflow，会影响原先 CF 那条线吗？',
+    });
+
+    assert.equal(analysis.lane, 'repo-question');
+    assert.equal(analysis.intent, 'repo_question');
+    assert.deepEqual(analysis.toolCall, {
+      name: 'answer_repo_question',
+      args: { question: '如果后续要修改 CI workflow，会影响原先 CF 那条线吗？' },
+    });
+  });
+
+  it('derives tool calls from model intent instead of deterministic fallback intent', () => {
+    const input = { text: '这个 Slack 流程的 session 存在哪里？' };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const analysis = normalizeModelAnalysis(
+      {
+        lane: 'repo-question',
+        intent: 'repo_question',
+        summary: '查询 Slack 会话持久化实现',
+        needsClarification: false,
+      },
+      {
+        ...fallback,
+        intent: 'create_platform_issue',
+        lane: 'platform-dev',
+        toolCall: { name: 'confirm_platform_issue', args: {} },
+      },
+      input
+    );
+
+    assert.equal(analysis.intent, 'repo_question');
+    assert.deepEqual(analysis.toolCall, {
+      name: 'answer_repo_question',
+      args: { question: '这个 Slack 流程的 session 存在哪里？' },
+    });
+  });
+
+  it('forces read-only repo question tool when model intent and tool call conflict', () => {
+    const input = { text: '这个 Slack 流程的 session 存在哪里？' };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const analysis = normalizeModelAnalysis(
+      {
+        lane: 'repo-question',
+        intent: 'repo_question',
+        summary: '查询 Slack 会话持久化实现',
+        toolCall: { name: 'confirm_platform_issue', args: { title: '错误创建需求' } },
+        needsClarification: false,
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(analysis.intent, 'repo_question');
+    assert.deepEqual(analysis.toolCall, {
+      name: 'answer_repo_question',
+      args: { question: '这个 Slack 流程的 session 存在哪里？' },
+    });
   });
 
   it('returns a scoped tool call for closed work item queries', () => {
@@ -232,6 +308,69 @@ describe('slack agent', () => {
     assert.equal(body.summary.source, 'deterministic');
     assert.equal(body.summary.summaryBullets.length, 3);
     assert.doesNotMatch(visible, /\bslackSessionId|agentRunId|gateway|worker|mysql|status card\b/i);
+  });
+
+  it('answers repo questions from provided evidence through the model gateway', async () => {
+    const calls = [];
+    const app = createSlackAgentApp({
+      config: {
+        modelProvider: 'company-agent',
+        gatewayUrl: 'https://agent-gateway.example/v1',
+        apiKey: 'gateway-key',
+        modelName: 'company-agent',
+        maxOutputTokens: 512,
+        repoAnswerTimeoutMs: 1000,
+        sharedSecret: 'secret',
+      },
+      async fetchImpl(url, request) {
+        calls.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    answerText:
+                      'Slack 会话由 gateway 持久化，核心字段在 `slack_sessions`，摘要和最近回复放在 `session_memories`。',
+                    confidence: 'high',
+                    citedPaths: ['apps/gateway/src/db/schema.js', 'apps/gateway/src/slack/session.js'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/repo-answer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
+        body: JSON.stringify({
+          question: 'Slack session 是怎么保存的？',
+          evidence: [
+            {
+              path: 'apps/gateway/src/db/schema.js',
+              lines: [120],
+              excerpts: ['export const slackSessions = mysqlTable("slack_sessions", { ... })'],
+            },
+          ],
+        }),
+      })
+    );
+    const body = await response.json();
+    const modelPayload = JSON.parse(calls[0].request.body);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.answer.source, 'agent');
+    assert.match(body.answer.answerText, /slack_sessions/);
+    assert.deepEqual(body.answer.citedPaths, ['apps/gateway/src/db/schema.js', 'apps/gateway/src/slack/session.js']);
+    assert.equal(calls[0].url, 'https://agent-gateway.example/v1/chat/completions');
+    assert.equal(modelPayload.messages[1].role, 'user');
+    assert.match(modelPayload.messages[1].content, /repo_question_answer/);
   });
 
   it('prefers shared company gateway config names while keeping legacy Slack names as fallback', () => {
