@@ -39,11 +39,11 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /repos\/\$GITHUB_REPOSITORY\/statuses\/\$HEAD_SHA/);
   assert.match(workflow, /post_status "pending" "PR Classify" "PR lane classification dispatched"/);
   assert.match(workflow, /post_status "pending" "check" "Project CI dispatched by Pages Agent"/);
-  assert.match(workflow, /post_status "pending" "pages-generated-site-check"/);
+  assert.match(workflow, /post_status "pending" "site-check"/);
   assert.match(workflow, /post_status "pending" "pages-user-flow"/);
   assert.match(workflow, /wait_for_run pr-classify\.yml "PR Classify"/);
   assert.match(workflow, /wait_for_run pr-platform\.yml check/);
-  assert.match(workflow, /wait_for_run pr-site\.yml pages-generated-site-check/);
+  assert.match(workflow, /wait_for_run pr-site\.yml site-check/);
   assert.match(workflow, /post_status "success" "pages-user-flow"/);
   assert.match(workflow, /post_status "failure" "pages-user-flow"/);
   assert.match(workflow, /post_status "success" "\$context"/);
@@ -72,6 +72,7 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   assert.match(classify, /headSha:/);
   assert.match(classify, /allowedPath:/);
   assert.match(classify, /Mixed PRs are not supported/);
+  assert.match(classify, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(classify, /echo "lane=site"/);
   assert.match(classify, /echo "origin=site-agent"/);
   assert.match(ci, /^\s*workflow_dispatch:/m);
@@ -88,10 +89,12 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   assert.match(ci, /INPUT_HEAD_SHA: \$\{\{ inputs\.headSha \}\}/);
   assert.match(ci, /INPUT_ALLOWED_PATH: \$\{\{ inputs\.allowedPath \}\}/);
   assert.match(ci, /site_only=true/);
+  assert.match(ci, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(ci, /Mixed PRs are not supported/);
   assert.match(siteCheck, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
   assert.match(siteCheck, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
   assert.match(siteCheck, /baseSha must be a full commit SHA/);
+  assert.match(siteCheck, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(siteCheck, /git fetch origin "\+refs\/heads\/\$base_ref:refs\/remotes\/origin\/\$base_ref"/);
   assert.match(siteCheck, /PR must only modify expected site root/);
 });

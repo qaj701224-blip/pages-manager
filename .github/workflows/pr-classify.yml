@@ -62,7 +62,7 @@ jobs:
             head="$INPUT_HEAD_SHA"
             head_ref="$REF_NAME"
           else
-            base="$PR_BASE_SHA"
+            base="$(git merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA")"
             head="$PR_HEAD_SHA"
             head_ref="$PR_HEAD_REF"
           fi

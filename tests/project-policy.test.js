@@ -41,6 +41,7 @@ test('branch policy documents master PR preview sync and CI lane isolation', () 
 
 test('master PR sync workflow merges project PR heads to staging and skips user-site PRs', () => {
   const workflow = readDoc('.github/workflows/sync-master-pr-to-staging.yml');
+  const compatibilityCi = readDoc('.github/workflows/ci.yml');
   const policy = readDoc('docs/deployment-branch-policy.md');
 
   assert.match(workflow, /^name: Sync Master PR To Staging$/m);
@@ -71,8 +72,8 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /git merge --no-ff "\$pr_ref"/);
   assert.match(workflow, /sync_branch="staging-sync\/pr-\$\{PR_NUMBER\}-\$\{short_sha\}"/);
   assert.match(workflow, /git push origin "HEAD:refs\/heads\/\$\{sync_branch\}"/);
-  assert.match(workflow, /gh workflow run pr-platform\.yml[\s\S]*--ref "\$sync_branch"/);
-  assert.match(workflow, /gh run list[\s\S]*--workflow pr-platform\.yml[\s\S]*--branch "\$sync_branch"/);
+  assert.match(workflow, /gh workflow run ci\.yml[\s\S]*--ref "\$sync_branch"/);
+  assert.match(workflow, /gh run list[\s\S]*--workflow ci\.yml[\s\S]*--branch "\$sync_branch"/);
   assert.match(workflow, /gh run watch "\$ci_run_id"[\s\S]*--exit-status/);
   assert.match(workflow, /git push origin "HEAD:staging"/);
   assert.match(workflow, /git push origin ":refs\/heads\/\$\{sync_branch\}"/);
@@ -92,6 +93,15 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /gh run watch "\$v2_run_id"[\s\S]*--exit-status/);
   assert.doesNotMatch(workflow, /force-with-lease|git push --force/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
+
+  assert.match(compatibilityCi, /^name: CI$/m);
+  assert.match(compatibilityCi, /Compatibility workflow for staging sync during the PR lane split\./);
+  assert.match(compatibilityCi, /^\s*workflow_dispatch:/m);
+  assert.doesNotMatch(compatibilityCi, /^\s*pull_request:/m);
+  assert.doesNotMatch(compatibilityCi, /^\s*push:/m);
+  assert.match(compatibilityCi, /jobs:[\s\S]*check:/);
+  assert.match(compatibilityCi, /pnpm lint/);
+  assert.match(compatibilityCi, /pnpm test/);
 
   assert.match(policy, /Master PR 同步 Staging 预览/);
   assert.match(policy, /项目类 PR 指向 `master`/);

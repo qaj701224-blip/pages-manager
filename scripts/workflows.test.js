@@ -89,6 +89,7 @@ test('deploy workflows keep production manual and separate wrangler token from r
 
 test('PR classification, platform CI, and site check keep platform and site lanes separate', () => {
   const classify = readWorkflow('.github/workflows/pr-classify.yml');
+  const compatibilityCi = readWorkflow('.github/workflows/ci.yml');
   const ci = readWorkflow('.github/workflows/pr-platform.yml');
   const staging = readWorkflow('.github/workflows/deploy-staging.yml');
   const siteCheck = readWorkflow('.github/workflows/pr-site.yml');
@@ -108,6 +109,17 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.match(classify, /echo "origin=site-agent"/);
   assert.match(classify, /echo "origin=platform-agent"/);
   assert.match(classify, /echo "origin=manual"/);
+  assert.match(classify, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
+
+  assert.match(compatibilityCi, /^name: CI$/m);
+  assert.match(compatibilityCi, /Compatibility workflow for staging sync during the PR lane split\./);
+  assert.match(compatibilityCi, /^\s*workflow_dispatch:/m);
+  assert.doesNotMatch(compatibilityCi, /^\s*pull_request:/m);
+  assert.doesNotMatch(compatibilityCi, /^\s*push:/m);
+  assert.match(compatibilityCi, /name: Detect platform changes/);
+  assert.match(compatibilityCi, /Skip platform CI for personal-site-only changes/);
+  assert.match(compatibilityCi, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm lint/);
+  assert.match(compatibilityCi, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm test/);
 
   assert.match(ci, /^name: Platform CI$/m);
   assert.match(ci, /PageManager platform CI\. Personal site PRs are validated by PR Classify and Site Check\./);
@@ -130,6 +142,7 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.match(ci, /PUSH_BEFORE_SHA: \$\{\{ github\.event\.before \}\}/);
   assert.match(ci, /PUSH_HEAD_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(ci, /"\$INPUT_ALLOWED_PATH"\/\*/);
+  assert.match(ci, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm lint/);
   assert.match(ci, /if: steps\.changes\.outputs\.platform_changed == 'true'[\s\S]*pnpm test/);
   assert.match(staging, /V1 platform staging deploy only\. V2 app changes must not redeploy/);
@@ -144,6 +157,7 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.match(siteCheck, /Personal site PR guard only\. Platform code PRs are validated by PR Classify and Platform CI\./);
   assert.match(siteCheck, /\n {2}pull_request:\n {4}paths:\n {6}- sites\/\*\*/);
   assert.match(siteCheck, /Site Check only accepts personal site PRs\. Split PageManager platform changes into a separate PR:/);
+  assert.match(siteCheck, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(siteCheck, /SITE_ROOT=\$site_roots/);
   assert.match(siteCheck, /find "\$SITE_ROOT"/);
   assert.doesNotMatch(siteCheck, /\bpnpm lint\b|\bpnpm test\b|wrangler|kubectl|docker build|ACR_|KUBE_CONFIG_B64/);

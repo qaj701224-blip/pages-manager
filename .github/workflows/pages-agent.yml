@@ -360,7 +360,7 @@ jobs:
 
           post_status "pending" "PR Classify" "PR lane classification dispatched"
           post_status "pending" "check" "Project CI dispatched by Pages Agent"
-          post_status "pending" "pages-generated-site-check" "Generated site validation dispatched"
+          post_status "pending" "site-check" "Generated site validation dispatched"
           post_status "pending" "pages-user-flow" "Generated site publishing checks are running"
 
           gh workflow run pr-classify.yml \
@@ -383,7 +383,7 @@ jobs:
           checks_failed=0
           wait_for_run pr-classify.yml "PR Classify" || checks_failed=1
           wait_for_run pr-platform.yml check || checks_failed=1
-          wait_for_run pr-site.yml pages-generated-site-check || checks_failed=1
+          wait_for_run pr-site.yml site-check || checks_failed=1
 
           if [[ "$checks_failed" == "0" ]]; then
             post_status "success" "pages-user-flow" "Generated site publishing checks passed"
