@@ -7,6 +7,7 @@ import {
 import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { parseSlackWorkItemReference } from './intake.js';
 import { completeSlackAgentRun, redactSlackAnalysis, slackAgentRunModelPatch } from './agent-run-records.js';
+import { appendAssistantConversationTurn, buildConversationContext } from './conversation-context.js';
 import { activateJobForSlackSession, slackThreadForSession } from './job-binding.js';
 import { notifySlackJobStatus } from './notifier.js';
 import { notifySlackPlatformDevStatus } from './platform-notifier.js';
@@ -71,6 +72,7 @@ export async function handleSlackListWorkItemsTool({
   env,
   intake,
   slackSession,
+  sessionMemory,
   agentRun,
   slackAgentAnalysis,
   toolArgs = {},
@@ -86,10 +88,23 @@ export async function handleSlackListWorkItemsTool({
   const replyText = slackWorkItemListText(jobs, { workItemState, includeInactive });
   if (slackSession?.id && store.updateSessionMemory) {
     const previousSummary = slackAgentAnalysis?.summary || intake.text || '';
+    const conversationContext = appendAssistantConversationTurn(
+      buildConversationContext({ slackSession, sessionMemory, intake }),
+      replyText,
+      { kind: 'work_item_list' }
+    );
+    const lastWorkItemList = slackWorkItemListMemory(jobs, result, workItemState);
+    conversationContext.lastWorkItemList = {
+      scope: 'current_session',
+      workItemState: lastWorkItemList.workItemState,
+      total: lastWorkItemList.total,
+      shown: lastWorkItemList.shown,
+    };
     await store.updateSessionMemory(slackSession.id, {
       summary: previousSummary,
       lastAgentResponse: replyText,
-      lastWorkItemList: slackWorkItemListMemory(jobs, result, workItemState),
+      lastWorkItemList,
+      conversationContext,
     });
   }
   await completeSlackAgentRun(store, agentRun, {

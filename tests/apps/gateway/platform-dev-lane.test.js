@@ -1002,11 +1002,15 @@ test('Slack follow-up on an active platform PR dispatches a fix round', async ()
   );
   const body = await json(response);
   const updated = app.store.getPlatformDevItem(item.id);
+  const memory = app.store.getSessionMemory('sess_platform_followup');
 
   assert.equal(response.status, 200);
   assert.equal(body.action, 'platform_followup_fix_dispatched');
   assert.equal(updated.status, 'agent_queued');
   assert.match(updated.summary, /Slack Follow-up/);
+  assert.equal(memory.lastAgentResponse, body.replyText);
+  assert.equal(memory.conversationContext.lastAssistantMessage.text, body.replyText);
+  assert.match(memory.conversationContext.recentTurns.at(-1).text, /已追加到 Issue|已记录/);
   assert.equal(githubCalls.length, 1);
   assert.match(githubCalls[0].url, /\/repos\/org\/pages-manager\/issues\/81\/comments$/);
   assert.match(githubCalls[0].body.body, /文案再克制一些/);

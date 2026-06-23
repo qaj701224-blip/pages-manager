@@ -6,6 +6,10 @@ import test from 'node:test';
 
 import { createGatewayApp as createRuntimeGatewayApp } from '../../../apps/gateway/src/index.js';
 import {
+  buildConversationContext,
+  repeatPreviousMessageFromContext,
+} from '../../../apps/gateway/src/slack/conversation-context.js';
+import {
   answerRepoQuestion,
   platformDraftFromRepoQuestionContext,
   repoQuestionActionBlocks,
@@ -90,6 +94,18 @@ function defaultSlackNotifierResponse(call, index) {
 
   return notifierResponse({ ok: true, channel, ts });
 }
+
+test('conversation context repeat skips the current user message when no previous reply exists', () => {
+  const context = buildConversationContext({
+    sessionMemory: {},
+    intake: {
+      text: '上一条消息是什么？',
+      messageTs: '1710000000.000100',
+    },
+  });
+
+  assert.equal(repeatPreviousMessageFromContext(context, 'previous_visible_message'), null);
+});
 
 function mockSlackNotifier(calls = [], options = {}) {
   return {
@@ -1330,6 +1346,124 @@ test('Slack query turns use reaction-only progress before posting the result', a
   assert.equal(notifierCalls.some((call) => call.path === '/internal/slack-notifier/agent-reply/start'), false);
   assert.equal(notifierCalls.filter((call) => call.path === '/internal/slack-notifier/message').length, 1);
   assert.doesNotMatch(JSON.stringify(notifierCalls), /正在整理需求/);
+});
+
+test('Slack repeat requests use persisted conversation context instead of intent summaries', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const notifierCalls = [];
+  const env = {
+    SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+    SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+    async SLACK_AGENT_FETCH(url, request) {
+      const payload = JSON.parse(request.body);
+      agentCalls.push({ url: String(url), body: payload });
+      if (payload.messageText === '当前会话有哪些？') {
+        assert.equal(payload.conversationContext.recentTurns.at(-1).text, '当前会话有哪些？');
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'list_work_items',
+                    toolCall: { name: 'list_my_work_items', args: { state: 'active' } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      }
+
+      assert.match(payload.conversationContext.lastAssistantMessage.text, /当前没有|没有找到|没有可继续/);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          turn: {
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            events: [
+              {
+                type: 'analysis_final',
+                sequence: 1,
+                agentRunId: payload.agentRunId,
+                slackSessionId: payload.slackSessionId,
+                analysis: {
+                  intent: 'repeat_previous_message',
+                  toolCall: { name: 'repeat_previous_message', args: { target: 'previous_assistant_message' } },
+                  summary: '复读上一条。',
+                  needsClarification: false,
+                },
+              },
+            ],
+          },
+        }),
+        { status: 200 }
+      );
+    },
+    ...mockSlackNotifier(notifierCalls),
+  };
+
+  const first = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-repeat-context-1',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.0001133',
+            text: '当前会话有哪些？',
+          },
+        }),
+      }),
+      env
+    )
+  );
+  const firstMemory = app.store.getSessionMemory(first.slackSessionId);
+  const second = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-repeat-context-2',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.0001134',
+            text: '你上一条消息是什么？',
+          },
+        }),
+      }),
+      env
+    )
+  );
+
+  assert.equal(first.action, 'list_work_items');
+  assert.equal(second.action, 'repeat_previous_message');
+  assert.equal(second.replyText, firstMemory.lastAgentResponse);
+  assert.equal(agentCalls.length, 2);
+  assert.equal(agentCalls[1].body.conversationContext.lastAssistantMessage.text, firstMemory.lastAgentResponse);
+  assert.doesNotMatch(second.replyText, /用户要求复读|intent|toolCall/);
 });
 
 test('Slack repo questions answer from repo context without creating platform issues', async () => {
@@ -5852,6 +5986,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   const followup = await json(followupResponse);
   const jobBody = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${created.jobId}`)));
   const followupStatusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
+  const followupMemory = app.store.getSessionMemory(created.slackSessionId);
 
   assert.equal(followupResponse.status, 200);
   assert.equal(agentCalls[0].url, 'http://slack-agent.test/internal/slack-agent/turn');
@@ -5868,6 +6003,9 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(jobBody.job.previewUrl, null);
   assert.equal(agentCalls.length, 1);
   assert.equal(workerStarts.length, 1);
+  assert.equal(followupMemory.lastAgentResponse, followup.replyText);
+  assert.equal(followupMemory.conversationContext.lastAssistantMessage.text, followup.replyText);
+  assert.match(followupMemory.conversationContext.recentTurns.at(-1).text, /已追加修改意见/);
 
   const queuedResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
