@@ -832,6 +832,31 @@ function summarizeRepoAnswerForMemory(replyText = '') {
   );
 }
 
+const REPO_IMPLEMENTATION_REQUEST_RE = new RegExp(
+  [
+    '(?:开始|直接|帮我|请|需要|要|希望|按这个|照这个|让|使|把).*(?:改|修改|修复|实现|支持|落地|接入|完善|优化|创建|生成)',
+    '(?:改造|修改|修复|实现|支持|落地|接入|完善|优化).*(?:方案|需求|能力|代码|流程)',
+    '(?:怎么改|如何实现|怎样实现|实现方案|落地方案|改造方案|需要改哪里|应该改哪里)',
+  ].join('|'),
+  'i'
+);
+const REPO_PURE_QUESTION_RE =
+  /(?:是什么|在哪里|在哪|怎么保存|如何保存|怎么触发|如何触发|会不会|是否|为什么|为啥|原因|查一下|看下|目前|现在)/i;
+const PLATFORM_OPS_SCOPE_RE = /\b(?:ECS|ACK|k8s|Kubernetes|Docker|kubectl|Caddy)\b|部署脚本|deploy|容器|运维/i;
+
+function stripRepoActionPrefix(question = '') {
+  return String(question || '')
+    .replace(/^(?:继续深挖|生成改造方案)[：:]\s*/u, '')
+    .trim();
+}
+
+export function repoQuestionTurnNeedsCodeChange(turn = {}) {
+  const question = stripRepoActionPrefix(turn.question || turn.effectiveQuestion || '');
+  if (!REPO_IMPLEMENTATION_REQUEST_RE.test(question)) return false;
+  if (!REPO_PURE_QUESTION_RE.test(question)) return true;
+  return /(怎么改|如何实现|怎样实现|实现方案|落地方案|改造方案|需要改哪里|应该改哪里)/i.test(question);
+}
+
 export function nextRepoQuestionContext(previousContext = {}, result = {}) {
   const context = repoQuestionContextFromMemory({ repoQuestionContext: previousContext });
   const evidencePaths = (result.evidence || []).map((item) => item.path).filter(Boolean).slice(0, 12);
@@ -857,6 +882,11 @@ export function repoQuestionActionBlocks(slackSession, result = {}, options = {}
   const sessionId = slackSession?.id || '';
   if (!sessionId) return null;
   const evidencePaths = (result.evidence || []).map((item) => item.path).filter(Boolean);
+  const codeChangeIntent = repoQuestionTurnNeedsCodeChange({
+    question: result.question || result.effectiveQuestion || '',
+    effectiveQuestion: result.effectiveQuestion || result.question || '',
+    answerSummary: result.replyText || '',
+  });
   const contextText = evidencePaths.length
     ? `基于 ${Math.min(evidencePaths.length, result.mode === 'normal' ? MAX_EVIDENCE_FILES : MAX_DEEP_EVIDENCE_FILES)} 个相关文件生成。`
     : '当前仓库 evidence 不足，可以继续补充关键词。';
@@ -883,8 +913,8 @@ export function repoQuestionActionBlocks(slackSession, result = {}, options = {}
   if (options.allowCreateIssueAction) {
     actions.push({
       type: 'button',
-      text: { type: 'plain_text', text: '按方案创建需求' },
-      style: 'primary',
+      text: { type: 'plain_text', text: codeChangeIntent ? '按方案创建需求' : '记录为问题咨询' },
+      ...(codeChangeIntent ? { style: 'primary' } : {}),
       action_id: 'pages_repo_create_platform_issue',
       value: JSON.stringify({ sessionId }).slice(0, 1900),
     });
@@ -946,19 +976,22 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
   if (!lastTurn) return null;
   const titleSource = lastTurn.question || '基于仓库问答创建改造需求';
   const evidence = Array.isArray(lastTurn.evidencePaths) ? lastTurn.evidencePaths : [];
+  const codeChangeIntent = repoQuestionTurnNeedsCodeChange(lastTurn);
   const classificationText = [titleSource, lastTurn.answerSummary || '', evidence.join(' ')].join('\n');
   const highRiskPath = evidence.some((file) =>
     /^(?:\.github|k8s|deploy)(?:\/|$)|Dockerfile|(?:^|\/)deploy|kubectl|KUBE_CONFIG|aliyun|ACR/i.test(file)
   );
-  const issueType = /security|权限|鉴权|token|secret|cookie|密钥|漏洞/i.test(classificationText)
-    ? 'type:security'
-    : /\b(CI|CD)\b|workflow|Actions|构建|测试|site-check|pages-agent|platform-agent/i.test(classificationText)
-      ? 'type:ci'
-      : /ECS|ACK|k8s|Kubernetes|Docker|部署脚本|deploy|Caddy|容器|运维/i.test(classificationText)
-        ? 'type:ops'
-        : /反馈|建议|意见/i.test(classificationText)
-          ? 'type:feedback'
-          : 'type:dev';
+  const issueType = codeChangeIntent
+    ? /security|权限|鉴权|token|secret|cookie|密钥|漏洞/i.test(classificationText)
+      ? 'type:security'
+      : /\b(CI|CD)\b|workflow|Actions|构建|测试|site-check|pages-agent|platform-agent/i.test(classificationText)
+        ? 'type:ci'
+        : PLATFORM_OPS_SCOPE_RE.test(classificationText)
+          ? 'type:ops'
+          : /反馈|建议|意见/i.test(classificationText)
+            ? 'type:feedback'
+            : 'type:dev'
+    : 'type:question';
   const areas = uniqStrings(
     [
       /Slack|slack/i.test(classificationText) ? 'area:slack' : '',
@@ -966,13 +999,17 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
       /\b(CI|CD)\b|workflow|Actions|构建|测试|site-check|pages-agent|platform-agent/i.test(classificationText)
         ? 'area:ci'
         : '',
-      /ECS|ACK|k8s|Kubernetes|Docker|deploy|Caddy|容器|运维/i.test(classificationText) ? 'area:ops' : '',
+      PLATFORM_OPS_SCOPE_RE.test(classificationText) ? 'area:ops' : '',
       /数据库|MySQL|schema|drizzle|session_memories|slack_sessions/i.test(classificationText) ? 'area:db' : '',
       /worker|gateway|notifier|agent/i.test(classificationText) ? 'area:platform' : '',
     ],
     6
   );
-  const risk = ['type:ci', 'type:ops', 'type:security'].includes(issueType) || highRiskPath ? 'risk:high' : 'risk:medium';
+  const risk = !codeChangeIntent
+    ? 'risk:low'
+    : ['type:ci', 'type:ops', 'type:security'].includes(issueType) || highRiskPath
+      ? 'risk:high'
+      : 'risk:medium';
   const agentEligible = !['type:feedback', 'type:question'].includes(issueType);
   const requiresHumanGate = risk === 'risk:high';
   const internalSummaryLines = [
@@ -980,14 +1017,20 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
     lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
     evidence.length ? `相关依据：${evidence.slice(0, 8).join(', ')}` : '',
   ].filter(Boolean);
-  const visibleSummaryLines = [
-    `基于刚才的仓库问答，继续推进这个改造：${titleSource}`,
-    lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
-    evidence.length ? '相关实现依据已记录，创建 Issue 后会进入需求上下文。' : '',
-  ].filter(Boolean);
+  const visibleSummaryLines = codeChangeIntent
+    ? [
+        `基于刚才的仓库问答，继续推进这个改造：${titleSource}`,
+        lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
+        evidence.length ? '相关实现依据已记录，创建 Issue 后会进入需求上下文。' : '',
+      ].filter(Boolean)
+    : [
+        `把刚才的仓库问答记录为问题咨询：${titleSource}`,
+        lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
+        '这类记录不会启动自动开发；如果后续要改代码，请在当前对话明确要实现的目标。',
+      ].filter(Boolean);
   const text = `${titleSource}\n${internalSummaryLines.join('\n')}`;
   return {
-    visibleReply: '我整理成一个待确认的平台需求。',
+    visibleReply: codeChangeIntent ? '我整理成一个待确认的平台需求。' : '我整理成一个待确认的问题咨询记录。',
     lane: 'platform-dev',
     intent: 'create_platform_issue',
     toolCall: { name: 'confirm_platform_issue', args: {} },
@@ -1000,6 +1043,10 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
     summary: visibleSummaryLines.join('\n').slice(0, 1800),
     needsClarification: false,
     sourceMessages: [text],
-    safetyNotes: ['由 repo 问答结果转为待确认需求；创建 issue 前仍需用户点击确认。'],
+    safetyNotes: [
+      codeChangeIntent
+        ? '由 repo 问答结果转为待确认需求；创建 issue 前仍需用户点击确认。'
+        : '由 repo 问答结果转为问题咨询记录；确认后只创建 issue，不启动自动开发。',
+    ],
   };
 }

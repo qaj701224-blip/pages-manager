@@ -53,9 +53,15 @@ gateway 执行受控 repo 工具：排除 `.git`、`node_modules`、`.env*`、se
 
 - 继续深挖：仍是只读查询，扩大 evidence 数量和 excerpt 数量，把结果发回当前 Slack thread。
 - 查看依据：展示本轮有限代码片段或文件路径，帮助用户理解回答来源；不展开完整文件。
-- 生成改造方案：仍是只读查询，要求 Agent 输出目标、改动位置、步骤、测试和风险。只有这个方案回复里才出现“按方案创建需求”入口。
+- 生成改造方案：仍是只读查询，要求 Agent 输出目标、改动位置、步骤、测试和风险。只有这个方案回复里才出现继续记录或创建需求的入口。
 
-“按方案创建需求”只把上一轮方案整理成 Platform Dev confirmation card；真正创建 GitHub issue 仍需用户点击确认按钮。这样用户可以先完成咨询和调研，再决定是否进入自动开发。
+“按方案创建需求 / 记录为问题咨询”只把上一轮方案整理成 Platform Dev confirmation card；真正创建 GitHub issue 仍需用户点击确认按钮。gateway 还会做最后的安全收口：
+
+- 纯“在哪里 / 怎么保存 / 为什么”的咨询只能整理成 `type:question`、`agentEligible=false`，确认后只创建 GitHub issue 记录，不启动自动开发。
+- 明确“让 X 支持 Y / 按方案实现 / 需要改哪里”的改造目标，才整理成可进入自动开发候选的 Platform Dev confirmation card。
+- `type:question` / `type:feedback` 即使被模型误标为可自动开发，gateway、workflow 和 coding script 也必须拒绝 dispatch Platform Agent。
+
+这样用户可以先完成咨询和调研，再决定是否进入记录或自动开发。
 
 ECS 运行时必须设置 `PAGES_REPO_ROOT=/app`，让 gateway 从容器内完整 repo snapshot 检索。否则如果进程 cwd 落在某个 package 目录，repo 问答会只能看到局部代码，导致回答缺失 workflow / docs / scripts 证据。
 
