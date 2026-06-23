@@ -127,10 +127,10 @@ Slack Agent 输出建议是结构化 JSON：
 {
   "visibleReply": "我来查看你已关闭的 issue 和 PR。",
   "lane": "site-publishing | platform-dev | support | unknown",
-  "intent": "create_or_update_site | new_site_request | modify_existing_preview | append_requirement | create_platform_issue | platform_feedback | platform_question | list_work_items | switch_work_item | reopen_work_item | status_query | cancel_request | close_session | clarify | unknown",
+  "intent": "create_or_update_site | new_site_request | modify_existing_preview | append_requirement | create_platform_issue | platform_feedback | platform_question | repo_question | architecture_question | list_work_items | switch_work_item | reopen_work_item | status_query | cancel_request | close_session | clarify | unknown",
   "confidence": 0.0,
   "toolCall": {
-    "name": "list_my_work_items | switch_work_item | reopen_work_item | get_current_status | close_session | unsupported_destructive_request | cancel_request | record_followup | confirm_create_issue | confirm_platform_issue",
+    "name": "list_my_work_items | switch_work_item | reopen_work_item | get_current_status | answer_repo_question | close_session | unsupported_destructive_request | cancel_request | record_followup | confirm_create_issue | confirm_platform_issue",
     "args": {
       "state": "active | all | closed",
       "kind": "issue | pr | unknown",
@@ -161,6 +161,8 @@ Slack Agent 负责决定下一步要请求哪个受控工具；gateway 负责执
 gateway 只有在 `toolCall.name=confirm_create_issue`、创建类 `intent` 且 `needsClarification=false` 时展示确认卡片；真正创建 `PublishingJob` 仍必须等用户点击确认按钮。如果 Slack Agent 返回 `clarify`、`unknown` 或 `needsClarification=true`，gateway 只回 Slack 澄清问题并保存 `SessionMemory`。
 
 Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platform-dev` 且 `needsClarification=false` 时展示平台 issue 创建确认卡。gateway 必须二次校验 `issueType`、`areas`、`risk` 和 `agentEligible`，不能完全信任模型。`type:feedback`、`type:question` 默认不触发 Coding Agent；`type:ci`、`type:ops`、`type:security` 默认需要人工 gate。
+
+Repo 问答是独立查询类 intent。用户询问 pages-manager 当前实现、代码位置、数据如何保存、workflow 如何触发或架构细节时，Slack Agent 必须返回 `repo_question` / `answer_repo_question`，不返回 `confirm_platform_issue`。gateway 只执行受控 repo search/read，并把答案作为查询结果回 Slack；只有用户明确要求“修改 / 修复 / 创建 issue / 支持这个能力”时，才转为 Platform Dev Lane。
 
 产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 help / ping / status、Slack / GitHub 签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底路径，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
 
