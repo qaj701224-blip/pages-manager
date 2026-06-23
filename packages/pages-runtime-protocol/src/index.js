@@ -134,6 +134,8 @@ const RESERVED_SITE_SLUGS = new Set([
   'pages-kv-gateway-staging',
 ]);
 const RESERVED_SITE_SLUG_PREFIXES = [
+  'production-slot-',
+  'staging-slot-',
   'v2-production-slot-',
   'v2-staging-slot-',
   'pages-v2-production-slot-',

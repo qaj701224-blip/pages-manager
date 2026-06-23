@@ -81,6 +81,8 @@ test('siteSlug reserves platform names consistently across control and data plan
   assert.equal(isReservedSiteSlug('deployments'), true);
   assert.equal(isReservedSiteSlug('runtime'), true);
   assert.equal(isReservedSiteSlug('pages-api'), true);
+  assert.equal(isReservedSiteSlug('staging-slot-001'), true);
+  assert.equal(isReservedSiteSlug('production-slot-001'), true);
   assert.equal(isReservedSiteSlug('pages-v2-production-slot-001'), true);
   assert.equal(isReservedSiteSlug('v2-staging-slot-001'), true);
   assert.equal(isReservedSiteSlug('q2-report'), false);
