@@ -98,6 +98,12 @@ function restoredStatusForReopenedGithubResource(job = {}, target = '') {
   return 'generating_page';
 }
 
+function restoredStatusForReopenedPlatformItem(item = {}, target = '') {
+  if (target === 'pr' || item.githubPrNumber) return 'pr_created';
+  if (item.requiresHumanGate && item.gateStatus !== 'approved') return 'gate_pending';
+  return item.agentEligible ? 'agent_queued' : 'issue_created';
+}
+
 export async function restoreJobForReopenedGithubResource(store, job, target, resource = {}) {
   const patch = {
     status: restoredStatusForReopenedGithubResource(job, target),
@@ -113,6 +119,22 @@ export async function restoreJobForReopenedGithubResource(store, job, target, re
     patch.prUrl = pullRequestUrl(resource) || job.prUrl || null;
   }
   return await store.patchJob(job.id, patch);
+}
+
+export async function restorePlatformDevItemForReopenedGithubResource(store, item, target, resource = {}) {
+  const patch = {
+    errorCode: null,
+    errorMessage: null,
+  };
+  if (target === 'issue') {
+    patch.githubIssueNumber = resource.number || item.githubIssueNumber || null;
+    patch.githubIssueUrl = issueUrl(resource) || item.githubIssueUrl || null;
+  }
+  if (target === 'pr') {
+    patch.githubPrNumber = resource.number || item.githubPrNumber || null;
+    patch.githubPrUrl = pullRequestUrl(resource) || item.githubPrUrl || null;
+  }
+  return await store.updatePlatformDevItem(item.id, restoredStatusForReopenedPlatformItem(item, target), patch);
 }
 
 export async function reopenGithubResourceForJob(env = {}, job = {}, target = '') {

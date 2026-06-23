@@ -1,4 +1,9 @@
-import { buildPlatformAgentInputs, dispatchWorkflow, ensurePlatformDevIssue } from '@xd/git-client';
+import {
+  appendPlatformDevFollowupIssueComment,
+  buildPlatformAgentInputs,
+  dispatchWorkflow,
+  ensurePlatformDevIssue,
+} from '@xd/git-client';
 
 import { postExecutorCallback } from '../integrations/gateway-client.js';
 
@@ -6,6 +11,11 @@ function shouldDispatchPlatformAgent(item = {}) {
   if (!item.agentEligible) return false;
   if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
   return true;
+}
+
+function platformAgentMode(item = {}) {
+  const fixStatuses = ['agent_queued', 'ci_failed', 'review_blocked', 'ready_to_merge', 'pr_created'];
+  return fixStatuses.includes(item.status) && item.githubPrNumber ? 'fix' : 'initial';
 }
 
 function stageResultForIssueCreated(item = {}) {
@@ -45,11 +55,21 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
   }
 
   const itemWithIssue = { ...item, githubIssueNumber: issueNumber, githubIssueUrl: issueUrl };
+  const mode = platformAgentMode(itemWithIssue);
+  const issueComment =
+    mode === 'fix'
+      ? await appendPlatformDevFollowupIssueComment(fetchImpl, github, itemWithIssue, {
+          mode,
+          issueNumber,
+          gateApproved: itemWithIssue.gateStatus === 'approved' || itemWithIssue.requiresHumanGate === false,
+        })
+      : null;
   const workflow = await dispatchWorkflow(fetchImpl, github, {
     workflowId: 'platform-agent.yml',
-    ref: config.workflowRef,
+    ref: config.platformWorkflowRef || config.workflowRef || 'master',
     inputs: buildPlatformAgentInputs(itemWithIssue, {
-      baseRef: config.platformBaseRef || config.workflowRef || 'master',
+      mode,
+      baseRef: config.platformBaseRef || config.platformWorkflowRef || config.workflowRef || 'master',
       callbackUrl: config.callbackUrl,
       issueNumber,
       gateApproved: itemWithIssue.gateStatus === 'approved' || itemWithIssue.requiresHumanGate === false,
@@ -67,10 +87,11 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
   });
 
   return {
-    action: 'platform_issue_created_and_agent_dispatched',
+    action: mode === 'fix' ? 'platform_agent_fix_dispatched' : 'platform_issue_created_and_agent_dispatched',
     issueNumber,
     issueUrl,
     issueCreated: issueResult.created,
+    ...(issueComment ? { issueComment } : {}),
     workflow,
   };
 }

@@ -1,6 +1,8 @@
 import { reconcileClosedGithubIssueForJob } from '../github/resource-reconciler.js';
+import { dispatchPlatformDevFixIfNeeded, PLATFORM_SLACK_FOLLOWUP_QUEUED_EVENT } from '../platform-dev/automation.js';
 import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
 import { notifySlackJobStatus } from './notifier.js';
+import { notifySlackPlatformDevStatus } from './platform-notifier.js';
 import { completeSlackAgentRun, redactSlackAnalysis, slackAgentRunModelPatch } from './agent-run-records.js';
 import { slackThreadForSession } from './job-binding.js';
 import { compactUserFacingText, redactSecretLikeText } from './text.js';
@@ -231,12 +233,196 @@ function canDispatchFixForJob(job) {
   return ['pr_created', 'reviewing', 'changes_requested', 'fixing', 'preview_deployed'].includes(job.status);
 }
 
-export async function handleSlackFollowup({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
-  const job = await reconcileClosedGithubIssueForJob(store, env, await activeJobForSlackSession(store, slackSession), {
-    notifySlack: true,
+function canDispatchFixForPlatformDevItem(item = {}) {
+  if (!item.agentEligible) return false;
+  if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
+  return ['issue_created', 'pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge', 'agent_queued'].includes(item.status);
+}
+
+function platformFollowupCardSummary(feedback = '') {
+  const text = compactUserFacingText(feedback);
+  return text ? `本轮补充：${text}` : '本轮补充已记录。';
+}
+
+async function handleSlackPlatformDevFollowup({
+  store,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  item,
+  feedback,
+  redactedSlackAgentAnalysis,
+}) {
+  if (!isActionableSlackWorkItem(item)) {
+    const replyText = inactiveSlackWorkItemReply(item);
+    await store.updateSessionMemory(slackSession.id, {
+      summary: redactSecretLikeText(sessionMemory.summary) || redactSecretLikeText(intake.text),
+      requirements: redactSlackAnalysis(sessionMemory.requirements) || {},
+      lastAgentResponse: replyText,
+    });
+    await completeSlackAgentRun(store, agentRun, {
+      workItemKind: 'platform_dev',
+      workItemId: item.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'followup_inactive_platform_item',
+        accepted: false,
+        intent: slackAgentAnalysis?.intent || null,
+        status: item.status,
+      },
+    });
+    return {
+      ok: true,
+      action: 'followup_inactive_platform_item',
+      accepted: false,
+      workItemKind: 'platform_dev',
+      workItemId: item.id,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      replyText,
+      ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
+    };
+  }
+
+  const patch = {
+    title: redactedSlackAgentAnalysis?.title || item.title,
+    summary: followupSummary(item.summary, feedback),
+    slackSessionId: slackSession.id,
+    slackSessionKey: slackSession.sessionKey,
+    slackThread: slackThreadForSession(slackSession, item.slackThread || {}),
+  };
+  await store.updateSessionMemory(slackSession.id, {
+    summary: followupSummary(sessionMemory.summary, feedback),
+    requirements: redactedSlackAgentAnalysis || { text: redactSecretLikeText(intake.text), action: 'followup' },
+    lastPreviewFeedback: feedback,
+    lastAgentResponse: null,
   });
+
+  let updatedItem = await store.patchPlatformDevItem(item.id, patch);
+  await store.linkPlatformDevItemToSlackSession(updatedItem, slackSession);
+  let action = 'platform_followup_recorded';
+  let replyText = '收到，已记录这轮补充。';
+  let fixDispatch = null;
+  let slackStatusNotification = null;
+
+  if (['agent_queued', 'agent_running', 'branch_committed'].includes(item.status)) {
+    if (store?.recordAgentRunEvent) {
+      await store.recordAgentRunEvent({
+        workItemKind: 'platform_dev',
+        workItemId: updatedItem.id,
+        slackSessionId: slackSession.id,
+        agentRunId: agentRun?.id || null,
+        type: PLATFORM_SLACK_FOLLOWUP_QUEUED_EVENT,
+        stage: item.status,
+        status: 'queued',
+        text: feedback,
+        dedupeKey: `platform-slack-followup-queued:${updatedItem.id}:${agentRun?.id || Date.now()}`,
+        slackChannelId: updatedItem.slackThread?.channelId || null,
+        slackThreadTs: updatedItem.slackThread?.threadTs || null,
+      });
+    }
+    slackStatusNotification = await notifySlackPlatformDevStatus(env, store, updatedItem, {
+      stage: item.status,
+      text: '已记录新的补充，当前处理结束后会继续修改。',
+      statusText: ':hourglass_flowing_sand: 已记录新的补充。',
+      finalSummary: finalRequirementCardSummary(updatedItem.summary),
+      skipDuplicate: false,
+      slackSessionId: slackSession.id,
+      dedupeKey: `platform-followup-queued:${updatedItem.id}:${agentRun?.id || Date.now()}`,
+    });
+    action = 'platform_followup_queued';
+    replyText = '收到，已追加；当前处理结束后会继续修改。';
+  } else if (canDispatchFixForPlatformDevItem(updatedItem)) {
+    fixDispatch = await dispatchPlatformDevFixIfNeeded(store, updatedItem, env, {
+      trigger: 'slack_followup',
+      force: true,
+    });
+    updatedItem = fixDispatch?.item || updatedItem;
+    slackStatusNotification = fixDispatch?.slackStatusNotification || null;
+    action = fixDispatch?.workerStart?.started ? 'platform_followup_fix_dispatched' : 'platform_followup_fix_ready';
+    replyText = fixDispatch?.workerStart?.started ? '收到，已启动新一轮修改。' : '收到，已记录，等待启动修改。';
+  } else {
+    slackStatusNotification = await notifySlackPlatformDevStatus(env, store, updatedItem, {
+      stage: updatedItem.status,
+      text: '已记录新的补充。',
+      statusText: ':white_check_mark: 已记录。',
+      finalSummary: finalRequirementCardSummary(updatedItem.summary),
+      currentChange: platformFollowupCardSummary(feedback),
+      skipDuplicate: false,
+      slackSessionId: slackSession.id,
+      dedupeKey: `platform-followup-recorded:${updatedItem.id}:${agentRun?.id || Date.now()}`,
+    });
+  }
+
+  await completeSlackAgentRun(store, agentRun, {
+    workItemKind: 'platform_dev',
+    workItemId: updatedItem.id,
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action,
+      accepted: true,
+      intent: slackAgentAnalysis?.intent || null,
+    },
+  });
+
+  console.log(
+    JSON.stringify({
+      service: 'pages-gateway',
+      message: 'slack_platform_followup_recorded',
+      action,
+      itemId: updatedItem.id,
+      slackSessionId: slackSession.id,
+      workerStarted: fixDispatch?.workerStart?.started ?? null,
+      workerError: fixDispatch?.workerStart?.error || null,
+    })
+  );
+
+  return {
+    ok: true,
+    action,
+    accepted: true,
+    workItemKind: 'platform_dev',
+    workItemId: updatedItem.id,
+    platformDevItemId: updatedItem.id,
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    replyText,
+    noReply: [
+      'platform_followup_fix_dispatched',
+      'platform_followup_fix_ready',
+      'platform_followup_queued',
+    ].includes(action),
+    item: updatedItem,
+    ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
+    ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    ...(fixDispatch?.workerStart ? { workerStart: fixDispatch.workerStart } : {}),
+  };
+}
+
+export async function handleSlackFollowup({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
   const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
   const feedback = redactSecretLikeText(redactedSlackAgentAnalysis?.summary || intake.text);
+  const activeWorkItem = await activeWorkItemForSlackSession(store, slackSession);
+  if (activeWorkItem?.workItemKind === 'platform_dev') {
+    return await handleSlackPlatformDevFollowup({
+      store,
+      env,
+      intake,
+      slackSession,
+      sessionMemory,
+      agentRun,
+      slackAgentAnalysis,
+      item: activeWorkItem,
+      feedback,
+      redactedSlackAgentAnalysis,
+    });
+  }
+
+  const activeJob = activeWorkItem || (await activeJobForSlackSession(store, slackSession));
+  const job = await reconcileClosedGithubIssueForJob(store, env, activeJob, { notifySlack: true });
 
   if (!job) {
     await completeSlackAgentRun(store, agentRun, {

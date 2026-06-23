@@ -1,12 +1,13 @@
 import { jsonResponse } from '@xd/worker-kit';
 
-import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
+import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { notifySlackJobStatus } from '../slack/notifier.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import {
   cancelJobForClosedGithubIssue,
   cancelJobForClosedGithubPr,
   restoreJobForReopenedGithubResource,
+  restorePlatformDevItemForReopenedGithubResource,
 } from './resource-reconciler.js';
 import { issueUrl, platformDevItemIdFromIssueBody, publishingJobIdFromIssueBody } from './webhook.js';
 
@@ -30,7 +31,11 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
       item.status === 'closed_unmerged'
         ? await store.patchPlatformDevItem(item.id, patch)
         : await store.updatePlatformDevItem(item.id, 'closed_unmerged', patch);
-  } else if (['opened', 'edited', 'reopened'].includes(action)) {
+  } else if (action === 'reopened') {
+    item = ['closed_unmerged', 'cancelled', 'failed'].includes(item.status)
+      ? await restorePlatformDevItemForReopenedGithubResource(store, item, 'issue', issue)
+      : await store.patchPlatformDevItem(item.id, patch);
+  } else if (['opened', 'edited'].includes(action)) {
     item =
       item.status === 'received' || item.status === 'issue_creating'
         ? await store.updatePlatformDevItem(item.id, item.requiresHumanGate ? 'gate_pending' : 'issue_created', patch)
@@ -38,9 +43,13 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
   }
 
   await store.linkPlatformDevItemToSlackSession(item);
+  const workerStart = action === 'reopened' ? await startWorkerForPlatformDevItemIfConfigured(item, env) : null;
   const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, item, {
     stage: item.status,
-    text: platformNotificationText(item.status, item) || 'GitHub issue 状态已更新。',
+    text:
+      action === 'reopened'
+        ? 'GitHub issue 已重新打开，任务已恢复。'
+        : platformNotificationText(item.status, item) || 'GitHub issue 状态已更新。',
     skipDuplicate: false,
   });
 
@@ -50,6 +59,7 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
     delivery: result.delivery,
     issueAction: 'platform_item_recorded',
     item,
+    ...(workerStart ? { workerStart } : {}),
     ...(slackStatusNotification ? { slackStatusNotification } : {}),
   });
 }
@@ -197,16 +207,23 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     };
     let nextStatus = platformItem.status;
     if (action === 'closed') nextStatus = pullRequest.merged ? 'merged' : 'closed_unmerged';
-    else if (['opened', 'reopened', 'ready_for_review'].includes(action)) nextStatus = 'pr_created';
+    else if (action === 'reopened' && ['closed_unmerged', 'cancelled', 'failed'].includes(platformItem.status)) {
+      platformItem = await restorePlatformDevItemForReopenedGithubResource(store, platformItem, 'pr', pullRequest);
+      nextStatus = platformItem.status;
+    } else if (['opened', 'reopened', 'ready_for_review'].includes(action)) nextStatus = 'pr_created';
     else if (action === 'synchronize') nextStatus = 'ci_running';
     platformItem =
       platformItem.status === nextStatus
         ? await store.patchPlatformDevItem(platformItem.id, patch)
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
     await store.linkPlatformDevItemToSlackSession(platformItem);
+    const workerStart = action === 'reopened' ? await startWorkerForPlatformDevItemIfConfigured(platformItem, env) : null;
     const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, platformItem, {
       stage: nextStatus,
-      text: platformNotificationText(nextStatus, platformItem) || 'GitHub PR 状态已更新。',
+      text:
+        action === 'reopened'
+          ? 'GitHub PR 已重新打开，任务已恢复。'
+          : platformNotificationText(nextStatus, platformItem) || 'GitHub PR 状态已更新。',
       skipDuplicate: false,
     });
     return jsonResponse({
@@ -215,6 +232,7 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
       delivery: result.delivery,
       prAction: 'platform_item_recorded',
       item: platformItem,
+      ...(workerStart ? { workerStart } : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
     });
   }

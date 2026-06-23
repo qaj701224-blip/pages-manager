@@ -226,16 +226,16 @@ test('allows high-risk repository paths after gate approval', async () => {
         return new Response(
           JSON.stringify({
             choices: [
-                {
-                  message: {
-                    content: JSON.stringify({
-                      files: [
-                        { path: '.github/workflows/platform-agent.yml', content: 'name: Platform Agent\n' },
-                        { path: 'deploy/ecs/Caddyfile', content: ':80 {\n  respond "ok"\n}\n' },
-                      ],
-                    }),
-                  },
+              {
+                message: {
+                  content: JSON.stringify({
+                    files: [
+                      { path: '.github/workflows/platform-agent.yml', content: 'name: Platform Agent\n' },
+                      { path: 'deploy/ecs/Caddyfile', content: ':80 {\n  respond "ok"\n}\n' },
+                    ],
+                  }),
                 },
+              },
             ],
           }),
           { status: 200 }

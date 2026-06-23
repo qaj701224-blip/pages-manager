@@ -25,9 +25,11 @@ import {
   reconcileClosedGithubIssueForJob,
   reopenGithubResourceForJob,
   restoreJobForReopenedGithubResource,
+  restorePlatformDevItemForReopenedGithubResource,
 } from '../github/resource-reconciler.js';
 import { readJson } from '../http/body.js';
 import { getStore, required, verifyInternalCallbackToken } from './context.js';
+import { dispatchQueuedPlatformDevFollowupIfNeeded } from '../platform-dev/automation.js';
 import { applyExecutorCallback, CALLBACK_STAGE_RESULTS } from '../publishing/callback-rules.js';
 import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../slack/http.js';
@@ -1327,11 +1329,26 @@ export async function handleSlackInteractions(request, env) {
       });
     }
 
-    let job = value.jobId ? await store.getJob(value.jobId) : null;
+    let job =
+      value.workItemKind === 'platform_dev' && value.jobId
+        ? await store.getPlatformDevItem(value.jobId)
+        : value.jobId
+          ? await store.getJob(value.jobId)
+          : null;
+    if (job && value.workItemKind === 'platform_dev') {
+      job = {
+        ...job,
+        workItemKind: 'platform_dev',
+        issueNumber: job.githubIssueNumber,
+        issueUrl: job.githubIssueUrl,
+        prNumber: job.githubPrNumber,
+        prUrl: job.githubPrUrl,
+      };
+    }
     if (!job || !slackJobVisibleToActor(job, body)) {
       return slackAckResponse({
         response_type: 'ephemeral',
-        text: '这个发布任务不存在，或不属于当前 Slack 用户。',
+        text: value.workItemKind === 'platform_dev' ? '这个平台需求不存在，或不属于当前 Slack 用户。' : '这个发布任务不存在，或不属于当前 Slack 用户。',
       });
     }
 
@@ -1353,20 +1370,39 @@ export async function handleSlackInteractions(request, env) {
       });
     }
 
-    job = await restoreJobForReopenedGithubResource(store, job, target, resource || {});
-    await store.linkJobToSlackSession(job, session);
-    const workerStart = await startWorkerForJobIfConfigured(job, env);
-    const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
-      stage: job.status,
-      text: target === 'pr' ? 'GitHub PR 已重新打开，发布任务已恢复。' : 'GitHub issue 已重新打开，发布任务已恢复。',
-      statusText:
-        target === 'pr'
-          ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。'
-          : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
-      skipDuplicate: false,
-      dedupeKey: `slack-reopen:${target}:${job.id}:${body.trigger_id || Date.now()}`,
-      slackSessionId: session.id,
-    });
+    let workerStart = null;
+    let slackStatusNotification = null;
+    if (job.workItemKind === 'platform_dev') {
+      job = await restorePlatformDevItemForReopenedGithubResource(store, job, target, resource || {});
+      await store.linkPlatformDevItemToSlackSession(job, session);
+      workerStart = await startWorkerForPlatformDevItemIfConfigured(job, env);
+      slackStatusNotification = await notifySlackPlatformDevStatus(env, store, job, {
+        stage: job.status,
+        text: target === 'pr' ? 'GitHub PR 已重新打开，任务已恢复。' : 'GitHub issue 已重新打开，任务已恢复。',
+        statusText:
+          target === 'pr'
+            ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。'
+            : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
+        skipDuplicate: false,
+        dedupeKey: `slack-platform-reopen:${target}:${job.id}:${body.trigger_id || Date.now()}`,
+        slackSessionId: session.id,
+      });
+    } else {
+      job = await restoreJobForReopenedGithubResource(store, job, target, resource || {});
+      await store.linkJobToSlackSession(job, session);
+      workerStart = await startWorkerForJobIfConfigured(job, env);
+      slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+        stage: job.status,
+        text: target === 'pr' ? 'GitHub PR 已重新打开，发布任务已恢复。' : 'GitHub issue 已重新打开，发布任务已恢复。',
+        statusText:
+          target === 'pr'
+            ? ':white_check_mark: GitHub PR 已重新打开，任务已恢复。'
+            : ':white_check_mark: GitHub issue 已重新打开，任务已恢复。',
+        skipDuplicate: false,
+        dedupeKey: `slack-reopen:${target}:${job.id}:${body.trigger_id || Date.now()}`,
+        slackSessionId: session.id,
+      });
+    }
     const refreshed = await listReconciledSlackWorkItemsForSession(store, body, env, {
       limit: 5,
       includeInactive: Boolean(value.includeInactive),
@@ -1390,6 +1426,7 @@ export async function handleSlackInteractions(request, env) {
           ? '已重新打开 PR，继续在这个对话里回复修改意见即可。'
           : '已重新打开 Issue，继续在这个对话里回复修改意见即可。',
       jobId: job.id,
+      ...(job.workItemKind === 'platform_dev' ? { workItemKind: 'platform_dev', workItemId: job.id } : {}),
       ...(workerStart ? { workerStart } : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
       ...(listUpdate ? { listUpdate } : {}),
@@ -1663,14 +1700,30 @@ async function handlePlatformDevExecutorCallback(body, env) {
     item = await store.updatePlatformDevItem(item.id, status, patch);
   }
   await store.linkPlatformDevItemToSlackSession(item);
-  const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, item, {
+  const queuedFollowupRerun =
+    ['pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge'].includes(status)
+      ? await dispatchQueuedPlatformDevFollowupIfNeeded(store, item, env)
+      : null;
+  if (queuedFollowupRerun?.item) item = queuedFollowupRerun.item;
+  const slackStatusNotification = queuedFollowupRerun?.slackStatusNotification
+    ? queuedFollowupRerun.slackStatusNotification
+    : await notifySlackPlatformDevStatus(env, store, item, {
     stage: stageResult,
     text: platformNotificationText(stageResult, item) || `平台需求进入：${item.status}`,
     skipDuplicate: false,
-  });
+      });
 
   return jsonResponse({
     item,
+    ...(queuedFollowupRerun
+      ? {
+          queuedFollowupRerun: {
+            skipped: queuedFollowupRerun.skipped || false,
+            reason: queuedFollowupRerun.reason || null,
+            workerStarted: queuedFollowupRerun.workerStart?.started ?? null,
+          },
+        }
+      : {}),
     ...(slackStatusNotification ? { slackStatusNotification } : {}),
   });
 }
