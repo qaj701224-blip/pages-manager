@@ -136,6 +136,88 @@ function buildCompanyChatCompletionsBody(config, messages, options = {}) {
   return requestBody;
 }
 
+function truncateText(text, maxLength) {
+  const value = String(text || '').trim();
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
+function normalizeStringArray(value, maxItems, maxLength) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => truncateText(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function fallbackMergeSummary(input = {}) {
+  const title = truncateText(input.prTitle || input.title || `PR #${input.prNumber || ''} 已合并`, 90);
+  return {
+    headline: title.replace(/^[a-z]+(?:\([^)]+\))?!?:\s*/i, '') || title,
+    summaryBullets: [
+      `合并了 PR #${input.prNumber || 'unknown'}：${title}。`,
+      `目标分支：${input.baseRef || 'unknown'}。`,
+      '更多背景、review 记录和完整 diff 请查看 PR。',
+    ],
+    impact: '影响范围请以 PR 描述和 changed files 为准。',
+    risk: '未生成模型风险摘要。',
+    tags: [input.baseRef, input.repoFullName].filter(Boolean).slice(0, 5),
+  };
+}
+
+function buildMergeSummaryMessages(input = {}) {
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 XD Pages 的 PR 合并公告摘要助手。',
+        '只输出严格 JSON，不要 Markdown、HTML、代码块或解释文字。',
+        '不要输出 token、secret、cookie、authorization、内部 prompt、完整 diff、完整日志或 provider debug 字段。',
+        'JSON schema: {"headline":string,"summaryBullets":string[3-5],"impact":string,"risk":string,"tags":string[]}',
+        'headline 最多 80 个中文字符；summaryBullets 每条最多 180 个中文字符；tags 最多 5 个。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        task: 'merge_announcement_summary',
+        repoFullName: input.repoFullName || null,
+        prNumber: input.prNumber || null,
+        prTitle: input.prTitle || null,
+        prUrl: input.prUrl || null,
+        baseRef: input.baseRef || null,
+        headRef: input.headRef || null,
+        authorLogin: input.authorLogin || null,
+        mergedByLogin: input.mergedByLogin || null,
+        mergeCommitSha: input.mergeCommitSha || null,
+        changedFiles: input.changedFiles || null,
+        additions: input.additions || null,
+        deletions: input.deletions || null,
+        prBodyExcerpt: truncateText(input.bodyExcerpt || input.prBodyExcerpt || '', 1200),
+      }),
+    },
+  ];
+}
+
+function normalizeMergeSummary(rawSummary = {}, fallback = {}) {
+  const headline = truncateText(rawSummary.headline || rawSummary.title || fallback.headline, 80);
+  const summaryBullets = normalizeStringArray(
+    rawSummary.summaryBullets || rawSummary.summary_bullets || rawSummary.bullets,
+    5,
+    180
+  );
+  const tags = normalizeStringArray(rawSummary.tags, 5, 32);
+  return {
+    headline: headline || fallback.headline,
+    summaryBullets: summaryBullets.length >= 3 ? summaryBullets : fallback.summaryBullets,
+    impact: truncateText(rawSummary.impact || fallback.impact, 220),
+    risk: truncateText(rawSummary.risk || fallback.risk, 220),
+    tags: tags.length ? tags : fallback.tags || [],
+    modelProvider: rawSummary.modelProvider,
+    modelName: rawSummary.modelName,
+    modelApiStyle: rawSummary.modelApiStyle,
+  };
+}
+
 function extractGatewayAnalysis(body) {
   if (body?.analysis && typeof body.analysis === 'object') return body.analysis;
   if (body?.result?.analysis && typeof body.result.analysis === 'object') return body.result.analysis;
@@ -475,6 +557,71 @@ export async function analyzeSlackRequirementWithProvider(input = {}, options = 
   } catch (err) {
     logSlackAgentModelCall({
       input,
+      config,
+      messages,
+      status: 'error',
+      durationMs: Date.now() - startedAt,
+      error: err,
+    });
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function summarizeMergeAnnouncementWithProvider(input = {}, options = {}) {
+  const config = options.config || {};
+  const fallback = fallbackMergeSummary(input);
+  if (config.modelProvider === 'deterministic') {
+    return {
+      ...fallback,
+      source: 'deterministic',
+      modelProvider: 'deterministic',
+      modelApiStyle: 'deterministic',
+    };
+  }
+
+  const fetchImpl = options.fetchImpl || fetch;
+  const timeoutMs = Number(config.mergeSummaryTimeoutMs || config.requestTimeoutMs || 30_000);
+  const controller = new globalThis.AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  const messages = buildMergeSummaryMessages(input);
+
+  try {
+    const rawSummary = await callCompanyOpenAiGateway({
+      config: {
+        ...config,
+        modelName: config.mergeSummaryModel || config.modelName,
+      },
+      messages,
+      fetchImpl,
+      signal: controller.signal,
+    });
+
+    if (!rawSummary) {
+      throw modelError('Slack Agent merge summary response did not contain a JSON object', 502);
+    }
+
+    const summary = {
+      ...normalizeMergeSummary(rawSummary, fallback),
+      source: 'agent',
+      modelProvider: config.modelProvider || 'company-agent',
+      modelName: config.mergeSummaryModel || config.modelName || null,
+      modelApiStyle: 'company-openai-compatible',
+    };
+    logSlackAgentModelCall({
+      input: { ...input, text: input.prTitle || '' },
+      config,
+      messages,
+      status: 'ok',
+      durationMs: Date.now() - startedAt,
+      analysis: { intent: 'merge_announcement_summary', needsClarification: false },
+    });
+    return summary;
+  } catch (err) {
+    logSlackAgentModelCall({
+      input: { ...input, text: input.prTitle || '' },
       config,
       messages,
       status: 'error',

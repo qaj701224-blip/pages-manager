@@ -210,6 +210,30 @@ describe('slack agent', () => {
     assert.equal(lines[2].analysis.needsClarification, true);
   });
 
+  it('returns a scoped merge announcement summary without Slack session state', async () => {
+    const app = createSlackAgentApp({ config: { modelProvider: 'deterministic', sharedSecret: 'secret' } });
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/merge-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
+        body: JSON.stringify({
+          repoFullName: 'org/pages-manager',
+          prNumber: 82,
+          prTitle: 'feat(slack): 完善任务诊断入口',
+          baseRef: 'master',
+        }),
+      })
+    );
+    const body = await response.json();
+    const visible = JSON.stringify(body.summary);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.summary.source, 'deterministic');
+    assert.equal(body.summary.summaryBullets.length, 3);
+    assert.doesNotMatch(visible, /\bslackSessionId|agentRunId|gateway|worker|mysql|status card\b/i);
+  });
+
   it('prefers shared company gateway config names while keeping legacy Slack names as fallback', () => {
     const config = readSlackAgentConfig({
       AGENT_MODEL_PROVIDER: 'company-agent',

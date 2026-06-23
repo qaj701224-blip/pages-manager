@@ -5746,6 +5746,256 @@ test('GitHub pull_request webhook marks closed PR inactive and restores reopened
   assert.equal(reopenedBody.job.errorMessage, null);
 });
 
+function mergedPullRequestPayload(patch = {}) {
+  return {
+    action: 'closed',
+    repository: {
+      full_name: 'org/pages-manager',
+      html_url: 'https://github.example/org/pages-manager',
+    },
+    pull_request: {
+      number: 82,
+      state: 'closed',
+      merged: true,
+      title: 'feat(slack): 完善任务诊断入口',
+      body: '让 Slack 可以解释任务卡在哪一步。',
+      html_url: 'https://github.example/org/pages-manager/pull/82',
+      merge_commit_sha: 'b'.repeat(40),
+      changed_files: 6,
+      additions: 120,
+      deletions: 24,
+      user: { login: 'alice' },
+      merged_by: { login: 'bob' },
+      base: { ref: 'master' },
+      head: { ref: 'feat/slack-diagnostics', sha: 'a'.repeat(40) },
+      ...patch,
+    },
+  };
+}
+
+async function postPullRequestWebhook(app, deliveryId, payload, env = {}) {
+  const waitUntilPromises = [];
+  const runtimeEnv = {
+    ...env,
+    waitUntil(promise) {
+      waitUntilPromises.push(promise);
+      return env.waitUntil?.(promise);
+    },
+  };
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': deliveryId,
+        'X-GitHub-Event': 'pull_request',
+      },
+      body: JSON.stringify(payload),
+    }),
+    runtimeEnv,
+    { waitUntil: runtimeEnv.waitUntil }
+  );
+  await Promise.all(waitUntilPromises);
+  return response;
+}
+
+test('GitHub merged PR webhook queues and posts one Slack merge announcement', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const response = await postPullRequestWebhook(app, 'delivery-merge-announcement-1', mergedPullRequestPayload(), {
+    ...mockSlackNotifier(notifierCalls),
+    GITHUB_REPO: 'org/pages-manager',
+    MERGE_ANNOUNCEMENT_ENABLED: 'true',
+    MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+  });
+  const body = await json(response);
+  const messageCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
+  const slackPayload = messageCall?.body?.payload || {};
+  const visibleText = JSON.stringify(slackPayload);
+  const events = [...app.store.agentRunEvents.values()].filter((event) => event.type === 'merge_announcement');
+  const runs = [...app.store.agentRuns.values()].filter((run) => run.agentKind === 'merge_announcement');
+
+  assert.equal(response.status, 200);
+  assert.equal(body.mergeAnnouncement.queued, true);
+  assert.equal(body.ignored, 'job_not_found');
+  assert.equal(notifierCalls.length, 1);
+  assert.equal(slackPayload.channel, 'C-MERGES');
+  assert.match(slackPayload.text, /PR 已合并/);
+  assert.match(visibleText, /查看 PR/);
+  assert.match(visibleText, /alice/);
+  assert.match(visibleText, /bob/);
+  assert.match(visibleText, /master/);
+  assert.match(visibleText, /bbbbbbb/);
+  assert.doesNotMatch(visibleText, /\b(gateway|worker|mysql|status card|job id|callback)\b/i);
+  assert.equal(events.some((event) => event.stage === 'pending'), true);
+  assert.equal(events.some((event) => event.stage === 'sent' && event.slackMessageTs), true);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].status, 'completed');
+  assert.equal(runs[0].report.summarySource, 'fallback_missing_agent_config');
+});
+
+test('GitHub merged PR webhook uses Slack Agent merge summary when configured', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const agentCalls = [];
+  const response = await postPullRequestWebhook(app, 'delivery-merge-announcement-agent-1', mergedPullRequestPayload(), {
+    ...mockSlackNotifier(notifierCalls),
+    GITHUB_REPO: 'org/pages-manager',
+    MERGE_ANNOUNCEMENT_ENABLED: 'true',
+    MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+    SLACK_AGENT_MERGE_SUMMARY_URL: 'http://slack-agent.test/internal/slack-agent/merge-summary',
+    SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+    async SLACK_AGENT_FETCH(url, request) {
+      agentCalls.push({ url: String(url), request, body: JSON.parse(request.body) });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          summary: {
+            headline: '完善 Slack 任务诊断入口',
+            summaryBullets: ['补齐任务诊断入口。', '解释 issue、PR 和 preview 断点。', '增加受控重试和追加诊断入口。'],
+            impact: '影响 Slack 内的平台任务诊断体验。',
+            risk: '低风险，未改变生产部署路径。',
+            tags: ['slack', 'diagnostics'],
+          },
+        })
+      );
+    },
+  });
+  const body = await json(response);
+  const slackPayload = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message')?.body?.payload || {};
+  const visibleText = JSON.stringify(slackPayload);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.mergeAnnouncement.queued, true);
+  assert.equal(agentCalls.length, 1);
+  assert.equal(agentCalls[0].request.headers['X-Pages-Slack-Agent-Token'], 'agent-secret');
+  assert.equal(agentCalls[0].body.prNumber, 82);
+  assert.match(visibleText, /补齐任务诊断入口/);
+  assert.match(visibleText, /未改变生产部署路径/);
+  assert.doesNotMatch(visibleText, /\b(gateway|worker|mysql|status card|job id|callback)\b/i);
+  assert.equal([...app.store.agentRuns.values()].find((run) => run.agentKind === 'merge_announcement')?.report.summarySource, 'agent');
+});
+
+test('GitHub merged PR webhook falls back when Slack Agent merge summary fails', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const response = await postPullRequestWebhook(app, 'delivery-merge-announcement-agent-fallback', mergedPullRequestPayload(), {
+    ...mockSlackNotifier(notifierCalls),
+    GITHUB_REPO: 'org/pages-manager',
+    MERGE_ANNOUNCEMENT_ENABLED: 'true',
+    MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+    SLACK_AGENT_MERGE_SUMMARY_URL: 'http://slack-agent.test/internal/slack-agent/merge-summary',
+    SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+    async SLACK_AGENT_FETCH() {
+      return new Response(JSON.stringify({ ok: false, error: 'model timeout' }), { status: 504 });
+    },
+  });
+  const body = await json(response);
+  const slackPayload = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message')?.body?.payload || {};
+  const visibleText = JSON.stringify(slackPayload);
+  const events = [...app.store.agentRunEvents.values()].filter((event) => event.type === 'merge_announcement');
+
+  assert.equal(response.status, 200);
+  assert.equal(body.mergeAnnouncement.queued, true);
+  assert.match(visibleText, /合并了 PR #82/);
+  assert.equal(events.some((event) => event.stage === 'summary_fallback' && /model timeout|Gateway Timeout/.test(event.text)), true);
+  assert.equal(events.some((event) => event.stage === 'sent'), true);
+});
+
+test('GitHub merged PR webhook dedupes merge announcement by repo PR and merge sha', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const env = {
+    ...mockSlackNotifier(notifierCalls),
+    GITHUB_REPO: 'org/pages-manager',
+    MERGE_ANNOUNCEMENT_ENABLED: 'true',
+    MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+  };
+  const first = await postPullRequestWebhook(app, 'delivery-merge-announcement-dedupe-1', mergedPullRequestPayload(), env);
+  const second = await postPullRequestWebhook(app, 'delivery-merge-announcement-dedupe-2', mergedPullRequestPayload(), env);
+  const firstBody = await json(first);
+  const secondBody = await json(second);
+
+  assert.equal(firstBody.mergeAnnouncement.queued, true);
+  assert.equal(secondBody.mergeAnnouncement.queued, false);
+  assert.equal(secondBody.mergeAnnouncement.ignored, 'duplicate_merge_announcement');
+  assert.equal(notifierCalls.filter((call) => call.path === '/internal/slack-notifier/message').length, 1);
+});
+
+test('GitHub merged PR webhook skips merge announcement when disabled or base ref is not allowed', async () => {
+  const disabledApp = createGatewayApp();
+  const disabledCalls = [];
+  const disabled = await postPullRequestWebhook(disabledApp, 'delivery-merge-announcement-disabled', mergedPullRequestPayload(), {
+    ...mockSlackNotifier(disabledCalls),
+    GITHUB_REPO: 'org/pages-manager',
+    MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+  });
+  const disabledBody = await json(disabled);
+
+  const stagingApp = createGatewayApp();
+  const stagingCalls = [];
+  const staging = await postPullRequestWebhook(
+    stagingApp,
+    'delivery-merge-announcement-staging',
+    mergedPullRequestPayload({ base: { ref: 'staging' } }),
+    {
+      ...mockSlackNotifier(stagingCalls),
+      GITHUB_REPO: 'org/pages-manager',
+      MERGE_ANNOUNCEMENT_ENABLED: 'true',
+      MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+    }
+  );
+  const stagingBody = await json(staging);
+
+  assert.equal(disabledBody.mergeAnnouncement.queued, false);
+  assert.equal(disabledBody.mergeAnnouncement.ignored, 'disabled');
+  assert.equal(disabledCalls.length, 0);
+  assert.equal(stagingBody.mergeAnnouncement.queued, false);
+  assert.equal(stagingBody.mergeAnnouncement.ignored, 'base_ref_not_allowed');
+  assert.equal(stagingCalls.length, 0);
+});
+
+test('GitHub merged site publishing PR skips fixed-channel merge announcement by default', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'site-merge-announcement-skip',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  app.store.patchJob(createBody.job.id, {
+    status: 'preview_deployed',
+    prNumber: 82,
+    prUrl: 'https://github.example/org/pages-manager/pull/82',
+    headSha: 'a'.repeat(40),
+  });
+
+  const response = await postPullRequestWebhook(app, 'delivery-merge-announcement-site-skip', mergedPullRequestPayload(), {
+    ...mockSlackNotifier(notifierCalls),
+    GITHUB_REPO: 'org/pages-manager',
+    MERGE_ANNOUNCEMENT_ENABLED: 'true',
+    MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+  });
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, 'merged_pr');
+  assert.equal(body.mergeAnnouncement, undefined);
+  assert.equal(notifierCalls.length, 0);
+});
+
 test('late issue_created callback is idempotent after GitHub issue webhook started pages-agent', async () => {
   const app = createGatewayApp();
   const createBody = await json(

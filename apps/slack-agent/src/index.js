@@ -2,7 +2,11 @@ import { jsonResponse } from '@xd/worker-kit';
 
 import { analyzeSlackRequirementDeterministic, buildSlackAgentTurn } from './analysis.js';
 import { readSlackAgentConfig } from './config.js';
-import { analyzeSlackRequirementWithProvider, streamSlackAgentTurnEvents } from './model-provider.js';
+import {
+  analyzeSlackRequirementWithProvider,
+  streamSlackAgentTurnEvents,
+  summarizeMergeAnnouncementWithProvider,
+} from './model-provider.js';
 
 async function readJson(request) {
   const text = await request.text();
@@ -98,6 +102,13 @@ export function createSlackAgentApp(options = {}) {
           }
           const turn = await runSlackAgentTurn(body, { config, fetchImpl });
           return jsonResponse({ ok: true, turn, analysis: turn.analysis });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-agent/merge-summary') {
+          requireAgentAuth(request, config);
+          const body = await readJson(request);
+          const summary = await summarizeMergeAnnouncementWithProvider(body, { config, fetchImpl });
+          return jsonResponse({ ok: true, summary });
         }
 
         return jsonResponse({ error: 'Endpoint not found', method: request.method, path: url.pathname }, 404);
