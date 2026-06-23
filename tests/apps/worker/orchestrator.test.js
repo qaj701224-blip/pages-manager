@@ -226,7 +226,7 @@ test('platform dev high risk item dispatches platform-agent workflow after gate 
   );
 });
 
-test('platform dev fix item appends issue comment and dispatches platform-agent fix workflow', async () => {
+test('platform dev fix item dispatches platform-agent fix workflow without duplicating follow-up issue comment', async () => {
   const callbacks = [];
   const result = await runWorkerForWorkItem(
     {
@@ -259,14 +259,7 @@ test('platform dev fix item appends issue comment and dispatches platform-agent 
             { status: 200 }
           );
         }
-        if (String(url).endsWith('/repos/org/pages-manager/issues/32/comments')) {
-          const body = JSON.parse(request.body).body;
-          assert.match(body, /追加说明/);
-          assert.match(body, /Agent mode: fix/);
-          return new Response(JSON.stringify({ id: 901, html_url: 'https://github.example/issues/32#comment-901' }), {
-            status: 201,
-          });
-        }
+        assert.doesNotMatch(String(url), /\/repos\/org\/pages-manager\/issues\/32\/comments$/);
         if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
           const body = JSON.parse(request.body);
           assert.equal(body.inputs.mode, 'fix');
@@ -284,7 +277,7 @@ test('platform dev fix item appends issue comment and dispatches platform-agent 
   );
 
   assert.equal(result.action, 'platform_agent_fix_dispatched');
-  assert.equal(result.issueComment.id, 901);
+  assert.equal(result.issueComment, undefined);
   assert.deepEqual(
     callbacks.map((payload) => payload.stageResult),
     ['agent_queued', 'agent_running']

@@ -1,5 +1,4 @@
 import {
-  appendPlatformDevFollowupIssueComment,
   buildPlatformAgentInputs,
   dispatchWorkflow,
   ensurePlatformDevIssue,
@@ -56,14 +55,6 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
 
   const itemWithIssue = { ...item, githubIssueNumber: issueNumber, githubIssueUrl: issueUrl };
   const mode = platformAgentMode(itemWithIssue);
-  const issueComment =
-    mode === 'fix'
-      ? await appendPlatformDevFollowupIssueComment(fetchImpl, github, itemWithIssue, {
-          mode,
-          issueNumber,
-          gateApproved: itemWithIssue.gateStatus === 'approved' || itemWithIssue.requiresHumanGate === false,
-        })
-      : null;
   const workflow = await dispatchWorkflow(fetchImpl, github, {
     workflowId: 'platform-agent.yml',
     ref: config.platformWorkflowRef || config.workflowRef || 'master',
@@ -91,7 +82,6 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
     issueNumber,
     issueUrl,
     issueCreated: issueResult.created,
-    ...(issueComment ? { issueComment } : {}),
     workflow,
   };
 }
