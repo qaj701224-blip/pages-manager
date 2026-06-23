@@ -14,7 +14,9 @@ export async function listReconciledSlackWorkItemsForSession(store, body, env, o
   const reconciledJobs = [];
 
   for (const job of result.jobs || []) {
+    if (!job || typeof job !== 'object') continue;
     const reconciled = await reconcileClosedGithubIssueForJob(store, env, job);
+    if (!reconciled || typeof reconciled !== 'object') continue;
     const actionable = isActionableSlackWorkItem(reconciled);
     if (workItemState === 'closed' ? !actionable : slackWorkItemIncludesInactive(workItemState) || actionable) {
       reconciledJobs.push(reconciled);

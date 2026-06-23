@@ -8,6 +8,8 @@ const SWITCH_WORK_ITEM_RE =
   /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
 const REOPEN_WORK_ITEM_RE =
   /(?:重新打开|恢复|重开|reopen).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
+const DIAGNOSIS_QUERY_RE =
+  /(为什么|为啥|原因|失败|没成功|没有成功|没出来|卡住|卡在哪|卡在|诊断|排查|查一下|看一下|重试|查.*(?:日志|log|workflow|actions))/i;
 const ISSUE_NUMBER_RE = /(?:issue|issues|需求|任务)\s*#?\s*(\d{1,8})\b/i;
 const PR_NUMBER_RE = /\b(?:PR|pull\s*request|pull-request|pullrequest)\s*#?\s*(\d{1,8})\b/i;
 const BARE_WORK_ITEM_NUMBER_RE = /#(\d{1,8})\b/;
@@ -69,6 +71,7 @@ function toolCallForIntent(intent, text = '') {
     const reference = workItemReferenceFromText(text);
     return { name: 'reopen_work_item', args: reference ? { kind: reference.kind, number: reference.number } : {} };
   }
+  if (intent === 'diagnose_work_item') return { name: 'diagnose_current_work_item', args: { timeWindowMinutes: 30 } };
   if (intent === 'status_query') return { name: 'get_current_status', args: {} };
   if (intent === 'close_session') return { name: 'close_session', args: {} };
   if (intent === 'cancel_request') return { name: 'cancel_request', args: {} };
@@ -144,15 +147,19 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const shouldListWorkItems = !isUnsupportedBulkDestructive && LIST_WORK_ITEMS_RE.test(text);
   const shouldReopenWorkItem = !isUnsupportedBulkDestructive && REOPEN_WORK_ITEM_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
+  const shouldDiagnoseWorkItem =
+    !isUnsupportedBulkDestructive && !shouldListWorkItems && !shouldSwitchWorkItem && DIAGNOSIS_QUERY_RE.test(text);
   const shouldCreateOrUpdate =
     !isUnsupportedBulkDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
+    !shouldDiagnoseWorkItem &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const shouldCreatePlatform =
     !isUnsupportedBulkDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
+    !shouldDiagnoseWorkItem &&
     PLATFORM_KEYWORDS.test(text) &&
     (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
   const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
@@ -164,7 +171,9 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
         ? 'switch_work_item'
         : shouldListWorkItems
           ? 'list_work_items'
-          : intent;
+          : shouldDiagnoseWorkItem
+            ? 'diagnose_work_item'
+            : intent;
 
   return {
     lane: shouldCreatePlatform ? 'platform-dev' : shouldCreateOrUpdate ? 'site-publishing' : 'unknown',
@@ -183,7 +192,12 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
     sourceMessages: input.sourceMessages || input.source_messages || [],
     sessionContext: sessionContextFromInput(input),
-    needsClarification: !isUnsupportedBulkDestructive && !shouldListWorkItems && !shouldSwitchWorkItem && intent === 'clarify',
+    needsClarification:
+      !isUnsupportedBulkDestructive &&
+      !shouldListWorkItems &&
+      !shouldSwitchWorkItem &&
+      !shouldDiagnoseWorkItem &&
+      intent === 'clarify',
     clarifyingQuestion: isUnsupportedBulkDestructive ? unsupportedBulkDestructiveQuestion() : undefined,
   };
 }
@@ -392,9 +406,15 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
       '和该用户名下的 GitHub issue / PR。',
     ].join(' '),
     [
+      '当用户询问任务状态、为什么失败、为什么 Issue 后没有 PR、卡在哪一步、查日志、查 workflow、能否重试、',
+      '追加诊断或转人工排查时，intent 返回 diagnose_work_item，toolCall.name 返回 diagnose_current_work_item。',
+      'Slack 先返回诊断摘要和受控按钮；不要在自然语言 turn 里直接请求执行重试、追加诊断或转人工。',
+      '不要输出 gateway、worker、MySQL、status card、callback、job id 或原始日志。',
+    ].join(''),
+    [
       'toolCall.name 可选：list_my_work_items, switch_work_item, reopen_work_item, get_current_status,',
-      'close_session, unsupported_destructive_request, cancel_request, record_followup, confirm_create_issue,',
-      'confirm_platform_issue。',
+      'diagnose_current_work_item, close_session, unsupported_destructive_request, cancel_request, record_followup,',
+      'confirm_create_issue, confirm_platform_issue。',
     ].join(' '),
     [
       '不要请求查询或操作其它 Slack 用户、其它 session 或其它人的 GitHub issue / PR；',
@@ -415,8 +435,9 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     ].join(''),
     [
       'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
-      'list_work_items, switch_work_item, reopen_work_item, status_query, cancel_request, close_session,',
-      'unsupported_destructive_request, confirm_preview, clarify。',
+      'list_work_items, switch_work_item, reopen_work_item, diagnose_work_item, get_work_item_timeline,',
+      'explain_work_item_blocker, get_workflow_status, retry_work_item, append_diagnosis_comment, human_triage,',
+      'status_query, cancel_request, close_session, unsupported_destructive_request, confirm_preview, clarify。',
     ].join(' '),
   ].join('\n');
 

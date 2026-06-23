@@ -78,6 +78,14 @@ describe('slack agent', () => {
     assert.deepEqual(prAnalysis.toolCall, { name: 'reopen_work_item', args: { kind: 'pr', number: 68 } });
   });
 
+  it('routes natural diagnosis questions to the current work item diagnosis tool', () => {
+    const analysis = analyzeSlackRequirement({ text: '为什么 issue 创建了 PR 没出来？帮我查一下日志' });
+
+    assert.equal(analysis.intent, 'diagnose_work_item');
+    assert.equal(analysis.needsClarification, false);
+    assert.deepEqual(analysis.toolCall, { name: 'diagnose_current_work_item', args: { timeWindowMinutes: 30 } });
+  });
+
   it('includes session context for model-driven turns', () => {
     const analysis = analyzeSlackRequirement({
       text: '继续修改 preview',
