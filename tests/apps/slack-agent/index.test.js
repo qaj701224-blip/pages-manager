@@ -168,6 +168,36 @@ describe('slack agent', () => {
     assert.deepEqual(analysis.toolCall, { name: 'list_my_work_items', args: { state: 'closed' } });
   });
 
+  it('treats issue list questions as all work item queries', () => {
+    const analysis = analyzeSlackRequirement({ text: '目前我的 issue 有哪几个？' });
+
+    assert.equal(analysis.intent, 'list_work_items');
+    assert.equal(analysis.workItemState, 'all');
+    assert.equal(analysis.needsClarification, false);
+    assert.deepEqual(analysis.toolCall, { name: 'list_my_work_items', args: { state: 'all' } });
+  });
+
+  it('continues previous work item list context for short follow-up questions', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '只有这一个么？',
+      sessionMemory: {
+        lastWorkItemList: {
+          action: 'list_work_items',
+          workItemState: 'all',
+          total: 2,
+          shown: [{ issueNumber: 88 }, { issueNumber: 89 }],
+        },
+      },
+    });
+
+    assert.equal(analysis.intent, 'list_work_items');
+    assert.equal(analysis.workItemState, 'all');
+    assert.equal(analysis.needsClarification, false);
+    assert.equal(analysis.sessionContext.lastWorkItemList.total, 2);
+    assert.equal(analysis.sessionContext.lastWorkItemList.shownCount, 2);
+    assert.deepEqual(analysis.toolCall, { name: 'list_my_work_items', args: { state: 'all' } });
+  });
+
   it('keeps issue and PR switch targets distinct', () => {
     const issueAnalysis = analyzeSlackRequirement({ text: '继续 issue #60' });
     const prAnalysis = analyzeSlackRequirement({ text: '继续 PR #68' });

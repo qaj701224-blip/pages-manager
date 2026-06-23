@@ -1,6 +1,7 @@
 const CLOSED_WORK_ITEM_QUERY_RE =
   /(?:已关闭|关闭的|关掉的|被关闭|已取消|取消的|已失败|失败的|归档|closed|cancelled|canceled|failed|inactive)/i;
 const ALL_WORK_ITEM_QUERY_RE = /(?:历史|全部|所有|所有的|全量|all|history|historical)/i;
+const ISSUE_LIST_QUERY_RE = /(?:issue|issues|需求).*(?:几个|多少|列表|清单|有哪些|有几个)|(?:几个|多少|哪些).*(?:issue|issues|需求)/i;
 
 export function normalizeSlackWorkItemQueryState(value = '') {
   const text = String(value || '')
@@ -14,7 +15,7 @@ export function normalizeSlackWorkItemQueryState(value = '') {
 export function slackWorkItemQueryStateFromText(text = '') {
   const value = String(text || '');
   if (CLOSED_WORK_ITEM_QUERY_RE.test(value)) return 'closed';
-  if (ALL_WORK_ITEM_QUERY_RE.test(value)) return 'all';
+  if (ALL_WORK_ITEM_QUERY_RE.test(value) || ISSUE_LIST_QUERY_RE.test(value)) return 'all';
   return 'active';
 }
 
