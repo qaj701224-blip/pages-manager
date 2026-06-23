@@ -4,6 +4,13 @@ function shouldStartWorkerForJob(job) {
   return job.status === 'received' || job.status === 'generating_page' || job.status === 'fixing' || job.status === 'previewing';
 }
 
+function shouldStartWorkerForPlatformDevItem(item = {}) {
+  if (item.status === 'received') return true;
+  if (!item.agentEligible) return false;
+  if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
+  return ['issue_created', 'agent_queued'].includes(item.status);
+}
+
 async function readResponseJson(response) {
   try {
     return await response.json();
@@ -67,4 +74,36 @@ export async function startWorkerForJobIfConfigured(job, env) {
   }
 
   return result;
+}
+
+export async function startWorkerForPlatformDevItemIfConfigured(item, env) {
+  if (!env.PAGES_WORKER_START_URL || !shouldStartWorkerForPlatformDevItem(item)) return null;
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (env.PAGES_WORKER_SHARED_SECRET) {
+    headers['X-Pages-Worker-Token'] = env.PAGES_WORKER_SHARED_SECRET;
+  }
+
+  const fetchImpl = env.WORKER_FETCH || fetch;
+  const response = await fetchImpl(env.PAGES_WORKER_START_URL, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ workItemKind: 'platform_dev', platformDevItem: item }),
+  });
+  const body = await readResponseJson(response);
+
+  if (!response.ok || body?.ok === false) {
+    return {
+      started: false,
+      error: body?.error || response.statusText || `HTTP ${response.status}`,
+    };
+  }
+
+  return {
+    started: true,
+    response: body,
+  };
 }

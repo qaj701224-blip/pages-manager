@@ -121,6 +121,9 @@ function slackResultType(result = {}) {
   if (result.action === 'status' || result.action === 'status_query') return 'status_returned';
   if (result.action === 'list_work_items' || String(result.action || '').startsWith('switch_work_item')) return 'status_returned';
   if (String(result.action || '').startsWith('followup_')) return 'followup_appended';
+  if (result.platformDevItemId || result.workItemKind === 'platform_dev') {
+    return result.action === 'create_platform_issue' ? 'platform_issue_created' : 'platform_gate_pending';
+  }
   if (result.jobId) return 'job_created';
   if (result.replyText) return 'agent_replied';
   return 'none';
@@ -143,6 +146,9 @@ export function slackDeliveryPatchForResult(result = {}, overrides = {}) {
     errorMessage: overrides.errorMessage || null,
     slackSessionId: result.slackSessionId || null,
     publishingJobId: result.jobId || null,
+    workItemKind: result.workItemKind || null,
+    workItemId: result.workItemId || result.platformDevItemId || null,
+    platformDevItemId: result.platformDevItemId || null,
     agentRunId: result.agentRunId || null,
     ...(overrides.payloadRedacted ? { payloadRedacted: overrides.payloadRedacted } : {}),
   };

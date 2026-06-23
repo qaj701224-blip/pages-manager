@@ -1,5 +1,6 @@
 const DEFAULT_GITHUB_API_BASE_URL = 'https://api.github.com';
 const JOB_MARKER_PREFIX = 'PublishingJob:';
+const PLATFORM_DEV_MARKER_PREFIX = 'PlatformDevItem:';
 const SMOKE_MARKER_PREFIX = 'PagesSmokeIssue:';
 
 export function parseRepoFullName(repoFullName) {
@@ -81,6 +82,10 @@ export function publishingJobMarker(jobId) {
   return `${JOB_MARKER_PREFIX} ${jobId}`;
 }
 
+export function platformDevItemMarker(itemId) {
+  return `${PLATFORM_DEV_MARKER_PREFIX} ${itemId}`;
+}
+
 export function smokeIssueMarker(scope) {
   return `${SMOKE_MARKER_PREFIX} ${scope}`;
 }
@@ -142,6 +147,23 @@ function automationMetadataLines(job, options = {}) {
   ];
 }
 
+function platformDevAutomationMetadataLines(item, options = {}) {
+  return [
+    platformDevItemMarker(item.id),
+    `Lane: platform-dev`,
+    `Source: ${item.source}`,
+    `Requested by: ${item.requestedByType}:${item.requestedById}`,
+    `IssueType: ${item.issueType}`,
+    `Areas: ${(item.areas || []).join(', ')}`,
+    `Risk: ${item.risk}`,
+    `AgentEligible: ${item.agentEligible ? 'true' : 'false'}`,
+    `RequiresHumanGate: ${item.requiresHumanGate ? 'true' : 'false'}`,
+    `Base ref: ${options.baseRef || ''}`,
+    'Pipeline: platform development',
+    'Site publishing: out of scope',
+  ];
+}
+
 export function buildPublishingIssue(job, options = {}) {
   const allowedPath = options.allowedPath || allowedPathForJob(job);
   const title = `[pages] ${job.employeeSlug}/${job.siteSlug}：${job.title || job.intent || '站点发布需求'}`;
@@ -191,6 +213,73 @@ export function buildPublishingIssue(job, options = {}) {
       ...automationMetadataLines(job, options),
       '```',
     ].join('\n'),
+  };
+}
+
+export function buildPlatformDevIssue(item, options = {}) {
+  const issueType = item.issueType || 'type:dev';
+  const areas = Array.isArray(item.areas) && item.areas.length ? item.areas : ['area:platform'];
+  const risk = item.risk || 'risk:medium';
+  const title = `[pages-platform] ${item.title || '平台改造需求'}`;
+  const summary = safeText(item.summary || item.brief, '未提供需求摘要。');
+
+  return {
+    title,
+    labels: options.labels || ['pages-platform-dev', issueType, risk, ...areas],
+    body: [
+      `<!-- pages-manager:platform_dev_item_id=${item.id} -->`,
+      '',
+      '## 类型',
+      '',
+      issueType,
+      '',
+      '## 背景 / 用户原话',
+      '',
+      summary,
+      '',
+      '## 目标',
+      '',
+      safeText(item.title, 'pages-manager 平台能力改造'),
+      '',
+      '## 范围',
+      '',
+      '- Lane: platform-dev',
+      `- Areas: ${areas.join(', ')}`,
+      '- Repo 范围：全目录，按风险 gate、CI、review 和 GitHub Rulesets 控制。',
+      '',
+      '## 验收标准',
+      '',
+      '- PR 只包含和本 issue 直接相关的代码、测试、文档或工作流改动。',
+      '- 修改必须有对应测试或清晰的验证说明。',
+      '- 不提交 secret、真实 token、本地 env、构建缓存或大文件。',
+      '- 涉及 CI/CD、K8s、Dockerfile、生产部署、权限或 token 流程时，必须等待人工确认后再进入自动开发。',
+      '',
+      '## 风险',
+      '',
+      risk,
+      '',
+      '## 自动化策略',
+      '',
+      `- agentEligible: ${item.agentEligible ? 'true' : 'false'}`,
+      `- requiresHumanGate: ${item.requiresHumanGate ? 'true' : 'false'}`,
+      item.gateReason ? `- gateReason: ${item.gateReason}` : null,
+      '',
+      '## 发起人',
+      '',
+      ...requesterLines(item),
+      '',
+      '## 来源上下文',
+      '',
+      ...sourceLines(item),
+      '',
+      '## 自动化元数据',
+      '',
+      '```text',
+      ...platformDevAutomationMetadataLines(item, options),
+      '```',
+    ]
+      .filter((line) => line !== null)
+      .join('\n'),
   };
 }
 
@@ -310,6 +399,27 @@ export function buildPagesPreviewInputs(job, options = {}) {
   };
 }
 
+export function buildPlatformAgentInputs(item, options = {}) {
+  const gateApproved =
+    options.gateApproved !== undefined
+      ? Boolean(options.gateApproved)
+      : item.gateStatus === 'approved' || item.requiresHumanGate === false;
+  return {
+    platformDevItemId: item.id,
+    mode: options.mode || 'initial',
+    issueNumber: String(options.issueNumber || item.githubIssueNumber || ''),
+    requestTitle: item.title || '',
+    requestSummary: item.summary || item.brief || '',
+    issueType: item.issueType || 'type:dev',
+    areas: (item.areas || []).join(','),
+    risk: item.risk || 'risk:medium',
+    gateApproved: gateApproved ? 'true' : 'false',
+    baseRef: options.baseRef || item.baseRef || '',
+    branchName: options.branchName || item.branchName || '',
+    callbackUrl: options.callbackUrl || '',
+  };
+}
+
 export async function searchIssues(fetchImpl, config, query) {
   const url = githubApiUrl(config, '/search/issues', { q: query, per_page: 5 });
   const result = await githubRequest(fetchImpl, config, { url, method: 'GET' });
@@ -331,6 +441,10 @@ export async function findIssueByBodyMarker(fetchImpl, config, marker, options =
 
 export async function findIssueByPublishingJob(fetchImpl, config, jobId) {
   return findIssueByBodyMarker(fetchImpl, config, publishingJobMarker(jobId));
+}
+
+export async function findIssueByPlatformDevItem(fetchImpl, config, itemId) {
+  return findIssueByBodyMarker(fetchImpl, config, platformDevItemMarker(itemId));
 }
 
 export async function createIssue(fetchImpl, config, issue) {
@@ -374,6 +488,21 @@ export async function ensurePublishingIssue(fetchImpl, config, job, options = {}
   if (existing) return { issue: existing, created: false };
 
   const issueInput = buildPublishingIssue(job, options);
+  let issue;
+  try {
+    issue = await createIssue(fetchImpl, config, issueInput);
+  } catch (err) {
+    if (!shouldRetryIssueWithoutLabels(err, issueInput)) throw err;
+    issue = await createIssue(fetchImpl, config, { ...issueInput, labels: [] });
+  }
+  return { issue, created: true };
+}
+
+export async function ensurePlatformDevIssue(fetchImpl, config, item, options = {}) {
+  const existing = await findIssueByPlatformDevItem(fetchImpl, config, item.id);
+  if (existing) return { issue: existing, created: false };
+
+  const issueInput = buildPlatformDevIssue(item, options);
   let issue;
   try {
     issue = await createIssue(fetchImpl, config, issueInput);

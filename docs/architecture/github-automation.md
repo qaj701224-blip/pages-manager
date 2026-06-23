@@ -4,9 +4,9 @@
 
 ## 当前定位
 
-`pages-manager` 的 issue、PR、review、site-check、workflow dispatch 和 preview gate 都在 `xindong/pages-manager` 仓库内闭环。
+`pages-manager` 的 issue、PR、review、site-check、workflow dispatch、preview gate 和平台自身开发 PR 都在 `xindong/pages-manager` 仓库内闭环。
 
-用户不需要拥有这个 repo 的 GitHub 写权限才能通过 Slack 发起发布。GitHub 写操作由平台身份完成，Slack 用户身份只用于 gateway 内部权限判断、审计和站点归属派生。
+用户不需要拥有这个 repo 的 GitHub 写权限才能通过 Slack 发起站点发布或平台开发 issue。GitHub 写操作由平台身份完成，Slack 用户身份只用于 gateway 内部权限判断、审计、站点归属派生和平台 issue 请求人记录。
 
 当前代码路径：
 
@@ -18,6 +18,7 @@
 | GitHub delivery / review / site-check 入库 | `apps/gateway/src/db/repositories/github-deliveries.js`、`apps/gateway/src/db/repositories/review-gates.js` |
 | GitHub issue / workflow dispatch           | `apps/worker/src/jobs/issue-and-index.js`、`apps/worker/src/jobs/coding-agent.js`、`packages/git-client/src/` |
 | Coding Agent workflow                      | `.github/workflows/pages-agent.yml`                                                                         |
+| Platform Dev Coding Agent workflow         | `.github/workflows/platform-agent.yml`                                                                      |
 | Project index workflow                     | `.github/workflows/project-index.yml`                                                                       |
 | 站点 required check                        | `.github/workflows/site-check.yml`                                                                          |
 | Preview workflow 兼容路径                  | `.github/workflows/pages-preview.yml`                                                                       |
@@ -71,6 +72,14 @@
 
 这些 workflow 只处理 `PublishingJob` 和 `sites/<employeeSlug>/<siteSlug>/`。它们不能读取 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、Slack bot token 或 production Cloudflare token。
 
+平台研发执行器 workflow：
+
+```text
+.github/workflows/platform-agent.yml
+```
+
+这条 workflow 只处理 `lane:platform-dev` issue。它可以在受控分支上修改 `pages-manager` repo 全目录，但不能读取 Slack bot token、生产部署 secret、Aliyun AK、ACR、`KUBE_CONFIG_B64` 或自动 merge token。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关变更必须走高风险 gate 和人工 review。
+
 当前执行边界：
 
 ```text
@@ -83,6 +92,20 @@ Slack / API
   -> site-check.yml 和 GitHub Review Agent 产生结果
   -> GitHub webhook 回到 gateway
   -> Review gate 通过后由 worker 触发 preview
+```
+
+Platform Dev Lane 执行边界：
+
+```text
+Slack / API
+  -> apps/gateway 分类 issue type / area / risk
+  -> apps/gateway 创建 PlatformDevItem / work item link / risk gate
+  -> apps/worker 创建 pages-manager issue + label
+  -> gateway 判断 agent eligible / gate approved / blocked
+  -> apps/worker dispatch platform-agent.yml
+  -> platform-agent.yml 修改 repo 全目录内相关文件并创建 PR
+  -> GitHub CI / review / webhook 回到 gateway
+  -> gateway / slack-notifier 回写 PR、CI、review、merge / close 状态
 ```
 
 当前 ECS 验证路径使用 `PAGES_PREVIEW_MODE=local_deploy`：`pages-worker` 从 PR head 读取目标站点文件，并用固定 ECS 出口调用 Cloudflare staging `/deploy`。这样避免 GitHub-hosted runner 的动态出口 IP 进入 Cloudflare staging 白名单。
@@ -192,7 +215,7 @@ Review Agent 不是 Coding Agent，也不是 gateway 内置 reviewer。它作为
 - 只有 allowlist 命中的 bot login / app / check name 才能作为 Review Agent。
 - comment 先入库，再分类为 `blocking`、`suggestion`、`note` 或 `unknown`。
 - blocking / unknown 不放行 preview。
-- suggestion / note 可以放行 preview，但需要在 Slack 状态中提示。
+- suggestion / note 可以放行 preview，但需要在 Slack 进度消息中提示。
 - 如果 Review Agent 超时没有返回最终评论，gateway 的 review gate watchdog 可以记录一条兜底结果，避免任务永久卡住。
 - 同一个 PR / job 同一时间只允许一个 Coding Agent fix round；Slack follow-up 和 Review Agent comment 都进入同一条修复队列。
 
@@ -218,7 +241,34 @@ Dockerfile*
 docs/** 中的平台部署文档
 ```
 
-如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，必须转成人工平台 PR。
+如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk gate、CI 和 review 控制。
+
+## Platform Dev PR 边界
+
+Platform Dev Lane 的目标就是修改 `pages-manager` 平台代码，因此不使用 `sites/<employeeSlug>/<siteSlug>/` 作为 allowed path。它允许修改 repo 全目录，但必须按 issue type 和 risk gate 控制：
+
+```text
+docs/**
+tests/**
+apps/**
+packages/**
+scripts/**
+k8s/**
+.github/**
+Dockerfile*
+```
+
+规则：
+
+- 所有改动必须来自 `lane:platform-dev` issue，PR body 必须引用该 issue 和 Slack thread。
+- `type:dev`、`type:bug`、`type:docs` 可以进入自动开发候选。
+- `type:feedback`、`type:question` 默认只沉淀和归纳，不自动改代码。
+- `type:ci`、`type:ops`、`type:security` 默认 `agent:blocked`，需要人工 gate。
+- `.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动必须在 PR 中标记 `risk:high`，并由人工 review 放行。
+- production workflow 仍只能手动触发；Platform Dev Lane 不能引入 push/PR 自动生产部署。
+- Coding Agent 不能 merge PR，也不能 resolve review thread 作为放行依据。
+
+Platform Dev Lane 的设计细节见 [platform-dev-lane.md](./platform-dev-lane.md)。
 
 ## GitHub Runtime 配置记录规则
 

@@ -8,15 +8,19 @@ import {
   buildFollowupIssueComment,
   buildPagesAgentInputs,
   buildPagesPreviewInputs,
+  buildPlatformAgentInputs,
+  buildPlatformDevIssue,
   buildProjectIndexInputs,
   buildPublishingIssue,
   buildSmokeIssue,
   buildSmokeIssueComment,
   dispatchWorkflow,
+  ensurePlatformDevIssue,
   ensureSmokeIssue,
   ensurePublishingIssue,
   githubApiUrl,
   parseRepoFullName,
+  platformDevItemMarker,
   publishingJobMarker,
   smokeIssueMarker,
 } from '../../../packages/git-client/src/index.js';
@@ -50,6 +54,23 @@ const job = {
   headSha: 'a'.repeat(40),
 };
 
+const platformItem = {
+  id: 'pdev_123',
+  source: 'slack',
+  requestedByType: 'user',
+  requestedById: 'slack:T1:U1',
+  title: '支持 Slack 创建平台开发 issue',
+  summary: '通过 Slack 创建 pages-manager 自身开发 issue，并跟踪 PR 进度。',
+  issueType: 'type:dev',
+  areas: ['area:gateway', 'area:github'],
+  risk: 'risk:medium',
+  agentEligible: true,
+  requiresHumanGate: false,
+  requesterProfile: job.requesterProfile,
+  slackThread: job.slackThread,
+  githubIssueNumber: 31,
+};
+
 test('parses GitHub repo full name and API URLs', () => {
   assert.deepEqual(parseRepoFullName('org/pages-manager'), { owner: 'org', repo: 'pages-manager' });
   assert.throws(() => parseRepoFullName('bad'), /owner\/repo/);
@@ -77,6 +98,17 @@ test('builds publishing issue with stable job marker and path boundary', () => {
     issue.body.includes('不允许修改平台代码、GitHub Actions、Kubernetes manifests、Dockerfile、部署脚本或任何 secret 配置')
   );
   assert.deepEqual(issue.labels, ['pages-publishing-job', 'site-change']);
+});
+
+test('builds platform dev issue with stable marker and enterprise boundaries', () => {
+  const issue = buildPlatformDevIssue(platformItem, { baseRef: 'master' });
+
+  assert.equal(issue.title, '[pages-platform] 支持 Slack 创建平台开发 issue');
+  assert.ok(issue.body.includes(platformDevItemMarker('pdev_123')));
+  assert.ok(issue.body.includes('Lane: platform-dev'));
+  assert.ok(issue.body.includes('Repo 范围：全目录，按风险 gate、CI、review 和 GitHub Rulesets 控制'));
+  assert.ok(issue.body.includes('Site publishing: out of scope'));
+  assert.deepEqual(issue.labels, ['pages-platform-dev', 'type:dev', 'risk:medium', 'area:gateway', 'area:github']);
 });
 
 test('builds smoke issue with reusable marker', () => {
@@ -134,6 +166,34 @@ test('builds workflow inputs from job fields', () => {
     previewHostname: '',
     callbackUrl: 'https://gateway.test/callback',
   });
+  assert.deepEqual(buildPlatformAgentInputs(platformItem, { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }), {
+    platformDevItemId: 'pdev_123',
+    mode: 'initial',
+    issueNumber: '31',
+    requestTitle: '支持 Slack 创建平台开发 issue',
+    requestSummary: '通过 Slack 创建 pages-manager 自身开发 issue，并跟踪 PR 进度。',
+    issueType: 'type:dev',
+    areas: 'area:gateway,area:github',
+    risk: 'risk:medium',
+    gateApproved: 'true',
+    baseRef: 'master',
+    branchName: '',
+    callbackUrl: 'https://gateway.test/callback',
+  });
+  assert.equal(
+    buildPlatformAgentInputs(
+      { ...platformItem, risk: 'risk:high', requiresHumanGate: true, gateStatus: 'pending' },
+      { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }
+    ).gateApproved,
+    'false'
+  );
+  assert.equal(
+    buildPlatformAgentInputs(
+      { ...platformItem, risk: 'risk:high', requiresHumanGate: true, gateStatus: 'approved' },
+      { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }
+    ).gateApproved,
+    'true'
+  );
 });
 
 test('ensurePublishingIssue reuses existing issue by PublishingJob marker', async () => {
@@ -184,6 +244,33 @@ test('ensurePublishingIssue creates issue when no marker exists', async () => {
 
   assert.equal(result.created, true);
   assert.equal(result.issue.number, 4);
+  assert.equal(requests.length, 2);
+});
+
+test('ensurePlatformDevIssue creates issue by PlatformDev marker', async () => {
+  const requests = [];
+  const result = await ensurePlatformDevIssue(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      if (request.method === 'GET') {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      const body = JSON.parse(request.body);
+      assert.match(body.body, /PlatformDevItem: pdev_123/);
+      assert.deepEqual(body.labels, ['pages-platform-dev', 'type:dev', 'risk:medium', 'area:gateway', 'area:github']);
+      return new Response(JSON.stringify({ number: 31, html_url: 'https://github.example/org/repo/issues/31' }), {
+        status: 201,
+      });
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    platformItem
+  );
+
+  assert.equal(result.created, true);
+  assert.equal(result.issue.number, 31);
   assert.equal(requests.length, 2);
 });
 

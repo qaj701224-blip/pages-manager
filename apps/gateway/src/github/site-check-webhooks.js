@@ -2,6 +2,7 @@ import { jsonResponse } from '@xd/worker-kit';
 
 import { notifySlackPlainProgress } from '../slack/delivery.js';
 import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/notifier.js';
+import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { dispatchPreviewFromStoredReviewIfReady, previewGateForPr } from './review-gate.js';
 
 async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
@@ -23,6 +24,39 @@ async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
 export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }) {
   const storedRun = await store.recordSiteCheckRun(siteCheckRun);
   const fullHeadSha = siteCheckRun.headSha && siteCheckRun.headSha.length === 40 ? siteCheckRun.headSha : null;
+  let platformItem = store.findPlatformDevItemByPrNumber
+    ? await store.findPlatformDevItemByPrNumber(siteCheckRun.prNumber, fullHeadSha ? { headSha: fullHeadSha } : {})
+    : null;
+  if (platformItem) {
+    const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
+    let nextStatus = 'ci_running';
+    if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion === 'success') {
+      nextStatus = platformItem.status === 'review_blocked' ? 'review_blocked' : 'ready_to_merge';
+    } else if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion && siteCheckRun.conclusion !== 'success') {
+      nextStatus = 'ci_failed';
+    }
+    platformItem =
+      platformItem.status === nextStatus
+        ? await store.patchPlatformDevItem(platformItem.id, patch)
+        : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
+    await store.linkPlatformDevItemToSlackSession(platformItem);
+    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, platformItem, {
+      stage: nextStatus,
+      text: platformNotificationText(nextStatus, platformItem) || 'CI 状态已更新。',
+      skipDuplicate: false,
+    });
+    return jsonResponse({
+      ok: true,
+      created: true,
+      delivery: result.delivery,
+      reviewAction: 'platform_ci_recorded',
+      siteCheckRun: storedRun.run,
+      siteCheckRunCreated: storedRun.created,
+      item: platformItem,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    });
+  }
+
   let job = await store.findJobByPrNumber(siteCheckRun.prNumber, fullHeadSha ? { headSha: fullHeadSha } : {});
   let gate = job
     ? await previewGateForPr(store, siteCheckRun.repoFullName, siteCheckRun.prNumber, fullHeadSha ? { headSha: fullHeadSha } : {})
