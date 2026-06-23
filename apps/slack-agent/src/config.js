@@ -24,6 +24,8 @@ export function readSlackAgentConfig(env = process.env) {
     maxContextMessages: Number(env.SLACK_AGENT_MAX_CONTEXT_MESSAGES || 50),
     maxOutputTokens: Number(env.SLACK_AGENT_MAX_OUTPUT_TOKENS || 2048),
     requestTimeoutMs: Number(env.SLACK_AGENT_REQUEST_TIMEOUT_SECONDS || 120) * 1000,
+    mergeSummaryModel: env.SLACK_AGENT_MERGE_SUMMARY_MODEL || '',
+    mergeSummaryTimeoutMs: Number(env.SLACK_AGENT_MERGE_SUMMARY_TIMEOUT_SECONDS || 30) * 1000,
     streamingEnabled: optionalBoolean(firstSet(env.AGENT_MODEL_STREAMING, env.SLACK_AGENT_MODEL_STREAMING), true),
     semanticChunkMinChars: Number(env.SLACK_AGENT_SEMANTIC_CHUNK_MIN_CHARS || 16),
     semanticChunkMaxChars: Number(env.SLACK_AGENT_SEMANTIC_CHUNK_MAX_CHARS || 72),
