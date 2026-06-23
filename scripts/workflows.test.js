@@ -222,6 +222,16 @@ test('platform agent workflow is manually dispatched and isolated from deploy cr
   assert.doesNotMatch(workflow, /ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY|CLOUDFLARE_API_TOKEN/);
 });
 
+test('platform agent commits newly generated files and scans untracked paths', () => {
+  const workflow = readWorkflow('.github/workflows/platform-agent.yml');
+
+  assert.match(workflow, /changed_files="\$\(git status --porcelain --untracked-files=all \| sed -E 's\/\^\.\.\.\/\/'\)"/);
+  assert.match(workflow, /printf '%s\\n' "\$changed_files" \| grep -E '\(\^\|\/\)\(\\\.env\|\\\.env\\\.\.\*\|wrangler\\\.toml\)\$'/);
+  assert.match(workflow, /git add -A -- \. ':\(exclude\)\.pages-artifacts' ':\(exclude\)\.pages-trusted'/);
+  assert.match(workflow, /if git diff --cached --quiet; then/);
+  assert.doesNotMatch(workflow, /if git diff --quiet; then[\s\S]*git add -A -- \./);
+});
+
 test('v1 deploy workflows do not inject KV capability secrets', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
