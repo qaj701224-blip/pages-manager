@@ -1,4 +1,9 @@
-import { eventForStatus, idempotencyScopeForJob } from '@xd/workflow-core';
+import {
+  eventForStatus,
+  idempotencyScopeForJob,
+  idempotencyScopeForPlatformDevItem,
+  platformDevItemEvent,
+} from '@xd/workflow-core';
 
 import { createMysqlPool } from './client.js';
 import { bindMysqlRepositoryMethods } from './repositories/index.js';
@@ -30,6 +35,9 @@ export class MySqlGatewayStore {
     this.jobs = new Map();
     this.idempotency = new Map();
     this.events = new Map();
+    this.platformDevItems = new Map();
+    this.platformDevIdempotency = new Map();
+    this.platformDevEvents = new Map();
     this.githubDeliveries = new Map();
     this.slackDeliveries = new Map();
     this.reviewAgentComments = new Map();
@@ -45,6 +53,10 @@ export class MySqlGatewayStore {
     this.issueLinks = new Map();
     this.issueLinkByIssueNumber = new Map();
     this.issueLinkByPrNumber = new Map();
+    this.workItemLinks = new Map();
+    this.workItemLinkByIssueNumber = new Map();
+    this.workItemLinkByPrNumber = new Map();
+    this.slackWorkItemStatusMessages = new Map();
     this.agentRuns = new Map();
 
     bindMysqlRepositoryMethods(this);
@@ -96,6 +108,12 @@ export class MySqlGatewayStore {
     this.events.set(job.id, events);
   }
 
+  appendPlatformDevEvent(item, message) {
+    const events = this.platformDevEvents.get(item.id) || [];
+    events.push(platformDevItemEvent(item, message));
+    this.platformDevEvents.set(item.id, events);
+  }
+
   slackDeliveryKey(teamId, eventId) {
     return `${teamId || 'unknown-team'}:${eventId || 'unknown-event'}`;
   }
@@ -109,6 +127,23 @@ export class MySqlGatewayStore {
     this.jobs.set(job.id, job);
     this.idempotency.set(idempotencyScopeForJob(job), job.id);
     return job;
+  }
+
+  cachePlatformDevItem(item) {
+    if (!item) return null;
+    this.platformDevItems.set(item.id, item);
+    this.platformDevIdempotency.set(idempotencyScopeForPlatformDevItem(item), item.id);
+    return item;
+  }
+
+  cachePlatformDevEvent(event) {
+    if (!event) return null;
+    const events = this.platformDevEvents.get(event.platformDevItemId) || [];
+    if (!events.some((item) => item.id === event.id)) {
+      events.push(event);
+      this.platformDevEvents.set(event.platformDevItemId, events);
+    }
+    return event;
   }
 
   cacheGithubDelivery(delivery) {
@@ -151,6 +186,14 @@ export class MySqlGatewayStore {
     return link;
   }
 
+  cacheWorkItemLink(link) {
+    if (!link) return null;
+    this.workItemLinks.set(link.id, link);
+    if (link.issueNumber) this.workItemLinkByIssueNumber.set(String(link.issueNumber), link);
+    if (link.prNumber) this.workItemLinkByPrNumber.set(String(link.prNumber), link);
+    return link;
+  }
+
   cacheAgentRun(run) {
     if (run) this.agentRuns.set(run.id, run);
     return run;
@@ -165,6 +208,16 @@ export class MySqlGatewayStore {
 
   cacheSlackJobStatusMessage(message) {
     if (message) this.slackJobStatusMessages.set(`${message.jobId}:${message.scopeKey || 'job'}`, message);
+    return message;
+  }
+
+  cacheSlackWorkItemStatusMessage(message) {
+    if (message) {
+      this.slackWorkItemStatusMessages.set(
+        `${message.workItemKind}:${message.workItemId}:${message.scopeKey || 'work-item'}`,
+        message
+      );
+    }
     return message;
   }
 

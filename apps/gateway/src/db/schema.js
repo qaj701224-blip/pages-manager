@@ -1,5 +1,17 @@
 import { sql } from 'drizzle-orm';
-import { char, datetime, index, int, json, mysqlEnum, mysqlTable, text, uniqueIndex, varchar } from 'drizzle-orm/mysql-core';
+import {
+  boolean,
+  char,
+  datetime,
+  index,
+  int,
+  json,
+  mysqlEnum,
+  mysqlTable,
+  text,
+  uniqueIndex,
+  varchar,
+} from 'drizzle-orm/mysql-core';
 
 const id = (name) => varchar(name, { length: 64 });
 const externalId = (name) => varchar(name, { length: 255 });
@@ -46,12 +58,49 @@ export const slackResultTypeValues = [
   'agent_replied',
   'clarification_requested',
   'job_created',
+  'platform_issue_created',
+  'platform_gate_pending',
   'followup_appended',
   'status_returned',
   'session_closed',
 ];
 export const agentRunStatusValues = ['running', 'completed', 'failed'];
 export const slackSessionStatusValues = ['active', 'closed', 'expired'];
+export const workItemKindValues = ['site_publishing', 'platform_dev'];
+export const platformDevStatusValues = [
+  'received',
+  'triaging',
+  'issue_creating',
+  'issue_created',
+  'gate_pending',
+  'agent_queued',
+  'agent_running',
+  'branch_committed',
+  'pr_created',
+  'ci_running',
+  'ci_failed',
+  'review_waiting',
+  'review_blocked',
+  'ready_to_merge',
+  'merged',
+  'closed_unmerged',
+  'failed',
+  'cancelled',
+];
+export const platformDevIssueTypeValues = [
+  'type:dev',
+  'type:bug',
+  'type:docs',
+  'type:feedback',
+  'type:question',
+  'type:ci',
+  'type:ops',
+  'type:security',
+];
+export const platformDevRiskValues = ['risk:low', 'risk:medium', 'risk:high'];
+export const workItemGateStatusValues = ['not_required', 'pending', 'approved', 'rejected', 'expired'];
+export const workItemGateTypeValues = ['risk', 'ci_cd', 'ops', 'security', 'manual'];
+export const workItemFollowupStatusValues = ['queued', 'applied', 'skipped', 'failed'];
 
 export const publishingJobs = mysqlTable(
   'publishing_jobs',
@@ -141,6 +190,9 @@ export const slackEvents = mysqlTable(
     slackUserId: externalId('slack_user_id'),
     slackSessionId: id('slack_session_id'),
     publishingJobId: id('publishing_job_id'),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues),
+    workItemId: id('work_item_id'),
+    platformDevItemId: id('platform_dev_item_id'),
     agentRunId: id('agent_run_id'),
     payloadRedactedJson: json('payload_redacted_json'),
     payloadHash: hash('payload_hash'),
@@ -156,6 +208,7 @@ export const slackEvents = mysqlTable(
     resultIdx: index('slack_events_result_idx').on(table.resultType, table.createdAt),
     sessionIdx: index('slack_events_session_idx').on(table.slackSessionId, table.createdAt),
     jobIdx: index('slack_events_job_idx').on(table.publishingJobId, table.createdAt),
+    workItemIdx: index('slack_events_work_item_idx').on(table.workItemKind, table.workItemId, table.createdAt),
   })
 );
 
@@ -173,6 +226,8 @@ export const slackSessions = mysqlTable(
     primarySlackUserId: externalId('primary_slack_user_id').notNull(),
     ownerScopeId: id('owner_scope_id'),
     activeJobId: id('active_job_id'),
+    activeWorkItemKind: mysqlEnum('active_work_item_kind', workItemKindValues),
+    activeWorkItemId: id('active_work_item_id'),
     activeIssueNumber: int('active_issue_number'),
     activePrNumber: int('active_pr_number'),
     activePreviewUrl: url('active_preview_url'),
@@ -188,6 +243,137 @@ export const slackSessions = mysqlTable(
     scopeUk: uniqueIndex('slack_sessions_scope_uk').on(table.teamId, table.primarySlackUserId, table.sessionKey),
     userActiveIdx: index('slack_sessions_user_active_idx').on(table.teamId, table.primarySlackUserId, table.lastActiveAt),
     activeJobIdx: index('slack_sessions_active_job_idx').on(table.activeJobId),
+    activeWorkItemIdx: index('slack_sessions_active_work_item_idx').on(table.activeWorkItemKind, table.activeWorkItemId),
+  })
+);
+
+export const platformDevItems = mysqlTable(
+  'platform_dev_items',
+  {
+    id: id('id').primaryKey(),
+    source: mysqlEnum('source', ['slack', 'api', 'admin', 'system']).notNull(),
+    requestedByType: varchar('requested_by_type', { length: 64 }).notNull(),
+    requestedById: varchar('requested_by_id', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    title: varchar('title', { length: 255 }).notNull(),
+    summary: text('summary'),
+    issueType: mysqlEnum('issue_type', platformDevIssueTypeValues).notNull(),
+    areasJson: json('areas_json'),
+    risk: mysqlEnum('risk', platformDevRiskValues).notNull(),
+    agentEligible: boolean('agent_eligible').notNull().default(false),
+    requiresHumanGate: boolean('requires_human_gate').notNull().default(false),
+    status: mysqlEnum('status', platformDevStatusValues).notNull(),
+    requesterProfileJson: json('requester_profile_json'),
+    slackThreadJson: json('slack_thread_json'),
+    slackSessionId: id('slack_session_id'),
+    slackSessionKey: varchar('slack_session_key', { length: 255 }),
+    githubIssueNumber: int('github_issue_number'),
+    githubIssueUrl: url('github_issue_url'),
+    githubPrNumber: int('github_pr_number'),
+    githubPrUrl: url('github_pr_url'),
+    branchName: varchar('branch_name', { length: 255 }),
+    baseRef: varchar('base_ref', { length: 128 }),
+    headSha: gitSha('head_sha'),
+    gateStatus: mysqlEnum('gate_status', workItemGateStatusValues).notNull().default('not_required'),
+    gateReason: text('gate_reason'),
+    errorCode: varchar('error_code', { length: 128 }),
+    errorMessage: text('error_message'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    idempotencyUk: uniqueIndex('platform_dev_items_idempotency_uk').on(
+      table.source,
+      table.requestedByType,
+      table.requestedById,
+      table.idempotencyKey
+    ),
+    statusUpdatedIdx: index('platform_dev_items_status_updated_idx').on(table.status, table.updatedAt),
+    slackSessionIdx: index('platform_dev_items_slack_session_idx').on(table.slackSessionId),
+    issueIdx: index('platform_dev_items_issue_idx').on(table.githubIssueNumber),
+    prIdx: index('platform_dev_items_pr_idx').on(table.githubPrNumber),
+  })
+);
+
+export const platformDevEvents = mysqlTable(
+  'platform_dev_events',
+  {
+    id: id('id').primaryKey(),
+    platformDevItemId: id('platform_dev_item_id').notNull(),
+    status: mysqlEnum('status', platformDevStatusValues).notNull(),
+    message: text('message'),
+    requestId: varchar('request_id', { length: 128 }),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    itemCreatedIdx: index('platform_dev_events_item_created_idx').on(table.platformDevItemId, table.createdAt),
+    statusCreatedIdx: index('platform_dev_events_status_created_idx').on(table.status, table.createdAt),
+  })
+);
+
+export const workItemLinks = mysqlTable(
+  'work_item_links',
+  {
+    id: id('id').primaryKey(),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues).notNull(),
+    workItemId: id('work_item_id').notNull(),
+    slackSessionId: id('slack_session_id'),
+    publishingJobId: id('publishing_job_id'),
+    platformDevItemId: id('platform_dev_item_id'),
+    issueNumber: int('issue_number'),
+    prNumber: int('pr_number'),
+    branchName: varchar('branch_name', { length: 255 }),
+    previewUrl: url('preview_url'),
+    headSha: gitSha('head_sha'),
+    relationship: varchar('relationship', { length: 64 }).notNull().default('primary'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    workItemUk: uniqueIndex('work_item_links_work_item_uk').on(table.workItemKind, table.workItemId, table.relationship),
+    sessionIdx: index('work_item_links_session_idx').on(table.slackSessionId, table.updatedAt),
+    issueIdx: index('work_item_links_issue_idx').on(table.issueNumber),
+    prIdx: index('work_item_links_pr_idx').on(table.prNumber),
+  })
+);
+
+export const workItemGates = mysqlTable(
+  'work_item_gates',
+  {
+    id: id('id').primaryKey(),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues).notNull(),
+    workItemId: id('work_item_id').notNull(),
+    gateType: mysqlEnum('gate_type', workItemGateTypeValues).notNull(),
+    status: mysqlEnum('status', workItemGateStatusValues).notNull().default('pending'),
+    reason: text('reason'),
+    decidedBy: varchar('decided_by', { length: 255 }),
+    decidedAt: datetime('decided_at', { mode: 'date', fsp: 3 }),
+    metadataJson: json('metadata_json'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    workItemGateUk: uniqueIndex('work_item_gates_work_item_type_uk').on(table.workItemKind, table.workItemId, table.gateType),
+    statusIdx: index('work_item_gates_status_idx').on(table.status, table.updatedAt),
+  })
+);
+
+export const workItemFollowups = mysqlTable(
+  'work_item_followups',
+  {
+    id: id('id').primaryKey(),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues).notNull(),
+    workItemId: id('work_item_id').notNull(),
+    slackSessionId: id('slack_session_id'),
+    text: text('text').notNull(),
+    status: mysqlEnum('status', workItemFollowupStatusValues).notNull().default('queued'),
+    metadataJson: json('metadata_json'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    workItemIdx: index('work_item_followups_work_item_idx').on(table.workItemKind, table.workItemId, table.createdAt),
+    sessionIdx: index('work_item_followups_session_idx').on(table.slackSessionId, table.createdAt),
   })
 );
 
@@ -241,6 +427,8 @@ export const agentRuns = mysqlTable(
     agentKind: varchar('agent_kind', { length: 80 }).notNull(),
     slackSessionId: id('slack_session_id'),
     publishingJobId: id('publishing_job_id'),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues),
+    workItemId: id('work_item_id'),
     status: mysqlEnum('status', agentRunStatusValues).notNull(),
     roundNo: int('round_no').notNull().default(1),
     provider: varchar('provider', { length: 80 }),
@@ -262,6 +450,7 @@ export const agentRuns = mysqlTable(
   },
   (table) => ({
     jobIdx: index('agent_runs_job_idx').on(table.publishingJobId, table.createdAt),
+    workItemIdx: index('agent_runs_work_item_idx').on(table.workItemKind, table.workItemId, table.createdAt),
     sessionIdx: index('agent_runs_session_idx').on(table.slackSessionId, table.createdAt),
     leaseIdx: index('agent_runs_lease_idx').on(table.agentKind, table.status, table.leaseExpiresAt),
   })
@@ -272,6 +461,8 @@ export const agentRunEvents = mysqlTable(
   {
     id: id('id').primaryKey(),
     publishingJobId: id('publishing_job_id'),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues),
+    workItemId: id('work_item_id'),
     slackSessionId: id('slack_session_id'),
     agentRunId: id('agent_run_id'),
     type: varchar('type', { length: 80 }).notNull(),
@@ -287,6 +478,7 @@ export const agentRunEvents = mysqlTable(
   (table) => ({
     dedupeUk: uniqueIndex('agent_run_events_dedupe_uk').on(table.dedupeKey),
     jobIdx: index('agent_run_events_job_idx').on(table.publishingJobId, table.createdAt),
+    workItemIdx: index('agent_run_events_work_item_idx').on(table.workItemKind, table.workItemId, table.createdAt),
     runIdx: index('agent_run_events_run_idx').on(table.agentRunId, table.createdAt),
   })
 );
@@ -388,13 +580,48 @@ export const slackNotificationDedupes = mysqlTable(
   'slack_notification_dedupes',
   {
     id: id('id').primaryKey(),
-    jobId: id('job_id').notNull(),
+    jobId: id('job_id'),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues),
+    workItemId: id('work_item_id'),
     dedupeKey: varchar('dedupe_key', { length: 255 }).notNull(),
     createdAt: createdAt(),
   },
   (table) => ({
     jobDedupeUk: uniqueIndex('slack_notification_dedupes_job_key_uk').on(table.jobId, table.dedupeKey),
+    workItemDedupeUk: uniqueIndex('slack_notification_dedupes_work_item_key_uk').on(
+      table.workItemKind,
+      table.workItemId,
+      table.dedupeKey
+    ),
     jobIdx: index('slack_notification_dedupes_job_idx').on(table.jobId, table.createdAt),
+    workItemIdx: index('slack_notification_dedupes_work_item_idx').on(table.workItemKind, table.workItemId, table.createdAt),
+  })
+);
+
+export const slackWorkItemStatusMessages = mysqlTable(
+  'slack_work_item_status_messages',
+  {
+    id: id('id').primaryKey(),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues).notNull(),
+    workItemId: id('work_item_id').notNull(),
+    slackSessionId: id('slack_session_id'),
+    scopeKey: varchar('scope_key', { length: 255 }).notNull().default('work-item'),
+    channel: externalId('channel'),
+    threadTs: varchar('thread_ts', { length: 64 }),
+    messageTs: varchar('message_ts', { length: 64 }),
+    stage: varchar('stage', { length: 80 }),
+    status: varchar('status', { length: 80 }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    workItemScopeUk: uniqueIndex('slack_work_item_status_messages_item_scope_uk').on(
+      table.workItemKind,
+      table.workItemId,
+      table.scopeKey
+    ),
+    workItemIdx: index('slack_work_item_status_messages_item_idx').on(table.workItemKind, table.workItemId, table.updatedAt),
+    sessionIdx: index('slack_work_item_status_messages_session_idx').on(table.slackSessionId, table.updatedAt),
   })
 );
 
@@ -454,6 +681,8 @@ export const externalApiCallLogs = mysqlTable(
     provider: varchar('provider', { length: 80 }).notNull(),
     operation: varchar('operation', { length: 128 }).notNull(),
     publishingJobId: id('publishing_job_id'),
+    workItemKind: mysqlEnum('work_item_kind', workItemKindValues),
+    workItemId: id('work_item_id'),
     slackSessionId: id('slack_session_id'),
     agentRunId: id('agent_run_id'),
     requestId: varchar('request_id', { length: 128 }),
@@ -466,6 +695,7 @@ export const externalApiCallLogs = mysqlTable(
   },
   (table) => ({
     jobIdx: index('external_api_call_logs_job_idx').on(table.publishingJobId, table.createdAt),
+    workItemIdx: index('external_api_call_logs_work_item_idx').on(table.workItemKind, table.workItemId, table.createdAt),
     providerIdx: index('external_api_call_logs_provider_idx').on(table.provider, table.operation, table.createdAt),
   })
 );

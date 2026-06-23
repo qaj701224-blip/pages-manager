@@ -1,5 +1,6 @@
 import { agentRunRepositoryMethods } from './agent-runs.js';
 import { githubDeliveryRepositoryMethods } from './github-deliveries.js';
+import { platformDevRepositoryMethods } from './platform-dev.js';
 import { publishingJobRepositoryMethods } from './publishing-jobs.js';
 import { reviewGateRepositoryMethods } from './review-gates.js';
 import { slackDeliveryRepositoryMethods } from './slack-deliveries.js';
@@ -14,6 +15,7 @@ const METHOD_GROUPS = [
   slackNotificationRepositoryMethods,
   slackSessionRepositoryMethods,
   agentRunRepositoryMethods,
+  platformDevRepositoryMethods,
 ];
 
 export function bindMysqlRepositoryMethods(store) {

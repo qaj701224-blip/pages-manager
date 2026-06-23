@@ -20,6 +20,24 @@ export async function activeJobForSlackSession(store, slackSession) {
   return link?.publishingJobId ? await store.getJob(link.publishingJobId) : null;
 }
 
+export async function activeWorkItemForSlackSession(store, slackSession) {
+  if (slackSession?.activeWorkItemKind === 'platform_dev' && slackSession.activeWorkItemId && store.getPlatformDevItem) {
+    const item = await store.getPlatformDevItem(slackSession.activeWorkItemId);
+    if (item) {
+      return {
+        ...item,
+        workItemKind: 'platform_dev',
+        issueNumber: item.githubIssueNumber,
+        issueUrl: item.githubIssueUrl,
+        prNumber: item.githubPrNumber,
+        prUrl: item.githubPrUrl,
+      };
+    }
+  }
+
+  return activeJobForSlackSession(store, slackSession);
+}
+
 function followupSummary(existingSummary, text) {
   const cleanText = String(text || '').trim();
   if (!cleanText) return existingSummary || '';

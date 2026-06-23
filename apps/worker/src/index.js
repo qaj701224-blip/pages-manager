@@ -1,7 +1,7 @@
 import { jsonResponse } from '@xd/worker-kit';
 
 import { readWorkerConfig } from './config.js';
-import { runWorkerForJob } from './orchestrator.js';
+import { runWorkerForJob, runWorkerForWorkItem } from './orchestrator.js';
 
 async function readJson(request) {
   const text = await request.text();
@@ -46,7 +46,10 @@ export function createWorkerApp(options = {}) {
         if (request.method === 'POST' && url.pathname === '/internal/publishing-jobs/start') {
           requireWorkerAuth(request, config);
           const body = await readJson(request);
-          const result = await runWorkerForJob(body.job, config, adapters);
+          const result =
+            body.workItemKind || body.work_item_kind
+              ? await runWorkerForWorkItem(body, config, adapters)
+              : await runWorkerForJob(body.job, config, adapters);
           return jsonResponse({ ok: true, result });
         }
 

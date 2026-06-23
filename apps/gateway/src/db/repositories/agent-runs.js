@@ -82,6 +82,8 @@ export const agentRunRepositoryMethods = {
     const event = {
       id: input.id || makeId('agentevent'),
       publishingJobId: input.publishingJobId || input.publishing_job_id || null,
+      workItemKind: input.workItemKind || input.work_item_kind || null,
+      workItemId: input.workItemId || input.work_item_id || null,
       slackSessionId: input.slackSessionId || input.slack_session_id || null,
       agentRunId: input.agentRunId || input.agent_run_id || null,
       type: input.type || 'job_progress',
@@ -112,6 +114,15 @@ export const agentRunRepositoryMethods = {
     return rows.map((row) => this.cacheAgentRunEvent(rowToAgentRunEvent(row)));
   },
 
+  async listAgentRunEventsForWorkItem(workItemKind, workItemId) {
+    const rows = await execute(
+      this.pool,
+      'SELECT * FROM agent_run_events WHERE work_item_kind = ? AND work_item_id = ? ORDER BY created_at ASC',
+      [workItemKind, workItemId]
+    );
+    return rows.map((row) => this.cacheAgentRunEvent(rowToAgentRunEvent(row)));
+  },
+
   async listAgentRunsForJob(publishingJobId) {
     const rows = await execute(this.pool, 'SELECT * FROM agent_runs WHERE publishing_job_id = ? ORDER BY created_at ASC', [
       publishingJobId,
@@ -136,6 +147,8 @@ export const agentRunRepositoryMethods = {
       agentKind,
       slackSessionId: input.slackSessionId || null,
       publishingJobId: input.publishingJobId || null,
+      workItemKind: input.workItemKind || null,
+      workItemId: input.workItemId || null,
       status: input.status || 'running',
       roundNo: input.roundNo || relatedRuns.filter((item) => item.agentKind === agentKind).length + 1,
       provider: input.provider || 'deterministic',

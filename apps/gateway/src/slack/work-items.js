@@ -17,9 +17,18 @@ export const ACTIONABLE_WORK_ITEM_STATUSES = [
   'fixing',
   'previewing',
   'preview_deployed',
+  'triaging',
+  'gate_pending',
+  'agent_queued',
+  'agent_running',
+  'ci_running',
+  'ci_failed',
+  'review_waiting',
+  'review_blocked',
+  'ready_to_merge',
 ];
 
-export const INACTIVE_WORK_ITEM_STATUSES = ['approved', 'merged', 'deployed', 'failed', 'cancelled'];
+export const INACTIVE_WORK_ITEM_STATUSES = ['approved', 'merged', 'deployed', 'failed', 'cancelled', 'closed_unmerged'];
 
 const ACTIONABLE_WORK_ITEM_STATUS_SET = new Set(ACTIONABLE_WORK_ITEM_STATUSES);
 
@@ -27,6 +36,10 @@ export function slackJobVisibleToActor(job, body) {
   if (!job) return true;
   const actor = slackActorFromBody(body);
   return job.source === 'slack' && job.requestedById === actor.requestedById;
+}
+
+function workItemKind(job = {}) {
+  return job.workItemKind || (job.githubIssueNumber !== undefined ? 'platform_dev' : 'site_publishing');
 }
 
 export function isActionableSlackWorkItem(job = {}) {
@@ -59,6 +72,16 @@ export function slackStatusLabel(status = '', job = {}) {
     preview_deployed: 'Preview 已生成',
     failed: '失败',
     cancelled: '已取消',
+    triaging: '确认处理策略',
+    gate_pending: '等待人工确认',
+    agent_queued: '等待自动开发',
+    agent_running: '自动开发中',
+    ci_running: 'CI 验证中',
+    ci_failed: 'CI 未通过',
+    review_waiting: '等待 Review',
+    review_blocked: '等待修复',
+    ready_to_merge: '可合并',
+    closed_unmerged: '已关闭',
   };
   if (status === 'cancelled' && job.errorCode === 'github_issue_closed') return 'Issue 已关闭';
   if (status === 'cancelled' && job.errorCode === 'github_pr_closed') return 'PR 已关闭';
@@ -91,11 +114,15 @@ export function parseSlackButtonValue(value = '') {
 }
 
 function workItemLine(job = {}) {
+  const kind = workItemKind(job);
   const parts = [
     `*${compactUserFacingText(job.title || job.siteSlug || '未命名任务').slice(0, 80)}*`,
-    `站点：${job.siteSlug || '-'}`,
+    kind === 'platform_dev'
+      ? `类型：${job.issueType || '-'} · 风险：${job.risk || '-'}`
+      : `站点：${job.siteSlug || '-'}`,
     `状态：${slackStatusLabel(job.status, job)}`,
   ];
+  if (kind === 'platform_dev' && Array.isArray(job.areas) && job.areas.length) parts.push(`范围：${job.areas.join(', ')}`);
   if (job.issueNumber) parts.push(`Issue：#${job.issueNumber}`);
   if (job.prNumber) parts.push(`PR：#${job.prNumber}`);
   if (job.previewUrl) parts.push('Preview：已生成');
@@ -105,7 +132,7 @@ function workItemLine(job = {}) {
 export function slackWorkItemTargetLabel(job = {}) {
   if (job.prNumber) return `PR #${job.prNumber}`;
   if (job.issueNumber) return `Issue #${job.issueNumber}`;
-  return '这个发布任务';
+  return workItemKind(job) === 'platform_dev' ? '这个平台需求' : '这个发布任务';
 }
 
 export function slackWorkItemListText(jobs = [], options = {}) {
@@ -159,7 +186,7 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
         text: { type: 'plain_text', text: '继续修改' },
         style: 'primary',
         action_id: 'pages_select_work_item',
-        value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id }),
+        value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id, workItemKind: workItemKind(job) }),
       });
     } else if (options.includeInactive && isReopenableSlackWorkItem(job)) {
       const target = reopenTargetForSlackWorkItem(job);
@@ -170,7 +197,8 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
         action_id: 'pages_reopen_work_item',
         value: slackButtonValue({
           sessionId: slackSession.id,
-          jobId: job.id,
+      jobId: job.id,
+      workItemKind: workItemKind(job),
           target,
           includeInactive: true,
           workItemState: state,
@@ -234,6 +262,20 @@ export async function listSlackWorkItemsForSession(store, body, options = {}) {
 }
 
 export async function findVisibleSlackJobByPrNumber(store, body, prNumber) {
+  const workItemLink = store.findWorkItemLinkByPrNumber ? await store.findWorkItemLinkByPrNumber(prNumber) : null;
+  if (workItemLink?.platformDevItemId && store.getPlatformDevItem) {
+    const item = await store.getPlatformDevItem(workItemLink.platformDevItemId);
+    if (item && slackJobVisibleToActor(item, body)) {
+      return {
+        ...item,
+        workItemKind: 'platform_dev',
+        issueNumber: item.githubIssueNumber,
+        issueUrl: item.githubIssueUrl,
+        prNumber: item.githubPrNumber,
+        prUrl: item.githubPrUrl,
+      };
+    }
+  }
   const link = store.findIssueLinkByPrNumber ? await store.findIssueLinkByPrNumber(prNumber) : null;
   const linkedJob = link?.publishingJobId && store.getJob ? await store.getJob(link.publishingJobId) : null;
   const job = linkedJob || (store.findJobByPrNumber ? await store.findJobByPrNumber(prNumber) : null);
@@ -242,6 +284,20 @@ export async function findVisibleSlackJobByPrNumber(store, body, prNumber) {
 }
 
 export async function findVisibleSlackJobByIssueNumber(store, body, issueNumber) {
+  const workItemLink = store.findWorkItemLinkByIssueNumber ? await store.findWorkItemLinkByIssueNumber(issueNumber) : null;
+  if (workItemLink?.platformDevItemId && store.getPlatformDevItem) {
+    const item = await store.getPlatformDevItem(workItemLink.platformDevItemId);
+    if (item && slackJobVisibleToActor(item, body)) {
+      return {
+        ...item,
+        workItemKind: 'platform_dev',
+        issueNumber: item.githubIssueNumber,
+        issueUrl: item.githubIssueUrl,
+        prNumber: item.githubPrNumber,
+        prUrl: item.githubPrUrl,
+      };
+    }
+  }
   const link = store.findIssueLinkByIssueNumber ? await store.findIssueLinkByIssueNumber(issueNumber) : null;
   const linkedJob = link?.publishingJobId && store.getJob ? await store.getJob(link.publishingJobId) : null;
   if (linkedJob && slackJobVisibleToActor(linkedJob, body)) return linkedJob;

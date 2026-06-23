@@ -1,0 +1,351 @@
+name: Platform Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      platformDevItemId:
+        description: Platform Dev item id
+        required: true
+        type: string
+      mode:
+        description: Agent mode
+        required: false
+        default: initial
+        type: string
+      issueNumber:
+        description: GitHub issue number
+        required: false
+        type: string
+      requestTitle:
+        description: Request title
+        required: true
+        type: string
+      requestSummary:
+        description: Request summary
+        required: true
+        type: string
+      issueType:
+        description: Issue type label
+        required: true
+        type: string
+      areas:
+        description: Comma separated area labels
+        required: false
+        type: string
+      risk:
+        description: Risk label
+        required: true
+        type: string
+      gateApproved:
+        description: Whether the high-risk gate has been approved
+        required: false
+        default: "false"
+        type: string
+      baseRef:
+        description: Base ref for platform PR
+        required: false
+        default: master
+        type: string
+      branchName:
+        description: Existing branch override
+        required: false
+        type: string
+      callbackUrl:
+        description: Gateway callback URL
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: platform-agent-${{ inputs.platformDevItemId }}
+  cancel-in-progress: false
+
+jobs:
+  platform-agent:
+    runs-on: ubuntu-latest
+    env:
+      PLATFORM_DEV_ITEM_ID: ${{ inputs.platformDevItemId }}
+      AGENT_MODE: ${{ inputs.mode }}
+      ISSUE_NUMBER: ${{ inputs.issueNumber }}
+      REQUEST_TITLE: ${{ inputs.requestTitle }}
+      REQUEST_SUMMARY: ${{ inputs.requestSummary }}
+      ISSUE_TYPE: ${{ inputs.issueType }}
+      AREAS: ${{ inputs.areas }}
+      RISK: ${{ inputs.risk }}
+      GATE_APPROVED: ${{ inputs.gateApproved }}
+      BASE_REF: ${{ inputs.baseRef || 'master' }}
+      BRANCH_NAME_OVERRIDE: ${{ inputs.branchName }}
+      PAGES_CALLBACK_URL: ${{ inputs.callbackUrl || vars.PAGES_GATEWAY_CALLBACK_URL }}
+      PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
+      PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
+      AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
+    steps:
+      - name: Checkout trusted helper
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          path: .pages-trusted
+          persist-credentials: false
+
+      - name: Copy trusted callback helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .pages-trusted/scripts/post-executor-callback.js "$RUNNER_TEMP/post-executor-callback.js"
+          cp .pages-trusted/scripts/platform-agent-coding.mjs "$RUNNER_TEMP/platform-agent-coding.mjs"
+
+      - name: Checkout platform workspace
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.BASE_REF }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate platform inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PLATFORM_DEV_ITEM_ID" =~ ^pdev_[A-Za-z0-9_]{1,80}$ ]]
+          [[ "$ISSUE_TYPE" =~ ^type:(dev|bug|docs|feedback|question|ci|ops|security)$ ]]
+          [[ "$RISK" =~ ^risk:(low|medium|high)$ ]]
+          [[ "$GATE_APPROVED" =~ ^(true|false)$ ]]
+          effective_risk="$RISK"
+          if [[ "$ISSUE_TYPE" =~ ^type:(ci|ops|security)$ ]]; then
+            effective_risk="risk:high"
+          fi
+          if [[ "$effective_risk" == "risk:high" && "$GATE_APPROVED" != "true" ]]; then
+            echo "High risk platform changes must be gate-approved before dispatch." >&2
+            exit 1
+          fi
+          echo "EFFECTIVE_RISK=$effective_risk" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare branch
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$BRANCH_NAME_OVERRIDE" ]]; then
+            branch="$BRANCH_NAME_OVERRIDE"
+          else
+            safe_title="$(echo "$REQUEST_TITLE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+|-+$//g' | cut -c1-64)"
+            branch="feat/platform-${PLATFORM_DEV_ITEM_ID}-${safe_title:-change}"
+          fi
+          if [[ ! "$branch" =~ ^feat/[A-Za-z0-9._/-]{1,180}$ || "$branch" == *..* || "$branch" == /* || "$branch" == */ ]]; then
+            echo "Platform Agent branch must use feat/ prefix and safe ref characters." >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+            git switch -C "$branch" "origin/$branch"
+            git merge --no-edit "origin/$BASE_REF"
+          else
+            git switch -c "$branch"
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "AGENT_BRANCH_NAME=$branch" >> "$GITHUB_ENV"
+
+      - name: Callback agent running
+        if: env.PAGES_CALLBACK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          node - <<'NODE'
+          const { writeFileSync } = require('node:fs');
+          writeFileSync('.pages-artifacts/platform-agent-running.json', `${JSON.stringify({
+            workItemKind: 'platform_dev',
+            platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
+            executorType: 'platform_agent',
+            status: 'succeeded',
+            stageResult: 'agent_running',
+            branchName: process.env.BRANCH_NAME,
+            callbackUrl: process.env.PAGES_CALLBACK_URL,
+          }, null, 2)}\n`);
+          NODE
+          node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-running.json
+        env:
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+
+      - name: Run platform coding agent
+        shell: bash
+        env:
+          AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
+          AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${AGENT_CODE_API_KEY:-}" ]]; then
+            echo "AGENT_CODE_API_KEY is required for Platform Agent." >&2
+            exit 1
+          fi
+          node "$RUNNER_TEMP/platform-agent-coding.mjs"
+
+      - name: Platform secret scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --name-only | grep -E '(^|/)(\.env|\.env\..*|wrangler\.toml)$'; then
+            echo "Refusing to commit local env or wrangler secret files." >&2
+            exit 1
+          fi
+          if git diff --name-only | grep -E '(^|/)(node_modules|dist|build|\.pages-artifacts)(/|$)'; then
+            echo "Refusing to commit generated build artifacts." >&2
+            exit 1
+          fi
+          sensitive_paths="$(git diff --name-only | grep -E '^(\.github/|k8s/|docker/|Dockerfile($|\.)|scripts/(deploy|k8s|put-)|.*(/deploy|/k8s))' || true)"
+          if [[ -n "$sensitive_paths" && ( "${EFFECTIVE_RISK:-$RISK}" != "risk:high" || "$GATE_APPROVED" != "true" ) ]]; then
+            echo "High-risk paths require gate-approved Platform Dev work:" >&2
+            echo "$sensitive_paths" >&2
+            exit 1
+          fi
+          if git diff -- . ':(exclude)pnpm-lock.yaml' | grep -E '(xox[baprs]-|xapp-|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' >/dev/null; then
+            echo "Potential secret detected in diff." >&2
+            exit 1
+          fi
+          if git diff -- . ':(exclude)pnpm-lock.yaml' | grep -Ei '(CF[_]API[_]TOKEN|SLACK[_]AGENT[_]API[_]KEY|AGENT_CODE_API_KEY)\s*[:=]\s*['\''"]?([A-Za-z0-9_./+=-]{8,})' | grep -Eiv 'secrets\.|process\.env\.|\$\{|<|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set' >/dev/null; then
+            echo "Potential secret detected in diff." >&2
+            exit 1
+          fi
+
+      - name: Run platform checks
+        run: |
+          pnpm lint
+          pnpm test
+
+      - name: Commit changes
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Platform Coding Agent produced no repository changes." >&2
+            exit 1
+          fi
+          git config user.name "pages-platform-agent"
+          git config user.email "pages-platform-agent@users.noreply.github.com"
+          git add -A -- . ':(exclude).pages-artifacts' ':(exclude).pages-trusted'
+          git commit -m "feat: 处理平台需求 ${PLATFORM_DEV_ITEM_ID}"
+          git push origin "HEAD:${{ steps.branch.outputs.branch }}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update PR
+        id: pr
+        if: steps.commit.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          body_file="$RUNNER_TEMP/platform-pr-body.md"
+          cat > "$body_file" <<EOF
+          ## 背景
+
+          ${REQUEST_SUMMARY}
+
+          ## 平台需求
+
+          - Item: ${PLATFORM_DEV_ITEM_ID}
+          - Type: ${ISSUE_TYPE}
+          - Areas: ${AREAS}
+          - Risk: ${RISK}
+          - Gate approved: ${GATE_APPROVED}
+          - Issue: #${ISSUE_NUMBER}
+
+          ## 验证
+
+          - pnpm lint
+          - pnpm test
+
+          ## 风险与边界
+
+          - Risk: ${RISK}
+          - Platform Dev Lane 可以修改 pages-manager repo 内与 issue 直接相关的文件。
+          - 本 PR 不触发 production deploy，不读取 Cloudflare / Aliyun / ACK / K8s 部署 secret。
+          - 如涉及 .github/**、k8s/**、Dockerfile 或部署脚本，必须按 high risk 走人工 gate 后再 dispatch。
+
+          ## Self-review Checklist
+
+          - [ ] 没有提交 secret、真实 token、真实 .env 或本地部署配置
+          - [ ] 没有引入 push/PR 自动生产部署
+          - [ ] 行为变更已有测试覆盖
+          - [ ] 已跑 pnpm lint
+          - [ ] 已跑 pnpm test
+          EOF
+          existing="$(gh pr list --head "${{ steps.branch.outputs.branch }}" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --title "feat: ${REQUEST_TITLE}" --body-file "$body_file"
+            pr_number="$existing"
+          else
+            pr_url="$(gh pr create --base "$BASE_REF" --head "${{ steps.branch.outputs.branch }}" --title "feat: ${REQUEST_TITLE}" --body-file "$body_file")"
+            pr_number="${pr_url##*/}"
+          fi
+          gh pr comment "$pr_number" --body "@codex review"
+          pr_json="$(gh pr view "$pr_number" --json number,url,headRefName,headRefOid)"
+          echo "number=$(echo "$pr_json" | jq -r '.number')" >> "$GITHUB_OUTPUT"
+          echo "url=$(echo "$pr_json" | jq -r '.url')" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(echo "$pr_json" | jq -r '.headRefOid')" >> "$GITHUB_OUTPUT"
+
+      - name: Callback PR created
+        if: steps.commit.outputs.changed == 'true' && env.PAGES_CALLBACK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const { writeFileSync } = require('node:fs');
+          writeFileSync('.pages-artifacts/platform-agent-pr.json', `${JSON.stringify({
+            workItemKind: 'platform_dev',
+            platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
+            executorType: 'platform_agent',
+            status: 'succeeded',
+            stageResult: 'pr_created',
+            prNumber: process.env.PR_NUMBER,
+            prUrl: process.env.PR_URL,
+            branchName: process.env.BRANCH_NAME,
+            headSha: process.env.HEAD_SHA,
+            callbackUrl: process.env.PAGES_CALLBACK_URL,
+          }, null, 2)}\n`);
+          NODE
+          node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-pr.json
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+
+      - name: Callback failure
+        if: failure() && env.PAGES_CALLBACK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .pages-artifacts
+          node - <<'NODE'
+          const { writeFileSync } = require('node:fs');
+          writeFileSync('.pages-artifacts/platform-agent-failed.json', `${JSON.stringify({
+            workItemKind: 'platform_dev',
+            platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
+            executorType: 'platform_agent',
+            status: 'failed',
+            errorCode: 'platform_agent_failed',
+            errorMessage: 'platform-agent.yml failed before completing the PR flow',
+            callbackUrl: process.env.PAGES_CALLBACK_URL,
+          }, null, 2)}\n`);
+          NODE
+          node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-failed.json

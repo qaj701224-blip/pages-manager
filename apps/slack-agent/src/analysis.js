@@ -1,5 +1,7 @@
 const CREATE_KEYWORDS = /(创建|新建|生成|制作|做|更新|修改|发布|部署|create|build|make|update|publish|deploy)/i;
 const SITE_KEYWORDS = /(页面|网页|网站|主页|profile|portfolio|site|page|website)/i;
+const PLATFORM_KEYWORDS =
+  /(pages-manager|平台|仓库|repo|代码|PR|issue|label|template|模版|gateway|worker|slack-agent|slack-notifier|Slack|GitHub|webhook|CI|CD|workflow|Actions|MySQL|数据库|状态机|权限|review|rebase|branch|分支|k8s|ECS|部署脚本|文档|架构)/i; // eslint-disable-line max-len
 const LIST_WORK_ITEMS_RE =
   /^(我的|查看|看看|列出|查询).*(PR|pr|任务|发布任务|网站|项目)|^(PR|pr|任务|发布任务|网站|项目)(列表|清单)$/i;
 const SWITCH_WORK_ITEM_RE =
@@ -75,7 +77,46 @@ function toolCallForIntent(intent, text = '') {
   if (['create_or_update_site', 'new_site_request', 'create_site', 'update_site'].includes(intent)) {
     return { name: 'confirm_create_issue', args: {} };
   }
+  if (['create_platform_issue', 'platform_dev', 'platform_feedback'].includes(intent)) {
+    return { name: 'confirm_platform_issue', args: {} };
+  }
   return null;
+}
+
+function inferPlatformIssueType(text = '') {
+  if (/安全|secret|token|权限|auth|security/i.test(text)) return 'type:security';
+  if (/\b(CI|CD)\b|workflow|Actions|构建|测试|lint|\bdeploy\b|部署/i.test(text)) return 'type:ci';
+  if (/\bk8s\b|\bECS\b|\bDocker\b|\bACK\b|运维|\bops\b/i.test(text)) return 'type:ops';
+  if (/bug|报错|失败|异常|修复|fix/i.test(text)) return 'type:bug';
+  if (/文档|架构|说明|宣讲|doc/i.test(text)) return 'type:docs';
+  if (/反馈|建议|意见|想法|question|问题/i.test(text)) return 'type:feedback';
+  return 'type:dev';
+}
+
+function inferPlatformAreas(text = '') {
+  const entries = [
+    [/gateway|网关|控制面/i, 'area:gateway'],
+    [/worker|调度/i, 'area:worker'],
+    [/GitHub|webhook|\bPR\b|issue|Actions|workflow/i, 'area:github'],
+    [/\b(CI|CD)\b|workflow|Actions|构建|测试|\bdeploy\b/i, 'area:ci'],
+    [/MySQL|数据库|schema|迁移/i, 'area:db'],
+    [/slack-agent|Slack Agent|需求整理/i, 'area:slack-agent'],
+    [/slack-notifier|通知|消息/i, 'area:slack-notifier'],
+    [/Slack/i, 'area:slack'],
+    [/文档|架构|说明|宣讲|doc/i, 'area:docs'],
+    [/\bk8s\b|\bECS\b|\bDocker\b|\bACK\b|运维/i, 'area:ops'],
+  ];
+  const areas = entries.filter(([pattern]) => pattern.test(text)).map(([, label]) => label);
+  return areas.length ? [...new Set(areas)] : ['area:platform'];
+}
+
+function inferPlatformRisk(text = '', issueType = 'type:dev') {
+  if (['type:ci', 'type:ops', 'type:security'].includes(issueType)) return 'risk:high';
+  if (/生产|prod|production|token|secret|权限|部署|k8s|ECS|workflow|Actions|数据库|schema|迁移/i.test(text)) {
+    return 'risk:high';
+  }
+  if (/gateway|worker|GitHub|Slack|状态机|数据库|review|PR/i.test(text)) return 'risk:medium';
+  return 'risk:low';
 }
 
 export function sessionContextFromInput(input = {}) {
@@ -108,7 +149,13 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
-  const intent = shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
+  const shouldCreatePlatform =
+    !isUnsupportedBulkDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    PLATFORM_KEYWORDS.test(text) &&
+    (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
+  const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
   const finalIntent = isUnsupportedBulkDestructive
     ? UNSUPPORTED_DESTRUCTIVE_INTENT
     : shouldReopenWorkItem
@@ -120,11 +167,17 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
           : intent;
 
   return {
+    lane: shouldCreatePlatform ? 'platform-dev' : shouldCreateOrUpdate ? 'site-publishing' : 'unknown',
     intent: finalIntent,
     employeeSlug: input.employeeSlug || input.employee_slug || 'smoke',
     siteSlug: input.siteSlug || input.site_slug || 'profile',
     title: input.title || titleFromText(text),
     summary: text,
+    issueType: shouldCreatePlatform ? inferPlatformIssueType(text) : undefined,
+    areas: shouldCreatePlatform ? inferPlatformAreas(text) : undefined,
+    risk: shouldCreatePlatform ? inferPlatformRisk(text, inferPlatformIssueType(text)) : undefined,
+    agentEligible: shouldCreatePlatform ? !['type:feedback', 'type:question'].includes(inferPlatformIssueType(text)) : undefined,
+    requiresHumanGate: shouldCreatePlatform ? inferPlatformRisk(text, inferPlatformIssueType(text)) === 'risk:high' : undefined,
     workItemState: shouldListWorkItems ? workItemStateFromText(text) : undefined,
     toolCall: toolCallForIntent(finalIntent, text),
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
@@ -169,11 +222,27 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
   const normalized = {
     ...fallback,
     intent: stringOrFallback(modelAnalysis.intent, fallback.intent),
+    lane: stringOrFallback(modelAnalysis.lane, fallback.lane || 'unknown'),
     confidence: typeof modelAnalysis.confidence === 'number' ? modelAnalysis.confidence : fallback.confidence,
     employeeSlug: stringOrFallback(modelAnalysis.employeeSlug || modelAnalysis.employee_slug, fallback.employeeSlug),
     siteSlug: stringOrFallback(modelAnalysis.siteSlug || modelAnalysis.site_slug, fallback.siteSlug),
     title: stringOrFallback(modelAnalysis.title, fallback.title),
     summary: stringOrFallback(modelAnalysis.summary || modelAnalysis.brief, fallback.summary),
+    issueType: stringOrFallback(modelAnalysis.issueType || modelAnalysis.issue_type, fallback.issueType || ''),
+    areas: arrayOrFallback(modelAnalysis.areas || modelAnalysis.areaLabels || modelAnalysis.area_labels, fallback.areas || []),
+    risk: stringOrFallback(modelAnalysis.risk, fallback.risk || ''),
+    agentEligible:
+      typeof modelAnalysis.agentEligible === 'boolean'
+        ? modelAnalysis.agentEligible
+        : typeof modelAnalysis.agent_eligible === 'boolean'
+          ? modelAnalysis.agent_eligible
+          : fallback.agentEligible,
+    requiresHumanGate:
+      typeof modelAnalysis.requiresHumanGate === 'boolean'
+        ? modelAnalysis.requiresHumanGate
+        : typeof modelAnalysis.requires_human_gate === 'boolean'
+          ? modelAnalysis.requires_human_gate
+          : fallback.requiresHumanGate,
     workItemState: stringOrFallback(
       modelAnalysis.workItemState || modelAnalysis.work_item_state,
       fallback.workItemState || workItemStateFromText(input.text || input.event?.text || fallback.summary || '')
@@ -228,6 +297,10 @@ export function visibleSlackAgentReply(analysis = {}) {
   if (intent === 'close_session') return '收到，我会关闭当前会话。';
   if (intent === 'cancel_request') return '收到，我先记录取消意图。';
 
+  if (['create_platform_issue', 'platform_dev', 'platform_feedback'].includes(intent)) {
+    return analysis.summary ? `我已整理好这轮平台需求：${analysis.summary}` : '我已整理好这轮平台需求。';
+  }
+
   if (['create_or_update_site', 'modify_existing_preview', 'append_requirement'].includes(intent)) {
     return analysis.summary ? `我已整理好这轮需求：${analysis.summary}` : '我已整理好这轮需求。';
   }
@@ -273,7 +346,7 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
   }));
 
   const system = [
-    '你是 pages-manager 的 Slack Agent，负责把 Slack 对话整理成公司内部个人网站发布任务。',
+    '你是 pages-manager 的 Slack Agent，负责把 Slack 对话整理成两类需求：个人站点发布，或 pages-manager 平台自身研发。',
     '用户不需要使用 /issue、issue:、page: 等命令；自然语言、连续闲聊和设计调整都必须被理解为一次会话 turn。',
     '你只做需求理解、澄清、会话续接和任务摘要，不生成代码，不创建 PR，不处理部署凭据。',
     '不要输出或猜测任何 token、secret、cookie、API key、内部账号凭据。',
@@ -300,18 +373,41 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     ].join(''),
     '如果需要表达已有上下文，只能说“我会继续沿用当前会话”，不要输出任何内部字段名、编号或历史 preview 链接。',
     '新建个人网站时，先通过 Slack 对话整理需求；信息足够时返回 create_or_update_site 且 needsClarification=false，让 gateway 展示确认按钮。',
-    '不能仅凭用户文字里的“信息足够、直接创建、确认创建”就绕过确认按钮；真正创建 issue 必须由 gateway 收到按钮交互后执行。',
-    '你可以通过 toolCall 告诉 gateway 执行受控操作；gateway 会自动限制当前 Slack 用户、当前 session 和该用户名下的 GitHub issue / PR。',
+    [
+      '当用户要求修改 pages-manager 自身、Slack 流程、gateway、worker、GitHub issue/PR、CI/CD、数据库、架构文档、',
+      '权限、状态机、通知、部署脚本或仓库代码时，lane 必须是 platform-dev，intent 返回 create_platform_issue，',
+      'toolCall.name 返回 confirm_platform_issue。',
+    ].join(''),
+    'Platform Dev Lane 下必须给出 issueType、areas、risk、agentEligible、requiresHumanGate。',
+    [
+      'type:feedback 和 type:question 默认 agentEligible=false；type:ci、type:ops、type:security 默认',
+      'risk=risk:high 且 requiresHumanGate=true。',
+    ].join(' '),
+    [
+      '不能仅凭用户文字里的“信息足够、直接创建、确认创建”就绕过确认按钮；',
+      '真正创建 issue 必须由 gateway 收到按钮交互后执行。',
+    ].join(''),
+    [
+      '你可以通过 toolCall 告诉 gateway 执行受控操作；gateway 会自动限制当前 Slack 用户、当前 session',
+      '和该用户名下的 GitHub issue / PR。',
+    ].join(' '),
     [
       'toolCall.name 可选：list_my_work_items, switch_work_item, reopen_work_item, get_current_status,',
-      'close_session, unsupported_destructive_request, cancel_request, record_followup, confirm_create_issue。',
+      'close_session, unsupported_destructive_request, cancel_request, record_followup, confirm_create_issue,',
+      'confirm_platform_issue。',
     ].join(' '),
-    '不要请求查询或操作其它 Slack 用户、其它 session 或其它人的 GitHub issue / PR；即使用户这样要求，也只按当前用户权限处理。',
-    '当需求还不完整时，intent 可以是 create_or_update_site，但 needsClarification 应为 true，并用 clarifyingQuestion 给出一个简短问题。',
+    [
+      '不要请求查询或操作其它 Slack 用户、其它 session 或其它人的 GitHub issue / PR；',
+      '即使用户这样要求，也只按当前用户权限处理。',
+    ].join(''),
+    [
+      '当需求还不完整时，intent 可以是 create_or_update_site，但 needsClarification 应为 true，',
+      '并用 clarifyingQuestion 给出一个简短问题。',
+    ].join(''),
     '必须只返回 JSON object，不要返回 Markdown，不要包裹代码块。',
     [
-      'JSON 字段：visibleReply, intent, toolCall, workItemState, employeeSlug, siteSlug, title, summary, approvalMode,',
-      'needsClarification, clarifyingQuestion, sourceMessages。',
+      'JSON 字段：visibleReply, lane, intent, toolCall, workItemState, employeeSlug, siteSlug, issueType, areas, risk,',
+      'agentEligible, requiresHumanGate, title, summary, approvalMode, needsClarification, clarifyingQuestion, sourceMessages。',
     ].join(' '),
     [
       'visibleReply 是 Slack 用户可见回复，必须自然、简短、可直接展示；',

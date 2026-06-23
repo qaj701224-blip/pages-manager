@@ -33,13 +33,19 @@ site-check.yml
 pages-preview.yml
 ```
 
-Coding Agent 不跑在 gateway、worker、Slack bot、GitHub Review Agent 或员工最终网站里。当前它跑在 `.github/workflows/pages-agent.yml` 的 GitHub Actions runner 中。
+Platform Dev Lane 使用独立 executor：
+
+```text
+platform-agent.yml
+```
+
+Coding Agent 不跑在 gateway、worker、Slack bot、GitHub Review Agent 或员工最终网站里。Site Publishing Lane 跑在 `.github/workflows/pages-agent.yml` 的 GitHub Actions runner 中；Platform Dev Lane 使用独立 `.github/workflows/platform-agent.yml`。
 
 后续如果要更强隔离，可以把 executor adapter 换成 K8s Job，但上层状态机不变。
 
 ## Coding Agent 边界
 
-Coding Agent 能做：
+Site Publishing Coding Agent 能做：
 
 - 读取 issue、Slack 摘要、site context。
 - 读取目标站点目录。
@@ -47,7 +53,7 @@ Coding Agent 能做：
 - 生成或修改 `sites/<employeeSlug>/<siteSlug>/` 文件。
 - 把执行结果 callback gateway。
 
-Coding Agent 不能做：
+Site Publishing Coding Agent 不能做：
 
 - 直接发 Slack。
 - 读取 Slack bot token。
@@ -56,6 +62,8 @@ Coding Agent 不能做：
 - 直接 production deploy。
 
 当前 `pages-agent.yml` 会在创建 / 更新 PR 前执行 allowed path 校验。PR 创建后仍必须跑 `site-check.yml`。
+
+Platform Dev Coding Agent 能修改 `pages-manager` repo 全目录内与 issue 直接相关的文件，但必须通过 `lane:platform-dev` issue、risk gate、CI 和 review 约束。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动默认 high risk，不能绕过人工 gate。
 
 ## Code 更新和编译跑在哪
 
@@ -66,6 +74,13 @@ pages-agent.yml
   -> 运行 Coding Agent
   -> 生成站点文件
   -> allowed path / secret / build 校验
+  -> 创建或更新受控 PR
+  -> callback gateway pr_created
+
+platform-agent.yml
+  -> 运行 Platform Dev Coding Agent
+  -> 修改 pages-manager repo 相关文件
+  -> risk / secret / CI policy 校验
   -> 创建或更新受控 PR
   -> callback gateway pr_created
 
