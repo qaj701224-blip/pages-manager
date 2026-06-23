@@ -5,6 +5,7 @@ import { readSlackAgentConfig } from './config.js';
 import {
   answerRepoQuestionWithProvider,
   analyzeSlackRequirementWithProvider,
+  planRepoResearchWithProvider,
   streamSlackAgentTurnEvents,
   summarizeMergeAnnouncementWithProvider,
 } from './model-provider.js';
@@ -117,6 +118,13 @@ export function createSlackAgentApp(options = {}) {
           const body = await readJson(request);
           const answer = await answerRepoQuestionWithProvider(body, { config, fetchImpl });
           return jsonResponse({ ok: true, answer });
+        }
+
+        if (request.method === 'POST' && url.pathname === '/internal/slack-agent/repo-plan') {
+          requireAgentAuth(request, config);
+          const body = await readJson(request);
+          const plan = await planRepoResearchWithProvider(body, { config, fetchImpl });
+          return jsonResponse({ ok: true, plan });
         }
 
         return jsonResponse({ error: 'Endpoint not found', method: request.method, path: url.pathname }, 404);

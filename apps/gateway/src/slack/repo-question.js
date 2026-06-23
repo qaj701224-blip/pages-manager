@@ -13,6 +13,10 @@ const MAX_SEARCH_BYTES = 12_000_000;
 const MAX_EVIDENCE_EXCERPTS = 2;
 const MAX_DEEP_EVIDENCE_EXCERPTS = 3;
 const MAX_REPO_CONTEXT_TURNS = 5;
+const MAX_REPO_TREE_FILES_FOR_AGENT = 1_200;
+const MAX_REPO_PLAN_ROUNDS = 2;
+const MAX_STORED_EVIDENCE_SNIPPETS = 8;
+const MAX_VISIBLE_EVIDENCE_SNIPPETS = 5;
 
 const BLOCKED_PATH_RE = new RegExp(
   [
@@ -219,10 +223,20 @@ function wantsDeepRepoAnswer(question = '', input = {}) {
   return /(完整|详细|深入|深挖|继续|具体|怎么改|怎么做|如何实现|实现方案|落地|代码层面|测试|风险)/i.test(question);
 }
 
+function wantsImplementationPlan(input = {}) {
+  return input.mode === 'implementation_plan' || input.plan === true;
+}
+
+function uniqStrings(items = [], limit = 20) {
+  return [...new Set(items.filter(Boolean))].slice(0, limit);
+}
+
 function effectiveQuestionForRepoSearch(question = '', sessionMemory = {}, input = {}) {
   const sanitized = sanitizeQuestion(question);
   const lastTurn = latestRepoQuestionTurn(sessionMemory);
-  if (!lastTurn || (!looksLikeRepoFollowup(sanitized) && !input.deepDive)) return sanitized;
+  if (!lastTurn || (!looksLikeRepoFollowup(sanitized) && !input.deepDive && !wantsImplementationPlan(input))) {
+    return sanitized;
+  }
 
   const parts = [
     `上一轮问题：${lastTurn.question || ''}`,
@@ -336,6 +350,9 @@ function evidenceFromFile(file, question = '', terms = termsFromQuestion(questio
 async function searchRepoEvidence(repoRoot, question, options = {}) {
   const terms = termsFromQuestion(question);
   const seedPaths = new Set(keywordCandidates(question));
+  for (const seedPath of options.seedPaths || []) {
+    if (isSafeRelativePath(seedPath)) seedPaths.add(seedPath);
+  }
   for (const evidencePath of options.previousEvidencePaths || []) {
     if (!isSafeRelativePath(evidencePath)) continue;
     seedPaths.add(evidencePath);
@@ -383,13 +400,23 @@ function evidenceSummary(evidence = [], limit = MAX_EVIDENCE_FILES) {
 
 function answerFromEvidence(question, evidence) {
   if (/session|sessions|会话|对话|保存|存储|memory|active/i.test(question)) {
+    const summary = evidenceSummary(evidence);
     return [
-      '当前 Slack 对话不是只放在 Slack 里，而是由 gateway 按用户和 thread 维度持久化。',
-      '`slack_sessions` 保存会话主体、Slack user、thread、active job/work item、Issue/PR/Preview 指针和过期时间。',
-      '`session_memories` 保存这轮对话的摘要、结构化需求、待澄清问题和最近回复。',
-      '`work_item_links` / `issue_links` 把 session 和 PublishingJob、PlatformDevItem、GitHub Issue/PR、Preview 关联起来。',
-      '所以后续同一 thread 或用户明确引用 issue/PR 时，可以找回上下文；关闭或过期只影响默认续接，不删除 Issue/PR。',
-    ].join('\n');
+      '结论：Slack 对话不是只存在 Slack 里，而是由平台按 Slack 用户和 thread 维度持久化。',
+      '',
+      '当前链路：',
+      '1. Slack event 进入平台入口后，会选择或创建一个 Slack session。',
+      '2. 会话主体记录 Slack user、thread、active job/work item、Issue/PR/Preview 指针和过期时间。',
+      '3. 会话记忆记录摘要、结构化需求、待澄清问题、最近回复和 repo 问答上下文。',
+      '4. 发布任务、平台需求、GitHub Issue/PR 和 Preview 通过 link / active target 续接到同一个会话。',
+      '',
+      summary ? `关键文件：\n${summary}` : '',
+      '',
+      '如果要改：优先确认是改 Slack 会话续接、repo 问答记忆，还是任务 / Issue / PR 绑定；这三类会落在不同模块和测试里。',
+      '限制：这是基于当前相关 repo evidence 的判断，不是完整源码浏览结果。',
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   if (/workflow|actions|CI|CD|构建|部署/i.test(question)) {
@@ -417,7 +444,14 @@ function answerFromEvidence(question, evidence) {
 
   const summary = evidenceSummary(evidence);
   return summary
-    ? `我在当前仓库里找到了这些相关实现：\n${summary}\n\n如果要继续定位具体调用链，可以继续追问具体文件或阶段。`
+    ? [
+        '结论：我在当前仓库里找到了和问题相关的实现依据。',
+        '',
+        `关键文件：\n${summary}`,
+        '',
+        '如果要改：可以先生成改造方案，我会把影响范围、建议改动位置、测试路径和风险边界整理出来。',
+        '限制：这是基于当前相关 repo evidence 的判断，不是完整源码浏览结果。',
+      ].join('\n')
     : '我没有在当前仓库 snapshot 里找到足够依据。可能需要补充关键词，或确认线上 gateway 是否挂载了完整 repo snapshot。';
 }
 
@@ -439,6 +473,13 @@ function slackAgentRepoAnswerEndpoint(env = {}) {
   return null;
 }
 
+function slackAgentRepoPlanEndpoint(env = {}) {
+  if (env.SLACK_AGENT_REPO_PLAN_URL) return env.SLACK_AGENT_REPO_PLAN_URL;
+  if (env.SLACK_AGENT_TURN_URL) return String(env.SLACK_AGENT_TURN_URL).replace(/\/turn\/?$/, '/repo-plan');
+  if (env.SLACK_AGENT_ANALYZE_URL) return String(env.SLACK_AGENT_ANALYZE_URL).replace(/\/analyze\/?$/, '/repo-plan');
+  return null;
+}
+
 function evidenceForAgent(evidence = [], options = {}) {
   return evidence
     .filter((item) => item.path && item.matches?.length)
@@ -453,6 +494,157 @@ function evidenceForAgent(evidence = [], options = {}) {
     }));
 }
 
+function normalizeRepoResearchPlan(plan = {}, fallback = {}) {
+  const queries = Array.isArray(plan.queries) ? plan.queries : Array.isArray(plan.searchQueries) ? plan.searchQueries : [];
+  const readPaths = Array.isArray(plan.readPaths) ? plan.readPaths : Array.isArray(plan.read_paths) ? plan.read_paths : [];
+  const requestedMode = ['normal', 'deep_dive', 'implementation_plan'].includes(fallback.mode) ? fallback.mode : 'normal';
+  const planMode = ['normal', 'deep_dive', 'implementation_plan'].includes(plan.mode) ? plan.mode : null;
+  const normalizedMode = requestedMode !== 'normal' ? requestedMode : planMode || requestedMode;
+  return {
+    mode: normalizedMode,
+    queries: queries.map((item) => sanitizeQuestion(item, 180)).filter(Boolean).slice(0, 5),
+    readPaths: readPaths.filter(isSafeRelativePath).slice(0, normalizedMode === 'normal' ? 8 : 16),
+    rationale: sanitizeQuestion(plan.rationale || fallback.rationale || '', 300),
+    suggestedNextAction:
+      plan.suggestedNextAction === 'create_platform_issue' || plan.suggested_next_action === 'create_platform_issue'
+        ? 'create_platform_issue'
+        : 'none',
+  };
+}
+
+function mergeRepoResearchPlans(base = {}, next = {}) {
+  return {
+    ...base,
+    mode: next.mode || base.mode || 'normal',
+    queries: uniqStrings([...(base.queries || []), ...(next.queries || [])], 8),
+    readPaths: uniqStrings([...(base.readPaths || []), ...(next.readPaths || [])], 24),
+    rationale: next.rationale || base.rationale || '',
+    suggestedNextAction:
+      next.suggestedNextAction === 'create_platform_issue' || base.suggestedNextAction === 'create_platform_issue'
+        ? 'create_platform_issue'
+        : 'none',
+  };
+}
+
+function mergeRepoEvidence(existing = [], incoming = [], limit = MAX_EVIDENCE_FILES) {
+  const byPath = new Map();
+  for (const item of [...existing, ...incoming]) {
+    if (!item?.path) continue;
+    const current = byPath.get(item.path);
+    if (!current) {
+      byPath.set(item.path, {
+        ...item,
+        matches: Array.isArray(item.matches) ? [...item.matches] : [],
+      });
+      continue;
+    }
+    const seenLines = new Set(current.matches.map((match) => match.line));
+    for (const match of item.matches || []) {
+      if (seenLines.has(match.line)) continue;
+      current.matches.push(match);
+      seenLines.add(match.line);
+    }
+  }
+  return [...byPath.values()].slice(0, limit);
+}
+
+function deterministicRepoResearchPlan(question = '', sessionMemory = {}, input = {}, repoTree = {}) {
+  const context = repoQuestionContextFromMemory(sessionMemory);
+  const mode = wantsImplementationPlan(input)
+    ? 'implementation_plan'
+    : input.deepDive || input.mode === 'deep_dive'
+      ? 'deep_dive'
+      : 'normal';
+  const questionTerms = termsFromQuestion(question);
+  const seedPaths = new Set([
+    ...keywordCandidates(question),
+    ...context.lastEvidencePaths,
+    ...(repoTree.files || []).filter((file) =>
+      questionTerms.some((term) => file.toLowerCase().includes(term.toLowerCase()))
+    ),
+  ]);
+  return normalizeRepoResearchPlan(
+    {
+      mode,
+      queries: [question],
+      readPaths: [...seedPaths],
+      rationale: '模型不可用时使用确定性 repo 调研计划。',
+      suggestedNextAction: wantsImplementationPlan(input) ? 'create_platform_issue' : 'none',
+    },
+    { mode: input.mode || 'normal' }
+  );
+}
+
+async function repoTreeForAgent(repoRoot) {
+  const files = await listSafeRepoFiles(repoRoot);
+  const topLevel = [...new Set(files.map((file) => file.split('/')[0]).filter(Boolean))].slice(0, 60);
+  return {
+    topLevel,
+    files: files.slice(0, MAX_REPO_TREE_FILES_FOR_AGENT),
+    totalVisibleFiles: files.length,
+    truncated: files.length > MAX_REPO_TREE_FILES_FOR_AGENT,
+  };
+}
+
+async function askSlackAgentRepoPlan(
+  env = {},
+  { question, originalQuestion, sessionMemory, mode, repoTree, observations } = {}
+) {
+  const fallback = deterministicRepoResearchPlan(originalQuestion || question, sessionMemory, { mode }, repoTree);
+  const endpoint = slackAgentRepoPlanEndpoint(env);
+  if (!endpoint || !env.SLACK_AGENT_SHARED_SECRET) return fallback;
+
+  const fetchImpl = env.SLACK_AGENT_FETCH || fetch;
+  const response = await fetchImpl(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Pages-Slack-Agent-Token': env.SLACK_AGENT_SHARED_SECRET,
+    },
+    body: JSON.stringify({
+      question,
+      originalQuestion: originalQuestion || question,
+      mode,
+      context: repoAnswerContextForAgent(sessionMemory),
+      repoTree,
+      observations: observations || null,
+    }),
+  });
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { rawText: text };
+  }
+  if (!response.ok || !body?.ok || !body.plan) {
+    const error = new Error(body?.error || `Slack Agent repo plan failed: HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return normalizeRepoResearchPlan(body.plan, fallback);
+}
+
+function canAskSlackAgentRepoPlan(env = {}) {
+  return Boolean(slackAgentRepoPlanEndpoint(env) && env.SLACK_AGENT_SHARED_SECRET);
+}
+
+function evidenceSnippetsForMemory(evidence = []) {
+  const snippets = [];
+  for (const item of evidence) {
+    for (const match of item.matches || item.snippets || []) {
+      if (!item.path || !match?.excerpt) continue;
+      snippets.push({
+        path: item.path,
+        line: match.line || null,
+        excerpt: redactSecretLikeText(String(match.excerpt || '').trim()).slice(0, 700),
+      });
+      if (snippets.length >= MAX_STORED_EVIDENCE_SNIPPETS) return snippets;
+    }
+  }
+  return snippets;
+}
+
 function repoAnswerContextForAgent(sessionMemory = {}) {
   const lastTurn = latestRepoQuestionTurn(sessionMemory);
   if (!lastTurn) return null;
@@ -464,7 +656,10 @@ function repoAnswerContextForAgent(sessionMemory = {}) {
   };
 }
 
-async function askSlackAgentRepoAnswer(env = {}, { question, originalQuestion, evidence, sessionMemory, mode, options } = {}) {
+async function askSlackAgentRepoAnswer(
+  env = {},
+  { question, originalQuestion, evidence, sessionMemory, mode, options, researchPlan } = {}
+) {
   const endpoint = slackAgentRepoAnswerEndpoint(env);
   if (!endpoint || !env.SLACK_AGENT_SHARED_SECRET) return null;
 
@@ -480,6 +675,7 @@ async function askSlackAgentRepoAnswer(env = {}, { question, originalQuestion, e
       originalQuestion: originalQuestion || question,
       mode: mode || 'normal',
       context: repoAnswerContextForAgent(sessionMemory),
+      researchPlan: researchPlan || null,
       evidence: evidenceForAgent(evidence, options),
     }),
   });
@@ -501,17 +697,79 @@ async function askSlackAgentRepoAnswer(env = {}, { question, originalQuestion, e
 export async function answerRepoQuestion(env = {}, input = {}) {
   const question = sanitizeQuestion(input.question || input.text || input.query || '');
   const sessionMemory = input.sessionMemory || null;
-  const deepDive = wantsDeepRepoAnswer(question, input);
-  const mode = deepDive ? 'deep_dive' : 'normal';
+  const implementationPlan = wantsImplementationPlan(input);
+  const deepDive = implementationPlan || wantsDeepRepoAnswer(question, input);
+  let mode = implementationPlan ? 'implementation_plan' : deepDive ? 'deep_dive' : 'normal';
   const effectiveQuestion = effectiveQuestionForRepoSearch(question, sessionMemory, input);
   const previousEvidencePaths = repoQuestionContextFromMemory(sessionMemory).lastEvidencePaths;
-  const evidenceOptions = {
-    maxEvidenceFiles: deepDive ? MAX_DEEP_EVIDENCE_FILES : MAX_EVIDENCE_FILES,
-    maxExcerpts: deepDive ? MAX_DEEP_EVIDENCE_EXCERPTS : MAX_EVIDENCE_EXCERPTS,
-    previousEvidencePaths,
-  };
   const repoRoot = repoRootFromEnv(env);
-  const evidence = await searchRepoEvidence(repoRoot, effectiveQuestion, evidenceOptions);
+  const repoTree = await repoTreeForAgent(repoRoot);
+  let researchPlan = deterministicRepoResearchPlan(effectiveQuestion, sessionMemory, { ...input, mode }, repoTree);
+  let researchPlanError = null;
+  try {
+    researchPlan = await askSlackAgentRepoPlan(env, {
+      question: effectiveQuestion,
+      originalQuestion: question,
+      sessionMemory,
+      mode,
+      repoTree,
+    });
+  } catch (err) {
+    researchPlanError = redactSecretLikeText(err.message);
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: 'slack_repo_plan_agent_failed',
+        error: researchPlanError,
+      })
+    );
+  }
+  mode = researchPlan.mode || mode;
+  const evidenceOptions = {
+    maxEvidenceFiles: mode === 'normal' ? MAX_EVIDENCE_FILES : MAX_DEEP_EVIDENCE_FILES,
+    maxExcerpts: mode === 'normal' ? MAX_EVIDENCE_EXCERPTS : MAX_DEEP_EVIDENCE_EXCERPTS,
+    previousEvidencePaths,
+    seedPaths: researchPlan.readPaths,
+  };
+  const researchQuestion = [effectiveQuestion, ...(researchPlan.queries || [])].filter(Boolean).join(' ');
+  let evidence = await searchRepoEvidence(repoRoot, researchQuestion, evidenceOptions);
+  const planRounds = [researchPlan];
+  if (mode !== 'normal' && canAskSlackAgentRepoPlan(env)) {
+    for (let round = 1; round < MAX_REPO_PLAN_ROUNDS; round += 1) {
+      let nextPlan;
+      try {
+        nextPlan = await askSlackAgentRepoPlan(env, {
+          question: effectiveQuestion,
+          originalQuestion: question,
+          sessionMemory,
+          mode,
+          repoTree,
+          observations: {
+            round,
+            previousPlan: researchPlan,
+            evidence: evidenceForAgent(evidence, evidenceOptions),
+            coveredPaths: evidence.map((item) => item.path).filter(Boolean),
+          },
+        });
+      } catch (err) {
+        researchPlanError = redactSecretLikeText(err.message);
+        break;
+      }
+      planRounds.push(nextPlan);
+      const beforePaths = new Set(evidence.map((item) => item.path));
+      researchPlan = mergeRepoResearchPlans(researchPlan, nextPlan);
+      const nextEvidenceOptions = {
+        ...evidenceOptions,
+        previousEvidencePaths: uniqStrings([...previousEvidencePaths, ...beforePaths], 24),
+        seedPaths: nextPlan.readPaths,
+      };
+      const nextResearchQuestion = [effectiveQuestion, ...(nextPlan.queries || [])].filter(Boolean).join(' ');
+      const nextEvidence = await searchRepoEvidence(repoRoot, nextResearchQuestion, nextEvidenceOptions);
+      evidence = mergeRepoEvidence(evidence, nextEvidence, evidenceOptions.maxEvidenceFiles);
+      const afterPaths = new Set(evidence.map((item) => item.path));
+      if (afterPaths.size <= beforePaths.size && !(nextPlan.queries || []).length && !(nextPlan.readPaths || []).length) break;
+    }
+  }
   let answer = answerFromEvidence(effectiveQuestion, evidence);
   let answerSource = 'deterministic';
   let agentAnswerError = null;
@@ -524,10 +782,12 @@ export async function answerRepoQuestion(env = {}, input = {}) {
       sessionMemory,
       mode,
       options: evidenceOptions,
+      researchPlan,
     });
     if (agentAnswer?.answerText) {
       answer = agentAnswer.answerText;
       answerSource = agentAnswer.source || 'agent';
+      if (agentAnswer.suggestedNextAction) researchPlan.suggestedNextAction = agentAnswer.suggestedNextAction;
     }
   } catch (err) {
     agentAnswerError = redactSecretLikeText(err.message);
@@ -548,11 +808,19 @@ export async function answerRepoQuestion(env = {}, input = {}) {
     effectiveQuestion,
     mode,
     answerSource,
+    researchPlan,
+    planRounds,
+    ...(researchPlanError ? { researchPlanError } : {}),
+    suggestedNextAction: researchPlan.suggestedNextAction || 'none',
     ...(agentAnswerError ? { agentAnswerError } : {}),
     replyText: redactSecretLikeText(`${answer}${evidenceText(evidence, evidenceOptions.maxEvidenceFiles)}`),
     evidence: evidence.map((item) => ({
       path: item.path,
       lines: item.matches.map((match) => match.line),
+      snippets: item.matches.map((match) => ({
+        line: match.line,
+        excerpt: redactSecretLikeText(String(match.excerpt || '').trim()).slice(0, 700),
+      })),
     })),
   };
 }
@@ -567,11 +835,13 @@ function summarizeRepoAnswerForMemory(replyText = '') {
 export function nextRepoQuestionContext(previousContext = {}, result = {}) {
   const context = repoQuestionContextFromMemory({ repoQuestionContext: previousContext });
   const evidencePaths = (result.evidence || []).map((item) => item.path).filter(Boolean).slice(0, 12);
+  const evidenceSnippets = evidenceSnippetsForMemory(result.evidence || []);
   const turn = {
     question: sanitizeQuestion(result.question || ''),
     effectiveQuestion: sanitizeQuestion(result.effectiveQuestion || result.question || ''),
     answerSummary: summarizeRepoAnswerForMemory(result.replyText || ''),
     evidencePaths,
+    evidenceSnippets,
     mode: result.mode || 'normal',
     createdAt: new Date().toISOString(),
   };
@@ -583,13 +853,42 @@ export function nextRepoQuestionContext(previousContext = {}, result = {}) {
   };
 }
 
-export function repoQuestionActionBlocks(slackSession, result = {}) {
+export function repoQuestionActionBlocks(slackSession, result = {}, options = {}) {
   const sessionId = slackSession?.id || '';
   if (!sessionId) return null;
   const evidencePaths = (result.evidence || []).map((item) => item.path).filter(Boolean);
   const contextText = evidencePaths.length
-    ? `基于 ${Math.min(evidencePaths.length, result.mode === 'deep_dive' ? MAX_DEEP_EVIDENCE_FILES : MAX_EVIDENCE_FILES)} 个相关文件生成。`
+    ? `基于 ${Math.min(evidencePaths.length, result.mode === 'normal' ? MAX_EVIDENCE_FILES : MAX_DEEP_EVIDENCE_FILES)} 个相关文件生成。`
     : '当前仓库 evidence 不足，可以继续补充关键词。';
+  const actions = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '继续深挖' },
+      action_id: 'pages_repo_deep_dive',
+      value: JSON.stringify({ sessionId }).slice(0, 1900),
+    },
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '查看依据' },
+      action_id: 'pages_repo_view_evidence',
+      value: JSON.stringify({ sessionId }).slice(0, 1900),
+    },
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '生成改造方案' },
+      action_id: 'pages_repo_generate_plan',
+      value: JSON.stringify({ sessionId }).slice(0, 1900),
+    },
+  ];
+  if (options.allowCreateIssueAction) {
+    actions.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '按方案创建需求' },
+      style: 'primary',
+      action_id: 'pages_repo_create_platform_issue',
+      value: JSON.stringify({ sessionId }).slice(0, 1900),
+    });
+  }
   return [
     {
       type: 'section',
@@ -609,23 +908,37 @@ export function repoQuestionActionBlocks(slackSession, result = {}) {
     },
     {
       type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '继续深挖' },
-          action_id: 'pages_repo_deep_dive',
-          value: JSON.stringify({ sessionId }).slice(0, 1900),
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '按这个方案创建需求' },
-          style: 'primary',
-          action_id: 'pages_repo_create_platform_issue',
-          value: JSON.stringify({ sessionId }).slice(0, 1900),
-        },
-      ],
+      elements: actions,
     },
   ];
+}
+
+export function repoEvidenceDetailsFromContext(sessionMemory = {}) {
+  const lastTurn = latestRepoQuestionTurn(sessionMemory);
+  const snippets = Array.isArray(lastTurn?.evidenceSnippets) ? lastTurn.evidenceSnippets : [];
+  const paths = Array.isArray(lastTurn?.evidencePaths) ? lastTurn.evidencePaths : [];
+  if (!snippets.length && !paths.length) {
+    return '当前会话还没有可展示的 repo evidence。可以先继续追问具体模块或文件。';
+  }
+
+  const lines = [
+    '我只展示本轮相关依据片段，不是完整文件。完整改造前还需要继续深挖或进入开发流程。',
+    '',
+  ];
+  for (const [index, snippet] of snippets.slice(0, MAX_VISIBLE_EVIDENCE_SNIPPETS).entries()) {
+    const location = `${snippet.path}${snippet.line ? `:${snippet.line}` : ''}`;
+    lines.push(`${index + 1}. \`${location}\``);
+    lines.push('```');
+    lines.push(String(snippet.excerpt || '').slice(0, 700));
+    lines.push('```');
+  }
+  if (!snippets.length && paths.length) {
+    lines.push(...paths.slice(0, MAX_VISIBLE_EVIDENCE_SNIPPETS).map((item, index) => `${index + 1}. \`${item}\``));
+  }
+  if (paths.length > MAX_VISIBLE_EVIDENCE_SNIPPETS) {
+    lines.push(`还有 ${paths.length - MAX_VISIBLE_EVIDENCE_SNIPPETS} 个相关文件未展开。`);
+  }
+  return truncateBlockText(lines.join('\n'), 2900);
 }
 
 export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
@@ -633,6 +946,35 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
   if (!lastTurn) return null;
   const titleSource = lastTurn.question || '基于仓库问答创建改造需求';
   const evidence = Array.isArray(lastTurn.evidencePaths) ? lastTurn.evidencePaths : [];
+  const classificationText = [titleSource, lastTurn.answerSummary || '', evidence.join(' ')].join('\n');
+  const highRiskPath = evidence.some((file) =>
+    /^(?:\.github|k8s|deploy)(?:\/|$)|Dockerfile|(?:^|\/)deploy|kubectl|KUBE_CONFIG|aliyun|ACR/i.test(file)
+  );
+  const issueType = /security|权限|鉴权|token|secret|cookie|密钥|漏洞/i.test(classificationText)
+    ? 'type:security'
+    : /\b(CI|CD)\b|workflow|Actions|构建|测试|site-check|pages-agent|platform-agent/i.test(classificationText)
+      ? 'type:ci'
+      : /ECS|ACK|k8s|Kubernetes|Docker|部署脚本|deploy|Caddy|容器|运维/i.test(classificationText)
+        ? 'type:ops'
+        : /反馈|建议|意见/i.test(classificationText)
+          ? 'type:feedback'
+          : 'type:dev';
+  const areas = uniqStrings(
+    [
+      /Slack|slack/i.test(classificationText) ? 'area:slack' : '',
+      /GitHub|issue|PR|pull_request|webhook/i.test(classificationText) ? 'area:github' : '',
+      /\b(CI|CD)\b|workflow|Actions|构建|测试|site-check|pages-agent|platform-agent/i.test(classificationText)
+        ? 'area:ci'
+        : '',
+      /ECS|ACK|k8s|Kubernetes|Docker|deploy|Caddy|容器|运维/i.test(classificationText) ? 'area:ops' : '',
+      /数据库|MySQL|schema|drizzle|session_memories|slack_sessions/i.test(classificationText) ? 'area:db' : '',
+      /worker|gateway|notifier|agent/i.test(classificationText) ? 'area:platform' : '',
+    ],
+    6
+  );
+  const risk = ['type:ci', 'type:ops', 'type:security'].includes(issueType) || highRiskPath ? 'risk:high' : 'risk:medium';
+  const agentEligible = !['type:feedback', 'type:question'].includes(issueType);
+  const requiresHumanGate = risk === 'risk:high';
   const internalSummaryLines = [
     `用户基于仓库问答希望继续推进：${titleSource}`,
     lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
@@ -649,11 +991,11 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
     lane: 'platform-dev',
     intent: 'create_platform_issue',
     toolCall: { name: 'confirm_platform_issue', args: {} },
-    issueType: 'type:dev',
-    areas: ['area:platform'],
-    risk: 'risk:medium',
-    agentEligible: true,
-    requiresHumanGate: false,
+    issueType,
+    areas: areas.length ? areas : ['area:platform'],
+    risk,
+    agentEligible,
+    requiresHumanGate,
     title: titleSource.length > 80 ? `${titleSource.slice(0, 77)}...` : titleSource,
     summary: visibleSummaryLines.join('\n').slice(0, 1800),
     needsClarification: false,
