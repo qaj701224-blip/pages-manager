@@ -70,7 +70,7 @@ apps/gateway/src/
 │   ├── agent-tool-call.js     # Slack Agent toolCall 解析和别名归一化
 │   ├── agent-run-records.js   # Slack AgentRun 完成 / 失败记录和分析结果脱敏
 │   ├── delivery.js            # Slack delivery、reaction、profile lookup 和通用输出 helper
-│   ├── followup.js            # 追加修改、排队修复和 follow-up 状态卡
+│   ├── followup.js            # 追加修改、排队修复和 follow-up 进度消息
 │   ├── http.js               # Slack signature / raw body
 │   ├── intake.js             # Slack event intake
 │   ├── intents.js            # Slack Agent intent 常量
@@ -78,7 +78,7 @@ apps/gateway/src/
 │   ├── job-input.js          # Slack -> PublishingJob 输入派生
 │   ├── job-binding.js         # SlackSession 与 PublishingJob 绑定
 │   ├── notifier.js           # gateway -> slack-notifier adapter
-│   ├── session.js            # SlackSession / IssueLink / follow-up
+│   ├── session.js            # SlackSession / WorkItemLink / follow-up
 │   ├── text.js
 │   ├── work-item-reconciler.js # Slack 任务列表前的 GitHub 状态校准
 │   ├── work-item-tools.js    # Slack Agent 任务查询 / 切换 / 重新打开 tool handler
@@ -142,7 +142,7 @@ Dockerfile*
 docs/** 中的平台部署文档
 ```
 
-如果用户需求需要修改平台代码、workflow、模板、K8s 或部署逻辑，必须转成人工平台 PR。
+如果用户需求需要修改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk gate、CI 和 review 控制。
 
 分支、workflow lane、GitHub App、Review Agent、webhook 和本地 `gh` 边界统一见 [github-automation.md](./github-automation.md)。本文件只描述 repo 结构，不重复展开 GitHub 运行规则。
 

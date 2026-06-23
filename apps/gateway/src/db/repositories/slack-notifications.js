@@ -3,9 +3,12 @@ import { makeId } from '@xd/workflow-core';
 import {
   rowToSlackAgentReplyMessage,
   rowToSlackJobStatusMessage,
+  rowToSlackWorkItemStatusMessage,
   slackAgentReplyMessageToRow,
   slackJobStatusMessageToRow,
+  slackWorkItemStatusMessageToRow,
   slackStatusScopeKey,
+  workItemStatusScopeKey,
 } from '../rows/slack-row.js';
 import { execute, upsertRow } from '../sql.js';
 
@@ -25,6 +28,32 @@ export const slackNotificationRepositoryMethods = {
       this.pool,
       'slack_notification_dedupes',
       { id: makeId('slackdedupe'), job_id: jobId, dedupe_key: key, created_at: new Date() },
+      { excludeUpdate: ['id', 'created_at'] }
+    );
+  },
+
+  async hasSlackWorkItemNotification(workItemKind, workItemId, key) {
+    const rows = await execute(
+      this.pool,
+      'SELECT id FROM slack_notification_dedupes WHERE work_item_kind = ? AND work_item_id = ? AND dedupe_key = ? LIMIT 1',
+      [workItemKind, workItemId, key]
+    );
+    return rows.length > 0;
+  },
+
+  async recordSlackWorkItemNotification(workItemKind, workItemId, key) {
+    this.slackNotifications.add(`${workItemKind}:${workItemId}:${key}`);
+    await upsertRow(
+      this.pool,
+      'slack_notification_dedupes',
+      {
+        id: makeId('slackdedupe'),
+        job_id: null,
+        work_item_kind: workItemKind,
+        work_item_id: workItemId,
+        dedupe_key: key,
+        created_at: new Date(),
+      },
       { excludeUpdate: ['id', 'created_at'] }
     );
   },
@@ -58,6 +87,46 @@ export const slackNotificationRepositoryMethods = {
     };
     this.cacheSlackJobStatusMessage(message);
     await upsertRow(this.pool, 'slack_job_status_messages', slackJobStatusMessageToRow(message), {
+      excludeUpdate: ['id', 'created_at'],
+    });
+    return message;
+  },
+
+  async getSlackWorkItemStatusMessage(workItemKind, workItemId, options = {}) {
+    const scopeKey = workItemStatusScopeKey(options);
+    const rows = await execute(
+      this.pool,
+      [
+        'SELECT * FROM slack_work_item_status_messages',
+        'WHERE work_item_kind = ? AND work_item_id = ? AND scope_key = ?',
+        'LIMIT 1',
+      ].join(' '),
+      [workItemKind, workItemId, scopeKey]
+    );
+    return this.cacheSlackWorkItemStatusMessage(rowToSlackWorkItemStatusMessage(rows[0]));
+  },
+
+  async recordSlackWorkItemStatusMessage(workItemKind, workItemId, input = {}, now = new Date()) {
+    const scopeKey = workItemStatusScopeKey(input);
+    const existing = await this.getSlackWorkItemStatusMessage(workItemKind, workItemId, { scopeKey });
+    const nowIso = now.toISOString();
+    const message = {
+      ...(existing || {}),
+      id: existing?.id || input.id || makeId('slackmsg'),
+      workItemKind,
+      workItemId,
+      slackSessionId: input.slackSessionId ?? existing?.slackSessionId ?? null,
+      scopeKey,
+      channel: input.channel ?? existing?.channel ?? null,
+      threadTs: input.threadTs ?? existing?.threadTs ?? null,
+      messageTs: input.messageTs ?? input.ts ?? existing?.messageTs ?? null,
+      stage: input.stage ?? existing?.stage ?? null,
+      status: input.status ?? existing?.status ?? null,
+      updatedAt: nowIso,
+      createdAt: existing?.createdAt || nowIso,
+    };
+    this.cacheSlackWorkItemStatusMessage(message);
+    await upsertRow(this.pool, 'slack_work_item_status_messages', slackWorkItemStatusMessageToRow(message), {
       excludeUpdate: ['id', 'created_at'],
     });
     return message;

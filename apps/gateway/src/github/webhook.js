@@ -61,6 +61,15 @@ export function publishingJobIdFromIssueBody(body) {
   return match ? match[1] : '';
 }
 
+export function platformDevItemIdFromIssueBody(body) {
+  const text = String(body || '');
+  const htmlCommentMatch = text.match(/<!--\s*pages-manager:platform_dev_item_id=(pdev_[A-Za-z0-9_]{1,80})\s*-->/);
+  if (htmlCommentMatch) return htmlCommentMatch[1];
+
+  const match = text.match(/^PlatformDevItem:\s*(pdev_[A-Za-z0-9_]{1,80})\s*$/m);
+  return match ? match[1] : '';
+}
+
 export function issueUrl(issue = {}) {
   return issue.html_url || issue.url || null;
 }

@@ -1,4 +1,5 @@
 export const CREATE_JOB_INTENTS = new Set(['create_or_update_site', 'new_site_request', 'create_site', 'update_site']);
+export const CREATE_PLATFORM_INTENTS = new Set(['create_platform_issue', 'platform_dev', 'platform_feedback']);
 export const FOLLOWUP_INTENTS = new Set(['modify_existing_preview', 'append_requirement']);
 export const NON_FOLLOWUP_ACTIONS = new Set([
   'help',

@@ -1,10 +1,15 @@
 import {
   buildPublishingJob,
+  buildPlatformDevItem,
   canTransition,
   eventForStatus,
   idempotencyScopeForInput,
   idempotencyScopeForJob,
+  idempotencyScopeForPlatformDevItem,
   makeId,
+  platformDevItemEvent,
+  transitionPlatformDevItem,
+  transitionPlatformDevItemWithBridge,
   transitionJob,
 } from '../../packages/workflow-core/src/index.js';
 
@@ -27,6 +32,13 @@ const CALLBACK_BRIDGES = {
 };
 
 const REVIEW_ACTIVE_JOB_STATUSES = new Set(['pr_created', 'reviewing', 'changes_requested', 'fixing', 'previewing']);
+const REVIEW_ACTIVE_PLATFORM_STATUSES = new Set([
+  'pr_created',
+  'ci_running',
+  'review_waiting',
+  'review_blocked',
+  'ready_to_merge',
+]);
 const SLACK_ACTIVE_JOB_STATUSES = new Set([
   'received',
   'summarizing',
@@ -43,6 +55,22 @@ const SLACK_ACTIVE_JOB_STATUSES = new Set([
   'previewing',
   'preview_deployed',
 ]);
+const SLACK_ACTIVE_PLATFORM_STATUSES = new Set([
+  'received',
+  'triaging',
+  'issue_creating',
+  'issue_created',
+  'gate_pending',
+  'agent_queued',
+  'agent_running',
+  'branch_committed',
+  'pr_created',
+  'ci_running',
+  'ci_failed',
+  'review_waiting',
+  'review_blocked',
+  'ready_to_merge',
+]);
 
 function fieldOrExisting(input, existing, key) {
   return Object.hasOwn(input, key) ? input[key] : (existing?.[key] ?? null);
@@ -50,6 +78,10 @@ function fieldOrExisting(input, existing, key) {
 
 function jobKeepsSlackSessionActive(job = {}) {
   return SLACK_ACTIVE_JOB_STATUSES.has(job.status);
+}
+
+function platformDevKeepsSlackSessionActive(item = {}) {
+  return SLACK_ACTIVE_PLATFORM_STATUSES.has(item.status);
 }
 
 function shaMatches(left, right) {
@@ -72,6 +104,9 @@ export class GatewayStoreFixture {
     this.jobs = new Map();
     this.idempotency = new Map();
     this.events = new Map();
+    this.platformDevItems = new Map();
+    this.platformDevIdempotency = new Map();
+    this.platformDevEvents = new Map();
     this.githubDeliveries = new Map();
     this.slackDeliveries = new Map();
     this.reviewAgentComments = new Map();
@@ -87,6 +122,11 @@ export class GatewayStoreFixture {
     this.issueLinks = new Map();
     this.issueLinkByIssueNumber = new Map();
     this.issueLinkByPrNumber = new Map();
+    this.workItemLinks = new Map();
+    this.workItemLinkByIssueNumber = new Map();
+    this.workItemLinkByPrNumber = new Map();
+    this.workItemGates = new Map();
+    this.slackWorkItemStatusMessages = new Map();
     this.agentRuns = new Map();
   }
 
@@ -109,6 +149,94 @@ export class GatewayStoreFixture {
 
   getJob(jobId) {
     return this.jobs.get(jobId) || null;
+  }
+
+  createPlatformDevItem(input) {
+    const scope = idempotencyScopeForInput({ source: 'slack', ...input });
+    if (this.platformDevIdempotency.has(scope)) {
+      return { item: this.platformDevItems.get(this.platformDevIdempotency.get(scope)), created: false };
+    }
+
+    const item = buildPlatformDevItem(input);
+    this.platformDevItems.set(item.id, item);
+    this.platformDevIdempotency.set(idempotencyScopeForPlatformDevItem(item), item.id);
+    this.appendPlatformDevEvent(item, 'PlatformDevItem received');
+    if (item.requiresHumanGate) {
+      this.ensureWorkItemGate({
+        workItemKind: 'platform_dev',
+        workItemId: item.id,
+        gateType: 'risk',
+        status: 'pending',
+        reason: item.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
+        metadata: {
+          risk: item.risk,
+          issueType: item.issueType,
+          areas: item.areas || [],
+        },
+      });
+    }
+    return { item, created: true };
+  }
+
+  getPlatformDevItem(itemId) {
+    return this.platformDevItems.get(itemId) || null;
+  }
+
+  listPlatformDevItems(options = {}) {
+    const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
+    const offset = Math.max(Number(options.offset) || 0, 0);
+    const items = [...this.platformDevItems.values()]
+      .filter((item) => {
+        if (options.source && item.source !== options.source) return false;
+        if (options.requestedById && item.requestedById !== options.requestedById) return false;
+        if (options.status && item.status !== options.status) return false;
+        if (options.statuses?.length && !options.statuses.includes(item.status)) return false;
+        return true;
+      })
+      .sort((left, right) => {
+        const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
+        const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+        return rightTime - leftTime;
+      });
+    return {
+      items: items.slice(offset, offset + limit),
+      total: items.length,
+      limit,
+      offset,
+    };
+  }
+
+  updatePlatformDevItem(itemId, status, patch = {}) {
+    const item = this.getPlatformDevItem(itemId);
+    if (!item) return null;
+    const updated = transitionPlatformDevItemWithBridge(item, status, patch, new Date(), (bridgedItem, nextStatus) => {
+      this.platformDevItems.set(itemId, bridgedItem);
+      this.appendPlatformDevEvent(bridgedItem, `PlatformDevItem moved to ${nextStatus}`);
+    });
+    this.platformDevItems.set(itemId, updated);
+    this.appendPlatformDevEvent(updated, `PlatformDevItem moved to ${status}`);
+    return updated;
+  }
+
+  patchPlatformDevItem(itemId, patch = {}) {
+    const item = this.getPlatformDevItem(itemId);
+    if (!item) return null;
+    const updated = {
+      ...item,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    this.platformDevItems.set(itemId, updated);
+    return updated;
+  }
+
+  failPlatformDevItem(itemId, errorCode, errorMessage) {
+    const item = this.getPlatformDevItem(itemId);
+    if (!item) return null;
+    const updated = transitionPlatformDevItem(item, 'failed', { errorCode, errorMessage });
+    this.platformDevItems.set(itemId, updated);
+    this.appendPlatformDevEvent(updated, errorMessage || errorCode || 'PlatformDevItem failed');
+    return updated;
   }
 
   listJobs(options = {}) {
@@ -248,6 +376,12 @@ export class GatewayStoreFixture {
     this.events.set(job.id, events);
   }
 
+  appendPlatformDevEvent(item, message) {
+    const events = this.platformDevEvents.get(item.id) || [];
+    events.push(platformDevItemEvent(item, message));
+    this.platformDevEvents.set(item.id, events);
+  }
+
   recordGithubDelivery({ repoFullName, deliveryId, eventName, action }) {
     const key = `${repoFullName}:${deliveryId}`;
     if (this.githubDeliveries.has(key)) {
@@ -295,6 +429,9 @@ export class GatewayStoreFixture {
       slackUserId: input.slackUserId || input.slack_user_id || null,
       slackSessionId: input.slackSessionId || input.slack_session_id || null,
       publishingJobId: input.publishingJobId || input.publishing_job_id || null,
+      workItemKind: input.workItemKind || input.work_item_kind || null,
+      workItemId: input.workItemId || input.work_item_id || null,
+      platformDevItemId: input.platformDevItemId || input.platform_dev_item_id || null,
       agentRunId: input.agentRunId || input.agent_run_id || null,
       payloadRedacted: input.payloadRedacted || input.payload_redacted || input.payloadRedactedJson || null,
       payloadHash: input.payloadHash || input.payload_hash || null,
@@ -343,6 +480,9 @@ export class GatewayStoreFixture {
         if (options.eventId && delivery.eventId !== options.eventId) return false;
         if (options.slackSessionId && delivery.slackSessionId !== options.slackSessionId) return false;
         if (options.publishingJobId && delivery.publishingJobId !== options.publishingJobId) return false;
+        if (options.workItemKind && delivery.workItemKind !== options.workItemKind) return false;
+        if (options.workItemId && delivery.workItemId !== options.workItemId) return false;
+        if (options.platformDevItemId && delivery.platformDevItemId !== options.platformDevItemId) return false;
         if (options.processingStatus && delivery.processingStatus !== options.processingStatus) return false;
         if (options.channelId && delivery.channelId !== options.channelId) return false;
         return true;
@@ -372,6 +512,32 @@ export class GatewayStoreFixture {
     }
 
     return candidates.find((job) => REVIEW_ACTIVE_JOB_STATUSES.has(job.status)) || candidates[0];
+  }
+
+  findPlatformDevItemByIssueNumber(issueNumber) {
+    const normalized = Number(issueNumber);
+    return (
+      [...this.platformDevItems.values()]
+        .filter((item) => Number(item.githubIssueNumber) === normalized)
+        .sort((left, right) => {
+          const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
+          const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+          return rightTime - leftTime;
+        })[0] || null
+    );
+  }
+
+  findPlatformDevItemByPrNumber(prNumber, options = {}) {
+    const normalized = Number(prNumber);
+    const candidates = [...this.platformDevItems.values()].filter((item) => Number(item.githubPrNumber) === normalized).reverse();
+    if (!candidates.length) return null;
+
+    if (options.headSha) {
+      const matched = candidates.find((item) => shaMatches(item.headSha, options.headSha));
+      if (matched) return matched;
+    }
+
+    return candidates.find((item) => REVIEW_ACTIVE_PLATFORM_STATUSES.has(item.status)) || candidates[0];
   }
 
   recordReviewAgentComment(comment) {
@@ -557,6 +723,34 @@ export class GatewayStoreFixture {
     return message;
   }
 
+  getSlackWorkItemStatusMessage(workItemKind, workItemId, options = {}) {
+    const scopeKey = options.scopeKey || (options.slackSessionId ? `session:${options.slackSessionId}` : 'work-item');
+    return this.slackWorkItemStatusMessages.get(`${workItemKind}:${workItemId}:${scopeKey}`) || null;
+  }
+
+  recordSlackWorkItemStatusMessage(workItemKind, workItemId, input = {}, now = new Date()) {
+    const scopeKey = input.scopeKey || (input.slackSessionId ? `session:${input.slackSessionId}` : 'work-item');
+    const existing = this.getSlackWorkItemStatusMessage(workItemKind, workItemId, { scopeKey });
+    const nowIso = now.toISOString();
+    const message = {
+      ...(existing || {}),
+      id: existing?.id || makeId('slackmsg'),
+      workItemKind,
+      workItemId,
+      slackSessionId: input.slackSessionId ?? existing?.slackSessionId ?? null,
+      scopeKey,
+      channel: input.channel ?? existing?.channel ?? null,
+      threadTs: input.threadTs ?? existing?.threadTs ?? null,
+      messageTs: input.messageTs ?? input.ts ?? existing?.messageTs ?? null,
+      stage: input.stage ?? existing?.stage ?? null,
+      status: input.status ?? existing?.status ?? null,
+      updatedAt: nowIso,
+      createdAt: existing?.createdAt || nowIso,
+    };
+    this.slackWorkItemStatusMessages.set(`${workItemKind}:${workItemId}:${scopeKey}`, message);
+    return message;
+  }
+
   getSlackAgentReplyMessage(agentRunId) {
     return this.slackAgentReplyMessages.get(agentRunId) || null;
   }
@@ -605,6 +799,8 @@ export class GatewayStoreFixture {
     const event = {
       id: input.id || makeId('agentevent'),
       publishingJobId: input.publishingJobId || input.publishing_job_id || null,
+      workItemKind: input.workItemKind || input.work_item_kind || null,
+      workItemId: input.workItemId || input.work_item_id || null,
       slackSessionId: input.slackSessionId || input.slack_session_id || null,
       agentRunId: input.agentRunId || input.agent_run_id || null,
       type: input.type || 'job_progress',
@@ -625,6 +821,16 @@ export class GatewayStoreFixture {
   listAgentRunEventsForJob(publishingJobId) {
     return [...this.agentRunEvents.values()]
       .filter((event) => event.publishingJobId === publishingJobId)
+      .sort((left, right) => {
+        const leftTime = new Date(left.createdAt || 0).getTime();
+        const rightTime = new Date(right.createdAt || 0).getTime();
+        return leftTime - rightTime;
+      });
+  }
+
+  listAgentRunEventsForWorkItem(workItemKind, workItemId) {
+    return [...this.agentRunEvents.values()]
+      .filter((event) => event.workItemKind === workItemKind && event.workItemId === workItemId)
       .sort((left, right) => {
         const leftTime = new Date(left.createdAt || 0).getTime();
         const rightTime = new Date(right.createdAt || 0).getTime();
@@ -658,6 +864,8 @@ export class GatewayStoreFixture {
       primarySlackUserId: input.primarySlackUserId,
       ownerScopeId: fieldOrExisting(input, existing, 'ownerScopeId'),
       activeJobId: fieldOrExisting(input, existing, 'activeJobId'),
+      activeWorkItemKind: fieldOrExisting(input, existing, 'activeWorkItemKind'),
+      activeWorkItemId: fieldOrExisting(input, existing, 'activeWorkItemId'),
       activeIssueNumber: fieldOrExisting(input, existing, 'activeIssueNumber'),
       activePrNumber: fieldOrExisting(input, existing, 'activePrNumber'),
       activePreviewUrl: fieldOrExisting(input, existing, 'activePreviewUrl'),
@@ -738,6 +946,8 @@ export class GatewayStoreFixture {
       ...existing,
       status: 'closed',
       activeJobId: null,
+      activeWorkItemKind: null,
+      activeWorkItemId: null,
       activeIssueNumber: null,
       activePrNumber: null,
       activePreviewUrl: null,
@@ -784,6 +994,8 @@ export class GatewayStoreFixture {
           status: 'active',
           closedAt: null,
           activeJobId: active ? job.id : null,
+          activeWorkItemKind: active ? 'site_publishing' : null,
+          activeWorkItemId: active ? job.id : null,
           activeIssueNumber: active ? link.issueNumber : null,
           activePrNumber: active ? link.prNumber : null,
           activePreviewUrl: active ? link.previewUrl : null,
@@ -833,15 +1045,165 @@ export class GatewayStoreFixture {
       });
   }
 
+  linkPlatformDevItemToSlackSession(item, session, now = new Date()) {
+    return this.linkWorkItemToSlackSession({ ...item, workItemKind: 'platform_dev' }, session, now);
+  }
+
+  workItemGateKey(workItemKind, workItemId, gateType = 'risk') {
+    return `${workItemKind}:${workItemId}:${gateType}`;
+  }
+
+  ensureWorkItemGate(input = {}) {
+    const workItemKind = input.workItemKind || input.work_item_kind;
+    const workItemId = input.workItemId || input.work_item_id;
+    const gateType = input.gateType || input.gate_type || 'risk';
+    if (!workItemKind || !workItemId) return null;
+    const key = this.workItemGateKey(workItemKind, workItemId, gateType);
+    const existing = this.workItemGates.get(key);
+    const nowIso = new Date().toISOString();
+    const gate = {
+      ...(existing || {}),
+      id: existing?.id || input.id || makeId('gate'),
+      workItemKind,
+      workItemId,
+      gateType,
+      status: input.status || existing?.status || 'pending',
+      reason: input.reason ?? existing?.reason ?? null,
+      decidedBy: input.decidedBy ?? existing?.decidedBy ?? null,
+      decidedAt: input.decidedAt ?? existing?.decidedAt ?? null,
+      metadata: input.metadata ?? input.metadataJson ?? existing?.metadata ?? null,
+      createdAt: existing?.createdAt || nowIso,
+      updatedAt: nowIso,
+    };
+    this.workItemGates.set(key, gate);
+    return gate;
+  }
+
+  getWorkItemGate(workItemKind, workItemId, gateType = 'risk') {
+    return this.workItemGates.get(this.workItemGateKey(workItemKind, workItemId, gateType)) || null;
+  }
+
+  decideWorkItemGate(workItemKind, workItemId, gateType = 'risk', decision = {}) {
+    const existing =
+      this.getWorkItemGate(workItemKind, workItemId, gateType) ||
+      this.ensureWorkItemGate({ workItemKind, workItemId, gateType });
+    const nowIso = new Date().toISOString();
+    const gate = {
+      ...existing,
+      status: decision.status,
+      reason: decision.reason ?? existing.reason ?? null,
+      decidedBy: decision.decidedBy || null,
+      decidedAt: nowIso,
+      metadata: decision.metadata ?? existing.metadata ?? null,
+      updatedAt: nowIso,
+    };
+    this.workItemGates.set(this.workItemGateKey(workItemKind, workItemId, gateType), gate);
+    return gate;
+  }
+
+  linkWorkItemToSlackSession(workItem, session, now = new Date()) {
+    if (!workItem?.id) return null;
+    const workItemKind = workItem.workItemKind || 'platform_dev';
+    const slackSessionId = session?.id || workItem.slackSessionId || null;
+    if (!slackSessionId) return null;
+    const existing = this.findWorkItemLink(workItemKind, workItem.id, 'primary');
+    const nowIso = now.toISOString();
+    const link = {
+      id: existing?.id || makeId('wilink'),
+      workItemKind,
+      workItemId: workItem.id,
+      slackSessionId,
+      publishingJobId: workItemKind === 'site_publishing' ? workItem.id : null,
+      platformDevItemId: workItemKind === 'platform_dev' ? workItem.id : null,
+      issueNumber: workItem.issueNumber ?? workItem.githubIssueNumber ?? existing?.issueNumber ?? null,
+      prNumber: workItem.prNumber ?? workItem.githubPrNumber ?? existing?.prNumber ?? null,
+      branchName: workItem.branchName ?? existing?.branchName ?? null,
+      previewUrl: workItem.previewUrl ?? existing?.previewUrl ?? null,
+      headSha: workItem.headSha ?? existing?.headSha ?? null,
+      relationship: existing?.relationship || 'primary',
+      createdAt: existing?.createdAt || nowIso,
+      updatedAt: nowIso,
+    };
+    this.workItemLinks.set(link.id, link);
+    if (link.issueNumber) this.workItemLinkByIssueNumber.set(String(link.issueNumber), link);
+    if (link.prNumber) this.workItemLinkByPrNumber.set(String(link.prNumber), link);
+
+    const currentSession = this.getSlackSession(slackSessionId);
+    if (currentSession) {
+      const active =
+        workItemKind === 'platform_dev' ? platformDevKeepsSlackSessionActive(workItem) : jobKeepsSlackSessionActive(workItem);
+      this.upsertSlackSession(
+        {
+          ...currentSession,
+          status: 'active',
+          closedAt: null,
+          activeJobId: workItemKind === 'site_publishing' && active ? workItem.id : null,
+          activeWorkItemKind: active ? workItemKind : null,
+          activeWorkItemId: active ? workItem.id : null,
+          activeIssueNumber: active ? link.issueNumber : null,
+          activePrNumber: active ? link.prNumber : null,
+          activePreviewUrl: active ? link.previewUrl : null,
+          activeContextExpiresAt: active ? currentSession.activeContextExpiresAt : null,
+        },
+        now
+      );
+    }
+
+    return link;
+  }
+
+  findWorkItemLink(workItemKind, workItemId, relationship = 'primary') {
+    return (
+      [...this.workItemLinks.values()].find(
+        (link) => link.workItemKind === workItemKind && link.workItemId === workItemId && link.relationship === relationship
+      ) || null
+    );
+  }
+
+  findWorkItemLinkByIssueNumber(issueNumber) {
+    return this.workItemLinkByIssueNumber.get(String(issueNumber)) || null;
+  }
+
+  findWorkItemLinkByPrNumber(prNumber) {
+    return this.workItemLinkByPrNumber.get(String(prNumber)) || null;
+  }
+
+  listWorkItemLinksForSlackSession(slackSessionId) {
+    return [...this.workItemLinks.values()]
+      .filter((link) => link.slackSessionId === slackSessionId)
+      .sort((left, right) => {
+        const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
+        const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+        return rightTime - leftTime;
+      });
+  }
+
   listWorkItemsForSlackUser(teamId, slackUserId, options = {}) {
     const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 20);
     const requestedById = `slack:${teamId || 'unknown-team'}:${slackUserId || 'unknown-user'}`;
-    const jobs = [...this.jobs.values()]
+    const siteJobs = [...this.jobs.values()]
       .filter((job) => job.source === 'slack' && job.requestedById === requestedById)
       .filter((job) => {
         if (!options.statuses?.length) return true;
         return options.statuses.includes(job.status);
       })
+      .map((job) => ({ ...job, workItemKind: 'site_publishing' }));
+    const platformItems = [...this.platformDevItems.values()]
+      .filter((item) => item.source === 'slack' && item.requestedById === requestedById)
+      .filter((item) => {
+        if (!options.statuses?.length) return true;
+        return options.statuses.includes(item.status);
+      })
+      .map((item) => ({
+        ...item,
+        workItemKind: 'platform_dev',
+        issueNumber: item.githubIssueNumber,
+        issueUrl: item.githubIssueUrl,
+        prNumber: item.githubPrNumber,
+        prUrl: item.githubPrUrl,
+        siteSlug: 'pages-manager',
+      }));
+    const jobs = [...siteJobs, ...platformItems]
       .sort((left, right) => {
         const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
         const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
@@ -888,6 +1250,8 @@ export class GatewayStoreFixture {
       agentKind,
       slackSessionId: input.slackSessionId || null,
       publishingJobId: input.publishingJobId || null,
+      workItemKind: input.workItemKind || null,
+      workItemId: input.workItemId || null,
       status: input.status || 'running',
       roundNo: input.roundNo || relatedRuns.length + 1,
       provider: input.provider || 'deterministic',
