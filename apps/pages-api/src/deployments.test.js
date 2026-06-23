@@ -707,6 +707,35 @@ test('deployments reject reserved site slugs with actionable API errors', async 
   assert.match(body.error.action, /平台保留/);
 });
 
+test('deployments allow existing sites whose slugs later become reserved', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_reserved',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_reserved',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_reserved',
+    hostname: 'docs.pages.xd.team',
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'docs' }),
+      { 'Idempotency-Key': 'existing_reserved_slug_deploy' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.deployment.siteId, 'site_reserved');
+  assert.equal(body.route.hostname, 'docs.pages.xd.team');
+  assert.equal((await store.getRouteBySiteId('site_reserved')).activeVersionId, 'ver_1');
+});
+
 test('access keys can deploy by slug only when the resolved site matches their scope', async () => {
   const store = await createSeededStore();
   await store.createSite({

@@ -131,7 +131,7 @@ async function createDeployment(request, env, config, store, actor) {
     return jsonError('SITE_REQUIRED', 'Site is required.', 400, 'Pass siteId or siteSlug.');
   }
   if (requestedSiteSlug) {
-    const slugError = validateDeploySiteSlug(requestedSiteSlug, config.environment);
+    const slugError = validateDeploySiteSlug(requestedSiteSlug, config.environment, { allowReserved: true });
     if (slugError) return slugError;
   }
   if (!clientContentHash.startsWith('sha256:')) {
@@ -1055,7 +1055,10 @@ async function resolveDeploySite(store, actor, environment, { siteId, siteSlug }
     return site || siteNotFound('Check the site id.');
   }
   const bySlug = typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(environment, siteSlug) : null;
-  if (!bySlug) return siteNotFound('Check the site slug.');
+  if (!bySlug) {
+    const slugError = validateDeploySiteSlug(siteSlug, environment);
+    return slugError || siteNotFound('Check the site slug.');
+  }
   const site = await store.getSiteForUser(bySlug.id, actor.userId, actor, environment);
   return site || siteNotFound('Check the site slug and access key scope.');
 }
@@ -1332,10 +1335,11 @@ function normalizeOptionalSlug(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
-function validateDeploySiteSlug(siteSlug, environment) {
+function validateDeploySiteSlug(siteSlug, environment, { allowReserved = false } = {}) {
   const validation = validateSiteSlug(siteSlug, { environment });
   if (validation.ok) return null;
   if (validation.error.code === 'RESERVED_SLUG') {
+    if (allowReserved) return null;
     return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
   }
   return jsonError(
