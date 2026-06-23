@@ -191,9 +191,11 @@ export function classifySlackIntake(body) {
 
   if (
     ['task', 'tasks', 'pr', 'prs', 'work'].includes(command?.command) ||
-    /^(我的|查看|看看|列出|查询).*(PR|pr|任务|发布任务|网站|项目)/i.test(text) ||
-    /^(当前|目前|现在)?.*我的.*(PR|pr|任务|发布任务|网站|项目).*(几个|多少|列表|清单|有哪些|有几个)?/i.test(text) ||
-    /^(PR|pr|任务|发布任务|网站|项目)(列表|清单)$/i.test(text)
+    /^(我的|查看|看看|列出|查询).*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)/i.test(text) ||
+    /^(当前|目前|现在)?.*我的.*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目).*(几个|多少|列表|清单|有哪些|有几个)?/i.test(
+      text
+    ) ||
+    /^(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)(列表|清单)$/i.test(text)
   ) {
     const workItemState = slackWorkItemQueryStateFromText(text);
     return {

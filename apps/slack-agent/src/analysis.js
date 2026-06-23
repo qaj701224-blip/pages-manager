@@ -3,7 +3,7 @@ const SITE_KEYWORDS = /(页面|网页|网站|主页|profile|portfolio|site|page|
 const PLATFORM_KEYWORDS =
   /(pages-manager|平台|仓库|repo|代码|PR|issue|label|template|模版|gateway|worker|slack-agent|slack-notifier|Slack|GitHub|webhook|CI|CD|workflow|Actions|MySQL|数据库|状态机|权限|review|rebase|branch|分支|k8s|ECS|部署脚本|文档|架构)/i; // eslint-disable-line max-len
 const LIST_WORK_ITEMS_RE =
-  /^(我的|查看|看看|列出|查询).*(PR|pr|任务|发布任务|网站|项目)|^(PR|pr|任务|发布任务|网站|项目)(列表|清单)$/i;
+  /^(我的|查看|看看|列出|查询|当前|目前|现在).*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)|^(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)(列表|清单)$/i;
 const SWITCH_WORK_ITEM_RE =
   /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
 const REOPEN_WORK_ITEM_RE =
@@ -43,6 +43,8 @@ const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
 const CLOSED_WORK_ITEM_QUERY_RE =
   /(?:已关闭|关闭的|关掉的|被关闭|已取消|取消的|已失败|失败的|归档|closed|cancelled|canceled|failed|inactive)/i;
 const ALL_WORK_ITEM_QUERY_RE = /(?:历史|全部|所有|所有的|全量|all|history|historical)/i;
+const ISSUE_LIST_QUERY_RE = /(?:issue|issues|需求).*(?:几个|多少|列表|清单|有哪些|有几个)|(?:几个|多少|哪些).*(?:issue|issues|需求)/i;
+const LIST_FOLLOWUP_RE = /(?:只有|就|还|还有|就这|只有这|只有这些).*(?:一个|这些|这个|吗|么)|(?:还有吗|还有么|就这吗|就这些吗)/i;
 
 function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
@@ -65,8 +67,14 @@ function titleFromText(text) {
 function workItemStateFromText(text = '') {
   const value = String(text || '');
   if (CLOSED_WORK_ITEM_QUERY_RE.test(value)) return 'closed';
-  if (ALL_WORK_ITEM_QUERY_RE.test(value)) return 'all';
+  if (ALL_WORK_ITEM_QUERY_RE.test(value) || ISSUE_LIST_QUERY_RE.test(value)) return 'all';
   return 'active';
+}
+
+function workItemStateForListTurn(text = '', sessionMemory = {}) {
+  const state = workItemStateFromText(text);
+  if (state !== 'active') return state;
+  return sessionMemory?.lastWorkItemList?.workItemState || state;
 }
 
 function workItemReferenceFromText(text = '') {
@@ -148,6 +156,7 @@ export function sessionContextFromInput(input = {}) {
   const slackSession = input.slackSession || {};
   const sessionMemory = input.sessionMemory || {};
   const issueLinks = Array.isArray(input.issueLinks) ? input.issueLinks : [];
+  const lastWorkItemList = sessionMemory.lastWorkItemList || null;
 
   return {
     slackSessionId: slackSession.id || null,
@@ -159,6 +168,13 @@ export function sessionContextFromInput(input = {}) {
     activeIssueNumber: slackSession.activeIssueNumber || null,
     activePrNumber: slackSession.activePrNumber || null,
     activePreviewUrl: slackSession.activePreviewUrl || null,
+    lastWorkItemList: lastWorkItemList
+      ? {
+          workItemState: lastWorkItemList.workItemState || null,
+          total: Number(lastWorkItemList.total || 0),
+          shownCount: Array.isArray(lastWorkItemList.shown) ? lastWorkItemList.shown.length : 0,
+        }
+      : null,
   };
 }
 
@@ -166,7 +182,10 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const event = input.event || {};
   const text = normalizeText(input.text || event.text || input.summary || '');
   const isUnsupportedBulkDestructive = isUnsupportedBulkDestructiveRequest(text);
-  const shouldListWorkItems = !isUnsupportedBulkDestructive && LIST_WORK_ITEMS_RE.test(text);
+  const hasPreviousWorkItemList = Boolean(input.sessionMemory?.lastWorkItemList);
+  const shouldListWorkItems =
+    !isUnsupportedBulkDestructive && (LIST_WORK_ITEMS_RE.test(text) || (hasPreviousWorkItemList && LIST_FOLLOWUP_RE.test(text)));
+  const workItemState = shouldListWorkItems ? workItemStateForListTurn(text, input.sessionMemory) : undefined;
   const shouldReopenWorkItem = !isUnsupportedBulkDestructive && REOPEN_WORK_ITEM_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
   const shouldDiagnoseWorkItem =
@@ -227,8 +246,11 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     risk: shouldCreatePlatform ? inferPlatformRisk(text, inferPlatformIssueType(text)) : undefined,
     agentEligible: shouldCreatePlatform ? !['type:feedback', 'type:question'].includes(inferPlatformIssueType(text)) : undefined,
     requiresHumanGate: shouldCreatePlatform ? inferPlatformRisk(text, inferPlatformIssueType(text)) === 'risk:high' : undefined,
-    workItemState: shouldListWorkItems ? workItemStateFromText(text) : undefined,
-    toolCall: toolCallForIntent(finalIntent, text),
+    workItemState,
+    toolCall:
+      finalIntent === 'list_work_items'
+        ? { name: 'list_my_work_items', args: { state: workItemState || 'active' } }
+        : toolCallForIntent(finalIntent, text),
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
     sourceMessages: input.sourceMessages || input.source_messages || [],
     sessionContext: sessionContextFromInput(input),
@@ -419,6 +441,7 @@ export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
     '如果用户是在修改已有 preview，优先保留当前 sessionContext 的 activeJobId / issue / PR / preview 关系。',
     '如果用户询问“我的 PR / 我的任务 / 发布任务列表”，intent 返回 list_work_items，不要新建任务，并设置 toolCall.name=list_my_work_items。',
     '查询当前可继续任务时 toolCall.args.state=active；查询历史/全部时 state=all；查询已关闭/已取消/失败时 state=closed。',
+    '如果上一轮刚返回任务 / issue / PR 列表，用户追问“只有这一个么 / 还有吗 / 只有这些吗”，继续返回 list_work_items；优先沿用上一轮列表范围，没有范围时用 state=all。',
     [
       '如果用户明确说“继续 PR #数字 / issue #数字 / 切换到 #数字”，intent 返回 switch_work_item，',
       '不要新建任务，并设置 toolCall.name=switch_work_item；能识别目标时把 toolCall.args.kind=pr|issue、number=数字。',
