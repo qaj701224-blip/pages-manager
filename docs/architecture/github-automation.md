@@ -216,12 +216,14 @@ delivery 写入 `github_webhook_deliveries`，Review Agent comment 写入 `revie
 ```text
 GitHub pull_request.closed + merged=true
   -> gateway 校验 signature / delivery 幂等 / repo allowlist
-  -> gateway 读取 PR payload + 必要的 GitHub API 补充信息
-  -> gateway 创建 merge_announcement AgentRun
+  -> gateway 记录 merge announcement pending / 幂等键
+  -> gateway 立即返回 200
+  -> 后台任务读取 PR payload + 必要的 GitHub API 补充信息
+  -> 后台任务创建 merge_announcement AgentRun
   -> slack-agent 生成结构化中文摘要
   -> gateway 校验摘要 JSON / 脱敏 / 截断 / 兜底
   -> slack-notifier chat.postMessage 到固定频道
-  -> gateway 记录 Slack message binding / notification attempt
+  -> gateway 记录 sent / failed 事件和 Slack message binding
 ```
 
 ### 触发条件
@@ -249,7 +251,7 @@ GitHub pull_request.closed + merged=true
 
 | 组件 | 职责 |
 | --- | --- |
-| `pages-gateway` | 接收 GitHub webhook、判断是否需要公告、创建系统 `AgentRun`、校验 Agent 输出、调用 notifier |
+| `pages-gateway` | 接收 GitHub webhook、判断是否需要公告、先登记 pending / 幂等键并快速返回、后台创建系统 `AgentRun`、校验 Agent 输出、调用 notifier |
 | `apps/slack-agent` | 根据受控上下文生成中文摘要 JSON，不读取 Slack token，不访问 GitHub 写权限 |
 | `apps/slack-notifier` | 持有 `SLACK_BOT_TOKEN`，执行 `chat.postMessage`，处理 Slack API 错误 |
 | MySQL | 保存 webhook delivery、AgentRun、AgentRunEvent、Slack message binding / notification attempt |
@@ -412,7 +414,7 @@ merge-announcement:<repo_full_name>:<pr_number>:<merge_commit_sha>
 建议落库方式：
 
 - 如果已有通用 `SlackNotificationAttempt` / `SlackMessageBinding`，新增 `message_kind=merge_announcement`。
-- 如果当前实现还没有统一 binding，可先复用现有 slack notification 记录表，但 key 必须包含 `repo + pr + merge sha`。
+- 如果当前实现还没有统一 binding，可先复用现有可全局去重的事件记录，但 key 必须包含 `repo + pr + merge sha`，并且 pending 事件必须在 `chat.postMessage` 之前写入。
 - 记录 `channel_id`、`message_ts`、`repo_full_name`、`pr_number`、`merge_commit_sha`、`agent_run_id`、`status`、`error_code`。
 
 重放策略：
@@ -420,6 +422,7 @@ merge-announcement:<repo_full_name>:<pr_number>:<merge_commit_sha>
 - GitHub webhook delivery 重放：直接返回已处理结果，不重复创建 AgentRun。
 - Agent 失败后重试：同一个幂等键只能有一条最终 Slack 消息；可以重跑 Agent 更新待发送 payload，但不能重复投递。
 - Slack `chat.postMessage` 返回超时但实际可能成功时，优先查询/依赖 notification attempt 状态；不能盲目再发一条相同公告。
+- pending 记录创建失败时不允许先发 Slack；否则 Slack 成功但 binding 写失败会造成 delivery 重试后的重复公告。
 
 ### 失败兜底
 
@@ -461,7 +464,7 @@ gateway：
 
 建议最小实现路径：
 
-1. 在 `apps/gateway/src/github/resource-webhooks.js` 的 `handleGithubPullRequestWebhook` 中识别 `closed + merged`。
+1. 在 `apps/gateway/src/github/resource-webhooks.js` 的 `handleGithubPullRequestWebhook` 中识别 `closed + merged`，只做触发判断、pending 记录和后台任务入队。
 2. 新增 `apps/gateway/src/github/merge-announcement.js`，封装触发判断、PR payload 归一化、幂等 key 和 fallback。
 3. 新增 gateway 到 `slack-agent` 的内部调用模式，例如 `task=merge_announcement_summary`；复用现有 provider、脱敏和 JSON 校验 helper。
 4. 新增 `apps/gateway/src/slack/merge-announcement-notifier.js`，构建 Block Kit 并通过 `postSlackMessage` 调 `slack-notifier`。
@@ -476,7 +479,7 @@ gateway：
 
 ### 验收标准
 
-- 合并 `master` PR 后，目标频道出现一条且只有一条公告。
+- 合并 `master` PR 后，webhook 快速返回 200，后台在目标频道发出一条且只有一条公告。
 - 公告包含 PR 标题、链接、作者、合并人、base ref、短 sha 和 3-5 条中文摘要。
 - Agent 超时或输出非法时仍能发 fallback 公告。
 - 重放同一个 GitHub delivery、重复收到同一 PR merge webhook，不会重复发频道消息。
