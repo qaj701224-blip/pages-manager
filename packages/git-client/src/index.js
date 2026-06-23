@@ -438,6 +438,9 @@ export function buildPlatformAgentInputs(item, options = {}) {
     baseRef: options.baseRef || item.baseRef || '',
     branchName: options.branchName || item.branchName || '',
     callbackUrl: options.callbackUrl || '',
+    reviewContext: options.reviewContext || item.reviewContext || '',
+    memoryContext: options.memoryContext || item.memoryContext || '',
+    statusContext: options.statusContext || item.statusContext || '',
   };
 }
 

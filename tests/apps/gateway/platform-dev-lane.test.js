@@ -381,22 +381,19 @@ test('platform status notification uses product labels instead of raw internal l
 });
 
 test('platform task list uses product labels instead of raw internal labels', () => {
-  const blocks = slackWorkItemListBlocks(
-    { id: 'sess_list' },
-    [
-      {
-        id: 'pdev_list',
-        workItemKind: 'platform_dev',
-        status: 'gate_pending',
-        title: '调整 gateway worker mysql 流程',
-        summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
-        issueType: 'type:ci',
-        risk: 'risk:high',
-        areas: ['area:gateway', 'area:worker', 'area:ci'],
-        issueNumber: 77,
-      },
-    ]
-  );
+  const blocks = slackWorkItemListBlocks({ id: 'sess_list' }, [
+    {
+      id: 'pdev_list',
+      workItemKind: 'platform_dev',
+      status: 'gate_pending',
+      title: '调整 gateway worker mysql 流程',
+      summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
+      issueType: 'type:ci',
+      risk: 'risk:high',
+      areas: ['area:gateway', 'area:worker', 'area:ci'],
+      issueNumber: 77,
+    },
+  ]);
   const payload = JSON.stringify(blocks);
 
   assert.match(payload, /自动化流程调整/);
@@ -1365,6 +1362,7 @@ test('platform CI failure dispatches an automatic fix round', async () => {
 
 test('platform blocking review dispatches an automatic fix round', async () => {
   const app = createGatewayApp();
+  const notifierCalls = [];
   const headSha = 'd'.repeat(40);
   const item = createOpenPlatformPr(app, {
     idempotencyKey: 'platform-review-fix',
@@ -1372,6 +1370,9 @@ test('platform blocking review dispatches an automatic fix round', async () => {
     prNumber: 93,
     headSha,
     slackSessionId: 'sess_platform_review_fix',
+  });
+  app.store.updateSessionMemory('sess_platform_review_fix', {
+    summary: '用户希望平台 Agent 自动处理 Review 评论。',
   });
   const workerCalls = [];
 
@@ -1398,7 +1399,7 @@ test('platform blocking review dispatches an automatic fix round', async () => {
       }),
     }),
     {
-      ...notifierEnv(),
+      ...notifierEnv(notifierCalls),
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -1409,12 +1410,20 @@ test('platform blocking review dispatches an automatic fix round', async () => {
   );
   const body = await json(response);
   const updated = app.store.getPlatformDevItem(item.id);
+  const memory = app.store.getSessionMemory('sess_platform_review_fix');
+  const visibleBlocks = latestSlackStatusBlocks(notifierCalls);
 
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'platform_review_fix_dispatched');
   assert.equal(updated.status, 'agent_queued');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  assert.match(workerCalls[0].body.platformDevItem.reviewContext, /必须修复阻塞问题/);
+  assert.match(workerCalls[0].body.platformDevItem.memoryContext, /用户希望平台 Agent 自动处理 Review 评论/);
+  assert.match(workerCalls[0].body.platformDevItem.statusContext, /review_blocked/);
+  assert.match(memory.requirements.platformReview.lastSummary, /必须修复阻塞问题/);
+  assert.match(visibleBlocks, /Review 处理上下文/);
+  assert.match(visibleBlocks, /必须修复阻塞问题/);
 });
 
 test('stale platform CI failure does not regress an active fix round', async () => {

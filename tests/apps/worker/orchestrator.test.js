@@ -86,40 +86,36 @@ test('worker config keeps platform workflow ref separate from site workflow ref'
 test('platform dev item creates issue and dispatches platform-agent workflow', async () => {
   const requests = [];
   const callbacks = [];
-  const result = await runWorkerForWorkItem(
-    { workItemKind: 'platform_dev', platformDevItem: platformItem },
-    config(),
-    {
-      async fetchImpl(url, request) {
-        requests.push({ url: String(url), request });
-        if (String(url).includes('/search/issues')) {
-          return new Response(JSON.stringify({ items: [] }), { status: 200 });
-        }
-        if (String(url).endsWith('/repos/org/pages-manager/issues')) {
-          const body = JSON.parse(request.body).body;
-          assert.match(body, /PlatformDevItem: pdev_123/);
-          assert.match(body, /Lane: platform-dev/);
-          return new Response(JSON.stringify({ number: 31, html_url: 'https://github.example/issues/31' }), {
-            status: 201,
-          });
-        }
-        if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
-          const body = JSON.parse(request.body);
-          assert.equal(body.ref, 'master');
-          assert.equal(body.inputs.platformDevItemId, 'pdev_123');
-          assert.equal(body.inputs.issueNumber, '31');
-          assert.equal(body.inputs.issueType, 'type:dev');
-          assert.equal(body.inputs.gateApproved, 'true');
-          return new Response(null, { status: 204 });
-        }
-        throw new Error(`Unexpected request ${request.method} ${url}`);
-      },
-      async postExecutorCallback(fetchImpl, cfg, payload) {
-        callbacks.push(payload);
-        return { ok: true };
-      },
-    }
-  );
+  const result = await runWorkerForWorkItem({ workItemKind: 'platform_dev', platformDevItem: platformItem }, config(), {
+    async fetchImpl(url, request) {
+      requests.push({ url: String(url), request });
+      if (String(url).includes('/search/issues')) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (String(url).endsWith('/repos/org/pages-manager/issues')) {
+        const body = JSON.parse(request.body).body;
+        assert.match(body, /PlatformDevItem: pdev_123/);
+        assert.match(body, /Lane: platform-dev/);
+        return new Response(JSON.stringify({ number: 31, html_url: 'https://github.example/issues/31' }), {
+          status: 201,
+        });
+      }
+      if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
+        const body = JSON.parse(request.body);
+        assert.equal(body.ref, 'master');
+        assert.equal(body.inputs.platformDevItemId, 'pdev_123');
+        assert.equal(body.inputs.issueNumber, '31');
+        assert.equal(body.inputs.issueType, 'type:dev');
+        assert.equal(body.inputs.gateApproved, 'true');
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected request ${request.method} ${url}`);
+    },
+    async postExecutorCallback(fetchImpl, cfg, payload) {
+      callbacks.push(payload);
+      return { ok: true };
+    },
+  });
 
   assert.equal(result.action, 'platform_issue_created_and_agent_dispatched');
   assert.equal(result.issueNumber, 31);
@@ -240,6 +236,9 @@ test('platform dev fix item dispatches platform-agent fix workflow without dupli
         githubPrUrl: 'https://github.example/pulls/45',
         branchName: 'platform/item-pdev-123',
         summary: '初始需求\n\n## Slack Follow-up\n\n继续收紧文案。',
+        reviewContext: 'Review context for PR #45:\n1. [blocking] apps/worker/src/jobs/platform-dev.js:L12 修复上下文',
+        memoryContext: 'Session summary: 用户希望自动修复 Review 意见。',
+        statusContext: 'status: review_blocked',
       },
     },
     config(),
@@ -265,6 +264,9 @@ test('platform dev fix item dispatches platform-agent fix workflow without dupli
           assert.equal(body.inputs.mode, 'fix');
           assert.equal(body.inputs.branchName, 'platform/item-pdev-123');
           assert.equal(body.inputs.issueNumber, '32');
+          assert.match(body.inputs.reviewContext, /Review context/);
+          assert.match(body.inputs.memoryContext, /自动修复 Review/);
+          assert.match(body.inputs.statusContext, /review_blocked/);
           return new Response(null, { status: 204 });
         }
         throw new Error(`Unexpected request ${request.method} ${url}`);
@@ -336,30 +338,34 @@ test('worker app fails closed when worker shared secret is missing', async () =>
 
 test('issue_only mode creates issue and skips workflow dispatch', async () => {
   const requests = [];
-  const result = await runWorkerForJob(baseJob, { ...config(), executorMode: 'issue_only' }, {
-    async fetchImpl(url, request) {
-      requests.push({ url: String(url), request });
+  const result = await runWorkerForJob(
+    baseJob,
+    { ...config(), executorMode: 'issue_only' },
+    {
+      async fetchImpl(url, request) {
+        requests.push({ url: String(url), request });
 
-      if (String(url).includes('/search/issues')) {
-        return new Response(JSON.stringify({ items: [] }), { status: 200 });
-      }
+        if (String(url).includes('/search/issues')) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
 
-      if (String(url).endsWith('/repos/org/pages-manager/issues')) {
-        const body = JSON.parse(request.body).body;
-        assert.match(body, /PublishingJob: job_123/);
-        assert.match(body, /Base ref: staging/);
-        return new Response(JSON.stringify({ number: 10, html_url: 'https://github.example/issues/10' }), {
-          status: 201,
-        });
-      }
+        if (String(url).endsWith('/repos/org/pages-manager/issues')) {
+          const body = JSON.parse(request.body).body;
+          assert.match(body, /PublishingJob: job_123/);
+          assert.match(body, /Base ref: staging/);
+          return new Response(JSON.stringify({ number: 10, html_url: 'https://github.example/issues/10' }), {
+            status: 201,
+          });
+        }
 
-      if (String(url) === 'http://gateway.test/internal/executor-callback') {
-        return new Response(JSON.stringify({ job: { ...baseJob, issueNumber: 10 } }), { status: 200 });
-      }
+        if (String(url) === 'http://gateway.test/internal/executor-callback') {
+          return new Response(JSON.stringify({ job: { ...baseJob, issueNumber: 10 } }), { status: 200 });
+        }
 
-      throw new Error(`Unexpected request ${request.method} ${url}`);
-    },
-  });
+        throw new Error(`Unexpected request ${request.method} ${url}`);
+      },
+    }
+  );
 
   assert.deepEqual(result, {
     action: 'issue_created',
@@ -372,27 +378,31 @@ test('issue_only mode creates issue and skips workflow dispatch', async () => {
 
 test('github_issue_webhook mode creates issue and waits for GitHub issues webhook', async () => {
   const requests = [];
-  const result = await runWorkerForJob(baseJob, { ...config(), executorMode: 'github_issue_webhook' }, {
-    async fetchImpl(url, request) {
-      requests.push({ url: String(url), request });
+  const result = await runWorkerForJob(
+    baseJob,
+    { ...config(), executorMode: 'github_issue_webhook' },
+    {
+      async fetchImpl(url, request) {
+        requests.push({ url: String(url), request });
 
-      if (String(url).includes('/search/issues')) {
-        return new Response(JSON.stringify({ items: [] }), { status: 200 });
-      }
+        if (String(url).includes('/search/issues')) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
 
-      if (String(url).endsWith('/repos/org/pages-manager/issues')) {
-        return new Response(JSON.stringify({ number: 11, html_url: 'https://github.example/issues/11' }), {
-          status: 201,
-        });
-      }
+        if (String(url).endsWith('/repos/org/pages-manager/issues')) {
+          return new Response(JSON.stringify({ number: 11, html_url: 'https://github.example/issues/11' }), {
+            status: 201,
+          });
+        }
 
-      if (String(url) === 'http://gateway.test/internal/executor-callback') {
-        return new Response(JSON.stringify({ job: { ...baseJob, issueNumber: 11 } }), { status: 200 });
-      }
+        if (String(url) === 'http://gateway.test/internal/executor-callback') {
+          return new Response(JSON.stringify({ job: { ...baseJob, issueNumber: 11 } }), { status: 200 });
+        }
 
-      throw new Error(`Unexpected request ${request.method} ${url}`);
-    },
-  });
+        throw new Error(`Unexpected request ${request.method} ${url}`);
+      },
+    }
+  );
 
   assert.deepEqual(result, {
     action: 'issue_created_waiting_for_github_issue_webhook',
@@ -401,7 +411,10 @@ test('github_issue_webhook mode creates issue and waits for GitHub issues webhoo
     issueCreated: true,
   });
   assert.equal(requests.length, 3);
-  assert.equal(requests.some((request) => request.url.includes('/actions/workflows/')), false);
+  assert.equal(
+    requests.some((request) => request.url.includes('/actions/workflows/')),
+    false
+  );
 });
 
 test('smoke_single issue mode reuses a smoke issue and still callbacks gateway', async () => {
@@ -513,10 +526,7 @@ test('generating_page job dispatches pages-agent workflow', async () => {
     config(),
     {
       async fetchImpl(url, request) {
-        assert.equal(
-          String(url),
-          'https://api.github.com/repos/org/pages-manager/actions/workflows/pages-agent.yml/dispatches'
-        );
+        assert.equal(String(url), 'https://api.github.com/repos/org/pages-manager/actions/workflows/pages-agent.yml/dispatches');
         assert.equal(request.method, 'POST');
         assert.deepEqual(JSON.parse(request.body), {
           ref: 'staging',
@@ -554,10 +564,7 @@ test('generating_page smoke_single PR mode dispatches pages-agent with reusable 
     { ...config(), prMode: 'smoke_single', smokeIssueScope: 'slack-local' },
     {
       async fetchImpl(url, request) {
-        assert.equal(
-          String(url),
-          'https://api.github.com/repos/org/pages-manager/actions/workflows/pages-agent.yml/dispatches'
-        );
+        assert.equal(String(url), 'https://api.github.com/repos/org/pages-manager/actions/workflows/pages-agent.yml/dispatches');
         assert.deepEqual(JSON.parse(request.body).inputs.branchName, 'sites/smoke-slack-local-zhangsan-profile');
         return new Response(null, { status: 204 });
       },
@@ -696,10 +703,9 @@ test('previewing job can deploy through local pages-manager API', async () => {
         }
 
         if (String(url).endsWith('/git/blobs/blob_html')) {
-          return new Response(
-            JSON.stringify({ encoding: 'base64', content: Buffer.from('<h1>hello</h1>').toString('base64') }),
-            { status: 200 }
-          );
+          return new Response(JSON.stringify({ encoding: 'base64', content: Buffer.from('<h1>hello</h1>').toString('base64') }), {
+            status: 200,
+          });
         }
 
         if (String(url) === 'https://api-staging.workers.xd.team/deploy') {
@@ -771,10 +777,9 @@ test('previewing job local deploy falls back to site root when src is missing', 
         }
 
         if (String(url).endsWith('/git/blobs/blob_root_html')) {
-          return new Response(
-            JSON.stringify({ encoding: 'base64', content: Buffer.from('<h1>root</h1>').toString('base64') }),
-            { status: 200 }
-          );
+          return new Response(JSON.stringify({ encoding: 'base64', content: Buffer.from('<h1>root</h1>').toString('base64') }), {
+            status: 200,
+          });
         }
 
         if (String(url) === 'https://api-staging.workers.xd.team/deploy') {

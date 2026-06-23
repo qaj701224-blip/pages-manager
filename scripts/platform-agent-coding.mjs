@@ -10,6 +10,7 @@ const DEFAULT_PATCH_MAX_CHARS = 250_000;
 const PLATFORM_AGENT_SKILLS_DIR = 'scripts/platform-agent-skills';
 const PLATFORM_AGENT_SKILL_MAX_FILES = 12;
 const PLATFORM_AGENT_SKILL_MAX_CHARS = 20_000;
+const PLATFORM_AGENT_CONTEXT_MAX_CHARS = 12_000;
 
 function required(value, name) {
   if (!value) throw new Error(`${name} is required`);
@@ -217,6 +218,9 @@ function contextFromEnv(env) {
     gatewayUrl: required(env.AGENT_GATEWAY_URL, 'AGENT_GATEWAY_URL'),
     apiKey: required(env.AGENT_CODE_API_KEY, 'AGENT_CODE_API_KEY'),
     modelName: env.AGENT_MODEL_NAME || '',
+    reviewContext: env.REVIEW_CONTEXT || '',
+    memoryContext: env.MEMORY_CONTEXT || '',
+    statusContext: env.STATUS_CONTEXT || '',
   };
 }
 
@@ -316,6 +320,9 @@ function buildCodingMessages(context) {
         branchName: context.branchName || null,
         requestTitle: context.requestTitle,
         requestSummary: context.requestSummary,
+        reviewContext: truncateText(context.reviewContext, PLATFORM_AGENT_CONTEXT_MAX_CHARS),
+        memoryContext: truncateText(context.memoryContext, PLATFORM_AGENT_CONTEXT_MAX_CHARS),
+        statusContext: truncateText(context.statusContext, PLATFORM_AGENT_CONTEXT_MAX_CHARS),
         preloadedSkills: collectPreloadedSkills(),
         currentFiles: collectContextFiles(),
       }),
@@ -870,6 +877,11 @@ function writeReport(context, report) {
     gateApproved: context.gateApproved,
     baseRef: context.baseRef,
     modelName: context.modelName || null,
+    contextReceived: {
+      review: Boolean(String(context.reviewContext || '').trim()),
+      memory: Boolean(String(context.memoryContext || '').trim()),
+      status: Boolean(String(context.statusContext || '').trim()),
+    },
     ...report,
   };
   writeFileSync('.pages-artifacts/platform-agent-report.json', `${JSON.stringify(finalReport, null, 2)}\n`);
@@ -934,7 +946,12 @@ export async function runPlatformCodingAgent(options = {}) {
       try {
         validateGeneratedFiles([], context);
       } catch (error) {
-        writeDiagnostic({ body, modelResult, context, reason: error.code === 'missing_files' ? 'missing_files' : 'invalid_action' });
+        writeDiagnostic({
+          body,
+          modelResult,
+          context,
+          reason: error.code === 'missing_files' ? 'missing_files' : 'invalid_action',
+        });
         throw error;
       }
     }

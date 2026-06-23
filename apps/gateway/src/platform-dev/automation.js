@@ -79,9 +79,7 @@ export async function dispatchPlatformDevFixIfNeeded(store, item, env, options =
   }
 
   const trigger = options.trigger || item.status || 'manual';
-  const events = store?.listAgentRunEventsForWorkItem
-    ? await store.listAgentRunEventsForWorkItem('platform_dev', item.id)
-    : [];
+  const events = store?.listAgentRunEventsForWorkItem ? await store.listAgentRunEventsForWorkItem('platform_dev', item.id) : [];
   const dispatchCount = fixDispatchEvents(events).length;
   if (dispatchCount >= maxFixAttempts(env)) {
     const failed = await store.updatePlatformDevItem(item.id, 'failed', {
@@ -160,6 +158,8 @@ export async function dispatchPlatformDevFixIfNeeded(store, item, env, options =
       ? ':hourglass_flowing_sand: 正在自动修复。'
       : `:warning: ${platformWorkerStartErrorText(workerStart?.error) || '已进入修复队列。'}`,
     currentChange: options.currentChange || null,
+    reviewSummary: options.reviewSummary || item.reviewSummary || null,
+    memorySummary: options.memorySummary || null,
     skipDuplicate: false,
     slackSessionId: queued.slackSessionId || null,
     dedupeKey: `platform-fix-dispatch:${queued.id}:${trigger}:${dispatchEvent?.event?.id || Date.now()}`,

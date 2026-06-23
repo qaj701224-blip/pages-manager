@@ -124,12 +124,18 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(doc, /PlatformDevItem: pdev_xxx/);
   assert.match(doc, /不生成 Cloudflare preview/);
   assert.match(readDoc('docs/architecture/db-schema.md'), /gate_type=risk,status=approved/);
-  assert.doesNotMatch(readDoc('docs/architecture/db-schema.md'), /gate_type=coding|platform-dev\.js`（计划）|work-items\.js`（计划）/);
+  assert.doesNotMatch(
+    readDoc('docs/architecture/db-schema.md'),
+    /gate_type=coding|platform-dev\.js`（计划）|work-items\.js`（计划）/
+  );
 
   assert.match(workflow, /^name: Platform Agent$/m);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /platformDevItemId:/);
   assert.match(workflow, /gateApproved:/);
+  assert.match(workflow, /reviewContext:/);
+  assert.match(workflow, /memoryContext:/);
+  assert.match(workflow, /statusContext:/);
   assert.match(workflow, /effective_risk/);
   assert.match(workflow, /AGENT_CODE_API_KEY/);
   assert.match(workflow, /post-executor-callback\.js/);
@@ -153,6 +159,9 @@ test('platform agent documentation tracks executor tool loop and merge boundary'
   assert.match(index, /docs\/architecture\/platform-agent\.md/);
   assert.match(doc, /工具循环/);
   assert.match(doc, /scripts\/platform-agent-skills\/\*\.md/);
+  assert.match(doc, /reviewContext/);
+  assert.match(doc, /memoryContext/);
+  assert.match(doc, /statusContext/);
   assert.match(script, /PLATFORM_AGENT_SKILLS_DIR = 'scripts\/platform-agent-skills'/);
   for (const action of ['search', 'read_file', 'apply_patch', 'run_command', 'git_diff', 'git_status', 'finish']) {
     assert.match(doc, new RegExp(`\`${action}\``));

@@ -11,6 +11,85 @@ function shouldIgnoreStalePlatformReview(platformItem = {}, nextStatus = '') {
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
 
+function compactText(value = '', maxLength = 1200) {
+  const text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}...`;
+}
+
+function reviewCommentLine(comment = {}) {
+  const location = [comment.path, comment.line ? `L${comment.line}` : ''].filter(Boolean).join(':');
+  const classification = comment.classification || 'unknown';
+  return [`[${classification}]`, location || 'PR', compactText(comment.bodyRedacted || comment.body || '', 900)]
+    .filter(Boolean)
+    .join(' ');
+}
+
+async function platformReviewContextForItem(store, platformItem = {}, normalized = {}) {
+  const prNumber = normalized.prNumber || platformItem.githubPrNumber;
+  if (!prNumber || !store?.listReviewAgentCommentsForPrNumber) return '';
+  const comments = await store.listReviewAgentCommentsForPrNumber(prNumber, {
+    repoFullName: normalized.repoFullName,
+    headSha: normalized.headSha || platformItem.headSha,
+  });
+  const open = comments.filter((comment) => comment.status === 'open').slice(0, 12);
+  if (!open.length) return '';
+  return [
+    `Review context for PR #${prNumber}:`,
+    ...open.map((comment, index) => `${index + 1}. ${reviewCommentLine(comment)}`),
+  ].join('\n');
+}
+
+async function platformMemoryContextForItem(store, platformItem = {}, reviewContext = '') {
+  if (!platformItem.slackSessionId || !store?.getSessionMemory) return '';
+  const memory = await store.getSessionMemory(platformItem.slackSessionId);
+  const platformReview = memory.requirements?.platformReview || {};
+  return [
+    memory.summary ? `Session summary: ${compactText(memory.summary, 1000)}` : '',
+    platformReview.lastSummary ? `Last review summary: ${compactText(platformReview.lastSummary, 1400)}` : '',
+    reviewContext ? `Latest review comments:\n${reviewContext}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+async function rememberPlatformReview(store, platformItem = {}, normalized = {}, reviewContext = '') {
+  if (!platformItem.slackSessionId || !store?.getSessionMemory || !store?.updateSessionMemory) return null;
+  const memory = await store.getSessionMemory(platformItem.slackSessionId);
+  const requirements = memory.requirements && typeof memory.requirements === 'object' ? memory.requirements : {};
+  const platformReview =
+    requirements.platformReview && typeof requirements.platformReview === 'object' ? requirements.platformReview : {};
+  const updatedPlatformReview = {
+    ...platformReview,
+    prNumber: normalized.prNumber || platformItem.githubPrNumber || platformReview.prNumber || null,
+    headSha: normalized.headSha || platformItem.headSha || platformReview.headSha || null,
+    lastClassification: normalized.classification || platformReview.lastClassification || null,
+    lastSummary: compactText(reviewContext || reviewCommentLine(normalized), 2000),
+    updatedAt: new Date().toISOString(),
+  };
+  return await store.updateSessionMemory(platformItem.slackSessionId, {
+    requirements: {
+      ...requirements,
+      platformReview: updatedPlatformReview,
+    },
+  });
+}
+
+function platformStatusContext(platformItem = {}, nextStatus = '') {
+  return [
+    `PlatformDevItem ${platformItem.id}`,
+    `status: ${platformItem.status}${nextStatus && nextStatus !== platformItem.status ? ` -> ${nextStatus}` : ''}`,
+    platformItem.githubIssueNumber ? `issue: #${platformItem.githubIssueNumber}` : '',
+    platformItem.githubPrNumber ? `pr: #${platformItem.githubPrNumber}` : '',
+    platformItem.branchName ? `branch: ${platformItem.branchName}` : '',
+    platformItem.headSha ? `headSha: ${platformItem.headSha}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export async function handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result }) {
   const reviewComment = await store.recordReviewAgentComment(normalized);
   let platformItem = store.findPlatformDevItemByPrNumber
@@ -42,9 +121,23 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
         ? await store.patchPlatformDevItem(platformItem.id, patch)
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
     await store.linkPlatformDevItemToSlackSession(platformItem);
+    const reviewContext = await platformReviewContextForItem(store, platformItem, { ...normalized, repoFullName });
+    const memory = await rememberPlatformReview(store, platformItem, normalized, reviewContext);
+    const memoryContext = await platformMemoryContextForItem(store, platformItem, reviewContext);
+    const contextPatch = {
+      reviewContext,
+      memoryContext,
+      statusContext: platformStatusContext(platformItem, nextStatus),
+      reviewSummary: memory?.requirements?.platformReview?.lastSummary || reviewContext || null,
+    };
+    platformItem = await store.patchPlatformDevItem(platformItem.id, contextPatch);
     const autoFix =
       nextStatus === 'review_blocked'
-        ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, { trigger: 'review_blocked' })
+        ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, {
+            trigger: 'review_blocked',
+            reviewSummary: contextPatch.reviewSummary,
+            memorySummary: memory?.summary || null,
+          })
         : await dispatchQueuedPlatformDevFollowupIfNeeded(store, platformItem, env);
     if (autoFix?.item) platformItem = autoFix.item;
     const slackStatusNotification = autoFix?.slackStatusNotification
@@ -52,6 +145,8 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       : await notifySlackPlatformDevStatus(env, store, platformItem, {
           stage: nextStatus,
           text: platformNotificationText(nextStatus, platformItem) || 'Review 状态已更新。',
+          reviewSummary: contextPatch.reviewSummary,
+          memorySummary: memory?.summary || null,
           skipDuplicate: false,
         });
     return jsonResponse({

@@ -90,7 +90,10 @@ function linkFields(item = {}) {
     });
   }
   if (item.errorMessage || item.errorCode) {
-    const errorText = userFacingPlatformSummary({ summary: item.errorMessage }, item.errorCode || '处理失败，请查看 Issue 记录。');
+    const errorText = userFacingPlatformSummary(
+      { summary: item.errorMessage },
+      item.errorCode || '处理失败，请查看 Issue 记录。'
+    );
     fields.push({
       type: 'mrkdwn',
       text: `*错误*\n${errorText.slice(0, 280)}`,
@@ -100,7 +103,8 @@ function linkFields(item = {}) {
 }
 
 function contextText(item = {}, statusText = '') {
-  if (item.status === 'gate_pending') return `${statusText || ':hourglass_flowing_sand: 等待确认'} · 高风险或敏感范围需要人工确认。`;
+  if (item.status === 'gate_pending')
+    return `${statusText || ':hourglass_flowing_sand: 等待确认'} · 高风险或敏感范围需要人工确认。`;
   if (item.status === 'merged') return `${statusText || ':white_check_mark: 已完成'} · PR 已合并。`;
   if (item.status === 'failed') return `${statusText || ':x: 失败'} · 可以打开 Issue 查看记录。`;
   if (item.status === 'closed_unmerged' || item.status === 'cancelled') {
@@ -141,6 +145,8 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
   });
   const summary = userFacingPlatformSummary({ summary: options.finalSummary || item.summary }, item.title || '暂无摘要');
   const currentChange = String(options.currentChange || '').trim();
+  const reviewSummary = String(options.reviewSummary || item.reviewSummary || '').trim();
+  const memorySummary = String(options.memorySummary || '').trim();
   const fields = [
     { type: 'mrkdwn', text: `*当前阶段*\n${label}` },
     { type: 'mrkdwn', text: `*类型*\n${platformIssueTypeLabel(item.issueType)}` },
@@ -153,6 +159,10 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
     { type: 'section', fields: fields.slice(0, 10) },
     { type: 'section', text: { type: 'mrkdwn', text: `*需求摘要*\n${summary.slice(0, 1000)}` } },
     ...(currentChange ? [{ type: 'section', text: { type: 'mrkdwn', text: `*本轮补充*\n${currentChange.slice(0, 800)}` } }] : []),
+    ...(reviewSummary
+      ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Review 处理上下文*\n${reviewSummary.slice(0, 900)}` } }]
+      : []),
+    ...(memorySummary ? [{ type: 'section', text: { type: 'mrkdwn', text: `*跨轮记忆*\n${memorySummary.slice(0, 700)}` } }] : []),
     { type: 'context', elements: [{ type: 'mrkdwn', text: contextText(item, statusText) }] },
   ];
   const actions = [

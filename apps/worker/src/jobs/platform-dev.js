@@ -1,8 +1,4 @@
-import {
-  buildPlatformAgentInputs,
-  dispatchWorkflow,
-  ensurePlatformDevIssue,
-} from '@xd/git-client';
+import { buildPlatformAgentInputs, dispatchWorkflow, ensurePlatformDevIssue } from '@xd/git-client';
 
 import { postExecutorCallback } from '../integrations/gateway-client.js';
 
@@ -21,6 +17,20 @@ function stageResultForIssueCreated(item = {}) {
   if (item.requiresHumanGate && item.gateStatus !== 'approved') return 'gate_pending';
   if (item.status === 'agent_queued') return 'agent_queued';
   return 'issue_created';
+}
+
+function contextText(value = '', maxLength = 12_000) {
+  const text = String(value || '').trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}\n[truncated ${text.length - maxLength} chars]`;
+}
+
+function platformAgentContextInputs(item = {}) {
+  return {
+    reviewContext: contextText(item.reviewContext),
+    memoryContext: contextText(item.memoryContext),
+    statusContext: contextText(item.statusContext),
+  };
 }
 
 export async function startPlatformDevItem(item, config, adapters = {}) {
@@ -64,6 +74,7 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
       callbackUrl: config.callbackUrl,
       issueNumber,
       gateApproved: itemWithIssue.gateStatus === 'approved' || itemWithIssue.requiresHumanGate === false,
+      ...platformAgentContextInputs(itemWithIssue),
     }),
   });
 

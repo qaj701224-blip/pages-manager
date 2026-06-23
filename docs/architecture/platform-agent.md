@@ -12,6 +12,8 @@ executor 只负责在工作区产生平台代码改动和 `.pages-artifacts/plat
 
 `platform-agent-coding.mjs` 默认按工具循环执行。启动时 executor 会按文件名排序读取 `scripts/platform-agent-skills/*.md`，并把这些短文档作为 `preloadedSkills` 放进初始模型上下文。该目录用于预制 coding skill，例如项目规则、代码地图和验证策略；新增或修改 skill 时必须同步本文档或就近说明。
 
+gateway / worker 可以通过 workflow inputs 向 executor 传入 `reviewContext`、`memoryContext` 和 `statusContext`。workflow 会映射为 `REVIEW_CONTEXT`、`MEMORY_CONTEXT`、`STATUS_CONTEXT` 环境变量，executor 会截断后放进初始模型上下文，并在 report 里只记录是否收到这些上下文。Review Agent 的 blocking comment 会被写入 Slack session memory，并在自动修复轮次传给 Platform Agent。
+
 模型每轮必须返回 JSON object，支持的 action 是：
 
 | action        | 作用                                                                                              |
@@ -87,5 +89,6 @@ executor 不向模型开放 shell。`run_command` 必须使用 `cmd` 加 `args` 
 - `summary`
 - `tests`
 - `modelName`
+- `contextReceived`
 
 模型响应无有效 action、旧格式文件无效、超过最大轮次、`finish` 时无仓库改动等情况会写 `.pages-artifacts/platform-agent-debug.json`。debug 文件只记录响应形状和 token 用量等诊断信息，不写入模型产出的完整文件内容。

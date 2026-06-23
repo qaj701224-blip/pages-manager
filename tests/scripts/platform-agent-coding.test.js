@@ -139,6 +139,52 @@ test('runs Platform Coding Agent and writes repo relative files', async () => {
   }
 });
 
+test('passes review, memory, and status context to Platform Coding Agent', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-context-'));
+  const previousCwd = process.cwd();
+  const calls = [];
+  try {
+    process.chdir(dir);
+    await runPlatformCodingAgent({
+      env: {
+        ...env,
+        REVIEW_CONTEXT: 'Review context for PR #45:\n1. [blocking] scripts/platform-agent-coding.mjs:L1 fix this',
+        MEMORY_CONTEXT: 'Session summary: previous run added docs.',
+        STATUS_CONTEXT: 'status: review_blocked',
+      },
+      async fetchImpl(url, request) {
+        calls.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    files: [{ path: 'docs/architecture/platform-agent.md', content: '# Platform Agent\n\nUpdated.\n' }],
+                    summary: 'Updated docs.',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const requestBody = JSON.parse(calls[0].request.body);
+    const requestContext = JSON.parse(requestBody.messages[1].content);
+    const report = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-report.json'), 'utf8'));
+    assert.match(requestContext.reviewContext, /blocking/);
+    assert.match(requestContext.memoryContext, /previous run/);
+    assert.match(requestContext.statusContext, /review_blocked/);
+    assert.deepEqual(report.contextReceived, { review: true, memory: true, status: true });
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('rejects high risk platform coding without gate', async () => {
   await assert.rejects(
     () =>

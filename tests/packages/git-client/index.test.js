@@ -179,7 +179,38 @@ test('builds workflow inputs from job fields', () => {
     baseRef: 'master',
     branchName: '',
     callbackUrl: 'https://gateway.test/callback',
+    reviewContext: '',
+    memoryContext: '',
+    statusContext: '',
   });
+  assert.deepEqual(
+    buildPlatformAgentInputs(
+      {
+        ...platformItem,
+        reviewContext: 'Review says fix tests.',
+        memoryContext: 'Previous run changed docs.',
+        statusContext: 'status: review_blocked',
+      },
+      { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }
+    ),
+    {
+      platformDevItemId: 'pdev_123',
+      mode: 'initial',
+      issueNumber: '31',
+      requestTitle: '支持 Slack 创建平台开发 issue',
+      requestSummary: '通过 Slack 创建 pages-manager 自身开发 issue，并跟踪 PR 进度。',
+      issueType: 'type:dev',
+      areas: 'area:gateway,area:github',
+      risk: 'risk:medium',
+      gateApproved: 'true',
+      baseRef: 'master',
+      branchName: '',
+      callbackUrl: 'https://gateway.test/callback',
+      reviewContext: 'Review says fix tests.',
+      memoryContext: 'Previous run changed docs.',
+      statusContext: 'status: review_blocked',
+    }
+  );
   assert.equal(
     buildPlatformAgentInputs(
       { ...platformItem, risk: 'risk:high', requiresHumanGate: true, gateStatus: 'pending' },
