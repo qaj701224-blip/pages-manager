@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test('published adapter subpath is importable at runtime', async () => {
   const adapter = await import('@xd/pages-sdk/adapter');
@@ -65,13 +68,9 @@ void context;
 
   try {
     execFileSync(
-      'corepack',
+      process.execPath,
       [
-        'pnpm',
-        '--filter',
-        '@xd/pages-sdk',
-        'exec',
-        'tsc',
+        'node_modules/typescript/bin/tsc',
         '--module',
         'NodeNext',
         '--moduleResolution',
@@ -82,7 +81,7 @@ void context;
         '--noEmit',
         file,
       ],
-      { cwd: process.cwd(), stdio: 'pipe' }
+      { cwd: packageRoot, stdio: 'pipe' }
     );
     assert.ok(true);
   } finally {
