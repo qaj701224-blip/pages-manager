@@ -123,8 +123,8 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(doc, /risk:high/);
   assert.match(doc, /PlatformDevItem: pdev_xxx/);
   assert.match(doc, /不生成 Cloudflare preview/);
-  assert.match(readDoc('docs/architecture/db-schema-v0.md'), /gate_type=risk,status=approved/);
-  assert.doesNotMatch(readDoc('docs/architecture/db-schema-v0.md'), /gate_type=coding|platform-dev\.js`（计划）|work-items\.js`（计划）/);
+  assert.match(readDoc('docs/architecture/db-schema.md'), /gate_type=risk,status=approved/);
+  assert.doesNotMatch(readDoc('docs/architecture/db-schema.md'), /gate_type=coding|platform-dev\.js`（计划）|work-items\.js`（计划）/);
 
   assert.match(workflow, /^name: Platform Agent$/m);
   assert.match(workflow, /workflow_dispatch:/);
@@ -137,6 +137,7 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(workflow, /pnpm test/);
   assert.match(workflow, /EFFECTIVE_RISK/);
   assert.match(workflow, /sensitive_paths/);
+  assert.match(workflow, /deploy\//);
   assert.match(workflow, /High-risk paths require gate-approved Platform Dev work/);
   assert.match(workflow, /Potential secret detected/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);

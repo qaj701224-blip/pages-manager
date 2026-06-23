@@ -1,10 +1,15 @@
 import { jsonResponse } from '@xd/worker-kit';
 
+import { dispatchPlatformDevFixIfNeeded, dispatchQueuedPlatformDevFollowupIfNeeded } from '../platform-dev/automation.js';
 import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.js';
 import { notifySlackPlainProgress } from '../slack/delivery.js';
 import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/notifier.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { previewGateForPr, shouldDispatchPreviewForReview, shouldReportSiteCheckWaiting } from './review-gate.js';
+
+function shouldIgnoreStalePlatformReview(platformItem = {}, nextStatus = '') {
+  return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
+}
 
 export async function handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result }) {
   const reviewComment = await store.recordReviewAgentComment(normalized);
@@ -20,24 +25,52 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
         : platformItem.status === 'pr_created' || platformItem.status === 'ci_running'
           ? 'review_waiting'
           : platformItem.status;
+    if (shouldIgnoreStalePlatformReview(platformItem, nextStatus)) {
+      const patched = fullHeadSha ? await store.patchPlatformDevItem(platformItem.id, patch) : platformItem;
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        reviewAction: 'platform_review_stale_ignored',
+        reviewComment: reviewComment.comment,
+        reviewCommentCreated: reviewComment.created,
+        item: patched,
+      });
+    }
     platformItem =
       platformItem.status === nextStatus
         ? await store.patchPlatformDevItem(platformItem.id, patch)
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
     await store.linkPlatformDevItemToSlackSession(platformItem);
-    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, platformItem, {
-      stage: nextStatus,
-      text: platformNotificationText(nextStatus, platformItem) || 'Review 状态已更新。',
-      skipDuplicate: false,
-    });
+    const autoFix =
+      nextStatus === 'review_blocked'
+        ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, { trigger: 'review_blocked' })
+        : await dispatchQueuedPlatformDevFollowupIfNeeded(store, platformItem, env);
+    if (autoFix?.item) platformItem = autoFix.item;
+    const slackStatusNotification = autoFix?.slackStatusNotification
+      ? autoFix.slackStatusNotification
+      : await notifySlackPlatformDevStatus(env, store, platformItem, {
+          stage: nextStatus,
+          text: platformNotificationText(nextStatus, platformItem) || 'Review 状态已更新。',
+          skipDuplicate: false,
+        });
     return jsonResponse({
       ok: true,
       created: true,
       delivery: result.delivery,
-      reviewAction: 'platform_review_recorded',
+      reviewAction: autoFix?.workerStart?.started ? 'platform_review_fix_dispatched' : 'platform_review_recorded',
       reviewComment: reviewComment.comment,
       reviewCommentCreated: reviewComment.created,
       item: platformItem,
+      ...(autoFix
+        ? {
+            autoFix: {
+              skipped: autoFix.skipped || false,
+              reason: autoFix.reason || null,
+              workerStarted: autoFix.workerStart?.started ?? null,
+            },
+          }
+        : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
     });
   }
