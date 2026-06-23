@@ -266,7 +266,7 @@ Expected: PASS.
 **Files:**
 - Modify: `apps/pages-sdk/README.md`
 - Modify: `apps/pages-skill/skill/references/sdk.md`
-- Modify: `demo/xd-pages-kv-smoke/src/app.js`
+- Modify: `demos/xd-pages-kv-smoke/src/app.js`
 - Modify: `docs/pages-v2-wfp-architecture.md`
 
 - [ ] **Step 1: Update public examples**
@@ -275,7 +275,7 @@ Replace primary `pages.kv` examples with `pages.data.site` and add a short `page
 
 - [ ] **Step 2: Search for stale examples**
 
-Run: `rg -n "pages\\.kv|site\\.kv|user\\.kv|runtime/v1/kv" apps/pages-sdk apps/pages-skill demo/xd-pages-kv-smoke docs/pages-v2-wfp-architecture.md`
+Run: `rg -n "pages\\.kv|site\\.kv|user\\.kv|runtime/v1/kv" apps/pages-sdk apps/pages-skill demos/xd-pages-kv-smoke docs/pages-v2-wfp-architecture.md`
 
 Expected: Only migration notes, legacy protocol explanations, and tests should mention old paths/API.
 

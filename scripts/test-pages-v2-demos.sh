@@ -103,7 +103,14 @@ validate_slug() {
   local slug="$1"
   [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$ ]] || die "invalid v2 demo slug: $slug"
   case "$slug" in
-    api | auth | router | kv-gateway | api-staging | auth-staging | router-staging | kv-gateway-staging)
+    api | api-staging | auth | auth-staging | admin | admin-staging | manager | manager-staging | router | router-staging | \
+      kv-gateway | kv-gateway-staging | pages | www | mail | static | assets | login | logout | callback | oauth | sso | \
+      internal | status | health | docs | readme | skill | openapi | help | support | console | dashboard | portal | \
+      site | sites | deploy | deployments | version | versions | rollback | access | access-keys | token | tokens | env | \
+      environments | runtime | data | kv | storage | worker | workers | dispatch | gateway | metrics | logs | audit | \
+      events | webhook | webhooks | monitor | monitoring | pages-api | pages-api-staging | pages-auth | pages-auth-staging | \
+      pages-router | pages-router-staging | pages-kv-gateway | pages-kv-gateway-staging | v2-production-slot-* | \
+      v2-staging-slot-* | pages-v2-production-slot-* | pages-v2-staging-slot-*)
       die "reserved v2 demo slug: $slug"
       ;;
     *-staging)

@@ -1,3 +1,5 @@
+import { validateSiteSlug } from '@xd/pages-runtime-protocol';
+
 import { authenticateApiRequest } from './auth.js';
 import { canonicalRequestHash, sha256HexForBytes } from './crypto.js';
 import { jsonError, jsonOk } from './http.js';
@@ -15,6 +17,7 @@ const ROUTING_MODES = new Set(['assets-only', 'worker-only', 'worker-first']);
 const FALLBACK_MODES = new Set(['auto', 'index', 'not-found']);
 const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
 const DENYLISTED_EXTENSIONS = new Set(['.pem', '.key']);
+const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Pages 平台保留项，请换一个业务站点名。';
 const CONTROL_ASSET_PATHS = new Set([
   '/_worker.js',
   '/_headers',
@@ -126,6 +129,10 @@ async function createDeployment(request, env, config, store, actor) {
 
   if (!requestedSiteId && !requestedSiteSlug) {
     return jsonError('SITE_REQUIRED', 'Site is required.', 400, 'Pass siteId or siteSlug.');
+  }
+  if (requestedSiteSlug) {
+    const slugError = validateDeploySiteSlug(requestedSiteSlug, config.environment);
+    if (slugError) return slugError;
   }
   if (!clientContentHash.startsWith('sha256:')) {
     return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
@@ -1323,6 +1330,20 @@ function normalizeOptionalString(value) {
 
 function normalizeOptionalSlug(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function validateDeploySiteSlug(siteSlug, environment) {
+  const validation = validateSiteSlug(siteSlug, { environment });
+  if (validation.ok) return null;
+  if (validation.error.code === 'RESERVED_SLUG') {
+    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
+  }
+  return jsonError(
+    'SITE_SLUG_INVALID',
+    'Site slug is invalid.',
+    400,
+    'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
+  );
 }
 
 function siteNotFound(action) {

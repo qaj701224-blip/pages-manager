@@ -39,6 +39,46 @@ export function buildOpenApi(config) {
             '`pages deploy --dry-run --json`; do not construct this payload by hand.',
           additionalProperties: true,
         },
+        WhoamiResponse: {
+          type: 'object',
+          required: ['environment', 'actor'],
+          properties: {
+            environment: { type: 'string', enum: ['production', 'staging'] },
+            actor: { $ref: '#/components/schemas/WhoamiActor' },
+          },
+        },
+        WhoamiActor: {
+          oneOf: [
+            {
+              type: 'object',
+              required: ['type', 'credentialType', 'userId', 'email', 'name', 'scopes'],
+              properties: {
+                type: { type: 'string', const: 'user' },
+                credentialType: { type: 'string', const: 'cli_token' },
+                userId: { type: 'string' },
+                email: { type: 'string', format: 'email' },
+                name: { type: ['string', 'null'] },
+                scopes: { type: 'array', items: { type: 'string' } },
+              },
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              required: ['type', 'credentialType', 'accessKeyId', 'userId', 'email', 'name', 'siteId', 'scopes'],
+              properties: {
+                type: { type: 'string', const: 'access_key' },
+                credentialType: { type: 'string', const: 'access_key' },
+                accessKeyId: { type: 'string' },
+                userId: { type: 'string' },
+                email: { type: 'string', format: 'email' },
+                name: { type: ['string', 'null'] },
+                siteId: { type: ['string', 'null'] },
+                scopes: { type: 'array', items: { type: 'string' } },
+              },
+              additionalProperties: false,
+            },
+          ],
+        },
         DeploymentDecision: {
           type: 'object',
           required: ['deploymentShape', 'requestedFallback', 'resolvedFallback', 'routingMode'],
@@ -295,7 +335,14 @@ export function buildOpenApi(config) {
         get: {
           summary: 'Return the authenticated actor for CLI token or access key validation',
           responses: {
-            200: { description: 'Authenticated actor returned without token plaintext or hashes' },
+            200: {
+              description: 'Authenticated actor returned without token plaintext or hashes',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/WhoamiResponse' },
+                },
+              },
+            },
             401: { description: 'Authentication required or invalid' },
             403: { description: 'Authenticated user is not active' },
           },
@@ -323,6 +370,9 @@ export function buildOpenApi(config) {
             'FALLBACK_REQUIRES_ASSETS',
             'INVALID_MULTIPART',
             'PAYLOAD_TOO_LARGE',
+            'SITE_REQUIRED',
+            'SITE_SLUG_INVALID',
+            'SITE_SLUG_RESERVED',
             'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
             'DEPLOYMENT_UPLOAD_FAILED',
             'DEPLOYMENT_VERIFY_FAILED',

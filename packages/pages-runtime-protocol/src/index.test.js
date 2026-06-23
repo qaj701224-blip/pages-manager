@@ -77,8 +77,14 @@ test('siteSlug reserves platform names consistently across control and data plan
   assert.equal(isReservedSiteSlug('router'), true);
   assert.equal(isReservedSiteSlug('kv-gateway'), true);
   assert.equal(isReservedSiteSlug('login'), true);
-  assert.equal(isReservedSiteSlug('docs'), false);
-  assert.equal(validateSiteSlug('docs', { environment: 'production' }).ok, true);
+  assert.equal(isReservedSiteSlug('docs'), true);
+  assert.equal(isReservedSiteSlug('deployments'), true);
+  assert.equal(isReservedSiteSlug('runtime'), true);
+  assert.equal(isReservedSiteSlug('pages-api'), true);
+  assert.equal(isReservedSiteSlug('pages-v2-production-slot-001'), true);
+  assert.equal(isReservedSiteSlug('v2-staging-slot-001'), true);
+  assert.equal(isReservedSiteSlug('q2-report'), false);
+  assert.equal(validateSiteSlug('q2-report', { environment: 'production' }).ok, true);
   assert.equal(validateSiteSlug('docs-staging', { environment: 'production' }).error.code, 'RESERVED_SLUG');
   assert.equal(validateSiteSlug('docs-staging', { environment: 'staging' }).ok, true);
   assert.equal(validateSiteSlug('kv-gateway', { environment: 'production' }).error.code, 'RESERVED_SLUG');

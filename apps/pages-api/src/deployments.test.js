@@ -37,9 +37,9 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   assertNoPublicExecutionDetails(body);
   assert.equal(body.route.routeGeneration, 1);
   assert.match((await store.getSiteVersion('ver_1')).contentHash, /^sha256:[a-f0-9]{64}$/);
-  assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'wfp://test/pages-v2-docs-ver-1');
+  assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'wfp://test/pages-v2-guide-ver-1');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
-  const pointer = snapshots.read('production:route_pointer:docs.pages.xd.team');
+  const pointer = snapshots.read('production:route_pointer:guide.pages.xd.team');
   assert.equal(pointer.routeGeneration, 1);
   assert.deepEqual(snapshots.read(pointer.snapshotKey).acl, [
     { effect: 'allow', subjectType: 'department', subjectValue: 'dept_design' },
@@ -77,8 +77,8 @@ test('uploads and verifies WFP worker before route activation', async () => {
 
   assert.equal(response.status, 201);
   assert.deepEqual(events, [
-    ['upload', 'pages-v2-docs-ver-1', null],
-    ['verify', 'pages-v2-docs-ver-1', null],
+    ['upload', 'pages-v2-guide-ver-1', null],
+    ['verify', 'pages-v2-guide-ver-1', null],
   ]);
   assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
 });
@@ -138,7 +138,7 @@ test('creates static deployment from multipart asset artifact without worker bun
       artifactBundle: undefined,
     },
   ]);
-  assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'assets://test/pages-v2-docs-ver-1');
+  assert.equal((await store.getSiteVersion('ver_1')).artifactRef, 'assets://test/pages-v2-guide-ver-1');
 });
 
 test('accepts v2 publishPlan multipart metadata and passes resolved decision to provider', async () => {
@@ -249,7 +249,7 @@ test('accepts v2 worker-with-assets publishPlan and builds Worker bundle plus as
     publishPlanMultipartRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       {
-        siteSlug: 'docs',
+        siteSlug: 'guide',
         requestedFallback: 'auto',
         source: 'cli',
         publishPlan: {
@@ -676,7 +676,7 @@ test('deployments can target an existing site by user-visible slug', async () =>
   const response = await worker.fetch(
     deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ siteId: undefined, siteSlug: 'Docs' }),
+      deployPayload({ siteId: undefined, siteSlug: 'Guide' }),
       { 'Idempotency-Key': 'slug_deploy' }
     ),
     testEnv(store, createSnapshotStore())
@@ -685,8 +685,26 @@ test('deployments can target an existing site by user-visible slug', async () =>
   assert.equal(response.status, 201, await response.clone().text());
   const body = await response.json();
   assert.equal(body.deployment.siteId, 'site_1');
-  assert.equal(body.route.hostname, 'docs.pages.xd.team');
+  assert.equal(body.route.hostname, 'guide.pages.xd.team');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
+});
+
+test('deployments reject reserved site slugs with actionable API errors', async () => {
+  const store = await createSeededStore();
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'openapi' }),
+      { 'Idempotency-Key': 'reserved_slug_deploy' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.error.code, 'SITE_SLUG_RESERVED');
+  assert.equal(body.error.message, 'Site slug is reserved.');
+  assert.match(body.error.action, /平台保留/);
 });
 
 test('access keys can deploy by slug only when the resolved site matches their scope', async () => {
@@ -706,14 +724,14 @@ test('access keys can deploy by slug only when the resolved site matches their s
   const env = testEnv(store, createSnapshotStore());
 
   const allowed = await worker.fetch(
-    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'guide' }), {
       Authorization: `Bearer ${matchingKey}`,
       'Idempotency-Key': 'slug_access_key_ok',
     }),
     env
   );
   const denied = await worker.fetch(
-    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'docs' }), {
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload({ siteId: undefined, siteSlug: 'guide' }), {
       Authorization: `Bearer ${otherSiteKey}`,
       'Idempotency-Key': 'slug_access_key_denied',
     }),
@@ -848,7 +866,7 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
   assert.equal(response.status, 201, await response.clone().text());
   assert.ok(
     requests.some((request) =>
-      request.url.includes('/workers/dispatch/namespaces/pages-production/scripts/pages-v2-docs-ver-1/assets-upload-session')
+      request.url.includes('/workers/dispatch/namespaces/pages-production/scripts/pages-v2-guide-ver-1/assets-upload-session')
     )
   );
   assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
@@ -912,7 +930,7 @@ test('deploys through normal worker slot mode without exposing provider to the r
   assert.equal((await store.getRouteBySiteId('site_1')).dispatchBindingName, 'SITE_SLOT_007');
   assert.equal((await store.getWorkerSlot('slot_007')).status, 'assigned');
   assert.equal((await store.getWorkerSlot('slot_007')).assignedVersionId, 'ver_1');
-  const pointer = snapshots.read('production:route_pointer:docs.pages.xd.team');
+  const pointer = snapshots.read('production:route_pointer:guide.pages.xd.team');
   assert.deepEqual(snapshots.read(pointer.snapshotKey).dispatch, {
     type: 'service-binding',
     slotId: 'slot_007',
@@ -1671,7 +1689,7 @@ test('rolls back to an existing immutable version and writes a new route snapsho
   assert.match(rolledBackVersion.contentHash, /^sha256:[a-f0-9]{64}$/);
   assert.match(replacementVersion.contentHash, /^sha256:[a-f0-9]{64}$/);
   assert.notEqual(rolledBackVersion.contentHash, replacementVersion.contentHash);
-  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').routeGeneration, 3);
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').routeGeneration, 3);
 });
 
 test('rejects rollback when requested site does not match the version site', async () => {
@@ -1729,10 +1747,10 @@ test('marks deployment failed when route snapshot write fails and replays failed
   assert.equal(firstBody.error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
   assert.equal(firstBody.error.action, 'Retry the deployment with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
-  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
+  assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
   assert.deepEqual(await store.getRouteBySiteId('site_1'), {
     id: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
     siteId: 'site_1',
     environment: 'production',
     runtime: 'disabled',
@@ -1817,7 +1835,7 @@ test('marks deployment failed when WFP verify fails without creating active vers
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
-  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
+  assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
 });
 
 test('cleans uploaded workers and marks deployments failed when post-upload persistence fails', async () => {
@@ -1849,7 +1867,7 @@ test('cleans uploaded workers and marks deployments failed when post-upload pers
   assert.equal((await store.getDeployment('dep_1')).errorCode, 'DEPLOYMENT_STATE_WRITE_FAILED');
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
-  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
+  assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
 });
 
 test('marks deployment failed when pre-upload status write fails without uploading', async () => {
@@ -1975,7 +1993,7 @@ test('fails deployment activation without clobbering a concurrently changed rout
         siteId,
         {
           activeVersionId: 'ver_concurrent',
-          workerName: 'pages-v2-docs-concurrent',
+          workerName: 'pages-v2-guide-concurrent',
           runtime: 'worker',
           executionProvider: 'wfp',
           dispatchType: 'dispatch-namespace',
@@ -2009,8 +2027,8 @@ test('fails deployment activation without clobbering a concurrently changed rout
   assert.equal((await store.getDeployment('dep_1')).status, 'failed');
   assert.equal((await store.getDeployment('dep_1')).errorCode, 'ROUTE_ACTIVATION_CONFLICT');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_concurrent');
-  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team'), undefined);
-  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-1']);
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team'), undefined);
+  assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
 });
 
 test('fails deployment when production WFP namespace points at staging', async () => {
@@ -2069,7 +2087,7 @@ test('keeps previous active route when rollback snapshot write fails', async () 
   assert.equal(body.error.action, 'Retry the rollback with a new Idempotency-Key.');
   assert.equal((await store.getDeployment('dep_3')).status, 'failed');
   assert.equal(route.activeVersionId, 'ver_2');
-  assert.equal(route.workerName, 'pages-v2-docs-ver-2');
+  assert.equal(route.workerName, 'pages-v2-guide-ver-2');
   assert.equal(route.routeGeneration, 2);
   assert.equal(route.routeStatus, 'active');
 });
@@ -2171,13 +2189,13 @@ async function createSeededStore() {
   });
   await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'org',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
   return store;
 }
