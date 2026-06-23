@@ -85,6 +85,8 @@ test('siteSlug reserves platform names consistently across control and data plan
   assert.equal(isReservedSiteSlug('production-slot-001'), true);
   assert.equal(isReservedSiteSlug('pages-v2-production-slot-001'), true);
   assert.equal(isReservedSiteSlug('v2-staging-slot-001'), true);
+  assert.equal(validateSiteSlug('staging', { environment: 'production' }).error.code, 'RESERVED_SLUG');
+  assert.equal(validateSiteSlug('staging-demo', { environment: 'production' }).error.code, 'RESERVED_SLUG');
   assert.equal(isReservedSiteSlug('q2-report'), false);
   assert.equal(validateSiteSlug('q2-report', { environment: 'production' }).ok, true);
   assert.equal(validateSiteSlug('docs-staging', { environment: 'production' }).error.code, 'RESERVED_SLUG');

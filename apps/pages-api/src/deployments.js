@@ -185,6 +185,8 @@ async function createDeployment(request, env, config, store, actor) {
     siteSlug: requestedSiteSlug,
   });
   if (site instanceof Response) return site;
+  const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
+  if (routeSlugError) return routeSlugError;
   const siteId = site.id;
   if (!actorCanDeploy(actor, siteId, 'deploy:site')) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
@@ -1348,6 +1350,12 @@ function validateDeploySiteSlug(siteSlug, environment, { allowReserved = false }
     400,
     'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
   );
+}
+
+function validateDeployableSiteSlug(siteSlug, environment) {
+  const value = String(siteSlug || '').trim();
+  if (environment !== 'production' || (value !== 'staging' && !value.startsWith('staging-'))) return null;
+  return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
 }
 
 function siteNotFound(action) {

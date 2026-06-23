@@ -1,4 +1,4 @@
-import { validateSiteSlug } from '@xd/pages-runtime-protocol';
+import { isValidSiteSlug } from '@xd/pages-runtime-protocol';
 
 const PROD_SUFFIX = '.pages.xd.team';
 const STAGING_SUFFIX = '-staging.pages.xd.team';
@@ -33,7 +33,9 @@ function classifyProductionHost(hostname) {
 
   const slug = hostname.slice(0, -PROD_SUFFIX.length);
   if (slug.includes('.')) return rejected('INVALID_HOST', hostname, 'production');
-  if (slug.endsWith('-staging')) return rejected('RESERVED_SLUG', hostname, 'production');
+  if (slug === 'staging' || slug.startsWith('staging-') || slug.endsWith('-staging')) {
+    return rejected('RESERVED_SLUG', hostname, 'production');
+  }
 
   return validateHostSlug({ hostname, slug, environment: 'production' });
 }
@@ -51,8 +53,7 @@ function classifyStagingHost(hostname) {
 }
 
 function validateHostSlug({ hostname, slug, environment }) {
-  const validation = validateSiteSlug(slug, { environment });
-  if (!validation.ok) return rejected(validation.error.code, hostname, environment);
+  if (!isValidSiteSlug(slug)) return rejected('INVALID_SLUG', hostname, environment);
 
   return { ok: true, environment, hostname, slug };
 }

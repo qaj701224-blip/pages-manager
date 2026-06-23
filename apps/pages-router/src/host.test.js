@@ -10,6 +10,12 @@ test('classifies production site hostnames', () => {
     hostname: 'demo.pages.xd.team',
     slug: 'demo',
   });
+  assert.deepEqual(classifyHost('docs.pages.xd.team', { environment: 'production' }), {
+    ok: true,
+    environment: 'production',
+    hostname: 'docs.pages.xd.team',
+    slug: 'docs',
+  });
 });
 
 test('classifies staging site hostnames', () => {
@@ -40,10 +46,11 @@ test('rejects invalid hostnames and cross-environment hosts', () => {
   assert.equal(classifyHost('demo.workers.xd.team', { environment: 'production' }).code, 'INVALID_HOST');
 });
 
-test('rejects reserved slugs and invalid slug syntax', () => {
-  assert.equal(classifyHost('admin.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
+test('rejects production staging-collision slugs and invalid slug syntax', () => {
+  assert.equal(classifyHost('admin.pages.xd.team', { environment: 'production' }).ok, true);
   assert.equal(classifyHost('kv-gateway.pages.xd.team', { environment: 'production' }).code, 'RESERVED_HOST');
-  assert.equal(classifyHost('login.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
+  assert.equal(classifyHost('staging.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
+  assert.equal(classifyHost('staging-demo.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
   assert.equal(classifyHost('-bad.pages.xd.team', { environment: 'production' }).code, 'INVALID_SLUG');
   assert.equal(classifyHost('Bad.pages.xd.team', { environment: 'production' }).code, 'INVALID_SLUG');
   assert.equal(classifyHost(`a${'b'.repeat(49)}1.pages.xd.team`, { environment: 'production' }).code, 'INVALID_SLUG');

@@ -736,6 +736,35 @@ test('deployments allow existing sites whose slugs later become reserved', async
   assert.equal((await store.getRouteBySiteId('site_reserved')).activeVersionId, 'ver_1');
 });
 
+test('deployments reject existing sites whose slugs would create unroutable workers', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_staging_prefixed',
+    slug: 'staging-demo',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_staging_prefixed',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_staging_prefixed',
+    hostname: 'staging-demo.pages.xd.team',
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: 'site_staging_prefixed' }),
+      { 'Idempotency-Key': 'existing_staging_prefixed_site_id_deploy' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.error.code, 'SITE_SLUG_RESERVED');
+  assert.match(body.error.action, /平台保留/);
+  assert.equal(await store.getSiteVersion('ver_1'), null);
+});
+
 test('access keys can deploy by slug only when the resolved site matches their scope', async () => {
   const store = await createSeededStore();
   await store.createSite({

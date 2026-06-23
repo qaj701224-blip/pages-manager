@@ -85,6 +85,10 @@ test('rejects invalid v2 target and slug values', () => {
   const expandedSlotSlug = run(['--dry-run', '--env-file', tempEnv('PAGES_V2_DEMO_SLUG=staging-slot-001\n')]);
   assert.notEqual(expandedSlotSlug.status, 0);
   assert.match(`${expandedSlotSlug.stderr}${expandedSlotSlug.stdout}`, /reserved v2 demo slug/);
+
+  const stagingPrefixSlug = run(['--dry-run', '--env-file', tempEnv('PAGES_V2_DEMO_SLUG=staging-demo\n')]);
+  assert.notEqual(stagingPrefixSlug.status, 0);
+  assert.match(`${stagingPrefixSlug.stderr}${stagingPrefixSlug.stdout}`, /reserved v2 demo slug/);
 });
 
 test('script invokes v2 CLI instead of legacy Pages API', () => {

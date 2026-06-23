@@ -173,6 +173,7 @@ export function isReservedSiteSlug(siteSlug, { environment } = {}) {
   return (
     RESERVED_SITE_SLUGS.has(value) ||
     RESERVED_SITE_SLUG_PREFIXES.some((prefix) => value.startsWith(prefix)) ||
+    (environment === 'production' && (value === 'staging' || value.startsWith('staging-'))) ||
     (environment === 'production' && value.endsWith('-staging'))
   );
 }
