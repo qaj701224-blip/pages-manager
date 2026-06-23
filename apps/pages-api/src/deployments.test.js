@@ -707,7 +707,7 @@ test('deployments reject reserved site slugs with actionable API errors', async 
   assert.match(body.error.action, /平台保留/);
 });
 
-test('deployments allow existing sites whose slugs later become reserved', async () => {
+test('deployments reject existing sites whose slugs are reserved', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_reserved',
@@ -729,11 +729,11 @@ test('deployments allow existing sites whose slugs later become reserved', async
     testEnv(store, createSnapshotStore())
   );
 
-  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(response.status, 400);
   const body = await response.json();
-  assert.equal(body.deployment.siteId, 'site_reserved');
-  assert.equal(body.route.hostname, 'docs.pages.xd.team');
-  assert.equal((await store.getRouteBySiteId('site_reserved')).activeVersionId, 'ver_1');
+  assert.equal(body.error.code, 'SITE_SLUG_RESERVED');
+  assert.match(body.error.action, /平台保留/);
+  assert.equal(await store.getSiteVersion('ver_1'), null);
 });
 
 test('deployments reject existing sites whose slugs would create unroutable workers', async () => {

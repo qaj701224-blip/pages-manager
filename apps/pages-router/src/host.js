@@ -1,4 +1,4 @@
-import { isValidSiteSlug } from '@xd/pages-runtime-protocol';
+import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 const PROD_SUFFIX = '.pages.xd.team';
 const STAGING_SUFFIX = '-staging.pages.xd.team';
@@ -53,7 +53,8 @@ function classifyStagingHost(hostname) {
 }
 
 function validateHostSlug({ hostname, slug, environment }) {
-  if (!isValidSiteSlug(slug)) return rejected('INVALID_SLUG', hostname, environment);
+  const validation = validateSiteSlug(slug, { environment });
+  if (!validation.ok) return rejected(validation.error.code, hostname, environment);
 
   return { ok: true, environment, hostname, slug };
 }

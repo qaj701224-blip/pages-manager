@@ -1353,9 +1353,7 @@ function validateDeploySiteSlug(siteSlug, environment, { allowReserved = false }
 }
 
 function validateDeployableSiteSlug(siteSlug, environment) {
-  const value = String(siteSlug || '').trim();
-  if (environment !== 'production' || (value !== 'staging' && !value.startsWith('staging-'))) return null;
-  return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
+  return validateDeploySiteSlug(siteSlug, environment);
 }
 
 function siteNotFound(action) {

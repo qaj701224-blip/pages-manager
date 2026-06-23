@@ -109,10 +109,12 @@ validate_slug() {
       site | sites | deploy | deployments | version | versions | rollback | access | access-keys | token | tokens | env | \
       environments | runtime | data | kv | storage | worker | workers | dispatch | gateway | metrics | logs | audit | \
       events | webhook | webhooks | monitor | monitoring | pages-api | pages-api-staging | pages-auth | pages-auth-staging | \
-      pages-router | pages-router-staging | pages-kv-gateway | pages-kv-gateway-staging | staging | staging-* | \
-      production-slot-* | staging-slot-* | v2-production-slot-* | v2-staging-slot-* | pages-v2-production-slot-* | \
-      pages-v2-staging-slot-*)
+      pages-router | pages-router-staging | pages-kv-gateway | pages-kv-gateway-staging | production-slot-* | \
+      staging-slot-* | v2-production-slot-* | v2-staging-slot-* | pages-v2-production-slot-* | pages-v2-staging-slot-*)
       die "reserved v2 demo slug: $slug"
+      ;;
+    staging | staging-*)
+      [[ "$PAGES_V2_DEMO_TARGET" == "staging" ]] || die "reserved v2 demo slug: $slug"
       ;;
     *-staging)
       [[ "$PAGES_V2_DEMO_TARGET" == "staging" ]] || die "production v2 demo slug must not end with -staging"
