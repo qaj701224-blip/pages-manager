@@ -30,6 +30,8 @@ const publishingExecutorWorkflows = [
   ['pages preview', '.github/workflows/pages-preview.yml'],
 ];
 
+const platformAgentWorkflow = '.github/workflows/platform-agent.yml';
+
 test('deploy workflows expose component choice for manual deploys', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);
@@ -203,6 +205,21 @@ test('user-triggered publishing executor workflows stay separate from platform d
     assert.match(workflow, /publishingJobId:/, `${name} is tied to a PublishingJob`);
     assert.doesNotMatch(workflow, /docker buildx?|kubectl|wrangler|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY|CLOUDFLARE_API_TOKEN/);
   }
+});
+
+test('platform agent workflow is manually dispatched and isolated from deploy credentials', () => {
+  const workflow = readWorkflow(platformAgentWorkflow);
+  const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
+
+  assert.match(triggers, /^ {2}workflow_dispatch:/m, 'platform agent is dispatched by pages-worker');
+  assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'platform agent has no push or PR trigger');
+  assert.match(workflow, /platformDevItemId:/, 'platform agent is tied to a PlatformDevItem');
+  assert.match(workflow, /scripts\/platform-agent-coding\.mjs/, 'platform agent uses the checked-in coding helper');
+  assert.doesNotMatch(
+    workflow,
+    /(?:^|\n)\s*(?:pnpm\s+.*\s+exec\s+)?(?:kubectl|wrangler)\s+(?:apply|deploy|delete|rollout|secret|d1)\b/,
+  );
+  assert.doesNotMatch(workflow, /ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY|CLOUDFLARE_API_TOKEN/);
 });
 
 test('v1 deploy workflows do not inject KV capability secrets', () => {
