@@ -97,4 +97,6 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   assert.match(siteCheck, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(siteCheck, /git fetch origin "\+refs\/heads\/\$base_ref:refs\/remotes\/origin\/\$base_ref"/);
   assert.match(siteCheck, /PR must only modify expected site root/);
+  assert.match(siteCheck, /while IFS= read -r file/);
+  assert.match(siteCheck, /done < <\(find "\$SITE_ROOT"/);
 });
