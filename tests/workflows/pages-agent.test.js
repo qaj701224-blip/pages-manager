@@ -37,11 +37,11 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /-f headSha="\$HEAD_SHA"/);
   assert.match(workflow, /-f allowedPath="\$ALLOWED_PATH"/);
   assert.match(workflow, /repos\/\$GITHUB_REPOSITORY\/statuses\/\$HEAD_SHA/);
-  assert.match(workflow, /post_status "pending" "pr-classify" "PR lane classification dispatched"/);
+  assert.match(workflow, /post_status "pending" "PR Classify" "PR lane classification dispatched"/);
   assert.match(workflow, /post_status "pending" "check" "Project CI dispatched by Pages Agent"/);
   assert.match(workflow, /post_status "pending" "pages-generated-site-check"/);
   assert.match(workflow, /post_status "pending" "pages-user-flow"/);
-  assert.match(workflow, /wait_for_run pr-classify\.yml pr-classify/);
+  assert.match(workflow, /wait_for_run pr-classify\.yml "PR Classify"/);
   assert.match(workflow, /wait_for_run pr-platform\.yml check/);
   assert.match(workflow, /wait_for_run pr-site\.yml pages-generated-site-check/);
   assert.match(workflow, /post_status "success" "pages-user-flow"/);
