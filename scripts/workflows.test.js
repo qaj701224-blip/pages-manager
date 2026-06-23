@@ -159,6 +159,8 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.match(siteCheck, /Site Check only accepts personal site PRs\. Split PageManager platform changes into a separate PR:/);
   assert.match(siteCheck, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(siteCheck, /SITE_ROOT=\$site_roots/);
+  assert.match(siteCheck, /manifest="\$SITE_ROOT\/site\.json"/);
+  assert.match(siteCheck, /Site Check requires \$manifest/);
   assert.match(siteCheck, /while IFS= read -r file/);
   assert.match(siteCheck, /node -e 'JSON\.parse\(require\("fs"\)\.readFileSync/);
   assert.match(siteCheck, /done < <\(find "\$SITE_ROOT"/);

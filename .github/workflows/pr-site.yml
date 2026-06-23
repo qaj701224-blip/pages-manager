@@ -98,6 +98,11 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${SITE_ROOT:-}"
+          manifest="$SITE_ROOT/site.json"
+          if [[ ! -f "$manifest" ]]; then
+            echo "Site Check requires $manifest" >&2
+            exit 1
+          fi
           while IFS= read -r file; do
             echo "$file"
             node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$file"
