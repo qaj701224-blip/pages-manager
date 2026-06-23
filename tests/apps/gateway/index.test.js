@@ -2998,6 +2998,215 @@ test('Slack work item list shows platform tasks without preview wording', async 
   assert.doesNotMatch(visible, /type:ci|risk:high|area:gateway|area:worker/);
 });
 
+test('Slack issue list includes active and closed issue records', async () => {
+  const app = createGatewayApp();
+  const active = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-visible-active-issue',
+    title: '平台功能需求',
+    summary: '正在处理的平台功能需求。',
+    issueType: 'type:dev',
+    areas: ['area:slack'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  }).item;
+  app.store.patchPlatformDevItem(active.id, {
+    githubIssueNumber: 88,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/88',
+  });
+  const closed = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-visible-closed-issue',
+    title: '问题咨询记录',
+    summary: '已经关闭的问题咨询。',
+    issueType: 'type:question',
+    areas: ['area:platform'],
+    risk: 'risk:low',
+    agentEligible: false,
+    requiresHumanGate: false,
+  }).item;
+  app.store.patchPlatformDevItem(closed.id, {
+    status: 'closed_unmerged',
+    githubIssueNumber: 89,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/89',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-platform-issue-list-all-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001302',
+          text: '目前我的 issue 有哪几个？',
+        },
+      }),
+    })
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+  const memory = app.store.getSessionMemory(body.slackSessionId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.workItemState, 'all');
+  assert.equal(body.jobs.length, 2);
+  assert.match(visible, /Issue：#88/);
+  assert.match(visible, /Issue：#89/);
+  assert.equal(memory.lastWorkItemList.total, 2);
+  assert.equal(memory.lastWorkItemList.shown.length, 2);
+});
+
+test('Slack issue list follow-up reuses previous list context', async () => {
+  const app = createGatewayApp();
+  const firstItem = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-list-followup-active-issue',
+    title: '平台功能需求',
+    summary: '正在处理的平台功能需求。',
+    issueType: 'type:dev',
+    areas: ['area:slack'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  }).item;
+  app.store.patchPlatformDevItem(firstItem.id, {
+    githubIssueNumber: 88,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/88',
+  });
+  const secondItem = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-list-followup-closed-issue',
+    title: '问题咨询记录',
+    summary: '已经关闭的问题咨询。',
+    issueType: 'type:question',
+    areas: ['area:platform'],
+    risk: 'risk:low',
+    agentEligible: false,
+    requiresHumanGate: false,
+  }).item;
+  app.store.patchPlatformDevItem(secondItem.id, {
+    status: 'closed_unmerged',
+    githubIssueNumber: 89,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/89',
+  });
+
+  const firstResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-platform-issue-list-followup-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001303',
+          text: '目前我的 issue 有哪几个？',
+        },
+      }),
+    })
+  );
+  const firstBody = await json(firstResponse);
+  const agentRequests = [];
+
+  const followupResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-platform-issue-list-followup-2',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001304',
+          text: '只有这一个么？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        agentRequests.push(payload);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'list_work_items',
+                visibleReply: '我继续查看上次的 issue 列表范围。',
+                summary: '继续查看上次的 issue 列表范围。',
+                toolCall: {
+                  name: 'list_my_work_items',
+                  args: { state: payload.sessionMemory.lastWorkItemList.workItemState },
+                },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'list_work_items',
+                    visibleReply: '我继续查看上次的 issue 列表范围。',
+                    summary: '继续查看上次的 issue 列表范围。',
+                    toolCall: {
+                      name: 'list_my_work_items',
+                      args: { state: payload.sessionMemory.lastWorkItemList.workItemState },
+                    },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const followupBody = await json(followupResponse);
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(firstBody.workItemState, 'all');
+  assert.equal(firstBody.jobs.length, 2);
+  assert.equal(followupResponse.status, 200);
+  assert.equal(followupBody.action, 'list_work_items');
+  assert.equal(followupBody.workItemState, 'all');
+  assert.equal(followupBody.jobs.length, 2);
+  assert.equal(followupBody.slackSessionId, firstBody.slackSessionId);
+  assert.equal(agentRequests.length, 1);
+  assert.equal(agentRequests[0].sessionMemory.lastWorkItemList.workItemState, 'all');
+  assert.equal(agentRequests[0].sessionMemory.lastWorkItemList.total, 2);
+  assert.doesNotMatch(followupBody.replyText, /哪个对象/);
+});
+
 test('Slack Agent can switch to a platform issue without site publishing status card', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
