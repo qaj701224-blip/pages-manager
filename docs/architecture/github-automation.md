@@ -444,6 +444,7 @@ gateway：
 | `MERGE_ANNOUNCEMENT_CHANNEL_ID` | 固定 Slack 频道 ID，例如 `C0123` |
 | `MERGE_ANNOUNCEMENT_BASE_REFS` | 允许公告的 base refs，默认 `master` |
 | `MERGE_ANNOUNCEMENT_AGENT_ENABLED` | 是否调用 Agent 生成摘要，默认跟随 enabled；关闭时只用 fallback |
+| `SLACK_AGENT_MERGE_SUMMARY_URL` | 可选，merge 摘要专用 Slack Agent endpoint；不配时从 `SLACK_AGENT_TURN_URL` / `SLACK_AGENT_ANALYZE_URL` 推导 `/merge-summary` |
 | `MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS` | 是否包含 `sites/**` 用户站点 PR，默认 `false`，避免个人站点变更刷公共频道 |
 | `MERGE_ANNOUNCEMENT_MENTION_USER_IDS` | 可选固定 mention 列表，默认空 |
 

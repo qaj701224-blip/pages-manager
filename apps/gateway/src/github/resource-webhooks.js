@@ -3,6 +3,8 @@ import { jsonResponse } from '@xd/worker-kit';
 import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { notifySlackJobStatus } from '../slack/notifier.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
+import { runSlackBackground } from '../slack/delivery.js';
+import { enqueueMergeAnnouncement, processMergeAnnouncement } from './merge-announcement.js';
 import {
   cancelJobForClosedGithubIssue,
   cancelJobForClosedGithubPr,
@@ -10,6 +12,26 @@ import {
   restorePlatformDevItemForReopenedGithubResource,
 } from './resource-reconciler.js';
 import { issueUrl, platformDevItemIdFromIssueBody, publishingJobIdFromIssueBody } from './webhook.js';
+
+function envFlag(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+async function queueMergeAnnouncementIfNeeded({ body, action, store, env }) {
+  const mergeAnnouncement = await enqueueMergeAnnouncement({ body, action, store, env });
+  if (mergeAnnouncement?.queued) {
+    runSlackBackground(env, () =>
+      processMergeAnnouncement({
+        input: mergeAnnouncement.input,
+        dedupeKey: mergeAnnouncement.dedupeKey,
+        store,
+        env,
+      })
+    );
+  }
+  return mergeAnnouncement;
+}
 
 async function handlePlatformDevIssueWebhook({ issue, action, store, env, result }) {
   const itemId = platformDevItemIdFromIssueBody(issue.body);
@@ -199,6 +221,8 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     ? await store.findPlatformDevItemByPrNumber(prNumber, { headSha: pullRequest.head?.sha || null })
     : null;
   if (platformItem) {
+    const mergeAnnouncement =
+      action === 'closed' && pullRequest.merged ? await queueMergeAnnouncementIfNeeded({ body, action, store, env }) : null;
     const patch = {
       githubPrNumber: prNumber,
       githubPrUrl: pullRequest.html_url || platformItem.githubPrUrl,
@@ -231,6 +255,7 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
       created: true,
       delivery: result.delivery,
       prAction: 'platform_item_recorded',
+      ...(mergeAnnouncement ? { mergeAnnouncement } : {}),
       item: platformItem,
       ...(workerStart ? { workerStart } : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
@@ -242,8 +267,20 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
   }
 
   let job = await store.findJobByPrNumber(prNumber, { headSha: pullRequest.head?.sha || null });
+  const allowSiteMergeAnnouncement = envFlag(env.MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS, false);
+  const mergeAnnouncement =
+    action === 'closed' && pullRequest.merged && (!job || allowSiteMergeAnnouncement)
+      ? await queueMergeAnnouncementIfNeeded({ body, action, store, env })
+      : null;
   if (!job) {
-    return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'job_not_found', prNumber });
+    return jsonResponse({
+      ok: true,
+      created: true,
+      delivery: result.delivery,
+      ignored: 'job_not_found',
+      prNumber,
+      ...(mergeAnnouncement ? { mergeAnnouncement } : {}),
+    });
   }
 
   if (pullRequest.html_url && pullRequest.html_url !== job.prUrl) {
@@ -252,7 +289,14 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
 
   if (action === 'closed') {
     if (pullRequest.merged) {
-      return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'merged_pr', job });
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        ignored: 'merged_pr',
+        job,
+        ...(mergeAnnouncement ? { mergeAnnouncement } : {}),
+      });
     }
 
     job = await cancelJobForClosedGithubPr(store, job, pullRequest);
