@@ -6,6 +6,12 @@
     reverse_proxy pages-gateway:8788
   }
 
+  @prefixed_callbacks path {$PUBLIC_PATH_PREFIX}/integrations/slack/events {$PUBLIC_PATH_PREFIX}/integrations/slack/interactions {$PUBLIC_PATH_PREFIX}/integrations/github/webhook {$PUBLIC_PATH_PREFIX}/internal/executor-callback
+  handle @prefixed_callbacks {
+    uri strip_prefix {$PUBLIC_PATH_PREFIX}
+    reverse_proxy pages-gateway:8788
+  }
+
   handle /health {
     reverse_proxy pages-gateway:8788
   }
