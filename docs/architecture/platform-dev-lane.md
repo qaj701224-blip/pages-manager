@@ -14,6 +14,8 @@ Platform Dev Lane 让 Slack 可以创建和跟踪 `pages-manager` 自身的开�
 
 用户不需要理解 gateway、worker、webhook、MySQL、PublishingJob 或内部 message binding。Slack 上只展示“需求摘要、当前进度、下一步动作和 GitHub 链接”。
 
+Platform Dev Lane 的长期产品定位不是命令式表单，而是平台研发任务的诊断入口。用户可以问“这个任务现在怎么样”“为什么 issue 没创建成功”“issue 创建了为什么 PR 没出来”“能不能重试”，Slack Agent 应返回可操作的诊断报告，而不是暴露底层服务、队列、数据库或 callback 细节。
+
 ## Lane 分流
 
 Site Publishing Lane：
@@ -164,6 +166,40 @@ issue body 必须包含：
 - 当前实现会保留 work item link 和 session memory。
 - 平台 followup 进入 `work_item_followups` 后，由后续平台 agent 修复循环消费。
 
+诊断查询：
+
+- 默认围绕当前 Slack thread / PlatformDevItem / issue / PR 查询，不提供任意项目范围的日志搜索。
+- 可展示当前状态、最近阶段、Issue、PR、CI / Workflow、失败原因和下一步建议。
+- 可以解释常见断点：issue 未创建、issue 已创建但 agent 未启动、agent 已运行但 PR 未创建、PR 创建后 CI 失败、review 阻塞、callback 过期或状态机拒绝旧事件。
+- 可以摘要受控日志和 GitHub Actions 状态，但 Slack 文案必须使用产品语义；不要把 `pages-gateway`、`pages-worker`、MySQL 表名、内部 token 名或 status card binding 当作用户可见解释。
+- 日志摘要必须受当前用户、当前 session 和 work item 归属约束，默认查最近 30 分钟，扩大时间窗或追加诊断到 issue 需要确认。
+
+执行权限：
+
+- 默认开放：状态查询、关联关系查询、timeline、断点解释、受控日志摘要、GitHub Actions 状态、下一步建议。
+- 需要确认：创建平台 issue、追加诊断 comment、重试失败的 worker 流程、重新 dispatch workflow、恢复已关闭任务。
+- 必须拒绝或转人工：创建 PR、合并 PR、生产部署、删除资源、批量关闭 issue / PR、读取 secret、任意 ECS 原始日志查询、直接 shell 到 ECS。
+
+推荐诊断回复：
+
+```text
+这个平台任务卡在 PR 创建前。
+当前状态：Issue 已创建
+Issue：#123
+最近阶段：Workflow 已请求启动
+失败原因：GitHub Actions dispatch 返回 403，可能是 token 缺少 workflow 权限。
+关联日志：最近 30 分钟有 1 条匹配错误。
+建议操作：可以重试，或把诊断结果追加到 Issue。
+```
+
+推荐按钮：
+
+- 查看 Issue。
+- 查看 Workflow。
+- 重试。
+- 追加诊断到 Issue。
+- 转人工排查。
+
 ## 验收标准
 
 - Slack 平台需求不会创建 `PublishingJob`。
@@ -173,3 +209,4 @@ issue body 必须包含：
 - 高风险需求不会在人工 gate 前启动 `platform-agent.yml`。
 - 高风险 gate 的批准 / 拒绝会写入 `work_item_gates`，并同步更新 Slack 进度消息。
 - 所有行为有单元测试或集成测试覆盖。
+- Slack 诊断回复不泄露 gateway / worker / MySQL / callback / status card 等底座细节，只展示任务阶段、链接、失败原因和建议操作。
