@@ -60,7 +60,7 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /platform_changed=false/);
   assert.match(
     workflow,
-    /Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs\./,
+    /Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs\./
   );
   assert.match(workflow, /PR only touches sites\/\*\*/);
   assert.match(workflow, /concurrency:[\s\S]*sync-master-pr-to-staging/);
@@ -142,4 +142,26 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(workflow, /Potential secret detected/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
   assert.doesNotMatch(workflow, /pages-preview\.yml|deploy-pages-v2|Deploy Production/);
+});
+
+test('platform agent documentation tracks executor tool loop and merge boundary', () => {
+  const doc = readDoc('docs/architecture/platform-agent.md');
+  const index = readDoc('docs/README.md');
+  const agents = readDoc('AGENTS.md');
+  const script = readDoc('scripts/platform-agent-coding.mjs');
+
+  assert.match(index, /docs\/architecture\/platform-agent\.md/);
+  assert.match(doc, /工具循环/);
+  assert.match(doc, /scripts\/platform-agent-skills\/\*\.md/);
+  assert.match(script, /PLATFORM_AGENT_SKILLS_DIR = 'scripts\/platform-agent-skills'/);
+  for (const action of ['search', 'read_file', 'apply_patch', 'run_command', 'git_diff', 'git_status', 'finish']) {
+    assert.match(doc, new RegExp(`\`${action}\``));
+    assert.match(script, new RegExp(`['"]${action}['"]`));
+  }
+  assert.match(doc, /不直接合并 `master`/);
+  assert.match(doc, /文档改动/);
+  assert.match(doc, /700 行/);
+  assert.match(agents, /每次代码、workflow、脚本或行为修改都必须同步更新对应文档/);
+  assert.match(script, /matching documentation update/);
+  assert.match(script, /Markdown document exceeds 700 lines/);
 });
