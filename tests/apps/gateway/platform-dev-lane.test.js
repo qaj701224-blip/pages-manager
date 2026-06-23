@@ -362,6 +362,248 @@ test('platform task list uses product labels instead of raw internal labels', ()
   assert.doesNotMatch(payload, /你的发布任务|PR \/ Preview/);
 });
 
+test('platform diagnosis reports blocker without leaking substrate terms', async () => {
+  const app = createGatewayApp();
+  const item = createOpenPlatformPr(app, {
+    title: '调整 gateway worker mysql 流程',
+    summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
+    issueType: 'type:ci',
+    risk: 'risk:high',
+    gateStatus: 'approved',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_running');
+  app.store.updatePlatformDevItem(item.id, 'ci_failed', {
+    errorMessage: 'gateway worker mysql status card failed',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(slackEvent('为什么没成功？帮我查一下日志', 'Ev-platform-diagnosis')),
+    }),
+    { SLACK_EVENTS_PROCESSING_MODE: 'sync', ...deterministicSlackAgentEnv() }
+  );
+  const body = await json(response);
+  const payload = JSON.stringify(body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'diagnose_work_item');
+  assert.match(body.replyText, /任务诊断|当前状态|CI 未通过|建议操作|关联日志/);
+  assert.match(payload, /查看 Issue|查看 PR|重试|追加诊断到 Issue|转人工排查/);
+  assert.doesNotMatch(payload, /\b(gateway|worker|mysql|status card)\b/i);
+});
+
+test('model-requested retry returns diagnosis confirmation instead of dispatching immediately', async () => {
+  const app = createGatewayApp();
+  const item = createOpenPlatformPr(app, {
+    slackSessionId: 'sess_diagnosis_retry_confirm',
+    issueType: 'type:ci',
+    risk: 'risk:high',
+    gateStatus: 'approved',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_running');
+  app.store.updatePlatformDevItem(item.id, 'ci_failed', {
+    errorMessage: 'workflow failed',
+  });
+  const workerCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(slackEvent('重试这个任务', 'Ev-platform-retry-confirm')),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'retry_work_item',
+                summary: '重试这个任务',
+                needsClarification: false,
+                toolCall: { name: 'request_retry_work_item', args: {} },
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const payload = JSON.stringify(body);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'diagnose_work_item');
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'ci_failed');
+  assert.equal(workerCalls.length, 0);
+  assert.match(payload, /重试|追加诊断到 Issue|转人工排查/);
+});
+
+test('append diagnosis button writes a scoped GitHub issue comment', async () => {
+  const app = createGatewayApp();
+  const githubCalls = [];
+  const item = createOpenPlatformPr(app, {
+    slackSessionId: 'sess_diagnosis_append',
+    issueType: 'type:ci',
+    risk: 'risk:high',
+  });
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        interaction(
+          'pages_request_append_diagnosis',
+          JSON.stringify({ sessionId: 'sess_diagnosis_append', workItemKind: 'platform_dev', workItemId: item.id })
+        )
+      ),
+    }),
+    {
+      ...notifierEnv(),
+      GITHUB_REPOSITORY: 'org/pages-manager',
+      GITHUB_TOKEN: 'github-token',
+      async GITHUB_FETCH(url, request) {
+        githubCalls.push({ url: String(url), body: JSON.parse(request.body), request });
+        return new Response(
+          JSON.stringify({
+            id: 123,
+            html_url: 'https://github.example/org/pages-manager/issues/80#issuecomment-123',
+          }),
+          { status: 201 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.match(body.text, /已把诊断摘要追加到 Issue #80/);
+  assert.equal(body.action, 'append_diagnosis_comment');
+  assert.equal(body.accepted, true);
+  assert.equal(githubCalls.length, 1);
+  assert.match(githubCalls[0].url, /\/repos\/org\/pages-manager\/issues\/80\/comments$/);
+  assert.match(githubCalls[0].body.body, /## Slack 任务诊断/);
+  assert.match(githubCalls[0].body.body, /当前状态|Issue|PR|建议操作/);
+  assert.doesNotMatch(githubCalls[0].body.body, /\b(gateway|worker|mysql|status card)\b/i);
+});
+
+test('retry diagnosis button dispatches a scoped platform fix round', async () => {
+  const app = createGatewayApp();
+  const workerCalls = [];
+  const item = createOpenPlatformPr(app, {
+    slackSessionId: 'sess_diagnosis_retry',
+    issueType: 'type:ci',
+    risk: 'risk:high',
+    gateStatus: 'approved',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_running');
+  app.store.updatePlatformDevItem(item.id, 'ci_failed', {
+    errorMessage: 'workflow failed',
+  });
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        interaction(
+          'pages_request_retry_work_item',
+          JSON.stringify({ sessionId: 'sess_diagnosis_retry', workItemKind: 'platform_dev', workItemId: item.id })
+        )
+      ),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true, result: { action: 'platform_agent_fix_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'retry_work_item');
+  assert.equal(body.accepted, true);
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
+  assert.equal(workerCalls[0].body.workItemKind, 'platform_dev');
+  assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  assert.ok(app.store.listAgentRunEventsForWorkItem('platform_dev', item.id).some((event) => event.stage === 'agent_queued'));
+});
+
+test('human triage button records the request and writes a scoped issue comment', async () => {
+  const app = createGatewayApp();
+  const githubCalls = [];
+  const item = createOpenPlatformPr(app, {
+    slackSessionId: 'sess_diagnosis_triage',
+    issueType: 'type:ci',
+    risk: 'risk:high',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_running');
+  app.store.updatePlatformDevItem(item.id, 'ci_failed', {
+    errorMessage: 'workflow failed',
+  });
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        interaction(
+          'pages_request_human_triage',
+          JSON.stringify({ sessionId: 'sess_diagnosis_triage', workItemKind: 'platform_dev', workItemId: item.id })
+        )
+      ),
+    }),
+    {
+      ...notifierEnv(),
+      GITHUB_REPOSITORY: 'org/pages-manager',
+      GITHUB_TOKEN: 'github-token',
+      async GITHUB_FETCH(url, request) {
+        githubCalls.push({ url: String(url), body: JSON.parse(request.body), request });
+        return new Response(
+          JSON.stringify({
+            id: 124,
+            html_url: 'https://github.example/org/pages-manager/issues/80#issuecomment-124',
+          }),
+          { status: 201 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const events = app.store.listAgentRunEventsForWorkItem('platform_dev', item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'human_triage');
+  assert.match(body.text, /已标记为需要人工排查/);
+  assert.equal(githubCalls.length, 1);
+  assert.match(githubCalls[0].url, /\/repos\/org\/pages-manager\/issues\/80\/comments$/);
+  assert.match(githubCalls[0].body.body, /## 请求人工排查/);
+  assert.doesNotMatch(githubCalls[0].body.body, /\b(gateway|worker|mysql|status card)\b/i);
+  assert.ok(events.some((event) => event.type === 'human_triage_requested'));
+});
+
 test('platform failure notification filters internal substrate terms from error copy', async () => {
   const calls = [];
   const store = {

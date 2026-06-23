@@ -1,4 +1,5 @@
 import { jsonResponse } from '@xd/worker-kit';
+import { createIssueComment } from '@xd/git-client';
 
 import {
   parseGithubWebhookBody,
@@ -29,14 +30,13 @@ import {
 } from '../github/resource-reconciler.js';
 import { readJson } from '../http/body.js';
 import { getStore, required, verifyInternalCallbackToken } from './context.js';
-import { dispatchQueuedPlatformDevFollowupIfNeeded } from '../platform-dev/automation.js';
+import { dispatchPlatformDevFixIfNeeded, dispatchQueuedPlatformDevFollowupIfNeeded } from '../platform-dev/automation.js';
 import { applyExecutorCallback, CALLBACK_STAGE_RESULTS } from '../publishing/callback-rules.js';
 import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../slack/http.js';
 import {
   classifySlackIntake,
   isUnsupportedBulkDestructiveRequest,
-  slackStatusReply,
 } from '../slack/intake.js';
 import {
   notificationTextForCallback,
@@ -77,6 +77,12 @@ import {
 import { activateJobForSlackSession } from '../slack/job-binding.js';
 import { selectSlackSession, slackActorFromBody, slackUserIdFromBody, surfaceForSlackBody } from '../slack/session.js';
 import { redactSecretLikeText } from '../slack/text.js';
+import {
+  buildSlackWorkItemDiagnosis,
+  buildSlackWorkItemDiagnosisBlocks,
+  buildSlackWorkItemDiagnosisIssueComment,
+  buildSlackWorkItemHumanTriageIssueComment,
+} from '../slack/diagnostics.js';
 import { slackJobInput } from '../slack/job-input.js';
 import {
   confirmedSlackJobBodyFromInteraction,
@@ -120,7 +126,6 @@ import {
   unsupportedDestructiveRequestReply,
 } from '../slack/work-items.js';
 import {
-  activeJobForSlackSession,
   activeWorkItemForSlackSession,
   dispatchQueuedFollowupFixIfNeeded,
   handleSlackFollowup,
@@ -160,6 +165,19 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
 
   if (shouldCloseSlackSession(intake, slackAgentAnalysis)) return { name: 'close_session', args: {} };
   if (slackAgentAnalysis.intent === 'status_query') return { name: 'get_current_status', args: {} };
+  if (
+    [
+      'diagnose_work_item',
+      'get_work_item_timeline',
+      'explain_work_item_blocker',
+      'get_workflow_status',
+      'append_diagnosis_comment',
+      'retry_work_item',
+      'human_triage',
+    ].includes(slackAgentAnalysis.intent)
+  ) {
+    return { name: 'diagnose_current_work_item', args: {} };
+  }
   if (shouldRejectUnsupportedDestructiveSlackTurn(intake, slackAgentAnalysis)) {
     return { name: 'unsupported_destructive_request', args: {} };
   }
@@ -277,7 +295,11 @@ async function handleSlackAgentToolCall(context) {
     case 'close_session':
       return handleCloseSlackSession(context);
     case 'get_current_status':
-      return handleSlackAgentStatusQuery(context);
+    case 'diagnose_current_work_item':
+    case 'request_retry_work_item':
+    case 'request_append_diagnosis_comment':
+    case 'request_human_triage':
+      return handleSlackWorkItemDiagnosisTool({ ...context, toolArgs: toolCall.args || {} });
     case 'unsupported_destructive_request':
       return handleSlackAgentNonPublishingTurn({
         ...context,
@@ -490,51 +512,20 @@ async function processSlackEventBody(body, env, options = {}) {
     );
   }
 
-  if (intake.action === 'status') {
-    let statusJob = intake.jobId
-      ? await store.getJob(intake.jobId)
-      : slackSession
-        ? await activeWorkItemForSlackSession(store, slackSession)
-        : null;
-    if (statusJob && !slackJobVisibleToActor(statusJob, body)) {
-      await completeSlackAgentRun(store, agentRun, {
-        report: { action: intake.action, jobId: intake.jobId, forbidden: true },
-      });
-      return respond({
-        ok: true,
-        action: 'forbidden_cross_user_job',
-        accepted: false,
-        replyText: '这个发布任务不属于当前 Slack 用户，不能查看状态。',
-        ...(slackSession ? { slackSessionId: slackSession.id } : {}),
-        ...(agentRun ? { agentRunId: agentRun.id } : {}),
-      });
-    }
-    if (statusJob?.workItemKind === 'platform_dev') {
-      await completeSlackAgentRun(store, agentRun, {
-        report: { action: intake.action, workItemKind: 'platform_dev', workItemId: statusJob.id },
-      });
-      return respond({
-        ok: true,
-        action: intake.action,
-        accepted: false,
-        replyText: platformNotificationText(statusJob.status, statusJob) || `当前平台需求状态：${statusJob.status}`,
-        ...(slackSession ? { slackSessionId: slackSession.id } : {}),
-        ...(agentRun ? { agentRunId: agentRun.id } : {}),
-      });
-    }
-    statusJob = await reconcileClosedGithubIssueForJob(store, env, statusJob, { notifySlack: true });
-
-    await completeSlackAgentRun(store, agentRun, {
-      report: { action: intake.action, jobId: intake.jobId || null },
-    });
-    return respond({
-      ok: true,
-      action: intake.action,
-      accepted: false,
-      replyText: statusJob ? slackStatusReply(statusJob.id, statusJob) : intake.replyText || '我还没有在当前会话里找到发布任务。',
-      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
-      ...(agentRun ? { agentRunId: agentRun.id } : {}),
-    });
+  if (intake.action === 'status' || intake.action === 'diagnose_work_item') {
+    return respond(
+      await handleSlackWorkItemDiagnosisTool({
+        store,
+        body,
+        env,
+        intake,
+        slackSession,
+        sessionMemory,
+        agentRun,
+        slackAgentAnalysis: null,
+        toolArgs: { jobId: intake.jobId },
+      })
+    );
   }
 
   try {
@@ -839,61 +830,552 @@ async function handleCloseSlackSession({ store, intake, slackSession, sessionMem
   };
 }
 
-async function handleSlackAgentStatusQuery({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
-  const activeWorkItem = await activeWorkItemForSlackSession(store, slackSession);
-  if (activeWorkItem?.workItemKind === 'platform_dev') {
-    const replyText = platformNotificationText(activeWorkItem.status, activeWorkItem) || `当前平台需求状态：${activeWorkItem.status}`;
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory.summary || intake.text),
-      lastAgentResponse: replyText,
-    });
-    await completeSlackAgentRun(store, agentRun, {
+async function eventsForWorkItem(store, item = {}) {
+  if (!item?.id) return [];
+  if (item.workItemKind === 'platform_dev') {
+    return store.listPlatformDevEvents ? await store.listPlatformDevEvents(item.id) : [];
+  }
+  return store.listEvents ? await store.listEvents(item.id) : [];
+}
+
+function platformDevSlackWorkItem(item = null) {
+  if (!item) return null;
+  return {
+    ...item,
+    workItemKind: 'platform_dev',
+    issueNumber: item.githubIssueNumber,
+    issueUrl: item.githubIssueUrl,
+    prNumber: item.githubPrNumber,
+    prUrl: item.githubPrUrl,
+  };
+}
+
+async function workItemForDiagnosis(store, body, slackSession, toolArgs = {}) {
+  const explicitWorkItemKind = toolArgs.workItemKind || toolArgs.work_item_kind || null;
+  const explicitWorkItemId = toolArgs.workItemId || toolArgs.work_item_id || null;
+  const explicitJobId =
+    toolArgs.jobId || toolArgs.job_id || (explicitWorkItemKind !== 'platform_dev' ? explicitWorkItemId : null);
+  if (explicitWorkItemKind === 'platform_dev' && explicitWorkItemId) {
+    const item = platformDevSlackWorkItem(store.getPlatformDevItem ? await store.getPlatformDevItem(explicitWorkItemId) : null);
+    if (item && !slackJobVisibleToActor(item, body)) return { forbidden: true, item };
+    return { item: item || null };
+  }
+  if (explicitJobId) {
+    const job = store.getJob ? await store.getJob(explicitJobId) : null;
+    if (job && !slackJobVisibleToActor(job, body)) return { forbidden: true, item: job };
+    return { item: job || null };
+  }
+  return { item: slackSession ? await activeWorkItemForSlackSession(store, slackSession) : null };
+}
+
+function githubWriteConfigForSlackDiagnosis(env = {}) {
+  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN || env.GITHUB_STATUS_TOKEN;
+  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
+  if (!token || !repoFullName) return null;
+  return {
+    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
+    token,
+    repoFullName,
+  };
+}
+
+function issueNumberForWorkItem(item = {}) {
+  return item.issueNumber || item.githubIssueNumber || null;
+}
+
+async function createSlackWorkItemIssueComment(env, item, body, logMessage) {
+  const issueNumber = issueNumberForWorkItem(item);
+  if (!issueNumber) return { skipped: true, reason: 'missing_issue' };
+  const config = githubWriteConfigForSlackDiagnosis(env);
+  if (!config) return { skipped: true, reason: 'github_not_configured' };
+
+  try {
+    const comment = await createIssueComment(
+      env.GITHUB_FETCH || env.GITHUB_STATUS_FETCH || fetch,
+      config,
+      issueNumber,
+      body
+    );
+    return { ok: true, issueNumber, comment };
+  } catch (err) {
+    console.log(
+      JSON.stringify({
+        service: 'pages-gateway',
+        message: logMessage,
+        workItemKind: item.workItemKind || 'site_publishing',
+        workItemId: item.id || null,
+        issueNumber,
+        error: err.message,
+      })
+    );
+    return { ok: false, issueNumber, error: err.message };
+  }
+}
+
+async function appendSlackDiagnosisIssueComment(env, item, events = []) {
+  return createSlackWorkItemIssueComment(
+    env,
+    item,
+    buildSlackWorkItemDiagnosisIssueComment(item, { events }),
+    'slack_diagnosis_issue_comment_failed'
+  );
+}
+
+async function appendSlackHumanTriageIssueComment(env, item, events = []) {
+  return createSlackWorkItemIssueComment(
+    env,
+    item,
+    buildSlackWorkItemHumanTriageIssueComment(item, { events }),
+    'slack_human_triage_issue_comment_failed'
+  );
+}
+
+function appendDiagnosisReplyText(result = {}) {
+  if (result.ok) return `已把诊断摘要追加到 Issue #${result.issueNumber}。`;
+  if (result.skipped && result.reason === 'missing_issue') return '当前任务还没有关联 Issue，暂时不能追加诊断。';
+  if (result.skipped && result.reason === 'github_not_configured') return '诊断摘要已生成，但 GitHub 写入暂未配置，不能追加到 Issue。';
+  if (result.ok === false) return `追加诊断失败：${result.error}`;
+  return '诊断摘要暂时不能追加到 Issue。';
+}
+
+function humanTriageReplyText(result = {}) {
+  if (result.issueComment?.ok) return `已标记为需要人工排查，并追加到 Issue #${result.issueComment.issueNumber}。`;
+  if (result.issueComment?.reason === 'missing_issue') {
+    return '已标记为需要人工排查；当前任务还没有关联 Issue，无法追加诊断记录。';
+  }
+  if (result.issueComment?.reason === 'github_not_configured') {
+    return '已标记为需要人工排查；GitHub 写入暂未配置，无法追加到 Issue。';
+  }
+  if (result.issueComment?.ok === false) {
+    return `已标记为需要人工排查；追加到 Issue 失败：${result.issueComment.error}`;
+  }
+  return '已标记为需要人工排查。';
+}
+
+async function recordHumanTriageRequest(store, item = {}, slackSession = null) {
+  if (!store?.recordAgentRunEvent || !item?.id) return null;
+  const common = {
+    slackSessionId: slackSession?.id || item.slackSessionId || null,
+    type: 'human_triage_requested',
+    stage: item.status || null,
+    status: 'requested',
+    text: '用户从 Slack 请求人工排查。',
+    dedupeKey: `human-triage:${item.workItemKind || 'site_publishing'}:${item.id}:${Date.now()}`,
+    slackChannelId: item.slackThread?.channelId || null,
+    slackThreadTs: item.slackThread?.threadTs || null,
+  };
+  if (item.workItemKind === 'platform_dev') {
+    return store.recordAgentRunEvent({
+      ...common,
       workItemKind: 'platform_dev',
-      workItemId: activeWorkItem.id,
-      ...slackAgentRunModelPatch(slackAgentAnalysis),
-      report: {
-        action: 'status_query',
-        accepted: false,
-        intent: slackAgentAnalysis?.intent || null,
-      },
+      workItemId: item.id,
+    });
+  }
+  return store.recordAgentRunEvent({
+    ...common,
+    publishingJobId: item.id,
+  });
+}
+
+async function retrySitePublishingWorkItem(store, env, item = {}, slackSession = null) {
+  let job = item;
+  let retryStage = item.status;
+  if (['issue_created', 'indexing'].includes(item.status) && store.updateJob) {
+    job = await store.updateJob(item.id, 'generating_page', { errorCode: null, errorMessage: null });
+    retryStage = 'generating_page';
+  } else if (
+    ['pr_created', 'reviewing', 'changes_requested', 'preview_deployed'].includes(item.status) &&
+    store.moveJobToFixing
+  ) {
+    job = await store.moveJobToFixing(item.id, {
+      errorCode: null,
+      errorMessage: null,
+      previewUrl: item.status === 'preview_deployed' ? null : item.previewUrl,
+    });
+    retryStage = 'fixing';
+  } else if (!['received', 'generating_page', 'fixing', 'previewing'].includes(item.status)) {
+    return { retried: false, reason: 'not_retryable', item };
+  }
+  if (!job) return { retried: false, reason: 'not_retryable', item };
+  await store.linkJobToSlackSession?.(job, slackSession || undefined);
+  const workerStart = await startWorkerForJobIfConfigured(job, env);
+  const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+    stage: retryStage,
+    text: workerStart?.started ? '已重新触发处理流程。' : '已记录重试请求，等待处理流程启动。',
+    statusText: workerStart?.started ? ':hourglass_flowing_sand: 已重试，正在处理。' : ':warning: 已记录重试请求。',
+    skipDuplicate: false,
+    slackSessionId: slackSession?.id || job.slackSessionId || null,
+    dedupeKey: `slack-diagnosis-retry:${job.id}:${Date.now()}`,
+  });
+  return {
+    retried: Boolean(workerStart?.started),
+    reason: workerStart?.started ? null : workerStart?.error || 'worker_not_started',
+    item: job,
+    workerStart,
+    slackStatusNotification,
+  };
+}
+
+async function retrySlackWorkItem(store, env, item = {}, slackSession = null) {
+  if (item.workItemKind === 'platform_dev') {
+    const result = await dispatchPlatformDevFixIfNeeded(store, item, env, {
+      trigger: 'manual_retry',
+      force: true,
+      issueSyncText: '已收到重试请求，',
+      currentChange: '用户从 Slack 请求重试当前任务。',
+    });
+    return {
+      retried: Boolean(result.workerStart?.started),
+      reason: result.reason || result.workerStart?.error || null,
+      item: result.item || item,
+      workerStart: result.workerStart || null,
+      slackStatusNotification: result.slackStatusNotification || null,
+    };
+  }
+  return retrySitePublishingWorkItem(store, env, item, slackSession);
+}
+
+function retryWorkItemReplyText(result = {}) {
+  if (result.retried) return '已重新触发处理流程。我会继续在当前对话更新进度。';
+  if (result.reason === 'not_dispatchable' || result.reason === 'not_retryable') {
+    return '当前阶段不能直接重试。可以查看 Issue / PR 后补充修复要求，或转人工排查。';
+  }
+  if (result.reason === 'fix_attempts_exhausted') return '自动修复次数已达到上限，需要人工查看 Issue / PR 后再继续。';
+  if (result.reason) return `重试暂未启动：${result.reason}`;
+  return '重试暂未启动，请稍后再试或转人工排查。';
+}
+
+async function handleSlackWorkItemDiagnosisTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
+  if (resolved.forbidden) {
+    await completeSlackAgentRun(store, agentRun, {
+      report: { action: 'diagnose_work_item', accepted: false, forbidden: true, jobId: toolArgs.jobId || null },
     });
     return {
       ok: true,
-      action: 'status_query',
+      action: 'diagnose_work_item_forbidden',
       accepted: false,
-      replyText,
-      slackSessionId: slackSession.id,
-      agentRunId: agentRun?.id,
+      replyText: '这个任务不属于当前 Slack 用户，不能查看诊断结果。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    };
+  }
+
+  let item = resolved.item;
+  if (item && item.workItemKind !== 'platform_dev') {
+    item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
+  }
+  if (!item) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: { action: 'diagnose_work_item', accepted: false, reason: 'not_found' },
+    });
+    return {
+      ok: true,
+      action: 'diagnose_work_item_not_found',
+      accepted: false,
+      replyText: '我还没有在当前会话里找到可诊断的任务。可以先说「我的任务」查看任务列表。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
       ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
     };
   }
 
-  const job = await reconcileClosedGithubIssueForJob(store, env, await activeJobForSlackSession(store, slackSession), {
-    notifySlack: true,
-  });
-  const replyText = job ? slackStatusReply(job.id, job) : '我还没有在当前会话里找到发布任务。';
-
-  await store.updateSessionMemory(slackSession.id, {
-    summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory.summary || intake.text),
-    lastAgentResponse: replyText,
-  });
+  const events = await eventsForWorkItem(store, item);
+  const replyText = buildSlackWorkItemDiagnosis(item, { events });
+  const blocks = buildSlackWorkItemDiagnosisBlocks(slackSession, item, { events });
+  if (slackSession?.id && store.updateSessionMemory) {
+    await store.updateSessionMemory(slackSession.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+      lastAgentResponse: replyText,
+    });
+  }
   await completeSlackAgentRun(store, agentRun, {
-    publishingJobId: job?.id || null,
+    ...(item.workItemKind === 'platform_dev'
+      ? { workItemKind: 'platform_dev', workItemId: item.id }
+      : { publishingJobId: item.id }),
     ...slackAgentRunModelPatch(slackAgentAnalysis),
     report: {
-      action: 'status_query',
+      action: 'diagnose_work_item',
       accepted: false,
-      intent: slackAgentAnalysis?.intent || null,
+      intent: slackAgentAnalysis?.intent || intake.action,
+      status: item.status,
+      eventCount: events.length,
+    },
+  });
+  return {
+    ok: true,
+    action: 'diagnose_work_item',
+    accepted: false,
+    replyText,
+    blocks,
+    ...(item.workItemKind === 'platform_dev' ? { workItemKind: 'platform_dev', workItemId: item.id } : { jobId: item.id }),
+    slackSessionId: slackSession?.id,
+    agentRunId: agentRun?.id,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+  };
+}
+
+async function handleSlackAppendDiagnosisCommentTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
+  if (resolved.forbidden) {
+    await completeSlackAgentRun(store, agentRun, {
+      report: { action: 'append_diagnosis_comment', accepted: false, forbidden: true },
+    });
+    return {
+      ok: true,
+      action: 'append_diagnosis_comment_forbidden',
+      accepted: false,
+      replyText: '这个任务不属于当前 Slack 用户，不能追加诊断。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    };
+  }
+
+  let item = resolved.item;
+  if (item && item.workItemKind !== 'platform_dev') {
+    item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
+  }
+  if (!item) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: { action: 'append_diagnosis_comment', accepted: false, reason: 'not_found' },
+    });
+    return {
+      ok: true,
+      action: 'append_diagnosis_comment_not_found',
+      accepted: false,
+      replyText: '我还没有在当前会话里找到可追加诊断的任务。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  const events = await eventsForWorkItem(store, item);
+  const appendResult = await appendSlackDiagnosisIssueComment(env, item, events);
+  const replyText = appendDiagnosisReplyText(appendResult);
+  if (slackSession?.id && store.updateSessionMemory) {
+    await store.updateSessionMemory(slackSession.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+      lastAgentResponse: replyText,
+    });
+  }
+  await completeSlackAgentRun(store, agentRun, {
+    ...(item.workItemKind === 'platform_dev'
+      ? { workItemKind: 'platform_dev', workItemId: item.id }
+      : { publishingJobId: item.id }),
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action: 'append_diagnosis_comment',
+      accepted: Boolean(appendResult.ok),
+      intent: slackAgentAnalysis?.intent || intake.action,
+      status: item.status,
+      issueNumber: appendResult.issueNumber || issueNumberForWorkItem(item),
+      ...(appendResult.reason ? { reason: appendResult.reason } : {}),
+      ...(appendResult.error ? { error: appendResult.error } : {}),
     },
   });
 
   return {
     ok: true,
-    action: 'status_query',
-    accepted: false,
+    action: appendResult.ok ? 'append_diagnosis_comment' : 'append_diagnosis_comment_failed',
+    accepted: Boolean(appendResult.ok),
     replyText,
-    slackSessionId: slackSession.id,
-    agentRunId: agentRun?.id,
+    ...(item.workItemKind === 'platform_dev' ? { workItemKind: 'platform_dev', workItemId: item.id } : { jobId: item.id }),
+    ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+    ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    appendDiagnosis: appendResult,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+  };
+}
+
+async function handleSlackHumanTriageTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
+  if (resolved.forbidden) {
+    await completeSlackAgentRun(store, agentRun, {
+      report: { action: 'human_triage', accepted: false, forbidden: true },
+    });
+    return {
+      ok: true,
+      action: 'human_triage_forbidden',
+      accepted: false,
+      replyText: '这个任务不属于当前 Slack 用户，不能转人工排查。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    };
+  }
+
+  let item = resolved.item;
+  if (item && item.workItemKind !== 'platform_dev') {
+    item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
+  }
+  if (!item) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: { action: 'human_triage', accepted: false, reason: 'not_found' },
+    });
+    return {
+      ok: true,
+      action: 'human_triage_not_found',
+      accepted: false,
+      replyText: '我还没有在当前会话里找到可转人工排查的任务。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  const events = await eventsForWorkItem(store, item);
+  const triageEvent = await recordHumanTriageRequest(store, item, slackSession);
+  const issueComment = await appendSlackHumanTriageIssueComment(env, item, events);
+  const result = { triageEvent, issueComment };
+  const replyText = humanTriageReplyText(result);
+  if (slackSession?.id && store.updateSessionMemory) {
+    await store.updateSessionMemory(slackSession.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+      lastAgentResponse: replyText,
+    });
+  }
+  await completeSlackAgentRun(store, agentRun, {
+    ...(item.workItemKind === 'platform_dev'
+      ? { workItemKind: 'platform_dev', workItemId: item.id }
+      : { publishingJobId: item.id }),
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action: 'human_triage',
+      accepted: true,
+      intent: slackAgentAnalysis?.intent || intake.action,
+      status: item.status,
+      issueNumber: issueComment.issueNumber || issueNumberForWorkItem(item),
+      ...(issueComment.reason ? { issueCommentReason: issueComment.reason } : {}),
+      ...(issueComment.error ? { issueCommentError: issueComment.error } : {}),
+    },
+  });
+
+  return {
+    ok: true,
+    action: 'human_triage',
+    accepted: true,
+    replyText,
+    ...(item.workItemKind === 'platform_dev' ? { workItemKind: 'platform_dev', workItemId: item.id } : { jobId: item.id }),
+    ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+    ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    humanTriage: result,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+  };
+}
+
+async function handleSlackRetryWorkItemTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
+  if (resolved.forbidden) {
+    await completeSlackAgentRun(store, agentRun, {
+      report: { action: 'retry_work_item', accepted: false, forbidden: true },
+    });
+    return {
+      ok: true,
+      action: 'retry_work_item_forbidden',
+      accepted: false,
+      replyText: '这个任务不属于当前 Slack 用户，不能重试。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    };
+  }
+
+  let item = resolved.item;
+  if (item && item.workItemKind !== 'platform_dev') {
+    item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
+  }
+  if (!item) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: { action: 'retry_work_item', accepted: false, reason: 'not_found' },
+    });
+    return {
+      ok: true,
+      action: 'retry_work_item_not_found',
+      accepted: false,
+      replyText: '我还没有在当前会话里找到可重试的任务。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  const retryResult = await retrySlackWorkItem(store, env, item, slackSession);
+  const replyText = retryWorkItemReplyText(retryResult);
+  if (slackSession?.id && store.updateSessionMemory) {
+    await store.updateSessionMemory(slackSession.id, {
+      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+      lastAgentResponse: replyText,
+    });
+  }
+  await completeSlackAgentRun(store, agentRun, {
+    ...(retryResult.item?.workItemKind === 'platform_dev'
+      ? { workItemKind: 'platform_dev', workItemId: retryResult.item.id }
+      : { publishingJobId: retryResult.item?.id || item.id }),
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action: 'retry_work_item',
+      accepted: Boolean(retryResult.retried),
+      intent: slackAgentAnalysis?.intent || intake.action,
+      status: retryResult.item?.status || item.status,
+      ...(retryResult.reason ? { reason: retryResult.reason } : {}),
+    },
+  });
+
+  return {
+    ok: true,
+    action: retryResult.retried ? 'retry_work_item' : 'retry_work_item_failed',
+    accepted: Boolean(retryResult.retried),
+    replyText,
+    noReply: Boolean(retryResult.slackStatusNotification?.ok),
+    ...(retryResult.item?.workItemKind === 'platform_dev'
+      ? { workItemKind: 'platform_dev', workItemId: retryResult.item.id }
+      : { jobId: retryResult.item?.id || item.id }),
+    ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+    ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    retry: retryResult,
     ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
   };
 }
@@ -1430,6 +1912,102 @@ export async function handleSlackInteractions(request, env) {
       ...(workerStart ? { workerStart } : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
       ...(listUpdate ? { listUpdate } : {}),
+    });
+  }
+
+  if (actionId === 'pages_request_append_diagnosis') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个诊断操作不属于当前 Slack 用户。',
+      });
+    }
+    const result = await handleSlackAppendDiagnosisCommentTool({
+      store,
+      body: {
+        team: { id: teamId },
+        user: { id: slackUserId },
+        channel_id: body.channel?.id || body.container?.channel_id || null,
+        thread_ts: body.message?.thread_ts || body.message?.ts || null,
+      },
+      env,
+      intake: { action: 'append_diagnosis_comment', text: '追加诊断到 Issue' },
+      slackSession: session,
+      sessionMemory: (await store.getSessionMemory?.(session.id)) || {},
+      agentRun: null,
+      slackAgentAnalysis: null,
+      toolArgs: value,
+    });
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: result.replyText,
+      ...result,
+    });
+  }
+
+  if (actionId === 'pages_request_retry_work_item') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个重试操作不属于当前 Slack 用户。',
+      });
+    }
+    const result = await handleSlackRetryWorkItemTool({
+      store,
+      body: {
+        team: { id: teamId },
+        user: { id: slackUserId },
+        channel_id: body.channel?.id || body.container?.channel_id || null,
+        thread_ts: body.message?.thread_ts || body.message?.ts || null,
+      },
+      env,
+      intake: { action: 'retry_work_item', text: '重试当前任务' },
+      slackSession: session,
+      sessionMemory: (await store.getSessionMemory?.(session.id)) || {},
+      agentRun: null,
+      slackAgentAnalysis: null,
+      toolArgs: value,
+    });
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: result.replyText,
+      ...result,
+    });
+  }
+
+  if (actionId === 'pages_request_human_triage') {
+    const value = parseSlackButtonValue(action.value);
+    const session = await store.getSlackSession(value.sessionId || '');
+    if (!session || session.teamId !== teamId || session.primarySlackUserId !== slackUserId) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个人工排查操作不属于当前 Slack 用户。',
+      });
+    }
+    const result = await handleSlackHumanTriageTool({
+      store,
+      body: {
+        team: { id: teamId },
+        user: { id: slackUserId },
+        channel_id: body.channel?.id || body.container?.channel_id || null,
+        thread_ts: body.message?.thread_ts || body.message?.ts || null,
+      },
+      env,
+      intake: { action: 'human_triage', text: '转人工排查' },
+      slackSession: session,
+      sessionMemory: (await store.getSessionMemory?.(session.id)) || {},
+      agentRun: null,
+      slackAgentAnalysis: null,
+      toolArgs: value,
+    });
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: result.replyText,
+      ...result,
     });
   }
 

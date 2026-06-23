@@ -9,6 +9,8 @@ import { canSendSlackOutput, shouldPostSlackResultReply } from './delivery.js';
 import { slackThreadForSession } from './job-binding.js';
 
 const SLACK_AGENT_REPLY_START_TEXT = '正在整理需求...';
+const SHORT_QUERY_TURN_RE =
+  /(我的\s*(?:PR|issue|任务)|当前会话|有哪些|为什么|为啥|原因|失败|没成功|没有成功|没出来|卡住|卡在哪|卡在|诊断|排查|查一下|看一下|状态|进度|日志|log|workflow|actions|重试)/i;
 
 function hasActiveSlackTarget(slackSession) {
   return Boolean(
@@ -104,6 +106,7 @@ function normalizeSlackAgentTurnResult(result = {}, mode = 'analyze') {
 
 function shouldStartSlackAgentReplyForTurn(intake, endpoint, slackSession) {
   if (endpoint?.mode !== 'turn' || intake.action !== 'agent_turn') return false;
+  if (SHORT_QUERY_TURN_RE.test(intake.text || '')) return false;
   return !hasActiveSlackTarget(slackSession);
 }
 
