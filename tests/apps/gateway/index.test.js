@@ -1809,6 +1809,63 @@ test('Slack repo answer can be converted into a platform issue confirmation card
   assert.match(JSON.stringify(updateCall.body.payload), /确认平台需求|pages_confirm_platform_issue/);
   assert.equal(memory.requirements.lane, 'platform-dev');
   assert.equal(memory.requirements.toolCall.name, 'confirm_platform_issue');
+  assert.equal(memory.requirements.issueType, 'type:dev');
+  assert.equal(memory.requirements.agentEligible, true);
+});
+
+test('Slack repo answer records pure questions without starting Platform Agent', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    channelId: 'D1',
+    dmChannelId: 'D1',
+  });
+  app.store.updateSessionMemory(session.id, {
+    repoQuestionContext: {
+      turns: [
+        {
+          question: '目前这个对话的 sessions 是保存在哪里？',
+          answerSummary: 'Slack 会话保存在 slack_sessions，摘要保存在 session_memories。',
+          evidencePaths: ['apps/gateway/src/db/schema.js'],
+          mode: 'implementation_plan',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      lastEvidencePaths: ['apps/gateway/src/db/schema.js'],
+      openQuestions: [],
+    },
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'block_actions',
+        team: { id: 'T1' },
+        user: { id: 'U1' },
+        channel: { id: 'D1' },
+        container: { channel_id: 'D1', message_ts: '1710000000.000202' },
+        message: { ts: '1710000000.000202', thread_ts: '1710000000.000100' },
+        actions: [{ action_id: 'pages_repo_create_platform_issue', value: JSON.stringify({ sessionId: session.id }) }],
+      }),
+    }),
+    mockSlackNotifier(notifierCalls)
+  );
+  const body = await json(response);
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  const memory = app.store.getSessionMemory(session.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'repo_question_platform_issue_draft');
+  assert.equal(app.store.platformDevItems.size, 0);
+  assert.equal(memory.requirements.issueType, 'type:question');
+  assert.equal(memory.requirements.agentEligible, false);
+  assert.equal(memory.requirements.requiresHumanGate, false);
+  assert.match(JSON.stringify(updateCall.body.payload), /问题咨询|不会启动自动开发/);
 });
 
 test('Slack repo question intent overrides conflicting create-platform tool call', async () => {
