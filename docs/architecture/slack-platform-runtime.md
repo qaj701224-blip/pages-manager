@@ -614,7 +614,7 @@ Platform Dev Lane 的确认卡片必须展示：
 - 确认后进入执行阶段，由 lane 对应的进度消息接管：Site Publishing Lane 对用户展示站点需求、PR / preview、阻塞原因和下一步；Platform Dev Lane 对用户展示 issue / PR / CI / review / merge 进度。用户后续继续在同一 thread 回复，会更新同一个工作项并触发 fix round 或排队。
 - 已有 active job / issue / PR 后，修改类消息不再创建“正在整理需求”的 Agent 占位回复；Agent 对用户修改意图的理解进入进度消息的“本轮修改 / 最终需求”。如果 Agent 需要追问、解释、返回查询结果或说明无法处理，仍然在同一 thread 里直接回复用户。
 - 每条用户输入的即时反馈优先用 reaction 表示：收到时加 working reaction，完成时换成 done，失败时换成 failed。文字消息只承载真正的信息，不重复刷“我已收到”。
-- PR 合并后的固定频道公告属于 GitHub webhook 触发的系统里程碑消息，不继承用户 Slack session。它可以复用 Slack Agent 的摘要能力生成中文富文本摘要，但触发判断、幂等、脱敏、频道选择和 `chat.postMessage` 仍由 gateway / slack-notifier 控制；详细合同见 [github-automation.md](./github-automation.md#merge-announcement-agent)。
+- PR 合并后的固定频道公告属于 GitHub webhook 触发的系统里程碑消息，不继承用户 Slack session。webhook 只负责校验、登记 pending / 幂等键并快速返回，摘要生成和 Slack 投递在后台执行。它可以复用 Slack Agent 的摘要能力生成中文富文本摘要，但触发判断、幂等、脱敏、频道选择和 `chat.postMessage` 仍由 gateway / slack-notifier 控制；详细合同见 [github-automation.md](./github-automation.md#merge-announcement-agent)。
 
 ```text
 轻量 Agent 回复：需求整理 / 澄清 / 确认前草稿的准流式正文
