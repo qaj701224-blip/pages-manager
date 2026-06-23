@@ -869,7 +869,7 @@ async function workItemForDiagnosis(store, body, slackSession, toolArgs = {}) {
 }
 
 function githubWriteConfigForSlackDiagnosis(env = {}) {
-  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN || env.GITHUB_STATUS_TOKEN;
+  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
   const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
   if (!token || !repoFullName) return null;
   return {
