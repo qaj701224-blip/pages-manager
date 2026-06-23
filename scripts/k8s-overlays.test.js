@@ -110,6 +110,13 @@ test('pages-manager preview overlay requires public callback and webhook auth se
   assert.doesNotMatch(baseKustomization, /gateway-pvc\.yaml/);
 });
 
+test('local K8s bootstrap writes gateway API token into callback secrets', () => {
+  const script = readRepoFile('scripts/k8s-local-up.sh');
+
+  assert.match(script, /apply_secret_if_any callback-secrets[\s\S]*pages-gateway-api-token/);
+  assert.match(script, /pages-gateway-api-token "\$\{PAGES_GATEWAY_API_TOKEN:-\$\{PAGES_INTERNAL_API_TOKEN:-\}\}"/);
+});
+
 test('pages-system workloads declare runtime resource and security guardrails', () => {
   const workloadFiles = [
     'k8s/base/pages-system/gateway.yaml',

@@ -74,7 +74,8 @@ apply_secret_if_any cloudflare-preview-secret \
 
 apply_secret_if_any callback-secrets \
   internal-callback-token "${INTERNAL_CALLBACK_TOKEN:-${PAGES_CALLBACK_TOKEN:-}}" \
-  pages-worker-shared-secret "${PAGES_WORKER_SHARED_SECRET:-}"
+  pages-worker-shared-secret "${PAGES_WORKER_SHARED_SECRET:-}" \
+  pages-gateway-api-token "${PAGES_GATEWAY_API_TOKEN:-${PAGES_INTERNAL_API_TOKEN:-}}"
 
 mysql_addr_value="${MYSQL_ADDR:-${MYSQL_HOST:+${MYSQL_HOST}:${MYSQL_PORT:-3306}}}"
 mysql_user_value="${MYSQL_USER:-${MYSQL_USERNAME:-}}"
