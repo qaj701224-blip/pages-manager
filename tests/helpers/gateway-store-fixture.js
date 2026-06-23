@@ -917,6 +917,7 @@ export class GatewayStoreFixture {
       pendingQuestions: [],
       preferences: {},
       repoQuestionContext: {},
+      conversationContext: {},
       lastPreviewFeedback: null,
       lastAgentResponse: null,
       createdAt: now,

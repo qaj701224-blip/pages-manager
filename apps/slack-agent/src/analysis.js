@@ -1,3 +1,6 @@
+import { compileSlackAgentPolicy } from './policy/compiler.js';
+import { SLACK_AGENT_POLICY_PACKAGE_VERSION } from './policy/package.js';
+
 const CREATE_KEYWORDS = /(创建|新建|生成|制作|做|更新|修改|发布|部署|create|build|make|update|publish|deploy)/i;
 const SITE_KEYWORDS = /(页面|网页|网站|主页|profile|portfolio|site|page|website)/i;
 const PLATFORM_KEYWORDS =
@@ -45,6 +48,7 @@ const CLOSED_WORK_ITEM_QUERY_RE =
 const ALL_WORK_ITEM_QUERY_RE = /(?:历史|全部|所有|所有的|全量|all|history|historical)/i;
 const ISSUE_LIST_QUERY_RE = /(?:issue|issues|需求).*(?:几个|多少|列表|清单|有哪些|有几个)|(?:几个|多少|哪些).*(?:issue|issues|需求)/i;
 const LIST_FOLLOWUP_RE = /(?:只有|就|还|还有|就这|只有这|只有这些).*(?:一个|这些|这个|吗|么)|(?:还有吗|还有么|就这吗|就这些吗)/i;
+const REPEAT_PREVIOUS_MESSAGE_RE = /(?:复读|重复|再发|上一条消息|刚才那条|你上一条|我上一条)/i;
 
 function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
@@ -99,6 +103,9 @@ function toolCallForIntent(intent, text = '') {
     return { name: 'reopen_work_item', args: reference ? { kind: reference.kind, number: reference.number } : {} };
   }
   if (intent === 'diagnose_work_item') return { name: 'diagnose_current_work_item', args: { timeWindowMinutes: 30 } };
+  if (intent === 'repeat_previous_message') {
+    return { name: 'repeat_previous_message', args: { target: repeatPreviousMessageTargetFromText(text) } };
+  }
   if (['repo_question', 'architecture_question', 'platform_question'].includes(intent)) {
     return { name: 'answer_repo_question', args: { question: text } };
   }
@@ -114,6 +121,15 @@ function toolCallForIntent(intent, text = '') {
     return { name: 'confirm_platform_issue', args: {} };
   }
   return null;
+}
+
+function repeatPreviousMessageTargetFromText(text = '') {
+  const value = String(text || '');
+  if (/我上一条|我刚才|我发的上一条|上一条我/i.test(value)) return 'previous_user_message';
+  if (/你上一条|你刚才|你发的上一条|上一条你|bot 上一条|机器人上一条/i.test(value)) {
+    return 'previous_assistant_message';
+  }
+  return 'previous_visible_message';
 }
 
 function inferPlatformIssueType(text = '') {
@@ -188,8 +204,13 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const workItemState = shouldListWorkItems ? workItemStateForListTurn(text, input.sessionMemory) : undefined;
   const shouldReopenWorkItem = !isUnsupportedBulkDestructive && REOPEN_WORK_ITEM_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
+  const shouldRepeatPreviousMessage = !isUnsupportedBulkDestructive && REPEAT_PREVIOUS_MESSAGE_RE.test(text);
   const shouldDiagnoseWorkItem =
-    !isUnsupportedBulkDestructive && !shouldListWorkItems && !shouldSwitchWorkItem && DIAGNOSIS_QUERY_RE.test(text);
+    !isUnsupportedBulkDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    !shouldRepeatPreviousMessage &&
+    DIAGNOSIS_QUERY_RE.test(text);
   const shouldAnswerRepoQuestion =
     !isUnsupportedBulkDestructive &&
     !shouldListWorkItems &&
@@ -220,13 +241,15 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
       ? 'reopen_work_item'
       : shouldSwitchWorkItem
         ? 'switch_work_item'
-        : shouldListWorkItems
-          ? 'list_work_items'
-          : shouldDiagnoseWorkItem
-            ? 'diagnose_work_item'
-            : shouldAnswerRepoQuestion
-              ? 'repo_question'
-            : intent;
+        : shouldRepeatPreviousMessage
+          ? 'repeat_previous_message'
+          : shouldListWorkItems
+            ? 'list_work_items'
+            : shouldDiagnoseWorkItem
+              ? 'diagnose_work_item'
+              : shouldAnswerRepoQuestion
+                ? 'repo_question'
+                : intent;
 
   return {
     lane: shouldAnswerRepoQuestion
@@ -252,12 +275,14 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
         ? { name: 'list_my_work_items', args: { state: workItemState || 'active' } }
         : toolCallForIntent(finalIntent, text),
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
+    policyVersion: SLACK_AGENT_POLICY_PACKAGE_VERSION,
     sourceMessages: input.sourceMessages || input.source_messages || [],
     sessionContext: sessionContextFromInput(input),
     needsClarification:
       !isUnsupportedBulkDestructive &&
       !shouldListWorkItems &&
       !shouldSwitchWorkItem &&
+      !shouldRepeatPreviousMessage &&
       !shouldDiagnoseWorkItem &&
       !shouldAnswerRepoQuestion &&
       intent === 'clarify',
@@ -287,7 +312,7 @@ function normalizeToolCall(value, fallbackToolCall = null) {
 }
 
 function shouldForceIntentToolCall(intent = '') {
-  return ['repo_question', 'architecture_question', 'platform_question'].includes(intent);
+  return ['repo_question', 'architecture_question', 'platform_question', 'repeat_previous_message'].includes(intent);
 }
 
 export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {}) {
@@ -344,6 +369,14 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
       modelAnalysis.clarifyingQuestion || modelAnalysis.clarifying_question,
       fallback.clarifyingQuestion || ''
     ),
+    contextResolution:
+      objectOrNull(modelAnalysis.contextResolution || modelAnalysis.context_resolution) ||
+      objectOrNull(fallback.contextResolution) ||
+      null,
+    policyVersion: stringOrFallback(
+      modelAnalysis.policyVersion || modelAnalysis.policy_version,
+      fallback.policyVersion || SLACK_AGENT_POLICY_PACKAGE_VERSION
+    ),
     sessionContext: {
       ...sessionContextFromInput(input),
       ...(modelAnalysis.sessionContext || modelAnalysis.session_context || {}),
@@ -379,6 +412,7 @@ export function visibleSlackAgentReply(analysis = {}) {
   if (intent === 'list_work_items') return '我来整理你当前可以继续处理的发布任务。';
   if (intent === 'switch_work_item') return '我会尝试切换到你指定的任务。';
   if (intent === 'reopen_work_item') return '我会尝试恢复你指定的 Issue 或 PR。';
+  if (intent === 'repeat_previous_message') return analysis.summary || '我来复读当前会话里上一条可见消息。';
   if (intent === 'status_query') return '我来查询当前发布进度。';
   if (['repo_question', 'architecture_question', 'platform_question'].includes(intent)) return '我来查一下当前仓库实现。';
   if (intent === 'close_session') return '收到，我会关闭当前会话。';
@@ -423,121 +457,10 @@ export function buildSlackAgentTurn(input = {}, analysis = {}) {
 
 export function buildSlackAgentMessages(input = {}, fallbackAnalysis) {
   const sessionContext = sessionContextFromInput(input);
-  const issueLinks = Array.isArray(input.issueLinks) ? input.issueLinks : [];
-  const compactIssueLinks = issueLinks.slice(0, 5).map((link) => ({
-    publishingJobId: link.publishingJobId || null,
-    issueNumber: link.issueNumber || null,
-    prNumber: link.prNumber || null,
-    previewUrl: link.previewUrl || null,
-    relationship: link.relationship || null,
-  }));
-
-  const system = [
-    '你是 pages-manager 的 Slack Agent，负责把 Slack 对话整理成两类需求：个人站点发布，或 pages-manager 平台自身研发。',
-    '用户不需要使用 /issue、issue:、page: 等命令；自然语言、连续闲聊和设计调整都必须被理解为一次会话 turn。',
-    '你只做需求理解、澄清、会话续接和任务摘要，不生成代码，不创建 PR，不处理部署凭据。',
-    '不要输出或猜测任何 token、secret、cookie、API key、内部账号凭据。',
-    '员工可以有多个网站；你可以给出 employeeSlug hint，但最终归属目录必须由 gateway 根据 Slack 身份派生；siteSlug 表示该用户名下的具体站点。',
-    '如果用户是在修改已有 preview，优先保留当前 sessionContext 的 activeJobId / issue / PR / preview 关系。',
-    '如果用户询问“我的 PR / 我的任务 / 发布任务列表”，intent 返回 list_work_items，不要新建任务，并设置 toolCall.name=list_my_work_items。',
-    '查询当前可继续任务时 toolCall.args.state=active；查询历史/全部时 state=all；查询已关闭/已取消/失败时 state=closed。',
-    '如果上一轮刚返回任务 / issue / PR 列表，用户追问“只有这一个么 / 还有吗 / 只有这些吗”，继续返回 list_work_items；优先沿用上一轮列表范围，没有范围时用 state=all。',
-    [
-      '如果用户明确说“继续 PR #数字 / issue #数字 / 切换到 #数字”，intent 返回 switch_work_item，',
-      '不要新建任务，并设置 toolCall.name=switch_work_item；能识别目标时把 toolCall.args.kind=pr|issue、number=数字。',
-    ].join(''),
-    [
-      '如果用户明确说“重新打开 / 恢复 / reopen PR #数字 或 issue #数字”，intent 返回 reopen_work_item，',
-      '不要新建任务，并设置 toolCall.name=reopen_work_item；无法识别具体编号时先澄清。',
-    ].join(''),
-    [
-      '如果用户要求关闭、删除、取消“所有 / 全部 / 我名下 / 我的” GitHub issue、PR 或发布任务，',
-      '这是危险批量操作；intent 必须返回 unsupported_destructive_request，不要返回 list_work_items，不要假装已执行。',
-    ].join(''),
-    '关闭 Slack 会话只适用于“关闭会话 / 结束对话 / 这个 preview 不用了”这类当前上下文操作；不要把“关闭所有 issue”理解为 close_session。',
-    [
-      'summary、title、clarifyingQuestion 是给用户看的文案，必须简短清楚；禁止包含 activeJobId、activeIssueNumber、',
-      'activePrNumber、activePreviewUrl、previewUrl、issueLinkCount、slackSessionId、sessionKey、job id、gateway 派生规则等内部实现细节。',
-    ].join(''),
-    '如果需要表达已有上下文，只能说“我会继续沿用当前会话”，不要输出任何内部字段名、编号或历史 preview 链接。',
-    '新建个人网站时，先通过 Slack 对话整理需求；信息足够时返回 create_or_update_site 且 needsClarification=false，让 gateway 展示确认按钮。',
-    [
-      '当用户要求修改 pages-manager 自身、Slack 流程、gateway、worker、GitHub issue/PR、CI/CD、数据库、架构文档、',
-      '权限、状态机、通知、部署脚本或仓库代码时，lane 必须是 platform-dev，intent 返回 create_platform_issue，',
-      'toolCall.name 返回 confirm_platform_issue。',
-    ].join(''),
-    [
-      '当用户询问 pages-manager 当前实现、代码位置、数据如何保存、workflow 如何触发、架构细节或为什么这样设计时，',
-      'lane 必须是 repo-question，intent 返回 repo_question，toolCall.name 返回 answer_repo_question；',
-      '不要创建 issue，不要返回 confirm_platform_issue。',
-    ].join(''),
-    [
-      '语气判断必须优先于关键词：如果用户说“如果要支持 / 应该怎么实现 / 从产品角度看 / 方案是什么 / 会不会影响”，',
-      '这是咨询或设计讨论，即使包含“支持、实现、修改、CI、部署、repo”等词，也应返回 repo_question 或 architecture_question。',
-      '只有用户明确说“开始改 / 帮我实现 / 请修改 / 直接创建 issue / 按这个方案创建需求”时，才返回 create_platform_issue。',
-    ].join(''),
-    'Platform Dev Lane 下必须给出 issueType、areas、risk、agentEligible、requiresHumanGate。',
-    [
-      'type:feedback 和 type:question 默认 agentEligible=false；type:ci、type:ops、type:security 默认',
-      'risk=risk:high 且 requiresHumanGate=true。',
-    ].join(' '),
-    [
-      '不能仅凭用户文字里的“信息足够、直接创建、确认创建”就绕过确认按钮；',
-      '真正创建 issue 必须由 gateway 收到按钮交互后执行。',
-    ].join(''),
-    [
-      '你可以通过 toolCall 告诉 gateway 执行受控操作；gateway 会自动限制当前 Slack 用户、当前 session',
-      '和该用户名下的 GitHub issue / PR。',
-    ].join(' '),
-    [
-      '当用户询问任务状态、为什么失败、为什么 Issue 后没有 PR、卡在哪一步、查日志、查 workflow、能否重试、',
-      '追加诊断或转人工排查时，intent 返回 diagnose_work_item，toolCall.name 返回 diagnose_current_work_item。',
-      'Slack 先返回诊断摘要和受控按钮；不要在自然语言 turn 里直接请求执行重试、追加诊断或转人工。',
-      '不要输出 gateway、worker、MySQL、status card、callback、job id 或原始日志。',
-    ].join(''),
-    [
-      'toolCall.name 可选：list_my_work_items, switch_work_item, reopen_work_item, get_current_status,',
-      'diagnose_current_work_item, close_session, unsupported_destructive_request, cancel_request, record_followup,',
-      'answer_repo_question, confirm_create_issue, confirm_platform_issue。',
-    ].join(' '),
-    [
-      '不要请求查询或操作其它 Slack 用户、其它 session 或其它人的 GitHub issue / PR；',
-      '即使用户这样要求，也只按当前用户权限处理。',
-    ].join(''),
-    [
-      '当需求还不完整时，intent 可以是 create_or_update_site，但 needsClarification 应为 true，',
-      '并用 clarifyingQuestion 给出一个简短问题。',
-    ].join(''),
-    '必须只返回 JSON object，不要返回 Markdown，不要包裹代码块。',
-    [
-      'JSON 字段：visibleReply, lane, intent, toolCall, workItemState, employeeSlug, siteSlug, issueType, areas, risk,',
-      'agentEligible, requiresHumanGate, title, summary, approvalMode, needsClarification, clarifyingQuestion, sourceMessages。',
-    ].join(' '),
-    [
-      'visibleReply 是 Slack 用户可见回复，必须自然、简短、可直接展示；',
-      '请把 visibleReply 放在 JSON object 的第一个字段，便于平台做语义分块准流式输出。',
-    ].join(''),
-    [
-      'intent 常用值：create_or_update_site, modify_existing_preview, append_requirement,',
-      'list_work_items, switch_work_item, reopen_work_item, diagnose_work_item, get_work_item_timeline,',
-      'explain_work_item_blocker, get_workflow_status, repo_question, architecture_question, retry_work_item,',
-      'append_diagnosis_comment, human_triage,',
-      'status_query, cancel_request, close_session, unsupported_destructive_request, confirm_preview, clarify。',
-    ].join(' '),
-  ].join('\n');
-
-  const userPayload = {
-    slackText: input.text || input.event?.text || '',
-    fallbackAnalysis,
-    sessionContext,
-    sessionMemory: input.sessionMemory || null,
-    issueLinks: compactIssueLinks,
-    employeeSlugHint: input.employeeSlug || input.employee_slug || null,
-    siteSlugHint: input.siteSlug || input.site_slug || null,
-  };
+  const policy = compileSlackAgentPolicy(input, fallbackAnalysis, sessionContext);
 
   return [
-    { role: 'system', content: system },
-    { role: 'user', content: JSON.stringify(userPayload) },
+    { role: 'system', content: policy.system },
+    { role: 'user', content: JSON.stringify(policy.userPayload) },
   ];
 }

@@ -67,6 +67,11 @@ import {
   slackAgentEndpointConfigured,
   updateSlackAgentReplyMessage,
 } from '../slack/agent-turn.js';
+import {
+  appendAssistantConversationTurn,
+  buildConversationContext,
+  repeatPreviousMessageFromContext,
+} from '../slack/conversation-context.js';
 import { slackAgentToolArgs, slackAgentToolName, slackAgentWorkItemState } from '../slack/agent-tool-call.js';
 import {
   completeSlackAgentRun,
@@ -323,6 +328,8 @@ async function handleSlackAgentToolCall(context) {
       return handleSlackListWorkItemsTool({ ...context, toolArgs: toolCall.args || {} });
     case 'answer_repo_question':
       return handleSlackRepoQuestionTool({ ...context, toolArgs: toolCall.args || {} });
+    case 'repeat_previous_message':
+      return handleSlackRepeatPreviousMessageTool({ ...context, toolArgs: toolCall.args || {} });
     case 'switch_work_item':
       return handleSlackSwitchWorkItemTool({ ...context, toolArgs: toolCall.args || {} });
     case 'reopen_work_item':
@@ -366,6 +373,79 @@ function slackAgentReplyText(intake, slackAgentAnalysis, fallbackText = null, op
       intake.replyText ||
       '我已记录这轮消息，但还需要再确认一下需求。'
   );
+}
+
+async function updateSessionMemoryWithAssistantTurn(
+  store,
+  slackSession,
+  sessionMemory = {},
+  intake = {},
+  patch = {},
+  replyText = ''
+) {
+  if (!slackSession?.id || !store?.updateSessionMemory) return null;
+  const baseContext = buildConversationContext({ slackSession, sessionMemory, intake });
+  const { conversationKind, conversationContext: patchContext = {}, ...memoryPatch } = patch;
+  const nextContext = appendAssistantConversationTurn(baseContext, replyText || patch.lastAgentResponse || '', {
+    kind: conversationKind || 'agent_reply',
+  });
+  return store.updateSessionMemory(slackSession.id, {
+    ...memoryPatch,
+    conversationContext: {
+      ...nextContext,
+      ...patchContext,
+      recentTurns: patchContext.recentTurns || nextContext.recentTurns,
+      lastAssistantMessage: patchContext.lastAssistantMessage || nextContext.lastAssistantMessage,
+    },
+  });
+}
+
+async function handleSlackRepeatPreviousMessageTool({
+  store,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const context = buildConversationContext({ slackSession, sessionMemory, intake });
+  const target = toolArgs.target || toolArgs.messageTarget || toolArgs.message_target || 'previous_visible_message';
+  const repeated = repeatPreviousMessageFromContext(context, target);
+  const replyText = repeated || '当前会话里我没有找到可复读的上一条消息。';
+
+  await updateSessionMemoryWithAssistantTurn(
+    store,
+    slackSession,
+    sessionMemory,
+    intake,
+    {
+      summary: redactSecretLikeText(sessionMemory.summary || intake.text),
+      lastAgentResponse: replyText,
+      pendingQuestions: [],
+      conversationKind: 'repeat_previous_message',
+    },
+    replyText
+  );
+  await completeSlackAgentRun(store, agentRun, {
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action: 'repeat_previous_message',
+      accepted: Boolean(repeated),
+      intent: slackAgentAnalysis?.intent || intake.action,
+      target,
+    },
+  });
+
+  return {
+    ok: true,
+    action: 'repeat_previous_message',
+    accepted: Boolean(repeated),
+    replyText,
+    slackSessionId: slackSession.id,
+    agentRunId: agentRun?.id,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+  };
 }
 
 async function processSlackEventBody(body, env, options = {}) {
@@ -657,11 +737,12 @@ async function processSlackEventBody(body, env, options = {}) {
     if (shouldCreatePlatformDevItem(intake, slackAgentAnalysis)) {
       const redactedIntake = { ...intake, text: redactSecretLikeText(intake.text) };
       const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
-      await store.updateSessionMemory(slackSession.id, {
+      await updateSessionMemoryWithAssistantTurn(store, slackSession, sessionMemory, intake, {
         summary: redactedSlackAgentAnalysis?.summary || redactedIntake.text,
         requirements: redactedSlackAgentAnalysis || { text: redactedIntake.text, action: redactedIntake.action },
-        lastAgentResponse: null,
+        lastAgentResponse: '',
         pendingQuestions: [],
+        conversationKind: 'platform_issue_created',
       });
       const requesterProfile = await fetchSlackRequesterProfile(env, body);
       const { item, created } = await store.createPlatformDevItem(
@@ -741,11 +822,19 @@ async function processSlackEventBody(body, env, options = {}) {
 
     const redactedIntake = { ...intake, text: redactSecretLikeText(intake.text) };
     const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactedSlackAgentAnalysis?.summary || redactedIntake.text,
-      requirements: redactedSlackAgentAnalysis || { text: redactedIntake.text, action: redactedIntake.action },
-      lastAgentResponse: redactedSlackAgentAnalysis?.needsClarification ? redactedSlackAgentAnalysis.summary : null,
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      {
+        summary: redactedSlackAgentAnalysis?.summary || redactedIntake.text,
+        requirements: redactedSlackAgentAnalysis || { text: redactedIntake.text, action: redactedIntake.action },
+        lastAgentResponse: redactedSlackAgentAnalysis?.needsClarification ? redactedSlackAgentAnalysis.summary : '',
+        conversationKind: 'site_issue_created',
+      },
+      redactedSlackAgentAnalysis?.needsClarification ? redactedSlackAgentAnalysis.summary : ''
+    );
     const requesterProfile = await fetchSlackRequesterProfile(env, body);
     const { job, created } = await store.createJob(
       slackJobInput({
@@ -820,11 +909,19 @@ async function processSlackEventBody(body, env, options = {}) {
 async function handleCloseSlackSession({ store, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
   await failRunningSlackAgentRunsForClosedSession(store, slackSession.id, { excludeAgentRunId: agentRun?.id });
   const closedSession = await store.closeSlackSession(slackSession.id);
-  await store.updateSessionMemory(slackSession.id, {
-    summary: redactSecretLikeText(sessionMemory.summary || intake.text),
-    lastAgentResponse: '会话已关闭。',
-    pendingQuestions: [],
-  });
+  await updateSessionMemoryWithAssistantTurn(
+    store,
+    slackSession,
+    sessionMemory,
+    intake,
+    {
+      summary: redactSecretLikeText(sessionMemory.summary || intake.text),
+      lastAgentResponse: '会话已关闭。',
+      pendingQuestions: [],
+      conversationKind: 'session_closed',
+    },
+    '会话已关闭。'
+  );
   await completeSlackAgentRun(store, agentRun, {
     report: {
       action: 'close_session',
@@ -1079,11 +1176,19 @@ async function handleSlackRepoQuestionTool({
   const blocks = repoQuestionActionBlocks(slackSession, result);
 
   if (slackSession?.id && store.updateSessionMemory) {
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
-      lastAgentResponse: replyText,
-      repoQuestionContext,
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+        lastAgentResponse: replyText,
+        repoQuestionContext,
+        conversationKind: 'repo_answer',
+      },
+      replyText
+    );
   }
   await completeSlackAgentRun(store, agentRun, {
     ...slackAgentRunModelPatch(slackAgentAnalysis),
@@ -1155,10 +1260,18 @@ async function handleSlackWorkItemDiagnosisTool({
   const replyText = buildSlackWorkItemDiagnosis(item, { events });
   const blocks = buildSlackWorkItemDiagnosisBlocks(slackSession, item, { events });
   if (slackSession?.id && store.updateSessionMemory) {
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
-      lastAgentResponse: replyText,
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+        lastAgentResponse: replyText,
+        conversationKind: 'diagnosis',
+      },
+      replyText
+    );
   }
   await completeSlackAgentRun(store, agentRun, {
     ...(item.workItemKind === 'platform_dev'
@@ -1236,10 +1349,18 @@ async function handleSlackAppendDiagnosisCommentTool({
   const appendResult = await appendSlackDiagnosisIssueComment(env, item, events);
   const replyText = appendDiagnosisReplyText(appendResult);
   if (slackSession?.id && store.updateSessionMemory) {
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
-      lastAgentResponse: replyText,
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+        lastAgentResponse: replyText,
+        conversationKind: 'diagnosis_comment',
+      },
+      replyText
+    );
   }
   await completeSlackAgentRun(store, agentRun, {
     ...(item.workItemKind === 'platform_dev'
@@ -1322,10 +1443,18 @@ async function handleSlackHumanTriageTool({
   const result = { triageEvent, issueComment };
   const replyText = humanTriageReplyText(result);
   if (slackSession?.id && store.updateSessionMemory) {
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
-      lastAgentResponse: replyText,
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+        lastAgentResponse: replyText,
+        conversationKind: 'human_triage',
+      },
+      replyText
+    );
   }
   await completeSlackAgentRun(store, agentRun, {
     ...(item.workItemKind === 'platform_dev'
@@ -1405,10 +1534,18 @@ async function handleSlackRetryWorkItemTool({
   const retryResult = await retrySlackWorkItem(store, env, item, slackSession);
   const replyText = retryWorkItemReplyText(retryResult);
   if (slackSession?.id && store.updateSessionMemory) {
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
-      lastAgentResponse: replyText,
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+        lastAgentResponse: replyText,
+        conversationKind: 'retry_work_item',
+      },
+      replyText
+    );
   }
   await completeSlackAgentRun(store, agentRun, {
     ...(retryResult.item?.workItemKind === 'platform_dev'
@@ -1455,14 +1592,22 @@ async function handleSlackAgentNonPublishingTurn({
   const redactedIntakeText = redactSecretLikeText(intake.text);
   const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
   const finalReplyText = slackAgentReplyText(intake, redactedSlackAgentAnalysis, replyText, { preferFallback: preferReplyText });
-  await store.updateSessionMemory(slackSession.id, {
-    summary: redactedSlackAgentAnalysis?.summary || redactSecretLikeText(sessionMemory.summary) || redactedIntakeText,
-    requirements: redactedSlackAgentAnalysis || redactSlackAnalysis(sessionMemory.requirements) || {},
-    lastAgentResponse: finalReplyText,
-    pendingQuestions: redactedSlackAgentAnalysis?.needsClarification
-      ? [finalReplyText]
-      : redactSlackAnalysis(sessionMemory.pendingQuestions) || [],
-  });
+  await updateSessionMemoryWithAssistantTurn(
+    store,
+    slackSession,
+    sessionMemory,
+    intake,
+    {
+      summary: redactedSlackAgentAnalysis?.summary || redactSecretLikeText(sessionMemory.summary) || redactedIntakeText,
+      requirements: redactedSlackAgentAnalysis || redactSlackAnalysis(sessionMemory.requirements) || {},
+      lastAgentResponse: finalReplyText,
+      pendingQuestions: redactedSlackAgentAnalysis?.needsClarification
+        ? [finalReplyText]
+        : redactSlackAnalysis(sessionMemory.pendingQuestions) || [],
+      conversationKind: action || 'agent_reply',
+    },
+    finalReplyText
+  );
   await completeSlackAgentRun(store, agentRun, {
     ...slackAgentRunModelPatch(slackAgentAnalysis),
     report: {
@@ -1584,12 +1729,20 @@ export async function handleSlackInteractions(request, env) {
       slackJobInput(confirmedSlackJobBodyFromInteraction(body, session, slackAgentAnalysis, requesterProfile))
     );
     const issueLink = await store.linkJobToSlackSession(job, session);
-    await store.updateSessionMemory(session.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis.summary || sessionMemory.summary),
-      requirements: redactSlackAnalysis(slackAgentAnalysis),
-      lastAgentResponse: '已确认创建发布任务。',
-      pendingQuestions: [],
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      session,
+      sessionMemory,
+      { action: 'confirm_create_issue', text: slackAgentAnalysis.summary || sessionMemory.summary || '' },
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis.summary || sessionMemory.summary),
+        requirements: redactSlackAnalysis(slackAgentAnalysis),
+        lastAgentResponse: '已确认创建发布任务。',
+        pendingQuestions: [],
+        conversationKind: 'confirmation_card',
+      },
+      '已确认创建发布任务。'
+    );
 
     const slackStatusNotification = created
       ? await notifySlackJobStatus(env, store, job, {
@@ -1655,12 +1808,20 @@ export async function handleSlackInteractions(request, env) {
       platformDevInput(confirmedSlackPlatformBodyFromInteraction(body, session, slackAgentAnalysis, requesterProfile))
     );
     const workItemLink = await store.linkPlatformDevItemToSlackSession(item, session);
-    await store.updateSessionMemory(session.id, {
-      summary: redactSecretLikeText(slackAgentAnalysis.summary || sessionMemory.summary),
-      requirements: redactSlackAnalysis({ ...slackAgentAnalysis, lane: 'platform-dev' }),
-      lastAgentResponse: '已确认创建平台需求。',
-      pendingQuestions: [],
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      session,
+      sessionMemory,
+      { action: 'confirm_platform_issue', text: slackAgentAnalysis.summary || sessionMemory.summary || '' },
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis.summary || sessionMemory.summary),
+        requirements: redactSlackAnalysis({ ...slackAgentAnalysis, lane: 'platform-dev' }),
+        lastAgentResponse: '已确认创建平台需求。',
+        pendingQuestions: [],
+        conversationKind: 'confirmation_card',
+      },
+      '已确认创建平台需求。'
+    );
 
     const initialStage = item.requiresHumanGate ? 'gate_pending' : 'received';
     const slackStatusNotification = created
@@ -1720,14 +1881,22 @@ export async function handleSlackInteractions(request, env) {
           deepDive: true,
         });
         const replyText = redactSecretLikeText(result.replyText);
-        await store.updateSessionMemory(session.id, {
-          summary: sessionMemory.summary || lastTurn.question,
-          lastAgentResponse: replyText,
-          repoQuestionContext: nextRepoQuestionContext(sessionMemory.repoQuestionContext || {}, {
-            ...result,
-            replyText,
-          }),
-        });
+        await updateSessionMemoryWithAssistantTurn(
+          store,
+          session,
+          sessionMemory,
+          { action: 'repo_question_deep_dive', text: lastTurn.question },
+          {
+            summary: sessionMemory.summary || lastTurn.question,
+            lastAgentResponse: replyText,
+            repoQuestionContext: nextRepoQuestionContext(sessionMemory.repoQuestionContext || {}, {
+              ...result,
+              replyText,
+            }),
+            conversationKind: 'repo_answer',
+          },
+          replyText
+        );
         await postSlackInteractionThreadReply(env, body, session, replyText);
       } catch (err) {
         console.log(
@@ -1761,6 +1930,18 @@ export async function handleSlackInteractions(request, env) {
     }
     const sessionMemory = (await store.getSessionMemory?.(session.id)) || {};
     const replyText = redactSecretLikeText(repoEvidenceDetailsFromContext(sessionMemory));
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      session,
+      sessionMemory,
+      { action: 'repo_question_view_evidence', text: '查看依据' },
+      {
+        summary: sessionMemory.summary || '查看仓库问答依据',
+        lastAgentResponse: replyText,
+        conversationKind: 'repo_evidence',
+      },
+      replyText
+    );
     const threadReply = await postSlackInteractionThreadReply(env, body, session, replyText);
     return slackAckResponse({
       response_type: 'ephemeral',
@@ -1804,11 +1985,19 @@ export async function handleSlackInteractions(request, env) {
           ...result,
           replyText,
         });
-        await store.updateSessionMemory(session.id, {
-          summary: sessionMemory.summary || lastTurn.question,
-          lastAgentResponse: replyText,
-          repoQuestionContext,
-        });
+        await updateSessionMemoryWithAssistantTurn(
+          store,
+          session,
+          sessionMemory,
+          { action: 'repo_question_generate_plan', text: lastTurn.question },
+          {
+            summary: sessionMemory.summary || lastTurn.question,
+            lastAgentResponse: replyText,
+            repoQuestionContext,
+            conversationKind: 'repo_implementation_plan',
+          },
+          replyText
+        );
         const blocks = repoQuestionActionBlocks(session, result, { allowCreateIssueAction: true });
         await postSlackInteractionThreadReply(env, body, session, replyText, { blocks });
       } catch (err) {
@@ -1855,13 +2044,21 @@ export async function handleSlackInteractions(request, env) {
         text: '当前会话还没有可转换的平台需求。',
       });
     }
-    await store.updateSessionMemory(session.id, {
-      summary: redactSecretLikeText(draft.summary || sessionMemory.summary || ''),
-      requirements: redactSlackAnalysis(draft),
-      lastAgentResponse: slackPlatformIssueConfirmationText(draft),
-      pendingQuestions: [],
-      repoQuestionContext: sessionMemory.repoQuestionContext || {},
-    });
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      session,
+      sessionMemory,
+      { action: 'repo_question_platform_issue_draft', text: draft.summary || sessionMemory.summary || '' },
+      {
+        summary: redactSecretLikeText(draft.summary || sessionMemory.summary || ''),
+        requirements: redactSlackAnalysis(draft),
+        lastAgentResponse: slackPlatformIssueConfirmationText(draft),
+        pendingQuestions: [],
+        repoQuestionContext: sessionMemory.repoQuestionContext || {},
+        conversationKind: 'confirmation_card',
+      },
+      slackPlatformIssueConfirmationText(draft)
+    );
     const cardUpdate = await updateSlackInteractionMessage(env, body, session, {
       text: slackPlatformIssueConfirmationText(draft),
       blocks: slackPlatformIssueConfirmationBlocks(session, draft),

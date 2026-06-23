@@ -9,6 +9,7 @@ import {
   buildSlackAgentMessages,
   normalizeModelAnalysis,
 } from '../../../apps/slack-agent/src/analysis.js';
+import { SLACK_AGENT_POLICY_PACKAGE_VERSION } from '../../../apps/slack-agent/src/policy/package.js';
 
 describe('slack agent', () => {
   it('summarizes create or update site requests', () => {
@@ -110,6 +111,57 @@ describe('slack agent', () => {
     assert.match(messages[0].content, /如果要支持/);
     assert.match(messages[0].content, /这是咨询或设计讨论/);
     assert.match(messages[0].content, /只有用户明确说/);
+  });
+
+  it('passes the policy package and conversation context to model turns', () => {
+    const fallback = analyzeSlackRequirementDeterministic({
+      text: '你上一条消息是什么？',
+      sessionMemory: {
+        lastAgentResponse: '当前会话里有 Issue #90。',
+        conversationContext: {
+          recentTurns: [{ role: 'assistant', text: '当前会话里有 Issue #90。' }],
+          lastAssistantMessage: { role: 'assistant', text: '当前会话里有 Issue #90。' },
+        },
+      },
+    });
+    const messages = buildSlackAgentMessages(
+      {
+        text: '你上一条消息是什么？',
+        sessionMemory: {
+          conversationContext: {
+            recentTurns: [{ role: 'assistant', text: '当前会话里有 Issue #90。' }],
+            lastAssistantMessage: { role: 'assistant', text: '当前会话里有 Issue #90。' },
+          },
+        },
+      },
+      fallback
+    );
+    const payload = JSON.parse(messages[1].content);
+
+    assert.equal(fallback.policyVersion, SLACK_AGENT_POLICY_PACKAGE_VERSION);
+    assert.match(messages[0].content, new RegExp(`Policy package: ${SLACK_AGENT_POLICY_PACKAGE_VERSION}`));
+    assert.match(messages[0].content, /conversationContext/);
+    assert.equal(payload.conversationContext.lastAssistantMessage.text, '当前会话里有 Issue #90。');
+  });
+
+  it('routes repeat requests to a constrained repeat tool', () => {
+    const input = { text: '你上一条消息是什么？' };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const analysis = normalizeModelAnalysis(
+      {
+        intent: 'repeat_previous_message',
+        toolCall: { name: 'confirm_platform_issue', args: { title: '错误创建需求' } },
+        summary: '复读上一条消息。',
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(analysis.intent, 'repeat_previous_message');
+    assert.deepEqual(analysis.toolCall, {
+      name: 'repeat_previous_message',
+      args: { target: 'previous_assistant_message' },
+    });
   });
 
   it('derives tool calls from model intent instead of deterministic fallback intent', () => {

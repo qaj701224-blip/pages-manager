@@ -10,6 +10,7 @@ import { startWorkerForJobIfConfigured } from '../publishing/worker-dispatcher.j
 import { notifySlackJobStatus } from './notifier.js';
 import { notifySlackPlatformDevStatus } from './platform-notifier.js';
 import { completeSlackAgentRun, redactSlackAnalysis, slackAgentRunModelPatch } from './agent-run-records.js';
+import { appendAssistantConversationTurn, buildConversationContext } from './conversation-context.js';
 import { slackThreadForSession } from './job-binding.js';
 import { compactUserFacingText, redactSecretLikeText } from './text.js';
 import { inactiveSlackWorkItemReply, isActionableSlackWorkItem } from './work-items.js';
@@ -311,6 +312,25 @@ function platformFollowupReplyText(issueSync, fixDispatch) {
   return '收到，补充已记录。';
 }
 
+async function updateFollowupSessionMemory({
+  store,
+  slackSession,
+  sessionMemory,
+  intake,
+  patch,
+  replyText,
+  conversationKind,
+}) {
+  if (!slackSession?.id || !store?.updateSessionMemory) return null;
+  const baseContext = buildConversationContext({ slackSession, sessionMemory, intake });
+  return store.updateSessionMemory(slackSession.id, {
+    ...patch,
+    conversationContext: appendAssistantConversationTurn(baseContext, replyText || patch.lastAgentResponse || '', {
+      kind: conversationKind || 'followup',
+    }),
+  });
+}
+
 async function handleSlackPlatformDevFollowup({
   store,
   env,
@@ -325,10 +345,18 @@ async function handleSlackPlatformDevFollowup({
 }) {
   if (!isActionableSlackWorkItem(item)) {
     const replyText = inactiveSlackWorkItemReply(item);
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(sessionMemory.summary) || redactSecretLikeText(intake.text),
-      requirements: redactSlackAnalysis(sessionMemory.requirements) || {},
-      lastAgentResponse: replyText,
+    await updateFollowupSessionMemory({
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      patch: {
+        summary: redactSecretLikeText(sessionMemory.summary) || redactSecretLikeText(intake.text),
+        requirements: redactSlackAnalysis(sessionMemory.requirements) || {},
+        lastAgentResponse: replyText,
+      },
+      replyText,
+      conversationKind: 'inactive_platform_followup',
     });
     await completeSlackAgentRun(store, agentRun, {
       workItemKind: 'platform_dev',
@@ -361,12 +389,11 @@ async function handleSlackPlatformDevFollowup({
     slackSessionKey: slackSession.sessionKey,
     slackThread: slackThreadForSession(slackSession, item.slackThread || {}),
   };
-  await store.updateSessionMemory(slackSession.id, {
+  const memoryPatch = {
     summary: followupSummary(sessionMemory.summary, feedback),
     requirements: redactedSlackAgentAnalysis || { text: redactSecretLikeText(intake.text), action: 'followup' },
     lastPreviewFeedback: feedback,
-    lastAgentResponse: null,
-  });
+  };
 
   let updatedItem = await store.patchPlatformDevItem(item.id, patch);
   await store.linkPlatformDevItemToSlackSession(updatedItem, slackSession);
@@ -429,6 +456,19 @@ async function handleSlackPlatformDevFollowup({
       dedupeKey: `platform-followup-recorded:${updatedItem.id}:${agentRun?.id || Date.now()}`,
     });
   }
+
+  await updateFollowupSessionMemory({
+    store,
+    slackSession,
+    sessionMemory,
+    intake,
+    patch: {
+      ...memoryPatch,
+      lastAgentResponse: replyText,
+    },
+    replyText,
+    conversationKind: 'platform_followup',
+  });
 
   await completeSlackAgentRun(store, agentRun, {
     workItemKind: 'platform_dev',
@@ -514,10 +554,18 @@ export async function handleSlackFollowup({ store, env, intake, slackSession, se
 
   if (!isActionableSlackWorkItem(job)) {
     const replyText = inactiveSlackWorkItemReply(job);
-    await store.updateSessionMemory(slackSession.id, {
-      summary: redactSecretLikeText(sessionMemory.summary) || redactSecretLikeText(intake.text),
-      requirements: redactSlackAnalysis(sessionMemory.requirements) || {},
-      lastAgentResponse: replyText,
+    await updateFollowupSessionMemory({
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      patch: {
+        summary: redactSecretLikeText(sessionMemory.summary) || redactSecretLikeText(intake.text),
+        requirements: redactSlackAnalysis(sessionMemory.requirements) || {},
+        lastAgentResponse: replyText,
+      },
+      replyText,
+      conversationKind: 'inactive_site_followup',
     });
     await completeSlackAgentRun(store, agentRun, {
       publishingJobId: job.id,
@@ -550,12 +598,11 @@ export async function handleSlackFollowup({ store, env, intake, slackSession, se
     slackSessionKey: slackSession.sessionKey,
     slackThread: slackThreadForSession(slackSession, job.slackThread || {}),
   };
-  await store.updateSessionMemory(slackSession.id, {
+  const memoryPatch = {
     summary: followupSummary(sessionMemory.summary, feedback),
     requirements: redactedSlackAgentAnalysis || { text: redactSecretLikeText(intake.text), action: 'followup' },
     lastPreviewFeedback: feedback,
-    lastAgentResponse: null,
-  });
+  };
 
   let updatedJob = null;
   let workerStart = null;
@@ -599,6 +646,19 @@ export async function handleSlackFollowup({ store, env, intake, slackSession, se
     await store.linkJobToSlackSession(updatedJob, slackSession);
     replyText = '收到，已记录。会继续沿用当前会话。';
   }
+
+  await updateFollowupSessionMemory({
+    store,
+    slackSession,
+    sessionMemory,
+    intake,
+    patch: {
+      ...memoryPatch,
+      lastAgentResponse: replyText,
+    },
+    replyText,
+    conversationKind: 'site_followup',
+  });
 
   await completeSlackAgentRun(store, agentRun, {
     publishingJobId: updatedJob.id,
