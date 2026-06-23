@@ -41,6 +41,15 @@ function triggerLabel(trigger = '') {
   return '需要继续处理';
 }
 
+export function platformWorkerStartErrorText(error = '') {
+  const text = String(error || '').trim();
+  if (!text) return '';
+  if (/not found/i.test(text)) {
+    return '自动开发暂未启动：GitHub workflow 还不可用。';
+  }
+  return `自动开发暂未启动：${text}`;
+}
+
 function canDispatchPlatformFix(item = {}) {
   if (!item?.id) return false;
   if (!item.agentEligible) return false;
@@ -144,9 +153,12 @@ export async function dispatchPlatformDevFixIfNeeded(store, item, env, options =
   const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, queued, {
     stage: 'agent_queued',
     text: workerStart?.started
-      ? `${triggerLabel(trigger)}，已启动自动修复。`
-      : `${triggerLabel(trigger)}，等待自动修复启动。`,
-    statusText: workerStart?.started ? ':hourglass_flowing_sand: 正在自动修复。' : ':hourglass_flowing_sand: 已进入修复队列。',
+      ? `${options.issueSyncText || triggerLabel(trigger)}已启动自动修复。`
+      : `${options.issueSyncText || triggerLabel(trigger)}${platformWorkerStartErrorText(workerStart?.error) || '等待自动修复启动。'}`,
+    statusText: workerStart?.started
+      ? ':hourglass_flowing_sand: 正在自动修复。'
+      : `:warning: ${platformWorkerStartErrorText(workerStart?.error) || '已进入修复队列。'}`,
+    currentChange: options.currentChange || null,
     skipDuplicate: false,
     slackSessionId: queued.slackSessionId || null,
     dedupeKey: `platform-fix-dispatch:${queued.id}:${trigger}:${dispatchEvent?.event?.id || Date.now()}`,

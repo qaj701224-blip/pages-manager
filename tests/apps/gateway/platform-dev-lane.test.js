@@ -132,6 +132,14 @@ function createOpenPlatformPr(app, options = {}) {
   return updated;
 }
 
+function latestSlackStatusBlocks(notifierCalls = []) {
+  const call = notifierCalls
+    .filter((item) => ['/internal/slack-notifier/message', '/internal/slack-notifier/update'].includes(item.path))
+    .filter((item) => item.body?.payload?.blocks?.length)
+    .at(-1);
+  return JSON.stringify(call?.body?.payload?.blocks || []);
+}
+
 test('Slack platform request shows platform confirmation instead of site publishing confirmation', async () => {
   const app = createGatewayApp();
   const response = await app.fetch(
@@ -613,6 +621,8 @@ test('Slack follow-up on an active platform PR dispatches a fix round', async ()
     slackSessionId: 'sess_platform_followup',
   });
   const workerCalls = [];
+  const githubCalls = [];
+  const notifierCalls = [];
 
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
@@ -621,7 +631,15 @@ test('Slack follow-up on an active platform PR dispatches a fix round', async ()
       body: JSON.stringify(slackEvent('继续修改：文案再克制一些', 'Ev-platform-followup-1')),
     }),
     {
-      ...notifierEnv(),
+      ...notifierEnv(notifierCalls),
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_TOKEN: 'ghs_test',
+      async GITHUB_FETCH(url, request) {
+        githubCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ id: 901, html_url: 'https://github.example/comment/901' }), {
+          status: 201,
+        });
+      },
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -658,9 +676,86 @@ test('Slack follow-up on an active platform PR dispatches a fix round', async ()
   assert.equal(body.action, 'platform_followup_fix_dispatched');
   assert.equal(updated.status, 'agent_queued');
   assert.match(updated.summary, /Slack Follow-up/);
+  assert.equal(githubCalls.length, 1);
+  assert.match(githubCalls[0].url, /\/repos\/org\/pages-manager\/issues\/81\/comments$/);
+  assert.match(githubCalls[0].body.body, /文案再克制一些/);
+  assert.match(githubCalls[0].body.body, /Agent mode: followup/);
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.workItemKind, 'platform_dev');
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  const blocks = latestSlackStatusBlocks(notifierCalls);
+  assert.match(blocks, /本轮补充/);
+  assert.match(blocks, /文案再克制一些/);
+});
+
+test('Slack platform follow-up reports issue comment and worker startup failure visibly', async () => {
+  const app = createGatewayApp();
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-followup-worker-failure',
+    issueNumber: 86,
+    prNumber: 96,
+    slackSessionId: 'sess_platform_followup_failure',
+  });
+  const githubCalls = [];
+  const notifierCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(slackEvent('继续补充：也要改 AGENTS.md 里的 CF 说明', 'Ev-platform-followup-failure')),
+    }),
+    {
+      ...notifierEnv(notifierCalls),
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_TOKEN: 'ghs_test',
+      async GITHUB_FETCH(url, request) {
+        githubCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ id: 902, html_url: 'https://github.example/comment/902' }), {
+          status: 201,
+        });
+      },
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'GitHub request failed: Not Found' }), {
+          status: 500,
+        });
+      },
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'append_requirement',
+                summary: '也要改 AGENTS.md 里的 CF 说明',
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'platform_followup_fix_ready');
+  assert.equal(body.noReply, false);
+  assert.match(body.replyText, /已追加到 Issue/);
+  assert.match(body.replyText, /workflow 还不可用/);
+  assert.equal(githubCalls.length, 1);
+  assert.match(githubCalls[0].body.body, /AGENTS\.md/);
+  const blocks = latestSlackStatusBlocks(notifierCalls);
+  assert.match(blocks, /自动开发暂未启动/);
+  assert.match(blocks, /AGENTS\.md/);
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'agent_queued');
 });
 
 test('platform CI failure dispatches an automatic fix round', async () => {
