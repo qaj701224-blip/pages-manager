@@ -576,7 +576,15 @@ test('whoami uses API validation and env list stays user-facing only', async () 
     fetch: fakeFetch(calls, [
       {
         environment: 'production',
-        actor: { type: 'access_key', credentialType: 'access_key', accessKeyId: 'ak_1', scopes: ['deploy:site'] },
+        actor: {
+          type: 'access_key',
+          credentialType: 'access_key',
+          accessKeyId: 'ak_1',
+          userId: 'usr_1',
+          email: 'user@example.com',
+          name: 'User One',
+          scopes: ['deploy:site'],
+        },
       },
     ]),
     output: (line) => output.push(line),
@@ -587,6 +595,8 @@ test('whoami uses API validation and env list stays user-facing only', async () 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/auth/whoami');
   assert.equal(calls[0].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
   assert.equal(JSON.parse(output[0]).actor.accessKeyId, 'ak_1');
+  assert.equal(JSON.parse(output[0]).actor.email, 'user@example.com');
+  assert.equal(JSON.parse(output[0]).actor.name, 'User One');
   assert.deepEqual(envOutput, ['production', 'staging']);
 });
 

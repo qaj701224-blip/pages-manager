@@ -33,7 +33,9 @@ function classifyProductionHost(hostname) {
 
   const slug = hostname.slice(0, -PROD_SUFFIX.length);
   if (slug.includes('.')) return rejected('INVALID_HOST', hostname, 'production');
-  if (slug.endsWith('-staging')) return rejected('RESERVED_SLUG', hostname, 'production');
+  if (slug === 'staging' || slug.startsWith('staging-') || slug.endsWith('-staging')) {
+    return rejected('RESERVED_SLUG', hostname, 'production');
+  }
 
   return validateHostSlug({ hostname, slug, environment: 'production' });
 }

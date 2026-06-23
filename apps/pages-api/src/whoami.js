@@ -22,6 +22,8 @@ function publicActor(actor) {
       credentialType: 'access_key',
       accessKeyId: actor.tokenId,
       userId: actor.userId,
+      email: actor.email,
+      name: actor.name,
       siteId: actor.siteId || null,
       scopes: actor.scopes,
     };
@@ -31,6 +33,8 @@ function publicActor(actor) {
     type: 'user',
     credentialType: 'cli_token',
     userId: actor.userId,
+    email: actor.email,
+    name: actor.name,
     scopes: actor.scopes,
   };
 }

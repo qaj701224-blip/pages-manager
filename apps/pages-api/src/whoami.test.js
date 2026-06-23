@@ -17,6 +17,8 @@ test('whoami returns the active CLI user without token material', async () => {
       type: 'user',
       credentialType: 'cli_token',
       userId: 'usr_1',
+      email: 'user@example.com',
+      name: 'User One',
       scopes: ['*'],
     },
   });
@@ -42,6 +44,8 @@ test('whoami accepts deploy-only access keys without read:site scope', async () 
       credentialType: 'access_key',
       accessKeyId: 'ak_deploy',
       userId: 'usr_1',
+      email: 'user@example.com',
+      name: 'User One',
       siteId: 'site_1',
       scopes: ['deploy:site'],
     },

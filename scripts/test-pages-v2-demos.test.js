@@ -73,6 +73,29 @@ test('rejects invalid v2 target and slug values', () => {
   const badSlug = run(['--dry-run', '--env-file', tempEnv('PAGES_V2_DEMO_SLUG=api\n')]);
   assert.notEqual(badSlug.status, 0);
   assert.match(`${badSlug.stderr}${badSlug.stdout}`, /reserved v2 demo slug/);
+
+  const docsSlug = run(['--dry-run', '--env-file', tempEnv('PAGES_V2_DEMO_SLUG=docs\n')]);
+  assert.notEqual(docsSlug.status, 0);
+  assert.match(`${docsSlug.stderr}${docsSlug.stdout}`, /reserved v2 demo slug/);
+
+  const slotSlug = run(['--dry-run', '--env-file', tempEnv('PAGES_V2_DEMO_SLUG=pages-v2-production-slot-001\n')]);
+  assert.notEqual(slotSlug.status, 0);
+  assert.match(`${slotSlug.stderr}${slotSlug.stdout}`, /reserved v2 demo slug/);
+
+  const expandedSlotSlug = run(['--dry-run', '--env-file', tempEnv('PAGES_V2_DEMO_SLUG=staging-slot-001\n')]);
+  assert.notEqual(expandedSlotSlug.status, 0);
+  assert.match(`${expandedSlotSlug.stderr}${expandedSlotSlug.stdout}`, /reserved v2 demo slug/);
+
+  const stagingPrefixSlug = run([
+    '--dry-run',
+    '--env-file',
+    tempEnv('PAGES_V2_DEMO_TARGET=production\nPAGES_V2_DEMO_SLUG=staging-demo\n'),
+  ]);
+  assert.notEqual(stagingPrefixSlug.status, 0);
+  assert.match(`${stagingPrefixSlug.stderr}${stagingPrefixSlug.stdout}`, /reserved v2 demo slug/);
+
+  const stagingTargetSlug = run(['--dry-run', '--env-file', tempEnv('PAGES_V2_DEMO_SLUG=staging-demo\n')]);
+  assert.equal(stagingTargetSlug.status, 0, `${stagingTargetSlug.stderr}${stagingTargetSlug.stdout}`);
 });
 
 test('script invokes v2 CLI instead of legacy Pages API', () => {

@@ -10,6 +10,7 @@ const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
+const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Pages 平台保留项，请换一个业务站点名。';
 
 export async function handleSitesApi(request, env, config, store) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -271,7 +272,7 @@ function validateSlug(slug, environment) {
   const validation = validateSiteSlug(slug, { environment });
   if (validation.ok) return null;
   if (validation.error.code === 'RESERVED_SLUG') {
-    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, 'Choose a different site slug.');
+    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
   }
   return jsonError(
     'SITE_SLUG_INVALID',

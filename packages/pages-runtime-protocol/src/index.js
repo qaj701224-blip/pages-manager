@@ -84,7 +84,63 @@ const RESERVED_SITE_SLUGS = new Set([
   'oauth',
   'sso',
   'internal',
+  'status',
+  'health',
+  'docs',
+  'readme',
+  'skill',
+  'openapi',
+  'help',
+  'support',
+  'console',
+  'dashboard',
+  'portal',
+  'site',
+  'sites',
+  'deploy',
+  'deployments',
+  'version',
+  'versions',
+  'rollback',
+  'access',
+  'access-keys',
+  'token',
+  'tokens',
+  'env',
+  'environments',
+  'runtime',
+  'data',
+  'kv',
+  'storage',
+  'worker',
+  'workers',
+  'dispatch',
+  'gateway',
+  'metrics',
+  'logs',
+  'audit',
+  'events',
+  'webhook',
+  'webhooks',
+  'monitor',
+  'monitoring',
+  'pages-api',
+  'pages-api-staging',
+  'pages-auth',
+  'pages-auth-staging',
+  'pages-router',
+  'pages-router-staging',
+  'pages-kv-gateway',
+  'pages-kv-gateway-staging',
 ]);
+const RESERVED_SITE_SLUG_PREFIXES = [
+  'production-slot-',
+  'staging-slot-',
+  'v2-production-slot-',
+  'v2-staging-slot-',
+  'pages-v2-production-slot-',
+  'pages-v2-staging-slot-',
+];
 const MAX_USER_KEY_BYTES = 256;
 const MAX_STORAGE_KEY_BYTES = 512;
 const MIN_TTL_SECONDS = 60;
@@ -114,7 +170,12 @@ export function isValidSiteSlug(siteSlug) {
 
 export function isReservedSiteSlug(siteSlug, { environment } = {}) {
   const value = String(siteSlug || '').trim();
-  return RESERVED_SITE_SLUGS.has(value) || (environment === 'production' && value.endsWith('-staging'));
+  return (
+    RESERVED_SITE_SLUGS.has(value) ||
+    RESERVED_SITE_SLUG_PREFIXES.some((prefix) => value.startsWith(prefix)) ||
+    (environment === 'production' && (value === 'staging' || value.startsWith('staging-'))) ||
+    (environment === 'production' && value.endsWith('-staging'))
+  );
 }
 
 export function validateSiteSlug(siteSlug, options = {}) {

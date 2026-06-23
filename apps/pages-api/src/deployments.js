@@ -1,3 +1,5 @@
+import { validateSiteSlug } from '@xd/pages-runtime-protocol';
+
 import { authenticateApiRequest } from './auth.js';
 import { canonicalRequestHash, sha256HexForBytes } from './crypto.js';
 import { jsonError, jsonOk } from './http.js';
@@ -15,6 +17,7 @@ const ROUTING_MODES = new Set(['assets-only', 'worker-only', 'worker-first']);
 const FALLBACK_MODES = new Set(['auto', 'index', 'not-found']);
 const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
 const DENYLISTED_EXTENSIONS = new Set(['.pem', '.key']);
+const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Pages 平台保留项，请换一个业务站点名。';
 const CONTROL_ASSET_PATHS = new Set([
   '/_worker.js',
   '/_headers',
@@ -127,6 +130,10 @@ async function createDeployment(request, env, config, store, actor) {
   if (!requestedSiteId && !requestedSiteSlug) {
     return jsonError('SITE_REQUIRED', 'Site is required.', 400, 'Pass siteId or siteSlug.');
   }
+  if (requestedSiteSlug) {
+    const slugError = validateDeploySiteSlug(requestedSiteSlug, config.environment, { allowReserved: true });
+    if (slugError) return slugError;
+  }
   if (!clientContentHash.startsWith('sha256:')) {
     return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
   }
@@ -178,6 +185,8 @@ async function createDeployment(request, env, config, store, actor) {
     siteSlug: requestedSiteSlug,
   });
   if (site instanceof Response) return site;
+  const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
+  if (routeSlugError) return routeSlugError;
   const siteId = site.id;
   if (!actorCanDeploy(actor, siteId, 'deploy:site')) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
@@ -1048,7 +1057,10 @@ async function resolveDeploySite(store, actor, environment, { siteId, siteSlug }
     return site || siteNotFound('Check the site id.');
   }
   const bySlug = typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(environment, siteSlug) : null;
-  if (!bySlug) return siteNotFound('Check the site slug.');
+  if (!bySlug) {
+    const slugError = validateDeploySiteSlug(siteSlug, environment);
+    return slugError || siteNotFound('Check the site slug.');
+  }
   const site = await store.getSiteForUser(bySlug.id, actor.userId, actor, environment);
   return site || siteNotFound('Check the site slug and access key scope.');
 }
@@ -1323,6 +1335,25 @@ function normalizeOptionalString(value) {
 
 function normalizeOptionalSlug(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function validateDeploySiteSlug(siteSlug, environment, { allowReserved = false } = {}) {
+  const validation = validateSiteSlug(siteSlug, { environment });
+  if (validation.ok) return null;
+  if (validation.error.code === 'RESERVED_SLUG') {
+    if (allowReserved) return null;
+    return jsonError('SITE_SLUG_RESERVED', 'Site slug is reserved.', 400, RESERVED_SITE_SLUG_ACTION);
+  }
+  return jsonError(
+    'SITE_SLUG_INVALID',
+    'Site slug is invalid.',
+    400,
+    'Use 2-50 lowercase letters, numbers, and hyphens; the first and last characters must be alphanumeric.'
+  );
+}
+
+function validateDeployableSiteSlug(siteSlug, environment) {
+  return validateDeploySiteSlug(siteSlug, environment);
 }
 
 function siteNotFound(action) {

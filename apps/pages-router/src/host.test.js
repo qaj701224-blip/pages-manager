@@ -42,8 +42,11 @@ test('rejects invalid hostnames and cross-environment hosts', () => {
 
 test('rejects reserved slugs and invalid slug syntax', () => {
   assert.equal(classifyHost('admin.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
+  assert.equal(classifyHost('docs.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
+  assert.equal(classifyHost('openapi.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
   assert.equal(classifyHost('kv-gateway.pages.xd.team', { environment: 'production' }).code, 'RESERVED_HOST');
-  assert.equal(classifyHost('login.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
+  assert.equal(classifyHost('staging.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
+  assert.equal(classifyHost('staging-demo.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
   assert.equal(classifyHost('-bad.pages.xd.team', { environment: 'production' }).code, 'INVALID_SLUG');
   assert.equal(classifyHost('Bad.pages.xd.team', { environment: 'production' }).code, 'INVALID_SLUG');
   assert.equal(classifyHost(`a${'b'.repeat(49)}1.pages.xd.team`, { environment: 'production' }).code, 'INVALID_SLUG');

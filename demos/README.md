@@ -10,6 +10,7 @@
 | `vue-app` | `spa` | Vue Router fallback, browser SDK, and Pages KV smoke test | `demos/vue-app/dist` after build |
 | `nuxt-app` | `spa` | Nuxt 3 generated static output | `demos/nuxt-app/.output/public` after generate |
 | `api-demo` | `worker` | Custom `_worker.js`, explicit IP guard, and static assets through `env.ASSETS` | `demos/api-demo` |
+| `xd-pages-kv-smoke` | `static` | Browser SDK runtime data smoke test | `demos/xd-pages-kv-smoke` |
 
 ## Staging Test Script
 

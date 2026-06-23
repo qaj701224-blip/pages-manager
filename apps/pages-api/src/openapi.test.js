@@ -24,9 +24,32 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
+  assert.equal(
+    body.paths['/.xd-pages/api/auth/whoami'].get.responses[200].content['application/json'].schema.$ref,
+    '#/components/schemas/WhoamiResponse'
+  );
   assert.ok(body.paths['/.xd-pages/api/deployments']);
   assert.ok(body.paths['/.xd-pages/api/deployments/{id}']);
   assert.ok(body.paths['/.xd-pages/api/versions/{id}/rollback']);
+  assert.ok(body.components.schemas.WhoamiResponse);
+  assert.deepEqual(body.components.schemas.WhoamiActor.oneOf[0].required, [
+    'type',
+    'credentialType',
+    'userId',
+    'email',
+    'name',
+    'scopes',
+  ]);
+  assert.deepEqual(body.components.schemas.WhoamiActor.oneOf[1].required, [
+    'type',
+    'credentialType',
+    'accessKeyId',
+    'userId',
+    'email',
+    'name',
+    'siteId',
+    'scopes',
+  ]);
   assert.ok(body.components.schemas.CliManagedDeploymentRequest);
   assert.ok(body.components.schemas.DeploymentDecision);
   assert.equal(body.paths['/.xd-pages/api/deployments'].post.requestBody.content['application/json'], undefined);
@@ -49,6 +72,9 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
     'FALLBACK_REQUIRES_ASSETS',
     'INVALID_MULTIPART',
     'PAYLOAD_TOO_LARGE',
+    'SITE_REQUIRED',
+    'SITE_SLUG_INVALID',
+    'SITE_SLUG_RESERVED',
     'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
     'DEPLOYMENT_UPLOAD_FAILED',
     'DEPLOYMENT_VERIFY_FAILED',

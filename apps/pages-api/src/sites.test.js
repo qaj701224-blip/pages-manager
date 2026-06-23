@@ -9,7 +9,7 @@ test('creates a production site with owner membership and inactive route', async
   const store = await createSeededStore();
   const response = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
-      slug: 'docs',
+      slug: 'guide',
       visibility: 'org',
     }),
     testEnv(store)
@@ -18,12 +18,12 @@ test('creates a production site with owner membership and inactive route', async
   assert.equal(response.status, 201);
   const body = await response.json();
   assert.equal(body.site.id, 'site_1');
-  assert.equal(body.site.slug, 'docs');
-  assert.equal(body.site.url, 'https://docs.pages.xd.team');
+  assert.equal(body.site.slug, 'guide');
+  assert.equal(body.site.url, 'https://guide.pages.xd.team');
   assert.equal(body.site.defaultVisibility, 'org');
   assert.equal('token' in body.site, false);
 
-  assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'docs.pages.xd.team');
+  assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'guide.pages.xd.team');
   assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'disabled');
   assert.equal((await store.getSite('site_1')).siteUuid, '4b4c8e8361ef4b47b64f5c20a7db7c47');
   assert.equal((await store.listSiteMembers('site_1'))[0].role, 'owner');
@@ -33,7 +33,7 @@ test('creates a site with internal visibility', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
-      slug: 'docs',
+      slug: 'guide',
       visibility: 'internal',
     }),
     testEnv(store)
@@ -125,20 +125,20 @@ test('gets a site by id for members and hides unknown sites', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'org',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
 
   const found = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1'), testEnv(store));
   const missing = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_missing'), testEnv(store));
 
   assert.equal(found.status, 200);
-  assert.equal((await found.json()).site.slug, 'docs');
+  assert.equal((await found.json()).site.slug, 'guide');
   assert.equal(missing.status, 404);
 });
 
@@ -146,13 +146,13 @@ test('requires read:site scope for access key site reads', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'org',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
   const deployOnlyKey = await seedAccessKey(store, 'ak_deploy', ['deploy:site']);
   const readKey = await seedAccessKey(store, 'ak_read', ['read:site']);
@@ -188,13 +188,13 @@ test('updates site visibility and bumps policy version for active routes', async
   const store = await createSeededStore();
   const site = await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'org',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
   await activateSite(store, site.id);
   const snapshots = createSnapshotStore();
@@ -210,21 +210,21 @@ test('updates site visibility and bumps policy version for active routes', async
   assert.equal(body.site.route.policyVersion, 2);
   assert.equal(body.site.route.visibility, 'disabled');
   assert.equal((await store.getRouteBySiteId('site_1')).cacheTier, 'strict');
-  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').policyVersion, 2);
-  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').routeGeneration, 1);
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').policyVersion, 2);
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').routeGeneration, 1);
 });
 
 test('rolls back visibility changes when active route snapshot write fails', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'org',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
   await activateSite(store, site.id);
 
@@ -244,13 +244,13 @@ test('replaces site ACL with allow-only OR entries and rejects unsupported polic
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'acl',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
 
   const put = await worker.fetch(
@@ -329,13 +329,13 @@ test('grants and revokes site ACL entries incrementally', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'acl',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
   await store.replaceSiteAclEntries(
     site.id,
@@ -381,20 +381,20 @@ test('grants and revokes site ACL entries incrementally', async () => {
     [{ subjectType: 'email', subjectValue: 'bob@example.com' }]
   );
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 4);
-  assert.equal(snapshots.read('production:route_pointer:docs.pages.xd.team').policyVersion, 4);
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').policyVersion, 4);
 });
 
 test('rejects deploy-only access keys from reading site ACL entries', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'acl',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
   await store.replaceSiteAclEntries(
     'site_1',
@@ -419,13 +419,13 @@ test('rolls back ACL changes when active route snapshot write fails', async () =
   const store = await createSeededStore();
   const site = await store.createSite({
     id: 'site_1',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_1',
     defaultVisibility: 'acl',
     environment: 'production',
     routeId: 'route_1',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
   await store.replaceSiteAclEntries(
     'site_1',
@@ -455,13 +455,13 @@ test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid s
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_existing',
-    slug: 'docs',
+    slug: 'guide',
     ownerUserId: 'usr_1',
     siteUuid: 'uuid_existing',
     defaultVisibility: 'org',
     environment: 'production',
     routeId: 'route_existing',
-    hostname: 'docs.pages.xd.team',
+    hostname: 'guide.pages.xd.team',
   });
 
   const invalidVisibility = await worker.fetch(
@@ -480,14 +480,14 @@ test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid s
   );
   const duplicate = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
-      slug: 'docs',
+      slug: 'guide',
       visibility: 'org',
     }),
     testEnv(store)
   );
   const stagingSuffix = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
-      slug: 'docs-staging',
+      slug: 'guide-staging',
       visibility: 'org',
     }),
     testEnv(store)
@@ -495,6 +495,20 @@ test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid s
   const reserved = await worker.fetch(
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
       slug: 'kv-gateway',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+  const platformDocs = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'docs',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+  const platformPrefix = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'pages-v2-production-slot-001',
       visibility: 'org',
     }),
     testEnv(store)
@@ -526,6 +540,12 @@ test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid s
   assert.equal((await stagingSuffix.json()).error.code, 'SITE_SLUG_RESERVED');
   assert.equal(reserved.status, 400);
   assert.equal((await reserved.json()).error.code, 'SITE_SLUG_RESERVED');
+  const platformDocsBody = await platformDocs.json();
+  assert.equal(platformDocs.status, 400);
+  assert.equal(platformDocsBody.error.code, 'SITE_SLUG_RESERVED');
+  assert.match(platformDocsBody.error.action, /平台保留/);
+  assert.equal(platformPrefix.status, 400);
+  assert.equal((await platformPrefix.json()).error.code, 'SITE_SLUG_RESERVED');
   assert.equal(tooLong.status, 400);
   assert.equal((await tooLong.json()).error.code, 'SITE_SLUG_INVALID');
   assert.equal(tooShort.status, 400);
@@ -604,9 +624,9 @@ async function activateSite(store, siteId, overrides = {}) {
     id: 'ver_1',
     siteId,
     deploymentId: 'dep_1',
-    workerName: 'pages-v2-docs-ver-1',
+    workerName: 'pages-v2-guide-ver-1',
     runtime: 'wfp',
-    artifactRef: 'wfp://test/pages-v2-docs-ver-1',
+    artifactRef: 'wfp://test/pages-v2-guide-ver-1',
     contentHash: 'sha256:abc',
     deploymentShape: 'worker-only',
     requestedFallback: 'auto',
@@ -618,7 +638,7 @@ async function activateSite(store, siteId, overrides = {}) {
     siteId,
     {
       activeVersionId: 'ver_1',
-      workerName: 'pages-v2-docs-ver-1',
+      workerName: 'pages-v2-guide-ver-1',
       visibility: overrides.visibility || 'org',
       updatedAt: '2026-06-15T00:00:00.000Z',
     },
