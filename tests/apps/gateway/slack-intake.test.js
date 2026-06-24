@@ -130,8 +130,8 @@ test('classifies bulk destructive issue requests as unsupported', () => {
   }
 });
 
-test('marks explicit work item history list requests', () => {
-  const result = classifySlackIntake(body('查看我的历史发布任务'));
+test('marks explicit work item history commands', () => {
+  const result = classifySlackIntake(body('work all'));
 
   assert.equal(result.action, 'list_work_items');
   assert.equal(result.shouldAnalyze, true);
@@ -139,8 +139,8 @@ test('marks explicit work item history list requests', () => {
   assert.equal(result.includeInactive, true);
 });
 
-test('marks closed work item list requests separately from all history', () => {
-  const result = classifySlackIntake(body('查看我已关闭的发布任务'));
+test('marks closed work item commands separately from all history', () => {
+  const result = classifySlackIntake(body('work closed'));
 
   assert.equal(result.action, 'list_work_items');
   assert.equal(result.shouldAnalyze, true);
