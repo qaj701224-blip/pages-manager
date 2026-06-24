@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -23,6 +23,8 @@ const baseEnv = {
   RISK: 'risk:medium',
   BASE_REF: 'master',
   AGENT_BACKEND: 'mock-codex',
+  AGENT_GATEWAY_URL: 'https://agent.example/v1/chat/completions',
+  AGENT_CODE_API_KEY: 'code-key',
   REVIEW_CONTEXT: 'Review context for PR #88:\n1. [blocking] runner must retry failed checks.',
   MEMORY_CONTEXT: 'Session summary: previous round introduced platform-agent-coding.mjs.',
   STATUS_CONTEXT: 'status: review_blocked',
@@ -88,6 +90,47 @@ test('writes task.md with PR, review, followup, memory, status, and repository i
 
     assert.equal(backendCalls.length, 1);
     assert.match(backendCalls[0].taskPath, /\.pages-artifacts\/platform-agent-task\.md$/);
+  });
+});
+
+test('codex backend maps company gateway URL and key env into CLI provider config', async () => {
+  await withFixture(async (cwd) => {
+    await mkdir(path.join(cwd, '.pages-artifacts'), { recursive: true });
+    const commandPath = path.join(cwd, '.pages-artifacts/mock-codex.mjs');
+    await writeFile(
+      commandPath,
+      [
+        '#!/usr/bin/env node',
+        "import { writeFileSync } from 'node:fs';",
+        "const out = process.env.MOCK_CODEX_ARGS_PATH;",
+        "writeFileSync(out, JSON.stringify({ args: process.argv.slice(2), key: process.env.AGENT_CODE_API_KEY }, null, 2));",
+      ].join('\n')
+    );
+    await chmod(commandPath, 0o755);
+
+    await assert.rejects(
+      () =>
+        runPlatformAgentRunner({
+          cwd,
+          env: {
+            ...baseEnv,
+            AGENT_BACKEND: 'codex',
+            PLATFORM_AGENT_CODEX_COMMAND: commandPath,
+            MOCK_CODEX_ARGS_PATH: path.join(cwd, '.pages-artifacts/codex-args.json'),
+          },
+          maxRounds: 1,
+          runChecks: async () => ({ ok: true, name: 'mock-check', log: 'checks passed' }),
+        }),
+      /backend produced no repository changes/
+    );
+
+    const invocation = JSON.parse(await readFile(path.join(cwd, '.pages-artifacts/codex-args.json'), 'utf8'));
+    const providerIndex = invocation.args.indexOf('model_provider="platform_agent_gateway"');
+    assert.notEqual(providerIndex, -1);
+    assert.match(invocation.args[providerIndex + 2], /base_url="https:\/\/agent\.example\/v1"/);
+    assert.match(invocation.args[providerIndex + 2], /env_key="AGENT_CODE_API_KEY"/);
+    assert.match(invocation.args[providerIndex + 2], /wire_api="responses"/);
+    assert.equal(invocation.key, 'code-key');
   });
 });
 
