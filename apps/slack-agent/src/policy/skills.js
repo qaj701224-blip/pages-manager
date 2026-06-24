@@ -1,15 +1,13 @@
-const ALWAYS_ON_SKILL_IDS = ['core', 'safety', 'tool-contract', 'product-language', 'output-schema'];
-
-const CONTINUATION_TEXT_RE =
-  /(这个|那个|刚才|上一条|继续|接着|续上|改为|改成|不再|不要再|换成|补充|追加|调整|修改|重试|恢复|reopen|follow.?up)/i;
-const REPO_QUESTION_TEXT_RE =
-  /(怎么|如何|怎样|哪里|在哪|是什么|为什么|为啥|解释|说明|实现|架构|代码|保存|存储|读取|触发|调用|流程|状态机|schema|repo|repository|workflow|Actions|影响|关系|边界)/i;
-const PLATFORM_DEV_TEXT_RE =
-  /(pages-manager|平台|Slack|GitHub|issue|PR|workflow|CI|CD|ECS|k8s|数据库|权限|状态机|通知|部署脚本|仓库|代码)/i;
-const SITE_PUBLISHING_TEXT_RE = /(个人站点|个人网站|网页|网站|主页|profile|portfolio|site|page|preview)/i;
-const DIAGNOSTICS_TEXT_RE =
-  /(为什么|为啥|原因|失败|没成功|没有成功|没出来|卡住|卡在哪|诊断|排查|查.*(?:日志|log|workflow|actions)|重试)/i;
-const PRODUCT_DESIGN_TEXT_RE = /(产品角度|用户角度|体验|交互|方案|设计|初衷|宣讲|怎么实现|如果要支持|是否应该)/i;
+import {
+  PLATFORM_AREAS,
+  PLATFORM_ISSUE_TYPES,
+  PLATFORM_RISKS,
+  REPEAT_PREVIOUS_MESSAGE_TARGETS,
+  SLACK_AGENT_INTENTS,
+  SLACK_AGENT_LANES,
+  SLACK_AGENT_TOOL_NAMES,
+  WORK_ITEM_STATES,
+} from './schema.js';
 
 export const SLACK_AGENT_POLICY_SKILLS = [
   {
@@ -23,6 +21,28 @@ export const SLACK_AGENT_POLICY_SKILLS = [
       '你不生成 patch，不改仓库文件，不创建 branch，不创建 PR，不 merge，不部署，不读取或索要 token。',
       '真正写 GitHub issue、写 comment、重试 workflow、恢复 issue / PR、创建发布任务，都由 gateway 在确认和权限收口后执行。',
       'Lane 不是权限授权；它只决定 gateway 展示哪类确认卡、保存哪类 draft、后续派发哪类 worker。',
+    ],
+  },
+  {
+    id: 'routing-priority',
+    title: 'Routing Priority',
+    alwaysOn: true,
+    content: [
+      '先判断危险批量破坏请求、明确关闭会话、复读/上一条、查询/切换/恢复任务、诊断、repo 咨询，再判断已有任务续接，最后才判断新建个人站点或平台需求。',
+      [
+        '如果用户询问“我的 PR / 我的 issue / 我的任务 / 有几个 / 哪几个 / 还有哪些 / 还没有处理”，',
+        'intent 必须返回 list_work_items，不要新建任务，不要续接当前 focus，并设置 toolCall.name=list_my_work_items。',
+      ].join(''),
+      `list_my_work_items.args.state 只能是 ${WORK_ITEM_STATES.join(' | ')}。查询当前可继续任务用 active；查询历史/全部用 all；查询已关闭/已取消/失败用 closed。`,
+      '如果上一轮刚返回任务 / issue / PR 列表，用户追问“只有这一个么 / 还有吗 / 只有这些吗”，继续返回 list_work_items；优先沿用上一轮列表范围，没有范围时用 state=all。',
+      '如果用户明确说“继续 PR #数字 / issue #数字 / 切换到 #数字”，intent 返回 switch_work_item，不要新建任务，并设置 toolCall.name=switch_work_item。',
+      '如果用户明确说“重新打开 / 恢复 / reopen PR #数字 或 issue #数字”，intent 返回 reopen_work_item，不要新建任务，并设置 toolCall.name=reopen_work_item。',
+      [
+        '如果用户要求关闭、删除、取消“所有 / 全部 / 我名下 / 我的” GitHub issue、PR 或发布任务，',
+        '这是危险批量操作；intent 必须返回 unsupported_destructive_request，不要返回 list_work_items，不要假装已执行。',
+      ].join(''),
+      '关闭 Slack 会话只适用于“关闭会话 / 结束对话 / 这个 preview 不用了”这类当前上下文操作；不要把“关闭所有 issue”理解为 close_session。',
+      '如果用户是在已有任务上补充“这个 issue / 接着改 / 改为 / 不再修改 X / 换成 Y”，优先 record_followup，不要新建 issue。',
     ],
   },
   {
@@ -134,6 +154,26 @@ export const SLACK_AGENT_POLICY_SKILLS = [
       '你可以通过 toolCall 告诉 gateway 执行受控操作；gateway 会自动限制当前 Slack 用户、当前 session 和该用户名下的 GitHub issue / PR。',
       '不要把 toolCall 当作已执行结果；写操作、重试、恢复和创建都必须由 gateway 校验后执行。',
       '当需求还不完整时，intent 可以是 create_or_update_site 或 clarify，但 needsClarification 应为 true，并用 clarifyingQuestion 给出一个简短问题。',
+      `toolCall.name 只能使用：${SLACK_AGENT_TOOL_NAMES.join(', ')}。`,
+      `repeat_previous_message.args.target 只能是 ${REPEAT_PREVIOUS_MESSAGE_TARGETS.join(' | ')}。`,
+      [
+        `issueType 只能是 ${PLATFORM_ISSUE_TYPES.join(' | ')}；`,
+        `risk 只能是 ${PLATFORM_RISKS.join(' | ')}；areas 常用值：${PLATFORM_AREAS.join(', ')}。`,
+      ].join(''),
+    ],
+  },
+  {
+    id: 'card-intent',
+    title: 'Card Intent',
+    alwaysOn: true,
+    content: [
+      'card 是可选卡片意图，只描述 kind/title/summary/context/fields/actions，不要输出 Slack Block Kit。',
+      'gateway 会负责按钮 action_id、URL、权限、脱敏、字段数量和长度限制；你只输出语义动作 id、用户可见 label 和展示顺序。',
+      [
+        '常用 action id：confirm_create_issue、confirm_platform_issue、continue_work_item、close_session、open_issue、open_pr、',
+        'open_preview、reopen_work_item、retry_work_item、append_diagnosis_to_issue、human_triage。',
+      ].join(''),
+      '不要为删除资源、合并 PR、生产部署、读取 secret、直接 shell 等收口动作生成执行按钮；需要时用 human_triage 或解释不可直接执行。',
     ],
   },
   {
@@ -159,71 +199,26 @@ export const SLACK_AGENT_POLICY_SKILLS = [
       '必须只返回 JSON object，不要返回 Markdown，不要包裹代码块。',
       'visibleReply 必须放在 JSON object 的第一个字段，便于平台做语义分块准流式输出。',
       'contextResolution 是可选审计字段，不能直接展示给用户。',
+      `lane 只能是：${SLACK_AGENT_LANES.join(' | ')}。`,
+      `intent 常用值：${SLACK_AGENT_INTENTS.join(', ')}。`,
+      [
+        'JSON 字段：visibleReply, dialogAct, lane, intent, toolCall, workItemState, focus, card, confirmationRequirement,',
+        'employeeSlug, siteSlug, issueType, areas, risk, agentEligible, requiresHumanGate, title, summary, approvalMode,',
+        'needsClarification, clarifyingQuestion, contextResolution, sourceMessages。',
+      ].join(' '),
+      'dialogAct 只能是 answer、ask_clarification、request_confirmation、run_tool、deny、handoff；需要按钮确认时使用 request_confirmation。',
+      [
+        'confirmationRequirement 只能是 none、create_site_issue、create_platform_issue、continue_work_item、',
+        'retry_work_item、append_diagnosis_to_issue、human_triage、reopen_work_item。',
+      ].join(''),
     ],
   },
 ];
 
-const SKILLS_BY_ID = new Map(SLACK_AGENT_POLICY_SKILLS.map((skill) => [skill.id, skill]));
-
-function normalizedText(input = {}) {
-  return String(input.text || input.messageText || input.event?.text || input.summary || '');
+export function selectSlackAgentSkills() {
+  return SLACK_AGENT_POLICY_SKILLS;
 }
 
-function hasActiveWorkContext(input = {}, sessionContext = {}) {
-  const memory = input.sessionMemory || {};
-  const conversationContext = input.conversationContext || memory.conversationContext || {};
-  const focus = conversationContext.focus || conversationContext.currentFocus || null;
-  return Boolean(
-    sessionContext.activeJobId ||
-      sessionContext.activeWorkItemId ||
-      sessionContext.activeIssueNumber ||
-      sessionContext.activePrNumber ||
-      sessionContext.activePreviewUrl ||
-      focus?.kind ||
-      conversationContext.lastWorkItemList ||
-      memory.lastWorkItemList ||
-      (Array.isArray(input.issueLinks) && input.issueLinks.length)
-  );
-}
-
-function addSelected(selected, id) {
-  const skill = SKILLS_BY_ID.get(id);
-  if (skill) selected.add(id);
-}
-
-export function selectSlackAgentSkills(input = {}, fallbackAnalysis = {}, sessionContext = {}) {
-  const text = normalizedText(input);
-  const selected = new Set(ALWAYS_ON_SKILL_IDS);
-  const lane = String(fallbackAnalysis.lane || '').replace('_', '-');
-  const intent = String(fallbackAnalysis.intent || '');
-  const activeContext = hasActiveWorkContext(input, sessionContext);
-
-  if (
-    activeContext ||
-    ['modify_existing_preview', 'append_requirement', 'record_followup', 'switch_work_item', 'reopen_work_item'].includes(
-      intent
-    ) ||
-    CONTINUATION_TEXT_RE.test(text)
-  ) {
-    addSelected(selected, 'conversation-context');
-    addSelected(selected, 'work-item-continuation');
-  }
-
-  if (lane === 'repo-question' || ['repo_question', 'architecture_question', 'platform_question'].includes(intent)) {
-    addSelected(selected, 'repo-question');
-  } else if (REPO_QUESTION_TEXT_RE.test(text) && (PLATFORM_DEV_TEXT_RE.test(text) || PRODUCT_DESIGN_TEXT_RE.test(text))) {
-    addSelected(selected, 'repo-question');
-  }
-
-  if (lane === 'platform-dev' || intent === 'create_platform_issue') addSelected(selected, 'platform-dev');
-  if (lane === 'site-publishing' || intent === 'create_or_update_site') addSelected(selected, 'site-publishing');
-  if (intent === 'diagnose_work_item' || DIAGNOSTICS_TEXT_RE.test(text)) addSelected(selected, 'diagnostics');
-  if (PRODUCT_DESIGN_TEXT_RE.test(text)) addSelected(selected, 'product-design');
-  if (SITE_PUBLISHING_TEXT_RE.test(text)) addSelected(selected, 'site-publishing');
-
-  return [...selected].map((id) => SKILLS_BY_ID.get(id)).filter(Boolean);
-}
-
-export function selectedSlackAgentSkillIds(input = {}, fallbackAnalysis = {}, sessionContext = {}) {
-  return selectSlackAgentSkills(input, fallbackAnalysis, sessionContext).map((skill) => skill.id);
+export function selectedSlackAgentSkillIds() {
+  return selectSlackAgentSkills().map((skill) => skill.id);
 }
