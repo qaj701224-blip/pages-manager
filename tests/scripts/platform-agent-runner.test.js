@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
-import { runPlatformAgentRunner } from '../../scripts/platform-agent-runner.mjs';
+import { runCodexPreflight, runPlatformAgentRunner } from '../../scripts/platform-agent-runner.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -125,6 +125,7 @@ test('codex backend maps company gateway URL and key env into CLI provider confi
     );
 
     const invocation = JSON.parse(await readFile(path.join(cwd, '.pages-artifacts/codex-args.json'), 'utf8'));
+    assert.ok(invocation.args.includes('--ignore-user-config'));
     const providerIndex = invocation.args.indexOf('model_provider="platform_agent_gateway"');
     assert.notEqual(providerIndex, -1);
     const providerArg = invocation.args[providerIndex + 2];
@@ -134,6 +135,62 @@ test('codex backend maps company gateway URL and key env into CLI provider confi
     assert.match(providerArg, /wire_api="responses"\}$/);
     assert.doesNotMatch(providerArg, /\{,|,\}/);
     assert.equal(invocation.key, 'code-key');
+  });
+});
+
+test('codex preflight validates the same provider config before running the agent', async () => {
+  await withFixture(async (cwd) => {
+    await mkdir(path.join(cwd, '.pages-artifacts'), { recursive: true });
+    const commandPath = path.join(cwd, '.pages-artifacts/mock-codex-preflight.mjs');
+    await writeFile(
+      commandPath,
+      [
+        '#!/usr/bin/env node',
+        "import { writeFileSync } from 'node:fs';",
+        "const payload = { args: process.argv.slice(2), key: process.env.AGENT_CODE_API_KEY };",
+        "writeFileSync(process.env.MOCK_CODEX_PREFLIGHT_ARGS_PATH, JSON.stringify(payload, null, 2));",
+        "process.stdout.write('{\"models\":[]}\\n');",
+      ].join('\n')
+    );
+    await chmod(commandPath, 0o755);
+
+    const result = await runCodexPreflight({
+      cwd,
+      env: {
+        ...baseEnv,
+        AGENT_BACKEND: 'codex',
+        PLATFORM_AGENT_CODEX_COMMAND: commandPath,
+        MOCK_CODEX_PREFLIGHT_ARGS_PATH: path.join(cwd, '.pages-artifacts/codex-preflight-args.json'),
+      },
+    });
+
+    const invocation = JSON.parse(
+      await readFile(path.join(cwd, '.pages-artifacts/codex-preflight-args.json'), 'utf8')
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.skipped, false);
+    assert.deepEqual(invocation.args.slice(0, 3), ['debug', 'models', '--bundled']);
+    const providerIndex = invocation.args.indexOf('model_provider="platform_agent_gateway"');
+    assert.notEqual(providerIndex, -1);
+    assert.match(invocation.args[providerIndex + 2], /wire_api="responses"\}$/);
+    assert.equal(invocation.key, 'code-key');
+  });
+});
+
+test('codex provider id is validated before building CLI config paths', async () => {
+  await withFixture(async (cwd) => {
+    await assert.rejects(
+      () =>
+        runCodexPreflight({
+          cwd,
+          env: {
+            ...baseEnv,
+            AGENT_BACKEND: 'codex',
+            PLATFORM_AGENT_CODEX_PROVIDER_ID: 'bad.provider',
+          },
+        }),
+      /PLATFORM_AGENT_CODEX_PROVIDER_ID/
+    );
   });
 });
 

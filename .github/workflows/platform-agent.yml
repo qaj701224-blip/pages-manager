@@ -187,6 +187,20 @@ jobs:
           npm install -g "$PLATFORM_AGENT_CODEX_PACKAGE"
           codex --version
 
+      - name: Preflight Codex CLI
+        shell: bash
+        env:
+          PLATFORM_AGENT_BACKEND: ${{ vars.PLATFORM_AGENT_BACKEND || vars.AGENT_BACKEND || 'codex' }}
+          AGENT_BACKEND: ${{ vars.AGENT_BACKEND || 'codex' }}
+          PLATFORM_AGENT_CODEX_MODEL: ${{ vars.PLATFORM_AGENT_CODEX_MODEL || vars.AGENT_MODEL_NAME }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL || vars.AGENT_MODEL_NAME }}
+          AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
+          AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+          AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          node "$RUNNER_TEMP/platform-agent-runner.mjs" --codex-preflight
+
       - name: Prepare branch
         id: branch
         shell: bash
