@@ -14,6 +14,7 @@ import {
   platformDraftFromRepoQuestionContext,
   repoQuestionActionBlocks,
 } from '../../../apps/gateway/src/slack/repo-question.js';
+import { activeJobForSlackSession } from '../../../apps/gateway/src/slack/followup.js';
 import { redactSecretLikeText } from '../../../apps/gateway/src/slack/text.js';
 import { createGatewayApp } from '../../helpers/gateway-app.js';
 
@@ -8507,6 +8508,32 @@ test('Slack Agent follow-up intent in an active DM session records follow-up ins
   assert.equal(jobBody.job.issueNumber, 71);
   assert.equal(app.store.jobs.size, 1);
   assert.equal(workerStarts.length, 0);
+});
+
+test('Slack active site work item resolves from activeWorkItemId without activeJobId', async () => {
+  const app = createGatewayApp();
+  const { job } = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'active-site-work-item-id',
+    employeeSlug: 'u1',
+    siteSlug: 'active-site',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Active site',
+    summary: 'active site',
+  });
+  app.store.patchJob(job.id, { status: 'previewing' });
+
+  const resolved = await activeJobForSlackSession(app.store, {
+    id: 'sess_active_site_work_item',
+    activeJobId: null,
+    activeWorkItemKind: 'site_publishing',
+    activeWorkItemId: job.id,
+  });
+
+  assert.equal(resolved.id, job.id);
 });
 
 test('Slack confirmation after preview does not dispatch another fix round', async () => {

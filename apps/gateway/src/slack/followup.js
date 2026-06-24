@@ -42,6 +42,10 @@ export async function activeJobForSlackSession(store, slackSession) {
     const job = await store.getJob(slackSession.activeJobId);
     if (job) return job;
   }
+  if (slackSession?.activeWorkItemKind === 'site_publishing' && slackSession.activeWorkItemId) {
+    const job = await store.getJob(slackSession.activeWorkItemId);
+    if (job) return job;
+  }
 
   const links = await store.findIssueLinksForSlackSession(slackSession.id);
   const link = links[0];
