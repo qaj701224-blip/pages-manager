@@ -551,6 +551,7 @@ test('preview completion replaces pending Slack working reactions with done reac
         publishingJobId: jobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test/job-reaction',
+        prNumber: 77,
         headSha: 'b'.repeat(40),
       }),
     }),
@@ -619,6 +620,7 @@ test('preview completion also settles working reactions linked by Slack session'
         publishingJobId: jobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test/session-reaction',
+        prNumber: 78,
         headSha: 'c'.repeat(40),
       }),
     }),
@@ -4182,6 +4184,71 @@ test('Slack Agent can switch to a platform issue without site publishing status 
   assert.doesNotMatch(payload, /Preview 已生成|发布需求/);
 });
 
+test('Slack work item selector handles platform item disappearing during switch', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'selector-platform-disappears',
+    title: '平台需求',
+    summary: '通过任务列表切换平台需求。',
+    issueType: 'type:dev',
+    areas: ['area:slack'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  const itemWithIssue = app.store.patchPlatformDevItem(item.id, {
+    githubIssueNumber: 73,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/73',
+  });
+  app.store.upsertSlackSession({
+    id: 'sess_platform_selector_disappears',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  const originalPatch = app.store.patchPlatformDevItem.bind(app.store);
+  app.store.patchPlatformDevItem = async (itemId, patch) => {
+    if (itemId === itemWithIssue.id && patch.slackSessionId === 'sess_platform_selector_disappears') return null;
+    return originalPatch(itemId, patch);
+  };
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'block_actions',
+        team: { id: 'T1' },
+        user: { id: 'U1' },
+        trigger_id: 'trigger-1',
+        channel: { id: 'D1' },
+        container: { channel_id: 'D1', message_ts: '1710000000.000200' },
+        message: { ts: '1710000000.000200', thread_ts: '1710000000.000100' },
+        actions: [
+          {
+            action_id: 'pages_select_work_item',
+            value: JSON.stringify({
+              sessionId: 'sess_platform_selector_disappears',
+              workItemKind: 'platform_dev',
+              jobId: itemWithIssue.id,
+            }),
+          },
+        ],
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.response_type, 'ephemeral');
+  assert.match(body.text, /刚刚被更新或删除/);
+});
+
 test('Slack Agent unsupported destructive intent refuses bulk destructive issue requests', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
@@ -6291,6 +6358,7 @@ test('preview_deployed status card includes the preview link', async () => {
         publishingJobId: created.jobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test',
+        prNumber: 29,
         headSha: 'a'.repeat(40),
       }),
     }),
@@ -8177,6 +8245,7 @@ test('executor callback advances the preview loop', async () => {
         publishingJobId: createBody.job.id,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test',
+        prNumber: 2,
         headSha,
         workflowName: 'pages-preview.yml',
         workflowRunId: '28000000099',
@@ -8293,6 +8362,8 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
       'preview_deployed',
       {
         previewUrl: 'https://preview.example.test',
+        prNumber: 31,
+        headSha: '1'.repeat(40),
       },
     ],
   ]) {
@@ -8925,6 +8996,7 @@ test('Slack confirmation after preview does not dispatch another fix round', asy
       'preview_deployed',
       {
         previewUrl: 'https://preview.example.test/confirmed',
+        prNumber: 32,
         headSha: '2'.repeat(40),
       },
     ],
@@ -9029,7 +9101,7 @@ test('Slack channel thread replies can continue an existing session without anot
         headSha: '6'.repeat(40),
       },
     ],
-    ['preview_deployed', { previewUrl: 'https://preview.example.test/thread' }],
+    ['preview_deployed', { previewUrl: 'https://preview.example.test/thread', prNumber: 61, headSha: '6'.repeat(40) }],
   ]) {
     const response = await app.fetch(
       new Request('http://gateway.test/internal/executor-callback', {
@@ -10960,6 +11032,7 @@ test('GitHub Review Agent issue comment targets latest reused PR job by reviewed
         publishingJobId: oldJobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://old-preview.example.test',
+        prNumber: 24,
         headSha: oldHeadSha,
       }),
     })
@@ -11702,19 +11775,24 @@ test('preview callback without headSha is ignored for head-bound jobs', async ()
 
 test('preview callback without headSha is accepted for legacy jobs without stored headSha', async () => {
   const app = createGatewayApp();
-  const jobId = await moveJobToPrCreated(app, {
-    prNumber: 93,
-    headSha: null,
+  const { job } = app.store.createJob({
+    source: 'manual',
+    requestedByType: 'system',
+    requestedById: 'legacy-preview',
     idempotencyKey: 'api-legacy-preview-callback',
+    employeeSlug: 'zhangsan',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'auto',
   });
-  app.store.updateJob(jobId, 'previewing', { headSha: null });
+  app.store.patchJob(job.id, { status: 'previewing', headSha: null, prNumber: null });
 
   const response = await app.fetch(
     new Request('http://gateway.test/internal/executor-callback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        publishingJobId: jobId,
+        publishingJobId: job.id,
         stageResult: 'preview_deployed',
         previewUrl: 'https://legacy-preview.example.test',
       }),
@@ -11727,6 +11805,65 @@ test('preview callback without headSha is accepted for legacy jobs without store
   assert.equal(body.job.status, 'preview_deployed');
   assert.equal(body.job.previewUrl, 'https://legacy-preview.example.test');
   assert.equal(body.job.headSha, null);
+});
+
+test('preview callback without prNumber is ignored for PR-bound legacy jobs', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 93,
+    headSha: null,
+    idempotencyKey: 'api-pr-bound-legacy-preview-callback',
+  });
+  app.store.updateJob(jobId, 'previewing', { headSha: null, prNumber: 93 });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://stale-pr-preview.example.test',
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, true);
+  assert.equal(body.job.status, 'previewing');
+  assert.equal(body.job.previewUrl, null);
+  assert.equal(body.job.prNumber, 93);
+});
+
+test('preview callback with matching prNumber is accepted for PR-bound jobs without stored headSha', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 94,
+    headSha: null,
+    idempotencyKey: 'api-pr-bound-matching-preview-callback',
+  });
+  app.store.updateJob(jobId, 'previewing', { headSha: null, prNumber: 94 });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://matching-pr-preview.example.test',
+        prNumber: 94,
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, undefined);
+  assert.equal(body.job.status, 'preview_deployed');
+  assert.equal(body.job.previewUrl, 'https://matching-pr-preview.example.test');
+  assert.equal(body.job.prNumber, 94);
 });
 
 test('GitHub issue webhook does not bypass project-index gate in actions executor mode', async () => {

@@ -160,7 +160,9 @@ base: master
 
 ### Executor Callback 幂等
 
-executor callback 只能推进仍可转换的当前任务。已取消、已合并、已部署或已失败的终态 job 收到迟到 callback 时，gateway 返回 200 并标记 ignored，不能让 workflow 因有意取消而失败。`pages-preview.yml` 的成功和失败 callback 必须携带 `prNumber` 与 `headSha`；已绑定 `headSha` 的 job 收到 `preview_deployed` 时，如果 callback 缺少 `headSha` 或不匹配当前 job head，只保留当前 DB 状态，不触发 Slack 成功卡片、plain progress、reaction settlement 或新的 worker dispatch。没有持久化 `headSha` 的 legacy / manual job 可以接受 preview callback，但不提供 stale head 保护。
+executor callback 只能推进仍可转换的当前任务。已取消、已合并、已部署或已失败的终态 job 收到迟到 callback 时，gateway 返回 200 并标记 ignored，不能让 workflow 因有意取消而失败。`pages-preview.yml` 的成功和失败 callback 必须携带 `prNumber` 与 `headSha`；已绑定 `headSha` 的 job 收到 `preview_deployed` 时，如果 callback 缺少 `headSha` 或不匹配当前 job head，只保留当前 DB 状态，不触发 Slack 成功卡片、plain progress、reaction settlement 或新的 worker dispatch。已绑定 PR 但没有持久化 `headSha` 的 job 也必须匹配 `prNumber`；只有没有 PR/head 元数据的 legacy / manual job 才接受无 `headSha` callback。
+
+`pages-preview.yml` 在部署前必须重新读取当前 PR head，并在 head 已移动时跳过 deploy、artifact 和 callback，避免旧 workflow run 覆盖同一个 preview site。预览内容只从 `sites/<employeeSlug>/<siteSlug>/src` 发布；没有 `src/` 时 workflow 失败，而不是回退发布整个站点根目录。
 
 ## Worker 配置
 
@@ -549,7 +551,7 @@ docs/** 中的平台部署文档
 
 如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk gate、CI 和 review 控制。
 
-`pages-agent.yml` 在提交自动生成站点 PR 前必须对本轮新增 diff 行做 secret scan，覆盖 Slack token、`sk-*`、`CF_API_TOKEN`、`SLACK_AGENT_API_KEY`、`AGENT_CODE_API_KEY`、`github_pat_*` 和 GitHub `gh[pousr]_` token 家族。扫描必须匹配真实 token 形态或敏感变量赋值，不能因为站点目录历史正文或示例文档里已有短前缀 `ghp_` / `gho_` 就阻断新的 PR 创建和 callback。
+`pages-agent.yml` 在提交自动生成站点 PR 前必须清空 index，使用 `git diff HEAD` 同时覆盖 staged 与 unstaged 改动，并只把 `ALLOWED_PATH` 加回提交。secret scan 只扫描本轮新增 diff 行，覆盖 Slack token、`sk-*`、`CF_API_TOKEN`、`SLACK_AGENT_API_KEY`、`AGENT_CODE_API_KEY`、`github_pat_*` 和 GitHub `gh[pousr]_` token 家族。扫描必须匹配真实 token 形态或敏感变量赋值，不能因为站点目录历史正文或示例文档里已有短前缀 `ghp_` / `gho_` 就阻断新的 PR 创建和 callback。
 
 ## Platform Dev PR 边界
 

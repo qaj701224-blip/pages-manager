@@ -192,6 +192,28 @@ async function failQueuedSlackWorkerStart(store, context = {}, errorMessage = 'W
   return null;
 }
 
+async function notifyQueuedWorkerStartFailure(env, store, failedItem, context = {}) {
+  if (!failedItem) return null;
+  if (context.workItemKind === 'platform_dev') {
+    return await notifySlackPlatformDevStatus(env, store, failedItem, {
+      stage: 'failed',
+      text: failedItem.errorMessage || failedItem.errorCode || '平台需求处理失败',
+      statusText: ':x: 平台需求处理失败',
+      skipDuplicate: false,
+      slackSessionId: context.slackSessionId || failedItem.slackSessionId || undefined,
+    });
+  }
+  if (context.workItemKind === 'site_publishing') {
+    return await notifySlackJobStatus(env, store, failedItem, {
+      stage: 'failed',
+      text: failedItem.errorMessage || failedItem.errorCode || '发布任务失败',
+      statusText: ':x: 发布任务失败',
+      skipDuplicate: false,
+    });
+  }
+  return null;
+}
+
 function queueSlackWorkerStart(env, store, task, context = {}) {
   runSlackBackground(env, async () => {
     let result;
@@ -201,7 +223,8 @@ function queueSlackWorkerStart(env, store, task, context = {}) {
       result = { started: false, error: error.message || 'Worker start failed' };
     }
     if (result?.started === false) {
-      await failQueuedSlackWorkerStart(store, context, result.error || 'Worker start failed');
+      const failedItem = await failQueuedSlackWorkerStart(store, context, result.error || 'Worker start failed');
+      await notifyQueuedWorkerStartFailure(env, store, failedItem, context);
       console.log(
         JSON.stringify({
           service: 'pages-gateway',
@@ -1061,7 +1084,13 @@ async function processSlackEventBody(body, env, options = {}) {
               : ':hourglass_flowing_sand: 正在创建 GitHub issue...',
           })
         : null;
-      const workerStart = created ? await startWorkerForPlatformDevItemIfConfigured(item, env) : null;
+      const workerStart = created
+        ? queueSlackWorkerStart(env, store, () => startWorkerForPlatformDevItemIfConfigured(item, env), {
+            workItemKind: 'platform_dev',
+            platformDevItemId: item.id,
+            slackSessionId: slackSession.id,
+          })
+        : null;
       await completeSlackAgentRun(store, agentRun, {
         workItemKind: 'platform_dev',
         workItemId: item.id,
@@ -2279,6 +2308,7 @@ export async function handleSlackInteractions(request, env) {
       ? queueSlackWorkerStart(env, store, () => startWorkerForPlatformDevItemIfConfigured(item, env), {
           workItemKind: 'platform_dev',
           platformDevItemId: item.id,
+          slackSessionId: session.id,
         })
       : null;
     const confirmationCardUpdate = await updateSlackInteractionMessage(env, body, session, {
@@ -2541,6 +2571,12 @@ export async function handleSlackInteractions(request, env) {
         slackSessionId: session.id,
         slackSessionKey: session.sessionKey,
       });
+      if (!activeItem) {
+        return slackAckResponse({
+          response_type: 'ephemeral',
+          text: '这个平台需求刚刚被更新或删除了，请重新打开任务列表后再选择。',
+        });
+      }
       await store.linkPlatformDevItemToSlackSession(activeItem, session);
       await notifySlackPlatformDevStatus(env, store, activeItem, {
         stage: activeItem.status,

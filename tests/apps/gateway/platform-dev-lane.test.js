@@ -372,6 +372,11 @@ test('confirming platform request fails item when queued worker start fails', as
   assert.equal(item.errorCode, 'worker_start_failed');
   assert.equal(item.errorMessage, 'worker unavailable');
   assert.equal(app.store.getSlackSession(sessionId).activeWorkItemId, item.id);
+  const updateCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/update').at(-1);
+  assert.ok(updateCall);
+  assert.match(updateCall.body.payload.text, /失败/);
+  const events = app.store.listAgentRunEventsForWorkItem('platform_dev', item.id);
+  assert.ok(events.some((event) => event.stage === 'failed' && /worker unavailable/.test(event.text)));
 });
 
 test('high-risk platform request creates issue work and waits for gate before coding dispatch', async () => {

@@ -58,7 +58,10 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /Callback gateway on failure[\s\S]*PAGES_CALLBACK_URL: \$\{\{ inputs\.callbackUrl \}\}/);
   assert.match(workflow, /failure\(\) && hashFiles\('\.pages-artifacts\/callback\.json'\) == ''/);
   assert.match(workflow, /callbackUrl: process\.env\.PAGES_CALLBACK_URL/);
-  assert.match(workflow, /added_lines="\$\(git diff --unified=0 -- "\$ALLOWED_PATH"/);
+  assert.match(workflow, /git reset[\s\S]*git add -N "\$ALLOWED_PATH"[\s\S]*changed="\$\(git diff HEAD --name-only\)"/);
+  assert.match(workflow, /git diff HEAD -- "\$ALLOWED_PATH" > \.pages-artifacts\/site\.patch/);
+  assert.match(workflow, /added_lines="\$\(git diff HEAD --unified=0 -- "\$ALLOWED_PATH"/);
+  assert.match(workflow, /git switch -C "\$branch"[\s\S]*git reset[\s\S]*git add "\$ALLOWED_PATH"/);
   assert.match(workflow, /printf '%s\\n' "\$added_lines" \| grep -En/);
   assert.match(workflow, /gh\[pousr\]_\[A-Za-z0-9_\]\{20,\}/);
   assert.doesNotMatch(workflow, /grep -REn [^\n]+ "\$ALLOWED_PATH"/);
@@ -115,11 +118,22 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
 test('pages-preview workflow keeps deploy API ip restriction compatible', async () => {
   const workflow = await readFile(path.join(root, '.github/workflows/pages-preview.yml'), 'utf8');
 
+  assert.match(workflow, /Verify current PR head[\s\S]*gh pr view "\$PR_NUMBER"/);
+  assert.match(workflow, /current_head.*!= "\$HEAD_SHA"/);
+  assert.match(workflow, /echo "stale=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(
+    workflow,
+    /Deploy preview through pages-manager[\s\S]*if: \$\{\{ steps\.current-head\.outputs\.stale != 'true' \}\}/
+  );
+  assert.match(workflow, /source_dir="\$ALLOWED_PATH\/src"/);
+  assert.doesNotMatch(workflow, /source_dir="\$ALLOWED_PATH"\n/);
   assert.match(workflow, /-F "ip_restrict=true"/);
   assert.match(workflow, /prNumber: report\.prNumber/);
   assert.match(workflow, /headSha: report\.headSha/);
   assert.match(workflow, /prNumber: process\.env\.PR_NUMBER/);
   assert.match(workflow, /headSha: process\.env\.HEAD_SHA/);
+  assert.match(workflow, /Callback gateway[\s\S]*if: \$\{\{ steps\.current-head\.outputs\.stale != 'true' \}\}/);
+  assert.match(workflow, /Callback gateway on failure[\s\S]*steps\.current-head\.outputs\.stale != 'true'/);
   assert.doesNotMatch(workflow, /-F "ip_restrict=false"/);
 });
 
