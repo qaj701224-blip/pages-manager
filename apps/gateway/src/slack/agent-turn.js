@@ -56,6 +56,7 @@ function slackAgentRequestPayload(body, intake, context = {}) {
     messageTs: surface.messageTs || null,
     messageText: intake.text,
     text: intake.text,
+    explicitWorkItemReference: intake.explicitWorkItemReference || null,
     employeeSlug: body.employeeSlug || body.employee_slug,
     siteSlug: body.siteSlug || body.site_slug,
     slackSession,

@@ -495,6 +495,8 @@ gateway：
 
 Review Agent 不是 Coding Agent，也不是 gateway 内置 reviewer。它作为 GitHub PR 外部 reviewer 产生 comment / review / check output，再由 GitHub webhook 回到 gateway。
 
+Slack 中把已入库 Review Agent 评论整理成 blocker / suggestion / note 摘要的只读产品能力见 [slack-review-results-summary.md](./slack-review-results-summary.md)。本节只定义 Review gate 和 webhook 放行规则。
+
 处理规则：
 
 - 只有 allowlist 命中的 bot login / app / check name 才能作为 Review Agent。

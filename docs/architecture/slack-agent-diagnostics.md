@@ -4,6 +4,8 @@
 
 试用中暴露的更完整产品问题和后续优先级见 [slack-agent-product-issue-backlog.md](./slack-agent-product-issue-backlog.md)。本文件只描述诊断入口的目标形态；列表查询兜底、二次补充写入 Issue / PR、统一 Work Item 心智、按影响范围生成测试闭环等仍按 backlog 逐项推进。
 
+Review Agent 评论、blocking / suggestion / note 摘要和 site-check 结论的 Slack 展示规则见 [slack-review-results-summary.md](./slack-review-results-summary.md)。Review 结果摘要是诊断类只读能力，但比泛化任务诊断更具体，应独立维护。
+
 ## 产品定位
 
 Slack Agent 必须优先解决任务执行的黑盒感。用户可以自由提问：

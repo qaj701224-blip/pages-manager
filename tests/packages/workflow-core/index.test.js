@@ -8,6 +8,8 @@ import {
   canTransitionPlatformDevItem,
   idempotencyScopeForJob,
   idempotencyScopeForPlatformDevItem,
+  slackAgentCapabilityForIntent,
+  slackAgentCapabilityForTool,
   transitionPlatformDevItem,
   transitionPlatformDevItemWithBridge,
   transitionJob,
@@ -46,6 +48,17 @@ test('buildPublishingJob creates a received job with an idempotency scope', () =
     email: 'zhangsan@example.com',
   });
   assert.equal(idempotencyScopeForJob(job), 'slack:user:slack:T:user:evt_1');
+});
+
+test('Slack Agent review results capability is read-only and intent addressable', () => {
+  const capability = slackAgentCapabilityForTool('summarize_review_results');
+
+  assert.equal(capability.name, 'summarize_review_results');
+  assert.equal(capability.sideEffect, 'read');
+  assert.equal(capability.confirmation, 'none');
+  assert.deepEqual(capability.args.kind, ['current', 'issue', 'pr', 'unknown']);
+  assert.equal(slackAgentCapabilityForIntent('summarize_review_results'), capability);
+  assert.equal(slackAgentCapabilityForIntent('list_review_results'), capability);
 });
 
 test('first priority status transitions allow preview loop', () => {

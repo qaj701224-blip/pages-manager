@@ -6017,6 +6017,702 @@ test('Slack Agent diagnosis card intent drives diagnosis copy and action order',
   assert.doesNotMatch(visible, /删除资源|delete_resource/);
 });
 
+test('Slack review result query summarizes visible Review Agent comments', async () => {
+  const app = createGatewayApp();
+  const agentRequests = [];
+  const headSha = 'c'.repeat(40);
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'review-results-visible-job',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Profile page',
+    summary: '个人主页',
+  }).job;
+  const updatedJob = app.store.patchJob(job.id, {
+    status: 'reviewing',
+    issueNumber: 81,
+    issueUrl: 'https://github.example/org/pages-manager/issues/81',
+    prNumber: 88,
+    prUrl: 'https://github.example/org/pages-manager/pull/88',
+    headSha,
+  });
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000151',
+    channelId: 'D1',
+    threadTs: '1710000000.000151',
+    dmChannelId: 'D1',
+    activeJobId: updatedJob.id,
+    activeWorkItemKind: 'site_publishing',
+    activeWorkItemId: updatedJob.id,
+    activeIssueNumber: 81,
+    activePrNumber: 88,
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  app.store.linkJobToSlackSession(updatedJob, session);
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 88,
+    headSha,
+    githubCommentNodeId: 'RRC_blocking_1',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    sourceType: 'inline_comment',
+    status: 'open',
+    classification: 'blocking',
+    path: 'apps/gateway/src/slack/review-results.js',
+    line: 42,
+    body: 'Blocking: 这里会把其它 Slack 用户的 review comment 暴露出来。',
+    bodyRedacted: 'Blocking: 这里会把其它 Slack 用户的 review comment 暴露出来。',
+    createdAt: '2026-06-24T00:00:00.000Z',
+    updatedAt: '2026-06-24T00:00:00.000Z',
+  });
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 88,
+    headSha,
+    githubCommentNodeId: 'RRC_suggestion_1',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    sourceType: 'review_summary',
+    status: 'open',
+    classification: 'suggestion',
+    body: 'Suggestion: 可以把 Slack 展示文案再收敛一点。',
+    bodyRedacted: 'Suggestion: 可以把 Slack 展示文案再收敛一点。',
+    createdAt: '2026-06-24T00:01:00.000Z',
+    updatedAt: '2026-06-24T00:01:00.000Z',
+  });
+  await recordSuccessfulSiteCheck(app, { prNumber: 88, headSha });
+
+  const eventId = 'Ev-review-results-visible-1';
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: eventId,
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000151',
+          text: 'review 说了什么？有哪些 blocker？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        agentRequests.push(payload);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'summarize_review_results',
+                visibleReply: '我来整理当前 PR 的 Review 结果。',
+                summary: '整理当前 PR 的 Review 结果。',
+                toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'summarize_review_results',
+                    visibleReply: '我来整理当前 PR 的 Review 结果。',
+                    summary: '整理当前 PR 的 Review 结果。',
+                    toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const memory = app.store.getSessionMemory(body.slackSessionId);
+  const delivery = app.store.slackDeliveries.get(`T1:${eventId}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(agentRequests.length, 1);
+  assert.equal(body.action, 'summarize_review_results');
+  assert.equal(body.accepted, true);
+  assert.equal(body.reviewResults.conclusion, 'blocked');
+  assert.equal(body.reviewResults.counts.blocking, 1);
+  assert.equal(body.reviewResults.counts.suggestion, 1);
+  assert.match(body.replyText, /Review 目前有 1 条需要先处理的问题/);
+  assert.match(body.replyText, /apps\/gateway\/src\/slack\/review-results\.js:42/);
+  assert.match(body.replyText, /其它 Slack 用户的 review comment/);
+  assert.match(body.replyText, /可以把 Slack 展示文案再收敛一点/);
+  assert.equal(findBlockAction(body.blocks, 'open_pr')?.url, 'https://github.example/org/pages-manager/pull/88');
+  assert.equal(findBlockAction(body.blocks, 'open_workflow')?.url, 'https://github.example/org/pages-manager/actions/runs/88');
+  assert.equal(memory.requirements.reviewResults.prNumber, 88);
+  assert.equal(memory.requirements.reviewResults.conclusion, 'blocked');
+  assert.match(memory.conversationContext.lastAssistantMessage.text, /Review 目前有 1 条需要先处理的问题/);
+  assert.match(memory.conversationContext.lastAssistantMessage.text, /apps\/gateway\/src\/slack\/review-results\.js:42/);
+  assert.equal(delivery.resultType, 'status_returned');
+});
+
+test('Slack review result query refuses another user PR', async () => {
+  const app = createGatewayApp();
+  const agentRequests = [];
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U2',
+    idempotencyKey: 'review-results-cross-user-job',
+    employeeSlug: 'u2',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U2 profile page',
+    summary: '别人的主页',
+  }).job;
+  const updatedJob = app.store.patchJob(job.id, {
+    status: 'reviewing',
+    issueNumber: 89,
+    prNumber: 90,
+    prUrl: 'https://github.example/org/pages-manager/pull/90',
+  });
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U2',
+    sessionKey: 'dm:D2:1710000000.000152',
+    channelId: 'D2',
+    threadTs: '1710000000.000152',
+    dmChannelId: 'D2',
+    activeJobId: updatedJob.id,
+    activeWorkItemKind: 'site_publishing',
+    activeWorkItemId: updatedJob.id,
+    activeIssueNumber: 89,
+    activePrNumber: 90,
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  app.store.linkJobToSlackSession(updatedJob, session);
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-review-results-cross-user-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000152',
+          text: 'PR #90 review 结果呢',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        agentRequests.push(payload);
+        assert.deepEqual(payload.explicitWorkItemReference, { kind: 'pr', number: 90 });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'summarize_review_results',
+                visibleReply: '我来整理 PR #90 的 Review 结果。',
+                summary: '整理 PR #90 的 Review 结果。',
+                toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'summarize_review_results',
+                    visibleReply: '我来整理 PR #90 的 Review 结果。',
+                    summary: '整理 PR #90 的 Review 结果。',
+                    toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(agentRequests.length, 1);
+  assert.equal(body.action, 'summarize_review_results_forbidden');
+  assert.equal(body.accepted, false);
+  assert.match(body.replyText, /不属于当前 Slack 用户/);
+});
+
+test('Slack review result query keeps explicit PR target above agent current target', async () => {
+  const app = createGatewayApp();
+  const headShaCurrent = 'd'.repeat(40);
+  const headShaExplicit = 'e'.repeat(40);
+  const currentJob = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'review-results-current-job',
+    employeeSlug: 'u1',
+    siteSlug: 'current',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Current profile page',
+    summary: '当前任务',
+  }).job;
+  const explicitJob = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'review-results-explicit-job',
+    employeeSlug: 'u1',
+    siteSlug: 'explicit',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Explicit profile page',
+    summary: '显式任务',
+  }).job;
+  const updatedCurrent = app.store.patchJob(currentJob.id, {
+    status: 'reviewing',
+    issueNumber: 81,
+    prNumber: 88,
+    prUrl: 'https://github.example/org/pages-manager/pull/88',
+    headSha: headShaCurrent,
+  });
+  const updatedExplicit = app.store.patchJob(explicitJob.id, {
+    status: 'reviewing',
+    issueNumber: 82,
+    prNumber: 90,
+    prUrl: 'https://github.example/org/pages-manager/pull/90',
+    headSha: headShaExplicit,
+  });
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000153',
+    channelId: 'D1',
+    threadTs: '1710000000.000153',
+    dmChannelId: 'D1',
+    activeJobId: updatedCurrent.id,
+    activeWorkItemKind: 'site_publishing',
+    activeWorkItemId: updatedCurrent.id,
+    activeIssueNumber: 81,
+    activePrNumber: 88,
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  app.store.linkJobToSlackSession(updatedExplicit, session);
+  app.store.linkJobToSlackSession(updatedCurrent, session);
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 88,
+    headSha: headShaCurrent,
+    githubCommentNodeId: 'RRC_current_1',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    sourceType: 'review_summary',
+    status: 'open',
+    classification: 'suggestion',
+    body: 'Suggestion: current PR comment should not be selected.',
+    bodyRedacted: 'Suggestion: current PR comment should not be selected.',
+    createdAt: '2026-06-24T00:02:00.000Z',
+    updatedAt: '2026-06-24T00:02:00.000Z',
+  });
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 90,
+    headSha: headShaExplicit,
+    githubCommentNodeId: 'RRC_explicit_1',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    sourceType: 'inline_comment',
+    status: 'open',
+    classification: 'blocking',
+    path: 'apps/gateway/src/control-plane/handlers.js',
+    line: 196,
+    body: 'Blocking: explicit PR target must override agent current args.',
+    bodyRedacted: 'Blocking: explicit PR target must override agent current args.',
+    createdAt: '2026-06-24T00:03:00.000Z',
+    updatedAt: '2026-06-24T00:03:00.000Z',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-review-results-explicit-target-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000153',
+          text: 'PR #90 review 结果呢',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        assert.deepEqual(payload.explicitWorkItemReference, { kind: 'pr', number: 90 });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'summarize_review_results',
+                visibleReply: '我来整理当前 PR 的 Review 结果。',
+                summary: '整理当前 PR 的 Review 结果。',
+                toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'summarize_review_results',
+                    visibleReply: '我来整理当前 PR 的 Review 结果。',
+                    summary: '整理当前 PR 的 Review 结果。',
+                    toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'summarize_review_results');
+  assert.equal(body.reviewResults.prNumber, 90);
+  assert.match(body.replyText, /explicit PR target/);
+  assert.doesNotMatch(body.replyText, /current PR comment/);
+});
+
+test('Slack review result query keeps current session target above agent-inferred target', async () => {
+  const app = createGatewayApp();
+  const headShaCurrent = 'f'.repeat(40);
+  const headShaAgent = 'a'.repeat(40);
+  const currentJob = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'review-results-current-precedence-job',
+    employeeSlug: 'u1',
+    siteSlug: 'current',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Current profile page',
+    summary: '当前任务',
+  }).job;
+  const agentJob = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'review-results-agent-target-job',
+    employeeSlug: 'u1',
+    siteSlug: 'agent-target',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Agent target profile page',
+    summary: 'Agent 推断任务',
+  }).job;
+  const updatedCurrent = app.store.patchJob(currentJob.id, {
+    status: 'reviewing',
+    issueNumber: 83,
+    prNumber: 88,
+    prUrl: 'https://github.example/org/pages-manager/pull/88',
+    headSha: headShaCurrent,
+  });
+  const updatedAgent = app.store.patchJob(agentJob.id, {
+    status: 'reviewing',
+    issueNumber: 84,
+    prNumber: 90,
+    prUrl: 'https://github.example/org/pages-manager/pull/90',
+    headSha: headShaAgent,
+  });
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000154',
+    channelId: 'D1',
+    threadTs: '1710000000.000154',
+    dmChannelId: 'D1',
+    activeJobId: updatedCurrent.id,
+    activeWorkItemKind: 'site_publishing',
+    activeWorkItemId: updatedCurrent.id,
+    activeIssueNumber: 83,
+    activePrNumber: 88,
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  app.store.linkJobToSlackSession(updatedAgent, session);
+  app.store.linkJobToSlackSession(updatedCurrent, session);
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 88,
+    headSha: headShaCurrent,
+    githubCommentNodeId: 'RRC_current_precedence_1',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    sourceType: 'inline_comment',
+    status: 'open',
+    classification: 'blocking',
+    body: 'Blocking: current session target must win when user did not name another PR.',
+    bodyRedacted: 'Blocking: current session target must win when user did not name another PR.',
+    createdAt: '2026-06-24T00:04:00.000Z',
+    updatedAt: '2026-06-24T00:04:00.000Z',
+  });
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 90,
+    headSha: headShaAgent,
+    githubCommentNodeId: 'RRC_agent_target_1',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    sourceType: 'review_summary',
+    status: 'open',
+    classification: 'suggestion',
+    body: 'Suggestion: agent inferred target should not win.',
+    bodyRedacted: 'Suggestion: agent inferred target should not win.',
+    createdAt: '2026-06-24T00:05:00.000Z',
+    updatedAt: '2026-06-24T00:05:00.000Z',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-review-results-current-precedence-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000154',
+          text: 'review 结果呢',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        assert.equal(payload.explicitWorkItemReference, null);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'summarize_review_results',
+                visibleReply: '我来整理当前 PR 的 Review 结果。',
+                summary: '整理当前 PR 的 Review 结果。',
+                toolCall: { name: 'summarize_review_results', args: { kind: 'pr', number: 90, maxItems: 5 } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'summarize_review_results',
+                    visibleReply: '我来整理当前 PR 的 Review 结果。',
+                    summary: '整理当前 PR 的 Review 结果。',
+                    toolCall: { name: 'summarize_review_results', args: { kind: 'pr', number: 90, maxItems: 5 } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'summarize_review_results');
+  assert.equal(body.reviewResults.prNumber, 88);
+  assert.match(body.replyText, /current session target/);
+  assert.doesNotMatch(body.replyText, /agent inferred target/);
+});
+
+test('Slack review result query can use a single previous work-item list target', async () => {
+  const app = createGatewayApp();
+  const headSha = '9'.repeat(40);
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'review-results-list-focus-job',
+    employeeSlug: 'u1',
+    siteSlug: 'list-focus',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'List focus profile page',
+    summary: '上一轮列表里的任务',
+  }).job;
+  const updatedJob = app.store.patchJob(job.id, {
+    status: 'reviewing',
+    issueNumber: 85,
+    prNumber: 91,
+    prUrl: 'https://github.example/org/pages-manager/pull/91',
+    headSha,
+  });
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm-thread:D1:1710000000.000155',
+    channelId: 'D1',
+    threadTs: '1710000000.000155',
+    dmChannelId: 'D1',
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  app.store.linkJobToSlackSession(updatedJob, session);
+  app.store.updateSessionMemory(session.id, {
+    lastWorkItemList: {
+      action: 'list_work_items',
+      workItemState: 'active',
+      total: 1,
+      shown: [
+        {
+          id: updatedJob.id,
+          status: 'reviewing',
+          siteSlug: updatedJob.siteSlug,
+          issueNumber: 85,
+          prNumber: 91,
+          previewUrl: null,
+        },
+      ],
+      createdAt: '2026-06-24T00:06:00.000Z',
+    },
+  });
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 91,
+    headSha,
+    githubCommentNodeId: 'RRC_list_focus_1',
+    reviewAgentLogin: 'chatgpt-codex-connector[bot]',
+    sourceType: 'inline_comment',
+    status: 'open',
+    classification: 'blocking',
+    body: 'Blocking: single previous list item can be the review target.',
+    bodyRedacted: 'Blocking: single previous list item can be the review target.',
+    createdAt: '2026-06-24T00:06:00.000Z',
+    updatedAt: '2026-06-24T00:06:00.000Z',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-review-results-list-focus-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000155',
+          thread_ts: '1710000000.000155',
+          text: 'review 结果呢',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        assert.equal(payload.conversationContext.lastWorkItemList.total, 1);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'summarize_review_results',
+                visibleReply: '我来整理刚才那个 PR 的 Review 结果。',
+                summary: '整理刚才那个 PR 的 Review 结果。',
+                toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'summarize_review_results',
+                    visibleReply: '我来整理刚才那个 PR 的 Review 结果。',
+                    summary: '整理刚才那个 PR 的 Review 结果。',
+                    toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'summarize_review_results');
+  assert.equal(body.reviewResults.prNumber, 91);
+  assert.match(body.replyText, /single previous list item/);
+});
+
 test('Slack Agent diagnosis summarizes failed GitHub Actions job logs', async () => {
   const app = createGatewayApp();
   const headSha = 'b'.repeat(40);

@@ -98,6 +98,8 @@ export const SLACK_AGENT_REPEAT_TARGETS = [
   'previous_assistant_message',
 ];
 
+export const SLACK_AGENT_REVIEW_RESULT_TARGET_KINDS = ['current', 'issue', 'pr', 'unknown'];
+
 export const SLACK_AGENT_CAPABILITIES = {
   list_my_work_items: {
     name: 'list_my_work_items',
@@ -163,6 +165,21 @@ export const SLACK_AGENT_CAPABILITIES = {
       timeWindowMinutes: 'positive_integer',
     },
     description: 'Explain status, blocker, workflow, and safe log summary for the current work item.',
+  },
+  summarize_review_results: {
+    name: 'summarize_review_results',
+    intents: ['summarize_review_results', 'list_review_results'],
+    dialogAct: 'run_tool',
+    sideEffect: 'read',
+    confirmation: 'none',
+    cardKind: 'diagnosis',
+    args: {
+      kind: SLACK_AGENT_REVIEW_RESULT_TARGET_KINDS,
+      number: 'positive_integer',
+      includeResolved: 'boolean',
+      maxItems: 'positive_integer',
+    },
+    description: 'Summarize visible Review Agent comments and site-check state for the current PR.',
   },
   answer_repo_question: {
     name: 'answer_repo_question',
