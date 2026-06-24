@@ -17,6 +17,24 @@ import { inactiveSlackWorkItemReply, isActionableSlackWorkItem } from './work-it
 
 const AGENT_EVENT_CODING_FIX_DISPATCHED = 'coding_fix_dispatched';
 const AGENT_EVENT_SLACK_FOLLOWUP_QUEUED = 'slack_followup_queued';
+const UNRECOVERABLE_PLATFORM_DEV_STATUSES = new Set(['merged', 'closed_unmerged', 'cancelled']);
+
+function platformDevSlackWorkItem(item = null) {
+  if (!item) return null;
+  return {
+    ...item,
+    workItemKind: 'platform_dev',
+    issueNumber: item.githubIssueNumber,
+    issueUrl: item.githubIssueUrl,
+    prNumber: item.githubPrNumber,
+    prUrl: item.githubPrUrl,
+  };
+}
+
+function isRecoverablePlatformDevSlackItem(item = {}) {
+  if (!item?.id) return false;
+  return !UNRECOVERABLE_PLATFORM_DEV_STATUSES.has(item.status);
+}
 
 export async function activeJobForSlackSession(store, slackSession) {
   if (slackSession?.activeJobId) {
@@ -33,14 +51,17 @@ export async function activeWorkItemForSlackSession(store, slackSession) {
   if (slackSession?.activeWorkItemKind === 'platform_dev' && slackSession.activeWorkItemId && store.getPlatformDevItem) {
     const item = await store.getPlatformDevItem(slackSession.activeWorkItemId);
     if (item) {
-      return {
-        ...item,
-        workItemKind: 'platform_dev',
-        issueNumber: item.githubIssueNumber,
-        issueUrl: item.githubIssueUrl,
-        prNumber: item.githubPrNumber,
-        prUrl: item.githubPrUrl,
-      };
+      return platformDevSlackWorkItem(item);
+    }
+  }
+
+  if (slackSession?.id && store.listWorkItemLinksForSlackSession && store.getPlatformDevItem) {
+    const links = await store.listWorkItemLinksForSlackSession(slackSession.id);
+    for (const link of links) {
+      if (link?.workItemKind !== 'platform_dev') continue;
+      const itemId = link.platformDevItemId || link.workItemId;
+      const item = itemId ? await store.getPlatformDevItem(itemId) : null;
+      if (isRecoverablePlatformDevSlackItem(item)) return platformDevSlackWorkItem(item);
     }
   }
 
@@ -243,7 +264,9 @@ function canDispatchFixForJob(job) {
 function canDispatchFixForPlatformDevItem(item = {}) {
   if (!item.agentEligible) return false;
   if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
-  return ['issue_created', 'pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge', 'agent_queued'].includes(item.status);
+  return ['issue_created', 'pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge', 'agent_queued', 'failed'].includes(
+    item.status
+  );
 }
 
 function platformFollowupCardSummary(feedback = '') {
@@ -252,7 +275,7 @@ function platformFollowupCardSummary(feedback = '') {
 }
 
 function githubWriteConfigForFollowup(env = {}) {
-  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN || env.GITHUB_STATUS_TOKEN;
+  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
   const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
   if (!token || !repoFullName) return null;
   return {

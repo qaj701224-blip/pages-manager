@@ -62,6 +62,7 @@ function canDispatchPlatformFix(item = {}) {
     'review_blocked',
     'ready_to_merge',
     'agent_queued',
+    'failed',
   ];
   return dispatchableStatuses.includes(item.status);
 }
@@ -176,7 +177,9 @@ export async function dispatchPlatformDevFixIfNeeded(store, item, env, options =
 
 export async function dispatchQueuedPlatformDevFollowupIfNeeded(store, item, env) {
   if (!item?.id || !store?.listAgentRunEventsForWorkItem) return null;
-  if (!['pr_created', 'ci_failed', 'review_waiting', 'review_blocked', 'ready_to_merge'].includes(item.status)) return null;
+  if (!['pr_created', 'ci_failed', 'review_waiting', 'review_blocked', 'ready_to_merge', 'failed'].includes(item.status)) {
+    return null;
+  }
   const events = await store.listAgentRunEventsForWorkItem('platform_dev', item.id);
   const queued = queuedFollowupsAfterLastSlackDispatch(events);
   if (!queued.length) return null;

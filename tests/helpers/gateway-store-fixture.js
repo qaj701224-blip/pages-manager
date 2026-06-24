@@ -38,6 +38,7 @@ const REVIEW_ACTIVE_PLATFORM_STATUSES = new Set([
   'review_waiting',
   'review_blocked',
   'ready_to_merge',
+  'failed',
 ]);
 const SLACK_ACTIVE_JOB_STATUSES = new Set([
   'received',

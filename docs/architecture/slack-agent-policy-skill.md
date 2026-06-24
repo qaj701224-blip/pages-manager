@@ -105,23 +105,23 @@ ECS 当前构建路径会把 `apps/` 和 `docs/` 都复制进镜像：`Dockerfil
 `package.js` 应导出稳定对象：
 
 ```js
-export const SLACK_AGENT_POLICY_PACKAGE_VERSION = 'slack-agent-policy-2026-06-23.1';
+export const SLACK_AGENT_POLICY_PACKAGE_VERSION = 'slack-agent-policy-2026-06-24.1';
 
 export const SLACK_AGENT_POLICY_PACKAGE = {
   version: SLACK_AGENT_POLICY_PACKAGE_VERSION,
-  fragments: [
-    'role',
+  skills: [
+    'core',
     'safety',
-    'lanes',
-    'intent-priority',
     'tool-contract',
-    'output-schema',
     'product-language',
+    'output-schema',
     'conversation-context',
+    'work-item-continuation',
     'repo-question',
     'diagnostics',
     'platform-dev',
     'site-publishing',
+    'product-design',
   ],
 };
 ```
@@ -132,6 +132,36 @@ export const SLACK_AGENT_POLICY_PACKAGE = {
 - 只改注释、拼写、测试 helper，不需要 bump。
 - `AgentRun` 应记录 `policyPackageVersion`，便于线上误判复盘。
 - 模型日志可以记录 fragment 名称和版本，不要记录 secret 或完整用户隐私上下文。
+
+## Runtime Skill Registry
+
+当前运行态不再把所有规则永久拼成一段大 prompt。`apps/slack-agent/src/policy/skills.js` 定义可组合 skill，`compileSlackAgentPolicy()` 每轮根据当前文本、deterministic fallback、`sessionContext`、`conversationContext` 和 `issueLinks` 选择本轮需要的 skill。
+
+Always-on skill：
+
+- `core`：角色、lane 和 side effect 边界。
+- `safety`：secret、跨用户、批量破坏和日志边界。
+- `tool-contract`：允许的 toolCall 和 gateway 执行边界。
+- `product-language`：用户可见文案约束。
+- `output-schema`：JSON 输出合同。
+
+Context / lane skill：
+
+- `conversation-context`：上一条消息、当前焦点、列表追问、复读和可见范围。
+- `work-item-continuation`：`这个 issue / 接着改 / 改为 / 不再修改 X / 换成 Y` 续接当前任务。
+- `repo-question`：仓库只读问答、实现方案咨询和 evidence 限制。
+- `diagnostics`：状态、失败、日志、workflow、重试和转人工入口。
+- `platform-dev`：明确平台研发需求、风险、area 和人工 gate。
+- `site-publishing`：个人站点创建、preview follow-up 和站点归属 hint。
+- `product-design`：产品视角、方案评审、用户心智和是否偏离初衷。
+
+选择规则：
+
+- `selectedSkills` 会写入 Slack Agent user payload，便于线上复盘模型当轮看到的产品策略。
+- 语义上仍由模型基于 selected skills 决策；deterministic selector 只决定本轮 prompt 应该带哪些技能，不能绕过 gateway 权限。
+- `work-item-continuation` 是防重复 issue 的关键 skill：只要当前 thread/session 有 active 或 recoverable work item，用户的“这个 / 刚才 / 接着 / 改为”默认续接当前任务。
+- `failed` 的 Platform Dev Item 如果仍有关联 Issue，会保留为 recoverable context；同一 Slack thread 的补充会更新原 Issue 并重试，不会新建 Issue。
+- 如果用户明确说“另开一个 / 新建另一个 / 创建新的 issue”，才允许在当前 thread 进入新的创建确认。
 
 ## Prompt Compiler
 
@@ -382,6 +412,16 @@ Gateway 必须继续：
 - “上一条消息 / 刚才那条” -> 当前输入之前最近一条 visible turn。
 - 找不到时回复：“当前会话里我没有找到可复读的上一条消息。”不要编造。
 
+### work-item-continuation.md
+
+必须包含：
+
+- 当前 session、conversation focus、issueLinks 或上一条任务卡片指向一个任务时，“这个 issue / 接着改 / 改为 / 不再修改 X / 换成 Y”默认续接当前任务。
+- 续接当前任务时返回 `append_requirement` 或 `modify_existing_preview`，toolCall 返回 `record_followup`，不要返回 `confirm_platform_issue`。
+- `failed` 的 Platform Dev Item 只要仍关联当前 Issue，就是 recoverable context；补充需求应写回同一个 Issue 并请求新一轮处理。
+- `merged`、`closed_unmerged`、`cancelled` 不再默认续接；用户需要通过列表或明确编号恢复/查看。
+- 用户明确说“另开一个 / 新建另一个 / 创建新的 issue”时，才允许在当前 thread 进入新的创建确认。
+
 ### output-schema.md
 
 模型必须只返回 JSON object，不返回 Markdown 或代码块。字段：
@@ -467,6 +507,14 @@ Normalization 规则：
 - 模型给出的 employeeSlug 只是 hint，最终目录由 gateway 根据 Slack 身份派生。
 - 已有 active preview 时，设计调整应续接当前任务，不新建。
 - 站点 PR 的后续执行只能改目标 `sites/<employeeSlug>/<siteSlug>/`，但这个执行约束由 site-check / workflow 保证，不由 Slack Agent 保证。
+
+### product-design.md
+
+必须包含：
+
+- “从产品角度 / 用户角度 / 是否偏离初衷 / 方案是否合理 / 是否应该这样做”默认是咨询，不是创建需求。
+- 可以给出建议、边界和取舍；需要改代码时必须等用户明确说“开始修改 / 创建需求 / 帮我实现”。
+- 文案保持克制，用户心智围绕任务、Issue、PR、Preview、Workflow、失败原因和建议操作，不暴露底座服务。
 
 ## Golden Cases
 
