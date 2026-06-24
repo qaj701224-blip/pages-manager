@@ -331,13 +331,12 @@ function createCodexBackend(env) {
       const lastMessagePath = path.join(cwd, '.pages-artifacts', `platform-agent-codex-round-${round}.md`);
       const providerId = env.PLATFORM_AGENT_CODEX_PROVIDER_ID || 'platform_agent_gateway';
       const providerConfig = [
-        '{',
         `name=${tomlString('Platform Agent Gateway')}`,
         `base_url=${tomlString(codexBaseUrlFromEnv(env))}`,
         'env_key="AGENT_CODE_API_KEY"',
         'wire_api="responses"',
-        '}',
       ].join(',');
+      const providerInlineTable = `{${providerConfig}}`;
       const args = [
         'exec',
         '--cd',
@@ -352,7 +351,7 @@ function createCodexBackend(env) {
         '-c',
         `model_provider=${tomlString(providerId)}`,
         '-c',
-        `model_providers.${providerId}=${providerConfig}`,
+        `model_providers.${providerId}=${providerInlineTable}`,
       ];
       const model = codexModelFromEnv(env);
       if (model) args.push('--model', model);
