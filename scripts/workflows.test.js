@@ -248,6 +248,17 @@ test('platform agent diagnostics artifact excludes prompt and context markdown',
   assert.doesNotMatch(workflow, /\.pages-artifacts\/platform-agent-\*\.json/);
 });
 
+test('platform agent PR body does not shell-expand workflow input text', () => {
+  const workflow = readWorkflow('.github/workflows/platform-agent.yml');
+
+  assert.match(workflow, /BODY_FILE="\$body_file" node <<'NODE'/);
+  assert.match(workflow, /env\.REQUEST_SUMMARY \|\| ''/);
+  assert.match(workflow, /Closes #\$\{issueNumber\}/);
+  assert.match(workflow, /- Issue: \$\{issueReference\}/);
+  assert.doesNotMatch(workflow, /cat > "\$body_file" <<EOF/);
+  assert.doesNotMatch(workflow, /REQUEST_SUMMARY[\s\S]{0,200}\$\(if \[\[ -n "\$\{ISSUE_NUMBER\}"/);
+});
+
 test('v1 deploy workflows do not inject KV capability secrets', () => {
   for (const [name, path] of deployWorkflows) {
     const workflow = readWorkflow(path);

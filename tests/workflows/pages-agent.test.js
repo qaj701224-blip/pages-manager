@@ -99,8 +99,12 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /AGENT_BACKEND:[^\n]*(vars\.AGENT_BACKEND|codex)/);
   assert.doesNotMatch(workflow, /AGENT_CODE_API_KEY is required for Platform Agent/);
   assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''/);
-  assert.match(workflow, /Closes #%s/);
-  assert.match(workflow, /Issue: \$\(if \[\[ -n "\$\{ISSUE_NUMBER\}" \]\]; then printf '#%s'/);
+  assert.match(workflow, /BODY_FILE="\$body_file" node <<'NODE'/);
+  assert.match(workflow, /const issueNumber = String\(env\.ISSUE_NUMBER \|\| ''\)\.trim\(\);/);
+  assert.match(workflow, /Closes #\$\{issueNumber\}/);
+  assert.match(workflow, /- Issue: \$\{issueReference\}/);
+  assert.doesNotMatch(workflow, /cat > "\$body_file" <<EOF/);
+  assert.doesNotMatch(workflow, /Issue: \$\(if \[\[ -n "\$\{ISSUE_NUMBER\}" \]\]/);
   assert.match(workflow, /added_lines="\$\(git diff HEAD --unified=0 -- "\$path"/);
   assert.match(workflow, /added_lines="\$\(sed 's\/\^\/\+\/' "\$path"\)"/);
   assert.match(workflow, /Upload platform agent diagnostics[\s\S]*if: always\(\)/);

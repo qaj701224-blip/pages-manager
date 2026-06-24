@@ -169,6 +169,7 @@ issue body 必须包含：
 - Codex CLI 在进入真实 coding round 前先执行 runner 的 `--codex-preflight`，用同一套 provider 参数校验 CLI 版本、TOML 配置、base URL 和必需凭据。
 - 运行 `pnpm lint` 和 `pnpm test`。
 - 做基础 secret scan，并按包含未跟踪文件的 changed-file 列表逐个读取内容扫描；`.pages-artifacts/**` 只作为 callback / report 临时目录，`.pages-trusted/**` 只作为可信 helper checkout，二者不参与目标仓库 diff、secret scan 或 commit。
+- 创建 / 更新 PR 时，PR body 由 Node 读取 workflow env 并写入临时文件；不可信的 request / review / follow-up 文本不能通过 bash heredoc 或 shell 模板展开生成，避免 `$(...)`、反引号等内容进入 runner shell 求值路径。
 - 通过 `/internal/executor-callback` 回写 `agent_running`、`pr_created` 或失败。
 - 无代码变更视为失败，不会把空 PR 或空执行当成成功。
 - 不直接合并 `master` / `main`；平台 PR 必须继续受 Review、CI 和 GitHub Rulesets gate 约束。

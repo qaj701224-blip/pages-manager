@@ -375,21 +375,25 @@ jobs:
         run: |
           set -euo pipefail
           body_file="$RUNNER_TEMP/platform-pr-body.md"
-          cat > "$body_file" <<EOF
-          ## 背景
+          BODY_FILE="$body_file" node <<'NODE'
+          const { writeFileSync } = require('node:fs');
 
-          ${REQUEST_SUMMARY}
+          const env = process.env;
+          const issueNumber = String(env.ISSUE_NUMBER || '').trim();
+          const issueReference = issueNumber ? `#${issueNumber}` : '未关联';
+          const closeLine = issueNumber ? `\nCloses #${issueNumber}\n` : '';
+          const body = `## 背景
 
-          $(if [[ -n "${ISSUE_NUMBER}" ]]; then printf 'Closes #%s\n' "${ISSUE_NUMBER}"; fi)
-
+          ${env.REQUEST_SUMMARY || ''}
+          ${closeLine}
           ## 平台需求
 
-          - Item: ${PLATFORM_DEV_ITEM_ID}
-          - Type: ${ISSUE_TYPE}
-          - Areas: ${AREAS}
-          - Risk: ${RISK}
-          - Gate approved: ${GATE_APPROVED}
-          - Issue: $(if [[ -n "${ISSUE_NUMBER}" ]]; then printf '#%s' "${ISSUE_NUMBER}"; else printf '未关联'; fi)
+          - Item: ${env.PLATFORM_DEV_ITEM_ID || ''}
+          - Type: ${env.ISSUE_TYPE || ''}
+          - Areas: ${env.AREAS || ''}
+          - Risk: ${env.RISK || ''}
+          - Gate approved: ${env.GATE_APPROVED || ''}
+          - Issue: ${issueReference}
 
           ## 验证
 
@@ -398,7 +402,7 @@ jobs:
 
           ## 风险与边界
 
-          - Risk: ${RISK}
+          - Risk: ${env.RISK || ''}
           - Platform Dev Lane 可以修改 pages-manager repo 内与 issue 直接相关的文件。
           - 本 PR 不触发 production deploy，不读取 Cloudflare / Aliyun / ACK / K8s 部署 secret。
           - 如涉及 .github/**、k8s/**、Dockerfile 或部署脚本，必须按 high risk 走人工 gate 后再 dispatch。
@@ -410,7 +414,9 @@ jobs:
           - [ ] 行为变更已有测试覆盖
           - [ ] 已跑 pnpm lint
           - [ ] 已跑 pnpm test
-          EOF
+          `;
+          writeFileSync(env.BODY_FILE, body);
+          NODE
           existing="$(gh pr list --head "${{ steps.branch.outputs.branch }}" --json number --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             gh pr edit "$existing" --title "feat: ${REQUEST_TITLE}" --body-file "$body_file"
