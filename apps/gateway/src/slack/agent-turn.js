@@ -24,7 +24,12 @@ const SHORT_QUERY_TURN_RE = new RegExp(
 
 function hasActiveSlackTarget(slackSession) {
   return Boolean(
-    slackSession?.activeJobId || slackSession?.activeIssueNumber || slackSession?.activePrNumber || slackSession?.activePreviewUrl
+    slackSession?.activeJobId ||
+      slackSession?.activeWorkItemId ||
+      slackSession?.activeWorkItemKind ||
+      slackSession?.activeIssueNumber ||
+      slackSession?.activePrNumber ||
+      slackSession?.activePreviewUrl
   );
 }
 

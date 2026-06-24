@@ -176,6 +176,26 @@ test('PlatformDevItem transitions cover issue, agent, PR, CI, review and merge',
   assert.equal(canTransitionPlatformDevItem('merged', 'agent_running'), false);
 });
 
+test('PlatformDevItem failed state can be recovered into a new agent round', () => {
+  const item = buildPlatformDevItem(
+    {
+      requestedById: 'usr_1',
+      idempotencyKey: 'key_recover_failed',
+      title: '平台开发',
+      summary: '平台开发',
+    },
+    { id: 'pdev_recover_failed', status: 'failed' }
+  );
+  const updated = transitionPlatformDevItem(item, 'agent_queued', {
+    errorCode: null,
+    errorMessage: null,
+  });
+
+  assert.equal(canTransitionPlatformDevItem('failed', 'agent_queued'), true);
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(updated.errorCode, null);
+});
+
 test('PlatformDevItem bridge transitions normalize late executor callbacks', () => {
   const item = buildPlatformDevItem(
     {

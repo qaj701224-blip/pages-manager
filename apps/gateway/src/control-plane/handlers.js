@@ -220,6 +220,7 @@ function hasActiveSlackTarget(slackSession) {
   return Boolean(
     slackSession?.activeJobId ||
       slackSession?.activeWorkItemId ||
+      slackSession?.activeWorkItemKind ||
       slackSession?.activeIssueNumber ||
       slackSession?.activePrNumber ||
       slackSession?.activePreviewUrl
@@ -233,7 +234,13 @@ function shouldAnalyzeSlackTurn(intake, slackSession) {
 }
 
 function looksLikeSlackFollowupText(text = '') {
-  return /(preview|预览|不满意|继续|调整|修改|改成|换成|加|增加|删除|删掉|标题|文案|颜色|布局|风格|重新|再来)/i.test(text);
+  return /(preview|预览|不满意|继续|接着|续上|调整|修改|修复|改成|改为|换成|不再|不要再|补充|追加|加|增加|删除|删掉|标题|文案|颜色|布局|风格|重新|再来)/i.test(
+    text
+  );
+}
+
+function looksLikeExplicitNewWorkItemText(text = '') {
+  return /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i.test(text);
 }
 
 function isSlackFollowupIntent(analysis, intake, slackSession = null) {
@@ -295,6 +302,14 @@ function shouldAskBeforeCreatingPlatformIssue(intake, slackAgentAnalysis, slackS
   return true;
 }
 
+async function shouldRoutePlatformCreateToCurrentFollowup({ store, intake, slackSession }) {
+  if (!slackSession?.id) return false;
+  if (looksLikeExplicitNewWorkItemText(intake.text)) return false;
+  if (!looksLikeSlackFollowupText(intake.text) && !hasActiveSlackTarget(slackSession)) return false;
+  const current = await activeWorkItemForSlackSession(store, slackSession);
+  return current?.workItemKind === 'platform_dev' && isActionableSlackWorkItem(current);
+}
+
 async function handleSlackAgentToolCall(context) {
   const { intake, slackAgentAnalysis, slackSession } = context;
   const toolCall = context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession);
@@ -351,6 +366,9 @@ async function handleSlackAgentToolCall(context) {
         preferReplyText: true,
       });
     case 'confirm_platform_issue':
+      if (await shouldRoutePlatformCreateToCurrentFollowup(context)) {
+        return handleSlackFollowup(context);
+      }
       return handleSlackAgentNonPublishingTurn({
         ...context,
         action: 'confirm_before_platform_issue',
