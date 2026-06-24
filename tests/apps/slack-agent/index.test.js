@@ -290,9 +290,74 @@ describe('slack agent', () => {
     const analysis = analyzeSlackRequirement({ text: '目前我的 issue 有哪几个？' });
 
     assert.equal(analysis.intent, 'list_work_items');
+    assert.equal(analysis.dialogAct, 'run_tool');
+    assert.equal(analysis.confirmationRequirement, 'none');
+    assert.equal(analysis.capability, 'list_my_work_items');
+    assert.equal(analysis.card.kind, 'task_list');
     assert.equal(analysis.workItemState, 'all');
     assert.equal(analysis.needsClarification, false);
     assert.deepEqual(analysis.toolCall, { name: 'list_my_work_items', args: { state: 'all' } });
+  });
+
+  it('keeps model-selected issue and PR count tools above current focus continuation', () => {
+    const input = {
+      text: '目前我有什么 issue 或者 PR 还没有处理？',
+      slackSession: {
+        id: 'sess_1',
+        activeWorkItemKind: 'platform_dev',
+        activeWorkItemId: 'pdev_88',
+        activeIssueNumber: 88,
+      },
+      sessionMemory: {
+        summary: '当前焦点是 Issue #88',
+      },
+    };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const analysis = normalizeModelAnalysis(
+      {
+        dialogAct: 'run_tool',
+        intent: 'list_work_items',
+        summary: '列出当前未处理的 issue 和 PR',
+        toolCall: { name: 'list_my_work_items', args: { state: 'active' } },
+        confirmationRequirement: 'none',
+        focus: { kind: 'work_item_list', source: 'model' },
+        card: { kind: 'task_list', title: '当前任务', summary: '列出未处理项', actions: [] },
+        needsClarification: false,
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(analysis.intent, 'list_work_items');
+    assert.equal(analysis.dialogAct, 'run_tool');
+    assert.equal(analysis.confirmationRequirement, 'none');
+    assert.equal(analysis.capability, 'list_my_work_items');
+    assert.deepEqual(analysis.focus, { kind: 'work_item_list', source: 'model' });
+    assert.equal(analysis.workItemState, 'active');
+    assert.deepEqual(analysis.toolCall, { name: 'list_my_work_items', args: { state: 'active' } });
+  });
+
+  it('adds capability metadata for follow-up, diagnosis, confirmation, and full-auto requests', () => {
+    const followup = analyzeSlackRequirement({
+      text: '这个 issue 接着改，文案再克制一点',
+      slackSession: { id: 'sess_1', activeWorkItemKind: 'platform_dev', activeWorkItemId: 'pdev_1' },
+    });
+    const diagnosis = analyzeSlackRequirement({ text: '为什么没 PR？查一下刚才那个 job' });
+    const fullAuto = analyzeSlackRequirement({ text: '后面你全自动接管，不要再问我' });
+
+    assert.equal(followup.intent, 'append_requirement');
+    assert.equal(followup.capability, 'record_followup');
+    assert.equal(followup.dialogAct, 'run_tool');
+    assert.deepEqual(followup.toolCall, { name: 'record_followup', args: {} });
+
+    assert.equal(diagnosis.intent, 'diagnose_work_item');
+    assert.equal(diagnosis.capability, 'diagnose_current_work_item');
+    assert.equal(diagnosis.card.kind, 'diagnosis');
+
+    assert.equal(fullAuto.intent, 'clarify');
+    assert.equal(fullAuto.needsClarification, true);
+    assert.equal(fullAuto.confirmationRequirement, 'none');
+    assert.equal(fullAuto.toolCall, null);
   });
 
   it('continues previous work item list context for short follow-up questions', () => {

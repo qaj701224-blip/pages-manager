@@ -1,3 +1,11 @@
+import {
+  PLATFORM_DEV_ISSUE_TYPES,
+  PLATFORM_DEV_RISKS,
+  SLACK_AGENT_CAPABILITY_NAMES,
+  SLACK_AGENT_REPEAT_TARGETS,
+  SLACK_AGENT_WORK_ITEM_STATES,
+} from '@xd/workflow-core';
+
 export const SLACK_AGENT_LANES = ['site-publishing', 'platform-dev', 'repo-question', 'unknown'];
 
 export const SLACK_AGENT_INTENTS = [
@@ -20,34 +28,11 @@ export const SLACK_AGENT_INTENTS = [
   'clarify',
 ];
 
-export const SLACK_AGENT_TOOL_NAMES = [
-  'list_my_work_items',
-  'switch_work_item',
-  'reopen_work_item',
-  'get_current_status',
-  'diagnose_current_work_item',
-  'answer_repo_question',
-  'repeat_previous_message',
-  'record_followup',
-  'confirm_create_issue',
-  'confirm_platform_issue',
-  'close_session',
-  'cancel_request',
-  'unsupported_destructive_request',
-];
+export const SLACK_AGENT_TOOL_NAMES = SLACK_AGENT_CAPABILITY_NAMES;
 
-export const PLATFORM_ISSUE_TYPES = [
-  'type:dev',
-  'type:bug',
-  'type:docs',
-  'type:feedback',
-  'type:question',
-  'type:ci',
-  'type:ops',
-  'type:security',
-];
+export const PLATFORM_ISSUE_TYPES = PLATFORM_DEV_ISSUE_TYPES;
 
-export const PLATFORM_RISKS = ['risk:low', 'risk:medium', 'risk:high'];
+export const PLATFORM_RISKS = PLATFORM_DEV_RISKS;
 
 export const PLATFORM_AREAS = [
   'area:gateway',
@@ -63,10 +48,6 @@ export const PLATFORM_AREAS = [
   'area:platform',
 ];
 
-export const WORK_ITEM_STATES = ['active', 'all', 'closed'];
+export const WORK_ITEM_STATES = SLACK_AGENT_WORK_ITEM_STATES;
 
-export const REPEAT_PREVIOUS_MESSAGE_TARGETS = [
-  'previous_visible_message',
-  'previous_user_message',
-  'previous_assistant_message',
-];
+export const REPEAT_PREVIOUS_MESSAGE_TARGETS = SLACK_AGENT_REPEAT_TARGETS;

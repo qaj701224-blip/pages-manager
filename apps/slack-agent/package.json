@@ -7,6 +7,7 @@
     "dev": "node src/dev.js"
   },
   "dependencies": {
+    "@xd/workflow-core": "workspace:*",
     "@xd/worker-kit": "workspace:*"
   }
 }

@@ -60,6 +60,239 @@ export const PLATFORM_DEV_ISSUE_TYPES = [
 
 export const PLATFORM_DEV_RISKS = ['risk:low', 'risk:medium', 'risk:high'];
 
+export const SLACK_AGENT_DIALOG_ACTS = [
+  'answer',
+  'ask_clarification',
+  'request_confirmation',
+  'run_tool',
+  'deny',
+  'handoff',
+];
+
+export const SLACK_AGENT_CARD_KINDS = [
+  'none',
+  'confirmation',
+  'task_list',
+  'diagnosis',
+  'repo_answer',
+  'status',
+  'handoff',
+];
+
+export const SLACK_AGENT_CONFIRMATION_TYPES = [
+  'none',
+  'create_site_issue',
+  'create_platform_issue',
+  'continue_work_item',
+  'retry_work_item',
+  'append_diagnosis_to_issue',
+  'human_triage',
+  'reopen_work_item',
+];
+
+export const SLACK_AGENT_WORK_ITEM_STATES = ['active', 'all', 'closed'];
+
+export const SLACK_AGENT_REPEAT_TARGETS = [
+  'previous_visible_message',
+  'previous_user_message',
+  'previous_assistant_message',
+];
+
+export const SLACK_AGENT_CAPABILITIES = {
+  list_my_work_items: {
+    name: 'list_my_work_items',
+    intents: ['list_work_items'],
+    dialogAct: 'run_tool',
+    sideEffect: 'read',
+    confirmation: 'none',
+    cardKind: 'task_list',
+    args: {
+      state: SLACK_AGENT_WORK_ITEM_STATES,
+    },
+    description: 'List the current Slack user visible issue, PR, and publishing work items.',
+  },
+  switch_work_item: {
+    name: 'switch_work_item',
+    intents: ['switch_work_item'],
+    dialogAct: 'run_tool',
+    sideEffect: 'write_session',
+    confirmation: 'none',
+    cardKind: 'status',
+    args: {
+      kind: ['issue', 'pr', 'unknown'],
+      number: 'positive_integer',
+    },
+    description: 'Switch the current Slack thread focus to one visible issue or PR.',
+  },
+  reopen_work_item: {
+    name: 'reopen_work_item',
+    intents: ['reopen_work_item'],
+    dialogAct: 'request_confirmation',
+    sideEffect: 'write_github',
+    confirmation: 'reopen_work_item',
+    cardKind: 'confirmation',
+    args: {
+      kind: ['issue', 'pr', 'unknown'],
+      number: 'positive_integer',
+    },
+    description: 'Request reopening one visible closed issue or PR.',
+  },
+  get_current_status: {
+    name: 'get_current_status',
+    intents: ['status_query'],
+    dialogAct: 'run_tool',
+    sideEffect: 'read',
+    confirmation: 'none',
+    cardKind: 'status',
+    args: {},
+    description: 'Read current session progress.',
+  },
+  diagnose_current_work_item: {
+    name: 'diagnose_current_work_item',
+    intents: [
+      'diagnose_work_item',
+      'get_work_item_timeline',
+      'explain_work_item_blocker',
+      'get_workflow_status',
+    ],
+    dialogAct: 'run_tool',
+    sideEffect: 'read',
+    confirmation: 'none',
+    cardKind: 'diagnosis',
+    args: {
+      timeWindowMinutes: 'positive_integer',
+    },
+    description: 'Explain status, blocker, workflow, and safe log summary for the current work item.',
+  },
+  answer_repo_question: {
+    name: 'answer_repo_question',
+    intents: ['repo_question', 'architecture_question', 'platform_question'],
+    dialogAct: 'run_tool',
+    sideEffect: 'read',
+    confirmation: 'none',
+    cardKind: 'repo_answer',
+    args: {
+      question: 'string',
+    },
+    description: 'Answer a repository implementation or architecture question from controlled evidence.',
+  },
+  repeat_previous_message: {
+    name: 'repeat_previous_message',
+    intents: ['repeat_previous_message'],
+    dialogAct: 'run_tool',
+    sideEffect: 'read',
+    confirmation: 'none',
+    cardKind: 'none',
+    args: {
+      target: SLACK_AGENT_REPEAT_TARGETS,
+    },
+    description: 'Repeat the last visible, user, or assistant message from conversation context.',
+  },
+  record_followup: {
+    name: 'record_followup',
+    intents: ['append_requirement', 'modify_existing_preview'],
+    dialogAct: 'run_tool',
+    sideEffect: 'write_issue_or_job',
+    confirmation: 'none',
+    cardKind: 'status',
+    args: {},
+    description: 'Record a follow-up against the focused work item and dispatch a fix when allowed.',
+  },
+  request_retry_work_item: {
+    name: 'request_retry_work_item',
+    intents: ['retry_work_item'],
+    dialogAct: 'request_confirmation',
+    sideEffect: 'write_workflow',
+    confirmation: 'retry_work_item',
+    cardKind: 'diagnosis',
+    args: {},
+    description: 'Ask the user to confirm retrying a failed or blocked workflow.',
+  },
+  request_append_diagnosis_comment: {
+    name: 'request_append_diagnosis_comment',
+    intents: ['append_diagnosis_comment'],
+    dialogAct: 'request_confirmation',
+    sideEffect: 'write_github',
+    confirmation: 'append_diagnosis_to_issue',
+    cardKind: 'diagnosis',
+    args: {},
+    description: 'Ask the user to confirm appending the visible diagnosis to the linked issue.',
+  },
+  request_human_triage: {
+    name: 'request_human_triage',
+    intents: ['human_triage'],
+    dialogAct: 'request_confirmation',
+    sideEffect: 'write_github',
+    confirmation: 'human_triage',
+    cardKind: 'handoff',
+    args: {},
+    description: 'Ask the user to confirm recording a human triage request.',
+  },
+  confirm_create_issue: {
+    name: 'confirm_create_issue',
+    intents: ['create_or_update_site', 'new_site_request', 'create_site', 'update_site'],
+    dialogAct: 'request_confirmation',
+    sideEffect: 'write_github',
+    confirmation: 'create_site_issue',
+    cardKind: 'confirmation',
+    args: {},
+    description: 'Show a confirmation card before creating a site publishing issue.',
+  },
+  confirm_platform_issue: {
+    name: 'confirm_platform_issue',
+    intents: ['create_platform_issue', 'platform_dev', 'platform_feedback'],
+    dialogAct: 'request_confirmation',
+    sideEffect: 'write_github',
+    confirmation: 'create_platform_issue',
+    cardKind: 'confirmation',
+    args: {},
+    description: 'Show a confirmation card before creating a pages-manager platform issue.',
+  },
+  close_session: {
+    name: 'close_session',
+    intents: ['close_session'],
+    dialogAct: 'run_tool',
+    sideEffect: 'write_session',
+    confirmation: 'none',
+    cardKind: 'status',
+    args: {},
+    description: 'Close the current Slack session.',
+  },
+  cancel_request: {
+    name: 'cancel_request',
+    intents: ['cancel_request'],
+    dialogAct: 'answer',
+    sideEffect: 'none',
+    confirmation: 'none',
+    cardKind: 'none',
+    args: {},
+    description: 'Record a non-destructive cancellation intent.',
+  },
+  unsupported_destructive_request: {
+    name: 'unsupported_destructive_request',
+    intents: ['unsupported_destructive_request'],
+    dialogAct: 'deny',
+    sideEffect: 'none',
+    confirmation: 'none',
+    cardKind: 'none',
+    args: {},
+    description: 'Deny unsupported destructive bulk operations.',
+  },
+};
+
+export const SLACK_AGENT_CAPABILITY_NAMES = Object.keys(SLACK_AGENT_CAPABILITIES);
+
+export function slackAgentCapabilityForTool(name = '') {
+  return SLACK_AGENT_CAPABILITIES[String(name || '').trim()] || null;
+}
+
+export function slackAgentCapabilityForIntent(intent = '') {
+  const normalized = String(intent || '').trim();
+  return SLACK_AGENT_CAPABILITY_NAMES.map((name) => SLACK_AGENT_CAPABILITIES[name]).find((capability) =>
+    capability.intents.includes(normalized)
+  ) || null;
+}
+
 export const FIRST_PRIORITY_STATUSES = [
   'received',
   'summarizing',
