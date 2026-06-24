@@ -137,6 +137,7 @@ export function classifySlackIntake(body) {
   const text = normalizeSlackIntakeText(event.text || body.text || '');
   const compact = text.toLowerCase();
   const command = commandIntent(text);
+  const workItemReference = parseSlackWorkItemReference(text);
 
   if (!text) {
     return {
@@ -199,6 +200,7 @@ export function classifySlackIntake(body) {
       shouldCreateJob: false,
       text,
       jobId: commandJobId,
+      ...explicitWorkItemFields(workItemReference),
       replyText: commandJobId ? null : null,
     };
   }
@@ -209,11 +211,10 @@ export function classifySlackIntake(body) {
       shouldCreateJob: false,
       text,
       jobId: text.match(JOB_ID_RE)?.[0] || null,
+      ...explicitWorkItemFields(workItemReference),
       replyText: null,
     };
   }
-
-  const workItemReference = parseSlackWorkItemReference(text);
 
   if (['task', 'tasks', 'pr', 'prs', 'work'].includes(command?.command)) {
     if (workItemReference) {

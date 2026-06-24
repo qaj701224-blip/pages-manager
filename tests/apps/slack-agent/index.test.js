@@ -169,9 +169,32 @@ describe('slack agent', () => {
 
     assert.ok(payload.selectedSkills.includes('repo-question'));
     assert.ok(payload.selectedSkills.includes('product-design'));
+    assert.equal(payload.selectedSkills.includes('site-publishing'), false);
+    assert.equal(payload.selectedSkills.includes('platform-dev'), false);
     assert.match(messages[0].content, /skill:repo-question/);
     assert.match(messages[0].content, /skill:product-design/);
+    assert.doesNotMatch(messages[0].content, /skill:site-publishing/);
+    assert.doesNotMatch(messages[0].content, /skill:platform-dev/);
     assert.match(messages[0].content, /语气判断必须优先于关键词/);
+  });
+
+  it('selects site publishing skills without unrelated repo consultation skills', () => {
+    const fallback = analyzeSlackRequirementDeterministic({
+      text: '帮我做一个展示项目进度的个人网站',
+    });
+    const messages = buildSlackAgentMessages(
+      {
+        text: '帮我做一个展示项目进度的个人网站',
+      },
+      fallback
+    );
+    const payload = JSON.parse(messages[1].content);
+
+    assert.ok(payload.selectedSkills.includes('site-publishing'));
+    assert.equal(payload.selectedSkills.includes('repo-question'), false);
+    assert.equal(payload.selectedSkills.includes('product-design'), false);
+    assert.match(messages[0].content, /skill:site-publishing/);
+    assert.doesNotMatch(messages[0].content, /skill:repo-question/);
   });
 
   it('continues the active platform issue for implicit follow-up wording', () => {

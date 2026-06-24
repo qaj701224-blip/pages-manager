@@ -116,6 +116,10 @@ function explicitReferences(text = '') {
   };
 }
 
+function hasExplicitWorkItemReference(intake = {}, references = {}) {
+  return Boolean(references.jobId || intake.explicitWorkItemReference?.number);
+}
+
 function isActiveSession(session, now) {
   return (
     session &&
@@ -190,6 +194,7 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
   const actor = slackActorFromBody(body);
   const surface = surfaceForSlackBody(body);
   const references = explicitReferences(intake.text || body.event?.text || body.text || '');
+  const hasExplicitTarget = hasExplicitWorkItemReference(intake, references);
 
   if (references.sessionId) {
     const byId = await store.getSlackSession(references.sessionId);
@@ -316,7 +321,7 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
   const userSessions = await store.findSlackSessionsForUser(actor.teamId, actor.slackUserId);
   const activeSessions = userSessions.filter((session) => isActiveSession(session, now));
   if (activeSessions.length > 0 && SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
-    if (activeSessions.length > 1 && ACTIVE_SESSION_REQUIRED_REFERENCE_ACTIONS.has(intake.action) && !references.jobId) {
+    if (activeSessions.length > 1 && ACTIVE_SESSION_REQUIRED_REFERENCE_ACTIONS.has(intake.action) && !hasExplicitTarget) {
       return {
         ambiguous: true,
         sessions: activeSessions,
@@ -364,7 +369,7 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
     };
   }
 
-  if (activeSessions.length > 1 && !SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
+  if (activeSessions.length > 1 && !SESSION_INDEPENDENT_ACTIONS.has(intake.action) && !hasExplicitTarget) {
     return {
       ambiguous: true,
       sessions: activeSessions,

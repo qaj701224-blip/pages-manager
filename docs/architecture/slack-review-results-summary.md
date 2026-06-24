@@ -58,6 +58,8 @@ Review 结果：0 个 blocker，1 条建议，1 条说明。
 下一步：等 site-check 完成；如果它失败，我会把失败阶段更新到当前对话。
 ```
 
+如果 site-check 已经完成且结论不是成功，即使还没有 Review Agent comment，Slack 摘要也必须明确返回 site-check 未通过，不能退回“还没有收到 Review Agent 结果”。
+
 示例三：Review 尚未返回。
 
 ```text

@@ -122,6 +122,7 @@ import { platformDevInput } from '../slack/platform-input.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { listReconciledSlackWorkItemsForSession } from '../slack/work-item-reconciler.js';
 import {
+  findVisibleSlackJobByReference,
   inactiveSlackWorkItemReply,
   isActionableSlackWorkItem,
   isReopenableSlackWorkItem,
@@ -309,7 +310,9 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, opt
   if (intake.action === 'repo_question' || intake.action === 'answer_repo_question') {
     return { name: 'answer_repo_question', args: { question: intake.text } };
   }
-  if (intake.action === 'diagnose_work_item') return { name: 'diagnose_current_work_item', args: {} };
+  if (intake.action === 'diagnose_work_item') {
+    return { name: 'diagnose_current_work_item', args: workItemToolArgsFromIntake(intake) };
+  }
   if (intake.action === 'summarize_review_results') {
     return {
       name: 'summarize_review_results',
@@ -343,7 +346,7 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, opt
             ? { question: intake.text }
             : capability.name === 'summarize_review_results'
               ? reviewResultsToolArgsForTurn(intake, slackAgentAnalysis)
-              : {},
+              : slackAgentToolArgs(slackAgentAnalysis),
     };
   }
 
@@ -364,7 +367,7 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, opt
       'human_triage',
     ].includes(slackAgentAnalysis.intent)
   ) {
-    return { name: 'diagnose_current_work_item', args: {} };
+    return { name: 'diagnose_current_work_item', args: slackAgentToolArgs(slackAgentAnalysis) };
   }
   if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis.intent)) {
     return { name: 'list_my_work_items', args: { state: slackAgentWorkItemState(intake, slackAgentAnalysis) } };
@@ -396,6 +399,24 @@ function reviewResultsToolArgsFromIntake(intake = {}) {
     number,
     maxItems: 5,
     explicitUserTarget: true,
+  };
+}
+
+function workItemToolArgsFromIntake(intake = {}) {
+  const explicitReference = intake.explicitWorkItemReference || null;
+  const number = Number(explicitReference?.number || intake.targetNumber || intake.prNumber || intake.issueNumber);
+  return {
+    ...(intake.jobId ? { jobId: intake.jobId } : {}),
+    ...(Number.isFinite(number) && number > 0
+      ? {
+          kind:
+            explicitReference?.kind ||
+            intake.targetKind ||
+            (intake.prNumber ? 'pr' : intake.issueNumber ? 'issue' : 'unknown'),
+          number,
+          explicitUserTarget: true,
+        }
+      : {}),
   };
 }
 
@@ -539,7 +560,10 @@ async function handleSlackAgentToolCall(context) {
     case 'request_retry_work_item':
     case 'request_append_diagnosis_comment':
     case 'request_human_triage':
-      return handleSlackWorkItemDiagnosisTool({ ...context, toolArgs: toolCall.args || {} });
+      return handleSlackWorkItemDiagnosisTool({
+        ...context,
+        toolArgs: { ...slackAgentToolArgs(slackAgentAnalysis), ...(toolCall.args || {}) },
+      });
     case 'summarize_review_results':
       return handleSlackReviewResultsTool({ ...context, toolArgs: toolCall.args || {} });
     case 'unsupported_destructive_request':
@@ -853,7 +877,7 @@ async function processSlackEventBody(body, env, options = {}) {
         sessionMemory,
         agentRun,
         slackAgentAnalysis: null,
-        toolArgs: { jobId: intake.jobId },
+        toolArgs: workItemToolArgsFromIntake(intake),
       })
     );
   }
@@ -1201,6 +1225,17 @@ function platformDevSlackWorkItem(item = null) {
 }
 
 async function workItemForDiagnosis(store, body, slackSession, toolArgs = {}) {
+  const explicitNumber = Number(toolArgs.number || toolArgs.targetNumber || toolArgs.prNumber || toolArgs.issueNumber);
+  const explicitKind =
+    toolArgs.kind ||
+    toolArgs.targetKind ||
+    (toolArgs.prNumber ? 'pr' : toolArgs.issueNumber ? 'issue' : toolArgs.target_kind || null);
+  if (Number.isFinite(explicitNumber) && explicitNumber > 0) {
+    const item = await findVisibleSlackJobByReference(store, body, { kind: explicitKind || 'unknown', number: explicitNumber });
+    if (!item) return { forbidden: true, item: null };
+    return { item };
+  }
+
   const explicitWorkItemKind = toolArgs.workItemKind || toolArgs.work_item_kind || null;
   const explicitWorkItemId = toolArgs.workItemId || toolArgs.work_item_id || null;
   const explicitJobId =
@@ -2613,11 +2648,27 @@ export async function handleSlackInteractions(request, env) {
       gateStatus: 'approved',
       gateReason: item.gateReason || '人工批准自动开发。',
     });
+    if (!approved) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求已不存在，无法继续批准。',
+        gate,
+        platformDevItemId: item.id,
+      });
+    }
     if (approved.status === 'gate_pending') {
       approved = await store.updatePlatformDevItem(approved.id, 'agent_queued', {
         gateStatus: 'approved',
         gateReason: approved.gateReason,
       });
+      if (!approved) {
+        return slackAckResponse({
+          response_type: 'ephemeral',
+          text: '这个平台需求已不存在，无法继续批准。',
+          gate,
+          platformDevItemId: item.id,
+        });
+      }
     }
     await store.linkPlatformDevItemToSlackSession(approved, session || undefined);
     const workerStart = await startWorkerForPlatformDevItemIfConfigured(approved, env);

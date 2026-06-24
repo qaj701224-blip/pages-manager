@@ -226,6 +226,7 @@ function compareComments(left, right) {
 
 function conclusionFor({ gate, comments }) {
   const openCount = comments.length;
+  if (!gate?.siteCheck?.passed && gate?.siteCheck?.status === 'completed') return 'waiting_site_check';
   if (!openCount) return 'waiting_review';
   if (comments.some((comment) => comment.classification === 'blocking') || gate?.blockingCount > 0) return 'blocked';
   if (comments.some((comment) => comment.classification === 'unknown') || gate?.unknownCount > 0) return 'unknown';

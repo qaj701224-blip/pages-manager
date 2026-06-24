@@ -582,6 +582,44 @@ test('received job creates or reuses issue then dispatches project index workflo
   assert.equal(result.issueNumber, 9);
   assert.equal(result.issueCreated, true);
   assert.equal(requests.length, 4);
+  assert.ok(
+    requests.findIndex((entry) => entry.url.endsWith('/actions/workflows/project-index.yml/dispatches')) <
+      requests.findIndex((entry) => entry.url === 'http://gateway.test/internal/executor-callback')
+  );
+});
+
+test('received job does not advance to issue_created when project index dispatch fails', async () => {
+  const requests = [];
+  await assert.rejects(
+    () =>
+      runWorkerForJob(baseJob, config(), {
+        async fetchImpl(url, request) {
+          requests.push({ url: String(url), request });
+
+          if (String(url).includes('/search/issues')) {
+            return new Response(JSON.stringify({ items: [] }), { status: 200 });
+          }
+
+          if (String(url).endsWith('/repos/org/pages-manager/issues')) {
+            return new Response(JSON.stringify({ number: 9, html_url: 'https://github.example/issues/9' }), {
+              status: 201,
+            });
+          }
+
+          if (String(url).endsWith('/actions/workflows/project-index.yml/dispatches')) {
+            return new Response(JSON.stringify({ message: 'workflow missing' }), { status: 404 });
+          }
+
+          if (String(url) === 'http://gateway.test/internal/executor-callback') {
+            throw new Error('callback should not be called before project index dispatch succeeds');
+          }
+
+          throw new Error(`Unexpected request ${request.method} ${url}`);
+        },
+      }),
+    /workflow missing|GitHub request failed/i
+  );
+  assert.equal(requests.some((entry) => entry.url === 'http://gateway.test/internal/executor-callback'), false);
 });
 
 test('generating_page job dispatches pages-agent workflow', async () => {

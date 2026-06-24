@@ -638,6 +638,7 @@ slack-notifier 更新进度消息或追加图片消息
 - [ ] Slack update 限流，不会每个 token 都打一次 Slack API；执行阶段只按阶段变化更新进度消息。
 - [ ] `analysis_final` 是创建 job 的唯一 Agent 结构化依据，不能从可见文本反解析。
 - [ ] 确认创建仍然需要用户点击按钮或明确受控动作。
+- [ ] runtime skill 只注入 always-on 与当前 lane / intent / context 需要的片段，repo 咨询、诊断、建站和平台开发指令不能全量混入同一轮 prompt。
 - [ ] Platform Dev Lane issue 分类、label、risk 和 automation policy 都来自结构化输出，并由 gateway 二次校验。
 - [ ] 高风险目录或 secret / production deploy 相关请求默认 `agent:blocked`。
 - [ ] 进度消息和 Agent 回复使用不同 binding 或明确 `message_kind`。

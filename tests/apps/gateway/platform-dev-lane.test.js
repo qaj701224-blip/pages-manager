@@ -895,6 +895,69 @@ test('approving high-risk platform gate starts worker for the existing item', as
   assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_approve_platform_gate|pages_reject_platform_gate/);
 });
 
+test('approving high-risk platform gate handles item disappearing during update', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-gate-approve-disappears',
+    title: '平台高风险需求',
+    summary: '修改 CI workflow',
+    issueType: 'type:ci',
+    areas: ['area:ci'],
+    risk: 'risk:high',
+    agentEligible: true,
+    requiresHumanGate: true,
+    gateStatus: 'pending',
+    slackSessionId: 'sess_gate_disappears',
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  app.store.upsertSlackSession({
+    id: 'sess_gate_disappears',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_disappears'));
+  app.store.updatePlatformDevItem(item.id, 'gate_pending');
+  const originalPatch = app.store.patchPlatformDevItem.bind(app.store);
+  app.store.patchPlatformDevItem = async (itemId, patch) => {
+    if (itemId === item.id && patch.gateStatus === 'approved') return null;
+    return originalPatch(itemId, patch);
+  };
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        interaction(
+          'pages_approve_platform_gate',
+          JSON.stringify({
+            workItemKind: 'platform_dev',
+            workItemId: item.id,
+            sessionId: 'sess_gate_disappears',
+            gateType: 'risk',
+          })
+        )
+      ),
+    }),
+    {
+      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U1',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        throw new Error('worker should not start after disappeared item');
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.platformDevItemId, item.id);
+  assert.match(body.text, /已不存在/);
+});
+
 test('allowlisted maintainer can approve a high-risk platform gate for another requester', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
