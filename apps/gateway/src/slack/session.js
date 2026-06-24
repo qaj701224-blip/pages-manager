@@ -7,10 +7,12 @@ const SESSION_INDEPENDENT_ACTIONS = new Set([
   'help',
   'ping',
   'status',
+  'diagnose_work_item',
   'cancel',
   'empty',
   'unsupported_destructive_request',
 ]);
+const ACTIVE_SESSION_REQUIRED_REFERENCE_ACTIONS = new Set(['status', 'diagnose_work_item']);
 
 function numberFromEnv(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -132,6 +134,13 @@ function selectionReply(sessions) {
     '可以继续在对应对话里回复，或者直接描述一个新需求。',
   ];
   return lines.join('\n');
+}
+
+function sessionReferenceRequiredReply(action = 'status') {
+  if (action === 'diagnose_work_item') {
+    return '我找到了多个最近的会话。请直接在对应对话里继续，或消息里带上 job id / issue / PR / GitHub URL，再让我排查。';
+  }
+  return '我找到了多个最近的会话。请直接在对应对话里继续，或消息里带上 job id / issue / PR / GitHub URL，再查状态。';
 }
 
 function forbiddenReferenceReply(kind) {
@@ -307,6 +316,15 @@ export async function selectSlackSession(store, body = {}, intake = {}, env = {}
   const userSessions = await store.findSlackSessionsForUser(actor.teamId, actor.slackUserId);
   const activeSessions = userSessions.filter((session) => isActiveSession(session, now));
   if (activeSessions.length > 0 && SESSION_INDEPENDENT_ACTIONS.has(intake.action)) {
+    if (activeSessions.length > 1 && ACTIVE_SESSION_REQUIRED_REFERENCE_ACTIONS.has(intake.action) && !references.jobId) {
+      return {
+        ambiguous: true,
+        sessions: activeSessions,
+        replyText: sessionReferenceRequiredReply(intake.action),
+        config,
+        action: 'ambiguous_active_dm_sessions',
+      };
+    }
     const session = await store.upsertSlackSession(
       {
         ...activeSessions[0],

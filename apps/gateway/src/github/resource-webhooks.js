@@ -50,7 +50,9 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
 
   if (action === 'closed') {
     item =
-      item.status === 'closed_unmerged'
+      item.status === 'merged'
+        ? await store.patchPlatformDevItem(item.id, patch)
+        : item.status === 'closed_unmerged'
         ? await store.patchPlatformDevItem(item.id, patch)
         : await store.updatePlatformDevItem(item.id, 'closed_unmerged', patch);
   } else if (action === 'reopened') {

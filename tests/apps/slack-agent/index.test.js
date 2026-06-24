@@ -410,6 +410,60 @@ describe('slack agent', () => {
     assert.deepEqual(prAnalysis.toolCall, { name: 'reopen_work_item', args: { kind: 'pr', number: 68 } });
   });
 
+  it('supports GitHub issue and PR URLs for switch and reopen intents', () => {
+    const switchAnalysis = analyzeSlackRequirement({
+      text: '继续处理 https://github.com/xindong/pages-manager/pull/68 这个 PR',
+    });
+    const reopenAnalysis = analyzeSlackRequirement({
+      text: '帮我恢复 https://github.com/xindong/pages-manager/issues/60',
+    });
+
+    assert.equal(switchAnalysis.intent, 'switch_work_item');
+    assert.deepEqual(switchAnalysis.toolCall, { name: 'switch_work_item', args: { kind: 'pr', number: 68 } });
+    assert.equal(reopenAnalysis.intent, 'reopen_work_item');
+    assert.deepEqual(reopenAnalysis.toolCall, { name: 'reopen_work_item', args: { kind: 'issue', number: 60 } });
+  });
+
+  it('treats natural close-session wording as close_session', () => {
+    const analysis = analyzeSlackRequirement({ text: '关闭会话' });
+
+    assert.equal(analysis.intent, 'close_session');
+    assert.deepEqual(analysis.toolCall, { name: 'close_session', args: {} });
+    assert.equal(analysis.needsClarification, false);
+  });
+
+  it('keeps natural status queries on current context instead of creating a new issue', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '现在进度怎么样？',
+      slackSession: {
+        id: 'sess_status_1',
+        activeJobId: 'job_status_1',
+        activeWorkItemKind: 'site_publishing',
+        activeWorkItemId: 'job_status_1',
+      },
+    });
+
+    assert.equal(analysis.intent, 'status_query');
+    assert.deepEqual(analysis.toolCall, { name: 'get_current_status', args: {} });
+    assert.equal(analysis.needsClarification, false);
+  });
+
+  it('keeps common follow-up wording on active targets instead of confirm_create_issue', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '继续改一下 hero 文案，再补一个项目区块',
+      slackSession: {
+        id: 'sess_followup_1',
+        activeJobId: 'job_followup_1',
+        activeWorkItemKind: 'site_publishing',
+        activeWorkItemId: 'job_followup_1',
+        activePreviewUrl: 'https://demo.pages.xd.team',
+      },
+    });
+
+    assert.equal(analysis.intent, 'append_requirement');
+    assert.deepEqual(analysis.toolCall, { name: 'record_followup', args: {} });
+  });
+
   it('routes natural diagnosis questions to the current work item diagnosis tool', () => {
     const analysis = analyzeSlackRequirement({ text: '为什么 issue 创建了 PR 没出来？帮我查一下日志' });
 

@@ -359,6 +359,8 @@ jobs:
 
           ${REQUEST_SUMMARY}
 
+          $(if [[ -n "${ISSUE_NUMBER}" ]]; then printf 'Closes #%s\n' "${ISSUE_NUMBER}"; fi)
+
           ## 平台需求
 
           - Item: ${PLATFORM_DEV_ITEM_ID}
@@ -366,7 +368,7 @@ jobs:
           - Areas: ${AREAS}
           - Risk: ${RISK}
           - Gate approved: ${GATE_APPROVED}
-          - Issue: #${ISSUE_NUMBER}
+          - Issue: ${ISSUE_NUMBER:+#${ISSUE_NUMBER}}${ISSUE_NUMBER:-未关联}
 
           ## 验证
 
