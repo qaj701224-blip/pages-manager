@@ -20,6 +20,16 @@ const REOPEN_WORK_ITEM_RE =
   /(?:重新打开|恢复|重开|reopen).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
 const DIAGNOSIS_QUERY_RE =
   /(为什么|为啥|原因|失败|没成功|没有成功|没出来|卡住|卡在哪|卡在|诊断|排查|查一下|看一下|重试|查.*(?:日志|log|workflow|actions))/i;
+const REVIEW_RESULTS_QUERY_RE = new RegExp(
+  [
+    '(?:review|Review|codex\\s+review|Review Agent).*(?:说了什么|结果|过了吗|通过了吗|blocker|blocking|意见|建议|需要改哪里|提了什么)',
+    '(?:有哪些|有什么|查看|看看|列出).*(?:blocker|blocking|review 意见|Review 意见|review 建议|Review 建议)',
+    '(?:review 结果呢|Review 结果呢)',
+  ].join('|'),
+  'i'
+);
+const AMBIGUOUS_REVIEW_RESULTS_QUERY_RE = /(?:需要改哪里|哪些地方要改|哪里要改|具体改哪里)/i;
+const REVIEW_RESULTS_FOLLOWUP_RE = /(?:按|根据|照着).*(?:review|Review).*(?:改|修改|修复|处理)|(?:review|Review).*(?:意见|建议).*(?:改|修改|修复|处理)/i;
 const QUESTION_CUE_RE =
   /(?:\?|？|怎么|如何|怎样|哪里|在哪|是什么|为啥|为什么|解释|说明|是否|会不会|能否|可以.*吗|是不是|有没有|影响|关系)/i;
 const EXECUTION_CUE_RE =
@@ -58,6 +68,7 @@ const LIST_FOLLOWUP_RE = /(?:只有|就|还|还有|就这|只有这|只有这些
 const REPEAT_PREVIOUS_MESSAGE_RE = /(?:复读|重复|再发|上一条消息|刚才那条|你上一条|我上一条)/i;
 const CURRENT_WORK_ITEM_FOLLOWUP_RE =
   /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|重试|重新跑|再跑)/i;
+const CURRENT_WORK_ITEM_QUESTION_RE = /(?:需要改哪里|哪些地方要改|哪里要改|具体改哪里)/i;
 const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
 
 function isUnsupportedBulkDestructiveRequest(text = '') {
@@ -113,6 +124,15 @@ function toolCallForIntent(intent, text = '') {
     return { name: 'reopen_work_item', args: reference ? { kind: reference.kind, number: reference.number } : {} };
   }
   if (intent === 'diagnose_work_item') return { name: 'diagnose_current_work_item', args: { timeWindowMinutes: 30 } };
+  if (['summarize_review_results', 'list_review_results'].includes(intent)) {
+    const reference = workItemReferenceFromText(text);
+    return {
+      name: 'summarize_review_results',
+      args: reference
+        ? { kind: reference.kind === 'pr' || reference.kind === 'issue' ? reference.kind : 'unknown', number: reference.number }
+        : { kind: 'current', maxItems: 5 },
+    };
+  }
   if (intent === 'repeat_previous_message') {
     return { name: 'repeat_previous_message', args: { target: repeatPreviousMessageTargetFromText(text) } };
   }
@@ -301,11 +321,27 @@ function hasCurrentWorkItemContext(input = {}, context = sessionContextFromInput
 function shouldTreatAsCurrentWorkItemFollowup(text = '', input = {}, context = sessionContextFromInput(input)) {
   if (!hasCurrentWorkItemContext(input, context)) return false;
   if (EXPLICIT_NEW_WORK_ITEM_RE.test(text)) return false;
-  return CURRENT_WORK_ITEM_FOLLOWUP_RE.test(text);
+  return CURRENT_WORK_ITEM_FOLLOWUP_RE.test(text) || CURRENT_WORK_ITEM_QUESTION_RE.test(text);
 }
 
 function laneForCurrentWorkItem(context = {}) {
   return context.activeWorkItemKind === 'platform_dev' ? 'platform-dev' : 'site-publishing';
+}
+
+function hasReviewResultsContext(input = {}, context = sessionContextFromInput(input)) {
+  const memory = input.sessionMemory || {};
+  const requirements = memory.requirements && typeof memory.requirements === 'object' ? memory.requirements : {};
+  const reviewResults =
+    requirements.reviewResults && typeof requirements.reviewResults === 'object' ? requirements.reviewResults : null;
+  if (reviewResults?.prNumber || reviewResults?.conclusion) return true;
+  const lastAssistant = memory.conversationContext?.lastAssistantMessage?.text || '';
+  if (/Review Agent|Review 结果|blocker|blocking|site-check/i.test(lastAssistant)) return true;
+  return Boolean(context.activePrNumber && /review/i.test(String(context.activeWorkItemKind || '')));
+}
+
+function shouldSummarizeReviewResultsTurn(text = '', input = {}, context = sessionContextFromInput(input)) {
+  if (REVIEW_RESULTS_QUERY_RE.test(text)) return true;
+  return hasReviewResultsContext(input, context) && AMBIGUOUS_REVIEW_RESULTS_QUERY_RE.test(text);
 }
 
 export function analyzeSlackRequirementDeterministic(input = {}) {
@@ -320,10 +356,19 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const shouldReopenWorkItem = !isUnsupportedBulkDestructive && REOPEN_WORK_ITEM_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
   const shouldRepeatPreviousMessage = !isUnsupportedBulkDestructive && REPEAT_PREVIOUS_MESSAGE_RE.test(text);
+  const shouldSummarizeReviewResults =
+    !isUnsupportedBulkDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    !shouldReopenWorkItem &&
+    !shouldRepeatPreviousMessage &&
+    !REVIEW_RESULTS_FOLLOWUP_RE.test(text) &&
+    shouldSummarizeReviewResultsTurn(text, input, sessionContext);
   const shouldDiagnoseWorkItem =
     !isUnsupportedBulkDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
+    !shouldSummarizeReviewResults &&
     !shouldRepeatPreviousMessage &&
     DIAGNOSIS_QUERY_RE.test(text);
   const shouldRecordCurrentWorkItemFollowup =
@@ -340,6 +385,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
     !shouldRecordCurrentWorkItemFollowup &&
+    !shouldSummarizeReviewResults &&
     (PLATFORM_KEYWORDS.test(text) || REPO_QUESTION_SUBJECT_RE.test(text)) &&
     (REPO_QUESTION_RE.test(text) || QUESTION_CUE_RE.test(text)) &&
     !EXECUTION_CUE_RE.test(text);
@@ -350,6 +396,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldDiagnoseWorkItem &&
     !shouldRecordCurrentWorkItemFollowup &&
     !shouldAnswerRepoQuestion &&
+    !shouldSummarizeReviewResults &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const shouldCreatePlatform =
     !isUnsupportedBulkDestructive &&
@@ -358,6 +405,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldDiagnoseWorkItem &&
     !shouldAnswerRepoQuestion &&
     !shouldRecordCurrentWorkItemFollowup &&
+    !shouldSummarizeReviewResults &&
     PLATFORM_KEYWORDS.test(text) &&
     (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
   const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
@@ -371,16 +419,20 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
           ? 'repeat_previous_message'
           : shouldListWorkItems
             ? 'list_work_items'
-            : shouldDiagnoseWorkItem
-              ? 'diagnose_work_item'
-              : shouldRecordCurrentWorkItemFollowup
-                ? 'append_requirement'
-                : shouldAnswerRepoQuestion
-                  ? 'repo_question'
-                  : intent;
+            : shouldSummarizeReviewResults
+              ? 'summarize_review_results'
+              : shouldDiagnoseWorkItem
+                ? 'diagnose_work_item'
+                : shouldRecordCurrentWorkItemFollowup
+                  ? 'append_requirement'
+                  : shouldAnswerRepoQuestion
+                    ? 'repo_question'
+                    : intent;
 
   return enrichWithCapabilityContract({
     lane: shouldRecordCurrentWorkItemFollowup
+      ? laneForCurrentWorkItem(sessionContext)
+      : shouldSummarizeReviewResults
       ? laneForCurrentWorkItem(sessionContext)
       : shouldAnswerRepoQuestion
       ? 'repo-question'
@@ -414,6 +466,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
       !shouldListWorkItems &&
       !shouldSwitchWorkItem &&
       !shouldRepeatPreviousMessage &&
+      !shouldSummarizeReviewResults &&
       !shouldDiagnoseWorkItem &&
       !shouldRecordCurrentWorkItemFollowup &&
       !shouldAnswerRepoQuestion &&
@@ -449,6 +502,8 @@ function shouldForceIntentToolCall(intent = '') {
     'switch_work_item',
     'reopen_work_item',
     'diagnose_work_item',
+    'summarize_review_results',
+    'list_review_results',
     'status_query',
     'repo_question',
     'architecture_question',
@@ -579,6 +634,7 @@ export function visibleSlackAgentReply(analysis = {}) {
   if (intent === 'switch_work_item') return '我会尝试切换到你指定的任务。';
   if (intent === 'reopen_work_item') return '我会尝试恢复你指定的 Issue 或 PR。';
   if (intent === 'repeat_previous_message') return analysis.summary || '我来复读当前会话里上一条可见消息。';
+  if (['summarize_review_results', 'list_review_results'].includes(intent)) return '我来整理当前 PR 的 Review 结果。';
   if (intent === 'status_query') return '我来查询当前发布进度。';
   if (['repo_question', 'architecture_question', 'platform_question'].includes(intent)) return '我来查一下当前仓库实现。';
   if (intent === 'close_session') return '收到，我会关闭当前会话。';

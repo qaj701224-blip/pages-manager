@@ -418,6 +418,78 @@ describe('slack agent', () => {
     assert.deepEqual(analysis.toolCall, { name: 'diagnose_current_work_item', args: { timeWindowMinutes: 30 } });
   });
 
+  it('routes review result questions to the read-only review summary tool', () => {
+    const analysis = analyzeSlackRequirement({ text: 'review 说了什么？有哪些 blocker？' });
+
+    assert.equal(analysis.intent, 'summarize_review_results');
+    assert.equal(analysis.lane, 'site-publishing');
+    assert.equal(analysis.capability, 'summarize_review_results');
+    assert.equal(analysis.dialogAct, 'run_tool');
+    assert.equal(analysis.confirmationRequirement, 'none');
+    assert.equal(analysis.needsClarification, false);
+    assert.deepEqual(analysis.toolCall, {
+      name: 'summarize_review_results',
+      args: { kind: 'current', maxItems: 5 },
+    });
+  });
+
+  it('treats ambiguous change questions as follow-up without review context', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '需要改哪里？',
+      slackSession: {
+        id: 'sess_preview_question',
+        activeWorkItemKind: 'site_publishing',
+        activeWorkItemId: 'job_preview_question',
+        activePreviewUrl: 'https://profile.pages.xd.team',
+      },
+    });
+
+    assert.equal(analysis.intent, 'append_requirement');
+    assert.deepEqual(analysis.toolCall, { name: 'record_followup', args: {} });
+  });
+
+  it('uses review summary for ambiguous change questions when review context exists', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '需要改哪里？',
+      slackSession: {
+        id: 'sess_review_question',
+        activeWorkItemKind: 'site_publishing',
+        activeWorkItemId: 'job_review_question',
+        activePrNumber: 88,
+      },
+      sessionMemory: {
+        requirements: {
+          reviewResults: {
+            prNumber: 88,
+            conclusion: 'blocked',
+            blockingCount: 1,
+          },
+        },
+      },
+    });
+
+    assert.equal(analysis.intent, 'summarize_review_results');
+    assert.deepEqual(analysis.toolCall, {
+      name: 'summarize_review_results',
+      args: { kind: 'current', maxItems: 5 },
+    });
+  });
+
+  it('keeps active work item modification wording as follow-up instead of review summary', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '按 review 的意见继续改一下',
+      slackSession: {
+        id: 'sess_review_followup',
+        activeWorkItemKind: 'platform_dev',
+        activeWorkItemId: 'pdev_review_followup',
+        activePrNumber: 88,
+      },
+    });
+
+    assert.equal(analysis.intent, 'append_requirement');
+    assert.deepEqual(analysis.toolCall, { name: 'record_followup', args: {} });
+  });
+
   it('includes session context for model-driven turns', () => {
     const analysis = analyzeSlackRequirement({
       text: '继续修改 preview',

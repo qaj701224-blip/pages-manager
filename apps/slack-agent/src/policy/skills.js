@@ -3,6 +3,7 @@ import {
   PLATFORM_ISSUE_TYPES,
   PLATFORM_RISKS,
   REPEAT_PREVIOUS_MESSAGE_TARGETS,
+  REVIEW_RESULT_TARGET_KINDS,
   SLACK_AGENT_INTENTS,
   SLACK_AGENT_LANES,
   SLACK_AGENT_TOOL_NAMES,
@@ -103,6 +104,15 @@ export const SLACK_AGENT_POLICY_SKILLS = [
     title: 'Work Item Diagnostics',
     content: [
       '当用户询问任务状态、为什么失败、为什么 Issue 后没有 PR、卡在哪一步、查日志、查 workflow、能否重试、追加诊断或转人工排查时，intent 返回 diagnose_work_item。',
+      [
+        '当用户问“review 说了什么 / review 结果呢 / 有哪些 blocker / Review Agent 提了什么”时，',
+        'intent 返回 summarize_review_results，toolCall.name 返回 summarize_review_results。',
+      ].join(''),
+      [
+        '“需要改哪里”这类裸问题必须结合当前上下文判断：已有 Review 结果或当前 PR 被 review_blocked 时',
+        '才走 summarize_review_results；普通 preview / 设计修改上下文应走 record_followup。',
+      ].join(''),
+      'summarize_review_results 是只读能力，只整理当前用户可见 PR 已入库的 Review Agent 评论和 site-check 状态；不触发新 review，不 resolve comment，不 merge。',
       '诊断 toolCall.name 返回 diagnose_current_work_item。',
       '自然语言里提到“重试 / 追加诊断 / 转人工”时，先返回诊断摘要和受控按钮，不直接执行写操作。',
       '诊断回复只返回摘要、关键错误、request id、内部日志链接和建议动作，不贴原始日志。',
@@ -156,6 +166,7 @@ export const SLACK_AGENT_POLICY_SKILLS = [
       '当需求还不完整时，intent 可以是 create_or_update_site 或 clarify，但 needsClarification 应为 true，并用 clarifyingQuestion 给出一个简短问题。',
       `toolCall.name 只能使用：${SLACK_AGENT_TOOL_NAMES.join(', ')}。`,
       `repeat_previous_message.args.target 只能是 ${REPEAT_PREVIOUS_MESSAGE_TARGETS.join(' | ')}。`,
+      `summarize_review_results.args.kind 只能是 ${REVIEW_RESULT_TARGET_KINDS.join(' | ')}；默认 kind=current，maxItems 默认 5。`,
       [
         `issueType 只能是 ${PLATFORM_ISSUE_TYPES.join(' | ')}；`,
         `risk 只能是 ${PLATFORM_RISKS.join(' | ')}；areas 常用值：${PLATFORM_AREAS.join(', ')}。`,
@@ -171,7 +182,7 @@ export const SLACK_AGENT_POLICY_SKILLS = [
       'gateway 会负责按钮 action_id、URL、权限、脱敏、字段数量和长度限制；你只输出语义动作 id、用户可见 label 和展示顺序。',
       [
         '常用 action id：confirm_create_issue、confirm_platform_issue、continue_work_item、close_session、open_issue、open_pr、',
-        'open_preview、reopen_work_item、retry_work_item、append_diagnosis_to_issue、human_triage。',
+        'open_preview、reopen_work_item、retry_work_item、append_diagnosis_to_issue、human_triage、summarize_review_results。',
       ].join(''),
       '不要为删除资源、合并 PR、生产部署、读取 secret、直接 shell 等收口动作生成执行按钮；需要时用 human_triage 或解释不可直接执行。',
     ],
