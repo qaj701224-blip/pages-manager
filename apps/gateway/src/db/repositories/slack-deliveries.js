@@ -63,6 +63,14 @@ export const slackDeliveryRepositoryMethods = {
         Object.hasOwn(patch, 'errorMessage') || Object.hasOwn(patch, 'error_message')
           ? patch.errorMessage || patch.error_message || null
           : existing.errorMessage || null,
+      retryNum:
+        Object.hasOwn(patch, 'retryNum') || Object.hasOwn(patch, 'retry_num')
+          ? Number(patch.retryNum ?? patch.retry_num ?? 0)
+          : existing.retryNum || 0,
+      retryReason:
+        Object.hasOwn(patch, 'retryReason') || Object.hasOwn(patch, 'retry_reason')
+          ? patch.retryReason || patch.retry_reason || null
+          : existing.retryReason || null,
       updatedAt: now.toISOString(),
     };
     this.cacheSlackDelivery(updated);

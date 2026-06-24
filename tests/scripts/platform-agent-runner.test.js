@@ -132,9 +132,55 @@ test('codex backend maps company gateway URL and key env into CLI provider confi
     assert.match(providerArg, /^model_providers\.platform_agent_gateway=\{name="Platform Agent Gateway"/);
     assert.match(providerArg, /base_url="https:\/\/agent\.example\/v1"/);
     assert.match(providerArg, /env_key="AGENT_CODE_API_KEY"/);
-    assert.match(providerArg, /wire_api="responses"\}$/);
+    assert.match(providerArg, /wire_api="chat"\}$/);
     assert.doesNotMatch(providerArg, /\{,|,\}/);
     assert.equal(invocation.key, 'code-key');
+  });
+});
+
+test('codex backend receives only the model key and scrubbed workflow secrets', async () => {
+  await withFixture(async (cwd) => {
+    await mkdir(path.join(cwd, '.pages-artifacts'), { recursive: true });
+    const commandPath = path.join(cwd, '.pages-artifacts/mock-codex-env.mjs');
+    await writeFile(
+      commandPath,
+      [
+        '#!/usr/bin/env node',
+        "import { writeFileSync } from 'node:fs';",
+        'writeFileSync(process.env.MOCK_CODEX_ENV_PATH, JSON.stringify({',
+        '  agentKey: process.env.AGENT_CODE_API_KEY || null,',
+        '  githubToken: process.env.GITHUB_TOKEN || null,',
+        '  callbackToken: process.env.PAGES_CALLBACK_TOKEN || null,',
+        '  randomSecret: process.env.RANDOM_SECRET_VALUE || null,',
+        '}, null, 2));',
+      ].join('\n')
+    );
+    await chmod(commandPath, 0o755);
+
+    await assert.rejects(
+      () =>
+        runPlatformAgentRunner({
+          cwd,
+          env: {
+            ...baseEnv,
+            AGENT_BACKEND: 'codex',
+            PLATFORM_AGENT_CODEX_COMMAND: commandPath,
+            MOCK_CODEX_ENV_PATH: path.join(cwd, '.pages-artifacts/codex-env.json'),
+            GITHUB_TOKEN: 'ghs_should_not_leak',
+            PAGES_CALLBACK_TOKEN: 'callback_should_not_leak',
+            RANDOM_SECRET_VALUE: 'secret_should_not_leak',
+          },
+          maxRounds: 1,
+          runChecks: async () => ({ ok: true, name: 'mock-check', log: 'checks passed' }),
+        }),
+      /backend produced no repository changes/
+    );
+
+    const envSnapshot = JSON.parse(await readFile(path.join(cwd, '.pages-artifacts/codex-env.json'), 'utf8'));
+    assert.equal(envSnapshot.agentKey, 'code-key');
+    assert.equal(envSnapshot.githubToken, null);
+    assert.equal(envSnapshot.callbackToken, null);
+    assert.equal(envSnapshot.randomSecret, null);
   });
 });
 
@@ -172,7 +218,7 @@ test('codex preflight validates the same provider config before running the agen
     assert.deepEqual(invocation.args.slice(0, 3), ['debug', 'models', '--bundled']);
     const providerIndex = invocation.args.indexOf('model_provider="platform_agent_gateway"');
     assert.notEqual(providerIndex, -1);
-    assert.match(invocation.args[providerIndex + 2], /wire_api="responses"\}$/);
+    assert.match(invocation.args[providerIndex + 2], /wire_api="chat"\}$/);
     assert.equal(invocation.key, 'code-key');
   });
 });
@@ -239,6 +285,61 @@ test('runs a second fix round when the first check fails and includes failure lo
     assert.equal(report.rounds.length, 2);
     assert.equal(report.checks[0].ok, false);
     assert.equal(report.checks[1].ok, true);
+  });
+});
+
+test('second fix round includes staged changes in current diff context', async () => {
+  await withFixture(async (cwd) => {
+    const tasks = [];
+
+    await runPlatformAgentRunner({
+      cwd,
+      env: baseEnv,
+      maxRounds: 2,
+      backend: createBackend(async ({ taskPath, round }) => {
+        const task = await readFile(taskPath, 'utf8');
+        tasks.push(task);
+        const target = path.join(cwd, 'apps/gateway/src/control-plane/runner-target.js');
+        if (round === 1) {
+          await writeFile(target, "export const value = 'staged-broken';\n");
+          await execFileAsync('git', ['add', 'apps/gateway/src/control-plane/runner-target.js'], { cwd });
+          return;
+        }
+        assert.match(task, /staged-broken/);
+        await writeFile(target, "export const value = 'staged-fixed';\n");
+      }),
+      runChecks: async ({ round }) =>
+        round === 1
+          ? { ok: false, name: 'pnpm test', log: 'staged change failed validation' }
+          : { ok: true, name: 'pnpm test', log: 'tests passed' },
+    });
+
+    assert.equal(tasks.length, 2);
+  });
+});
+
+test('default validation checks run with workflow secrets scrubbed', async () => {
+  await withFixture(async (cwd) => {
+    await runPlatformAgentRunner({
+      cwd,
+      env: {
+        ...baseEnv,
+        PLATFORM_AGENT_CHECK_COMMANDS:
+          'node -e "if (process.env.GITHUB_TOKEN || process.env.AGENT_CODE_API_KEY || process.env.PAGES_CALLBACK_TOKEN) process.exit(7)"',
+        GITHUB_TOKEN: 'ghs_should_not_leak',
+        PAGES_CALLBACK_TOKEN: 'callback_should_not_leak',
+      },
+      maxRounds: 1,
+      backend: createBackend(async () => {
+        await writeFile(
+          path.join(cwd, 'apps/gateway/src/control-plane/runner-target.js'),
+          "export const value = 'checks-scrubbed';\n"
+        );
+      }),
+    });
+
+    const report = await readReport(cwd);
+    assert.equal(report.checks[0].ok, true);
   });
 });
 

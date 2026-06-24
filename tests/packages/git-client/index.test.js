@@ -216,6 +216,29 @@ test('builds workflow inputs from job fields', () => {
   );
 });
 
+test('workflow inputs are truncated before dispatch', async () => {
+  const longSummary = 'x'.repeat(70000);
+  const inputs = buildPagesAgentInputs({ ...job, summary: longSummary });
+  assert.equal(inputs.requestSummary.length, 60000);
+
+  await dispatchWorkflow(
+    async (_url, request) => {
+      const body = JSON.parse(request.body);
+      assert.equal(body.inputs.requestSummary.length, 60000);
+      return new Response(null, { status: 204 });
+    },
+    {
+      token: 'ghs_test',
+      repoFullName: 'org/pages-manager',
+    },
+    {
+      workflowId: 'pages-agent.yml',
+      ref: 'master',
+      inputs: { requestSummary: longSummary },
+    }
+  );
+});
+
 test('ensurePublishingIssue reuses existing issue by PublishingJob marker', async () => {
   const requests = [];
   const result = await ensurePublishingIssue(

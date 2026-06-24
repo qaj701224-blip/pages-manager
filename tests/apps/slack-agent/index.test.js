@@ -1138,14 +1138,23 @@ describe('slack agent', () => {
   it('redacts token-like values from Slack Agent audit logs', () => {
     const redacted = redactSlackAgentLogValue(
       {
-        text: '请不要记录 xoxb-1234567890-secret 或 ghp_1234567890abcdefghij1234567890',
+        text: [
+          '请不要记录 xoxb-1234567890-secret',
+          'ghp_1234567890abcdefghij1234567890',
+          'gho_1234567890abcdefghij1234567890',
+          'ghu_1234567890abcdefghij1234567890',
+          'ghs_1234567890abcdefghij1234567890',
+          'ghr_1234567890abcdefghij1234567890',
+          'github_pat_1234567890abcdefghij1234567890',
+        ].join(' '),
         token: 'plain-token-value',
       },
       ['exact-secret']
     );
 
     assert.match(redacted.text, /\[REDACTED_SLACK_TOKEN\]/);
-    assert.match(redacted.text, /\[REDACTED_GITHUB_TOKEN\]/);
+    assert.equal((redacted.text.match(/\[REDACTED_GITHUB_TOKEN\]/g) || []).length, 6);
+    assert.doesNotMatch(redacted.text, /gh[pousr]_|github_pat_/);
     assert.equal(redacted.token, '[REDACTED_SECRET]');
   });
 

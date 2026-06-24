@@ -93,6 +93,7 @@ function platformStatusContext(platformItem = {}, nextStatus = '') {
 
 export async function handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result }) {
   const reviewComment = await store.recordReviewAgentComment(normalized);
+  const commentIsOpen = reviewComment.comment?.status === 'open';
   let platformItem = store.findPlatformDevItemByPrNumber
     ? await store.findPlatformDevItemByPrNumber(normalized.prNumber, { headSha: normalized.headSha })
     : null;
@@ -100,7 +101,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     const fullHeadSha = normalized.headSha && normalized.headSha.length === 40 ? normalized.headSha : null;
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
     const nextStatus =
-      normalized.classification === 'blocking' || normalized.classification === 'unknown'
+      commentIsOpen && (normalized.classification === 'blocking' || normalized.classification === 'unknown')
         ? 'review_blocked'
         : platformItem.status === 'pr_created' || platformItem.status === 'ci_running'
           ? 'review_waiting'
@@ -108,6 +109,16 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     const statusContext = platformStatusContext(platformItem, nextStatus);
     if (shouldIgnoreStalePlatformReview(platformItem, nextStatus)) {
       const patched = fullHeadSha ? await store.patchPlatformDevItem(platformItem.id, patch) : platformItem;
+      if (!patched) {
+        return jsonResponse({
+          ok: true,
+          created: true,
+          delivery: result.delivery,
+          reviewAction: 'platform_item_not_found_after_update',
+          reviewComment: reviewComment.comment,
+          reviewCommentCreated: reviewComment.created,
+        });
+      }
       return jsonResponse({
         ok: true,
         created: true,
@@ -122,6 +133,16 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       platformItem.status === nextStatus
         ? await store.patchPlatformDevItem(platformItem.id, patch)
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
+    if (!platformItem) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        reviewAction: 'platform_item_not_found_after_update',
+        reviewComment: reviewComment.comment,
+        reviewCommentCreated: reviewComment.created,
+      });
+    }
     await store.linkPlatformDevItemToSlackSession(platformItem);
     const reviewContext = await platformReviewContextForItem(store, platformItem, { ...normalized, repoFullName });
     const memory = await rememberPlatformReview(store, platformItem, normalized, reviewContext);
@@ -133,8 +154,18 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       reviewSummary: memory?.requirements?.platformReview?.lastSummary || reviewContext || null,
     };
     platformItem = await store.patchPlatformDevItem(platformItem.id, contextPatch);
+    if (!platformItem) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        reviewAction: 'platform_item_not_found_after_context_update',
+        reviewComment: reviewComment.comment,
+        reviewCommentCreated: reviewComment.created,
+      });
+    }
     const autoFix =
-      nextStatus === 'review_blocked'
+      commentIsOpen && nextStatus === 'review_blocked'
         ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, {
             trigger: 'review_blocked',
             reviewSummary: contextPatch.reviewSummary,

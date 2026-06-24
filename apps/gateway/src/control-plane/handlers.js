@@ -181,6 +181,51 @@ function platformGateApprovalAllowed(env = {}, teamId, slackUserId) {
   return allowlist.has(slackUserId) || allowlist.has(`slack:${teamId}:${slackUserId}`);
 }
 
+const TERMINAL_SLACK_DELIVERY_STATUSES = new Set(['processed', 'ignored']);
+const TERMINAL_GITHUB_DELIVERY_STATUSES = new Set(['processed', 'ignored']);
+
+function shouldRetryRecordedSlackDelivery(delivery = {}) {
+  return !TERMINAL_SLACK_DELIVERY_STATUSES.has(delivery.processingStatus || 'received');
+}
+
+function shouldRetryRecordedGithubDelivery(delivery = {}) {
+  return !TERMINAL_GITHUB_DELIVERY_STATUSES.has(delivery.status || 'received');
+}
+
+async function markGithubDelivery(store, result, patch = {}) {
+  const delivery = result?.delivery;
+  if (!delivery?.repoFullName || !delivery?.deliveryId || !store?.updateGithubDelivery) return null;
+  return await store.updateGithubDelivery(
+    {
+      repoFullName: delivery.repoFullName,
+      deliveryId: delivery.deliveryId,
+    },
+    patch
+  );
+}
+
+async function responseHasIgnoredPayload(response) {
+  if (!response?.clone) return false;
+  const payload = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  return Boolean(payload?.ignored);
+}
+
+async function completeGithubDelivery(store, result, response) {
+  await markGithubDelivery(store, result, {
+    status: (await responseHasIgnoredPayload(response)) ? 'ignored' : 'processed',
+  });
+  return response;
+}
+
+function githubWebhookRepoAllowed(repoFullName, env = {}) {
+  const configured = env.GITHUB_REPO || env.GITHUB_REPOSITORY || '';
+  if (!configured) return true;
+  return String(repoFullName || '').toLowerCase() === String(configured).toLowerCase();
+}
+
 function isUnaddressedChannelThreadMessage(body = {}) {
   const event = body.event || {};
   const surface = surfaceForSlackBody(body);
@@ -675,13 +720,24 @@ async function processSlackEventBody(body, env, options = {}) {
     });
 
     if (!delivery.created) {
-      return {
-        ok: true,
-        action: 'duplicate_slack_event',
-        accepted: false,
-        reply: false,
-        delivery: delivery.delivery,
-      };
+      if (!shouldRetryRecordedSlackDelivery(delivery.delivery)) {
+        return {
+          ok: true,
+          action: 'duplicate_slack_event',
+          accepted: false,
+          reply: false,
+          delivery: delivery.delivery,
+        };
+      }
+      await updateDelivery({
+        processingStatus: 'processing',
+        resultType: 'none',
+        ignoredReason: null,
+        errorCode: null,
+        errorMessage: null,
+        retryNum: Number(delivery.delivery?.retryNum || 0) + 1,
+        retryReason: `retry_${delivery.delivery?.processingStatus || 'received'}`,
+      });
     }
   }
 
@@ -1968,6 +2024,14 @@ export async function handleSlackEvents(request, env) {
       }
       return result;
     } catch (err) {
+      if (store?.updateSlackDelivery) {
+        await store.updateSlackDelivery(slackDeliveryContextFromBody(body), {
+          processingStatus: 'failed',
+          resultType: 'none',
+          errorCode: 'slack_delivery_failed',
+          errorMessage: err.message,
+        });
+      }
       const settledReaction = await settleImmediateSlackReaction(env, workingReaction, {
         ok: false,
         action: 'slack_event_processing_failed',
@@ -2448,13 +2512,16 @@ export async function handleSlackInteractions(request, env) {
     const itemId = value.workItemId || value.platformDevItemId || value.jobId || '';
     const session = value.sessionId ? await store.getSlackSession(value.sessionId) : null;
     const item = itemId ? await store.getPlatformDevItem(itemId) : null;
-    if (!item || !slackJobVisibleToActor(item, body)) {
+    const isGateApprover = platformGateApprovalAllowed(env, teamId, slackUserId);
+    const visibleToRequester = item ? slackJobVisibleToActor(item, body) : false;
+    if (!item || (!visibleToRequester && !(actionId === 'pages_approve_platform_gate' && isGateApprover))) {
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '这个平台需求不存在，或不属于当前 Slack 用户。',
       });
     }
-    if (session && (session.teamId !== teamId || session.primarySlackUserId !== slackUserId)) {
+    const maintainerApproval = actionId === 'pages_approve_platform_gate' && isGateApprover;
+    if (session && (session.teamId !== teamId || (!maintainerApproval && session.primarySlackUserId !== slackUserId))) {
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '这个确认操作不属于当前 Slack 用户。',
@@ -2481,17 +2548,26 @@ export async function handleSlackInteractions(request, env) {
 
     const gateType = value.gateType || 'risk';
     if (actionId === 'pages_reject_platform_gate') {
+      let itemForRejection = item;
+      if (itemForRejection.status === 'received') {
+        itemForRejection = await store.updatePlatformDevItem(itemForRejection.id, 'gate_pending', {
+          gateStatus: itemForRejection.gateStatus || 'pending',
+          gateReason: itemForRejection.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
+        });
+        if (!itemForRejection) return slackAckResponse({ response_type: 'ephemeral', text: '这个平台需求已经不存在。' });
+      }
       const gate = store.decideWorkItemGate
-        ? await store.decideWorkItemGate('platform_dev', item.id, gateType, {
+        ? await store.decideWorkItemGate('platform_dev', itemForRejection.id, gateType, {
             status: 'rejected',
             decidedBy: `slack:${teamId}:${slackUserId}`,
-            reason: item.gateReason || '人工拒绝自动开发。',
+            reason: itemForRejection.gateReason || '人工拒绝自动开发。',
           })
         : null;
-      const rejected = await store.updatePlatformDevItem(item.id, 'closed_unmerged', {
+      const rejected = await store.updatePlatformDevItem(itemForRejection.id, 'closed_unmerged', {
         gateStatus: 'rejected',
-        gateReason: item.gateReason || '人工拒绝自动开发。',
+        gateReason: itemForRejection.gateReason || '人工拒绝自动开发。',
       });
+      if (!rejected) return slackAckResponse({ response_type: 'ephemeral', text: '这个平台需求已经不存在。' });
       await store.linkPlatformDevItemToSlackSession(rejected, session || undefined);
       const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, rejected, {
         stage: 'closed_unmerged',
@@ -2519,7 +2595,7 @@ export async function handleSlackInteractions(request, env) {
       });
     }
 
-    if (!platformGateApprovalAllowed(env, teamId, slackUserId)) {
+    if (!isGateApprover) {
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '这个高风险平台需求需要指定维护者批准后才能进入自动开发。',
@@ -3097,6 +3173,7 @@ async function handlePlatformDevExecutorCallback(body, env) {
   } else {
     item = await store.updatePlatformDevItem(item.id, status, patch);
   }
+  if (!item) return jsonResponse({ error: 'PlatformDevItem not found after update' }, 404);
   await store.linkPlatformDevItemToSlackSession(item);
   const queuedFollowupRerun =
     ['pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge'].includes(status)
@@ -3138,36 +3215,81 @@ export async function handleGithubWebhook(request, env) {
   const result = await store.recordGithubDelivery({ repoFullName, deliveryId, eventName, action });
 
   if (!result.created) {
-    return jsonResponse({ ok: true, created: false, delivery: result.delivery });
-  }
-
-  if (eventName === 'issues') {
-    return handleGithubIssueWebhook({ body, action, store, env, result });
-  }
-
-  if (eventName === 'pull_request') {
-    return handleGithubPullRequestWebhook({ body, action, store, env, result });
-  }
-
-  const siteCheckRun = normalizeSiteCheckRunWebhook(body, eventName, deliveryId, repoFullName);
-  if (siteCheckRun && isAllowedSiteCheckRun(siteCheckRun, env)) {
-    return handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result });
-  }
-
-  const normalized = normalizeReviewAgentWebhook(body, eventName, deliveryId, repoFullName);
-  if (!normalized) {
-    return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'unsupported_event' });
-  }
-
-  if (!isAllowedReviewAgent(normalized, env)) {
-    return jsonResponse({
-      ok: true,
-      created: true,
-      delivery: result.delivery,
-      ignored: 'review_agent_not_allowed',
-      reviewAgentLogin: normalized.reviewAgentLogin,
+    if (!shouldRetryRecordedGithubDelivery(result.delivery)) {
+      return jsonResponse({ ok: true, created: false, delivery: result.delivery });
+    }
+    await markGithubDelivery(store, result, {
+      status: 'processing',
+      requestId: request.headers.get('X-GitHub-Hook-Installation-Target-ID') || null,
     });
   }
 
-  return handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result });
+  if (result.created) {
+    await markGithubDelivery(store, result, {
+      status: 'processing',
+      requestId: request.headers.get('X-GitHub-Hook-Installation-Target-ID') || null,
+    });
+  }
+
+  if (!githubWebhookRepoAllowed(repoFullName, env)) {
+    return await completeGithubDelivery(
+      store,
+      result,
+      jsonResponse({ ok: true, created: result.created, delivery: result.delivery, ignored: 'repo_not_allowed', repoFullName })
+    );
+  }
+
+  try {
+    if (eventName === 'issues') {
+      return await completeGithubDelivery(store, result, await handleGithubIssueWebhook({ body, action, store, env, result }));
+    }
+
+    if (eventName === 'pull_request') {
+      return await completeGithubDelivery(
+        store,
+        result,
+        await handleGithubPullRequestWebhook({ body, action, store, env, result })
+      );
+    }
+
+    const siteCheckRun = normalizeSiteCheckRunWebhook(body, eventName, deliveryId, repoFullName);
+    if (siteCheckRun && isAllowedSiteCheckRun(siteCheckRun, env)) {
+      return await completeGithubDelivery(store, result, await handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }));
+    }
+
+    const normalized = normalizeReviewAgentWebhook(body, eventName, deliveryId, repoFullName);
+    if (!normalized) {
+      return await completeGithubDelivery(
+        store,
+        result,
+        jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'unsupported_event' })
+      );
+    }
+
+    if (!isAllowedReviewAgent(normalized, env)) {
+      return await completeGithubDelivery(
+        store,
+        result,
+        jsonResponse({
+          ok: true,
+          created: true,
+          delivery: result.delivery,
+          ignored: 'review_agent_not_allowed',
+          reviewAgentLogin: normalized.reviewAgentLogin,
+        })
+      );
+    }
+
+    return await completeGithubDelivery(
+      store,
+      result,
+      await handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result })
+    );
+  } catch (err) {
+    await markGithubDelivery(store, result, {
+      status: 'failed',
+      requestId: request.headers.get('X-GitHub-Hook-Installation-Target-ID') || null,
+    });
+    throw err;
+  }
 }

@@ -162,9 +162,16 @@ echo "[ecs] sync source to remote build dir"
     --exclude='*/node_modules/*' \
     --exclude='.env' \
     --exclude='.env.*' \
+    --exclude='.dev.vars' \
+    --exclude='*/.dev.vars' \
     --exclude='.ack-preview.env' \
     --exclude='.ack_preview.env' \
     --exclude='.ack*.env' \
+    --exclude='.staging.env' \
+    --exclude='.pages.json' \
+    --exclude='*/.pages.json' \
+    --exclude='wrangler.toml' \
+    --exclude='*/wrangler.toml' \
     --exclude='*.tar.gz' \
     --exclude='.DS_Store' \
     --exclude='._*' \

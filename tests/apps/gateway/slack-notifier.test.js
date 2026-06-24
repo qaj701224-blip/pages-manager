@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   addSlackReaction,
+  notifySlackJob,
   notifySlackJobStatus,
   postSlackMessage,
   removeSlackReaction,
@@ -119,6 +120,122 @@ test('gateway skips stale Slack status updates before remote notifier call', asy
   assert.equal(result.skipped, true);
   assert.equal(result.reason, 'stale_stage');
   assert.deepEqual(calls, []);
+});
+
+test('gateway sends same-stage Slack status update when payload content changes', async () => {
+  const calls = [];
+  const events = [];
+  const store = {
+    getSlackJobStatusMessage() {
+      return {
+        channel: 'C1',
+        threadTs: '1710000000.000100',
+        messageTs: '1710000001.000100',
+        stage: 'reviewing',
+        status: 'reviewing',
+      };
+    },
+    recordAgentRunEvent(input) {
+      events.push(input);
+      return { created: true, event: input };
+    },
+    recordSlackJobStatusMessage(jobId, input) {
+      return { ...input, jobId };
+    },
+  };
+  const job = {
+    id: 'job_1',
+    status: 'reviewing',
+    employeeSlug: 'alice',
+    siteSlug: 'profile',
+    summary: '个人主页',
+    slackThread: {
+      channelId: 'C1',
+      threadTs: '1710000000.000100',
+      userId: 'U1',
+    },
+  };
+
+  const result = await notifySlackJobStatus(
+    {
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        calls.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            action: 'updated',
+            message: {
+              channel: 'C1',
+              threadTs: '1710000000.000100',
+              messageTs: '1710000001.000100',
+              stage: 'reviewing',
+              status: 'reviewing',
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    },
+    store,
+    job,
+    {
+      stage: 'reviewing',
+      dedupeKey: 'review-status:job_1:comment-42',
+      text: 'Review Agent 发现 1 条 blocking comment，已暂停 Preview。',
+      cardSummary: '新增 blocking comment #42。',
+    }
+  );
+  const payload = JSON.parse(calls[0].request.body);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, 'updated');
+  assert.equal(calls.length, 1);
+  assert.equal(payload.options.skipDuplicate, false);
+  assert.equal(payload.options.dedupeKey, 'review-status:job_1:comment-42');
+  assert.equal(events[0].dedupeKey, 'review-status:job_1:comment-42');
+});
+
+test('gateway dedupes concurrent Slack job messages before remote notifier call', async () => {
+  const calls = [];
+  let releaseFirstCall;
+  const firstCallStarted = new Promise((resolve) => {
+    releaseFirstCall = resolve;
+  });
+  const store = {
+    hasSlackNotification() {
+      return false;
+    },
+    recordSlackNotification() {},
+  };
+  const job = {
+    id: 'job_1',
+    slackThread: {
+      channelId: 'C1',
+      threadTs: '1710000000.000100',
+      userId: 'U1',
+    },
+  };
+  const env = {
+    SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+    SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+    async SLACK_NOTIFIER_FETCH(url, request) {
+      calls.push({ url: String(url), request });
+      await firstCallStarted;
+      return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000100' }), { status: 200 });
+    },
+  };
+
+  const first = notifySlackJob(env, store, job, 'Preview 已部署。', 'preview:job_1');
+  const second = await notifySlackJob(env, store, job, 'Preview 已部署。', 'preview:job_1');
+  releaseFirstCall();
+  const firstResult = await first;
+
+  assert.equal(firstResult.ok, true);
+  assert.equal(second.skipped, true);
+  assert.equal(second.reason, 'duplicate_in_flight');
+  assert.equal(calls.length, 1);
 });
 
 test('gateway records Slack status progress only after remote notifier success', async () => {

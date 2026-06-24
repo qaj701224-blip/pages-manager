@@ -3,7 +3,10 @@ import { githubApiUrl, githubRequest, parseRepoFullName } from '@xd/git-client';
 import { notifySlackJobStatus } from '../slack/notifier.js';
 import { issueUrl } from './webhook.js';
 
+const TERMINAL_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
+
 export async function cancelJobForClosedGithubIssue(store, job, issue = {}) {
+  if (!job?.id || TERMINAL_JOB_STATUSES.has(job.status)) return job;
   const message = issue.number
     ? `GitHub issue #${issue.number} 已关闭，发布任务已停止。`
     : 'GitHub issue 已关闭，发布任务已停止。';
@@ -18,6 +21,7 @@ export async function cancelJobForClosedGithubIssue(store, job, issue = {}) {
 }
 
 export async function cancelJobForClosedGithubPr(store, job, pullRequest = {}) {
+  if (!job?.id || TERMINAL_JOB_STATUSES.has(job.status)) return job;
   const message = pullRequest.number
     ? `GitHub PR #${pullRequest.number} 已关闭，发布任务已停止。`
     : 'GitHub PR 已关闭，发布任务已停止。';
@@ -133,6 +137,12 @@ export async function restorePlatformDevItemForReopenedGithubResource(store, ite
   if (target === 'pr') {
     patch.githubPrNumber = resource.number || item.githubPrNumber || null;
     patch.githubPrUrl = pullRequestUrl(resource) || item.githubPrUrl || null;
+  }
+  if (['failed', 'cancelled'].includes(item.status)) {
+    return await store.patchPlatformDevItem(item.id, {
+      ...patch,
+      status: restoredStatusForReopenedPlatformItem(item, target),
+    });
   }
   return await store.updatePlatformDevItem(item.id, restoredStatusForReopenedPlatformItem(item, target), patch);
 }

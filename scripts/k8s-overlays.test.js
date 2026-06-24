@@ -122,6 +122,16 @@ test('local K8s bootstrap writes gateway API token into callback secrets', () =>
   assert.match(script, /pages-gateway-api-token "\$\{PAGES_GATEWAY_API_TOKEN:-\$\{PAGES_INTERNAL_API_TOKEN:-\}\}"/);
 });
 
+test('local K8s env check requires Slack Agent config when turn endpoint is enabled', () => {
+  const script = readRepoFile('scripts/k8s-local-check-env.sh');
+
+  assert.match(script, /if ! is_placeholder_value "\$\{SLACK_AGENT_TURN_URL:-\}"; then/);
+  assert.match(script, /require_var SLACK_AGENT_SHARED_SECRET/);
+  assert.match(script, /if \[ "\$\{AGENT_MODEL_PROVIDER:-company-agent\}" != "deterministic" \]; then/);
+  assert.match(script, /require_var AGENT_GATEWAY_URL/);
+  assert.match(script, /require_var SLACK_AGENT_API_KEY/);
+});
+
 test('pages-system workloads declare runtime resource and security guardrails', () => {
   const workloadFiles = [
     'k8s/base/pages-system/gateway.yaml',

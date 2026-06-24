@@ -41,7 +41,7 @@ export async function startIssueAndIndex(job, config, adapters = {}) {
     issueUrl: issueResult.issue.html_url || issueResult.issue.url || null,
   });
 
-  if (config.executorMode === 'issue_only' || config.executorMode === 'github_issue_webhook') {
+  if (config.executorMode === 'issue_only' || (config.executorMode === 'github_issue_webhook' && issueResult.created)) {
     return {
       action: config.executorMode === 'github_issue_webhook' ? 'issue_created_waiting_for_github_issue_webhook' : 'issue_created',
       issueNumber,

@@ -122,7 +122,7 @@ services:
       PAGES_PREVIEW_MODE: ${PAGES_PREVIEW_MODE:-actions}
       PAGES_API: ${PAGES_API:-https://api-staging.workers.xd.team}
       PAGES_PREVIEW_TOKEN: ${PAGES_PREVIEW_TOKEN:-}
-      PAGES_PREVIEW_IP_RESTRICT: ${PAGES_PREVIEW_IP_RESTRICT:-false}
+      PAGES_PREVIEW_IP_RESTRICT: ${PAGES_PREVIEW_IP_RESTRICT:-true}
       PAGES_PREVIEW_SITE_NAME_PATTERN: ${PAGES_PREVIEW_SITE_NAME_PATTERN:-pm-pr-{prNumber}-{employeeSlug}-{siteSlug}}
     healthcheck:
       test:

@@ -6,6 +6,16 @@ import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { dispatchPreviewFromStoredReviewIfReady, previewGateForPr } from './review-gate.js';
 
+const TERMINAL_PLATFORM_STATUSES = new Set(['merged', 'closed_unmerged', 'failed', 'cancelled']);
+
+function shaMatches(left, right) {
+  if (!left || !right) return false;
+  const normalizedLeft = String(left).toLowerCase();
+  const normalizedRight = String(right).toLowerCase();
+  if (normalizedLeft.length < 7 || normalizedRight.length < 7) return false;
+  return normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
+}
+
 async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
   if (!job) return null;
   if (job.status === 'changes_requested') {
@@ -33,6 +43,8 @@ function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}) {
 }
 
 function shouldIgnoreStalePlatformCheck(platformItem = {}, nextStatus = '') {
+  if (TERMINAL_PLATFORM_STATUSES.has(platformItem.status)) return true;
+  if (platformItem.status === 'ready_to_merge' && nextStatus === 'ci_failed') return true;
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
 
@@ -45,8 +57,29 @@ export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, r
   if (platformItem) {
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
     const nextStatus = platformCheckStatusForRun(platformItem, siteCheckRun);
+    if (fullHeadSha && platformItem.headSha && !shaMatches(platformItem.headSha, fullHeadSha)) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        reviewAction: 'platform_ci_stale_ignored',
+        siteCheckRun: storedRun.run,
+        siteCheckRunCreated: storedRun.created,
+        item: platformItem,
+      });
+    }
     if (shouldIgnoreStalePlatformCheck(platformItem, nextStatus)) {
       const patched = fullHeadSha ? await store.patchPlatformDevItem(platformItem.id, patch) : platformItem;
+      if (!patched) {
+        return jsonResponse({
+          ok: true,
+          created: true,
+          delivery: result.delivery,
+          reviewAction: 'platform_item_not_found_after_update',
+          siteCheckRun: storedRun.run,
+          siteCheckRunCreated: storedRun.created,
+        });
+      }
       return jsonResponse({
         ok: true,
         created: true,
@@ -61,6 +94,16 @@ export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, r
       platformItem.status === nextStatus
         ? await store.patchPlatformDevItem(platformItem.id, patch)
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
+    if (!platformItem) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        reviewAction: 'platform_item_not_found_after_update',
+        siteCheckRun: storedRun.run,
+        siteCheckRunCreated: storedRun.created,
+      });
+    }
     await store.linkPlatformDevItemToSlackSession(platformItem);
     const autoFix =
       nextStatus === 'ci_failed'

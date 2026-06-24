@@ -95,6 +95,15 @@ function safeText(value, fallback = '未提供') {
   return text || fallback;
 }
 
+function workflowInputValue(value, maxLength = 60000) {
+  const text = value === undefined || value === null ? '' : String(value);
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
+function workflowInputs(inputs = {}) {
+  return Object.fromEntries(Object.entries(inputs).map(([key, value]) => [key, workflowInputValue(value)]));
+}
+
 function requesterProfileForJob(job = {}) {
   const profile = job.requesterProfile || job.requester_profile || job.requester || {};
   const slackUserId = profile.slackUserId || profile.slack_user_id || job.slackThread?.userId || '';
@@ -378,18 +387,18 @@ export function buildPlatformDevFollowupComment(item, options = {}) {
 }
 
 export function buildProjectIndexInputs(job, options = {}) {
-  return {
+  return workflowInputs({
     publishingJobId: job.id,
     siteProjectId: job.siteProjectId || '',
     allowedPath: options.allowedPath || allowedPathForJob(job),
     baseRef: options.baseRef || '',
     callbackUrl: options.callbackUrl || '',
     issueNumber: String(options.issueNumber || job.issueNumber || ''),
-  };
+  });
 }
 
 export function buildPagesAgentInputs(job, options = {}) {
-  return {
+  return workflowInputs({
     publishingJobId: job.id,
     mode: options.mode || 'initial',
     employeeSlug: job.employeeSlug,
@@ -402,11 +411,11 @@ export function buildPagesAgentInputs(job, options = {}) {
     requestSummary: job.summary || job.brief || '',
     callbackUrl: options.callbackUrl || '',
     branchName: options.branchName || '',
-  };
+  });
 }
 
 export function buildPagesPreviewInputs(job, options = {}) {
-  return {
+  return workflowInputs({
     publishingJobId: job.id,
     prNumber: String(options.prNumber || job.prNumber || ''),
     headSha: options.headSha || job.headSha || '',
@@ -417,7 +426,7 @@ export function buildPagesPreviewInputs(job, options = {}) {
     previewSiteName: options.previewSiteName || '',
     previewHostname: options.previewHostname || '',
     callbackUrl: options.callbackUrl || '',
-  };
+  });
 }
 
 export function buildPlatformAgentInputs(item, options = {}) {
@@ -573,7 +582,7 @@ export async function dispatchWorkflow(fetchImpl, config, workflow) {
     method: 'POST',
     body: {
       ref: workflow.ref,
-      inputs: workflow.inputs || {},
+      inputs: workflowInputs(workflow.inputs || {}),
     },
   });
 

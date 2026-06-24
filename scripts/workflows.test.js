@@ -215,9 +215,10 @@ test('platform agent workflow is manually dispatched and isolated from deploy cr
 test('platform agent commits newly generated files and scans untracked paths', () => {
   const workflow = readWorkflow('.github/workflows/platform-agent.yml');
 
-  assert.match(workflow, /git status --porcelain --untracked-files=all/);
-  assert.match(workflow, /sed -E 's\/\^\.\.\.\/\/'/);
-  assert.match(workflow, /grep -Ev '\^\(\\\.pages-artifacts\|\\\.pages-trusted\)\(\/\|\$\)'/);
+  assert.match(workflow, /execFileSync\('git', \['status', '--porcelain=v1', '-z', '--untracked-files=all'\]/);
+  assert.match(workflow, /status\[0\] === 'R'/);
+  assert.match(workflow, /file = parts\[index \+ 1\] \|\| file/);
+  assert.match(workflow, /\^\(\\\.pages-artifacts\|\\\.pages-trusted\)\(\\\/\|\$\)/);
   assert.match(workflow, /printf '%s\\n' "\$changed_files" \| grep -E/);
   assert.match(workflow, /\\\.env\(\\\.\.\*\)\?/);
   assert.match(workflow, /\.\*\\\.env/);
@@ -226,13 +227,25 @@ test('platform agent commits newly generated files and scans untracked paths', (
   assert.match(workflow, /while IFS= read -r path; do/);
   assert.match(workflow, /done <<< "\$changed_files"/);
   assert.match(workflow, /git ls-files --error-unmatch -- "\$path"/);
-  assert.match(workflow, /git diff --unified=0 -- "\$path"/);
+  assert.match(workflow, /git diff HEAD --unified=0 -- "\$path"/);
   assert.match(workflow, /sed 's\/\^\/\+\/' "\$path"/);
   assert.match(workflow, /Potential secret detected in changed file: \$path/);
   assert.doesNotMatch(workflow, /git diff -- \. ':\(exclude\)pnpm-lock\.yaml'/);
   assert.match(workflow, /git add -A -- \. ':\(exclude\)\.pages-artifacts' ':\(exclude\)\.pages-trusted'/);
   assert.match(workflow, /if git diff --cached --quiet; then/);
   assert.doesNotMatch(workflow, /if git diff --quiet; then[\s\S]*git add -A -- \./);
+});
+
+test('platform agent diagnostics artifact excludes prompt and context markdown', () => {
+  const workflow = readWorkflow('.github/workflows/platform-agent.yml');
+
+  assert.match(workflow, /path: \|\n\s+\.pages-artifacts\/platform-agent-report\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-debug\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-running\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-pr\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-failed\.json/);
+  assert.doesNotMatch(workflow, /\.pages-artifacts\/platform-agent-\*\.md/);
+  assert.doesNotMatch(workflow, /\.pages-artifacts\/platform-agent-\*\.json/);
 });
 
 test('v1 deploy workflows do not inject KV capability secrets', () => {

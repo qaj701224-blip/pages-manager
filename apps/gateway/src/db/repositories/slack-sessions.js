@@ -159,8 +159,8 @@ export const slackSessionRepositoryMethods = {
       lastActiveAt: closedAt,
       updatedAt: closedAt,
     };
-    this.cacheSession(session);
     await upsertRow(this.pool, 'slack_sessions', sessionToRow(session), { excludeUpdate: ['id', 'created_at'] });
+    this.cacheSession(session);
     return session;
   },
 
@@ -185,11 +185,11 @@ export const slackSessionRepositoryMethods = {
       createdAt: existing?.createdAt || nowIso,
       updatedAt: nowIso,
     };
-    this.cacheIssueLink(link);
     await upsertRow(this.pool, 'issue_links', issueLinkToRow(link), { excludeUpdate: ['id', 'created_at'] });
+    this.cacheIssueLink(link);
 
     const currentSession = session || (await this.getSlackSession(slackSessionId));
-    if (currentSession) {
+    if (currentSession && currentSession.status !== 'closed') {
       const active = jobKeepsSlackSessionActive(job);
       await this.upsertSlackSession(
         {

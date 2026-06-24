@@ -32,13 +32,27 @@ const SESSION_ENV_KEYS = [
   'CODING_AGENT_RUN_TIMEOUT_MINUTES',
 ];
 
+const MERGE_ANNOUNCEMENT_ENV_KEYS = [
+  'MERGE_ANNOUNCEMENT_ENABLED',
+  'MERGE_ANNOUNCEMENT_CHANNEL_ID',
+  'MERGE_ANNOUNCEMENT_BASE_REFS',
+  'MERGE_ANNOUNCEMENT_AGENT_ENABLED',
+  'MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS',
+  'MERGE_ANNOUNCEMENT_MENTION_USER_IDS',
+];
+
 function sessionEnv() {
   return Object.fromEntries(SESSION_ENV_KEYS.map((key) => [key, process.env[key]]).filter(([, value]) => value));
+}
+
+function selectedEnv(keys) {
+  return Object.fromEntries(keys.map((key) => [key, process.env[key]]).filter(([, value]) => value));
 }
 
 function gatewayEnv() {
   return {
     ...sessionEnv(),
+    ...selectedEnv(MERGE_ANNOUNCEMENT_ENV_KEYS),
     NODE_ENV: process.env.NODE_ENV,
     INTERNAL_CALLBACK_TOKEN: process.env.INTERNAL_CALLBACK_TOKEN,
     INTERNAL_CALLBACK_TOKEN_REQUIRED: process.env.INTERNAL_CALLBACK_TOKEN_REQUIRED,
@@ -71,6 +85,8 @@ function gatewayEnv() {
     GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS: process.env.GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS,
     PAGES_WORKER_START_URL: process.env.PAGES_WORKER_START_URL,
     PAGES_WORKER_SHARED_SECRET: process.env.PAGES_WORKER_SHARED_SECRET,
+    PAGES_PLATFORM_GATE_APPROVERS: process.env.PAGES_PLATFORM_GATE_APPROVERS,
+    PAGES_PLATFORM_GATE_APPROVER_IDS: process.env.PAGES_PLATFORM_GATE_APPROVER_IDS,
   };
 }
 

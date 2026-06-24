@@ -22,7 +22,7 @@ const BLOCKED_PATH_RE = new RegExp(
   [
     '(^|/)(?:\\.git|node_modules|\\.wrangler|coverage|dist|build|\\.next|\\.turbo|\\.cache)(?:/|$)',
     '(^|/)\\.env(?:\\.|$)',
-    '(?:^|/)(?:id_rsa|known_hosts|wrangler\\.toml)$',
+    '(?:^|/)(?:id_rsa|known_hosts|wrangler\\.toml|\\.pages\\.json|\\.dev\\.vars|\\.staging\\.env|\\.ack-preview\\.env|\\.ack_preview\\.env)$',
     '(?:secret|token|cookie|private[-_]?key)',
   ].join('|'),
   'i'

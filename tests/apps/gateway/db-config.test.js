@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { databaseUrlFromEnv, resolveMysqlConfig, resolveRedisConfig } from '../../../apps/gateway/src/db/config.js';
 import { MySqlGatewayStore } from '../../../apps/gateway/src/db/gateway-store.js';
 import { createBullMqRedisClient, createRedisClient } from '../../../apps/gateway/src/db/redis.js';
 import * as schema from '../../../apps/gateway/src/db/schema.js';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 test('gateway DB config parses DATABASE_URL without exposing secrets', () => {
   const config = resolveMysqlConfig({
@@ -34,8 +39,28 @@ test('gateway DB config supports xdclaw-style MYSQL_ADDR inputs', () => {
   assert.equal(config.database, 'pages_manager');
 });
 
+test('gateway DB config supports bracketed IPv6 MYSQL_ADDR inputs', () => {
+  const config = resolveMysqlConfig({
+    MYSQL_ADDR: '[::1]:3307',
+    MYSQL_USER: 'root',
+    MYSQL_PASSWORD: '',
+    MYSQL_DATABASE: 'pages_manager',
+  });
+
+  assert.equal(config.host, '::1');
+  assert.equal(config.port, 3307);
+  assert.equal(config.user, 'root');
+  assert.equal(config.database, 'pages_manager');
+});
+
 test('drizzle config can build a local default URL for generation', () => {
   assert.equal(databaseUrlFromEnv({}, { allowDefaults: true }), 'mysql://root:@127.0.0.1:3306/pages_manager');
+});
+
+test('gateway migrations do not end with an empty statement breakpoint', () => {
+  const migration = readFileSync(join(repoRoot, 'apps/gateway/drizzle/migrations/0011_witty_talos.sql'), 'utf8');
+
+  assert.doesNotMatch(migration.trimEnd(), /--> statement-breakpoint$/);
 });
 
 test('redis config fails closed when REDIS_URL is missing', () => {
@@ -372,6 +397,53 @@ test('MySQL gateway store records GitHub deliveries with duplicate-key idempoten
   assert.match(calls[0].sql, /INSERT INTO `github_webhook_deliveries`/);
   assert.doesNotMatch(calls[0].sql, /INSERT IGNORE/);
   assert.match(calls[1].sql, /SELECT \* FROM github_webhook_deliveries/);
+});
+
+test('MySQL gateway store updates GitHub delivery status', async () => {
+  const calls = [];
+  const store = new MySqlGatewayStore({
+    async execute(sql, params) {
+      calls.push({ sql, params });
+      if (sql.includes('SELECT * FROM github_webhook_deliveries')) {
+        return [
+          [
+            {
+              id: 'ghdeliv_retry',
+              repo_full_name: 'xindong/pages-manager',
+              delivery_id: 'delivery-retry',
+              event_name: 'issues',
+              action: 'opened',
+              status: 'failed',
+              created_at: new Date('2026-06-14T00:00:00.000Z'),
+              updated_at: new Date('2026-06-14T00:00:00.000Z'),
+            },
+          ],
+          [],
+        ];
+      }
+      if (sql.includes('INSERT INTO `github_webhook_deliveries`')) {
+        return [{ affectedRows: 2 }, []];
+      }
+      return [[], []];
+    },
+    async end() {},
+  });
+
+  const result = await store.updateGithubDelivery(
+    {
+      repoFullName: 'xindong/pages-manager',
+      deliveryId: 'delivery-retry',
+    },
+    {
+      status: 'processing',
+      requestId: 'hook-target-1',
+    }
+  );
+
+  assert.equal(result.status, 'processing');
+  assert.equal(result.requestId, 'hook-target-1');
+  assert.match(calls[0].sql, /SELECT \* FROM github_webhook_deliveries/);
+  assert.match(calls[1].sql, /INSERT INTO `github_webhook_deliveries`/);
 });
 
 test('MySQL gateway store records agent run events with duplicate-key idempotency', async () => {
