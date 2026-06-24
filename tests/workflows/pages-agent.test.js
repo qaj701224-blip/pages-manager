@@ -88,10 +88,13 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.doesNotMatch(workflow, /AGENT_CODE_API_KEY is required for Platform Agent/);
   assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''/);
   assert.match(workflow, /Closes #%s/);
+  assert.match(workflow, /added_lines="\$\(git diff --unified=0 -- "\$path"/);
+  assert.match(workflow, /added_lines="\$\(sed 's\/\^\/\+\/' "\$path"\)"/);
   assert.match(workflow, /Upload platform agent diagnostics[\s\S]*if: always\(\)/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
   assert.match(workflow, /\.pages-artifacts\/platform-agent-\*\.json/);
   assert.match(workflow, /\.pages-artifacts\/platform-agent-\*\.md/);
+  assert.match(workflow, /include-hidden-files: true/);
 });
 
 test('pages-preview workflow keeps deploy API ip restriction compatible', async () => {
