@@ -10088,11 +10088,15 @@ test('GitHub merged PR webhook queues and posts one Slack merge announcement', a
   assert.equal(notifierCalls.length, 1);
   assert.equal(slackPayload.channel, 'C-MERGES');
   assert.match(slackPayload.text, /PR 已合并/);
-  assert.match(visibleText, /查看 PR/);
-  assert.match(visibleText, /alice/);
-  assert.match(visibleText, /bob/);
-  assert.match(visibleText, /master/);
-  assert.match(visibleText, /bbbbbbb/);
+  assert.deepEqual(
+    slackPayload.blocks.map((block) => block.type),
+    ['section']
+  );
+  assert.doesNotMatch(visibleText, /查看 PR/);
+  assert.doesNotMatch(visibleText, /合并了 PR #82/);
+  assert.match(visibleText, /合并了 <https:\/\/github.example\/org\/pages-manager\/pull\/82\|PR #82>/);
+  assert.match(visibleText, /要点/);
+  assert.doesNotMatch(visibleText, /alice|bob|bbbbbbb/);
   assert.doesNotMatch(visibleText, /\b(gateway|worker|mysql|status card|job id|callback)\b/i);
   assert.equal(events.some((event) => event.stage === 'pending'), true);
   assert.equal(events.some((event) => event.stage === 'sent' && event.slackMessageTs), true);
@@ -10243,7 +10247,8 @@ test('GitHub merged PR webhook falls back when Slack Agent merge summary fails',
 
   assert.equal(response.status, 200);
   assert.equal(body.mergeAnnouncement.queued, true);
-  assert.match(visibleText, /合并了 PR #82/);
+  assert.doesNotMatch(visibleText, /合并了 PR #82/);
+  assert.match(visibleText, /影响范围/);
   assert.equal(
     events.some((event) => event.stage === 'summary_fallback' && /model timeout|Gateway Timeout/.test(event.text)),
     true

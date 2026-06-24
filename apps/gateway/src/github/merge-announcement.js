@@ -31,10 +31,6 @@ function mergeSummaryEndpoint(env = {}) {
   }
 }
 
-function shortSha(sha) {
-  return sha ? String(sha).slice(0, 7) : 'unknown';
-}
-
 function truncate(text, maxLength) {
   const value = redactSecretLikeText(String(text || '').trim());
   if (value.length <= maxLength) return value;
@@ -133,7 +129,9 @@ export function shouldHandleMergeAnnouncement(body = {}, action, env = {}) {
   if (configuredRepo && input.repoFullName !== configuredRepo) return { ok: false, reason: 'repo_not_allowed' };
 
   const allowedBaseRefs = envList(env.MERGE_ANNOUNCEMENT_BASE_REFS, DEFAULT_BASE_REFS);
-  if (allowedBaseRefs.length > 0 && !allowedBaseRefs.includes(input.baseRef)) return { ok: false, reason: 'base_ref_not_allowed' };
+  if (allowedBaseRefs.length > 0 && !allowedBaseRefs.includes(input.baseRef)) {
+    return { ok: false, reason: 'base_ref_not_allowed' };
+  }
 
   if (input.siteOnly && !envFlag(env.MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS, false)) {
     return { ok: false, reason: 'site_pr_skipped' };
@@ -158,12 +156,10 @@ export function fallbackMergeAnnouncementSummary(input = {}) {
     source: 'fallback',
     headline,
     summaryBullets: [
-      `合并了 PR #${input.prNumber}：${headline}。`,
-      `主要影响范围：${input.area || '代码库'}${stats ? `（${stats}）` : ''}。`,
-      '更多背景、review 记录和完整 diff 请查看 PR。',
+      `影响范围：${input.area || '代码库'}${stats ? `（${stats}）` : ''}。`,
     ],
     impact: `影响范围请以 PR 描述和 changed files 为准。`,
-    risk: '未生成 Agent 风险摘要；如需进一步确认，请查看 PR 与 CI 结果。',
+    risk: '未生成 Agent 风险摘要；如需进一步确认，请以 PR 与 CI 结果为准。',
     tags: [input.baseRef, input.area].filter(Boolean).slice(0, 5),
   };
 }
@@ -236,60 +232,36 @@ function formatBullets(summary = {}) {
     .join('\n');
 }
 
+function formatMergeAnnouncementText(input = {}, summary = {}) {
+  const title = truncate(input.prTitle || `PR #${input.prNumber}`, 180);
+  const headline = truncate(summary.headline || stripConventionalPrefix(title) || title, 180);
+  const prLink = input.prUrl ? `<${input.prUrl}|PR #${input.prNumber}>` : `PR #${input.prNumber}`;
+  const intro = `${input.repoFullName} 合并了 ${prLink}: ${title}。`;
+  const lines = [
+    `*${intro}*`,
+    headline && headline !== title && headline !== stripConventionalPrefix(title) ? `\n${headline}` : '',
+    '\n要点:',
+    formatBullets(summary),
+    summary.impact ? `• 影响：${truncate(summary.impact, 220)}` : '',
+    summary.risk ? `• 风险：${truncate(summary.risk, 220)}` : '',
+  ].filter(Boolean);
+  return lines.join('\n').slice(0, MAX_TEXT);
+}
+
 export function buildMergeAnnouncementSlackPayload(input = {}, summary = {}, env = {}) {
   const channel = env.MERGE_ANNOUNCEMENT_CHANNEL_ID;
   const title = truncate(input.prTitle || `PR #${input.prNumber}`, 180);
-  const headline = truncate(summary.headline || stripConventionalPrefix(title) || title, 90);
   const prLink = input.prUrl ? `<${input.prUrl}|PR #${input.prNumber}>` : `PR #${input.prNumber}`;
-  const mergedBy = input.mergedByLogin || 'unknown';
-  const author = input.authorLogin || 'unknown';
-  const meta = [`作者 ${author}`, `合并 ${mergedBy}`, input.baseRef, shortSha(input.mergeCommitSha)].filter(Boolean).join(' · ');
-  const details = [
-    formatBullets(summary),
-    summary.impact ? `\n*影响*：${truncate(summary.impact, 220)}` : '',
-    summary.risk ? `\n*风险*：${truncate(summary.risk, 220)}` : '',
-  ]
-    .join('')
-    .slice(0, MAX_TEXT);
+  const details = formatMergeAnnouncementText(input, summary);
 
   return {
     channel,
     text: `PR 已合并：${input.repoFullName} ${prLink} ${title}`,
     blocks: [
       {
-        type: 'header',
-        text: { type: 'plain_text', text: 'PR 已合并' },
-      },
-      {
         type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*${input.repoFullName} 合并了 ${prLink}: ${title}*\n${headline}`,
-        },
+        text: { type: 'mrkdwn', text: details || `*${input.repoFullName} 合并了 ${prLink}: ${title}。*` },
       },
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: details || '详情请查看 PR。' },
-      },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: meta }],
-      },
-      ...(input.prUrl
-        ? [
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: '查看 PR' },
-                  url: input.prUrl,
-                  action_id: 'open_pr',
-                },
-              ],
-            },
-          ]
-        : []),
     ],
   };
 }
