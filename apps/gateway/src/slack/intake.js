@@ -1,4 +1,7 @@
-import { slackWorkItemIncludesInactive, slackWorkItemQueryStateFromText } from './work-item-query.js';
+import {
+  slackWorkItemIncludesInactive,
+  slackWorkItemQueryStateFromText,
+} from './work-item-query.js';
 
 const JOB_ID_RE = /\bjob_[A-Za-z0-9_]+\b/;
 const ISSUE_NUMBER_RE = /(?:issue|issues|需求|任务)\s*#?\s*(\d{1,8})\b/i;
@@ -175,6 +178,19 @@ export function classifySlackIntake(body) {
   }
 
   const workItemReference = parseSlackWorkItemReference(text);
+  if (workItemReference && /(?:重新打开|恢复|重开|reopen)/i.test(text)) {
+    return {
+      action: 'reopen_work_item',
+      shouldCreateJob: false,
+      shouldAnalyze: true,
+      text,
+      targetKind: workItemReference.kind,
+      targetNumber: workItemReference.number,
+      prNumber: workItemReference.kind === 'issue' ? null : workItemReference.number,
+      issueNumber: workItemReference.kind === 'issue' ? workItemReference.number : null,
+      replyText: null,
+    };
+  }
   if (workItemReference && /(继续|接着|切换|选择|打开|查看|回到|续上|处理|修改)/i.test(text)) {
     return {
       action: 'switch_work_item',
@@ -189,14 +205,7 @@ export function classifySlackIntake(body) {
     };
   }
 
-  if (
-    ['task', 'tasks', 'pr', 'prs', 'work'].includes(command?.command) ||
-    /^(我的|查看|看看|列出|查询).*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)/i.test(text) ||
-    /^(当前|目前|现在)?.*我的.*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目).*(几个|多少|列表|清单|有哪些|有几个)?/i.test(
-      text
-    ) ||
-    /^(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)(列表|清单)$/i.test(text)
-  ) {
+  if (['task', 'tasks', 'pr', 'prs', 'work'].includes(command?.command)) {
     const workItemState = slackWorkItemQueryStateFromText(text);
     return {
       action: 'list_work_items',

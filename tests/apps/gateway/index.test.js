@@ -3000,7 +3000,7 @@ test('Slack work item list only shows current user publishing jobs', async () =>
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000130',
-          text: '我的 PR',
+          text: 'work',
         },
       }),
     })
@@ -3065,7 +3065,7 @@ test('Slack work item list skips stale missing work items instead of failing', a
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.00013005',
-          text: '我的 PR',
+          text: 'work',
         },
       }),
     })
@@ -3113,7 +3113,7 @@ test('Slack work item list shows platform tasks without preview wording', async 
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.0001301',
-          text: '我的任务',
+          text: 'work',
         },
       }),
     })
@@ -3183,7 +3183,7 @@ test('Slack issue list includes active and closed issue records', async () => {
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.0001302',
-          text: '目前我的 issue 有哪几个？',
+          text: 'work all',
         },
       }),
     })
@@ -3253,7 +3253,7 @@ test('Slack issue list follow-up reuses previous list context', async () => {
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.0001303',
-          text: '目前我的 issue 有哪几个？',
+          text: 'work all',
         },
       }),
     })
@@ -3339,6 +3339,157 @@ test('Slack issue list follow-up reuses previous list context', async () => {
   assert.equal(agentRequests[0].sessionMemory.lastWorkItemList.workItemState, 'all');
   assert.equal(agentRequests[0].sessionMemory.lastWorkItemList.total, 2);
   assert.doesNotMatch(followupBody.replyText, /哪个对象/);
+});
+
+test('Slack explicit issue and PR count query is not swallowed by active platform focus', async () => {
+  const app = createGatewayApp();
+  const activeItem = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-list-active-focus',
+    title: 'Slack Agent 对话改造',
+    summary: '正在处理的平台功能需求。',
+    issueType: 'type:dev',
+    areas: ['area:slack'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  }).item;
+  app.store.patchPlatformDevItem(activeItem.id, {
+    githubIssueNumber: 88,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/88',
+  });
+  const otherIssue = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-list-other-issue',
+    title: '另一个平台任务',
+    summary: '另一个还没处理的平台任务。',
+    issueType: 'type:bug',
+    areas: ['area:github'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  }).item;
+  app.store.patchPlatformDevItem(otherIssue.id, {
+    githubIssueNumber: 91,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/91',
+  });
+  const prItem = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-list-pr',
+    title: '已有 PR 的平台任务',
+    summary: '已有 PR 的平台任务。',
+    issueType: 'type:dev',
+    areas: ['area:ci'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  }).item;
+  app.store.patchPlatformDevItem(prItem.id, {
+    status: 'pr_created',
+    githubIssueNumber: 92,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/92',
+    githubPrNumber: 93,
+    githubPrUrl: 'https://github.example/org/pages-manager/pull/93',
+  });
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    slackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.0001305',
+    channelId: 'D1',
+    channelType: 'im',
+    threadTs: '1710000000.0001305',
+    messageTs: '1710000000.0001305',
+    activeWorkItemKind: 'platform_dev',
+    activeWorkItemId: activeItem.id,
+    activeIssueNumber: 88,
+  });
+  await app.store.linkPlatformDevItemToSlackSession(activeItem, session);
+  const agentRequests = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-platform-issue-pr-count-active-focus-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.0001305',
+          thread_ts: '1710000000.0001305',
+          text: '目前我有什么 issue 或者 PR 还没有处理？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        agentRequests.push(payload);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                dialogAct: 'run_tool',
+                intent: 'list_work_items',
+                summary: '列出当前未处理的 issue 和 PR',
+                toolCall: { name: 'list_my_work_items', args: { state: 'active' } },
+                confirmationRequirement: 'none',
+                focus: { kind: 'work_item_list', source: 'model' },
+                card: { kind: 'task_list', title: '当前任务', summary: '列出未处理项', actions: [] },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    dialogAct: 'run_tool',
+                    intent: 'list_work_items',
+                    summary: '列出当前未处理的 issue 和 PR',
+                    toolCall: { name: 'list_my_work_items', args: { state: 'active' } },
+                    confirmationRequirement: 'none',
+                    focus: { kind: 'work_item_list', source: 'model' },
+                    card: { kind: 'task_list', title: '当前任务', summary: '列出未处理项', actions: [] },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.equal(body.workItemState, 'active');
+  assert.equal(body.jobs.length, 3);
+  assert.equal(body.slackSessionId, session.id);
+  assert.equal(agentRequests.length, 1);
+  assert.match(visible, /Issue：#88/);
+  assert.match(visible, /Issue：#91/);
+  assert.match(visible, /PR：#93/);
 });
 
 test('Slack Agent can switch to a platform issue without site publishing status card', async () => {
@@ -3598,7 +3749,7 @@ test('Slack work item list hides inactive jobs by default and shows history as r
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000134',
-          text: '我的 PR',
+          text: 'work',
         },
       }),
     })
@@ -3623,7 +3774,7 @@ test('Slack work item list hides inactive jobs by default and shows history as r
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000135',
-          text: '查看我的历史发布任务',
+          text: 'work all',
         },
       }),
     })
@@ -3970,7 +4121,7 @@ test('Slack closed work item query is not starved by many active work items', as
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.0001363',
-          text: '查看我已关闭的发布任务',
+          text: 'work closed',
         },
       }),
     })
@@ -4023,7 +4174,7 @@ test('Slack work item queries prefer Slack Agent tool execution when configured'
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.0001362',
-          text: '查看我已关闭的发布任务',
+          text: 'work closed',
         },
       }),
     }),
@@ -4127,7 +4278,7 @@ test('Slack work item list reconciles GitHub closed issues before showing action
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000136',
-          text: '我的 PR',
+          text: 'work',
         },
       }),
     }),
@@ -4156,7 +4307,7 @@ test('Slack work item list reconciles GitHub closed issues before showing action
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000137',
-          text: '查看我的历史发布任务',
+          text: 'work all',
         },
       }),
     }),
@@ -4236,7 +4387,7 @@ test('Slack work item list reconciles closed GitHub issues beyond the display li
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000138',
-          text: '我的 PR',
+          text: 'work',
         },
       }),
     }),
@@ -4305,7 +4456,7 @@ test('Slack work item list reconciles GitHub closed PRs before showing actions',
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000139',
-          text: '我的 PR',
+          text: 'work',
         },
       }),
     }),
@@ -4384,7 +4535,7 @@ test('Slack reopen button restores a closed GitHub PR work item', async () => {
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000140',
-          text: '查看我的历史发布任务',
+          text: 'work all',
         },
       }),
     })
@@ -4477,7 +4628,7 @@ test('Slack reopen button restores a closed GitHub issue work item', async () =>
           channel: 'D1',
           channel_type: 'im',
           ts: '1710000000.000141',
-          text: '查看我的历史发布任务',
+          text: 'work all',
         },
       }),
     })
@@ -4822,7 +4973,7 @@ test('Slack close session stops running agent runs before the same thread contin
           channel_type: 'im',
           ts: '1710000002.000140',
           thread_ts: '1710000000.000140',
-          text: '目前我的 PR 有几个？',
+          text: 'work',
         },
       }),
     })

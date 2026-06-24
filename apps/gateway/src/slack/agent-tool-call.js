@@ -1,3 +1,5 @@
+import { slackAgentCapabilityForIntent, slackAgentCapabilityForTool } from '@xd/workflow-core';
+
 import { normalizeSlackWorkItemQueryState, slackWorkItemQueryStateFromText } from './work-item-query.js';
 
 export function slackAgentToolArgs(slackAgentAnalysis = {}) {
@@ -7,13 +9,11 @@ export function slackAgentToolArgs(slackAgentAnalysis = {}) {
   return args && typeof args === 'object' ? args : {};
 }
 
-export function slackAgentToolName(slackAgentAnalysis = {}) {
-  const analysis = slackAgentAnalysis || {};
-  const toolCall = analysis.toolCall || analysis.tool_call || {};
-  const rawName = toolCall.name || analysis.tool || analysis.toolName || analysis.tool_name || analysis.action;
+function normalizeSlackAgentToolName(rawName = '') {
   const name = String(rawName || '')
     .trim()
     .toLowerCase();
+  if (!name) return null;
   const aliases = {
     list_work_items: 'list_my_work_items',
     list_tasks: 'list_my_work_items',
@@ -71,7 +71,26 @@ export function slackAgentToolName(slackAgentAnalysis = {}) {
     followup: 'record_followup',
     modify_existing_preview: 'record_followup',
   };
-  return aliases[name] || name || null;
+  const normalized = aliases[name] || name;
+  return slackAgentCapabilityForTool(normalized)?.name || normalized;
+}
+
+export function slackAgentToolName(slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const toolCall = analysis.toolCall || analysis.tool_call || {};
+  const rawName = toolCall.name || analysis.tool || analysis.toolName || analysis.tool_name || analysis.action;
+  return normalizeSlackAgentToolName(rawName);
+}
+
+export function slackAgentExplicitToolName(slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const toolCall = analysis.toolCall || analysis.tool_call || {};
+  return normalizeSlackAgentToolName(toolCall.name || toolCall.tool);
+}
+
+export function slackAgentCapability(slackAgentAnalysis = {}) {
+  const toolName = slackAgentExplicitToolName(slackAgentAnalysis);
+  return slackAgentCapabilityForTool(toolName) || slackAgentCapabilityForIntent(slackAgentAnalysis?.intent);
 }
 
 export function slackAgentWorkItemState(intake = {}, slackAgentAnalysis = {}) {
