@@ -15,7 +15,7 @@ import {
   refreshStoredSession,
   revokeStoredSession,
 } from './do-storage.js';
-import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { isPublicRequestId, jsonError, jsonOk, readJsonBody, withRequestId } from './http.js';
 import {
   handleInternalConsumeSiteCode,
   handleInternalVerifyCliToken,
@@ -25,36 +25,41 @@ import {
 
 export default {
   async fetch(request, env) {
-    let config;
-    try {
-      config = readAuthConfig(env);
-    } catch {
-      return jsonError('AUTH_ENV_INVALID', 'Auth environment is invalid.', 500);
-    }
-
-    const url = new URL(request.url);
-    if (url.pathname === '/.xd-pages/health') {
-      return jsonOk(
-        {
-          status: 'ok',
-          service: 'pages-auth',
-          environment: config.environment,
-        },
-        200
-      );
-    }
-
-    if (url.pathname === '/.xd-pages/cli/login/start') return handleCliLoginStart(request, env, config);
-    if (url.pathname === '/.xd-pages/cli/login/poll') return handleCliLoginPoll(request, env, config);
-    if (url.pathname === '/.xd-pages/cli/login/confirm') return handleCliLoginConfirm(request, env, config);
-    if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config);
-    if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config);
-    if (url.pathname === '/.xd-pages/internal/consume-site-code') return handleInternalConsumeSiteCode(request, env, config);
-    if (url.pathname === '/.xd-pages/internal/verify-cli-token') return handleInternalVerifyCliToken(request, env, config);
-
-    return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
+    const requestId = createRequestId(env);
+    return await withRequestId(await routeAuthRequest(request, env, { requestId }), requestId);
   },
 };
+
+async function routeAuthRequest(request, env, context) {
+  let config;
+  try {
+    config = readAuthConfig(env);
+  } catch {
+    return jsonError('AUTH_ENV_INVALID', 'Auth environment is invalid.', 500);
+  }
+
+  const url = new URL(request.url);
+  if (url.pathname === '/.xd-pages/health') {
+    return jsonOk(
+      {
+        status: 'ok',
+        service: 'pages-auth',
+        environment: config.environment,
+      },
+      200
+    );
+  }
+
+  if (url.pathname === '/.xd-pages/cli/login/start') return handleCliLoginStart(request, env, config);
+  if (url.pathname === '/.xd-pages/cli/login/poll') return handleCliLoginPoll(request, env, config);
+  if (url.pathname === '/.xd-pages/cli/login/confirm') return handleCliLoginConfirm(request, env, config);
+  if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config, context);
+  if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config, context);
+  if (url.pathname === '/.xd-pages/internal/consume-site-code') return handleInternalConsumeSiteCode(request, env, config);
+  if (url.pathname === '/.xd-pages/internal/verify-cli-token') return handleInternalVerifyCliToken(request, env, config);
+
+  return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
+}
 
 export class OAuthStateDO {
   constructor(state, env) {
@@ -141,4 +146,18 @@ function statusForStorageError(error) {
   const message = error instanceof Error ? error.message : '';
   if (/already consumed|still pending|status is/.test(message)) return 409;
   return 400;
+}
+
+function createRequestId(env) {
+  if (typeof env?.createRequestId === 'function') {
+    const requestId = env.createRequestId();
+    if (isPublicRequestId(requestId)) return requestId;
+  }
+  return createRandomRequestId();
+}
+
+function createRandomRequestId() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `req_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }

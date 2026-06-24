@@ -2,6 +2,7 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { readPublicDiagnostics } from './api-client.js';
 import { executeCommand } from './commands.js';
 
 export async function main(argv = process.argv.slice(2), io = {}) {
@@ -30,8 +31,10 @@ function formatError(error) {
   const localized = localizeError(error);
   const code = localized.code;
   const message = localized.message && localized.message !== code ? ` ${localized.message}` : '';
+  const reason = localized.reason ? ` reason=${localized.reason}` : '';
+  const requestId = localized.requestId ? ` requestId=${localized.requestId}` : '';
   const action = localized.action ? ` ${localized.action}` : '';
-  return `${code}${message}${action}`;
+  return `${code}${message}${reason}${requestId}${action}`;
 }
 
 function formatErrorJson(error) {
@@ -48,6 +51,11 @@ function formatErrorJson(error) {
     },
   };
   if (localized.action) payload.error.action = localized.action;
+  if (localized.reason) payload.error.reason = localized.reason;
+  if (localized.step) payload.error.step = localized.step;
+  if (localized.requestId) payload.error.requestId = localized.requestId;
+  if (typeof localized.retryable === 'boolean') payload.error.retryable = localized.retryable;
+  if (localized.details) payload.error.details = localized.details;
   return JSON.stringify(payload, null, 2);
 }
 
@@ -94,11 +102,12 @@ function localizeError(error) {
     },
   };
   const translated = known[code];
-  if (translated) return { code, ...translated };
+  if (translated) return { code, ...translated, ...readPublicDiagnostics(error) };
   return {
     code,
     message: error.message || code,
     action: error.action,
+    ...readPublicDiagnostics(error),
   };
 }
 

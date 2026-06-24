@@ -7,10 +7,12 @@ import { signSessionJwt } from './jwt.js';
 test('health endpoint returns non-sensitive environment status without cache', async () => {
   const response = await worker.fetch(new Request('https://auth.pages.xd.team/.xd-pages/health'), {
     PAGES_ENV: 'production',
+    createRequestId: () => 'req_test_health',
   });
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.equal(response.headers.get('X-Request-Id'), 'req_test_health');
   assert.deepEqual(await response.json(), { status: 'ok', service: 'pages-auth', environment: 'production' });
 });
 
@@ -22,6 +24,95 @@ test('unknown paths return safe no-store errors', async () => {
   assert.equal(response.status, 404);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   assert.equal((await response.json()).error.code, 'NOT_FOUND');
+});
+
+test('worker adds server-generated requestId to JSON errors without trusting public headers', async () => {
+  const response = await worker.fetch(
+    new Request('https://auth.pages.xd.team/not-found', {
+      headers: {
+        'X-Request-Id': 'attacker-request',
+        traceparent: '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+        'CF-Platform-Trace-Id': 'attacker-trace',
+      },
+    }),
+    {
+      PAGES_ENV: 'production',
+      createRequestId: () => 'req_test_server',
+    }
+  );
+
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get('X-Request-Id'), 'req_test_server');
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'NOT_FOUND',
+      message: 'Endpoint not found.',
+      requestId: 'req_test_server',
+    },
+  });
+});
+
+test('worker falls back when the injected requestId is unsafe', async () => {
+  const response = await worker.fetch(new Request('https://auth.pages.xd.team/not-found'), {
+    PAGES_ENV: 'production',
+    createRequestId: () => 'req_bad\nrequest',
+  });
+
+  const body = await response.json();
+  const requestId = response.headers.get('X-Request-Id');
+  assert.match(requestId, /^req_[a-f0-9]{32}$/);
+  assert.deepEqual(body, {
+    error: {
+      code: 'NOT_FOUND',
+      message: 'Endpoint not found.',
+      requestId,
+    },
+  });
+});
+
+test('worker adds requestId to routed JSON errors', async () => {
+  const response = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/start', { method: 'GET' }),
+    {
+      ...testJwtEnv(),
+      createRequestId: () => 'req_test_routed',
+    }
+  );
+
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get('X-Request-Id'), 'req_test_routed');
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'METHOD_NOT_ALLOWED',
+      message: 'Method not allowed.',
+      requestId: 'req_test_routed',
+    },
+  });
+});
+
+test('worker adds server-generated requestId to browser auth errors', async () => {
+  const response = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code', {
+      headers: {
+        Accept: 'text/html',
+        'X-Request-Id': 'attacker-request',
+      },
+    }),
+    {
+      ...testJwtEnv(),
+      SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
+      SSO_CLIENT_ID: 'xd_pages_test',
+      SSO_CLIENT_SECRET: 'test-client-secret',
+      SSO_REDIRECT_URI: 'https://auth.pages.xd.team/.xd-pages/auth/callback',
+      createRequestId: () => 'req_test_html',
+    }
+  );
+
+  const text = await response.text();
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get('X-Request-Id'), 'req_test_html');
+  assert.match(text, /req_test_html/);
+  assert.equal(text.includes('attacker-request'), false);
 });
 
 test('invalid PAGES_ENV fails closed', async () => {

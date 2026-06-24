@@ -62,6 +62,39 @@ test('main prints API error code, message, and action', async () => {
   assert.equal(stdout.text(), '');
 });
 
+test('main prints public request diagnostics for API errors', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const exitCode = await main(['login'], {
+    stdout,
+    stderr,
+    env: {},
+    commandRunner: async () => {
+      throw new ApiError({
+        status: 400,
+        code: 'OAUTH_STATE_INVALID',
+        message: 'OAuth state is invalid.',
+        action: 'Restart login.',
+        reason: 'oauth_state_invalid_or_expired',
+        step: 'oauth.state',
+        requestId: 'req_test_cli',
+        retryable: false,
+        details: {
+          httpStatus: 502,
+          providerEndpointType: 'sso_profile',
+        },
+      });
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.text(), /OAUTH_STATE_INVALID/);
+  assert.match(stderr.text(), /oauth_state_invalid_or_expired/);
+  assert.match(stderr.text(), /req_test_cli/);
+  assert.doesNotMatch(stderr.text(), /httpStatus/);
+  assert.equal(stdout.text(), '');
+});
+
 test('main prints JSON error envelopes when --json is requested', async () => {
   const stdout = capture();
   const stderr = capture();
@@ -87,6 +120,118 @@ test('main prints JSON error envelopes when --json is requested', async () => {
       action: '请传入站点名，例如 pages deploy ./dist demo。',
     },
   });
+});
+
+test('main preserves public diagnostics in JSON error envelopes', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const exitCode = await main(['login', '--json'], {
+    stdout,
+    stderr,
+    env: {},
+    commandRunner: async () => {
+      throw new ApiError({
+        status: 400,
+        code: 'OAUTH_STATE_INVALID',
+        message: 'OAuth state is invalid.',
+        action: 'Restart login.',
+        reason: 'oauth_state_invalid_or_expired',
+        step: 'oauth.state',
+        requestId: 'req_test_cli',
+        retryable: false,
+        details: {
+          httpStatus: 502,
+          providerEndpointType: 'sso_profile',
+        },
+      });
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), '');
+  assert.deepEqual(JSON.parse(stderr.text()), {
+    ok: false,
+    schemaVersion: 1,
+    error: {
+      code: 'OAUTH_STATE_INVALID',
+      message: 'OAuth state is invalid.',
+      action: 'Restart login.',
+      reason: 'oauth_state_invalid_or_expired',
+      step: 'oauth.state',
+      requestId: 'req_test_cli',
+      retryable: false,
+      details: {
+        httpStatus: 502,
+        providerEndpointType: 'sso_profile',
+      },
+    },
+  });
+});
+
+test('main drops unsafe diagnostic details from JSON error envelopes', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const exitCode = await main(['login', '--json'], {
+    stdout,
+    stderr,
+    env: {},
+    commandRunner: async () => {
+      throw new ApiError({
+        status: 502,
+        code: 'SSO_EXCHANGE_FAILED',
+        message: 'SSO exchange failed.',
+        details: {
+          httpStatus: 502,
+          providerEndpointType: 'sso_profile',
+          redirectUri: 'https://demo.pages.xd.team/callback?token=secret',
+          stateAgeBucket: 'expired',
+          token: 'secret-token',
+        },
+      });
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), '');
+  assert.deepEqual(JSON.parse(stderr.text()).error.details, {
+    httpStatus: 502,
+    providerEndpointType: 'sso_profile',
+  });
+  assert.doesNotMatch(stderr.text(), /secret-token/);
+  assert.doesNotMatch(stderr.text(), /redirectUri/);
+  assert.doesNotMatch(stderr.text(), /stateAgeBucket/);
+});
+
+test('main drops non-allowlisted diagnostic reason and step from JSON error envelopes', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const exitCode = await main(['login', '--json'], {
+    stdout,
+    stderr,
+    env: {},
+    commandRunner: async () => {
+      const error = new Error('SSO exchange failed.');
+      error.code = 'SSO_EXCHANGE_FAILED';
+      error.reason = 'https://sso.example.test/oauth/error?token=secret';
+      error.step = 'sso.profile.parse';
+      error.requestId = 'req_test_cli';
+      throw error;
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), '');
+  assert.deepEqual(JSON.parse(stderr.text()), {
+    ok: false,
+    schemaVersion: 1,
+    error: {
+      code: 'SSO_EXCHANGE_FAILED',
+      message: 'SSO exchange failed.',
+      requestId: 'req_test_cli',
+    },
+  });
+  assert.doesNotMatch(stderr.text(), /secret/);
+  assert.doesNotMatch(stderr.text(), /sso\.profile\.parse/);
 });
 
 test('main keeps command-specific SITE_REQUIRED actions', async () => {

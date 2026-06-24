@@ -89,6 +89,14 @@ test('API client turns safe error envelopes into ApiError', async () => {
             code: 'SITE_NOT_FOUND',
             message: 'Site not found.',
             action: 'Check the site id.',
+            reason: 'oauth_state_invalid_or_expired',
+            step: 'oauth.state',
+            requestId: 'req_test_cli',
+            retryable: false,
+            details: {
+              httpStatus: 502,
+              providerEndpointType: 'sso_profile',
+            },
           },
         },
         { status: 404 }
@@ -102,6 +110,111 @@ test('API client turns safe error envelopes into ApiError', async () => {
       assert.equal(error.status, 404);
       assert.equal(error.code, 'SITE_NOT_FOUND');
       assert.equal(error.action, 'Check the site id.');
+      assert.equal(error.reason, 'oauth_state_invalid_or_expired');
+      assert.equal(error.step, 'oauth.state');
+      assert.equal(error.requestId, 'req_test_cli');
+      assert.equal(error.retryable, false);
+      assert.deepEqual(error.details, {
+        httpStatus: 502,
+        providerEndpointType: 'sso_profile',
+      });
+      return true;
+    }
+  );
+});
+
+test('API client drops unsafe error diagnostic details from API envelopes', async () => {
+  const client = createApiClient({
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    credential: { type: 'access_key', value: 'xdpak_production_ak_1_secret' },
+    fetch: async () =>
+      Response.json(
+        {
+          error: {
+            code: 'SSO_EXCHANGE_FAILED',
+            message: 'SSO exchange failed.',
+            details: {
+              httpStatus: 502,
+              providerEndpointType: 'sso_profile',
+              redirectUri: 'https://demo.pages.xd.team/callback?token=secret',
+              stateAgeBucket: 'expired',
+              token: 'secret-token',
+            },
+          },
+        },
+        { status: 502 }
+      ),
+  });
+
+  await assert.rejects(
+    () => client.requestApi('GET', '/.xd-pages/api/sites/site_1'),
+    (error) => {
+      assert.equal(error instanceof ApiError, true);
+      assert.deepEqual(error.details, {
+        httpStatus: 502,
+        providerEndpointType: 'sso_profile',
+      });
+      return true;
+    }
+  );
+});
+
+test('API client drops non-allowlisted diagnostic reason and step from API envelopes', async () => {
+  const client = createApiClient({
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    credential: { type: 'access_key', value: 'xdpak_production_ak_1_secret' },
+    fetch: async () =>
+      Response.json(
+        {
+          error: {
+            code: 'SSO_EXCHANGE_FAILED',
+            message: 'SSO exchange failed.',
+            reason: 'https://sso.example.test/oauth/error?token=secret',
+            step: 'sso.profile.parse',
+            requestId: 'req_test_cli',
+          },
+        },
+        { status: 502 }
+      ),
+  });
+
+  await assert.rejects(
+    () => client.requestApi('GET', '/.xd-pages/api/sites/site_1'),
+    (error) => {
+      assert.equal(error instanceof ApiError, true);
+      assert.equal(error.reason, undefined);
+      assert.equal(error.step, undefined);
+      assert.equal(error.requestId, 'req_test_cli');
+      return true;
+    }
+  );
+});
+
+test('API client drops unsafe request ids from API envelopes', async () => {
+  const client = createApiClient({
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    credential: { type: 'access_key', value: 'xdpak_production_ak_1_secret' },
+    fetch: async () =>
+      Response.json(
+        {
+          error: {
+            code: 'OAUTH_STATE_INVALID',
+            message: 'OAuth state is invalid.',
+            requestId: 'req_bad\nrequest',
+          },
+        },
+        { status: 400 }
+      ),
+  });
+
+  await assert.rejects(
+    () => client.requestApi('GET', '/.xd-pages/api/sites/site_1'),
+    (error) => {
+      assert.equal(error instanceof ApiError, true);
+      assert.equal(error.requestId, undefined);
       return true;
     }
   );
