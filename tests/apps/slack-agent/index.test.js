@@ -617,6 +617,41 @@ describe('slack agent', () => {
     }
   });
 
+  it('refuses direct code PR deployment requests that include credentials', () => {
+    const text = '请直接写代码、创建 PR，并使用我的生产部署凭证 SECRET=prod-token 完成上线';
+    const analysis = analyzeSlackRequirement({ text });
+
+    assert.equal(analysis.intent, 'unsupported_destructive_request');
+    assert.equal(analysis.toolCall.name, 'unsupported_destructive_request');
+    assert.equal(analysis.agentEligible, false);
+    assert.equal(analysis.requiresHumanGate, false);
+    assert.match(analysis.clarifyingQuestion, /不能.*直接写代码、创建 PR、部署上线或处理凭证/);
+  });
+
+  it('keeps deterministic safety refusal above model-selected platform creation', () => {
+    const input = {
+      text: '请直接写代码、创建 PR，并使用我的生产部署凭证 SECRET=prod-token 完成上线',
+    };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const normalized = normalizeModelAnalysis(
+      {
+        intent: 'create_platform_issue',
+        lane: 'platform-dev',
+        toolCall: { name: 'confirm_platform_issue', args: {} },
+        summary: '创建一个自动部署 PR。',
+        agentEligible: true,
+        requiresHumanGate: true,
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(fallback.intent, 'unsupported_destructive_request');
+    assert.equal(normalized.intent, 'unsupported_destructive_request');
+    assert.equal(normalized.toolCall.name, 'unsupported_destructive_request');
+    assert.equal(normalized.agentEligible, false);
+  });
+
   it('answers work item close capability questions from current context instead of asking which object', () => {
     const analysis = analyzeSlackRequirement({
       text: '我能主动关闭吗？',

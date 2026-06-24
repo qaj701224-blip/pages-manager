@@ -105,6 +105,11 @@ function shaMatches(left, right) {
   return normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
 }
 
+function prNumberMatches(left, right) {
+  if (!left || !right) return false;
+  return Number(left) === Number(right);
+}
+
 function shouldIgnoreExecutorCallback(existing = {}, stageResult = '', patch = {}) {
   if (TERMINAL_JOB_STATUSES.has(existing.status)) return true;
   if (
@@ -119,8 +124,9 @@ function shouldIgnoreExecutorCallback(existing = {}, stageResult = '', patch = {
   }
   if (stageResult === 'preview_deployed') {
     if (existing.headSha && !patch.headSha) return true;
+    if (existing.headSha && patch.headSha && !shaMatches(existing.headSha, patch.headSha)) return true;
+    if (existing.prNumber && !prNumberMatches(existing.prNumber, patch.prNumber)) return true;
     if (!existing.headSha || !patch.headSha) return false;
-    if (!shaMatches(existing.headSha, patch.headSha)) return true;
   }
   return false;
 }

@@ -117,7 +117,24 @@ jobs:
           ref: ${{ inputs.headSha }}
           path: preview-worktree
 
+      - name: Verify current PR head
+        id: current-head
+        shell: bash
+        working-directory: preview-worktree
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_head="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+          if [[ "$current_head" != "$HEAD_SHA" ]]; then
+            echo "PR head moved from $HEAD_SHA to $current_head; skipping stale preview deploy."
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "stale=false" >> "$GITHUB_OUTPUT"
+
       - name: Deploy preview through pages-manager
+        if: ${{ steps.current-head.outputs.stale != 'true' }}
         shell: bash
         working-directory: preview-worktree
         env:
@@ -136,9 +153,6 @@ jobs:
           fi
 
           source_dir="$ALLOWED_PATH/src"
-          if [[ ! -d "$source_dir" ]]; then
-            source_dir="$ALLOWED_PATH"
-          fi
           if [[ ! -d "$source_dir" ]]; then
             echo "preview source directory not found: $source_dir" >&2
             exit 1
@@ -202,11 +216,13 @@ jobs:
           NODE
 
       - uses: actions/upload-artifact@v4
+        if: ${{ steps.current-head.outputs.stale != 'true' }}
         with:
           name: preview-report
           path: preview-worktree/.pages-artifacts/preview-report.json
 
       - name: Print callback payload
+        if: ${{ steps.current-head.outputs.stale != 'true' }}
         shell: bash
         env:
           WORKFLOW_RUN_ID: ${{ github.run_id }}
@@ -233,6 +249,7 @@ jobs:
           cat preview-worktree/.pages-artifacts/callback.json
 
       - name: Callback gateway
+        if: ${{ steps.current-head.outputs.stale != 'true' }}
         shell: bash
         env:
           PAGES_CALLBACK_URL: ${{ inputs.callbackUrl }}
@@ -241,7 +258,7 @@ jobs:
         run: node "$RUNNER_TEMP/post-executor-callback.js" preview-worktree/.pages-artifacts/callback.json
 
       - name: Callback gateway on failure
-        if: ${{ failure() && hashFiles('preview-worktree/.pages-artifacts/callback.json') == '' }}
+        if: ${{ failure() && steps.current-head.outputs.stale != 'true' && hashFiles('preview-worktree/.pages-artifacts/callback.json') == '' }}
         shell: bash
         env:
           WORKFLOW_RUN_ID: ${{ github.run_id }}

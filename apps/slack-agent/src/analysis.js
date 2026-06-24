@@ -60,6 +60,16 @@ const WORK_ITEM_DESTRUCTIVE_ACTION_RE = /(?:关闭|关掉|删除|删掉|清理|�
 const WORK_ITEM_CLOSE_CAPABILITY_QUESTION_RE =
   /(?:能不能|能否|可以|是否|是不是|能|可不可以).*(?:主动)?(?:关闭|关掉|取消|归档|close|cancel|archive).*(?:吗|么|\?|？)?/i;
 const UNSUPPORTED_DESTRUCTIVE_INTENT = 'unsupported_destructive_request';
+const DIRECT_CODE_PR_REQUEST_RE = new RegExp(
+  [
+    '(?:直接|现在|马上|立刻|自动)?.*',
+    '(?:写代码|改代码|生成代码|修改代码|创建\\s*PR|发\\s*PR|开\\s*PR|提交\\s*PR)',
+    '|(?:create\\s+PR|open\\s+PR|push|commit|部署|上线|发布到生产|production|prod)',
+  ].join(''),
+  'i'
+);
+const DEPLOYMENT_CREDENTIAL_REQUEST_RE =
+  /(?:部署凭证|生产凭证|上线凭证|credential|credentials|secret|token|api[_-]?key|私钥|密钥|密码|password|pwd)/i;
 const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
   [
     '(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
@@ -89,8 +99,13 @@ function isExplicitWorkItemDestructiveRequest(text = '') {
   return WORK_ITEM_DESTRUCTIVE_ACTION_RE.test(value) && Boolean(workItemReferenceFromText(value));
 }
 
+function isUnsupportedDirectExecutionRequest(text = '') {
+  const value = String(text || '');
+  return DIRECT_CODE_PR_REQUEST_RE.test(value) && DEPLOYMENT_CREDENTIAL_REQUEST_RE.test(value);
+}
+
 function unsupportedDestructiveQuestion() {
-  return '我不能在 Slack 里直接关闭或删除 GitHub issue / PR / 发布任务，也不能做批量关闭。可以打开对应 GitHub 页面手动处理；如果只是想结束这轮 Slack 对话，请说「关闭会话」。';
+  return '我不能在 Slack 里直接关闭或删除 GitHub issue / PR / 发布任务，也不能直接写代码、创建 PR、部署上线或处理凭证。可以先整理成需求或诊断记录；如果只是想结束这轮 Slack 对话，请说「关闭会话」。';
 }
 
 export function normalizeText(value = '') {
@@ -375,7 +390,10 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const isUnsupportedDestructive =
     isUnsupportedBulkDestructiveRequest(text) ||
     isExplicitWorkItemDestructiveRequest(text) ||
-    (!shouldCloseSession && hasCurrentWorkItemContext(input, sessionContext) && WORK_ITEM_CLOSE_CAPABILITY_QUESTION_RE.test(text));
+    isUnsupportedDirectExecutionRequest(text) ||
+    (!shouldCloseSession &&
+      hasCurrentWorkItemContext(input, sessionContext) &&
+      WORK_ITEM_CLOSE_CAPABILITY_QUESTION_RE.test(text));
   const hasPreviousWorkItemList = Boolean(input.sessionMemory?.lastWorkItemList);
   const shouldListWorkItems =
     !isUnsupportedDestructive && (LIST_WORK_ITEMS_RE.test(text) || (hasPreviousWorkItemList && LIST_FOLLOWUP_RE.test(text)));
@@ -497,8 +515,16 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     issueType: shouldCreatePlatform ? inferPlatformIssueType(text) : undefined,
     areas: shouldCreatePlatform ? inferPlatformAreas(text) : undefined,
     risk: shouldCreatePlatform ? inferPlatformRisk(text, inferPlatformIssueType(text)) : undefined,
-    agentEligible: shouldCreatePlatform ? !['type:feedback', 'type:question'].includes(inferPlatformIssueType(text)) : undefined,
-    requiresHumanGate: shouldCreatePlatform ? inferPlatformRisk(text, inferPlatformIssueType(text)) === 'risk:high' : undefined,
+    agentEligible: isUnsupportedDestructive
+      ? false
+      : shouldCreatePlatform
+        ? !['type:feedback', 'type:question'].includes(inferPlatformIssueType(text))
+        : undefined,
+    requiresHumanGate: isUnsupportedDestructive
+      ? false
+      : shouldCreatePlatform
+        ? inferPlatformRisk(text, inferPlatformIssueType(text)) === 'risk:high'
+        : undefined,
     workItemState,
     toolCall:
       finalIntent === 'list_work_items'
@@ -548,6 +574,7 @@ function normalizeToolCall(value, fallbackToolCall = null) {
 
 function shouldForceIntentToolCall(intent = '') {
   return [
+    UNSUPPORTED_DESTRUCTIVE_INTENT,
     'list_work_items',
     'switch_work_item',
     'reopen_work_item',
@@ -609,17 +636,21 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
     areas: arrayOrFallback(modelAnalysis.areas || modelAnalysis.areaLabels || modelAnalysis.area_labels, fallback.areas || []),
     risk: stringOrFallback(modelAnalysis.risk, fallback.risk || ''),
     agentEligible:
-      typeof modelAnalysis.agentEligible === 'boolean'
-        ? modelAnalysis.agentEligible
-        : typeof modelAnalysis.agent_eligible === 'boolean'
-          ? modelAnalysis.agent_eligible
-          : fallback.agentEligible,
+      modelIntent === UNSUPPORTED_DESTRUCTIVE_INTENT
+        ? fallback.agentEligible
+        : typeof modelAnalysis.agentEligible === 'boolean'
+          ? modelAnalysis.agentEligible
+          : typeof modelAnalysis.agent_eligible === 'boolean'
+            ? modelAnalysis.agent_eligible
+            : fallback.agentEligible,
     requiresHumanGate:
-      typeof modelAnalysis.requiresHumanGate === 'boolean'
-        ? modelAnalysis.requiresHumanGate
-        : typeof modelAnalysis.requires_human_gate === 'boolean'
-          ? modelAnalysis.requires_human_gate
-          : fallback.requiresHumanGate,
+      modelIntent === UNSUPPORTED_DESTRUCTIVE_INTENT
+        ? fallback.requiresHumanGate
+        : typeof modelAnalysis.requiresHumanGate === 'boolean'
+          ? modelAnalysis.requiresHumanGate
+          : typeof modelAnalysis.requires_human_gate === 'boolean'
+            ? modelAnalysis.requires_human_gate
+            : fallback.requiresHumanGate,
     workItemState: stringOrFallback(
       modelAnalysis.workItemState || modelAnalysis.work_item_state,
       fallback.workItemState || workItemStateFromText(input.text || input.event?.text || fallback.summary || '')
