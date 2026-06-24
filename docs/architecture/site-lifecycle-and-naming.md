@@ -31,6 +31,8 @@
 - Slack Agent 可以给 `siteSlug` hint，但 `employeeSlug` 最终由 gateway 根据 Slack 身份派生。
 - 修改 `siteSlug` 是 rename 操作，不是普通 update。
 
+Gateway API 创建 `PublishingJob` 时还必须先做 repo path segment guard：`employeeSlug` 和 `siteSlug` 只允许小写字母、数字和连字符，且首尾必须是字母或数字；不能接受 `/`、`.`、路径穿越片段或首尾连字符。API 层 guard 的长度上限跟 `publishing_jobs.employee_slug` / `site_slug` 字段保持一致，最终 SiteProject slug 规则仍以本节产品规则为准。
+
 保留词：
 
 ```text

@@ -699,6 +699,49 @@ describe('slack agent', () => {
     assert.equal(lines[2].analysis.needsClarification, true);
   });
 
+  it('fails ndjson turns when the streamed event source throws', async () => {
+    const app = createSlackAgentApp({
+      config: {
+        modelProvider: 'company-agent',
+        gatewayUrl: 'https://agent-gateway.example/v1',
+        apiKey: 'gateway-key',
+        modelName: 'company-agent',
+        requestTimeoutMs: 1000,
+        sharedSecret: 'secret',
+      },
+      async fetchImpl() {
+        throw new Error('gateway unavailable');
+      },
+    });
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/turn', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+          'X-Pages-Slack-Agent-Token': 'secret',
+        },
+        body: JSON.stringify({
+          agentRunId: 'agent_1',
+          slackSessionId: 'sess_1',
+          text: '你好',
+        }),
+      })
+    );
+    const lines = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), 'application/x-ndjson; charset=utf-8');
+    assert.deepEqual(
+      lines.map((line) => line.type),
+      ['reply_started', 'reply_failed']
+    );
+    assert.equal(lines[1].error, 'gateway unavailable');
+  });
+
   it('returns a scoped merge announcement summary without Slack session state', async () => {
     const app = createSlackAgentApp({ config: { modelProvider: 'deterministic', sharedSecret: 'secret' } });
     const response = await app.fetch(

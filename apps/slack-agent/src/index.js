@@ -1,4 +1,4 @@
-import { jsonResponse } from '@xd/worker-kit';
+import { jsonResponse, timingSafeEqualString } from '@xd/worker-kit';
 
 import { analyzeSlackRequirementDeterministic, buildSlackAgentTurn } from './analysis.js';
 import { readSlackAgentConfig } from './config.js';
@@ -31,7 +31,7 @@ function requireAgentAuth(request, config) {
   }
 
   const token = request.headers.get('X-Pages-Slack-Agent-Token');
-  if (token !== config.sharedSecret) {
+  if (!timingSafeEqualString(token || '', config.sharedSecret)) {
     const error = new Error('Invalid Slack agent token');
     error.status = 401;
     throw error;
@@ -56,12 +56,16 @@ function ndjsonStreamResponse(events) {
   return new Response(
     new globalThis.ReadableStream({
       async start(controller) {
+        let closed = false;
         try {
           for await (const event of events) {
             controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
           }
+        } catch (error) {
+          closed = true;
+          controller.error(error);
         } finally {
-          controller.close();
+          if (!closed) controller.close();
         }
       },
     }),

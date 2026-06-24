@@ -569,6 +569,42 @@ test('API creates a PublishingJob without requiring GitHub repo user permissions
   assert.equal(body.job.status, 'received');
 });
 
+test('PublishingJob API rejects invalid employee and site slugs', async () => {
+  const app = createGatewayApp();
+
+  const invalidEmployee = await app.fetch(
+    new Request('http://gateway.test/api/publishing-jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'api-invalid-employee-slug',
+        'X-Pages-Actor-Id': 'usr_1',
+      },
+      body: JSON.stringify({ employeeSlug: '../alice', siteSlug: 'profile' }),
+    })
+  );
+  const invalidEmployeeBody = await json(invalidEmployee);
+
+  assert.equal(invalidEmployee.status, 400);
+  assert.match(invalidEmployeeBody.error, /employeeSlug/);
+
+  const invalidSite = await app.fetch(
+    new Request('http://gateway.test/api/publishing-jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'api-invalid-site-slug',
+        'X-Pages-Actor-Id': 'usr_1',
+      },
+      body: JSON.stringify({ employeeSlug: 'alice', siteSlug: 'bad/path' }),
+    })
+  );
+  const invalidSiteBody = await json(invalidSite);
+
+  assert.equal(invalidSite.status, 400);
+  assert.match(invalidSiteBody.error, /siteSlug/);
+});
+
 test('PublishingJob API fails closed when production API token is missing', async () => {
   const app = createGatewayApp();
   const response = await app.fetch(
@@ -1376,6 +1412,82 @@ test('Slack Agent turn consumes ndjson chunks and updates one reply message prog
       'slack_reply_updated',
     ]
   );
+});
+
+test('Slack Agent turn ignores malformed ndjson lines and keeps valid events', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (line) => logs.push(String(line));
+
+  try {
+    const response = await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-agent-turn-ndjson-bad-line-1',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.000118',
+            text: '做一个个人主页，突出项目经历和联系方式',
+          },
+        }),
+      }),
+      {
+        SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+        async SLACK_AGENT_FETCH(url, request) {
+          const payload = JSON.parse(request.body);
+          const events = [
+            JSON.stringify({
+              type: 'reply_started',
+              sequence: 1,
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+            }),
+            '{bad json',
+            JSON.stringify({
+              type: 'analysis_final',
+              sequence: 2,
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'create_or_update_site',
+                siteSlug: 'profile',
+                title: '个人主页',
+                summary: '突出项目经历和联系方式。',
+                needsClarification: false,
+              },
+            }),
+            JSON.stringify({
+              type: 'reply_completed',
+              sequence: 3,
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+            }),
+          ];
+          return new Response(`${events.join('\n')}\n`, {
+            status: 200,
+            headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+          });
+        },
+        ...mockSlackNotifier(notifierCalls),
+      }
+    );
+    const body = await json(response);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.action, 'confirm_before_issue');
+    assert.equal(body.noReply, true);
+    assert.ok(logs.some((line) => line.includes('"message":"ndjson_line_parse_error"')));
+  } finally {
+    console.log = originalLog;
+  }
 });
 
 test('Slack query turns use reaction-only progress before posting the result', async () => {

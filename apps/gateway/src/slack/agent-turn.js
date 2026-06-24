@@ -80,11 +80,22 @@ async function readSlackAgentResponse(response) {
 
   const contentType = response.headers?.get?.('Content-Type') || '';
   if (/\bapplication\/x-ndjson\b/i.test(contentType)) {
-    const events = text
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
+    const events = [];
+    for (const rawLine of text.split(/\n+/)) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+      try {
+        events.push(JSON.parse(trimmed));
+      } catch {
+        console.log(
+          JSON.stringify({
+            service: 'pages-gateway',
+            message: 'ndjson_line_parse_error',
+            line: trimmed.slice(0, 200),
+          })
+        );
+      }
+    }
     const final = [...events].reverse().find((event) => event.type === 'analysis_final' && event.analysis);
     return {
       ok: true,
@@ -407,7 +418,20 @@ async function readSlackAgentNdjsonResponse(response, context = {}) {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      await handleEvent(JSON.parse(trimmed));
+      let parsed;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        console.log(
+          JSON.stringify({
+            service: 'pages-gateway',
+            message: 'ndjson_line_parse_error',
+            line: trimmed.slice(0, 200),
+          })
+        );
+        continue;
+      }
+      await handleEvent(parsed);
     }
   };
 

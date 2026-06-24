@@ -1,5 +1,6 @@
 import { makeId } from '@xd/workflow-core';
 
+import { deleteRedisKeyIfValueMatches } from '../redis.js';
 import { agentRunEventToRow, agentRunToRow, rowToAgentRun, rowToAgentRunEvent } from '../rows/agent-run-row.js';
 import { execute, insertRowIfNotDuplicate, upsertRow } from '../sql.js';
 
@@ -16,10 +17,7 @@ async function releaseSlackAgentLease(store, run) {
 
   const key = slackAgentLeaseKey(run.slackSessionId);
   try {
-    const current = await store.redis.get(key);
-    if (current === run.id) {
-      await store.redis.del(key);
-    }
+    await deleteRedisKeyIfValueMatches(store.redis, key, run.id);
   } catch (error) {
     console.log(
       JSON.stringify({
@@ -39,8 +37,8 @@ async function clearSlackAgentLeaseForSession(store, slackSessionId, expectedRun
   const key = slackAgentLeaseKey(slackSessionId);
   try {
     if (expectedRunId) {
-      const current = await store.redis.get(key);
-      if (current !== expectedRunId) return false;
+      const deleted = await deleteRedisKeyIfValueMatches(store.redis, key, expectedRunId);
+      return deleted > 0;
     }
     await store.redis.del(key);
     return true;
@@ -264,7 +262,7 @@ export const agentRunRepositoryMethods = {
         );
         return { acquired: true, agentRun };
       } catch (error) {
-        await this.redis.del(key).catch(() => {});
+        await deleteRedisKeyIfValueMatches(this.redis, key, agentRunId).catch(() => {});
         throw error;
       }
     }

@@ -73,6 +73,8 @@ Slack Agent 输出必须包含：
 - “批准自动开发”：把 `work_item_gates` 的 risk gate 置为 `approved`，`PlatformDevItem.gateStatus=approved`，然后启动 `platform-agent.yml`。
 - “不进入自动开发”：把 gate 置为 `rejected`，`PlatformDevItem` 进入 `closed_unmerged`，保留 GitHub issue 作为需求记录。
 
+批准高风险自动开发必须 fail-closed。gateway 只有在 `PAGES_PLATFORM_GATE_APPROVERS` 或 `PAGES_PLATFORM_GATE_APPROVER_IDS` 配置了当前 Slack 用户时才接受批准；值支持 `U123` 或 `slack:T1:U123`。未配置维护者 allowlist 时，同一需求发起人也不能批准，高风险 item 必须保持 `gate_pending`，不能 dispatch worker。
+
 按钮 value 只携带 work item id / session id / gate type；gateway 必须重新从 MySQL 读取 item 和 gate，并校验当前 Slack 用户归属，不能信任按钮里的风险或范围字段。
 
 ## 状态机

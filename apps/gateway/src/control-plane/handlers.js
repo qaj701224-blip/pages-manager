@@ -162,6 +162,25 @@ const LOCAL_FOLLOWUP_CUE_RE =
   /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|再加|再补|再改)/i;
 const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
 
+function csvSet(value = '') {
+  return new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
+}
+
+function platformGateApproverSet(env = {}) {
+  return new Set([...csvSet(env.PAGES_PLATFORM_GATE_APPROVERS), ...csvSet(env.PAGES_PLATFORM_GATE_APPROVER_IDS)]);
+}
+
+function platformGateApprovalAllowed(env = {}, teamId, slackUserId) {
+  const allowlist = platformGateApproverSet(env);
+  if (!allowlist.size) return false;
+  return allowlist.has(slackUserId) || allowlist.has(`slack:${teamId}:${slackUserId}`);
+}
+
 function isUnaddressedChannelThreadMessage(body = {}) {
   const event = body.event || {};
   const surface = surfaceForSlackBody(body);
@@ -444,7 +463,9 @@ function shouldAskBeforeCreatingPlatformIssue(intake, slackAgentAnalysis) {
 async function handleSlackAgentToolCall(context) {
   const { intake, slackAgentAnalysis, slackSession, store } = context;
   const activeWorkItem =
-    slackSession?.id && store && intake?.action === 'agent_turn' ? await activeWorkItemForSlackSession(store, slackSession) : null;
+    slackSession?.id && store && intake?.action === 'agent_turn'
+      ? await activeWorkItemForSlackSession(store, slackSession)
+      : null;
   const toolCall =
     context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, { activeWorkItem });
   if (!toolCall?.name) return null;
@@ -2495,6 +2516,13 @@ export async function handleSlackInteractions(request, env) {
         platformDevItemId: rejected.id,
         ...(slackStatusNotification ? { slackStatusNotification } : {}),
         ...(gateCardUpdate ? { gateCardUpdate } : {}),
+      });
+    }
+
+    if (!platformGateApprovalAllowed(env, teamId, slackUserId)) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个高风险平台需求需要指定维护者批准后才能进入自动开发。',
       });
     }
 

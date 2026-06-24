@@ -3,7 +3,7 @@ import {
   mentionSlackUser,
   prepareSlackJobStatusNotification,
 } from '@xd/slack-notifier-core';
-import { jsonResponse } from '@xd/worker-kit';
+import { jsonResponse, timingSafeEqualString } from '@xd/worker-kit';
 
 async function readJson(request) {
   const text = await request.text();
@@ -31,7 +31,7 @@ function authorize(request, env = {}) {
   if (!expected) return misconfigured('Slack notifier shared secret is required');
 
   const actual = request.headers.get('X-Pages-Slack-Notifier-Token');
-  if (actual !== expected) {
+  if (!timingSafeEqualString(actual || '', expected)) {
     return unauthorized('Invalid slack notifier token');
   }
   return null;
