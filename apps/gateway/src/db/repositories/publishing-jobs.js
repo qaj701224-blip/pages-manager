@@ -181,11 +181,11 @@ export const publishingJobRepositoryMethods = {
     return updated;
   },
 
-  async failJob(jobId, errorCode, errorMessage) {
+  async failJob(jobId, errorCode, errorMessage, patch = {}) {
     const job = await this.getJob(jobId);
     if (!job) return null;
     const beforeCount = this.events.get(jobId)?.length || 0;
-    const updated = transitionJob(job, 'failed', { errorCode, errorMessage });
+    const updated = transitionJob(job, 'failed', { ...patch, errorCode, errorMessage });
     this.jobs.set(jobId, updated);
     this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob failed');
     const events = this.events.get(jobId)?.slice(beforeCount) || [];

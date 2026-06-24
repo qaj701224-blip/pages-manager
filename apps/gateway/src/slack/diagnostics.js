@@ -169,8 +169,58 @@ function workflowLabel(item = {}) {
   return null;
 }
 
+function githubActionsWorkflowLine(actions = {}) {
+  if (!actions?.available) return null;
+  const label = [
+    actions.workflowName || actions.workflowFile || 'GitHub Actions',
+    actions.runNumber ? `#${actions.runNumber}` : actions.runId ? `#${actions.runId}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return actions.runUrl ? `<${actions.runUrl}|${label}>` : label;
+}
+
+function githubActionsStatusLine(actions = {}) {
+  if (!actions?.available) {
+    const reasons = {
+      not_configured: 'GitHub Actions 日志暂不可读：当前诊断入口还没有配置 Actions 读取授权。',
+      permission_denied: 'GitHub Actions 日志暂不可读：当前 GitHub 授权缺少 Actions read 权限。',
+      run_not_found: 'GitHub Actions 日志暂未匹配到关联 workflow run。',
+      not_found: 'GitHub Actions 日志暂未找到关联 workflow 或 job。',
+      github_error: `GitHub Actions 日志读取失败：${redactSecretLikeText(actions.error || 'GitHub API 返回错误。').slice(0, 180)}`,
+    };
+    return reasons[actions.reason] || 'GitHub Actions 日志暂不可读。';
+  }
+  const conclusion = actions.conclusion || actions.status || 'unknown';
+  return `GitHub Actions：${conclusion}`;
+}
+
+function githubActionsFailureLines(actions = {}) {
+  if (!actions) return [];
+  if (!actions?.available) return [githubActionsStatusLine(actions)].filter(Boolean);
+  const lines = [];
+  const workflowLine = githubActionsWorkflowLine(actions);
+  if (workflowLine) lines.push(`Workflow：${workflowLine}`);
+  lines.push(githubActionsStatusLine(actions));
+  const failedJob = (actions.jobs || []).find((job) =>
+    ['failure', 'timed_out', 'cancelled'].includes(String(job.conclusion || '').toLowerCase())
+  );
+  if (failedJob) {
+    const jobLabel = failedJob.url ? `<${failedJob.url}|${failedJob.name}>` : failedJob.name;
+    lines.push(`失败 Job：${jobLabel}`);
+    if (failedJob.failedStepName) lines.push(`失败步骤：${failedJob.failedStepName}`);
+    if (failedJob.logLines?.length) {
+      lines.push(`关键错误：${failedJob.logLines.slice(0, 3).join(' / ')}`);
+    } else if (failedJob.logError === 'permission_denied') {
+      lines.push('关键错误：已定位失败 Job，但当前 token 不能读取 Job 日志。');
+    }
+  }
+  return lines;
+}
+
 export function buildSlackWorkItemDiagnosis(item = {}, options = {}) {
   const events = options.events || [];
+  const githubActions = options.githubActions || null;
   const statusLabel = slackStatusLabel(item.status, item);
   const [stageSummary] = stageDetails(item);
   const lines = [
@@ -184,12 +234,12 @@ export function buildSlackWorkItemDiagnosis(item = {}, options = {}) {
   if (issue) lines.push(`Issue：${issueLink ? `<${issueLink}|#${issue}>` : `#${issue}`}`);
   if (pr) lines.push(`PR：${prLink ? `<${prLink}|#${pr}>` : `#${pr}`}`);
   if (item.previewUrl) lines.push(`Preview：${item.previewUrl}`);
-  const workflow = workflowLabel(item);
+  const workflow = githubActionsWorkflowLine(githubActions) || workflowLabel(item);
   if (workflow) lines.push(`Workflow：${workflow}`);
   lines.push(`最近阶段：${slackStatusLabel(latestStage(events, item), item)}`);
   lines.push(`阶段说明：${stageSummary}`);
   lines.push(`可能原因：${reasonForWorkItem(item, events)}`);
-  lines.push('关联日志：当前只返回受控摘要；如需扩大范围，需要人工确认。');
+  lines.push(...githubActionsFailureLines(githubActions).filter((line) => !line.startsWith('Workflow：')));
   lines.push(`建议操作：${nextActionForWorkItem(item)}`);
   return lines.join('\n');
 }
@@ -284,6 +334,15 @@ export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, optio
       url: item.previewUrl,
       action_id: 'open_preview',
       agent_action_id: 'open_preview',
+    });
+  }
+  if (options.githubActions?.runUrl) {
+    actions.push({
+      type: 'button',
+      text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'open_workflow', '查看 Workflow') },
+      url: options.githubActions.runUrl,
+      action_id: 'open_workflow',
+      agent_action_id: 'open_workflow',
     });
   }
   if (slackSession?.id && canRetryWorkItem(item)) {

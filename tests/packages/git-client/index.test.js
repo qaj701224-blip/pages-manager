@@ -166,20 +166,40 @@ test('builds workflow inputs from job fields', () => {
     previewHostname: '',
     callbackUrl: 'https://gateway.test/callback',
   });
-  assert.deepEqual(buildPlatformAgentInputs(platformItem, { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }), {
-    platformDevItemId: 'pdev_123',
-    mode: 'initial',
-    issueNumber: '31',
-    requestTitle: '支持 Slack 创建平台开发 issue',
-    requestSummary: '通过 Slack 创建 pages-manager 自身开发 issue，并跟踪 PR 进度。',
-    issueType: 'type:dev',
-    areas: 'area:gateway,area:github',
-    risk: 'risk:medium',
-    gateApproved: 'true',
-    baseRef: 'master',
-    branchName: '',
-    callbackUrl: 'https://gateway.test/callback',
-  });
+  assert.deepEqual(
+    buildPlatformAgentInputs(
+      {
+        ...platformItem,
+        githubPrNumber: 45,
+        headSha: 'b'.repeat(40),
+        reviewContext: 'Review says fix docs.',
+        memoryContext: 'Previous run summary.',
+        statusContext: 'status: review_blocked',
+        followupContext: 'Slack follow-up.',
+      },
+      { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }
+    ),
+    {
+      platformDevItemId: 'pdev_123',
+      mode: 'initial',
+      issueNumber: '31',
+      prNumber: '45',
+      headSha: 'b'.repeat(40),
+      requestTitle: '支持 Slack 创建平台开发 issue',
+      requestSummary: '通过 Slack 创建 pages-manager 自身开发 issue，并跟踪 PR 进度。',
+      issueType: 'type:dev',
+      areas: 'area:gateway,area:github',
+      risk: 'risk:medium',
+      gateApproved: 'true',
+      baseRef: 'master',
+      branchName: '',
+      callbackUrl: 'https://gateway.test/callback',
+      reviewContext: 'Review says fix docs.',
+      memoryContext: 'Previous run summary.',
+      statusContext: 'status: review_blocked',
+      followupContext: 'Slack follow-up.',
+    }
+  );
   assert.equal(
     buildPlatformAgentInputs(
       { ...platformItem, risk: 'risk:high', requiresHumanGate: true, gateStatus: 'pending' },
