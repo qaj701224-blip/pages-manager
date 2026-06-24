@@ -8820,7 +8820,7 @@ test('GitHub merged platform PR keeps merged status after linked issue closes', 
   updated = app.store.updatePlatformDevItem(updated.id, 'agent_queued');
   updated = app.store.updatePlatformDevItem(updated.id, 'agent_running');
   updated = app.store.updatePlatformDevItem(updated.id, 'branch_committed');
-  updated = app.store.updatePlatformDevItem(updated.id, 'pr_created', {
+  app.store.updatePlatformDevItem(updated.id, 'pr_created', {
     githubPrNumber: 288,
     githubPrUrl: 'https://github.example/org/pages-manager/pull/288',
     branchName: 'feat/platform-merged-issue-close',
