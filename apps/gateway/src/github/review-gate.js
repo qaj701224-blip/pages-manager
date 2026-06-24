@@ -80,6 +80,7 @@ async function previewTriggerFromStoredReviews(store, job, env) {
 async function dispatchPreviewFromReviewTrigger(job, store, env, trigger, reviewAction = 'preview_dispatched') {
   const updatedJob =
     job.status === 'previewing' ? job : await store.updateJob(job.id, 'previewing', job.headSha ? { headSha: job.headSha } : {});
+  if (!updatedJob) return null;
   const workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
 
   return {
@@ -230,6 +231,17 @@ export async function reconcileReviewGateForJob(store, job, env, nowMs = Date.no
     fallback.trigger,
     fallback.reviewAction || 'preview_dispatched'
   );
+  if (!result?.job) {
+    return {
+      jobId: job?.id || null,
+      prNumber: job?.prNumber || null,
+      headSha: job?.headSha || null,
+      skipped: 'job_not_found_after_update',
+      gate: fallback.trigger.gate,
+      reviewComment: fallback.trigger.reviewComment,
+      reviewCommentCreated: fallback.reviewCommentCreated,
+    };
+  }
   await store.linkJobToSlackSession(result.job);
   const slack = await notifySlackForReviewAction(
     env,

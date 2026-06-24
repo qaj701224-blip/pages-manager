@@ -344,8 +344,10 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     });
   }
 
+  const jobId = job.id;
   if (pullRequest.html_url && pullRequest.html_url !== job.prUrl) {
     job = await store.patchJob(job.id, { prUrl: pullRequest.html_url });
+    if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
   }
 
   if (action === 'closed') {

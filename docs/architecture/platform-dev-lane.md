@@ -66,11 +66,11 @@ Slack Agent 输出必须包含：
 - `risk:medium`：gateway、worker、Slack、GitHub 自动化、DB 状态机等常规平台改动。
 - `risk:high`：CI/CD、部署、K8s、ECS、Dockerfile、secret、生产行为、权限模型或 schema 迁移。
 
-高风险需求必须先创建 issue 并等待人工确认，不能直接启动自动开发。
+高风险需求必须先创建 issue 并等待人工确认，不能直接启动自动开发。创建时 worker 只负责确保 GitHub issue 和返回 `gate_pending` callback；真正的 Platform Agent dispatch 必须等 gate 已批准后由 gateway 从当前 MySQL 状态触发。
 
 人工确认入口在 Slack 进度消息中展示：
 
-- “批准自动开发”：把 `work_item_gates` 的 risk gate 置为 `approved`，`PlatformDevItem.gateStatus=approved`，然后启动 `platform-agent.yml`。
+- “批准自动开发”：把 `work_item_gates` 的 risk gate 置为 `approved`，`PlatformDevItem.gateStatus=approved`。如果 item 已在 `gate_pending`，gateway 推进到 `agent_queued` 并启动 `platform-agent.yml`；如果 item 仍是 `received`，只记录批准，等待正在运行的 issue 创建回调到达后再推进，避免重复启动 worker。
 - “不进入自动开发”：把 gate 置为 `rejected`，`PlatformDevItem` 进入 `closed_unmerged`，保留 GitHub issue 作为需求记录。
 
 批准高风险自动开发必须 fail-closed。gateway 只有在 `PAGES_PLATFORM_GATE_APPROVERS` 或 `PAGES_PLATFORM_GATE_APPROVER_IDS` 配置了当前 Slack 用户时才接受批准；值支持 `U123` 或 `slack:T1:U123`。未配置维护者 allowlist 时，同一需求发起人也不能批准，高风险 item 必须保持 `gate_pending`，不能 dispatch worker。
@@ -110,6 +110,8 @@ received
 - `work_item_gates`：人工确认、风险 gate 和审核结论。
 - `work_item_followups`：Slack 后续补充。
 - `slack_work_item_status_messages`：平台进度消息 message binding。
+
+`platform_dev_items`、初始 `platform_dev_events` 和需要的 `work_item_gates` 必须在同一个 MySQL transaction 内创建；同一 idempotency key 的重试不能留下只有 item、没有事件或 gate 的半成品。
 
 兼容扩展：
 

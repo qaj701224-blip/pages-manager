@@ -1,6 +1,7 @@
 const CODING_FIX_DISPATCHED_EVENT = 'coding_fix_dispatched';
 
 function shouldStartWorkerForJob(job) {
+  if (!job) return false;
   return job.status === 'received' || job.status === 'generating_page' || job.status === 'fixing' || job.status === 'previewing';
 }
 

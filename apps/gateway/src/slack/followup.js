@@ -696,6 +696,40 @@ export async function handleSlackFollowup({ store, env, intake, slackSession, se
 
   if (!updatedJob) {
     updatedJob = await store.patchJob(job.id, patch);
+    if (!updatedJob) {
+      const replyText = '当前发布任务刚刚发生变化，修改意见没有写入。请重新查询任务状态后再继续。';
+      await updateFollowupSessionMemory({
+        store,
+        slackSession,
+        sessionMemory,
+        intake,
+        patch: {
+          ...memoryPatch,
+          lastAgentResponse: replyText,
+        },
+        replyText,
+        conversationKind: 'site_followup_missing_job',
+      });
+      await completeSlackAgentRun(store, agentRun, {
+        publishingJobId: job.id,
+        ...slackAgentRunModelPatch(slackAgentAnalysis),
+        report: {
+          action: 'followup_missing_job_after_update',
+          accepted: false,
+          intent: slackAgentAnalysis?.intent || null,
+        },
+      });
+      return {
+        ok: true,
+        action: 'followup_missing_job_after_update',
+        accepted: false,
+        jobId: job.id,
+        slackSessionId: slackSession.id,
+        agentRunId: agentRun?.id,
+        replyText,
+        ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
+      };
+    }
     await store.linkJobToSlackSession(updatedJob, slackSession);
     replyText = '收到，已记录。会继续沿用当前会话。';
   }

@@ -6,7 +6,7 @@ import {
 } from '@xd/workflow-core';
 
 import { eventToRow, jobToRow, rowToEvent, rowToJob } from '../rows/publishing-job-row.js';
-import { execute, limitOffsetSql, queryPlaceholders, upsertRow } from '../sql.js';
+import { execute, limitOffsetSql, queryPlaceholders, upsertRow, withTransaction } from '../sql.js';
 
 const REVIEW_ACTIVE_JOB_STATUSES = new Set(['pr_created', 'reviewing', 'changes_requested', 'fixing', 'previewing']);
 const LIKE_SEARCH_FIELDS = [
@@ -79,8 +79,12 @@ export const publishingJobRepositoryMethods = {
     const events = this.events.get(job.id) || [];
 
     try {
-      await this.upsertJob(job);
-      await this.insertEvents(events);
+      await withTransaction(this.pool, async (connection) => {
+        await upsertRow(connection, 'publishing_jobs', jobToRow(job), { excludeUpdate: ['id', 'created_at'] });
+        for (const event of events) {
+          await upsertRow(connection, 'job_events', eventToRow(event), { excludeUpdate: ['id', 'created_at'] });
+        }
+      });
     } catch (error) {
       if (String(error.code || '').includes('ER_DUP_ENTRY')) {
         const duplicate = await this.getJobByIdempotency(input);
@@ -111,6 +115,14 @@ export const publishingJobRepositoryMethods = {
     if (options.source) {
       where.push('source = ?');
       params.push(String(options.source));
+    }
+    if (options.requestedById) {
+      where.push('requested_by_id = ?');
+      params.push(String(options.requestedById));
+    }
+    if (options.statuses?.length) {
+      where.push(`status IN (${queryPlaceholders(options.statuses.length)})`);
+      params.push(...options.statuses);
     }
     if (options.q) {
       const like = `%${escapeLikeSearch(String(options.q).trim().toLowerCase())}%`;

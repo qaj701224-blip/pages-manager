@@ -550,6 +550,8 @@ work_item_kind + work_item_id + dedupe_key
 
 通知去重不能只按 Slack message ts，因为同一个 GitHub webhook 可能需要更新进度消息和追加一条 thread 消息。
 
+`slack_notification_dedupes` 对普通 `job-message` 也是发送前的原子 claim：gateway 在调用 slack-notifier 前先插入去重行，插入失败就跳过发送；Slack 发送失败时可以释放 claim 让后续重试。
+
 ### `audit_logs`
 
 审计日志。记录 actor、action、target、request id 和脱敏 metadata。
@@ -580,3 +582,9 @@ platform_dev_item_id
 ```
 
 所有 GitHub issue/PR、Slack Web API、Agent Gateway、Actions dispatch 调用都应该写摘要日志。日志不能保存 secret、完整 prompt、完整 diff 或用户敏感原文。
+
+## 写入原子性要求
+
+- `PublishingJob` 创建必须把 `publishing_jobs` 和首条 `job_events` 放在同一个 MySQL transaction 内。
+- `PlatformDevItem` 创建必须把 `platform_dev_items`、首条 `platform_dev_events` 和需要的 `work_item_gates` 放在同一个 MySQL transaction 内。
+- 同一 idempotency key 的重试不能留下只有主表、没有事件或 gate 的半成品。

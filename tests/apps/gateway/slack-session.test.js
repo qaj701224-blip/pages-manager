@@ -437,6 +437,41 @@ test('multiple active DM sessions do not bind natural status queries to the firs
   assert.match(ambiguous.replyText, /job id|issue|PR|GitHub URL/i);
 });
 
+test('multiple active DM sessions can still list work items', async () => {
+  const app = createGatewayApp();
+
+  await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-list-multiple-sessions-1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个项目展示页',
+    })
+  );
+  await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-list-multiple-sessions-2',
+      ts: '1710000001.000100',
+      text: 'issue: 做一个博客页',
+    })
+  );
+
+  const listed = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-list-multiple-sessions-3',
+      ts: '1710000002.000100',
+      text: 'work',
+    })
+  );
+
+  assert.equal(listed.action, 'list_work_items');
+  assert.equal(listed.accepted, false);
+  assert.equal(listed.jobs.length, 2);
+  assert.doesNotMatch(listed.replyText, /多个最近的会话/);
+});
+
 test('top-level DM after expired active context starts a new thread session', async () => {
   const app = createGatewayApp();
   const created = await postSlack(

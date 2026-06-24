@@ -182,6 +182,23 @@ function platformGateApprovalAllowed(env = {}, teamId, slackUserId) {
   return allowlist.has(slackUserId) || allowlist.has(`slack:${teamId}:${slackUserId}`);
 }
 
+function queueSlackWorkerStart(env, task, context = {}) {
+  runSlackBackground(env, async () => {
+    const result = await task();
+    if (result?.started === false) {
+      console.log(
+        JSON.stringify({
+          service: 'pages-gateway',
+          message: 'slack_interaction_worker_start_failed',
+          error: result.error || 'worker_start_failed',
+          ...context,
+        })
+      );
+    }
+  });
+  return { queued: true };
+}
+
 const TERMINAL_SLACK_DELIVERY_STATUSES = new Set(['processed', 'ignored']);
 const TERMINAL_GITHUB_DELIVERY_STATUSES = new Set(['processed', 'ignored']);
 
@@ -2155,7 +2172,12 @@ export async function handleSlackInteractions(request, env) {
           skipDuplicate: false,
         })
       : null;
-    const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
+    const workerStart = created
+      ? queueSlackWorkerStart(env, () => startWorkerForJobIfConfigured(job, env), {
+          workItemKind: 'site_publishing',
+          publishingJobId: job.id,
+        })
+      : null;
     const confirmationCardUpdate = await updateSlackInteractionMessage(env, body, session, {
       text: slackIssueConfirmedText(slackAgentAnalysis),
       blocks: slackIssueConfirmedBlocks(session, slackAgentAnalysis),
@@ -2237,7 +2259,12 @@ export async function handleSlackInteractions(request, env) {
           skipDuplicate: false,
         })
       : null;
-    const workerStart = created ? await startWorkerForPlatformDevItemIfConfigured(item, env) : null;
+    const workerStart = created
+      ? queueSlackWorkerStart(env, () => startWorkerForPlatformDevItemIfConfigured(item, env), {
+          workItemKind: 'platform_dev',
+          platformDevItemId: item.id,
+        })
+      : null;
     const confirmationCardUpdate = await updateSlackInteractionMessage(env, body, session, {
       text: slackPlatformIssueConfirmedText(slackAgentAnalysis),
       blocks: slackPlatformIssueConfirmedBlocks(session, slackAgentAnalysis),
@@ -2656,6 +2683,7 @@ export async function handleSlackInteractions(request, env) {
         platformDevItemId: item.id,
       });
     }
+    let workerStart = null;
     if (approved.status === 'gate_pending') {
       approved = await store.updatePlatformDevItem(approved.id, 'agent_queued', {
         gateStatus: 'approved',
@@ -2669,13 +2697,27 @@ export async function handleSlackInteractions(request, env) {
           platformDevItemId: item.id,
         });
       }
+      workerStart = queueSlackWorkerStart(env, () => startWorkerForPlatformDevItemIfConfigured(approved, env), {
+        workItemKind: 'platform_dev',
+        platformDevItemId: approved.id,
+      });
+    } else if (approved.status !== 'received') {
+      workerStart = queueSlackWorkerStart(env, () => startWorkerForPlatformDevItemIfConfigured(approved, env), {
+        workItemKind: 'platform_dev',
+        platformDevItemId: approved.id,
+      });
     }
     await store.linkPlatformDevItemToSlackSession(approved, session || undefined);
-    const workerStart = await startWorkerForPlatformDevItemIfConfigured(approved, env);
     const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, approved, {
       stage: approved.status,
-      text: '人工确认已通过，正在进入后续处理。',
-      statusText: ':white_check_mark: 已批准自动开发。',
+      text:
+        approved.status === 'received'
+          ? '人工确认已通过，等待当前 issue 创建完成后继续自动开发。'
+          : '人工确认已通过，正在进入后续处理。',
+      statusText:
+        approved.status === 'received'
+          ? ':white_check_mark: 已批准，等待 issue 创建完成。'
+          : ':white_check_mark: 已批准自动开发。',
       skipDuplicate: false,
       slackSessionId: session?.id || approved.slackSessionId || null,
     });
@@ -2690,7 +2732,12 @@ export async function handleSlackInteractions(request, env) {
     });
     return slackAckResponse({
       response_type: 'ephemeral',
-      text: workerStart?.started ? '已批准，自动开发已启动。' : '已批准，后续处理已排队。',
+      text:
+        approved.status === 'received'
+          ? '已批准，当前 issue 创建完成后会继续自动开发。'
+          : workerStart?.started
+            ? '已批准，自动开发已启动。'
+            : '已批准，后续处理已排队。',
       gate,
       platformDevItemId: approved.id,
       ...(workerStart ? { workerStart } : {}),
@@ -3064,15 +3111,16 @@ export async function handleExecutorCallback(request, env) {
   const patch = rule.patch ? rule.patch(body) : {};
   const store = getStore(env);
   const previousJob = await store.getJob(jobId);
-  let job = await applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
+  const callbackResult = await applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
+  let job = callbackResult.job;
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   await store.linkJobToSlackSession(job);
-  let workerStart = await startWorkerForJobIfConfigured(job, env);
+  let workerStart = callbackResult.ignored ? null : await startWorkerForJobIfConfigured(job, env);
   let queuedFollowupRerun = null;
   let reviewReplay = null;
   let slackStatusNotification = null;
 
-  if (previousJob?.status === 'fixing' && stageResult === 'reviewing') {
+  if (!callbackResult.ignored && previousJob?.status === 'fixing' && stageResult === 'reviewing') {
     queuedFollowupRerun = await dispatchQueuedFollowupFixIfNeeded(store, job, env);
     if (queuedFollowupRerun) {
       job = queuedFollowupRerun.job;
@@ -3082,7 +3130,7 @@ export async function handleExecutorCallback(request, env) {
     }
   }
 
-  if (!queuedFollowupRerun) {
+  if (!callbackResult.ignored && !queuedFollowupRerun) {
     reviewReplay = stageResult === 'pr_created' ? await dispatchPreviewFromStoredReviewIfReady(job, store, env) : null;
   }
 
@@ -3092,7 +3140,7 @@ export async function handleExecutorCallback(request, env) {
     await store.linkJobToSlackSession(job);
   }
 
-  if (!slackStatusNotification) {
+  if (!callbackResult.ignored && !slackStatusNotification) {
     const statusText = reviewReplay
       ? notificationTextForReviewAction(reviewReplay.reviewAction, {
           gate: reviewReplay.gate,
@@ -3107,16 +3155,17 @@ export async function handleExecutorCallback(request, env) {
     });
   }
   const slackText = notificationTextForCallback(stageResult, job);
-  const slackNotification = queuedFollowupRerun
+  const slackNotification = callbackResult.ignored || queuedFollowupRerun
     ? null
     : await notifySlackPlainProgress(env, store, job, slackText, `callback:${stageResult}`);
   const slackReactionSettlement =
-    stageResult === 'preview_deployed' || job.status === 'preview_deployed'
+    !callbackResult.ignored && (stageResult === 'preview_deployed' || job.status === 'preview_deployed')
       ? await settleJobSlackReactions(env, store, job, 'done')
       : null;
 
   return jsonResponse({
     job,
+    ...(callbackResult.ignored ? { ignored: true, ignoredStageResult: stageResult } : {}),
     ...(workerStart ? { workerStart } : {}),
     ...(reviewReplay
       ? {
@@ -3225,6 +3274,15 @@ async function handlePlatformDevExecutorCallback(body, env) {
     item = await store.updatePlatformDevItem(item.id, status, patch);
   }
   if (!item) return jsonResponse({ error: 'PlatformDevItem not found after update' }, 404);
+  let workerStart = null;
+  if (stageResult === 'gate_pending' && item.gateStatus === 'approved' && item.agentEligible) {
+    item = await store.updatePlatformDevItem(item.id, 'agent_queued', {
+      gateStatus: 'approved',
+      gateReason: item.gateReason || '人工批准自动开发。',
+    });
+    if (!item) return jsonResponse({ error: 'PlatformDevItem not found after gate approval dispatch' }, 404);
+    workerStart = await startWorkerForPlatformDevItemIfConfigured(item, env);
+  }
   await store.linkPlatformDevItemToSlackSession(item);
   const queuedFollowupRerun =
     ['pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge'].includes(status)
@@ -3250,6 +3308,7 @@ async function handlePlatformDevExecutorCallback(body, env) {
           },
         }
       : {}),
+    ...(workerStart ? { workerStart } : {}),
     ...(slackStatusNotification ? { slackStatusNotification } : {}),
   });
 }

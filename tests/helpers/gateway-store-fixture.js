@@ -245,12 +245,15 @@ export class GatewayStoreFixture {
     const offset = Math.max(Number(options.offset) || 0, 0);
     const status = options.status ? String(options.status) : null;
     const source = options.source ? String(options.source) : null;
+    const requestedById = options.requestedById ? String(options.requestedById) : null;
     const query = options.q ? String(options.q).trim().toLowerCase() : '';
 
     const jobs = [...this.jobs.values()]
       .filter((job) => {
         if (status && job.status !== status) return false;
+        if (options.statuses?.length && !options.statuses.includes(job.status)) return false;
         if (source && job.source !== source) return false;
+        if (requestedById && job.requestedById !== requestedById) return false;
         if (!query) return true;
 
         return [
@@ -730,6 +733,17 @@ export class GatewayStoreFixture {
 
   recordSlackNotification(jobId, key) {
     this.slackNotifications.add(`${jobId}:${key}`);
+  }
+
+  claimSlackNotification(jobId, key) {
+    const notificationKey = `${jobId}:${key}`;
+    if (this.slackNotifications.has(notificationKey)) return false;
+    this.slackNotifications.add(notificationKey);
+    return true;
+  }
+
+  releaseSlackNotification(jobId, key) {
+    this.slackNotifications.delete(`${jobId}:${key}`);
   }
 
   getSlackJobStatusMessage(jobId, options = {}) {

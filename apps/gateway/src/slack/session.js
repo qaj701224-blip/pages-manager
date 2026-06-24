@@ -8,6 +8,7 @@ const SESSION_INDEPENDENT_ACTIONS = new Set([
   'ping',
   'status',
   'diagnose_work_item',
+  'list_work_items',
   'cancel',
   'empty',
   'unsupported_destructive_request',
