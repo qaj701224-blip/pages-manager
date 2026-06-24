@@ -169,11 +169,24 @@ function focusFromSessionContext(context = {}) {
 
 function cardForCapability(capability, analysis = {}) {
   if (!capability || capability.cardKind === 'none') return null;
+  const defaultActions = {
+    confirmation:
+      capability.name === 'confirm_platform_issue'
+        ? ['confirm_platform_issue', 'continue_work_item', 'close_session']
+        : ['confirm_create_issue', 'continue_work_item', 'close_session'],
+    task_list: ['continue_work_item', 'open_issue', 'open_pr', 'open_preview', 'reopen_work_item'],
+    diagnosis: ['open_issue', 'open_pr', 'open_preview', 'retry_work_item', 'append_diagnosis_to_issue', 'human_triage'],
+    repo_answer: ['open_issue'],
+    status: ['open_issue', 'open_pr', 'open_preview'],
+    handoff: ['human_triage'],
+  };
   return {
     kind: capability.cardKind,
     title: analysis.title || '',
     summary: analysis.visibleReply || analysis.summary || '',
-    actions: [],
+    context: '',
+    fields: [],
+    actions: defaultActions[capability.cardKind] || [],
   };
 }
 

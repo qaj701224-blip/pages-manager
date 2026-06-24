@@ -1079,6 +1079,73 @@ test('Slack free-form turn asks for confirmation before creating an issue', asyn
   assert.equal(app.store.jobs.size, 0);
 });
 
+test('Slack Agent card intent drives confirmation copy while gateway owns actions', async () => {
+  const app = createGatewayApp();
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-card-confirm-copy-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001031',
+          text: '我想做一个个人主页',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              employeeSlug: 'alice',
+              siteSlug: 'brand',
+              title: 'fallback title',
+              summary: 'fallback summary',
+              needsClarification: false,
+              card: {
+                kind: 'confirmation',
+                title: '个人主页任务',
+                summary: '展示项目经历和联系方式。',
+                context: '确认后我会把它整理成可执行任务。',
+                fields: [{ label: '语气', value: '简洁专业' }],
+                actions: [
+                  { id: 'confirm_create_issue', label: '删除资源' },
+                  { id: 'delete_resource', label: '删除资源' },
+                  { id: 'continue_work_item', label: '再补充' },
+                  { id: 'close_session', label: '先关闭' },
+                ],
+              },
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'confirm_before_issue');
+  assert.match(body.replyText, /个人主页任务/);
+  assert.match(body.replyText, /确认后我会把它整理成可执行任务/);
+  assert.match(visible, /展示项目经历和联系方式/);
+  assert.match(visible, /语气/);
+  assert.equal(findBlockAction(body.blocks, 'pages_confirm_issue')?.text?.text, '确认创建发布任务');
+  assert.equal(findBlockAction(body.blocks, 'pages_continue_modifying')?.text?.text, '再补充');
+  assert.equal(findBlockAction(body.blocks, 'pages_close_session')?.text?.text, '先关闭');
+  assert.doesNotMatch(visible, /删除资源|delete_resource/);
+});
+
 test('Slack free-form turn uses Slack Agent turn and updates one agent reply message', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
@@ -3492,6 +3559,101 @@ test('Slack explicit issue and PR count query is not swallowed by active platfor
   assert.match(visible, /PR：#93/);
 });
 
+test('Slack Agent task list card intent drives list copy and action labels', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-card-list-job',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: 'https://preview.example.test/u1',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-card-list-copy-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.0001306',
+          text: '我有哪些任务？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                dialogAct: 'run_tool',
+                intent: 'list_work_items',
+                toolCall: { name: 'list_my_work_items', args: { state: 'active' } },
+                needsClarification: false,
+                card: {
+                  kind: 'task_list',
+                  title: '任务总览',
+                  summary: '这里是你现在可以继续推进的任务。',
+                  context: '选择后，这个对话会聚焦到对应任务。',
+                  actions: [
+                    { id: 'open_pr', label: '看 PR' },
+                    { id: 'continue_work_item', label: '继续这个' },
+                    { id: 'open_preview', label: '看预览' },
+                    { id: 'delete_resource', label: '删除' },
+                  ],
+                },
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+  const firstActions = body.blocks.find((block) => block.type === 'actions')?.elements || [];
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'list_work_items');
+  assert.match(visible, /任务总览/);
+  assert.match(visible, /这里是你现在可以继续推进的任务/);
+  assert.match(visible, /选择后，这个对话会聚焦到对应任务/);
+  assert.equal(findBlockAction(body.blocks, 'pages_select_work_item')?.text?.text, '继续这个');
+  assert.equal(findBlockAction(body.blocks, 'open_pr')?.text?.text, '看 PR');
+  assert.equal(findBlockAction(body.blocks, 'open_preview')?.text?.text, '看预览');
+  assert.deepEqual(
+    firstActions.map((action) => action.action_id).slice(0, 3),
+    ['open_pr', 'pages_select_work_item', 'open_preview']
+  );
+  assert.doesNotMatch(visible, /删除|delete_resource/);
+});
+
 test('Slack Agent can switch to a platform issue without site publishing status card', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
@@ -5672,6 +5834,109 @@ test('Slack status message reads an existing job without creating a new one', as
   assert.match(body.replyText, /当前状态：整理需求/);
   assert.match(body.replyText, /最近阶段：整理需求/);
   assert.match(body.replyText, /建议操作：/);
+});
+
+test('Slack Agent diagnosis card intent drives diagnosis copy and action order', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-card-diagnosis-job',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'preview_deployed',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+    previewUrl: 'https://preview.example.test/u1',
+  });
+  app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    slackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000150',
+    channelId: 'D1',
+    channelType: 'im',
+    threadTs: '1710000000.000150',
+    messageTs: '1710000000.000150',
+    activeJobId: job.id,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-card-diagnosis-copy-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000150',
+          text: '为什么没成功？',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                dialogAct: 'run_tool',
+                intent: 'diagnose_work_item',
+                toolCall: { name: 'diagnose_current_work_item', args: { jobId: job.id } },
+                needsClarification: false,
+                card: {
+                  kind: 'diagnosis',
+                  title: '诊断结果',
+                  summary: '任务已经有 Preview，可以继续检查或追加诊断。',
+                  fields: [{ label: '建议', value: '先看预览，再决定是否继续修改。' }],
+                  actions: [
+                    { id: 'open_preview', label: '看预览' },
+                    { id: 'append_diagnosis_to_issue', label: '写入 Issue' },
+                    { id: 'open_issue', label: '看 Issue' },
+                    { id: 'delete_resource', label: '删除资源' },
+                  ],
+                },
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+  const actionIds = body.blocks.find((block) => block.type === 'actions')?.elements?.map((action) => action.action_id) || [];
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'diagnose_work_item');
+  assert.match(visible, /诊断结果/);
+  assert.match(visible, /任务已经有 Preview/);
+  assert.match(visible, /先看预览，再决定是否继续修改/);
+  assert.equal(findBlockAction(body.blocks, 'open_preview')?.text?.text, '看预览');
+  assert.equal(findBlockAction(body.blocks, 'pages_request_append_diagnosis')?.text?.text, '写入 Issue');
+  assert.equal(findBlockAction(body.blocks, 'open_issue')?.text?.text, '看 Issue');
+  assert.deepEqual(actionIds.slice(0, 3), ['open_preview', 'pages_request_append_diagnosis', 'open_issue']);
+  assert.doesNotMatch(visible, /删除资源|delete_resource/);
 });
 
 test('Slack event can start the worker without requiring user GitHub permissions', async () => {

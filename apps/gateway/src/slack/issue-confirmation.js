@@ -4,6 +4,13 @@ import { compactUserFacingText } from './text.js';
 import { interactionChannelId, interactionChannelType, interactionThreadTs } from './delivery.js';
 import { CREATE_JOB_INTENTS } from './intents.js';
 import { normalizePlatformAreas, normalizePlatformIssueType, normalizePlatformRisk } from './platform-input.js';
+import {
+  slackAgentActionLabel,
+  slackAgentCardContext,
+  slackAgentCardFields,
+  slackAgentCardSummary,
+  slackAgentCardTitle,
+} from './agent-card.js';
 
 const INTERNAL_PLATFORM_TERMS = new RegExp(
   [
@@ -98,22 +105,25 @@ function platformAreaLabels(areas = []) {
 }
 
 export function slackIssueConfirmationText(slackAgentAnalysis = {}) {
-  const summary = userFacingSlackSummary(slackAgentAnalysis);
+  const summary = slackAgentCardSummary(slackAgentAnalysis, 'confirmation', userFacingSlackSummary(slackAgentAnalysis));
   const site = String(slackAgentAnalysis.siteSlug || slackAgentAnalysis.site_slug || 'profile').trim();
-  const title = userFacingSlackTitle(slackAgentAnalysis);
+  const title = slackAgentCardTitle(slackAgentAnalysis, 'confirmation', userFacingSlackTitle(slackAgentAnalysis));
+  const context = slackAgentCardContext(slackAgentAnalysis, 'confirmation', '下一步：点击「确认创建发布任务」。');
   const lines = ['我整理好了，先等你确认。', '', `标题：${title}`, `站点：${site}`];
   if (summary) lines.push('', `需求：${summary}`);
-  lines.push('', '下一步：点击「确认创建发布任务」。');
+  if (context) lines.push('', context);
   return lines.join('\n');
 }
 
 export function slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis = {}, options = {}) {
   const sessionId = slackSession?.id || '';
-  const title = userFacingSlackTitle(slackAgentAnalysis);
+  const title = slackAgentCardTitle(slackAgentAnalysis, 'confirmation', userFacingSlackTitle(slackAgentAnalysis));
   const site = String(slackAgentAnalysis.siteSlug || slackAgentAnalysis.site_slug || 'profile').trim();
-  const summary = userFacingSlackSummary(slackAgentAnalysis);
+  const summary = slackAgentCardSummary(slackAgentAnalysis, 'confirmation', userFacingSlackSummary(slackAgentAnalysis));
   const status = options.statusLabel || '待确认';
-  const contextText = options.contextText || '点击确认后，我会创建 issue 并开始生成 PR。';
+  const contextText =
+    options.contextText ||
+    slackAgentCardContext(slackAgentAnalysis, 'confirmation', '点击确认后，我会创建 issue 并开始生成 PR。');
   const fields = [
     {
       type: 'mrkdwn',
@@ -123,6 +133,10 @@ export function slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis = 
       type: 'mrkdwn',
       text: `*状态*\n${status}`,
     },
+    ...slackAgentCardFields(slackAgentAnalysis, 'confirmation').map((field) => ({
+      type: 'mrkdwn',
+      text: `*${field.label || '说明'}*\n${field.value}`,
+    })),
   ];
 
   const blocks = [
@@ -158,20 +172,29 @@ export function slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis = 
       elements: [
         {
           type: 'button',
-          text: { type: 'plain_text', text: '确认创建发布任务' },
+          text: {
+            type: 'plain_text',
+            text: slackAgentActionLabel(slackAgentAnalysis, 'confirmation', 'confirm_create_issue', '确认创建发布任务'),
+          },
           style: 'primary',
           action_id: 'pages_confirm_issue',
           value: sessionId,
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: '继续补充需求' },
+          text: {
+            type: 'plain_text',
+            text: slackAgentActionLabel(slackAgentAnalysis, 'confirmation', 'continue_work_item', '继续补充需求'),
+          },
           action_id: 'pages_continue_modifying',
           value: sessionId,
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: '关闭会话' },
+          text: {
+            type: 'plain_text',
+            text: slackAgentActionLabel(slackAgentAnalysis, 'confirmation', 'close_session', '关闭会话'),
+          },
           style: 'danger',
           action_id: 'pages_close_session',
           value: sessionId,
@@ -184,8 +207,8 @@ export function slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis = 
 }
 
 export function slackPlatformIssueConfirmationText(slackAgentAnalysis = {}) {
-  const title = userFacingPlatformTitle(slackAgentAnalysis);
-  const summary = userFacingPlatformSummary(slackAgentAnalysis);
+  const title = slackAgentCardTitle(slackAgentAnalysis, 'confirmation', userFacingPlatformTitle(slackAgentAnalysis));
+  const summary = slackAgentCardSummary(slackAgentAnalysis, 'confirmation', userFacingPlatformSummary(slackAgentAnalysis));
   const issueType = normalizePlatformIssueType(slackAgentAnalysis.issueType || slackAgentAnalysis.issue_type);
   const risk = normalizePlatformRisk(slackAgentAnalysis.risk, issueType);
   const agentEligible =
@@ -196,6 +219,12 @@ export function slackPlatformIssueConfirmationText(slackAgentAnalysis = {}) {
     slackAgentAnalysis.areas || slackAgentAnalysis.areaLabels || slackAgentAnalysis.area_labels
   );
   const areaLabels = platformAreaLabels(areas);
+  const defaultNextStep = !agentEligible
+    ? '下一步：点击「确认创建平台需求」后，只会创建 GitHub issue 作为记录，不会启动自动开发。'
+    : risk === 'risk:high'
+      ? '下一步：点击「确认创建平台需求」后，会先创建 GitHub issue，并等待人工确认后再进入自动开发。'
+      : '下一步：点击「确认创建平台需求」后，会创建 GitHub issue，并按策略进入后续处理。';
+  const nextStep = slackAgentCardContext(slackAgentAnalysis, 'confirmation', defaultNextStep);
   const lines = [
     '我整理好了，先等你确认。',
     '',
@@ -206,19 +235,15 @@ export function slackPlatformIssueConfirmationText(slackAgentAnalysis = {}) {
     '',
     `需求：${summary}`,
     '',
-    !agentEligible
-      ? '下一步：点击「确认创建平台需求」后，只会创建 GitHub issue 作为记录，不会启动自动开发。'
-      : risk === 'risk:high'
-        ? '下一步：点击「确认创建平台需求」后，会先创建 GitHub issue，并等待人工确认后再进入自动开发。'
-        : '下一步：点击「确认创建平台需求」后，会创建 GitHub issue，并按策略进入后续处理。',
+    nextStep,
   ];
   return lines.join('\n');
 }
 
 export function slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAnalysis = {}, options = {}) {
   const sessionId = slackSession?.id || '';
-  const title = userFacingPlatformTitle(slackAgentAnalysis);
-  const summary = userFacingPlatformSummary(slackAgentAnalysis);
+  const title = slackAgentCardTitle(slackAgentAnalysis, 'confirmation', userFacingPlatformTitle(slackAgentAnalysis));
+  const summary = slackAgentCardSummary(slackAgentAnalysis, 'confirmation', userFacingPlatformSummary(slackAgentAnalysis));
   const issueType = normalizePlatformIssueType(slackAgentAnalysis.issueType || slackAgentAnalysis.issue_type);
   const risk = normalizePlatformRisk(slackAgentAnalysis.risk, issueType);
   const agentEligible =
@@ -232,11 +257,15 @@ export function slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAna
   const status = options.statusLabel || '待确认';
   const contextText =
     options.contextText ||
-    (!agentEligible
-      ? '确认后只会创建 GitHub issue 作为记录，不会启动自动开发。'
-      : risk === 'risk:high'
-        ? '确认后会先创建 GitHub issue；高风险需求需要人工确认后再进入自动开发。'
-        : '确认后会创建 GitHub issue；后续进度会在当前对话更新。');
+    slackAgentCardContext(
+      slackAgentAnalysis,
+      'confirmation',
+      !agentEligible
+        ? '确认后只会创建 GitHub issue 作为记录，不会启动自动开发。'
+        : risk === 'risk:high'
+          ? '确认后会先创建 GitHub issue；高风险需求需要人工确认后再进入自动开发。'
+          : '确认后会创建 GitHub issue；后续进度会在当前对话更新。'
+    );
 
   const blocks = [
     {
@@ -257,6 +286,10 @@ export function slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAna
         { type: 'mrkdwn', text: `*状态*\n${status}` },
         { type: 'mrkdwn', text: `*范围*\n${areaLabels.join('、')}` },
         { type: 'mrkdwn', text: `*风险*\n${platformRiskLabel(risk)}` },
+        ...slackAgentCardFields(slackAgentAnalysis, 'confirmation').slice(0, 6).map((field) => ({
+          type: 'mrkdwn',
+          text: `*${field.label || '说明'}*\n${field.value}`,
+        })),
       ],
     },
     {
@@ -271,20 +304,29 @@ export function slackPlatformIssueConfirmationBlocks(slackSession, slackAgentAna
       elements: [
         {
           type: 'button',
-          text: { type: 'plain_text', text: '确认创建平台需求' },
+          text: {
+            type: 'plain_text',
+            text: slackAgentActionLabel(slackAgentAnalysis, 'confirmation', 'confirm_platform_issue', '确认创建平台需求'),
+          },
           style: 'primary',
           action_id: 'pages_confirm_platform_issue',
           value: sessionId,
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: '继续补充需求' },
+          text: {
+            type: 'plain_text',
+            text: slackAgentActionLabel(slackAgentAnalysis, 'confirmation', 'continue_work_item', '继续补充需求'),
+          },
           action_id: 'pages_continue_modifying',
           value: sessionId,
         },
         {
           type: 'button',
-          text: { type: 'plain_text', text: '关闭会话' },
+          text: {
+            type: 'plain_text',
+            text: slackAgentActionLabel(slackAgentAnalysis, 'confirmation', 'close_session', '关闭会话'),
+          },
           style: 'danger',
           action_id: 'pages_close_session',
           value: sessionId,

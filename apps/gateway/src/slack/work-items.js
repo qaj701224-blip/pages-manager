@@ -7,6 +7,14 @@ import {
 } from './issue-confirmation.js';
 import { compactUserFacingText } from './text.js';
 import { normalizeSlackWorkItemQueryState } from './work-item-query.js';
+import {
+  orderSlackActionsByAgentIntent,
+  slackActionElement,
+  slackAgentActionLabel,
+  slackAgentCardContext,
+  slackAgentCardSummary,
+  slackAgentCardTitle,
+} from './agent-card.js';
 
 export const ACTIONABLE_WORK_ITEM_STATUSES = [
   'received',
@@ -185,33 +193,39 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
   const visibleJobs = jobs.filter(isSlackWorkItemRecord);
   const state = normalizeSlackWorkItemQueryState(options.workItemState || (options.includeInactive ? 'all' : 'active'));
   const hasPlatformDev = visibleJobs.some((job) => workItemKind(job) === 'platform_dev');
+  const analysis = options.slackAgentAnalysis || {};
   if (!visibleJobs.length) {
     return [
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: slackWorkItemListText(visibleJobs, options) },
+        text: { type: 'mrkdwn', text: slackAgentCardSummary(analysis, 'task_list', slackWorkItemListText(visibleJobs, options)) },
       },
     ];
   }
 
+  const defaultContext =
+    state === 'closed'
+      ? '这些任务当前不可继续修改；可恢复的任务会出现「重新打开」。'
+      : state === 'all'
+        ? '历史任务仅用于查看状态；只有可继续任务会出现「继续修改」。'
+        : hasPlatformDev
+          ? '点「继续修改」后，后续回复会进入选中的任务。'
+          : '点「继续修改」后，后续回复会进入选中的 PR / Preview。';
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: hasPlatformDev ? '你的任务' : '你的发布任务' },
+      text: { type: 'plain_text', text: slackAgentCardTitle(analysis, 'task_list', hasPlatformDev ? '你的任务' : '你的发布任务') },
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: slackAgentCardSummary(analysis, 'task_list', slackWorkItemListText(visibleJobs, options)) },
     },
     {
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text:
-            state === 'closed'
-              ? '这些任务当前不可继续修改；可恢复的任务会出现「重新打开」。'
-              : state === 'all'
-                ? '历史任务仅用于查看状态；只有可继续任务会出现「继续修改」。'
-                : hasPlatformDev
-                  ? '点「继续修改」后，后续回复会进入选中的任务。'
-                  : '点「继续修改」后，后续回复会进入选中的 PR / Preview。',
+          text: slackAgentCardContext(analysis, 'task_list', defaultContext),
         },
       ],
     },
@@ -222,18 +236,23 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
     if (isActionableSlackWorkItem(job)) {
       elements.push({
         type: 'button',
-        text: { type: 'plain_text', text: '继续修改' },
+        text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'task_list', 'continue_work_item', '继续修改') },
         style: 'primary',
         action_id: 'pages_select_work_item',
+        agent_action_id: 'continue_work_item',
         value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id, workItemKind: workItemKind(job) }),
       });
     } else if (options.includeInactive && isReopenableSlackWorkItem(job)) {
       const target = reopenTargetForSlackWorkItem(job);
       elements.push({
         type: 'button',
-        text: { type: 'plain_text', text: target === 'pr' ? '重新打开 PR' : '重新打开 Issue' },
+        text: {
+          type: 'plain_text',
+          text: slackAgentActionLabel(analysis, 'task_list', 'reopen_work_item', target === 'pr' ? '重新打开 PR' : '重新打开 Issue'),
+        },
         style: 'primary',
         action_id: 'pages_reopen_work_item',
+        agent_action_id: 'reopen_work_item',
         value: slackButtonValue({
           sessionId: slackSession.id,
           jobId: job.id,
@@ -247,29 +266,37 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
     if (job.issueUrl) {
       elements.push({
         type: 'button',
-        text: { type: 'plain_text', text: '打开 Issue' },
+        text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'task_list', 'open_issue', '打开 Issue') },
         url: job.issueUrl,
         action_id: 'open_issue',
+        agent_action_id: 'open_issue',
       });
     }
     if (job.prUrl) {
       elements.push({
         type: 'button',
-        text: { type: 'plain_text', text: '打开 PR' },
+        text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'task_list', 'open_pr', '打开 PR') },
         url: job.prUrl,
         action_id: 'open_pr',
+        agent_action_id: 'open_pr',
       });
     }
     if (job.previewUrl) {
       elements.push({
         type: 'button',
-        text: { type: 'plain_text', text: '打开 Preview' },
+        text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'task_list', 'open_preview', '打开 Preview') },
         url: job.previewUrl,
         action_id: 'open_preview',
+        agent_action_id: 'open_preview',
       });
     }
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: workItemLine(job) } });
-    if (elements.length) blocks.push({ type: 'actions', elements });
+    if (elements.length) {
+      blocks.push({
+        type: 'actions',
+        elements: orderSlackActionsByAgentIntent(elements, analysis, 'task_list').map(slackActionElement),
+      });
+    }
   }
 
   return blocks;
