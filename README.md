@@ -134,3 +134,7 @@ production 部署必须人工在 GitHub Actions 中手动触发；改动 workflo
 ## Pages KV
 
 v1 不再提供 Pages KV。需要 runtime helper 或 KV 相关能力时，按 `@xd/pages-sdk` 和当前平台文档接入，不要使用旧部署参数。
+
+## Slack 合并通知 Smoke
+
+- 2026-06-24：用于验证 `feat/slack-preview-gateway` 合并 PR 后会发送 Slack 合并通知。
