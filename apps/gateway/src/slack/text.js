@@ -1,3 +1,19 @@
+const SECRET_FIELD_NAME_PATTERN =
+  [
+    '(?:[A-Za-z0-9]+[_-])*',
+    '(?:api[_-]?key|secret(?:[_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)',
+    '(?:[_-][A-Za-z0-9]+)*',
+  ].join('');
+const jsonSecretFieldPattern = new RegExp(`("(?:${SECRET_FIELD_NAME_PATTERN})"\\s*:\\s*)(["'])[^"']*\\2`, 'gi');
+const quotedSecretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*(["'])[^"']*\\3`,
+  'gi'
+);
+const secretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*[^"',\\s}]+`,
+  'gi'
+);
+
 export function redactSecretLikeText(text = '') {
   return String(text || '')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED_TOKEN]')
@@ -6,8 +22,9 @@ export function redactSecretLikeText(text = '') {
     .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
-    .replace(/("(?:api[_-]?key|token|secret|password|passwd|pwd)"\s*:\s*")[^"]+(")/gi, '$1[REDACTED_SECRET]$2')
-    .replace(/\b(api[_-]?key|token|secret|password|passwd|pwd)\b\s*[:=]\s*["']?[^"',\s}]+/gi, '$1=[REDACTED_SECRET]');
+    .replace(jsonSecretFieldPattern, '$1$2[REDACTED_SECRET]$2')
+    .replace(quotedSecretAssignmentPattern, '$1$2$3[REDACTED_SECRET]$3')
+    .replace(secretAssignmentPattern, '$1$2[REDACTED_SECRET]');
 }
 
 export function compactUserFacingText(text = '') {

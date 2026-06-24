@@ -16,6 +16,20 @@ async function json(response) {
   return response.json();
 }
 
+async function fetchAndDrainWaitUntil(app, request, env = {}) {
+  const waitUntilPromises = [];
+  const response = await app.fetch(request, env, {
+    waitUntil(promise) {
+      waitUntilPromises.push(promise);
+    },
+  });
+  return {
+    response,
+    waitUntil: () => Promise.all(waitUntilPromises),
+    waitUntilCount: waitUntilPromises.length,
+  };
+}
+
 function slackEvent(text, eventId = 'Ev-platform-1') {
   return {
     team_id: 'T1',
@@ -313,6 +327,51 @@ test('confirming platform request creates PlatformDevItem and starts worker when
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
   assert.equal(app.store.getSlackSession(sessionId).activeWorkItemId, item.id);
   assert.ok(notifierCalls.some((call) => call.path === '/internal/slack-notifier/message'));
+});
+
+test('confirming platform request fails item when queued worker start fails', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const first = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(slackEvent('通过 Slack 创建 pages-manager 自身开发 issue，并跟踪 GitHub PR 进度', 'Ev-platform-worker-failure')),
+      }),
+      { SLACK_EVENTS_PROCESSING_MODE: 'sync', ...deterministicSlackAgentEnv() }
+    )
+  );
+  const sessionId = first.slackSessionId;
+
+  const { response, waitUntil, waitUntilCount } = await fetchAndDrainWaitUntil(
+    app,
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(interaction('pages_confirm_platform_issue', sessionId)),
+    }),
+    {
+      ...notifierEnv(notifierCalls),
+      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U2',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.created, true);
+  assert.equal(waitUntilCount, 1);
+  await waitUntil();
+  const item = app.store.getPlatformDevItem(body.platformDevItemId);
+  assert.equal(item.status, 'failed');
+  assert.equal(item.errorCode, 'worker_start_failed');
+  assert.equal(item.errorMessage, 'worker unavailable');
+  assert.equal(app.store.getSlackSession(sessionId).activeWorkItemId, item.id);
 });
 
 test('high-risk platform request creates issue work and waits for gate before coding dispatch', async () => {

@@ -182,10 +182,26 @@ function platformGateApprovalAllowed(env = {}, teamId, slackUserId) {
   return allowlist.has(slackUserId) || allowlist.has(`slack:${teamId}:${slackUserId}`);
 }
 
-function queueSlackWorkerStart(env, task, context = {}) {
+async function failQueuedSlackWorkerStart(store, context = {}, errorMessage = 'Worker start failed') {
+  if (context.workItemKind === 'site_publishing' && context.publishingJobId && store?.failJob) {
+    return await store.failJob(context.publishingJobId, 'worker_start_failed', errorMessage);
+  }
+  if (context.workItemKind === 'platform_dev' && context.platformDevItemId && store?.failPlatformDevItem) {
+    return await store.failPlatformDevItem(context.platformDevItemId, 'worker_start_failed', errorMessage);
+  }
+  return null;
+}
+
+function queueSlackWorkerStart(env, store, task, context = {}) {
   runSlackBackground(env, async () => {
-    const result = await task();
+    let result;
+    try {
+      result = await task();
+    } catch (error) {
+      result = { started: false, error: error.message || 'Worker start failed' };
+    }
     if (result?.started === false) {
+      await failQueuedSlackWorkerStart(store, context, result.error || 'Worker start failed');
       console.log(
         JSON.stringify({
           service: 'pages-gateway',
@@ -2173,7 +2189,7 @@ export async function handleSlackInteractions(request, env) {
         })
       : null;
     const workerStart = created
-      ? queueSlackWorkerStart(env, () => startWorkerForJobIfConfigured(job, env), {
+      ? queueSlackWorkerStart(env, store, () => startWorkerForJobIfConfigured(job, env), {
           workItemKind: 'site_publishing',
           publishingJobId: job.id,
         })
@@ -2260,7 +2276,7 @@ export async function handleSlackInteractions(request, env) {
         })
       : null;
     const workerStart = created
-      ? queueSlackWorkerStart(env, () => startWorkerForPlatformDevItemIfConfigured(item, env), {
+      ? queueSlackWorkerStart(env, store, () => startWorkerForPlatformDevItemIfConfigured(item, env), {
           workItemKind: 'platform_dev',
           platformDevItemId: item.id,
         })
@@ -2697,12 +2713,12 @@ export async function handleSlackInteractions(request, env) {
           platformDevItemId: item.id,
         });
       }
-      workerStart = queueSlackWorkerStart(env, () => startWorkerForPlatformDevItemIfConfigured(approved, env), {
+      workerStart = queueSlackWorkerStart(env, store, () => startWorkerForPlatformDevItemIfConfigured(approved, env), {
         workItemKind: 'platform_dev',
         platformDevItemId: approved.id,
       });
     } else if (approved.status !== 'received') {
-      workerStart = queueSlackWorkerStart(env, () => startWorkerForPlatformDevItemIfConfigured(approved, env), {
+      workerStart = queueSlackWorkerStart(env, store, () => startWorkerForPlatformDevItemIfConfigured(approved, env), {
         workItemKind: 'platform_dev',
         platformDevItemId: approved.id,
       });

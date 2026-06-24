@@ -50,6 +50,25 @@ test('Slack text redacts all GitHub token prefixes', () => {
   assert.doesNotMatch(redacted, /gh[pousr]_|github_pat_/);
 });
 
+test('Slack text redacts environment-style secret variable values', () => {
+  const redacted = redactSecretLikeText(
+    [
+      'AWS_SECRET_ACCESS_KEY=abcdef1234567890',
+      'CF_API_TOKEN="cf-token-value"',
+      "SLACK_BOT_TOKEN='xoxb-secret'",
+      '{"AGENT_CODE_API_KEY":"sk-secret-value"}',
+      'normal_key=value',
+    ].join('\n')
+  );
+
+  assert.match(redacted, /AWS_SECRET_ACCESS_KEY=\[REDACTED_SECRET\]/);
+  assert.match(redacted, /CF_API_TOKEN="\[REDACTED_SECRET\]"/);
+  assert.match(redacted, /SLACK_BOT_TOKEN='\[REDACTED_SECRET\]'/);
+  assert.match(redacted, /"AGENT_CODE_API_KEY":"\[REDACTED_SECRET\]"/);
+  assert.match(redacted, /normal_key=value/);
+  assert.doesNotMatch(redacted, /abcdef1234567890|cf-token-value|xoxb-secret|sk-secret-value/);
+});
+
 async function fetchAndDrainWaitUntil(app, request, env = {}) {
   const waitUntilPromises = [];
   const response = await app.fetch(request, env, {
@@ -532,6 +551,7 @@ test('preview completion replaces pending Slack working reactions with done reac
         publishingJobId: jobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test/job-reaction',
+        headSha: 'b'.repeat(40),
       }),
     }),
     {
@@ -599,6 +619,7 @@ test('preview completion also settles working reactions linked by Slack session'
         publishingJobId: jobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test/session-reaction',
+        headSha: 'c'.repeat(40),
       }),
     }),
     {
@@ -3195,6 +3216,101 @@ test('Slack confirm issue button creates the publishing job and starts worker', 
   assert.equal(updateCall.body.payload.ts, '1710000000.000109');
   assert.match(JSON.stringify(updateCall.body.payload.blocks), /发布需求已确认/);
   assert.doesNotMatch(JSON.stringify(updateCall.body.payload.blocks), /pages_confirm_issue/);
+});
+
+test('Slack confirm issue button fails the job when queued worker start fails', async () => {
+  const app = createGatewayApp();
+  const draftResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-freeform-confirm-worker-failure',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.000110',
+          text: '个人主页信息足够，请直接创建发布任务',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_ANALYZE_URL: 'http://slack-agent.test/internal/slack-agent/analyze',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            analysis: {
+              intent: 'create_or_update_site',
+              employeeSlug: 'alice',
+              siteSlug: 'brand',
+              title: 'Alice personal brand page',
+              summary: '用户希望创建一个清爽可信的个人品牌页面。',
+              needsClarification: false,
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const draft = await json(draftResponse);
+  const sessionId = draft.slackSessionId;
+  const payload = JSON.stringify({
+    type: 'block_actions',
+    team: { id: 'T1' },
+    user: { id: 'U1' },
+    channel: { id: 'D1' },
+    message: { ts: '1710000000.000110' },
+    actions: [{ action_id: 'pages_confirm_issue', value: sessionId }],
+  });
+  const notifierCalls = [];
+  const { response, waitUntil, waitUntilCount } = await fetchAndDrainWaitUntil(
+    app,
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ payload }).toString(),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      ...mockSlackNotifier(notifierCalls, {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/user-info') {
+            return notifierResponse({
+              ok: true,
+              profile: {
+                source: 'slack.users.info',
+                slackTeamId: 'T1',
+                slackUserId: 'U1',
+                name: 'alice',
+                displayName: 'Alice',
+                realName: null,
+                email: 'alice@example.test',
+              },
+            });
+          }
+          return null;
+        },
+      }),
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const confirmed = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(confirmed.created, true);
+  assert.equal(waitUntilCount, 1);
+  await waitUntil();
+  const job = app.store.getJob(confirmed.jobId);
+  assert.equal(job.status, 'failed');
+  assert.equal(job.errorCode, 'worker_start_failed');
+  assert.equal(job.errorMessage, 'worker unavailable');
 });
 
 test('Slack continue modifying button updates the draft card without creating an issue', async () => {
@@ -6175,6 +6291,7 @@ test('preview_deployed status card includes the preview link', async () => {
         publishingJobId: created.jobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test',
+        headSha: 'a'.repeat(40),
       }),
     }),
     {
@@ -8016,6 +8133,7 @@ test('Slack interaction can close only the caller owned session', async () => {
 
 test('executor callback advances the preview loop', async () => {
   const app = createGatewayApp();
+  const headSha = 'a'.repeat(40);
   const createBody = await json(
     await app.fetch(
       new Request('http://gateway.test/api/publishing-jobs', {
@@ -8042,6 +8160,7 @@ test('executor callback advances the preview loop', async () => {
           indexSnapshotId: 'idxsnap_1',
           branchName: 'sites/job-test-zhangsan-profile',
           prNumber: 2,
+          headSha,
           workflowName: `${stageResult}.yml`,
           workflowRunId: String(28000000000 + stageResult.length),
         }),
@@ -8058,6 +8177,7 @@ test('executor callback advances the preview loop', async () => {
         publishingJobId: createBody.job.id,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test',
+        headSha,
         workflowName: 'pages-preview.yml',
         workflowRunId: '28000000099',
       }),
@@ -8747,6 +8867,7 @@ test('Slack confirmation after preview does not dispatch another fix round', asy
       'preview_deployed',
       {
         previewUrl: 'https://preview.example.test/confirmed',
+        headSha: '2'.repeat(40),
       },
     ],
   ]) {
@@ -10781,6 +10902,7 @@ test('GitHub Review Agent issue comment targets latest reused PR job by reviewed
         publishingJobId: oldJobId,
         stageResult: 'preview_deployed',
         previewUrl: 'https://old-preview.example.test',
+        headSha: oldHeadSha,
       }),
     })
   );
@@ -11470,6 +11592,52 @@ test('stale preview callback is ignored when headSha no longer matches', async (
   assert.equal(body.job.status, 'previewing');
   assert.equal(body.job.previewUrl, null);
   assert.equal(body.job.headSha, 'b'.repeat(40));
+  assert.equal(workerStarts.length, 0);
+  assert.equal(notifierCalls.length, 0);
+});
+
+test('preview callback without headSha is ignored for head-bound jobs', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 92,
+    headSha: 'c'.repeat(40),
+    idempotencyKey: 'api-missing-head-preview-callback',
+  });
+  app.store.updateJob(jobId, 'previewing', { headSha: 'c'.repeat(40) });
+  const workerStarts = [];
+  const notifierCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://missing-head-preview.example.test',
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        notifierCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000201' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, true);
+  assert.equal(body.job.status, 'previewing');
+  assert.equal(body.job.previewUrl, null);
+  assert.equal(body.job.headSha, 'c'.repeat(40));
   assert.equal(workerStarts.length, 0);
   assert.equal(notifierCalls.length, 0);
 });
