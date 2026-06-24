@@ -49,6 +49,9 @@ const ALL_WORK_ITEM_QUERY_RE = /(?:历史|全部|所有|所有的|全量|all|his
 const ISSUE_LIST_QUERY_RE = /(?:issue|issues|需求).*(?:几个|多少|列表|清单|有哪些|有几个)|(?:几个|多少|哪些).*(?:issue|issues|需求)/i;
 const LIST_FOLLOWUP_RE = /(?:只有|就|还|还有|就这|只有这|只有这些).*(?:一个|这些|这个|吗|么)|(?:还有吗|还有么|就这吗|就这些吗)/i;
 const REPEAT_PREVIOUS_MESSAGE_RE = /(?:复读|重复|再发|上一条消息|刚才那条|你上一条|我上一条)/i;
+const CURRENT_WORK_ITEM_FOLLOWUP_RE =
+  /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|重试|重新跑|再跑)/i;
+const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
 
 function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
@@ -181,6 +184,8 @@ export function sessionContextFromInput(input = {}) {
     memorySummary: sessionMemory.summary || '',
     issueLinkCount: issueLinks.length,
     activeJobId: slackSession.activeJobId || null,
+    activeWorkItemKind: slackSession.activeWorkItemKind || null,
+    activeWorkItemId: slackSession.activeWorkItemId || null,
     activeIssueNumber: slackSession.activeIssueNumber || null,
     activePrNumber: slackSession.activePrNumber || null,
     activePreviewUrl: slackSession.activePreviewUrl || null,
@@ -194,9 +199,37 @@ export function sessionContextFromInput(input = {}) {
   };
 }
 
+function hasCurrentWorkItemContext(input = {}, context = sessionContextFromInput(input)) {
+  const memory = input.sessionMemory || {};
+  const conversationContext = input.conversationContext || memory.conversationContext || {};
+  const focus = conversationContext.focus || conversationContext.currentFocus || null;
+  return Boolean(
+    context.activeJobId ||
+      context.activeWorkItemId ||
+      context.activeIssueNumber ||
+      context.activePrNumber ||
+      context.activePreviewUrl ||
+      focus?.kind ||
+      memory.lastWorkItemList ||
+      conversationContext.lastWorkItemList ||
+      (Array.isArray(input.issueLinks) && input.issueLinks.length)
+  );
+}
+
+function shouldTreatAsCurrentWorkItemFollowup(text = '', input = {}, context = sessionContextFromInput(input)) {
+  if (!hasCurrentWorkItemContext(input, context)) return false;
+  if (EXPLICIT_NEW_WORK_ITEM_RE.test(text)) return false;
+  return CURRENT_WORK_ITEM_FOLLOWUP_RE.test(text);
+}
+
+function laneForCurrentWorkItem(context = {}) {
+  return context.activeWorkItemKind === 'platform_dev' ? 'platform-dev' : 'site-publishing';
+}
+
 export function analyzeSlackRequirementDeterministic(input = {}) {
   const event = input.event || {};
   const text = normalizeText(input.text || event.text || input.summary || '');
+  const sessionContext = sessionContextFromInput(input);
   const isUnsupportedBulkDestructive = isUnsupportedBulkDestructiveRequest(text);
   const hasPreviousWorkItemList = Boolean(input.sessionMemory?.lastWorkItemList);
   const shouldListWorkItems =
@@ -211,11 +244,20 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldSwitchWorkItem &&
     !shouldRepeatPreviousMessage &&
     DIAGNOSIS_QUERY_RE.test(text);
+  const shouldRecordCurrentWorkItemFollowup =
+    !isUnsupportedBulkDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    !shouldReopenWorkItem &&
+    !shouldRepeatPreviousMessage &&
+    !shouldDiagnoseWorkItem &&
+    shouldTreatAsCurrentWorkItemFollowup(text, input, sessionContext);
   const shouldAnswerRepoQuestion =
     !isUnsupportedBulkDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
+    !shouldRecordCurrentWorkItemFollowup &&
     (PLATFORM_KEYWORDS.test(text) || REPO_QUESTION_SUBJECT_RE.test(text)) &&
     (REPO_QUESTION_RE.test(text) || QUESTION_CUE_RE.test(text)) &&
     !EXECUTION_CUE_RE.test(text);
@@ -224,6 +266,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
+    !shouldRecordCurrentWorkItemFollowup &&
     !shouldAnswerRepoQuestion &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const shouldCreatePlatform =
@@ -232,6 +275,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
     !shouldAnswerRepoQuestion &&
+    !shouldRecordCurrentWorkItemFollowup &&
     PLATFORM_KEYWORDS.test(text) &&
     (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
   const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
@@ -247,12 +291,16 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
             ? 'list_work_items'
             : shouldDiagnoseWorkItem
               ? 'diagnose_work_item'
-              : shouldAnswerRepoQuestion
-                ? 'repo_question'
-                : intent;
+              : shouldRecordCurrentWorkItemFollowup
+                ? 'append_requirement'
+                : shouldAnswerRepoQuestion
+                  ? 'repo_question'
+                  : intent;
 
   return {
-    lane: shouldAnswerRepoQuestion
+    lane: shouldRecordCurrentWorkItemFollowup
+      ? laneForCurrentWorkItem(sessionContext)
+      : shouldAnswerRepoQuestion
       ? 'repo-question'
       : shouldCreatePlatform
         ? 'platform-dev'
@@ -277,13 +325,14 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     approvalMode: input.approvalMode || input.approval_mode || 'manual_required',
     policyVersion: SLACK_AGENT_POLICY_PACKAGE_VERSION,
     sourceMessages: input.sourceMessages || input.source_messages || [],
-    sessionContext: sessionContextFromInput(input),
+    sessionContext,
     needsClarification:
       !isUnsupportedBulkDestructive &&
       !shouldListWorkItems &&
       !shouldSwitchWorkItem &&
       !shouldRepeatPreviousMessage &&
       !shouldDiagnoseWorkItem &&
+      !shouldRecordCurrentWorkItemFollowup &&
       !shouldAnswerRepoQuestion &&
       intent === 'clarify',
     clarifyingQuestion: isUnsupportedBulkDestructive ? unsupportedBulkDestructiveQuestion() : undefined,
@@ -312,12 +361,25 @@ function normalizeToolCall(value, fallbackToolCall = null) {
 }
 
 function shouldForceIntentToolCall(intent = '') {
-  return ['repo_question', 'architecture_question', 'platform_question', 'repeat_previous_message'].includes(intent);
+  return [
+    'repo_question',
+    'architecture_question',
+    'platform_question',
+    'repeat_previous_message',
+    'append_requirement',
+    'modify_existing_preview',
+  ].includes(intent);
 }
 
 export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {}) {
-  const modelIntent = stringOrFallback(modelAnalysis.intent, fallback.intent);
+  const inputSessionContext = sessionContextFromInput(input);
+  const rawModelIntent = stringOrFallback(modelAnalysis.intent, fallback.intent);
   const toolCallFallbackText = input.text || input.event?.text || modelAnalysis.summary || fallback.summary || '';
+  const modelIntent =
+    ['create_platform_issue', 'create_or_update_site', 'platform_dev', 'platform_feedback'].includes(rawModelIntent) &&
+    shouldTreatAsCurrentWorkItemFollowup(toolCallFallbackText, input, inputSessionContext)
+      ? 'append_requirement'
+      : rawModelIntent;
   const inferredToolCall = modelAnalysis.intent
     ? toolCallForIntent(modelIntent, toolCallFallbackText)
     : fallback.toolCall || toolCallForIntent(fallback.intent, fallback.summary);
@@ -333,7 +395,10 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
   const normalized = {
     ...fallback,
     intent: modelIntent,
-    lane: stringOrFallback(modelAnalysis.lane, fallback.lane || 'unknown'),
+    lane:
+      modelIntent === 'append_requirement' && rawModelIntent !== modelIntent
+        ? laneForCurrentWorkItem(inputSessionContext)
+        : stringOrFallback(modelAnalysis.lane, fallback.lane || 'unknown'),
     confidence: typeof modelAnalysis.confidence === 'number' ? modelAnalysis.confidence : fallback.confidence,
     employeeSlug: stringOrFallback(modelAnalysis.employeeSlug || modelAnalysis.employee_slug, fallback.employeeSlug),
     siteSlug: stringOrFallback(modelAnalysis.siteSlug || modelAnalysis.site_slug, fallback.siteSlug),
@@ -378,7 +443,7 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
       fallback.policyVersion || SLACK_AGENT_POLICY_PACKAGE_VERSION
     ),
     sessionContext: {
-      ...sessionContextFromInput(input),
+      ...inputSessionContext,
       ...(modelAnalysis.sessionContext || modelAnalysis.session_context || {}),
     },
     needsClarification:

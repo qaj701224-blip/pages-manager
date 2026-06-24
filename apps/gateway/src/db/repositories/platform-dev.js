@@ -31,6 +31,7 @@ const ACTIVE_PLATFORM_DEV_STATUSES = new Set([
   'review_waiting',
   'review_blocked',
   'ready_to_merge',
+  'failed',
 ]);
 
 const TERMINAL_PLATFORM_DEV_STATUSES = new Set(['merged', 'closed_unmerged', 'failed', 'cancelled']);

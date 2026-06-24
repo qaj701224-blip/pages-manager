@@ -1023,6 +1023,192 @@ test('Slack follow-up on an active platform PR dispatches a fix round', async ()
   assert.match(blocks, /文案再克制一些/);
 });
 
+test('Slack platform follow-up does not use status-only GitHub token for issue comments', async () => {
+  const app = createGatewayApp();
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-followup-status-token',
+    issueNumber: 87,
+    prNumber: 97,
+    slackSessionId: 'sess_platform_followup_status_token',
+  });
+  const workerCalls = [];
+  const githubCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(slackEvent('继续修改：补充状态 token 不应写 issue', 'Ev-platform-followup-status-token')),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      ...notifierEnv(),
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_STATUS_TOKEN: 'status-token',
+      async GITHUB_FETCH(url, request) {
+        githubCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ id: 987 }), { status: 201 });
+      },
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true, result: { action: 'platform_agent_fix_dispatched' } }), {
+          status: 200,
+        });
+      },
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'append_requirement',
+                summary: '补充状态 token 不应写 issue',
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'platform_followup_fix_dispatched');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(githubCalls.length, 0);
+  assert.equal(workerCalls.length, 1);
+});
+
+test('Slack follow-up continues the failed platform issue instead of creating a duplicate issue', async () => {
+  const app = createGatewayApp();
+  app.store.upsertSlackSession({
+    id: 'sess_platform_failed_followup',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    channelId: 'D1',
+    dmChannelId: 'D1',
+    threadTs: '1710000000.000100',
+    activeContextExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    status: 'active',
+  });
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-failed-followup',
+    title: '修改 README',
+    summary: '修改 README.md',
+    issueType: 'type:dev',
+    areas: ['area:docs'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+    gateStatus: 'not_required',
+    slackSessionId: 'sess_platform_failed_followup',
+    slackSessionKey: 'dm:D1',
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  let updated = app.store.updatePlatformDevItem(item.id, 'issue_created', {
+    githubIssueNumber: 91,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/91',
+  });
+  app.store.linkPlatformDevItemToSlackSession(updated, app.store.getSlackSession('sess_platform_failed_followup'));
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_queued');
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_running');
+  updated = app.store.updatePlatformDevItem(updated.id, 'failed', {
+    errorMessage: 'Workflow failed before PR creation.',
+  });
+  app.store.upsertSlackSession({
+    ...app.store.getSlackSession('sess_platform_failed_followup'),
+    activeWorkItemKind: null,
+    activeWorkItemId: null,
+    activeIssueNumber: null,
+    activePrNumber: null,
+    activePreviewUrl: null,
+  });
+
+  const workerCalls = [];
+  const githubCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        slackEvent('不再修改 README.md；改为在仓库中新增 DIY.md，文件内容只需要一个标题。', 'Ev-platform-failed-followup')
+      ),
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      ...notifierEnv(),
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_TOKEN: 'ghs_test',
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async GITHUB_FETCH(url, request) {
+        githubCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ id: 910, html_url: 'https://github.example/comment/910' }), {
+          status: 201,
+        });
+      },
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true, result: { action: 'platform_agent_fix_dispatched' } }), {
+          status: 200,
+        });
+      },
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                lane: 'platform-dev',
+                intent: 'create_platform_issue',
+                summary: payload.text,
+                needsClarification: false,
+                toolCall: { name: 'confirm_platform_issue', args: { title: '错误的新 issue' } },
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const finalItem = app.store.getPlatformDevItem(item.id);
+  const platformItems = [...app.store.platformDevItems.values()];
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'platform_followup_fix_dispatched');
+  assert.equal(platformItems.length, 1);
+  assert.equal(finalItem.status, 'agent_queued');
+  assert.match(finalItem.summary, /DIY\.md/);
+  assert.equal(app.store.getSlackSession('sess_platform_failed_followup').activeWorkItemId, item.id);
+  assert.equal(githubCalls.length, 1);
+  assert.match(githubCalls[0].url, /\/repos\/org\/pages-manager\/issues\/91\/comments$/);
+  assert.equal(workerCalls.length, 1);
+  assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  assert.notEqual(body.action, 'confirm_before_platform_issue');
+});
+
 test('Slack platform follow-up reports issue comment and worker startup failure visibly', async () => {
   const app = createGatewayApp();
   const item = createOpenPlatformPr(app, {

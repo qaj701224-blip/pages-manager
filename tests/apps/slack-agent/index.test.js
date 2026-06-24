@@ -140,8 +140,74 @@ describe('slack agent', () => {
 
     assert.equal(fallback.policyVersion, SLACK_AGENT_POLICY_PACKAGE_VERSION);
     assert.match(messages[0].content, new RegExp(`Policy package: ${SLACK_AGENT_POLICY_PACKAGE_VERSION}`));
+    assert.match(messages[0].content, /Selected runtime skills:/);
     assert.match(messages[0].content, /conversationContext/);
+    assert.ok(payload.selectedSkills.includes('conversation-context'));
     assert.equal(payload.conversationContext.lastAssistantMessage.text, '当前会话里有 Issue #90。');
+  });
+
+  it('selects repo question and product design skills for consultative implementation questions', () => {
+    const fallback = analyzeSlackRequirementDeterministic({
+      text: '从产品角度看，如果要支持 Slack Agent 读取 repo，应该怎么实现？',
+    });
+    const messages = buildSlackAgentMessages(
+      {
+        text: '从产品角度看，如果要支持 Slack Agent 读取 repo，应该怎么实现？',
+      },
+      fallback
+    );
+    const payload = JSON.parse(messages[1].content);
+
+    assert.ok(payload.selectedSkills.includes('repo-question'));
+    assert.ok(payload.selectedSkills.includes('product-design'));
+    assert.match(messages[0].content, /skill:repo-question/);
+    assert.match(messages[0].content, /skill:product-design/);
+    assert.match(messages[0].content, /语气判断必须优先于关键词/);
+  });
+
+  it('continues the active platform issue for implicit follow-up wording', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '不再修改 README.md，改为在仓库中新增 DIY.md，文件内容只需要一个标题。',
+      slackSession: {
+        id: 'sess_issue_91',
+        activeWorkItemKind: 'platform_dev',
+        activeWorkItemId: 'pdev_issue_91',
+        activeIssueNumber: 91,
+      },
+    });
+
+    assert.equal(analysis.lane, 'platform-dev');
+    assert.equal(analysis.intent, 'append_requirement');
+    assert.deepEqual(analysis.toolCall, { name: 'record_followup', args: {} });
+    assert.equal(analysis.needsClarification, false);
+  });
+
+  it('normalizes model-created platform issue drafts into follow-up when current issue is focused', () => {
+    const input = {
+      text: '不再修改 README.md，改为在仓库中新增 DIY.md，文件内容只需要一个标题。',
+      slackSession: {
+        id: 'sess_issue_91',
+        activeWorkItemKind: 'platform_dev',
+        activeWorkItemId: 'pdev_issue_91',
+        activeIssueNumber: 91,
+      },
+    };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const analysis = normalizeModelAnalysis(
+      {
+        lane: 'platform-dev',
+        intent: 'create_platform_issue',
+        summary: input.text,
+        toolCall: { name: 'confirm_platform_issue', args: { title: '错误的新需求' } },
+        needsClarification: false,
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(analysis.lane, 'platform-dev');
+    assert.equal(analysis.intent, 'append_requirement');
+    assert.deepEqual(analysis.toolCall, { name: 'record_followup', args: {} });
   });
 
   it('routes repeat requests to a constrained repeat tool', () => {
