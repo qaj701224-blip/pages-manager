@@ -99,6 +99,17 @@ export function parseSlackWorkItemReference(text = '') {
   return null;
 }
 
+function explicitWorkItemFields(reference = null) {
+  if (!reference) return {};
+  return {
+    explicitWorkItemReference: reference,
+    targetKind: reference.kind,
+    targetNumber: reference.number,
+    prNumber: reference.kind === 'pr' ? reference.number : null,
+    issueNumber: reference.kind === 'issue' ? reference.number : null,
+  };
+}
+
 export function classifySlackIntake(body) {
   const event = body.event || {};
   const text = normalizeSlackIntakeText(event.text || body.text || '');
@@ -206,6 +217,17 @@ export function classifySlackIntake(body) {
   }
 
   if (['task', 'tasks', 'pr', 'prs', 'work'].includes(command?.command)) {
+    if (workItemReference) {
+      return {
+        action: 'agent_turn',
+        shouldCreateJob: false,
+        shouldAnalyze: true,
+        text,
+        ...explicitWorkItemFields(workItemReference),
+        replyText: null,
+      };
+    }
+
     const workItemState = slackWorkItemQueryStateFromText(text);
     return {
       action: 'list_work_items',
@@ -256,6 +278,7 @@ export function classifySlackIntake(body) {
       shouldCreateJob: false,
       shouldAnalyze: true,
       text,
+      ...explicitWorkItemFields(workItemReference),
     };
   }
 
@@ -264,6 +287,7 @@ export function classifySlackIntake(body) {
     shouldCreateJob: false,
     shouldAnalyze: true,
     text,
+    ...explicitWorkItemFields(workItemReference),
     replyText: unknownText(),
   };
 }
