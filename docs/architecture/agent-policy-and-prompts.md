@@ -164,7 +164,7 @@ Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platf
 
 Repo 问答是独立查询类 intent。用户询问 pages-manager 当前实现、代码位置、数据如何保存、workflow 如何触发或架构细节时，Slack Agent 必须返回 `repo_question` / `answer_repo_question`，不返回 `confirm_platform_issue`。gateway 只执行受控 repo search/read，并把答案作为查询结果回 Slack；只有用户明确要求“修改 / 修复 / 创建 issue / 支持这个能力”时，才转为 Platform Dev Lane。
 
-产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 help / ping / status、Slack / GitHub 签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底路径，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
+产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 Slack 协议命令、显式 `issue:` / `status:` / `/close` 兼容入口、GitHub URL / issue / PR 编号等结构化引用提取、Slack / GitHub 签名校验、幂等和执行权限收口，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”“关闭 / 删除 issue 或 PR”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
 
 诊断类 intent 应优先围绕当前 Slack thread / 当前 work item 执行。自然语言里的“能不能重试 / 追加诊断 / 转人工排查”也先返回诊断报告和受控按钮；真正执行重试、写 Issue comment 或记录人工排查请求，只能来自按钮交互。
 

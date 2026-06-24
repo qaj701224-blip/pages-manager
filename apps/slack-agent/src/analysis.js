@@ -52,6 +52,11 @@ const REPO_QUESTION_SUBJECT_RE = new RegExp(
 const ISSUE_NUMBER_RE = /(?:issue|issues|需求|任务)\s*#?\s*(\d{1,8})\b/i;
 const PR_NUMBER_RE = /\b(?:PR|pull\s*request|pull-request|pullrequest)\s*#?\s*(\d{1,8})\b/i;
 const BARE_WORK_ITEM_NUMBER_RE = /#(\d{1,8})\b/;
+const GITHUB_WORK_ITEM_URL_RE =
+  /https?:\/\/github\.com\/[^/\s<>]+\/[^/\s<>]+\/(issues|pull)\/(\d{1,8})(?:[/?#][^\s<>]*)?/i;
+const WORK_ITEM_DESTRUCTIVE_ACTION_RE = /(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive)/i;
+const WORK_ITEM_CLOSE_CAPABILITY_QUESTION_RE =
+  /(?:能不能|能否|可以|是否|是不是|能|可不可以).*(?:主动)?(?:关闭|关掉|取消|归档|close|cancel|archive).*(?:吗|么|\?|？)?/i;
 const UNSUPPORTED_DESTRUCTIVE_INTENT = 'unsupported_destructive_request';
 const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
   [
@@ -75,8 +80,13 @@ function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
 }
 
-function unsupportedBulkDestructiveQuestion() {
-  return '我不能批量关闭或删除你名下的 GitHub issue / PR / 发布任务。请先查看可继续任务，或明确指定一个 PR / issue。';
+function isExplicitWorkItemDestructiveRequest(text = '') {
+  const value = String(text || '');
+  return WORK_ITEM_DESTRUCTIVE_ACTION_RE.test(value) && Boolean(workItemReferenceFromText(value));
+}
+
+function unsupportedDestructiveQuestion() {
+  return '我不能在 Slack 里直接关闭或删除 GitHub issue / PR / 发布任务，也不能做批量关闭。可以打开对应 GitHub 页面手动处理；如果只是想结束这轮 Slack 对话，请说「关闭会话」。';
 }
 
 export function normalizeText(value = '') {
@@ -104,6 +114,8 @@ function workItemStateForListTurn(text = '', sessionMemory = {}) {
 
 function workItemReferenceFromText(text = '') {
   const value = String(text || '');
+  const githubMatch = value.match(GITHUB_WORK_ITEM_URL_RE);
+  if (githubMatch) return { kind: githubMatch[1] === 'pull' ? 'pr' : 'issue', number: Number(githubMatch[2]) };
   const issueMatch = value.match(ISSUE_NUMBER_RE);
   if (issueMatch) return { kind: 'issue', number: Number(issueMatch[1]) };
   const prMatch = value.match(PR_NUMBER_RE);
@@ -348,16 +360,19 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const event = input.event || {};
   const text = normalizeText(input.text || event.text || input.summary || '');
   const sessionContext = sessionContextFromInput(input);
-  const isUnsupportedBulkDestructive = isUnsupportedBulkDestructiveRequest(text);
+  const isUnsupportedDestructive =
+    isUnsupportedBulkDestructiveRequest(text) ||
+    isExplicitWorkItemDestructiveRequest(text) ||
+    (hasCurrentWorkItemContext(input, sessionContext) && WORK_ITEM_CLOSE_CAPABILITY_QUESTION_RE.test(text));
   const hasPreviousWorkItemList = Boolean(input.sessionMemory?.lastWorkItemList);
   const shouldListWorkItems =
-    !isUnsupportedBulkDestructive && (LIST_WORK_ITEMS_RE.test(text) || (hasPreviousWorkItemList && LIST_FOLLOWUP_RE.test(text)));
+    !isUnsupportedDestructive && (LIST_WORK_ITEMS_RE.test(text) || (hasPreviousWorkItemList && LIST_FOLLOWUP_RE.test(text)));
   const workItemState = shouldListWorkItems ? workItemStateForListTurn(text, input.sessionMemory) : undefined;
-  const shouldReopenWorkItem = !isUnsupportedBulkDestructive && REOPEN_WORK_ITEM_RE.test(text);
+  const shouldReopenWorkItem = !isUnsupportedDestructive && REOPEN_WORK_ITEM_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
-  const shouldRepeatPreviousMessage = !isUnsupportedBulkDestructive && REPEAT_PREVIOUS_MESSAGE_RE.test(text);
+  const shouldRepeatPreviousMessage = !isUnsupportedDestructive && REPEAT_PREVIOUS_MESSAGE_RE.test(text);
   const shouldSummarizeReviewResults =
-    !isUnsupportedBulkDestructive &&
+    !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldReopenWorkItem &&
@@ -365,14 +380,14 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !REVIEW_RESULTS_FOLLOWUP_RE.test(text) &&
     shouldSummarizeReviewResultsTurn(text, input, sessionContext);
   const shouldDiagnoseWorkItem =
-    !isUnsupportedBulkDestructive &&
+    !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldSummarizeReviewResults &&
     !shouldRepeatPreviousMessage &&
     DIAGNOSIS_QUERY_RE.test(text);
   const shouldRecordCurrentWorkItemFollowup =
-    !isUnsupportedBulkDestructive &&
+    !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldReopenWorkItem &&
@@ -380,7 +395,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldDiagnoseWorkItem &&
     shouldTreatAsCurrentWorkItemFollowup(text, input, sessionContext);
   const shouldAnswerRepoQuestion =
-    !isUnsupportedBulkDestructive &&
+    !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
@@ -390,7 +405,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     (REPO_QUESTION_RE.test(text) || QUESTION_CUE_RE.test(text)) &&
     !EXECUTION_CUE_RE.test(text);
   const shouldCreateOrUpdate =
-    !isUnsupportedBulkDestructive &&
+    !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
@@ -399,7 +414,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldSummarizeReviewResults &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const shouldCreatePlatform =
-    !isUnsupportedBulkDestructive &&
+    !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldDiagnoseWorkItem &&
@@ -409,7 +424,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     PLATFORM_KEYWORDS.test(text) &&
     (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
   const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
-  const finalIntent = isUnsupportedBulkDestructive
+  const finalIntent = isUnsupportedDestructive
     ? UNSUPPORTED_DESTRUCTIVE_INTENT
     : shouldReopenWorkItem
       ? 'reopen_work_item'
@@ -462,7 +477,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     sessionContext,
     focus: focusFromSessionContext(sessionContext),
     needsClarification:
-      !isUnsupportedBulkDestructive &&
+      !isUnsupportedDestructive &&
       !shouldListWorkItems &&
       !shouldSwitchWorkItem &&
       !shouldRepeatPreviousMessage &&
@@ -471,7 +486,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
       !shouldRecordCurrentWorkItemFollowup &&
       !shouldAnswerRepoQuestion &&
       intent === 'clarify',
-    clarifyingQuestion: isUnsupportedBulkDestructive ? unsupportedBulkDestructiveQuestion() : undefined,
+    clarifyingQuestion: isUnsupportedDestructive ? unsupportedDestructiveQuestion() : undefined,
   });
 }
 
@@ -627,7 +642,7 @@ export function visibleSlackAgentReply(analysis = {}) {
   }
 
   if (intent === UNSUPPORTED_DESTRUCTIVE_INTENT) {
-    return analysis.clarifyingQuestion || analysis.summary || unsupportedBulkDestructiveQuestion();
+    return analysis.clarifyingQuestion || analysis.summary || unsupportedDestructiveQuestion();
   }
 
   if (intent === 'list_work_items') return '我来整理你当前可以继续处理的发布任务。';

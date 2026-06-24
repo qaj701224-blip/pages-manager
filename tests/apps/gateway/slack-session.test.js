@@ -163,6 +163,65 @@ test('top-level DM messages continue the only active Slack session', async () =>
   assert.equal(app.store.getSlackSession(first.slackSessionId).sessionKey, 'dm:D1:1710000000.000100');
 });
 
+test('question-like issue prefix continues the active DM session instead of starting a new issue command session', async () => {
+  const app = createGatewayApp();
+  const agentCalls = [];
+  const first = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-dm-issue-question-1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个项目展示页',
+    })
+  );
+  const second = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-dm-issue-question-2',
+      ts: '1710000001.000100',
+      text: 'issue 我能主动关闭吗？',
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(url, request) {
+        agentCalls.push({ url: String(url), request });
+        const payload = JSON.parse(request.body);
+        assert.equal(payload.slackSessionId, first.slackSessionId);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              visibleText: '当前 Slack 里不能直接关闭 GitHub issue。',
+              events: [
+                { type: 'reply_started', sequence: 1, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+                {
+                  type: 'analysis_final',
+                  sequence: 2,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'clarify',
+                    summary: '当前 Slack 里不能直接关闭 GitHub issue。',
+                    needsClarification: true,
+                    clarifyingQuestion: '你是想结束 Slack 会话，还是询问 GitHub issue 是否能关闭？',
+                  },
+                },
+                { type: 'reply_completed', sequence: 3, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+
+  assert.equal(second.slackSessionId, first.slackSessionId);
+  assert.equal(agentCalls.length, 1);
+});
+
 test('DM thread replies continue the same Slack session', async () => {
   const app = createGatewayApp();
 
@@ -416,6 +475,66 @@ test('Slack close command closes the selected session and clears active context'
   assert.equal(session.activeIssueNumber, null);
   assert.equal(session.activePrNumber, null);
   assert.equal(session.activePreviewUrl, null);
+});
+
+test('explicit issue close requests do not close the Slack session even if Agent asks for close', async () => {
+  const app = createGatewayApp();
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-issue-1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个个人主页',
+    })
+  );
+
+  const response = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-close-issue-2',
+      ts: '1710000001.000100',
+      text: '关闭 这个 https://github.com/xindong/pages-manager/issues/97 issue',
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              visibleText: '收到，我会关闭当前会话。',
+              events: [
+                { type: 'reply_started', sequence: 1, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+                {
+                  type: 'analysis_final',
+                  sequence: 2,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'close_session',
+                    toolCall: { name: 'close_session', args: {} },
+                    summary: '用户想关闭 GitHub issue。',
+                    needsClarification: false,
+                  },
+                },
+                { type: 'reply_completed', sequence: 3, agentRunId: payload.agentRunId, slackSessionId: payload.slackSessionId },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const session = app.store.getSlackSession(created.slackSessionId);
+
+  assert.equal(response.action, 'unsupported_destructive_request');
+  assert.equal(response.accepted, false);
+  assert.match(response.replyText, /不能在 Slack 里直接关闭或删除/);
+  assert.equal(session.status, 'active');
 });
 
 test('closed Slack session stays closed when the same thread starts a new job', async () => {
