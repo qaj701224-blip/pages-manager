@@ -162,7 +162,7 @@ const PLATFORM_DEV_ALLOWED_TRANSITIONS = {
   ],
   merged: [],
   closed_unmerged: ['issue_created', 'gate_pending', 'agent_queued', 'agent_running', 'pr_created'],
-  failed: [],
+  failed: ['agent_queued', 'cancelled'],
   cancelled: [],
 };
 

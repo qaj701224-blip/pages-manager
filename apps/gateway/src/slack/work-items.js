@@ -54,7 +54,9 @@ function workItemKind(job = {}) {
 }
 
 export function isActionableSlackWorkItem(job = {}) {
-  return ACTIONABLE_WORK_ITEM_STATUS_SET.has((job || {}).status);
+  const item = job || {};
+  if (workItemKind(item) === 'platform_dev' && item.status === 'failed') return true;
+  return ACTIONABLE_WORK_ITEM_STATUS_SET.has(item.status);
 }
 
 export function reopenTargetForSlackWorkItem(job = {}) {
@@ -175,7 +177,7 @@ export function slackWorkItemListText(jobs = [], options = {}) {
     return '我还没有找到你的任务。可以先描述一个个人网站或平台改造需求，我会整理后等你确认创建。';
   }
   if (state === 'closed') return `找到你最近的 ${visibleJobs.length} 个已关闭、已取消或失败的${target}。可恢复的任务会显示「重新打开」。`;
-  if (state === 'all') return `找到你最近的 ${visibleJobs.length} 个${target}。已关闭、已取消或失败的任务只展示状态，不会继续修改。`;
+  if (state === 'all') return `找到你最近的 ${visibleJobs.length} 个${target}。已关闭或已取消的任务只展示状态；失败的平台任务可继续补充或重试。`;
   return `找到你最近的 ${visibleJobs.length} 个${target}。选择一个后，这个对话会继续围绕它修改。`;
 }
 
