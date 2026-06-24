@@ -122,7 +122,7 @@ export async function handleSlackListWorkItemsTool({
     action: 'list_work_items',
     accepted: false,
     replyText,
-    blocks: slackWorkItemListBlocks(slackSession, jobs, { workItemState, includeInactive }),
+    blocks: slackWorkItemListBlocks(slackSession, jobs, { workItemState, includeInactive, slackAgentAnalysis }),
     slackSessionId: slackSession.id,
     agentRunId: agentRun?.id,
     workItemState,

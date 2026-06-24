@@ -6,6 +6,14 @@ import {
 } from './issue-confirmation.js';
 import { compactUserFacingText, redactSecretLikeText } from './text.js';
 import { slackStatusLabel, slackButtonValue } from './work-items.js';
+import {
+  orderSlackActionsByAgentIntent,
+  slackActionElement,
+  slackAgentActionLabel,
+  slackAgentCardFields,
+  slackAgentCardSummary,
+  slackAgentCardTitle,
+} from './agent-card.js';
 
 const PLATFORM_RETRYABLE_STATUSES = new Set([
   'issue_created',
@@ -223,6 +231,7 @@ function canRetryWorkItem(item = {}) {
 
 export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, options = {}) {
   const kind = workItemKind(item);
+  const analysis = options.slackAgentAnalysis || {};
   const text = buildSlackWorkItemDiagnosis(item, options);
   const fields = [
     { type: 'mrkdwn', text: `*当前状态*\n${slackStatusLabel(item.status, item)}` },
@@ -234,9 +243,18 @@ export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, optio
   } else if (item.siteSlug) {
     fields.push({ type: 'mrkdwn', text: `*站点*\n${compactUserFacingText(item.siteSlug).slice(0, 80)}` });
   }
+  for (const field of slackAgentCardFields(analysis, 'diagnosis')) {
+    fields.push({ type: 'mrkdwn', text: `*${field.label || '说明'}*\n${field.value}` });
+  }
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: '任务诊断' } },
-    { type: 'section', text: { type: 'mrkdwn', text: `*${titleForWorkItem(item).slice(0, 180)}*` } },
+    { type: 'header', text: { type: 'plain_text', text: slackAgentCardTitle(analysis, 'diagnosis', '任务诊断') } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${slackAgentCardSummary(analysis, 'diagnosis', titleForWorkItem(item)).slice(0, 180)}*`,
+      },
+    },
     { type: 'section', fields: fields.slice(0, 10) },
     { type: 'section', text: { type: 'mrkdwn', text: text.slice(0, 2900) } },
   ];
@@ -244,51 +262,67 @@ export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, optio
   if (issueUrl(item)) {
     actions.push({
       type: 'button',
-      text: { type: 'plain_text', text: '查看 Issue' },
+      text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'open_issue', '查看 Issue') },
       url: issueUrl(item),
       action_id: 'open_issue',
+      agent_action_id: 'open_issue',
     });
   }
   if (prUrl(item)) {
     actions.push({
       type: 'button',
-      text: { type: 'plain_text', text: '查看 PR' },
+      text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'open_pr', '查看 PR') },
       url: prUrl(item),
       action_id: 'open_pr',
+      agent_action_id: 'open_pr',
     });
   }
   if (item.previewUrl) {
     actions.push({
       type: 'button',
-      text: { type: 'plain_text', text: '查看 Preview' },
+      text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'open_preview', '查看 Preview') },
       url: item.previewUrl,
       action_id: 'open_preview',
+      agent_action_id: 'open_preview',
     });
   }
   if (slackSession?.id && canRetryWorkItem(item)) {
     actions.push({
       type: 'button',
-      text: { type: 'plain_text', text: '重试' },
+      text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'retry_work_item', '重试') },
       action_id: 'pages_request_retry_work_item',
+      agent_action_id: 'retry_work_item',
       value: slackButtonValue({ sessionId: slackSession.id, workItemKind: kind, workItemId: item.id }),
     });
   }
   if (slackSession?.id && issueNumber(item)) {
     actions.push({
       type: 'button',
-      text: { type: 'plain_text', text: '追加诊断到 Issue' },
+      text: {
+        type: 'plain_text',
+        text: slackAgentActionLabel(analysis, 'diagnosis', 'append_diagnosis_to_issue', '追加诊断到 Issue'),
+      },
       action_id: 'pages_request_append_diagnosis',
+      agent_action_id: 'append_diagnosis_to_issue',
       value: slackButtonValue({ sessionId: slackSession.id, workItemKind: kind, workItemId: item.id }),
     });
   }
   if (slackSession?.id) {
     actions.push({
       type: 'button',
-      text: { type: 'plain_text', text: '转人工排查' },
+      text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'human_triage', '转人工排查') },
       action_id: 'pages_request_human_triage',
+      agent_action_id: 'human_triage',
       value: slackButtonValue({ sessionId: slackSession.id, workItemKind: kind, workItemId: item.id }),
     });
   }
-  if (actions.length) blocks.push({ type: 'actions', elements: actions.slice(0, 5) });
+  if (actions.length) {
+    blocks.push({
+      type: 'actions',
+      elements: orderSlackActionsByAgentIntent(actions, analysis, 'diagnosis')
+        .slice(0, 5)
+        .map(slackActionElement),
+    });
+  }
   return blocks;
 }
