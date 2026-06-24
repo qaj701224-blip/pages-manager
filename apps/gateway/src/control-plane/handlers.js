@@ -1364,7 +1364,7 @@ async function handleSlackWorkItemDiagnosisTool({
 
   const events = await eventsForWorkItem(store, item);
   const replyText = buildSlackWorkItemDiagnosis(item, { events });
-  const blocks = buildSlackWorkItemDiagnosisBlocks(slackSession, item, { events });
+  const blocks = buildSlackWorkItemDiagnosisBlocks(slackSession, item, { events, slackAgentAnalysis });
   if (slackSession?.id && store.updateSessionMemory) {
     await updateSessionMemoryWithAssistantTurn(
       store,

@@ -88,7 +88,14 @@ function buildSystemPrompt(selectedSkills = []) {
       'confirmationRequirement 只能是 none、create_site_issue、create_platform_issue、continue_work_item、',
       'retry_work_item、append_diagnosis_to_issue、human_triage、reopen_work_item。',
     ].join(''),
-    'card 是可选卡片意图，只描述 kind/title/summary/fields/actions，不要输出 Slack Block Kit。',
+    [
+      'card 是可选卡片意图，只描述 kind/title/summary/context/fields/actions，不要输出 Slack Block Kit。',
+      'gateway 会负责按钮 action_id、URL、权限和脱敏；你只输出语义动作 id 和用户可见 label。',
+    ].join(''),
+    [
+      '常用 action id：confirm_create_issue、confirm_platform_issue、continue_work_item、close_session、open_issue、open_pr、',
+      'open_preview、reopen_work_item、retry_work_item、append_diagnosis_to_issue、human_triage。',
+    ].join(''),
   ].join('\n');
 }
 
