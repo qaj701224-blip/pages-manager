@@ -3,6 +3,7 @@ import {
   PLATFORM_DEV_RISKS,
   SLACK_AGENT_CAPABILITY_NAMES,
   SLACK_AGENT_REPEAT_TARGETS,
+  SLACK_AGENT_REVIEW_RESULT_TARGET_KINDS,
   SLACK_AGENT_WORK_ITEM_STATES,
 } from '@xd/workflow-core';
 
@@ -20,6 +21,8 @@ export const SLACK_AGENT_INTENTS = [
   'switch_work_item',
   'reopen_work_item',
   'diagnose_work_item',
+  'summarize_review_results',
+  'list_review_results',
   'repeat_previous_message',
   'status_query',
   'cancel_request',
@@ -51,3 +54,5 @@ export const PLATFORM_AREAS = [
 export const WORK_ITEM_STATES = SLACK_AGENT_WORK_ITEM_STATES;
 
 export const REPEAT_PREVIOUS_MESSAGE_TARGETS = SLACK_AGENT_REPEAT_TARGETS;
+
+export const REVIEW_RESULT_TARGET_KINDS = SLACK_AGENT_REVIEW_RESULT_TARGET_KINDS;

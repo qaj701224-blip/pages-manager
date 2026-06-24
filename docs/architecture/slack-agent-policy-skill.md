@@ -2,6 +2,8 @@
 
 本文定义如何把 Slack Agent 当前内联 system prompt 收敛为生产级 policy skill。它是 [slack-agent-runtime.md](./slack-agent-runtime.md)、[slack-agent-repo-question.md](./slack-agent-repo-question.md) 和 [agent-policy-and-prompts.md](./agent-policy-and-prompts.md) 的落地规格。
 
+Slack 中查看 Review Agent 具体评论、blocker 和建议的只读能力单独见 [slack-review-results-summary.md](./slack-review-results-summary.md)。本文只维护通用 policy package、tool contract 和 prompt 组织规则。
+
 目标不是写一段更长的 prompt，而是把 Slack Agent 的产品语义、权限边界、工具合同、反例样本和测试矩阵变成可版本化、可 review、可测试的 prompt package。Slack Agent 可以决定“下一步请求 gateway 做什么”，但不能因为 skill 存在而获得任何执行权限。
 
 ## 现状与问题

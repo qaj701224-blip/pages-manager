@@ -55,6 +55,7 @@ export function compileSlackAgentPolicy(input = {}, fallbackAnalysis, sessionCon
       conversationContext: compactConversationContext(
         input.conversationContext || input.sessionMemory?.conversationContext || null
       ),
+      explicitWorkItemReference: input.explicitWorkItemReference || input.explicit_work_item_reference || null,
       issueLinks: compactIssueLinks(input.issueLinks),
       employeeSlugHint: input.employeeSlug || input.employee_slug || null,
       siteSlugHint: input.siteSlug || input.site_slug || null,

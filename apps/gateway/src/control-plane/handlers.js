@@ -142,6 +142,13 @@ import {
   handleSlackFollowup,
 } from '../slack/followup.js';
 import {
+  buildReviewResultsSummary,
+  buildSlackReviewResultsBlocks,
+  formatSlackReviewResultsText,
+  resolveReviewResultsTarget,
+  reviewResultsMemory,
+} from '../slack/review-results.js';
+import {
   handleSlackListWorkItemsTool,
   handleSlackReopenWorkItemTool,
   handleSlackSwitchWorkItemTool,
@@ -186,6 +193,12 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
     return { name: 'answer_repo_question', args: { question: intake.text } };
   }
   if (intake.action === 'diagnose_work_item') return { name: 'diagnose_current_work_item', args: {} };
+  if (intake.action === 'summarize_review_results') {
+    return {
+      name: 'summarize_review_results',
+      args: reviewResultsToolArgsForTurn(intake, slackAgentAnalysis),
+    };
+  }
 
   if (['repo_question', 'architecture_question', 'platform_question'].includes(slackAgentAnalysis.intent)) {
     return { name: 'answer_repo_question', args: { question: intake.text } };
@@ -196,7 +209,10 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
   if (explicitName && capability) {
     return {
       name: capability.name,
-      args: slackAgentToolArgs(slackAgentAnalysis),
+      args:
+        capability.name === 'summarize_review_results'
+          ? reviewResultsToolArgsForTurn(intake, slackAgentAnalysis)
+          : slackAgentToolArgs(slackAgentAnalysis),
     };
   }
   if (['confirm_create_issue', 'confirm_platform_issue'].includes(capability?.name)) return null;
@@ -208,7 +224,9 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
           ? { state: slackAgentWorkItemState(intake, slackAgentAnalysis) }
           : capability.name === 'answer_repo_question'
             ? { question: intake.text }
-            : {},
+            : capability.name === 'summarize_review_results'
+              ? reviewResultsToolArgsForTurn(intake, slackAgentAnalysis)
+              : {},
     };
   }
 
@@ -243,6 +261,28 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
     return { name: 'confirm_platform_issue', args: {} };
   }
   return null;
+}
+
+function reviewResultsToolArgsFromIntake(intake = {}) {
+  const explicitReference = intake.explicitWorkItemReference || null;
+  const number = Number(explicitReference?.number || intake.targetNumber || intake.prNumber || intake.issueNumber);
+  if (!Number.isFinite(number) || number <= 0) return { kind: 'current', maxItems: 5 };
+  return {
+    kind:
+      explicitReference?.kind ||
+      intake.targetKind ||
+      (intake.prNumber ? 'pr' : intake.issueNumber ? 'issue' : 'unknown'),
+    number,
+    maxItems: 5,
+    explicitUserTarget: true,
+  };
+}
+
+function reviewResultsToolArgsForTurn(intake = {}, slackAgentAnalysis = {}) {
+  const agentArgs = slackAgentToolArgs(slackAgentAnalysis);
+  const intakeArgs = reviewResultsToolArgsFromIntake(intake);
+  if (intakeArgs.explicitUserTarget) return { ...agentArgs, ...intakeArgs };
+  return Object.keys(agentArgs).length ? agentArgs : intakeArgs;
 }
 
 function hasActiveSlackTarget(slackSession) {
@@ -407,6 +447,8 @@ async function handleSlackAgentToolCall(context) {
     case 'request_append_diagnosis_comment':
     case 'request_human_triage':
       return handleSlackWorkItemDiagnosisTool({ ...context, toolArgs: toolCall.args || {} });
+    case 'summarize_review_results':
+      return handleSlackReviewResultsTool({ ...context, toolArgs: toolCall.args || {} });
     case 'unsupported_destructive_request':
       return handleSlackAgentNonPublishingTurn({
         ...context,
@@ -711,6 +753,22 @@ async function processSlackEventBody(body, env, options = {}) {
         agentRun,
         slackAgentAnalysis: null,
         toolArgs: { jobId: intake.jobId },
+      })
+    );
+  }
+
+  if (intake.action === 'summarize_review_results' && !useSlackAgentForToolLikeTurn) {
+    return respond(
+      await handleSlackReviewResultsTool({
+        store,
+        body,
+        env,
+        intake,
+        slackSession,
+        sessionMemory,
+        agentRun,
+        slackAgentAnalysis: null,
+        toolArgs: reviewResultsToolArgsFromIntake(intake),
       })
     );
   }
@@ -1311,6 +1369,113 @@ async function handleSlackRepoQuestionTool({
     ...result,
     replyText,
     ...(blocks ? { blocks } : {}),
+    slackSessionId: slackSession?.id,
+    agentRunId: agentRun?.id,
+    ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+  };
+}
+
+async function handleSlackReviewResultsTool({
+  store,
+  body,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  toolArgs = {},
+}) {
+  const resolved = await resolveReviewResultsTarget(store, body, slackSession, toolArgs, { sessionMemory });
+  if (resolved.forbidden) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'summarize_review_results',
+        accepted: false,
+        forbidden: true,
+        targetKind: resolved.targetKind,
+        targetNumber: resolved.targetNumber || null,
+      },
+    });
+    return {
+      ok: true,
+      action: 'summarize_review_results_forbidden',
+      accepted: false,
+      replyText: '这个 PR 或 Issue 不属于当前 Slack 用户，不能查看 Review 结果。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  if (!resolved.item) {
+    await completeSlackAgentRun(store, agentRun, {
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: { action: 'summarize_review_results', accepted: false, reason: 'not_found' },
+    });
+    return {
+      ok: true,
+      action: 'summarize_review_results_not_found',
+      accepted: false,
+      replyText: '我还没有在当前会话里找到关联 PR，所以还没有可查看的 Review 结果。可以先说「我的 PR」查看当前任务。',
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
+
+  const summary = await buildReviewResultsSummary(store, env, resolved.item, toolArgs);
+  const replyText = formatSlackReviewResultsText(summary);
+  const blocks = buildSlackReviewResultsBlocks(slackSession, summary);
+  if (slackSession?.id && store.updateSessionMemory) {
+    const existingRequirements =
+      sessionMemory?.requirements && typeof sessionMemory.requirements === 'object' ? sessionMemory.requirements : {};
+    await updateSessionMemoryWithAssistantTurn(
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      {
+        summary: redactSecretLikeText(slackAgentAnalysis?.summary || sessionMemory?.summary || intake.text),
+        requirements: {
+          ...existingRequirements,
+          reviewResults: reviewResultsMemory(summary),
+        },
+        lastAgentResponse: replyText,
+        conversationKind: 'review_results',
+      },
+      replyText
+    );
+  }
+  await completeSlackAgentRun(store, agentRun, {
+    ...(summary.workItemKind === 'platform_dev'
+      ? { workItemKind: 'platform_dev', workItemId: summary.workItemId || resolved.item.id }
+      : { publishingJobId: summary.workItemId || resolved.item.id }),
+    ...slackAgentRunModelPatch(slackAgentAnalysis),
+    report: {
+      action: 'summarize_review_results',
+      accepted: true,
+      intent: slackAgentAnalysis?.intent || intake.action,
+      found: summary.found,
+      reason: summary.reason || null,
+      prNumber: summary.prNumber || null,
+      headSha: summary.headSha || null,
+      conclusion: summary.conclusion || null,
+      counts: summary.counts || null,
+      omitted: summary.omitted || null,
+    },
+  });
+  return {
+    ok: true,
+    action: 'summarize_review_results',
+    accepted: true,
+    replyText,
+    blocks,
+    reviewResults: summary,
+    ...(summary.workItemKind === 'platform_dev'
+      ? { workItemKind: 'platform_dev', workItemId: summary.workItemId || resolved.item.id }
+      : { jobId: summary.workItemId || resolved.item.id }),
     slackSessionId: slackSession?.id,
     agentRunId: agentRun?.id,
     ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
