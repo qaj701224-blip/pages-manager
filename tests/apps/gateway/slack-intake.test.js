@@ -53,10 +53,9 @@ test('keeps casual greetings as free-form agent turns', () => {
   assert.equal(result.shouldAnalyze, true);
 });
 
-test('classifies message commands deterministically', () => {
+test('classifies colon message commands deterministically', () => {
   for (const [text, expectedText] of [
     ['issue: 给 smoke/profile 做一个个人主页', '给 smoke/profile 做一个个人主页'],
-    ['issue 给 smoke/profile 做一个个人主页', '给 smoke/profile 做一个个人主页'],
     ['page: 帮我生成一个个人网页', '帮我生成一个个人网页'],
     ['site: update smoke profile', 'update smoke profile'],
   ]) {
@@ -85,12 +84,26 @@ test('routes natural create or update messages to the Slack Agent', () => {
   }
 });
 
-test('classifies status messages with job id', () => {
+test('routes non-colon legacy issue prefixes to the Slack Agent instead of creating isolated jobs', () => {
+  for (const text of [
+    'issue 我能主动关闭吗？',
+    'issue 关闭 https://github.com/xindong/pages-manager/issues/97 issue',
+    'issue 给 smoke/profile 做一个个人主页',
+  ]) {
+    const result = classifySlackIntake(body(text));
+
+    assert.equal(result.action, 'agent_turn');
+    assert.equal(result.shouldCreateJob, false);
+    assert.equal(result.shouldAnalyze, true);
+  }
+});
+
+test('routes natural status messages with job id to the Slack Agent', () => {
   const result = classifySlackIntake(body('状态 job_abc123'));
 
-  assert.equal(result.action, 'diagnose_work_item');
+  assert.equal(result.action, 'agent_turn');
   assert.equal(result.shouldCreateJob, false);
-  assert.equal(result.jobId, 'job_abc123');
+  assert.equal(result.shouldAnalyze, true);
 });
 
 test('classifies status command without job id as a friendly reply', () => {
@@ -103,7 +116,13 @@ test('classifies status command without job id as a friendly reply', () => {
 });
 
 test('keeps natural diagnosis questions as agent turns', () => {
-  for (const text of ['为什么 issue 创建了 PR 没出来？', '这个任务卡在哪？', '帮我查一下这个 job 的日志', '能不能重试？']) {
+  for (const text of [
+    '为什么 issue 创建了 PR 没出来？',
+    '这个任务卡在哪？',
+    '帮我查一下这个 job 的日志',
+    '能不能重试？',
+    '状态 job_abc123',
+  ]) {
     const result = classifySlackIntake(body(text));
 
     assert.equal(result.action, 'agent_turn');
@@ -112,7 +131,7 @@ test('keeps natural diagnosis questions as agent turns', () => {
   }
 });
 
-test('classifies bulk destructive issue requests as unsupported', () => {
+test('routes bulk destructive issue requests to the Slack Agent', () => {
   for (const text of [
     '关闭我名下的所有 issue',
     '把我的全部 PR 都关掉',
@@ -123,11 +142,31 @@ test('classifies bulk destructive issue requests as unsupported', () => {
   ]) {
     const result = classifySlackIntake(body(text));
 
-    assert.equal(result.action, 'unsupported_destructive_request');
+    assert.equal(result.action, 'agent_turn');
     assert.equal(result.shouldCreateJob, false);
-    assert.equal(result.shouldAnalyze, false);
-    assert.match(result.replyText, /不能批量关闭或删除/);
+    assert.equal(result.shouldAnalyze, true);
   }
+});
+
+test('does not classify explicit work item close requests as Slack session close', () => {
+  const issueUrl = 'https://github.com/xindong/pages-manager/issues/97';
+  const issueResult = classifySlackIntake(body(`关闭 这个 ${issueUrl} issue`));
+  const closeCommandResult = classifySlackIntake(body('close issue #97'));
+
+  assert.equal(issueResult.action, 'agent_turn');
+  assert.equal(issueResult.shouldAnalyze, true);
+  assert.deepEqual(issueResult.explicitWorkItemReference, { kind: 'issue', number: 97 });
+  assert.equal(issueResult.issueNumber, 97);
+  assert.equal(closeCommandResult.action, 'agent_turn');
+  assert.deepEqual(closeCommandResult.explicitWorkItemReference, { kind: 'issue', number: 97 });
+});
+
+test('only explicit session close wording closes Slack sessions in intake', () => {
+  assert.equal(classifySlackIntake(body('close: sess_abc123')).action, 'close_session');
+  assert.equal(classifySlackIntake(body('/close sess_abc123')).action, 'close_session');
+  assert.equal(classifySlackIntake(body('关闭会话')).action, 'agent_turn');
+  assert.equal(classifySlackIntake(body('close session')).action, 'agent_turn');
+  assert.equal(classifySlackIntake(body('关闭这个任务')).action, 'agent_turn');
 });
 
 test('marks explicit work item history commands', () => {
@@ -151,10 +190,18 @@ test('marks closed work item commands separately from all history', () => {
 test('parses issue and PR work item references distinctly', () => {
   assert.deepEqual(parseSlackWorkItemReference('继续 issue #60'), { kind: 'issue', number: 60 });
   assert.deepEqual(parseSlackWorkItemReference('继续 PR #68'), { kind: 'pr', number: 68 });
+  assert.deepEqual(parseSlackWorkItemReference('https://github.com/xindong/pages-manager/issues/97'), {
+    kind: 'issue',
+    number: 97,
+  });
+  assert.deepEqual(parseSlackWorkItemReference('https://github.com/xindong/pages-manager/pull/98'), {
+    kind: 'pr',
+    number: 98,
+  });
   assert.deepEqual(parseSlackWorkItemReference('继续 #70'), { kind: 'unknown', number: 70 });
 
   const result = classifySlackIntake(body('继续 issue #60'));
-  assert.equal(result.action, 'switch_work_item');
+  assert.equal(result.action, 'agent_turn');
   assert.equal(result.shouldAnalyze, true);
   assert.equal(result.targetKind, 'issue');
   assert.equal(result.issueNumber, 60);

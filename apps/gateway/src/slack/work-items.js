@@ -128,7 +128,7 @@ export function inactiveSlackWorkItemReply(job = {}) {
 }
 
 export function unsupportedDestructiveRequestReply() {
-  return '我不能批量关闭或删除你名下的 GitHub issue / PR / 发布任务。为了避免误操作，请先说「我的 PR」查看可继续任务，或明确指定一个 PR / issue 再处理。';
+  return '我不能在 Slack 里直接关闭或删除 GitHub issue / PR / 发布任务，也不能做批量关闭。可以打开对应 GitHub 页面手动处理；如果只是想结束这轮 Slack 对话，请说「关闭会话」。';
 }
 
 export function slackButtonValue(value = {}) {

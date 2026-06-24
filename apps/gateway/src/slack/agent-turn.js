@@ -129,6 +129,7 @@ function normalizeSlackAgentTurnResult(result = {}, mode = 'analyze') {
 
 function shouldStartSlackAgentReplyForTurn(intake, endpoint, slackSession) {
   if (endpoint?.mode !== 'turn' || intake.action !== 'agent_turn') return false;
+  if (intake.explicitWorkItemReference) return false;
   if (SHORT_QUERY_TURN_RE.test(intake.text || '')) return false;
   return !hasActiveSlackTarget(slackSession);
 }

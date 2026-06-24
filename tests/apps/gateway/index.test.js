@@ -46,6 +46,36 @@ async function fetchAndDrainWaitUntil(app, request, env = {}) {
   };
 }
 
+function mockSlackAgentTurnAnalysis(analysis = {}, calls = []) {
+  return {
+    SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+    async SLACK_AGENT_FETCH(_url, request) {
+      const payload = readRequestJson(request);
+      calls.push(payload);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          turn: {
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            analysis,
+            events: [
+              {
+                type: 'analysis_final',
+                sequence: 1,
+                agentRunId: payload.agentRunId,
+                slackSessionId: payload.slackSessionId,
+                analysis,
+              },
+            ],
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    },
+  };
+}
+
 function notifierResponse(body = {}, status = 200) {
   return new Response(JSON.stringify(body), { status });
 }
@@ -3746,7 +3776,7 @@ test('Slack Agent can switch to a platform issue without site publishing status 
   assert.doesNotMatch(payload, /Preview 已生成|发布需求/);
 });
 
-test('Slack refuses bulk destructive issue requests instead of listing jobs', async () => {
+test('Slack Agent unsupported destructive intent refuses bulk destructive issue requests', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
   const job = app.store.createJob({
@@ -3787,8 +3817,9 @@ test('Slack refuses bulk destructive issue requests instead of listing jobs', as
         return new Response(
           JSON.stringify({
             analysis: {
-              intent: 'list_work_items',
-              summary: '模型误判为查看任务列表',
+              intent: 'unsupported_destructive_request',
+              toolCall: { name: 'unsupported_destructive_request', args: {} },
+              summary: '用户要求批量归档 issue，Slack 不支持直接执行。',
               needsClarification: false,
             },
           }),
@@ -3802,12 +3833,12 @@ test('Slack refuses bulk destructive issue requests instead of listing jobs', as
   assert.equal(response.status, 200);
   assert.equal(body.action, 'unsupported_destructive_request');
   assert.equal(body.accepted, false);
-  assert.match(body.replyText, /不能批量关闭或删除/);
+  assert.match(body.replyText, /不能在 Slack 里直接关闭或删除/);
   assert.equal(app.store.getJob(job.id).status, 'preview_deployed');
-  assert.equal(agentCalls.length, 0);
+  assert.equal(agentCalls.length, 1);
 });
 
-test('Slack refuses bulk destructive requests even when model misroutes them as repo questions', async () => {
+test('Slack Agent unsupported destructive toolCall does not run repo answer', async () => {
   const app = createGatewayApp();
   const agentCalls = [];
   const response = await app.fetch(
@@ -3835,9 +3866,8 @@ test('Slack refuses bulk destructive requests even when model misroutes them as 
         return new Response(
           JSON.stringify({
             analysis: {
-              lane: 'repo-question',
-              intent: 'repo_question',
-              toolCall: { name: 'answer_repo_question', args: { question: '误判为仓库咨询' } },
+              intent: 'unsupported_destructive_request',
+              toolCall: { name: 'unsupported_destructive_request', args: {} },
               needsClarification: false,
             },
           }),
@@ -5152,6 +5182,7 @@ test('Slack close session stops running agent runs before the same thread contin
 
 test('Slack can switch the current thread to a visible PR', async () => {
   const app = createGatewayApp();
+  const agentCalls = [];
   const job = app.store.createJob({
     source: 'slack',
     requestedByType: 'user',
@@ -5187,7 +5218,16 @@ test('Slack can switch the current thread to a visible PR', async () => {
           text: '继续 PR #68',
         },
       }),
-    })
+    }),
+    mockSlackAgentTurnAnalysis(
+      {
+        intent: 'switch_work_item',
+        toolCall: { name: 'switch_work_item', args: { kind: 'pr', number: 68 } },
+        summary: '切换到 PR #68。',
+        needsClarification: false,
+      },
+      agentCalls
+    )
   );
   const body = await json(response);
   const session = app.store.getSlackSession(body.slackSessionId);
@@ -5207,10 +5247,12 @@ test('Slack can switch the current thread to a visible PR', async () => {
   assert.equal(memory.requirements.prNumber, 68);
   assert.equal(memory.requirements.previewUrl, 'https://preview.example.test/u1');
   assert.match(memory.lastAgentResponse, /已切换到 PR #68/);
+  assert.equal(agentCalls.length, 1);
 });
 
 test('Slack can switch the current thread to a visible issue', async () => {
   const app = createGatewayApp();
+  const agentCalls = [];
   const job = app.store.createJob({
     source: 'slack',
     requestedByType: 'user',
@@ -5245,7 +5287,16 @@ test('Slack can switch the current thread to a visible issue', async () => {
           text: '继续 issue #66',
         },
       }),
-    })
+    }),
+    mockSlackAgentTurnAnalysis(
+      {
+        intent: 'switch_work_item',
+        toolCall: { name: 'switch_work_item', args: { kind: 'issue', number: 66 } },
+        summary: '切换到 Issue #66。',
+        needsClarification: false,
+      },
+      agentCalls
+    )
   );
   const body = await json(response);
   const session = app.store.getSlackSession(body.slackSessionId);
@@ -5259,10 +5310,12 @@ test('Slack can switch the current thread to a visible issue', async () => {
   assert.equal(session.activePrNumber, null);
   assert.equal(memory.requirements.issueNumber, 66);
   assert.match(memory.lastAgentResponse, /已切换到 Issue #66/);
+  assert.equal(agentCalls.length, 1);
 });
 
 test('Slack switch only patches Slack binding and keeps fresher job state', async () => {
   const app = createGatewayApp();
+  const agentCalls = [];
   const job = app.store.createJob({
     source: 'slack',
     requestedByType: 'user',
@@ -5305,7 +5358,16 @@ test('Slack switch only patches Slack binding and keeps fresher job state', asyn
           text: '继续 PR #68',
         },
       }),
-    })
+    }),
+    mockSlackAgentTurnAnalysis(
+      {
+        intent: 'switch_work_item',
+        toolCall: { name: 'switch_work_item', args: { kind: 'pr', number: 68 } },
+        summary: '切换到 PR #68。',
+        needsClarification: false,
+      },
+      agentCalls
+    )
   );
   const body = await json(response);
   const session = app.store.getSlackSession(body.slackSessionId);
@@ -5320,10 +5382,12 @@ test('Slack switch only patches Slack binding and keeps fresher job state', asyn
   assert.equal(updatedJob.slackSessionId, session.id);
   assert.equal(updatedJob.slackThread.threadTs, '1710000000.000135');
   assert.equal(memory.requirements.previewUrl, 'https://preview.example.test/u1-fresh');
+  assert.equal(agentCalls.length, 1);
 });
 
 test('Slack switch posts a new scoped card when the existing job card belongs to another thread', async () => {
   const app = createGatewayApp();
+  const agentCalls = [];
   const job = app.store.createJob({
     source: 'slack',
     requestedByType: 'user',
@@ -5369,6 +5433,15 @@ test('Slack switch posts a new scoped card when the existing job card belongs to
       }),
     }),
     {
+      ...mockSlackAgentTurnAnalysis(
+        {
+          intent: 'switch_work_item',
+          toolCall: { name: 'switch_work_item', args: { kind: 'pr', number: 68 } },
+          summary: '切换到 PR #68。',
+          needsClarification: false,
+        },
+        agentCalls
+      ),
       ...mockSlackNotifier(notifierCalls, {
         handle(call) {
           if (call.path === '/internal/slack-notifier/job-status') {
@@ -5409,10 +5482,12 @@ test('Slack switch posts a new scoped card when the existing job card belongs to
   assert.equal(scopedMessage.messageTs, '1710000000.000134');
   assert.equal(oldMessage.channel, 'D-old');
   assert.equal(oldMessage.messageTs, '1710000000.000002');
+  assert.equal(agentCalls.length, 1);
 });
 
 test('Slack cannot switch to another user PR', async () => {
   const app = createGatewayApp();
+  const agentCalls = [];
   const job = app.store.createJob({
     source: 'slack',
     requestedByType: 'user',
@@ -5443,7 +5518,16 @@ test('Slack cannot switch to another user PR', async () => {
           text: '继续 PR #70',
         },
       }),
-    })
+    }),
+    mockSlackAgentTurnAnalysis(
+      {
+        intent: 'switch_work_item',
+        toolCall: { name: 'switch_work_item', args: { kind: 'pr', number: 70 } },
+        summary: '切换到 PR #70。',
+        needsClarification: false,
+      },
+      agentCalls
+    )
   );
   const body = await json(response);
 
@@ -5451,6 +5535,7 @@ test('Slack cannot switch to another user PR', async () => {
   assert.equal(body.action, 'switch_work_item_not_found');
   assert.equal(body.accepted, false);
   assert.match(body.replyText, /没有找到你可继续操作的 PR #70/);
+  assert.equal(agentCalls.length, 1);
 });
 
 test('Slack free-form turn stays conversational when Slack Agent is not configured', async () => {
@@ -5868,6 +5953,7 @@ test('Slack help and ping messages do not create jobs', async () => {
 
 test('Slack status message reads an existing job without creating a new one', async () => {
   const app = createGatewayApp();
+  const agentCalls = [];
   const createResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -5900,7 +5986,16 @@ test('Slack status message reads an existing job without creating a new one', as
           text: `状态 ${created.jobId}`,
         },
       }),
-    })
+    }),
+    mockSlackAgentTurnAnalysis(
+      {
+        intent: 'diagnose_work_item',
+        toolCall: { name: 'diagnose_current_work_item', args: { jobId: created.jobId } },
+        summary: '查询当前任务状态。',
+        needsClarification: false,
+      },
+      agentCalls
+    )
   );
   const body = await json(statusResponse);
 
@@ -5912,6 +6007,7 @@ test('Slack status message reads an existing job without creating a new one', as
   assert.match(body.replyText, /当前状态：整理需求/);
   assert.match(body.replyText, /最近阶段：整理需求/);
   assert.match(body.replyText, /建议操作：/);
+  assert.equal(agentCalls.length, 1);
 });
 
 test('Slack Agent diagnosis card intent drives diagnosis copy and action order', async () => {
@@ -7918,7 +8014,7 @@ test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Ag
   assert.equal(redisCalls[0][5], 'NX');
 });
 
-test('Slack create intent in an active DM session records follow-up instead of creating another issue', async () => {
+test('Slack Agent follow-up intent in an active DM session records follow-up instead of creating another issue', async () => {
   const app = createGatewayApp();
   const createResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
@@ -7980,7 +8076,8 @@ test('Slack create intent in an active DM session records follow-up instead of c
           JSON.stringify({
             ok: true,
             analysis: {
-              intent: 'create_or_update_site',
+              intent: 'append_requirement',
+              toolCall: { name: 'record_followup', args: {} },
               title: '确认开始生成个人网站页面',
               summary: '用户确认开始生成页面，应沿用当前 active issue。',
               needsClarification: false,
@@ -8171,6 +8268,7 @@ test('Slack channel thread replies can continue an existing session without anot
   }
 
   const workerStarts = [];
+  const agentCalls = [];
   const followupResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
       method: 'POST',
@@ -8190,6 +8288,15 @@ test('Slack channel thread replies can continue an existing session without anot
       }),
     }),
     {
+      ...mockSlackAgentTurnAnalysis(
+        {
+          intent: 'append_requirement',
+          toolCall: { name: 'record_followup', args: {} },
+          summary: '把标题改成中文。',
+          needsClarification: false,
+        },
+        agentCalls
+      ),
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
@@ -8210,6 +8317,7 @@ test('Slack channel thread replies can continue an existing session without anot
   assert.equal(followup.slackSessionId, created.slackSessionId);
   assert.equal(app.store.jobs.size, 1);
   assert.equal(workerStarts.length, 1);
+  assert.equal(agentCalls.length, 1);
 });
 
 test('Slack channel thread replies without an existing session are ignored', async () => {

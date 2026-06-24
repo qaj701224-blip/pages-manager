@@ -525,8 +525,39 @@ describe('slack agent', () => {
 
       assert.equal(analysis.intent, 'unsupported_destructive_request');
       assert.equal(analysis.needsClarification, false);
-      assert.match(analysis.clarifyingQuestion, /不能批量关闭或删除/);
+      assert.match(analysis.clarifyingQuestion, /不能在 Slack 里直接关闭或删除/);
     }
+  });
+
+  it('does not turn explicit issue close requests into close_session', () => {
+    for (const text of ['关闭 issue #97', 'close https://github.com/xindong/pages-manager/issues/97 issue']) {
+      const analysis = analyzeSlackRequirement({ text });
+
+      assert.equal(analysis.intent, 'unsupported_destructive_request');
+      assert.equal(analysis.toolCall.name, 'unsupported_destructive_request');
+      assert.notEqual(analysis.intent, 'close_session');
+      assert.match(analysis.clarifyingQuestion, /关闭会话/);
+    }
+  });
+
+  it('answers work item close capability questions from current context instead of asking which object', () => {
+    const analysis = analyzeSlackRequirement({
+      text: '我能主动关闭吗？',
+      slackSession: {
+        id: 'sess_issue_97',
+        activeWorkItemKind: 'platform_dev',
+        activeIssueNumber: 97,
+      },
+      sessionMemory: {
+        conversationContext: {
+          currentFocus: { kind: 'issue', number: 97, label: 'Issue #97' },
+        },
+      },
+    });
+
+    assert.equal(analysis.intent, 'unsupported_destructive_request');
+    assert.equal(analysis.needsClarification, false);
+    assert.match(analysis.clarifyingQuestion, /不能在 Slack 里直接关闭或删除/);
   });
 
   it('requires the internal token when configured', async () => {

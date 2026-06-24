@@ -4,29 +4,18 @@ import {
 } from './work-item-query.js';
 
 const JOB_ID_RE = /\bjob_[A-Za-z0-9_]+\b/;
+const SESSION_ID_RE = /\bsess_[A-Za-z0-9_]+\b/;
+const GITHUB_WORK_ITEM_URL_RE =
+  /https?:\/\/github\.com\/[^/\s<>]+\/[^/\s<>]+\/(issues|pull)\/(\d{1,8})(?:[/?#][^\s<>]*)?/i;
 const ISSUE_NUMBER_RE = /(?:issue|issues|需求|任务)\s*#?\s*(\d{1,8})\b/i;
 const PR_NUMBER_RE = /\b(?:PR|pull\s*request|pull-request|pullrequest)\s*#?\s*(\d{1,8})\b/i;
 const BARE_WORK_ITEM_NUMBER_RE = /#(\d{1,8})\b/;
 const SLASH_COMMAND_RE = /^\/([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i;
-const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close|tasks?|prs?|work)(?::|\s+)?([\s\S]*)?$/i;
-const UNSUPPORTED_BULK_DESTRUCTIVE_RE = new RegExp(
-  [
-    '(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive).*(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务)',
-    '(?:全部|所有|我名下|我的|all|every).*(?:issues?|PR|pr|任务|发布任务).*(?:关闭|关掉|删除|删掉|清理|清空|取消|归档|close|delete|remove|cancel|archive)',
-  ].join('|'),
-  'i'
-);
-
-export function isUnsupportedBulkDestructiveRequest(text = '') {
-  return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
-}
+const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close|tasks?|prs?|work):([\s\S]*)?$/i;
+const WORK_ITEM_COMMAND_RE = /^(tasks?|prs?|work)(?:\s+([\s\S]*))?$/i;
 
 export function isWorkItemHistoryQuery(text = '') {
   return slackWorkItemIncludesInactive(slackWorkItemQueryStateFromText(text));
-}
-
-function unsupportedBulkDestructiveReply() {
-  return '我不能批量关闭或删除你名下的 GitHub issue / PR / 发布任务。为了避免误操作，请先说「我的 PR」查看可继续任务，或明确指定一个 PR / issue 再处理。';
 }
 
 export function normalizeSlackIntakeText(text = '') {
@@ -61,12 +50,21 @@ function unknownText() {
 }
 
 function commandIntent(text) {
-  const match = text.match(SLASH_COMMAND_RE) || text.match(TEXT_COMMAND_RE);
+  const match = text.match(SLASH_COMMAND_RE) || text.match(TEXT_COMMAND_RE) || text.match(WORK_ITEM_COMMAND_RE);
   if (!match) return null;
   return {
     command: match[1].toLowerCase(),
     args: (match[2] || '').trim(),
   };
+}
+
+function isExplicitSessionCloseRequest(text, command) {
+  const commandArgs = String(command?.args || '').replaceAll(/\s+/g, ' ').trim().toLowerCase();
+
+  if (command?.command !== 'close') return false;
+  if (!commandArgs) return true;
+  if (SESSION_ID_RE.test(command.args)) return true;
+  return ['session', 'conversation', '会话', '对话', '当前会话', '当前对话'].includes(commandArgs);
 }
 
 export function parseSlackPrNumber(text = '') {
@@ -78,6 +76,13 @@ export function parseSlackPrNumber(text = '') {
 
 export function parseSlackWorkItemReference(text = '') {
   const value = String(text || '');
+  const githubMatch = value.match(GITHUB_WORK_ITEM_URL_RE);
+  if (githubMatch) {
+    const number = Number(githubMatch[2]);
+    if (!Number.isFinite(number) || number <= 0) return null;
+    return { kind: githubMatch[1] === 'pull' ? 'pr' : 'issue', number };
+  }
+
   const issueMatch = value.match(ISSUE_NUMBER_RE);
   if (issueMatch) {
     const number = Number(issueMatch[1]);
@@ -114,7 +119,6 @@ export function classifySlackIntake(body) {
   const event = body.event || {};
   const text = normalizeSlackIntakeText(event.text || body.text || '');
   const compact = text.toLowerCase();
-  const jobId = text.match(JOB_ID_RE)?.[0] || null;
   const command = commandIntent(text);
 
   if (!text) {
@@ -126,7 +130,7 @@ export function classifySlackIntake(body) {
     };
   }
 
-  if (command?.command === 'help' || /^(help|帮助|菜单|\?|怎么用|说明)$/.test(compact) || /怎么用|能做什么|帮助/.test(text)) {
+  if (command?.command === 'help' || ['help', '帮助', '菜单', '?', '说明'].includes(compact)) {
     return {
       action: 'help',
       shouldCreateJob: false,
@@ -135,7 +139,7 @@ export function classifySlackIntake(body) {
     };
   }
 
-  if (command?.command === 'ping' || /^(ping|pong|test|测试|1)$/.test(compact) || /连通性/i.test(text)) {
+  if (command?.command === 'ping' || ['ping', 'pong', 'test', '测试', '1'].includes(compact)) {
     return {
       action: 'ping',
       shouldCreateJob: false,
@@ -144,17 +148,7 @@ export function classifySlackIntake(body) {
     };
   }
 
-  if (isUnsupportedBulkDestructiveRequest(text)) {
-    return {
-      action: 'unsupported_destructive_request',
-      shouldCreateJob: false,
-      shouldAnalyze: false,
-      text,
-      replyText: unsupportedBulkDestructiveReply(),
-    };
-  }
-
-  if (command?.command === 'cancel' || /^(cancel|取消|停止|不用了)/i.test(text)) {
+  if (command?.command === 'cancel') {
     return {
       action: 'cancel',
       shouldCreateJob: false,
@@ -163,12 +157,7 @@ export function classifySlackIntake(body) {
     };
   }
 
-  if (
-    command?.command === 'close' ||
-    /^(close|关闭|结束|归档)(\s|:|：|$)/i.test(text) ||
-    /^(关闭|结束).*(会话|对话|session|任务|preview|预览)/i.test(text) ||
-    /^(先到这里|到这里就好|这个任务不用了|这个 preview 不用了)$/i.test(text)
-  ) {
+  if (isExplicitSessionCloseRequest(text, command)) {
     return {
       action: 'close_session',
       shouldCreateJob: false,
@@ -189,32 +178,6 @@ export function classifySlackIntake(body) {
   }
 
   const workItemReference = parseSlackWorkItemReference(text);
-  if (workItemReference && /(?:重新打开|恢复|重开|reopen)/i.test(text)) {
-    return {
-      action: 'reopen_work_item',
-      shouldCreateJob: false,
-      shouldAnalyze: true,
-      text,
-      targetKind: workItemReference.kind,
-      targetNumber: workItemReference.number,
-      prNumber: workItemReference.kind === 'issue' ? null : workItemReference.number,
-      issueNumber: workItemReference.kind === 'issue' ? workItemReference.number : null,
-      replyText: null,
-    };
-  }
-  if (workItemReference && /(继续|接着|切换|选择|打开|查看|回到|续上|处理|修改)/i.test(text)) {
-    return {
-      action: 'switch_work_item',
-      shouldCreateJob: false,
-      shouldAnalyze: true,
-      text,
-      targetKind: workItemReference.kind,
-      targetNumber: workItemReference.number,
-      prNumber: workItemReference.kind === 'issue' ? null : workItemReference.number,
-      issueNumber: workItemReference.kind === 'issue' ? workItemReference.number : null,
-      replyText: null,
-    };
-  }
 
   if (['task', 'tasks', 'pr', 'prs', 'work'].includes(command?.command)) {
     if (workItemReference) {
@@ -240,15 +203,6 @@ export function classifySlackIntake(body) {
     };
   }
 
-  if (jobId && /(status|状态|进度|查询|查看|看一下)/i.test(text)) {
-    return {
-      action: 'diagnose_work_item',
-      shouldCreateJob: false,
-      text,
-      jobId,
-    };
-  }
-
   if (['issue', 'page', 'site'].includes(command?.command)) {
     if (!command.args) {
       return {
@@ -264,21 +218,6 @@ export function classifySlackIntake(body) {
       shouldCreateJob: true,
       text: command.args,
       command: command.command,
-    };
-  }
-
-  if (
-    /(创建|新建|提(一个)?|开(一个)?).*(issue|任务|需求)/i.test(text) ||
-    /(创建|新建|生成|制作|做|更新|修改).*(页面|网页|网站|主页|profile|portfolio)/i.test(text) ||
-    /(帮我|请帮我).*(做|建|创建|生成|更新|修改)/i.test(text) ||
-    /\b(create|build|make|update|publish|deploy)\b/i.test(text)
-  ) {
-    return {
-      action: 'agent_turn',
-      shouldCreateJob: false,
-      shouldAnalyze: true,
-      text,
-      ...explicitWorkItemFields(workItemReference),
     };
   }
 
