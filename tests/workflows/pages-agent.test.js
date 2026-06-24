@@ -58,6 +58,7 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /Callback gateway on failure[\s\S]*PAGES_CALLBACK_URL: \$\{\{ inputs\.callbackUrl \}\}/);
   assert.match(workflow, /failure\(\) && hashFiles\('\.pages-artifacts\/callback\.json'\) == ''/);
   assert.match(workflow, /callbackUrl: process\.env\.PAGES_CALLBACK_URL/);
+  assert.match(workflow, /gh\[pousr\]_/);
   assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.(SLACK_BOT_TOKEN|SLACK_APP_TOKEN|CF_API_TOKEN|CLOUDFLARE_API_TOKEN)/);
   assert.doesNotMatch(workflow, /^\s+(SLACK_BOT_TOKEN|SLACK_APP_TOKEN|CF_API_TOKEN|CLOUDFLARE_API_TOKEN):/m);
 });
@@ -108,6 +109,10 @@ test('pages-preview workflow keeps deploy API ip restriction compatible', async 
   const workflow = await readFile(path.join(root, '.github/workflows/pages-preview.yml'), 'utf8');
 
   assert.match(workflow, /-F "ip_restrict=true"/);
+  assert.match(workflow, /prNumber: report\.prNumber/);
+  assert.match(workflow, /headSha: report\.headSha/);
+  assert.match(workflow, /prNumber: process\.env\.PR_NUMBER/);
+  assert.match(workflow, /headSha: process\.env\.HEAD_SHA/);
   assert.doesNotMatch(workflow, /-F "ip_restrict=false"/);
 });
 

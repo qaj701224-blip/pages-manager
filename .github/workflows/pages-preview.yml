@@ -219,6 +219,8 @@ jobs:
           const report = JSON.parse(readFileSync('preview-worktree/.pages-artifacts/preview-report.json', 'utf8'));
           const data = {
             publishingJobId: process.env.PUBLISHING_JOB_ID,
+            prNumber: report.prNumber,
+            headSha: report.headSha,
             workflowName: 'pages-preview.yml',
             workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'succeeded',
@@ -253,6 +255,8 @@ jobs:
 
           const data = {
             publishingJobId: process.env.PUBLISHING_JOB_ID,
+            prNumber: process.env.PR_NUMBER,
+            headSha: process.env.HEAD_SHA,
             workflowName: 'pages-preview.yml',
             workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'failed',

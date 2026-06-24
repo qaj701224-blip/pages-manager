@@ -203,7 +203,7 @@ jobs:
             esac
           done <<< "$changed"
 
-          if grep -REn 'xoxb-|xapp-|ghp_|github_pat_|ghs_|sk-[A-Za-z0-9]|CF_API_TOKEN|SLACK_AGENT_API_KEY|AGENT_CODE_API_KEY' "$ALLOWED_PATH"; then
+          if grep -REn 'xoxb-|xapp-|gh[pousr]_|github_pat_|sk-[A-Za-z0-9]|CF_API_TOKEN|SLACK_AGENT_API_KEY|AGENT_CODE_API_KEY' "$ALLOWED_PATH"; then
             echo "Generated files contain secret-looking content" >&2
             exit 1
           fi
