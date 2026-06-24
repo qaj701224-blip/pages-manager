@@ -512,6 +512,7 @@ test('closed Slack channel thread ignores plain replies until the bot is address
 
 test('Slack close button clears a running Agent lease before the next thread message', async () => {
   const app = createGatewayApp();
+  const notifierCalls = [];
   const created = await postSlack(
     app,
     slackEvent({
@@ -532,7 +533,18 @@ test('Slack close button clears a running Agent lease before the next thread mes
     type: 'block_actions',
     team: { id: 'T1' },
     user: { id: 'U1' },
+    channel: { id: 'C1' },
+    container: { channel_id: 'C1', message_ts: '1710000000.000200' },
+    message: { ts: '1710000000.000200', thread_ts: '1710000000.000100' },
     actions: [{ action_id: 'pages_close_session', value: created.slackSessionId }],
+  }, {
+    SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+    SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+    async SLACK_NOTIFIER_FETCH(url, request) {
+      const body = request.body ? JSON.parse(request.body) : {};
+      notifierCalls.push({ path: new URL(String(url)).pathname, body });
+      return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000000.000200' }), { status: 200 });
+    },
   });
   const next = await postSlack(
     app,
@@ -547,10 +559,15 @@ test('Slack close button clears a running Agent lease before the next thread mes
   );
 
   assert.match(closed.text, /已关闭/);
+  assert.equal(closed.closeCardUpdate?.ok, true);
   assert.equal(app.store.getAgentRun(running.id).status, 'failed');
   assert.equal(app.store.getAgentRun(running.id).errorCode, 'slack_session_closed');
   assert.equal(next.action, 'list_work_items');
   assert.notEqual(next.action, 'agent_busy');
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /会话已关闭/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_close_session/);
 });
 
 test('late Slack Agent result after close does not create a stale job', async () => {
