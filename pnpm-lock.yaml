@@ -141,6 +141,9 @@ importers:
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
+      '@xd/workflow-core':
+        specifier: workspace:*
+        version: link:../../packages/workflow-core
 
   apps/slack-notifier:
     dependencies:

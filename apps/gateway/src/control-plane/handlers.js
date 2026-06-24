@@ -72,7 +72,12 @@ import {
   buildConversationContext,
   repeatPreviousMessageFromContext,
 } from '../slack/conversation-context.js';
-import { slackAgentToolArgs, slackAgentToolName, slackAgentWorkItemState } from '../slack/agent-tool-call.js';
+import {
+  slackAgentCapability,
+  slackAgentExplicitToolName,
+  slackAgentToolArgs,
+  slackAgentWorkItemState,
+} from '../slack/agent-tool-call.js';
 import {
   completeSlackAgentRun,
   failRunningSlackAgentRunsForClosedSession,
@@ -171,15 +176,38 @@ function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
     return { name: 'unsupported_destructive_request', args: {} };
   }
 
+  if (intake.action === 'list_work_items') {
+    return { name: 'list_my_work_items', args: { state: slackAgentWorkItemState(intake, slackAgentAnalysis) } };
+  }
+  if (intake.action === 'switch_work_item') return { name: 'switch_work_item', args: {} };
+  if (intake.action === 'reopen_work_item') return { name: 'reopen_work_item', args: slackAgentToolArgs(slackAgentAnalysis) };
+  if (intake.action === 'repo_question' || intake.action === 'answer_repo_question') {
+    return { name: 'answer_repo_question', args: { question: intake.text } };
+  }
+  if (intake.action === 'diagnose_work_item') return { name: 'diagnose_current_work_item', args: {} };
+
   if (['repo_question', 'architecture_question', 'platform_question'].includes(slackAgentAnalysis.intent)) {
     return { name: 'answer_repo_question', args: { question: intake.text } };
   }
 
-  const explicitName = slackAgentToolName(slackAgentAnalysis);
-  if (explicitName) {
+  const explicitName = slackAgentExplicitToolName(slackAgentAnalysis);
+  const capability = slackAgentCapability(slackAgentAnalysis);
+  if (explicitName && capability) {
     return {
-      name: explicitName,
+      name: capability.name,
       args: slackAgentToolArgs(slackAgentAnalysis),
+    };
+  }
+  if (['confirm_create_issue', 'confirm_platform_issue'].includes(capability?.name)) return null;
+  if (capability) {
+    return {
+      name: capability.name,
+      args:
+        capability.name === 'list_my_work_items'
+          ? { state: slackAgentWorkItemState(intake, slackAgentAnalysis) }
+          : capability.name === 'answer_repo_question'
+            ? { question: intake.text }
+            : {},
     };
   }
 
@@ -328,6 +356,14 @@ function shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis, slackSession) 
   return true;
 }
 
+function shouldRouteCreateIntentToCurrentFollowup(intake, slackAgentAnalysis, slackSession) {
+  if (!slackAgentAnalysis || slackAgentAnalysis.needsClarification) return false;
+  if (!hasActiveSlackTarget(slackSession)) return false;
+  if (!CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent)) return false;
+  if (looksLikeExplicitNewWorkItemText(intake.text)) return false;
+  return isSlackFollowupIntent(slackAgentAnalysis, intake, slackSession);
+}
+
 function shouldAskBeforeCreatingPlatformIssue(intake, slackAgentAnalysis, slackSession) {
   if (!slackAgentAnalysis || slackAgentAnalysis.needsClarification) return false;
   if (!shouldCreatePlatformDevItem(intake, slackAgentAnalysis)) return false;
@@ -347,6 +383,9 @@ async function shouldRoutePlatformCreateToCurrentFollowup({ store, intake, slack
 
 async function handleSlackAgentToolCall(context) {
   const { intake, slackAgentAnalysis, slackSession } = context;
+  if (shouldRouteCreateIntentToCurrentFollowup(intake, slackAgentAnalysis, slackSession)) {
+    return handleSlackFollowup(context);
+  }
   const toolCall = context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession);
   if (!toolCall?.name) return null;
   if (
@@ -749,6 +788,20 @@ async function processSlackEventBody(body, env, options = {}) {
           agentRun,
           slackAgentAnalysis,
           action: 'clarification_needed',
+        })
+      );
+    }
+
+    if (shouldRouteCreateIntentToCurrentFollowup(intake, slackAgentAnalysis, slackSession)) {
+      return respond(
+        handleSlackFollowup({
+          store,
+          env,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
         })
       );
     }

@@ -1,3 +1,10 @@
+import {
+  slackAgentCapabilityForIntent,
+  slackAgentCapabilityForTool,
+  SLACK_AGENT_CONFIRMATION_TYPES,
+  SLACK_AGENT_DIALOG_ACTS,
+} from '@xd/workflow-core';
+
 import { compileSlackAgentPolicy } from './policy/compiler.js';
 import { SLACK_AGENT_POLICY_PACKAGE_VERSION } from './policy/package.js';
 
@@ -124,6 +131,68 @@ function toolCallForIntent(intent, text = '') {
     return { name: 'confirm_platform_issue', args: {} };
   }
   return null;
+}
+
+function normalizeDialogAct(value, fallback = 'answer') {
+  const normalized = String(value || '').trim();
+  return SLACK_AGENT_DIALOG_ACTS.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeConfirmationRequirement(value, fallback = 'none') {
+  const normalized = String(value || '').trim();
+  return SLACK_AGENT_CONFIRMATION_TYPES.includes(normalized) ? normalized : fallback;
+}
+
+function focusFromSessionContext(context = {}) {
+  if (context.activePrNumber) {
+    return { kind: 'pr', number: context.activePrNumber, label: `PR #${context.activePrNumber}`, source: 'active_session' };
+  }
+  if (context.activeIssueNumber) {
+    return {
+      kind: 'issue',
+      number: context.activeIssueNumber,
+      label: `Issue #${context.activeIssueNumber}`,
+      source: 'active_session',
+    };
+  }
+  if (context.activeWorkItemId) {
+    return {
+      kind: context.activeWorkItemKind || 'work_item',
+      id: context.activeWorkItemId,
+      number: null,
+      label: '当前任务',
+      source: 'active_session',
+    };
+  }
+  return null;
+}
+
+function cardForCapability(capability, analysis = {}) {
+  if (!capability || capability.cardKind === 'none') return null;
+  return {
+    kind: capability.cardKind,
+    title: analysis.title || '',
+    summary: analysis.visibleReply || analysis.summary || '',
+    actions: [],
+  };
+}
+
+function enrichWithCapabilityContract(analysis = {}) {
+  const capability =
+    slackAgentCapabilityForTool(analysis.toolCall?.name || analysis.tool_call?.name) ||
+    slackAgentCapabilityForIntent(analysis.intent);
+  const dialogAct = normalizeDialogAct(analysis.dialogAct || analysis.dialog_act, capability?.dialogAct || 'answer');
+  const confirmationRequirement = normalizeConfirmationRequirement(
+    analysis.confirmationRequirement || analysis.confirmation_requirement,
+    capability?.confirmation || 'none'
+  );
+  return {
+    ...analysis,
+    capability: capability?.name || analysis.capability || null,
+    dialogAct,
+    confirmationRequirement,
+    card: objectOrNull(analysis.card) || cardForCapability(capability, analysis),
+  };
 }
 
 function repeatPreviousMessageTargetFromText(text = '') {
@@ -297,7 +366,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
                   ? 'repo_question'
                   : intent;
 
-  return {
+  return enrichWithCapabilityContract({
     lane: shouldRecordCurrentWorkItemFollowup
       ? laneForCurrentWorkItem(sessionContext)
       : shouldAnswerRepoQuestion
@@ -326,6 +395,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     policyVersion: SLACK_AGENT_POLICY_PACKAGE_VERSION,
     sourceMessages: input.sourceMessages || input.source_messages || [],
     sessionContext,
+    focus: focusFromSessionContext(sessionContext),
     needsClarification:
       !isUnsupportedBulkDestructive &&
       !shouldListWorkItems &&
@@ -336,7 +406,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
       !shouldAnswerRepoQuestion &&
       intent === 'clarify',
     clarifyingQuestion: isUnsupportedBulkDestructive ? unsupportedBulkDestructiveQuestion() : undefined,
-  };
+  });
 }
 
 function stringOrFallback(value, fallback) {
@@ -362,6 +432,11 @@ function normalizeToolCall(value, fallbackToolCall = null) {
 
 function shouldForceIntentToolCall(intent = '') {
   return [
+    'list_work_items',
+    'switch_work_item',
+    'reopen_work_item',
+    'diagnose_work_item',
+    'status_query',
     'repo_question',
     'architecture_question',
     'platform_question',
@@ -371,15 +446,23 @@ function shouldForceIntentToolCall(intent = '') {
   ].includes(intent);
 }
 
+function modelMustYieldToSafetyIntent(modelIntent = '', fallbackIntent = '') {
+  if (!fallbackIntent || modelIntent === fallbackIntent) return false;
+  return fallbackIntent === UNSUPPORTED_DESTRUCTIVE_INTENT;
+}
+
 export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {}) {
   const inputSessionContext = sessionContextFromInput(input);
   const rawModelIntent = stringOrFallback(modelAnalysis.intent, fallback.intent);
   const toolCallFallbackText = input.text || input.event?.text || modelAnalysis.summary || fallback.summary || '';
-  const modelIntent =
+  let modelIntent =
     ['create_platform_issue', 'create_or_update_site', 'platform_dev', 'platform_feedback'].includes(rawModelIntent) &&
     shouldTreatAsCurrentWorkItemFollowup(toolCallFallbackText, input, inputSessionContext)
       ? 'append_requirement'
       : rawModelIntent;
+  if (modelMustYieldToSafetyIntent(modelIntent, fallback.intent)) {
+    modelIntent = fallback.intent;
+  }
   const inferredToolCall = modelAnalysis.intent
     ? toolCallForIntent(modelIntent, toolCallFallbackText)
     : fallback.toolCall || toolCallForIntent(fallback.intent, fallback.summary);
@@ -392,7 +475,7 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
           args: modelAnalysis.toolArgs || modelAnalysis.tool_args || {},
         }
       : null);
-  const normalized = {
+  const normalized = enrichWithCapabilityContract({
     ...fallback,
     intent: modelIntent,
     lane:
@@ -438,6 +521,11 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
       objectOrNull(modelAnalysis.contextResolution || modelAnalysis.context_resolution) ||
       objectOrNull(fallback.contextResolution) ||
       null,
+    focus:
+      objectOrNull(modelAnalysis.focus) ||
+      objectOrNull(modelAnalysis.contextFocus || modelAnalysis.context_focus) ||
+      objectOrNull(fallback.focus) ||
+      focusFromSessionContext(inputSessionContext),
     policyVersion: stringOrFallback(
       modelAnalysis.policyVersion || modelAnalysis.policy_version,
       fallback.policyVersion || SLACK_AGENT_POLICY_PACKAGE_VERSION
@@ -452,7 +540,7 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
         : typeof modelAnalysis.needs_clarification === 'boolean'
           ? modelAnalysis.needs_clarification
           : fallback.needsClarification,
-  };
+  });
 
   return normalized;
 }

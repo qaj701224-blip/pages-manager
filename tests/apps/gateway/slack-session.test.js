@@ -554,7 +554,7 @@ test('Slack close button clears a running Agent lease before the next thread mes
       channelType: 'channel',
       ts: '1710000001.000100',
       threadTs: '1710000000.000100',
-      text: '我的 PR',
+      text: 'work',
     })
   );
 
