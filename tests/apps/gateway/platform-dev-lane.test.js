@@ -1418,9 +1418,13 @@ test('platform blocking review dispatches an automatic fix round', async () => {
   assert.equal(updated.status, 'agent_queued');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  assert.equal(workerCalls[0].body.platformDevItem.githubPrNumber, 93);
+  assert.equal(workerCalls[0].body.platformDevItem.headSha, headSha);
   assert.match(workerCalls[0].body.platformDevItem.reviewContext, /必须修复阻塞问题/);
   assert.match(workerCalls[0].body.platformDevItem.memoryContext, /用户希望平台 Agent 自动处理 Review 评论/);
   assert.match(workerCalls[0].body.platformDevItem.statusContext, /review_blocked/);
+  assert.match(workerCalls[0].body.platformDevItem.statusContext, /pr: #93/);
+  assert.match(workerCalls[0].body.platformDevItem.statusContext, new RegExp(`headSha: ${headSha}`));
   assert.match(memory.requirements.platformReview.lastSummary, /必须修复阻塞问题/);
   assert.match(visibleBlocks, /Review 处理上下文/);
   assert.match(visibleBlocks, /必须修复阻塞问题/);

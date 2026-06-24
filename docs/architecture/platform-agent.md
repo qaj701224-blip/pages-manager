@@ -6,13 +6,13 @@
 
 `Platform Agent` 由 `.github/workflows/platform-agent.yml` 手动 dispatch 或由 gateway 调度。workflow 会从可信 checkout 复制 `scripts/platform-agent-coding.mjs`，再在目标 base ref 上创建或复用 `feat/` 分支。
 
-executor 只负责在工作区产生平台代码改动和 `.pages-artifacts/platform-agent-report.json`。后续 workflow 会跑 secret scan、`pnpm lint`、`pnpm test`，再提交分支并打开或更新 PR。agent 不直接合并 `master`。
+executor 只负责在当前 repo 工作区产生平台代码改动和 `.pages-artifacts/platform-agent-report.json`。后续 workflow 只读取这个工作区的 `git diff`，跑 secret scan、`pnpm lint`、`pnpm test`，再提交分支并打开或更新 PR。agent 不直接合并 `master`。
 
 ## 模型执行协议
 
 `platform-agent-coding.mjs` 默认按工具循环执行。启动时 executor 会按文件名排序读取 `scripts/platform-agent-skills/*.md`，并把这些短文档作为 `preloadedSkills` 放进初始模型上下文。该目录用于预制 coding skill，例如项目规则、代码地图和验证策略；新增或修改 skill 时必须同步本文档或就近说明。
 
-gateway / worker 可以通过 workflow inputs 向 executor 传入 `reviewContext`、`memoryContext` 和 `statusContext`。workflow 会映射为 `REVIEW_CONTEXT`、`MEMORY_CONTEXT`、`STATUS_CONTEXT` 环境变量，executor 会截断后放进初始模型上下文，并在 report 里只记录是否收到这些上下文。Review Agent 的 blocking comment 会被写入 Slack session memory，并在自动修复轮次传给 Platform Agent。
+gateway / worker 可以通过 workflow inputs 向 executor 传入 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`。workflow 会映射为 `PR_NUMBER`、`HEAD_SHA`、`REVIEW_CONTEXT`、`MEMORY_CONTEXT`、`STATUS_CONTEXT`、`FOLLOWUP_CONTEXT` 环境变量，executor 会截断后放进初始模型上下文，并在 report 里只记录是否收到这些上下文。Review Agent 的 blocking / unknown comment 会被写入 Slack session memory，并在自动修复轮次传给 Platform Agent；Slack / issue follow-up 会作为 `followupContext` 传入，让 fix round 知道本轮为什么修。
 
 模型每轮必须返回 JSON object，支持的 action 是：
 

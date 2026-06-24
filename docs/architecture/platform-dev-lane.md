@@ -147,7 +147,7 @@ issue body 必须包含：
 - 做基础 secret scan。
 - 通过 `/internal/executor-callback` 回写 `agent_running`、`pr_created` 或失败。
 - 无代码变更视为失败，不会把空 PR 或空执行当成成功。
-- Review Agent 的 blocking / unknown comment 会进入 `review_blocked`，gateway 会摘要 open review comments，写入 Slack session memory，并把 `reviewContext`、`memoryContext`、`statusContext` 传给下一轮 `platform-agent.yml` 修复。
+- Review Agent 的 blocking / unknown comment 会进入 `review_blocked`，gateway 会摘要 open review comments，写入 Slack session memory，并把 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 传给下一轮 `platform-agent.yml` 修复。
 
 ## Slack 体验
 
@@ -165,7 +165,7 @@ issue body 必须包含：
 后续补充：
 
 - 当前实现会保留 work item link 和 session memory。
-- 平台 followup 进入 `work_item_followups` 后，由后续平台 agent 修复循环消费。
+- 平台 followup 进入 `work_item_followups` 后，由后续平台 agent 修复循环消费；worker 会从当前 summary 中提取最近的 Slack Follow-up 作为 `followupContext` 传给 fix round。
 - Review 自动修复会在状态卡展示 Review 处理上下文和跨轮记忆摘要，让用户知道本轮修复依据来自哪条 PR comment，而不是无提示地重新跑 agent。
 
 诊断查询：

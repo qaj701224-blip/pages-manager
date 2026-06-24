@@ -144,13 +144,23 @@ test('passes review, memory, and status context to Platform Coding Agent', async
   const previousCwd = process.cwd();
   const calls = [];
   try {
+    await initGitRepo(dir);
     process.chdir(dir);
+    await mkdir(path.join(dir, 'docs/architecture'), { recursive: true });
+    await writeFile(path.join(dir, 'docs/architecture/platform-agent.md'), '# Platform Agent\n\nOld.\n');
+    execFileSync('git', ['add', 'docs/architecture/platform-agent.md'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'baseline docs'], { cwd: dir, stdio: 'ignore' });
+
     await runPlatformCodingAgent({
       env: {
         ...env,
+        AGENT_MODE: 'fix',
+        PR_NUMBER: '45',
+        HEAD_SHA: 'c'.repeat(40),
         REVIEW_CONTEXT: 'Review context for PR #45:\n1. [blocking] scripts/platform-agent-coding.mjs:L1 fix this',
         MEMORY_CONTEXT: 'Session summary: previous run added docs.',
         STATUS_CONTEXT: 'status: review_blocked',
+        FOLLOWUP_CONTEXT: '## Slack Follow-up\n\n继续补充 review 修复说明。',
       },
       async fetchImpl(url, request) {
         calls.push({ url: String(url), request });
@@ -175,10 +185,16 @@ test('passes review, memory, and status context to Platform Coding Agent', async
     const requestBody = JSON.parse(calls[0].request.body);
     const requestContext = JSON.parse(requestBody.messages[1].content);
     const report = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-report.json'), 'utf8'));
+    const diffNames = execFileSync('git', ['diff', '--name-only'], { cwd: dir, encoding: 'utf8' });
+    assert.equal(requestContext.mode, 'fix');
+    assert.equal(requestContext.prNumber, '45');
+    assert.equal(requestContext.headSha, 'c'.repeat(40));
     assert.match(requestContext.reviewContext, /blocking/);
     assert.match(requestContext.memoryContext, /previous run/);
     assert.match(requestContext.statusContext, /review_blocked/);
-    assert.deepEqual(report.contextReceived, { review: true, memory: true, status: true });
+    assert.match(requestContext.followupContext, /继续补充 review 修复说明/);
+    assert.match(diffNames, /docs\/architecture\/platform-agent\.md/);
+    assert.deepEqual(report.contextReceived, { review: true, memory: true, status: true, followup: true });
   } finally {
     process.chdir(previousCwd);
     await rm(dir, { recursive: true, force: true });

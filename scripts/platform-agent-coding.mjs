@@ -206,6 +206,8 @@ function contextFromEnv(env) {
     platformDevItemId: required(env.PLATFORM_DEV_ITEM_ID, 'PLATFORM_DEV_ITEM_ID'),
     agentMode: env.AGENT_MODE || 'initial',
     issueNumber: env.ISSUE_NUMBER || '',
+    prNumber: env.PR_NUMBER || '',
+    headSha: env.HEAD_SHA || '',
     requestTitle: env.REQUEST_TITLE || 'Platform change',
     requestSummary: env.REQUEST_SUMMARY || 'No summary provided.',
     issueType: required(env.ISSUE_TYPE, 'ISSUE_TYPE'),
@@ -221,6 +223,7 @@ function contextFromEnv(env) {
     reviewContext: env.REVIEW_CONTEXT || '',
     memoryContext: env.MEMORY_CONTEXT || '',
     statusContext: env.STATUS_CONTEXT || '',
+    followupContext: env.FOLLOWUP_CONTEXT || '',
   };
 }
 
@@ -311,6 +314,8 @@ function buildCodingMessages(context) {
         platformDevItemId: context.platformDevItemId,
         mode: context.agentMode,
         issueNumber: context.issueNumber || null,
+        prNumber: context.prNumber || null,
+        headSha: context.headSha || null,
         issueType: context.issueType,
         areas: context.areas,
         risk: context.effectiveRisk,
@@ -323,6 +328,7 @@ function buildCodingMessages(context) {
         reviewContext: truncateText(context.reviewContext, PLATFORM_AGENT_CONTEXT_MAX_CHARS),
         memoryContext: truncateText(context.memoryContext, PLATFORM_AGENT_CONTEXT_MAX_CHARS),
         statusContext: truncateText(context.statusContext, PLATFORM_AGENT_CONTEXT_MAX_CHARS),
+        followupContext: truncateText(context.followupContext, PLATFORM_AGENT_CONTEXT_MAX_CHARS),
         preloadedSkills: collectPreloadedSkills(),
         currentFiles: collectContextFiles(),
       }),
@@ -900,6 +906,7 @@ function writeReport(context, report) {
       review: Boolean(String(context.reviewContext || '').trim()),
       memory: Boolean(String(context.memoryContext || '').trim()),
       status: Boolean(String(context.statusContext || '').trim()),
+      followup: Boolean(String(context.followupContext || '').trim()),
     },
     ...report,
   };

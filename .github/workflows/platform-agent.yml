@@ -16,6 +16,14 @@ on:
         description: GitHub issue number
         required: false
         type: string
+      prNumber:
+        description: GitHub PR number for fix rounds
+        required: false
+        type: string
+      headSha:
+        description: Current PR head SHA for fix rounds
+        required: false
+        type: string
       requestTitle:
         description: Request title
         required: true
@@ -66,6 +74,10 @@ on:
         description: Current Platform Dev status context
         required: false
         type: string
+      followupContext:
+        description: Slack or issue follow-up context for the next agent round
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -83,6 +95,8 @@ jobs:
       PLATFORM_DEV_ITEM_ID: ${{ inputs.platformDevItemId }}
       AGENT_MODE: ${{ inputs.mode }}
       ISSUE_NUMBER: ${{ inputs.issueNumber }}
+      PR_NUMBER: ${{ inputs.prNumber }}
+      HEAD_SHA: ${{ inputs.headSha }}
       REQUEST_TITLE: ${{ inputs.requestTitle }}
       REQUEST_SUMMARY: ${{ inputs.requestSummary }}
       ISSUE_TYPE: ${{ inputs.issueType }}
@@ -94,6 +108,7 @@ jobs:
       REVIEW_CONTEXT: ${{ inputs.reviewContext }}
       MEMORY_CONTEXT: ${{ inputs.memoryContext }}
       STATUS_CONTEXT: ${{ inputs.statusContext }}
+      FOLLOWUP_CONTEXT: ${{ inputs.followupContext }}
       PAGES_CALLBACK_URL: ${{ inputs.callbackUrl || vars.PAGES_GATEWAY_CALLBACK_URL }}
       PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
     steps:

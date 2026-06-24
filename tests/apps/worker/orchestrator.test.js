@@ -264,9 +264,12 @@ test('platform dev fix item dispatches platform-agent fix workflow without dupli
           assert.equal(body.inputs.mode, 'fix');
           assert.equal(body.inputs.branchName, 'platform/item-pdev-123');
           assert.equal(body.inputs.issueNumber, '32');
+          assert.equal(body.inputs.prNumber, '45');
+          assert.equal(body.inputs.headSha, '');
           assert.match(body.inputs.reviewContext, /Review context/);
           assert.match(body.inputs.memoryContext, /自动修复 Review/);
           assert.match(body.inputs.statusContext, /review_blocked/);
+          assert.match(body.inputs.followupContext, /继续收紧文案/);
           return new Response(null, { status: 204 });
         }
         throw new Error(`Unexpected request ${request.method} ${url}`);

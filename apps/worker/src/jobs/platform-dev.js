@@ -25,11 +25,19 @@ function contextText(value = '', maxLength = 12_000) {
   return `${text.slice(0, maxLength)}\n[truncated ${text.length - maxLength} chars]`;
 }
 
+function followupContextFromSummary(summary = '') {
+  const text = String(summary || '');
+  const marker = '## Slack Follow-up';
+  const index = text.lastIndexOf(marker);
+  return index >= 0 ? contextText(text.slice(index)) : '';
+}
+
 function platformAgentContextInputs(item = {}) {
   return {
     reviewContext: contextText(item.reviewContext),
     memoryContext: contextText(item.memoryContext),
     statusContext: contextText(item.statusContext),
+    followupContext: contextText(item.followupContext || followupContextFromSummary(item.summary)),
   };
 }
 
@@ -73,6 +81,8 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
       baseRef: config.platformBaseRef || config.platformWorkflowRef || config.workflowRef || 'master',
       callbackUrl: config.callbackUrl,
       issueNumber,
+      prNumber: itemWithIssue.githubPrNumber,
+      headSha: itemWithIssue.headSha,
       gateApproved: itemWithIssue.gateStatus === 'approved' || itemWithIssue.requiresHumanGate === false,
       ...platformAgentContextInputs(itemWithIssue),
     }),

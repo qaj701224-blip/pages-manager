@@ -429,6 +429,8 @@ export function buildPlatformAgentInputs(item, options = {}) {
     platformDevItemId: item.id,
     mode: options.mode || 'initial',
     issueNumber: String(options.issueNumber || item.githubIssueNumber || ''),
+    prNumber: String(options.prNumber || item.githubPrNumber || ''),
+    headSha: options.headSha || item.headSha || '',
     requestTitle: item.title || '',
     requestSummary: item.summary || item.brief || '',
     issueType: item.issueType || 'type:dev',
@@ -441,6 +443,7 @@ export function buildPlatformAgentInputs(item, options = {}) {
     reviewContext: options.reviewContext || item.reviewContext || '',
     memoryContext: options.memoryContext || item.memoryContext || '',
     statusContext: options.statusContext || item.statusContext || '',
+    followupContext: options.followupContext || item.followupContext || '',
   };
 }
 
