@@ -12,22 +12,26 @@ const SITE_CODE_TTL_SECONDS = 60;
 const CLI_LOGIN_CONFIRM_TTL_SECONDS = 600;
 const ACTIVE_EMPLOYEE_STATUS = 'active';
 
-export async function handleOAuthAuthorize(request, env, config) {
-  if (request.method !== 'GET') return authError(request, config, 'METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+export async function handleOAuthAuthorize(request, env, config, context = {}) {
+  if (request.method !== 'GET') {
+    return authError(request, config, context, 'METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  }
 
   const now = readNow(env);
   const stateInput = buildOAuthStateInput(new URL(request.url), config, now);
-  if (!stateInput) return authError(request, config, 'OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
+  if (!stateInput) {
+    return authError(request, config, context, 'OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
+  }
 
   if (stateInput.cliLoginId) {
     let cliLogin;
     try {
       cliLogin = await readCliLoginRecordForAuthorize(env, { loginId: stateInput.cliLoginId }, { now });
     } catch {
-      return authError(request, config, 'CLI_LOGIN_INVALID', 'CLI login request is invalid.', 400);
+      return authError(request, config, context, 'CLI_LOGIN_INVALID', 'CLI login request is invalid.', 400);
     }
     if (cliLogin.environment !== config.environment) {
-      return authError(request, config, 'CLI_LOGIN_ENV_MISMATCH', 'CLI login environment does not match.', 403);
+      return authError(request, config, context, 'CLI_LOGIN_ENV_MISMATCH', 'CLI login environment does not match.', 403);
     }
     stateInput.deviceCode = cliLogin.deviceCode;
   }
@@ -36,35 +40,35 @@ export async function handleOAuthAuthorize(request, env, config) {
   if (sessionRedirect) return sessionRedirect;
 
   if (!config.ssoAuthorizationUrl || !config.ssoClientId) {
-    return authError(request, config, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
+    return authError(request, config, context, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
   }
 
   let created;
   try {
     created = await createOAuthStateRecord(env, stateInput);
   } catch {
-    return authError(request, config, 'OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
+    return authError(request, config, context, 'OAUTH_AUTHORIZE_INVALID', 'OAuth authorize request is invalid.', 400);
   }
 
   try {
     return safeRedirect(buildSsoAuthorizeUrl(config, created.publicState), 302);
   } catch {
-    return authError(request, config, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
+    return authError(request, config, context, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
   }
 }
 
-export async function handleOAuthCallback(request, env, config) {
-  if (request.method !== 'GET') return authError(request, config, 'METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+export async function handleOAuthCallback(request, env, config, context = {}) {
+  if (request.method !== 'GET') return authError(request, config, context, 'METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
 
   const url = new URL(request.url);
   const code = requiredQuery(url, 'code');
   const publicState = requiredQuery(url, 'state');
   if (!code || !publicState) {
-    return authError(request, config, 'OAUTH_CALLBACK_INVALID', 'OAuth callback request is invalid.', 400);
+    return authError(request, config, context, 'OAUTH_CALLBACK_INVALID', 'OAuth callback request is invalid.', 400);
   }
 
   if (!ssoExchangeIsConfigured(env, config)) {
-    return authError(request, config, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
+    return authError(request, config, context, 'SSO_PROVIDER_UNCONFIGURED', 'SSO provider is not configured.', 503);
   }
 
   const now = readNow(env);
@@ -72,37 +76,58 @@ export async function handleOAuthCallback(request, env, config) {
   try {
     consumedState = await consumeOAuthStateRecord(env, publicState, { now, environment: config.environment });
   } catch (error) {
-    return authError(request, config, 'OAUTH_STATE_INVALID', 'OAuth state is invalid.', statusForStateError(error));
+    return authError(
+      request,
+      config,
+      context,
+      'OAUTH_STATE_INVALID',
+      'OAuth state is invalid.',
+      statusForStateError(error)
+    );
   }
 
   let profile;
+  let accessToken;
   try {
     const token = await fetchSsoToken(env, config, { code });
-    const accessToken = normalizeAccessToken(token);
+    accessToken = normalizeAccessToken(token);
+  } catch {
+    return authError(request, config, context, 'SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502, {
+      reason: 'sso_token_unavailable',
+      step: 'sso.token',
+      details: { providerEndpointType: 'sso_token' },
+    });
+  }
+
+  try {
     const rawProfile = await fetchSsoProfile(env, config, { accessToken });
     profile = normalizeSsoProfile(rawProfile);
   } catch {
-    return authError(request, config, 'SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502);
+    return authError(request, config, context, 'SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502, {
+      reason: 'sso_profile_unavailable',
+      step: 'sso.profile',
+      details: { providerEndpointType: 'sso_profile' },
+    });
   }
 
-  if (!profile.userId) return authError(request, config, 'SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
+  if (!profile.userId) return authError(request, config, context, 'SSO_PROFILE_INVALID', 'SSO profile is invalid.', 502);
 
   let authoritativeProfile;
   try {
     authoritativeProfile = mergeSyncedUserAuthority(profile, await syncSsoUserProfile(env, profile, now));
   } catch {
-    return authError(request, config, 'SSO_USER_SYNC_FAILED', 'SSO user could not be synced.', 502);
+    return authError(request, config, context, 'SSO_USER_SYNC_FAILED', 'SSO user could not be synced.', 502);
   }
 
   if (authoritativeProfile.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) {
-    return authError(request, config, 'SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
+    return authError(request, config, context, 'SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
   }
 
   let authSession;
   try {
     authSession = await createAuthSession(env, config, authoritativeProfile.userId, now);
   } catch {
-    return authError(request, config, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
+    return authError(request, config, context, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
 
   if (consumedState.kind === 'cli') {
@@ -118,6 +143,7 @@ export async function handleOAuthCallback(request, env, config) {
       return authError(
         request,
         config,
+        context,
         'CLI_LOGIN_CONFIRM_CREATE_FAILED',
         'CLI login confirmation could not be created.',
         500
@@ -150,7 +176,7 @@ export async function handleOAuthCallback(request, env, config) {
     );
     return response;
   } catch {
-    return authError(request, config, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
+    return authError(request, config, context, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
 }
 
@@ -516,12 +542,14 @@ function jsonDoRequest(url, body) {
   });
 }
 
-function authError(request, config, code, message, status, action) {
-  if (!wantsHtml(request)) return jsonError(code, message, status, action);
+function authError(request, config, context, code, message, status, actionOrOptions) {
+  if (!wantsHtml(request)) return jsonError(code, message, status, actionOrOptions);
+  const detail = ['状态详情：' + code];
+  if (context.requestId) detail.push('请求 ID：' + context.requestId);
   return browserPageResponse({
     title: '登录没有完成',
     message: '这次登录链接可能已经过期或已经使用过。重新打开站点或重新执行登录操作即可再次验证。',
-    detail: `状态详情：${code}`,
+    detail: detail.join('；'),
     status,
     actionHref: `${config.authBase}/.xd-pages/auth/authorize`,
     actionLabel: '重新验证',
@@ -865,6 +893,8 @@ async function fetchSsoToken(env, config, { code }) {
   }
 
   const url = new URL(config.ssoTokenUrl);
+  // Current XD SSO CAS endpoints require sensitive OAuth values in query params.
+  // Keep diagnostics to endpoint type/status only; never record or return this URL.
   url.searchParams.set('code', code);
   url.searchParams.set('client_id', config.ssoClientId);
   url.searchParams.set('client_secret', config.ssoClientSecret);
@@ -887,6 +917,8 @@ async function fetchSsoProfile(env, config, { accessToken }) {
   if (typeof env?.fetchSsoProfile === 'function') return env.fetchSsoProfile({ accessToken });
 
   const url = new URL(config.ssoProfileUrl);
+  // Current XD SSO CAS profile lookup requires the access token in query params.
+  // Keep diagnostics to endpoint type/status only; never record or return this URL.
   url.searchParams.set('access_token', accessToken);
 
   const response = await fetch(url, {

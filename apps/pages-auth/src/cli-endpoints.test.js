@@ -255,7 +255,12 @@ test('confirm rejects cross-origin form posts before touching CLI transaction', 
   );
 
   assert.equal(response.status, 403);
-  assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONFIRM_ORIGIN_FORBIDDEN');
+  assert.deepEqual((await response.json()).error, {
+    code: 'CLI_LOGIN_CONFIRM_ORIGIN_FORBIDDEN',
+    message: 'CLI login confirmation origin is not allowed.',
+    reason: 'cli_login_confirm_forbidden',
+    step: 'cli.confirm',
+  });
   assert.equal(confirmed, false);
 });
 
@@ -415,7 +420,12 @@ test('confirm rejects missing confirmation token before touching CLI transaction
   );
 
   assert.equal(response.status, 403);
-  assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONFIRM_TOKEN_FORBIDDEN');
+  assert.deepEqual((await response.json()).error, {
+    code: 'CLI_LOGIN_CONFIRM_TOKEN_FORBIDDEN',
+    message: 'CLI login confirmation token is not allowed.',
+    reason: 'cli_login_confirm_forbidden',
+    step: 'cli.confirm',
+  });
   assert.equal(confirmed, false);
 });
 
@@ -488,7 +498,12 @@ test('poll with wrong secret does not consume transaction', async () => {
   const wrongResponse = await handleCliLoginPoll(pollRequest('cli_test', 'wrong-secret'), env, config);
 
   assert.equal(wrongResponse.status, 401);
-  assert.equal((await wrongResponse.json()).error.code, 'CLI_LOGIN_INVALID');
+  assert.deepEqual((await wrongResponse.json()).error, {
+    code: 'CLI_LOGIN_INVALID',
+    message: 'CLI login request is invalid.',
+    reason: 'cli_login_invalid_or_expired',
+    step: 'cli.poll',
+  });
   assert.equal(consumed, false);
 
   const okResponse = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, config);
@@ -573,7 +588,12 @@ test('poll after confirmation returns signed CLI token once', async () => {
   const repeatedResponse = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, config);
 
   assert.equal(repeatedResponse.status, 409);
-  assert.equal((await repeatedResponse.json()).error.code, 'CLI_LOGIN_CONSUMED');
+  assert.deepEqual((await repeatedResponse.json()).error, {
+    code: 'CLI_LOGIN_CONSUMED',
+    message: 'CLI login has already been consumed.',
+    reason: 'cli_login_invalid_or_expired',
+    step: 'cli.poll',
+  });
 });
 
 test('poll maps Durable Object consumed responses to CLI_LOGIN_CONSUMED', async () => {
@@ -595,7 +615,12 @@ test('poll maps Durable Object consumed responses to CLI_LOGIN_CONSUMED', async 
   const response = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, readAuthConfig(env));
 
   assert.equal(response.status, 409);
-  assert.equal((await response.json()).error.code, 'CLI_LOGIN_CONSUMED');
+  assert.deepEqual((await response.json()).error, {
+    code: 'CLI_LOGIN_CONSUMED',
+    message: 'CLI login has already been consumed.',
+    reason: 'cli_login_invalid_or_expired',
+    step: 'cli.poll',
+  });
 });
 
 function assertNoCoolToneFragments(text) {

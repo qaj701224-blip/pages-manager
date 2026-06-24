@@ -369,7 +369,12 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
   const repeatedText = await repeatedResponse.text();
   assert.equal(repeatedText.includes('oauth-code'), false);
   assert.equal(repeatedText.includes('state-secret'), false);
-  assert.equal(JSON.parse(repeatedText).error.code, 'OAUTH_STATE_INVALID');
+  assert.deepEqual(JSON.parse(repeatedText).error, {
+    code: 'OAUTH_STATE_INVALID',
+    message: 'OAuth state is invalid.',
+    reason: 'oauth_state_invalid_or_expired',
+    step: 'oauth.state',
+  });
 });
 
 test('callback exchanges code with configured SSO HTTP endpoints and canonicalizes company profile', async () => {
@@ -477,6 +482,112 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
       departments: [],
       sessionVersion: 1,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('callback SSO HTTP endpoint failures return public diagnostics without provider URL data', async () => {
+  const oauthStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('provider unavailable', { status: 503 });
+
+  try {
+    const env = testEnv({
+      SSO_TOKEN_URL: 'https://sso.example.test/oauth/accessToken',
+      SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
+      SSO_CLIENT_SECRET: 'test-client-secret',
+      consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    });
+    const response = await handleOAuthCallback(
+      new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+      env,
+      readAuthConfig(env)
+    );
+
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.deepEqual(JSON.parse(text).error, {
+      code: 'SSO_EXCHANGE_FAILED',
+      message: 'SSO exchange failed.',
+      reason: 'sso_token_unavailable',
+      step: 'sso.token',
+      details: {
+        providerEndpointType: 'sso_token',
+      },
+    });
+    assert.equal(text.includes('oauth-code'), false);
+    assert.equal(text.includes('state-secret'), false);
+    assert.equal(text.includes('test-client-secret'), false);
+    assert.equal(text.includes('sso.example.test'), false);
+    assert.equal(text.includes('provider unavailable'), false);
+    assert.equal(text.includes('internalReason'), false);
+    assert.equal(text.includes('internalStep'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('callback SSO profile failures return profile diagnostics without provider URL data', async () => {
+  const oauthStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const requestUrl = new URL(url);
+    if (requestUrl.origin + requestUrl.pathname === 'https://sso.example.test/oauth/accessToken') {
+      return Response.json({ access_token: 'sso-access-token' });
+    }
+    return new Response('profile unavailable', { status: 503 });
+  };
+
+  try {
+    const env = testEnv({
+      SSO_TOKEN_URL: 'https://sso.example.test/oauth/accessToken',
+      SSO_PROFILE_URL: 'https://sso.example.test/oauth/profile',
+      SSO_CLIENT_SECRET: 'test-client-secret',
+      consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    });
+    const response = await handleOAuthCallback(
+      new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+      env,
+      readAuthConfig(env)
+    );
+
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.deepEqual(JSON.parse(text).error, {
+      code: 'SSO_EXCHANGE_FAILED',
+      message: 'SSO exchange failed.',
+      reason: 'sso_profile_unavailable',
+      step: 'sso.profile',
+      details: {
+        providerEndpointType: 'sso_profile',
+      },
+    });
+    assert.equal(text.includes('oauth-code'), false);
+    assert.equal(text.includes('state-secret'), false);
+    assert.equal(text.includes('sso-access-token'), false);
+    assert.equal(text.includes('profile unavailable'), false);
+    assert.equal(text.includes('sso.example.test'), false);
+    assert.equal(text.includes('internalReason'), false);
+    assert.equal(text.includes('internalStep'), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -816,7 +927,12 @@ test('callback returns provider-unconfigured error when SSO hooks are absent', a
   );
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error.code, 'SSO_PROVIDER_UNCONFIGURED');
+  assert.deepEqual((await response.json()).error, {
+    code: 'SSO_PROVIDER_UNCONFIGURED',
+    message: 'SSO provider is not configured.',
+    reason: 'sso_token_unavailable',
+    step: 'sso.provider',
+  });
 });
 
 function testEnv(overrides = {}) {
