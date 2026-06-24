@@ -117,8 +117,9 @@ function shouldIgnoreExecutorCallback(existing = {}, stageResult = '', patch = {
   ) {
     return true;
   }
-  if (stageResult === 'preview_deployed' && patch.headSha && existing.headSha && !shaMatches(existing.headSha, patch.headSha)) {
-    return true;
+  if (stageResult === 'preview_deployed') {
+    if (!patch.headSha || !existing.headSha) return true;
+    if (!shaMatches(existing.headSha, patch.headSha)) return true;
   }
   return false;
 }
