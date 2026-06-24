@@ -445,6 +445,32 @@ test('rejects forbidden generated paths and writes sanitized diagnostic', async 
   }
 });
 
+test('rejects local env and pages config files', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-local-env-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    for (const forbiddenPath of ['.staging.env', '.ack-preview.env', 'demo/.pages.json']) {
+      await assert.rejects(
+        () =>
+          runPlatformCodingAgent({
+            env,
+            async fetchImpl() {
+              return responseFor({
+                files: [{ path: forbiddenPath, content: 'TOKEN=placeholder\n' }],
+                summary: 'Bad output.',
+              });
+            },
+          }),
+        /forbidden/
+      );
+    }
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('rejects secret-looking generated content', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-secret-'));
   const previousCwd = process.cwd();
@@ -669,6 +695,54 @@ test('tool loop rejects unsafe command and allows the model to recover', async (
     const retryRequest = calls[1];
     const readme = await readFile(path.join(dir, 'README.md'), 'utf8');
     assert.match(retryRequest.messages.at(-1).content, /not allowed/);
+    assert.match(readme, /Recovered/);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('tool loop rejects generic node execution and allows the model to recover', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-node-command-'));
+  const previousCwd = process.cwd();
+  const calls = [];
+  try {
+    await initGitRepo(dir);
+    process.chdir(dir);
+    await writeFile(path.join(dir, 'README.md'), '# Repo\n\nOld.\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'baseline'], { cwd: dir, stdio: 'ignore' });
+
+    const responses = [
+      { action: 'run_command', cmd: 'node', args: ['-e', 'console.log(process.env.AGENT_CODE_API_KEY)'] },
+      {
+        action: 'apply_patch',
+        patch: [
+          'diff --git a/README.md b/README.md',
+          '--- a/README.md',
+          '+++ b/README.md',
+          '@@ -1,3 +1,3 @@',
+          ' # Repo',
+          ' ',
+          '-Old.',
+          '+Recovered.',
+          '',
+        ].join('\n'),
+      },
+      { action: 'finish', summary: 'Recovered.', tests: [] },
+    ];
+
+    await runPlatformCodingAgent({
+      env,
+      async fetchImpl(url, request) {
+        calls.push(JSON.parse(request.body));
+        return responseFor(responses[calls.length - 1]);
+      },
+    });
+
+    const retryRequest = calls[1];
+    const readme = await readFile(path.join(dir, 'README.md'), 'utf8');
+    assert.match(retryRequest.messages.at(-1).content, /node is limited to --version/);
     assert.match(readme, /Recovered/);
   } finally {
     process.chdir(previousCwd);

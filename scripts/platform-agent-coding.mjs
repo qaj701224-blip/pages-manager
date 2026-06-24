@@ -292,7 +292,7 @@ function buildCodingMessages(context) {
         '{"action":"search","query":"text or regex","glob":"optional path glob"}',
         '{"action":"read_file","path":"repo/relative/path","startLine":1,"maxLines":220}',
         '{"action":"apply_patch","patch":"unified git diff"}',
-        '{"action":"run_command","cmd":"node|pnpm|npm|npx|rg|git","args":["safe","args"]}',
+        '{"action":"run_command","cmd":"node|pnpm|npm|npx|git","args":["safe","args"]}',
         '{"action":"git_diff"}',
         '{"action":"git_status"}',
         '{"action":"finish","summary":"short summary","tests":["test command and result"]}',
@@ -301,7 +301,7 @@ function buildCodingMessages(context) {
         'Every repository behavior/code change must include a matching documentation update; ordinary Markdown docs must stay under 700 lines.',
         'Do not include secrets, tokens, cookies, private credentials, local env values, or real internal account data.',
         'Do not modify production deploy behavior, Cloudflare runtime resources, Aliyun credentials, ACK/K8s secrets, or user site content unless the issue explicitly asks and risk gate has approved it.',
-        'Do not write files under node_modules, .git, .pages-artifacts, dist, build outputs, local env files, or wrangler.toml.',
+        'Do not write files under node_modules, .git, .pages-artifacts, dist, build outputs, local env files, .pages.json, or wrangler.toml.',
         'Prefer existing project patterns, node:test coverage, and the documented architecture.',
       ].join('\n'),
     },
@@ -342,12 +342,16 @@ function normalizeRepoPath(rawPath) {
   return normalized;
 }
 
+function isLocalEnvFile(path) {
+  const baseName = posix.basename(path);
+  return baseName === '.env' || baseName.startsWith('.env.') || baseName.endsWith('.env');
+}
+
 function isForbiddenPath(path) {
   return (
-    path === '.env' ||
-    path.startsWith('.env.') ||
-    path.endsWith('/.env') ||
-    path.includes('/.env.') ||
+    isLocalEnvFile(path) ||
+    path === '.pages.json' ||
+    path.endsWith('/.pages.json') ||
     path.endsWith('wrangler.toml') ||
     path.startsWith('.git/') ||
     path.startsWith('node_modules/') ||
@@ -747,13 +751,22 @@ function ensureStringArray(value, name) {
 }
 
 function assertSafeCommand(cmd, args) {
-  if (!['node', 'pnpm', 'npm', 'npx', 'rg', 'git'].includes(cmd)) {
+  if (!['node', 'pnpm', 'npm', 'npx', 'git'].includes(cmd)) {
     throw new Error(`run_command executable is not allowed: ${cmd}`);
+  }
+  if (cmd === 'node' && !(args.length === 1 && ['--version', '-v'].includes(args[0]))) {
+    throw new Error('run_command node is limited to --version');
+  }
+  if (['pnpm', 'npm', 'npx'].includes(cmd) && !(args.length === 1 && ['--version', '-v'].includes(args[0]))) {
+    throw new Error(`run_command ${cmd} is limited to --version`);
   }
   if (cmd === 'git') {
     const subcommand = args[0] || '';
     if (!['diff', 'status', 'show', 'ls-files', 'grep'].includes(subcommand)) {
       throw new Error(`run_command git subcommand is not allowed: ${subcommand}`);
+    }
+    if (args.some((arg) => /credential|config|remote|submodule|worktree/i.test(arg))) {
+      throw new Error('run_command git args include a sensitive or mutating git operation');
     }
   }
   for (const arg of args) {
@@ -790,6 +803,12 @@ function runSearch(action, limits) {
     '!.env*',
     '--glob',
     '!**/.env*',
+    '--glob',
+    '!*.env',
+    '--glob',
+    '!**/*.env',
+    '--glob',
+    '!**/.pages.json',
     '--glob',
     '!**/wrangler.toml',
   ];

@@ -95,9 +95,7 @@ jobs:
       MEMORY_CONTEXT: ${{ inputs.memoryContext }}
       STATUS_CONTEXT: ${{ inputs.statusContext }}
       PAGES_CALLBACK_URL: ${{ inputs.callbackUrl || vars.PAGES_GATEWAY_CALLBACK_URL }}
-      PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
       PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
-      AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
     steps:
       - name: Checkout trusted helper
         uses: actions/checkout@v6
@@ -119,6 +117,7 @@ jobs:
           ref: ${{ env.BASE_REF }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Validate platform inputs
         shell: bash
@@ -201,12 +200,14 @@ jobs:
           node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-running.json
         env:
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
 
       - name: Run platform coding agent
         shell: bash
         env:
           AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
           AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+          AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
         run: |
           set -euo pipefail
           if [[ -z "${AGENT_CODE_API_KEY:-}" ]]; then
@@ -220,8 +221,8 @@ jobs:
         run: |
           set -euo pipefail
           changed_files="$(git status --porcelain --untracked-files=all | sed -E 's/^...//')"
-          if printf '%s\n' "$changed_files" | grep -E '(^|/)(\.env|\.env\..*|wrangler\.toml)$'; then
-            echo "Refusing to commit local env or wrangler secret files." >&2
+          if printf '%s\n' "$changed_files" | grep -E '(^|/)(\.env(\..*)?|.*\.env|wrangler\.toml|\.pages\.json)$'; then
+            echo "Refusing to commit local env, wrangler, or pages config secret files." >&2
             exit 1
           fi
           if printf '%s\n' "$changed_files" | grep -E '(^|/)(node_modules|dist|build|\.pages-artifacts)(/|$)'; then
@@ -244,6 +245,11 @@ jobs:
           fi
 
       - name: Run platform checks
+        env:
+          AGENT_CODE_API_KEY: ''
+          PAGES_CALLBACK_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
         run: |
           pnpm lint
           pnpm test
@@ -251,6 +257,8 @@ jobs:
       - name: Commit changes
         id: commit
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "pages-platform-agent"
@@ -262,7 +270,7 @@ jobs:
             exit 1
           fi
           git commit -m "feat: 处理平台需求 ${PLATFORM_DEV_ITEM_ID}"
-          git push origin "HEAD:${{ steps.branch.outputs.branch }}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${{ steps.branch.outputs.branch }}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -349,10 +357,13 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
 
       - name: Callback failure
         if: failure() && env.PAGES_CALLBACK_URL != ''
         shell: bash
+        env:
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p .pages-artifacts

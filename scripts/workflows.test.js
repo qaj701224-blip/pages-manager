@@ -71,11 +71,7 @@ test('deploy workflows keep production manual and separate wrangler token from r
   const productionTriggers = production.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
 
   assert.match(productionTriggers, /^ {2}workflow_dispatch:/m, 'production deploy is manually dispatchable');
-  assert.doesNotMatch(
-    productionTriggers,
-    /^ {2}(?!workflow_dispatch:)\S/m,
-    'production deploy has no non-manual trigger',
-  );
+  assert.doesNotMatch(productionTriggers, /^ {2}(?!workflow_dispatch:)\S/m, 'production deploy has no non-manual trigger');
   assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]/, 'staging deploy keeps staging push trigger');
   assert.match(staging, /\n {4}paths:/, 'staging deploy is path-scoped to v1 platform files');
   assert.doesNotMatch(staging, /\n {4}paths-ignore:/, 'staging deploy must not run for arbitrary v2 changes');
@@ -99,9 +95,11 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.match(classify, /^\s*workflow_dispatch:/m);
   assert.match(classify, /^\s*pull_request:/m);
   assert.doesNotMatch(classify, /^\s*push:/m);
-  assert.ok(classify.includes(
-    'Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs.',
-  ));
+  assert.ok(
+    classify.includes(
+      'Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs.'
+    )
+  );
   assert.match(classify, /Site PRs must modify exactly one site root/);
   assert.match(classify, /Site PR must only modify expected site root/);
   assert.match(classify, /echo "lane=site"/);
@@ -128,9 +126,9 @@ test('PR classification, platform CI, and site check keep platform and site lane
   assert.match(ci, /name: Detect platform changes/);
   assert.match(ci, /site_changed=false/);
   assert.match(ci, /platform_changed=false/);
-  assert.ok(ci.includes(
-    'Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs.',
-  ));
+  assert.ok(
+    ci.includes('Mixed PRs are not supported: split personal site changes and PageManager platform changes into separate PRs.')
+  );
   assert.match(ci, /elif \[\[ "\$EVENT_NAME" == "push" \]\]; then[\s\S]*platform_changed=true/);
   assert.match(ci, /Skip platform CI for personal-site-only changes/);
   assert.match(ci, /Personal-site-only PR; PR Classify and Site Check own validation\./);
@@ -171,25 +169,17 @@ test('staging sync classifies files before generated site branch skip', () => {
   const workflow = readWorkflow('.github/workflows/sync-master-pr-to-staging.yml');
   const fileListIndex = workflow.indexOf('files="$(gh api --paginate');
   const mixedPrIndex = workflow.indexOf('Mixed PRs are not supported:');
-  const siteBranchSkipIndex = workflow.indexOf(
-    'head branch is a generated user-site branch and PR only touches sites/**',
-  );
+  const siteBranchSkipIndex = workflow.indexOf('head branch is a generated user-site branch and PR only touches sites/**');
 
   assert.notEqual(fileListIndex, -1, 'staging sync reads PR file list');
   assert.notEqual(mixedPrIndex, -1, 'staging sync rejects mixed PRs');
   assert.notEqual(siteBranchSkipIndex, -1, 'staging sync still reports generated site branch skips');
-  assert.ok(
-    fileListIndex < siteBranchSkipIndex,
-    'generated site branch skip must happen after file classification',
-  );
-  assert.ok(
-    mixedPrIndex < siteBranchSkipIndex,
-    'mixed platform/site PRs must fail before generated branch skip can apply',
-  );
+  assert.ok(fileListIndex < siteBranchSkipIndex, 'generated site branch skip must happen after file classification');
+  assert.ok(mixedPrIndex < siteBranchSkipIndex, 'mixed platform/site PRs must fail before generated branch skip can apply');
   assert.doesNotMatch(
     workflow,
     /if \[\[ "\$HEAD_REF" == sites\/\* \]\]; then\s+echo "skip=true"[\s\S]*?exit 0\s+fi\s+files="\$\(gh api/,
-    'generated site branch name must not skip before reading PR files',
+    'generated site branch name must not skip before reading PR files'
   );
 });
 
@@ -209,7 +199,11 @@ test('platform agent commits newly generated files and scans untracked paths', (
   const workflow = readWorkflow('.github/workflows/platform-agent.yml');
 
   assert.match(workflow, /changed_files="\$\(git status --porcelain --untracked-files=all \| sed -E 's\/\^\.\.\.\/\/'\)"/);
-  assert.match(workflow, /printf '%s\\n' "\$changed_files" \| grep -E '\(\^\|\/\)\(\\\.env\|\\\.env\\\.\.\*\|wrangler\\\.toml\)\$'/);
+  assert.match(workflow, /printf '%s\\n' "\$changed_files" \| grep -E/);
+  assert.match(workflow, /\\\.env\(\\\.\.\*\)\?/);
+  assert.match(workflow, /\.\*\\\.env/);
+  assert.match(workflow, /wrangler\\\.toml/);
+  assert.match(workflow, /\\\.pages\\\.json/);
   assert.match(workflow, /git add -A -- \. ':\(exclude\)\.pages-artifacts' ':\(exclude\)\.pages-trusted'/);
   assert.match(workflow, /if git diff --cached --quiet; then/);
   assert.doesNotMatch(workflow, /if git diff --quiet; then[\s\S]*git add -A -- \./);
@@ -232,11 +226,7 @@ test('pages v2 deploy workflows keep production manual and staging scoped to v2 
   const productionTriggers = production.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
 
   assert.match(productionTriggers, /^ {2}workflow_dispatch:/m, 'pages v2 production deploy is manual');
-  assert.doesNotMatch(
-    productionTriggers,
-    /^ {2}(?!workflow_dispatch:)\S/m,
-    'pages v2 production has no non-manual trigger',
-  );
+  assert.doesNotMatch(productionTriggers, /^ {2}(?!workflow_dispatch:)\S/m, 'pages v2 production has no non-manual trigger');
   assert.match(staging, /\n {2}push:\n {4}branches: \[staging\]/, 'pages v2 staging deploys on staging push');
   assert.match(staging, /- 'apps\/pages-api\/\*\*'/);
   assert.match(staging, /- 'apps\/pages-auth\/\*\*'/);
@@ -271,67 +261,64 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-api ${environment}`),
-      `${name} renders pages-api ${environment} template`,
+      `${name} renders pages-api ${environment} template`
     );
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-auth ${environment}`),
-      `${name} renders pages-auth ${environment} template`,
+      `${name} renders pages-auth ${environment} template`
     );
     assert.match(
       workflow,
       new RegExp(
-        String.raw`name: Generate Pages Auth Wrangler config[\s\S]*`
-          + String.raw`D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}[\s\S]*`
-          + String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-auth`,
+        String.raw`name: Generate Pages Auth Wrangler config[\s\S]*` +
+          String.raw`D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}[\s\S]*` +
+          String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-auth`
       ),
-      `${name} gives pages-auth the shared metadata D1 id`,
+      `${name} gives pages-auth the shared metadata D1 id`
     );
     assert.match(
       workflow,
       /name: Apply Pages API D1 migrations\n {8}if: .+pages-auth/,
-      `${name} applies D1 migrations for pages-auth deploys`,
+      `${name} applies D1 migrations for pages-auth deploys`
     );
     assert.ok(
       workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-auth ${environment}`) <
         workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy'),
-      `${name} renders auth before deploying auth`,
+      `${name} renders auth before deploying auth`
     );
     assert.ok(
       workflow.indexOf(
-        `wrangler d1 migrations apply ${
-          environment === 'staging' ? 'pages-v2-metadata-staging' : 'pages-v2-metadata'
-        } --remote`,
-      ) <
-        workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy'),
-      `${name} applies D1 migrations before deploying auth`,
+        `wrangler d1 migrations apply ${environment === 'staging' ? 'pages-v2-metadata-staging' : 'pages-v2-metadata'} --remote`
+      ) < workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy'),
+      `${name} applies D1 migrations before deploying auth`
     );
     assert.ok(
       workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy') <
         workflow.indexOf('pnpm --dir apps/pages-api exec wrangler deploy'),
-      `${name} deploys auth before api because api has a PAGES_AUTH service binding`,
+      `${name} deploys auth before api because api has a PAGES_AUTH service binding`
     );
     assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} prepare`));
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-router ${environment}`),
-      `${name} renders pages-router ${environment} template after slot provisioning`,
+      `${name} renders pages-router ${environment} template after slot provisioning`
     );
     assert.ok(
       workflow.indexOf(`node scripts/provision-pages-v2-slots.mjs ${environment} prepare`) <
         workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`),
-      `${name} provisions slots before rendering router bindings`,
+      `${name} provisions slots before rendering router bindings`
     );
     assert.ok(
       workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`) <
         workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy'),
-      `${name} renders router before deploying router`,
+      `${name} renders router before deploying router`
     );
     assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} activate`));
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/kv-gateway ${environment}`),
-      `${name} renders kv-gateway ${environment} template`,
+      `${name} renders kv-gateway ${environment} template`
     );
     assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ vars\.CLOUDFLARE_ACCOUNT_ID \}\}/);
     assert.match(workflow, /D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}/);
@@ -340,7 +327,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /SITE_DATA_KV_ID: \$\{\{ vars\.PAGES_V2_SITE_DATA_KV_ID \}\}/);
     assert.doesNotMatch(
       workflow,
-      /secrets\.(?:CLOUDFLARE_ACCOUNT_ID|PAGES_V2_D1_DATABASE_ID|PAGES_V2_ROUTE_SNAPSHOTS_KV_ID|PAGES_V2_SITE_DATA_KV_ID)/,
+      /secrets\.(?:CLOUDFLARE_ACCOUNT_ID|PAGES_V2_D1_DATABASE_ID|PAGES_V2_ROUTE_SNAPSHOTS_KV_ID|PAGES_V2_SITE_DATA_KV_ID)/
     );
     assert.doesNotMatch(workflow, /PAGES_EXECUTION_MODE: \$\{\{ vars\.PAGES_EXECUTION_MODE \}\}/);
     assert.match(workflow, /provision-pages-v2-slots\.mjs/);
@@ -348,24 +335,21 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /ACCESS_KEY_ACTIVE_PEPPER_ID: pepper_2026_06/);
     assert.match(workflow, /ACCESS_KEY_PEPPERS: "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
     assert.match(workflow, /PAGES_SESSION_JWT_ACTIVE_KID: pages-session-2026-06/);
-    assert.match(
-      workflow,
-      /PAGES_SESSION_JWT_KEYS: "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/,
-    );
+    assert.match(workflow, /PAGES_SESSION_JWT_KEYS: "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
     assert.match(workflow, /PAGES_CAP_JWT_ACTIVE_KID: pages-cap-2026-06/);
     assert.match(workflow, /PAGES_CAP_JWT_KEYS: "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"/);
     assert.doesNotMatch(workflow, /vars\.(?:ACCESS_KEY|PAGES_SESSION_JWT|PAGES_CAP_JWT)/);
     assert.doesNotMatch(
       workflow,
       new RegExp(
-        String.raw`vars\.(?:PAGES_EXECUTION_MODE|PAGES_NORMAL_WORKER_SLOT_COUNT`
-          + String.raw`|WFP_COMPATIBILITY_DATE|SSO_AUTHORIZATION_URL|SSO_TOKEN_URL|SSO_PROFILE_URL|SSO_CLIENT_ID`
-          + String.raw`|OAUTH_STATE_TTL_SECONDS`
-          + String.raw`|CLI_LOGIN_TTL_SECONDS|AUTH_SESSION_IDLE_TTL_SECONDS|AUTH_SESSION_ABSOLUTE_TTL_SECONDS`
-          + String.raw`|SITE_SESSION_IDLE_TTL_SECONDS|SITE_SESSION_ABSOLUTE_TTL_SECONDS`
-          + String.raw`|ROUTE_CACHE_TTL_SECONDS|SITE_SESSION_FRESHNESS_TTL_SECONDS`
-          + String.raw`|INTERNAL_WORKER_JWT_TTL_SECONDS)`,
-      ),
+        String.raw`vars\.(?:PAGES_EXECUTION_MODE|PAGES_NORMAL_WORKER_SLOT_COUNT` +
+          String.raw`|WFP_COMPATIBILITY_DATE|SSO_AUTHORIZATION_URL|SSO_TOKEN_URL|SSO_PROFILE_URL|SSO_CLIENT_ID` +
+          String.raw`|OAUTH_STATE_TTL_SECONDS` +
+          String.raw`|CLI_LOGIN_TTL_SECONDS|AUTH_SESSION_IDLE_TTL_SECONDS|AUTH_SESSION_ABSOLUTE_TTL_SECONDS` +
+          String.raw`|SITE_SESSION_IDLE_TTL_SECONDS|SITE_SESSION_ABSOLUTE_TTL_SECONDS` +
+          String.raw`|ROUTE_CACHE_TTL_SECONDS|SITE_SESSION_FRESHNESS_TTL_SECONDS` +
+          String.raw`|INTERNAL_WORKER_JWT_TTL_SECONDS)`
+      )
     );
     assert.match(workflow, /PAGES_CAP_JWT_SECRET_202606: \$\{\{ secrets\.PAGES_CAP_JWT_SECRET_202606 \}\}/);
     assert.match(workflow, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
@@ -416,9 +400,9 @@ test('router slot expansion workflow is manual and only touches router slot reso
   assert.match(
     workflow,
     new RegExp(
-      String.raw`node --test scripts/provision-pages-v2-slots\.test\.js `
-        + String.raw`scripts/render-pages-v2-wrangler\.test\.js apps/pages-router/src/\*\.test\.js`,
-    ),
+      String.raw`node --test scripts/provision-pages-v2-slots\.test\.js ` +
+        String.raw`scripts/render-pages-v2-wrangler\.test\.js apps/pages-router/src/\*\.test\.js`
+    )
   );
   assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" plan/);
   assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" cleanup-plan/);
@@ -431,17 +415,17 @@ test('router slot expansion workflow is manual and only touches router slot reso
   assert.ok(
     workflow.indexOf('node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" prepare') <
       workflow.indexOf('node scripts/render-pages-v2-wrangler.mjs apps/pages-router "$TARGET_ENV"'),
-    'prepare happens before router config rendering',
+    'prepare happens before router config rendering'
   );
   assert.ok(
     workflow.indexOf('node scripts/render-pages-v2-wrangler.mjs apps/pages-router "$TARGET_ENV"') <
       workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy'),
-    'router config renders before deploy',
+    'router config renders before deploy'
   );
   assert.ok(
     workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy') <
       workflow.indexOf('node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" activate'),
-    'slots activate only after router deploy',
+    'slots activate only after router deploy'
   );
   assert.doesNotMatch(workflow, /pnpm --dir apps\/pages-api exec wrangler deploy/);
   assert.doesNotMatch(workflow, /pnpm --dir apps\/pages-auth exec wrangler deploy/);
@@ -503,7 +487,7 @@ test('ack preview deploy is manual and isolated from Cloudflare production deplo
   assert.match(triggers, /^ {2}workflow_dispatch:/m, 'ACK preview deploy is manually dispatchable');
   assert.match(
     triggers,
-    /component:[\s\S]*type: choice[\s\S]*- all[\s\S]*- gateway[\s\S]*- worker[\s\S]*- slack-agent[\s\S]*- slack-notifier/,
+    /component:[\s\S]*type: choice[\s\S]*- all[\s\S]*- gateway[\s\S]*- worker[\s\S]*- slack-agent[\s\S]*- slack-notifier/
   );
   assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'ACK preview deploy has no non-manual trigger');
   assert.match(workflow, /concurrency:\n {2}group: pages-manager-ack-preview\n {2}cancel-in-progress: false/);
@@ -527,7 +511,7 @@ test('ack preview deploy is manual and isolated from Cloudflare production deplo
   assert.match(
     workflow,
     /name: Validate target namespace access[\s\S]*name: Configure ACR docker auth/,
-    'K8s access is validated before ACR auth and image build',
+    'K8s access is validated before ACR auth and image build'
   );
   assert.doesNotMatch(workflow, /aliyun\/setup-aliyun-cli-action/);
   assert.match(workflow, /ALIYUN_ACCESS_KEY_ID/);

@@ -115,6 +115,7 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
 test('platform dev lane documents Slack-to-platform PR flow and isolates deployment secrets', () => {
   const doc = readDoc('docs/architecture/platform-dev-lane.md');
   const workflow = readDoc('.github/workflows/platform-agent.yml');
+  const jobEnvBlock = workflow.split('    steps:')[0] || '';
 
   assert.match(doc, /Platform Dev Lane/);
   assert.match(doc, /Site Publishing Lane/);
@@ -138,6 +139,9 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(workflow, /statusContext:/);
   assert.match(workflow, /effective_risk/);
   assert.match(workflow, /AGENT_CODE_API_KEY/);
+  assert.doesNotMatch(jobEnvBlock, /AGENT_CODE_API_KEY|PAGES_CALLBACK_TOKEN/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''[\s\S]*PAGES_CALLBACK_TOKEN: ''/);
   assert.match(workflow, /post-executor-callback\.js/);
   assert.match(workflow, /pnpm lint/);
   assert.match(workflow, /pnpm test/);
@@ -145,6 +149,8 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(workflow, /sensitive_paths/);
   assert.match(workflow, /deploy\//);
   assert.match(workflow, /High-risk paths require gate-approved Platform Dev work/);
+  assert.match(workflow, /\.\*\\\.env/);
+  assert.match(workflow, /\\\.pages\\\.json/);
   assert.match(workflow, /Potential secret detected/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
   assert.doesNotMatch(workflow, /pages-preview\.yml|deploy-pages-v2|Deploy Production/);
@@ -167,6 +173,10 @@ test('platform agent documentation tracks executor tool loop and merge boundary'
     assert.match(doc, new RegExp(`\`${action}\``));
     assert.match(script, new RegExp(`['"]${action}['"]`));
   }
+  assert.match(doc, /只允许版本查询/);
+  assert.match(doc, /清空 agent callback \/ coding token env/);
+  assert.match(script, /node is limited to --version/);
+  assert.match(script, /isLocalEnvFile/);
   assert.match(doc, /不直接合并 `master`/);
   assert.match(doc, /文档改动/);
   assert.match(doc, /700 行/);
