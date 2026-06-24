@@ -142,7 +142,16 @@ describe('slack agent', () => {
     assert.match(messages[0].content, new RegExp(`Policy package: ${SLACK_AGENT_POLICY_PACKAGE_VERSION}`));
     assert.match(messages[0].content, /Selected runtime skills:/);
     assert.match(messages[0].content, /conversationContext/);
+    assert.match(messages[0].content, /skill:routing-priority/);
+    assert.match(messages[0].content, /skill:tool-contract/);
+    assert.match(messages[0].content, /skill:card-intent/);
+    assert.match(messages[0].content, /skill:output-schema/);
+    assert.doesNotMatch(messages[0].content, /\n全局优先级：/);
+    assert.doesNotMatch(messages[0].content, /\nTool contract：/);
+    assert.doesNotMatch(messages[0].content, /\n输出合同：/);
     assert.ok(payload.selectedSkills.includes('conversation-context'));
+    assert.ok(payload.selectedSkills.includes('routing-priority'));
+    assert.ok(payload.selectedSkills.includes('card-intent'));
     assert.equal(payload.conversationContext.lastAssistantMessage.text, '当前会话里有 Issue #90。');
   });
 
