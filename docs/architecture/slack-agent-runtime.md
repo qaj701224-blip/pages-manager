@@ -632,6 +632,7 @@ slack-notifier 更新进度消息或追加图片消息
 - [ ] 每个 Slack event / interaction 都有非空 dedupe key。
 - [ ] interaction dedupe 包含单次点击 id 或完整 payload hash，不会把用户第二次合法点击误判成 retry。
 - [ ] Slack session 按 `(team_id, slack_user_id, session_key)` 隔离。
+- [ ] site follow-up 既能从 `activeJobId` 找任务，也能从 `activeWorkItemKind=site_publishing` + `activeWorkItemId` 找任务。
 - [ ] 同一 session 只有一个 running `AgentRun`。
 - [ ] 对话阶段 Agent 回复 `channel + message_ts + offset/sequence` 持久化，且不依赖 job 已创建。
 - [ ] delta 使用 `sequence` 或 offset 去重。
