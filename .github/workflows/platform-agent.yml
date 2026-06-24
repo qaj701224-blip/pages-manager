@@ -374,7 +374,7 @@ jobs:
           - Areas: ${AREAS}
           - Risk: ${RISK}
           - Gate approved: ${GATE_APPROVED}
-          - Issue: ${ISSUE_NUMBER:+#${ISSUE_NUMBER}}${ISSUE_NUMBER:-未关联}
+          - Issue: $(if [[ -n "${ISSUE_NUMBER}" ]]; then printf '#%s' "${ISSUE_NUMBER}"; else printf '未关联'; fi)
 
           ## 验证
 
