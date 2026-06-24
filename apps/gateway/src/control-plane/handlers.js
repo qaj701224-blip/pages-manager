@@ -227,6 +227,41 @@ function hasActiveSlackTarget(slackSession) {
   );
 }
 
+function interactionHandledBlocks({ header = '操作已处理', text = '', contextText = '', links = [] } = {}) {
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: header.slice(0, 150) } },
+    ...(text ? [{ type: 'section', text: { type: 'mrkdwn', text: text.slice(0, 2900) } }] : []),
+    ...(contextText ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: contextText.slice(0, 2900) }] }] : []),
+  ];
+  const elements = links
+    .filter((link) => link?.url && link?.text)
+    .slice(0, 3)
+    .map((link) => ({
+      type: 'button',
+      text: { type: 'plain_text', text: link.text },
+      url: link.url,
+      action_id: link.actionId || 'open_link',
+    }));
+  if (elements.length) blocks.push({ type: 'actions', elements });
+  return blocks;
+}
+
+async function updateInteractionAsHandled(env, body, session, options = {}) {
+  return updateSlackInteractionMessage(env, body, session, {
+    text: options.text || options.header || '操作已处理。',
+    blocks: interactionHandledBlocks(options),
+  });
+}
+
+function linksForWorkItem(item = {}) {
+  const workItem = item || {};
+  return [
+    { text: '查看 Issue', url: workItem.issueUrl || workItem.githubIssueUrl, actionId: 'open_issue' },
+    { text: '查看 PR', url: workItem.prUrl || workItem.githubPrUrl, actionId: 'open_pr' },
+    { text: '打开 Preview', url: workItem.previewUrl, actionId: 'open_preview' },
+  ];
+}
+
 function shouldAnalyzeSlackTurn(intake, slackSession) {
   if (NON_FOLLOWUP_ACTIONS.has(intake.action)) return false;
   if (intake.command && !intake.shouldCreateJob) return false;
@@ -1404,6 +1439,7 @@ async function handleSlackAppendDiagnosisCommentTool({
     ...(item.workItemKind === 'platform_dev' ? { workItemKind: 'platform_dev', workItemId: item.id } : { jobId: item.id }),
     ...(slackSession ? { slackSessionId: slackSession.id } : {}),
     ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    workItem: item,
     appendDiagnosis: appendResult,
     ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
   };
@@ -1498,6 +1534,7 @@ async function handleSlackHumanTriageTool({
     ...(item.workItemKind === 'platform_dev' ? { workItemKind: 'platform_dev', workItemId: item.id } : { jobId: item.id }),
     ...(slackSession ? { slackSessionId: slackSession.id } : {}),
     ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    workItem: item,
     humanTriage: result,
     ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
   };
@@ -1590,6 +1627,7 @@ async function handleSlackRetryWorkItemTool({
       : { jobId: retryResult.item?.id || item.id }),
     ...(slackSession ? { slackSessionId: slackSession.id } : {}),
     ...(agentRun ? { agentRunId: agentRun.id } : {}),
+    workItem: retryResult.item || item,
     retry: retryResult,
     ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
   };
@@ -2214,12 +2252,22 @@ export async function handleSlackInteractions(request, env) {
         skipDuplicate: false,
         slackSessionId: session?.id || rejected.slackSessionId || null,
       });
+      const gateCardUpdate = await updateInteractionAsHandled(env, body, session, {
+        header: '自动开发已停止',
+        text: '*处理结果*\n这个平台需求不会进入自动开发。',
+        contextText: '如需继续，可以在当前对话补充新的处理方式。',
+        links: [
+          { text: '查看 Issue', url: rejected.githubIssueUrl, actionId: 'open_issue' },
+          { text: '查看 PR', url: rejected.githubPrUrl, actionId: 'open_pr' },
+        ],
+      });
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '已记录：这个平台需求不会进入自动开发。',
         gate,
         platformDevItemId: rejected.id,
         ...(slackStatusNotification ? { slackStatusNotification } : {}),
+        ...(gateCardUpdate ? { gateCardUpdate } : {}),
       });
     }
 
@@ -2249,6 +2297,15 @@ export async function handleSlackInteractions(request, env) {
       skipDuplicate: false,
       slackSessionId: session?.id || approved.slackSessionId || null,
     });
+    const gateCardUpdate = await updateInteractionAsHandled(env, body, session, {
+      header: '自动开发已批准',
+      text: '*处理结果*\n已批准自动开发，任务正在进入后续处理。',
+      contextText: '后续进度会在当前对话更新。',
+      links: [
+        { text: '查看 Issue', url: approved.githubIssueUrl, actionId: 'open_issue' },
+        { text: '查看 PR', url: approved.githubPrUrl, actionId: 'open_pr' },
+      ],
+    });
     return slackAckResponse({
       response_type: 'ephemeral',
       text: workerStart?.started ? '已批准，自动开发已启动。' : '已批准，后续处理已排队。',
@@ -2256,6 +2313,7 @@ export async function handleSlackInteractions(request, env) {
       platformDevItemId: approved.id,
       ...(workerStart ? { workerStart } : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      ...(gateCardUpdate ? { gateCardUpdate } : {}),
     });
   }
 
@@ -2398,10 +2456,20 @@ export async function handleSlackInteractions(request, env) {
       slackAgentAnalysis: null,
       toolArgs: value,
     });
+    const cardUpdate =
+      result.action === 'append_diagnosis_comment'
+        ? await updateInteractionAsHandled(env, body, session, {
+            header: '诊断已追加',
+            text: '*处理结果*\n已把本轮诊断追加到 Issue。',
+            contextText: '后续可以继续在当前对话补充问题。',
+            links: linksForWorkItem(result.workItem),
+          })
+        : null;
     return slackAckResponse({
       response_type: 'ephemeral',
       text: result.replyText,
       ...result,
+      ...(cardUpdate ? { cardUpdate } : {}),
     });
   }
 
@@ -2430,10 +2498,20 @@ export async function handleSlackInteractions(request, env) {
       slackAgentAnalysis: null,
       toolArgs: value,
     });
+    const cardUpdate =
+      result.action === 'retry_work_item'
+        ? await updateInteractionAsHandled(env, body, session, {
+            header: '已请求重试',
+            text: '*处理结果*\n已请求重新处理这个任务。',
+            contextText: '后续进度会在当前对话更新。',
+            links: linksForWorkItem(result.workItem),
+          })
+        : null;
     return slackAckResponse({
       response_type: 'ephemeral',
       text: result.replyText,
       ...result,
+      ...(cardUpdate ? { cardUpdate } : {}),
     });
   }
 
@@ -2462,10 +2540,20 @@ export async function handleSlackInteractions(request, env) {
       slackAgentAnalysis: null,
       toolArgs: value,
     });
+    const cardUpdate =
+      result.action === 'human_triage'
+        ? await updateInteractionAsHandled(env, body, session, {
+            header: '已请求人工排查',
+            text: '*处理结果*\n已记录人工排查请求。',
+            contextText: '需要补充信息时，可以继续在当前对话回复。',
+            links: linksForWorkItem(result.workItem),
+          })
+        : null;
     return slackAckResponse({
       response_type: 'ephemeral',
       text: result.replyText,
       ...result,
+      ...(cardUpdate ? { cardUpdate } : {}),
     });
   }
 
@@ -2480,11 +2568,19 @@ export async function handleSlackInteractions(request, env) {
     }
 
     await failRunningSlackAgentRunsForClosedSession(store, session.id);
+    const activeWorkItem = await activeWorkItemForSlackSession(store, session);
     await store.closeSlackSession(session.id);
     await postSlackInteractionThreadReply(env, body, session, '已关闭当前会话。继续发新需求会开启新任务。');
+    const closeCardUpdate = await updateInteractionAsHandled(env, body, session, {
+      header: '会话已关闭',
+      text: '*处理结果*\n当前会话已关闭。',
+      contextText: '继续发新需求会开启新任务。',
+      links: linksForWorkItem(activeWorkItem),
+    });
     return slackAckResponse({
       response_type: 'ephemeral',
       text: '已关闭当前会话。继续发新需求会开启新任务。',
+      ...(closeCardUpdate ? { closeCardUpdate } : {}),
     });
   }
 
