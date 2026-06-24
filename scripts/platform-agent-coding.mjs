@@ -565,7 +565,9 @@ function changedFilesFromGit() {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((path) => normalizeRepoPath(path));
-  return [...new Set([...stagedAndUnstaged, ...staged, ...untracked])].sort();
+  return [...new Set([...stagedAndUnstaged, ...staged, ...untracked])]
+    .filter((path) => !path.startsWith('.pages-artifacts/'))
+    .sort();
 }
 
 function classifyChangedFiles(files) {

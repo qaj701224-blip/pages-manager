@@ -663,6 +663,52 @@ test('runs tool loop with read_file, apply_patch, run_command, and finish', asyn
   }
 });
 
+test('tool loop ignores workflow artifacts when validating changed repo files', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-artifact-ignore-'));
+  const previousCwd = process.cwd();
+  try {
+    await initGitRepo(dir);
+    process.chdir(dir);
+    await mkdir(path.join(dir, '.pages-artifacts'), { recursive: true });
+    await writeFile(path.join(dir, '.pages-artifacts/platform-agent-running.json'), '{"stageResult":"agent_running"}\n');
+    await writeFile(path.join(dir, 'README.md'), '# Repo\n\nOld.\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'baseline'], { cwd: dir, stdio: 'ignore' });
+
+    const responses = [
+      {
+        action: 'apply_patch',
+        patch: [
+          'diff --git a/README.md b/README.md',
+          '--- a/README.md',
+          '+++ b/README.md',
+          '@@ -1,3 +1,3 @@',
+          ' # Repo',
+          ' ',
+          '-Old.',
+          '+Changed while workflow artifact exists.',
+          '',
+        ].join('\n'),
+      },
+      { action: 'finish', summary: 'Updated README.', tests: [] },
+    ];
+    let index = 0;
+
+    await runPlatformCodingAgent({
+      env,
+      async fetchImpl() {
+        return responseFor(responses[index++]);
+      },
+    });
+
+    const report = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-report.json'), 'utf8'));
+    assert.deepEqual(report.generatedFiles, ['README.md']);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('tool loop rejects final code changes without documentation changes', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-doc-required-'));
   const previousCwd = process.cwd();

@@ -72,7 +72,7 @@ executor 不向模型开放 shell。`run_command` 必须使用 `cmd` 加 `args` 
 
 workflow 不把 `AGENT_CODE_API_KEY`、`PAGES_CALLBACK_TOKEN` 或 `GITHUB_TOKEN` 放进 job 级环境。coding agent、callback、push / PR 等步骤按需注入对应 token；运行模型产物检查时会显式清空这些敏感 env，避免生成代码在 `pnpm lint` / `pnpm test` 中读取自动化凭据。
 
-每次 patch 或命令执行后，executor 会重新扫描当前改动路径和文件内容。发现 forbidden path、高风险未批准路径或 secret-looking 内容时，工具 observation 会把错误返回给模型；模型可以继续修复。`finish` 时仍会做最终校验。
+每次 patch 或命令执行后，executor 会重新扫描当前改动路径和文件内容。发现 forbidden path、高风险未批准路径或 secret-looking 内容时，工具 observation 会把错误返回给模型；模型可以继续修复。`finish` 时仍会做最终校验。workflow 自身写入的 `.pages-artifacts/**` 只作为 callback / report 临时目录，不参与最终 changed-file 判断，也不会被提交。
 
 ## 文档一致性
 
