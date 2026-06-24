@@ -890,6 +890,24 @@ function executeToolAction(action, context, limits) {
   }
 }
 
+function buildProtocolErrorObservation(modelResult, limits) {
+  return buildToolObservation(
+    'protocol_error',
+    {
+      ok: false,
+      error:
+        'Response must include either legacy files[] or an action field. Use one of: search, read_file, apply_patch, run_command, git_diff, git_status, finish.',
+      legacyFormat: {
+        files: [{ path: 'repo/relative/path', content: 'complete file content' }],
+        summary: 'short summary',
+        tests: ['optional test command'],
+      },
+      receivedShape: summarizeShape(modelResult),
+    },
+    limits
+  );
+}
+
 function writeReport(context, report) {
   mkdirSync('.pages-artifacts', { recursive: true });
   const finalReport = {
@@ -969,17 +987,10 @@ export async function runPlatformCodingAgent(options = {}) {
 
     const action = parseAction(modelResult);
     if (!action) {
-      try {
-        validateGeneratedFiles([], context);
-      } catch (error) {
-        writeDiagnostic({
-          body,
-          modelResult,
-          context,
-          reason: error.code === 'missing_files' ? 'missing_files' : 'invalid_action',
-        });
-        throw error;
-      }
+      const observation = buildProtocolErrorObservation(modelResult, limits);
+      steps.push({ step, action: 'protocol_error' });
+      messages.push(observation);
+      continue;
     }
 
     if (action.action === 'finish') {

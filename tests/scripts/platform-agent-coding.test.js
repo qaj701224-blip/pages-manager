@@ -384,7 +384,56 @@ test('allows high-risk repository paths after gate approval', async () => {
   }
 });
 
-test('writes a missing-files diagnostic when model output has no generated files', async () => {
+test('tool loop reports protocol errors and allows the model to recover', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-protocol-recover-'));
+  const previousCwd = process.cwd();
+  const calls = [];
+  try {
+    await initGitRepo(dir);
+    process.chdir(dir);
+    await writeFile(path.join(dir, 'README.md'), '# Repo\n\nOld.\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'baseline'], { cwd: dir, stdio: 'ignore' });
+
+    const responses = [
+      { summary: '我会修改 README，但这一轮没有按协议返回 action。' },
+      {
+        action: 'apply_patch',
+        patch: [
+          'diff --git a/README.md b/README.md',
+          '--- a/README.md',
+          '+++ b/README.md',
+          '@@ -1,3 +1,3 @@',
+          ' # Repo',
+          ' ',
+          '-Old.',
+          '+Recovered from protocol error.',
+          '',
+        ].join('\n'),
+      },
+      { action: 'finish', summary: 'Recovered.', tests: [] },
+    ];
+
+    await runPlatformCodingAgent({
+      env,
+      async fetchImpl(url, request) {
+        calls.push(JSON.parse(request.body));
+        return responseFor(responses[calls.length - 1]);
+      },
+    });
+
+    const retryRequest = calls[1];
+    const readme = await readFile(path.join(dir, 'README.md'), 'utf8');
+    assert.match(retryRequest.messages.at(-1).content, /protocol_error/);
+    assert.match(retryRequest.messages.at(-1).content, /legacy files\[\] or an action field/);
+    assert.match(readme, /Recovered from protocol error/);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('writes a max-steps diagnostic when model never returns valid files or actions', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-missing-files-'));
   const previousCwd = process.cwd();
   try {
@@ -392,29 +441,16 @@ test('writes a missing-files diagnostic when model output has no generated files
     await assert.rejects(
       () =>
         runPlatformCodingAgent({
-          env,
+          env: { ...env, AGENT_CODE_MAX_STEPS: '2' },
           async fetchImpl() {
-            return new Response(
-              JSON.stringify({
-                choices: [
-                  {
-                    message: {
-                      content: JSON.stringify({
-                        summary: '这是一个仓库问答，不需要修改文件。',
-                      }),
-                    },
-                  },
-                ],
-              }),
-              { status: 200 }
-            );
+            return responseFor({ summary: '这是一个仓库问答，不需要修改文件。' });
           },
         }),
-      /did not include files/
+      /exceeded max tool steps/
     );
 
     const diagnostic = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-debug.json'), 'utf8'));
-    assert.equal(diagnostic.reason, 'missing_files');
+    assert.equal(diagnostic.reason, 'max_steps_exceeded');
     assert.equal(diagnostic.platformDevItemId, 'pdev_abc123');
   } finally {
     process.chdir(previousCwd);

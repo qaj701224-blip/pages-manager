@@ -41,7 +41,7 @@ gateway / worker 可以通过 workflow inputs 向 executor 传入 `prNumber`、`
 }
 ```
 
-旧格式仍会走相同的路径、secret、文档同步和 Markdown 行数校验。
+旧格式仍会走相同的路径、secret、文档同步和 Markdown 行数校验。如果模型某一轮没有返回 `files` 或合法 `action`，executor 会把 `protocol_error` observation 追加回对话，让模型按协议重试；超过最大轮数仍无有效改动才失败。
 
 ## 安全边界
 
