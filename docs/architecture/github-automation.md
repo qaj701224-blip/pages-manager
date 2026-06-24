@@ -166,6 +166,8 @@ base: master
 | `PAGES_EXECUTOR_MODE`                                    | `actions`、`github_issue_webhook` 或 `issue_only`  |
 | `PAGES_WORKFLOW_REF`                                     | workflow 文件读取分支                              |
 | `PAGES_BASE_REF` / `PAGES_PR_BASE_REF`                   | index、agent checkout 和 PR base                   |
+| `PAGES_PLATFORM_WORKFLOW_REF`                            | Platform Agent workflow 文件读取分支               |
+| `PAGES_PLATFORM_BASE_REF` / `PAGES_PLATFORM_PR_BASE_REF` | Platform Agent checkout 和 PR base                 |
 | `PAGES_GATEWAY_CALLBACK_URL`                             | GitHub Actions runner 回调公网 gateway             |
 | `PAGES_WORKER_CALLBACK_URL` / `PAGES_GATEWAY_URL`        | worker 到 gateway 的内部 callback                  |
 | `INTERNAL_CALLBACK_TOKEN`                                | executor callback shared token                     |
@@ -176,6 +178,7 @@ base: master
 
 - `PAGES_WORKFLOW_REF` 决定从哪个分支读取 workflow。
 - `PAGES_BASE_REF` 决定生成站点 PR 的 base。
+- Platform Dev Lane 使用独立的 `PAGES_PLATFORM_WORKFLOW_REF` 和 `PAGES_PLATFORM_BASE_REF`。手动测试某个特性分支时，两者必须指向同一个已 push 到远端的 ref，避免 workflow 代码和 Agent checkout / PR base 混用。
 - 当前预览验证通常使用 `staging`，生产合入仍以 `master` 为真相源。
 
 ## Repository Webhook
