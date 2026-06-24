@@ -395,7 +395,7 @@ const PLATFORM_DEV_ALLOWED_TRANSITIONS = {
   ],
   merged: [],
   closed_unmerged: ['issue_created', 'gate_pending', 'agent_queued', 'agent_running', 'pr_created'],
-  failed: ['agent_queued', 'cancelled'],
+  failed: ['agent_queued', 'review_blocked', 'cancelled'],
   cancelled: [],
 };
 
@@ -487,6 +487,7 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
     issue_creating: ['issue_created', 'agent_queued', 'agent_running'],
     issue_created: ['agent_queued', 'agent_running'],
     gate_pending: ['agent_queued', 'agent_running'],
+    failed: ['agent_queued', 'agent_running'],
   },
   branch_committed: {
     received: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running', 'branch_committed'],

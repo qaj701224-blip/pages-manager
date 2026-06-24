@@ -198,12 +198,18 @@ test('user-triggered publishing executor workflows stay separate from platform d
 test('platform agent commits newly generated files and scans untracked paths', () => {
   const workflow = readWorkflow('.github/workflows/platform-agent.yml');
 
-  assert.match(workflow, /changed_files="\$\(git status --porcelain --untracked-files=all \| sed -E 's\/\^\.\.\.\/\/'\)"/);
+  assert.match(workflow, /git status --porcelain --untracked-files=all/);
+  assert.match(workflow, /sed -E 's\/\^\.\.\.\/\/'/);
+  assert.match(workflow, /grep -Ev '\^\(\\\.pages-artifacts\|\\\.pages-trusted\)\(\/\|\$\)'/);
   assert.match(workflow, /printf '%s\\n' "\$changed_files" \| grep -E/);
   assert.match(workflow, /\\\.env\(\\\.\.\*\)\?/);
   assert.match(workflow, /\.\*\\\.env/);
   assert.match(workflow, /wrangler\\\.toml/);
   assert.match(workflow, /\\\.pages\\\.json/);
+  assert.match(workflow, /while IFS= read -r path; do/);
+  assert.match(workflow, /done <<< "\$changed_files"/);
+  assert.match(workflow, /Potential secret detected in changed file: \$path/);
+  assert.doesNotMatch(workflow, /git diff -- \. ':\(exclude\)pnpm-lock\.yaml'/);
   assert.match(workflow, /git add -A -- \. ':\(exclude\)\.pages-artifacts' ':\(exclude\)\.pages-trusted'/);
   assert.match(workflow, /if git diff --cached --quiet; then/);
   assert.doesNotMatch(workflow, /if git diff --quiet; then[\s\S]*git add -A -- \./);

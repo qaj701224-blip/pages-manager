@@ -196,6 +196,36 @@ test('PlatformDevItem failed state can be recovered into a new agent round', () 
   assert.equal(updated.errorCode, null);
 });
 
+test('PlatformDevItem failed state can bridge into agent running callback', () => {
+  const item = buildPlatformDevItem(
+    {
+      requestedById: 'usr_1',
+      idempotencyKey: 'key_recover_failed_running',
+      title: '平台开发',
+      summary: '平台开发',
+    },
+    { id: 'pdev_recover_failed_running', status: 'failed' }
+  );
+  const bridgedStatuses = [];
+  const updated = transitionPlatformDevItemWithBridge(
+    item,
+    'agent_running',
+    {
+      branchName: 'feat/platform-pdev-retry',
+      errorCode: null,
+      errorMessage: null,
+    },
+    new Date('2026-06-24T00:00:00.000Z'),
+    (_, status) => bridgedStatuses.push(status)
+  );
+
+  assert.equal(canTransitionPlatformDevItem('failed', 'review_blocked'), true);
+  assert.equal(updated.status, 'agent_running');
+  assert.equal(updated.branchName, 'feat/platform-pdev-retry');
+  assert.equal(updated.errorCode, null);
+  assert.deepEqual(bridgedStatuses, ['agent_queued']);
+});
+
 test('PlatformDevItem bridge transitions normalize late executor callbacks', () => {
   const item = buildPlatformDevItem(
     {

@@ -96,7 +96,7 @@ received
 - `failed`
 - `cancelled`
 
-`gate_pending` 只对需要人工确认的需求出现。`ci_failed` 和 `review_blocked` 可以回到 `agent_queued` 或 `agent_running` 继续修复。
+`gate_pending` 只对需要人工确认的需求出现。`ci_failed` 和 `review_blocked` 可以回到 `agent_queued` 或 `agent_running` 继续修复。`failed` 表示某一轮自动化失败，但有关联 PR 的工单仍可被受控恢复：用户 follow-up 会先回到 `agent_queued`，Review Agent 的 blocking / unknown comment 会先进入 `review_blocked`，再由 gateway dispatch `mode=fix` 的 Platform Agent；后续 workflow 的 `agent_running` callback 会桥接成 `failed -> agent_queued -> agent_running`，避免重试卡死在旧失败态。
 
 ## 数据模型
 

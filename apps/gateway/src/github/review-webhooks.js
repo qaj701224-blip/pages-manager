@@ -78,9 +78,10 @@ async function rememberPlatformReview(store, platformItem = {}, normalized = {},
 }
 
 function platformStatusContext(platformItem = {}, nextStatus = '') {
+  const currentStatus = platformItem.status;
   return [
     `PlatformDevItem ${platformItem.id}`,
-    `status: ${platformItem.status}${nextStatus && nextStatus !== platformItem.status ? ` -> ${nextStatus}` : ''}`,
+    `status: ${currentStatus}${nextStatus && nextStatus !== currentStatus ? ` -> ${nextStatus}` : ''}`,
     platformItem.githubIssueNumber ? `issue: #${platformItem.githubIssueNumber}` : '',
     platformItem.githubPrNumber ? `pr: #${platformItem.githubPrNumber}` : '',
     platformItem.branchName ? `branch: ${platformItem.branchName}` : '',
@@ -104,6 +105,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
         : platformItem.status === 'pr_created' || platformItem.status === 'ci_running'
           ? 'review_waiting'
           : platformItem.status;
+    const statusContext = platformStatusContext(platformItem, nextStatus);
     if (shouldIgnoreStalePlatformReview(platformItem, nextStatus)) {
       const patched = fullHeadSha ? await store.patchPlatformDevItem(platformItem.id, patch) : platformItem;
       return jsonResponse({
@@ -127,7 +129,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     const contextPatch = {
       reviewContext,
       memoryContext,
-      statusContext: platformStatusContext(platformItem, nextStatus),
+      statusContext,
       reviewSummary: memory?.requirements?.platformReview?.lastSummary || reviewContext || null,
     };
     platformItem = await store.patchPlatformDevItem(platformItem.id, contextPatch);
