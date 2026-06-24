@@ -248,16 +248,14 @@ jobs:
             pnpm test
           PLATFORM_AGENT_CODEX_MODEL: ${{ vars.PLATFORM_AGENT_CODEX_MODEL || vars.AGENT_MODEL_NAME }}
           CODEX_MODEL: ${{ vars.CODEX_MODEL || vars.AGENT_MODEL_NAME }}
-          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.CODEX_API_KEY }}
           AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
           AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
           AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
         run: |
           set -euo pipefail
           backend="${PLATFORM_AGENT_BACKEND:-${AGENT_BACKEND:-codex}}"
-          if [[ "$backend" =~ ^(codex|codex-cli)$ && -z "${CODEX_API_KEY:-${OPENAI_API_KEY:-}}" ]]; then
-            echo "CODEX_API_KEY or OPENAI_API_KEY is required for Codex Platform Agent backend." >&2
+          if [[ "$backend" =~ ^(codex|codex-cli)$ && ( -z "${AGENT_GATEWAY_URL:-}" || -z "${AGENT_CODE_API_KEY:-}" ) ]]; then
+            echo "AGENT_GATEWAY_URL and AGENT_CODE_API_KEY are required for Codex Platform Agent backend." >&2
             exit 1
           fi
           if [[ "$backend" =~ ^(company-json|legacy-json|platform-agent-coding)$ && -z "${AGENT_CODE_API_KEY:-}" ]]; then

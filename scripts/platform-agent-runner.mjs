@@ -290,7 +290,38 @@ function codexModelFromEnv(env) {
   return env.PLATFORM_AGENT_CODEX_MODEL || env.CODEX_MODEL || env.AGENT_MODEL_NAME || '';
 }
 
+function tomlString(value) {
+  return JSON.stringify(String(value || ''));
+}
+
+function normalizeAgentGatewayBaseUrl(value) {
+  const normalized = String(value || '').replace(/\/+$/, '');
+  if (!normalized) return '';
+  if (normalized.endsWith('/chat/completions')) return normalized.slice(0, -'/chat/completions'.length);
+  if (normalized.endsWith('/responses')) return normalized.slice(0, -'/responses'.length);
+  if (normalized.endsWith('/v1')) return normalized;
+  return `${normalized}/v1`;
+}
+
+function codexBaseUrlFromEnv(env) {
+  return (
+    env.PLATFORM_AGENT_CODEX_BASE_URL ||
+    env.CODEX_BASE_URL ||
+    normalizeAgentGatewayBaseUrl(env.AGENT_GATEWAY_URL || '')
+  );
+}
+
+function requireCodexGatewayEnv(env) {
+  if (!codexBaseUrlFromEnv(env)) {
+    throw new Error('AGENT_GATEWAY_URL or PLATFORM_AGENT_CODEX_BASE_URL is required for Codex Platform Agent backend');
+  }
+  if (!env.AGENT_CODE_API_KEY) {
+    throw new Error('AGENT_CODE_API_KEY is required for Codex Platform Agent backend');
+  }
+}
+
 function createCodexBackend(env) {
+  requireCodexGatewayEnv(env);
   return {
     name: 'codex',
     async run({ cwd, taskPath, round }) {
@@ -298,6 +329,15 @@ function createCodexBackend(env) {
       const command = env.PLATFORM_AGENT_CODEX_COMMAND || env.CODEX_COMMAND || 'codex';
       const timeoutMs = numberFromEnv(env.PLATFORM_AGENT_BACKEND_TIMEOUT_MS, DEFAULT_BACKEND_TIMEOUT_MS);
       const lastMessagePath = path.join(cwd, '.pages-artifacts', `platform-agent-codex-round-${round}.md`);
+      const providerId = env.PLATFORM_AGENT_CODEX_PROVIDER_ID || 'platform_agent_gateway';
+      const providerConfig = [
+        '{',
+        `name=${tomlString('Platform Agent Gateway')}`,
+        `base_url=${tomlString(codexBaseUrlFromEnv(env))}`,
+        'env_key="AGENT_CODE_API_KEY"',
+        'wire_api="responses"',
+        '}',
+      ].join(',');
       const args = [
         'exec',
         '--cd',
@@ -309,6 +349,10 @@ function createCodexBackend(env) {
         'never',
         '-o',
         lastMessagePath,
+        '-c',
+        `model_provider=${tomlString(providerId)}`,
+        '-c',
+        `model_providers.${providerId}=${providerConfig}`,
       ];
       const model = codexModelFromEnv(env);
       if (model) args.push('--model', model);
