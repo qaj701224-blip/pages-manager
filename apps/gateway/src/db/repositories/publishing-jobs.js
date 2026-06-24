@@ -2,7 +2,6 @@ import {
   buildPublishingJob,
   canTransition,
   idempotencyScopeForInput,
-  idempotencyScopeForJob,
   transitionJob,
 } from '@xd/workflow-core';
 
@@ -76,8 +75,6 @@ export const publishingJobRepositoryMethods = {
     }
 
     const job = buildPublishingJob(input);
-    this.jobs.set(job.id, job);
-    this.idempotency.set(idempotencyScopeForJob(job), job.id);
     this.appendEvent(job, 'PublishingJob received');
     const events = this.events.get(job.id) || [];
 
@@ -92,6 +89,7 @@ export const publishingJobRepositoryMethods = {
       throw error;
     }
 
+    this.cacheJob(job);
     return { job, created: true };
   },
 
@@ -151,11 +149,16 @@ export const publishingJobRepositoryMethods = {
     if (!job) return null;
     const beforeCount = this.events.get(jobId)?.length || 0;
     const updated = this.transitionWithBridge(job, status, patch);
-    this.jobs.set(jobId, updated);
     this.appendEvent(updated, `PublishingJob moved to ${status}`);
     const events = this.events.get(jobId)?.slice(beforeCount) || [];
-    await this.upsertJob(updated);
-    await this.insertEvents(events);
+    try {
+      await this.upsertJob(updated);
+      await this.insertEvents(events);
+    } catch (error) {
+      this.events.set(jobId, this.events.get(jobId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cacheJob(updated);
     return updated;
   },
 
@@ -176,8 +179,8 @@ export const publishingJobRepositoryMethods = {
       ...patch,
       updatedAt: new Date().toISOString(),
     };
-    this.jobs.set(jobId, updated);
     await this.upsertJob(updated);
+    this.cacheJob(updated);
     return updated;
   },
 
@@ -186,11 +189,16 @@ export const publishingJobRepositoryMethods = {
     if (!job) return null;
     const beforeCount = this.events.get(jobId)?.length || 0;
     const updated = transitionJob(job, 'failed', { ...patch, errorCode, errorMessage });
-    this.jobs.set(jobId, updated);
     this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob failed');
     const events = this.events.get(jobId)?.slice(beforeCount) || [];
-    await this.upsertJob(updated);
-    await this.insertEvents(events);
+    try {
+      await this.upsertJob(updated);
+      await this.insertEvents(events);
+    } catch (error) {
+      this.events.set(jobId, this.events.get(jobId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cacheJob(updated);
     return updated;
   },
 
@@ -205,11 +213,16 @@ export const publishingJobRepositoryMethods = {
       errorMessage,
       updatedAt: new Date().toISOString(),
     };
-    this.jobs.set(jobId, updated);
     this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob cancelled');
     const events = this.events.get(jobId)?.slice(beforeCount) || [];
-    await this.upsertJob(updated);
-    await this.insertEvents(events);
+    try {
+      await this.upsertJob(updated);
+      await this.insertEvents(events);
+    } catch (error) {
+      this.events.set(jobId, this.events.get(jobId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cacheJob(updated);
     return updated;
   },
 
@@ -223,6 +236,7 @@ export const publishingJobRepositoryMethods = {
     if (options.headSha) {
       const matched = candidates.find((job) => shaMatches(job.headSha, options.headSha));
       if (matched) return matched;
+      return null;
     }
 
     return candidates.find((job) => REVIEW_ACTIVE_JOB_STATUSES.has(job.status)) || candidates[0];

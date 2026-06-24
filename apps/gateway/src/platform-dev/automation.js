@@ -88,6 +88,15 @@ export async function dispatchPlatformDevFixIfNeeded(store, item, env, options =
       errorCode: 'platform_fix_attempts_exhausted',
       errorMessage: '自动修复次数已达到上限，请人工查看 Issue / PR 后再继续。',
     });
+    if (!failed) {
+      return {
+        skipped: true,
+        reason: 'item_update_failed',
+        item: null,
+        workerStart: null,
+        slackStatusNotification: null,
+      };
+    }
     await store.linkPlatformDevItemToSlackSession(failed);
     const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, failed, {
       stage: 'failed',
@@ -132,6 +141,15 @@ export async function dispatchPlatformDevFixIfNeeded(store, item, env, options =
           errorCode: null,
           errorMessage: null,
         });
+  if (!queued) {
+    return {
+      skipped: true,
+      reason: 'item_update_failed',
+      item: null,
+      workerStart: null,
+      slackStatusNotification: null,
+    };
+  }
   await store.linkPlatformDevItemToSlackSession(queued);
   const workerStart = await startWorkerForPlatformDevItemIfConfigured(queued, env);
 

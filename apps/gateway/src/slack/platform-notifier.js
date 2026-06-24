@@ -109,6 +109,19 @@ function contextText(item = {}, statusText = '') {
   return `${statusText || ':hourglass_flowing_sand: 处理中'} · 后续进度会继续在当前对话更新。`;
 }
 
+function csvSet(value = '') {
+  return new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
+}
+
+function hasPlatformGateApprover(env = {}) {
+  return Boolean(csvSet(env.PAGES_PLATFORM_GATE_APPROVERS).size || csvSet(env.PAGES_PLATFORM_GATE_APPROVER_IDS).size);
+}
+
 export function platformNotificationText(stage, item = {}) {
   if (stage === 'issue_created') {
     if (item.githubIssueUrl) return `已创建 GitHub issue：#${item.githubIssueNumber}\n${item.githubIssueUrl}`;
@@ -133,6 +146,7 @@ export function platformNotificationText(stage, item = {}) {
 
 function buildPlatformStatusBlocks(item = {}, options = {}) {
   const stage = options.stage || item.status;
+  const gateApproverConfigured = options.gateApproverConfigured !== false;
   const label = platformStageLabel(stage, item);
   const statusText = options.statusText || options.text || ':hourglass_flowing_sand: 处理中';
   const title = userFacingPlatformTitle({
@@ -153,10 +167,21 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
     { type: 'section', fields: fields.slice(0, 10) },
     { type: 'section', text: { type: 'mrkdwn', text: `*需求摘要*\n${summary.slice(0, 1000)}` } },
     ...(currentChange ? [{ type: 'section', text: { type: 'mrkdwn', text: `*本轮补充*\n${currentChange.slice(0, 800)}` } }] : []),
-    { type: 'context', elements: [{ type: 'mrkdwn', text: contextText(item, statusText) }] },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text:
+            stage === 'gate_pending' && !gateApproverConfigured
+              ? `${contextText(item, statusText)} 请先配置平台维护者审批 allowlist。`
+              : contextText(item, statusText),
+        },
+      ],
+    },
   ];
   const actions = [
-    stage === 'gate_pending'
+    stage === 'gate_pending' && gateApproverConfigured
       ? {
           type: 'button',
           text: { type: 'plain_text', text: '批准自动开发' },
@@ -222,7 +247,10 @@ export async function notifySlackPlatformDevStatus(env, store, item, options = {
     return { skipped: true, reason: 'duplicate_stage', message: existing };
   }
 
-  const blocks = buildPlatformStatusBlocks(item, options);
+  const blocks = buildPlatformStatusBlocks(item, {
+    ...options,
+    gateApproverConfigured: hasPlatformGateApprover(env),
+  });
   const text = `Pages 平台需求进度：${platformStageLabel(stage, item)}`;
   const result = existing?.messageTs
     ? await updateSlackMessage(env, {

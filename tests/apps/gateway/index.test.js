@@ -14,6 +14,7 @@ import {
   platformDraftFromRepoQuestionContext,
   repoQuestionActionBlocks,
 } from '../../../apps/gateway/src/slack/repo-question.js';
+import { redactSecretLikeText } from '../../../apps/gateway/src/slack/text.js';
 import { createGatewayApp } from '../../helpers/gateway-app.js';
 
 async function json(response) {
@@ -31,6 +32,22 @@ function findBlockAction(blocks = [], actionId = '') {
 function readRequestJson(request = {}) {
   return request.body ? JSON.parse(request.body) : {};
 }
+
+test('Slack text redacts all GitHub token prefixes', () => {
+  const redacted = redactSecretLikeText(
+    [
+      'ghp_1234567890abcdefghij1234567890',
+      'gho_1234567890abcdefghij1234567890',
+      'ghu_1234567890abcdefghij1234567890',
+      'ghs_1234567890abcdefghij1234567890',
+      'ghr_1234567890abcdefghij1234567890',
+      'github_pat_1234567890abcdefghij1234567890',
+    ].join(' ')
+  );
+
+  assert.equal((redacted.match(/\[REDACTED_GITHUB_TOKEN\]/g) || []).length, 6);
+  assert.doesNotMatch(redacted, /gh[pousr]_|github_pat_/);
+});
 
 async function fetchAndDrainWaitUntil(app, request, env = {}) {
   const waitUntilPromises = [];
@@ -420,6 +437,65 @@ test('Slack working reaction errors do not block message processing', async () =
     ['/internal/slack-notifier/reaction', '/internal/slack-notifier/message']
   );
   assert.equal(deliveries[0].payloadRedacted.workingReaction.status, 'failed');
+});
+
+test('Slack event retries failed deliveries instead of dropping duplicates', async () => {
+  const app = createGatewayApp();
+  const payload = JSON.stringify({
+    team_id: 'T1',
+    event_id: 'Ev-slack-retry-failed',
+    event: {
+      type: 'message',
+      user: 'U1',
+      channel: 'D1',
+      channel_type: 'im',
+      ts: '1710000000.000103',
+      text: 'ping',
+    },
+  });
+  const notifierCalls = [];
+
+  const failedResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      ...mockSlackNotifier(notifierCalls, {
+        handle(call) {
+          if (call.path === '/internal/slack-notifier/message') {
+            throw new Error('slack message down');
+          }
+          return null;
+        },
+      }),
+    }
+  );
+  const failedDelivery = app.store.listSlackDeliveries({ eventId: 'Ev-slack-retry-failed' }).deliveries[0];
+
+  const retryResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    }),
+    {
+      SLACK_EVENTS_PROCESSING_MODE: 'sync',
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const retryBody = await json(retryResponse);
+  const delivery = app.store.listSlackDeliveries({ eventId: 'Ev-slack-retry-failed' }).deliveries[0];
+
+  assert.equal(failedResponse.status, 500);
+  assert.equal(failedDelivery.processingStatus, 'failed');
+  assert.equal(retryResponse.status, 200);
+  assert.equal(retryBody.action, 'ping');
+  assert.equal(delivery.processingStatus, 'processed');
+  assert.equal(delivery.retryNum, 1);
+  assert.equal(delivery.retryReason, 'retry_failed');
 });
 
 test('preview completion replaces pending Slack working reactions with done reaction', async () => {
@@ -2303,16 +2379,23 @@ test('repo question tool searches controlled repo files without reading secrets'
     ].join('\n')
   );
   await fs.writeFile(path.join(repoRoot, '.env.local'), 'SLACK_BOT_TOKEN=xoxb-secret\n');
+  await fs.writeFile(path.join(repoRoot, '.pages.json'), '{"token":"pages-secret"}\n');
+  await fs.writeFile(path.join(repoRoot, '.dev.vars'), 'GITHUB_TOKEN=ghs_abcdefghijklmnopqrstuvwxyz123456\n');
+  await fs.writeFile(path.join(repoRoot, 'custom', 'runtime', 'wrangler.toml'), 'token = "cf-secret"\n');
 
   const result = await answerRepoQuestion(
     { PAGES_REPO_ROOT: repoRoot },
-    { question: 'Slack conversation session 是怎么保存的？' }
+    { question: 'Slack conversation session 是怎么保存的？ token .pages wrangler' }
   );
 
   assert.equal(result.accepted, true);
   assert.match(result.replyText, /custom\/runtime\/conversation-store\.js/);
   assert.doesNotMatch(result.replyText, /xoxb-secret/);
+  assert.doesNotMatch(result.replyText, /pages-secret|cf-secret|abcdefghijklmnopqrstuvwxyz/);
   assert.equal(result.evidence.some((item) => item.path === '.env.local'), false);
+  assert.equal(result.evidence.some((item) => item.path === '.pages.json'), false);
+  assert.equal(result.evidence.some((item) => item.path === '.dev.vars'), false);
+  assert.equal(result.evidence.some((item) => item.path.endsWith('wrangler.toml')), false);
 });
 
 test('repo question tool redacts token-like content before sending evidence to Slack Agent', async () => {
@@ -5794,19 +5877,11 @@ test('executor callbacks update the source Slack status card without extra progr
         issueUrl: 'https://github.example/org/pages-manager/issues/8',
       }),
     }),
-    {
-      ...mockSlackNotifier([], {
-        handle(call) {
-          if (call.path === '/internal/slack-notifier/job-status') {
-            throw new Error('duplicate callback should not post to Slack');
-          }
-          return null;
-        },
-      }),
-    }
+    mockSlackNotifier([])
   );
   const duplicateBody = await json(duplicate);
-  assert.equal(duplicateBody.slackStatusNotification.skipped, true);
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicateBody.slackStatusNotification.ok, true);
   assert.equal(duplicateBody.slackNotification, undefined);
 });
 
@@ -7435,6 +7510,7 @@ test('index_ready callback can start worker to dispatch pages-agent', async () =
       }),
     }),
     {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
@@ -7915,6 +7991,7 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
       }),
     }),
     {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request, rerun: true });
@@ -8101,6 +8178,7 @@ test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Ag
       }),
     }),
     {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
@@ -8601,6 +8679,7 @@ test('GitHub issue webhook routes platform issue through gateway before starting
       }),
     }),
     {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
@@ -8622,6 +8701,148 @@ test('GitHub issue webhook routes platform issue through gateway before starting
   assert.equal(workerBody.job.id, createBody.job.id);
   assert.equal(workerBody.job.status, 'generating_page');
   assert.equal(workerBody.job.issueNumber, 31);
+});
+
+test('GitHub webhook ignores events from non-target repositories', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-issue-wrong-repo',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  const issueBody = [`PublishingJob: ${createBody.job.id}`, '', 'Create a personal website.'].join('\n');
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-wrong-repo',
+        'X-GitHub-Event': 'issues',
+      },
+      body: JSON.stringify({
+        action: 'opened',
+        repository: { full_name: 'other/pages-manager' },
+        issue: {
+          number: 31,
+          html_url: 'https://github.example/other/pages-manager/issues/31',
+          body: issueBody,
+        },
+      }),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const delivery = app.store.listGithubDeliveries({ eventName: 'issues' }).deliveries[0];
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, 'repo_not_allowed');
+  assert.equal(delivery.status, 'ignored');
+  assert.equal(app.store.getJob(createBody.job.id).status, 'received');
+  assert.equal(workerStarts.length, 0);
+});
+
+test('GitHub issue webhook retries deliveries that failed after insertion', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-issue-webhook-retry',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  const issueBody = [`PublishingJob: ${createBody.job.id}`, '', 'Create a personal website.'].join('\n');
+  const payload = JSON.stringify({
+    action: 'opened',
+    repository: { full_name: 'org/pages-manager' },
+    issue: {
+      number: 37,
+      html_url: 'https://github.example/org/pages-manager/issues/37',
+      body: issueBody,
+    },
+  });
+
+  const failedResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-retry-1',
+        'X-GitHub-Event': 'issues',
+      },
+      body: payload,
+    }),
+    {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        throw new Error('worker temporarily unavailable');
+      },
+    }
+  );
+  const failedDelivery = app.store.listGithubDeliveries({ eventName: 'issues' }).deliveries[0];
+  const workerStarts = [];
+
+  const retryResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-retry-1',
+        'X-GitHub-Event': 'issues',
+      },
+      body: payload,
+    }),
+    {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const retryBody = await json(retryResponse);
+  const delivery = app.store.listGithubDeliveries({ eventName: 'issues' }).deliveries[0];
+
+  assert.equal(failedResponse.status, 500);
+  assert.equal(failedDelivery.status, 'failed');
+  assert.equal(retryResponse.status, 200);
+  assert.equal(retryBody.issueAction, 'pages_agent_dispatched');
+  assert.equal(delivery.status, 'processed');
+  assert.equal(workerStarts.length, 1);
 });
 
 test('GitHub issue webhook accepts pages-manager HTML job marker', async () => {
@@ -8664,6 +8885,7 @@ test('GitHub issue webhook accepts pages-manager HTML job marker', async () => {
       }),
     }),
     {
+      PAGES_EXECUTOR_MODE: 'actions',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH(url, request) {
         workerStarts.push({ url: String(url), request });
@@ -8676,10 +8898,10 @@ test('GitHub issue webhook accepts pages-manager HTML job marker', async () => {
   const body = await json(response);
 
   assert.equal(response.status, 200);
-  assert.equal(body.issueAction, 'pages_agent_dispatched');
-  assert.equal(body.job.status, 'generating_page');
+  assert.equal(body.issueAction, 'issue_recorded_waiting_for_project_index');
+  assert.equal(body.job.status, 'issue_created');
   assert.equal(body.job.issueNumber, 33);
-  assert.equal(workerStarts.length, 1);
+  assert.equal(workerStarts.length, 0);
 });
 
 test('GitHub closed issue webhook marks the publishing job inactive', async () => {
@@ -9201,6 +9423,7 @@ test('late issue_created callback is idempotent after GitHub issue webhook start
       }),
     }),
     {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH() {
         return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_dispatched' } }), {
@@ -10006,6 +10229,48 @@ test('GitHub Review Agent issue comment targets latest reused PR job by reviewed
   assert.equal(workerStarts.length, 1);
 });
 
+test('GitHub Review Agent issue comment with unknown reviewed commit does not fallback to active PR job', async () => {
+  const app = createGatewayApp();
+  const currentHeadSha = '5'.repeat(40);
+  const staleHeadSha = '6'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 25,
+    headSha: currentHeadSha,
+    idempotencyKey: 'api-review-stale-pr-head',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-stale-pr-head',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 25, pull_request: { url: 'https://github.example/org/pages-manager/pulls/25' } },
+        comment: {
+          id: 104,
+          node_id: 'IC_104',
+          body: `Codex Review: Must fix stale commit.\n\n**Reviewed commit:** \`${staleHeadSha.slice(0, 10)}\``,
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    })
+  );
+  const body = await json(response);
+  const currentJob = await json(await app.fetch(new Request(`http://gateway.test/api/publishing-jobs/${jobId}`)));
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'recorded');
+  assert.equal(body.job, undefined);
+  assert.equal(currentJob.job.status, 'pr_created');
+  assert.equal(currentJob.job.headSha, currentHeadSha);
+});
+
 test('GitHub Review Agent blocking comment moves job to changes_requested', async () => {
   const app = createGatewayApp();
   const headSha = 'c'.repeat(40);
@@ -10413,4 +10678,231 @@ test('GitHub webhook fails closed when production webhook secret is missing', as
 
   assert.equal(response.status, 401);
   assert.equal(body.error, 'GitHub webhook secret is not configured');
+});
+
+test('executor callback does not reopen a closed Slack session', async () => {
+  const app = createGatewayApp();
+  const created = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-closed-session-callback',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.000900',
+            text: 'issue: 帮我创建 profile 页面',
+          },
+        }),
+      })
+    )
+  );
+  app.store.closeSlackSession(created.slackSessionId);
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: created.jobId,
+        stageResult: 'issue_created',
+        issueNumber: 88,
+        issueUrl: 'https://github.example/org/pages-manager/issues/88',
+      }),
+    })
+  );
+  const session = app.store.getSlackSession(created.slackSessionId);
+
+  assert.equal(response.status, 200);
+  assert.equal(session.status, 'closed');
+  assert.equal(session.activeJobId, null);
+  assert.equal(session.activeWorkItemId, null);
+});
+
+test('Slack follow-up during in-flight page generation is queued and drained by callback', async () => {
+  const app = createGatewayApp();
+  const created = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-inflight-followup-create',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000000.000901',
+            text: 'issue: 帮我创建 profile 页面',
+          },
+        }),
+      })
+    )
+  );
+  app.store.updateJob(created.jobId, 'issue_created', { issueNumber: 89 });
+  app.store.updateJob(created.jobId, 'indexing');
+  app.store.updateJob(created.jobId, 'generating_page');
+
+  const followup = await json(
+    await app.fetch(
+      new Request('http://gateway.test/integrations/slack/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          team_id: 'T1',
+          event_id: 'Ev-inflight-followup-queued',
+          event: {
+            type: 'message',
+            user: 'U1',
+            channel: 'D1',
+            channel_type: 'im',
+            ts: '1710000010.000901',
+            thread_ts: '1710000000.000901',
+            text: '再加一个项目经历区域',
+          },
+        }),
+      }),
+      mockSlackAgentTurnAnalysis({
+        intent: 'append_requirement',
+        summary: '再加一个项目经历区域。',
+        needsClarification: false,
+      })
+    )
+  );
+  assert.equal(followup.action, 'followup_fix_queued');
+  assert.equal(app.store.getJob(created.jobId).status, 'generating_page');
+
+  app.store.updateJob(created.jobId, 'pr_created', {
+    branchName: 'sites/job-inflight-followup-zhangsan-profile',
+    prNumber: 89,
+    prUrl: 'https://github.example/org/pages-manager/pull/89',
+    headSha: '8'.repeat(40),
+  });
+  app.store.updateJob(created.jobId, 'reviewing');
+  app.store.moveJobToFixing(created.jobId, {
+    summary: app.store.getJob(created.jobId).summary,
+  });
+
+  const workerStarts = [];
+  const callbackResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: created.jobId,
+        stageResult: 'reviewing',
+        branchName: 'sites/job-inflight-followup-zhangsan-profile',
+        prNumber: 89,
+        prUrl: 'https://github.example/org/pages-manager/pull/89',
+        headSha: '9'.repeat(40),
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(_url, request) {
+        workerStarts.push(JSON.parse(request.body));
+        return new Response(JSON.stringify({ ok: true, result: { action: 'pages_agent_fix_dispatched' } }), {
+          status: 200,
+        });
+      },
+    }
+  );
+  const callback = await json(callbackResponse);
+
+  assert.equal(callbackResponse.status, 200);
+  assert.equal(callback.job.status, 'fixing');
+  assert.equal(callback.queuedFollowupRerun.queuedFollowupCount, 1);
+  assert.equal(workerStarts.length, 1);
+  assert.match(workerStarts[0].job.summary, /项目经历区域/);
+});
+
+test('stale preview callback is ignored when headSha no longer matches', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 91,
+    headSha: 'a'.repeat(40),
+    idempotencyKey: 'api-stale-preview-callback',
+  });
+  app.store.updateJob(jobId, 'previewing', { headSha: 'b'.repeat(40) });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://old-preview.example.test',
+        headSha: 'a'.repeat(40),
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.job.status, 'previewing');
+  assert.equal(body.job.previewUrl, null);
+  assert.equal(body.job.headSha, 'b'.repeat(40));
+});
+
+test('GitHub issue webhook does not bypass project-index gate in actions executor mode', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-issue-webhook-actions-gate',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+        }),
+      })
+    )
+  );
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-actions-gate',
+        'X-GitHub-Event': 'issues',
+      },
+      body: JSON.stringify({
+        action: 'opened',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 92,
+          html_url: 'https://github.example/org/pages-manager/issues/92',
+          body: `PublishingJob: ${createBody.job.id}`,
+        },
+      }),
+    }),
+    {
+      PAGES_EXECUTOR_MODE: 'actions',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(_url, request) {
+        workerStarts.push(JSON.parse(request.body));
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.issueAction, 'issue_recorded_waiting_for_project_index');
+  assert.equal(body.job.status, 'issue_created');
+  assert.equal(workerStarts.length, 0);
 });

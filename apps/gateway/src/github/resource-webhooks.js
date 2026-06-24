@@ -13,9 +13,23 @@ import {
 } from './resource-reconciler.js';
 import { issueUrl, platformDevItemIdFromIssueBody, publishingJobIdFromIssueBody } from './webhook.js';
 
+const TERMINAL_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
+const TERMINAL_PLATFORM_STATUSES = new Set(['merged', 'closed_unmerged', 'failed', 'cancelled']);
+
 function envFlag(value, defaultValue = false) {
   if (value === undefined || value === null || value === '') return defaultValue;
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function issueWebhookStartsSiteWorker(env = {}) {
+  return String(env.PAGES_EXECUTOR_MODE || env.EXECUTOR_MODE || '').trim() === 'github_issue_webhook';
+}
+
+function shouldIgnorePlatformPrAction(item = {}, action = '', pullRequest = {}) {
+  if (!TERMINAL_PLATFORM_STATUSES.has(item.status)) return false;
+  if (action === 'reopened' && ['closed_unmerged', 'cancelled', 'failed'].includes(item.status)) return false;
+  if (action === 'closed' && pullRequest.merged && item.status !== 'merged') return false;
+  return true;
 }
 
 async function queueMergeAnnouncementIfNeeded({ body, action, store, env }) {
@@ -156,6 +170,15 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
         issueUrl: issueUrl(issue),
       });
     }
+    if (TERMINAL_JOB_STATUSES.has(job.status)) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        issueAction: 'job_terminal_ignored',
+        job,
+      });
+    }
     job = await cancelJobForClosedGithubIssue(store, job, issue);
     await store.linkJobToSlackSession(job);
     await notifySlackJobStatus(env, store, job, {
@@ -185,13 +208,18 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
   let workerStart = null;
   let issueAction = 'recorded';
 
-  if (job.status === 'issue_created') {
+  if (job.status === 'issue_created' && issueWebhookStartsSiteWorker(env)) {
     job = await store.updateJob(job.id, 'generating_page');
     await store.linkJobToSlackSession(job);
     await notifySlackJobStatus(env, store, job, {
       stage: 'issue_created',
       text: 'GitHub issue 已创建，准备启动页面生成。',
     });
+    workerStart = await startWorkerForJobIfConfigured(job, env);
+    issueAction = workerStart?.started ? 'pages_agent_dispatched' : 'pages_agent_ready';
+  } else if (job.status === 'issue_created') {
+    issueAction = 'issue_recorded_waiting_for_project_index';
+  } else if (job.status === 'generating_page' && issueWebhookStartsSiteWorker(env) && result?.delivery?.status === 'failed') {
     workerStart = await startWorkerForJobIfConfigured(job, env);
     issueAction = workerStart?.started ? 'pages_agent_dispatched' : 'pages_agent_ready';
   } else if (['generating_page', 'patch_generated', 'branch_committed', 'pr_created', 'reviewing'].includes(job.status)) {
@@ -238,6 +266,16 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
       nextStatus = platformItem.status;
     } else if (['opened', 'reopened', 'ready_for_review'].includes(action)) nextStatus = 'pr_created';
     else if (action === 'synchronize') nextStatus = 'ci_running';
+    if (shouldIgnorePlatformPrAction(platformItem, action, pullRequest)) {
+      platformItem = await store.patchPlatformDevItem(platformItem.id, patch);
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        prAction: 'platform_item_terminal_ignored',
+        item: platformItem,
+      });
+    }
     platformItem =
       platformItem.status === nextStatus
         ? await store.patchPlatformDevItem(platformItem.id, patch)
@@ -296,6 +334,17 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
         created: true,
         delivery: result.delivery,
         ignored: 'merged_pr',
+        job,
+        ...(mergeAnnouncement ? { mergeAnnouncement } : {}),
+      });
+    }
+
+    if (TERMINAL_JOB_STATUSES.has(job.status)) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        prAction: 'job_terminal_ignored',
         job,
         ...(mergeAnnouncement ? { mergeAnnouncement } : {}),
       });

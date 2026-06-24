@@ -76,7 +76,9 @@ export function platformDevInput(body = {}) {
       : typeof analysis.requires_human_gate === 'boolean'
         ? analysis.requires_human_gate
         : risk === 'risk:high' || HIGH_RISK_TYPE_SET.has(issueType);
-  const requiresHumanGate = FEEDBACK_TYPE_SET.has(issueType) ? false : modelRequiresHumanGate;
+  const requiresHumanGate = FEEDBACK_TYPE_SET.has(issueType)
+    ? false
+    : risk === 'risk:high' || HIGH_RISK_TYPE_SET.has(issueType) || modelRequiresHumanGate;
   const requesterProfile = body.requesterProfile || body.requester_profile || null;
 
   return {

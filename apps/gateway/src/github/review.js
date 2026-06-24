@@ -19,7 +19,7 @@ const NOTE_PATTERNS = [
   /\bpassed\b/i,
 ];
 
-const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
+const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check', 'Platform CI'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 
 function listFromCsv(value = '') {

@@ -401,6 +401,30 @@ export class GatewayStoreFixture {
     return { delivery, created: true };
   }
 
+  updateGithubDelivery(input = {}, patch = {}, now = new Date()) {
+    const repoFullName = input.repoFullName || input.repo_full_name;
+    const deliveryId = input.deliveryId || input.delivery_id;
+    const key = `${repoFullName}:${deliveryId}`;
+    const existing = this.githubDeliveries.get(key);
+    if (!existing) return null;
+    const updated = {
+      ...existing,
+      ...patch,
+      status: patch.status || existing.status || 'received',
+      requestId:
+        Object.hasOwn(patch, 'requestId') || Object.hasOwn(patch, 'request_id')
+          ? patch.requestId || patch.request_id || null
+          : existing.requestId || null,
+      payloadHash:
+        Object.hasOwn(patch, 'payloadHash') || Object.hasOwn(patch, 'payload_hash')
+          ? patch.payloadHash || patch.payload_hash || null
+          : existing.payloadHash || null,
+      updatedAt: now.toISOString(),
+    };
+    this.githubDeliveries.set(key, updated);
+    return updated;
+  }
+
   slackDeliveryKey(teamId, eventId) {
     return `${teamId || 'unknown-team'}:${eventId || 'unknown-event'}`;
   }
@@ -466,6 +490,14 @@ export class GatewayStoreFixture {
         Object.hasOwn(patch, 'errorMessage') || Object.hasOwn(patch, 'error_message')
           ? patch.errorMessage || patch.error_message || null
           : existing.errorMessage || null,
+      retryNum:
+        Object.hasOwn(patch, 'retryNum') || Object.hasOwn(patch, 'retry_num')
+          ? Number(patch.retryNum ?? patch.retry_num ?? 0)
+          : existing.retryNum || 0,
+      retryReason:
+        Object.hasOwn(patch, 'retryReason') || Object.hasOwn(patch, 'retry_reason')
+          ? patch.retryReason || patch.retry_reason || null
+          : existing.retryReason || null,
       updatedAt: now.toISOString(),
     };
     this.slackDeliveries.set(key, updated);
@@ -510,6 +542,7 @@ export class GatewayStoreFixture {
     if (options.headSha) {
       const matched = candidates.find((job) => shaMatches(job.headSha, options.headSha));
       if (matched) return matched;
+      return null;
     }
 
     return candidates.find((job) => REVIEW_ACTIVE_JOB_STATUSES.has(job.status)) || candidates[0];
@@ -536,6 +569,7 @@ export class GatewayStoreFixture {
     if (options.headSha) {
       const matched = candidates.find((item) => shaMatches(item.headSha, options.headSha));
       if (matched) return matched;
+      return null;
     }
 
     return candidates.find((item) => REVIEW_ACTIVE_PLATFORM_STATUSES.has(item.status)) || candidates[0];
@@ -989,7 +1023,7 @@ export class GatewayStoreFixture {
     if (link.prNumber) this.issueLinkByPrNumber.set(String(link.prNumber), link);
 
     const currentSession = this.getSlackSession(slackSessionId);
-    if (currentSession) {
+    if (currentSession && currentSession.status !== 'closed') {
       const active = jobKeepsSlackSessionActive(job);
       this.upsertSlackSession(
         {
@@ -1132,7 +1166,7 @@ export class GatewayStoreFixture {
     if (link.prNumber) this.workItemLinkByPrNumber.set(String(link.prNumber), link);
 
     const currentSession = this.getSlackSession(slackSessionId);
-    if (currentSession) {
+    if (currentSession && currentSession.status !== 'closed') {
       const active =
         workItemKind === 'platform_dev' ? platformDevKeepsSlackSessionActive(workItem) : jobKeepsSlackSessionActive(workItem);
       this.upsertSlackSession(

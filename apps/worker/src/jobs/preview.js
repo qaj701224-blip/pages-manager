@@ -65,16 +65,9 @@ async function githubTreeFiles(fetchImpl, github, headSha) {
 }
 
 function previewFilesFromTree(tree, allowedPath) {
-  const sourcePrefixes = [`${allowedPath}/src/`, `${allowedPath}/`];
-
-  for (const sourcePrefix of sourcePrefixes) {
-    const files = tree.filter((item) => item.path?.startsWith(sourcePrefix));
-    if (files.length) {
-      return { files, sourcePrefix };
-    }
-  }
-
-  return { files: [], sourcePrefix: sourcePrefixes[0] };
+  const sourcePrefix = `${allowedPath}/src/`;
+  const files = tree.filter((item) => item.path?.startsWith(sourcePrefix));
+  return { files, sourcePrefix };
 }
 
 async function githubBlobBytes(fetchImpl, github, sha) {
@@ -103,7 +96,7 @@ async function deployPreviewLocally(job, config, adapters = {}) {
   const { files, sourcePrefix } = previewFilesFromTree(tree, allowedPath);
 
   if (!files.length) {
-    throw new Error(`No preview files found under ${allowedPath}/src/ or ${allowedPath}/`);
+    throw new Error(`No preview files found under ${allowedPath}/src/`);
   }
 
   const form = new FormData();

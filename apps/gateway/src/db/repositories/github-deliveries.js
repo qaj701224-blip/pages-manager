@@ -1,7 +1,7 @@
 import { makeId } from '@xd/workflow-core';
 
 import { githubDeliveryToRow, rowToGithubDelivery } from '../rows/github-row.js';
-import { execute, insertRowIfNotDuplicate, limitOffsetSql } from '../sql.js';
+import { execute, insertRowIfNotDuplicate, limitOffsetSql, upsertRow } from '../sql.js';
 
 export const githubDeliveryRepositoryMethods = {
   async recordGithubDelivery(input) {
@@ -24,6 +24,38 @@ export const githubDeliveryRepositoryMethods = {
     );
     const stored = rowToGithubDelivery(rows[0]) || delivery;
     return { delivery: this.cacheGithubDelivery(stored), created };
+  },
+
+  async updateGithubDelivery(input = {}, patch = {}, now = new Date()) {
+    const repoFullName = input.repoFullName || input.repo_full_name;
+    const deliveryId = input.deliveryId || input.delivery_id;
+    if (!repoFullName || !deliveryId) return null;
+    const rows = await execute(
+      this.pool,
+      'SELECT * FROM github_webhook_deliveries WHERE repo_full_name = ? AND delivery_id = ? LIMIT 1',
+      [repoFullName, deliveryId]
+    );
+    const existing = rowToGithubDelivery(rows[0]);
+    if (!existing) return null;
+    const updated = {
+      ...existing,
+      ...patch,
+      status: patch.status || existing.status || 'received',
+      requestId:
+        Object.hasOwn(patch, 'requestId') || Object.hasOwn(patch, 'request_id')
+          ? patch.requestId || patch.request_id || null
+          : existing.requestId || null,
+      payloadHash:
+        Object.hasOwn(patch, 'payloadHash') || Object.hasOwn(patch, 'payload_hash')
+          ? patch.payloadHash || patch.payload_hash || null
+          : existing.payloadHash || null,
+      updatedAt: now.toISOString(),
+    };
+    this.cacheGithubDelivery(updated);
+    await upsertRow(this.pool, 'github_webhook_deliveries', githubDeliveryToRow(updated), {
+      excludeUpdate: ['id', 'created_at'],
+    });
+    return updated;
   },
 
   async listGithubDeliveries(options = {}) {

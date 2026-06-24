@@ -86,6 +86,22 @@ test('ECS deploy smoke checks all app services, not only gateway ready', () => {
   assert.doesNotMatch(script, /gateway did not become ready in time/);
 });
 
+test('ECS deploy upload excludes ignored local env and Pages config files', () => {
+  const script = readRepoFile('scripts/deploy-ecs.sh');
+
+  for (const pattern of [
+    "--exclude='.dev.vars'",
+    "--exclude='*/.dev.vars'",
+    "--exclude='.pages.json'",
+    "--exclude='*/.pages.json'",
+    "--exclude='wrangler.toml'",
+    "--exclude='*/wrangler.toml'",
+    "--exclude='.staging.env'",
+  ]) {
+    assert.match(script, new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+});
+
 test('ECS deploy rolls back services and keeps image/build retention bounded', () => {
   const script = readRepoFile('scripts/deploy-ecs.sh');
 

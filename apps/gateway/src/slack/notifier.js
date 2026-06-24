@@ -49,6 +49,8 @@ const STAGE_ORDER = [
   'cancelled',
 ];
 
+const slackJobNotificationInFlight = new Set();
+
 function stageRank(stage) {
   const index = STAGE_ORDER.indexOf(stage);
   return index === -1 ? -1 : index;
@@ -64,6 +66,17 @@ function sameSlackStatusTarget(message = {}, job = {}) {
   const thread = job.slackThread || {};
   if (!message?.messageTs || !thread.channelId) return false;
   return message.channel === thread.channelId && (message.threadTs || null) === (thread.threadTs || null);
+}
+
+function optionHasSlackStatusContent(options = {}) {
+  return [
+    'text',
+    'statusText',
+    'cardTitle',
+    'cardSummary',
+    'finalSummary',
+    'currentChange',
+  ].some((key) => options[key] !== undefined && options[key] !== null && options[key] !== '');
 }
 
 async function callRemoteNotifier(env, path, payload) {
@@ -139,15 +152,24 @@ export async function removeSlackReaction(env, payload) {
 
 export async function notifySlackJob(env, store, job, text, key) {
   if (!text || !job?.id) return null;
+  const inFlightKey = key ? `${job.id}:${key}` : null;
   if (store?.hasSlackNotification && (await store.hasSlackNotification(job.id, key))) {
     return { skipped: true, reason: 'duplicate', key };
   }
-
-  const result = await callRemoteNotifier(env, '/internal/slack-notifier/job-message', { job, text, key });
-  if (result?.ok) {
-    await store?.recordSlackNotification?.(job.id, key);
+  if (inFlightKey && slackJobNotificationInFlight.has(inFlightKey)) {
+    return { skipped: true, reason: 'duplicate_in_flight', key };
   }
-  return result;
+
+  if (inFlightKey) slackJobNotificationInFlight.add(inFlightKey);
+  try {
+    const result = await callRemoteNotifier(env, '/internal/slack-notifier/job-message', { job, text, key });
+    if (result?.ok) {
+      await store?.recordSlackNotification?.(job.id, key);
+    }
+    return result;
+  } finally {
+    if (inFlightKey) slackJobNotificationInFlight.delete(inFlightKey);
+  }
 }
 
 export async function notifySlackJobStatus(env, store, job, options = {}) {
@@ -155,6 +177,7 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
 
   const stage = options.stage || job.status;
   const dedupeKey = options.dedupeKey || `job-status:${job.id}:${stage}`;
+  const hasNewStatusContent = options.dedupeKey !== undefined || optionHasSlackStatusContent(options);
   const slackSessionId = options.slackSessionId || job.slackSessionId || null;
   const scopeKey = options.scopeKey || (slackSessionId ? `session:${slackSessionId}` : 'job');
   const existing = store?.getSlackJobStatusMessage ? await store.getSlackJobStatusMessage(job.id, { scopeKey }) : null;
@@ -167,13 +190,18 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
   if (existingMessage?.messageTs && isStaleStageUpdate(existingMessage.stage, stage) && options.allowRegression !== true) {
     return { skipped: true, reason: 'stale_stage', key: dedupeKey, message: existingMessage };
   }
-  if (existingMessage?.messageTs && existingMessage.stage === stage && options.skipDuplicate !== false) {
+  if (existingMessage?.messageTs && existingMessage.stage === stage && options.skipDuplicate !== false && !hasNewStatusContent) {
     return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existingMessage };
   }
 
   const result = await callRemoteNotifier(env, '/internal/slack-notifier/job-status', {
     job,
-    options: { ...options, slackSessionId, scopeKey },
+    options: {
+      ...options,
+      ...(hasNewStatusContent && options.skipDuplicate === undefined ? { skipDuplicate: false } : {}),
+      slackSessionId,
+      scopeKey,
+    },
     existingMessage: existingMessage || null,
   });
 

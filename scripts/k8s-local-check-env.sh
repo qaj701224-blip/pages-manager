@@ -105,9 +105,18 @@ if [ "${PAGES_PREVIEW_MODE:-actions}" = "local_deploy" ]; then
 fi
 
 warn_var GITHUB_WEBHOOK_SECRET
-warn_var SLACK_AGENT_SHARED_SECRET
-warn_var AGENT_GATEWAY_URL
-warn_var SLACK_AGENT_API_KEY
+
+if ! is_placeholder_value "${SLACK_AGENT_TURN_URL:-}"; then
+  require_var SLACK_AGENT_SHARED_SECRET
+  if [ "${AGENT_MODEL_PROVIDER:-company-agent}" != "deterministic" ]; then
+    require_var AGENT_GATEWAY_URL
+    require_var SLACK_AGENT_API_KEY
+  fi
+else
+  warn_var SLACK_AGENT_SHARED_SECRET
+  warn_var AGENT_GATEWAY_URL
+  warn_var SLACK_AGENT_API_KEY
+fi
 
 if [ "${#missing[@]}" -gt 0 ]; then
   echo "Missing required local K8s environment variables:"

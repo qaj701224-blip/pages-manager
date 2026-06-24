@@ -20,5 +20,11 @@
     reverse_proxy pages-gateway:8788
   }
 
+  @prefixed_health path {$PUBLIC_PATH_PREFIX}/health {$PUBLIC_PATH_PREFIX}/ready
+  handle @prefixed_health {
+    uri strip_prefix {$PUBLIC_PATH_PREFIX}
+    reverse_proxy pages-gateway:8788
+  }
+
   respond "not found" 404
 }

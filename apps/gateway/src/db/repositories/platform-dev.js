@@ -142,7 +142,6 @@ export const platformDevRepositoryMethods = {
     }
 
     const item = buildPlatformDevItem(input);
-    this.cachePlatformDevItem(item);
     this.appendPlatformDevEvent(item, 'PlatformDevItem received');
     const events = this.platformDevEvents.get(item.id) || [];
 
@@ -171,6 +170,7 @@ export const platformDevRepositoryMethods = {
       throw error;
     }
 
+    this.cachePlatformDevItem(item);
     return { item, created: true };
   },
 
@@ -236,11 +236,16 @@ export const platformDevRepositoryMethods = {
     const updated = transitionPlatformDevItemWithBridge(item, status, patch, new Date(), (bridgedItem, nextStatus) => {
       this.appendPlatformDevEvent(bridgedItem, `PlatformDevItem moved to ${nextStatus}`);
     });
-    this.cachePlatformDevItem(updated);
     this.appendPlatformDevEvent(updated, `PlatformDevItem moved to ${status}`);
     const events = this.platformDevEvents.get(itemId)?.slice(beforeCount) || [];
-    await this.upsertPlatformDevItem(updated);
-    await this.insertPlatformDevEvents(events);
+    try {
+      await this.upsertPlatformDevItem(updated);
+      await this.insertPlatformDevEvents(events);
+    } catch (error) {
+      this.platformDevEvents.set(itemId, this.platformDevEvents.get(itemId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cachePlatformDevItem(updated);
     return updated;
   },
 
@@ -252,8 +257,8 @@ export const platformDevRepositoryMethods = {
       ...patch,
       updatedAt: new Date().toISOString(),
     };
-    this.cachePlatformDevItem(updated);
     await this.upsertPlatformDevItem(updated);
+    this.cachePlatformDevItem(updated);
     return updated;
   },
 
@@ -262,11 +267,16 @@ export const platformDevRepositoryMethods = {
     if (!item) return null;
     const beforeCount = this.platformDevEvents.get(itemId)?.length || 0;
     const updated = transitionPlatformDevItem(item, 'failed', { ...patch, errorCode, errorMessage });
-    this.cachePlatformDevItem(updated);
     this.appendPlatformDevEvent(updated, errorMessage || errorCode || 'PlatformDevItem failed');
     const events = this.platformDevEvents.get(itemId)?.slice(beforeCount) || [];
-    await this.upsertPlatformDevItem(updated);
-    await this.insertPlatformDevEvents(events);
+    try {
+      await this.upsertPlatformDevItem(updated);
+      await this.insertPlatformDevEvents(events);
+    } catch (error) {
+      this.platformDevEvents.set(itemId, this.platformDevEvents.get(itemId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cachePlatformDevItem(updated);
     return updated;
   },
 
@@ -290,6 +300,7 @@ export const platformDevRepositoryMethods = {
     if (options.headSha) {
       const matched = candidates.find((item) => shaMatches(item.headSha, options.headSha));
       if (matched) return matched;
+      return null;
     }
     return candidates.find((item) => !TERMINAL_PLATFORM_DEV_STATUSES.has(item.status)) || candidates[0];
   },
@@ -320,11 +331,11 @@ export const platformDevRepositoryMethods = {
       updatedAt: nowIso,
     };
 
-    this.cacheWorkItemLink(link);
     await upsertRow(this.pool, 'work_item_links', workItemLinkToRow(link), { excludeUpdate: ['id', 'created_at'] });
+    this.cacheWorkItemLink(link);
 
     const currentSession = session || (await this.getSlackSession(slackSessionId));
-    if (currentSession) {
+    if (currentSession && currentSession.status !== 'closed') {
       const active =
         workItemKind === 'platform_dev'
           ? platformDevKeepsSlackSessionActive(workItem)

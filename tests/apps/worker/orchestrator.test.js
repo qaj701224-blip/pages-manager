@@ -446,6 +446,46 @@ test('github_issue_webhook mode creates issue and waits for GitHub issues webhoo
   assert.equal(requests.some((request) => request.url.includes('/actions/workflows/')), false);
 });
 
+test('github_issue_webhook mode dispatches project index when reusing an existing issue', async () => {
+  const requests = [];
+  const result = await runWorkerForJob(baseJob, { ...config(), executorMode: 'github_issue_webhook' }, {
+    async fetchImpl(url, request) {
+      requests.push({ url: String(url), request });
+
+      if (String(url).includes('/search/issues')) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 11,
+                body: 'PublishingJob: job_123',
+                html_url: 'https://github.example/issues/11',
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+
+      if (String(url) === 'http://gateway.test/internal/executor-callback') {
+        return new Response(JSON.stringify({ job: { ...baseJob, issueNumber: 11 } }), { status: 200 });
+      }
+
+      if (String(url).endsWith('/actions/workflows/project-index.yml/dispatches')) {
+        const body = JSON.parse(request.body);
+        assert.equal(body.inputs.issueNumber, '11');
+        return new Response(null, { status: 204 });
+      }
+
+      throw new Error(`Unexpected request ${request.method} ${url}`);
+    },
+  });
+
+  assert.equal(result.action, 'issue_created_and_project_index_dispatched');
+  assert.equal(result.issueCreated, false);
+  assert.equal(requests.some((request) => request.url.includes('/actions/workflows/project-index.yml/dispatches')), true);
+});
+
 test('smoke_single issue mode reuses a smoke issue and still callbacks gateway', async () => {
   const requests = [];
   const result = await runWorkerForJob(
@@ -783,73 +823,42 @@ test('previewing job can deploy through local pages-manager API', async () => {
   assert.equal(requests.length, 4);
 });
 
-test('previewing job local deploy falls back to site root when src is missing', async () => {
+test('previewing job local deploy refuses to upload the whole allowedPath when src is missing', async () => {
   const headSha = 'c'.repeat(40);
   const requests = [];
-  const result = await runWorkerForJob(
-    {
-      ...baseJob,
-      status: 'previewing',
-      prNumber: 20,
-      headSha,
-    },
-    {
-      ...config(),
-      previewMode: 'local_deploy',
-      pagesApi: 'https://api-staging.workers.xd.team',
-      pagesToken: 'pages-preview@xd.com',
-    },
-    {
-      async fetchImpl(url, request = {}) {
-        requests.push({ url: String(url), request });
-
-        if (String(url).includes(`/git/trees/${headSha}`)) {
-          return new Response(
-            JSON.stringify({
-              tree: [{ type: 'blob', path: 'sites/zhangsan/profile/index.html', sha: 'blob_root_html' }],
-            }),
-            { status: 200 }
-          );
-        }
-
-        if (String(url).endsWith('/git/blobs/blob_root_html')) {
-          return new Response(
-            JSON.stringify({ encoding: 'base64', content: Buffer.from('<h1>root</h1>').toString('base64') }),
-            { status: 200 }
-          );
-        }
-
-        if (String(url) === 'https://api-staging.workers.xd.team/deploy') {
-          assert.equal(request.method, 'POST');
-          assert.equal(request.headers['X-Pages-Token'], 'pages-preview@xd.com');
-          assert.equal(request.body.get('file-0').name, 'index.html');
-          return new Response(
-            JSON.stringify({
-              status: 'ok',
-              name: 'pm-pr-20-zhangsan-profile',
-              url: 'https://pm-pr-20-zhangsan-profile.staging.workers.xd.team',
-              preset: 'static',
-              fileCount: 1,
-            }),
-            { status: 200 }
-          );
-        }
-
-        if (String(url) === 'http://gateway.test/internal/executor-callback') {
-          const body = JSON.parse(request.body);
-          assert.equal(body.stageResult, 'preview_deployed');
-          assert.equal(body.previewUrl, 'https://pm-pr-20-zhangsan-profile.staging.workers.xd.team');
-          return new Response(JSON.stringify({ ok: true, job: { ...baseJob, status: 'preview_deployed' } }), {
-            status: 200,
-          });
-        }
-
-        throw new Error(`Unexpected request ${request.method || 'GET'} ${url}`);
+  await assert.rejects(
+    runWorkerForJob(
+      {
+        ...baseJob,
+        status: 'previewing',
+        prNumber: 20,
+        headSha,
       },
-    }
+      {
+        ...config(),
+        previewMode: 'local_deploy',
+        pagesApi: 'https://api-staging.workers.xd.team',
+        pagesToken: 'pages-preview@xd.com',
+      },
+      {
+        async fetchImpl(url, request = {}) {
+          requests.push({ url: String(url), request });
+
+          if (String(url).includes(`/git/trees/${headSha}`)) {
+            return new Response(
+              JSON.stringify({
+                tree: [{ type: 'blob', path: 'sites/zhangsan/profile/index.html', sha: 'blob_root_html' }],
+              }),
+              { status: 200 }
+            );
+          }
+
+          throw new Error(`Unexpected request ${request.method || 'GET'} ${url}`);
+        },
+      }
+    ),
+    /No preview files found under sites\/zhangsan\/profile\/src\//
   );
 
-  assert.equal(result.action, 'pages_preview_deployed');
-  assert.equal(result.previewUrl, 'https://pm-pr-20-zhangsan-profile.staging.workers.xd.team');
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 1);
 });

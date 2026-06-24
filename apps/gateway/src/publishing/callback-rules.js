@@ -1,8 +1,14 @@
+import { canTransition } from '@xd/workflow-core';
+
 function workflowPatch(body = {}) {
   return {
     workflowName: body.workflowName || body.workflow_name || null,
     workflowRunId: body.workflowRunId || body.workflow_run_id || null,
   };
+}
+
+function optionalPatch(fields = {}) {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
 }
 
 export const CALLBACK_STAGE_RESULTS = {
@@ -64,10 +70,12 @@ export const CALLBACK_STAGE_RESULTS = {
   preview_deployed: {
     status: 'preview_deployed',
     patch(body) {
-      return {
+      return optionalPatch({
         ...workflowPatch(body),
         previewUrl: body.previewUrl || body.preview_url || null,
-      };
+        prNumber: body.prNumber || body.pr_number || undefined,
+        headSha: body.headSha || body.head_sha || undefined,
+      });
     },
   },
 };
@@ -87,9 +95,60 @@ export const STALE_CALLBACK_PATCH_STATUSES = {
   ]),
 };
 
+const TERMINAL_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
+
+function shaMatches(left, right) {
+  if (!left || !right) return false;
+  const normalizedLeft = String(left).toLowerCase();
+  const normalizedRight = String(right).toLowerCase();
+  if (normalizedLeft.length < 7 || normalizedRight.length < 7) return false;
+  return normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
+}
+
+function shouldIgnoreExecutorCallback(existing = {}, stageResult = '', patch = {}) {
+  if (TERMINAL_JOB_STATUSES.has(existing.status)) return true;
+  if (
+    stageResult === 'issue_created' &&
+    existing.issueNumber &&
+    patch.issueNumber &&
+    Number(existing.issueNumber) === Number(patch.issueNumber) &&
+    existing.status !== 'received' &&
+    existing.status !== 'issue_creating'
+  ) {
+    return true;
+  }
+  if (stageResult === 'preview_deployed' && patch.headSha && existing.headSha && !shaMatches(existing.headSha, patch.headSha)) {
+    return true;
+  }
+  return false;
+}
+
 export async function applyExecutorCallback(store, jobId, stageResult, status, patch) {
   const existing = await store.getJob(jobId);
   if (!existing) return null;
+
+  if (shouldIgnoreExecutorCallback(existing, stageResult, patch)) {
+    return existing;
+  }
+
+  if (status === 'reviewing' && !canTransition(existing.status, status)) {
+    const paths = {
+      issue_created: ['generating_page', 'pr_created', 'reviewing'],
+      generating_page: ['pr_created', 'reviewing'],
+      patch_generated: ['branch_committed', 'pr_created', 'reviewing'],
+      branch_committed: ['pr_created', 'reviewing'],
+      fixing: ['reviewing'],
+    };
+    const path = paths[existing.status];
+    if (path) {
+      let current = existing;
+      for (const nextStatus of path) {
+        current = await store.updateJob(jobId, nextStatus, nextStatus === status ? patch : {});
+        if (!current) return null;
+      }
+      return current;
+    }
+  }
 
   if (STALE_CALLBACK_PATCH_STATUSES[stageResult]?.has(existing.status)) {
     return await store.patchJob(jobId, patch);

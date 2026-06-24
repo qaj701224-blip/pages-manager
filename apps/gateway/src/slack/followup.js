@@ -259,12 +259,20 @@ function canDispatchFixForJob(job) {
   return ['pr_created', 'reviewing', 'changes_requested', 'fixing', 'preview_deployed'].includes(job.status);
 }
 
+function shouldQueueFixForJob(job) {
+  return ['generating_page', 'patch_generated', 'branch_committed', 'previewing'].includes(job.status);
+}
+
 function canDispatchFixForPlatformDevItem(item = {}) {
   if (!item.agentEligible) return false;
   if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
   return ['issue_created', 'pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge', 'agent_queued', 'failed'].includes(
     item.status
   );
+}
+
+function shouldQueueFixForPlatformDevItem(item = {}) {
+  return ['agent_queued', 'agent_running', 'branch_committed', 'ci_running', 'review_waiting'].includes(item.status);
 }
 
 function platformFollowupCardSummary(feedback = '') {
@@ -424,7 +432,7 @@ async function handleSlackPlatformDevFollowup({
   let fixDispatch = null;
   let slackStatusNotification = null;
 
-  if (['agent_queued', 'agent_running', 'branch_committed'].includes(item.status)) {
+  if (shouldQueueFixForPlatformDevItem(item)) {
     if (store?.recordAgentRunEvent) {
       await store.recordAgentRunEvent({
         workItemKind: 'platform_dev',
@@ -659,6 +667,26 @@ export async function handleSlackFollowup({ store, env, intake, slackSession, se
         action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
         replyText = workerStart?.started ? '收到，已追加修改意见，正在启动修复。' : '收到，已追加修改意见，等待修复开始。';
       }
+    }
+  } else if (shouldQueueFixForJob(job)) {
+    updatedJob = await store.patchJob(job.id, patch);
+    if (updatedJob) {
+      await store.linkJobToSlackSession(updatedJob, slackSession);
+      await recordQueuedSlackFollowup(store, updatedJob, slackSession, feedback, agentRun);
+      const round = followupRoundFromSummary(updatedJob.summary);
+      slackStatusNotification = await notifySlackJobStatus(env, store, updatedJob, {
+        stage: job.status,
+        text: `已排队第 ${round || 1} 轮修改。当前处理结束后会继续更新。`,
+        statusText: ':hourglass_flowing_sand: 已记录新的修改，等待当前处理结束。',
+        cardTitle: `第 ${Math.max(1, Number(round) || 1)} 轮修改已排队`,
+        finalSummary: finalRequirementCardSummary(updatedJob.summary),
+        currentChange: followupCardSummary(feedback),
+        allowRegression: true,
+        skipDuplicate: false,
+        dedupeKey: `slack-followup-queued:${updatedJob.id}:${agentRun?.id || Date.now()}`,
+      });
+      action = 'followup_fix_queued';
+      replyText = '收到，已追加修改意见；当前处理结束后会继续处理这一轮。';
     }
   }
 

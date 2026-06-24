@@ -16,6 +16,20 @@ function mysqlAddr(env = {}, allowDefaults = false) {
   return null;
 }
 
+function parseMysqlAddr(addr) {
+  const value = String(addr || '').trim();
+  if (value.startsWith('[')) {
+    const match = value.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    if (!match) throw new Error('MYSQL_ADDR must be host:port or [ipv6]:port');
+    return { host: match[1], port: Number(match[2] || 3306) };
+  }
+  const lastColon = value.lastIndexOf(':');
+  if (lastColon > -1 && value.indexOf(':') === lastColon) {
+    return { host: value.slice(0, lastColon), port: Number(value.slice(lastColon + 1) || 3306) };
+  }
+  return { host: value, port: 3306 };
+}
+
 export function resolveMysqlConfig(env = process.env, options = {}) {
   if (env.DATABASE_URL) return parseMysqlUrl(env.DATABASE_URL);
 
@@ -24,7 +38,7 @@ export function resolveMysqlConfig(env = process.env, options = {}) {
     throw new Error('DATABASE_URL, MYSQL_ADDR, or MYSQL_HOST+MYSQL_PORT is required');
   }
 
-  const [host, portValue] = addr.split(':');
+  const { host, port } = parseMysqlAddr(addr);
   const user = env.MYSQL_USER || env.MYSQL_USERNAME || (options.allowDefaults ? 'root' : '');
   if (!user) {
     throw new Error('MYSQL_USER or MYSQL_USERNAME is required');
@@ -32,7 +46,7 @@ export function resolveMysqlConfig(env = process.env, options = {}) {
 
   return {
     host,
-    port: Number(portValue || 3306),
+    port,
     user,
     password: env.MYSQL_PASSWORD || '',
     database: env.MYSQL_DATABASE || 'pages_manager',

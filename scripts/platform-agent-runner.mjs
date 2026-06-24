@@ -15,6 +15,28 @@ const LOG_LIMIT = 24_000;
 const TASK_CONTEXT_LIMIT = 30_000;
 const FILE_LIST_LIMIT = 1_200;
 const DEFAULT_CODEX_PROVIDER_ID = 'platform_agent_gateway';
+const SECRET_ENV_NAME_RE = /(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|COOKIE|SESSION|WEBHOOK|CALLBACK)/i;
+const SAFE_ENV_NAMES = new Set([
+  'CI',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'LOGNAME',
+  'PATH',
+  'PWD',
+  'SHELL',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'USER',
+  'USERNAME',
+  'RUNNER_TEMP',
+  'RUNNER_TOOL_CACHE',
+  'RUNNER_OS',
+  'RUNNER_ARCH',
+  'GITHUB_ACTIONS',
+  'GITHUB_WORKSPACE',
+]);
 
 function required(value, name) {
   if (!value) throw new Error(`${name} is required`);
@@ -172,8 +194,36 @@ async function repositoryFiles(cwd) {
 }
 
 async function currentDiff(cwd) {
-  const diff = await gitOutput(cwd, ['diff', '--', '.']);
+  const diff = await gitOutput(cwd, ['diff', 'HEAD', '--', '.']);
   return truncateLog(diff, LOG_LIMIT);
+}
+
+function scrubSecretEnv(env = {}) {
+  const scrubbed = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    if (SECRET_ENV_NAME_RE.test(key)) continue;
+    scrubbed[key] = value;
+  }
+  return scrubbed;
+}
+
+function safeBaseEnv(env = process.env) {
+  const base = {};
+  for (const key of SAFE_ENV_NAMES) {
+    if (env[key] !== undefined) base[key] = env[key];
+  }
+  return base;
+}
+
+function envWithAllowedSecrets(env = {}, allowedSecretNames = []) {
+  const next = {
+    ...safeBaseEnv(process.env),
+    ...scrubSecretEnv(env),
+  };
+  for (const key of allowedSecretNames) {
+    if (env[key] !== undefined) next[key] = env[key];
+  }
+  return next;
 }
 
 function contextReceived(context) {
@@ -324,6 +374,18 @@ function codexBaseUrlFromEnv(env) {
   );
 }
 
+function codexWireApiFromEnv(env) {
+  const configured = String(env.PLATFORM_AGENT_CODEX_WIRE_API || env.CODEX_WIRE_API || '').trim().toLowerCase();
+  if (configured) {
+    if (!['chat', 'responses'].includes(configured)) {
+      throw new Error('PLATFORM_AGENT_CODEX_WIRE_API must be "chat" or "responses"');
+    }
+    return configured;
+  }
+  const rawUrl = String(env.PLATFORM_AGENT_CODEX_BASE_URL || env.CODEX_BASE_URL || env.AGENT_GATEWAY_URL || '');
+  return rawUrl.replace(/\/+$/, '').endsWith('/chat/completions') ? 'chat' : 'responses';
+}
+
 function requireCodexGatewayEnv(env) {
   if (!codexBaseUrlFromEnv(env)) {
     throw new Error('AGENT_GATEWAY_URL or PLATFORM_AGENT_CODEX_BASE_URL is required for Codex Platform Agent backend');
@@ -340,7 +402,7 @@ export function buildCodexConfigArgs(env) {
     `name=${tomlString('Platform Agent Gateway')}`,
     `base_url=${tomlString(codexBaseUrlFromEnv(env))}`,
     'env_key="AGENT_CODE_API_KEY"',
-    'wire_api="responses"',
+    `wire_api=${tomlString(codexWireApiFromEnv(env))}`,
   ].join(',');
   return [
     '-c',
@@ -365,7 +427,7 @@ export async function runCodexPreflight(options = {}) {
   const args = ['debug', 'models', '--bundled', ...buildCodexConfigArgs(env)];
   const result = await runProcess(command, args, {
     cwd,
-    env: { ...process.env, ...env },
+    env: envWithAllowedSecrets(env, ['AGENT_CODE_API_KEY']),
     timeoutMs: numberFromEnv(env.PLATFORM_AGENT_CODEX_PREFLIGHT_TIMEOUT_MS, 60_000),
   });
   if (!result.ok) {
@@ -407,7 +469,7 @@ function createCodexBackend(env) {
 
       const result = await runProcess(command, args, {
         cwd,
-        env: { ...process.env, ...env },
+        env: envWithAllowedSecrets(env, ['AGENT_CODE_API_KEY']),
         input: task,
         timeoutMs,
       });
@@ -461,7 +523,7 @@ async function runShellCheck(command, { cwd, env, round }) {
   const timeoutMs = numberFromEnv(env.PLATFORM_AGENT_CHECK_TIMEOUT_MS, DEFAULT_CHECK_TIMEOUT_MS);
   const result = await runProcess(command, [], {
     cwd,
-    env: { ...process.env, ...env },
+    env: envWithAllowedSecrets(env, []),
     shell: true,
     timeoutMs,
   });

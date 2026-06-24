@@ -282,11 +282,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          changed_files="$(
-            git status --porcelain --untracked-files=all \
-              | sed -E 's/^...//' \
-              | grep -Ev '^(\.pages-artifacts|\.pages-trusted)(/|$)' \
-              || true
+          changed_files="$(node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const raw = execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+            encoding: 'utf8',
+          });
+          const parts = raw.split('\0').filter(Boolean);
+          const paths = [];
+          for (let index = 0; index < parts.length; index += 1) {
+            const entry = parts[index];
+            const status = entry.slice(0, 2);
+            let file = entry.slice(3);
+            if (status[0] === 'R' || status[1] === 'R' || status[0] === 'C' || status[1] === 'C') {
+              file = parts[index + 1] || file;
+              index += 1;
+            }
+            if (!file || /^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(file)) continue;
+            paths.push(file);
+          }
+          process.stdout.write([...new Set(paths)].join('\n'));
+          NODE
           )"
           if printf '%s\n' "$changed_files" | grep -E '(^|/)(\.env(\..*)?|.*\.env|wrangler\.toml|\.pages\.json)$'; then
             echo "Refusing to commit local env, wrangler, or pages config secret files." >&2
@@ -305,7 +320,7 @@ jobs:
           while IFS= read -r path; do
             [[ -z "$path" || "$path" == "pnpm-lock.yaml" || ! -f "$path" ]] && continue
             if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
-              added_lines="$(git diff --unified=0 -- "$path" | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
+              added_lines="$(git diff HEAD --unified=0 -- "$path" | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
             else
               added_lines="$(sed 's/^/+/' "$path")"
             fi
@@ -470,8 +485,11 @@ jobs:
         with:
           name: platform-agent-diagnostics-${{ github.run_id }}
           path: |
-            .pages-artifacts/platform-agent-*.json
-            .pages-artifacts/platform-agent-*.md
+            .pages-artifacts/platform-agent-report.json
+            .pages-artifacts/platform-agent-debug.json
+            .pages-artifacts/platform-agent-running.json
+            .pages-artifacts/platform-agent-pr.json
+            .pages-artifacts/platform-agent-failed.json
           if-no-files-found: ignore
           retention-days: 7
           include-hidden-files: true
