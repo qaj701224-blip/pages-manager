@@ -72,7 +72,8 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /memoryContext:/);
   assert.match(workflow, /statusContext:/);
   assert.match(workflow, /followupContext:/);
-  assert.ok(workflow.includes("grep -Ev '^(\\.pages-artifacts|\\.pages-trusted)(/|$)'"));
+  assert.match(workflow, /execFileSync\('git', \['status', '--porcelain=v1', '-z', '--untracked-files=all'\]/);
+  assert.match(workflow, /\^\(\\\.pages-artifacts\|\\\.pages-trusted\)\(\\\/\|\$\)/);
   assert.ok(workflow.includes("git add -A -- . ':(exclude).pages-artifacts' ':(exclude).pages-trusted'"));
   assert.match(workflow, /Refusing to commit generated build artifacts/);
   assert.match(workflow, /\(\^\|\/\)\(node_modules\|dist\|build\)\(\/\|\$\)/);
@@ -89,12 +90,17 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''/);
   assert.match(workflow, /Closes #%s/);
   assert.match(workflow, /Issue: \$\(if \[\[ -n "\$\{ISSUE_NUMBER\}" \]\]; then printf '#%s'/);
-  assert.match(workflow, /added_lines="\$\(git diff --unified=0 -- "\$path"/);
+  assert.match(workflow, /added_lines="\$\(git diff HEAD --unified=0 -- "\$path"/);
   assert.match(workflow, /added_lines="\$\(sed 's\/\^\/\+\/' "\$path"\)"/);
   assert.match(workflow, /Upload platform agent diagnostics[\s\S]*if: always\(\)/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
-  assert.match(workflow, /\.pages-artifacts\/platform-agent-\*\.json/);
-  assert.match(workflow, /\.pages-artifacts\/platform-agent-\*\.md/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-report\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-debug\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-running\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-pr\.json/);
+  assert.match(workflow, /\.pages-artifacts\/platform-agent-failed\.json/);
+  assert.doesNotMatch(workflow, /\.pages-artifacts\/platform-agent-\*\.md/);
+  assert.doesNotMatch(workflow, /\.pages-artifacts\/platform-agent-\*\.json/);
   assert.match(workflow, /include-hidden-files: true/);
 });
 

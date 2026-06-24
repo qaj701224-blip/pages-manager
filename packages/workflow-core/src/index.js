@@ -504,6 +504,7 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
     issue_creating: ['issue_created', 'agent_queued', 'agent_running'],
     issue_created: ['agent_queued', 'agent_running'],
     gate_pending: ['agent_queued', 'agent_running'],
+    failed: ['agent_queued', 'agent_running'],
   },
   branch_committed: {
     received: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running', 'branch_committed'],
@@ -560,7 +561,15 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
 
 function isStalePlatformDevCallback(from, to) {
   if (['merged', 'closed_unmerged', 'cancelled'].includes(from)) return true;
-  if (from === 'failed' && to !== 'agent_queued' && to !== 'review_blocked' && to !== 'cancelled') return true;
+  if (
+    from === 'failed' &&
+    to !== 'agent_queued' &&
+    to !== 'agent_running' &&
+    to !== 'review_blocked' &&
+    to !== 'cancelled'
+  ) {
+    return true;
+  }
   if (from === 'ready_to_merge' && to === 'ci_failed') return true;
   if (['agent_queued', 'agent_running', 'branch_committed'].includes(from) && to !== 'ready_to_merge') return true;
   return false;
