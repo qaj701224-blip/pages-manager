@@ -230,8 +230,97 @@ export const SLACK_AGENT_POLICY_SKILLS = [
   },
 ];
 
-export function selectSlackAgentSkills() {
-  return SLACK_AGENT_POLICY_SKILLS;
+function normalizedText(input = {}, fallbackAnalysis = {}) {
+  return [
+    input.text,
+    input.event?.text,
+    fallbackAnalysis.visibleReply,
+    fallbackAnalysis.summary,
+    fallbackAnalysis.intent,
+    fallbackAnalysis.lane,
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase();
+}
+
+function hasWorkItemContext(input = {}, sessionContext = {}) {
+  const conversationContext = input.conversationContext || input.sessionMemory?.conversationContext || {};
+  return Boolean(
+    input.explicitWorkItemReference ||
+      input.explicit_work_item_reference ||
+      input.issueLinks?.length ||
+      sessionContext?.activeJobId ||
+      sessionContext?.activeWorkItemId ||
+      sessionContext?.activeIssueNumber ||
+      sessionContext?.activePrNumber ||
+      conversationContext.focus ||
+      conversationContext.currentFocus ||
+      conversationContext.lastWorkItemList
+  );
+}
+
+function shouldSelectProductDesignSkill(text, fallbackAnalysis = {}) {
+  return (
+    fallbackAnalysis.intent === 'architecture_question' ||
+    /产品角度|用户角度|是否合理|应该怎么|方案|架构|会不会影响|如果要/.test(text)
+  );
+}
+
+export function selectSlackAgentSkills(input = {}, fallbackAnalysis = {}, sessionContext = {}) {
+  const selected = new Set(
+    SLACK_AGENT_POLICY_SKILLS.filter((skill) => skill.alwaysOn).map((skill) => skill.id)
+  );
+  const lane = fallbackAnalysis.lane || input.lane || 'unknown';
+  const intent = fallbackAnalysis.intent || input.intent || '';
+  const toolName = fallbackAnalysis.toolCall?.name || input.toolCall?.name || '';
+  const text = normalizedText(input, fallbackAnalysis);
+
+  if (hasWorkItemContext(input, sessionContext) || /这个|那个|刚才|上一条|继续|还有|只有/.test(text)) {
+    selected.add('conversation-context');
+    selected.add('work-item-continuation');
+  }
+
+  if (lane === 'repo-question' || ['repo_question', 'architecture_question'].includes(intent)) {
+    selected.add('repo-question');
+  }
+  if (shouldSelectProductDesignSkill(text, fallbackAnalysis)) {
+    selected.add('product-design');
+  }
+  if (lane === 'platform-dev' || ['create_platform_issue', 'platform_feedback'].includes(intent)) {
+    selected.add('platform-dev');
+  }
+  if (lane === 'site-publishing' || ['create_or_update_site', 'modify_existing_preview'].includes(intent)) {
+    selected.add('site-publishing');
+  }
+  if (
+    [
+      'append_requirement',
+      'modify_existing_preview',
+      'list_work_items',
+      'switch_work_item',
+      'reopen_work_item',
+      'repeat_previous_message',
+    ].includes(intent)
+  ) {
+    selected.add('conversation-context');
+    selected.add('work-item-continuation');
+  }
+  if (
+    [
+      'diagnose_work_item',
+      'summarize_review_results',
+      'list_review_results',
+      'status_query',
+      'cancel_request',
+    ].includes(intent) ||
+    ['diagnose_current_work_item', 'summarize_review_results', 'list_my_work_items'].includes(toolName)
+  ) {
+    selected.add('diagnostics');
+    selected.add('work-item-continuation');
+  }
+
+  return SLACK_AGENT_POLICY_SKILLS.filter((skill) => selected.has(skill.id));
 }
 
 export function selectedSlackAgentSkillIds() {

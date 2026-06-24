@@ -32,6 +32,16 @@ function shouldIgnorePlatformPrAction(item = {}, action = '', pullRequest = {}) 
   return true;
 }
 
+function workItemGoneResponse(result, workItemKind, workItemId) {
+  return jsonResponse({
+    ok: true,
+    created: true,
+    delivery: result.delivery,
+    ignored: workItemKind === 'platform_dev' ? 'platform_item_not_found' : 'job_not_found',
+    ...(workItemKind === 'platform_dev' ? { itemId: workItemId } : { jobId: workItemId }),
+  });
+}
+
 async function queueMergeAnnouncementIfNeeded({ body, action, store, env }) {
   const mergeAnnouncement = await enqueueMergeAnnouncement({ body, action, store, env });
   if (mergeAnnouncement?.queued) {
@@ -79,6 +89,7 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
         ? await store.updatePlatformDevItem(item.id, item.requiresHumanGate ? 'gate_pending' : 'issue_created', patch)
         : await store.patchPlatformDevItem(item.id, patch);
   }
+  if (!item) return workItemGoneResponse(result, 'platform_dev', itemId);
 
   await store.linkPlatformDevItemToSlackSession(item);
   const workerStart = action === 'reopened' ? await startWorkerForPlatformDevItemIfConfigured(item, env) : null;
@@ -136,10 +147,12 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
         issueNumber,
         issueUrl: issueUrl(issue),
       });
+      if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
     }
 
     if (job.status === 'cancelled' && job.errorCode === 'github_issue_closed') {
       job = await restoreJobForReopenedGithubResource(store, job, 'issue', issue);
+      if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
       await store.linkJobToSlackSession(job);
       const workerStart = await startWorkerForJobIfConfigured(job, env);
       const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
@@ -169,6 +182,7 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
         issueNumber,
         issueUrl: issueUrl(issue),
       });
+      if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
     }
     if (TERMINAL_JOB_STATUSES.has(job.status)) {
       return jsonResponse({
@@ -180,6 +194,7 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
       });
     }
     job = await cancelJobForClosedGithubIssue(store, job, issue);
+    if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
     await store.linkJobToSlackSession(job);
     await notifySlackJobStatus(env, store, job, {
       stage: 'cancelled',
@@ -202,6 +217,7 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
       issueNumber,
       issueUrl: issueUrl(issue),
     });
+    if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
   }
   await store.linkJobToSlackSession(job);
 
@@ -210,6 +226,7 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
 
   if (job.status === 'issue_created' && issueWebhookStartsSiteWorker(env)) {
     job = await store.updateJob(job.id, 'generating_page');
+    if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
     await store.linkJobToSlackSession(job);
     await notifySlackJobStatus(env, store, job, {
       stage: 'issue_created',
@@ -251,6 +268,7 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     ? await store.findPlatformDevItemByPrNumber(prNumber, { headSha: pullRequest.head?.sha || null })
     : null;
   if (platformItem) {
+    const platformItemId = platformItem.id;
     const mergeAnnouncement =
       action === 'closed' && pullRequest.merged ? await queueMergeAnnouncementIfNeeded({ body, action, store, env }) : null;
     const patch = {
@@ -263,11 +281,13 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     if (action === 'closed') nextStatus = pullRequest.merged ? 'merged' : 'closed_unmerged';
     else if (action === 'reopened' && ['closed_unmerged', 'cancelled', 'failed'].includes(platformItem.status)) {
       platformItem = await restorePlatformDevItemForReopenedGithubResource(store, platformItem, 'pr', pullRequest);
+      if (!platformItem) return workItemGoneResponse(result, 'platform_dev', platformItemId);
       nextStatus = platformItem.status;
     } else if (['opened', 'reopened', 'ready_for_review'].includes(action)) nextStatus = 'pr_created';
     else if (action === 'synchronize') nextStatus = 'ci_running';
     if (shouldIgnorePlatformPrAction(platformItem, action, pullRequest)) {
       platformItem = await store.patchPlatformDevItem(platformItem.id, patch);
+      if (!platformItem) return workItemGoneResponse(result, 'platform_dev', platformItemId);
       return jsonResponse({
         ok: true,
         created: true,
@@ -280,6 +300,7 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
       platformItem.status === nextStatus
         ? await store.patchPlatformDevItem(platformItem.id, patch)
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
+    if (!platformItem) return workItemGoneResponse(result, 'platform_dev', platformItemId);
     await store.linkPlatformDevItemToSlackSession(platformItem);
     const workerStart = action === 'reopened' ? await startWorkerForPlatformDevItemIfConfigured(platformItem, env) : null;
     const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, platformItem, {

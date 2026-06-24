@@ -94,6 +94,10 @@ Slack / API
   -> Review gate 通过后由 worker 触发 preview
 ```
 
+`apps/worker` 直接创建 issue 的路径必须先成功 dispatch `project-index.yml`，再向 gateway 回调 `issue_created`。如果 project-index dispatch 失败，任务不能提前进入 issue_created，避免用户看到“issue 已进入下一阶段”但索引和后续 agent 没有启动。
+
+GitHub webhook 和 Slack gate 回调里的 `patch/update` 都要按可能返回 `null` 处理。并发删除或状态被其它流程收口时，入口应返回 ignored / ephemeral 提示，不能继续读取 `.status` 或启动 worker。
+
 Platform Dev Lane 执行边界：
 
 ```text

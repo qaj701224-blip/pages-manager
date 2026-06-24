@@ -211,7 +211,7 @@ async function recordSuccessfulSiteCheck(app, options = {}) {
     appSlug: options.appSlug || 'github-actions',
     appName: options.appName || 'GitHub Actions',
     status: 'completed',
-    conclusion: 'success',
+    conclusion: options.conclusion || 'success',
     headSha,
     detailsUrl: options.detailsUrl || `https://github.example/org/pages-manager/actions/runs/${prNumber}`,
     firstSeenDeliveryId: options.deliveryId || `seed-site-check-${prNumber}`,
@@ -6712,6 +6712,112 @@ test('Slack review result query keeps explicit PR target above agent current tar
   assert.doesNotMatch(body.replyText, /current PR comment/);
 });
 
+test('Slack review result query surfaces failed site-check without review comments', async () => {
+  const app = createGatewayApp();
+  const headSha = '1'.repeat(40);
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'review-results-failed-site-check-job',
+    employeeSlug: 'u1',
+    siteSlug: 'failed-site-check',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Failed site-check page',
+    summary: 'site-check 失败',
+  }).job;
+  const updatedJob = app.store.patchJob(job.id, {
+    status: 'reviewing',
+    issueNumber: 92,
+    prNumber: 93,
+    prUrl: 'https://github.example/org/pages-manager/pull/93',
+    headSha,
+  });
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000156',
+    channelId: 'D1',
+    threadTs: '1710000000.000156',
+    dmChannelId: 'D1',
+    activeJobId: updatedJob.id,
+    activeWorkItemKind: 'site_publishing',
+    activeWorkItemId: updatedJob.id,
+    activeIssueNumber: 92,
+    activePrNumber: 93,
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  app.store.linkJobToSlackSession(updatedJob, session);
+  await recordSuccessfulSiteCheck(app, { prNumber: 93, headSha, conclusion: 'failure' });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-review-results-site-check-failed-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000156',
+          text: 'review 结果呢',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'summarize_review_results',
+                visibleReply: '我来整理当前 PR 的 Review 结果。',
+                summary: '整理当前 PR 的 Review 结果。',
+                toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                needsClarification: false,
+              },
+              events: [
+                {
+                  type: 'analysis_final',
+                  sequence: 1,
+                  agentRunId: payload.agentRunId,
+                  slackSessionId: payload.slackSessionId,
+                  analysis: {
+                    intent: 'summarize_review_results',
+                    visibleReply: '我来整理当前 PR 的 Review 结果。',
+                    summary: '整理当前 PR 的 Review 结果。',
+                    toolCall: { name: 'summarize_review_results', args: { kind: 'current', maxItems: 5 } },
+                    needsClarification: false,
+                  },
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'summarize_review_results');
+  assert.equal(body.reviewResults.conclusion, 'waiting_site_check');
+  assert.equal(body.reviewResults.gate.siteCheckStatus, 'completed');
+  assert.equal(body.reviewResults.gate.siteCheckConclusion, 'failure');
+  assert.match(body.replyText, /site-check 还没通过/);
+  assert.doesNotMatch(body.replyText, /还没有收到 Review Agent 的结果/);
+});
+
 test('Slack review result query keeps current session target above agent-inferred target', async () => {
   const app = createGatewayApp();
   const headShaCurrent = 'f'.repeat(40);
@@ -6994,6 +7100,115 @@ test('Slack review result query can use a single previous work-item list target'
   assert.equal(body.action, 'summarize_review_results');
   assert.equal(body.reviewResults.prNumber, 91);
   assert.match(body.replyText, /single previous list item/);
+});
+
+test('Slack explicit PR diagnosis bypasses multiple active DM session ambiguity', async () => {
+  const app = createGatewayApp();
+  const targetJob = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'diagnosis-explicit-pr-target',
+    employeeSlug: 'u1',
+    siteSlug: 'target',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Target job',
+    summary: '目标任务',
+  }).job;
+  const updatedTargetJob = app.store.patchJob(targetJob.id, {
+    status: 'pr_created',
+    issueNumber: 76,
+    prNumber: 77,
+    prUrl: 'https://github.example/org/pages-manager/pull/77',
+    workflowRunId: '28000000077',
+  });
+  const otherJob = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'diagnosis-other-active-session',
+    employeeSlug: 'u1',
+    siteSlug: 'other',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Other job',
+    summary: '另一个任务',
+  }).job;
+  const firstSession = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000260',
+    channelId: 'D1',
+    threadTs: '1710000000.000260',
+    dmChannelId: 'D1',
+    activeJobId: otherJob.id,
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  const secondSession = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000261',
+    channelId: 'D1',
+    threadTs: '1710000000.000261',
+    dmChannelId: 'D1',
+    activeJobId: targetJob.id,
+    activeContextExpiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  app.store.linkJobToSlackSession(otherJob, firstSession);
+  app.store.linkJobToSlackSession(updatedTargetJob, secondSession);
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-diagnosis-explicit-pr-target-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000260',
+          text: '状态 PR #77',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        assert.deepEqual(payload.explicitWorkItemReference, { kind: 'pr', number: 77 });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                dialogAct: 'run_tool',
+                intent: 'diagnose_work_item',
+                toolCall: { name: 'diagnose_current_work_item', args: { kind: 'pr', number: 77 } },
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+      GITHUB_REPO: 'org/pages-manager',
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'diagnose_work_item');
+  assert.equal(body.accepted, false);
+  assert.equal(body.jobId, targetJob.id);
+  assert.match(body.replyText, /#77/);
+  assert.doesNotMatch(body.replyText, /多个最近的会话/);
 });
 
 test('Slack Agent diagnosis summarizes failed GitHub Actions job logs', async () => {

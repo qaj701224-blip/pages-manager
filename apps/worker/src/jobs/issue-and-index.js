@@ -32,16 +32,15 @@ export async function startIssueAndIndex(job, config, adapters = {}) {
     })
   );
 
-  await callback(fetchImpl, config, {
-    publishingJobId: job.id,
-    executorType: 'pages_worker',
-    status: 'succeeded',
-    stageResult: 'issue_created',
-    issueNumber,
-    issueUrl: issueResult.issue.html_url || issueResult.issue.url || null,
-  });
-
   if (config.executorMode === 'issue_only' || (config.executorMode === 'github_issue_webhook' && issueResult.created)) {
+    await callback(fetchImpl, config, {
+      publishingJobId: job.id,
+      executorType: 'pages_worker',
+      status: 'succeeded',
+      stageResult: 'issue_created',
+      issueNumber,
+      issueUrl: issueResult.issue.html_url || issueResult.issue.url || null,
+    });
     return {
       action: config.executorMode === 'github_issue_webhook' ? 'issue_created_waiting_for_github_issue_webhook' : 'issue_created',
       issueNumber,
@@ -59,6 +58,15 @@ export async function startIssueAndIndex(job, config, adapters = {}) {
       callbackUrl: config.callbackUrl,
       issueNumber,
     }),
+  });
+
+  await callback(fetchImpl, config, {
+    publishingJobId: job.id,
+    executorType: 'pages_worker',
+    status: 'succeeded',
+    stageResult: 'issue_created',
+    issueNumber,
+    issueUrl: issueResult.issue.html_url || issueResult.issue.url || null,
   });
 
   return {
