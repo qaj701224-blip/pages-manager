@@ -46,11 +46,14 @@ test('ECS deploy builds from stable Node image unless previous app image is expl
   assert.match(script, /NODE_IMAGE="\$\{ECS_NODE_IMAGE:-node:22-bookworm-slim\}"/);
   assert.match(script, /if \[\[ "\$base_image_tag" == "__empty__" \]\]; then/);
   assert.match(script, /if \[\[ -z "\$base_image_tag" \]\] && is_truthy "\$build_from_previous"; then/);
+  assert.match(script, /fallback_base_image_tag="\$previous_image_tag"/);
   assert.doesNotMatch(
     script,
     /base_image_tag="\$\(sed -n 's\/\^PAGES_IMAGE_TAG=\/\/p' "\$env_file" \| tail -1 \|\| true\)"/
   );
   assert.match(script, /--build-arg "NODE_IMAGE=\$\{node_image\}"/);
+  assert.match(script, /stable Node build failed; retry \$\{service\} from \$\{fallback_base_image_tag\}/);
+  assert.match(script, /--build-arg "NODE_IMAGE=\$\(image_for "\$service" "\$fallback_base_image_tag"\)"/);
   assert.match(dockerfile, /RUN corepack enable && corepack prepare pnpm@\$\{PNPM_VERSION\} --activate/);
   assert.match(
     dockerfile,
@@ -89,6 +92,7 @@ test('ECS deploy rolls back services and keeps image/build retention bounded', (
   assert.match(script, /rollback_env_and_services\(\)/);
   assert.match(script, /rm -f "\$candidate_env_file"/);
   assert.match(script, /cat "\$env_backup" >"\$env_file"/);
+  assert.match(script, /\[\[ -n "\$base_image_tag" && "\$tag" == "\$base_image_tag" \]\] && continue/);
   assert.match(script, /compose_up_services \|\| true/);
   assert.match(script, /cleanup_old_images\(\)/);
   assert.match(script, /docker image rm "\$\{repo\}:\$\{tag\}"/);
