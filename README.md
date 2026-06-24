@@ -1,4 +1,4 @@
-## pages-manager
+# pages-manager
 
 `pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `xd-cell` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
 
