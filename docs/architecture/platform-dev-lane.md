@@ -143,6 +143,7 @@ issue body 必须包含：
 - 不持有 Cloudflare、Aliyun、Kube、ACK 或 production deploy secret。
 - 允许使用 GitHub token 创建平台 PR。
 - Codex CLI 主路径和 legacy JSON fallback 都使用 `AGENT_GATEWAY_URL` + `AGENT_CODE_API_KEY`，保持同一套 company agent gateway 凭据。
+- Codex CLI 在进入真实 coding round 前先执行 runner 的 `--codex-preflight`，用同一套 provider 参数校验 CLI 版本、TOML 配置、base URL 和必需凭据。
 - 运行 `pnpm lint` 和 `pnpm test`。
 - 做基础 secret scan，并按包含未跟踪文件的 changed-file 列表逐个读取内容扫描；`.pages-artifacts/**` 只作为 callback / report 临时目录，`.pages-trusted/**` 只作为可信 helper checkout，二者不参与目标仓库 diff、secret scan 或 commit。
 - 通过 `/internal/executor-callback` 回写 `agent_running`、`pr_created` 或失败。
@@ -163,7 +164,7 @@ Platform Agent 是真实 repo-editing coding runner，不是只生成 JSON patch
 6. runner 输出报告 artifact，包含 backend、轮次、验证结果、失败原因、changed files 和可回传摘要。
 7. workflow 对工作区做 changed-file 枚举、secret scan、lint/test 结果归档、commit、push 和 callback。
 
-Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner 生成的任务和上下文文件，按普通 coding agent 方式修改仓库文件，并通过验证 / 修复循环收敛。Codex CLI provider 使用 `AGENT_GATEWAY_URL` 归一化后的 `/v1` base URL、`AGENT_CODE_API_KEY` 和 `wire_api="responses"`，并通过 `model_providers.<id>={...}` TOML inline table 注入 provider 配置；因此 company agent gateway 必须兼容 `/v1/responses`。`scripts/platform-agent-coding.mjs` 保留为 legacy JSON backend / fallback，只能用于受限场景；它的局限是更偏一次性 JSON 输出，不能完整表达多轮 repo 编辑、真实命令验证、复杂冲突处理和已有工作区状态，因此不能作为 Platform Agent 的长期主路径。
+Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner 生成的任务和上下文文件，按普通 coding agent 方式修改仓库文件，并通过验证 / 修复循环收敛。Codex CLI provider 使用 `AGENT_GATEWAY_URL` 归一化后的 `/v1` base URL、`AGENT_CODE_API_KEY` 和 `wire_api="responses"`，并通过 `model_providers.<id>={...}` TOML inline table 注入 provider 配置；runner 会复用同一段配置构造逻辑做 `debug models --bundled` preflight，防止无效 provider id、坏 TOML 或缺失凭据进入长任务。实际执行时 Codex CLI 使用 `--ignore-user-config`，避免 runner 机器上的个人 Codex 配置污染自动化。company agent gateway 必须兼容 `/v1/responses`。`scripts/platform-agent-coding.mjs` 保留为 legacy JSON backend / fallback，只能用于受限场景；它的局限是更偏一次性 JSON 输出，不能完整表达多轮 repo 编辑、真实命令验证、复杂冲突处理和已有工作区状态，因此不能作为 Platform Agent 的长期主路径。
 
 fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent 的 blocking / unknown comment，或收到用户后续 follow-up 后，gateway 可以 dispatch `platform-agent.yml(mode=fix)`。该 dispatch 必须携带 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`，让 runner 明确本轮是修复 review 阻塞、处理不确定评论，还是消化 Slack / issue follow-up。fix round 仍然只把生成改动留在 repo 工作区，由 workflow 的标准 diff、commit、push 路径落到 PR 分支。
 

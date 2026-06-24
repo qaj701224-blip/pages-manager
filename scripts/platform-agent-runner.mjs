@@ -14,6 +14,7 @@ const DEFAULT_CHECK_TIMEOUT_MS = 20 * 60 * 1000;
 const LOG_LIMIT = 24_000;
 const TASK_CONTEXT_LIMIT = 30_000;
 const FILE_LIST_LIMIT = 1_200;
+const DEFAULT_CODEX_PROVIDER_ID = 'platform_agent_gateway';
 
 function required(value, name) {
   if (!value) throw new Error(`${name} is required`);
@@ -294,6 +295,18 @@ function tomlString(value) {
   return JSON.stringify(String(value || ''));
 }
 
+function codexCommandFromEnv(env) {
+  return env.PLATFORM_AGENT_CODEX_COMMAND || env.CODEX_COMMAND || 'codex';
+}
+
+function codexProviderIdFromEnv(env) {
+  const providerId = env.PLATFORM_AGENT_CODEX_PROVIDER_ID || DEFAULT_CODEX_PROVIDER_ID;
+  if (!/^[A-Za-z0-9_-]+$/.test(providerId)) {
+    throw new Error('PLATFORM_AGENT_CODEX_PROVIDER_ID must contain only letters, numbers, "_" or "-"');
+  }
+  return providerId;
+}
+
 function normalizeAgentGatewayBaseUrl(value) {
   const normalized = String(value || '').replace(/\/+$/, '');
   if (!normalized) return '';
@@ -320,23 +333,60 @@ function requireCodexGatewayEnv(env) {
   }
 }
 
+export function buildCodexConfigArgs(env) {
+  requireCodexGatewayEnv(env);
+  const providerId = codexProviderIdFromEnv(env);
+  const providerConfig = [
+    `name=${tomlString('Platform Agent Gateway')}`,
+    `base_url=${tomlString(codexBaseUrlFromEnv(env))}`,
+    'env_key="AGENT_CODE_API_KEY"',
+    'wire_api="responses"',
+  ].join(',');
+  return [
+    '-c',
+    `model_provider=${tomlString(providerId)}`,
+    '-c',
+    `model_providers.${providerId}={${providerConfig}}`,
+  ];
+}
+
+export async function runCodexPreflight(options = {}) {
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const env = options.env || process.env;
+  const backend = backendNameFromEnv(env);
+  if (LEGACY_BACKENDS.has(backend)) {
+    return { ok: true, skipped: true, backend };
+  }
+  if (backend !== 'codex' && backend !== 'codex-cli') {
+    throw new Error(`Unsupported Platform Agent backend: ${backend}`);
+  }
+
+  const command = codexCommandFromEnv(env);
+  const args = ['debug', 'models', '--bundled', ...buildCodexConfigArgs(env)];
+  const result = await runProcess(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    timeoutMs: numberFromEnv(env.PLATFORM_AGENT_CODEX_PREFLIGHT_TIMEOUT_MS, 60_000),
+  });
+  if (!result.ok) {
+    throw new Error(
+      `Codex CLI preflight failed${result.timedOut ? ' (timeout)' : ''}:\n${truncateLog(
+        `${result.stdout}\n${result.stderr}`.trim()
+      )}`
+    );
+  }
+  return { ok: true, skipped: false, backend, command };
+}
+
 function createCodexBackend(env) {
   requireCodexGatewayEnv(env);
   return {
     name: 'codex',
     async run({ cwd, taskPath, round }) {
       const task = await readFile(taskPath, 'utf8');
-      const command = env.PLATFORM_AGENT_CODEX_COMMAND || env.CODEX_COMMAND || 'codex';
+      const command = codexCommandFromEnv(env);
       const timeoutMs = numberFromEnv(env.PLATFORM_AGENT_BACKEND_TIMEOUT_MS, DEFAULT_BACKEND_TIMEOUT_MS);
       const lastMessagePath = path.join(cwd, '.pages-artifacts', `platform-agent-codex-round-${round}.md`);
-      const providerId = env.PLATFORM_AGENT_CODEX_PROVIDER_ID || 'platform_agent_gateway';
-      const providerConfig = [
-        `name=${tomlString('Platform Agent Gateway')}`,
-        `base_url=${tomlString(codexBaseUrlFromEnv(env))}`,
-        'env_key="AGENT_CODE_API_KEY"',
-        'wire_api="responses"',
-      ].join(',');
-      const providerInlineTable = `{${providerConfig}}`;
       const args = [
         'exec',
         '--cd',
@@ -344,14 +394,12 @@ function createCodexBackend(env) {
         '--dangerously-bypass-approvals-and-sandbox',
         '--dangerously-bypass-hook-trust',
         '--ephemeral',
+        '--ignore-user-config',
         '--color',
         'never',
         '-o',
         lastMessagePath,
-        '-c',
-        `model_provider=${tomlString(providerId)}`,
-        '-c',
-        `model_providers.${providerId}=${providerInlineTable}`,
+        ...buildCodexConfigArgs(env),
       ];
       const model = codexModelFromEnv(env);
       if (model) args.push('--model', model);
@@ -630,14 +678,24 @@ export async function runPlatformAgentRunner(options = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runPlatformAgentRunner().then((result) => {
+  const run =
+    process.argv[2] === '--codex-preflight'
+      ? runCodexPreflight().then((result) => ({
+          ok: result.ok,
+          generatedBy: 'platform-agent-runner',
+          preflight: true,
+          backend: result.backend,
+          skipped: result.skipped,
+        }))
+      : runPlatformAgentRunner().then((result) => ({
+          ok: true,
+          generatedBy: 'platform-agent-runner',
+          backend: result.report.backend,
+          changedFiles: result.report.changedFiles,
+        }));
+  run.then((result) => {
     console.log(
-      JSON.stringify({
-        ok: true,
-        generatedBy: 'platform-agent-runner',
-        backend: result.report.backend,
-        changedFiles: result.report.changedFiles,
-      })
+      JSON.stringify(result)
     );
   });
 }
