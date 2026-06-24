@@ -161,12 +161,22 @@ export async function notifySlackJob(env, store, job, text, key) {
   }
 
   if (inFlightKey) slackJobNotificationInFlight.add(inFlightKey);
+  let claimed = false;
   try {
+    if (key && store?.claimSlackNotification) {
+      claimed = await store.claimSlackNotification(job.id, key);
+      if (!claimed) return { skipped: true, reason: 'duplicate', key };
+    }
     const result = await callRemoteNotifier(env, '/internal/slack-notifier/job-message', { job, text, key });
     if (result?.ok) {
-      await store?.recordSlackNotification?.(job.id, key);
+      if (!claimed) await store?.recordSlackNotification?.(job.id, key);
+    } else if (claimed) {
+      await store?.releaseSlackNotification?.(job.id, key);
     }
     return result;
+  } catch (error) {
+    if (claimed) await store?.releaseSlackNotification?.(job.id, key);
+    throw error;
   } finally {
     if (inFlightKey) slackJobNotificationInFlight.delete(inFlightKey);
   }

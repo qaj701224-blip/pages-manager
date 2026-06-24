@@ -125,10 +125,10 @@ function shouldIgnoreExecutorCallback(existing = {}, stageResult = '', patch = {
 
 export async function applyExecutorCallback(store, jobId, stageResult, status, patch) {
   const existing = await store.getJob(jobId);
-  if (!existing) return null;
+  if (!existing) return { job: null, ignored: false };
 
   if (shouldIgnoreExecutorCallback(existing, stageResult, patch)) {
-    return existing;
+    return { job: existing, ignored: true };
   }
 
   if (status === 'reviewing' && !canTransition(existing.status, status)) {
@@ -144,15 +144,15 @@ export async function applyExecutorCallback(store, jobId, stageResult, status, p
       let current = existing;
       for (const nextStatus of path) {
         current = await store.updateJob(jobId, nextStatus, nextStatus === status ? patch : {});
-        if (!current) return null;
+        if (!current) return { job: null, ignored: false };
       }
-      return current;
+      return { job: current, ignored: false };
     }
   }
 
   if (STALE_CALLBACK_PATCH_STATUSES[stageResult]?.has(existing.status)) {
-    return await store.patchJob(jobId, patch);
+    return { job: await store.patchJob(jobId, patch), ignored: false };
   }
 
-  return await store.updateJob(jobId, status, patch);
+  return { job: await store.updateJob(jobId, status, patch), ignored: false };
 }

@@ -10,7 +10,7 @@ import {
   slackStatusScopeKey,
   workItemStatusScopeKey,
 } from '../rows/slack-row.js';
-import { execute, upsertRow } from '../sql.js';
+import { execute, insertRowIfNotDuplicate, upsertRow } from '../sql.js';
 
 export const slackNotificationRepositoryMethods = {
   async hasSlackNotification(jobId, key) {
@@ -30,6 +30,24 @@ export const slackNotificationRepositoryMethods = {
       { id: makeId('slackdedupe'), job_id: jobId, dedupe_key: key, created_at: new Date() },
       { excludeUpdate: ['id', 'created_at'] }
     );
+  },
+
+  async claimSlackNotification(jobId, key) {
+    const claimed = await insertRowIfNotDuplicate(this.pool, 'slack_notification_dedupes', {
+      id: makeId('slackdedupe'),
+      job_id: jobId,
+      work_item_kind: null,
+      work_item_id: null,
+      dedupe_key: key,
+      created_at: new Date(),
+    });
+    if (claimed) this.slackNotifications.add(`${jobId}:${key}`);
+    return claimed;
+  },
+
+  async releaseSlackNotification(jobId, key) {
+    this.slackNotifications.delete(`${jobId}:${key}`);
+    await execute(this.pool, 'DELETE FROM slack_notification_dedupes WHERE job_id = ? AND dedupe_key = ?', [jobId, key]);
   },
 
   async hasSlackWorkItemNotification(workItemKind, workItemId, key) {

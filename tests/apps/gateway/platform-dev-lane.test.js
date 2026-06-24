@@ -1024,6 +1024,92 @@ test('allowlisted maintainer can approve a high-risk platform gate for another r
   assert.equal(workerCalls.length, 1);
 });
 
+test('early high-risk platform gate approval waits for gate callback before dispatching agent', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-gate-early-approve',
+    title: '平台高风险需求',
+    summary: '修改 CI workflow',
+    issueType: 'type:ci',
+    areas: ['area:ci'],
+    risk: 'risk:high',
+    agentEligible: true,
+    requiresHumanGate: true,
+    gateStatus: 'pending',
+    slackSessionId: 'sess_gate_early',
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  app.store.upsertSlackSession({
+    id: 'sess_gate_early',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_early'));
+  const workerCalls = [];
+  const env = {
+    ...notifierEnv(),
+    PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U1',
+    PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+    PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+    async WORKER_FETCH(url, request) {
+      workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+  };
+
+  const approvalResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        interaction(
+          'pages_approve_platform_gate',
+          JSON.stringify({
+            workItemKind: 'platform_dev',
+            workItemId: item.id,
+            sessionId: 'sess_gate_early',
+            gateType: 'risk',
+          })
+        )
+      ),
+    }),
+    env
+  );
+  const approval = await json(approvalResponse);
+
+  assert.equal(approvalResponse.status, 200);
+  assert.match(approval.text, /issue 创建完成/);
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'received');
+  assert.equal(app.store.getPlatformDevItem(item.id).gateStatus, 'approved');
+  assert.equal(workerCalls.length, 0);
+
+  const callbackResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workItemKind: 'platform_dev',
+        platformDevItemId: item.id,
+        stageResult: 'gate_pending',
+        issueNumber: 81,
+        issueUrl: 'https://github.example/org/pages-manager/issues/81',
+      }),
+    }),
+    env
+  );
+  const callback = await json(callbackResponse);
+
+  assert.equal(callbackResponse.status, 200);
+  assert.equal(callback.item.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
+  assert.equal(workerCalls[0].body.platformDevItem.status, 'agent_queued');
+  assert.equal(workerCalls[0].body.platformDevItem.gateStatus, 'approved');
+});
+
 test('high-risk platform gate approval fails closed without approver allowlist', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({

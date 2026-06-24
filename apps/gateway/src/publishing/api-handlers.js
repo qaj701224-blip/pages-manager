@@ -58,9 +58,21 @@ export async function handleCreatePublishingJob(request, env) {
   const store = getStore(env);
   const body = await readJson(request);
   const { job, created } = await store.createJob(normalizePublishingJobInput(body, request));
-  const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
+  let workerStart = null;
+  let responseJob = job;
+  if (created) {
+    try {
+      workerStart = await startWorkerForJobIfConfigured(job, env);
+    } catch (error) {
+      workerStart = { started: false, error: error.message || 'Worker start failed' };
+    }
+    if (workerStart?.started === false) {
+      responseJob = await store.failJob?.(job.id, 'worker_start_failed', workerStart.error || 'Worker start failed');
+      return jsonResponse({ job: responseJob || job, created, workerStart }, 502);
+    }
+  }
 
-  return jsonResponse({ job, created, ...(workerStart ? { workerStart } : {}) }, created ? 201 : 200);
+  return jsonResponse({ job: responseJob, created, ...(workerStart ? { workerStart } : {}) }, created ? 201 : 200);
 }
 
 export async function handleListPublishingJobs(request, env) {

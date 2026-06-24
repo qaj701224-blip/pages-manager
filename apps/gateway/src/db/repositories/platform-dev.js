@@ -14,7 +14,7 @@ import {
   rowToPlatformDevItem,
 } from '../rows/platform-dev-row.js';
 import { rowToWorkItemLink, workItemLinkToRow } from '../rows/slack-row.js';
-import { execute, fromDbJson, limitOffsetSql, queryPlaceholders, toDbJson, toIso, upsertRow } from '../sql.js';
+import { execute, fromDbJson, limitOffsetSql, queryPlaceholders, toDbJson, toIso, upsertRow, withTransaction } from '../sql.js';
 
 const ACTIVE_PLATFORM_DEV_STATUSES = new Set([
   'received',
@@ -146,22 +146,35 @@ export const platformDevRepositoryMethods = {
     const events = this.platformDevEvents.get(item.id) || [];
 
     try {
-      await this.upsertPlatformDevItem(item);
-      await this.insertPlatformDevEvents(events);
-      if (item.requiresHumanGate) {
-        await this.ensureWorkItemGate({
-          workItemKind: 'platform_dev',
-          workItemId: item.id,
-          gateType: 'risk',
-          status: 'pending',
-          reason: item.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
-          metadata: {
-            risk: item.risk,
-            issueType: item.issueType,
-            areas: item.areas || [],
-          },
-        });
-      }
+      await withTransaction(this.pool, async (connection) => {
+        await upsertRow(connection, 'platform_dev_items', platformDevItemToRow(item), { excludeUpdate: ['id', 'created_at'] });
+        for (const event of events) {
+          await upsertRow(connection, 'platform_dev_events', platformDevEventToRow(event), {
+            excludeUpdate: ['id', 'created_at'],
+          });
+        }
+        if (item.requiresHumanGate) {
+          const nowIso = new Date().toISOString();
+          const gate = {
+            id: makeId('gate'),
+            workItemKind: 'platform_dev',
+            workItemId: item.id,
+            gateType: 'risk',
+            status: 'pending',
+            reason: item.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
+            decidedBy: null,
+            decidedAt: null,
+            metadata: {
+              risk: item.risk,
+              issueType: item.issueType,
+              areas: item.areas || [],
+            },
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          await upsertRow(connection, 'work_item_gates', workItemGateToRow(gate), { excludeUpdate: ['id', 'created_at'] });
+        }
+      });
     } catch (error) {
       if (String(error.code || '').includes('ER_DUP_ENTRY')) {
         const duplicate = await this.getPlatformDevItemByIdempotency(input);
@@ -459,7 +472,7 @@ export const platformDevRepositoryMethods = {
     const requestedById = slackRequestedById(teamId, slackUserId);
     const statuses = options.statuses || null;
     const [siteResult, platformResult] = await Promise.all([
-      this.listJobs({ source: 'slack', limit: 50 }),
+      this.listJobs({ source: 'slack', requestedById, statuses, limit: 50 }),
       this.listPlatformDevItems({
         source: 'slack',
         requestedById,
@@ -468,10 +481,7 @@ export const platformDevRepositoryMethods = {
       }),
     ]);
 
-    const siteItems = (siteResult.jobs || [])
-      .filter((job) => job.requestedById === requestedById)
-      .filter((job) => !statuses?.length || statuses.includes(job.status))
-      .map((job) => ({ ...job, workItemKind: 'site_publishing' }));
+    const siteItems = (siteResult.jobs || []).map((job) => ({ ...job, workItemKind: 'site_publishing' }));
     const platformItems = (platformResult.items || []).map(itemForSlackList);
     const items = [...siteItems, ...platformItems].sort((left, right) => {
       const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();

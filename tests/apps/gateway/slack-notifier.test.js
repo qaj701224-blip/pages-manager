@@ -238,6 +238,52 @@ test('gateway dedupes concurrent Slack job messages before remote notifier call'
   assert.equal(calls.length, 1);
 });
 
+test('gateway atomically claims Slack job message dedupe before remote notifier call', async () => {
+  const calls = [];
+  const claims = new Set();
+  const store = {
+    hasSlackNotification() {
+      return false;
+    },
+    claimSlackNotification(jobId, key) {
+      const claimKey = `${jobId}:${key}`;
+      if (claims.has(claimKey)) return false;
+      claims.add(claimKey);
+      return true;
+    },
+    releaseSlackNotification(jobId, key) {
+      claims.delete(`${jobId}:${key}`);
+    },
+    recordSlackNotification() {
+      throw new Error('claim already records the dedupe row');
+    },
+  };
+  const job = {
+    id: 'job_1',
+    slackThread: {
+      channelId: 'C1',
+      threadTs: '1710000000.000100',
+      userId: 'U1',
+    },
+  };
+  const env = {
+    SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+    SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+    async SLACK_NOTIFIER_FETCH(url, request) {
+      calls.push({ url: String(url), request });
+      return new Response(JSON.stringify({ ok: true, channel: 'C1', ts: '1710000001.000100' }), { status: 200 });
+    },
+  };
+
+  const first = await notifySlackJob(env, store, job, 'Preview 已部署。', 'preview:job_1');
+  const second = await notifySlackJob(env, store, job, 'Preview 已部署。', 'preview:job_1');
+
+  assert.equal(first.ok, true);
+  assert.equal(second.skipped, true);
+  assert.equal(second.reason, 'duplicate');
+  assert.equal(calls.length, 1);
+});
+
 test('gateway records Slack status progress only after remote notifier success', async () => {
   const events = [];
   const store = {

@@ -54,6 +54,25 @@ export async function executeResult(pool, sql, params = []) {
   return result;
 }
 
+export async function withTransaction(pool, fn) {
+  if (typeof pool?.getConnection !== 'function') {
+    return await fn(pool);
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const result = await fn(connection);
+    await connection.commit();
+    return result;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    if (typeof connection.release === 'function') connection.release();
+  }
+}
+
 export function isDuplicateKeyError(error) {
   return error?.code === 'ER_DUP_ENTRY' || error?.errno === 1062;
 }

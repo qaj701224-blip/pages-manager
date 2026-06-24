@@ -15,6 +15,13 @@ export async function listReconciledSlackWorkItemsForSession(store, body, env, o
 
   for (const job of result.jobs || []) {
     if (!job || typeof job !== 'object') continue;
+    if (job.workItemKind === 'platform_dev' || job.githubIssueNumber !== undefined) {
+      const actionable = isActionableSlackWorkItem(job);
+      if (workItemState === 'closed' ? !actionable : slackWorkItemIncludesInactive(workItemState) || actionable) {
+        reconciledJobs.push(job);
+      }
+      continue;
+    }
     const reconciled = await reconcileClosedGithubIssueForJob(store, env, job);
     if (!reconciled || typeof reconciled !== 'object') continue;
     const actionable = isActionableSlackWorkItem(reconciled);

@@ -96,7 +96,7 @@ Slack / API
 
 `apps/worker` 直接创建 issue 的路径必须先成功 dispatch `project-index.yml`，再向 gateway 回调 `issue_created`。如果 project-index dispatch 失败，任务不能提前进入 issue_created，避免用户看到“issue 已进入下一阶段”但索引和后续 agent 没有启动。
 
-GitHub webhook 和 Slack gate 回调里的 `patch/update` 都要按可能返回 `null` 处理。并发删除或状态被其它流程收口时，入口应返回 ignored / ephemeral 提示，不能继续读取 `.status` 或启动 worker。
+GitHub webhook、Review gate、site-check 和 Slack gate 回调里的 `patch/update` 都要按可能返回 `null` 处理。并发删除或状态被其它流程收口时，入口应返回 ignored / ephemeral 提示，不能继续读取 `.status` 或启动 worker；worker dispatcher 也必须把缺失 work item 当作 no-op。
 
 Platform Dev Lane 执行边界：
 
@@ -157,6 +157,10 @@ base: master
 - v1 平台变更 dispatch `deploy-staging.yml`；v2 平台变更 dispatch `deploy-pages-v2-staging.yml` 且 `component=all`。
 - 如果 PR head 无法干净 merge 到 `staging`，或者临时分支 `CI` 失败，workflow 失败并转人工处理。
 - 这条 workflow 只使用 GitHub `GITHUB_TOKEN`，不读取 Cloudflare、Aliyun、ACR、ACK 或用户发布执行器 secret。
+
+### Executor Callback 幂等
+
+executor callback 只能推进仍可转换的当前任务。已取消、已合并、已部署或已失败的终态 job 收到迟到 callback 时，gateway 返回 200 并标记 ignored，不能让 workflow 因有意取消而失败。带 `headSha` 的 preview callback 如果不匹配当前 job head，也只保留当前 DB 状态，不触发 Slack 成功卡片、plain progress、reaction settlement 或新的 worker dispatch。
 
 ## Worker 配置
 

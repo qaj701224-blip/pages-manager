@@ -25,6 +25,7 @@ async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
   let current = job;
   if (current.status === 'pr_created') {
     current = await store.updateJob(current.id, 'reviewing', patch);
+    if (!current) return null;
   }
   if (current.status === 'reviewing') {
     return await store.updateJob(current.id, 'changes_requested', patch);

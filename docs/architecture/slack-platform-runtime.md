@@ -132,6 +132,7 @@ Slack thread
 - `pages-worker` 和 executor 推进 issue、PR、review、preview，但不直接发 Slack。
 - executor 不直接写 MySQL / Redis 最终业务状态；它只能 callback gateway。
 - MySQL 是最终状态真相源；Redis / queue 只做 lease、事件分发、短期协调和 rate limit。
+- gateway 调 `slack-notifier` 发 `job-message` 前必须先在 MySQL 原子 claim dedupe key；claim 失败直接跳过，避免多 gateway pod 同时把同一条普通进度消息发到 Slack。
 
 ## K8s 运行位置
 
@@ -399,10 +400,12 @@ Session 选择：
 - 频道 / thread 消息：默认使用该用户在 `channel_id + thread_ts` 下的 session；没有则创建新的 thread-scoped session。
 - DM thread 回复：优先回到原 root message 对应的 session；即使最早的 root message 是普通 DM，也要能通过 `thread_ts` 找回同一 session。
 - DM 顶层普通消息：如果用户只有一个未过期 active session，默认续接；如果有多个 active session，必须反问选择。
+- DM 顶层 `work` / “我的任务”：这是跨 session 的只读任务列表查询，不能被多个 active session 的歧义拦住；平台任务列表也不能进入站点发布的 GitHub closed-issue reconciler。
 - DM 顶层显式 `issue:` / `page:` / `site:` 测试命令：创建新的 message-scoped session，避免覆盖正在进行的任务。
 - 用户明确说“新建会话”“重新做一个”“另开一个版本”：创建新的 session。
 - 用户说“刚才那个”：只在该用户 active session 唯一且未过期时续接，否则提示用户查看自己的 PR / 任务列表再选择。
 - 用户点击或发送“关闭会话”后，当前 session 进入 closed，active job / issue / PR 指针被清空，running AgentRun 被失败化；后续即使在同一个 Slack thread 继续发消息，也不能自动复活这个 closed session，只能创建新 session 或通过“我的任务 / 继续 issue #数字 / PR #数字”显式重新选择。
+- Slack Interactivity 确认类按钮在写入 MySQL 后必须快速 ACK；worker 启动放入 background / waitUntil 执行，避免 GitHub 或 Actions dispatch 慢调用占用 Slack 的交互响应窗口。
 
 默认 TTL：
 
@@ -613,6 +616,7 @@ Platform Dev Lane 的确认卡片必须展示：
 - 用户点击“继续补充需求”时，原卡片更新为“等待补充”，不会创建 issue，也不会关闭会话。
 - 用户点击确认后，原确认卡片更新为“已确认”，确认按钮被移除，避免旧卡片被重复点击。
 - 确认后进入执行阶段，由 lane 对应的进度消息接管：Site Publishing Lane 对用户展示站点需求、PR / preview、阻塞原因和下一步；Platform Dev Lane 对用户展示 issue / PR / CI / review / merge 进度。用户后续继续在同一 thread 回复，会更新同一个工作项并触发 fix round 或排队。
+- 修改类消息写入 job / work item 时必须按并发失败处理；如果状态已被其它回调收口或记录消失，Slack 应给出“重新查询状态后再继续”的可见提示，不继续启动 worker 或写成功进度。
 - 已有 active job / issue / PR 后，修改类消息不再创建“正在整理需求”的 Agent 占位回复；Agent 对用户修改意图的理解进入进度消息的“本轮修改 / 最终需求”。如果 Agent 需要追问、解释、返回查询结果或说明无法处理，仍然在同一 thread 里直接回复用户。
 - 每条用户输入的即时反馈优先用 reaction 表示：收到时加 working reaction，完成时换成 done，失败时换成 failed。文字消息只承载真正的信息，不重复刷“我已收到”。
 - repo 问答和任务诊断属于查询类体验，只使用 reaction 表示处理中，不创建“正在整理需求...”占位消息。回复应是一条克制的答案，包含 2-5 个最相关文件路径作为依据；不泄露 secret、原始日志或内部 token。
