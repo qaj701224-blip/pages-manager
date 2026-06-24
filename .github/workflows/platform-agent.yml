@@ -457,3 +457,14 @@ jobs:
           }, null, 2)}\n`);
           NODE
           node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-failed.json
+
+      - name: Upload platform agent diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-agent-diagnostics-${{ github.run_id }}
+          path: |
+            .pages-artifacts/platform-agent-*.json
+            .pages-artifacts/platform-agent-*.md
+          if-no-files-found: ignore
+          retention-days: 7
