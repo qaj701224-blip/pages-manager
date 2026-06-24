@@ -136,8 +136,8 @@ function buildPublicError(code, message, actionOrOptions) {
   const error = { code, message };
   const options = readErrorOptions(actionOrOptions);
   const defaults = PUBLIC_ERROR_DEFAULTS.get(code) || {};
-  const reason = Object.hasOwn(options, 'reason') ? options.reason : defaults.reason;
-  const step = Object.hasOwn(options, 'step') ? options.step : defaults.step;
+  const reason = isPublicReason(options.reason) ? options.reason : defaults.reason;
+  const step = isPublicStep(options.step) ? options.step : defaults.step;
   if (isPublicString(options.action)) error.action = options.action;
   if (isPublicReason(reason)) error.reason = reason;
   if (isPublicStep(step)) error.step = step;

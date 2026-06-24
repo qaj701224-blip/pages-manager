@@ -69,6 +69,8 @@ test('jsonError drops nested public diagnostic detail values', async () => {
     error: {
       code: 'SSO_EXCHANGE_FAILED',
       message: 'SSO exchange failed.',
+      reason: 'sso_token_unavailable',
+      step: 'sso.token',
     },
   });
 });
@@ -128,18 +130,23 @@ test('jsonError keeps allowlisted public diagnostic detail values', async () => 
   });
 });
 
-test('jsonError only emits allowlisted public reason and step values', async () => {
+test('jsonError falls back to default public reason and step for unsafe overrides', async () => {
   const response = jsonError('SSO_EXCHANGE_FAILED', 'SSO exchange failed.', 502, {
     reason: 'https://sso.example.test/oauth/error?error_description=secret-provider-description',
     step: 'sso.profile.parse',
   });
+  const text = await response.text();
 
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(JSON.parse(text), {
     error: {
       code: 'SSO_EXCHANGE_FAILED',
       message: 'SSO exchange failed.',
+      reason: 'sso_token_unavailable',
+      step: 'sso.token',
     },
   });
+  assert.equal(text.includes('secret-provider-description'), false);
+  assert.equal(text.includes('sso.profile.parse'), false);
 
   const publicResponse = jsonError('OAUTH_STATE_INVALID', 'OAuth state is invalid.', 400, {
     reason: 'oauth_state_invalid_or_expired',
