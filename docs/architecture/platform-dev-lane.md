@@ -142,7 +142,7 @@ issue body 必须包含：
 - 只由 `workflow_dispatch` 触发。
 - 不持有 Cloudflare、Aliyun、Kube、ACK 或 production deploy secret。
 - 允许使用 GitHub token 创建平台 PR。
-- Codex CLI 主路径使用 `CODEX_API_KEY` / `OPENAI_API_KEY`；legacy JSON fallback 才使用 `AGENT_CODE_API_KEY`。
+- Codex CLI 主路径和 legacy JSON fallback 都使用 `AGENT_GATEWAY_URL` + `AGENT_CODE_API_KEY`，保持同一套 company agent gateway 凭据。
 - 运行 `pnpm lint` 和 `pnpm test`。
 - 做基础 secret scan，并按包含未跟踪文件的 changed-file 列表逐个读取内容扫描；`.pages-artifacts/**` 只作为 callback / report 临时目录，`.pages-trusted/**` 只作为可信 helper checkout，二者不参与目标仓库 diff、secret scan 或 commit。
 - 通过 `/internal/executor-callback` 回写 `agent_running`、`pr_created` 或失败。
@@ -163,7 +163,7 @@ Platform Agent 是真实 repo-editing coding runner，不是只生成 JSON patch
 6. runner 输出报告 artifact，包含 backend、轮次、验证结果、失败原因、changed files 和可回传摘要。
 7. workflow 对工作区做 changed-file 枚举、secret scan、lint/test 结果归档、commit、push 和 callback。
 
-Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner 生成的任务和上下文文件，按普通 coding agent 方式修改仓库文件，并通过验证 / 修复循环收敛。`scripts/platform-agent-coding.mjs` 保留为 legacy JSON backend / fallback，只能用于受限场景；它的局限是更偏一次性 JSON 输出，不能完整表达多轮 repo 编辑、真实命令验证、复杂冲突处理和已有工作区状态，因此不能作为 Platform Agent 的长期主路径。
+Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner 生成的任务和上下文文件，按普通 coding agent 方式修改仓库文件，并通过验证 / 修复循环收敛。Codex CLI provider 使用 `AGENT_GATEWAY_URL` 归一化后的 `/v1` base URL、`AGENT_CODE_API_KEY` 和 `wire_api="responses"`；因此 company agent gateway 必须兼容 `/v1/responses`。`scripts/platform-agent-coding.mjs` 保留为 legacy JSON backend / fallback，只能用于受限场景；它的局限是更偏一次性 JSON 输出，不能完整表达多轮 repo 编辑、真实命令验证、复杂冲突处理和已有工作区状态，因此不能作为 Platform Agent 的长期主路径。
 
 fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent 的 blocking / unknown comment，或收到用户后续 follow-up 后，gateway 可以 dispatch `platform-agent.yml(mode=fix)`。该 dispatch 必须携带 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`，让 runner 明确本轮是修复 review 阻塞、处理不确定评论，还是消化 Slack / issue follow-up。fix round 仍然只把生成改动留在 repo 工作区，由 workflow 的标准 diff、commit、push 路径落到 PR 分支。
 
