@@ -62,6 +62,26 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.doesNotMatch(workflow, /^\s+(SLACK_BOT_TOKEN|SLACK_APP_TOKEN|CF_API_TOKEN|CLOUDFLARE_API_TOKEN):/m);
 });
 
+test('platform-agent workflow excludes runtime artifacts from repository scans', async () => {
+  const workflow = await readFile(path.join(root, '.github/workflows/platform-agent.yml'), 'utf8');
+
+  assert.match(workflow, /^name: Platform Agent$/m);
+  assert.match(workflow, /prNumber:/);
+  assert.match(workflow, /headSha:/);
+  assert.match(workflow, /reviewContext:/);
+  assert.match(workflow, /memoryContext:/);
+  assert.match(workflow, /statusContext:/);
+  assert.match(workflow, /followupContext:/);
+  assert.ok(workflow.includes("grep -Ev '^(\\.pages-artifacts|\\.pages-trusted)(/|$)'"));
+  assert.ok(workflow.includes("git add -A -- . ':(exclude).pages-artifacts' ':(exclude).pages-trusted'"));
+  assert.match(workflow, /Refusing to commit generated build artifacts/);
+  assert.match(workflow, /\(\^\|\/\)\(node_modules\|dist\|build\)\(\/\|\$\)/);
+  assert.match(workflow, /while IFS= read -r path; do[\s\S]*done <<< "\$changed_files"/);
+  assert.match(workflow, /Potential secret detected in changed file: \$path/);
+  assert.match(workflow, /Run platform coding agent[\s\S]*AGENT_CODE_API_KEY: \$\{\{ secrets\.AGENT_CODE_API_KEY \}\}/);
+  assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''/);
+});
+
 test('pages-preview workflow keeps deploy API ip restriction compatible', async () => {
   const workflow = await readFile(path.join(root, '.github/workflows/pages-preview.yml'), 'utf8');
 

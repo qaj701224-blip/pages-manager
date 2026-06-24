@@ -96,7 +96,7 @@ received
 - `failed`
 - `cancelled`
 
-`gate_pending` 只对需要人工确认的需求出现。`ci_failed` 和 `review_blocked` 可以回到 `agent_queued` 或 `agent_running` 继续修复。
+`gate_pending` 只对需要人工确认的需求出现。`ci_failed` 和 `review_blocked` 可以回到 `agent_queued` 或 `agent_running` 继续修复。`failed` 表示某一轮自动化失败，但有关联 PR 的工单仍可被受控恢复：用户 follow-up 会先回到 `agent_queued`，Review Agent 的 blocking / unknown comment 会先进入 `review_blocked`，再由 gateway dispatch `mode=fix` 的 Platform Agent；后续 workflow 的 `agent_running` callback 会桥接成 `failed -> agent_queued -> agent_running`，避免重试卡死在旧失败态。
 
 ## 数据模型
 
@@ -144,9 +144,11 @@ issue body 必须包含：
 - 允许使用 GitHub token 创建平台 PR。
 - 使用 `AGENT_CODE_API_KEY` 作为外部 coding agent 凭据。
 - 运行 `pnpm lint` 和 `pnpm test`。
-- 做基础 secret scan。
+- 做基础 secret scan，并按包含未跟踪文件的 changed-file 列表逐个读取内容扫描；`.pages-artifacts/**` 只作为 callback / report 临时目录，`.pages-trusted/**` 只作为可信 helper checkout，二者不参与目标仓库 diff、secret scan 或 commit。
 - 通过 `/internal/executor-callback` 回写 `agent_running`、`pr_created` 或失败。
 - 无代码变更视为失败，不会把空 PR 或空执行当成成功。
+
+fix round 必须带上当前 PR 上下文。worker dispatch `platform-agent.yml(mode=fix)` 时会传入 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`；workflow 映射成环境变量后交给 `scripts/platform-agent-coding.mjs`，让模型知道本轮是由 Review blocking / unknown comment、Slack follow-up 或 issue follow-up 触发，并把最终改动写回当前 repo 工作区，由 workflow 正常 `git diff`、commit 和 push。
 
 ## Slack 体验
 

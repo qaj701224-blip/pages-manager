@@ -5613,6 +5613,84 @@ test('executor callbacks update the source Slack status card without extra progr
   assert.equal(duplicateBody.slackNotification, undefined);
 });
 
+test('executor failure callback stores workflow run identity for diagnosis', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'api',
+    requestedByType: 'user',
+    requestedById: 'usr_1',
+    idempotencyKey: 'executor-failure-workflow-run',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+  }).job;
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: job.id,
+        status: 'failed',
+        errorCode: 'AGENT_FAILED',
+        errorMessage: 'pages-agent.yml failed before creating a PR',
+        workflowName: 'pages-agent.yml',
+        workflowRunId: '28037536775',
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.job.status, 'failed');
+  assert.equal(body.job.workflowName, 'pages-agent.yml');
+  assert.equal(body.job.workflowRunId, '28037536775');
+});
+
+test('platform executor failure callback stores workflow run identity for diagnosis', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-executor-failure-workflow-run',
+    title: '修复 Slack CI 诊断',
+    summary: '让 Slack 能查 GitHub Actions 日志。',
+    issueType: 'type:dev',
+    areas: ['area:slack'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  });
+  app.store.updatePlatformDevItem(item.id, 'issue_created', {
+    githubIssueNumber: 91,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/91',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workItemKind: 'platform_dev',
+        platformDevItemId: item.id,
+        status: 'failed',
+        errorCode: 'platform_agent_failed',
+        errorMessage: 'platform-agent.yml failed before completing the PR flow',
+        workflowName: 'platform-agent.yml',
+        workflowRunId: '28038250585',
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.item.status, 'failed');
+  assert.equal(body.item.workflowName, 'platform-agent.yml');
+  assert.equal(body.item.workflowRunId, '28038250585');
+});
+
 test('executor callbacks update the Slack status card in place', async () => {
   const app = createGatewayApp();
   const notifierCalls = [];
@@ -5939,6 +6017,441 @@ test('Slack Agent diagnosis card intent drives diagnosis copy and action order',
   assert.doesNotMatch(visible, /删除资源|delete_resource/);
 });
 
+test('Slack Agent diagnosis summarizes failed GitHub Actions job logs', async () => {
+  const app = createGatewayApp();
+  const headSha = 'b'.repeat(40);
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-actions-diagnosis-job',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'pr_created',
+    branchName: 'sites/job-agent-actions-diagnosis-u1-profile',
+    headSha,
+    workflowName: 'pages-agent.yml',
+    workflowRunId: '28037536775',
+    issueNumber: 65,
+    issueUrl: 'https://github.example/org/pages-manager/issues/65',
+    prNumber: 68,
+    prUrl: 'https://github.example/org/pages-manager/pull/68',
+  });
+  app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    slackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000250',
+    channelId: 'D1',
+    channelType: 'im',
+    threadTs: '1710000000.000250',
+    messageTs: '1710000000.000250',
+    activeJobId: job.id,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-actions-diagnosis-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000250',
+          text: '查一下 CI 为什么失败',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                dialogAct: 'run_tool',
+                intent: 'diagnose_work_item',
+                toolCall: { name: 'diagnose_current_work_item', args: { jobId: job.id } },
+                needsClarification: false,
+                card: {
+                  kind: 'diagnosis',
+                  title: 'CI 诊断',
+                  summary: '我会检查关联 workflow 和失败日志摘要。',
+                  actions: [{ id: 'open_workflow', label: '查看 Workflow' }],
+                },
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_APP_INSTALLATION_TOKEN: 'github-app-token',
+      async GITHUB_FETCH(url) {
+        const pathname = new URL(String(url)).pathname;
+        if (pathname.endsWith('/actions/runs/28037536775')) {
+          return new Response(
+            JSON.stringify({
+              id: 28037536775,
+              run_number: 42,
+              name: 'Pages Agent',
+              path: '.github/workflows/pages-agent.yml',
+              html_url: 'https://github.example/org/pages-manager/actions/runs/28037536775',
+              status: 'completed',
+              conclusion: 'failure',
+              head_branch: 'sites/job-agent-actions-diagnosis-u1-profile',
+              head_sha: headSha,
+              created_at: '2026-06-23T14:04:29Z',
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (pathname.endsWith('/actions/runs/28037536775/jobs')) {
+          return new Response(
+            JSON.stringify({
+              jobs: [
+                {
+                  id: 82997351456,
+                  name: 'Run Coding Agent',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  html_url: 'https://github.example/org/pages-manager/actions/runs/28037536775/job/82997351456',
+                  steps: [
+                    { name: 'Checkout', conclusion: 'success' },
+                    { name: 'Run Coding Agent', conclusion: 'failure' },
+                  ],
+                },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (pathname.endsWith('/actions/jobs/82997351456/logs')) {
+          return new Response(
+            [
+              '2026-06-23T14:05:00Z Run platform coding agent',
+              '2026-06-23T14:05:01Z Error: Platform Coding Agent response did not include files',
+              '2026-06-23T14:05:01Z process exited with code 1',
+            ].join('\n')
+          );
+        }
+        return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+      },
+    }
+  );
+  const body = await json(response);
+  const visible = JSON.stringify(body.blocks);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'diagnose_work_item');
+  assert.match(
+    body.replyText,
+    /Workflow：<https:\/\/github\.example\/org\/pages-manager\/actions\/runs\/28037536775\|Pages Agent #42>/
+  );
+  assert.match(
+    body.replyText,
+    /失败 Job：<https:\/\/github\.example\/org\/pages-manager\/actions\/runs\/28037536775\/job\/82997351456\|Run Coding Agent>/
+  );
+  assert.match(body.replyText, /失败步骤：Run Coding Agent/);
+  assert.match(body.replyText, /Platform Coding Agent response did not include files/);
+  assert.equal(
+    findBlockAction(body.blocks, 'open_workflow')?.url,
+    'https://github.example/org/pages-manager/actions/runs/28037536775'
+  );
+  assert.match(visible, /查看 Workflow/);
+});
+
+test('Slack Agent diagnosis prefers failed generated PR check workflow over successful parent workflow', async () => {
+  const app = createGatewayApp();
+  const headSha = 'd'.repeat(40);
+  const branchName = 'sites/job-agent-actions-child-check-u1-profile';
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-actions-diagnosis-child-check-job',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'failed',
+    branchName,
+    headSha,
+    workflowName: 'pages-agent.yml',
+    workflowRunId: '28037536000',
+    issueNumber: 70,
+    issueUrl: 'https://github.example/org/pages-manager/issues/70',
+    prNumber: 71,
+    prUrl: 'https://github.example/org/pages-manager/pull/71',
+  });
+  app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    slackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000255',
+    channelId: 'D1',
+    channelType: 'im',
+    threadTs: '1710000000.000255',
+    messageTs: '1710000000.000255',
+    activeJobId: job.id,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-actions-child-check-diagnosis-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000255',
+          text: '为什么 PR 校验失败',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                dialogAct: 'run_tool',
+                intent: 'diagnose_work_item',
+                toolCall: { name: 'diagnose_current_work_item', args: { jobId: job.id } },
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_APP_INSTALLATION_TOKEN: 'github-app-token',
+      async GITHUB_FETCH(url) {
+        const parsed = new URL(String(url));
+        const pathname = parsed.pathname;
+        if (pathname.endsWith('/actions/runs/28037536000')) {
+          return new Response(
+            JSON.stringify({
+              id: 28037536000,
+              run_number: 40,
+              name: 'Pages Agent',
+              path: '.github/workflows/pages-agent.yml',
+              html_url: 'https://github.example/org/pages-manager/actions/runs/28037536000',
+              status: 'completed',
+              conclusion: 'success',
+              head_branch: branchName,
+              head_sha: headSha,
+              created_at: '2026-06-23T14:00:00Z',
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (
+          pathname.endsWith('/actions/runs') &&
+          (parsed.searchParams.get('branch') === branchName || parsed.searchParams.get('head_sha') === headSha)
+        ) {
+          return new Response(
+            JSON.stringify({
+              workflow_runs: [
+                {
+                  id: 28037536000,
+                  run_number: 40,
+                  name: 'Pages Agent',
+                  path: '.github/workflows/pages-agent.yml',
+                  html_url: 'https://github.example/org/pages-manager/actions/runs/28037536000',
+                  status: 'completed',
+                  conclusion: 'success',
+                  head_branch: branchName,
+                  head_sha: headSha,
+                  created_at: '2026-06-23T14:00:00Z',
+                },
+                {
+                  id: 28037536010,
+                  run_number: 41,
+                  name: 'Platform CI',
+                  path: '.github/workflows/pr-platform.yml',
+                  html_url: 'https://github.example/org/pages-manager/actions/runs/28037536010',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  head_branch: branchName,
+                  head_sha: headSha,
+                  created_at: '2026-06-23T14:01:00Z',
+                },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (pathname.endsWith('/actions/runs/28037536010/jobs')) {
+          return new Response(
+            JSON.stringify({
+              jobs: [
+                {
+                  id: 82997351010,
+                  name: 'check',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  html_url: 'https://github.example/org/pages-manager/actions/runs/28037536010/job/82997351010',
+                  steps: [
+                    { name: 'Detect platform changes', conclusion: 'success' },
+                    { name: 'Run tests', conclusion: 'failure' },
+                  ],
+                },
+              ],
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (pathname.endsWith('/actions/jobs/82997351010/logs')) {
+          return new Response(
+            [
+              '2026-06-23T14:05:00Z Run tests',
+              '2026-06-23T14:05:01Z Error: Mixed PRs are not supported',
+              '2026-06-23T14:05:01Z Process completed with exit code 1',
+            ].join('\n')
+          );
+        }
+        if (pathname.endsWith('/actions/runs/28037536000/jobs')) {
+          return new Response(
+            JSON.stringify({
+              jobs: [{ id: 82997351000, name: 'pages-agent', status: 'completed', conclusion: 'success' }],
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'diagnose_work_item');
+  assert.match(
+    body.replyText,
+    /Workflow：<https:\/\/github\.example\/org\/pages-manager\/actions\/runs\/28037536010\|Platform CI #41>/
+  );
+  assert.match(
+    body.replyText,
+    /失败 Job：<https:\/\/github\.example\/org\/pages-manager\/actions\/runs\/28037536010\/job\/82997351010\|check>/
+  );
+  assert.match(body.replyText, /失败步骤：Run tests/);
+  assert.match(body.replyText, /Mixed PRs are not supported/);
+});
+
+test('Slack Agent diagnosis keeps normal summary when GitHub Actions token is missing', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'agent-actions-diagnosis-no-token-job',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'ci_failed',
+    branchName: 'sites/job-agent-actions-diagnosis-no-token-u1-profile',
+    headSha: 'c'.repeat(40),
+    issueNumber: 66,
+    prNumber: 69,
+  });
+  app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    slackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000260',
+    channelId: 'D1',
+    channelType: 'im',
+    threadTs: '1710000000.000260',
+    messageTs: '1710000000.000260',
+    activeJobId: job.id,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-agent-actions-diagnosis-no-token-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000001.000260',
+          text: '查一下 workflow',
+        },
+      }),
+    }),
+    {
+      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                dialogAct: 'run_tool',
+                intent: 'diagnose_work_item',
+                toolCall: { name: 'diagnose_current_work_item', args: { jobId: job.id } },
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'diagnose_work_item');
+  assert.match(body.replyText, /当前状态：CI 未通过/);
+  assert.match(body.replyText, /GitHub Actions 日志暂不可读：当前诊断入口还没有配置 Actions 读取授权/);
+  assert.equal(findBlockAction(body.blocks, 'open_workflow'), null);
+});
+
 test('Slack event can start the worker without requiring user GitHub permissions', async () => {
   const app = createGatewayApp();
   const workerStarts = [];
@@ -6238,6 +6751,8 @@ test('executor callback advances the preview loop', async () => {
           indexSnapshotId: 'idxsnap_1',
           branchName: 'sites/job-test-zhangsan-profile',
           prNumber: 2,
+          workflowName: `${stageResult}.yml`,
+          workflowRunId: String(28000000000 + stageResult.length),
         }),
       })
     );
@@ -6252,6 +6767,8 @@ test('executor callback advances the preview loop', async () => {
         publishingJobId: createBody.job.id,
         stageResult: 'preview_deployed',
         previewUrl: 'https://preview.example.test',
+        workflowName: 'pages-preview.yml',
+        workflowRunId: '28000000099',
       }),
     })
   );
@@ -6259,6 +6776,8 @@ test('executor callback advances the preview loop', async () => {
 
   assert.equal(body.job.status, 'preview_deployed');
   assert.equal(body.job.previewUrl, 'https://preview.example.test');
+  assert.equal(body.job.workflowName, 'pages-preview.yml');
+  assert.equal(body.job.workflowRunId, '28000000099');
 });
 
 test('Slack follow-up on an active preview dispatches a fix round instead of creating a new job', async () => {

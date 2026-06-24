@@ -1,8 +1,18 @@
+function workflowPatch(body = {}) {
+  return {
+    workflowName: body.workflowName || body.workflow_name || null,
+    workflowRunId: body.workflowRunId || body.workflow_run_id || null,
+  };
+}
+
 export const CALLBACK_STAGE_RESULTS = {
   index_ready: {
     status: 'generating_page',
     patch(body) {
-      return { indexSnapshotId: body.indexSnapshotId || body.index_snapshot_id || null };
+      return {
+        ...workflowPatch(body),
+        indexSnapshotId: body.indexSnapshotId || body.index_snapshot_id || null,
+      };
     },
   },
   issue_created: {
@@ -18,13 +28,17 @@ export const CALLBACK_STAGE_RESULTS = {
   branch_committed: {
     status: 'branch_committed',
     patch(body) {
-      return { branchName: body.branchName || body.branch_name || null };
+      return {
+        ...workflowPatch(body),
+        branchName: body.branchName || body.branch_name || null,
+      };
     },
   },
   pr_created: {
     status: 'pr_created',
     patch(body) {
       return {
+        ...workflowPatch(body),
         branchName: body.branchName || body.branch_name || null,
         prNumber: body.prNumber || body.pr_number || null,
         prUrl: body.prUrl || body.pr_url || null,
@@ -37,6 +51,7 @@ export const CALLBACK_STAGE_RESULTS = {
     status: 'reviewing',
     patch(body) {
       return {
+        ...workflowPatch(body),
         branchName: body.branchName || body.branch_name || null,
         prNumber: body.prNumber || body.pr_number || null,
         prUrl: body.prUrl || body.pr_url || null,
@@ -49,7 +64,10 @@ export const CALLBACK_STAGE_RESULTS = {
   preview_deployed: {
     status: 'preview_deployed',
     patch(body) {
-      return { previewUrl: body.previewUrl || body.preview_url || null };
+      return {
+        ...workflowPatch(body),
+        previewUrl: body.previewUrl || body.preview_url || null,
+      };
     },
   },
 };

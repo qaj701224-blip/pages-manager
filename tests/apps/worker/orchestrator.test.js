@@ -238,7 +238,11 @@ test('platform dev fix item dispatches platform-agent fix workflow without dupli
         githubIssueUrl: 'https://github.example/issues/32',
         githubPrNumber: 45,
         githubPrUrl: 'https://github.example/pulls/45',
+        headSha: 'b'.repeat(40),
         branchName: 'platform/item-pdev-123',
+        reviewContext: 'Review context for PR #45:\n1. [blocking] README 缺说明',
+        memoryContext: 'Session summary: 用户希望自动修复 Review 意见。',
+        statusContext: 'status: review_blocked',
         summary: '初始需求\n\n## Slack Follow-up\n\n继续收紧文案。',
       },
     },
@@ -265,6 +269,12 @@ test('platform dev fix item dispatches platform-agent fix workflow without dupli
           assert.equal(body.inputs.mode, 'fix');
           assert.equal(body.inputs.branchName, 'platform/item-pdev-123');
           assert.equal(body.inputs.issueNumber, '32');
+          assert.equal(body.inputs.prNumber, '45');
+          assert.equal(body.inputs.headSha, 'b'.repeat(40));
+          assert.match(body.inputs.reviewContext, /README 缺说明/);
+          assert.match(body.inputs.memoryContext, /自动修复 Review/);
+          assert.match(body.inputs.statusContext, /review_blocked/);
+          assert.match(body.inputs.followupContext, /继续收紧文案/);
           return new Response(null, { status: 204 });
         }
         throw new Error(`Unexpected request ${request.method} ${url}`);

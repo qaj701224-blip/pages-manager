@@ -16,6 +16,14 @@ on:
         description: GitHub issue number
         required: false
         type: string
+      prNumber:
+        description: GitHub PR number for fix rounds
+        required: false
+        type: string
+      headSha:
+        description: Current PR head SHA for fix rounds
+        required: false
+        type: string
       requestTitle:
         description: Request title
         required: true
@@ -39,7 +47,7 @@ on:
       gateApproved:
         description: Whether the high-risk gate has been approved
         required: false
-        default: "false"
+        default: 'false'
         type: string
       baseRef:
         description: Base ref for platform PR
@@ -52,6 +60,22 @@ on:
         type: string
       callbackUrl:
         description: Gateway callback URL
+        required: false
+        type: string
+      reviewContext:
+        description: Review comments for the next agent round
+        required: false
+        type: string
+      memoryContext:
+        description: Cross-round platform agent memory
+        required: false
+        type: string
+      statusContext:
+        description: Current Platform Dev status context
+        required: false
+        type: string
+      followupContext:
+        description: Slack or issue follow-up context for the next agent round
         required: false
         type: string
 
@@ -71,6 +95,8 @@ jobs:
       PLATFORM_DEV_ITEM_ID: ${{ inputs.platformDevItemId }}
       AGENT_MODE: ${{ inputs.mode }}
       ISSUE_NUMBER: ${{ inputs.issueNumber }}
+      PR_NUMBER: ${{ inputs.prNumber }}
+      HEAD_SHA: ${{ inputs.headSha }}
       REQUEST_TITLE: ${{ inputs.requestTitle }}
       REQUEST_SUMMARY: ${{ inputs.requestSummary }}
       ISSUE_TYPE: ${{ inputs.issueType }}
@@ -79,10 +105,13 @@ jobs:
       GATE_APPROVED: ${{ inputs.gateApproved }}
       BASE_REF: ${{ inputs.baseRef || 'master' }}
       BRANCH_NAME_OVERRIDE: ${{ inputs.branchName }}
+      REVIEW_CONTEXT: ${{ inputs.reviewContext }}
+      MEMORY_CONTEXT: ${{ inputs.memoryContext }}
+      STATUS_CONTEXT: ${{ inputs.statusContext }}
+      FOLLOWUP_CONTEXT: ${{ inputs.followupContext }}
+      WORKFLOW_RUN_ID: ${{ github.run_id }}
       PAGES_CALLBACK_URL: ${{ inputs.callbackUrl || vars.PAGES_GATEWAY_CALLBACK_URL }}
-      PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
       PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
-      AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
     steps:
       - name: Checkout trusted helper
         uses: actions/checkout@v6
@@ -104,6 +133,7 @@ jobs:
           ref: ${{ env.BASE_REF }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Validate platform inputs
         shell: bash
@@ -177,6 +207,8 @@ jobs:
             workItemKind: 'platform_dev',
             platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
             executorType: 'platform_agent',
+            workflowName: 'platform-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'succeeded',
             stageResult: 'agent_running',
             branchName: process.env.BRANCH_NAME,
@@ -186,12 +218,14 @@ jobs:
           node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-running.json
         env:
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
 
       - name: Run platform coding agent
         shell: bash
         env:
           AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
           AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+          AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
         run: |
           set -euo pipefail
           if [[ -z "${AGENT_CODE_API_KEY:-}" ]]; then
@@ -204,12 +238,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          changed_files="$(git status --porcelain --untracked-files=all | sed -E 's/^...//')"
-          if printf '%s\n' "$changed_files" | grep -E '(^|/)(\.env|\.env\..*|wrangler\.toml)$'; then
-            echo "Refusing to commit local env or wrangler secret files." >&2
+          changed_files="$(
+            git status --porcelain --untracked-files=all \
+              | sed -E 's/^...//' \
+              | grep -Ev '^(\.pages-artifacts|\.pages-trusted)(/|$)' \
+              || true
+          )"
+          if printf '%s\n' "$changed_files" | grep -E '(^|/)(\.env(\..*)?|.*\.env|wrangler\.toml|\.pages\.json)$'; then
+            echo "Refusing to commit local env, wrangler, or pages config secret files." >&2
             exit 1
           fi
-          if printf '%s\n' "$changed_files" | grep -E '(^|/)(node_modules|dist|build|\.pages-artifacts)(/|$)'; then
+          if printf '%s\n' "$changed_files" | grep -E '(^|/)(node_modules|dist|build)(/|$)'; then
             echo "Refusing to commit generated build artifacts." >&2
             exit 1
           fi
@@ -219,16 +258,25 @@ jobs:
             echo "$sensitive_paths" >&2
             exit 1
           fi
-          if git diff -- . ':(exclude)pnpm-lock.yaml' | grep -E '(xox[baprs]-|xapp-|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' >/dev/null; then
-            echo "Potential secret detected in diff." >&2
-            exit 1
-          fi
-          if git diff -- . ':(exclude)pnpm-lock.yaml' | grep -Ei '(CF[_]API[_]TOKEN|SLACK[_]AGENT[_]API[_]KEY|AGENT_CODE_API_KEY)\s*[:=]\s*['\''"]?([A-Za-z0-9_./+=-]{8,})' | grep -Eiv 'secrets\.|process\.env\.|\$\{|<|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set' >/dev/null; then
-            echo "Potential secret detected in diff." >&2
-            exit 1
-          fi
+          while IFS= read -r path; do
+            [[ -z "$path" || "$path" == "pnpm-lock.yaml" || ! -f "$path" ]] && continue
+            if grep -E '(xox[baprs]-|xapp-|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' "$path" >/dev/null; then
+              echo "Potential secret detected in changed file: $path" >&2
+              exit 1
+            fi
+            if grep -Ei '(CF[_]API[_]TOKEN|SLACK[_]AGENT[_]API[_]KEY|AGENT_CODE_API_KEY)\s*[:=]\s*['\''"]?([A-Za-z0-9_./+=-]{8,})' "$path" \
+              | grep -Eiv 'secrets\.|process\.env\.|\$\{|<|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set' >/dev/null; then
+              echo "Potential secret detected in changed file: $path" >&2
+              exit 1
+            fi
+          done <<< "$changed_files"
 
       - name: Run platform checks
+        env:
+          AGENT_CODE_API_KEY: ''
+          PAGES_CALLBACK_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
         run: |
           pnpm lint
           pnpm test
@@ -236,6 +284,8 @@ jobs:
       - name: Commit changes
         id: commit
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "pages-platform-agent"
@@ -247,7 +297,7 @@ jobs:
             exit 1
           fi
           git commit -m "feat: 处理平台需求 ${PLATFORM_DEV_ITEM_ID}"
-          git push origin "HEAD:${{ steps.branch.outputs.branch }}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${{ steps.branch.outputs.branch }}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -319,6 +369,8 @@ jobs:
             workItemKind: 'platform_dev',
             platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
             executorType: 'platform_agent',
+            workflowName: 'platform-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'succeeded',
             stageResult: 'pr_created',
             prNumber: process.env.PR_NUMBER,
@@ -334,10 +386,13 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
 
       - name: Callback failure
         if: failure() && env.PAGES_CALLBACK_URL != ''
         shell: bash
+        env:
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p .pages-artifacts
@@ -347,6 +402,8 @@ jobs:
             workItemKind: 'platform_dev',
             platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
             executorType: 'platform_agent',
+            workflowName: 'platform-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'failed',
             errorCode: 'platform_agent_failed',
             errorMessage: 'platform-agent.yml failed before completing the PR flow',
