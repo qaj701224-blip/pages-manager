@@ -93,6 +93,8 @@ pages-worker
   -> 当前 ECS 路径可用 local_deploy 调 Cloudflare staging /deploy
 ```
 
+ECS `pages-worker` 通过 `.env.ecs` 配置平台开发分支：`PAGES_PLATFORM_WORKFLOW_REF` 决定 dispatch 哪个 `platform-agent.yml` ref，`PAGES_PLATFORM_BASE_REF` 决定 Platform Agent PR 的 checkout/base ref。联调未合入主线的 workflow 或 executor 改动时，这两个变量必须指向同一个测试分支，避免 workflow 来自测试分支但工作区仍从 `master` checkout。
+
 最终网站不跑在 GitHub Actions 或 K8s，最终网站跑在 Cloudflare Workers / assets。
 
 ## K8s 目标形态
