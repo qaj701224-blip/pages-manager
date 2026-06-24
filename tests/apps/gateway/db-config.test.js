@@ -509,6 +509,80 @@ test('MySQL gateway store uses Redis SET NX as Slack Agent lease when Redis is c
   assert.ok(calls.some((call) => call.sql.includes('INSERT INTO `agent_runs`')));
 });
 
+test('MySQL gateway store releases Slack Agent leases with atomic Redis compare-delete', async () => {
+  const redisCalls = [];
+  const redis = {
+    async set(...args) {
+      redisCalls.push(['set', ...args]);
+      return 'OK';
+    },
+    async eval(...args) {
+      redisCalls.push(['eval', ...args]);
+      return 1;
+    },
+  };
+  const rows = new Map();
+  const store = new MySqlGatewayStore(
+    {
+      async execute(sql, params) {
+        if (sql.includes('SELECT * FROM agent_runs WHERE slack_session_id = ?')) return [[...rows.values()], []];
+        if (sql.includes('SELECT * FROM agent_runs WHERE id = ?')) return [[rows.get(params[0])].filter(Boolean), []];
+        if (sql.includes('INSERT INTO `agent_runs`')) {
+          rows.set(params[0], {
+            id: params[0],
+            agent_kind: params[1],
+            slack_session_id: params[2],
+            publishing_job_id: params[3],
+            work_item_kind: params[4],
+            work_item_id: params[5],
+            status: params[6],
+            round_no: params[7],
+            provider: params[8],
+            model: params[9],
+            model_api_style: params[10],
+            prompt_version: params[11],
+            policy_version: params[12],
+            input_summary_hash: params[13],
+            output_hash: params[14],
+            report_json: params[15],
+            error_code: params[16],
+            error_message: params[17],
+            lease_expires_at: new Date(params[18]),
+            timeout_at: new Date(params[19]),
+            started_at: new Date(params[20]),
+            completed_at: params[21] ? new Date(params[21]) : null,
+            created_at: new Date(params[22]),
+            updated_at: new Date(params[23]),
+          });
+          return [{ affectedRows: 1 }, []];
+        }
+        if (sql.includes('UPDATE `agent_runs`')) {
+          const row = rows.get(params[0]);
+          rows.set(params[0], { ...row, status: params[6], completed_at: new Date(params[21]) });
+          return [{ affectedRows: 1 }, []];
+        }
+        return [[], []];
+      },
+      async end() {},
+    },
+    { redis }
+  );
+
+  const lease = await store.acquireSlackAgentLease(
+    'sess_lease',
+    { slackAgentSessionLeaseMs: 180_000, slackAgentTurnTimeoutMs: 300_000 },
+    new Date('2026-06-14T00:00:00.000Z')
+  );
+  await store.completeAgentRun(lease.agentRun.id, {}, new Date('2026-06-14T00:01:00.000Z'));
+
+  const evalCall = redisCalls.find((call) => call[0] === 'eval');
+  assert.equal(evalCall?.[2], 1);
+  assert.equal(evalCall?.[3], 'pages-manager:slack-agent:lease:sess_lease');
+  assert.equal(evalCall?.[4], lease.agentRun.id);
+  assert.equal(redisCalls.some((call) => call[0] === 'get'), false);
+  assert.equal(redisCalls.some((call) => call[0] === 'del'), false);
+});
+
 test('MySQL gateway store refuses a Slack Agent lease when Redis NX sees another holder', async () => {
   const redis = {
     async set() {
@@ -516,6 +590,9 @@ test('MySQL gateway store refuses a Slack Agent lease when Redis NX sees another
     },
     async get() {
       return 'agent_existing';
+    },
+    async eval() {
+      return 0;
     },
   };
   const store = new MySqlGatewayStore(

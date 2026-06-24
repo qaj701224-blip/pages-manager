@@ -171,21 +171,6 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
     return { skipped: true, reason: 'duplicate_stage', key: dedupeKey, message: existingMessage };
   }
 
-  const progress = store?.recordAgentRunEvent
-    ? await store.recordAgentRunEvent({
-        publishingJobId: job.id,
-        slackSessionId,
-        agentRunId: options.agentRunId || null,
-        type: options.type || 'job_progress',
-        stage,
-        text: options.text || stage,
-        status: options.status || job.status || 'running',
-        dedupeKey,
-        slackChannelId: job.slackThread?.channelId || null,
-        slackThreadTs: job.slackThread?.threadTs || null,
-      })
-    : null;
-
   const result = await callRemoteNotifier(env, '/internal/slack-notifier/job-status', {
     job,
     options: { ...options, slackSessionId, scopeKey },
@@ -197,9 +182,25 @@ export async function notifySlackJobStatus(env, store, job, options = {}) {
       ok: false,
       key: dedupeKey,
       error: result?.error || 'Slack notifier request failed',
-      event: progress?.event || null,
+      event: null,
     };
   }
+
+  const progress = store?.recordAgentRunEvent
+    ? await store.recordAgentRunEvent({
+        publishingJobId: job.id,
+        slackSessionId,
+        agentRunId: options.agentRunId || null,
+        type: options.type || 'job_progress',
+        stage,
+        text: options.text || stage,
+        status: options.status || job.status || 'running',
+        dedupeKey,
+        slackChannelId: result.message?.channel || job.slackThread?.channelId || null,
+        slackThreadTs: result.message?.threadTs || job.slackThread?.threadTs || null,
+        slackMessageTs: result.message?.messageTs || result.ts || null,
+      })
+    : null;
 
   const message =
     result.message && store?.recordSlackJobStatusMessage

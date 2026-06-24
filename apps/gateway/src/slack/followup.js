@@ -1,5 +1,6 @@
 import { appendPlatformDevFollowupIssueComment } from '@xd/git-client';
 
+import { deleteRedisKeyIfValueMatches } from '../db/redis.js';
 import { reconcileClosedGithubIssueForJob } from '../github/resource-reconciler.js';
 import {
   dispatchPlatformDevFixIfNeeded,
@@ -110,10 +111,7 @@ async function releaseQueuedFollowupClaim(store, claim) {
   if (!store?.redis || !claim?.key || !claim?.value) return;
 
   try {
-    const current = await store.redis.get(claim.key);
-    if (current === claim.value) {
-      await store.redis.del(claim.key);
-    }
+    await deleteRedisKeyIfValueMatches(store.redis, claim.key, claim.value);
   } catch (error) {
     console.log(
       JSON.stringify({

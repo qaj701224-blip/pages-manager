@@ -1,4 +1,4 @@
-import { jsonResponse } from '@xd/worker-kit';
+import { jsonResponse, timingSafeEqualString } from '@xd/worker-kit';
 
 import { readWorkerConfig } from './config.js';
 import { runWorkerForJob, runWorkerForWorkItem } from './orchestrator.js';
@@ -23,7 +23,7 @@ function requireWorkerAuth(request, config) {
   }
 
   const token = request.headers.get('X-Pages-Worker-Token');
-  if (token !== config.workerSharedSecret) {
+  if (!timingSafeEqualString(token || '', config.workerSharedSecret)) {
     const error = new Error('Invalid worker token');
     error.status = 401;
     throw error;

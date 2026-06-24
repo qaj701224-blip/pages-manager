@@ -121,6 +121,105 @@ test('gateway skips stale Slack status updates before remote notifier call', asy
   assert.deepEqual(calls, []);
 });
 
+test('gateway records Slack status progress only after remote notifier success', async () => {
+  const events = [];
+  const store = {
+    getSlackJobStatusMessage() {
+      return null;
+    },
+    recordAgentRunEvent(input) {
+      events.push(input);
+      return { created: true, event: input };
+    },
+  };
+  const job = {
+    id: 'job_1',
+    status: 'received',
+    employeeSlug: 'alice',
+    siteSlug: 'profile',
+    summary: '个人主页',
+    slackThread: {
+      channelId: 'C1',
+      threadTs: '1710000000.000100',
+      userId: 'U1',
+    },
+  };
+
+  const result = await notifySlackJobStatus(
+    {
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_NOTIFIER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'Slack unavailable' }), { status: 502 });
+      },
+    },
+    store,
+    job,
+    { stage: 'received' }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'Slack unavailable');
+  assert.deepEqual(events, []);
+});
+
+test('gateway records delivered Slack message identity in progress events', async () => {
+  const events = [];
+  const store = {
+    getSlackJobStatusMessage() {
+      return null;
+    },
+    recordAgentRunEvent(input) {
+      events.push(input);
+      return { created: true, event: input };
+    },
+  };
+  const job = {
+    id: 'job_1',
+    status: 'received',
+    employeeSlug: 'alice',
+    siteSlug: 'profile',
+    summary: '个人主页',
+    slackThread: {
+      channelId: 'C1',
+      threadTs: '1710000000.000100',
+      userId: 'U1',
+    },
+  };
+
+  const result = await notifySlackJobStatus(
+    {
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_NOTIFIER_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            action: 'posted',
+            message: {
+              channel: 'C2',
+              threadTs: '1710000000.000200',
+              messageTs: '1710000001.000200',
+              stage: 'received',
+              status: 'received',
+            },
+          }),
+          { status: 200 }
+        );
+      },
+    },
+    store,
+    job,
+    { stage: 'received' }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].slackChannelId, 'C2');
+  assert.equal(events[0].slackThreadTs, '1710000000.000200');
+  assert.equal(events[0].slackMessageTs, '1710000001.000200');
+});
+
 test('gateway can allow a new Slack card cycle after preview is already deployed', async () => {
   const calls = [];
   const recordedMessages = [];

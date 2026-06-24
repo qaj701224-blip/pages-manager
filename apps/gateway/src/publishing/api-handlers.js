@@ -11,17 +11,34 @@ function actorFromHeaders(request, fallback = {}) {
   };
 }
 
+function validateSlug(value, name, maxLength) {
+  const slug = String(required(value, name)).trim();
+  const valid =
+    slug.length <= maxLength &&
+    /^[a-z0-9]$/.test(slug[0] || '') &&
+    /^[a-z0-9]$/.test(slug.at(-1) || '') &&
+    /^[a-z0-9-]+$/.test(slug);
+  if (!valid) {
+    const error = new Error(`${name} must use lowercase letters, numbers, and hyphens only`);
+    error.status = 400;
+    throw error;
+  }
+  return slug;
+}
+
 function normalizePublishingJobInput(body, request) {
   const actor = actorFromHeaders(request, body);
   const idempotencyKey = request.headers.get('Idempotency-Key') || body.idempotencyKey || body.idempotency_key || body.requestId;
+  const employeeSlug = validateSlug(body.employeeSlug || body.employee_slug, 'employeeSlug', 80);
+  const siteSlug = validateSlug(body.siteSlug || body.site_slug, 'siteSlug', 120);
 
   return {
     source: body.source || 'api',
     requestedByType: actor.requestedByType,
     requestedById: required(actor.requestedById, 'requestedById'),
     idempotencyKey: required(idempotencyKey, 'idempotencyKey'),
-    employeeSlug: required(body.employeeSlug || body.employee_slug, 'employeeSlug'),
-    siteSlug: required(body.siteSlug || body.site_slug, 'siteSlug'),
+    employeeSlug,
+    siteSlug,
     siteProjectId: body.siteProjectId || body.site_project_id || null,
     ownerScopeId: body.ownerScopeId || body.owner_scope_id || null,
     employeeId: body.employeeId || body.employee_id || null,
