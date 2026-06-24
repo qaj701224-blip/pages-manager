@@ -35,6 +35,7 @@ Fast ECS deploy path:
   - deploys with a candidate env file, then writes .env.ecs only after smoke passes
   - rolls back .env.ecs and services if deployment smoke fails
   - checks gateway, worker, slack-agent, and slack-notifier before success
+  - falls back to the previous ECS app image if the stable Node base cannot be pulled
 
 Environment:
   ECS_SSH_TARGET       Required. SSH target for the ECS host.
@@ -376,6 +377,7 @@ cleanup_old_images() {
     while read -r tag image_id; do
       [[ -z "$tag" || "$tag" == "<none>" ]] && continue
       [[ "$tag" == "$image_tag" || "$tag" == "$previous_image_tag" || "$tag" == "$latest_alias_tag" ]] && continue
+      [[ -n "$base_image_tag" && "$tag" == "$base_image_tag" ]] && continue
       [[ "$tag" =~ ^ecs- ]] || continue
 
       kept=$((kept + 1))
@@ -413,6 +415,11 @@ previous_image_tag="$(sed -n 's/^PAGES_IMAGE_TAG=//p' "$env_file" | tail -1 || t
 
 if [[ -z "$base_image_tag" ]] && is_truthy "$build_from_previous"; then
   base_image_tag="$previous_image_tag"
+fi
+
+fallback_base_image_tag=""
+if [[ -z "$base_image_tag" && -n "$previous_image_tag" ]]; then
+  fallback_base_image_tag="$previous_image_tag"
 fi
 
 cat >"${release_dir}/Dockerfile.node-service.offline" <<'DOCKERFILE'
@@ -454,13 +461,26 @@ for service in "${selected_services[@]}"; do
       "$release_dir"
   else
     echo "[ecs:remote] build ${service} from ${node_image}"
-    docker build \
+    if docker build \
       --platform "$platform" \
       -f "${release_dir}/Dockerfile.node-service" \
       --build-arg "NODE_IMAGE=${node_image}" \
       --build-arg "SERVICE=${service}" \
       -t "$target_image" \
-      "$release_dir"
+      "$release_dir"; then
+      :
+    elif [[ -n "$fallback_base_image_tag" ]] && docker image inspect "$(image_for "$service" "$fallback_base_image_tag")" >/dev/null 2>&1; then
+      echo "[ecs:remote] stable Node build failed; retry ${service} from ${fallback_base_image_tag}" >&2
+      docker build \
+        --platform "$platform" \
+        -f "${release_dir}/Dockerfile.node-service.offline" \
+        --build-arg "NODE_IMAGE=$(image_for "$service" "$fallback_base_image_tag")" \
+        --build-arg "SERVICE=${service}" \
+        -t "$target_image" \
+        "$release_dir"
+    else
+      exit 1
+    fi
   fi
 done
 
