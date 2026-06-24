@@ -78,7 +78,13 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /\(\^\|\/\)\(node_modules\|dist\|build\)\(\/\|\$\)/);
   assert.match(workflow, /while IFS= read -r path; do[\s\S]*done <<< "\$changed_files"/);
   assert.match(workflow, /Potential secret detected in changed file: \$path/);
-  assert.match(workflow, /Run platform coding agent[\s\S]*AGENT_CODE_API_KEY: \$\{\{ secrets\.AGENT_CODE_API_KEY \}\}/);
+  assert.match(workflow, /Copy trusted callback helper[\s\S]*platform-agent-runner\.mjs/);
+  assert.match(workflow, /Install Codex CLI[\s\S]*PLATFORM_AGENT_CODEX_PACKAGE/);
+  assert.match(workflow, /npm install -g "\$PLATFORM_AGENT_CODEX_PACKAGE"/);
+  assert.match(workflow, /Run platform coding agent[\s\S]*platform-agent-runner\.mjs/);
+  assert.doesNotMatch(workflow, /node "\$RUNNER_TEMP\/platform-agent-coding\.mjs"/);
+  assert.match(workflow, /AGENT_BACKEND:[^\n]*(vars\.AGENT_BACKEND|codex)/);
+  assert.doesNotMatch(workflow, /AGENT_CODE_API_KEY is required for Platform Agent/);
   assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''/);
 });
 

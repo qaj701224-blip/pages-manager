@@ -142,13 +142,32 @@ issue body 必须包含：
 - 只由 `workflow_dispatch` 触发。
 - 不持有 Cloudflare、Aliyun、Kube、ACK 或 production deploy secret。
 - 允许使用 GitHub token 创建平台 PR。
-- 使用 `AGENT_CODE_API_KEY` 作为外部 coding agent 凭据。
+- Codex CLI 主路径使用 `CODEX_API_KEY` / `OPENAI_API_KEY`；legacy JSON fallback 才使用 `AGENT_CODE_API_KEY`。
 - 运行 `pnpm lint` 和 `pnpm test`。
 - 做基础 secret scan，并按包含未跟踪文件的 changed-file 列表逐个读取内容扫描；`.pages-artifacts/**` 只作为 callback / report 临时目录，`.pages-trusted/**` 只作为可信 helper checkout，二者不参与目标仓库 diff、secret scan 或 commit。
 - 通过 `/internal/executor-callback` 回写 `agent_running`、`pr_created` 或失败。
 - 无代码变更视为失败，不会把空 PR 或空执行当成成功。
+- 不直接合并 `master` / `main`；平台 PR 必须继续受 Review、CI 和 GitHub Rulesets gate 约束。
 
-fix round 必须带上当前 PR 上下文。worker dispatch `platform-agent.yml(mode=fix)` 时会传入 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`；workflow 映射成环境变量后交给 `scripts/platform-agent-coding.mjs`，让模型知道本轮是由 Review blocking / unknown comment、Slack follow-up 或 issue follow-up 触发，并把最终改动写回当前 repo 工作区，由 workflow 正常 `git diff`、commit 和 push。
+### Platform Agent 运行流
+
+Platform Agent 是真实 repo-editing coding runner，不是只生成 JSON patch 的一次性脚本。workflow 只负责编排：checkout、准备上下文、调用 runner、校验 diff、提交和推送。实际代码或文档编辑必须发生在 checkout 工作区里，workflow 后续统一通过 `git diff`、commit 和 push 处理。
+
+运行步骤：
+
+1. gateway / worker dispatch `platform-agent.yml`，传入 `mode`、工单、issue、PR、review、follow-up、memory 和 status 上下文。
+2. workflow checkout 目标分支，准备受控 helper 和临时 artifact 目录。
+3. `platform-agent-runner` 在 `.pages-artifacts/**` 写入 task、context、status 和 backend 输入文件。
+4. runner 在 repo checkout 内调用 coding backend。backend 必须直接编辑工作区文件，不能只返回游离的 patch 或报告。
+5. runner 运行验证命令，并在失败时把错误摘要、当前 diff 和上下文继续交给 backend 做 fix round。
+6. runner 输出报告 artifact，包含 backend、轮次、验证结果、失败原因、changed files 和可回传摘要。
+7. workflow 对工作区做 changed-file 枚举、secret scan、lint/test 结果归档、commit、push 和 callback。
+
+Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner 生成的任务和上下文文件，按普通 coding agent 方式修改仓库文件，并通过验证 / 修复循环收敛。`scripts/platform-agent-coding.mjs` 保留为 legacy JSON backend / fallback，只能用于受限场景；它的局限是更偏一次性 JSON 输出，不能完整表达多轮 repo 编辑、真实命令验证、复杂冲突处理和已有工作区状态，因此不能作为 Platform Agent 的长期主路径。
+
+fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent 的 blocking / unknown comment，或收到用户后续 follow-up 后，gateway 可以 dispatch `platform-agent.yml(mode=fix)`。该 dispatch 必须携带 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`，让 runner 明确本轮是修复 review 阻塞、处理不确定评论，还是消化 Slack / issue follow-up。fix round 仍然只把生成改动留在 repo 工作区，由 workflow 的标准 diff、commit、push 路径落到 PR 分支。
+
+本阶段测试配置固定使用开发分支：`PAGES_PLATFORM_WORKFLOW_REF=feat/slack-preview-gateway`，`PAGES_PLATFORM_BASE_REF=feat/slack-preview-gateway`。该配置只用于 Platform Agent 架构变更验证，不能被解释为允许自动合并到 `master` / `main`。
 
 ## Slack 体验
 
