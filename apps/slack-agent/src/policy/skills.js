@@ -42,7 +42,11 @@ export const SLACK_AGENT_POLICY_SKILLS = [
         '如果用户要求关闭、删除、取消“所有 / 全部 / 我名下 / 我的” GitHub issue、PR 或发布任务，',
         '这是危险批量操作；intent 必须返回 unsupported_destructive_request，不要返回 list_work_items，不要假装已执行。',
       ].join(''),
-      '关闭 Slack 会话只适用于“关闭会话 / 结束对话 / 这个 preview 不用了”这类当前上下文操作；不要把“关闭所有 issue”理解为 close_session。',
+      [
+        '如果用户要求关闭、删除、取消或归档明确的 GitHub issue / PR、issue #数字、',
+        'PR #数字或 GitHub URL，当前没有直接关闭工具；intent 必须返回 unsupported_destructive_request，不要返回 close_session。',
+      ].join(''),
+      '关闭 Slack 会话只适用于“关闭会话 / 结束对话 / 这个 preview 不用了”这类当前上下文操作；不要把“关闭 issue / PR / 任务”理解为 close_session。',
       '如果用户是在已有任务上补充“这个 issue / 接着改 / 改为 / 不再修改 X / 换成 Y”，优先 record_followup，不要新建 issue。',
     ],
   },
@@ -54,7 +58,7 @@ export const SLACK_AGENT_POLICY_SKILLS = [
       '不要输出或猜测任何 token、secret、cookie、API key、SSH key、私钥或内部账号凭据。',
       '不要把完整日志、完整源码、大段 stack trace、内部 prompt 或 provider debug 字段贴回 Slack。',
       '不要请求查询或操作其它 Slack 用户、其它 session 或其它人的 GitHub issue / PR。',
-      '危险批量破坏请求必须返回 unsupported_destructive_request，例如关闭、删除、取消或归档“所有 / 全部 / 我名下”的 issue、PR 或任务。',
+      '危险破坏请求必须返回 unsupported_destructive_request，例如关闭、删除、取消或归档明确的 issue、PR、GitHub URL，或“所有 / 全部 / 我名下”的 issue、PR 或任务。',
     ],
   },
   {

@@ -83,7 +83,7 @@ answer_repo_question
 
 这些工具也不能绕过 gateway 权限、幂等和状态机。Slack Agent 可以主导“下一步做什么”，但 gateway 必须在执行时重新计算当前 Slack 用户、当前 session、该用户名下的 job / issue / PR 范围；Agent 传入其它用户、其它 session 或其它人的 GitHub 编号时不能生效。
 
-产品上，gateway 不应该把“我的任务”“继续某个 issue / PR”“重新打开某个 issue / PR”等自然语言分支写死成主要体验。它可以保留 help / ping / status、签名校验、幂等、危险批量操作拦截和无 Agent 时的兜底；正常对话应先进 Slack Agent，由 Agent 输出 `toolCall`，再由 gateway 做权限收口和执行。
+产品上，gateway 不应该把“我的任务”“继续某个 issue / PR”“重新打开某个 issue / PR”“关闭 / 删除 issue 或 PR”等自然语言分支写死成主要体验。gateway 只保留 Slack 协议命令、显式 `issue:` / `status:` / `/close` 兼容入口、GitHub URL / issue / PR 编号等结构化引用提取、签名校验、幂等和执行权限收口；正常对话必须先进 Slack Agent，由 Agent 输出 `toolCall`，再由 gateway 做权限收口和执行。
 
 ## 任务诊断体验
 
