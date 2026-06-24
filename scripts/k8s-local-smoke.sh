@@ -154,6 +154,8 @@ require_runtime_config() {
 require_runtime_config GITHUB_REPO
 require_runtime_config PAGES_WORKFLOW_REF
 require_runtime_config PAGES_BASE_REF
+require_runtime_config PAGES_PLATFORM_WORKFLOW_REF
+require_runtime_config PAGES_PLATFORM_BASE_REF
 require_runtime_config PAGES_GATEWAY_CALLBACK_URL
 require_runtime_config PAGES_GATEWAY_PUBLIC_URL
 

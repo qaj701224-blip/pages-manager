@@ -15,7 +15,9 @@ data:
   PAGES_PR_MODE: per_job
   PAGES_PREVIEW_MODE: actions
   PAGES_WORKFLOW_REF: staging
+  PAGES_PLATFORM_WORKFLOW_REF: master
   PAGES_BASE_REF: staging
+  PAGES_PLATFORM_BASE_REF: master
   PAGES_GATEWAY_URL: http://pages-gateway:8788
   PAGES_GATEWAY_PUBLIC_URL: https://replace-me.example.com
   PAGES_GATEWAY_CALLBACK_URL: https://replace-me.example.com/internal/executor-callback

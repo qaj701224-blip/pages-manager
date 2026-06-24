@@ -77,10 +77,30 @@ test('worker config keeps platform workflow ref separate from site workflow ref'
     GITHUB_REPO: 'org/pages-manager',
     PAGES_WORKFLOW_REF: 'staging',
     PAGES_PLATFORM_WORKFLOW_REF: 'master',
+    PAGES_BASE_REF: 'staging',
+    PAGES_PLATFORM_BASE_REF: 'master',
   });
 
   assert.equal(workerConfig.workflowRef, 'staging');
   assert.equal(workerConfig.platformWorkflowRef, 'master');
+  assert.equal(workerConfig.baseRef, 'staging');
+  assert.equal(workerConfig.platformBaseRef, 'master');
+});
+
+test('worker config can pin platform workflow and base refs to the same test branch', () => {
+  const workerConfig = readWorkerConfig({
+    GITHUB_APP_INSTALLATION_TOKEN: 'ghs_test',
+    GITHUB_REPO: 'org/pages-manager',
+    PAGES_WORKFLOW_REF: 'staging',
+    PAGES_BASE_REF: 'staging',
+    PAGES_PLATFORM_WORKFLOW_REF: 'feat/slack-preview-gateway',
+    PAGES_PLATFORM_BASE_REF: 'feat/slack-preview-gateway',
+  });
+
+  assert.equal(workerConfig.workflowRef, 'staging');
+  assert.equal(workerConfig.baseRef, 'staging');
+  assert.equal(workerConfig.platformWorkflowRef, 'feat/slack-preview-gateway');
+  assert.equal(workerConfig.platformBaseRef, 'feat/slack-preview-gateway');
 });
 
 test('platform dev item creates issue and dispatches platform-agent workflow', async () => {
