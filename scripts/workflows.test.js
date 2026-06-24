@@ -225,6 +225,9 @@ test('platform agent commits newly generated files and scans untracked paths', (
   assert.match(workflow, /\\\.pages\\\.json/);
   assert.match(workflow, /while IFS= read -r path; do/);
   assert.match(workflow, /done <<< "\$changed_files"/);
+  assert.match(workflow, /git ls-files --error-unmatch -- "\$path"/);
+  assert.match(workflow, /git diff --unified=0 -- "\$path"/);
+  assert.match(workflow, /sed 's\/\^\/\+\/' "\$path"/);
   assert.match(workflow, /Potential secret detected in changed file: \$path/);
   assert.doesNotMatch(workflow, /git diff -- \. ':\(exclude\)pnpm-lock\.yaml'/);
   assert.match(workflow, /git add -A -- \. ':\(exclude\)\.pages-artifacts' ':\(exclude\)\.pages-trusted'/);
