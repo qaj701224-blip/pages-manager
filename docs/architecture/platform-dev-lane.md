@@ -116,7 +116,26 @@ received
 - `agent_runs` / `agent_run_events` 增加 `work_item_kind`、`work_item_id`。
 - `slack_notification_dedupes` 支持 work item 维度幂等。
 
+`platform_dev_items` 还会持久化自动修复循环需要恢复的上下文：
+
+- `review_context`
+- `memory_context`
+- `status_context`
+- `followup_context`
+- `review_summary`
+
+这些字段不是临时内存缓存，而是 MySQL 真相源的一部分。Review Agent 的 blocking / unknown comment、Slack follow-up 和失败后重试都依赖它们跨 webhook、跨进程和跨轮次恢复 fix round。
+
 运行态仍以 MySQL 为真相源。Redis 只用于 lease、短期幂等和队列，不保存最终状态。
+
+## GitHub issue / PR 闭环
+
+Platform Agent 创建 PR 时会在 PR body 写入 `Closes #<issue>`，用于在 PR 合并到仓库默认分支时让 GitHub 自动关闭关联 issue。
+
+需要注意两点：
+
+- GitHub 的 auto-close 只在合并到默认分支时生效。把 PR 合并到测试分支或 feature 分支时，即使 body 里有 `Closes #<issue>`，issue 也可能不会被 GitHub 自动关闭。
+- gateway 在处理 `issues.closed` webhook 时，如果对应 `PlatformDevItem` 已经是 `merged`，只会同步 issue 编号和 URL，不会把状态回退成 `closed_unmerged`。这样可以避免“PR 已合并，但后到达的 issue closed webhook 又把平台工单打回未合并关闭态”。
 
 ## GitHub 自动化
 
@@ -166,9 +185,9 @@ Platform Agent 是真实 repo-editing coding runner，不是只生成 JSON patch
 
 Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner 生成的任务和上下文文件，按普通 coding agent 方式修改仓库文件，并通过验证 / 修复循环收敛。Codex CLI provider 使用 `AGENT_GATEWAY_URL` 归一化后的 `/v1` base URL、`AGENT_CODE_API_KEY` 和 `wire_api="responses"`，并通过 `model_providers.<id>={...}` TOML inline table 注入 provider 配置；runner 会复用同一段配置构造逻辑做 `debug models --bundled` preflight，防止无效 provider id、坏 TOML 或缺失凭据进入长任务。实际执行时 Codex CLI 使用 `--ignore-user-config`，避免 runner 机器上的个人 Codex 配置污染自动化。company agent gateway 必须兼容 `/v1/responses`。`scripts/platform-agent-coding.mjs` 保留为 legacy JSON backend / fallback，只能用于受限场景；它的局限是更偏一次性 JSON 输出，不能完整表达多轮 repo 编辑、真实命令验证、复杂冲突处理和已有工作区状态，因此不能作为 Platform Agent 的长期主路径。
 
-fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent 的 blocking / unknown comment，或收到用户后续 follow-up 后，gateway 可以 dispatch `platform-agent.yml(mode=fix)`。该 dispatch 必须携带 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`，让 runner 明确本轮是修复 review 阻塞、处理不确定评论，还是消化 Slack / issue follow-up。fix round 仍然只把生成改动留在 repo 工作区，由 workflow 的标准 diff、commit、push 路径落到 PR 分支。
+fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent 的 blocking / unknown comment，或收到用户后续 follow-up 后，gateway 可以 dispatch `platform-agent.yml(mode=fix)`。该 dispatch 必须携带 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`，让 runner 明确本轮是修复 review 阻塞、处理不确定评论，还是消化 Slack / issue follow-up。上述上下文会先落到 `platform_dev_items`，再由 worker dispatch 读出并传入 workflow；不能只停留在 webhook 进程内存里。fix round 仍然只把生成改动留在 repo 工作区，由 workflow 的标准 diff、commit、push 路径落到 PR 分支。
 
-本阶段测试配置固定使用开发分支：`PAGES_PLATFORM_WORKFLOW_REF=feat/slack-preview-gateway`，`PAGES_PLATFORM_BASE_REF=feat/slack-preview-gateway`。该配置只用于 Platform Agent 架构变更验证，不能被解释为允许自动合并到 `master` / `main`。
+本阶段测试配置固定使用开发分支：`PAGES_PLATFORM_WORKFLOW_REF=feat/slack-preview-gateway`，`PAGES_PLATFORM_BASE_REF=feat/slack-preview-gateway`。该配置只用于 Platform Agent 架构变更验证，不能被解释为允许自动合并到 `master` / `main`。若显式未传 `PAGES_PLATFORM_BASE_REF`，worker 默认跟随 `PAGES_PLATFORM_WORKFLOW_REF`，避免 workflow 代码和 checkout / PR base 混用。
 
 ## Slack 体验
 
@@ -187,6 +206,7 @@ fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent �
 
 - 当前实现会保留 work item link 和 session memory。
 - 平台 followup 进入 `work_item_followups` 后，由后续平台 agent 修复循环消费。
+- 对已绑定 active PlatformDevItem 的 Slack thread，gateway 还会本地兜底识别“继续修改 / 改为 / 补充 / 不再修改”等 follow-up 语义；即使远端 Slack Agent 未配置，或误把这类续改分析成新的 create intent，也会优先续接当前工单，而不是重新创建 issue。
 
 诊断查询：
 

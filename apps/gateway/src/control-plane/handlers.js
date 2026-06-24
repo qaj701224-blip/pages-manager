@@ -158,6 +158,10 @@ import {
   repoEvidenceDetailsFromContext,
 } from '../slack/repo-question.js';
 
+const LOCAL_FOLLOWUP_CUE_RE =
+  /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|再加|再补|再改)/i;
+const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
+
 function isUnaddressedChannelThreadMessage(body = {}) {
   const event = body.event || {};
   const surface = surfaceForSlackBody(body);
@@ -174,8 +178,60 @@ async function existingSlackThreadSession(store, body = {}) {
   return session?.status === 'closed' ? null : session;
 }
 
-function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession) {
-  if (!slackAgentAnalysis) return null;
+function hasSlackFollowupTarget(slackSession, activeWorkItem = null) {
+  return hasActiveSlackTarget(slackSession) || Boolean(activeWorkItem?.id);
+}
+
+function shouldForceSlackFollowup(intake, slackAgentAnalysis, slackSession, activeWorkItem = null) {
+  if (intake?.action !== 'agent_turn') return false;
+  if (!hasSlackFollowupTarget(slackSession, activeWorkItem)) return false;
+  if (intake?.explicitWorkItemReference) return false;
+  if (slackAgentAnalysis?.needsClarification) return false;
+
+  const text = String(intake?.text || '');
+  if (!text || EXPLICIT_NEW_WORK_ITEM_RE.test(text)) return false;
+
+  if (!LOCAL_FOLLOWUP_CUE_RE.test(text)) {
+    return FOLLOWUP_INTENTS.has(slackAgentAnalysis?.intent);
+  }
+
+  if (!slackAgentAnalysis?.intent) return true;
+  if (FOLLOWUP_INTENTS.has(slackAgentAnalysis.intent)) return true;
+  if (LIST_WORK_ITEM_INTENTS.has(slackAgentAnalysis.intent)) return false;
+  if (SWITCH_WORK_ITEM_INTENTS.has(slackAgentAnalysis.intent)) return false;
+  if (UNSUPPORTED_DESTRUCTIVE_INTENTS.has(slackAgentAnalysis.intent)) return false;
+  if (
+    [
+      'repo_question',
+      'architecture_question',
+      'platform_question',
+      'status_query',
+      'diagnose_work_item',
+      'summarize_review_results',
+      'reopen_work_item',
+      'cancel_request',
+      'close_session',
+      'repeat_previous_message',
+    ].includes(slackAgentAnalysis.intent)
+  ) {
+    return false;
+  }
+
+  return CREATE_PLATFORM_INTENTS.has(slackAgentAnalysis.intent) || CREATE_JOB_INTENTS.has(slackAgentAnalysis.intent);
+}
+
+function slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, options = {}) {
+  const activeWorkItem = options.activeWorkItem || null;
+  if (!slackAgentAnalysis) {
+    if (shouldForceSlackFollowup(intake, null, slackSession, activeWorkItem)) {
+      return { name: 'record_followup', args: {} };
+    }
+    return null;
+  }
+
+  if (shouldForceSlackFollowup(intake, slackAgentAnalysis, slackSession, activeWorkItem)) {
+    return { name: 'record_followup', args: {} };
+  }
 
   if (shouldRejectUnsupportedDestructiveSlackTurn(slackAgentAnalysis)) {
     return { name: 'unsupported_destructive_request', args: {} };
@@ -386,8 +442,11 @@ function shouldAskBeforeCreatingPlatformIssue(intake, slackAgentAnalysis) {
 }
 
 async function handleSlackAgentToolCall(context) {
-  const { intake, slackAgentAnalysis, slackSession } = context;
-  const toolCall = context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession);
+  const { intake, slackAgentAnalysis, slackSession, store } = context;
+  const activeWorkItem =
+    slackSession?.id && store && intake?.action === 'agent_turn' ? await activeWorkItemForSlackSession(store, slackSession) : null;
+  const toolCall =
+    context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, { activeWorkItem });
   if (!toolCall?.name) return null;
   if (
     slackAgentAnalysis?.needsClarification &&

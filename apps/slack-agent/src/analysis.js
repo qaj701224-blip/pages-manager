@@ -14,10 +14,12 @@ const PLATFORM_KEYWORDS =
   /(pages-manager|平台|仓库|repo|代码|PR|issue|label|template|模版|gateway|worker|slack-agent|slack-notifier|Slack|GitHub|webhook|CI|CD|workflow|Actions|MySQL|数据库|状态机|权限|review|rebase|branch|分支|k8s|ECS|部署脚本|文档|架构)/i; // eslint-disable-line max-len
 const LIST_WORK_ITEMS_RE =
   /^(我的|查看|看看|列出|查询|当前|目前|现在).*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)|^(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)(列表|清单)$/i;
+const STATUS_QUERY_RE =
+  /(?:^(?:status|状态)\b(?:\s+job_[A-Za-z0-9_]+)?$)|(?:(?:现在|当前|目前|这会儿|此刻).{0,12}(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢))|(?:(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢|查一下|查下|看一下|看下))/i;
 const SWITCH_WORK_ITEM_RE =
-  /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
+  /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:https?:\/\/github\.com\/[^/\s<>]+\/[^/\s<>]+\/(?:issues|pull)\/\d{1,8}(?:[/?#][^\s<>]*)?|(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b)/i;
 const REOPEN_WORK_ITEM_RE =
-  /(?:重新打开|恢复|重开|reopen).*(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b/i;
+  /(?:重新打开|恢复|重开|reopen).*(?:https?:\/\/github\.com\/[^/\s<>]+\/[^/\s<>]+\/(?:issues|pull)\/\d{1,8}(?:[/?#][^\s<>]*)?|(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b)/i;
 const DIAGNOSIS_QUERY_RE =
   /(为什么|为啥|原因|失败|没成功|没有成功|没出来|卡住|卡在哪|卡在|诊断|排查|查一下|看一下|重试|查.*(?:日志|log|workflow|actions))/i;
 const REVIEW_RESULTS_QUERY_RE = new RegExp(
@@ -75,6 +77,8 @@ const CURRENT_WORK_ITEM_FOLLOWUP_RE =
   /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|重试|重新跑|再跑)/i;
 const CURRENT_WORK_ITEM_QUESTION_RE = /(?:需要改哪里|哪些地方要改|哪里要改|具体改哪里)/i;
 const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
+const CLOSE_SESSION_RE =
+  /(?:(?:关闭|结束|停止|退出|close|end)\s*(?:当前)?(?:这个)?\s*(?:会话|对话|session|conversation))|(?:(?:会话|对话|session|conversation).*(?:关闭|结束|停止|退出|close|end))/i;
 
 function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
@@ -356,14 +360,22 @@ function shouldSummarizeReviewResultsTurn(text = '', input = {}, context = sessi
   return hasReviewResultsContext(input, context) && AMBIGUOUS_REVIEW_RESULTS_QUERY_RE.test(text);
 }
 
+function isNaturalCloseSessionTurn(text = '', input = {}, context = sessionContextFromInput(input)) {
+  if (!CLOSE_SESSION_RE.test(text)) return false;
+  if (workItemReferenceFromText(text)) return false;
+  if (WORK_ITEM_DESTRUCTIVE_ACTION_RE.test(text) && hasCurrentWorkItemContext(input, context)) return false;
+  return true;
+}
+
 export function analyzeSlackRequirementDeterministic(input = {}) {
   const event = input.event || {};
   const text = normalizeText(input.text || event.text || input.summary || '');
   const sessionContext = sessionContextFromInput(input);
+  const shouldCloseSession = isNaturalCloseSessionTurn(text, input, sessionContext);
   const isUnsupportedDestructive =
     isUnsupportedBulkDestructiveRequest(text) ||
     isExplicitWorkItemDestructiveRequest(text) ||
-    (hasCurrentWorkItemContext(input, sessionContext) && WORK_ITEM_CLOSE_CAPABILITY_QUESTION_RE.test(text));
+    (!shouldCloseSession && hasCurrentWorkItemContext(input, sessionContext) && WORK_ITEM_CLOSE_CAPABILITY_QUESTION_RE.test(text));
   const hasPreviousWorkItemList = Boolean(input.sessionMemory?.lastWorkItemList);
   const shouldListWorkItems =
     !isUnsupportedDestructive && (LIST_WORK_ITEMS_RE.test(text) || (hasPreviousWorkItemList && LIST_FOLLOWUP_RE.test(text)));
@@ -371,12 +383,21 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const shouldReopenWorkItem = !isUnsupportedDestructive && REOPEN_WORK_ITEM_RE.test(text);
   const shouldSwitchWorkItem = SWITCH_WORK_ITEM_RE.test(text);
   const shouldRepeatPreviousMessage = !isUnsupportedDestructive && REPEAT_PREVIOUS_MESSAGE_RE.test(text);
+  const shouldStatusQuery =
+    !isUnsupportedDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    !shouldReopenWorkItem &&
+    !shouldRepeatPreviousMessage &&
+    STATUS_QUERY_RE.test(text) &&
+    !DIAGNOSIS_QUERY_RE.test(text);
   const shouldSummarizeReviewResults =
     !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldReopenWorkItem &&
     !shouldRepeatPreviousMessage &&
+    !shouldStatusQuery &&
     !REVIEW_RESULTS_FOLLOWUP_RE.test(text) &&
     shouldSummarizeReviewResultsTurn(text, input, sessionContext);
   const shouldDiagnoseWorkItem =
@@ -385,6 +406,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldSwitchWorkItem &&
     !shouldSummarizeReviewResults &&
     !shouldRepeatPreviousMessage &&
+    !shouldStatusQuery &&
     DIAGNOSIS_QUERY_RE.test(text);
   const shouldRecordCurrentWorkItemFollowup =
     !isUnsupportedDestructive &&
@@ -392,14 +414,17 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldSwitchWorkItem &&
     !shouldReopenWorkItem &&
     !shouldRepeatPreviousMessage &&
+    !shouldStatusQuery &&
     !shouldDiagnoseWorkItem &&
     shouldTreatAsCurrentWorkItemFollowup(text, input, sessionContext);
   const shouldAnswerRepoQuestion =
     !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
+    !shouldCloseSession &&
     !shouldDiagnoseWorkItem &&
     !shouldRecordCurrentWorkItemFollowup &&
+    !shouldStatusQuery &&
     !shouldSummarizeReviewResults &&
     (PLATFORM_KEYWORDS.test(text) || REPO_QUESTION_SUBJECT_RE.test(text)) &&
     (REPO_QUESTION_RE.test(text) || QUESTION_CUE_RE.test(text)) &&
@@ -408,24 +433,30 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
+    !shouldCloseSession &&
     !shouldDiagnoseWorkItem &&
     !shouldRecordCurrentWorkItemFollowup &&
     !shouldAnswerRepoQuestion &&
+    !shouldStatusQuery &&
     !shouldSummarizeReviewResults &&
     (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const shouldCreatePlatform =
     !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
+    !shouldCloseSession &&
     !shouldDiagnoseWorkItem &&
     !shouldAnswerRepoQuestion &&
     !shouldRecordCurrentWorkItemFollowup &&
+    !shouldStatusQuery &&
     !shouldSummarizeReviewResults &&
     PLATFORM_KEYWORDS.test(text) &&
     (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
   const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
   const finalIntent = isUnsupportedDestructive
     ? UNSUPPORTED_DESTRUCTIVE_INTENT
+    : shouldCloseSession
+      ? 'close_session'
     : shouldReopenWorkItem
       ? 'reopen_work_item'
       : shouldSwitchWorkItem
@@ -434,6 +465,8 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
           ? 'repeat_previous_message'
           : shouldListWorkItems
             ? 'list_work_items'
+            : shouldStatusQuery
+              ? 'status_query'
             : shouldSummarizeReviewResults
               ? 'summarize_review_results'
               : shouldDiagnoseWorkItem
@@ -481,6 +514,8 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
       !shouldListWorkItems &&
       !shouldSwitchWorkItem &&
       !shouldRepeatPreviousMessage &&
+      !shouldCloseSession &&
+      !shouldStatusQuery &&
       !shouldSummarizeReviewResults &&
       !shouldDiagnoseWorkItem &&
       !shouldRecordCurrentWorkItemFollowup &&

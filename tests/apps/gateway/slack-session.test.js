@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { classifySlackIntake } from '../../../apps/gateway/src/slack/intake.js';
 import { readSlackSessionConfig, slackUserIdFromBody } from '../../../apps/gateway/src/slack/session.js';
 import { createGatewayApp } from '../../helpers/gateway-app.js';
 import { GatewayStoreFixture } from '../../helpers/gateway-store-fixture.js';
@@ -340,6 +341,100 @@ test('Slack users cannot query another user job status', async () => {
   assert.equal(forbidden.accepted, false);
   assert.equal(forbidden.action, 'forbidden_cross_user_job');
   assert.match(forbidden.replyText, /不属于当前 Slack 用户/);
+});
+
+test('natural close-session wording closes the active DM session', async () => {
+  const app = createGatewayApp();
+
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-natural-close-1',
+      ts: '1710000000.000100',
+      text: '我想先聊聊个人网站',
+    })
+  );
+  const closed = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-natural-close-2',
+      ts: '1710000001.000100',
+      text: '关闭会话',
+    })
+  );
+
+  assert.equal(closed.action, 'close_session');
+  assert.equal(app.store.getSlackSession(created.slackSessionId).status, 'closed');
+});
+
+test('status query with explicit job id does not regress under natural language phrasing', async () => {
+  const intake = classifySlackIntake(slackEvent({ eventId: 'Ev-status-classify', text: '状态 job_abc123' }));
+  assert.equal(intake.action, 'diagnose_work_item');
+  assert.equal(intake.jobId, 'job_abc123');
+
+  const app = createGatewayApp();
+  const created = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-status-job-1',
+      user: 'U1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个项目展示页',
+    })
+  );
+
+  const queried = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-status-job-2',
+      user: 'U1',
+      ts: '1710000001.000100',
+      text: `状态 ${created.jobId}`,
+    })
+  );
+
+  assert.equal(queried.action, 'diagnose_work_item');
+  assert.equal(queried.accepted, false);
+  assert.equal(queried.jobId, created.jobId);
+  assert.match(queried.replyText, /当前状态|最近阶段/);
+});
+
+test('multiple active DM sessions do not bind natural status queries to the first session', async () => {
+  const intake = classifySlackIntake(slackEvent({ eventId: 'Ev-ambiguous-status-classify', text: '现在进度怎么样？' }));
+  assert.equal(intake.action, 'diagnose_work_item');
+
+  const app = createGatewayApp();
+
+  await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-ambiguous-status-1',
+      ts: '1710000000.000100',
+      text: 'issue: 做一个项目展示页',
+    })
+  );
+  await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-ambiguous-status-2',
+      ts: '1710000001.000100',
+      text: 'issue: 做一个博客页',
+    })
+  );
+
+  const ambiguous = await postSlack(
+    app,
+    slackEvent({
+      eventId: 'Ev-ambiguous-status-3',
+      ts: '1710000002.000100',
+      text: '现在进度怎么样？',
+    })
+  );
+
+  assert.equal(ambiguous.accepted, false);
+  assert.equal(ambiguous.action, 'ambiguous_active_dm_sessions');
+  assert.match(ambiguous.replyText, /多个最近的会话/);
+  assert.match(ambiguous.replyText, /job id|issue|PR|GitHub URL/i);
 });
 
 test('top-level DM after expired active context starts a new thread session', async () => {
