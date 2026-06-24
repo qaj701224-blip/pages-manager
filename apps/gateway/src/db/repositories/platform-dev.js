@@ -257,11 +257,11 @@ export const platformDevRepositoryMethods = {
     return updated;
   },
 
-  async failPlatformDevItem(itemId, errorCode, errorMessage) {
+  async failPlatformDevItem(itemId, errorCode, errorMessage, patch = {}) {
     const item = await this.getPlatformDevItem(itemId);
     if (!item) return null;
     const beforeCount = this.platformDevEvents.get(itemId)?.length || 0;
-    const updated = transitionPlatformDevItem(item, 'failed', { errorCode, errorMessage });
+    const updated = transitionPlatformDevItem(item, 'failed', { ...patch, errorCode, errorMessage });
     this.cachePlatformDevItem(updated);
     this.appendPlatformDevEvent(updated, errorMessage || errorCode || 'PlatformDevItem failed');
     const events = this.platformDevEvents.get(itemId)?.slice(beforeCount) || [];

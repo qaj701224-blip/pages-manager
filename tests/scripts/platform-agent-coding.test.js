@@ -10,12 +10,18 @@ const env = {
   PLATFORM_DEV_ITEM_ID: 'pdev_abc123',
   AGENT_MODE: 'initial',
   ISSUE_NUMBER: '77',
+  PR_NUMBER: '88',
+  HEAD_SHA: 'a'.repeat(40),
   REQUEST_TITLE: '平台需求',
   REQUEST_SUMMARY: '实现 Slack 到平台 PR 的闭环。',
   ISSUE_TYPE: 'type:dev',
   AREAS: 'area:gateway,area:github',
   RISK: 'risk:medium',
   BASE_REF: 'master',
+  REVIEW_CONTEXT: 'Review context for PR #88:\n1. [blocking] README 缺说明',
+  MEMORY_CONTEXT: 'Session summary: previous run changed docs.',
+  STATUS_CONTEXT: 'status: review_blocked',
+  FOLLOWUP_CONTEXT: 'Slack follow-up: 继续收紧文案。',
   AGENT_GATEWAY_URL: 'https://agent.example',
   AGENT_CODE_API_KEY: 'code-key',
   AGENT_MODEL_NAME: 'company-coder',
@@ -77,8 +83,24 @@ test('runs Platform Coding Agent and writes repo relative files', async () => {
     assert.equal(requestBody.model, 'company-coder');
     assert.equal(requestBody.reasoning_effort, 'medium');
     assert.match(requestBody.messages[0].content, /Platform Coding Agent/);
+    const userPayload = JSON.parse(requestBody.messages[1].content);
+    assert.equal(userPayload.mode, 'initial');
+    assert.equal(userPayload.prNumber, '88');
+    assert.equal(userPayload.headSha, 'a'.repeat(40));
+    assert.match(userPayload.reviewContext, /README 缺说明/);
+    assert.match(userPayload.memoryContext, /previous run/);
+    assert.match(userPayload.statusContext, /review_blocked/);
+    assert.match(userPayload.followupContext, /继续收紧文案/);
     assert.match(doc, /Implemented/);
     assert.equal(report.platformDevItemId, 'pdev_abc123');
+    assert.equal(report.prNumber, '88');
+    assert.equal(report.headSha, 'a'.repeat(40));
+    assert.deepEqual(report.contextReceived, {
+      review: true,
+      memory: true,
+      status: true,
+      followup: true,
+    });
     assert.deepEqual(report.generatedFiles, ['docs/architecture/platform-dev-lane.md', 'tests/platform.test.js']);
   } finally {
     process.chdir(previousCwd);

@@ -71,6 +71,13 @@
       "when": 1782229367372,
       "tag": "0009_medical_phalanx",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1782273362017,
+      "tag": "0010_glorious_lady_mastermind",
+      "breakpoints": true
     }
   ]
 }

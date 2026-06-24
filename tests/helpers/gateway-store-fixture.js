@@ -231,10 +231,10 @@ export class GatewayStoreFixture {
     return updated;
   }
 
-  failPlatformDevItem(itemId, errorCode, errorMessage) {
+  failPlatformDevItem(itemId, errorCode, errorMessage, patch = {}) {
     const item = this.getPlatformDevItem(itemId);
     if (!item) return null;
-    const updated = transitionPlatformDevItem(item, 'failed', { errorCode, errorMessage });
+    const updated = transitionPlatformDevItem(item, 'failed', { ...patch, errorCode, errorMessage });
     this.platformDevItems.set(itemId, updated);
     this.appendPlatformDevEvent(updated, errorMessage || errorCode || 'PlatformDevItem failed');
     return updated;
@@ -345,11 +345,11 @@ export class GatewayStoreFixture {
     return current;
   }
 
-  failJob(jobId, errorCode, errorMessage) {
+  failJob(jobId, errorCode, errorMessage, patch = {}) {
     const job = this.getJob(jobId);
     if (!job) return null;
 
-    const updated = transitionJob(job, 'failed', { errorCode, errorMessage });
+    const updated = transitionJob(job, 'failed', { ...patch, errorCode, errorMessage });
     this.jobs.set(jobId, updated);
     this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob failed');
     return updated;
