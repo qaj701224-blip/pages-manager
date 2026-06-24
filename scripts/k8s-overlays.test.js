@@ -12,8 +12,13 @@ function readRepoFile(path) {
 
 test('pages-manager preview overlay derives preview owner markers per employee', () => {
   const configMapPatch = readRepoFile('k8s/overlays/pages-manager-preview/configmap-patch.yaml');
+  const baseConfigMap = readRepoFile('k8s/base/pages-system/configmap.yaml');
 
   assert.match(configMapPatch, /PAGES_PREVIEW_MODE: local_deploy/);
+  assert.match(baseConfigMap, /PAGES_PLATFORM_WORKFLOW_REF: master/);
+  assert.match(baseConfigMap, /PAGES_PLATFORM_BASE_REF: master/);
+  assert.match(configMapPatch, /PAGES_PLATFORM_WORKFLOW_REF: master/);
+  assert.match(configMapPatch, /PAGES_PLATFORM_BASE_REF: master/);
   assert.match(configMapPatch, /PAGES_PREVIEW_IP_RESTRICT: 'true'/);
   assert.match(configMapPatch, /PAGES_PREVIEW_SITE_NAME_PATTERN: pm-\{publishingJobId\}/);
   assert.match(configMapPatch, /PAGES_PREVIEW_TOKEN_PATTERN: pages_\{employeeSlug\}@xd\.com/);

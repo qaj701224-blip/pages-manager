@@ -48,3 +48,17 @@ test('ECS gateway scans the full repo snapshot for Slack repo questions', () => 
   assert.match(compose, /pages-gateway:[\s\S]*PAGES_REPO_ROOT: \$\{PAGES_REPO_ROOT:-\/app\}/);
   assert.match(envExample, /^PAGES_REPO_ROOT=\/app$/m);
 });
+
+test('ECS worker exposes platform workflow and base refs separately', () => {
+  const compose = readRepoFile('docker-compose.ecs.yml');
+  const envExample = readRepoFile('.env.ecs.example');
+
+  assert.match(compose, /PAGES_WORKFLOW_REF: \$\{PAGES_WORKFLOW_REF:-staging\}/);
+  assert.match(compose, /PAGES_BASE_REF: \$\{PAGES_BASE_REF:-staging\}/);
+  assert.match(compose, /PAGES_PLATFORM_WORKFLOW_REF: \$\{PAGES_PLATFORM_WORKFLOW_REF:-master\}/);
+  assert.match(compose, /PAGES_PLATFORM_BASE_REF: \$\{PAGES_PLATFORM_BASE_REF:-master\}/);
+  assert.match(envExample, /^PAGES_WORKFLOW_REF=staging$/m);
+  assert.match(envExample, /^PAGES_BASE_REF=staging$/m);
+  assert.match(envExample, /^PAGES_PLATFORM_WORKFLOW_REF=master$/m);
+  assert.match(envExample, /^PAGES_PLATFORM_BASE_REF=master$/m);
+});

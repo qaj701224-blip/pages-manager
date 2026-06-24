@@ -6,7 +6,9 @@ metadata:
 data:
   PAGES_PREVIEW_MODE: local_deploy
   PAGES_WORKFLOW_REF: staging
+  PAGES_PLATFORM_WORKFLOW_REF: master
   PAGES_BASE_REF: staging
+  PAGES_PLATFORM_BASE_REF: master
   PAGES_GATEWAY_PUBLIC_URL: https://pages-manager-preview.xdclaw-dev.xindong.com
   PAGES_GATEWAY_CALLBACK_URL: https://pages-manager-preview.xdclaw-dev.xindong.com/internal/executor-callback
   PAGES_API: https://api-staging.workers.xd.team
