@@ -13,6 +13,8 @@ const BARE_WORK_ITEM_NUMBER_RE = /#(\d{1,8})\b/;
 const SLASH_COMMAND_RE = /^\/([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i;
 const TEXT_COMMAND_RE = /^(issue|page|site|status|help|ping|cancel|close|tasks?|prs?|work):([\s\S]*)?$/i;
 const WORK_ITEM_COMMAND_RE = /^(tasks?|prs?|work)(?:\s+([\s\S]*))?$/i;
+const NATURAL_STATUS_QUERY_RE =
+  /(?:^(?:status|状态)\b(?:\s+job_[A-Za-z0-9_]+)?$)|(?:^(?:status|状态)\s+.+$)|(?:(?:现在|当前|目前|这会儿|此刻).{0,12}(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢))|(?:(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢|查一下|查下|看一下|看下))/i;
 
 export function isWorkItemHistoryQuery(text = '') {
   return slackWorkItemIncludesInactive(slackWorkItemQueryStateFromText(text));
@@ -65,6 +67,21 @@ function isExplicitSessionCloseRequest(text, command) {
   if (!commandArgs) return true;
   if (SESSION_ID_RE.test(command.args)) return true;
   return ['session', 'conversation', '会话', '对话', '当前会话', '当前对话'].includes(commandArgs);
+}
+
+function isNaturalSessionCloseRequest(text = '') {
+  const value = String(text || '');
+  if (parseSlackWorkItemReference(value)) return false;
+  return /(?:(?:关闭|结束|停止|退出|close|end)\s*(?:当前)?(?:这个)?\s*(?:会话|对话|session|conversation))|(?:(?:会话|对话|session|conversation).*(?:关闭|结束|停止|退出|close|end))/i.test(
+    value
+  );
+}
+
+function isNaturalStatusQuery(text = '') {
+  const value = String(text || '');
+  if (isWorkItemHistoryQuery(value)) return false;
+  if (NATURAL_STATUS_QUERY_RE.test(value)) return true;
+  return JOB_ID_RE.test(value) && /(?:状态|进度|status|怎么样|如何|咋样|查一下|查下|看一下|看下)/i.test(value);
 }
 
 export function parseSlackPrNumber(text = '') {
@@ -166,6 +183,15 @@ export function classifySlackIntake(body) {
     };
   }
 
+  if (isNaturalSessionCloseRequest(text)) {
+    return {
+      action: 'close_session',
+      shouldCreateJob: false,
+      text,
+      replyText: '收到，准备关闭当前会话。',
+    };
+  }
+
   if (command?.command === 'status') {
     const commandJobId = command.args.match(JOB_ID_RE)?.[0] || null;
     return {
@@ -174,6 +200,16 @@ export function classifySlackIntake(body) {
       text,
       jobId: commandJobId,
       replyText: commandJobId ? null : null,
+    };
+  }
+
+  if (isNaturalStatusQuery(text)) {
+    return {
+      action: 'diagnose_work_item',
+      shouldCreateJob: false,
+      text,
+      jobId: text.match(JOB_ID_RE)?.[0] || null,
+      replyText: null,
     };
   }
 

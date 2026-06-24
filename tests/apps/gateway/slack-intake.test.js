@@ -98,12 +98,12 @@ test('routes non-colon legacy issue prefixes to the Slack Agent instead of creat
   }
 });
 
-test('routes natural status messages with job id to the Slack Agent', () => {
+test('routes natural status messages with job id to direct diagnosis handling', () => {
   const result = classifySlackIntake(body('状态 job_abc123'));
 
-  assert.equal(result.action, 'agent_turn');
+  assert.equal(result.action, 'diagnose_work_item');
   assert.equal(result.shouldCreateJob, false);
-  assert.equal(result.shouldAnalyze, true);
+  assert.equal(result.jobId, 'job_abc123');
 });
 
 test('classifies status command without job id as a friendly reply', () => {
@@ -115,20 +115,18 @@ test('classifies status command without job id as a friendly reply', () => {
   assert.equal(result.replyText, null);
 });
 
-test('keeps natural diagnosis questions as agent turns', () => {
-  for (const text of [
-    '为什么 issue 创建了 PR 没出来？',
-    '这个任务卡在哪？',
-    '帮我查一下这个 job 的日志',
-    '能不能重试？',
-    '状态 job_abc123',
-  ]) {
+test('keeps diagnosis-style questions routed through existing intake paths', () => {
+  for (const text of ['为什么 issue 创建了 PR 没出来？', '这个任务卡在哪？', '帮我查一下这个 job 的日志', '能不能重试？']) {
     const result = classifySlackIntake(body(text));
 
     assert.equal(result.action, 'agent_turn');
     assert.equal(result.shouldCreateJob, false);
     assert.equal(result.shouldAnalyze, true);
   }
+
+  const statusResult = classifySlackIntake(body('状态 job_abc123'));
+  assert.equal(statusResult.action, 'diagnose_work_item');
+  assert.equal(statusResult.jobId, 'job_abc123');
 });
 
 test('routes bulk destructive issue requests to the Slack Agent', () => {
@@ -164,8 +162,9 @@ test('does not classify explicit work item close requests as Slack session close
 test('only explicit session close wording closes Slack sessions in intake', () => {
   assert.equal(classifySlackIntake(body('close: sess_abc123')).action, 'close_session');
   assert.equal(classifySlackIntake(body('/close sess_abc123')).action, 'close_session');
-  assert.equal(classifySlackIntake(body('关闭会话')).action, 'agent_turn');
-  assert.equal(classifySlackIntake(body('close session')).action, 'agent_turn');
+  assert.equal(classifySlackIntake(body('关闭会话')).action, 'close_session');
+  assert.equal(classifySlackIntake(body('close session')).action, 'close_session');
+  assert.equal(classifySlackIntake(body('结束当前对话')).action, 'close_session');
   assert.equal(classifySlackIntake(body('关闭这个任务')).action, 'agent_turn');
 });
 

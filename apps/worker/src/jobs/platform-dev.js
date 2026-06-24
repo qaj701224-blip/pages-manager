@@ -56,17 +56,16 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
   const issueNumber = issueResult.issue.number;
   const issueUrl = issueResult.issue.html_url || issueResult.issue.url || null;
 
-  await callback(fetchImpl, config, {
-    workItemKind: 'platform_dev',
-    platformDevItemId: item.id,
-    executorType: 'pages_worker',
-    status: 'succeeded',
-    stageResult: stageResultForIssueCreated(item),
-    issueNumber,
-    issueUrl,
-  });
-
   if (!shouldDispatchPlatformAgent(item)) {
+    await callback(fetchImpl, config, {
+      workItemKind: 'platform_dev',
+      platformDevItemId: item.id,
+      executorType: 'pages_worker',
+      status: 'succeeded',
+      stageResult: stageResultForIssueCreated(item),
+      issueNumber,
+      issueUrl,
+    });
     return {
       action: item.requiresHumanGate ? 'platform_issue_created_waiting_for_gate' : 'platform_issue_created',
       issueNumber,
@@ -90,6 +89,16 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
       gateApproved: itemWithIssue.gateStatus === 'approved' || itemWithIssue.requiresHumanGate === false,
       ...platformAgentContextInputs(itemWithIssue),
     }),
+  });
+
+  await callback(fetchImpl, config, {
+    workItemKind: 'platform_dev',
+    platformDevItemId: item.id,
+    executorType: 'pages_worker',
+    status: 'succeeded',
+    stageResult: stageResultForIssueCreated(item),
+    issueNumber,
+    issueUrl,
   });
 
   await callback(fetchImpl, config, {

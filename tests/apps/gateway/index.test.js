@@ -6007,7 +6007,7 @@ test('Slack status message reads an existing job without creating a new one', as
   assert.match(body.replyText, /当前状态：整理需求/);
   assert.match(body.replyText, /最近阶段：整理需求/);
   assert.match(body.replyText, /建议操作：/);
-  assert.equal(agentCalls.length, 1);
+  assert.equal(agentCalls.length, 0);
 });
 
 test('Slack Agent diagnosis card intent drives diagnosis copy and action order', async () => {
@@ -8797,6 +8797,82 @@ test('GitHub merged PR webhook queues and posts one Slack merge announcement', a
   assert.equal(runs.length, 1);
   assert.equal(runs[0].status, 'completed');
   assert.equal(runs[0].report.summarySource, 'fallback_missing_agent_config');
+});
+
+test('GitHub merged platform PR keeps merged status after linked issue closes', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-merged-issue-close',
+    title: '完善平台 PR merge 闭环',
+    summary: '确保合并后 issue 关闭不会把 merged 回退成 closed_unmerged。',
+    issueType: 'type:dev',
+    areas: ['area:github'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  });
+  let updated = app.store.updatePlatformDevItem(item.id, 'issue_created', {
+    githubIssueNumber: 188,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/188',
+  });
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_queued');
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_running');
+  updated = app.store.updatePlatformDevItem(updated.id, 'branch_committed');
+  updated = app.store.updatePlatformDevItem(updated.id, 'pr_created', {
+    githubPrNumber: 288,
+    githubPrUrl: 'https://github.example/org/pages-manager/pull/288',
+    branchName: 'feat/platform-merged-issue-close',
+    headSha: 'd'.repeat(40),
+  });
+
+  const mergedResponse = await postPullRequestWebhook(
+    app,
+    'delivery-platform-merged-1',
+    {
+      action: 'closed',
+      repository: { full_name: 'org/pages-manager' },
+      pull_request: {
+        number: 288,
+        state: 'closed',
+        merged: true,
+        html_url: 'https://github.example/org/pages-manager/pull/288',
+        head: { ref: 'feat/platform-merged-issue-close', sha: 'd'.repeat(40) },
+      },
+    },
+    {}
+  );
+  const mergedBody = await json(mergedResponse);
+
+  assert.equal(mergedResponse.status, 200);
+  assert.equal(mergedBody.item.status, 'merged');
+
+  const issueClosedResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-issue-closed-after-merge',
+        'X-GitHub-Event': 'issues',
+      },
+      body: JSON.stringify({
+        action: 'closed',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 188,
+          state: 'closed',
+          html_url: 'https://github.example/org/pages-manager/issues/188',
+          body: `<!-- pages-manager:platform_dev_item_id=${item.id} -->`,
+        },
+      }),
+    })
+  );
+  const issueClosedBody = await json(issueClosedResponse);
+
+  assert.equal(issueClosedResponse.status, 200);
+  assert.equal(issueClosedBody.item.status, 'merged');
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'merged');
 });
 
 test('GitHub merged PR webhook uses Slack Agent merge summary when configured', async () => {

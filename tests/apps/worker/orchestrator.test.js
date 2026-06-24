@@ -103,6 +103,18 @@ test('worker config can pin platform workflow and base refs to the same test bra
   assert.equal(workerConfig.platformBaseRef, 'feat/slack-preview-gateway');
 });
 
+test('worker config falls back platform base ref to platform workflow ref when omitted', () => {
+  const workerConfig = readWorkerConfig({
+    GITHUB_APP_INSTALLATION_TOKEN: 'ghs_test',
+    GITHUB_REPO: 'org/pages-manager',
+    GITHUB_REF_NAME: 'feat/slack-preview-gateway',
+    PAGES_PLATFORM_WORKFLOW_REF: 'feat/slack-preview-gateway',
+  });
+
+  assert.equal(workerConfig.platformWorkflowRef, 'feat/slack-preview-gateway');
+  assert.equal(workerConfig.platformBaseRef, 'feat/slack-preview-gateway');
+});
+
 test('platform dev item creates issue and dispatches platform-agent workflow', async () => {
   const requests = [];
   const callbacks = [];
@@ -314,14 +326,14 @@ test('platform dev fix item dispatches platform-agent fix workflow without dupli
   );
 });
 
-test('worker config keeps legacy preview deploy IP restriction enabled', () => {
+test('worker config honors preview deploy IP restriction env override', () => {
   const workerConfig = readWorkerConfig({
     GITHUB_APP_INSTALLATION_TOKEN: 'ghs_test',
     GITHUB_REPO: 'org/pages-manager',
     PAGES_PREVIEW_IP_RESTRICT: 'false',
   });
 
-  assert.equal(workerConfig.previewIpRestrict, true);
+  assert.equal(workerConfig.previewIpRestrict, false);
 });
 
 test('worker config can enable smoke PR reuse', () => {

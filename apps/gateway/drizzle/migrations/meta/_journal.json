@@ -78,6 +78,13 @@
       "when": 1782273362017,
       "tag": "0010_glorious_lady_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1782300000000,
+      "tag": "0011_witty_talos",
+      "breakpoints": true
     }
   ]
 }
