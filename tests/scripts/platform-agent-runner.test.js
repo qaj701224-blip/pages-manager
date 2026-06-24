@@ -127,9 +127,12 @@ test('codex backend maps company gateway URL and key env into CLI provider confi
     const invocation = JSON.parse(await readFile(path.join(cwd, '.pages-artifacts/codex-args.json'), 'utf8'));
     const providerIndex = invocation.args.indexOf('model_provider="platform_agent_gateway"');
     assert.notEqual(providerIndex, -1);
-    assert.match(invocation.args[providerIndex + 2], /base_url="https:\/\/agent\.example\/v1"/);
-    assert.match(invocation.args[providerIndex + 2], /env_key="AGENT_CODE_API_KEY"/);
-    assert.match(invocation.args[providerIndex + 2], /wire_api="responses"/);
+    const providerArg = invocation.args[providerIndex + 2];
+    assert.match(providerArg, /^model_providers\.platform_agent_gateway=\{name="Platform Agent Gateway"/);
+    assert.match(providerArg, /base_url="https:\/\/agent\.example\/v1"/);
+    assert.match(providerArg, /env_key="AGENT_CODE_API_KEY"/);
+    assert.match(providerArg, /wire_api="responses"\}$/);
+    assert.doesNotMatch(providerArg, /\{,|,\}/);
     assert.equal(invocation.key, 'code-key');
   });
 });
