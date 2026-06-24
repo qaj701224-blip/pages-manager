@@ -8191,6 +8191,64 @@ test('executor callback advances the preview loop', async () => {
   assert.equal(body.job.workflowRunId, '28000000099');
 });
 
+test('executor callback fails the job when next-stage worker start fails', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-callback-worker-start-fails',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({ employeeSlug: 'zhangsan', siteSlug: 'profile' }),
+      })
+    )
+  );
+  const issueResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: createBody.job.id,
+        stageResult: 'issue_created',
+        issueNumber: 1,
+        issueUrl: 'https://github.example/org/pages-manager/issues/1',
+      }),
+    })
+  );
+  assert.equal(issueResponse.status, 200);
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: createBody.job.id,
+        stageResult: 'index_ready',
+        indexSnapshotId: 'idxsnap_worker_failure',
+        workflowName: 'project-index.yml',
+        workflowRunId: '28000000100',
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 502);
+  assert.equal(body.workerStart.started, false);
+  assert.equal(body.workerStart.error, 'worker unavailable');
+  assert.equal(body.job.status, 'failed');
+  assert.equal(body.job.errorCode, 'worker_start_failed');
+  assert.equal(app.store.getJob(createBody.job.id).status, 'failed');
+});
+
 test('Slack follow-up on an active preview dispatches a fix round instead of creating a new job', async () => {
   const app = createGatewayApp();
   const createResponse = await app.fetch(
@@ -11640,6 +11698,35 @@ test('preview callback without headSha is ignored for head-bound jobs', async ()
   assert.equal(body.job.headSha, 'c'.repeat(40));
   assert.equal(workerStarts.length, 0);
   assert.equal(notifierCalls.length, 0);
+});
+
+test('preview callback without headSha is accepted for legacy jobs without stored headSha', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 93,
+    headSha: null,
+    idempotencyKey: 'api-legacy-preview-callback',
+  });
+  app.store.updateJob(jobId, 'previewing', { headSha: null });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'preview_deployed',
+        previewUrl: 'https://legacy-preview.example.test',
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, undefined);
+  assert.equal(body.job.status, 'preview_deployed');
+  assert.equal(body.job.previewUrl, 'https://legacy-preview.example.test');
+  assert.equal(body.job.headSha, null);
 });
 
 test('GitHub issue webhook does not bypass project-index gate in actions executor mode', async () => {

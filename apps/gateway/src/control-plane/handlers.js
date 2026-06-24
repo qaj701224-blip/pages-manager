@@ -3131,7 +3131,45 @@ export async function handleExecutorCallback(request, env) {
   let job = callbackResult.job;
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
   await store.linkJobToSlackSession(job);
-  let workerStart = callbackResult.ignored ? null : await startWorkerForJobIfConfigured(job, env);
+  let workerStart = null;
+  if (!callbackResult.ignored) {
+    try {
+      workerStart = await startWorkerForJobIfConfigured(job, env);
+    } catch (error) {
+      workerStart = { started: false, error: error.message || 'Worker start failed' };
+    }
+  }
+  if (!callbackResult.ignored && workerStart?.started === false) {
+    job =
+      (await store.failJob?.(job.id, 'worker_start_failed', workerStart.error || 'Worker start failed', {
+        workflowName: job.workflowName,
+        workflowRunId: job.workflowRunId,
+      })) || job;
+    await store.linkJobToSlackSession(job);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+      stage: 'failed',
+      text: job.errorMessage || job.errorCode || '发布任务失败',
+      statusText: ':x: 发布任务失败',
+    });
+    const slackNotification = await notifySlackJob(
+      env,
+      store,
+      job,
+      `失败：${job.errorMessage || job.errorCode || '发布任务失败'}`,
+      `failed:${job.errorCode || 'unknown'}`
+    );
+    const slackReactionSettlement = await settleJobSlackReactions(env, store, job, 'failed');
+    return jsonResponse(
+      {
+        job,
+        workerStart,
+        ...(slackStatusNotification ? { slackStatusNotification } : {}),
+        ...(slackNotification ? { slackNotification } : {}),
+        ...(slackReactionSettlement ? { slackReactionSettlement } : {}),
+      },
+      502
+    );
+  }
   let queuedFollowupRerun = null;
   let reviewReplay = null;
   let slackStatusNotification = null;
