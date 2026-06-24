@@ -505,6 +505,7 @@ test('model-requested retry returns diagnosis confirmation instead of dispatchin
 test('append diagnosis button writes a scoped GitHub issue comment', async () => {
   const app = createGatewayApp();
   const githubCalls = [];
+  const notifierCalls = [];
   const item = createOpenPlatformPr(app, {
     slackSessionId: 'sess_diagnosis_append',
     issueType: 'type:ci',
@@ -522,7 +523,7 @@ test('append diagnosis button writes a scoped GitHub issue comment', async () =>
       ),
     }),
     {
-      ...notifierEnv(),
+      ...notifierEnv(notifierCalls),
       GITHUB_REPOSITORY: 'org/pages-manager',
       GITHUB_TOKEN: 'github-token',
       async GITHUB_FETCH(url, request) {
@@ -548,6 +549,11 @@ test('append diagnosis button writes a scoped GitHub issue comment', async () =>
   assert.match(githubCalls[0].body.body, /## Slack 任务诊断/);
   assert.match(githubCalls[0].body.body, /当前状态|Issue|PR|建议操作/);
   assert.doesNotMatch(githubCalls[0].body.body, /\b(gateway|worker|mysql|status card)\b/i);
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /诊断已追加/);
+  assert.match(JSON.stringify(updateCall.body.payload), /open_issue|open_pr/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_request_append_diagnosis/);
 });
 
 test('append diagnosis button does not use status-only GitHub token for issue comments', async () => {
@@ -595,6 +601,7 @@ test('append diagnosis button does not use status-only GitHub token for issue co
 test('retry diagnosis button dispatches a scoped platform fix round', async () => {
   const app = createGatewayApp();
   const workerCalls = [];
+  const notifierCalls = [];
   const item = createOpenPlatformPr(app, {
     slackSessionId: 'sess_diagnosis_retry',
     issueType: 'type:ci',
@@ -617,7 +624,7 @@ test('retry diagnosis button dispatches a scoped platform fix round', async () =
       ),
     }),
     {
-      ...notifierEnv(),
+      ...notifierEnv(notifierCalls),
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -639,11 +646,17 @@ test('retry diagnosis button dispatches a scoped platform fix round', async () =
   assert.equal(workerCalls[0].body.workItemKind, 'platform_dev');
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
   assert.ok(app.store.listAgentRunEventsForWorkItem('platform_dev', item.id).some((event) => event.stage === 'agent_queued'));
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /已请求重试/);
+  assert.match(JSON.stringify(updateCall.body.payload), /open_issue|open_pr/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_request_retry_work_item/);
 });
 
 test('human triage button records the request and writes a scoped issue comment', async () => {
   const app = createGatewayApp();
   const githubCalls = [];
+  const notifierCalls = [];
   const item = createOpenPlatformPr(app, {
     slackSessionId: 'sess_diagnosis_triage',
     issueType: 'type:ci',
@@ -665,7 +678,7 @@ test('human triage button records the request and writes a scoped issue comment'
       ),
     }),
     {
-      ...notifierEnv(),
+      ...notifierEnv(notifierCalls),
       GITHUB_REPOSITORY: 'org/pages-manager',
       GITHUB_TOKEN: 'github-token',
       async GITHUB_FETCH(url, request) {
@@ -691,6 +704,11 @@ test('human triage button records the request and writes a scoped issue comment'
   assert.match(githubCalls[0].body.body, /## 请求人工排查/);
   assert.doesNotMatch(githubCalls[0].body.body, /\b(gateway|worker|mysql|status card)\b/i);
   assert.ok(events.some((event) => event.type === 'human_triage_requested'));
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /已请求人工排查/);
+  assert.match(JSON.stringify(updateCall.body.payload), /open_issue|open_pr/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_request_human_triage/);
 });
 
 test('platform failure notification filters internal substrate terms from error copy', async () => {
@@ -764,6 +782,7 @@ test('approving high-risk platform gate starts worker for the existing item', as
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate'));
   app.store.updatePlatformDevItem(item.id, 'gate_pending');
   const workerCalls = [];
+  const notifierCalls = [];
 
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/interactions', {
@@ -777,7 +796,7 @@ test('approving high-risk platform gate starts worker for the existing item', as
       ),
     }),
     {
-      ...notifierEnv(),
+      ...notifierEnv(notifierCalls),
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -796,6 +815,10 @@ test('approving high-risk platform gate starts worker for the existing item', as
   assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'approved');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /自动开发已批准/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_approve_platform_gate|pages_reject_platform_gate/);
 });
 
 test('high-risk platform gate cannot be approved by another Slack user', async () => {
@@ -883,6 +906,7 @@ test('rejecting high-risk platform gate closes the item without starting worker'
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_reject'));
   app.store.updatePlatformDevItem(item.id, 'gate_pending');
+  const notifierCalls = [];
 
   const response = await app.fetch(
     new Request('http://gateway.test/integrations/slack/interactions', {
@@ -895,7 +919,7 @@ test('rejecting high-risk platform gate closes the item without starting worker'
         )
       ),
     }),
-    notifierEnv()
+    notifierEnv(notifierCalls)
   );
   const updated = app.store.getPlatformDevItem(item.id);
 
@@ -903,6 +927,10 @@ test('rejecting high-risk platform gate closes the item without starting worker'
   assert.equal(updated.status, 'closed_unmerged');
   assert.equal(updated.gateStatus, 'rejected');
   assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'rejected');
+  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /自动开发已停止/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_approve_platform_gate|pages_reject_platform_gate/);
 });
 
 test('platform executor callback updates PlatformDevItem PR state', async () => {
