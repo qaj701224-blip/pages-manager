@@ -1417,6 +1417,74 @@ test('platform blocking review dispatches an automatic fix round', async () => {
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
 });
 
+test('platform blocking review recovers a failed PR item and dispatches a fix round', async () => {
+  const app = createGatewayApp();
+  const headSha = '9'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-review-fix-after-failed',
+    issueNumber: 88,
+    prNumber: 98,
+    headSha,
+    slackSessionId: 'sess_platform_review_failed_fix',
+  });
+  app.store.updateSessionMemory('sess_platform_review_failed_fix', {
+    summary: '用户希望失败后仍能继续处理 Review blocking comment。',
+  });
+  const failed = app.store.updatePlatformDevItem(item.id, 'failed', {
+    errorCode: 'platform_agent_failed',
+    errorMessage: 'previous platform-agent.yml run failed',
+  });
+  assert.equal(failed.status, 'failed');
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-review-failed-blocking',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 98, head: { sha: headSha } },
+        review: {
+          id: 9801,
+          node_id: 'PRR_PLATFORM_9801',
+          state: 'changes_requested',
+          body: 'blocking: README 说明还没有补齐。',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_review_fix_dispatched');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(updated.errorCode, null);
+  assert.equal(workerCalls.length, 1);
+  assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  assert.equal(workerCalls[0].body.platformDevItem.githubPrNumber, 98);
+  assert.equal(workerCalls[0].body.platformDevItem.headSha, headSha);
+  assert.match(workerCalls[0].body.platformDevItem.reviewContext, /README 说明还没有补齐/);
+  assert.match(workerCalls[0].body.platformDevItem.memoryContext, /失败后仍能继续处理 Review/);
+  assert.match(workerCalls[0].body.platformDevItem.statusContext, /failed -> review_blocked/);
+});
+
 test('stale platform CI failure does not regress an active fix round', async () => {
   const app = createGatewayApp();
   const headSha = 'e'.repeat(40);

@@ -395,7 +395,7 @@ const PLATFORM_DEV_ALLOWED_TRANSITIONS = {
   ],
   merged: [],
   closed_unmerged: ['issue_created', 'gate_pending', 'agent_queued', 'agent_running', 'pr_created'],
-  failed: ['agent_queued', 'cancelled'],
+  failed: ['agent_queued', 'review_blocked', 'cancelled'],
   cancelled: [],
 };
 
@@ -487,6 +487,7 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
     issue_creating: ['issue_created', 'agent_queued', 'agent_running'],
     issue_created: ['agent_queued', 'agent_running'],
     gate_pending: ['agent_queued', 'agent_running'],
+    failed: ['agent_queued', 'agent_running'],
   },
   branch_committed: {
     received: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running', 'branch_committed'],
@@ -651,6 +652,8 @@ export function buildPublishingJob(input, options = {}) {
     branchName: null,
     baseRef: input.baseRef || input.base_ref || null,
     headSha: null,
+    workflowName: null,
+    workflowRunId: null,
     indexSnapshotId: null,
     previewUrl: null,
     errorCode: null,
@@ -730,6 +733,8 @@ export function buildPlatformDevItem(input, options = {}) {
     branchName: input.branchName || input.branch_name || null,
     baseRef: input.baseRef || input.base_ref || null,
     headSha: input.headSha || input.head_sha || null,
+    workflowName: input.workflowName || input.workflow_name || null,
+    workflowRunId: input.workflowRunId || input.workflow_run_id || null,
     gateStatus: input.gateStatus || input.gate_status || (requiresHumanGate ? 'pending' : 'not_required'),
     gateReason: input.gateReason || input.gate_reason || null,
     errorCode: null,

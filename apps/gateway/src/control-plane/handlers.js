@@ -28,6 +28,7 @@ import {
   restoreJobForReopenedGithubResource,
   restorePlatformDevItemForReopenedGithubResource,
 } from '../github/resource-reconciler.js';
+import { diagnoseGithubActionsForWorkItem } from '../github/actions-diagnostics.js';
 import { readJson } from '../http/body.js';
 import { getStore, required, verifyInternalCallbackToken } from './context.js';
 import { dispatchPlatformDevFixIfNeeded, dispatchQueuedPlatformDevFollowupIfNeeded } from '../platform-dev/automation.js';
@@ -1129,20 +1130,20 @@ async function createSlackWorkItemIssueComment(env, item, body, logMessage) {
   }
 }
 
-async function appendSlackDiagnosisIssueComment(env, item, events = []) {
+async function appendSlackDiagnosisIssueComment(env, item, events = [], githubActions = null) {
   return createSlackWorkItemIssueComment(
     env,
     item,
-    buildSlackWorkItemDiagnosisIssueComment(item, { events }),
+    buildSlackWorkItemDiagnosisIssueComment(item, { events, githubActions }),
     'slack_diagnosis_issue_comment_failed'
   );
 }
 
-async function appendSlackHumanTriageIssueComment(env, item, events = []) {
+async function appendSlackHumanTriageIssueComment(env, item, events = [], githubActions = null) {
   return createSlackWorkItemIssueComment(
     env,
     item,
-    buildSlackWorkItemHumanTriageIssueComment(item, { events }),
+    buildSlackWorkItemHumanTriageIssueComment(item, { events, githubActions }),
     'slack_human_triage_issue_comment_failed'
   );
 }
@@ -1363,8 +1364,10 @@ async function handleSlackWorkItemDiagnosisTool({
   }
 
   const events = await eventsForWorkItem(store, item);
-  const replyText = buildSlackWorkItemDiagnosis(item, { events });
-  const blocks = buildSlackWorkItemDiagnosisBlocks(slackSession, item, { events, slackAgentAnalysis });
+  const githubActions = await diagnoseGithubActionsForWorkItem(env, item, { events });
+  const diagnosisOptions = { events, githubActions };
+  const replyText = buildSlackWorkItemDiagnosis(item, diagnosisOptions);
+  const blocks = buildSlackWorkItemDiagnosisBlocks(slackSession, item, { ...diagnosisOptions, slackAgentAnalysis });
   if (slackSession?.id && store.updateSessionMemory) {
     await updateSessionMemoryWithAssistantTurn(
       store,
@@ -1390,6 +1393,13 @@ async function handleSlackWorkItemDiagnosisTool({
       intent: slackAgentAnalysis?.intent || intake.action,
       status: item.status,
       eventCount: events.length,
+      githubActions: {
+        available: githubActions.available,
+        reason: githubActions.reason || null,
+        workflowName: githubActions.workflowName || null,
+        runId: githubActions.runId || null,
+        conclusion: githubActions.conclusion || null,
+      },
     },
   });
   return {
@@ -1452,7 +1462,8 @@ async function handleSlackAppendDiagnosisCommentTool({
   }
 
   const events = await eventsForWorkItem(store, item);
-  const appendResult = await appendSlackDiagnosisIssueComment(env, item, events);
+  const githubActions = await diagnoseGithubActionsForWorkItem(env, item, { events });
+  const appendResult = await appendSlackDiagnosisIssueComment(env, item, events, githubActions);
   const replyText = appendDiagnosisReplyText(appendResult);
   if (slackSession?.id && store.updateSessionMemory) {
     await updateSessionMemoryWithAssistantTurn(
@@ -1545,8 +1556,9 @@ async function handleSlackHumanTriageTool({
   }
 
   const events = await eventsForWorkItem(store, item);
+  const githubActions = await diagnoseGithubActionsForWorkItem(env, item, { events });
   const triageEvent = await recordHumanTriageRequest(store, item, slackSession);
-  const issueComment = await appendSlackHumanTriageIssueComment(env, item, events);
+  const issueComment = await appendSlackHumanTriageIssueComment(env, item, events, githubActions);
   const result = { triageEvent, issueComment };
   const replyText = humanTriageReplyText(result);
   if (slackSession?.id && store.updateSessionMemory) {
@@ -2701,7 +2713,10 @@ export async function handleExecutorCallback(request, env) {
 
   if (body.status === 'failed') {
     const store = getStore(env);
-    const job = await store.failJob(jobId, body.errorCode || body.error_code, body.errorMessage || body.error_message);
+    const job = await store.failJob(jobId, body.errorCode || body.error_code, body.errorMessage || body.error_message, {
+      workflowName: body.workflowName || body.workflow_name || undefined,
+      workflowRunId: body.workflowRunId || body.workflow_run_id || undefined,
+    });
     if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
     await store.linkJobToSlackSession(job);
     const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
@@ -2835,6 +2850,8 @@ function platformDevPatchFromCallback(body = {}) {
     githubPrUrl: body.prUrl || body.pr_url || body.githubPrUrl || body.github_pr_url || undefined,
     branchName: body.branchName || body.branch_name || undefined,
     headSha: body.headSha || body.head_sha || undefined,
+    workflowName: body.workflowName || body.workflow_name || undefined,
+    workflowRunId: body.workflowRunId || body.workflow_run_id || undefined,
     errorCode: body.errorCode || body.error_code || undefined,
     errorMessage: body.errorMessage || body.error_message || undefined,
   };
@@ -2855,7 +2872,13 @@ async function handlePlatformDevExecutorCallback(body, env) {
     const item = await store.failPlatformDevItem(
       itemId,
       body.errorCode || body.error_code,
-      body.errorMessage || body.error_message
+      body.errorMessage || body.error_message,
+      {
+        workflowName: body.workflowName || body.workflow_name || undefined,
+        workflowRunId: body.workflowRunId || body.workflow_run_id || undefined,
+        branchName: body.branchName || body.branch_name || undefined,
+        headSha: body.headSha || body.head_sha || undefined,
+      }
     );
     if (!item) return jsonResponse({ error: 'PlatformDevItem not found' }, 404);
     await store.linkPlatformDevItemToSlackSession(item);
