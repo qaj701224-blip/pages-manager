@@ -58,7 +58,10 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /Callback gateway on failure[\s\S]*PAGES_CALLBACK_URL: \$\{\{ inputs\.callbackUrl \}\}/);
   assert.match(workflow, /failure\(\) && hashFiles\('\.pages-artifacts\/callback\.json'\) == ''/);
   assert.match(workflow, /callbackUrl: process\.env\.PAGES_CALLBACK_URL/);
+  assert.match(workflow, /added_lines="\$\(git diff --unified=0 -- "\$ALLOWED_PATH"/);
+  assert.match(workflow, /printf '%s\\n' "\$added_lines" \| grep -En/);
   assert.match(workflow, /gh\[pousr\]_\[A-Za-z0-9_\]\{20,\}/);
+  assert.doesNotMatch(workflow, /grep -REn [^\n]+ "\$ALLOWED_PATH"/);
   assert.doesNotMatch(
     workflow,
     /gh\[pousr\]_\|github_pat_\|sk-\[A-Za-z0-9\]\|CF_API_TOKEN\|SLACK_AGENT_API_KEY\|AGENT_CODE_API_KEY/

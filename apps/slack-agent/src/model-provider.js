@@ -51,6 +51,23 @@ function companyChatCompletionsUrl(config) {
   return `${baseUrl}/v1/chat/completions`;
 }
 
+const SECRET_FIELD_NAME_PATTERN =
+  [
+    '(?:[A-Za-z0-9]+[_-])*',
+    '(?:api[_-]?key|secret(?:[_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)',
+    '(?:[_-][A-Za-z0-9]+)*',
+  ].join('');
+const jsonSecretFieldPattern = new RegExp(`("(?:${SECRET_FIELD_NAME_PATTERN})"\\s*:\\s*)(["'])[^"']*\\2`, 'gi');
+const quotedSecretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*(["'])[^"']*\\3`,
+  'gi'
+);
+const secretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*[^"',\\s}]+`,
+  'gi'
+);
+const secretFieldNamePattern = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})$`, 'i');
+
 function redactSecretLikeText(text, secrets = []) {
   let redacted = String(text || '');
   for (const secret of secrets) {
@@ -65,19 +82,25 @@ function redactSecretLikeText(text, secrets = []) {
     .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
     .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
-    .replace(
-      /("(?:api[_-]?key|token|secret|password|passwd|pwd)"\s*:\s*")[^"]+(")/gi,
-      '$1[REDACTED_SECRET]$2'
-    )
-    .replace(
-      /\b(api[_-]?key|token|secret|password|passwd|pwd)\b\s*[:=]\s*["']?[^"',\s}]+/gi,
-      '$1=[REDACTED_SECRET]'
-    );
+    .replace(jsonSecretFieldPattern, '$1$2[REDACTED_SECRET]$2')
+    .replace(quotedSecretAssignmentPattern, '$1$2$3[REDACTED_SECRET]$3')
+    .replace(secretAssignmentPattern, '$1$2[REDACTED_SECRET]');
 }
 
 export function redactSlackAgentLogValue(value, secrets = []) {
+  return redactSlackAgentLogEntry('', value, secrets);
+}
+
+function redactSlackAgentLogEntry(key, value, secrets = []) {
+  if (key && secretFieldNamePattern.test(key)) return '[REDACTED_SECRET]';
   if (typeof value === 'string') return redactSecretLikeText(value, secrets);
-  return JSON.parse(redactSecretLikeText(JSON.stringify(value ?? null), secrets));
+  if (Array.isArray(value)) return value.map((item) => redactSlackAgentLogEntry('', item, secrets));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, item]) => [entryKey, redactSlackAgentLogEntry(entryKey, item, secrets)])
+    );
+  }
+  return value ?? null;
 }
 
 function extractUserText(input = {}) {

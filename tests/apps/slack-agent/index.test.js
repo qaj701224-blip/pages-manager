@@ -1169,6 +1169,10 @@ describe('slack agent', () => {
           'ghs_1234567890abcdefghij1234567890',
           'ghr_1234567890abcdefghij1234567890',
           'github_pat_1234567890abcdefghij1234567890',
+          'CF_API_TOKEN="cf-token-value"',
+          'AWS_SECRET_ACCESS_KEY=abcdef1234567890',
+          "SLACK_BOT_TOKEN='xoxb-secret'",
+          '{"AGENT_CODE_API_KEY":"sk-secret-value"}',
         ].join(' '),
         token: 'plain-token-value',
       },
@@ -1178,6 +1182,11 @@ describe('slack agent', () => {
     assert.match(redacted.text, /\[REDACTED_SLACK_TOKEN\]/);
     assert.equal((redacted.text.match(/\[REDACTED_GITHUB_TOKEN\]/g) || []).length, 6);
     assert.doesNotMatch(redacted.text, /gh[pousr]_|github_pat_/);
+    assert.match(redacted.text, /CF_API_TOKEN="\[REDACTED_SECRET\]"/);
+    assert.match(redacted.text, /AWS_SECRET_ACCESS_KEY=\[REDACTED_SECRET\]/);
+    assert.match(redacted.text, /SLACK_BOT_TOKEN='\[REDACTED_SECRET\]'/);
+    assert.match(redacted.text, /"AGENT_CODE_API_KEY":"\[REDACTED_SECRET\]"/);
+    assert.doesNotMatch(redacted.text, /cf-token-value|abcdef1234567890|xoxb-secret|sk-secret-value/);
     assert.equal(redacted.token, '[REDACTED_SECRET]');
   });
 
