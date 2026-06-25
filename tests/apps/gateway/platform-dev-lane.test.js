@@ -1562,6 +1562,59 @@ test('Slack follow-up on an active platform PR dispatches a fix round', async ()
   assert.match(blocks, /文案再克制一些/);
 });
 
+test('Slack platform follow-up handles item disappearing during patch', async () => {
+  const app = createGatewayApp();
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-followup-disappears',
+    issueNumber: 82,
+    prNumber: 92,
+    slackSessionId: 'sess_platform_followup_disappears',
+  });
+  const originalPatch = app.store.patchPlatformDevItem.bind(app.store);
+  app.store.patchPlatformDevItem = async (itemId, patch) => {
+    if (itemId === item.id && patch.slackSessionId === 'sess_platform_followup_disappears') return null;
+    return originalPatch(itemId, patch);
+  };
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(slackEvent('继续修改：文案再克制一些', 'Ev-platform-followup-disappears')),
+    }),
+    {
+      ...notifierEnv(),
+      async SLACK_AGENT_FETCH(_url, request) {
+        const payload = JSON.parse(request.body);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            turn: {
+              agentRunId: payload.agentRunId,
+              slackSessionId: payload.slackSessionId,
+              analysis: {
+                intent: 'modify_existing_preview',
+                summary: '文案再克制一些',
+                needsClarification: false,
+              },
+              events: [],
+            },
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const memory = app.store.getSessionMemory('sess_platform_followup_disappears');
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, false);
+  assert.equal(body.action, 'platform_followup_item_missing');
+  assert.match(body.replyText, /不可用/);
+  assert.equal(memory.lastAgentResponse, body.replyText);
+});
+
 test('Slack platform follow-up does not use status-only GitHub token for issue comments', async () => {
   const app = createGatewayApp();
   const item = createOpenPlatformPr(app, {
