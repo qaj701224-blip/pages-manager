@@ -183,4 +183,16 @@ test('platform CI is allowlisted separately from site-check', () => {
 
   assert.equal(isAllowedSiteCheckRun(platformRun), false);
   assert.equal(isAllowedPlatformCiRun(platformRun), true);
+  assert.equal(
+    isAllowedPlatformCiRun(platformRun, {
+      GITHUB_SITE_CHECK_APP_LOGINS: 'dedicated-site-check',
+    }),
+    true
+  );
+  assert.equal(
+    isAllowedPlatformCiRun(platformRun, {
+      GITHUB_PLATFORM_CI_APP_LOGINS: 'dedicated-platform-ci',
+    }),
+    false
+  );
 });

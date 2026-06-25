@@ -22,6 +22,7 @@ const NOTE_PATTERNS = [
 const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
 const DEFAULT_PLATFORM_CI_CHECK_NAMES = ['Platform CI'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
+const DEFAULT_PLATFORM_CI_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 
 function listFromCsv(value = '') {
   return String(value)
@@ -63,6 +64,10 @@ export function platformCiCheckNames(env = {}) {
 
 export function siteCheckAppLogins(env = {}) {
   return configuredSet(env.GITHUB_SITE_CHECK_APP_LOGINS, DEFAULT_SITE_CHECK_APP_LOGINS);
+}
+
+export function platformCiAppLogins(env = {}) {
+  return configuredSet(env.GITHUB_PLATFORM_CI_APP_LOGINS, DEFAULT_PLATFORM_CI_APP_LOGINS);
 }
 
 function commentStatusForAction(action) {
@@ -271,7 +276,7 @@ export function isAllowedPlatformCiRun(checkRun, env = {}) {
   if (!checkRun?.checkName) return false;
 
   const names = platformCiCheckNames(env);
-  const apps = siteCheckAppLogins(env);
+  const apps = platformCiAppLogins(env);
   const appCandidates = [checkRun.appSlug, checkRun.appName].filter(Boolean).map((value) => value.toLowerCase());
 
   return names.has(String(checkRun.checkName).toLowerCase()) && appCandidates.some((candidate) => apps.has(candidate));

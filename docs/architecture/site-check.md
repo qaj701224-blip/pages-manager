@@ -20,7 +20,7 @@
 
 gateway 通过 GitHub `check_run` webhook 记录 `site_check_runs`，再和 Review Agent gate 一起决定是否可以 preview。
 
-`Platform CI` 是 Platform Dev Lane 的平台 PR 检查，不属于 Site Publishing Lane 的 site-check。gateway 可以消费 `Platform CI` 来推进平台任务，但不能把它写成站点 PR 的 site-check 通过记录，也不能用它放行站点 preview。
+`Platform CI` 是 Platform Dev Lane 的平台 PR 检查，不属于 Site Publishing Lane 的 site-check。gateway 可以消费 `Platform CI` 来推进平台任务，但不能把它写成站点 PR 的 site-check 通过记录，也不能用它放行站点 preview。二者的 check name 和 GitHub App allowlist 也必须分开配置，避免收紧 site-check app 后误伤平台 PR CI。
 
 ## 必跑检查
 
