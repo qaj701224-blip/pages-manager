@@ -118,10 +118,20 @@ class TestPagesStore {
     );
 
     const existingClaim = this.hostnameClaims.get(claim.hostname);
-    if (existingClaim && !hostnameClaimOwnerMatches(existingClaim, claim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
-    if (this.findConflictingHostnameClaimSync(claim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+    if (existingClaim) {
+      if (!['released', 'held'].includes(existingClaim.status)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      if (existingClaim.reuseHoldUntil && existingClaim.reuseHoldUntil > now) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      if (this.findConflictingHostnameClaimSync({ ...claim, excludeHostname: claim.hostname })) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      this.hostnameClaims.set(claim.hostname, { ...claim, id: existingClaim.id, createdAt: existingClaim.createdAt });
+    } else {
+      if (this.findConflictingHostnameClaimSync(claim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      this.hostnameClaims.set(claim.hostname, claim);
+    }
 
-    this.hostnameClaims.set(claim.hostname, claim);
     this.sites.set(site.id, site);
     this.siteSlugIndex.set(slugKey, site.id);
     this.routes.set(route.id, route);

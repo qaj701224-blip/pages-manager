@@ -160,6 +160,66 @@ test('createSite rejects v2 create when hostname claim is held by another owner'
   assert.deepEqual(await store.listSiteMembers('site_1'), []);
 });
 
+test('createSite revives expired hostname delete hold when recreating same slug', async () => {
+  let now = '2026-06-15T00:00:00.000Z';
+  const store = createSeededStore({ now: () => now });
+
+  await store.createSite({
+    id: 'site_1',
+    slug: 'portal',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'portal.workers.xd.team',
+  });
+  await store.deleteSite(
+    'site_1',
+    {
+      deletedAt: '2026-06-15T00:01:00.000Z',
+      reuseHoldUntil: '2026-06-15T00:06:00.000Z',
+    },
+    'production'
+  );
+
+  await assert.rejects(
+    () =>
+      store.createSite({
+        id: 'site_2',
+        slug: 'portal',
+        ownerUserId: 'usr_1',
+        siteUuid: 'uuid_2',
+        defaultVisibility: 'acl',
+        environment: 'production',
+        routeId: 'route_2',
+        hostname: 'portal.workers.xd.team',
+      }),
+    /HOSTNAME_CLAIM_CONFLICT/
+  );
+
+  now = '2026-06-15T00:06:01.000Z';
+  const site = await store.createSite({
+    id: 'site_2',
+    slug: 'portal',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_2',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_2',
+    hostname: 'portal.workers.xd.team',
+  });
+  const claim = await store.getHostnameClaim('portal.workers.xd.team');
+
+  assert.equal(site.id, 'site_2');
+  assert.equal(claim.id, 'claim_route_1');
+  assert.equal(claim.status, 'active');
+  assert.equal(claim.ownerId, 'site_2');
+  assert.equal(claim.ownerRef, 'route_2');
+  assert.equal(claim.reuseHoldUntil, null);
+  assert.equal(claim.releaseReason, null);
+});
+
 test('hostname claim lifecycle confirms pending claims and allows released claims to be acquired again', async () => {
   const store = createSeededStore();
   const claim = {

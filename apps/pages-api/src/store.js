@@ -161,16 +161,6 @@ export class D1PagesStore {
   async createSite(input) {
     const now = this.now();
     if (await this.findSiteBySlug(input.environment, input.slug)) throw new Error('SITE_SLUG_CONFLICT');
-    if (
-      await this.findConflictingHostnameClaim({
-        environment: input.environment,
-        normalizedSlug: input.slug,
-        ownerSystem: 'v2',
-        ownerId: input.id,
-      })
-    ) {
-      throw new Error('HOSTNAME_CLAIM_CONFLICT');
-    }
 
     const site = {
       id: input.id,
@@ -199,36 +189,76 @@ export class D1PagesStore {
       },
       now
     );
-
-    try {
-      await this.db.batch([
-        this.db
-          .prepare(
-            `INSERT INTO hostname_claims (
+    const existingHostnameClaim = await this.getHostnameClaim(hostnameClaim.hostname);
+    let hostnameClaimStatement;
+    if (existingHostnameClaim) {
+      if (!['released', 'held'].includes(existingHostnameClaim.status)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      if (existingHostnameClaim.reuseHoldUntil && existingHostnameClaim.reuseHoldUntil > now) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      if (await this.findConflictingHostnameClaim({ ...hostnameClaim, excludeHostname: hostnameClaim.hostname })) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      hostnameClaimStatement = this.db
+        .prepare(
+          `UPDATE hostname_claims
+          SET environment = ?, normalized_slug = ?, hostname_family = ?, owner_system = ?, owner_id = ?,
+            owner_ref = ?, status = ?, source = ?, acquired_at = ?, lease_expires_at = ?,
+            released_at = NULL, reuse_hold_until = ?, release_reason = NULL, updated_at = ?
+          WHERE hostname = ?
+            AND status IN ('released', 'held')
+            AND (reuse_hold_until IS NULL OR reuse_hold_until <= ?)`
+        )
+        .bind(
+          hostnameClaim.environment,
+          hostnameClaim.normalizedSlug,
+          hostnameClaim.hostnameFamily,
+          hostnameClaim.ownerSystem,
+          hostnameClaim.ownerId,
+          hostnameClaim.ownerRef,
+          hostnameClaim.status,
+          hostnameClaim.source,
+          hostnameClaim.acquiredAt,
+          hostnameClaim.leaseExpiresAt,
+          hostnameClaim.reuseHoldUntil,
+          hostnameClaim.updatedAt,
+          hostnameClaim.hostname,
+          now
+        );
+    } else {
+      if (await this.findConflictingHostnameClaim(hostnameClaim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      hostnameClaimStatement = this.db
+        .prepare(
+          `INSERT INTO hostname_claims (
               id, environment, hostname, normalized_slug, hostname_family, owner_system, owner_id,
               owner_ref, status, source, acquired_at, lease_expires_at, released_at, reuse_hold_until,
               release_reason, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          )
-          .bind(
-            hostnameClaim.id,
-            hostnameClaim.environment,
-            hostnameClaim.hostname,
-            hostnameClaim.normalizedSlug,
-            hostnameClaim.hostnameFamily,
-            hostnameClaim.ownerSystem,
-            hostnameClaim.ownerId,
-            hostnameClaim.ownerRef,
-            hostnameClaim.status,
-            hostnameClaim.source,
-            hostnameClaim.acquiredAt,
-            hostnameClaim.leaseExpiresAt,
-            hostnameClaim.releasedAt,
-            hostnameClaim.reuseHoldUntil,
-            hostnameClaim.releaseReason,
-            hostnameClaim.createdAt,
-            hostnameClaim.updatedAt
-          ),
+        )
+        .bind(
+          hostnameClaim.id,
+          hostnameClaim.environment,
+          hostnameClaim.hostname,
+          hostnameClaim.normalizedSlug,
+          hostnameClaim.hostnameFamily,
+          hostnameClaim.ownerSystem,
+          hostnameClaim.ownerId,
+          hostnameClaim.ownerRef,
+          hostnameClaim.status,
+          hostnameClaim.source,
+          hostnameClaim.acquiredAt,
+          hostnameClaim.leaseExpiresAt,
+          hostnameClaim.releasedAt,
+          hostnameClaim.reuseHoldUntil,
+          hostnameClaim.releaseReason,
+          hostnameClaim.createdAt,
+          hostnameClaim.updatedAt
+        );
+    }
+
+    try {
+      await this.db.batch([
+        hostnameClaimStatement,
         this.db
           .prepare(
             `INSERT INTO sites (
