@@ -790,6 +790,51 @@ test('fixing job callbacks failure when pages-agent dispatch fails after issue c
   ]);
 });
 
+test('fixing job callbacks failure when follow-up issue comment fails before dispatch', async () => {
+  const callbacks = [];
+  const requests = [];
+  await assert.rejects(
+    runWorkerForJob(
+      {
+        ...baseJob,
+        status: 'fixing',
+        issueNumber: 9,
+        branchName: 'sites/job-job_123-zhangsan-profile',
+        prNumber: 12,
+        summary: 'Original request.\n\n## Slack Follow-up\n\n把标题改成中文。',
+      },
+      config(),
+      {
+        async fetchImpl(url, request) {
+          requests.push({ url: String(url), request });
+
+          if (String(url).endsWith('/issues/9/comments')) {
+            return new Response(JSON.stringify({ message: 'issue closed' }), { status: 410 });
+          }
+
+          throw new Error(`Unexpected request ${request.method} ${url}`);
+        },
+        async postExecutorCallback(_fetchImpl, _cfg, payload) {
+          callbacks.push(payload);
+          return { ok: true };
+        },
+      }
+    ),
+    /issue closed|GitHub request failed/i
+  );
+
+  assert.equal(requests.length, 1);
+  assert.deepEqual(callbacks, [
+    {
+      publishingJobId: 'job_123',
+      executorType: 'pages_worker',
+      status: 'failed',
+      errorCode: 'pages_agent_followup_comment_failed',
+      errorMessage: 'GitHub request failed: issue closed',
+    },
+  ]);
+});
+
 test('previewing job dispatches pages-preview workflow', async () => {
   const result = await runWorkerForJob(
     {
