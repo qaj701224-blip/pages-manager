@@ -17,6 +17,15 @@ function shouldIgnoreStalePlatformReview(platformItem = {}, nextStatus = '') {
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
 
+async function platformCiPassedForItem(store, repoFullName, platformItem = {}, normalized = {}) {
+  if (!store?.siteCheckGateForPr || !repoFullName) return false;
+  const prNumber = normalized.prNumber || platformItem.githubPrNumber;
+  if (!prNumber) return false;
+  const headSha = normalized.headSha || platformItem.headSha;
+  const gate = await store.siteCheckGateForPr(repoFullName, prNumber, headSha ? { headSha } : {});
+  return gate?.passed === true;
+}
+
 function reviewedCommitSha(value) {
   return typeof value === 'string' && /^[a-f0-9]{7,40}$/i.test(value) ? value : null;
 }
@@ -150,11 +159,18 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     const fullHeadSha =
       effectiveNormalized.headSha && effectiveNormalized.headSha.length === 40 ? effectiveNormalized.headSha : null;
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
-    const nextStatus =
-      commentIsOpen &&
-      (effectiveNormalized.classification === 'blocking' || effectiveNormalized.classification === 'unknown')
-        ? 'review_blocked'
-        : platformItem.status === 'pr_created' || platformItem.status === 'ci_running'
+    const reviewIsBlocking =
+      commentIsOpen && (effectiveNormalized.classification === 'blocking' || effectiveNormalized.classification === 'unknown');
+    const reviewIsNonblocking =
+      commentIsOpen && ['note', 'suggestion'].includes(effectiveNormalized.classification || 'unknown');
+    const ciPassed = reviewIsNonblocking
+      ? await platformCiPassedForItem(store, repoFullName, platformItem, effectiveNormalized)
+      : false;
+    const nextStatus = reviewIsBlocking
+      ? 'review_blocked'
+      : ciPassed
+        ? 'ready_to_merge'
+        : ['pr_created', 'ci_running'].includes(platformItem.status)
           ? 'review_waiting'
           : platformItem.status;
     const statusContext = platformStatusContext(platformItem, nextStatus);
@@ -310,6 +326,17 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
   } else if (shouldDispatchPreviewForReview(updatedJob, normalized, gate)) {
     if (updatedJob.status !== 'previewing') {
       updatedJob = await store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});
+      if (!updatedJob) {
+        return jsonResponse({
+          ok: true,
+          created: true,
+          delivery: result.delivery,
+          reviewAction: 'job_not_found_after_update',
+          reviewComment: reviewComment.comment,
+          reviewCommentCreated: reviewComment.created,
+          gate,
+        });
+      }
     }
     workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
     assertWorkerStarted(workerStart, 'Preview worker start failed');

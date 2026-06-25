@@ -221,6 +221,8 @@ gateway 必须校验：
 
 delivery 写入 `github_webhook_deliveries`，Review Agent comment 写入 `review_agent_comments`，site-check 写入 `site_check_runs`。这些都是 MySQL 真相源。
 
+Platform Dev Lane 中，平台 CI 成功只表示构建检查通过；若当前 head 还没有非阻塞 Review Agent 结果，状态保持 `review_waiting`。只有同一 head 的平台 CI 成功和非阻塞 Review 结果都到齐，gateway 才能把 PlatformDevItem 推进到 `ready_to_merge`。
+
 ## Merge Announcement Agent
 
 目标：每次 PR 合并后，由平台机器人在固定 Slack 频道发一条类似发布简报的富文本消息，内容包含 PR 链接、标题、作者、合并人、影响范围和 3-5 条中文摘要。摘要可以由 Agent 生成，但触发、权限、幂等和投递仍由 gateway / slack-notifier 控制。

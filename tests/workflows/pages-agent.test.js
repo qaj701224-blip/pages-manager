@@ -12,7 +12,7 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /^\s*workflow_dispatch:/m);
   assert.match(workflow, /pages-agent-context\.mjs/);
   assert.match(workflow, /pages-agent-coding\.mjs/);
-  assert.match(workflow, /AGENT_MODE" == "fix"/);
+  assert.match(workflow, /^\s+- fix$/m);
   assert.match(workflow, /stageResult: process\.env\.AGENT_MODE === 'fix' \? 'reviewing' : 'pr_created'/);
   assert.match(workflow, /Pipeline: user-site publishing/);
   assert.match(workflow, /Platform deployment: out of scope/);
@@ -30,7 +30,9 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /agent branch must use the sites\/ prefix/);
   assert.match(workflow, /base_sha="\$\(git rev-parse "origin\/\$BASE_REF"\)"/);
   assert.match(workflow, /BASE_SHA=\$base_sha/);
-  assert.match(workflow, /git merge --no-edit "origin\/\$BASE_REF"/);
+  assert.match(workflow, /if git fetch origin "\+refs\/heads\/\$branch:refs\/remotes\/origin\/\$branch"; then/);
+  assert.match(workflow, /git switch -C "\$branch" "origin\/\$branch"[\s\S]*git merge --no-edit "origin\/\$BASE_REF"/);
+  assert.match(workflow, /else[\s\S]*git switch -C "\$branch" "origin\/\$BASE_REF"/);
   assert.match(workflow, /gh pr list --head "\$branch" --base "\$BASE_REF" --state open/);
   assert.doesNotMatch(workflow, /gh pr view "\$branch"/);
   assert.match(workflow, /Dispatch required PR checks/);
@@ -61,7 +63,15 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /git reset[\s\S]*git add -N "\$ALLOWED_PATH"[\s\S]*changed="\$\(git diff HEAD --name-only\)"/);
   assert.match(workflow, /git diff HEAD -- "\$ALLOWED_PATH" > \.pages-artifacts\/site\.patch/);
   assert.match(workflow, /added_lines="\$\(git diff HEAD --unified=0 -- "\$ALLOWED_PATH"/);
-  assert.match(workflow, /git switch -C "\$branch"[\s\S]*git reset[\s\S]*git add "\$ALLOWED_PATH"/);
+  assert.match(workflow, /git config user\.email[\s\S]*git reset[\s\S]*git add "\$ALLOWED_PATH"/);
+  assert.doesNotMatch(
+    workflow,
+    /Controlled commit and PR[\s\S]*git switch -C "\$branch"[\s\S]*git reset[\s\S]*git add "\$ALLOWED_PATH"/
+  );
+  assert.doesNotMatch(
+    workflow,
+    /Controlled commit and PR[\s\S]*git fetch origin "\+refs\/heads\/\$branch:refs\/remotes\/origin\/\$branch"/
+  );
   assert.match(workflow, /printf '%s\\n' "\$added_lines" \| grep -En/);
   assert.match(workflow, /gh\[pousr\]_\[A-Za-z0-9_\]\{20,\}/);
   assert.doesNotMatch(workflow, /grep -REn [^\n]+ "\$ALLOWED_PATH"/);

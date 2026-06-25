@@ -163,14 +163,15 @@ jobs:
           fi
           echo "AGENT_BRANCH_NAME=$branch" >> "$GITHUB_ENV"
 
-          if [[ "$AGENT_MODE" == "fix" ]]; then
-            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+          if git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"; then
             git switch -C "$branch" "origin/$branch"
             if ! git merge --no-edit "origin/$BASE_REF"; then
               git merge --abort || true
               echo "agent branch cannot be merged cleanly with $BASE_REF" >&2
               exit 1
             fi
+          else
+            git switch -C "$branch" "origin/$BASE_REF"
           fi
 
       - name: Run Coding Agent
@@ -238,11 +239,9 @@ jobs:
 
           git config user.name "pages-manager-bot"
           git config user.email "pages-manager-bot@users.noreply.github.com"
-          git switch -C "$branch"
           git reset
           git add "$ALLOWED_PATH"
           git commit -m "chore: update $EMPLOYEE_SLUG/$SITE_SLUG" || true
-          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" || true
           git push --force-with-lease origin "HEAD:$branch"
 
           {

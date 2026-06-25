@@ -2141,6 +2141,123 @@ test('platform CI automatic fix marks item failed when worker start fails', asyn
   assert.equal(updated.errorMessage, 'worker unavailable');
 });
 
+test('platform CI success waits for Review before marking merge-ready', async () => {
+  const app = createGatewayApp();
+  const headSha = '1'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-success-waits-review',
+    issueNumber: 81,
+    prNumber: 91,
+    headSha,
+    slackSessionId: 'sess_platform_ci_waits_review',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-success-waits-review',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9101,
+          node_id: 'SCR_PLATFORM_9101',
+          name: 'Platform CI',
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 91 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_recorded');
+  assert.equal(updated.status, 'review_waiting');
+});
+
+test('platform nonblocking review after CI success marks item merge-ready', async () => {
+  const app = createGatewayApp();
+  const headSha = '2'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-review-after-ci-ready',
+    issueNumber: 82,
+    prNumber: 92,
+    headSha,
+    slackSessionId: 'sess_platform_review_after_ci',
+  });
+
+  const ciResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-review-after-ci-success',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9202,
+          node_id: 'SCR_PLATFORM_9202',
+          name: 'Platform CI',
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 92 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    notifierEnv()
+  );
+  assert.equal(ciResponse.status, 200);
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'review_waiting');
+
+  const reviewResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-review-after-ci-note',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 92, head: { sha: headSha } },
+        review: {
+          id: 9203,
+          node_id: 'PRR_PLATFORM_9203',
+          state: 'approved',
+          body: 'LGTM, no blockers.',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(reviewResponse);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(reviewResponse.status, 200);
+  assert.equal(body.reviewAction, 'platform_review_recorded');
+  assert.equal(updated.status, 'ready_to_merge');
+});
+
 test('platform blocking review dispatches an automatic fix round', async () => {
   const app = createGatewayApp();
   const headSha = 'd'.repeat(40);
