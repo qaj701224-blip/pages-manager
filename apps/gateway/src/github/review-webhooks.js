@@ -13,6 +13,7 @@ function assertWorkerStarted(workerStart, context) {
 }
 
 function shouldIgnoreStalePlatformReview(platformItem = {}, nextStatus = '') {
+  if (['merged', 'closed_unmerged', 'cancelled', 'failed'].includes(platformItem.status)) return true;
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
 
