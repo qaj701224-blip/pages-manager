@@ -72,7 +72,7 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
     workflow,
     /Controlled commit and PR[\s\S]*git fetch origin "\+refs\/heads\/\$branch:refs\/remotes\/origin\/\$branch"/
   );
-  assert.match(workflow, /printf '%s\\n' "\$added_lines" \| grep -En/);
+  assert.match(workflow, /printf '%s\\n' "\$added_lines" \| grep -Ein "\$\{token_shape_re\}\|\$\{secret_value_re\}"/);
   assert.match(workflow, /gh\[pousr\]_\[A-Za-z0-9_\]\{20,\}/);
   assert.doesNotMatch(workflow, /grep -REn [^\n]+ "\$ALLOWED_PATH"/);
   assert.doesNotMatch(
