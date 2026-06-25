@@ -24,6 +24,34 @@ function followupRoundFromSummary(summary = '') {
   return (String(summary || '').match(/## Slack Follow-up/g) || []).length;
 }
 
+async function postWorkerStart(fetchImpl, url, payload, headers) {
+  try {
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    const body = await readResponseJson(response);
+
+    if (!response.ok || body?.ok === false) {
+      return {
+        started: false,
+        error: body?.error || response.statusText || `HTTP ${response.status}`,
+      };
+    }
+
+    return {
+      started: true,
+      response: body,
+    };
+  } catch (error) {
+    return {
+      started: false,
+      error: error?.message || 'Worker start failed',
+    };
+  }
+}
+
 async function recordCodingFixDispatch(store, job, workerStart) {
   if (!workerStart?.started || !store?.recordAgentRunEvent || job?.status !== 'fixing') return null;
 
@@ -51,24 +79,7 @@ export async function startWorkerForJobIfConfigured(job, env) {
   }
 
   const fetchImpl = env.WORKER_FETCH || fetch;
-  const response = await fetchImpl(env.PAGES_WORKER_START_URL, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ job }),
-  });
-  const body = await readResponseJson(response);
-
-  if (!response.ok || body?.ok === false) {
-    return {
-      started: false,
-      error: body?.error || response.statusText || `HTTP ${response.status}`,
-    };
-  }
-
-  const result = {
-    started: true,
-    response: body,
-  };
+  const result = await postWorkerStart(fetchImpl, env.PAGES_WORKER_START_URL, { job }, headers);
   const store = env.store || env.GATEWAY_STORE || globalThis.__PAGES_GATEWAY_STORE__;
   if (job.status === 'fixing' && store) {
     result.dispatchEvent = await recordCodingFixDispatch(store, job, result);
@@ -89,22 +100,10 @@ export async function startWorkerForPlatformDevItemIfConfigured(item, env) {
   }
 
   const fetchImpl = env.WORKER_FETCH || fetch;
-  const response = await fetchImpl(env.PAGES_WORKER_START_URL, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ workItemKind: 'platform_dev', platformDevItem: item }),
-  });
-  const body = await readResponseJson(response);
-
-  if (!response.ok || body?.ok === false) {
-    return {
-      started: false,
-      error: body?.error || response.statusText || `HTTP ${response.status}`,
-    };
-  }
-
-  return {
-    started: true,
-    response: body,
-  };
+  return await postWorkerStart(
+    fetchImpl,
+    env.PAGES_WORKER_START_URL,
+    { workItemKind: 'platform_dev', platformDevItem: item },
+    headers
+  );
 }
