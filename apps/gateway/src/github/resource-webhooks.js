@@ -25,6 +25,11 @@ function issueWebhookStartsSiteWorker(env = {}) {
   return String(env.PAGES_EXECUTOR_MODE || env.EXECUTOR_MODE || '').trim() === 'github_issue_webhook';
 }
 
+function assertWorkerStarted(workerStart, context) {
+  if (workerStart?.started !== false) return;
+  throw new Error(`${context}: ${workerStart.error || 'Worker start failed'}`);
+}
+
 function shouldIgnorePlatformPrAction(item = {}, action = '', pullRequest = {}) {
   if (!TERMINAL_PLATFORM_STATUSES.has(item.status)) return false;
   if (action === 'reopened' && ['closed_unmerged', 'cancelled', 'failed'].includes(item.status)) return false;
@@ -233,11 +238,13 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
       text: 'GitHub issue 已创建，准备启动页面生成。',
     });
     workerStart = await startWorkerForJobIfConfigured(job, env);
+    assertWorkerStarted(workerStart, 'Pages Agent worker start failed');
     issueAction = workerStart?.started ? 'pages_agent_dispatched' : 'pages_agent_ready';
   } else if (job.status === 'issue_created') {
     issueAction = 'issue_recorded_waiting_for_project_index';
   } else if (job.status === 'generating_page' && issueWebhookStartsSiteWorker(env) && result?.delivery?.status === 'failed') {
     workerStart = await startWorkerForJobIfConfigured(job, env);
+    assertWorkerStarted(workerStart, 'Pages Agent worker retry failed');
     issueAction = workerStart?.started ? 'pages_agent_dispatched' : 'pages_agent_ready';
   } else if (['generating_page', 'patch_generated', 'branch_committed', 'pr_created', 'reviewing'].includes(job.status)) {
     issueAction = 'already_running_or_completed';

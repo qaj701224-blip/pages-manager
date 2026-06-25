@@ -82,6 +82,9 @@ async function dispatchPreviewFromReviewTrigger(job, store, env, trigger, review
     job.status === 'previewing' ? job : await store.updateJob(job.id, 'previewing', job.headSha ? { headSha: job.headSha } : {});
   if (!updatedJob) return null;
   const workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
+  if (workerStart?.started === false) {
+    throw new Error(`Preview worker start failed: ${workerStart.error || 'Worker start failed'}`);
+  }
 
   return {
     reviewAction,

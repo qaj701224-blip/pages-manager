@@ -100,6 +100,8 @@ received
 
 `gate_pending` 只对需要人工确认的需求出现。`ci_failed` 和 `review_blocked` 可以回到 `agent_queued` 或 `agent_running` 继续修复。`failed` 表示某一轮自动化失败，但有关联 PR 的工单仍可被受控恢复：用户 follow-up 会先回到 `agent_queued`，Review Agent 的 blocking / unknown comment 会先进入 `review_blocked`，再由 gateway dispatch `mode=fix` 的 Platform Agent；后续 workflow 的 `agent_running` callback 会桥接成 `failed -> agent_queued -> agent_running`，避免重试卡死在旧失败态。fix 轮次写 follow-up comment 或 dispatch workflow 失败时，worker 必须通过 executor callback 把任务标记为 `failed`，不能让用户看到“已追加/启动”但任务停在旧状态。
 
+自动修复、人工 gate 放行后 dispatch Platform Agent 时，如果 worker start 返回失败，item 必须落到 `failed` 并记录可见错误；GitHub webhook 驱动的 site preview / Pages Agent dispatch 则必须让 delivery 保持可重试，不能把未启动的 worker 当成已处理。
+
 ## 数据模型
 
 核心表：

@@ -197,6 +197,14 @@ test('user-triggered publishing executor workflows stay separate from platform d
   }
 });
 
+test('pages preview serializes deploys per pull request', () => {
+  const workflow = readWorkflow('.github/workflows/pages-preview.yml');
+
+  assert.match(workflow, /concurrency:\n {6}group: pages-preview-pr-\$\{\{ inputs\.prNumber \}\}\n {6}cancel-in-progress: true/);
+  assert.match(workflow, /headSha:\n(?: {8}.+\n)* {8}required: true/);
+  assert.match(workflow, /headSha: report\.headSha/);
+});
+
 test('platform agent workflow is manually dispatched and isolated from deploy credentials', () => {
   const workflow = readWorkflow(platformAgentWorkflow);
   const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';

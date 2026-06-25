@@ -151,7 +151,43 @@ export async function dispatchPlatformDevFixIfNeeded(store, item, env, options =
     };
   }
   await store.linkPlatformDevItemToSlackSession(queued);
-  const workerStart = await startWorkerForPlatformDevItemIfConfigured(queued, env);
+  let workerStart = null;
+  try {
+    workerStart = await startWorkerForPlatformDevItemIfConfigured(queued, env);
+  } catch (error) {
+    workerStart = { started: false, error: error.message || 'Worker start failed' };
+  }
+
+  if (workerStart?.started === false) {
+    const failed =
+      (await store.failPlatformDevItem?.(
+        queued.id,
+        'worker_start_failed',
+        workerStart.error || 'Worker start failed',
+        {
+          workflowName: queued.workflowName || undefined,
+          workflowRunId: queued.workflowRunId || undefined,
+        }
+      )) || queued;
+    await store.linkPlatformDevItemToSlackSession(failed);
+    const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, failed, {
+      stage: 'failed',
+      text: platformWorkerStartErrorText(workerStart.error) || '自动开发暂未启动。',
+      statusText: ':x: 自动开发启动失败。',
+      currentChange: options.currentChange || null,
+      skipDuplicate: false,
+      slackSessionId: failed.slackSessionId || null,
+      dedupeKey: `platform-fix-dispatch-failed:${queued.id}:${trigger}:${queued.updatedAt || Date.now()}`,
+    });
+    return {
+      skipped: false,
+      reason: 'worker_start_failed',
+      item: failed,
+      workerStart,
+      dispatchEvent: null,
+      slackStatusNotification,
+    };
+  }
 
   const dispatchEvent =
     workerStart?.started && store?.recordAgentRunEvent

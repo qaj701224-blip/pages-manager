@@ -36,6 +36,20 @@ const QUESTION_CUE_RE =
   /(?:\?|？|怎么|如何|怎样|哪里|在哪|是什么|为啥|为什么|解释|说明|是否|会不会|能否|可以.*吗|是不是|有没有|影响|关系)/i;
 const EXECUTION_CUE_RE =
   /(?:开始|直接|马上|现在).*(?:改|修改|修复|实现|创建|部署|提交|push)|(?:帮我|请).*(?:改|修改|修复|实现|创建|部署|提交|push)|(?:创建|新建).*(?:issue|需求|任务)/i;
+const SECRET_FIELD_NAME_PATTERN =
+  [
+    '(?:[A-Za-z0-9]+[_-])*',
+    '(?:api[_-]?key|secret(?:[_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)',
+    '(?:[_-][A-Za-z0-9]+)*',
+  ].join('');
+const quotedSecretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*(["'])[^"']*\\3`,
+  'gi'
+);
+const secretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*[^"',\\s}]+`,
+  'gi'
+);
 const REPO_QUESTION_RE = new RegExp(
   [
     '怎么|如何|怎样|哪里|在哪|是什么|为啥|为什么|解释|说明',
@@ -44,6 +58,18 @@ const REPO_QUESTION_RE = new RegExp(
   ].join('|'),
   'i'
 );
+
+function redactSecretLikeText(text = '') {
+  return String(text || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED_TOKEN]')
+    .replace(/\b(xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_TOKEN]')
+    .replace(/\b(xapp-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_APP_TOKEN]')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
+    .replace(quotedSecretAssignmentPattern, '$1$2$3[REDACTED_SECRET]$3')
+    .replace(secretAssignmentPattern, '$1$2[REDACTED_SECRET]');
+}
 const REPO_QUESTION_SUBJECT_RE = new RegExp(
   [
     'pages-manager|平台|仓库|repo|repository|代码|code|Slack|bot|机器人',
@@ -696,25 +722,29 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
 
 export function visibleSlackAgentReply(analysis = {}) {
   const intent = analysis.intent || 'clarify';
-  if (analysis.visibleReply || analysis.visible_reply) return analysis.visibleReply || analysis.visible_reply;
+  if (analysis.visibleReply || analysis.visible_reply) {
+    return redactSecretLikeText(analysis.visibleReply || analysis.visible_reply);
+  }
 
   if (analysis.needsClarification) {
-    return (
+    return redactSecretLikeText(
       analysis.clarifyingQuestion ||
-      analysis.clarifying_question ||
-      analysis.summary ||
-      '我需要再确认一个信息，然后再继续整理需求。'
+        analysis.clarifying_question ||
+        analysis.summary ||
+        '我需要再确认一个信息，然后再继续整理需求。'
     );
   }
 
   if (intent === UNSUPPORTED_DESTRUCTIVE_INTENT) {
-    return analysis.clarifyingQuestion || analysis.summary || unsupportedDestructiveQuestion();
+    return redactSecretLikeText(analysis.clarifyingQuestion || analysis.summary || unsupportedDestructiveQuestion());
   }
 
   if (intent === 'list_work_items') return '我来整理你当前可以继续处理的发布任务。';
   if (intent === 'switch_work_item') return '我会尝试切换到你指定的任务。';
   if (intent === 'reopen_work_item') return '我会尝试恢复你指定的 Issue 或 PR。';
-  if (intent === 'repeat_previous_message') return analysis.summary || '我来复读当前会话里上一条可见消息。';
+  if (intent === 'repeat_previous_message') {
+    return redactSecretLikeText(analysis.summary || '我来复读当前会话里上一条可见消息。');
+  }
   if (['summarize_review_results', 'list_review_results'].includes(intent)) return '我来整理当前 PR 的 Review 结果。';
   if (intent === 'status_query') return '我来查询当前发布进度。';
   if (['repo_question', 'architecture_question', 'platform_question'].includes(intent)) return '我来查一下当前仓库实现。';
@@ -722,14 +752,16 @@ export function visibleSlackAgentReply(analysis = {}) {
   if (intent === 'cancel_request') return '收到，我先记录取消意图。';
 
   if (['create_platform_issue', 'platform_dev', 'platform_feedback'].includes(intent)) {
-    return analysis.summary ? `我已整理好这轮平台需求：${analysis.summary}` : '我已整理好这轮平台需求。';
+    return analysis.summary
+      ? `我已整理好这轮平台需求：${redactSecretLikeText(analysis.summary)}`
+      : '我已整理好这轮平台需求。';
   }
 
   if (['create_or_update_site', 'modify_existing_preview', 'append_requirement'].includes(intent)) {
-    return analysis.summary ? `我已整理好这轮需求：${analysis.summary}` : '我已整理好这轮需求。';
+    return analysis.summary ? `我已整理好这轮需求：${redactSecretLikeText(analysis.summary)}` : '我已整理好这轮需求。';
   }
 
-  return analysis.summary || '我已记录这轮消息。';
+  return redactSecretLikeText(analysis.summary || '我已记录这轮消息。');
 }
 
 export function buildSlackAgentTurn(input = {}, analysis = {}) {

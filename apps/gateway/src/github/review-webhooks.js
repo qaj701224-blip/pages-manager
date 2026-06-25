@@ -7,6 +7,11 @@ import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { previewGateForPr, shouldDispatchPreviewForReview, shouldReportSiteCheckWaiting } from './review-gate.js';
 
+function assertWorkerStarted(workerStart, context) {
+  if (workerStart?.started !== false) return;
+  throw new Error(`${context}: ${workerStart.error || 'Worker start failed'}`);
+}
+
 function shouldIgnoreStalePlatformReview(platformItem = {}, nextStatus = '') {
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
@@ -238,6 +243,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       updatedJob = await store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});
     }
     workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
+    assertWorkerStarted(workerStart, 'Preview worker start failed');
     reviewAction = 'preview_dispatched';
   } else if (shouldReportSiteCheckWaiting(updatedJob, normalized, gate)) {
     reviewAction = 'site_check_waiting';

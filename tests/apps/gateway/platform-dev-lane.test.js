@@ -1174,6 +1174,66 @@ test('early high-risk platform gate approval waits for gate callback before disp
   assert.equal(workerCalls[0].body.platformDevItem.gateStatus, 'approved');
 });
 
+test('early high-risk platform gate callback fails item when worker start fails', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-gate-callback-worker-failure',
+    title: '平台高风险需求',
+    summary: '修改 CI workflow',
+    issueType: 'type:ci',
+    areas: ['area:ci'],
+    risk: 'risk:high',
+    agentEligible: true,
+    requiresHumanGate: true,
+    gateStatus: 'pending',
+    slackSessionId: 'sess_gate_callback_failure',
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  app.store.upsertSlackSession({
+    id: 'sess_gate_callback_failure',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_callback_failure'));
+  app.store.patchPlatformDevItem(item.id, { gateStatus: 'approved' });
+
+  const callbackResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workItemKind: 'platform_dev',
+        platformDevItemId: item.id,
+        stageResult: 'gate_pending',
+        issueNumber: 82,
+        issueUrl: 'https://github.example/org/pages-manager/issues/82',
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const callback = await json(callbackResponse);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(callbackResponse.status, 502);
+  assert.equal(callback.workerStart.started, false);
+  assert.equal(callback.workerStart.error, 'worker unavailable');
+  assert.equal(callback.item.status, 'failed');
+  assert.equal(callback.item.errorCode, 'worker_start_failed');
+  assert.equal(updated.status, 'failed');
+  assert.equal(updated.errorMessage, 'worker unavailable');
+});
+
 test('high-risk platform gate approval fails closed without approver allowlist', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
@@ -1866,9 +1926,12 @@ test('Slack platform follow-up reports issue comment and worker startup failure 
   assert.equal(githubCalls.length, 1);
   assert.match(githubCalls[0].body.body, /AGENTS\.md/);
   const blocks = latestSlackStatusBlocks(notifierCalls);
-  assert.match(blocks, /自动开发暂未启动/);
+  assert.match(blocks, /自动开发启动失败/);
   assert.match(blocks, /AGENTS\.md/);
-  assert.equal(app.store.getPlatformDevItem(item.id).status, 'agent_queued');
+  const updated = app.store.getPlatformDevItem(item.id);
+  assert.equal(updated.status, 'failed');
+  assert.equal(updated.errorCode, 'worker_start_failed');
+  assert.equal(updated.errorMessage, 'GitHub request failed: Not Found');
 });
 
 test('platform CI failure dispatches an automatic fix round', async () => {
@@ -1925,6 +1988,62 @@ test('platform CI failure dispatches an automatic fix round', async () => {
   assert.equal(updated.status, 'agent_queued');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+});
+
+test('platform CI automatic fix marks item failed when worker start fails', async () => {
+  const app = createGatewayApp();
+  const headSha = 'b'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-fix-worker-failure',
+    issueNumber: 89,
+    prNumber: 99,
+    headSha,
+    slackSessionId: 'sess_platform_ci_fix_worker_failure',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-failure-worker-failure',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9901,
+          node_id: 'SCR_PLATFORM_9901',
+          name: 'Platform CI',
+          status: 'completed',
+          conclusion: 'failure',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 99 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_recorded');
+  assert.equal(body.autoFix.reason, 'worker_start_failed');
+  assert.equal(body.autoFix.workerStarted, false);
+  assert.equal(updated.status, 'failed');
+  assert.equal(updated.errorCode, 'worker_start_failed');
+  assert.equal(updated.errorMessage, 'worker unavailable');
 });
 
 test('platform blocking review dispatches an automatic fix round', async () => {

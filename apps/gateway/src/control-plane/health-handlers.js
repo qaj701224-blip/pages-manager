@@ -3,7 +3,7 @@ import { jsonResponse } from '@xd/worker-kit';
 import { getStore } from './context.js';
 
 export async function handleHealth(_request, env = {}) {
-  const store = getStore(env);
+  const store = env.store || env.GATEWAY_STORE || globalThis.__PAGES_GATEWAY_STORE__ || {};
   return jsonResponse({
     status: 'ok',
     service: 'pages-gateway',

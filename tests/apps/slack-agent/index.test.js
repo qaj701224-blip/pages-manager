@@ -8,6 +8,7 @@ import {
   analyzeSlackRequirementDeterministic,
   buildSlackAgentMessages,
   normalizeModelAnalysis,
+  visibleSlackAgentReply,
 } from '../../../apps/slack-agent/src/analysis.js';
 import { SLACK_AGENT_POLICY_PACKAGE_VERSION } from '../../../apps/slack-agent/src/policy/package.js';
 
@@ -724,6 +725,16 @@ describe('slack agent', () => {
     assert.equal(body.turn.events[1].type, 'reply_delta');
     assert.equal(body.turn.events[2].type, 'analysis_final');
     assert.match(body.turn.visibleText, /我已整理好/);
+  });
+
+  it('redacts env-style secrets from visible reply text before streaming', () => {
+    const visibleText = visibleSlackAgentReply({
+      intent: 'create_platform_issue',
+      summary: '请修改 README，并使用 CF_API_TOKEN="cf-token-value" 触发测试。',
+    });
+
+    assert.match(visibleText, /CF_API_TOKEN="\[REDACTED_SECRET\]"/);
+    assert.doesNotMatch(visibleText, /cf-token-value/);
   });
 
   it('can stream the turn contract as ndjson events', async () => {

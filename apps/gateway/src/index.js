@@ -53,6 +53,13 @@ export function createGatewayApp(options = {}) {
       }
 
       try {
+        if (request.method === 'GET' && url.pathname === '/health') {
+          return await match.handler(
+            request,
+            { ...env, waitUntil: ctx.waitUntil?.bind(ctx), ...(store ? { store } : {}) },
+            match.params
+          );
+        }
         const requestStore = await resolveStore(env);
         return await match.handler(request, { ...env, waitUntil: ctx.waitUntil?.bind(ctx), store: requestStore }, match.params);
       } catch (err) {
