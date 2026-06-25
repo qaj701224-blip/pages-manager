@@ -107,7 +107,7 @@ function platformStatusContext(platformItem = {}, nextStatus = '') {
 }
 
 export async function handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result }) {
-  const reviewComment = await store.recordReviewAgentComment(normalized);
+  let reviewComment = await store.recordReviewAgentComment(normalized);
   const commentIsOpen = reviewComment.comment?.status === 'open';
   let platformItem = store.findPlatformDevItemByPrNumber
     ? await store.findPlatformDevItemByPrNumber(normalized.prNumber, { headSha: normalized.headSha })
@@ -242,6 +242,17 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     headlessReviewForHeadBoundJob && ['blocking', 'unknown'].includes(normalized.classification);
   const headlessNonblockingReview =
     headlessReviewForHeadBoundJob && ['note', 'suggestion'].includes(normalized.classification);
+
+  if (headlessBlockingReview) {
+    const rebound = await store.recordReviewAgentComment({
+      ...reviewComment.comment,
+      headSha: updatedJob.headSha,
+    });
+    reviewComment = {
+      ...rebound,
+      created: reviewComment.created,
+    };
+  }
 
   if (updatedJob && updatedJob.status === 'pr_created') {
     updatedJob = await store.updateJob(updatedJob.id, 'reviewing', fullHeadSha ? { headSha: fullHeadSha } : {});
