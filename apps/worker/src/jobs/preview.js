@@ -64,6 +64,41 @@ async function githubTreeFiles(fetchImpl, github, headSha) {
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
+function shaMatches(left, right) {
+  if (!left || !right) return false;
+  const normalizedLeft = String(left).toLowerCase();
+  const normalizedRight = String(right).toLowerCase();
+  if (normalizedLeft.length < 7 || normalizedRight.length < 7) return false;
+  return normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
+}
+
+async function currentPullRequestHeadSha(fetchImpl, github, prNumber) {
+  const { owner, repo } = parseRepoFullName(github.repoFullName);
+  const result = await githubRequest(fetchImpl, github, {
+    url: githubApiUrl(github, `/repos/${owner}/${repo}/pulls/${prNumber}`),
+  });
+  return result.body?.head?.sha || null;
+}
+
+async function previewHeadState(fetchImpl, github, job) {
+  const currentHeadSha = await currentPullRequestHeadSha(fetchImpl, github, job.prNumber);
+  return {
+    currentHeadSha,
+    stale: currentHeadSha ? !shaMatches(currentHeadSha, job.headSha) : true,
+  };
+}
+
+function stalePreviewResult(job, headState, phase) {
+  return {
+    action: 'pages_preview_skipped_stale_head',
+    reason: 'pr_head_moved',
+    phase,
+    prNumber: job.prNumber,
+    expectedHeadSha: job.headSha,
+    currentHeadSha: headState.currentHeadSha,
+  };
+}
+
 function previewFilesFromTree(tree, allowedPath) {
   const sourcePrefix = `${allowedPath}/src/`;
   const files = tree.filter((item) => item.path?.startsWith(sourcePrefix));
@@ -92,6 +127,9 @@ async function deployPreviewLocally(job, config, adapters = {}) {
   const callback = adapters.postExecutorCallback || postExecutorCallback;
   const github = config.github;
   const allowedPath = allowedPathForJob(job);
+  const initialHeadState = await previewHeadState(fetchImpl, github, job);
+  if (initialHeadState.stale) return stalePreviewResult(job, initialHeadState, 'before_read');
+
   const tree = await githubTreeFiles(fetchImpl, github, job.headSha);
   const { files, sourcePrefix } = previewFilesFromTree(tree, allowedPath);
 
@@ -112,6 +150,9 @@ async function deployPreviewLocally(job, config, adapters = {}) {
     form.append(`file-${index}`, new Blob([bytes]), relativePath);
     index += 1;
   }
+
+  const deployHeadState = await previewHeadState(fetchImpl, github, job);
+  if (deployHeadState.stale) return stalePreviewResult(job, deployHeadState, 'before_deploy');
 
   const response = await fetchImpl(pagesApiDeployUrl(config), {
     method: 'POST',

@@ -2315,6 +2315,79 @@ test('platform nonblocking review after CI success marks item merge-ready', asyn
   assert.equal(updated.status, 'ready_to_merge');
 });
 
+test('successful platform CI rerun promotes item after stored nonblocking review', async () => {
+  const app = createGatewayApp();
+  const headSha = '7'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-rerun-after-review-ready',
+    issueNumber: 87,
+    prNumber: 97,
+    headSha,
+    slackSessionId: 'sess_platform_ci_rerun_after_review',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_failed', { headSha });
+
+  const reviewResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-rerun-review-note',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 97, head: { sha: headSha } },
+        review: {
+          id: 9703,
+          node_id: 'PRR_PLATFORM_9703',
+          state: 'approved',
+          body: 'LGTM, no blockers.',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    notifierEnv()
+  );
+  assert.equal(reviewResponse.status, 200);
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'ci_failed');
+
+  const ciResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-rerun-ci-success',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9704,
+          node_id: 'SCR_PLATFORM_9704',
+          name: 'Platform CI',
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 97 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(ciResponse);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(ciResponse.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_recorded');
+  assert.equal(updated.status, 'ready_to_merge');
+});
+
 test('duplicate successful platform CI keeps a merge-ready item ready', async () => {
   const app = createGatewayApp();
   const headSha = '3'.repeat(40);

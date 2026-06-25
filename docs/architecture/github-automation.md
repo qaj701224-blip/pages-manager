@@ -163,7 +163,7 @@ base: master
 
 executor callback 只能推进仍可转换的当前任务。已取消、已合并、已部署或已失败的终态 job 收到迟到 callback 时，gateway 返回 200 并标记 ignored，不能让 workflow 因有意取消而失败。`pages-preview.yml` 的成功和失败 callback 必须携带 `prNumber` 与 `headSha`；已绑定 `headSha` 的 job 收到 `preview_deployed` 时，如果 callback 缺少 `headSha` 或不匹配当前 job head，只保留当前 DB 状态，不触发 Slack 成功卡片、plain progress、reaction settlement 或新的 worker dispatch。已绑定 PR 但没有持久化 `headSha` 的 job 也必须匹配 `prNumber`；只有没有 PR/head 元数据的 legacy / manual job 才接受无 `headSha` callback。
 
-`pages-preview.yml` 在部署前必须重新读取当前 PR head，并在 head 已移动时跳过 deploy、artifact 和 callback，避免旧 workflow run 覆盖同一个 preview site。该 workflow 还必须按 `prNumber` 设置 `concurrency` 且 `cancel-in-progress: true`，让同一 PR 的旧 preview run 在发布前被取消。预览内容只从 `sites/<employeeSlug>/<siteSlug>/src` 发布；没有 `src/` 时 workflow 失败，而不是回退发布整个站点根目录。
+`pages-preview.yml` 和 ECS `local_deploy` 在部署前必须重新读取当前 PR head，并在 head 已移动时跳过 deploy、artifact 和 callback，避免旧 worker / workflow run 覆盖同一个 preview site。该 workflow 还必须按 `prNumber` 设置 `concurrency` 且 `cancel-in-progress: true`，让同一 PR 的旧 preview run 在发布前被取消。预览内容只从 `sites/<employeeSlug>/<siteSlug>/src` 发布；没有 `src/` 时 workflow 失败，而不是回退发布整个站点根目录。
 
 ## Worker 配置
 
@@ -221,7 +221,7 @@ gateway 必须校验：
 
 delivery 写入 `github_webhook_deliveries`，Review Agent comment 写入 `review_agent_comments`，site-check 写入 `site_check_runs`。这些都是 MySQL 真相源。
 
-Platform Dev Lane 中，平台 CI 成功只表示构建检查通过；若当前 head 还没有非阻塞 Review Agent 结果，状态保持 `review_waiting`。只有同一 head 的平台 CI 成功和非阻塞 Review 结果都到齐，gateway 才能把 PlatformDevItem 推进到 `ready_to_merge`。
+Platform Dev Lane 中，平台 CI 成功只表示构建检查通过；若当前 head 还没有非阻塞 Review Agent 结果，状态保持 `review_waiting`。只有同一 head 的平台 CI 成功和非阻塞 Review 结果都到齐，gateway 才能把 PlatformDevItem 推进到 `ready_to_merge`；若先 `ci_failed` 后 Review 通过，后续同 head CI rerun 成功也必须立即提升到 `ready_to_merge`。
 
 ## Merge Announcement Agent
 
