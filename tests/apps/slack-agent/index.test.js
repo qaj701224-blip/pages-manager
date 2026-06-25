@@ -496,6 +496,16 @@ describe('slack agent', () => {
     assert.deepEqual(analysis.toolCall, { name: 'diagnose_current_work_item', args: { timeWindowMinutes: 30 } });
   });
 
+  it('preserves explicit PR targets for diagnosis tool calls', () => {
+    const analysis = analyzeSlackRequirement({ text: '为什么 PR #123 失败？查一下 workflow' });
+
+    assert.equal(analysis.intent, 'diagnose_work_item');
+    assert.deepEqual(analysis.toolCall, {
+      name: 'diagnose_current_work_item',
+      args: { timeWindowMinutes: 30, kind: 'pr', number: 123, explicitUserTarget: true },
+    });
+  });
+
   it('routes review result questions to the read-only review summary tool', () => {
     const analysis = analyzeSlackRequirement({ text: 'review 说了什么？有哪些 blocker？' });
 
@@ -1189,6 +1199,31 @@ describe('slack agent', () => {
     assert.doesNotMatch(visibleText, /real-token/);
     assert.equal(final.analysis.visibleReply, '请使用 CF_API_TOKEN=[REDACTED_SECRET] 触发测试。');
     assert.equal(final.analysis.summary, 'CF_API_TOKEN=[REDACTED_SECRET]');
+  });
+
+  it('redacts JSON-shaped secret fields from user-visible analysis text', () => {
+    const fallback = analyzeSlackRequirementDeterministic({ text: '处理 token 字段' });
+    const analysis = normalizeModelAnalysis(
+      {
+        visibleReply: '我会处理 {"CF_API_TOKEN":"real-token"}。',
+        title: '{"slack_agent_api_key":"real-token"}',
+        summary: '{"CF_API_TOKEN":"real-token"}',
+        sourceMessages: ['{"password":"real-password"}'],
+        clarifyingQuestion: '{"private_key":"real-private-key"}',
+        intent: 'create_platform_issue',
+        needsClarification: false,
+      },
+      fallback,
+      { text: '处理 token 字段' }
+    );
+    const serialized = JSON.stringify(analysis);
+
+    assert.match(analysis.visibleReply, /"CF_API_TOKEN":"\[REDACTED_SECRET\]"/);
+    assert.match(analysis.title, /"slack_agent_api_key":"\[REDACTED_SECRET\]"/);
+    assert.match(analysis.summary, /"CF_API_TOKEN":"\[REDACTED_SECRET\]"/);
+    assert.match(analysis.sourceMessages[0], /"password":"\[REDACTED_SECRET\]"/);
+    assert.match(analysis.clarifyingQuestion, /"private_key":"\[REDACTED_SECRET\]"/);
+    assert.doesNotMatch(serialized, /real-token|real-password|real-private-key/);
   });
 
   it('normalizes company gateway root BaseURL to /v1/chat/completions', async () => {

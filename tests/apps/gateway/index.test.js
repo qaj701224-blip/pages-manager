@@ -7975,6 +7975,46 @@ test('Slack event can start the worker without requiring user GitHub permissions
   assert.equal(workerStarts.length, 1);
 });
 
+test('Slack direct job fails when worker dispatch is rejected', async () => {
+  const app = createGatewayApp();
+  const workerStarts = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-worker-fail-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel_type: 'im',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const body = await json(response);
+  const job = [...app.store.jobs.values()][0];
+  const delivery = app.store.slackDeliveries.get('T1:Ev-worker-fail-1');
+
+  assert.equal(response.status, 500);
+  assert.equal(body.error, 'worker unavailable');
+  assert.equal(workerStarts.length, 1);
+  assert.equal(job.status, 'failed');
+  assert.equal(job.errorCode, 'worker_start_failed');
+  assert.equal(job.errorMessage, 'worker unavailable');
+  assert.equal(delivery.processingStatus, 'failed');
+  assert.equal(delivery.errorCode, 'slack_delivery_failed');
+});
+
 test('index_ready callback can start worker to dispatch pages-agent', async () => {
   const app = createGatewayApp();
   const createBody = await json(
@@ -9709,6 +9749,50 @@ test('failed executor callback after cancellation is ignored without failing wor
   assert.equal(body.ignoredCallbackStatus, 'failed');
   assert.equal(body.job.status, 'cancelled');
   assert.equal(body.job.errorCode, 'github_issue_closed');
+});
+
+test('failed platform executor callback after terminal state is ignored without failing workflow', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-terminal-failed-callback',
+    title: '已关闭平台需求',
+    summary: '平台需求已关闭。',
+    issueType: 'type:dev',
+    areas: ['area:gateway'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  });
+  const itemWithIssue = app.store.updatePlatformDevItem(item.id, 'issue_created', {
+    githubIssueNumber: 36,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/36',
+  });
+  const closedItem = app.store.updatePlatformDevItem(itemWithIssue.id, 'closed_unmerged');
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workItemKind: 'platform_dev',
+        platformDevItemId: closedItem.id,
+        status: 'failed',
+        errorCode: 'PLATFORM_AGENT_FAILED',
+        errorMessage: 'late platform workflow failure',
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, true);
+  assert.equal(body.ignoredStatus, 'closed_unmerged');
+  assert.equal(body.ignoredCallbackStatus, 'failed');
+  assert.equal(body.item.status, 'closed_unmerged');
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'closed_unmerged');
 });
 
 test('GitHub pull_request webhook marks closed PR inactive and restores reopened PR', async () => {
