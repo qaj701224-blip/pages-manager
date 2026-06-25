@@ -1,10 +1,10 @@
-# pages-manager
+## pages-manager
 
 `pages-manager` 是 XD Pages 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `pages` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
 
 v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 维护，后续不再作为新能力的设计目标。
 
-## 架构一览
+### 架构一览
 
 ```text
 用户 / AI / CI
@@ -25,7 +25,7 @@ v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 
 - `packages/pages-runtime-protocol/`：runtime 协议共享定义。
 - `packages/worker-kit/`、`packages/ip-guard/`：Worker 公共工具。
 
-## 用户入口
+### 用户入口
 
 ```bash
 pages login
@@ -69,7 +69,7 @@ CLI 会自动识别发布目录：
 
 更多 API 边界见 [docs/api-boundary.md](./docs/api-boundary.md)。文档索引和真相源矩阵见 [docs/README.md](./docs/README.md)。
 
-## 安全边界
+### 安全边界
 
 - 发布必须通过 CLI token 或发布 token 强认证。
 - 除 `/skill.md`、`/readme.md` 外，管理 API 受公司网络 / VPN / 办公网出口 IP allowlist 约束。
@@ -78,7 +78,7 @@ CLI 会自动识别发布目录：
 - `acl` 支持邮箱和完整部门路径授权，部门路径默认包含子部门。
 - 发布 token、CLI token、cookie、SSO code、Cloudflare token 和平台能力不得写入项目文件、日志、README、截图或聊天消息。
 
-## 代码目录
+### 代码目录
 
 ```text
 pages-manager/
@@ -102,7 +102,7 @@ apps/server/              # v1 管理 API Worker，仅维护旧 workers.xd.team 
 pages-deploy.skill.md     # v1 文件名兼容入口，内容指向当前 XD Pages skill
 ```
 
-## 开发
+### 开发
 
 ```bash
 pnpm install
@@ -117,7 +117,7 @@ pnpm test
 
 不要提交 `.env`、`.staging.env`、`apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、demo 目录里的 `.pages.json`，也不要在测试或文档中写真实 Cloudflare 资源 ID、token 或账号信息。
 
-## 部署
+### 部署
 
 平台部署规则见 [docs/deployment-branch-policy.md](./docs/deployment-branch-policy.md)。v2 架构入口见 [docs/pages-v2-wfp-architecture.md](./docs/pages-v2-wfp-architecture.md)。
 
@@ -131,11 +131,11 @@ pnpm --dir apps/pages-skill build
 
 production 部署必须人工在 GitHub Actions 中手动触发；改动 workflow 时必须确认 push/PR 不会自动部署 production。
 
-## Pages KV
+### Pages KV
 
 v1 不再提供 Pages KV。需要 runtime helper 或 KV 相关能力时，按 `@xd/pages-sdk` 和当前平台文档接入，不要使用旧部署参数。
 
-## Slack 合并通知 Smoke
+### Slack 合并通知 Smoke
 
 - 2026-06-24：用于验证 `feat/slack-preview-gateway` 合并 PR 后会发送 Slack 合并通知。
 - 2026-06-24：用于验证 Slack 合并通知的消息样式接近 MR 摘要格式。
