@@ -12207,6 +12207,59 @@ test('GitHub issue review comment without head marker does not reuse stale gate 
   assert.equal(workerStarts.length, 0);
 });
 
+test('GitHub headless blocking review comment blocks the current head conservatively', async () => {
+  const app = createGatewayApp();
+  const currentHeadSha = '3'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 225,
+    headSha: currentHeadSha,
+    idempotencyKey: 'api-headless-blocking-review',
+  });
+  const workerStarts = [];
+  const notifierCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-headless-blocking-review',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 225,
+          pull_request: { url: 'https://api.github.example/repos/org/pages-manager/pulls/225' },
+        },
+        comment: {
+          id: 22501,
+          node_id: 'IC_HEADLESS_BLOCKING_REVIEW',
+          body: 'Not approved: tests failed.',
+          user: { login: 'greptile[bot]' },
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  const job = app.store.getJob(jobId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'changes_requested');
+  assert.equal(body.reviewComment.classification, 'blocking');
+  assert.equal(job.status, 'changes_requested');
+  assert.equal(workerStarts.length, 0);
+});
+
 test('GitHub webhook signature is enforced when configured', async () => {
   const app = createGatewayApp();
   const payload = JSON.stringify({

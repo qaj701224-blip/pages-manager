@@ -19,6 +19,19 @@ const NOTE_PATTERNS = [
   /\bpassed\b/i,
 ];
 
+const ENGLISH_BLOCKING_PATTERNS = [
+  /\bnot approved\b/i,
+  /\bnot pass(?:ed|ing)?\b/i,
+  /\bmust fix\b/i,
+  /\brequired\b/i,
+  /\bfailing\b/i,
+  /\bfailed\b/i,
+  /\bfailure\b/i,
+  /\bsecurity\b/i,
+  /\bcritical\b/i,
+  /\berror\b/i,
+];
+
 const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
 const DEFAULT_PLATFORM_CI_CHECK_NAMES = ['Platform CI', 'check'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
@@ -98,20 +111,28 @@ function reviewPriorityFromBody(body = '') {
   return match ? Number(match[1]) : null;
 }
 
+function hasBlockingReviewSignal(body = '') {
+  const text = String(body || '');
+  if (ENGLISH_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (/\bblocking\b/i.test(text) && !/\b(no blocking issues?|not blocking|without blocking)\b/i.test(text)) return true;
+  if (/(没有通过|未通过|不通过|失败|必须|需要修复|安全风险|严重)/.test(text)) return true;
+  if (/阻塞/.test(text) && !/(无阻塞|没有阻塞|没阻塞)/.test(text)) return true;
+  return false;
+}
+
 export function classifyReviewAgentComment(input) {
   const body = String(input.body || '');
   const state = String(input.reviewState || '').toLowerCase();
   const priority = reviewPriorityFromBody(body);
 
   if (state === 'changes_requested') return 'blocking';
-  if (state === 'approved') return 'note';
   if (priority === 0 || priority === 1) return 'blocking';
   if (priority === 2 || priority === 3) return 'suggestion';
+  if (hasBlockingReviewSignal(body)) return 'blocking';
+  if (state === 'approved') return 'note';
   if (NOTE_PATTERNS.some((pattern) => pattern.test(body)) || /(通过|没问题|无阻塞)/.test(body)) {
     return 'note';
   }
-  if (/\b(blocking|must fix|required|failing|failed|failure|security|critical|error)\b/i.test(body)) return 'blocking';
-  if (/(必须|阻塞|失败|需要修复|安全风险|严重)/.test(body)) return 'blocking';
   if (/\b(suggestions?|nit|optional|consider)\b/i.test(body) || /(建议|可以考虑|优化建议)/.test(body)) {
     return 'suggestion';
   }
