@@ -656,8 +656,8 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
     confidence: typeof modelAnalysis.confidence === 'number' ? modelAnalysis.confidence : fallback.confidence,
     employeeSlug: stringOrFallback(modelAnalysis.employeeSlug || modelAnalysis.employee_slug, fallback.employeeSlug),
     siteSlug: stringOrFallback(modelAnalysis.siteSlug || modelAnalysis.site_slug, fallback.siteSlug),
-    title: stringOrFallback(modelAnalysis.title, fallback.title),
-    summary: stringOrFallback(modelAnalysis.summary || modelAnalysis.brief, fallback.summary),
+    title: redactSecretLikeText(stringOrFallback(modelAnalysis.title, fallback.title)),
+    summary: redactSecretLikeText(stringOrFallback(modelAnalysis.summary || modelAnalysis.brief, fallback.summary)),
     issueType: stringOrFallback(modelAnalysis.issueType || modelAnalysis.issue_type, fallback.issueType || ''),
     areas: arrayOrFallback(modelAnalysis.areas || modelAnalysis.areaLabels || modelAnalysis.area_labels, fallback.areas || []),
     risk: stringOrFallback(modelAnalysis.risk, fallback.risk || ''),
@@ -682,15 +682,22 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
       fallback.workItemState || workItemStateFromText(input.text || input.event?.text || fallback.summary || '')
     ),
     toolCall: shouldForceIntentToolCall(modelIntent) ? inferredToolCall : normalizeToolCall(modelToolCall, inferredToolCall),
-    visibleReply: stringOrFallback(
-      modelAnalysis.visibleReply || modelAnalysis.visible_reply,
-      fallback.visibleReply || fallback.visible_reply || ''
+    visibleReply: redactSecretLikeText(
+      stringOrFallback(
+        modelAnalysis.visibleReply || modelAnalysis.visible_reply,
+        fallback.visibleReply || fallback.visible_reply || ''
+      )
     ),
     approvalMode: stringOrFallback(modelAnalysis.approvalMode || modelAnalysis.approval_mode, fallback.approvalMode),
-    sourceMessages: arrayOrFallback(modelAnalysis.sourceMessages || modelAnalysis.source_messages, fallback.sourceMessages),
-    clarifyingQuestion: stringOrFallback(
-      modelAnalysis.clarifyingQuestion || modelAnalysis.clarifying_question,
-      fallback.clarifyingQuestion || ''
+    sourceMessages: arrayOrFallback(
+      modelAnalysis.sourceMessages || modelAnalysis.source_messages,
+      fallback.sourceMessages
+    ).map((message) => redactSecretLikeText(message)),
+    clarifyingQuestion: redactSecretLikeText(
+      stringOrFallback(
+        modelAnalysis.clarifyingQuestion || modelAnalysis.clarifying_question,
+        fallback.clarifyingQuestion || ''
+      )
     ),
     contextResolution:
       objectOrNull(modelAnalysis.contextResolution || modelAnalysis.context_resolution) ||

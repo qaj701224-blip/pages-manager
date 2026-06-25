@@ -109,7 +109,7 @@ POST /internal/slack-agent/turn
 
 这里的 streaming 是内部传输合同，不等于 Slack 对外 token-by-token。模型 provider 如果支持 token 流，`slack-agent` 应先聚合成短句、语义片段或节流窗口，再输出 `reply_delta`。
 
-当前公司 OpenAI-compatible 路径使用 `stream: true` 请求模型，并要求模型 JSON 第一字段包含 `visibleReply`。`slack-agent` 只从 `visibleReply` 中抽取用户可见文本，按标点和长度聚合后输出 `reply_delta`；`intent`、`summary`、`siteSlug` 等结构化字段只在完整 JSON 可解析后作为 `analysis_final` 输出。
+当前公司 OpenAI-compatible 路径使用 `stream: true` 请求模型，并要求模型 JSON 第一字段包含 `visibleReply`。为避免 secret-like 文本被拆成多个 provider delta 后提前泄漏，`slack-agent` 不向下游透传未完成 JSON；它先聚合完整 provider 内容，解析、规范化并脱敏 `visibleReply`、`summary`、`title`、`sourceMessages`、`clarifyingQuestion` 后，再按标点和长度输出 `reply_delta`。`intent`、`summary`、`siteSlug` 等结构化字段只在完整 JSON 可解析后作为 `analysis_final` 输出。
 
 请求示例：
 
