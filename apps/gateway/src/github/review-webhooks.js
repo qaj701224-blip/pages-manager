@@ -235,23 +235,31 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
   const gateHeadSha = reviewedHeadSha || updatedJob?.headSha || null;
   const gateOptions = gateHeadSha ? { headSha: gateHeadSha } : {};
   const gate = await previewGateForPr(store, repoFullName, normalized.prNumber, gateOptions);
-  const ignoreHeadlessReviewForPreview = Boolean(
+  const headlessReviewForHeadBoundJob = Boolean(
     updatedJob?.headSha && normalized.sourceType === 'issue_comment' && !reviewedHeadSha
   );
+  const headlessBlockingReview =
+    headlessReviewForHeadBoundJob && ['blocking', 'unknown'].includes(normalized.classification);
+  const headlessNonblockingReview =
+    headlessReviewForHeadBoundJob && ['note', 'suggestion'].includes(normalized.classification);
 
   if (updatedJob && updatedJob.status === 'pr_created') {
     updatedJob = await store.updateJob(updatedJob.id, 'reviewing', fullHeadSha ? { headSha: fullHeadSha } : {});
     reviewAction = 'reviewing';
   }
 
-  if (ignoreHeadlessReviewForPreview) {
-    reviewAction = 'headless_review_recorded';
-  } else if (updatedJob && gate.blockingCount > 0 && ['reviewing', 'changes_requested'].includes(updatedJob.status)) {
+  if (
+    updatedJob &&
+    (gate.blockingCount > 0 || headlessBlockingReview) &&
+    ['reviewing', 'changes_requested'].includes(updatedJob.status)
+  ) {
     updatedJob =
       updatedJob.status === 'changes_requested'
         ? updatedJob
         : await store.updateJob(updatedJob.id, 'changes_requested', fullHeadSha ? { headSha: fullHeadSha } : {});
     reviewAction = 'changes_requested';
+  } else if (headlessNonblockingReview) {
+    reviewAction = 'headless_review_recorded';
   } else if (shouldDispatchPreviewForReview(updatedJob, normalized, gate)) {
     if (updatedJob.status !== 'previewing') {
       updatedJob = await store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});

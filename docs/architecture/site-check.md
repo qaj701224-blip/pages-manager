@@ -51,7 +51,7 @@ no open unknown ReviewAgentComment
 no active pages-agent fix round
 ```
 
-site-check 失败时不发布 preview。Review Agent suggestion / note 可以放行，但需要在 Slack 状态里提示。`issue_comment` 类型的 Review Agent 汇总如果没有 `Reviewed commit` 标记，且 job 已绑定 `headSha`，gateway 只记录评论，不据此触发 Preview；带 7-40 位 commit 前缀的评论才会参与当前 head 的 gate。
+site-check 失败时不发布 preview。Review Agent suggestion / note 可以放行，但需要在 Slack 状态里提示。`issue_comment` 类型的 Review Agent 汇总如果没有 `Reviewed commit` 标记，且 job 已绑定 `headSha`，note / suggestion 只记录评论，不据此触发 Preview；blocking / unknown 必须保守阻塞当前 head。带 7-40 位 commit 前缀的评论才会按对应 head 参与 gate。
 
 ## Secret 边界
 

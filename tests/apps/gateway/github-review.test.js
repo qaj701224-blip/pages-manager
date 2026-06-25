@@ -53,6 +53,8 @@ test('review agent allowlist supports csv and json metadata', () => {
 test('classifies review agent comments conservatively', () => {
   assert.equal(classifyReviewAgentComment({ reviewState: 'changes_requested', body: 'Looks close' }), 'blocking');
   assert.equal(classifyReviewAgentComment({ body: 'Must fix this failing check.' }), 'blocking');
+  assert.equal(classifyReviewAgentComment({ body: 'Not approved: tests failed.' }), 'blocking');
+  assert.equal(classifyReviewAgentComment({ body: '没有通过，失败。' }), 'blocking');
   assert.equal(
     classifyReviewAgentComment({
       body: '**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-red?style=flat)</sub></sub> Security issue**',
@@ -76,6 +78,7 @@ test('classifies review agent comments conservatively', () => {
   assert.equal(classifyReviewAgentComment({ reviewState: 'approved', body: 'LGTM' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: "Didn't find any major issues." }), 'note');
   assert.equal(classifyReviewAgentComment({ body: 'No blocking issues found. Site check passed.' }), 'note');
+  assert.equal(classifyReviewAgentComment({ body: '无阻塞，检查通过。' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: 'Please inspect this custom output.' }), 'unknown');
 });
 
