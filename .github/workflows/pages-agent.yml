@@ -207,7 +207,10 @@ jobs:
           done <<< "$changed"
 
           added_lines="$(git diff HEAD --unified=0 -- "$ALLOWED_PATH" | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
-          if printf '%s\n' "$added_lines" | grep -En 'xox[baprs]-[A-Za-z0-9-]{8,}|xapp-[A-Za-z0-9-]{8,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|(CF_API_TOKEN|SLACK_AGENT_API_KEY|AGENT_CODE_API_KEY)[[:space:]]*[:=][[:space:]]*['"'"'"'"'"']?[^[:space:]'"'"'"'"'"',}]+'; then
+          token_shape_re='xox[baprs]-[A-Za-z0-9-]{8,}|xapp-[A-Za-z0-9-]{8,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}'
+          secret_field_re='([A-Za-z0-9]+[_-])*(api[_-]?key|secret([_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)([_-][A-Za-z0-9]+)*'
+          secret_value_re="${secret_field_re}[[:space:]]*[:=][[:space:]]*['\"]?[^[:space:]'\",}]+"
+          if printf '%s\n' "$added_lines" | grep -Ein "${token_shape_re}|${secret_value_re}"; then
             echo "Generated files contain secret-looking content" >&2
             exit 1
           fi

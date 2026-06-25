@@ -1501,6 +1501,53 @@ test('platform executor callback updates PlatformDevItem PR state', async () => 
   assert.equal(app.store.findPlatformDevItemByPrNumber(44).id, item.id);
 });
 
+test('stale platform agent failed callback does not regress current item state', async () => {
+  const app = createGatewayApp();
+  const currentHeadSha = 'c'.repeat(40);
+  const staleHeadSha = 'd'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-agent-stale-failed-callback',
+    issueNumber: 86,
+    prNumber: 106,
+    headSha: currentHeadSha,
+    slackSessionId: 'sess_platform_agent_stale_failed',
+  });
+  const ready = app.store.updatePlatformDevItem(item.id, 'ready_to_merge', {
+    headSha: currentHeadSha,
+    workflowName: 'platform-agent.yml',
+    workflowRunId: 'new-run',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workItemKind: 'platform_dev',
+        platformDevItemId: ready.id,
+        status: 'failed',
+        errorCode: 'platform_agent_failed',
+        errorMessage: 'stale platform-agent.yml failed',
+        workflowName: 'platform-agent.yml',
+        workflowRunId: 'old-run',
+        headSha: staleHeadSha,
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, true);
+  assert.equal(body.ignoredReason, 'stale_platform_agent_callback');
+  assert.equal(body.item.status, 'ready_to_merge');
+  assert.equal(updated.status, 'ready_to_merge');
+  assert.equal(updated.headSha, currentHeadSha);
+  assert.equal(updated.workflowRunId, 'new-run');
+  assert.equal(updated.errorCode, null);
+});
+
 test('platform PR synchronize updates item by PR number when head changes', async () => {
   const app = createGatewayApp();
   const oldHeadSha = '1'.repeat(40);

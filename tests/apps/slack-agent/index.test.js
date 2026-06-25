@@ -301,6 +301,35 @@ describe('slack agent', () => {
     assert.equal(analysis.toolCall.name, 'confirm_platform_issue');
   });
 
+  it('keeps generic content filenames in site publishing lane', () => {
+    const input = {
+      text: '帮我做一个个人主页，把 portfolio.md 的内容展示出来',
+    };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const messages = buildSlackAgentMessages(input, fallback);
+    const payload = JSON.parse(messages[1].content);
+    const analysis = normalizeModelAnalysis(
+      {
+        lane: 'site-publishing',
+        intent: 'create_or_update_site',
+        siteSlug: 'profile',
+        summary: input.text,
+        toolCall: { name: 'confirm_create_issue', args: {} },
+        needsClarification: false,
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(fallback.lane, 'site-publishing');
+    assert.equal(fallback.intent, 'create_or_update_site');
+    assert.ok(payload.selectedSkills.includes('site-publishing'));
+    assert.match(messages[0].content, /skill:site-publishing/);
+    assert.equal(analysis.lane, 'site-publishing');
+    assert.equal(analysis.intent, 'create_or_update_site');
+    assert.equal(analysis.toolCall.name, 'confirm_create_issue');
+  });
+
   it('routes repeat requests to a constrained repeat tool', () => {
     const input = { text: '你上一条消息是什么？' };
     const fallback = analyzeSlackRequirementDeterministic(input);

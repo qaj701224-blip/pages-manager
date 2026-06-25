@@ -197,6 +197,19 @@ test('user-triggered publishing executor workflows stay separate from platform d
   }
 });
 
+test('pages agent generated-site secret scan covers generic sensitive assignments', () => {
+  const workflow = readWorkflow('.github/workflows/pages-agent.yml');
+
+  assert.match(workflow, /token_shape_re=/);
+  assert.match(workflow, /secret_field_re=/);
+  assert.match(workflow, /api\[_-\]\?key/);
+  assert.match(workflow, /secret\(\[_-\]access\)\?\[_-\]\?key/);
+  assert.match(workflow, /private\[_-\]\?key/);
+  assert.match(workflow, /password\|passwd\|pwd/);
+  assert.match(workflow, /secret_value_re=/);
+  assert.match(workflow, /grep -Ein "\$\{token_shape_re\}\|\$\{secret_value_re\}"/);
+});
+
 test('pages preview serializes deploys per pull request', () => {
   const workflow = readWorkflow('.github/workflows/pages-preview.yml');
 

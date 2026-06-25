@@ -12,7 +12,7 @@ import {
 
 const ROUTING_DECISION_TEXT_RE = /(创建|新建|新增|生成|制作|做|更新|修改|调整|删除|发布|部署|create|build|make|update|publish|deploy)/i;
 const REPO_FILE_TEXT_RE =
-  /(?:^|[\s`'"])(?:(?:\.github|apps|packages|scripts|docs|k8s|deploy|tests|migrations)\/[^\s`'",，。；;)]+|(?:README|AGENTS|CLAUDE|CHANGELOG|LICENSE|package|pnpm-lock|pnpm-workspace|wrangler|docker-compose|Dockerfile|tsconfig(?:\.[\w-]+)?|eslint\.config|vitest\.config)(?:\.(?:md|json|ya?ml|mjs|js|toml|lock))?\b|[\w.-]+\.(?:md|mjs|cjs|js|ts|tsx|json|ya?ml|toml)\b)/i; // eslint-disable-line max-len
+  /(?:^|[\s`'"])(?:(?:\.github|apps|packages|scripts|docs|k8s|deploy|tests|migrations)\/[^\s`'",，。；;)]+|(?:README|AGENTS|CLAUDE|CHANGELOG|LICENSE|package|pnpm-lock|pnpm-workspace|wrangler|docker-compose|Dockerfile|tsconfig(?:\.[\w-]+)?|eslint\.config|vitest\.config)(?:\.(?:md|json|ya?ml|mjs|js|toml|lock))?\b)/i; // eslint-disable-line max-len
 
 export const SLACK_AGENT_POLICY_SKILLS = [
   {

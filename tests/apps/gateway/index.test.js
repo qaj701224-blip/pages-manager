@@ -11790,7 +11790,7 @@ test('GitHub Review Agent issue comment retries preview worker when job is alrea
   assert.equal(workerStarts.length, 1);
 });
 
-test('GitHub Review Agent issue comment fails delivery when preview worker does not start', async () => {
+test('GitHub Review Agent issue comment rolls back previewing when preview worker does not start', async () => {
   const app = createGatewayApp();
   const headSha = '7'.repeat(40);
   const jobId = await moveJobToPrCreated(app, {
@@ -11834,7 +11834,97 @@ test('GitHub Review Agent issue comment fails delivery when preview worker does 
   assert.match(body.error, /Preview worker start failed/);
   assert.match(body.error, /worker unavailable/);
   assert.equal(delivery.status, 'failed');
-  assert.equal(app.store.getJob(jobId).status, 'previewing');
+  assert.equal(app.store.getJob(jobId).status, 'reviewing');
+});
+
+test('stored Review Agent replay rolls back previewing when preview worker does not start', async () => {
+  const app = createGatewayApp();
+  const headSha = '8'.repeat(40);
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/api/publishing-jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'api-stored-review-worker-failure',
+        'X-Pages-Actor-Id': 'usr_1',
+      },
+      body: JSON.stringify({ employeeSlug: 'zhangsan', siteSlug: 'profile' }),
+    })
+  );
+  const createBody = await json(createResponse);
+
+  for (const stageResult of ['issue_created', 'index_ready']) {
+    const response = await app.fetch(
+      new Request('http://gateway.test/internal/executor-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishingJobId: createBody.job.id,
+          stageResult,
+          issueNumber: 128,
+          issueUrl: 'https://github.example/org/pages-manager/issues/128',
+          indexSnapshotId: 'idxsnap_128',
+        }),
+      })
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const reviewResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-stored-review-worker-failure',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 128, pull_request: { url: 'https://github.example/org/pages-manager/pulls/128' } },
+        comment: {
+          id: 12801,
+          node_id: 'IC_12801',
+          body: `Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`${headSha.slice(0, 10)}\``,
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    })
+  );
+  assert.equal(reviewResponse.status, 200);
+
+  await recordSuccessfulSiteCheck(app, { prNumber: 128, headSha });
+
+  const prResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: createBody.job.id,
+        stageResult: 'pr_created',
+        branchName: `sites/job-${createBody.job.id}-zhangsan-profile`,
+        prNumber: 128,
+        prUrl: 'https://github.example/org/pages-manager/pull/128',
+        baseRef: 'staging',
+        headSha,
+      }),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const body = await json(prResponse);
+  const updated = app.store.getJob(createBody.job.id);
+
+  assert.equal(prResponse.status, 500);
+  assert.match(body.error, /Preview worker start failed/);
+  assert.equal(updated.status, 'pr_created');
+  assert.equal(updated.previewUrl, null);
 });
 
 test('GitHub Review Agent issue comment targets latest reused PR job by reviewed commit', async () => {

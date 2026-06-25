@@ -195,6 +195,23 @@ function shouldIgnoreStaleFailedPreviewCallback(existingJob = {}, body = {}) {
   return false;
 }
 
+function shouldIgnoreStaleFailedPlatformCallback(existingItem = {}, body = {}) {
+  const callbackHeadSha = body.headSha || body.head_sha || null;
+  const callbackWorkflowRunId = body.workflowRunId || body.workflow_run_id || null;
+
+  if (existingItem.workflowRunId && !callbackWorkflowRunId && !callbackHeadSha) return true;
+  if (
+    existingItem.workflowRunId &&
+    callbackWorkflowRunId &&
+    String(existingItem.workflowRunId) !== String(callbackWorkflowRunId)
+  ) {
+    return true;
+  }
+  if (existingItem.headSha && !callbackHeadSha && !callbackWorkflowRunId) return true;
+  if (existingItem.headSha && callbackHeadSha && !shaMatches(existingItem.headSha, callbackHeadSha)) return true;
+  return false;
+}
+
 function csvSet(value = '') {
   return new Set(
     String(value || '')
@@ -3523,6 +3540,16 @@ async function handlePlatformDevExecutorCallback(body, env) {
         ignored: true,
         ignoredStatus: existingItem.status,
         ignoredCallbackStatus: 'failed',
+      });
+    }
+    if (shouldIgnoreStaleFailedPlatformCallback(existingItem, body)) {
+      await store.linkPlatformDevItemToSlackSession(existingItem);
+      return jsonResponse({
+        item: existingItem,
+        ignored: true,
+        ignoredStatus: existingItem.status,
+        ignoredCallbackStatus: 'failed',
+        ignoredReason: 'stale_platform_agent_callback',
       });
     }
     const item = await store.failPlatformDevItem(

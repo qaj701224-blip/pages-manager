@@ -339,6 +339,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
   } else if (headlessNonblockingReview) {
     reviewAction = 'headless_review_recorded';
   } else if (shouldDispatchPreviewForReview(updatedJob, normalized, gate)) {
+    const previousStatus = updatedJob.status;
     if (updatedJob.status !== 'previewing') {
       updatedJob = await store.updateJob(updatedJob.id, 'previewing', fullHeadSha ? { headSha: fullHeadSha } : {});
       if (!updatedJob) {
@@ -354,6 +355,10 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       }
     }
     workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
+    if (workerStart?.started === false && updatedJob.status !== previousStatus) {
+      await store.patchJob?.(updatedJob.id, { status: previousStatus });
+      updatedJob = await store.getJob(updatedJob.id);
+    }
     assertWorkerStarted(workerStart, 'Preview worker start failed');
     reviewAction = 'preview_dispatched';
   } else if (shouldReportSiteCheckWaiting(updatedJob, normalized, gate)) {

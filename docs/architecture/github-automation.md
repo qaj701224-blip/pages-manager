@@ -557,7 +557,7 @@ docs/** 中的平台部署文档
 
 如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk gate、CI 和 review 控制。
 
-`pages-agent.yml` 在提交自动生成站点 PR 前必须清空 index，使用 `git diff HEAD` 同时覆盖 staged 与 unstaged 改动，并只把 `ALLOWED_PATH` 加回提交。secret scan 只扫描本轮新增 diff 行，覆盖 Slack token、`sk-*`、`CF_API_TOKEN`、`SLACK_AGENT_API_KEY`、`AGENT_CODE_API_KEY`、`github_pat_*` 和 GitHub `gh[pousr]_` token 家族。扫描必须匹配真实 token 形态或敏感变量赋值，不能因为站点目录历史正文或示例文档里已有短前缀 `ghp_` / `gho_` 就阻断新的 PR 创建和 callback。
+`pages-agent.yml` 在提交自动生成站点 PR 前必须清空 index，使用 `git diff HEAD` 同时覆盖 staged 与 unstaged 改动，并只把 `ALLOWED_PATH` 加回提交。secret scan 只扫描本轮新增 diff 行，覆盖 Slack token、`sk-*`、`CF_API_TOKEN`、`SLACK_AGENT_API_KEY`、`AGENT_CODE_API_KEY`、`github_pat_*`、GitHub `gh[pousr]_` token 家族，以及 `AWS_SECRET_ACCESS_KEY=`、`DATABASE_PASSWORD=`、`private_key=` 这类通用敏感字段赋值。扫描必须匹配真实 token 形态或敏感变量赋值，不能因为站点目录历史正文或示例文档里已有短前缀 `ghp_` / `gho_` 就阻断新的 PR 创建和 callback。
 
 ## Platform Dev PR 边界
 

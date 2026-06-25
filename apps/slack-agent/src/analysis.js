@@ -241,11 +241,12 @@ const CLOSE_SESSION_RE = new RegExp(
 
 function hasRepoFileReference(text = '') {
   const value = String(text || '');
-  return (
-    REPO_PATH_REFERENCE_RE.test(value) ||
-    REPO_ROOT_FILE_REFERENCE_RE.test(value) ||
-    CODE_FILE_REFERENCE_RE.test(value)
-  );
+  return REPO_PATH_REFERENCE_RE.test(value) || REPO_ROOT_FILE_REFERENCE_RE.test(value) || CODE_FILE_REFERENCE_RE.test(value);
+}
+
+function hasExplicitRepoFileReference(text = '') {
+  const value = String(text || '');
+  return REPO_PATH_REFERENCE_RE.test(value) || REPO_ROOT_FILE_REFERENCE_RE.test(value);
 }
 
 function hasSitePublishingSignal(text = '') {
@@ -558,6 +559,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const text = normalizeText(input.text || event.text || input.summary || '');
   const sessionContext = sessionContextFromInput(input);
   const hasRepoFile = hasRepoFileReference(text);
+  const hasExplicitRepoFile = hasExplicitRepoFileReference(text);
   const hasSiteSignal = hasSitePublishingSignal(text);
   const shouldCloseSession = isNaturalCloseSessionTurn(text, input, sessionContext);
   const isUnsupportedDestructive =
@@ -630,7 +632,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldStatusQuery &&
     !shouldSummarizeReviewResults &&
     !shouldAnswerRepoQuestion &&
-    (PLATFORM_KEYWORDS.test(text) || hasRepoFile) &&
+    (PLATFORM_KEYWORDS.test(text) || hasExplicitRepoFile) &&
     (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
   const shouldCreateOrUpdate =
     !isUnsupportedDestructive &&
@@ -781,7 +783,7 @@ function modelMustYieldToRepoFilePlatformIntent(modelIntent = '', fallbackIntent
   if (fallbackIntent !== 'create_platform_issue') return false;
   if (!['create_or_update_site', 'new_site_request', 'create_site', 'update_site'].includes(modelIntent)) return false;
   if (shouldTreatAsCurrentWorkItemFollowup(text, input, context)) return false;
-  return hasRepoFileReference(text);
+  return hasExplicitRepoFileReference(text);
 }
 
 export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {}) {
