@@ -11384,7 +11384,7 @@ test('GitHub Review gate reclassifies stored Codex P2 comments after rules chang
   assert.equal(workerStarts.length, 1);
 });
 
-test('GitHub Review Agent issue comment summary dispatches staging preview', async () => {
+test('GitHub Review Agent issue comment summary without reviewed commit does not dispatch preview', async () => {
   const app = createGatewayApp();
   const headSha = '2'.repeat(40);
   const jobId = await moveJobToPrCreated(app, {
@@ -11431,12 +11431,12 @@ test('GitHub Review Agent issue comment summary dispatches staging preview', asy
   const body = await json(response);
 
   assert.equal(response.status, 200);
-  assert.equal(body.reviewAction, 'preview_dispatched');
+  assert.equal(body.reviewAction, 'headless_review_recorded');
   assert.equal(body.reviewComment.classification, 'note');
   assert.equal(body.gate.canPreview, true);
-  assert.equal(body.job.status, 'previewing');
-  assert.equal(body.workerStart.started, true);
-  assert.equal(workerStarts.length, 1);
+  assert.equal(body.job.status, 'reviewing');
+  assert.equal(body.workerStart, undefined);
+  assert.equal(workerStarts.length, 0);
 });
 
 test('pr_created callback replays existing Review Agent summary and dispatches preview', async () => {
@@ -11568,7 +11568,7 @@ test('GitHub Review Agent issue comment retries preview worker when job is alrea
         comment: {
           id: 105,
           node_id: 'IC_105',
-          body: "Codex Review: Didn't find any major issues.",
+          body: `Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`${headSha.slice(0, 10)}\``,
           user: { login: 'chatgpt-codex-connector' },
         },
         sender: { login: 'chatgpt-codex-connector' },
@@ -12143,6 +12143,68 @@ test('GitHub webhook ignores untrusted review agents and deduplicates deliveries
   const second = await json(await app.fetch(request('delivery-dedup', 'greptile[bot]')));
   assert.equal(first.created, true);
   assert.equal(second.created, false);
+});
+
+test('GitHub issue review comment without head marker does not reuse stale gate state for preview', async () => {
+  const app = createGatewayApp();
+  const staleHeadSha = '1'.repeat(40);
+  const currentHeadSha = '2'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 224,
+    headSha: currentHeadSha,
+    idempotencyKey: 'api-headless-review-current-head',
+    siteCheck: false,
+  });
+  await recordSuccessfulSiteCheck(app, {
+    prNumber: 224,
+    headSha: staleHeadSha,
+    checkRunId: 'site-check-stale-head',
+    checkRunNodeId: 'SCR_SITE_CHECK_STALE_HEAD',
+  });
+  const workerStarts = [];
+  const notifierCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-headless-review',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 224,
+          pull_request: { url: 'https://api.github.example/repos/org/pages-manager/pulls/224' },
+        },
+        comment: {
+          id: 22401,
+          node_id: 'IC_HEADLESS_REVIEW',
+          body: 'No blocking issues found.',
+          user: { login: 'greptile[bot]' },
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  const job = app.store.getJob(jobId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'headless_review_recorded');
+  assert.equal(body.gate.siteCheck.status, 'missing');
+  assert.equal(body.gate.canPreview, false);
+  assert.equal(job.status, 'reviewing');
+  assert.equal(workerStarts.length, 0);
 });
 
 test('GitHub webhook signature is enforced when configured', async () => {

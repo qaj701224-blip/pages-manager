@@ -153,6 +153,7 @@ base: master
 - workflow 从 `origin/staging` 创建临时工作分支，fetch PR head，并确认 fetch 到的 commit 与 PR head sha 一致。
 - merge 成功后先 push 到 `staging-sync/pr-<number>-<sha>` 临时分支，并 dispatch `CI` 在该 merge commit 上运行 `check`。
 - `check` 成功后再把同一个已验证 commit push 到 `staging`，满足 `staging` ruleset 的 required status check。
+- push `staging` 后必须先等待 GitHub refs API 确认 `refs/heads/staging` 已指向该 merge commit，再 dispatch staging deploy，避免 workflow_dispatch 读到旧 `staging` head。
 - 由于 GitHub `GITHUB_TOKEN` 产生的 push 不会自动触发后续 push workflow，同步 workflow 必须显式 dispatch `Deploy XD Pages Staging`，并等待 `Deploy XD Pages Staging` 完成。
 - v1 平台变更 dispatch `deploy-staging.yml`；v2 平台变更 dispatch `deploy-pages-v2-staging.yml` 且 `component=all`。
 - 如果 PR head 无法干净 merge 到 `staging`，或者临时分支 `CI` 失败，workflow 失败并转人工处理。

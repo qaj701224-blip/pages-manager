@@ -533,6 +533,8 @@ test('staging sync explicitly dispatches deploy workflows for deploy-affecting p
     assert.match(workflow, new RegExp(escapeRegExp(path)), `v2 staging sync watches ${path}`);
   }
   assert.doesNotMatch(workflow, /docs\/人工配置待办\.md/, 'deleted manual config todo must not be watched');
+  assert.match(workflow, /wait_for_remote_branch_sha staging "\$deploy_head_sha"/);
+  assert.match(workflow, /repos\/\$\{GITHUB_REPOSITORY\}\/git\/ref\/heads\/\$\{branch\}/);
 });
 
 test('ack preview deploy is manual and isolated from Cloudflare production deploy', () => {

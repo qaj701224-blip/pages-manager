@@ -391,6 +391,9 @@ export function notificationTextForReviewAction(reviewAction, payload = {}) {
   if (reviewAction === 'site_check_waiting') {
     return 'Review Agent 已记录，正在等待 site-check 通过后再生成 Preview。';
   }
+  if (reviewAction === 'headless_review_recorded') {
+    return 'Review Agent comment 已记录，但未带 Reviewed commit；当前 PR head 已固定，暂不据此触发 Preview。';
+  }
   if (reviewAction === 'site_check_passed') {
     return 'site-check 已通过，继续等待 Review Agent 结果。';
   }
