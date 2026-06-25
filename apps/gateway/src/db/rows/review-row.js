@@ -1,5 +1,6 @@
 import { makeId } from '@xd/workflow-core';
 
+import { redactSecretLikeText } from '../../slack/text.js';
 import { toDate, toIso } from '../sql.js';
 
 export function reviewCommentToRow(comment) {
@@ -14,7 +15,7 @@ export function reviewCommentToRow(comment) {
     status: comment.status || 'open',
     path: comment.path || null,
     line: comment.line || null,
-    body_redacted: comment.bodyRedacted || comment.body || null,
+    body_redacted: redactSecretLikeText(comment.bodyRedacted || comment.body || '') || null,
     body_hash: comment.bodyHash || null,
     head_sha: comment.headSha || null,
     first_seen_delivery_id: comment.firstSeenDeliveryId || null,

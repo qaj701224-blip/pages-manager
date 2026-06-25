@@ -1512,6 +1512,38 @@ async function retrySitePublishingWorkItem(store, env, item = {}, slackSession =
   if (!job) return { retried: false, reason: 'not_retryable', item };
   await store.linkJobToSlackSession?.(job, slackSession || undefined);
   const workerStart = await startWorkerForJobIfConfigured(job, env);
+  if (workerStart?.started === false) {
+    const message = workerStart.error || 'Worker start failed';
+    job =
+      (await store.failJob?.(job.id, 'worker_start_failed', message, {
+        summary: job.summary,
+        previewUrl: null,
+      })) ||
+      (await store.patchJob?.(job.id, {
+        status: 'failed',
+        errorCode: 'worker_start_failed',
+        errorMessage: message,
+        previewUrl: null,
+      })) ||
+      job;
+    await store.linkJobToSlackSession?.(job, slackSession || undefined);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
+      stage: 'failed',
+      text: `重试启动失败：${message}`,
+      statusText: ':x: 重试启动失败',
+      allowRegression: true,
+      skipDuplicate: false,
+      slackSessionId: slackSession?.id || job.slackSessionId || null,
+      dedupeKey: `slack-diagnosis-retry-failed:${job.id}:${Date.now()}`,
+    });
+    return {
+      retried: false,
+      reason: message,
+      item: job,
+      workerStart,
+      slackStatusNotification,
+    };
+  }
   const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
     stage: retryStage,
     text: workerStart?.started ? '已重新触发处理流程。' : '已记录重试请求，等待处理流程启动。',

@@ -135,6 +135,7 @@ Slack thread
 - MySQL 是最终状态真相源；Redis / queue 只做 lease、事件分发、短期协调和 rate limit。
 - gateway `/health` 是不依赖 MySQL / Redis 的 liveness；`/ready` 才检查运行态依赖，避免数据库异常触发 K8s 误杀进程。
 - ECS compose 的 gateway 容器 healthcheck 也只能打 `/health`；部署脚本和外部上线验证继续等待 `/ready`，确保依赖未就绪时不会放量。
+- Slack retry / follow-up 把任务推进到 running 类状态后，如果 worker dispatch 返回未启动或抛错，gateway 必须立刻把任务落到 `failed` 并回写可见状态，不能留下没有 worker 消费的 `generating_page` / `fixing`。
 - gateway 调 `slack-notifier` 发 `job-message` 前必须先在 MySQL 原子 claim dedupe key；claim 失败直接跳过，避免多 gateway pod 同时把同一条普通进度消息发到 Slack。
 
 ## K8s 运行位置

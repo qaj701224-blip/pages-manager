@@ -8132,6 +8132,91 @@ test('Slack direct job fails when worker dispatch is rejected', async () => {
   assert.equal(delivery.errorCode, 'slack_delivery_failed');
 });
 
+test('Slack retry fails a site job when worker dispatch is rejected', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'slack-retry-worker-rejected',
+    employeeSlug: 'u1',
+    siteSlug: 'profile',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'U1 profile page',
+    summary: '个人主页',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'changes_requested',
+    issueNumber: 171,
+    issueUrl: 'https://github.example/org/pages-manager/issues/171',
+    prNumber: 181,
+    prUrl: 'https://github.example/org/pages-manager/pull/181',
+    headSha: '8'.repeat(40),
+    errorCode: 'review_blocked',
+    errorMessage: 'Review requested changes.',
+  });
+  const blockedJob = app.store.getJob(job.id);
+  const session = app.store.upsertSlackSession({
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1:1710000000.000171',
+    channelId: 'D1',
+    threadTs: '1710000000.000171',
+    activeJobId: blockedJob.id,
+    activeWorkItemKind: 'site_publishing',
+    activeWorkItemId: blockedJob.id,
+  });
+  app.store.linkJobToSlackSession(blockedJob, session);
+  const notifierCalls = [];
+  const workerStarts = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        payload: JSON.stringify({
+          type: 'block_actions',
+          team: { id: 'T1' },
+          user: { id: 'U1' },
+          channel: { id: 'D1' },
+          message: { ts: '1710000000.000171' },
+          actions: [
+            {
+              action_id: 'pages_request_retry_work_item',
+              value: JSON.stringify({ sessionId: session.id, workItemKind: 'site_publishing', workItemId: blockedJob.id }),
+            },
+          ],
+        }),
+      }).toString(),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), body: readRequestJson(request) });
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  const failedJob = app.store.getJob(blockedJob.id);
+  const statusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.action, 'retry_work_item_failed');
+  assert.equal(body.retry.workerStart.started, false);
+  assert.equal(body.retry.workerStart.error, 'worker unavailable');
+  assert.equal(workerStarts.length, 1);
+  assert.equal(workerStarts[0].body.job.status, 'fixing');
+  assert.equal(failedJob.status, 'failed');
+  assert.equal(failedJob.errorCode, 'worker_start_failed');
+  assert.equal(failedJob.errorMessage, 'worker unavailable');
+  assert.equal(body.workItem.status, 'failed');
+  assert.equal(statusCall.body.job.status, 'failed');
+  assert.match(statusCall.body.options.statusText, /重试启动失败/);
+});
+
 test('index_ready callback can start worker to dispatch pages-agent', async () => {
   const app = createGatewayApp();
   const createBody = await json(
