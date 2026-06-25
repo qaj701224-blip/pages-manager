@@ -588,12 +588,7 @@ export function platformDevTransitionPath(from, to) {
 export function transitionPlatformDevItemWithBridge(item, status, patch = {}, now = new Date(), onBridge = null) {
   const path = platformDevTransitionPath(item.status, status);
   if (!path.length) {
-    return {
-      ...item,
-      ...patch,
-      status: item.status,
-      updatedAt: now.toISOString(),
-    };
+    return item;
   }
   let current = item;
   for (const nextStatus of path) {

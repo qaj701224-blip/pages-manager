@@ -214,6 +214,7 @@ export class GatewayStoreFixture {
       this.platformDevItems.set(itemId, bridgedItem);
       this.appendPlatformDevEvent(bridgedItem, `PlatformDevItem moved to ${nextStatus}`);
     });
+    if (updated === item) return item;
     this.platformDevItems.set(itemId, updated);
     this.appendPlatformDevEvent(updated, `PlatformDevItem moved to ${status}`);
     return updated;

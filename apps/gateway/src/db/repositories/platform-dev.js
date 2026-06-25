@@ -249,6 +249,7 @@ export const platformDevRepositoryMethods = {
     const updated = transitionPlatformDevItemWithBridge(item, status, patch, new Date(), (bridgedItem, nextStatus) => {
       this.appendPlatformDevEvent(bridgedItem, `PlatformDevItem moved to ${nextStatus}`);
     });
+    if (updated === item) return item;
     this.appendPlatformDevEvent(updated, `PlatformDevItem moved to ${status}`);
     const events = this.platformDevEvents.get(itemId)?.slice(beforeCount) || [];
     try {
