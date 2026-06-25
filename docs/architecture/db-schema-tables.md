@@ -587,4 +587,4 @@ platform_dev_item_id
 
 - `PublishingJob` 创建必须把 `publishing_jobs` 和首条 `job_events` 放在同一个 MySQL transaction 内。
 - `PlatformDevItem` 创建必须把 `platform_dev_items`、首条 `platform_dev_events` 和需要的 `work_item_gates` 放在同一个 MySQL transaction 内。
-- 同一 idempotency key 的重试不能留下只有主表、没有事件或 gate 的半成品。
+- 同一 idempotency key 的重试必须 insert-only 后读取已有主表记录，不能通过 upsert 重置既有状态，也不能留下只有主表、没有事件或 gate 的半成品。

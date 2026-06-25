@@ -6,7 +6,7 @@ import {
 } from '@xd/workflow-core';
 
 import { eventToRow, jobToRow, rowToEvent, rowToJob } from '../rows/publishing-job-row.js';
-import { execute, limitOffsetSql, queryPlaceholders, upsertRow, withTransaction } from '../sql.js';
+import { execute, insertRowIfNotDuplicate, limitOffsetSql, queryPlaceholders, upsertRow, withTransaction } from '../sql.js';
 
 const REVIEW_ACTIVE_JOB_STATUSES = new Set(['pr_created', 'reviewing', 'changes_requested', 'fixing', 'previewing']);
 const LIKE_SEARCH_FIELDS = [
@@ -78,19 +78,20 @@ export const publishingJobRepositoryMethods = {
     this.appendEvent(job, 'PublishingJob received');
     const events = this.events.get(job.id) || [];
 
-    try {
-      await withTransaction(this.pool, async (connection) => {
-        await upsertRow(connection, 'publishing_jobs', jobToRow(job), { excludeUpdate: ['id', 'created_at'] });
-        for (const event of events) {
-          await upsertRow(connection, 'job_events', eventToRow(event), { excludeUpdate: ['id', 'created_at'] });
-        }
-      });
-    } catch (error) {
-      if (String(error.code || '').includes('ER_DUP_ENTRY')) {
-        const duplicate = await this.getJobByIdempotency(input);
-        if (duplicate) return { job: duplicate, created: false };
+    let inserted = false;
+    await withTransaction(this.pool, async (connection) => {
+      inserted = await insertRowIfNotDuplicate(connection, 'publishing_jobs', jobToRow(job));
+      if (!inserted) return;
+      for (const event of events) {
+        await upsertRow(connection, 'job_events', eventToRow(event), { excludeUpdate: ['id', 'created_at'] });
       }
-      throw error;
+    });
+
+    if (!inserted) {
+      this.events.delete(job.id);
+      const duplicate = await this.getJobByIdempotency(input);
+      if (duplicate) return { job: duplicate, created: false };
+      throw new Error('Duplicate PublishingJob idempotency row could not be loaded');
     }
 
     this.cacheJob(job);

@@ -26,7 +26,7 @@ const DEFAULT_PLATFORM_CI_APP_LOGINS = ['github-actions', 'github-actions[bot]',
 
 function listFromCsv(value = '') {
   return String(value)
-    .split(/[,\s]+/)
+    .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
 }

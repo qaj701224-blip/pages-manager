@@ -215,11 +215,25 @@ function platformGateApprovalAllowed(env = {}, teamId, slackUserId) {
 }
 
 async function failQueuedSlackWorkerStart(store, context = {}, errorMessage = 'Worker start failed') {
-  if (context.workItemKind === 'site_publishing' && context.publishingJobId && store?.failJob) {
-    return await store.failJob(context.publishingJobId, 'worker_start_failed', errorMessage);
+  if (context.workItemKind === 'site_publishing' && context.publishingJobId) {
+    return (
+      (await store?.failJob?.(context.publishingJobId, 'worker_start_failed', errorMessage)) ||
+      (await store?.patchJob?.(context.publishingJobId, {
+        status: 'failed',
+        errorCode: 'worker_start_failed',
+        errorMessage,
+      }))
+    );
   }
-  if (context.workItemKind === 'platform_dev' && context.platformDevItemId && store?.failPlatformDevItem) {
-    return await store.failPlatformDevItem(context.platformDevItemId, 'worker_start_failed', errorMessage);
+  if (context.workItemKind === 'platform_dev' && context.platformDevItemId) {
+    return (
+      (await store?.failPlatformDevItem?.(context.platformDevItemId, 'worker_start_failed', errorMessage)) ||
+      (await store?.patchPlatformDevItem?.(context.platformDevItemId, {
+        status: 'failed',
+        errorCode: 'worker_start_failed',
+        errorMessage,
+      }))
+    );
   }
   return null;
 }
@@ -2907,6 +2921,42 @@ export async function handleSlackInteractions(request, env) {
       job = await restorePlatformDevItemForReopenedGithubResource(store, job, target, resource || {});
       await store.linkPlatformDevItemToSlackSession(job, session);
       workerStart = await startWorkerForPlatformDevItemIfConfigured(job, env);
+      if (workerStart?.started === false) {
+        job =
+          (await failQueuedSlackWorkerStart(
+            store,
+            { workItemKind: 'platform_dev', platformDevItemId: job.id, slackSessionId: session.id },
+            workerStart.error || 'Worker start failed'
+          )) || job;
+        slackStatusNotification = await notifyQueuedWorkerStartFailure(env, store, job, {
+          workItemKind: 'platform_dev',
+          slackSessionId: session.id,
+        });
+        const refreshed = await listReconciledSlackWorkItemsForSession(store, body, env, {
+          limit: 5,
+          includeInactive: Boolean(value.includeInactive),
+          workItemState: value.workItemState,
+        });
+        const listUpdate = await updateSlackInteractionMessage(env, body, session, {
+          text: slackWorkItemListText(refreshed.jobs || [], {
+            includeInactive: Boolean(value.includeInactive),
+            workItemState: value.workItemState,
+          }),
+          blocks: slackWorkItemListBlocks(session, refreshed.jobs || [], {
+            includeInactive: Boolean(value.includeInactive),
+            workItemState: value.workItemState,
+          }),
+        });
+        return slackAckResponse({
+          response_type: 'ephemeral',
+          text: `重新打开后启动处理失败：${workerStart.error || 'Worker start failed'}`,
+          workItemKind: 'platform_dev',
+          workItemId: job.id,
+          workerStart,
+          ...(slackStatusNotification ? { slackStatusNotification } : {}),
+          ...(listUpdate ? { listUpdate } : {}),
+        });
+      }
       slackStatusNotification = await notifySlackPlatformDevStatus(env, store, job, {
         stage: job.status,
         text: target === 'pr' ? 'GitHub PR 已重新打开，任务已恢复。' : 'GitHub issue 已重新打开，任务已恢复。',
@@ -2922,6 +2972,41 @@ export async function handleSlackInteractions(request, env) {
       job = await restoreJobForReopenedGithubResource(store, job, target, resource || {});
       await store.linkJobToSlackSession(job, session);
       workerStart = await startWorkerForJobIfConfigured(job, env);
+      if (workerStart?.started === false) {
+        job =
+          (await failQueuedSlackWorkerStart(
+            store,
+            { workItemKind: 'site_publishing', publishingJobId: job.id, slackSessionId: session.id },
+            workerStart.error || 'Worker start failed'
+          )) || job;
+        slackStatusNotification = await notifyQueuedWorkerStartFailure(env, store, job, {
+          workItemKind: 'site_publishing',
+          slackSessionId: session.id,
+        });
+        const refreshed = await listReconciledSlackWorkItemsForSession(store, body, env, {
+          limit: 5,
+          includeInactive: Boolean(value.includeInactive),
+          workItemState: value.workItemState,
+        });
+        const listUpdate = await updateSlackInteractionMessage(env, body, session, {
+          text: slackWorkItemListText(refreshed.jobs || [], {
+            includeInactive: Boolean(value.includeInactive),
+            workItemState: value.workItemState,
+          }),
+          blocks: slackWorkItemListBlocks(session, refreshed.jobs || [], {
+            includeInactive: Boolean(value.includeInactive),
+            workItemState: value.workItemState,
+          }),
+        });
+        return slackAckResponse({
+          response_type: 'ephemeral',
+          text: `重新打开后启动处理失败：${workerStart.error || 'Worker start failed'}`,
+          jobId: job.id,
+          workerStart,
+          ...(slackStatusNotification ? { slackStatusNotification } : {}),
+          ...(listUpdate ? { listUpdate } : {}),
+        });
+      }
       slackStatusNotification = await notifySlackJobStatus(env, store, job, {
         stage: job.status,
         text: target === 'pr' ? 'GitHub PR 已重新打开，发布任务已恢复。' : 'GitHub issue 已重新打开，发布任务已恢复。',

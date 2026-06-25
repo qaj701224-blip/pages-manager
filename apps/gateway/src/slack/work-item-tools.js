@@ -395,6 +395,46 @@ export async function handleSlackReopenWorkItemTool({
     job = await restorePlatformDevItemForReopenedGithubResource(store, job, target, resource || {});
     await store.linkPlatformDevItemToSlackSession(job, slackSession);
     const workerStart = await startWorkerForPlatformDevItemIfConfigured(job, env);
+    if (workerStart?.started === false) {
+      const failedItem =
+        (await store.failPlatformDevItem?.(job.id, 'worker_start_failed', workerStart.error || 'Worker start failed')) ||
+        (await store.patchPlatformDevItem?.(job.id, {
+          status: 'failed',
+          errorCode: 'worker_start_failed',
+          errorMessage: workerStart.error || 'Worker start failed',
+        })) ||
+        job;
+      await store.linkPlatformDevItemToSlackSession(failedItem, slackSession);
+      const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, failedItem, {
+        stage: 'failed',
+        text: failedItem.errorMessage || failedItem.errorCode || '平台需求处理失败',
+        statusText: ':x: 平台需求处理失败',
+        skipDuplicate: false,
+        slackSessionId: slackSession.id,
+        dedupeKey: `slack-agent-platform-reopen-failed:${target}:${failedItem.id}:${agentRun?.id || Date.now()}`,
+      });
+      await complete({
+        accepted: false,
+        reason: 'worker_start_failed',
+        workItemKind: 'platform_dev',
+        workItemId: failedItem.id,
+        error: workerStart.error || 'Worker start failed',
+      });
+      return {
+        ok: true,
+        action: 'reopen_work_item_worker_start_failed',
+        accepted: false,
+        workItemKind: 'platform_dev',
+        workItemId: failedItem.id,
+        replyText: `重新打开后启动处理失败：${workerStart.error || 'Worker start failed'}`,
+        noReply: Boolean(slackStatusNotification?.ok),
+        slackSessionId: slackSession.id,
+        agentRunId: agentRun?.id,
+        ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+        workerStart,
+        ...(slackStatusNotification ? { slackStatusNotification } : {}),
+      };
+    }
     const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, job, {
       stage: job.status,
       text: target === 'pr' ? 'GitHub PR 已重新打开，任务已恢复。' : 'GitHub issue 已重新打开，任务已恢复。',
@@ -455,6 +495,46 @@ export async function handleSlackReopenWorkItemTool({
   job = await restoreJobForReopenedGithubResource(store, job, target, resource || {});
   await store.linkJobToSlackSession(job, slackSession);
   const workerStart = await startWorkerForJobIfConfigured(job, env);
+  if (workerStart?.started === false) {
+    const failedJob =
+      (await store.failJob?.(job.id, 'worker_start_failed', workerStart.error || 'Worker start failed')) ||
+      (await store.patchJob?.(job.id, {
+        status: 'failed',
+        errorCode: 'worker_start_failed',
+        errorMessage: workerStart.error || 'Worker start failed',
+      })) ||
+      job;
+    await store.linkJobToSlackSession(failedJob, slackSession);
+    const slackStatusNotification = await notifySlackJobStatus(env, store, failedJob, {
+      stage: 'failed',
+      text: failedJob.errorMessage || failedJob.errorCode || '发布任务失败',
+      statusText: ':x: 发布任务失败',
+      skipDuplicate: false,
+      dedupeKey: `slack-agent-reopen-failed:${target}:${failedJob.id}:${agentRun?.id || Date.now()}`,
+      slackSessionId: slackSession.id,
+    });
+    await complete(
+      {
+        accepted: false,
+        reason: 'worker_start_failed',
+        error: workerStart.error || 'Worker start failed',
+      },
+      { jobId: failedJob.id }
+    );
+    return {
+      ok: true,
+      action: 'reopen_work_item_worker_start_failed',
+      accepted: false,
+      jobId: failedJob.id,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      replyText: `重新打开后启动处理失败：${workerStart.error || 'Worker start failed'}`,
+      noReply: Boolean(slackStatusNotification?.ok),
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+      workerStart,
+      ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    };
+  }
   const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
     stage: job.status,
     text: target === 'pr' ? 'GitHub PR 已重新打开，发布任务已恢复。' : 'GitHub issue 已重新打开，发布任务已恢复。',

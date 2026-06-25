@@ -5364,6 +5364,96 @@ test('Slack reopen button restores a closed GitHub issue work item', async () =>
   assert.equal(JSON.parse(githubRequests[0].request.body).state, 'open');
 });
 
+test('Slack reopen button fails restored issue when worker dispatch is rejected', async () => {
+  const app = createGatewayApp();
+  const job = app.store.createJob({
+    source: 'slack',
+    requestedByType: 'user',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'reopen-closed-issue-worker-rejected',
+    employeeSlug: 'u1',
+    siteSlug: 'closed-issue-worker',
+    intent: 'create_site',
+    approvalMode: 'manual_required',
+    title: 'Closed issue profile page',
+    summary: '已关闭 issue 需要恢复。',
+  }).job;
+  app.store.patchJob(job.id, {
+    status: 'cancelled',
+    errorCode: 'github_issue_closed',
+    errorMessage: 'GitHub issue #72 已关闭，发布任务已停止。',
+    issueNumber: 72,
+    issueUrl: 'https://github.example/org/pages-manager/issues/72',
+  });
+
+  const historyResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-work-items-reopen-issue-worker-failed-history-1',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000000.0001412',
+          text: 'work all',
+        },
+      }),
+    })
+  );
+  const historyBody = await json(historyResponse);
+  const reopenAction = findBlockAction(historyBody.blocks, 'pages_reopen_work_item');
+
+  assert.ok(reopenAction);
+
+  const reopenResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        payload: JSON.stringify({
+          type: 'block_actions',
+          team: { id: 'T1' },
+          user: { id: 'U1' },
+          channel: { id: 'D1' },
+          message: { ts: '1710000000.0001412' },
+          actions: [reopenAction],
+        }),
+      }).toString(),
+    }),
+    {
+      GITHUB_REPO: 'org/pages-manager',
+      GITHUB_APP_INSTALLATION_TOKEN: 'ghs_write',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/start',
+      async GITHUB_FETCH() {
+        return new Response(
+          JSON.stringify({
+            number: 72,
+            state: 'open',
+            html_url: 'https://github.example/org/pages-manager/issues/72',
+          })
+        );
+      },
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const reopenBody = await json(reopenResponse);
+  const updatedJob = app.store.getJob(job.id);
+
+  assert.equal(reopenResponse.status, 200);
+  assert.equal(reopenBody.jobId, job.id);
+  assert.equal(reopenBody.workerStart.started, false);
+  assert.match(reopenBody.text, /启动处理失败/);
+  assert.equal(updatedJob.status, 'failed');
+  assert.equal(updatedJob.errorCode, 'worker_start_failed');
+  assert.equal(updatedJob.errorMessage, 'worker unavailable');
+});
+
 test('Slack Agent can reopen a visible closed issue through a scoped tool call', async () => {
   const app = createGatewayApp();
   const job = app.store.createJob({
