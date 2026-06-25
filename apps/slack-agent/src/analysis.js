@@ -8,18 +8,125 @@ import {
 import { compileSlackAgentPolicy } from './policy/compiler.js';
 import { SLACK_AGENT_POLICY_PACKAGE_VERSION } from './policy/package.js';
 
-const CREATE_KEYWORDS = /(创建|新建|生成|制作|做|更新|修改|发布|部署|create|build|make|update|publish|deploy)/i;
+const CREATE_KEYWORDS = new RegExp(
+  [
+    '创建',
+    '新建',
+    '新增',
+    '生成',
+    '制作',
+    '做',
+    '更新',
+    '修改',
+    '调整',
+    '删除',
+    '发布',
+    '部署',
+    'create',
+    'build',
+    'make',
+    'update',
+    'publish',
+    'deploy',
+  ].join('|'),
+  'i'
+);
 const SITE_KEYWORDS = /(页面|网页|网站|主页|profile|portfolio|site|page|website)/i;
-const PLATFORM_KEYWORDS =
-  /(pages-manager|平台|仓库|repo|代码|PR|issue|label|template|模版|gateway|worker|slack-agent|slack-notifier|Slack|GitHub|webhook|CI|CD|workflow|Actions|MySQL|数据库|状态机|权限|review|rebase|branch|分支|k8s|ECS|部署脚本|文档|架构)/i; // eslint-disable-line max-len
-const LIST_WORK_ITEMS_RE =
-  /^(我的|查看|看看|列出|查询|当前|目前|现在).*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)|^(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)(列表|清单)$/i;
-const STATUS_QUERY_RE =
-  /(?:^(?:status|状态)\b(?:\s+job_[A-Za-z0-9_]+)?$)|(?:(?:现在|当前|目前|这会儿|此刻).{0,12}(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢))|(?:(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢|查一下|查下|看一下|看下))/i;
-const SWITCH_WORK_ITEM_RE =
-  /(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:https?:\/\/github\.com\/[^/\s<>]+\/[^/\s<>]+\/(?:issues|pull)\/\d{1,8}(?:[/?#][^\s<>]*)?|(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b)/i;
-const REOPEN_WORK_ITEM_RE =
-  /(?:重新打开|恢复|重开|reopen).*(?:https?:\/\/github\.com\/[^/\s<>]+\/[^/\s<>]+\/(?:issues|pull)\/\d{1,8}(?:[/?#][^\s<>]*)?|(?:(?:\bPR|pull\s*request|issue|issues|需求|任务)\s*#?|#)\d{1,8}\b)/i;
+const PLATFORM_KEYWORDS = new RegExp(
+  [
+    'pages-manager',
+    '平台',
+    '仓库',
+    'repo',
+    '代码',
+    'PR',
+    'issue',
+    'label',
+    'template',
+    '模版',
+    'gateway',
+    'worker',
+    'slack-agent',
+    'slack-notifier',
+    'Slack',
+    'GitHub',
+    'webhook',
+    'CI',
+    'CD',
+    'workflow',
+    'Actions',
+    'MySQL',
+    '数据库',
+    '状态机',
+    '权限',
+    'review',
+    'rebase',
+    'branch',
+    '分支',
+    'k8s',
+    'ECS',
+    '部署脚本',
+    '文档',
+    '架构',
+  ].join('|'),
+  'i'
+);
+const REPO_REFERENCE_PREFIX_RE = '(?:^|[\\s`\'"])';
+const REPO_PATH_DIRS_RE = '(?:\\.github|apps|packages|scripts|docs|k8s|deploy|tests|migrations)';
+const REPO_PATH_REFERENCE_RE = new RegExp(
+  `${REPO_REFERENCE_PREFIX_RE}${REPO_PATH_DIRS_RE}/[^\\s\`'",，。；;)]+`,
+  'i'
+);
+const REPO_ROOT_FILES_RE = [
+  'README',
+  'AGENTS',
+  'CLAUDE',
+  'CHANGELOG',
+  'LICENSE',
+  'package',
+  'pnpm-lock',
+  'pnpm-workspace',
+  'wrangler',
+  'docker-compose',
+  'Dockerfile',
+  'tsconfig(?:\\.[\\w-]+)?',
+  'eslint\\.config',
+  'vitest\\.config',
+].join('|');
+const REPO_ROOT_FILE_REFERENCE_RE = new RegExp(
+  `${REPO_REFERENCE_PREFIX_RE}(?:${REPO_ROOT_FILES_RE})(?:\\.(?:md|json|ya?ml|mjs|js|toml|lock))?\\b`,
+  'i'
+);
+const CODE_FILE_REFERENCE_RE = new RegExp(
+  `${REPO_REFERENCE_PREFIX_RE}[\\w.-]+\\.(?:md|mjs|cjs|js|ts|tsx|json|ya?ml|toml)\\b`,
+  'i'
+);
+const LIST_WORK_ITEMS_RE = new RegExp(
+  [
+    '^(我的|查看|看看|列出|查询|当前|目前|现在).*(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)',
+    '^(PR|pr|issue|issues|需求|任务|发布任务|网站|项目)(列表|清单)$',
+  ].join('|'),
+  'i'
+);
+const STATUS_QUERY_RE = new RegExp(
+  [
+    '^(?:status|状态)\\b(?:\\s+job_[A-Za-z0-9_]+)?$',
+    '(?:现在|当前|目前|这会儿|此刻).{0,12}(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢)',
+    '(?:进度|状态).{0,12}(?:怎么样|如何|咋样|到哪了|呢|查一下|查下|看一下|看下)',
+  ].join('|'),
+  'i'
+);
+const GITHUB_WORK_ITEM_REF_RE =
+  'https?:\\/\\/github\\.com\\/[^/\\s<>]+\\/[^/\\s<>]+\\/(?:issues|pull)\\/\\d{1,8}(?:[/?#][^\\s<>]*)?';
+const SHORT_WORK_ITEM_REF_RE = '(?:(?:\\bPR|pull\\s*request|issue|issues|需求|任务)\\s*#?|#)\\d{1,8}\\b';
+const SWITCH_WORK_ITEM_RE = new RegExp(
+  `(?:继续|接着|切换|选择|打开|查看|回到|续上|处理|修改).*(?:${GITHUB_WORK_ITEM_REF_RE}|${SHORT_WORK_ITEM_REF_RE})`,
+  'i'
+);
+const REOPEN_WORK_ITEM_RE = new RegExp(
+  `(?:重新打开|恢复|重开|reopen).*(?:${GITHUB_WORK_ITEM_REF_RE}|${SHORT_WORK_ITEM_REF_RE})`,
+  'i'
+);
 const DIAGNOSIS_QUERY_RE =
   /(为什么|为啥|原因|失败|没成功|没有成功|没出来|卡住|卡在哪|卡在|诊断|排查|查一下|看一下|重试|查.*(?:日志|log|workflow|actions))/i;
 const REVIEW_RESULTS_QUERY_RE = new RegExp(
@@ -124,8 +231,26 @@ const CURRENT_WORK_ITEM_FOLLOWUP_RE =
   /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|重试|重新跑|再跑)/i;
 const CURRENT_WORK_ITEM_QUESTION_RE = /(?:需要改哪里|哪些地方要改|哪里要改|具体改哪里)/i;
 const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
-const CLOSE_SESSION_RE =
-  /(?:(?:关闭|结束|停止|退出|close|end)\s*(?:当前)?(?:这个)?\s*(?:会话|对话|session|conversation))|(?:(?:会话|对话|session|conversation).*(?:关闭|结束|停止|退出|close|end))/i;
+const CLOSE_SESSION_RE = new RegExp(
+  [
+    '(?:关闭|结束|停止|退出|close|end)\\s*(?:当前)?(?:这个)?\\s*(?:会话|对话|session|conversation)',
+    '(?:会话|对话|session|conversation).*(?:关闭|结束|停止|退出|close|end)',
+  ].join('|'),
+  'i'
+);
+
+function hasRepoFileReference(text = '') {
+  const value = String(text || '');
+  return (
+    REPO_PATH_REFERENCE_RE.test(value) ||
+    REPO_ROOT_FILE_REFERENCE_RE.test(value) ||
+    CODE_FILE_REFERENCE_RE.test(value)
+  );
+}
+
+function hasSitePublishingSignal(text = '') {
+  return SITE_KEYWORDS.test(String(text || ''));
+}
 
 function isUnsupportedBulkDestructiveRequest(text = '') {
   return UNSUPPORTED_BULK_DESTRUCTIVE_RE.test(String(text || ''));
@@ -319,7 +444,7 @@ function inferPlatformIssueType(text = '') {
   if (/\b(CI|CD)\b|workflow|Actions|构建|测试|lint|\bdeploy\b|部署/i.test(text)) return 'type:ci';
   if (/\bk8s\b|\bECS\b|\bDocker\b|\bACK\b|运维|\bops\b/i.test(text)) return 'type:ops';
   if (/bug|报错|失败|异常|修复|fix/i.test(text)) return 'type:bug';
-  if (/文档|架构|说明|宣讲|doc/i.test(text)) return 'type:docs';
+  if (/文档|架构|说明|宣讲|doc|README\.md|AGENTS\.md|CLAUDE\.md|\.md\b/i.test(text)) return 'type:docs';
   if (/反馈|建议|意见|想法|question|问题/i.test(text)) return 'type:feedback';
   return 'type:dev';
 }
@@ -334,7 +459,7 @@ function inferPlatformAreas(text = '') {
     [/slack-agent|Slack Agent|需求整理/i, 'area:slack-agent'],
     [/slack-notifier|通知|消息/i, 'area:slack-notifier'],
     [/Slack/i, 'area:slack'],
-    [/文档|架构|说明|宣讲|doc/i, 'area:docs'],
+    [/文档|架构|说明|宣讲|doc|README\.md|AGENTS\.md|CLAUDE\.md|docs\/|\.md\b/i, 'area:docs'],
     [/\bk8s\b|\bECS\b|\bDocker\b|\bACK\b|运维/i, 'area:ops'],
   ];
   const areas = entries.filter(([pattern]) => pattern.test(text)).map(([, label]) => label);
@@ -432,6 +557,8 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
   const event = input.event || {};
   const text = normalizeText(input.text || event.text || input.summary || '');
   const sessionContext = sessionContextFromInput(input);
+  const hasRepoFile = hasRepoFileReference(text);
+  const hasSiteSignal = hasSitePublishingSignal(text);
   const shouldCloseSession = isNaturalCloseSessionTurn(text, input, sessionContext);
   const isUnsupportedDestructive =
     isUnsupportedBulkDestructiveRequest(text) ||
@@ -490,32 +617,33 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     !shouldRecordCurrentWorkItemFollowup &&
     !shouldStatusQuery &&
     !shouldSummarizeReviewResults &&
-    (PLATFORM_KEYWORDS.test(text) || REPO_QUESTION_SUBJECT_RE.test(text)) &&
+    (PLATFORM_KEYWORDS.test(text) || REPO_QUESTION_SUBJECT_RE.test(text) || hasRepoFile) &&
     (REPO_QUESTION_RE.test(text) || QUESTION_CUE_RE.test(text)) &&
     !EXECUTION_CUE_RE.test(text);
-  const shouldCreateOrUpdate =
-    !isUnsupportedDestructive &&
-    !shouldListWorkItems &&
-    !shouldSwitchWorkItem &&
-    !shouldCloseSession &&
-    !shouldDiagnoseWorkItem &&
-    !shouldRecordCurrentWorkItemFollowup &&
-    !shouldAnswerRepoQuestion &&
-    !shouldStatusQuery &&
-    !shouldSummarizeReviewResults &&
-    (CREATE_KEYWORDS.test(text) || SITE_KEYWORDS.test(text));
   const shouldCreatePlatform =
     !isUnsupportedDestructive &&
     !shouldListWorkItems &&
     !shouldSwitchWorkItem &&
     !shouldCloseSession &&
     !shouldDiagnoseWorkItem &&
+    !shouldRecordCurrentWorkItemFollowup &&
+    !shouldStatusQuery &&
+    !shouldSummarizeReviewResults &&
+    !shouldAnswerRepoQuestion &&
+    (PLATFORM_KEYWORDS.test(text) || hasRepoFile) &&
+    (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
+  const shouldCreateOrUpdate =
+    !isUnsupportedDestructive &&
+    !shouldListWorkItems &&
+    !shouldSwitchWorkItem &&
+    !shouldCloseSession &&
+    !shouldDiagnoseWorkItem &&
     !shouldAnswerRepoQuestion &&
     !shouldRecordCurrentWorkItemFollowup &&
     !shouldStatusQuery &&
     !shouldSummarizeReviewResults &&
-    PLATFORM_KEYWORDS.test(text) &&
-    (CREATE_KEYWORDS.test(text) || /(需求|建议|反馈|优化|改造|支持|接入|流程|能力)/i.test(text));
+    !shouldCreatePlatform &&
+    hasSiteSignal;
   const intent = shouldCreatePlatform ? 'create_platform_issue' : shouldCreateOrUpdate ? 'create_or_update_site' : 'clarify';
   const finalIntent = isUnsupportedDestructive
     ? UNSUPPORTED_DESTRUCTIVE_INTENT
@@ -634,12 +762,26 @@ function shouldForceIntentToolCall(intent = '') {
     'repeat_previous_message',
     'append_requirement',
     'modify_existing_preview',
+    'create_platform_issue',
+    'platform_dev',
+    'platform_feedback',
+    'create_or_update_site',
+    'new_site_request',
+    'create_site',
+    'update_site',
   ].includes(intent);
 }
 
 function modelMustYieldToSafetyIntent(modelIntent = '', fallbackIntent = '') {
   if (!fallbackIntent || modelIntent === fallbackIntent) return false;
   return fallbackIntent === UNSUPPORTED_DESTRUCTIVE_INTENT;
+}
+
+function modelMustYieldToRepoFilePlatformIntent(modelIntent = '', fallbackIntent = '', text = '', input = {}, context = {}) {
+  if (fallbackIntent !== 'create_platform_issue') return false;
+  if (!['create_or_update_site', 'new_site_request', 'create_site', 'update_site'].includes(modelIntent)) return false;
+  if (shouldTreatAsCurrentWorkItemFollowup(text, input, context)) return false;
+  return hasRepoFileReference(text);
 }
 
 export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {}) {
@@ -651,7 +793,10 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
     shouldTreatAsCurrentWorkItemFollowup(toolCallFallbackText, input, inputSessionContext)
       ? 'append_requirement'
       : rawModelIntent;
-  if (modelMustYieldToSafetyIntent(modelIntent, fallback.intent)) {
+  const forceFallbackIntent =
+    modelMustYieldToSafetyIntent(modelIntent, fallback.intent) ||
+    modelMustYieldToRepoFilePlatformIntent(modelIntent, fallback.intent, toolCallFallbackText, input, inputSessionContext);
+  if (forceFallbackIntent) {
     modelIntent = fallback.intent;
   }
   const inferredToolCall = modelAnalysis.intent
@@ -672,6 +817,8 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
     lane:
       modelIntent === 'append_requirement' && rawModelIntent !== modelIntent
         ? laneForCurrentWorkItem(inputSessionContext)
+        : forceFallbackIntent
+          ? fallback.lane
         : stringOrFallback(modelAnalysis.lane, fallback.lane || 'unknown'),
     confidence: typeof modelAnalysis.confidence === 'number' ? modelAnalysis.confidence : fallback.confidence,
     employeeSlug: stringOrFallback(modelAnalysis.employeeSlug || modelAnalysis.employee_slug, fallback.employeeSlug),
