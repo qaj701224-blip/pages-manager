@@ -514,6 +514,8 @@ Slack 中把已入库 Review Agent 评论整理成 blocker / suggestion / note �
 - comment 先入库，再分类为 `blocking`、`suggestion`、`note` 或 `unknown`。
 - blocking / unknown 不放行 preview。
 - suggestion / note 可以放行 preview，但需要在 Slack 进度消息中提示。
+- 通过摘要里的 `0 failed`、`failed: 0`、`0 errors` 或 `errors: 0` 不视为 blocking；真实非零 failed / error 计数仍视为 blocking。
+- Platform Dev Lane 中，没有 `Reviewed commit` 标记的 issue comment 如果是 note / suggestion，只入库不推进当前 head 的 review 状态；blocking / unknown 会保守绑定当前 head 并进入 fix round。
 - 如果 Review Agent 超时没有返回最终评论，gateway 的 review gate watchdog 可以记录一条兜底结果，避免任务永久卡住。
 - 同一个 PR / job 同一时间只允许一个 Coding Agent fix round；Slack follow-up 和 Review Agent comment 都进入同一条修复队列。
 

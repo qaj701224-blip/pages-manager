@@ -113,10 +113,46 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     ? await store.findPlatformDevItemByPrNumber(normalized.prNumber, { headSha: normalized.headSha })
     : null;
   if (platformItem) {
-    const fullHeadSha = normalized.headSha && normalized.headSha.length === 40 ? normalized.headSha : null;
+    const headlessPlatformReviewForHeadBoundItem = Boolean(
+      platformItem.headSha && normalized.sourceType === 'issue_comment' && !normalized.headSha
+    );
+    const headlessBlockingPlatformReview =
+      headlessPlatformReviewForHeadBoundItem && ['blocking', 'unknown'].includes(normalized.classification);
+    const headlessNonblockingPlatformReview =
+      headlessPlatformReviewForHeadBoundItem && ['note', 'suggestion'].includes(normalized.classification);
+
+    if (headlessNonblockingPlatformReview) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        reviewAction: 'platform_headless_review_recorded',
+        reviewComment: reviewComment.comment,
+        reviewCommentCreated: reviewComment.created,
+        item: platformItem,
+      });
+    }
+
+    const effectiveNormalized = headlessBlockingPlatformReview
+      ? { ...normalized, headSha: platformItem.headSha }
+      : normalized;
+    if (headlessBlockingPlatformReview) {
+      const rebound = await store.recordReviewAgentComment({
+        ...reviewComment.comment,
+        headSha: platformItem.headSha,
+      });
+      reviewComment = {
+        ...rebound,
+        created: reviewComment.created,
+      };
+    }
+
+    const fullHeadSha =
+      effectiveNormalized.headSha && effectiveNormalized.headSha.length === 40 ? effectiveNormalized.headSha : null;
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
     const nextStatus =
-      commentIsOpen && (normalized.classification === 'blocking' || normalized.classification === 'unknown')
+      commentIsOpen &&
+      (effectiveNormalized.classification === 'blocking' || effectiveNormalized.classification === 'unknown')
         ? 'review_blocked'
         : platformItem.status === 'pr_created' || platformItem.status === 'ci_running'
           ? 'review_waiting'
@@ -159,8 +195,8 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       });
     }
     await store.linkPlatformDevItemToSlackSession(platformItem);
-    const reviewContext = await platformReviewContextForItem(store, platformItem, { ...normalized, repoFullName });
-    const memory = await rememberPlatformReview(store, platformItem, normalized, reviewContext);
+    const reviewContext = await platformReviewContextForItem(store, platformItem, { ...effectiveNormalized, repoFullName });
+    const memory = await rememberPlatformReview(store, platformItem, effectiveNormalized, reviewContext);
     const memoryContext = await platformMemoryContextForItem(store, platformItem, reviewContext);
     const contextPatch = {
       reviewContext,
