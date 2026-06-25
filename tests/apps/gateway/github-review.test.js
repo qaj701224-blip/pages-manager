@@ -98,6 +98,10 @@ test('classifies review agent comments conservatively', () => {
   assert.equal(classifyReviewAgentComment({ body: '2 errors found.' }), 'blocking');
   assert.equal(classifyReviewAgentComment({ body: 'Security issue: token exposure.' }), 'blocking');
   assert.equal(classifyReviewAgentComment({ body: 'Critical vulnerability in auth.' }), 'blocking');
+  assert.equal(
+    classifyReviewAgentComment({ body: 'No security issues found. However, there is 1 critical vulnerability in auth.' }),
+    'blocking'
+  );
   assert.equal(classifyReviewAgentComment({ body: 'Please inspect this custom output.' }), 'unknown');
 });
 

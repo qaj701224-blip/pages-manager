@@ -82,6 +82,13 @@ const POSITIVE_COUNT_BLOCKING_PATTERNS = [
   /\berrors?(?:\s+(?:found|detected))?\s*:\s*[1-9]\d*\b/i,
 ];
 
+function reviewSegments(body = '') {
+  return String(body || '')
+    .split(/(?:\r?\n+|(?<=[.!?。！？；;])\s+)/u)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
 const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
 const DEFAULT_PLATFORM_CI_CHECK_NAMES = ['Platform CI', 'check'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
@@ -164,9 +171,16 @@ function reviewPriorityFromBody(body = '') {
 function hasBlockingReviewSignal(body = '') {
   const text = String(body || '');
   const zeroCountPass = ZERO_COUNT_PASS_PATTERNS.some((pattern) => pattern.test(text));
-  const noRiskPass = NO_RISK_PASS_PATTERNS.some((pattern) => pattern.test(text));
   if (POSITIVE_COUNT_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
-  if (!noRiskPass && ENGLISH_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (
+    reviewSegments(text).some(
+      (segment) =>
+        !NO_RISK_PASS_PATTERNS.some((pattern) => pattern.test(segment)) &&
+        ENGLISH_BLOCKING_PATTERNS.some((pattern) => pattern.test(segment))
+    )
+  ) {
+    return true;
+  }
   if (/\bfailed\b/i.test(text) && !/\bno failed\b/i.test(text) && !zeroCountPass) return true;
   if (/\berrors?\b/i.test(text) && !/\bno errors?(?: found| detected)?\b/i.test(text) && !zeroCountPass) return true;
   if (/\bblocking\b/i.test(text) && !/\b(no blocking issues?|not blocking|without blocking)\b/i.test(text)) return true;
