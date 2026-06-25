@@ -582,7 +582,7 @@ Dockerfile*
 - `type:ci`、`type:ops`、`type:security` 默认 `agent:blocked`，需要人工 gate。
 - `.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动必须在 PR 中标记 `risk:high`，并由人工 review 放行。
 - production workflow 仍只能手动触发；Platform Dev Lane 不能引入 push/PR 自动生产部署。
-- PR body 生成也属于安全边界：request / review / follow-up 等 workflow input 只能作为文本写入 `--body-file`，不能通过 bash heredoc、`eval` 或 shell 模板展开。
+- PR body / title / 站点 manifest 生成也属于安全边界：request / review / follow-up 等 workflow input 只能先做 secret-like 脱敏后写入公开 PR、issue 或 `site.json`，并且不能通过 bash heredoc、`eval` 或 shell 模板展开。
 - Coding Agent 不能 merge PR，也不能 resolve review thread 作为放行依据。
 
 Platform Dev Lane 的设计细节见 [platform-dev-lane.md](./platform-dev-lane.md)。

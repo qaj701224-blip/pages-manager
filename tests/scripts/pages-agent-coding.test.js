@@ -82,6 +82,46 @@ test('runs Coding Agent and writes only the allowed site files', async () => {
   }
 });
 
+test('redacts secret-like request metadata before writing public site manifest', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-agent-coding-redacted-title-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await runCodingAgent({
+      env: {
+        ...env,
+        REQUEST_TITLE: 'Alice profile password=super-secret',
+      },
+      async fetchImpl() {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    html: '<!doctype html><html><body><h1>Alice</h1></body></html>',
+                    summary: 'Generated with CF_API_TOKEN=cf-secret-value.',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const siteJson = JSON.parse(await readFile(path.join(dir, 'sites/alice/profile/site.json'), 'utf8'));
+
+    assert.equal(siteJson.title, 'Alice profile password=[REDACTED_SECRET]');
+    assert.equal(siteJson.codingSummary, 'Generated with CF_API_TOKEN=[REDACTED_SECRET]');
+    assert.doesNotMatch(JSON.stringify(siteJson), /super-secret|cf-secret-value/);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('fix mode sends existing site HTML to the Coding Agent', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-agent-coding-fix-'));
   const previousCwd = process.cwd();

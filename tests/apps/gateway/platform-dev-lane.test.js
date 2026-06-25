@@ -2388,6 +2388,110 @@ test('successful platform CI rerun promotes item after stored nonblocking review
   assert.equal(updated.status, 'ready_to_merge');
 });
 
+test('platform CI rerun from failed state records in-progress without throwing', async () => {
+  const app = createGatewayApp();
+  const headSha = '8'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-rerun-in-progress',
+    issueNumber: 88,
+    prNumber: 98,
+    headSha,
+    slackSessionId: 'sess_platform_ci_rerun_in_progress',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_failed', { headSha });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-rerun-in-progress',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'rerequested',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9804,
+          node_id: 'SCR_PLATFORM_9804',
+          name: 'Platform CI',
+          status: 'in_progress',
+          conclusion: null,
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 98 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_recorded');
+  assert.equal(updated.status, 'ci_running');
+});
+
+test('successful platform CI rerun preserves stored blocking review', async () => {
+  const app = createGatewayApp();
+  const headSha = '9'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-rerun-blocking-review',
+    issueNumber: 89,
+    prNumber: 99,
+    headSha,
+    slackSessionId: 'sess_platform_ci_rerun_blocking_review',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_failed', { headSha });
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 99,
+    githubCommentNodeId: 'PRR_PLATFORM_9903',
+    sourceType: 'review_summary',
+    reviewAgentLogin: 'chatgpt-codex-connector',
+    classification: 'blocking',
+    status: 'open',
+    body: 'Must fix before merge.',
+    headSha,
+    firstSeenDeliveryId: 'delivery-platform-ci-rerun-blocking-review',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-rerun-success-with-blocking',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9904,
+          node_id: 'SCR_PLATFORM_9904',
+          name: 'Platform CI',
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 99 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_recorded');
+  assert.equal(updated.status, 'review_blocked');
+});
+
 test('duplicate successful platform CI keeps a merge-ready item ready', async () => {
   const app = createGatewayApp();
   const headSha = '3'.repeat(40);
@@ -2601,6 +2705,75 @@ test('platform blocking review with mismatched head SHA does not dispatch a fix 
   assert.equal(updated.status, 'pr_created');
   assert.equal(updated.headSha, currentHeadSha);
   assert.equal(workerCalls.length, 0);
+});
+
+test('nonblocking review does not clear an existing open platform blocking review', async () => {
+  const app = createGatewayApp();
+  const headSha = 'a'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-review-blocked-stays-blocked',
+    issueNumber: 100,
+    prNumber: 100,
+    headSha,
+    slackSessionId: 'sess_platform_review_blocked_stays_blocked',
+  });
+  app.store.updatePlatformDevItem(item.id, 'review_blocked', { headSha });
+  app.store.recordSiteCheckRun({
+    repoFullName: 'org/pages-manager',
+    prNumber: 100,
+    checkRunId: '10004',
+    checkRunNodeId: 'SCR_PLATFORM_10004',
+    checkName: 'Platform CI',
+    appSlug: 'github-actions',
+    appName: 'GitHub Actions',
+    status: 'completed',
+    conclusion: 'success',
+    headSha,
+    firstSeenDeliveryId: 'delivery-platform-review-blocked-site-check',
+  });
+  app.store.recordReviewAgentComment({
+    repoFullName: 'org/pages-manager',
+    prNumber: 100,
+    githubCommentNodeId: 'PRR_PLATFORM_10003',
+    sourceType: 'review_summary',
+    reviewAgentLogin: 'chatgpt-codex-connector',
+    classification: 'blocking',
+    status: 'open',
+    body: 'Must fix before merge.',
+    headSha,
+    firstSeenDeliveryId: 'delivery-platform-review-blocked-summary',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-review-blocked-note',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 100, head: { sha: headSha } },
+        review: {
+          id: 10005,
+          node_id: 'PRR_PLATFORM_10005',
+          state: 'approved',
+          body: 'LGTM on the latest small cleanup.',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_review_recorded');
+  assert.equal(updated.status, 'review_blocked');
 });
 
 test('platform headless nonblocking issue comment does not advance head-bound review', async () => {

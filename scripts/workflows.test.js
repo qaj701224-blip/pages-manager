@@ -259,12 +259,16 @@ test('platform agent diagnostics artifact excludes prompt and context markdown',
 test('platform agent PR body does not shell-expand workflow input text', () => {
   const workflow = readWorkflow('.github/workflows/platform-agent.yml');
 
-  assert.match(workflow, /BODY_FILE="\$body_file" node <<'NODE'/);
-  assert.match(workflow, /env\.REQUEST_SUMMARY \|\| ''/);
+  assert.match(workflow, /BODY_FILE="\$body_file" TITLE_FILE="\$title_file" node <<'NODE'/);
+  assert.match(workflow, /const requestSummary = redactPublicText\(env\.REQUEST_SUMMARY \|\| ''\);/);
+  assert.match(workflow, /const requestTitle = redactPublicText\(env\.REQUEST_TITLE \|\| '平台需求'\)/);
+  assert.match(workflow, /writeFileSync\(env\.TITLE_FILE, `feat: \$\{requestTitle\}\\n`\)/);
+  assert.match(workflow, /--title "\$pr_title"/);
   assert.match(workflow, /Closes #\$\{issueNumber\}/);
   assert.match(workflow, /- Issue: \$\{issueReference\}/);
   assert.doesNotMatch(workflow, /cat > "\$body_file" <<EOF/);
   assert.doesNotMatch(workflow, /REQUEST_SUMMARY[\s\S]{0,200}\$\(if \[\[ -n "\$\{ISSUE_NUMBER\}"/);
+  assert.doesNotMatch(workflow, /--title "feat: \$\{REQUEST_TITLE\}"/);
 });
 
 test('v1 deploy workflows do not inject KV capability secrets', () => {

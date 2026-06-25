@@ -26,6 +26,16 @@ async function platformCiPassedForItem(store, repoFullName, platformItem = {}, n
   return gate?.passed === true;
 }
 
+async function platformReviewPassedForItem(store, repoFullName, platformItem = {}, normalized = {}) {
+  if (!store || !repoFullName) return false;
+  const prNumber = normalized.prNumber || platformItem.githubPrNumber;
+  if (!prNumber) return false;
+  const headSha = normalized.headSha || platformItem.headSha;
+  const gate = await previewGateForPr(store, repoFullName, prNumber, headSha ? { headSha } : {});
+  const passedReviewCount = Number(gate?.reviewGate?.noteCount || 0) + Number(gate?.reviewGate?.suggestionCount || 0);
+  return gate?.reviewGate?.canPreview === true && passedReviewCount > 0;
+}
+
 function reviewedCommitSha(value) {
   return typeof value === 'string' && /^[a-f0-9]{7,40}$/i.test(value) ? value : null;
 }
@@ -166,11 +176,14 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     const ciPassed = reviewIsNonblocking
       ? await platformCiPassedForItem(store, repoFullName, platformItem, effectiveNormalized)
       : false;
+    const reviewPassed = reviewIsNonblocking
+      ? await platformReviewPassedForItem(store, repoFullName, platformItem, effectiveNormalized)
+      : false;
     const nextStatus = reviewIsBlocking
       ? platformItem.status === 'ci_failed'
         ? 'ci_failed'
         : 'review_blocked'
-      : ciPassed
+      : ciPassed && reviewPassed
         ? 'ready_to_merge'
         : ['pr_created', 'ci_running'].includes(platformItem.status)
           ? 'review_waiting'
