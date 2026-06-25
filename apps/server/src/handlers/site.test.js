@@ -218,7 +218,7 @@ test('site delete allows the owning token', async () => {
     assert.equal(body.status, 'ok');
     assert.deepEqual(env.deleted, ['demo']);
     assert.deepEqual(
-      fetchCalls.map((call) => [call.method, call.url.replace(/https:\/\/api.cloudflare.com\/client\/v4/, '')]),
+      fetchCalls.map((call) => [call.method, call.url.replace(/https:\/\/api\.cloudflare\.com\/client\/v4/, '')]),
       [
         ['GET', '/zones/dummy-zone/workers/routes'],
         ['DELETE', '/zones/dummy-zone/workers/routes/route_1'],
