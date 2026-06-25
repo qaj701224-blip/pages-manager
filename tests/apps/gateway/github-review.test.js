@@ -80,8 +80,14 @@ test('classifies review agent comments conservatively', () => {
   assert.equal(classifyReviewAgentComment({ body: 'No blocking issues found. Site check passed.' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: 'No action required.' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: 'No errors found.' }), 'note');
+  assert.equal(classifyReviewAgentComment({ body: '0 failed tests.' }), 'note');
+  assert.equal(classifyReviewAgentComment({ body: '0 errors found.' }), 'note');
+  assert.equal(classifyReviewAgentComment({ body: 'All checks passed: 0 failed, 0 errors.' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: 'Required checks passed.' }), 'note');
   assert.equal(classifyReviewAgentComment({ body: '无阻塞，检查通过。' }), 'note');
+  assert.equal(classifyReviewAgentComment({ body: '1 failed test.' }), 'blocking');
+  assert.equal(classifyReviewAgentComment({ body: 'All checks completed: 1 failed test, 0 errors.' }), 'blocking');
+  assert.equal(classifyReviewAgentComment({ body: '2 errors found.' }), 'blocking');
   assert.equal(classifyReviewAgentComment({ body: 'Please inspect this custom output.' }), 'unknown');
 });
 
