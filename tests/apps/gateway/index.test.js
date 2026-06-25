@@ -12256,7 +12256,48 @@ test('GitHub headless blocking review comment blocks the current head conservati
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'changes_requested');
   assert.equal(body.reviewComment.classification, 'blocking');
+  assert.equal(body.reviewComment.headSha, currentHeadSha);
   assert.equal(job.status, 'changes_requested');
+  assert.equal(workerStarts.length, 0);
+
+  const followupResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-headless-blocking-followup',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 225,
+          pull_request: { url: 'https://api.github.example/repos/org/pages-manager/pulls/225' },
+        },
+        comment: {
+          id: 22502,
+          node_id: 'IC_HEADLESS_BLOCKING_FOLLOWUP',
+          body: `No blocking issues found.\n\n**Reviewed commit:** \`${currentHeadSha.slice(0, 10)}\``,
+          user: { login: 'greptile[bot]' },
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const followupBody = await json(followupResponse);
+
+  assert.equal(followupResponse.status, 200);
+  assert.equal(followupBody.reviewAction, 'changes_requested');
+  assert.equal(followupBody.gate.blockingCount, 1);
+  assert.equal(app.store.getJob(jobId).status, 'changes_requested');
   assert.equal(workerStarts.length, 0);
 });
 
