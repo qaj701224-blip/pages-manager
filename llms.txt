@@ -1,0 +1,23 @@
+# XD Cell AI 文档索引
+
+本文面向 AI agent，列出高信号、低重复的 XD Cell 文档入口。API 细节以生成文档为准，不在 skill reference 中重复维护。
+
+## Worker SDK
+
+- Worker SDK 使用快照：apps/worker-sdk/docs/llms/worker-sdk.md
+- Worker SDK API 摘要：apps/worker-sdk/docs/llms/worker-sdk-api.md
+- Worker SDK 破坏性变更：apps/worker-sdk/BREAKING_CHANGES.md
+- Worker SDK README：apps/worker-sdk/README.md
+
+## Agent 与发布
+
+- xd-cell skill：apps/pages-skill/skill/SKILL.md
+- Skill SDK reference：apps/pages-skill/skill/references/sdk.md
+- CLI reference：apps/pages-skill/skill/references/cli.md
+- 分发边界 ADR：docs/adr/0004-cli-sdk-skill-release-boundaries.md
+
+## 平台边界
+
+- 文档索引与真相源矩阵：docs/README.md
+- API 边界说明：docs/api-boundary.md
+- v2 架构索引：docs/pages-v2-wfp-architecture.md

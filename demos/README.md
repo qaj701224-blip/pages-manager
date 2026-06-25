@@ -7,7 +7,7 @@
 | Demo | Preset | Purpose | Deploy source |
 | --- | --- | --- | --- |
 | `html-img` | `static` | Plain HTML plus SVG asset serving | `demos/html-img` |
-| `vue-app` | `spa` | Vue Router fallback, browser SDK, and Pages KV smoke test | `demos/vue-app/dist` after build |
+| `vue-app` | `spa` | Vue Router fallback, vendored legacy browser helper, and Pages KV smoke test | `demos/vue-app/dist` after build |
 | `nuxt-app` | `spa` | Nuxt 3 generated static output | `demos/nuxt-app/.output/public` after generate |
 | `api-demo` | `worker` | Custom `_worker.js`, explicit IP guard, and static assets through `env.ASSETS` | `demos/api-demo` |
 | `xd-pages-kv-smoke` | `static` | Browser SDK runtime data smoke test | `demos/xd-pages-kv-smoke` |
@@ -109,11 +109,11 @@ PAGES_V2_DEMO_TARGET=staging
 PAGES_V2_API=https://api-staging.pages.xd.team
 PAGES_V2_DEMO_SLUG=demo-vue-app
 PAGES_V2_DEMO_VISIBILITY=internal
-PAGES_CLI_BIN=pages
+PAGES_CLI_BIN=xd-cell
 ```
 
 By default it verifies `https://demo-vue-app-staging.pages.xd.team/` and `/about`. Use `--slug <name>` for a personal staging site, or `--target production --slug <name>` for a production smoke test.
-After opening the published page, use the `Pages KV` panel on the home page to verify browser SDK `set` / `get` / `delete`.
+After opening the published page, use the `Pages KV` panel on the home page to verify the vendored legacy browser helper `set` / `get` / `delete`. This browser helper is only for demo smoke tests and is not part of `@xd-cell/worker-sdk`.
 
 ## Package Manager Relationship
 

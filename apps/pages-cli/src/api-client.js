@@ -51,7 +51,7 @@ export function createApiClient({ apiBaseUrl, authBaseUrl, credential = null, fe
           status: 401,
           code: 'PAGES_CREDENTIAL_REQUIRED',
           message: 'Pages credential is required.',
-          action: 'Run `pages login` and retry.',
+          action: 'Run `xd-cell login` and retry.',
         });
       }
       return requestJson(fetch, buildUrl(apiBaseUrl, path), {
@@ -67,7 +67,7 @@ export function createApiClient({ apiBaseUrl, authBaseUrl, credential = null, fe
           status: 401,
           code: 'PAGES_CREDENTIAL_REQUIRED',
           message: 'Pages credential is required.',
-          action: 'Run `pages login` and retry.',
+          action: 'Run `xd-cell login` and retry.',
         });
       }
       return requestForm(fetch, buildUrl(apiBaseUrl, path), {

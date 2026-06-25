@@ -8,7 +8,7 @@ Last updated: 2026-06-23
 
 ## 背景
 
-XD Pages auth 同时服务浏览器登录、子站 SSO 跳转和 CLI 登录。近期 `pages login` 排障暴露出一个问题：当错误码过粗时，同一个用户现象可能被误判为 callback URL 过期或重放，但实际还需要排查 SSO profile 形态、员工状态、CLI login 配对关系，以及 OAuth state 的一次性消费时机。
+XD Cell auth 同时服务浏览器登录、子站 SSO 跳转和 CLI 登录。近期 `xd-cell login` 排障暴露出一个问题：当错误码过粗时，同一个用户现象可能被误判为 callback URL 过期或重放，但实际还需要排查 SSO profile 形态、员工状态、CLI login 配对关系，以及 OAuth state 的一次性消费时机。
 
 当前 auth 侧主要返回或渲染 `code`、`message`，部分场景带 `action`。这个模型简单且兼容，但会把多个不同失败阶段压缩成同一个错误：
 

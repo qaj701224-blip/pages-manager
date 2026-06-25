@@ -102,11 +102,11 @@ test('script invokes v2 CLI instead of legacy Pages API', () => {
   const script = readFileSync(scriptPath, 'utf8');
   const demoReadme = readFileSync(join(repoRoot, 'demos/README.md'), 'utf8');
 
-  assert.match(script, /PAGES_CLI_BIN:-pages/);
-  assert.match(script, /pnpm --filter @xd\/pages-sdk build/);
+  assert.match(script, /PAGES_CLI_BIN:-xd-cell/);
   assert.match(script, /PAGES_CLI_ENV="\$PAGES_V2_DEMO_TARGET"/);
   assert.match(script, /deploy dist "\$PAGES_V2_DEMO_SLUG"/);
   assert.doesNotMatch(script, /apps\/pages-cli\/src\/main\.js/);
+  assert.doesNotMatch(script, /@xd-cell\/worker-sdk build/);
   assert.doesNotMatch(script, /--artifact-kind/);
   assert.doesNotMatch(script, /--slug "\$PAGES_V2_DEMO_SLUG"/);
   assert.doesNotMatch(script, /X-Pages-Token|PAGES_TOKEN|api-staging\.workers\.xd\.team|\/deploy/);

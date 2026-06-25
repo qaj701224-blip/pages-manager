@@ -117,7 +117,7 @@ test('main prints JSON error envelopes when --json is requested', async () => {
     error: {
       code: 'SITE_SLUG_REQUIRED',
       message: '缺少站点名。',
-      action: '请传入站点名，例如 pages deploy ./dist demo。',
+      action: '请传入站点名，例如 xd-cell deploy ./dist demo。',
     },
   });
 });
@@ -244,28 +244,28 @@ test('main keeps command-specific SITE_REQUIRED actions', async () => {
     commandRunner: async () => {
       const error = new Error('缺少站点名。');
       error.code = 'SITE_REQUIRED';
-      error.action = '请使用 pages status <站点名>。';
+      error.action = '请使用 xd-cell status <站点名>。';
       throw error;
     },
   });
 
   assert.equal(exitCode, 1);
   assert.match(stderr.text(), /SITE_REQUIRED/);
-  assert.match(stderr.text(), /pages status <站点名>/);
-  assert.doesNotMatch(stderr.text(), /pages deploy \.\/dist demo/);
+  assert.match(stderr.text(), /xd-cell status <站点名>/);
+  assert.doesNotMatch(stderr.text(), /xd-cell deploy \.\/dist demo/);
 });
 
 test('global symlinked bin invokes the CLI entrypoint', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-bin-'));
   test.after(() => rm(dir, { recursive: true, force: true }));
-  const linkPath = path.join(dir, 'pages');
+  const linkPath = path.join(dir, 'xd-cell');
   const mainPath = fileURLToPath(new URL('./main.js', import.meta.url));
   await symlink(mainPath, linkPath);
 
   const result = await runNode([linkPath, 'help']);
 
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /用法：pages/);
+  assert.match(result.stdout, /用法：xd-cell/);
   assert.equal(result.stderr, '');
 });
 

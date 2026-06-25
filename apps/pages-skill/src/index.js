@@ -1,1 +1,1 @@
-export { buildPagesSkill } from './build.js';
+export { buildCellSkill, buildPagesSkill } from './build.js';

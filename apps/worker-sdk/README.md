@@ -1,0 +1,159 @@
+# @xd-cell/worker-sdk
+
+`@xd-cell/worker-sdk` 是 XD Cell 面向业务自定义 Worker 的 runtime SDK。它的目标是在 Worker 运行时提供一层足够薄、接近 Cloudflare API 心智的资源抽象，而不是把底层 KV、D1、R2、service binding、内部 gateway path 或 capability 格式直接暴露给业务。
+
+业务代码应该面向本 SDK 的 `runtime` 资源编程。这样平台未来从 Cloudflare Workers 演进到其它 Worker-compatible 基础设施时，可以优先在 SDK 内适配，尽量减少业务 Worker 感知。
+
+## 设计目标
+
+- 保持 Cloudflare Worker 开发者熟悉的资源心智，例如 `env.MY_KV.get()` 对应 `runtime.kv.get()`。
+- 对业务隐藏底层资源绑定、gateway、capability、内部 header、JWT 和 provider 资源 ID。
+- 让 SDK 成为业务 Worker 与 XD Cell runtime 能力之间的稳定边界。
+- 当前先提供 KV 风格资源；D1、R2 等资源在 API 稳定前只作为规划方向，不提前暴露空 API。
+- 只使用 Worker-compatible Web API，不依赖 Node.js、DOM、localStorage 或浏览器全局对象。
+
+## 当前状态
+
+本目录是独立 npm 包 `@xd-cell/worker-sdk` 的源码目录。Worker SDK 的 README、`package.json`、类型声明、`docs/llms/*` 和 `BREAKING_CHANGES.md` 随包发布，是业务 Worker 和 AI agent 理解 SDK 能力的真相源；源码和测试是仓库内校验真相源，不随 npm 包发布。
+
+`xd-cell` skill / `@xd-cell/skill` 暂时仍是 XD Cell 发布与管理入口。skill 不复制 Worker SDK 领域产物，也不手写维护 SDK API 细节。agent 需要接入自定义 Worker 时，应让用户项目显式安装 `@xd-cell/worker-sdk`，再读取安装包内的 AI 文档和类型声明。
+
+## 安装与导入
+
+业务自定义 Worker 直接安装：
+
+```bash
+pnpm add @xd-cell/worker-sdk
+```
+
+```ts
+import { createRuntime, readContext } from '@xd-cell/worker-sdk';
+```
+
+如果 npm 包尚不可安装，不应从 skill 产物中寻找内置 SDK 副本；应暂停接入、使用用户项目已有实现，或在本 monorepo 内继续开发 `apps/worker-sdk`。
+
+## 构建与发布流程
+
+本包把构建、AI 文档生成和发布前校验拆开维护：
+
+```bash
+pnpm --dir apps/worker-sdk run build
+pnpm --dir apps/worker-sdk run docs:llms
+pnpm --dir apps/worker-sdk run pack:check
+cd apps/worker-sdk && npm pack --dry-run
+```
+
+- `build` 只生成 `dist`。
+- `docs:llms` 只基于已存在的 `dist`、README、`package.json` 和 `BREAKING_CHANGES.md` 生成 AI 文档。
+- `pack:prepare` 执行 `build` 和 `docs:llms`，并由 `prepack` 自动调用。
+- `pack:check` 执行 `build`、`docs:llms:check` 和 `pack:surface`，用于 CI 或人工发布前确认文档未漂移，且 npm tarball 包含 `exports` 指向的运行时代码和类型声明。
+
+## 核心用法
+
+自定义 Worker 先创建 runtime，再像使用 Cloudflare 资源一样访问 SDK 暴露的资源对象：
+
+```ts
+import { createRuntime, readContext } from '@xd-cell/worker-sdk';
+
+export default {
+  async fetch(request, env) {
+    const runtime = createRuntime({ request, env });
+    const context = readContext(request);
+
+    const message = await runtime.kv.get('app/message');
+    const config = await runtime.kv.get('app/config', { type: 'json' });
+
+    await runtime.kv.put('app/last-request', { traceId: context?.traceId ?? null }, { type: 'json' });
+
+    return Response.json({ config, message, userId: context?.userId ?? null });
+  },
+};
+```
+
+`createRuntime({ request, env })` 返回业务 Worker 可用的资源集合。
+
+`readContext(request)` 读取 router 注入的最小身份上下文，包括用户、站点、版本和 trace 信息。它不会暴露原始内部 JWT，也不是 data/KV 授权凭证。
+
+## 资源模型
+
+当前公开资源：
+
+- `runtime.kv`：默认 KV namespace，适合配置、站点状态和跨请求共享数据。
+
+`runtime.kv` 的心智对齐 Cloudflare 的 `env.MY_KV` binding。业务代码不需要理解底层 site/user data scope，也不应该直接处理 capability。
+
+规划资源：
+
+- `runtime.d1`：计划面向 D1 类 SQL 数据能力提供薄封装，但当前未公开。
+- `runtime.r2`：计划面向 R2 类对象存储能力提供薄封装，但当前未公开。
+
+D1/R2 公开前必须先明确资源命名、授权模型、类型声明、错误语义、README 示例、AI 文档和 `BREAKING_CHANGES.md`。
+
+## KV API
+
+KV API 当前提供接近 Cloudflare KV 的最小子集：
+
+```ts
+const textValue = await runtime.kv.get('app/message');
+const jsonValue = await runtime.kv.get('app/config', { type: 'json' });
+
+await runtime.kv.put('app/message', 'hello', { expirationTtl: 60 });
+await runtime.kv.put('app/config', { enabled: true }, { type: 'json' });
+await runtime.kv.delete('app/message');
+```
+
+当前差异：
+
+- `get()` 默认按 text 读取，返回 `string | null`，对齐 Cloudflare KV。
+- `put()` 默认按 text 写入，写 JSON 必须显式传入 `{ type: 'json' }`。
+- `get(key, { type: 'json' })` 是 SDK 提供的 JSON convenience，返回解析后的对象或 `null`。
+- `put()` 支持 `expirationTtl`，后端是否支持更细的过期语义由平台能力决定。
+- `getWithMetadata()`、`list()`、`metadata`、`expiration`、`arrayBuffer` 和 `stream` 尚未公开；公开前需要先补齐 gateway/protocol 支持。
+- SDK 内部通过受控 gateway 和 capability 调用资源，业务代码不直接拿底层 KV binding。
+
+## 运行时边界
+
+- Runtime 服务绑定和 capability 必须来自 Worker bindings、secrets 或 router 注入的单请求 header。
+- 平台 data/KV API 必须通过 Worker binding 提供的受控 gateway 调用。
+- `runtime.kv` 表示默认 KV namespace；底层 scope 由平台决定，不作为业务 API 心智暴露。
+- Worker 代码不能信任浏览器传入的平台相关 header；只读取 router 注入的上下文。
+- 底层基础设施可以从 Cloudflare Workers 演进为其它 Worker-compatible runtime；业务代码应只依赖本包公开 API。
+
+## 非目标
+
+本包不承载：
+
+- Browser SDK 或浏览器端 KV helper；
+- runtime adapter、inline runtime source 或平台内部 Worker 生成模板；
+- `xd-cell` CLI、登录、发布、回滚或访问策略管理；
+- 公开 OpenAPI client；
+- 直接暴露内部 JWT、capability、Cloudflare 资源 ID、namespace ID、bucket 名、database ID 或平台 secret；
+- 未实现的 D1/R2 空壳 API；
+- 用户级存储的独立公开资源模型。
+
+Browser helper、runtime adapter、inline runtime source 和 user-scoped storage 不属于当前 Worker SDK 公共面。后续如果恢复为公开能力，应先单独评估包名、导出路径、README、类型声明、测试、兼容承诺和 `BREAKING_CHANGES.md`。
+
+## 安全约束
+
+- 不要把 capability、CLI token、发布 token、cookie、session 或 secret 写入源码、配置、日志、文档、截图或聊天内容。
+- 不要绕过 SDK 直接调用内部 gateway path。
+- 不要把 `readContext(request)` 的结果当作 data/KV 授权凭证。
+- 不要把底层 Cloudflare binding、namespace ID、D1 database ID、R2 bucket 名写入业务代码作为公共契约。
+
+## 迁移方向
+
+新自定义 Worker 使用：
+
+```ts
+import { createRuntime, readContext } from '@xd-cell/worker-sdk';
+```
+
+首发 public API 只提供 `runtime.kv.get()`、`runtime.kv.put()` 和 `runtime.kv.delete()`。旧草案中的品牌化 runtime 函数、context 函数、`data` 入口、scope-specific KV 入口和 `set()` alias 不进入首发公共面。
+
+每次发布前必须确认：
+
+- 稳定的根导出、README、TypeScript 类型声明和测试已与源码同步；
+- `BREAKING_CHANGES.md` 已说明当前包名、导入路径、公开 API、runtime 语义和安全边界是否变化；
+- `docs/llms/*` 已由包真相源重新生成并通过 drift check；
+- 从旧本地 helper 或旧 SDK 草案迁移到 `@xd-cell/worker-sdk` import 的说明仍然准确；
+- 与 `xd-cell` skill release manifest 对齐的推荐版本和兼容关系仍然准确。

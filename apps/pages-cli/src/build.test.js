@@ -28,9 +28,9 @@ test('buildPagesCli copies runtime files and package metadata without tests', as
     assert.equal(statSync(path.join(outDir, 'main.js')).mode & 0o111, 0o111);
 
     const packageJson = JSON.parse(await readFile(path.join(outDir, 'package.json'), 'utf8'));
-    assert.equal(packageJson.name, '@xd/pages-cli');
+    assert.equal(packageJson.name, '@xd-cell/cli');
     assert.equal(packageJson.type, 'module');
-    assert.deepEqual(packageJson.bin, { pages: './main.js' });
+    assert.deepEqual(packageJson.bin, { 'xd-cell': './main.js' });
     assert.equal(existsSync(path.join(outDir, 'src')), false);
   } finally {
     await rm(outDir, { recursive: true, force: true });

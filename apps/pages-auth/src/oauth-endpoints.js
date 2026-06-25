@@ -771,7 +771,7 @@ function buildCliLoginConfirmationHtml(loginId, deviceCode, config, confirmToken
         <span class="digits">${safeDeviceCode}</span>
         <span class="status">等待确认</span>
       </div>
-      <p class="hint">如果终端里的设备码不同，或者你没有发起 <code>pages login</code>，请直接关闭此页面。</p>
+      <p class="hint">如果终端里的设备码不同，或者你没有发起 <code>xd-cell login</code>，请直接关闭此页面。</p>
       <dl>
         <dt>环境</dt>
         <dd>${safeEnvironment}</dd>

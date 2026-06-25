@@ -8,7 +8,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@xd/pages-sdk": "file:../../apps/pages-sdk",
     "vue": "^3.4.0",
     "vue-router": "^4.6.4"
   },

@@ -9,7 +9,7 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
-    "test": "pnpm --filter @xd/pages-sdk build && node --test \"apps/*/src/**/*.test.js\" \"apps/pages-sdk/test/**/*.test.js\" \"packages/**/*.test.js\" \"scripts/**/*.test.js\" \"tests/**/*.test.js\"",
+    "test": "pnpm --filter @xd-cell/worker-sdk build && node apps/worker-sdk/scripts/generate-llms.js --check && node --test \"apps/*/src/**/*.test.js\" \"apps/worker-sdk/test/**/*.test.js\" \"packages/**/*.test.js\" \"scripts/**/*.test.js\" \"tests/**/*.test.js\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "fix": "eslint --fix . && prettier --write ."

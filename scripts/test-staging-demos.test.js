@@ -126,7 +126,8 @@ test('legacy staging demo script does not enable v1 Pages KV', () => {
   const script = readFileSync(scriptPath, 'utf8');
 
   assert.match(home, /createPagesClient|Pages KV/);
-  assert.equal(packageJson.dependencies['@xd/pages-sdk'], 'file:../../apps/pages-sdk');
+  assert.match(home, /xd-pages-kv-smoke\/vendor\/xd-pages-sdk\/browser\.js/);
+  assert.equal(packageJson.dependencies['@xd/pages-sdk'], undefined);
   assert.match(demoReadme, /Pages KV smoke test/);
   assert.doesNotMatch(script, /kv=true|--kv|PAGES_KV/);
 });

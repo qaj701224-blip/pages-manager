@@ -13,7 +13,7 @@ Accepted。
 XD Pages 的理想发布体验应该是：
 
 ```bash
-pages deploy ./dist example-site
+xd-cell deploy ./dist example-site
 ```
 
 用户只需要指定要发布的目录和站点名。CLI 自动识别目录形态、校验风险、打包上传，并在有歧义时给出可操作提示，而不是要求用户理解平台内部的产物枚举。
@@ -70,7 +70,7 @@ CLI 不提供 `--artifact-kind` 作为用户参数，配置文件也不接受 `a
 ### 普通路径
 
 ```bash
-pages deploy ./dist example-site
+xd-cell deploy ./dist example-site
 ```
 
 CLI 自动识别发布形态和 fallback。普通目录即使置信度低，也默认按 `fallback: not-found` 继续给出可操作 warning；只有非法输入、Worker 入口歧义、超出限制或无法安全打包时才失败。
@@ -78,8 +78,8 @@ CLI 自动识别发布形态和 fallback。普通目录即使置信度低，也�
 ### 高级覆盖
 
 ```bash
-pages deploy ./dist example-site --fallback index
-pages deploy ./dist example-site --fallback not-found
+xd-cell deploy ./dist example-site --fallback index
+xd-cell deploy ./dist example-site --fallback not-found
 ```
 
 `fallback` 只表达静态资源未命中时的行为：
@@ -104,13 +104,13 @@ pages deploy ./dist example-site --fallback not-found
 这个文件可以保存为项目根目录的 `pages.config.json`，然后直接发布：
 
 ```bash
-pages deploy
+xd-cell deploy
 ```
 
 也可以显式指定配置文件：
 
 ```bash
-pages deploy --config ./pages.config.json
+xd-cell deploy --config ./pages.config.json
 ```
 
 `worker.entry` 是相对 `source` 根目录的路径。上面的配置表示 Worker 入口文件是 `./dist/worker.mjs`。`worker.entry` 必须留在 `source` 目录内，不能使用绝对路径，也不能通过 `..` 指向目录外文件。
@@ -118,9 +118,9 @@ pages deploy --config ./pages.config.json
 命令式也允许单独设置高级参数，适合 CI、AI 或一次性发布：
 
 ```bash
-pages deploy ./dist example-site --worker-entry worker.mjs
-pages deploy ./dist example-site --fallback index
-pages deploy ./dist example-site --fallback not-found
+xd-cell deploy ./dist example-site --worker-entry worker.mjs
+xd-cell deploy ./dist example-site --fallback index
+xd-cell deploy ./dist example-site --fallback not-found
 ```
 
 `--worker-entry worker.mjs` 同样相对 `source` 根目录解析，即 `./dist/worker.mjs`。命令行参数只是覆盖发布意图，不会写回配置文件。

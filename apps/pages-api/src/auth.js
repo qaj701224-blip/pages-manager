@@ -8,13 +8,13 @@ export async function authenticateApiRequest(request, env, store, config, now = 
       'LEGACY_TOKEN_UNSUPPORTED',
       'Legacy Pages token headers are not supported by XD Pages.',
       400,
-      'Run `pages login` or use an XD Pages access key.'
+      'Run `xd-cell login` or use an XD Pages access key.'
     );
   }
 
   const token = readBearerToken(request);
   if (!token) {
-    return authError('PAGES_AUTH_REQUIRED', 'Login required.', 401, 'Run `pages login` and retry.');
+    return authError('PAGES_AUTH_REQUIRED', 'Login required.', 401, 'Run `xd-cell login` and retry.');
   }
 
   const accessKeyParts = parseAccessKeyPlaintext(token);
@@ -32,11 +32,11 @@ async function authenticateCliToken(token, env, store, config) {
   try {
     payload = await verifyCliToken(token, env, config);
   } catch {
-    return authError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401, 'Run `pages login` and retry.');
+    return authError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401, 'Run `xd-cell login` and retry.');
   }
 
   if (payload?.purpose !== 'cli_token' || payload?.aud !== CLI_TOKEN_AUDIENCE || payload?.env !== config.environment) {
-    return authError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401, 'Run `pages login` and retry.');
+    return authError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401, 'Run `xd-cell login` and retry.');
   }
 
   const userId = payload.sub;

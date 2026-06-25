@@ -18,7 +18,7 @@ export default {
         'LEGACY_TOKEN_UNSUPPORTED',
         'Legacy Pages tokens are not supported by XD Pages.',
         400,
-        'Run `pages login` or use an XD Pages access key.'
+        'Run `xd-cell login` or use an XD Pages access key.'
       );
     }
 

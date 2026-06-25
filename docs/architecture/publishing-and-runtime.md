@@ -154,13 +154,13 @@ iat / exp
 
 CLI 只适配 `pages.xd.team` 平台。它不发布、不管理、不回退兼容旧版 `workers.xd.team` 站点；旧版继续使用现有 API、skill 和发布流程。
 
-当前 CLI 落地为 `apps/pages-cli` workspace package，bin 名称为 `pages`。CLI 只负责本地 UX、凭据读取、显式配置读取、artifact hash 和调用 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
+当前 CLI 落地为 `apps/pages-cli` workspace package，npm 包名为 `@xd-cell/cli`，bin 名称为 `xd-cell`。CLI 只负责本地 UX、凭据读取、显式配置读取、artifact hash 和调用 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
 
 CLI 使用 XD Pages 平台签发的 token，不直接持有心动 SSO `access_token`：
 
-- `pages login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
-- `pages login --env staging` 登录 staging；默认登录 production。
-- `pages login --token <token>` 先调用 `/.xd-pages/api/auth/whoami` 验证该 access key 有效，再保存到本地 secret store。
+- `xd-cell login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
+- `xd-cell login --env staging` 登录 staging；默认登录 production。
+- `xd-cell login --token <token>` 先调用 `/.xd-pages/api/auth/whoami` 验证该 access key 有效，再保存到本地 secret store。
 - 其它需要访问 API 的命令支持全局 `--token <token>`；它只用于本次命令，不保存、不读取本地登录态。
 - CLI token 支持过期、scope、吊销和本地安全存储。
 - CI 默认使用 `access key`，不使用个人浏览器 session。`service token` 只有在后续需要组织级机器人身份时再单独设计，不混入 MVP。
@@ -219,11 +219,11 @@ Windows fallback 文件没有 `chmod 0600` 语义，CLI 必须检查 ACL：只�
 access key 有两种使用方式：
 
 ```bash
-pages login --token <token>
-pages deploy ./dist foo --token <token> --json
+xd-cell login --token <token>
+xd-cell deploy ./dist foo --token <token> --json
 ```
 
-本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `pages login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。access key 不能创建站点；CI / agent 使用 access key 部署时显式传站点名，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
+本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。access key 不能创建站点；CI / agent 使用 access key 部署时显式传站点名，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
 
 #### Global config
 
@@ -259,11 +259,11 @@ profile 只用于本地显示和用户体验，服务端不能信任。真实权
 CLI 可以支持：
 
 ```bash
-pages env list
-pages env staging
+xd-cell env list
+xd-cell env staging
 ```
 
-用户侧 `pages env list` 只展示 `production` / `staging`。`custom` 是开发保留项，可以由测试或开发命令显式启用，但不在普通 help 和用户文档主路径中展示。内置 `production` / `staging` 是固定环境，不能被本地 profile、环境变量或普通 override 改写。`custom` 只允许指向 loopback：
+用户侧 `xd-cell env list` 只展示 `production` / `staging`。`custom` 是开发保留项，可以由测试或开发命令显式启用，但不在普通 help 和用户文档主路径中展示。内置 `production` / `staging` 是固定环境，不能被本地 profile、环境变量或普通 override 改写。`custom` 只允许指向 loopback：
 
 - 本机开发：`localhost` / `127.0.0.1` / `::1`，可使用 HTTP。
 
@@ -310,20 +310,20 @@ XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不�
 CLI 日常命令契约建议：
 
 ```bash
-pages login [--env staging] [--token <token>] [--no-open]
-pages auth status [--env staging]
-pages auth whoami [--env staging]
-pages auth logout [--env staging]
-pages deploy ./dist foo --visibility org
-pages deploy --config pages.config.json
-pages deploy ./dist foo --token <token> --json
-pages status foo
-pages rollback foo ver_xxx
-pages open foo [--print]
-pages sites list
-pages sites info foo
-pages env list
-pages env staging
+xd-cell login [--env staging] [--token <token>] [--no-open]
+xd-cell auth status [--env staging]
+xd-cell auth whoami [--env staging]
+xd-cell auth logout [--env staging]
+xd-cell deploy ./dist foo --visibility org
+xd-cell deploy --config pages.config.json
+xd-cell deploy ./dist foo --token <token> --json
+xd-cell status foo
+xd-cell rollback foo ver_xxx
+xd-cell open foo [--print]
+xd-cell sites list
+xd-cell sites info foo
+xd-cell env list
+xd-cell env staging
 ```
 
 配置优先级从高到低：
@@ -340,7 +340,7 @@ pages env staging
 ```text
 显式 --token <token>，仅本次命令生效
   > 当前 environment 的本地 secret store
-  > 提示用户 pages login
+  > 提示用户 xd-cell login
 ```
 
 ### API 边界
@@ -349,7 +349,7 @@ pages env staging
 
 API 设计必须保持这些架构约束：
 
-- 用户和 AI agent 通过 `pages` CLI / skill 使用平台，不手写部署 HTTP 请求。
+- 用户和 AI agent 通过 `xd-cell` CLI / skill 使用平台，不手写部署 HTTP 请求。
 - 所有部署、回滚和 mutation 类请求必须有强认证、权限校验和幂等保护。
 - access key scope 必须在 API 层强制执行；`deploy:site`、`rollback:site`、`read:site` 不能互相越权。
 - ACL 读取和策略管理首版只允许用户 CLI token / 未来 api_session，不允许 access key。
@@ -365,7 +365,7 @@ API 设计必须保持这些架构约束：
     "code": "PAGES_AUTH_REQUIRED",
     "message": "Login required.",
     "requestId": "req_xxx",
-    "action": "Run `pages login` and retry."
+    "action": "Run `xd-cell login` and retry."
   }
 }
 ```
@@ -401,7 +401,7 @@ CF-Platform-Trace-Id: <trace-id>
 ### 人类用户
 
 ```text
-pages login
+xd-cell login
   -> CLI 调 pages-auth /.xd-pages/cli/login/start
   -> CLI 本地保存 login_secret，服务端生成 login_id 和短码并只保存 loginSecretHash
   -> CLI 展示短码、environment、auth host、scope
@@ -409,9 +409,9 @@ pages login
   -> 用户通过心动 SSO 登录
   -> 浏览器确认页要求用户手动输入终端短码
   -> CLI 带 login_secret 轮询 /.xd-pages/cli/login/poll
-  -> 获取 pages CLI token
+  -> 获取 xd-cell CLI token
 
-pages deploy ./dist foo --visibility org
+xd-cell deploy ./dist foo --visibility org
   -> CLI 调 pages-api /.xd-pages/api/deployments
   -> CLI 计算 artifact hash
      custom Worker: JSON 发送 artifactBundle，读取入口模块内容
@@ -426,7 +426,7 @@ pages deploy ./dist foo --visibility org
   -> pages-api 通过发布状态机切换 active route 和 route snapshot
   -> 返回 https://foo.pages.xd.team
 
-pages deploy ./dist foo --visibility org --env staging
+xd-cell deploy ./dist foo --visibility org --env staging
   -> CLI 调 api-staging.pages.xd.team
   -> pages-api-staging 写 staging D1 / 当前执行面
   -> 返回 https://foo-staging.pages.xd.team
@@ -435,7 +435,7 @@ pages deploy ./dist foo --visibility org --env staging
 ### CI / Agent
 
 ```text
-pages deploy ./dist foo --token <token> --json
+xd-cell deploy ./dist foo --token <token> --json
 ```
 
 access key 要求：
@@ -453,7 +453,7 @@ access key 要求：
 XD Pages AI skill 最终只负责调用 CLI：
 
 ```text
-用户 -> AI -> pages CLI -> pages-api
+用户 -> AI -> xd-cell CLI -> pages-api
 ```
 
 不再让 AI 直接拼接 API、猜测 token、解释复杂 OpenAPI 或手写 multipart 请求。现有旧版 skill / 文档继续服务 `workers.xd.team`，不因 XD Pages CLI 改造而改变行为。
@@ -589,7 +589,7 @@ user data:
 静态站点和 SPA 是 XD Pages 的默认发布形态。第一版不再使用 generated-worker，不把 dist 文件 base64 内嵌到 `worker.mjs`。CLI 采用文件级 multipart 上传，服务端内部使用 Cloudflare Assets upload session 和薄 assets Worker 承载静态资源。
 
 ```text
-pages deploy ./dist foo
+xd-cell deploy ./dist foo
   -> CLI 遍历 dist，排除 .git、node_modules、.DS_Store 和显式配置文件
   -> CLI 自动解析 deploymentShape、requestedFallback、resolvedFallback、routingMode
   -> CLI 生成 publishPlan、assetManifest 和 contentHash
@@ -606,14 +606,14 @@ pages deploy ./dist foo
 
 custom Worker 发布时，CLI 读取用户指定的 `.js` / `.mjs` 文件内容作为 module，通过 multipart worker module 上传。`.ts` 入口第一版不直接上传；在接入 bundler / transpile 前，CLI 必须给出 `WORKER_TYPESCRIPT_UNSUPPORTED` 这类明确错误，避免把 TypeScript 当作 JavaScript module 部署。multipart metadata 和文件内容不能包含本地绝对路径、CLI token、access key、Cloudflare 资源 id 或 `--config` 文件内容。
 
-`pages-api` 不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。worker artifact 的 JSON body 上限是 1 MiB；static / SPA 的 CLI 侧第一版限制为原始文件总量不超过 50 MiB、文件数不超过 5000。超限时 CLI 提前失败。DR 0003 讨论的 R2 + D1 artifact store 是长期候选能力；当前发布链路仍以 provider materialization 和 D1 版本索引为准，用户命令保持 `pages deploy ./dist foo`。
+`pages-api` 不从用户环境读取文件，也不把 Cloudflare 凭证下发给 CLI。worker artifact 的 JSON body 上限是 1 MiB；static / SPA 的 CLI 侧第一版限制为原始文件总量不超过 50 MiB、文件数不超过 5000。超限时 CLI 提前失败。DR 0003 讨论的 R2 + D1 artifact store 是长期候选能力；当前发布链路仍以 provider materialization 和 D1 版本索引为准，用户命令保持 `xd-cell deploy ./dist foo`。
 
 这条路径不提供“失败后回退 generated-worker”。如果 asset upload session、asset bucket 上传或 Worker assets binding 失败，发布必须失败并返回明确错误，避免同一命令在不同部署中产生不同运行形态。
 
 无论采用哪种路径，对用户暴露的心智保持一致：
 
 ```text
-pages deploy ./dist foo
+xd-cell deploy ./dist foo
 ```
 
 用户不需要理解 execution provider、dispatch namespace、slot、asset store、gateway 或 Cloudflare binding。

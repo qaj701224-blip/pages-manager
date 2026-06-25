@@ -66,15 +66,15 @@ function localizeError(error) {
   const known = {
     PAGES_CREDENTIAL_REQUIRED: {
       message: '缺少 Pages 登录凭证。',
-      action: '请先运行 pages login；CI/agent 可以显式传 --token <token>。',
+      action: '请先运行 xd-cell login；CI/agent 可以显式传 --token <token>。',
     },
     SITE_REQUIRED: {
       message: '缺少站点名。',
-      action: localizedAction(error, '请传入站点名，例如 pages deploy ./dist demo。'),
+      action: localizedAction(error, '请传入站点名，例如 xd-cell deploy ./dist demo。'),
     },
     SITE_SLUG_REQUIRED: {
       message: '缺少站点名。',
-      action: localizedAction(error, '请传入站点名，例如 pages deploy ./dist demo。'),
+      action: localizedAction(error, '请传入站点名，例如 xd-cell deploy ./dist demo。'),
     },
     SITE_NOT_FOUND: {
       message: error.message && /^未找到/.test(error.message) ? error.message : '未找到站点。',
@@ -86,7 +86,7 @@ function localizeError(error) {
     },
     VERSION_REQUIRED: {
       message: '缺少版本 ID。',
-      action: '请使用 pages rollback <站点名> <version-id>。',
+      action: '请使用 xd-cell rollback <站点名> <version-id>。',
     },
     SITE_BINDING_REQUIRED: {
       message: '缺少站点名。',
@@ -94,11 +94,11 @@ function localizeError(error) {
     },
     ENV_COMMAND_INVALID: {
       message: 'env 命令不完整或无效。',
-      action: '请使用 pages env、pages env list 或 pages env <production|staging>。',
+      action: '请使用 xd-cell env、xd-cell env list 或 xd-cell env <production|staging>。',
     },
     UNKNOWN_COMMAND: {
       message: command ? `未知命令：${command}` : '未知命令。',
-      action: '运行 pages help 查看可用命令。',
+      action: '运行 xd-cell help 查看可用命令。',
     },
   };
   const translated = known[code];

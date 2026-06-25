@@ -11,18 +11,18 @@ export function markdownResponse(body) {
 export function buildSkill(config) {
   const staging = config.environment === 'staging';
   const envSetup = staging
-    ? `\n当前文档来自 staging API。执行会联网或会修改远端状态的命令时必须显式使用 \`--env staging\`，或先运行：\n\n\`\`\`bash\npages env staging\n\`\`\`\n`
+    ? `\n当前文档来自 staging API。执行会联网或会修改远端状态的命令时必须显式使用 \`--env staging\`，或先运行：\n\n\`\`\`bash\nxd-cell env staging\n\`\`\`\n`
     : '';
   const envFlag = staging ? ' --env staging' : '';
   return `---
-name: pages
-description: Deploy XD Pages sites through the local CLI with automatic artifact detection.
+name: xd-cell
+description: Deploy XD Cell sites through the xd-cell CLI with automatic artifact detection.
 version: 0.1.0
 ---
 
-# XD Pages CLI Skill
+# XD Cell Skill
 
-你是 XD Pages 部署助手。只通过本地 \`pages\` CLI 操作，不手写 HTTP 请求，不拼接底层 API，不要求用户理解平台基础设施。
+你是 XD Cell 部署助手。只通过本地 \`xd-cell\` CLI 操作，不手写 HTTP 请求，不拼接底层 API，不要求用户理解平台基础设施。
 
 ## 环境
 
@@ -36,13 +36,13 @@ ${envSetup}
 优先使用浏览器登录：
 
 \`\`\`bash
-pages login${envFlag}
+xd-cell login${envFlag}
 \`\`\`
 
 CI 或 agent 环境使用平台签发的发布 token：
 
 \`\`\`bash
-pages deploy <dir> <site>${envFlag} --token <token> --json
+xd-cell deploy <dir> <site>${envFlag} --token <token> --json
 \`\`\`
 
 不要把 CLI token、发布 token、cookie、SSO code 或平台能力写入项目文件、日志、README、截图或聊天消息。
@@ -50,17 +50,17 @@ pages deploy <dir> <site>${envFlag} --token <token> --json
 ## 发布
 
 \`\`\`bash
-pages detect <dir> --json
-pages deploy <dir> <site>${envFlag} --dry-run --json
-pages deploy <dir> <site>${envFlag} --visibility org
-pages deploy${envFlag} --config pages.config.json
-pages status <site>${envFlag}
-pages open <site>${envFlag}
-pages rollback <site> <version-id>${envFlag}
-pages access get <site>${envFlag}
-pages access set <site>${envFlag} --visibility acl --email user@xd.com
-pages access grant <site>${envFlag} --department "心动/技术平台部"
-pages access revoke <site>${envFlag} --email user@xd.com
+xd-cell detect <dir> --json
+xd-cell deploy <dir> <site>${envFlag} --dry-run --json
+xd-cell deploy <dir> <site>${envFlag} --visibility org
+xd-cell deploy${envFlag} --config pages.config.json
+xd-cell status <site>${envFlag}
+xd-cell open <site>${envFlag}
+xd-cell rollback <site> <version-id>${envFlag}
+xd-cell access get <site>${envFlag}
+xd-cell access set <site>${envFlag} --visibility acl --email user@xd.com
+xd-cell access grant <site>${envFlag} --department "心动/技术平台部"
+xd-cell access revoke <site>${envFlag} --email user@xd.com
 \`\`\`
 
 可见性只使用：\`internal\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。第一版所有可见性都受公司网络 / VPN / 办公网出口 IP allowlist 约束。
@@ -73,7 +73,7 @@ pages access revoke <site>${envFlag} --email user@xd.com
 
 ## 硬性规则
 
-1. 只调用 \`pages\` CLI。
+1. 只调用 \`xd-cell\` CLI。
 2. 认证和上传协议由 CLI 管理，不手写认证 header。
 3. 不把 CLI 指向旧版域名。
 4. 不读取或提交本地 SSO 参考文件、env 文件或 secret 文件。
@@ -87,9 +87,9 @@ export function buildReadme(config) {
       ? `https://demo-staging.${config.siteDomainSuffix}`
       : `https://demo.${config.siteDomainSuffix}`;
 
-  return `# XD Pages
+  return `# XD Cell
 
-XD Pages 是内部站点发布平台。用户通过 \`pages\` CLI 发布构建目录或带自定义 Worker 入口的站点；平台负责登录、发布鉴权、子站 SSO、访问策略和运行隔离。
+XD Cell 是内部站点发布平台。用户通过 \`xd-cell\` CLI 发布构建目录或带自定义 Worker 入口的站点；平台负责登录、发布鉴权、子站 SSO、访问策略和运行隔离。
 
 ## 当前环境
 
@@ -103,17 +103,17 @@ XD Pages 是内部站点发布平台。用户通过 \`pages\` CLI 发布构建�
 ## 常用命令
 
 \`\`\`bash
-pages login
-pages detect ./dist --json
-pages deploy ./dist demo --dry-run --json
-pages deploy ./dist demo --visibility org
-pages deploy --config pages.config.json
-pages status demo
-pages open demo
-pages rollback demo <version-id>
-pages access get demo
-pages access set demo --visibility acl --email user@xd.com
-pages access grant demo --department "心动/技术平台部"
+xd-cell login
+xd-cell detect ./dist --json
+xd-cell deploy ./dist demo --dry-run --json
+xd-cell deploy ./dist demo --visibility org
+xd-cell deploy --config pages.config.json
+xd-cell status demo
+xd-cell open demo
+xd-cell rollback demo <version-id>
+xd-cell access get demo
+xd-cell access set demo --visibility acl --email user@xd.com
+xd-cell access grant demo --department "心动/技术平台部"
 \`\`\`
 
 CI 使用显式 \`--token <token>\` 和站点名位置参数，不要在仓库中保存发布 token 或 CLI token。

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { PagesSDKError, createPagesRuntime, readPlatformContext } from '../dist/worker.js';
+import { SDKError, createRuntime, readContext } from '../dist/worker/index.js';
 
 const platformPayload = {
   iss: 'pages-router',
@@ -48,8 +48,8 @@ function base64UrlJson(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
-test('readPlatformContext reads minimal router-injected identity without exposing the JWT as capability', () => {
-  const context = readPlatformContext(platformRequest());
+test('readContext reads minimal router-injected identity without exposing the JWT as capability', () => {
+  const context = readContext(platformRequest());
 
   assert.deepEqual(context, {
     authenticated: true,
@@ -68,26 +68,29 @@ test('readPlatformContext reads minimal router-injected identity without exposin
   assert.equal(Object.hasOwn(context, 'capability'), false);
 });
 
-test('readPlatformContext rejects inconsistent platform headers and token claims', () => {
+test('readContext rejects inconsistent platform headers and token claims', () => {
   assert.throws(
-    () => readPlatformContext(platformRequest(platformPayload, { 'CF-Platform-Site-Id': 'site_other' })),
+    () => readContext(platformRequest(platformPayload, { 'CF-Platform-Site-Id': 'site_other' })),
     (error) => {
-      assert.ok(error instanceof PagesSDKError);
+      assert.ok(error instanceof SDKError);
       assert.equal(error.code, 'INVALID_PLATFORM_CONTEXT');
       return true;
     },
   );
 });
 
-test('createPagesRuntime().kv.get calls the gateway service binding and returns value', async () => {
+test('createRuntime().kv.get uses the site KV namespace with Cloudflare text default', async () => {
   let captured;
-  const runtime = createPagesRuntime({
+  const request = new Request('https://demo.pages.xd.team/', {
+    headers: { 'CF-Platform-Data-Site-Capability': 'site-request-capability' },
+  });
+  const runtime = createRuntime({
+    request,
     env: {
-      XD_PAGES_KV_CAPABILITY: 'capability-token',
       XD_PAGES_KV_GATEWAY: {
-        fetch: async (request) => {
-          captured = request;
-          return Response.json({ ok: true, found: true, value: { enabled: true } });
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({ ok: true, found: true, value: 'hello' });
         },
       },
     },
@@ -95,20 +98,18 @@ test('createPagesRuntime().kv.get calls the gateway service binding and returns 
 
   const value = await runtime.kv.get('app/config');
 
-  assert.deepEqual(value, { enabled: true });
-  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/get');
-  assert.equal(captured.method, 'POST');
-  assert.equal(captured.headers.get('Authorization'), 'Bearer capability-token');
-  assert.equal(captured.headers.get('Content-Type'), 'application/json');
-  assert.deepEqual(await captured.json(), { key: 'app/config', type: 'json' });
+  assert.equal(value, 'hello');
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/get');
+  assert.equal(captured.headers.get('Authorization'), 'Bearer site-request-capability');
+  assert.deepEqual(await captured.json(), { key: 'app/config', type: 'text' });
 });
 
-test('createPagesRuntime().data.site.get uses the site data capability header', async () => {
+test('createRuntime().kv.get reads JSON only when explicitly requested', async () => {
   let captured;
   const request = new Request('https://demo.pages.xd.team/', {
     headers: { 'CF-Platform-Data-Site-Capability': 'site-request-capability' },
   });
-  const runtime = createPagesRuntime({
+  const runtime = createRuntime({
     request,
     env: {
       XD_PAGES_KV_GATEWAY: {
@@ -120,16 +121,73 @@ test('createPagesRuntime().data.site.get uses the site data capability header', 
     },
   });
 
-  const value = await runtime.data.site.get('app/config');
+  const value = await runtime.kv.get('app/config', { type: 'json' });
 
   assert.deepEqual(value, { enabled: true });
   assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/get');
-  assert.equal(captured.headers.get('Authorization'), 'Bearer site-request-capability');
+  assert.deepEqual(await captured.json(), { key: 'app/config', type: 'json' });
 });
 
-test('createPagesRuntime().data.site can fall back to env site data capability', async () => {
+test('createRuntime().kv.put uses the Cloudflare KV text default', async () => {
   let captured;
-  const runtime = createPagesRuntime({
+  const request = new Request('https://demo.pages.xd.team/', {
+    headers: { 'CF-Platform-Data-Site-Capability': 'site-request-capability' },
+  });
+  const runtime = createRuntime({
+    request,
+    env: {
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({ ok: true });
+        },
+      },
+    },
+  });
+
+  await runtime.kv.put('app/config', 'hello', { expirationTtl: 60 });
+
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/set');
+  assert.equal(captured.method, 'POST');
+  assert.equal(captured.headers.get('Authorization'), 'Bearer site-request-capability');
+  assert.deepEqual(await captured.json(), {
+    key: 'app/config',
+    value: 'hello',
+    type: 'text',
+    expirationTtl: 60,
+  });
+});
+
+test('createRuntime().kv.put writes JSON only when explicitly requested', async () => {
+  let captured;
+  const request = new Request('https://demo.pages.xd.team/', {
+    headers: { 'CF-Platform-Data-Site-Capability': 'site-request-capability' },
+  });
+  const runtime = createRuntime({
+    request,
+    env: {
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({ ok: true });
+        },
+      },
+    },
+  });
+
+  await runtime.kv.put('app/config', { enabled: true }, { type: 'json' });
+
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/set');
+  assert.deepEqual(await captured.json(), {
+    key: 'app/config',
+    value: { enabled: true },
+    type: 'json',
+  });
+});
+
+test('createRuntime().kv can fall back to env site data capability', async () => {
+  let captured;
+  const runtime = createRuntime({
     env: {
       XD_PAGES_DATA_SITE_CAPABILITY: 'site-env-capability',
       XD_PAGES_KV_GATEWAY: {
@@ -141,80 +199,57 @@ test('createPagesRuntime().data.site can fall back to env site data capability',
     },
   });
 
-  assert.equal(await runtime.data.site.get('app/config'), null);
+  assert.equal(await runtime.kv.get('app/config'), null);
   assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/get');
   assert.equal(captured.headers.get('Authorization'), 'Bearer site-env-capability');
+  assert.deepEqual(await captured.json(), { key: 'app/config', type: 'text' });
 });
 
-test('createPagesRuntime().data.site falls back to legacy path for legacy env capability', async () => {
+test('createRuntime reads XD Cell env bindings without changing the public API shape', async () => {
   let captured;
-  const runtime = createPagesRuntime({
+  const runtime = createRuntime({
     env: {
-      XD_PAGES_KV_CAPABILITY: 'legacy-env-capability',
-      XD_PAGES_KV_GATEWAY: {
+      XD_CELL_DATA_SITE_CAPABILITY: 'cell-site-env-capability',
+      XD_CELL_KV_GATEWAY: {
         fetch: async (gatewayRequest) => {
           captured = gatewayRequest;
-          return Response.json({ ok: true, found: true, value: { legacy: true } });
+          return Response.json({ ok: true, found: true, value: 'cell' });
         },
       },
     },
   });
 
-  assert.deepEqual(await runtime.data.site.get('app/config'), { legacy: true });
+  assert.equal(await runtime.kv.get('app/config'), 'cell');
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/get');
+  assert.equal(captured.headers.get('Authorization'), 'Bearer cell-site-env-capability');
+});
+
+test('createRuntime().kv falls back to legacy path for legacy env capability', async () => {
+  let captured;
+  const runtime = createRuntime({
+    env: {
+      XD_PAGES_KV_CAPABILITY: 'legacy-env-capability',
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({ ok: true, found: true, value: 'legacy' });
+        },
+      },
+    },
+  });
+
+  assert.equal(await runtime.kv.get('app/config'), 'legacy');
   assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/get');
   assert.equal(captured.headers.get('Authorization'), 'Bearer legacy-env-capability');
+  assert.deepEqual(await captured.json(), { key: 'app/config', type: 'text' });
 });
 
-test('createPagesRuntime().data.user uses only request user capability header', async () => {
-  let captured;
-  const request = new Request('https://demo.pages.xd.team/', {
-    headers: { 'CF-Platform-Data-User-Capability': 'user-request-capability' },
-  });
-  const runtime = createPagesRuntime({
-    request,
-    env: {
-      XD_PAGES_KV_CAPABILITY: 'legacy-env-capability',
-      XD_PAGES_DATA_SITE_CAPABILITY: 'site-env-capability',
-      XD_PAGES_KV_GATEWAY: {
-        fetch: async (gatewayRequest) => {
-          captured = gatewayRequest;
-          return Response.json({ ok: true, found: true, value: { title: 'hello' } });
-        },
-      },
-    },
-  });
-
-  const value = await runtime.data.user.get('draft');
-
-  assert.deepEqual(value, { title: 'hello' });
-  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/user/get');
-  assert.equal(captured.headers.get('Authorization'), 'Bearer user-request-capability');
-});
-
-test('createPagesRuntime().data.user rejects env static capabilities', async () => {
-  const runtime = createPagesRuntime({
-    env: {
-      XD_PAGES_KV_CAPABILITY: 'legacy-env-capability',
-      XD_PAGES_DATA_SITE_CAPABILITY: 'site-env-capability',
-      XD_PAGES_KV_GATEWAY: {
-        fetch: async () => {
-          throw new Error('gateway should not be called');
-        },
-      },
-    },
-  });
-
-  await assert.rejects(() => runtime.data.user.get('draft'), {
-    code: 'INVALID_PLATFORM_CONTEXT',
-  });
-});
-
-test('createPagesRuntime reads per-request KV capability from router header', async () => {
+test('createRuntime reads per-request KV capability from router header for legacy compatibility', async () => {
   let captured;
   const request = new Request('https://demo.pages.xd.team/', {
     headers: { 'CF-Platform-KV-Capability': 'request-capability-token' },
   });
-  const runtime = createPagesRuntime({
+  const runtime = createRuntime({
     request,
     env: {
       XD_PAGES_KV_GATEWAY: {
@@ -230,10 +265,11 @@ test('createPagesRuntime reads per-request KV capability from router header', as
 
   assert.equal(value, null);
   assert.equal(captured.headers.get('Authorization'), 'Bearer request-capability-token');
+  assert.deepEqual(await captured.json(), { key: 'app/config', type: 'text' });
 });
 
-test('createPagesRuntime rejects gateway error envelopes', async () => {
-  const runtime = createPagesRuntime({
+test('createRuntime rejects gateway error envelopes', async () => {
+  const runtime = createRuntime({
     env: {
       XD_PAGES_KV_CAPABILITY: 'capability-token',
       XD_PAGES_KV_GATEWAY: {
@@ -248,8 +284,8 @@ test('createPagesRuntime rejects gateway error envelopes', async () => {
   });
 });
 
-test('createPagesRuntime throws invalid runtime response for get envelopes without found', async () => {
-  const runtime = createPagesRuntime({
+test('createRuntime throws invalid runtime response for get envelopes without found', async () => {
+  const runtime = createRuntime({
     env: {
       XD_PAGES_KV_CAPABILITY: 'capability-token',
       XD_PAGES_KV_GATEWAY: {
@@ -263,8 +299,8 @@ test('createPagesRuntime throws invalid runtime response for get envelopes witho
   });
 });
 
-test('createPagesRuntime throws invalid runtime response for non-JSON gateway responses', async () => {
-  const runtime = createPagesRuntime({
+test('createRuntime throws invalid runtime response for non-JSON gateway responses', async () => {
+  const runtime = createRuntime({
     env: {
       XD_PAGES_KV_CAPABILITY: 'capability-token',
       XD_PAGES_KV_GATEWAY: {
@@ -274,42 +310,15 @@ test('createPagesRuntime throws invalid runtime response for non-JSON gateway re
   });
 
   await assert.rejects(() => runtime.kv.get('app/config'), (error) => {
-    assert.ok(error instanceof PagesSDKError);
+    assert.ok(error instanceof SDKError);
     assert.equal(error.code, 'INVALID_RUNTIME_RESPONSE');
     return true;
   });
 });
 
-test('createPagesRuntime().kv.set calls the gateway set endpoint', async () => {
+test('createRuntime().kv.delete calls the gateway delete endpoint', async () => {
   let captured;
-  const runtime = createPagesRuntime({
-    env: {
-      XD_PAGES_KV_CAPABILITY: 'capability-token',
-      XD_PAGES_KV_GATEWAY: {
-        fetch: async (request) => {
-          captured = request;
-          return Response.json({ ok: true });
-        },
-      },
-    },
-  });
-
-  await runtime.kv.set('app/config', 'hello', { type: 'text', expirationTtl: 60 });
-
-  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/kv/set');
-  assert.equal(captured.method, 'POST');
-  assert.equal(captured.headers.get('Authorization'), 'Bearer capability-token');
-  assert.deepEqual(await captured.json(), {
-    key: 'app/config',
-    value: 'hello',
-    type: 'text',
-    expirationTtl: 60,
-  });
-});
-
-test('createPagesRuntime().kv.delete calls the gateway delete endpoint', async () => {
-  let captured;
-  const runtime = createPagesRuntime({
+  const runtime = createRuntime({
     env: {
       XD_PAGES_KV_CAPABILITY: 'capability-token',
       XD_PAGES_KV_GATEWAY: {

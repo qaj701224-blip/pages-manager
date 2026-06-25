@@ -23,11 +23,11 @@ Options:
   -h, --help          Show this help.
 
 Environment:
-  PAGES_ACCESS_KEY          Optional. Used by pages CLI for non-interactive deploys.
+  PAGES_ACCESS_KEY          Optional. Used by xd-cell CLI for non-interactive deploys.
   PAGES_V2_DEMO_TARGET      Optional. Defaults to staging. Overridden by --target.
   PAGES_V2_DEMO_SLUG        Optional. Defaults to demo-vue-app. Overridden by --slug.
   PAGES_V2_DEMO_VISIBILITY  Optional. Defaults to internal. Overridden by --visibility.
-  PAGES_CLI_BIN             Optional. Defaults to pages.
+  PAGES_CLI_BIN             Optional. Defaults to xd-cell.
   PAGES_DEMO_SKIP_INSTALL   Optional. Set true to skip dependency install before build.
 
 EOF
@@ -150,8 +150,6 @@ run_cmd() {
 install_and_build_vue() {
   local dir="$REPO_ROOT/demos/vue-app"
 
-  run_cmd pnpm --filter @xd/pages-sdk build
-
   if [[ "${PAGES_DEMO_SKIP_INSTALL:-false}" != "true" ]]; then
     if [[ -f "$dir/package-lock.json" ]]; then
       run_cmd npm --prefix "$dir" ci
@@ -171,7 +169,7 @@ deploy_vue() {
   local output url
   output="$(
     cd "$REPO_ROOT/demos/vue-app"
-    PAGES_CLI_ENV="$PAGES_V2_DEMO_TARGET" "${PAGES_CLI_BIN:-pages}" \
+    PAGES_CLI_ENV="$PAGES_V2_DEMO_TARGET" "${PAGES_CLI_BIN:-xd-cell}" \
       deploy dist "$PAGES_V2_DEMO_SLUG" \
       --env "$PAGES_V2_DEMO_TARGET" \
       --visibility "$PAGES_V2_DEMO_VISIBILITY"
@@ -182,7 +180,7 @@ deploy_vue() {
 
   printf '%s\n' "$output" >&2
   url="$(printf '%s\n' "$output" | awk '/^URL https:\/\// { print $2; exit }')"
-  [[ -n "$url" ]] || die "pages CLI deploy output did not include a URL"
+  [[ -n "$url" ]] || die "xd-cell CLI deploy output did not include a URL"
   printf '%s' "$url"
 }
 

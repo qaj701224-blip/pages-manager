@@ -100,7 +100,7 @@ publish -> activate -> drain -> retire
 
 - 新增 `pages-auth`。
 - 新增 `pages-api` 的登录态校验和 access key。
-- CLI 支持 `pages login`、`login_id + login_secret` 轮询、`pages login --token <token>` 保存凭证，以及 API 命令的单次 `--token <token>`。
+- CLI 支持 `xd-cell login`、`login_id + login_secret` 轮询、`xd-cell login --token <token>` 保存凭证，以及 API 命令的单次 `--token <token>`。
 - AI skill 改为只调用 XD Pages CLI。
 - 现有 `apps/server` 继续服务旧版 `workers.xd.team`，新架构不改旧版 API、skill、README 或发布行为。
 
@@ -111,7 +111,7 @@ publish -> activate -> drain -> retire
 - 按 `PAGES_EXECUTION_MODE` 启用执行面：
   - WFP 未开通：`normal-worker-slot`，先创建少量 staging / production slot。
   - WFP 已开通：`wfp`，使用 dispatch namespace。
-- 用户仍只执行 `pages deploy ./dist foo`，不暴露 execution provider 参数。
+- 用户仍只执行 `xd-cell deploy ./dist foo`，不暴露 execution provider 参数。
 - 支持 `internal` 和 `org` visibility。
 - 支持 router IP allowlist 强限制；未命中公司网络直接 403。
 - 支持站点级 `site_session`、员工 active 状态校验、header/cookie 清洗和 `internal_worker_jwt`。
@@ -174,11 +174,11 @@ publish -> activate -> drain -> retire
 ## 第一版验收标准
 
 - 用户必须登录后才能发布 XD Pages 站点。
-- 用户 CLI 不暴露 execution provider；`pages deploy` 由平台 `PAGES_EXECUTION_MODE` 决定部署到 WFP 或 ordinary Worker slot。
+- 用户 CLI 不暴露 execution provider；`xd-cell deploy` 由平台 `PAGES_EXECUTION_MODE` 决定部署到 WFP 或 ordinary Worker slot。
 - WFP 未开通时，`normal-worker-slot` 能发布试点站点；WFP 开通后切换默认 mode 不改变用户命令。
 - production/staging 由不同 router Worker 和不同资源承载；如果使用 thin router，它不能持有业务 secret。
 - pages-router 第一版必须强制 IP allowlist；未命中公司网络的请求直接 403，且不 dispatch 到 User Worker。
-- `pages deploy --visibility org` 发布的站点，未登录访问会跳转 SSO。
+- `xd-cell deploy --visibility org` 发布的站点，未登录访问会跳转 SSO。
 - `org` 站点只允许 active employee 访问；disabled/left/unknown 默认拒绝或 strict 校验后拒绝。
 - 登录后访问受保护子站不回 `pages-api`。
 - User Worker 收到签名内部 JWT，不能依赖浏览器 cookie。

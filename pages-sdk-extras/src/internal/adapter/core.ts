@@ -7,11 +7,11 @@ import {
   validateKvType,
   validateTtl,
   validateUserKey,
-} from './protocol.js';
-import { PagesSDKError } from './errors.js';
-import type { KVType, PagesDataStore, PagesRuntimeEnv } from './types.js';
+} from '../../protocol.js';
+import { PagesSDKError } from '../../errors.js';
+import type { KVType, PagesDataStore, PagesRuntimeEnv } from '../../types.js';
 
-type RuntimeFactory = typeof import('./worker.js').createPagesRuntime;
+type RuntimeFactory = typeof import('../../worker/index.js').createPagesRuntime;
 
 export function createHandlePagesRuntimeRequest(createPagesRuntime: RuntimeFactory) {
   return async function handlePagesRuntimeRequest(
