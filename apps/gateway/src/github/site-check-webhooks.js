@@ -50,11 +50,20 @@ function shouldIgnoreStalePlatformCheck(platformItem = {}, nextStatus = '') {
 }
 
 export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }) {
-  const storedRun = await store.recordSiteCheckRun(siteCheckRun);
   const fullHeadSha = siteCheckRun.headSha && siteCheckRun.headSha.length === 40 ? siteCheckRun.headSha : null;
   let platformItem = store.findPlatformDevItemByPrNumber
     ? await store.findPlatformDevItemByPrNumber(siteCheckRun.prNumber, fullHeadSha ? { headSha: fullHeadSha } : {})
     : null;
+  if (!platformItem && siteCheckRun.platformCiOnly) {
+    return jsonResponse({
+      ok: true,
+      created: true,
+      delivery: result.delivery,
+      ignored: 'platform_ci_without_platform_item',
+    });
+  }
+
+  const storedRun = await store.recordSiteCheckRun(siteCheckRun);
   if (platformItem) {
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
     const nextStatus = platformCheckStatusForRun(platformItem, siteCheckRun);

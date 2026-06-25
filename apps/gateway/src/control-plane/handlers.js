@@ -6,6 +6,7 @@ import {
   verifyGithubWebhookSignature,
 } from '../github/webhook.js';
 import {
+  isAllowedPlatformCiRun,
   isAllowedReviewAgent,
   isAllowedSiteCheckRun,
   normalizeReviewAgentWebhook,
@@ -3561,8 +3562,21 @@ export async function handleGithubWebhook(request, env) {
     }
 
     const siteCheckRun = normalizeSiteCheckRunWebhook(body, eventName, deliveryId, repoFullName);
-    if (siteCheckRun && isAllowedSiteCheckRun(siteCheckRun, env)) {
-      return await completeGithubDelivery(store, result, await handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }));
+    if (siteCheckRun) {
+      const allowedSiteCheck = isAllowedSiteCheckRun(siteCheckRun, env);
+      const allowedPlatformCi = isAllowedPlatformCiRun(siteCheckRun, env);
+      if (allowedSiteCheck || allowedPlatformCi) {
+        return await completeGithubDelivery(
+          store,
+          result,
+          await handleGithubSiteCheckWebhook({
+            siteCheckRun: { ...siteCheckRun, platformCiOnly: allowedPlatformCi && !allowedSiteCheck },
+            store,
+            env,
+            result,
+          })
+        );
+      }
     }
 
     const normalized = normalizeReviewAgentWebhook(body, eventName, deliveryId, repoFullName);

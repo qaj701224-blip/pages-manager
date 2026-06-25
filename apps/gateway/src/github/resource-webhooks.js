@@ -366,8 +366,6 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     } else if (['opened', 'reopened', 'ready_for_review'].includes(action)) nextStatus = 'pr_created';
     else if (action === 'synchronize') nextStatus = 'ci_running';
     if (shouldIgnorePlatformPrAction(platformItem, action, pullRequest)) {
-      platformItem = await store.patchPlatformDevItem(platformItem.id, patch);
-      if (!platformItem) return workItemGoneResponse(result, 'platform_dev', platformItemId);
       return jsonResponse({
         ok: true,
         created: true,

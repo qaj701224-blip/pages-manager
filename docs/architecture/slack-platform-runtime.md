@@ -618,7 +618,7 @@ Platform Dev Lane 的确认卡片必须展示：
 - 用户点击“继续补充需求”时，原卡片更新为“等待补充”，不会创建 issue，也不会关闭会话。
 - 用户点击确认后，原确认卡片更新为“已确认”，确认按钮被移除，避免旧卡片被重复点击。
 - 确认后进入执行阶段，由 lane 对应的进度消息接管：Site Publishing Lane 对用户展示站点需求、PR / preview、阻塞原因和下一步；Platform Dev Lane 对用户展示 issue / PR / CI / review / merge 进度。用户后续继续在同一 thread 回复，会更新同一个工作项并触发 fix round 或排队。
-- 修改类消息写入 job / work item 时必须按并发失败处理；如果状态已被其它回调收口或记录消失，Slack 应给出“重新查询状态后再继续”的可见提示，不继续启动 worker 或写成功进度。executor 的迟到 callback 命中 `merged`、`closed_unmerged`、`cancelled` 等 terminal 状态时只能 no-op ignore，不能合入 patch 或把已完成/关闭的工作项回退。
+- 修改类消息写入 job / work item 时必须按并发失败处理；如果状态已被其它回调收口或记录消失，Slack 应给出“重新查询状态后再继续”的可见提示，不继续启动 worker 或写成功进度。executor 或 GitHub PR lifecycle 的迟到 callback 命中 `merged`、`closed_unmerged`、`cancelled` 等 terminal 状态时只能 no-op ignore，不能合入 patch 或把已完成/关闭的工作项回退。
 - GitHub issue / PR 被 reopen 后，如果恢复任务时 worker dispatch 被拒绝或抛错，必须把 job / work item 记录为 `worker_start_failed`，不能只 ACK webhook 后留下运行中状态。
 - 已有 active job / issue / PR 后，修改类消息不再创建“正在整理需求”的 Agent 占位回复；Agent 对用户修改意图的理解进入进度消息的“本轮修改 / 最终需求”。如果 Agent 需要追问、解释、返回查询结果或说明无法处理，仍然在同一 thread 里直接回复用户。
 - 每条用户输入的即时反馈优先用 reaction 表示：收到时加 working reaction，完成时换成 done，失败时换成 failed。文字消息只承载真正的信息，不重复刷“我已收到”。
