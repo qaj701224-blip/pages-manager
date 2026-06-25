@@ -25,6 +25,41 @@ function trimTrailingSlash(value = '') {
   return String(value || '').replace(/\/+$/, '');
 }
 
+const SECRET_FIELD_NAME_PATTERN =
+  [
+    '(?:[A-Za-z0-9]+[_-])*',
+    '(?:api[_-]?key|secret(?:[_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)',
+    '(?:[_-][A-Za-z0-9]+)*',
+  ].join('');
+const jsonSecretFieldPattern = new RegExp(
+  `((["'])(?:${SECRET_FIELD_NAME_PATTERN})\\2\\s*:\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*')`,
+  'gi'
+);
+const quotedSecretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*')`,
+  'gi'
+);
+const secretAssignmentPattern = new RegExp(`\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*[^"',\\s}]+`, 'gi');
+
+function redactPublicText(value = '') {
+  return String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED_TOKEN]')
+    .replace(/\b(xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_TOKEN]')
+    .replace(/\b(xapp-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_APP_TOKEN]')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
+    .replace(jsonSecretFieldPattern, (_, prefix, _keyQuote, valueText) => {
+      const quote = valueText[0];
+      return `${prefix}${quote}[REDACTED_SECRET]${quote}`;
+    })
+    .replace(quotedSecretAssignmentPattern, (_, key, operator, valueText) => {
+      const quote = valueText[0];
+      return `${key}${operator}${quote}[REDACTED_SECRET]${quote}`;
+    })
+    .replace(secretAssignmentPattern, '$1$2[REDACTED_SECRET]');
+}
+
 export function companyChatCompletionsUrl(baseUrl) {
   const normalized = trimTrailingSlash(baseUrl);
   if (!normalized) throw new Error('AGENT_GATEWAY_URL is required');
@@ -360,14 +395,14 @@ export async function runCodingAgent(options = {}) {
   const siteJson = {
     employeeSlug: context.employeeSlug,
     siteSlug: context.siteSlug,
-    title: context.requestTitle,
+    title: redactPublicText(context.requestTitle),
     publishingJobId: context.publishingJobId,
     issueNumber: context.issueNumber || null,
     indexSnapshotId: context.indexSnapshotId || null,
     baseRef: context.baseRef,
     generatedBy: 'pages-agent-coding',
     generatedAt,
-    codingSummary: modelResult?.summary || '',
+    codingSummary: redactPublicText(modelResult?.summary || ''),
     modelName: context.modelName || null,
   };
 

@@ -43,6 +43,7 @@ async function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}, s
       ? await previewGateForPr(store, siteCheckRun.repoFullName, prNumber, headSha ? { headSha } : {})
       : null;
     const passedReviewCount = Number(gate?.reviewGate?.noteCount || 0) + Number(gate?.reviewGate?.suggestionCount || 0);
+    if (gate?.reviewGate?.blockingCount > 0 || gate?.reviewGate?.unknownCount > 0) return 'review_blocked';
     return gate?.reviewGate?.canPreview && passedReviewCount > 0 ? 'ready_to_merge' : 'review_waiting';
   }
   if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion && siteCheckRun.conclusion !== 'success') {

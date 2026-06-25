@@ -80,9 +80,9 @@ cancelled
 | `branch_committed` | 分支已提交 | `pr_created` / `failed` |
 | `pr_created` | PR 已创建 | `ci_running` / `review_waiting` / `review_blocked` / `ready_to_merge` |
 | `ci_running` | CI 运行中 | `review_waiting` / `ci_failed` |
-| `ci_failed` | CI 阻塞 | `agent_queued` / `agent_running` / `review_waiting` / `ready_to_merge` |
+| `ci_failed` | CI 阻塞 | `agent_queued` / `agent_running` / `ci_running` / `review_waiting` / `review_blocked` / `ready_to_merge` |
 | `review_waiting` | 等待 review | `review_blocked` / `ready_for_review` |
-| `review_blocked` | review 阻塞 | `agent_queued` / `agent_running` / `ci_running` |
+| `review_blocked` | review 阻塞 | `agent_queued` / `agent_running` / `ci_running` / `review_waiting` / `ready_to_merge` |
 | `ready_to_merge` | 技术上可合并，但仍需人类 merge | `merged` / `closed_unmerged` |
 | `merged` | PR 已合并 | 终态 |
 | `closed_unmerged` | issue / PR 已关闭未合并 | 可由 GitHub `merged: true` PR webhook 修正为 `merged` |
