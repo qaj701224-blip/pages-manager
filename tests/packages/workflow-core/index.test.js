@@ -262,3 +262,44 @@ test('PlatformDevItem bridge transitions normalize late executor callbacks', () 
   assert.equal(updated.githubPrNumber, 99);
   assert.deepEqual(bridgedStatuses, ['issue_creating', 'issue_created', 'agent_queued', 'agent_running', 'branch_committed']);
 });
+
+test('PlatformDevItem stale terminal callbacks do not patch completed items', () => {
+  const item = {
+    ...buildPlatformDevItem(
+      {
+        requestedById: 'usr_1',
+        idempotencyKey: 'key_terminal_stale',
+        title: '平台开发',
+        summary: '平台开发',
+      },
+      {
+        id: 'pdev_terminal_stale',
+        status: 'merged',
+      }
+    ),
+    headSha: 'a'.repeat(40),
+    branchName: 'codex/platform-old',
+    workflowRunId: 'run_old',
+    updatedAt: '2026-06-24T00:00:00.000Z',
+  };
+  const bridgedStatuses = [];
+  const updated = transitionPlatformDevItemWithBridge(
+    item,
+    'agent_running',
+    {
+      headSha: 'b'.repeat(40),
+      branchName: 'codex/platform-stale',
+      workflowRunId: 'run_stale',
+    },
+    new Date('2026-06-24T01:00:00.000Z'),
+    (_, status) => bridgedStatuses.push(status)
+  );
+
+  assert.equal(updated, item);
+  assert.equal(updated.status, 'merged');
+  assert.equal(updated.headSha, 'a'.repeat(40));
+  assert.equal(updated.branchName, 'codex/platform-old');
+  assert.equal(updated.workflowRunId, 'run_old');
+  assert.equal(updated.updatedAt, '2026-06-24T00:00:00.000Z');
+  assert.deepEqual(bridgedStatuses, []);
+});
