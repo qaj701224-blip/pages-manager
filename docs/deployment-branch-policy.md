@@ -47,7 +47,7 @@ base: master
 - merge 成功后先 push 到 `staging-sync/pr-<number>-<sha>` 临时分支，并 dispatch 默认分支已注册的兼容 `CI`
   workflow（`.github/workflows/ci.yml`）在该 merge commit 上运行 `check`。PR / master push 的平台校验由
   `pr-platform.yml` 承接，`ci.yml` 只保留给 staging sync 的迁移期手动校验。
-- `check` 成功后再把同一个已验证 commit push 到 `staging`，满足 `staging` ruleset 的 required status check。
+- `check` 成功后再把同一个已验证 commit push 到 `staging`，满足 `staging` ruleset 的 required status check；dispatch staging deploy 前必须等待 GitHub refs API 确认 `refs/heads/staging` 已指向该 commit，避免部署 workflow 绑定旧 head。
 - 临时分支只用于让 GitHub Actions 给待同步 commit 产生 required check，成功或失败后由 workflow 清理。
 - 由于 GitHub `GITHUB_TOKEN` 产生的 push 不会自动触发后续 push workflow，同步 workflow 必须显式 dispatch `Deploy XD Pages Staging`。
 - 同步 workflow 必须等待 `Deploy XD Pages Staging` 完成并继承其结果；这样 master PR 上能直接看到 staging preview / validation 是否通过。

@@ -17,6 +17,15 @@ function shouldIgnoreStalePlatformReview(platformItem = {}, nextStatus = '') {
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
 
+function reviewedCommitSha(value) {
+  return typeof value === 'string' && /^[a-f0-9]{7,40}$/i.test(value) ? value : null;
+}
+
+function fullCommitSha(value) {
+  const sha = reviewedCommitSha(value);
+  return sha?.length === 40 ? sha : null;
+}
+
 function compactText(value = '', maxLength = 1200) {
   const text = String(value || '')
     .replace(/\s+/g, ' ')
@@ -210,30 +219,34 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
   }
 
   const job = await store.findJobByPrNumber(normalized.prNumber, { headSha: normalized.headSha });
-  const gate = await previewGateForPr(
-    store,
-    repoFullName,
-    normalized.prNumber,
-    normalized.headSha ? { headSha: normalized.headSha } : {}
-  );
   let updatedJob = job;
   let workerStart = null;
   let reviewAction = 'recorded';
   let slackStatusNotification = null;
   let slackNotification = null;
 
-  const fullHeadSha = normalized.headSha && normalized.headSha.length === 40 ? normalized.headSha : null;
+  const reviewedHeadSha = reviewedCommitSha(normalized.headSha);
+  const fullHeadSha = fullCommitSha(reviewedHeadSha);
 
   if (updatedJob && fullHeadSha && updatedJob.headSha !== fullHeadSha) {
     updatedJob = await store.patchJob(updatedJob.id, { headSha: fullHeadSha });
   }
+
+  const gateHeadSha = reviewedHeadSha || updatedJob?.headSha || null;
+  const gateOptions = gateHeadSha ? { headSha: gateHeadSha } : {};
+  const gate = await previewGateForPr(store, repoFullName, normalized.prNumber, gateOptions);
+  const ignoreHeadlessReviewForPreview = Boolean(
+    updatedJob?.headSha && normalized.sourceType === 'issue_comment' && !reviewedHeadSha
+  );
 
   if (updatedJob && updatedJob.status === 'pr_created') {
     updatedJob = await store.updateJob(updatedJob.id, 'reviewing', fullHeadSha ? { headSha: fullHeadSha } : {});
     reviewAction = 'reviewing';
   }
 
-  if (updatedJob && gate.blockingCount > 0 && ['reviewing', 'changes_requested'].includes(updatedJob.status)) {
+  if (ignoreHeadlessReviewForPreview) {
+    reviewAction = 'headless_review_recorded';
+  } else if (updatedJob && gate.blockingCount > 0 && ['reviewing', 'changes_requested'].includes(updatedJob.status)) {
     updatedJob =
       updatedJob.status === 'changes_requested'
         ? updatedJob
