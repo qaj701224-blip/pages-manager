@@ -30,6 +30,52 @@ function assertWorkerStarted(workerStart, context) {
   throw new Error(`${context}: ${workerStart.error || 'Worker start failed'}`);
 }
 
+async function startWorkerSafely(workItem, env, startWorker) {
+  try {
+    return await startWorker(workItem, env);
+  } catch (error) {
+    return { started: false, error: error.message || 'Worker start failed' };
+  }
+}
+
+async function failJobAfterWorkerStartRejection(store, env, job, workerStart) {
+  if (workerStart?.started !== false) return null;
+  const failedJob =
+    (await store.failJob?.(job.id, 'worker_start_failed', workerStart.error || 'Worker start failed')) ||
+    (await store.patchJob?.(job.id, {
+      status: 'failed',
+      errorCode: 'worker_start_failed',
+      errorMessage: workerStart.error || 'Worker start failed',
+    })) ||
+    job;
+  await store.linkJobToSlackSession(failedJob);
+  const slackStatusNotification = await notifySlackJobStatus(env, store, failedJob, {
+    stage: 'failed',
+    text: failedJob.errorMessage || failedJob.errorCode || '发布任务失败',
+    statusText: ':x: 发布任务失败',
+  });
+  return { job: failedJob, slackStatusNotification };
+}
+
+async function failPlatformAfterWorkerStartRejection(store, env, item, workerStart) {
+  if (workerStart?.started !== false) return null;
+  const failedItem =
+    (await store.failPlatformDevItem?.(item.id, 'worker_start_failed', workerStart.error || 'Worker start failed')) ||
+    (await store.patchPlatformDevItem?.(item.id, {
+      status: 'failed',
+      errorCode: 'worker_start_failed',
+      errorMessage: workerStart.error || 'Worker start failed',
+    })) ||
+    item;
+  await store.linkPlatformDevItemToSlackSession(failedItem);
+  const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, failedItem, {
+    stage: 'failed',
+    text: failedItem.errorMessage || failedItem.errorCode || '平台开发任务失败',
+    skipDuplicate: false,
+  });
+  return { item: failedItem, slackStatusNotification };
+}
+
 function shouldIgnorePlatformPrAction(item = {}, action = '', pullRequest = {}) {
   if (!TERMINAL_PLATFORM_STATUSES.has(item.status)) return false;
   if (action === 'reopened' && ['closed_unmerged', 'cancelled', 'failed'].includes(item.status)) return false;
@@ -97,7 +143,22 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
   if (!item) return workItemGoneResponse(result, 'platform_dev', itemId);
 
   await store.linkPlatformDevItemToSlackSession(item);
-  const workerStart = action === 'reopened' ? await startWorkerForPlatformDevItemIfConfigured(item, env) : null;
+  const workerStart =
+    action === 'reopened' ? await startWorkerSafely(item, env, startWorkerForPlatformDevItemIfConfigured) : null;
+  const workerStartFailure = await failPlatformAfterWorkerStartRejection(store, env, item, workerStart);
+  if (workerStartFailure) {
+    return jsonResponse({
+      ok: true,
+      created: true,
+      delivery: result.delivery,
+      issueAction: 'platform_item_worker_start_failed',
+      item: workerStartFailure.item,
+      workerStart,
+      ...(workerStartFailure.slackStatusNotification
+        ? { slackStatusNotification: workerStartFailure.slackStatusNotification }
+        : {}),
+    });
+  }
   const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, item, {
     stage: item.status,
     text:
@@ -159,7 +220,21 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
       job = await restoreJobForReopenedGithubResource(store, job, 'issue', issue);
       if (!job) return workItemGoneResponse(result, 'site_publishing', jobId);
       await store.linkJobToSlackSession(job);
-      const workerStart = await startWorkerForJobIfConfigured(job, env);
+      const workerStart = await startWorkerSafely(job, env, startWorkerForJobIfConfigured);
+      const workerStartFailure = await failJobAfterWorkerStartRejection(store, env, job, workerStart);
+      if (workerStartFailure) {
+        return jsonResponse({
+          ok: true,
+          created: true,
+          delivery: result.delivery,
+          issueAction: 'job_restore_worker_start_failed',
+          job: workerStartFailure.job,
+          workerStart,
+          ...(workerStartFailure.slackStatusNotification
+            ? { slackStatusNotification: workerStartFailure.slackStatusNotification }
+            : {}),
+        });
+      }
       const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
         stage: job.status,
         text: 'GitHub issue 已重新打开，发布任务已恢复。',
@@ -271,9 +346,7 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'missing_pr_number' });
   }
 
-  let platformItem = store.findPlatformDevItemByPrNumber
-    ? await store.findPlatformDevItemByPrNumber(prNumber, { headSha: pullRequest.head?.sha || null })
-    : null;
+  let platformItem = store.findPlatformDevItemByPrNumber ? await store.findPlatformDevItemByPrNumber(prNumber) : null;
   if (platformItem) {
     const platformItemId = platformItem.id;
     const mergeAnnouncement =
@@ -309,7 +382,23 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
         : await store.updatePlatformDevItem(platformItem.id, nextStatus, patch);
     if (!platformItem) return workItemGoneResponse(result, 'platform_dev', platformItemId);
     await store.linkPlatformDevItemToSlackSession(platformItem);
-    const workerStart = action === 'reopened' ? await startWorkerForPlatformDevItemIfConfigured(platformItem, env) : null;
+    const workerStart =
+      action === 'reopened' ? await startWorkerSafely(platformItem, env, startWorkerForPlatformDevItemIfConfigured) : null;
+    const workerStartFailure = await failPlatformAfterWorkerStartRejection(store, env, platformItem, workerStart);
+    if (workerStartFailure) {
+      return jsonResponse({
+        ok: true,
+        created: true,
+        delivery: result.delivery,
+        prAction: 'platform_item_worker_start_failed',
+        ...(mergeAnnouncement ? { mergeAnnouncement } : {}),
+        item: workerStartFailure.item,
+        workerStart,
+        ...(workerStartFailure.slackStatusNotification
+          ? { slackStatusNotification: workerStartFailure.slackStatusNotification }
+          : {}),
+      });
+    }
     const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, platformItem, {
       stage: nextStatus,
       text:

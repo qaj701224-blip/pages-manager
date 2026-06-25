@@ -9672,6 +9672,74 @@ test('GitHub closed issue webhook marks the publishing job inactive', async () =
   assert.match(body.job.errorMessage, /issue #34 已关闭/);
 });
 
+test('GitHub reopened issue fails restored job when worker dispatch is rejected', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-issue-reopened-worker-failed',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  app.store.patchJob(createBody.job.id, {
+    issueNumber: 37,
+    issueUrl: 'https://github.example/org/pages-manager/issues/37',
+  });
+  app.store.cancelJob(createBody.job.id, 'github_issue_closed', 'GitHub issue #37 已关闭，发布任务已停止。');
+  const workerCalls = [];
+  const notifierCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-issue-reopened-worker-failed',
+        'X-GitHub-Event': 'issues',
+      },
+      body: JSON.stringify({
+        action: 'reopened',
+        repository: { full_name: 'org/pages-manager' },
+        issue: {
+          number: 37,
+          html_url: 'https://github.example/org/pages-manager/issues/37',
+          body: `PublishingJob: ${createBody.job.id}`,
+        },
+      }),
+    }),
+    {
+      ...mockSlackNotifier(notifierCalls),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: false, error: 'bad worker token' }), { status: 502 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getJob(createBody.job.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.issueAction, 'job_restore_worker_start_failed');
+  assert.equal(body.workerStart.started, false);
+  assert.equal(body.job.status, 'failed');
+  assert.equal(body.job.errorCode, 'worker_start_failed');
+  assert.match(body.job.errorMessage, /bad worker token/);
+  assert.equal(updated.status, 'failed');
+  assert.equal(workerCalls.length, 1);
+  assert.equal(notifierCalls.some((call) => call.path === '/internal/slack-notifier/job-status'), true);
+});
+
 test('executor callback after cancellation is ignored without failing workflow', async () => {
   const app = createGatewayApp();
   const createBody = await json(

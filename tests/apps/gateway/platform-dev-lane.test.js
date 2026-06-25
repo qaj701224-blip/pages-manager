@@ -1501,6 +1501,52 @@ test('platform executor callback updates PlatformDevItem PR state', async () => 
   assert.equal(app.store.findPlatformDevItemByPrNumber(44).id, item.id);
 });
 
+test('platform PR synchronize updates item by PR number when head changes', async () => {
+  const app = createGatewayApp();
+  const oldHeadSha = '1'.repeat(40);
+  const newHeadSha = '2'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-pr-sync-new-head',
+    issueNumber: 82,
+    prNumber: 102,
+    headSha: oldHeadSha,
+    branchName: 'platform/item-old',
+    slackSessionId: 'sess_platform_pr_sync',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-pr-sync-new-head',
+        'X-GitHub-Event': 'pull_request',
+      },
+      body: JSON.stringify({
+        action: 'synchronize',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: {
+          number: 102,
+          state: 'open',
+          merged: false,
+          html_url: 'https://github.example/org/pages-manager/pull/102',
+          head: { sha: newHeadSha, ref: 'platform/item-new' },
+        },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.prAction, 'platform_item_recorded');
+  assert.equal(updated.status, 'ci_running');
+  assert.equal(updated.githubPrNumber, 102);
+  assert.equal(updated.headSha, newHeadSha);
+  assert.equal(updated.branchName, 'platform/item-new');
+});
+
 test('platform executor callback stops when item disappears during update', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
