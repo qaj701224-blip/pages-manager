@@ -501,67 +501,6 @@ async function* readOpenAiCompatibleStreamPayloads(response) {
   yield* flushLines(true);
 }
 
-function decodeJsonStringEscape(raw, index) {
-  const char = raw[index];
-  const simple = {
-    '"': '"',
-    '\\': '\\',
-    '/': '/',
-    b: '\b',
-    f: '\f',
-    n: '\n',
-    r: '\r',
-    t: '\t',
-  };
-  if (Object.prototype.hasOwnProperty.call(simple, char)) {
-    return { value: simple[char], nextIndex: index };
-  }
-  if (char === 'u') {
-    const hex = raw.slice(index + 1, index + 5);
-    if (/^[0-9a-fA-F]{4}$/.test(hex)) {
-      return { value: String.fromCharCode(Number.parseInt(hex, 16)), nextIndex: index + 4 };
-    }
-    return { value: '', nextIndex: index - 1, incomplete: true };
-  }
-  return { value: char || '', nextIndex: index };
-}
-
-function partialJsonStringValue(raw = '', key) {
-  const keyToken = `"${key}"`;
-  const keyIndex = raw.indexOf(keyToken);
-  if (keyIndex < 0) return { found: false, value: '', complete: false };
-
-  let index = keyIndex + keyToken.length;
-  while (/\s/.test(raw[index] || '')) index += 1;
-  if (raw[index] !== ':') return { found: true, value: '', complete: false };
-  index += 1;
-  while (/\s/.test(raw[index] || '')) index += 1;
-  if (raw[index] !== '"') return { found: true, value: '', complete: false };
-  index += 1;
-
-  let value = '';
-  for (; index < raw.length; index += 1) {
-    const char = raw[index];
-    if (char === '\\') {
-      const decoded = decodeJsonStringEscape(raw, index + 1);
-      if (decoded.incomplete) return { found: true, value, complete: false };
-      value += decoded.value;
-      index = decoded.nextIndex;
-      continue;
-    }
-    if (char === '"') return { found: true, value, complete: true };
-    value += char;
-  }
-
-  return { found: true, value, complete: false };
-}
-
-function partialVisibleReply(raw = '') {
-  const camel = partialJsonStringValue(raw, 'visibleReply');
-  if (camel.found) return camel;
-  return partialJsonStringValue(raw, 'visible_reply');
-}
-
 class SemanticChunker {
   constructor(config = {}) {
     this.pending = '';
@@ -637,24 +576,12 @@ async function* streamCompanyOpenAiGatewayTurnEvents({ input, config, messages, 
     throw modelError(`Slack Agent company OpenAI-compatible gateway failed: HTTP ${response.status}`, 502);
   }
 
-  const chunker = new SemanticChunker(config);
   let rawContent = '';
-  let lastVisibleLength = 0;
-  let emittedVisible = '';
 
   for await (const payload of readOpenAiCompatibleStreamPayloads(response)) {
     const delta = extractOpenAiStreamDelta(payload);
     if (!delta) continue;
     rawContent += delta;
-    const visible = partialVisibleReply(rawContent);
-    if (!visible.found || visible.value.length <= lastVisibleLength) continue;
-
-    const newText = visible.value.slice(lastVisibleLength);
-    lastVisibleLength = visible.value.length;
-    for (const chunk of chunker.push(newText)) {
-      emittedVisible += chunk;
-      yield { type: 'reply_delta', text: chunk };
-    }
   }
 
   const rawAnalysis =
@@ -671,15 +598,8 @@ async function* streamCompanyOpenAiGatewayTurnEvents({ input, config, messages, 
     modelApiStyle: 'company-openai-compatible',
   };
   const finalVisible = visibleSlackAgentReply(analysis);
-  for (const chunk of chunker.flush()) {
-    emittedVisible += chunk;
+  for (const chunk of splitSemanticChunks(finalVisible, config)) {
     yield { type: 'reply_delta', text: chunk };
-  }
-  if (!emittedVisible) {
-    for (const chunk of splitSemanticChunks(finalVisible, config)) {
-      emittedVisible += chunk;
-      yield { type: 'reply_delta', text: chunk };
-    }
   }
   yield { type: 'analysis_final', analysis };
 }

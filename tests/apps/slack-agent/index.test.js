@@ -1126,6 +1126,71 @@ describe('slack agent', () => {
     assert.equal(final.analysis.modelApiStyle, 'company-openai-compatible');
   });
 
+  it('redacts split env-style secrets before emitting streamed visible replies', async () => {
+    const app = createSlackAgentApp({
+      config: {
+        modelProvider: 'company-agent',
+        gatewayUrl: 'https://agent-gateway.example/v1',
+        apiKey: 'gateway-key',
+        modelName: 'company-agent',
+        requestTimeoutMs: 1000,
+        semanticChunkMinChars: 8,
+        semanticChunkMaxChars: 80,
+        sharedSecret: 'secret',
+      },
+      async fetchImpl() {
+        const events = [
+          { choices: [{ delta: { content: '{"visibleReply":"请使用 CF_API_' } }] },
+          { choices: [{ delta: { content: 'TOKEN=real-token 触发测试。","intent":"create_platform_issue",' } }] },
+          {
+            choices: [
+              {
+                delta: {
+                  content: '"title":"测试","summary":"CF_API_TOKEN=real-token","needsClarification":false}',
+                },
+              },
+            ],
+          },
+        ];
+        return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+        });
+      },
+    });
+
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/turn', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+          'X-Pages-Slack-Agent-Token': 'secret',
+        },
+        body: JSON.stringify({
+          agentRunId: 'agent_stream_secret',
+          slackSessionId: 'sess_stream_secret',
+          text: '处理 CF_API_TOKEN=real-token',
+        }),
+      })
+    );
+    const lines = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const visibleText = lines
+      .filter((line) => line.type === 'reply_delta')
+      .map((line) => line.text)
+      .join('');
+    const final = lines.find((line) => line.type === 'analysis_final');
+
+    assert.equal(response.status, 200);
+    assert.match(visibleText, /CF_API_TOKEN=\[REDACTED_SECRET\]/);
+    assert.doesNotMatch(visibleText, /real-token/);
+    assert.equal(final.analysis.visibleReply, '请使用 CF_API_TOKEN=[REDACTED_SECRET] 触发测试。');
+    assert.equal(final.analysis.summary, 'CF_API_TOKEN=[REDACTED_SECRET]');
+  });
+
   it('normalizes company gateway root BaseURL to /v1/chat/completions', async () => {
     const calls = [];
     const app = createSlackAgentApp({
