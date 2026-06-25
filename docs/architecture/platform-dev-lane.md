@@ -113,7 +113,7 @@ received
 - `work_item_followups`：Slack 后续补充。
 - `slack_work_item_status_messages`：平台进度消息 message binding。
 
-`platform_dev_items`、初始 `platform_dev_events` 和需要的 `work_item_gates` 必须在同一个 MySQL transaction 内创建；同一 idempotency key 的重试不能留下只有 item、没有事件或 gate 的半成品。
+`platform_dev_items`、初始 `platform_dev_events` 和需要的 `work_item_gates` 必须在同一个 MySQL transaction 内创建；同一 idempotency key 的重试必须 insert-only 后读取已有 item，不能用 upsert 重置既有 item，也不能留下只有 item、没有事件或 gate 的半成品。
 
 兼容扩展：
 

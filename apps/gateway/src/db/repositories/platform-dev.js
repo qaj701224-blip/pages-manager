@@ -14,7 +14,17 @@ import {
   rowToPlatformDevItem,
 } from '../rows/platform-dev-row.js';
 import { rowToWorkItemLink, workItemLinkToRow } from '../rows/slack-row.js';
-import { execute, fromDbJson, limitOffsetSql, queryPlaceholders, toDbJson, toIso, upsertRow, withTransaction } from '../sql.js';
+import {
+  execute,
+  fromDbJson,
+  insertRowIfNotDuplicate,
+  limitOffsetSql,
+  queryPlaceholders,
+  toDbJson,
+  toIso,
+  upsertRow,
+  withTransaction,
+} from '../sql.js';
 
 const ACTIVE_PLATFORM_DEV_STATUSES = new Set([
   'received',
@@ -145,42 +155,43 @@ export const platformDevRepositoryMethods = {
     this.appendPlatformDevEvent(item, 'PlatformDevItem received');
     const events = this.platformDevEvents.get(item.id) || [];
 
-    try {
-      await withTransaction(this.pool, async (connection) => {
-        await upsertRow(connection, 'platform_dev_items', platformDevItemToRow(item), { excludeUpdate: ['id', 'created_at'] });
-        for (const event of events) {
-          await upsertRow(connection, 'platform_dev_events', platformDevEventToRow(event), {
-            excludeUpdate: ['id', 'created_at'],
-          });
-        }
-        if (item.requiresHumanGate) {
-          const nowIso = new Date().toISOString();
-          const gate = {
-            id: makeId('gate'),
-            workItemKind: 'platform_dev',
-            workItemId: item.id,
-            gateType: 'risk',
-            status: 'pending',
-            reason: item.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
-            decidedBy: null,
-            decidedAt: null,
-            metadata: {
-              risk: item.risk,
-              issueType: item.issueType,
-              areas: item.areas || [],
-            },
-            createdAt: nowIso,
-            updatedAt: nowIso,
-          };
-          await upsertRow(connection, 'work_item_gates', workItemGateToRow(gate), { excludeUpdate: ['id', 'created_at'] });
-        }
-      });
-    } catch (error) {
-      if (String(error.code || '').includes('ER_DUP_ENTRY')) {
-        const duplicate = await this.getPlatformDevItemByIdempotency(input);
-        if (duplicate) return { item: duplicate, created: false };
+    let inserted = false;
+    await withTransaction(this.pool, async (connection) => {
+      inserted = await insertRowIfNotDuplicate(connection, 'platform_dev_items', platformDevItemToRow(item));
+      if (!inserted) return;
+      for (const event of events) {
+        await upsertRow(connection, 'platform_dev_events', platformDevEventToRow(event), {
+          excludeUpdate: ['id', 'created_at'],
+        });
       }
-      throw error;
+      if (item.requiresHumanGate) {
+        const nowIso = new Date().toISOString();
+        const gate = {
+          id: makeId('gate'),
+          workItemKind: 'platform_dev',
+          workItemId: item.id,
+          gateType: 'risk',
+          status: 'pending',
+          reason: item.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
+          decidedBy: null,
+          decidedAt: null,
+          metadata: {
+            risk: item.risk,
+            issueType: item.issueType,
+            areas: item.areas || [],
+          },
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        await upsertRow(connection, 'work_item_gates', workItemGateToRow(gate), { excludeUpdate: ['id', 'created_at'] });
+      }
+    });
+
+    if (!inserted) {
+      this.platformDevEvents.delete(item.id);
+      const duplicate = await this.getPlatformDevItemByIdempotency(input);
+      if (duplicate) return { item: duplicate, created: false };
+      throw new Error('Duplicate PlatformDevItem idempotency row could not be loaded');
     }
 
     this.cachePlatformDevItem(item);
