@@ -525,6 +525,7 @@ Platform Dev PR 的 `blocking` / `unknown` review comment、CI 失败和 Slack f
 - webhook 先把 comment / check / follow-up 入库，再决定是否 dispatch `platform-agent.yml(mode=fix)`。
 - dispatch 输入必须包含 PR number、当前 head SHA、issue / follow-up 摘要，以及触发本轮修复的 review comment 或 CI 失败摘要。
 - 处理 review comment 时必须按 PR head SHA 匹配当前 work item；无法确认 head SHA 的事件不能回退到任意 active PR。
+- 中间状态更新必须 fail closed；例如 `pr_created -> reviewing -> fixing` 中任一步找不到当前 job / item，直接返回可恢复失败，不继续按旧对象 dispatch。
 - 生成结果必须同步回 workflow checkout 的 repo 工作区，由 workflow 的 `git diff`、secret scan、commit 和 push 统一处理，不能只停留在 agent session 或 artifact。
 - 同一 PR / work item 同一时间只允许一个 fix round；新 follow-up 在当前轮未结束时排队，并在可安全推进的 callback 后继续启动下一轮。
 - 非 open 的 review comment 事件，例如 deleted、dismissed 或 outdated，只记录状态，不触发自动修复。

@@ -429,6 +429,42 @@ async function handleSlackPlatformDevFollowup({
   };
 
   let updatedItem = await store.patchPlatformDevItem(item.id, patch);
+  if (!updatedItem) {
+    const replyText = '这个平台需求刚刚已不可用，无法继续追加修改。';
+    await updateFollowupSessionMemory({
+      store,
+      slackSession,
+      sessionMemory,
+      intake,
+      patch: {
+        ...memoryPatch,
+        lastAgentResponse: replyText,
+      },
+      replyText,
+      conversationKind: 'platform_followup_missing',
+    });
+    await completeSlackAgentRun(store, agentRun, {
+      workItemKind: 'platform_dev',
+      workItemId: item.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'platform_followup_item_missing',
+        accepted: false,
+        intent: slackAgentAnalysis?.intent || null,
+      },
+    });
+    return {
+      ok: false,
+      action: 'platform_followup_item_missing',
+      accepted: false,
+      workItemKind: 'platform_dev',
+      workItemId: item.id,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      replyText,
+      ...(redactedSlackAgentAnalysis ? { slackAgentAnalysis: redactedSlackAgentAnalysis } : {}),
+    };
+  }
   await store.linkPlatformDevItemToSlackSession(updatedItem, slackSession);
   const issueSync = await appendPlatformFollowupIssueCommentIfPossible(env, updatedItem, feedback);
   let action = 'platform_followup_recorded';

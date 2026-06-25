@@ -179,6 +179,7 @@ export const publishingJobRepositoryMethods = {
     if (!job) return null;
     if (job.status === 'fixing') return this.patchJob(jobId, patch);
     if (job.status === 'pr_created') job = await this.updateJob(jobId, 'reviewing');
+    if (!job) return null;
     if (!canTransition(job.status, 'fixing')) return null;
     return this.updateJob(jobId, 'fixing', patch);
   },

@@ -1,5 +1,7 @@
 import { appendFollowupIssueComment, buildPagesAgentInputs, dispatchWorkflow } from '@xd/git-client';
 
+import { postExecutorCallback } from '../integrations/gateway-client.js';
+
 function safeBranchSegment(value) {
   return String(value || '')
     .toLowerCase()
@@ -28,22 +30,37 @@ function pagesAgentBranchName(job, config) {
 
 export async function startPagesAgent(job, config, adapters = {}) {
   const fetchImpl = adapters.fetchImpl || fetch;
+  const callback = adapters.postExecutorCallback || postExecutorCallback;
   const github = config.github;
   const mode = job.status === 'fixing' ? 'fix' : 'initial';
   const issueComment = mode === 'fix' ? await appendFollowupIssueComment(fetchImpl, github, job, { mode }) : null;
 
-  const workflow = await dispatchWorkflow(fetchImpl, github, {
-    workflowId: 'pages-agent.yml',
-    ref: config.workflowRef,
-    inputs: buildPagesAgentInputs(job, {
-      mode,
-      baseRef: config.baseRef,
-      issueNumber: job.issueNumber,
-      indexSnapshotId: job.indexSnapshotId,
-      callbackUrl: config.callbackUrl,
-      branchName: pagesAgentBranchName(job, config),
-    }),
-  });
+  let workflow;
+  try {
+    workflow = await dispatchWorkflow(fetchImpl, github, {
+      workflowId: 'pages-agent.yml',
+      ref: config.workflowRef,
+      inputs: buildPagesAgentInputs(job, {
+        mode,
+        baseRef: config.baseRef,
+        issueNumber: job.issueNumber,
+        indexSnapshotId: job.indexSnapshotId,
+        callbackUrl: config.callbackUrl,
+        branchName: pagesAgentBranchName(job, config),
+      }),
+    });
+  } catch (error) {
+    if (mode === 'fix') {
+      await callback(fetchImpl, config, {
+        publishingJobId: job.id,
+        executorType: 'pages_worker',
+        status: 'failed',
+        errorCode: 'pages_agent_dispatch_failed',
+        errorMessage: error?.message || 'Failed to dispatch pages-agent.yml',
+      });
+    }
+    throw error;
+  }
 
   return {
     action: mode === 'fix' ? 'pages_agent_fix_dispatched' : 'pages_agent_dispatched',

@@ -741,6 +741,55 @@ test('fixing job appends issue comment and dispatches pages-agent fix mode on th
   assert.equal(requests.length, 2);
 });
 
+test('fixing job callbacks failure when pages-agent dispatch fails after issue comment', async () => {
+  const callbacks = [];
+  const requests = [];
+  await assert.rejects(
+    runWorkerForJob(
+      {
+        ...baseJob,
+        status: 'fixing',
+        issueNumber: 9,
+        branchName: 'sites/job-job_123-zhangsan-profile',
+        prNumber: 12,
+        summary: 'Original request.\n\n## Slack Follow-up\n\n把标题改成中文。',
+      },
+      config(),
+      {
+        async fetchImpl(url, request) {
+          requests.push({ url: String(url), request });
+
+          if (String(url).endsWith('/issues/9/comments')) {
+            return new Response(JSON.stringify({ id: 501 }), { status: 201 });
+          }
+
+          if (String(url).endsWith('/actions/workflows/pages-agent.yml/dispatches')) {
+            return new Response(JSON.stringify({ message: 'workflow missing' }), { status: 404 });
+          }
+
+          throw new Error(`Unexpected request ${request.method} ${url}`);
+        },
+        async postExecutorCallback(_fetchImpl, _cfg, payload) {
+          callbacks.push(payload);
+          return { ok: true };
+        },
+      }
+    ),
+    /workflow missing|GitHub request failed/i
+  );
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(callbacks, [
+    {
+      publishingJobId: 'job_123',
+      executorType: 'pages_worker',
+      status: 'failed',
+      errorCode: 'pages_agent_dispatch_failed',
+      errorMessage: 'GitHub request failed: workflow missing',
+    },
+  ]);
+});
+
 test('previewing job dispatches pages-preview workflow', async () => {
   const result = await runWorkerForJob(
     {

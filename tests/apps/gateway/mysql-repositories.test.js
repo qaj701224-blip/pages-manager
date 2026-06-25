@@ -108,3 +108,23 @@ test('MySQL Slack work item list filters site jobs by Slack requester before lim
   assert.match(siteJobsQuery.sql, /status IN \(\?\)/);
   assert.deepEqual(siteJobsQuery.params.slice(0, 3), ['slack', 'slack:T1:U1', 'previewing']);
 });
+
+test('MySQL PublishingJob moveJobToFixing returns null when intermediate reviewing update disappears', async () => {
+  const pool = transactionalPool();
+  const store = new MySqlGatewayStore(pool);
+  const originalUpdateJob = store.updateJob.bind(store);
+  const job = {
+    id: 'job_123',
+    status: 'pr_created',
+    summary: 'Create a profile page.',
+  };
+
+  store.getJob = async () => job;
+  store.updateJob = async () => null;
+
+  const result = await store.moveJobToFixing('job_123', { summary: 'Follow-up' });
+
+  assert.equal(result, null);
+  assert.equal(pool.calls.some((call) => /^INSERT INTO `publishing_jobs`/.test(call)), false);
+  store.updateJob = originalUpdateJob;
+});
