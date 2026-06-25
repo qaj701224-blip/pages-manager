@@ -1205,10 +1205,10 @@ describe('slack agent', () => {
     const fallback = analyzeSlackRequirementDeterministic({ text: '处理 token 字段' });
     const analysis = normalizeModelAnalysis(
       {
-        visibleReply: '我会处理 {"CF_API_TOKEN":"real-token"}。',
+        visibleReply: '我会处理 {"CF_API_TOKEN":"real-token","GITHUB_TOKEN":"tok\\u0022en"}。',
         title: '{"slack_agent_api_key":"real-token"}',
-        summary: '{"CF_API_TOKEN":"real-token"}',
-        sourceMessages: ['{"password":"real-password"}'],
+        summary: '{"CF_API_TOKEN":"tok\'en"}',
+        sourceMessages: ['{"password":"real\'password"}'],
         clarifyingQuestion: '{"private_key":"real-private-key"}',
         intent: 'create_platform_issue',
         needsClarification: false,
@@ -1219,11 +1219,12 @@ describe('slack agent', () => {
     const serialized = JSON.stringify(analysis);
 
     assert.match(analysis.visibleReply, /"CF_API_TOKEN":"\[REDACTED_SECRET\]"/);
+    assert.match(analysis.visibleReply, /"GITHUB_TOKEN":"\[REDACTED_SECRET\]"/);
     assert.match(analysis.title, /"slack_agent_api_key":"\[REDACTED_SECRET\]"/);
     assert.match(analysis.summary, /"CF_API_TOKEN":"\[REDACTED_SECRET\]"/);
     assert.match(analysis.sourceMessages[0], /"password":"\[REDACTED_SECRET\]"/);
     assert.match(analysis.clarifyingQuestion, /"private_key":"\[REDACTED_SECRET\]"/);
-    assert.doesNotMatch(serialized, /real-token|real-password|real-private-key/);
+    assert.doesNotMatch(serialized, /real-token|real-password|real-private-key|tok'en|tok\\u0022en/);
   });
 
   it('normalizes company gateway root BaseURL to /v1/chat/completions', async () => {
@@ -1318,7 +1319,7 @@ describe('slack agent', () => {
           'CF_API_TOKEN="cf-token-value"',
           'AWS_SECRET_ACCESS_KEY=abcdef1234567890',
           "SLACK_BOT_TOKEN='xoxb-secret'",
-          '{"AGENT_CODE_API_KEY":"sk-secret-value"}',
+          '{"AGENT_CODE_API_KEY":"sk-secret-value","CF_API_TOKEN":"tok\'en","PASSWORD":"tok\\u0022en"}',
         ].join(' '),
         token: 'plain-token-value',
       },
@@ -1332,7 +1333,12 @@ describe('slack agent', () => {
     assert.match(redacted.text, /AWS_SECRET_ACCESS_KEY=\[REDACTED_SECRET\]/);
     assert.match(redacted.text, /SLACK_BOT_TOKEN='\[REDACTED_SECRET\]'/);
     assert.match(redacted.text, /"AGENT_CODE_API_KEY":"\[REDACTED_SECRET\]"/);
-    assert.doesNotMatch(redacted.text, /cf-token-value|abcdef1234567890|xoxb-secret|sk-secret-value/);
+    assert.match(redacted.text, /"CF_API_TOKEN":"\[REDACTED_SECRET\]"/);
+    assert.match(redacted.text, /"PASSWORD":"\[REDACTED_SECRET\]"/);
+    assert.doesNotMatch(
+      redacted.text,
+      /cf-token-value|abcdef1234567890|xoxb-secret|sk-secret-value|tok'en|tok\\u0022en/
+    );
     assert.equal(redacted.token, '[REDACTED_SECRET]');
   });
 
