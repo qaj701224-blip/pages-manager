@@ -72,12 +72,16 @@ test('rejects worker entries outside source and legacy intent fields', () => {
   assert.throws(() => validateCommandConfig({ artifactKind: 'spa' }), /COMMAND_CONFIG_UNKNOWN_FIELD:artifactKind/);
 });
 
-test('rejects unknown fields, secret-like fields, old domains, and invalid enums', () => {
+test('rejects unknown fields, secret-like fields, URL site values, legacy API origins, and invalid enums', () => {
   assert.throws(() => validateCommandConfig({ site: 'docs', owner: 'alice' }), /COMMAND_CONFIG_UNKNOWN_FIELD:owner/);
   assert.throws(() => validateCommandConfig({ site: 'docs', accessKey: 'secret' }), /COMMAND_CONFIG_SECRET_FIELD:accessKey/);
   assert.throws(
     () => validateCommandConfig({ site: 'https://demo.workers.xd.team' }),
-    /COMMAND_CONFIG_LEGACY_DOMAIN_UNSUPPORTED/
+    /COMMAND_CONFIG_SITE_INVALID/
+  );
+  assert.throws(
+    () => validateCommandConfig({ source: 'https://api.workers.xd.team/deploy' }),
+    /COMMAND_CONFIG_LEGACY_API_UNSUPPORTED/
   );
   assert.throws(() => validateCommandConfig({ environment: 'local' }), /COMMAND_CONFIG_ENVIRONMENT_INVALID/);
   assert.throws(() => validateCommandConfig({ visibility: 'public' }), /COMMAND_CONFIG_VISIBILITY_INVALID/);

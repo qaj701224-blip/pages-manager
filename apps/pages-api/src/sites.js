@@ -11,6 +11,7 @@ const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Pages 平台保留项，请换一个业务站点名。';
+const DEFAULT_REUSE_HOLD_SECONDS = 300;
 
 export async function handleSitesApi(request, env, config, store) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -40,6 +41,7 @@ export async function handleSitesApi(request, env, config, store) {
   const siteId = matchSiteId(url.pathname);
   if (siteId && request.method === 'GET') return getSite(store, auth.actor, siteId, config.environment);
   if (siteId && request.method === 'PATCH') return updateSite(request, env, config, store, auth.actor, siteId);
+  if (siteId && request.method === 'DELETE') return deleteSite(env, config, store, auth.actor, siteId);
   if (siteId) return methodNotAllowed();
 
   return null;
@@ -97,6 +99,20 @@ async function updateSite(request, env, config, store, actor, siteId) {
   }
 
   return jsonOk({ site: formatSite({ ...updatedSite, route }) });
+}
+
+async function deleteSite(env, config, store, actor, siteId) {
+  const site = await getOwnerSite(store, actor, siteId, config.environment);
+  if (site instanceof Response) return site;
+  const deletedAt = readNow(env);
+  const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
+  const deleted = await store.deleteSite(site.id, {
+    deletedAt,
+    reuseHoldUntil,
+    releaseReason: 'site_deleted',
+  }, config.environment);
+  if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  return jsonOk({ site: formatSite({ ...deleted, route: await store.getRouteBySiteId(site.id, config.environment) }) });
 }
 
 async function listSiteAcl(store, actor, siteId, environment) {
@@ -261,6 +277,14 @@ async function createSite(request, env, config, store, actor) {
     if (/SITE_SLUG_CONFLICT/.test(message)) {
       return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
     }
+    if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
+      return jsonError(
+        'HOSTNAME_CLAIM_CONFLICT',
+        'Site hostname is already claimed.',
+        409,
+        '请换一个站点名，或使用原站点 owner 继续部署。'
+      );
+    }
     throw error;
   }
 
@@ -305,6 +329,7 @@ function formatSite(site) {
       : null,
     createdAt: site.createdAt,
     updatedAt: site.updatedAt,
+    deletedAt: site.deletedAt || null,
   };
 }
 
@@ -531,6 +556,16 @@ function nextSiteUuid(env) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
+}
+
+function readReuseHoldSeconds(env) {
+  const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || DEFAULT_REUSE_HOLD_SECONDS);
+  if (!Number.isInteger(value) || value < 0 || value > 86_400) return DEFAULT_REUSE_HOLD_SECONDS;
+  return value;
+}
+
+function addSecondsIso(iso, seconds) {
+  return new Date(Date.parse(iso) + seconds * 1000).toISOString();
 }
 
 function authErrorResponse(error) {

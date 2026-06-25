@@ -9,6 +9,8 @@ test('schema defines all v2 authority tables', () => {
     'users',
     'sites',
     'site_routes',
+    'hostname_claims',
+    'hostname_claim_conflicts',
     'site_versions',
     'worker_slots',
     'deployments',
@@ -19,7 +21,7 @@ test('schema defines all v2 authority tables', () => {
     'audit_events',
   ];
 
-  assert.equal(SCHEMA_VERSION, 5);
+  assert.equal(SCHEMA_VERSION, 7);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -29,7 +31,11 @@ test('schema includes authority indexes for routing, idempotency, and access key
   const sql = createSchemaSql().join('\n');
 
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_environment_slug/);
-  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname_live/);
+  assert.match(sql, /WHERE route_status != 'deleted'/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
+  assert.match(sql, /WHERE status IN \('pending', 'active', 'held', 'conflicted'\)/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject/);
@@ -43,7 +49,9 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /user_id TEXT PRIMARY KEY/);
   assert.match(sql, /account_id TEXT/);
   assert.match(sql, /employeenum TEXT/);
+  assert.match(sql, /reuse_hold_until TEXT/);
+  assert.match(sql, /lease_expires_at TEXT/);
+  assert.doesNotMatch(sql, /X-Pages-Token/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_binding/);
   assert.doesNotMatch(sql, /workers\.xd\.team/);
-  assert.doesNotMatch(sql, /X-Pages-Token/);
 });

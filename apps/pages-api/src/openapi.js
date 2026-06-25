@@ -210,6 +210,16 @@ export function buildOpenApi(config) {
             503: { description: 'Route snapshot write failed' },
           },
         },
+        delete: {
+          summary: 'Soft-delete an owned site and hold its hostname briefly before reuse',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          'x-error-codes': ['SITE_POLICY_FORBIDDEN', 'SITE_NOT_FOUND'],
+          responses: {
+            200: { description: 'Site deleted' },
+            403: { description: 'Only the site owner can delete the site' },
+            404: { description: 'Site not found' },
+          },
+        },
       },
       '/.xd-pages/api/sites/{id}/acl': {
         get: {

@@ -7,7 +7,7 @@ const productionConfig = {
   environment: 'production',
   apiBaseUrl: 'https://api.pages.xd.team',
   authBaseUrl: 'https://auth.pages.xd.team',
-  siteDomainSuffix: 'pages.xd.team',
+  siteDomainSuffix: 'workers.xd.team',
 };
 
 test('access-key login stores secret without printing it', async () => {

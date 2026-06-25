@@ -149,7 +149,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
-  assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
+  assert.match(config, /PUBLIC_SITE_SUFFIX = "workers\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-production"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
@@ -346,11 +346,12 @@ test('production pages-router config renders explicit production fast-path setti
   assert.match(config, /account_id = "dummy-account"/);
   assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1\ninvocation_logs = false/);
   assert.match(config, /pattern = "\*\.pages\.xd\.team\/\*"/);
+  assert.match(config, /pattern = "\*\.workers\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.match(config, /PAGES_ENV = "production"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
-  assert.match(config, /PUBLIC_SITE_SUFFIX = "pages\.xd\.team"/);
+  assert.match(config, /PUBLIC_SITE_SUFFIX = "workers\.xd\.team"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
@@ -379,6 +380,7 @@ test('production pages-router config renders explicit production fast-path setti
   assert.doesNotMatch(config, /namespace = "pages-production"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
+  assert.doesNotMatch(config, /\*-staging\.workers\.xd\.team/);
   assert.doesNotMatch(config, /namespace = "pages-staging"/);
   assert.doesNotMatch(config, /service = "pages-auth-staging"/);
   assert.doesNotMatch(config, /CF_API_TOKEN|CLOUDFLARE_API_TOKEN|SSO_CLIENT_SECRET/);
@@ -391,6 +393,7 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   assert.match(config, /name = "pages-router-staging"/);
   assert.doesNotMatch(config, /\[observability/);
   assert.match(config, /pattern = "\*-staging\.pages\.xd\.team\/\*"/);
+  assert.match(config, /pattern = "\*-staging\.workers\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
@@ -410,6 +413,7 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   assert.match(config, /service = "pages-v2-staging-slot-002"/);
   assert.doesNotMatch(config, /binding = "PAGES_DISPATCH"/);
   assert.doesNotMatch(config, /namespace = "pages-staging"/);
+  assert.doesNotMatch(config, /pattern = "\*\.workers\.xd\.team\/\*"/);
 });
 
 test('pages-router config renders WFP dispatch namespace and omits slot bindings in wfp mode', () => {

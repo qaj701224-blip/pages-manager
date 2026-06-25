@@ -92,6 +92,176 @@ test('createSite creates owner membership and inactive route authority record', 
   });
 });
 
+test('createSite writes hostname claim in the same authority operation', async () => {
+  const store = createSeededStore();
+
+  await store.createSite({
+    id: 'site_1',
+    slug: 'portal',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'portal.pages.xd.team',
+  });
+
+  assert.deepEqual(await store.getHostnameClaim('portal.pages.xd.team'), {
+    id: 'claim_route_1',
+    environment: 'production',
+    hostname: 'portal.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'site_1',
+    ownerRef: 'route_1',
+    status: 'active',
+    source: 'v2_create',
+    acquiredAt: '2026-06-15T00:00:00.000Z',
+    leaseExpiresAt: null,
+    releasedAt: null,
+    reuseHoldUntil: null,
+    releaseReason: null,
+    createdAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+});
+
+test('createSite rejects v2 create when hostname claim is held by another owner', async () => {
+  const store = createSeededStore();
+  await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.workers.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:portal',
+    ownerRef: 'pages-portal',
+    source: 'backfill_v1_sites',
+  });
+
+  await assert.rejects(
+    () =>
+      store.createSite({
+        id: 'site_1',
+        slug: 'portal',
+        ownerUserId: 'usr_1',
+        siteUuid: 'uuid_1',
+        defaultVisibility: 'acl',
+        environment: 'production',
+        routeId: 'route_1',
+        hostname: 'portal.pages.xd.team',
+      }),
+    /HOSTNAME_CLAIM_CONFLICT/
+  );
+
+  assert.equal(await store.getRouteBySiteId('site_1'), null);
+  assert.equal(await store.getSite('site_1'), null);
+  assert.deepEqual(await store.listSiteMembers('site_1'), []);
+});
+
+test('hostname claim lifecycle confirms pending claims and allows released claims to be acquired again', async () => {
+  const store = createSeededStore();
+  const claim = {
+    environment: 'production',
+    hostname: 'portal.workers.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:portal',
+    ownerRef: 'pages-portal',
+    source: 'v1_deploy',
+    status: 'pending',
+  };
+
+  const acquired = await store.acquireHostnameClaim(claim);
+  const confirmed = await store.confirmHostnameClaim(claim);
+
+  assert.equal(acquired.ok, true);
+  assert.equal(confirmed.ok, true);
+  assert.equal((await store.getHostnameClaim(claim.hostname)).status, 'active');
+
+  const failedClaim = { ...claim, hostname: 'retry.workers.xd.team', normalizedSlug: 'retry', ownerId: 'v1:production:retry' };
+  await store.acquireHostnameClaim(failedClaim);
+  const released = await store.releaseHostnameClaim({ ...failedClaim, releaseReason: 'v1_deploy_failed' });
+  const reacquired = await store.acquireHostnameClaim({ ...failedClaim, ownerId: 'v1:production:retry-2' });
+
+  assert.equal(released.ok, true);
+  assert.equal(reacquired.ok, true);
+  assert.equal(reacquired.claim.status, 'pending');
+  assert.equal(reacquired.claim.ownerId, 'v1:production:retry-2');
+});
+
+test('hostname claim delete hold blocks reuse until reuse_hold_until expires', async () => {
+  let now = '2026-06-15T00:00:00.000Z';
+  const store = createSeededStore({ now: () => now });
+  const claim = {
+    environment: 'production',
+    hostname: 'portal.workers.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v2',
+    ownerId: 'site_1',
+    ownerRef: 'route_1',
+    source: 'v2_create',
+  };
+
+  await store.acquireHostnameClaim(claim);
+  const held = await store.releaseHostnameClaim({
+    ...claim,
+    releaseReason: 'site_deleted',
+    reuseHoldUntil: '2026-06-15T00:05:00.000Z',
+  });
+  const blocked = await store.acquireHostnameClaim({
+    ...claim,
+    ownerId: 'site_2',
+    ownerRef: 'route_2',
+  });
+  now = '2026-06-15T00:05:01.000Z';
+  const reacquired = await store.acquireHostnameClaim({
+    ...claim,
+    ownerId: 'site_2',
+    ownerRef: 'route_2',
+  });
+
+  assert.equal(held.ok, true);
+  assert.equal(held.claim.status, 'held');
+  assert.equal(held.claim.reuseHoldUntil, '2026-06-15T00:05:00.000Z');
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.code, 'HOSTNAME_CLAIM_CONFLICT');
+  assert.equal(reacquired.ok, true);
+  assert.equal(reacquired.claim.status, 'active');
+  assert.equal(reacquired.claim.ownerId, 'site_2');
+  assert.equal(reacquired.claim.reuseHoldUntil, null);
+});
+
+test('hostname claim rejects slug conflicts even when hostname differs', async () => {
+  const store = createSeededStore();
+  await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.workers.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:portal',
+    source: 'v1_deploy',
+  });
+
+  const result = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'site_portal',
+    source: 'v2_create',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HOSTNAME_CLAIM_CONFLICT');
+  assert.equal(result.claim.ownerSystem, 'v1');
+});
+
 test('upsertUserFromSso creates users and bumps session version on status changes', async () => {
   const store = createSeededStore();
 
@@ -302,7 +472,15 @@ test('site ACL incremental helpers dedupe entries and update policy version only
   );
   const duplicateGrant = await store.addSiteAclEntries(
     'site_1',
-    [{ id: 'acl_duplicate_2', subjectType: 'department', subjectValue: '心动/技术平台部', accessRole: 'viewer', effect: 'allow' }],
+    [
+      {
+        id: 'acl_duplicate_2',
+        subjectType: 'department',
+        subjectValue: '心动/技术平台部',
+        accessRole: 'viewer',
+        effect: 'allow',
+      },
+    ],
     { createdBy: 'usr_1', updatedAt: '2026-06-15T00:03:00.000Z' },
     'production'
   );
@@ -548,9 +726,9 @@ test('D1 store upserts SSO users atomically and keeps disabled users disabled', 
   assert.equal(db.selectBeforeFirstUpsert, false);
 });
 
-function createSeededStore() {
+function createSeededStore(options = {}) {
   const store = createTestPagesStore({
-    now: () => '2026-06-15T00:00:00.000Z',
+    now: options.now || (() => '2026-06-15T00:00:00.000Z'),
   });
   store.createUser({
     userId: 'usr_1',
@@ -706,10 +884,7 @@ function fakeUserDb() {
                   employeeStatus: effectiveStatus,
                   sessionVersion: staleActiveOrUnknown
                     ? existing.session_version
-                    : Math.max(
-                        sessionVersion,
-                        existing.session_version + (effectiveStatus === existing.employee_status ? 0 : 1)
-                      ),
+                    : Math.max(sessionVersion, existing.session_version + (effectiveStatus === existing.employee_status ? 0 : 1)),
                   lastLoginAt: staleActiveOrUnknown ? existing.last_login_at : lastLoginAt,
                   createdAt: existing.created_at,
                   updatedAt: staleActiveOrUnknown ? existing.updated_at : updatedAt,

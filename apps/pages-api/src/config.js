@@ -2,12 +2,12 @@ const API_CONFIG_BY_ENV = {
   production: {
     apiBaseUrl: 'https://api.pages.xd.team',
     authBaseUrl: 'https://auth.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   },
   staging: {
     apiBaseUrl: 'https://api-staging.pages.xd.team',
     authBaseUrl: 'https://auth-staging.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   },
   local: {
     apiBaseUrl: 'http://xd-pages.127.0.0.1.nip.io:8787',

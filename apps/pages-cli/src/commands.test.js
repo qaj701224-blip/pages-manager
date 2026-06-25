@@ -446,7 +446,7 @@ test('status, sites, rollback, and open use explicit site names', async () => {
   assert.equal(calls[2].url, 'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback');
   assert.deepEqual(await calls[2].json(), { siteSlug: 'docs' });
   assert.equal(calls[2].headers.get('Idempotency-Key'), 'rb_1');
-  assert.deepEqual(openOutput, ['https://docs-staging.pages.xd.team']);
+  assert.deepEqual(openOutput, ['https://docs-staging.workers.xd.team']);
 });
 
 test('sites list defaults to a summary and supports detailed JSON', async () => {
@@ -645,7 +645,7 @@ test('env current reports active environment details', async () => {
     '当前环境：staging',
     'API：https://api-staging.pages.xd.team',
     '认证：https://auth-staging.pages.xd.team',
-    '站点域名：*-staging.pages.xd.team',
+    '站点域名：*-staging.workers.xd.team',
     '来源：本地 profile',
   ]);
 
@@ -663,7 +663,7 @@ test('env current reports active environment details', async () => {
     source: 'profile',
     apiBaseUrl: 'https://api-staging.pages.xd.team',
     authBaseUrl: 'https://auth-staging.pages.xd.team',
-    siteUrlExample: 'https://<site>-staging.pages.xd.team',
+    siteUrlExample: 'https://<site>-staging.workers.xd.team',
   });
 });
 

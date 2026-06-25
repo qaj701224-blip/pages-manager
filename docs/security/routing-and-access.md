@@ -10,7 +10,8 @@ production 和 staging 使用显式环境域名，不通过 query、header 或�
 | ------------------ | ---------------------- | ------------------------------ |
 | 控制面 API         | `api.pages.xd.team`    | `api-staging.pages.xd.team`    |
 | 认证服务           | `auth.pages.xd.team`   | `auth-staging.pages.xd.team`   |
-| 子站域名           | `{name}.pages.xd.team` | `{name}-staging.pages.xd.team` |
+| 新建子站默认域名  | `{name}.workers.xd.team` | `{name}-staging.workers.xd.team` |
+| 既有 v2 子站域名  | `{name}.pages.xd.team` | `{name}-staging.pages.xd.team` |
 | 目标 WFP namespace | `pages-production`     | `pages-staging`                |
 | 普通 Worker slot   | `pages-v2-production-slot-*` | `pages-v2-staging-slot-*` |
 
@@ -23,22 +24,26 @@ api-staging.pages.xd.team/*     -> pages-api-staging
 auth-staging.pages.xd.team/*    -> pages-auth-staging
 *-staging.pages.xd.team/*       -> pages-router-staging
 *.pages.xd.team/*               -> pages-router
+*-staging.workers.xd.team/*     -> pages-router-staging
+*.workers.xd.team/*             -> pages-router
 ```
 
-当前 v1 `workers` 和 `*.workers` DNS / route / certificate 保持不动。v2 需要在 DNSPod 侧新增或确认 `pages` 与 `*.pages` CNAME、证书 DCV；Cloudflare custom domain / route 绑定由 v2 wrangler template 随部署创建/更新。所有验证都只针对 `pages.xd.team`，不能改动 `workers.xd.team`。
+v1 legacy 仍通过每个站点的 exact route 服务 `{name}.workers.xd.team/*`。v2 只绑定 workers wildcard fallback，不手工创建每个 v2 站点的 workers exact route；Cloudflare route specificity 必须保证 v1 exact route 优先于 v2 wildcard。v2 部署必须继续保留 `*.pages.xd.team/*`，用于存量 v2 `pages.xd.team` 站点。
 
 需要确认 Cloudflare 侧 wildcard route / custom domain 绑定策略：
 
-- `pages-router` 需要稳定接收 production 子站。
-- `pages-router-staging` 需要稳定接收 `*-staging.pages.xd.team`。
-- `api.pages.xd.team`、`auth.pages.xd.team`、`api-staging.pages.xd.team` 和 `auth-staging.pages.xd.team` 应作为平台保留域名，不能被用户站点占用。
+- `pages-router` 需要稳定接收 production `*.pages.xd.team` 和 `*.workers.xd.team` 子站。
+- `pages-router-staging` 需要稳定接收 `*-staging.pages.xd.team` 和 `*-staging.workers.xd.team`。
+- `api.pages.xd.team`、`auth.pages.xd.team`、`api-staging.pages.xd.team`、`auth-staging.pages.xd.team` 以及 workers family 下的平台保留 host 都不能被用户站点占用。
 - 平台保留路径使用 `/.xd-pages/*`，避免与用户站点业务路径冲突。
 
 router 必须根据 hostname 推导环境，并校验 route record：
 
 ```text
 foo.pages.xd.team          -> environment=production
+foo.workers.xd.team        -> environment=production
 foo-staging.pages.xd.team  -> environment=staging
+foo-staging.workers.xd.team -> environment=staging
 ```
 
 环境推导结果必须与 `site_routes.environment`、execution provider、dispatch target、D1/DO/KV binding 和 signing key 一致，不一致时 fail closed。
@@ -49,13 +54,12 @@ foo-staging.pages.xd.team  -> environment=staging
 
 | host pattern                                  | target                               |
 | --------------------------------------------- | ------------------------------------ |
-| `api.pages.xd.team`                           | fail closed，应该由 exact route 处理 |
-| `auth.pages.xd.team`                          | fail closed，应该由 exact route 处理 |
-| `api-staging.pages.xd.team`                   | fail closed，应该由 exact route 处理 |
-| `auth-staging.pages.xd.team`                  | fail closed，应该由 exact route 处理 |
-| `{slug}-staging.pages.xd.team`                | `pages-router-staging`               |
-| `{slug}.pages.xd.team`                        | `pages-router`                       |
-| 保留 slug、非法 host、非 `pages.xd.team` 后缀 | fail closed                          |
+| `api.pages.xd.team` / `auth.pages.xd.team`    | fail closed，应该由 exact route 处理 |
+| `api-staging.pages.xd.team` / `auth-staging.pages.xd.team` | fail closed，应该由 exact route 处理 |
+| workers family 平台保留 host                  | fail closed，应该由 exact route 或 v1 处理 |
+| `{slug}-staging.pages.xd.team` / `{slug}-staging.workers.xd.team` | `pages-router-staging` |
+| `{slug}.pages.xd.team` / `{slug}.workers.xd.team` | `pages-router`                    |
+| 保留 slug、非法 host、非受信后缀              | fail closed                          |
 
 thin router 不能根据 query、header、cookie 或用户输入切环境。
 
@@ -85,6 +89,14 @@ router.pages.xd.team
 router-staging.pages.xd.team
 kv-gateway.pages.xd.team
 kv-gateway-staging.pages.xd.team
+api.workers.xd.team
+api-staging.workers.xd.team
+auth.workers.xd.team
+auth-staging.workers.xd.team
+router.workers.xd.team
+router-staging.workers.xd.team
+kv-gateway.workers.xd.team
+kv-gateway-staging.workers.xd.team
 *.internal.pages.xd.team
 ```
 
@@ -112,7 +124,7 @@ sso
 internal
 ```
 
-production 还应保留 `-staging` 后缀，避免用户创建看起来像 staging 的 production 站点，例如 `foo-staging.pages.xd.team`。保留名校验应在 `pages-api` 的创建和重命名路径统一执行，不能只放在 CLI。
+production 还应保留 `-staging` 后缀，避免用户创建看起来像 staging 的 production 站点，例如 `foo-staging.workers.xd.team`。保留名校验应在 `pages-api` 的创建和重命名路径统一执行，不能只放在 CLI。
 
 ### 保留路径
 
@@ -149,8 +161,8 @@ production 还应保留 `-staging` 后缀，避免用户创建看起来像 stagi
 | `auth.pages.xd.team`         | `/.xd-pages/auth/logout`     | 平台登出                    | auth-flow                      |
 | `auth.pages.xd.team`         | `/.xd-pages/cli/login/start` | CLI login transaction 创建  | auth-flow                      |
 | `auth.pages.xd.team`         | `/.xd-pages/cli/login/poll`  | CLI login 轮询              | auth-flow，需 login secret     |
-| `{slug}.pages.xd.team`       | `/.xd-pages/auth/callback`   | 子站 site_session 补发      | auth-flow，由 router 处理      |
-| `{slug}.pages.xd.team`       | `/.xd-pages/runtime/*`       | generated runtime / SDK API | subsite runtime，平台优先      |
+| `{slug}.workers.xd.team` / `{slug}.pages.xd.team` | `/.xd-pages/auth/callback`   | 子站 site_session 补发      | auth-flow，由 router 处理      |
+| `{slug}.workers.xd.team` / `{slug}.pages.xd.team` | `/.xd-pages/runtime/*`       | generated runtime / SDK API | subsite runtime，平台优先      |
 | `api-staging.pages.xd.team`  | 同 production API path       | staging API                 | 只能返回 staging 环境配置      |
 | `auth-staging.pages.xd.team` | 同 production auth path      | staging auth                | 只能使用 staging SSO redirect  |
 
