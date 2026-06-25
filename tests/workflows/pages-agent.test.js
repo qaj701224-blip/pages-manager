@@ -109,12 +109,17 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /AGENT_BACKEND:[^\n]*(vars\.AGENT_BACKEND|codex)/);
   assert.doesNotMatch(workflow, /AGENT_CODE_API_KEY is required for Platform Agent/);
   assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''/);
-  assert.match(workflow, /BODY_FILE="\$body_file" node <<'NODE'/);
+  assert.match(workflow, /BODY_FILE="\$body_file" TITLE_FILE="\$title_file" node <<'NODE'/);
   assert.match(workflow, /const issueNumber = String\(env\.ISSUE_NUMBER \|\| ''\)\.trim\(\);/);
+  assert.match(workflow, /const requestSummary = redactPublicText\(env\.REQUEST_SUMMARY \|\| ''\);/);
+  assert.match(workflow, /const requestTitle = redactPublicText\(env\.REQUEST_TITLE \|\| '平台需求'\)/);
+  assert.match(workflow, /writeFileSync\(env\.TITLE_FILE, `feat: \$\{requestTitle\}\\n`\)/);
+  assert.match(workflow, /--title "\$pr_title"/);
   assert.match(workflow, /Closes #\$\{issueNumber\}/);
   assert.match(workflow, /- Issue: \$\{issueReference\}/);
   assert.doesNotMatch(workflow, /cat > "\$body_file" <<EOF/);
   assert.doesNotMatch(workflow, /Issue: \$\(if \[\[ -n "\$\{ISSUE_NUMBER\}" \]\]/);
+  assert.doesNotMatch(workflow, /--title "feat: \$\{REQUEST_TITLE\}"/);
   assert.match(workflow, /added_lines="\$\(git diff HEAD --unified=0 -- "\$path"/);
   assert.match(workflow, /added_lines="\$\(sed 's\/\^\/\+\/' "\$path"\)"/);
   assert.match(workflow, /Upload platform agent diagnostics[\s\S]*if: always\(\)/);
