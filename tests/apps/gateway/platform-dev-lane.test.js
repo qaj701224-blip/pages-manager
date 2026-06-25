@@ -2250,6 +2250,114 @@ test('platform blocking review with mismatched head SHA does not dispatch a fix 
   assert.equal(workerCalls.length, 0);
 });
 
+test('platform headless nonblocking issue comment does not advance head-bound review', async () => {
+  const app = createGatewayApp();
+  const currentHeadSha = '5'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-headless-note-review',
+    issueNumber: 86,
+    prNumber: 96,
+    headSha: currentHeadSha,
+    slackSessionId: 'sess_platform_headless_note',
+  });
+  app.store.updatePlatformDevItem(item.id, 'ci_running', { headSha: currentHeadSha });
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-headless-note-review',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 96, pull_request: {} },
+        comment: {
+          id: 9601,
+          node_id: 'IC_PLATFORM_HEADLESS_NOTE',
+          body: 'Codex Review: All checks passed, no action required.',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_headless_review_recorded');
+  assert.equal(updated.status, 'ci_running');
+  assert.equal(updated.headSha, currentHeadSha);
+  assert.equal(workerCalls.length, 0);
+});
+
+test('platform headless blocking issue comment binds to current head and dispatches a fix round', async () => {
+  const app = createGatewayApp();
+  const currentHeadSha = '6'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-headless-blocking-review',
+    issueNumber: 85,
+    prNumber: 95,
+    headSha: currentHeadSha,
+    slackSessionId: 'sess_platform_headless_blocking',
+  });
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-headless-blocking-review',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 95, pull_request: {} },
+        comment: {
+          id: 9501,
+          node_id: 'IC_PLATFORM_HEADLESS_BLOCKING',
+          body: 'Codex Review: blocking issue. README fix context missing.',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_review_fix_dispatched');
+  assert.equal(body.reviewComment.headSha, currentHeadSha);
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
+  assert.match(workerCalls[0].body.platformDevItem.reviewContext, /README fix context missing/);
+  assert.equal(workerCalls[0].body.platformDevItem.headSha, currentHeadSha);
+});
+
 test('platform deleted blocking review comment is recorded without dispatching a fix round', async () => {
   const app = createGatewayApp();
   const headSha = '1'.repeat(40);

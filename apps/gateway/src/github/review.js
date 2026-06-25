@@ -20,8 +20,12 @@ const NOTE_PATTERNS = [
   /\bno errors? (found|detected)\b/i,
   /\b0\s+failed(?:\s+(?:tests?|checks?))?\b/i,
   /\b0\s+errors?(?:\s+(?:found|detected))?\b/i,
+  /\bfailed(?:\s+(?:tests?|checks?))?\s*:\s*0\b/i,
+  /\berrors?(?:\s+(?:found|detected))?\s*:\s*0\b/i,
   /\bzero\s+failed(?:\s+(?:tests?|checks?))?\b/i,
   /\bzero\s+errors?(?:\s+(?:found|detected))?\b/i,
+  /\bfailed(?:\s+(?:tests?|checks?))?\s*:\s*zero\b/i,
+  /\berrors?(?:\s+(?:found|detected))?\s*:\s*zero\b/i,
   /\b(all )?required checks? passed\b/i,
   /\bpassed\b/i,
 ];
@@ -43,11 +47,15 @@ const ZERO_COUNT_PASS_PATTERNS = [
   /\bzero\s+failed(?:\s+(?:tests?|checks?))?\b/i,
   /\b0\s+errors?(?:\s+(?:found|detected))?\b/i,
   /\bzero\s+errors?(?:\s+(?:found|detected))?\b/i,
+  /\bfailed(?:\s+(?:tests?|checks?))?\s*:\s*(?:0|zero)\b/i,
+  /\berrors?(?:\s+(?:found|detected))?\s*:\s*(?:0|zero)\b/i,
 ];
 
 const POSITIVE_COUNT_BLOCKING_PATTERNS = [
   /\b[1-9]\d*\s+failed(?:\s+(?:tests?|checks?))?\b/i,
   /\b[1-9]\d*\s+errors?(?:\s+(?:found|detected))?\b/i,
+  /\bfailed(?:\s+(?:tests?|checks?))?\s*:\s*[1-9]\d*\b/i,
+  /\berrors?(?:\s+(?:found|detected))?\s*:\s*[1-9]\d*\b/i,
 ];
 
 const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
