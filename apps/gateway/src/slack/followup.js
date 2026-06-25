@@ -177,6 +177,36 @@ async function recordQueuedSlackFollowup(store, job, slackSession, feedback, age
   });
 }
 
+async function failJobAfterWorkerStartFailure(store, env, job, workerStart) {
+  if (workerStart?.started !== false || !job?.id) {
+    return { job, slackStatusNotification: null };
+  }
+
+  const message = workerStart.error || 'Worker start failed';
+  const failedJob =
+    (await store.failJob?.(job.id, 'worker_start_failed', message, {
+      summary: job.summary,
+      previewUrl: null,
+    })) ||
+    (await store.patchJob?.(job.id, {
+      status: 'failed',
+      errorCode: 'worker_start_failed',
+      errorMessage: message,
+      previewUrl: null,
+    })) ||
+    job;
+  await store.linkJobToSlackSession?.(failedJob);
+  const slackStatusNotification = await notifySlackJobStatus(env, store, failedJob, {
+    stage: 'failed',
+    text: `修复启动失败：${message}`,
+    statusText: ':x: 修复启动失败',
+    allowRegression: true,
+    skipDuplicate: false,
+  });
+
+  return { job: failedJob, slackStatusNotification };
+}
+
 export async function dispatchQueuedFollowupFixIfNeeded(store, reviewedJob, env) {
   if (!reviewedJob?.id || !store?.listAgentRunEventsForJob || !store?.moveJobToFixing) return null;
 
@@ -211,6 +241,14 @@ export async function dispatchQueuedFollowupFixIfNeeded(store, reviewedJob, env)
   const workerStart = await startWorkerForJobIfConfigured(fixingJob, env);
   if (!workerStart?.started) {
     await releaseQueuedFollowupClaim(store, claim);
+    const failure = await failJobAfterWorkerStartFailure(store, env, fixingJob, workerStart);
+    return {
+      job: failure.job,
+      queuedFollowupCount: queued.length,
+      workerStart,
+      dispatchEvent: null,
+      slackStatusNotification: failure.slackStatusNotification,
+    };
   }
   const slackStatusNotification = await notifySlackJobStatus(env, store, fixingJob, {
     stage: 'fixing',
@@ -704,8 +742,16 @@ export async function handleSlackFollowup({ store, env, intake, slackSession, se
         replyText = '收到，已追加修改意见；当前修复结束后会继续处理这一轮。';
       } else {
         workerStart = await startWorkerForJobIfConfigured(updatedJob, env);
-        action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
-        replyText = workerStart?.started ? '收到，已追加修改意见，正在启动修复。' : '收到，已追加修改意见，等待修复开始。';
+        if (workerStart?.started === false) {
+          const failure = await failJobAfterWorkerStartFailure(store, env, updatedJob, workerStart);
+          updatedJob = failure.job;
+          slackStatusNotification = failure.slackStatusNotification || slackStatusNotification;
+          action = 'followup_fix_failed';
+          replyText = `收到，已追加修改意见，但启动修复失败：${workerStart.error || 'Worker start failed'}`;
+        } else {
+          action = workerStart?.started ? 'followup_fix_dispatched' : 'followup_fix_ready';
+          replyText = workerStart?.started ? '收到，已追加修改意见，正在启动修复。' : '收到，已追加修改意见，等待修复开始。';
+        }
       }
     }
   } else if (shouldQueueFixForJob(job)) {

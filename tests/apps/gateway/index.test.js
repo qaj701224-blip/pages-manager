@@ -8720,6 +8720,99 @@ test('Slack follow-up on an active preview dispatches a fix round instead of cre
   assert.equal(workerStarts.length, 2);
 });
 
+test('Slack follow-up fails the job when worker start network fails', async () => {
+  const app = createGatewayApp();
+  const createResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-followup-network-create',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000300.000100',
+          text: 'issue: 帮我创建 profile 页面',
+        },
+      }),
+    })
+  );
+  const created = await json(createResponse);
+
+  for (const [stageResult, patch] of [
+    ['issue_created', { issueNumber: 121, issueUrl: 'https://github.example/org/pages-manager/issues/121' }],
+    [
+      'pr_created',
+      {
+        issueNumber: 121,
+        branchName: 'sites/job-followup-network-profile',
+        prNumber: 131,
+        prUrl: 'https://github.example/org/pages-manager/pull/131',
+        headSha: 'c'.repeat(40),
+      },
+    ],
+    ['preview_deployed', { previewUrl: 'https://preview.example.test', prNumber: 131, headSha: 'c'.repeat(40) }],
+  ]) {
+    const response = await app.fetch(
+      new Request('http://gateway.test/internal/executor-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishingJobId: created.jobId,
+          stageResult,
+          ...patch,
+        }),
+      })
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const notifierCalls = [];
+  const followupResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-followup-network-fail',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D1',
+          channel_type: 'im',
+          ts: '1710000310.000100',
+          thread_ts: '1710000300.000100',
+          text: '这个 preview 不满意，把标题改成中文',
+        },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        throw new Error('worker dns unavailable');
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const followup = await json(followupResponse);
+  const failedJob = app.store.getJob(created.jobId);
+  const failedStatusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
+
+  assert.equal(followupResponse.status, 200);
+  assert.equal(followup.action, 'followup_fix_failed');
+  assert.equal(followup.workerStart.started, false);
+  assert.equal(followup.workerStart.error, 'worker dns unavailable');
+  assert.equal(followup.noReply, false);
+  assert.equal(failedJob.status, 'failed');
+  assert.equal(failedJob.errorCode, 'worker_start_failed');
+  assert.equal(failedJob.errorMessage, 'worker dns unavailable');
+  assert.equal(failedStatusCall.body.job.status, 'failed');
+  assert.match(failedStatusCall.body.options.statusText, /修复启动失败/);
+});
+
 test('Slack active job clarification still replies without creating an agent placeholder', async () => {
   const app = createGatewayApp();
   const createResponse = await app.fetch(
@@ -8906,6 +8999,94 @@ test('queued Slack follow-up rerun uses Redis claim to avoid duplicate Coding Ag
     'PX',
   ]);
   assert.equal(redisCalls[0][5], 'NX');
+});
+
+test('queued Slack follow-up rerun fails job when worker start network fails', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, { prNumber: 161, headSha: '6'.repeat(40) });
+  app.store.moveJobToFixing(jobId, {
+    summary: [
+      '做一个 profile 页面。',
+      '',
+      '## Slack Follow-up',
+      '标题改成中文。',
+      '',
+      '## Slack Follow-up',
+      '按钮改成黑色。',
+    ].join('\n'),
+  });
+  app.store.recordAgentRunEvent(
+    {
+      publishingJobId: jobId,
+      type: 'coding_fix_dispatched',
+      stage: 'fixing',
+      status: 'dispatched',
+      text: 'round:1 Coding Agent 修复已启动。',
+      dedupeKey: `test-dispatched:${jobId}:1`,
+    },
+    new Date('2026-06-14T00:00:00.000Z')
+  );
+  app.store.recordAgentRunEvent(
+    {
+      publishingJobId: jobId,
+      type: 'slack_followup_queued',
+      stage: 'fixing',
+      status: 'queued',
+      text: '按钮改成黑色。',
+      dedupeKey: `test-queued:${jobId}:2`,
+    },
+    new Date('2026-06-14T00:00:01.000Z')
+  );
+
+  const redisCalls = [];
+  app.store.redis = {
+    async set(...args) {
+      redisCalls.push(['set', ...args]);
+      return 'OK';
+    },
+    async eval(...args) {
+      redisCalls.push(['eval', ...args]);
+      return 1;
+    },
+  };
+  const notifierCalls = [];
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        stageResult: 'reviewing',
+        branchName: 'sites/job-followup-fix-zhangsan-profile',
+        prNumber: 161,
+        prUrl: 'https://github.example/org/pages-manager/pull/161',
+        baseRef: 'staging',
+        headSha: '7'.repeat(40),
+      }),
+    }),
+    {
+      PAGES_EXECUTOR_MODE: 'github_issue_webhook',
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        throw new Error('worker connection refused');
+      },
+      ...mockSlackNotifier(notifierCalls),
+    }
+  );
+  const body = await json(response);
+  const failedStatusCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/job-status').at(-1);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.job.status, 'failed');
+  assert.equal(body.workerStart.started, false);
+  assert.equal(body.workerStart.error, 'worker connection refused');
+  assert.equal(body.queuedFollowupRerun.queuedFollowupCount, 1);
+  assert.equal(app.store.getJob(jobId).status, 'failed');
+  assert.equal(app.store.getJob(jobId).errorCode, 'worker_start_failed');
+  assert.equal(failedStatusCall.body.job.status, 'failed');
+  assert.match(failedStatusCall.body.options.statusText, /修复启动失败/);
+  assert.equal(redisCalls[0][0], 'set');
+  assert.equal(redisCalls[1][0], 'eval');
 });
 
 test('Slack Agent follow-up intent in an active DM session records follow-up instead of creating another issue', async () => {
