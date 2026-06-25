@@ -141,7 +141,7 @@ Platform Agent 创建 PR 时会在 PR body 写入 `Closes #<issue>`，用于在 
 需要注意两点：
 
 - GitHub 的 auto-close 只在合并到默认分支时生效。把 PR 合并到测试分支或 feature 分支时，即使 body 里有 `Closes #<issue>`，issue 也可能不会被 GitHub 自动关闭。
-- gateway 在处理 `issues.closed` webhook 时，如果对应 `PlatformDevItem` 已经是 `merged`，只会同步 issue 编号和 URL，不会把状态回退成 `closed_unmerged`。这样可以避免“PR 已合并，但后到达的 issue closed webhook 又把平台工单打回未合并关闭态”。
+- gateway 在处理 `issues.closed` webhook 时，如果对应 `PlatformDevItem` 已经是 `merged`，只会同步 issue 编号和 URL，不会把状态回退成 `closed_unmerged`。这样可以避免“PR 已合并，但后到达的 issue closed webhook 又把平台工单打回未合并关闭态”。如果 GitHub `pull_request.closed` 明确携带 `merged: true`，GitHub 是合并真相源，可以把本地 `failed`、`cancelled` 或 `closed_unmerged` 的平台工单修正为 `merged`。
 
 ## GitHub 自动化
 
@@ -194,7 +194,7 @@ Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner
 
 fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent 的 blocking / unknown comment，或收到用户后续 follow-up 后，gateway 可以 dispatch `platform-agent.yml(mode=fix)`。该 dispatch 必须携带 `prNumber`、`headSha`、`reviewContext`、`memoryContext`、`statusContext` 和 `followupContext`，让 runner 明确本轮是修复 review 阻塞、处理不确定评论，还是消化 Slack / issue follow-up。上述上下文会先落到 `platform_dev_items`，再由 worker dispatch 读出并传入 workflow；不能只停留在 webhook 进程内存里。fix round 仍然只把生成改动留在 repo 工作区，由 workflow 的标准 diff、commit、push 路径落到 PR 分支。
 
-本阶段测试配置固定使用开发分支：`PAGES_PLATFORM_WORKFLOW_REF=feat/slack-preview-gateway`，`PAGES_PLATFORM_BASE_REF=feat/slack-preview-gateway`。该配置只用于 Platform Agent 架构变更验证，不能被解释为允许自动合并到 `master` / `main`。若显式未传 `PAGES_PLATFORM_BASE_REF`，worker 默认跟随 `PAGES_PLATFORM_WORKFLOW_REF`，避免 workflow 代码和 checkout / PR base 混用。
+分支测试时可以临时把 `PAGES_PLATFORM_WORKFLOW_REF` 和 `PAGES_PLATFORM_BASE_REF` 指向同一个已 push 的特性分支。ECS 正式运行默认使用 `master`，不能继续指向测试分支，也不能被解释为允许自动合并到 `master` / `main`。若显式未传 `PAGES_PLATFORM_BASE_REF`，worker 默认跟随 `PAGES_PLATFORM_WORKFLOW_REF`，避免 workflow 代码和 checkout / PR base 混用。
 
 ## Slack 体验
 

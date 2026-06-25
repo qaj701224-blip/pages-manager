@@ -239,6 +239,29 @@ test('PlatformDevItem failed state can bridge into agent running callback', () =
   assert.deepEqual(bridgedStatuses, ['agent_queued']);
 });
 
+test('PlatformDevItem terminal local states can be corrected by GitHub merged truth', () => {
+  for (const status of ['failed', 'cancelled', 'closed_unmerged']) {
+    const item = buildPlatformDevItem(
+      {
+        requestedById: `usr_${status}`,
+        idempotencyKey: `key_${status}_merged_truth`,
+        title: '平台开发',
+        summary: '平台开发',
+      },
+      { id: `pdev_${status}_merged_truth`, status }
+    );
+    const updated = transitionPlatformDevItemWithBridge(
+      item,
+      'merged',
+      { githubPrNumber: 99 },
+      new Date('2026-06-24T00:00:00.000Z')
+    );
+
+    assert.equal(updated.status, 'merged');
+    assert.equal(updated.githubPrNumber, 99);
+  }
+});
+
 test('PlatformDevItem bridge transitions normalize late executor callbacks', () => {
   const item = buildPlatformDevItem(
     {

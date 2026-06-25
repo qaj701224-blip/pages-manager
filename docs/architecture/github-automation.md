@@ -112,7 +112,7 @@ Slack / API
   -> gateway / slack-notifier 回写 PR、CI、review、merge / close 状态
 ```
 
-当前 ECS 验证路径使用 `PAGES_PREVIEW_MODE=local_deploy`：`pages-worker` 从 PR head 读取目标站点文件，并用固定 ECS 出口调用 Cloudflare staging `/deploy`。这样避免 GitHub-hosted runner 的动态出口 IP 进入 Cloudflare staging 白名单。
+ECS worker 可以使用 `PAGES_PREVIEW_MODE=local_deploy`：`pages-worker` 从 PR head 读取目标站点文件，并用固定 ECS 出口调用 Cloudflare staging `/deploy`。这样避免 GitHub-hosted runner 的动态出口 IP 进入 Cloudflare staging 白名单。这里的 preview 指 Site Publishing Lane 的站点预览交付物，不表示 ECS 是 preview 环境。
 
 ## 分支和部署策略
 

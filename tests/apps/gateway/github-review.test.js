@@ -171,6 +171,19 @@ test('site-check allowlist requires both trusted check name and app', () => {
   assert.equal(
     isAllowedSiteCheckRun(
       {
+        checkName: 'site-check',
+        appSlug: 'github-actions',
+        appName: 'GitHub Actions',
+      },
+      {
+        GITHUB_SITE_CHECK_APP_LOGINS: 'GitHub Actions',
+      }
+    ),
+    true
+  );
+  assert.equal(
+    isAllowedSiteCheckRun(
+      {
         checkName: 'Site Check / site-check',
         appSlug: 'github-actions',
         appName: 'GitHub Actions',
@@ -206,6 +219,13 @@ test('platform CI is allowlisted separately from site-check', () => {
   assert.equal(isAllowedSiteCheckRun(platformRun), false);
   assert.equal(isAllowedPlatformCiRun(platformRun), true);
   assert.equal(
+    isAllowedPlatformCiRun({
+      ...platformRun,
+      checkName: 'check',
+    }),
+    true
+  );
+  assert.equal(
     isAllowedPlatformCiRun(platformRun, {
       GITHUB_PLATFORM_CI_CHECK_NAMES: 'Platform CI',
     }),
@@ -214,6 +234,12 @@ test('platform CI is allowlisted separately from site-check', () => {
   assert.equal(
     isAllowedPlatformCiRun(platformRun, {
       GITHUB_SITE_CHECK_APP_LOGINS: 'dedicated-site-check',
+    }),
+    true
+  );
+  assert.equal(
+    isAllowedPlatformCiRun(platformRun, {
+      GITHUB_PLATFORM_CI_APP_LOGINS: 'GitHub Actions',
     }),
     true
   );
