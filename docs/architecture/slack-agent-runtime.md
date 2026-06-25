@@ -81,7 +81,7 @@ request_human_triage
 answer_repo_question
 ```
 
-这些工具也不能绕过 gateway 权限、幂等和状态机。Slack Agent 可以主导“下一步做什么”，但 gateway 必须在执行时重新计算当前 Slack 用户、当前 session、该用户名下的 job / issue / PR 范围；Agent 传入其它用户、其它 session 或其它人的 GitHub 编号时不能生效。
+这些工具也不能绕过 gateway 权限、幂等和状态机。Slack Agent 可以主导“下一步做什么”，诊断、切换和 Review 查询 toolCall 必须带上用户明确提到的 issue / PR 编号；gateway 执行时必须重新计算当前 Slack 用户、当前 session、该用户名下的 job / issue / PR 范围，Agent 传入其它用户、其它 session 或其它人的 GitHub 编号时不能生效。
 
 产品上，gateway 不应该把“我的任务”“继续某个 issue / PR”“重新打开某个 issue / PR”“关闭 / 删除 issue 或 PR”等自然语言分支写死成主要体验。gateway 只保留 Slack 协议命令、显式 `issue:` / `status:` / `/close` 兼容入口、GitHub URL / issue / PR 编号等结构化引用提取、签名校验、幂等和执行权限收口；正常对话必须先进 Slack Agent，由 Agent 输出 `toolCall`，再由 gateway 做权限收口和执行。
 
@@ -109,7 +109,7 @@ POST /internal/slack-agent/turn
 
 这里的 streaming 是内部传输合同，不等于 Slack 对外 token-by-token。模型 provider 如果支持 token 流，`slack-agent` 应先聚合成短句、语义片段或节流窗口，再输出 `reply_delta`。
 
-当前公司 OpenAI-compatible 路径使用 `stream: true` 请求模型，并要求模型 JSON 第一字段包含 `visibleReply`。为避免 secret-like 文本被拆成多个 provider delta 后提前泄漏，`slack-agent` 不向下游透传未完成 JSON；它先聚合完整 provider 内容，解析、规范化并脱敏 `visibleReply`、`summary`、`title`、`sourceMessages`、`clarifyingQuestion` 后，再按标点和长度输出 `reply_delta`。`intent`、`summary`、`siteSlug` 等结构化字段只在完整 JSON 可解析后作为 `analysis_final` 输出。
+当前公司 OpenAI-compatible 路径使用 `stream: true` 请求模型，并要求模型 JSON 第一字段包含 `visibleReply`。为避免 secret-like 文本被拆成多个 provider delta 后提前泄漏，`slack-agent` 不向下游透传未完成 JSON；它先聚合完整 provider 内容，解析、规范化并脱敏 `visibleReply`、`summary`、`title`、`sourceMessages`、`clarifyingQuestion` 后，再按标点和长度输出 `reply_delta`。脱敏必须覆盖 `TOKEN=value` 和 `{"*_API_KEY":"value"}` 这类 JSON 字段。`intent`、`summary`、`siteSlug` 等结构化字段只在完整 JSON 可解析后作为 `analysis_final` 输出。
 
 请求示例：
 

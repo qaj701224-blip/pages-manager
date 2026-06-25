@@ -163,6 +163,7 @@ const LOCAL_FOLLOWUP_CUE_RE =
   /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|再加|再补|再改)/i;
 const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
 const TERMINAL_FAILED_CALLBACK_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
+const TERMINAL_FAILED_CALLBACK_PLATFORM_STATUSES = new Set(['failed', 'cancelled', 'merged', 'closed_unmerged']);
 
 function csvSet(value = '') {
   return new Set(
@@ -1180,7 +1181,27 @@ async function processSlackEventBody(body, env, options = {}) {
           statusText: ':hourglass_flowing_sand: 正在整理发布任务...',
         })
       : null;
-    const workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
+    let workerStart = created ? await startWorkerForJobIfConfigured(job, env) : null;
+    if (workerStart?.started === false) {
+      const failedJob = await failQueuedSlackWorkerStart(
+        store,
+        {
+          workItemKind: 'site_publishing',
+          publishingJobId: job.id,
+          slackSessionId: slackSession.id,
+        },
+        workerStart.error || 'Worker start failed'
+      );
+      await notifyQueuedWorkerStartFailure(env, store, failedJob, {
+        workItemKind: 'site_publishing',
+        publishingJobId: job.id,
+        slackSessionId: slackSession.id,
+      });
+      workerStart = { ...workerStart, failedJobId: failedJob?.id || job.id };
+      const error = new Error(workerStart.error || 'Worker start failed');
+      error.name = 'SlackWorkerStartError';
+      throw error;
+    }
     await completeSlackAgentRun(store, agentRun, {
       publishingJobId: job.id,
       ...slackAgentRunModelPatch(slackAgentAnalysis),
@@ -3336,6 +3357,17 @@ async function handlePlatformDevExecutorCallback(body, env) {
   );
 
   if (body.status === 'failed') {
+    const existingItem = await store.getPlatformDevItem(itemId);
+    if (!existingItem) return jsonResponse({ error: 'PlatformDevItem not found' }, 404);
+    if (TERMINAL_FAILED_CALLBACK_PLATFORM_STATUSES.has(existingItem.status)) {
+      await store.linkPlatformDevItemToSlackSession(existingItem);
+      return jsonResponse({
+        item: existingItem,
+        ignored: true,
+        ignoredStatus: existingItem.status,
+        ignoredCallbackStatus: 'failed',
+      });
+    }
     const item = await store.failPlatformDevItem(
       itemId,
       body.errorCode || body.error_code,
