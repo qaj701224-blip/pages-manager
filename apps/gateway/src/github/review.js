@@ -18,6 +18,10 @@ const NOTE_PATTERNS = [
   /\bdid(?: not|n't) find (any )?(major )?issues\b/i,
   /\bno action required\b/i,
   /\bno errors? (found|detected)\b/i,
+  /\b0\s+failed(?:\s+(?:tests?|checks?))?\b/i,
+  /\b0\s+errors?(?:\s+(?:found|detected))?\b/i,
+  /\bzero\s+failed(?:\s+(?:tests?|checks?))?\b/i,
+  /\bzero\s+errors?(?:\s+(?:found|detected))?\b/i,
   /\b(all )?required checks? passed\b/i,
   /\bpassed\b/i,
 ];
@@ -32,6 +36,18 @@ const ENGLISH_BLOCKING_PATTERNS = [
   /\bfailure\b/i,
   /\bsecurity\b/i,
   /\bcritical\b/i,
+];
+
+const ZERO_COUNT_PASS_PATTERNS = [
+  /\b0\s+failed(?:\s+(?:tests?|checks?))?\b/i,
+  /\bzero\s+failed(?:\s+(?:tests?|checks?))?\b/i,
+  /\b0\s+errors?(?:\s+(?:found|detected))?\b/i,
+  /\bzero\s+errors?(?:\s+(?:found|detected))?\b/i,
+];
+
+const POSITIVE_COUNT_BLOCKING_PATTERNS = [
+  /\b[1-9]\d*\s+failed(?:\s+(?:tests?|checks?))?\b/i,
+  /\b[1-9]\d*\s+errors?(?:\s+(?:found|detected))?\b/i,
 ];
 
 const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
@@ -115,9 +131,11 @@ function reviewPriorityFromBody(body = '') {
 
 function hasBlockingReviewSignal(body = '') {
   const text = String(body || '');
+  const zeroCountPass = ZERO_COUNT_PASS_PATTERNS.some((pattern) => pattern.test(text));
+  if (POSITIVE_COUNT_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (ENGLISH_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
-  if (/\bfailed\b/i.test(text) && !/\bno failed\b/i.test(text)) return true;
-  if (/\berrors?\b/i.test(text) && !/\bno errors?(?: found| detected)?\b/i.test(text)) return true;
+  if (/\bfailed\b/i.test(text) && !/\bno failed\b/i.test(text) && !zeroCountPass) return true;
+  if (/\berrors?\b/i.test(text) && !/\bno errors?(?: found| detected)?\b/i.test(text) && !zeroCountPass) return true;
   if (/\bblocking\b/i.test(text) && !/\b(no blocking issues?|not blocking|without blocking)\b/i.test(text)) return true;
   if (/(没有通过|未通过|不通过|失败|必须|需要修复|安全风险|严重)/.test(text)) return true;
   if (/阻塞/.test(text) && !/(无阻塞|没有阻塞|没阻塞)/.test(text)) return true;

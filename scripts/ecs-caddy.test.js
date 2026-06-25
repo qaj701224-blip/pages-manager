@@ -104,6 +104,21 @@ test('ECS gateway exposes platform gate approver allowlist', () => {
   assert.match(envExample, /^PAGES_PLATFORM_GATE_APPROVER_IDS=$/m);
 });
 
+test('ECS gateway exposes check allowlists for review gate webhooks', () => {
+  const compose = readRepoFile('docker-compose.ecs.yml');
+  const envExample = readRepoFile('.env.ecs.example');
+
+  for (const name of [
+    'GITHUB_SITE_CHECK_NAMES',
+    'GITHUB_SITE_CHECK_APP_LOGINS',
+    'GITHUB_PLATFORM_CI_CHECK_NAMES',
+    'GITHUB_PLATFORM_CI_APP_LOGINS',
+  ]) {
+    assert.match(compose, new RegExp(`${name}: \\$\\{${name}:-\\}`), `compose forwards ${name}`);
+    assert.match(envExample, new RegExp(`^${name}=`, 'm'), `.env.ecs.example documents ${name}`);
+  }
+});
+
 test('ECS local preview stays IP restricted unless explicitly disabled', () => {
   const compose = readRepoFile('docker-compose.ecs.yml');
   const envExample = readRepoFile('.env.ecs.example');
