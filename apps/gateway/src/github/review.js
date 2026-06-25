@@ -24,6 +24,13 @@ const DEFAULT_PLATFORM_CI_CHECK_NAMES = ['Platform CI'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 const DEFAULT_PLATFORM_CI_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 
+function listFromDelimited(value = '') {
+  return String(value)
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function listFromCsv(value = '') {
   return String(value)
     .split(',')
@@ -45,21 +52,24 @@ function parseAllowlistJson(value) {
 }
 
 export function reviewAgentLogins(env = {}) {
-  const configured = [...listFromCsv(env.GITHUB_REVIEW_AGENT_LOGINS), ...parseAllowlistJson(env.GITHUB_REVIEW_AGENT_ALLOWLIST)];
+  const configured = [
+    ...listFromDelimited(env.GITHUB_REVIEW_AGENT_LOGINS),
+    ...parseAllowlistJson(env.GITHUB_REVIEW_AGENT_ALLOWLIST),
+  ];
   return new Set((configured.length ? configured : DEFAULT_REVIEW_AGENT_LOGINS).map((login) => login.toLowerCase()));
 }
 
-function configuredSet(value, fallback) {
-  const configured = listFromCsv(value);
+function configuredSet(value, fallback, parser = listFromDelimited) {
+  const configured = parser(value);
   return new Set((configured.length ? configured : fallback).map((item) => item.toLowerCase()));
 }
 
 export function siteCheckNames(env = {}) {
-  return configuredSet(env.GITHUB_SITE_CHECK_NAMES, DEFAULT_SITE_CHECK_NAMES);
+  return configuredSet(env.GITHUB_SITE_CHECK_NAMES, DEFAULT_SITE_CHECK_NAMES, listFromCsv);
 }
 
 export function platformCiCheckNames(env = {}) {
-  return configuredSet(env.GITHUB_PLATFORM_CI_CHECK_NAMES, DEFAULT_PLATFORM_CI_CHECK_NAMES);
+  return configuredSet(env.GITHUB_PLATFORM_CI_CHECK_NAMES, DEFAULT_PLATFORM_CI_CHECK_NAMES, listFromCsv);
 }
 
 export function siteCheckAppLogins(env = {}) {
