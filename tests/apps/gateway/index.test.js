@@ -10966,6 +10966,60 @@ test('GitHub Review Agent approval waits for site-check before preview', async (
   assert.equal(workerStarts.length, 0);
 });
 
+test('GitHub Review Agent approval skips preview dispatch when job disappears during update', async () => {
+  const app = createGatewayApp();
+  const headSha = '0'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 126,
+    headSha,
+    idempotencyKey: 'api-review-preview-gone',
+  });
+  const originalUpdateJob = app.store.updateJob.bind(app.store);
+  app.store.updateJob = (id, status, patch = {}) => {
+    if (id === jobId && status === 'previewing') return null;
+    return originalUpdateJob(id, status, patch);
+  };
+  const workerStarts = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-preview-gone',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 126, head: { sha: headSha } },
+        review: {
+          id: 1126,
+          node_id: 'PRR_1126',
+          state: 'approved',
+          body: 'LGTM, no issues found.',
+          user: { login: 'greptile[bot]' },
+        },
+        sender: { login: 'greptile[bot]' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'job_not_found_after_update');
+  assert.equal(body.job, undefined);
+  assert.equal(body.workerStart, undefined);
+  assert.equal(workerStarts.length, 0);
+});
+
 test('site-check success dispatches preview after stored Review Agent approval', async () => {
   const app = createGatewayApp();
   const headSha = '7'.repeat(40);
