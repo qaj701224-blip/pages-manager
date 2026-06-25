@@ -33,10 +33,17 @@ export async function startPagesAgent(job, config, adapters = {}) {
   const callback = adapters.postExecutorCallback || postExecutorCallback;
   const github = config.github;
   const mode = job.status === 'fixing' ? 'fix' : 'initial';
-  const issueComment = mode === 'fix' ? await appendFollowupIssueComment(fetchImpl, github, job, { mode }) : null;
+  let issueComment = null;
+  let failureCode = 'pages_agent_dispatch_failed';
 
   let workflow;
   try {
+    if (mode === 'fix') {
+      failureCode = 'pages_agent_followup_comment_failed';
+      issueComment = await appendFollowupIssueComment(fetchImpl, github, job, { mode });
+    }
+
+    failureCode = 'pages_agent_dispatch_failed';
     workflow = await dispatchWorkflow(fetchImpl, github, {
       workflowId: 'pages-agent.yml',
       ref: config.workflowRef,
@@ -55,7 +62,7 @@ export async function startPagesAgent(job, config, adapters = {}) {
         publishingJobId: job.id,
         executorType: 'pages_worker',
         status: 'failed',
-        errorCode: 'pages_agent_dispatch_failed',
+        errorCode: failureCode,
         errorMessage: error?.message || 'Failed to dispatch pages-agent.yml',
       });
     }
