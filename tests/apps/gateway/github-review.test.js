@@ -26,6 +26,15 @@ test('review agent allowlist supports csv and json metadata', () => {
   );
   assert.equal(
     isAllowedReviewAgent(
+      { reviewAgentLogin: 'copilot-pull-request-reviewer[bot]' },
+      {
+        GITHUB_REVIEW_AGENT_LOGINS: 'greptile[bot] copilot-pull-request-reviewer[bot]',
+      }
+    ),
+    true
+  );
+  assert.equal(
+    isAllowedReviewAgent(
       { reviewAgentLogin: 'greptile-enterprise[bot]' },
       {
         GITHUB_REVIEW_AGENT_ALLOWLIST: JSON.stringify([
