@@ -33,11 +33,17 @@ async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
   return current;
 }
 
-function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}) {
+async function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}, store = null) {
   if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion === 'success') {
     if (platformItem.status === 'review_blocked') return 'review_blocked';
     if (platformItem.status === 'ready_to_merge') return 'ready_to_merge';
-    return platformItem.status === 'review_waiting' ? 'ready_to_merge' : 'review_waiting';
+    const prNumber = siteCheckRun.prNumber || platformItem.githubPrNumber;
+    const headSha = siteCheckRun.headSha || platformItem.headSha;
+    const gate = prNumber
+      ? await previewGateForPr(store, siteCheckRun.repoFullName, prNumber, headSha ? { headSha } : {})
+      : null;
+    const passedReviewCount = Number(gate?.reviewGate?.noteCount || 0) + Number(gate?.reviewGate?.suggestionCount || 0);
+    return gate?.reviewGate?.canPreview && passedReviewCount > 0 ? 'ready_to_merge' : 'review_waiting';
   }
   if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion && siteCheckRun.conclusion !== 'success') {
     return 'ci_failed';
@@ -67,7 +73,7 @@ export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, r
   const storedRun = await store.recordSiteCheckRun(siteCheckRun);
   if (platformItem) {
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
-    const nextStatus = platformCheckStatusForRun(platformItem, siteCheckRun);
+    const nextStatus = await platformCheckStatusForRun(platformItem, siteCheckRun, store);
     if (fullHeadSha && platformItem.headSha && !shaMatches(platformItem.headSha, fullHeadSha)) {
       return jsonResponse({
         ok: true,

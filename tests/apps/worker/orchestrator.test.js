@@ -897,6 +897,10 @@ test('previewing job can deploy through local pages-manager API', async () => {
       async fetchImpl(url, request = {}) {
         requests.push({ url: String(url), request });
 
+        if (String(url).endsWith('/pulls/19')) {
+          return new Response(JSON.stringify({ head: { sha: headSha } }), { status: 200 });
+        }
+
         if (String(url).includes(`/git/trees/${headSha}`)) {
           return new Response(
             JSON.stringify({
@@ -952,7 +956,44 @@ test('previewing job can deploy through local pages-manager API', async () => {
 
   assert.equal(result.action, 'pages_preview_deployed');
   assert.equal(result.previewUrl, 'https://pm-pr-19-zhangsan-profile.staging.workers.xd.team');
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 6);
+});
+
+test('previewing job local deploy skips when the PR head has moved', async () => {
+  const staleHeadSha = 'd'.repeat(40);
+  const currentHeadSha = 'e'.repeat(40);
+  const requests = [];
+  const result = await runWorkerForJob(
+    {
+      ...baseJob,
+      status: 'previewing',
+      prNumber: 21,
+      headSha: staleHeadSha,
+    },
+    {
+      ...config(),
+      previewMode: 'local_deploy',
+      pagesApi: 'https://api-staging.workers.xd.team',
+      pagesToken: 'pages-preview@xd.com',
+    },
+    {
+      async fetchImpl(url, request = {}) {
+        requests.push({ url: String(url), request });
+
+        if (String(url).endsWith('/pulls/21')) {
+          return new Response(JSON.stringify({ head: { sha: currentHeadSha } }), { status: 200 });
+        }
+
+        throw new Error(`Unexpected request ${request.method || 'GET'} ${url}`);
+      },
+    }
+  );
+
+  assert.equal(result.action, 'pages_preview_skipped_stale_head');
+  assert.equal(result.reason, 'pr_head_moved');
+  assert.equal(result.expectedHeadSha, staleHeadSha);
+  assert.equal(result.currentHeadSha, currentHeadSha);
+  assert.equal(requests.length, 1);
 });
 
 test('previewing job local deploy refuses to upload the whole allowedPath when src is missing', async () => {
@@ -976,6 +1017,10 @@ test('previewing job local deploy refuses to upload the whole allowedPath when s
         async fetchImpl(url, request = {}) {
           requests.push({ url: String(url), request });
 
+          if (String(url).endsWith('/pulls/20')) {
+            return new Response(JSON.stringify({ head: { sha: headSha } }), { status: 200 });
+          }
+
           if (String(url).includes(`/git/trees/${headSha}`)) {
             return new Response(
               JSON.stringify({
@@ -992,5 +1037,5 @@ test('previewing job local deploy refuses to upload the whole allowedPath when s
     /No preview files found under sites\/zhangsan\/profile\/src\//
   );
 
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 2);
 });

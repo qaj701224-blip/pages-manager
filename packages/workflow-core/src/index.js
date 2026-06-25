@@ -389,7 +389,7 @@ const PLATFORM_DEV_ALLOWED_TRANSITIONS = {
     'failed',
     'cancelled',
   ],
-  ci_failed: ['agent_queued', 'agent_running', 'failed', 'cancelled'],
+  ci_failed: ['agent_queued', 'agent_running', 'review_waiting', 'ready_to_merge', 'failed', 'cancelled'],
   review_waiting: [
     'agent_queued',
     'agent_running',
