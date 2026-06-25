@@ -1547,6 +1547,55 @@ test('platform PR synchronize updates item by PR number when head changes', asyn
   assert.equal(updated.branchName, 'platform/item-new');
 });
 
+test('terminal platform PR webhook is ignored without patching stale metadata', async () => {
+  const app = createGatewayApp();
+  const oldHeadSha = '3'.repeat(40);
+  const staleHeadSha = '4'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-pr-terminal-stale-webhook',
+    issueNumber: 83,
+    prNumber: 103,
+    headSha: oldHeadSha,
+    branchName: 'platform/item-final',
+    slackSessionId: 'sess_platform_pr_terminal_stale',
+  });
+  app.store.updatePlatformDevItem(item.id, 'merged', {
+    branchName: 'platform/item-final',
+    headSha: oldHeadSha,
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-pr-terminal-stale',
+        'X-GitHub-Event': 'pull_request',
+      },
+      body: JSON.stringify({
+        action: 'synchronize',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: {
+          number: 103,
+          state: 'open',
+          merged: false,
+          html_url: 'https://github.example/org/pages-manager/pull/103',
+          head: { sha: staleHeadSha, ref: 'platform/item-stale' },
+        },
+      }),
+    }),
+    notifierEnv()
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.prAction, 'platform_item_terminal_ignored');
+  assert.equal(updated.status, 'merged');
+  assert.equal(updated.headSha, oldHeadSha);
+  assert.equal(updated.branchName, 'platform/item-final');
+});
+
 test('platform executor callback stops when item disappears during update', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({

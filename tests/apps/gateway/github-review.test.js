@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   classifyReviewAgentComment,
+  isAllowedPlatformCiRun,
   isAllowedReviewAgent,
   isAllowedSiteCheckRun,
   normalizeReviewAgentWebhook,
@@ -171,4 +172,15 @@ test('site-check allowlist requires both trusted check name and app', () => {
     ),
     false
   );
+});
+
+test('platform CI is allowlisted separately from site-check', () => {
+  const platformRun = {
+    checkName: 'Platform CI',
+    appSlug: 'github-actions',
+    appName: 'GitHub Actions',
+  };
+
+  assert.equal(isAllowedSiteCheckRun(platformRun), false);
+  assert.equal(isAllowedPlatformCiRun(platformRun), true);
 });

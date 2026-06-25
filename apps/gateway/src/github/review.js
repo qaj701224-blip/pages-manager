@@ -19,7 +19,8 @@ const NOTE_PATTERNS = [
   /\bpassed\b/i,
 ];
 
-const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check', 'Platform CI'];
+const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
+const DEFAULT_PLATFORM_CI_CHECK_NAMES = ['Platform CI'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 
 function listFromCsv(value = '') {
@@ -54,6 +55,10 @@ function configuredSet(value, fallback) {
 
 export function siteCheckNames(env = {}) {
   return configuredSet(env.GITHUB_SITE_CHECK_NAMES, DEFAULT_SITE_CHECK_NAMES);
+}
+
+export function platformCiCheckNames(env = {}) {
+  return configuredSet(env.GITHUB_PLATFORM_CI_CHECK_NAMES, DEFAULT_PLATFORM_CI_CHECK_NAMES);
 }
 
 export function siteCheckAppLogins(env = {}) {
@@ -256,6 +261,16 @@ export function isAllowedSiteCheckRun(checkRun, env = {}) {
   if (!checkRun?.checkName) return false;
 
   const names = siteCheckNames(env);
+  const apps = siteCheckAppLogins(env);
+  const appCandidates = [checkRun.appSlug, checkRun.appName].filter(Boolean).map((value) => value.toLowerCase());
+
+  return names.has(String(checkRun.checkName).toLowerCase()) && appCandidates.some((candidate) => apps.has(candidate));
+}
+
+export function isAllowedPlatformCiRun(checkRun, env = {}) {
+  if (!checkRun?.checkName) return false;
+
+  const names = platformCiCheckNames(env);
   const apps = siteCheckAppLogins(env);
   const appCandidates = [checkRun.appSlug, checkRun.appName].filter(Boolean).map((value) => value.toLowerCase());
 

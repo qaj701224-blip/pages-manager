@@ -10613,6 +10613,86 @@ test('site-check success dispatches preview after stored Review Agent approval',
   assert.equal(workerStarts.length, 1);
 });
 
+test('Platform CI check_run does not satisfy site publishing site-check gate', async () => {
+  const app = createGatewayApp();
+  const headSha = '4'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 127,
+    headSha,
+    idempotencyKey: 'api-platform-ci-not-site-check',
+    siteCheck: false,
+  });
+  const workerStarts = [];
+
+  const reviewResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-before-platform-ci',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 127, head: { sha: headSha } },
+        review: {
+          id: 1127,
+          node_id: 'PRR_1127',
+          state: 'approved',
+          body: 'LGTM, no issues found.',
+          user: { login: 'greptile[bot]' },
+        },
+        sender: { login: 'greptile[bot]' },
+      }),
+    })
+  );
+  assert.equal(reviewResponse.status, 200);
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-not-site-check',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 7127,
+          node_id: 'SCR_PLATFORM_7127',
+          name: 'Platform CI',
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: headSha,
+          details_url: 'https://github.example/org/pages-manager/actions/runs/7127',
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 127 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH(url, request) {
+        workerStarts.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getJob(jobId);
+  const gate = app.store.siteCheckGateForPr('org/pages-manager', 127, { headSha });
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, 'platform_ci_without_platform_item');
+  assert.equal(updated.status, 'reviewing');
+  assert.equal(gate.status, 'missing');
+  assert.equal(workerStarts.length, 0);
+});
+
 test('review gate reconcile records fallback result when Review Agent does not answer', async () => {
   const app = createGatewayApp();
   const headSha = 'e'.repeat(40);
