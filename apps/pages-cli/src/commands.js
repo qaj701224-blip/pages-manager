@@ -54,7 +54,7 @@ export async function executeCommand(argv = [], options = {}) {
   }
   if (parsed.command === 'version') {
     assertTokenNotUsed(parsed);
-    assertNoPositionals(parsed, 'VERSION_USAGE_INVALID', 'pages version 不接受位置参数。');
+    assertNoPositionals(parsed, 'VERSION_USAGE_INVALID', 'xd-cell version 不接受位置参数。');
     output(await readCliVersion());
     return 0;
   }
@@ -105,12 +105,12 @@ async function runAuth(parsed, context) {
   throw usageError(
     'AUTH_COMMAND_INVALID',
     'auth 命令无效。',
-    '请使用 pages auth login、pages auth status、pages auth whoami 或 pages auth logout。'
+    '请使用 xd-cell auth login、xd-cell auth status、xd-cell auth whoami 或 xd-cell auth logout。'
   );
 }
 
 async function runLogin(parsed, context) {
-  assertNoPositionals(parsed, 'LOGIN_USAGE_INVALID', 'pages login 不接受位置参数。');
+  assertNoPositionals(parsed, 'LOGIN_USAGE_INVALID', 'xd-cell login 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
   const saveProfile = (profile) => saveProfileFile(context.profileDir, profile);
@@ -157,7 +157,7 @@ async function runLogin(parsed, context) {
 
 async function runAuthStatus(parsed, context) {
   assertTokenNotUsed(parsed);
-  assertNoPositionals(parsed, 'AUTH_STATUS_USAGE_INVALID', 'pages auth status 不接受位置参数。');
+  assertNoPositionals(parsed, 'AUTH_STATUS_USAGE_INVALID', 'xd-cell auth status 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
   const credential = await secretStore.get(config.environment);
@@ -172,7 +172,7 @@ async function runAuthStatus(parsed, context) {
 }
 
 async function runWhoami(parsed, context) {
-  assertNoPositionals(parsed, 'AUTH_WHOAMI_USAGE_INVALID', 'pages auth whoami 不接受位置参数。');
+  assertNoPositionals(parsed, 'AUTH_WHOAMI_USAGE_INVALID', 'xd-cell auth whoami 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const credential = await resolveCredential(config.environment, context, parsed);
   const result = await createClient(config, credential, context).requestApi('GET', '/.xd-pages/api/auth/whoami');
@@ -183,7 +183,7 @@ async function runWhoami(parsed, context) {
 
 async function runAuthLogout(parsed, context) {
   assertTokenNotUsed(parsed);
-  assertNoPositionals(parsed, 'AUTH_LOGOUT_USAGE_INVALID', 'pages auth logout 不接受位置参数。');
+  assertNoPositionals(parsed, 'AUTH_LOGOUT_USAGE_INVALID', 'xd-cell auth logout 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
   if (typeof secretStore.delete === 'function') await secretStore.delete(config.environment);
@@ -205,7 +205,7 @@ async function runAuthLogout(parsed, context) {
 
 async function runDetect(parsed, context) {
   if (parsed.positional.length > 1) {
-    throw usageError('DETECT_USAGE_INVALID', 'detect 参数过多。', '请使用 pages detect <目录>。');
+    throw usageError('DETECT_USAGE_INVALID', 'detect 参数过多。', '请使用 xd-cell detect <目录>。');
   }
   const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: true });
   const dirInput = parsed.positional[0] || commandConfig?.source || commandConfig?.dir || '.';
@@ -239,7 +239,7 @@ async function runDeploy(parsed, context) {
   rejectRemovedProjectFlags(parsed);
   const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: true });
   const config = readConfigForCommand(parsed, { ...context, commandConfig });
-  if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 pages deploy <目录> <站点名>。');
+  if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 xd-cell deploy <目录> <站点名>。');
 
   const dirInput = parsed.positional[0] || commandConfig?.source || commandConfig?.dir;
   const siteSlug = normalizeSiteSlug(parsed.positional[1] || commandConfig?.site);
@@ -247,14 +247,14 @@ async function runDeploy(parsed, context) {
     throw usageError(
       'DIR_REQUIRED',
       '缺少发布目录。',
-      '请使用 pages deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 source。'
+      '请使用 xd-cell deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 source。'
     );
   }
   if (!siteSlug) {
     throw usageError(
       'SITE_REQUIRED',
       '缺少站点名。',
-      '请使用 pages deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 site。'
+      '请使用 xd-cell deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 site。'
     );
   }
 
@@ -474,7 +474,7 @@ async function runStatus(parsed, context) {
     return 0;
   }
 
-  const site = readSingleSiteArg(parsed, 'STATUS_USAGE_INVALID', '请使用 pages status <站点名>。');
+  const site = readSingleSiteArg(parsed, 'STATUS_USAGE_INVALID', '请使用 xd-cell status <站点名>。');
   const result = await readSiteBySlug(client, site);
   if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
   outputSiteStatus(context.output, config.environment, result.site);
@@ -483,7 +483,7 @@ async function runStatus(parsed, context) {
 
 async function runRollback(parsed, context) {
   if (parsed.positional.length !== 2) {
-    throw usageError('ROLLBACK_USAGE_INVALID', 'rollback 参数无效。', '请使用 pages rollback <站点名> <version-id>。');
+    throw usageError('ROLLBACK_USAGE_INVALID', 'rollback 参数无效。', '请使用 xd-cell rollback <站点名> <version-id>。');
   }
   const [site, versionId] = parsed.positional;
   const config = readConfigForCommand(parsed, context);
@@ -506,7 +506,7 @@ async function runRollback(parsed, context) {
 async function runOpen(parsed, context) {
   assertTokenNotUsed(parsed);
   const config = readConfigForCommand(parsed, context);
-  const site = readSingleSiteArg(parsed, 'OPEN_USAGE_INVALID', '请使用 pages open <站点名>。');
+  const site = readSingleSiteArg(parsed, 'OPEN_USAGE_INVALID', '请使用 xd-cell open <站点名>。');
   const url = siteUrlForSlug(site, config);
   if (outputJsonResult(parsed, context, { environment: config.environment, site, url })) return 0;
   if (parsed.flags.print) {
@@ -526,7 +526,7 @@ async function runSites(parsed, context) {
   const client = createClient(config, credential, context);
 
   if (subcommand === 'list') {
-    assertNoPositionals(child, 'SITES_LIST_USAGE_INVALID', 'pages sites list 不接受位置参数。');
+    assertNoPositionals(child, 'SITES_LIST_USAGE_INVALID', 'xd-cell sites list 不接受位置参数。');
     const result = await client.requestApi('GET', '/.xd-pages/api/sites');
     const payload = parsed.flags.details
       ? { environment: config.environment, ...result }
@@ -541,14 +541,14 @@ async function runSites(parsed, context) {
   }
 
   if (subcommand === 'info') {
-    const site = readSingleSiteArg(child, 'SITES_INFO_USAGE_INVALID', '请使用 pages sites info <站点名>。');
+    const site = readSingleSiteArg(child, 'SITES_INFO_USAGE_INVALID', '请使用 xd-cell sites info <站点名>。');
     const result = await readSiteBySlug(client, site);
     if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
     outputSiteInfo(context.output, config.environment, result.site);
     return 0;
   }
 
-  throw usageError('SITES_COMMAND_INVALID', 'sites 命令无效。', '请使用 pages sites list 或 pages sites info <站点名>。');
+  throw usageError('SITES_COMMAND_INVALID', 'sites 命令无效。', '请使用 xd-cell sites list 或 xd-cell sites info <站点名>。');
 }
 
 async function runAccess(parsed, context) {
@@ -560,7 +560,7 @@ async function runAccess(parsed, context) {
 
   if (subcommand === 'get') {
     assertFlagsAbsent(parsed, ['visibility', 'email', 'department'], 'ACCESS_GET_USAGE_INVALID', 'access get 不接受访问范围设置参数。');
-    const siteSlug = readSingleSiteArg(child, 'ACCESS_GET_USAGE_INVALID', '请使用 pages access get <站点名>。');
+    const siteSlug = readSingleSiteArg(child, 'ACCESS_GET_USAGE_INVALID', '请使用 xd-cell access get <站点名>。');
     const { site } = await readSiteBySlug(client, siteSlug);
     const result = await client.requestApi('GET', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}/acl`);
     const summary = summarizeAccessEntries(result.aclEntries || []);
@@ -573,7 +573,7 @@ async function runAccess(parsed, context) {
   }
 
   if (subcommand === 'set') {
-    const siteSlug = readSingleSiteArg(child, 'ACCESS_SET_USAGE_INVALID', '请使用 pages access set <站点名> --visibility <范围>。');
+    const siteSlug = readSingleSiteArg(child, 'ACCESS_SET_USAGE_INVALID', '请使用 xd-cell access set <站点名> --visibility <范围>。');
     const visibility = normalizeVisibility(parsed.flags.visibility);
     if (!visibility) {
       if (parsed.flags.visibility !== undefined) {
@@ -615,7 +615,7 @@ async function runAccess(parsed, context) {
     const siteSlug = readSingleSiteArg(
       child,
       subcommand === 'grant' ? 'ACCESS_GRANT_USAGE_INVALID' : 'ACCESS_REVOKE_USAGE_INVALID',
-      `请使用 pages access ${subcommand} <站点名> --email <邮箱> 或 --department <部门路径>。`
+      `请使用 xd-cell access ${subcommand} <站点名> --email <邮箱> 或 --department <部门路径>。`
     );
     const requested = readAccessEntryFlags(parsed, { requireEntry: true });
     const { site } = await readSiteBySlug(client, siteSlug);
@@ -639,7 +639,7 @@ async function runAccess(parsed, context) {
   throw usageError(
     'ACCESS_COMMAND_INVALID',
     'access 命令无效。',
-    '请使用 pages access get、set、grant 或 revoke。'
+    '请使用 xd-cell access get、set、grant 或 revoke。'
   );
 }
 
@@ -670,7 +670,7 @@ async function runEnv(parsed, context) {
 
   if (subcommand === 'list') {
     if (parsed.positional.length !== 1 && parsed.positional.length !== 0) {
-      throw usageError('ENV_USAGE_INVALID', 'env list 参数无效。', '请使用 pages env list。');
+      throw usageError('ENV_USAGE_INVALID', 'env list 参数无效。', '请使用 xd-cell env list。');
     }
     if (outputJsonResult(parsed, context, { environments: USER_ENVIRONMENTS })) return 0;
     for (const name of USER_ENVIRONMENTS) context.output(name);
@@ -679,7 +679,7 @@ async function runEnv(parsed, context) {
 
   if (subcommand === 'use') {
     if (parsed.positional.length !== 2) {
-      throw usageError('ENV_USAGE_INVALID', 'env use 参数无效。', '请使用 pages env <production|staging>。');
+      throw usageError('ENV_USAGE_INVALID', 'env use 参数无效。', '请使用 xd-cell env <production|staging>。');
     }
     const environment = resolveEnvironment(parsed.positional[1]);
     if (!USER_ENVIRONMENTS.includes(environment) && environment !== 'custom') {
@@ -690,7 +690,7 @@ async function runEnv(parsed, context) {
 
   if (subcommand === 'set' && parsed.positional[1] === 'custom') {
     if (parsed.positional.length !== 2) {
-      throw usageError('ENV_USAGE_INVALID', 'env set custom 参数无效。', '请使用 pages env set custom。');
+      throw usageError('ENV_USAGE_INVALID', 'env set custom 参数无效。', '请使用 xd-cell env set custom。');
     }
     const custom = readCliConfig(context.env, {
       environment: 'custom',
@@ -711,7 +711,7 @@ async function runEnv(parsed, context) {
     return 0;
   }
 
-  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 pages env、pages env list 或 pages env <环境>。');
+  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 xd-cell env、xd-cell env list 或 xd-cell env <环境>。');
 }
 
 async function switchEnvironment(parsed, context, environment) {
@@ -731,7 +731,7 @@ function validateCommandUsage(parsed) {
   const allowed = allowedFlagsForCommand(parsed);
   if (allowed) assertOnlyAllowedFlags(parsed, allowed);
   if (parsed.command === 'help' && parsed.positional.length > 1) {
-    throw usageError('HELP_USAGE_INVALID', 'help 参数无效。', '请使用 pages help 或 pages help <命令>。');
+    throw usageError('HELP_USAGE_INVALID', 'help 参数无效。', '请使用 xd-cell help 或 xd-cell help <命令>。');
   }
 }
 
@@ -776,7 +776,7 @@ function assertOnlyAllowedFlags(parsed, allowed) {
 function assertFlagsAbsent(parsed, flags, code, message) {
   for (const flag of flags) {
     if (parsed.flags[flag] !== undefined) {
-      throw usageError(code, message, '请运行 pages help access 查看用法。');
+      throw usageError(code, message, '请运行 xd-cell help access 查看用法。');
     }
   }
 }
@@ -786,8 +786,8 @@ function displayFlagName(flag) {
 }
 
 function helpActionForCommand(command) {
-  if (command && command !== 'help' && command !== 'version') return `请运行 pages help ${command} 查看可用选项。`;
-  return '请运行 pages help 查看可用选项。';
+  if (command && command !== 'help' && command !== 'version') return `请运行 xd-cell help ${command} 查看可用选项。`;
+  return '请运行 xd-cell help 查看可用选项。';
 }
 
 async function readSiteBySlug(client, slug) {
@@ -1112,10 +1112,10 @@ function summarizeAccessEntries(aclEntries = []) {
 
 function firstAclSetAction(siteSlug, requested) {
   const email = requested.emails[0];
-  if (email) return `请先运行 pages access set ${siteSlug} --visibility acl --email ${email}。`;
+  if (email) return `请先运行 xd-cell access set ${siteSlug} --visibility acl --email ${email}。`;
   const department = requested.departments[0];
-  if (department) return `请先运行 pages access set ${siteSlug} --visibility acl --department "${department}"。`;
-  return `请先运行 pages access set ${siteSlug} --visibility acl --email user@xd.com。`;
+  if (department) return `请先运行 xd-cell access set ${siteSlug} --visibility acl --department "${department}"。`;
+  return `请先运行 xd-cell access set ${siteSlug} --visibility acl --email user@xd.com。`;
 }
 
 function outputAccessResult(parsed, context, payload) {
@@ -1128,7 +1128,7 @@ function outputAccessResult(parsed, context, payload) {
 }
 
 function assertNoPositionals(parsed, code, message) {
-  if (parsed.positional.length > 0) throw usageError(code, message, '运行 pages help 查看用法。');
+  if (parsed.positional.length > 0) throw usageError(code, message, '运行 xd-cell help 查看用法。');
 }
 
 function rejectRemovedProjectFlags(parsed) {
@@ -1136,7 +1136,7 @@ function rejectRemovedProjectFlags(parsed) {
     throw usageError(
       'OPTION_UNSUPPORTED',
       '该参数不再支持。',
-      '请使用位置参数：pages deploy <目录> <站点名>；也可以在当前目录放 pages.config.json 或显式传 --config <file>。'
+      '请使用位置参数：xd-cell deploy <目录> <站点名>；也可以在当前目录放 pages.config.json 或显式传 --config <file>。'
     );
   }
 }
@@ -1181,10 +1181,10 @@ function formatJson(value) {
 
 function helpText(topic) {
   if (topic === 'deploy') {
-    return `用法：pages deploy <目录> <站点名> [选项]
-      pages deploy --config <file> [选项]
+    return `用法：xd-cell deploy <目录> <站点名> [选项]
+      xd-cell deploy --config <file> [选项]
 
-发布目录到 XD Pages。CLI 会自动判断发布方式。
+发布目录到 XD Cell。CLI 会自动判断发布方式。
 
 选项：
   --visibility <internal|org|acl|owner|disabled>
@@ -1198,9 +1198,9 @@ function helpText(topic) {
   --help                                    显示帮助。
 
 示例：
-  pages deploy ./dist demo --visibility org
-  pages deploy ./dist demo --token <token> --json
-  pages deploy --config pages.config.json
+  xd-cell deploy ./dist demo --visibility org
+  xd-cell deploy ./dist demo --token <token> --json
+  xd-cell deploy --config pages.config.json
 
 说明：
   站点名使用位置参数；CLI 不读取隐藏项目绑定文件。
@@ -1208,7 +1208,7 @@ function helpText(topic) {
   CLI 不暴露底层执行平台细节。`;
   }
   if (topic === 'detect') {
-    return `用法：pages detect <目录> [选项]
+    return `用法：xd-cell detect <目录> [选项]
 
 本地识别发布目录，不登录、不联网、不上传文件。
 
@@ -1220,12 +1220,12 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'login' || topic === 'auth') {
-    return `用法：pages login [选项]
-      pages status [选项]
-      pages whoami [选项]
-      pages logout [选项]
+    return `用法：xd-cell login [选项]
+      xd-cell status [选项]
+      xd-cell whoami [选项]
+      xd-cell logout [选项]
 
-登录、查看或退出 XD Pages CLI。
+登录、查看或退出 XD Cell CLI。
 
 选项：
   --token <token>                           显式保存已有发布 token，保存前会先校验 whoami。
@@ -1234,7 +1234,7 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'status') {
-    return `用法：pages status [站点名] [选项]
+    return `用法：xd-cell status [站点名] [选项]
 
 查看登录状态、站点状态或部署状态。
 
@@ -1245,7 +1245,7 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'whoami') {
-    return `用法：pages whoami [选项]
+    return `用法：xd-cell whoami [选项]
 
 查看当前凭证身份。
 
@@ -1255,7 +1255,7 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'logout') {
-    return `用法：pages logout [选项]
+    return `用法：xd-cell logout [选项]
 
 退出本地登录。
 
@@ -1264,8 +1264,8 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'sites') {
-    return `用法：pages sites list [选项]
-      pages sites info <站点名> [选项]
+    return `用法：xd-cell sites list [选项]
+      xd-cell sites info <站点名> [选项]
 
 查看站点列表或站点详情。
 
@@ -1276,10 +1276,10 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'access') {
-    return `用法：pages access get <站点名> [选项]
-      pages access set <站点名> --visibility <范围> [--email <邮箱>] [--department <部门路径>]
-      pages access grant <站点名> [--email <邮箱>] [--department <部门路径>]
-      pages access revoke <站点名> [--email <邮箱>] [--department <部门路径>]
+    return `用法：xd-cell access get <站点名> [选项]
+      xd-cell access set <站点名> --visibility <范围> [--email <邮箱>] [--department <部门路径>]
+      xd-cell access grant <站点名> [--email <邮箱>] [--department <部门路径>]
+      xd-cell access revoke <站点名> [--email <邮箱>] [--department <部门路径>]
 
 查看或调整站点访问范围。
 
@@ -1300,13 +1300,13 @@ function helpText(topic) {
   --help                                    显示帮助。
 
 示例：
-  pages access get demo
-  pages access set demo --visibility acl --email user@xd.com --department "心动/技术平台部"
-  pages access grant demo --email another@xd.com
-  pages access revoke demo --department "心动/技术平台部"`;
+  xd-cell access get demo
+  xd-cell access set demo --visibility acl --email user@xd.com --department "心动/技术平台部"
+  xd-cell access grant demo --email another@xd.com
+  xd-cell access revoke demo --department "心动/技术平台部"`;
   }
   if (topic === 'rollback') {
-    return `用法：pages rollback <站点名> <version-id> [选项]
+    return `用法：xd-cell rollback <站点名> <version-id> [选项]
 
 回滚站点到一个已存在的不可变版本。如果当前站点类型不支持回滚，命令会返回可操作错误。
 
@@ -1316,7 +1316,7 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'open') {
-    return `用法：pages open <站点名> [选项]
+    return `用法：xd-cell open <站点名> [选项]
 
 打开或打印站点地址。
 
@@ -1326,29 +1326,29 @@ function helpText(topic) {
   --help                                    显示帮助。`;
   }
   if (topic === 'env') {
-    return `用法：pages env [current|list|production|staging] [选项]
+    return `用法：xd-cell env [current|list|production|staging] [选项]
 
 管理本地 CLI 环境选择。
 
 命令：
-  pages env
-  pages env current
-  pages env list
-  pages env production
-  pages env staging
+  xd-cell env
+  xd-cell env current
+  xd-cell env list
+  xd-cell env production
+  xd-cell env staging
 
 选项：
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
-  return `用法：pages <命令> [选项]
+  return `用法：xd-cell <命令> [选项]
 
 命令：
   login       通过浏览器 SSO 登录，或显式保存发布 token。
   logout      退出本地登录。
   whoami      查看当前凭证身份。
   detect      本地识别发布目录。
-  deploy      发布目录到 XD Pages，自动判断发布方式。
+  deploy      发布目录到 XD Cell，自动判断发布方式。
   status      查看登录状态、站点或部署状态。
   sites       查看站点列表或详情。
   rollback    回滚到不可变版本 ID。
@@ -1362,14 +1362,14 @@ function helpText(topic) {
   --version, -v                             显示 CLI 版本。
 
 查看某个命令的参数：
-  pages help deploy`;
+  xd-cell help deploy`;
 }
 
 function helpJson(topic) {
   return {
     topic,
     commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'rollback', 'access', 'open'],
-    commandHelp: 'pages help <命令>',
+    commandHelp: 'xd-cell help <命令>',
     jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };
 }

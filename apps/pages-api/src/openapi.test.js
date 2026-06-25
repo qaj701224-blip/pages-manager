@@ -154,10 +154,11 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get('Content-Type'), /text\/markdown/);
   const body = await response.text();
-  assert.match(body, /name: pages/);
-  assert.match(body, /pages login/);
-  assert.match(body, /pages detect <dir> --json/);
-  assert.match(body, /pages deploy <dir> <site>/);
+  assert.match(body, /name: xd-cell/);
+  assert.match(body, /XD Cell/);
+  assert.match(body, /xd-cell login/);
+  assert.match(body, /xd-cell detect <dir> --json/);
+  assert.match(body, /xd-cell deploy <dir> <site>/);
   assert.match(body, /--token <token>/);
   assert.match(body, /--config pages\.config\.json/);
   assert.match(body, /--json/);
@@ -171,6 +172,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   );
   assert.doesNotMatch(body, /--access-key|curl|X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
+  assert.doesNotMatch(body, /XD Pages/);
 });
 
 test('serves staging skill with explicit staging CLI environment', async () => {
@@ -180,12 +182,12 @@ test('serves staging skill with explicit staging CLI environment', async () => {
 
   assert.equal(response.status, 200);
   const body = await response.text();
-  assert.match(body, /pages env staging/);
-  assert.match(body, /pages login --env staging/);
-  assert.match(body, /pages detect <dir> --json/);
-  assert.match(body, /pages deploy <dir> <site> --env staging --dry-run --json/);
-  assert.match(body, /pages deploy <dir> <site> --env staging --visibility org/);
-  assert.match(body, /pages deploy <dir> <site> --env staging --token <token> --json/);
+  assert.match(body, /xd-cell env staging/);
+  assert.match(body, /xd-cell login --env staging/);
+  assert.match(body, /xd-cell detect <dir> --json/);
+  assert.match(body, /xd-cell deploy <dir> <site> --env staging --dry-run --json/);
+  assert.match(body, /xd-cell deploy <dir> <site> --env staging --visibility org/);
+  assert.match(body, /xd-cell deploy <dir> <site> --env staging --token <token> --json/);
   assert.doesNotMatch(body, /api\.pages\.xd\.team(?![\\w.-])/);
   assert.doesNotMatch(body, /workers\.xd\.team/);
 });
@@ -198,13 +200,14 @@ test('serves readme docs without legacy API addresses', async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get('Content-Type'), /text\/markdown/);
   const body = await response.text();
+  assert.match(body, /^# XD Cell/m);
   assert.match(body, /api-staging\.pages\.xd\.team/);
-  assert.match(body, /pages login/);
-  assert.match(body, /pages detect \.\/dist --json/);
-  assert.match(body, /pages deploy \.\/dist demo --visibility org/);
+  assert.match(body, /xd-cell login/);
+  assert.match(body, /xd-cell detect \.\/dist --json/);
+  assert.match(body, /xd-cell deploy \.\/dist demo --visibility org/);
   assert.match(body, /--token <token>/);
   assert.match(body, /--config <file>/);
-  assert.doesNotMatch(body, /--access-key|--env|pages env|Environment/);
+  assert.doesNotMatch(body, /--access-key|--env|xd-cell env|Environment/);
   assert.doesNotMatch(
     body,
     new RegExp(
@@ -213,4 +216,5 @@ test('serves readme docs without legacy API addresses', async () => {
     )
   );
   assert.doesNotMatch(body, /X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
+  assert.doesNotMatch(body, /XD Pages/);
 });

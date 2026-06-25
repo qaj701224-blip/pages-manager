@@ -4,9 +4,9 @@
 
 ## 项目概览
 
-`pages-manager` 是 XD Pages 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把静态站点、SPA 或自定义 Worker 发布到 `pages.xd.team` 域名下。
+`pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把静态站点、SPA 或自定义 Worker 发布到 `pages.xd.team` 域名下。
 
-v2 用户入口是 `pages` CLI。平台负责登录认证、发布 token、上传、访问策略、路由快照、runtime data/KV helper 和执行隔离。
+v2 用户入口是 `xd-cell` CLI。平台负责登录认证、发布 token、上传、访问策略、路由快照、runtime data/KV helper 和执行隔离。
 
 v1 位于 `apps/server`，服务旧 `workers.xd.team` 链路。v1 只做 legacy 维护，后续不再作为新能力设计目标。
 
@@ -17,8 +17,8 @@ v1 位于 `apps/server`，服务旧 `workers.xd.team` 链路。v1 只做 legacy 
 - `apps/pages-router/`：子站访问 router，执行 visibility、SSO、ACL 和路由快照。
 - `apps/pages-auth/`：登录、SSO、session 和 token 相关 Worker。
 - `apps/kv-gateway/`：runtime data/KV 能力的受控网关。
-- `apps/pages-sdk/`：站点 runtime helper SDK。
-- `apps/pages-skill/`：发布给 AI agent 的 XD Pages skill。
+- `apps/worker-sdk/`：业务自定义 Worker 使用的 runtime helper SDK，包名 `@xd-cell/worker-sdk`。
+- `apps/pages-skill/`：发布给 AI agent 的 `xd-cell` skill。
 - `packages/wfp-client/`：Cloudflare Workers for Platforms 客户端。
 - `packages/pages-runtime-protocol/`：runtime 协议共享定义。
 - `packages/worker-kit/`、`packages/ip-guard/`：Worker 公共工具。

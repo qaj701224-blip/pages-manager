@@ -1,29 +1,29 @@
-# XD Pages CLI
+# XD Cell CLI
 
-CLI 是 XD Pages 发布和管理操作的权威入口。不要在 skill 文档里复刻完整命令参数；执行前先查询 CLI 自己的 help。
+CLI 是 XD Cell 发布和管理操作的权威入口。不要在 skill 文档里复刻完整命令参数；执行前先查询 CLI 自己的 help。
 
 ## 选择 CLI
 
 始终使用 skill 内置 CLI：
 
 ```bash
-node tools/pages-cli/main.js help
+node tools/xd-cell-cli/main.js help
 ```
 
-不要优先使用环境里的 `pages`，也不要引导用户把内置 CLI 全局安装。全局命令可能滞后于当前 skill 内置版本。
+不要优先使用环境里的 `xd-cell`，也不要引导用户把内置 CLI 全局安装。全局命令可能滞后于当前 skill 内置版本。
 
 ## 查询用法
 
 根据用户意图先查询对应命令：
 
 ```bash
-node tools/pages-cli/main.js help deploy
-node tools/pages-cli/main.js help status
-node tools/pages-cli/main.js help sites
-node tools/pages-cli/main.js help rollback
-node tools/pages-cli/main.js help access
-node tools/pages-cli/main.js help open
-node tools/pages-cli/main.js help login
+node tools/xd-cell-cli/main.js help deploy
+node tools/xd-cell-cli/main.js help status
+node tools/xd-cell-cli/main.js help sites
+node tools/xd-cell-cli/main.js help rollback
+node tools/xd-cell-cli/main.js help access
+node tools/xd-cell-cli/main.js help open
+node tools/xd-cell-cli/main.js help login
 ```
 
 ## 执行流程

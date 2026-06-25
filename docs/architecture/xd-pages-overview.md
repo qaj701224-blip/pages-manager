@@ -133,7 +133,7 @@ packages/
 
 ```mermaid
 flowchart TD
-  CLI["pages CLI / Agent"] --> API["apps/pages-api<br/>Control Plane"]
+  CLI["xd-cell CLI / Agent"] --> API["apps/pages-api<br/>Control Plane"]
   Browser["Browser"] --> Router["apps/pages-router<br/>Data Plane"]
   Router --> Auth["apps/pages-auth<br/>SSO / Session"]
   API --> Auth

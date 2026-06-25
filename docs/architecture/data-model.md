@@ -370,7 +370,7 @@ cli_login:{login_id}
 
 用途：
 
-- CLI `pages login` 轮询。
+- CLI `xd-cell login` 轮询。
 - 浏览器 SSO 成功后写入登录结果。
 - CLI 领取 token 后标记 `consumedAt`，防止重复领取。
 
@@ -387,7 +387,7 @@ https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id={loginId}
 为防止攻击者生成登录链接诱导他人授权，CLI login 还必须有 device confirmation：
 
 - CLI 在终端显示短码，例如 `12345678`，并展示 environment、auth host 和请求 scope。
-- 浏览器 SSO 成功后，页面必须明确提示“正在授权 pages CLI”，并要求用户手动输入终端短码，再确认 environment、auth host 和 scope。
+- 浏览器 SSO 成功后，页面必须明确提示“正在授权 xd-cell CLI”，并要求用户手动输入终端短码，再确认 environment、auth host 和 scope。
 - 浏览器确认表单必须带服务端签发的短 TTL confirm token，绑定 `cli_login_id` 和当前登录用户；确认 POST 必须校验 exact `Origin` / same-origin fetch metadata，防止其它 `*.pages.xd.team` 子站 CSRF 自动确认。
 - 用户未确认短码前，`CliLoginDO` 不能写入 completed user，也不能让 CLI 领取 token。
 - 后续如果改成本机 loopback callback，也应配合 PKCE / nonce，把浏览器回调绑定到本地 CLI。

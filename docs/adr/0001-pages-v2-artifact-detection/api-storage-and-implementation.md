@@ -158,7 +158,7 @@ Cloudflare provider 应从 resolved decision 派生 metadata：
 
 ## CLI deploy 流程
 
-`pages deploy` 应围绕 preflight 和 upload plan 重排流程，避免先做服务端副作用再发现本地产物不可发布。
+`xd-cell deploy` 应围绕 preflight 和 upload plan 重排流程，避免先做服务端副作用再发现本地产物不可发布。
 
 目标顺序：
 
@@ -178,8 +178,8 @@ Cloudflare provider 应从 resolved decision 派生 metadata：
 关键要求：
 
 - preflight 必须发生在登录、创建站点、创建 deployment、上传文件之前。
-- `pages detect`、`pages deploy --dry-run` 和真实 `pages deploy` 必须复用同一套 detector。
-- `pages deploy --dry-run` 和真实 `pages deploy` 必须复用同一套 publishPlan / uploadPlan 生成器。
+- `xd-cell detect`、`xd-cell deploy --dry-run` 和真实 `xd-cell deploy` 必须复用同一套 detector。
+- `xd-cell deploy --dry-run` 和真实 `xd-cell deploy` 必须复用同一套 publishPlan / uploadPlan 生成器。
 - `hash`、manifest、文件大小统计应尽量在同一次目录扫描中完成，避免重复读取大目录。
 - `publishPlan` 应包含 resolved proposal：`deploymentShape`、`requestedFallback`、`resolvedFallback`、`routingMode`、`workerEntry`、`assetsConfig`。
 - `uploadPlan` 是 CLI 内部打包计划，包含 `publishPlan`、`contentHash`、asset manifest、asset files 和 worker modules。
@@ -221,8 +221,8 @@ pages-api 不应依赖用户或 AI 传入的 `artifactKind` 或 `deploymentShape
 ### 阶段一：建立内部 detector 和 preflight
 
 - 增加 detector 模块，返回结构化 decision、signals、warnings、errors。
-- 新增轻量 `pages detect --json`，只做配置解析和本地识别，不计算 hash 或生成 uploadPlan。
-- 新增 `pages deploy --dry-run --json`，做完整本地打包预演但不登录、不联网、不产生服务端副作用。
+- 新增轻量 `xd-cell detect --json`，只做配置解析和本地识别，不计算 hash 或生成 uploadPlan。
+- 新增 `xd-cell deploy --dry-run --json`，做完整本地打包预演但不登录、不联网、不产生服务端副作用。
 - `detect`、`dry-run` 和真实 deploy 复用同一套 detector；`dry-run` 和真实 deploy 复用同一套 publishPlan 和 uploadPlan。
 - 实现后的 deploy 成功 JSON 中附带 authoritative decision 和 `uploadPlanSummary`。
 - 为非 JSON deploy 增加阶段性进度输出。

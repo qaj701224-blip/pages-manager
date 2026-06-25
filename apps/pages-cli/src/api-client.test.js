@@ -241,7 +241,7 @@ test('API client explains non-JSON responses with HTTP context', async () => {
       assert.match(error.message, /HTTP 404/);
       assert.match(error.message, /text\/html/);
       assert.match(error.action, /服务地址和网络访问/);
-      assert.doesNotMatch(error.action, /pages env|--env/);
+      assert.doesNotMatch(error.action, /xd-cell env|--env/);
       return true;
     }
   );

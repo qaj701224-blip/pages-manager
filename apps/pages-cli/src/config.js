@@ -38,7 +38,7 @@ export function readCliConfig(env = {}, options = {}) {
 
 export function resolveEnvironment(value) {
   if (value === 'production' || value === 'staging' || value === 'custom') return value;
-  throw new Error('Pages CLI environment is invalid.');
+  throw new Error('XD Cell CLI environment is invalid.');
 }
 
 export function validateTrustedOrigin(value, { environment }) {

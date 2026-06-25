@@ -41,7 +41,7 @@
 ## 后果与取舍
 
 - 这是一次面向正式化的破坏性设计：内部测试脚本、测试数据和临时 API 字段可能需要修改或重建。
-- 用户心智更简单：普通路径只剩 `pages deploy ./dist example-site`。
+- 用户心智更简单：普通路径只剩 `xd-cell deploy ./dist example-site`。
 - AI 更稳定：不再需要猜 `static/spa/worker` 或 `assets-only/worker-only/worker-with-assets` 输入值。
 - 实现复杂度上升：CLI/API/provider 都需要围绕 resolved decision 和 multipart upload plan 重新整理。
 - Worker with Assets 更明确：它是 worker-first，用户 Worker 必须主动调用 `env.ASSETS.fetch(request)` 服务静态资源。
@@ -61,12 +61,12 @@
 - 明确 rewrite 到 `/index.html` 识别为 `resolvedFallback: "index"`。
 - 单入口 app shell 识别为 `resolvedFallback: "index"`，并带 signals。
 - 低置信目录默认 `resolvedFallback: "not-found"` 并输出 warning。
-- `pages detect --json` 不输出 `uploadPlanSummary`，`checks.packageChecked: false`，`checks.canPackage: null`。
-- `pages deploy --dry-run --json` 不创建 site、不创建 deployment、不上传文件。
-- `pages deploy --dry-run --json` 输出 `checks.remoteChecked: false`、`checks.canDeploy: null`、`checks.canDeployScope: "local"`，不误称远端可发布。
-- `pages detect --json` 与 `pages deploy --dry-run --json` 在相同 config/flags 下输出一致 decision。
-- `pages detect` 支持 `--config`、`--fallback`、`--worker-entry`，并正确报告 config source。
-- 非 JSON `pages deploy` 输出阶段性进度。
+- `xd-cell detect --json` 不输出 `uploadPlanSummary`，`checks.packageChecked: false`，`checks.canPackage: null`。
+- `xd-cell deploy --dry-run --json` 不创建 site、不创建 deployment、不上传文件。
+- `xd-cell deploy --dry-run --json` 输出 `checks.remoteChecked: false`、`checks.canDeploy: null`、`checks.canDeployScope: "local"`，不误称远端可发布。
+- `xd-cell detect --json` 与 `xd-cell deploy --dry-run --json` 在相同 config/flags 下输出一致 decision。
+- `xd-cell detect` 支持 `--config`、`--fallback`、`--worker-entry`，并正确报告 config source。
+- 非 JSON `xd-cell deploy` 输出阶段性进度。
 - 长阶段输出 heartbeat 或计数更新。
 - 非 JSON dry-run 明确说明不会创建站点、不会创建 deployment、不会上传文件、不会检查远端权限或 slug。
 - JSON deploy 成功响应包含 resolved decision、uploadPlanSummary、checks、sideEffects 和 diagnostics，且不包含 `artifactKind`。
@@ -96,7 +96,7 @@
 实现后：
 
 - 用户文档只讲 `source`、`fallback`、`worker.entry`。
-- AI skill 使用 `pages detect --json` 和 `pages deploy --dry-run --json` 作为推荐诊断路径。
+- AI skill 使用 `xd-cell detect --json` 和 `xd-cell deploy --dry-run --json` 作为推荐诊断路径。
 - 不再教 AI 选择 `static/spa/worker`。
 - 开发期 OpenAPI request schema 不暴露 `artifactKind`、用户输入 `deploymentShape` 或内部 `publishPlan.deploymentShape`。
 - 开发期 OpenAPI response 可以暴露 resolved decision，用于解释系统最终如何发布。

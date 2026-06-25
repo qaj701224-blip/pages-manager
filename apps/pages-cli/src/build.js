@@ -29,7 +29,7 @@ async function packageManifest() {
     private: packageJson.private,
     type: packageJson.type,
     bin: {
-      pages: './main.js',
+      'xd-cell': './main.js',
     },
     engines: packageJson.engines,
   };

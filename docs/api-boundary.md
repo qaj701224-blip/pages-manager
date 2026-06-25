@@ -1,8 +1,8 @@
-# XD Pages API Boundary
+# XD Cell API Boundary
 
-本文定义 XD Pages v2 的 CLI-managed API boundary。它不是 endpoint reference，也不是 CLI 使用指南。
+本文定义 XD Cell v2 的 CLI-managed API boundary。它不是 endpoint reference，也不是 CLI 使用指南。
 
-普通用户、AI agent 和 CI 的入口是 `pages` CLI 与 XD Pages skill。它们不手写部署 HTTP 请求，不拼接认证 header，不直接构造上传协议。CLI 负责认证、目录识别、打包上传、重试和结果解释。
+普通用户、AI agent 和 CI 的入口是 `xd-cell` CLI 与 `xd-cell` skill。它们不手写部署 HTTP 请求，不拼接认证 header，不直接构造上传协议。CLI 负责认证、目录识别、打包上传、重试和结果解释。
 
 ## 边界结论
 
@@ -16,7 +16,7 @@
 
 | 领域 | 真相源 | 说明 |
 | --- | --- | --- |
-| 用户和 agent 操作 | `pages` CLI help、`apps/pages-skill/skill/SKILL.md` | 发布、状态、访问控制、回滚和错误处理 |
+| 用户和 agent 操作 | `xd-cell` CLI help、`apps/pages-skill/skill/SKILL.md` | 发布、状态、访问控制、回滚和错误处理 |
 | API 开发合约 | `apps/pages-api/src/openapi.js`、对应 handler、`node:test` | 开发、测试和受控内部集成，不作为 public route |
 | 项目架构入口 | `README.md`、`docs/README.md` | monorepo 架构、文档索引和真相源矩阵 |
 | v1 legacy API | `apps/server/README.md`、`apps/server/src/**` | 旧 `workers.xd.team` 行为和 v1 `/openapi.json` |

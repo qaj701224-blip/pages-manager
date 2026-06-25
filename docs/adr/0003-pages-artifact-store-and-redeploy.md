@@ -125,8 +125,8 @@ source_artifact_availability = available | missing | expired
 采纳本设计后，用户和 AI 仍不应该感知 artifact store。公开契约只表达：
 
 ```bash
-pages deploy ./dist example-site
-pages rollback example-site ver_xxx
+xd-cell deploy ./dist example-site
+xd-cell rollback example-site ver_xxx
 ```
 
 公开文档、CLI help、skill 和 OpenAPI 不暴露 R2、D1、manifest、slot、dispatch namespace、provider pointer 或 source artifact ref。状态查询可以表达 `rollbackAvailable` 和用户可理解的原因，例如 `version-expired` 或 `version-unavailable`；内部再映射到 provider artifact 和 source artifact 的可用性。
@@ -328,7 +328,7 @@ materialized deployment = artifactVersion + configVersion + routePolicyVersion +
 这个扩展不改变普通用户的发布入口。用户仍然只需要：
 
 ```bash
-pages deploy ./dist example-site
+xd-cell deploy ./dist example-site
 ```
 
 ## 风险与缓解

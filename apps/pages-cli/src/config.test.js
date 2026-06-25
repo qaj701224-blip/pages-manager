@@ -24,7 +24,7 @@ test('user-facing fixed environments are production and staging only', () => {
   assert.equal(resolveEnvironment('production'), 'production');
   assert.equal(resolveEnvironment('staging'), 'staging');
   assert.equal(resolveEnvironment('custom'), 'custom');
-  assert.throws(() => resolveEnvironment('local'), /Pages CLI environment is invalid/);
+  assert.throws(() => resolveEnvironment('local'), /XD Cell CLI environment is invalid/);
 });
 
 test('rejects overriding fixed production and staging endpoints', () => {

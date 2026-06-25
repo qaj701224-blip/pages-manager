@@ -1,0 +1,27 @@
+{
+  "name": "@xd-cell/worker-sdk",
+  "version": "0.1.1",
+  "type": "module",
+  "private": false,
+  "sideEffects": false,
+  "files": ["dist", "docs/llms", "README.md", "BREAKING_CHANGES.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/worker/index.d.ts",
+      "import": "./dist/worker/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm run clean && tsc -p tsconfig.json",
+    "docs:llms": "node scripts/generate-llms.js",
+    "docs:llms:check": "node scripts/generate-llms.js --check",
+    "pack:prepare": "pnpm run build && pnpm run docs:llms",
+    "pack:surface": "node scripts/check-pack-surface.js",
+    "pack:check": "pnpm run build && pnpm run docs:llms:check && pnpm run pack:surface",
+    "prepack": "pnpm run pack:prepare"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}

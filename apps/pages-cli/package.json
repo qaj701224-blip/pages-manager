@@ -1,10 +1,10 @@
 {
-  "name": "@xd/pages-cli",
+  "name": "@xd-cell/cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "pages": "./src/main.js"
+    "xd-cell": "./src/main.js"
   },
   "scripts": {
     "build": "node src/build.js",

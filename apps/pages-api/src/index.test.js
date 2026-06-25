@@ -33,7 +33,7 @@ test('health rejects legacy token headers', async () => {
   const body = await response.json();
   assert.equal(body.error.code, 'LEGACY_TOKEN_UNSUPPORTED');
   assert.equal(body.error.message, 'Legacy Pages tokens are not supported by XD Pages.');
-  assert.equal(body.error.action, 'Run `pages login` or use an XD Pages access key.');
+  assert.equal(body.error.action, 'Run `xd-cell login` or use an XD Pages access key.');
 });
 
 test('invalid environment fails closed', async () => {

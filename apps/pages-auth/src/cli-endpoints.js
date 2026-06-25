@@ -128,7 +128,7 @@ export async function handleCliLoginConfirm(request, env, config) {
 
   const user = await readAuthSessionUser(request, env);
   if (!user) {
-    return jsonError('AUTH_SESSION_REQUIRED', 'Login required before confirming CLI access.', 401, 'Restart `pages login`.');
+    return jsonError('AUTH_SESSION_REQUIRED', 'Login required before confirming CLI access.', 401, 'Restart `xd-cell login`.');
   }
 
   const confirmTokenOk = await verifyCliLoginConfirmToken(confirmToken, env, { loginId, user });

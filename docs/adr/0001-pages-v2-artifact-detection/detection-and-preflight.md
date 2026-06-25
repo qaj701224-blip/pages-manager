@@ -129,12 +129,12 @@ Worker 的自动识别要保守，避免把前端构建产物误判成 Worker。
 为了让 AI/CI 自然使用，应新增无副作用诊断：
 
 ```bash
-pages detect ./dist --json
-pages detect --config ./pages.config.json --json
-pages deploy ./dist example-site --dry-run --json
+xd-cell detect ./dist --json
+xd-cell detect --config ./pages.config.json --json
+xd-cell deploy ./dist example-site --dry-run --json
 ```
 
-### `pages detect`
+### `xd-cell detect`
 
 `detect` 是轻量识别命令，只做本地目录识别和配置解析：
 
@@ -147,9 +147,9 @@ pages deploy ./dist example-site --dry-run --json
 - 不生成可上传 payload。
 - 支持与 deploy 相同的 `--config`、`--fallback`、`--worker-entry` 覆盖参数。
 
-适合 AI 在发布前判断目录，或 CI 在构建后给出可解释诊断。`detect` 和 `deploy` 必须复用同一个 detector，避免 “detect 显示一种结果、deploy 实际另一种结果”。如果需要确认文件数量、大小、hash 和可上传 payload，应使用 `pages deploy --dry-run`。
+适合 AI 在发布前判断目录，或 CI 在构建后给出可解释诊断。`detect` 和 `deploy` 必须复用同一个 detector，避免 “detect 显示一种结果、deploy 实际另一种结果”。如果需要确认文件数量、大小、hash 和可上传 payload，应使用 `xd-cell deploy --dry-run`。
 
-### `pages deploy --dry-run`
+### `xd-cell deploy --dry-run`
 
 默认执行本地 preflight 和打包预演，但不产生服务端副作用：
 
@@ -482,7 +482,7 @@ JSON 输出不得包含 `artifactKind`。用户和 AI-facing JSON 可以包含 `
 
 ### 人类可读进度输出
 
-非 JSON 模式下，`pages deploy` 必须输出阶段性进度，避免长时间 hash、打包、上传或 Cloudflare 部署时看起来像卡住。
+非 JSON 模式下，`xd-cell deploy` 必须输出阶段性进度，避免长时间 hash、打包、上传或 Cloudflare 部署时看起来像卡住。
 
 通道规则：
 
@@ -517,13 +517,13 @@ JSON 输出不得包含 `artifactKind`。用户和 AI-facing JSON 可以包含 `
 - Warning 应在真正上传前集中展示，并说明是否继续。
 - Fatal error 应包含稳定 error code 和下一步建议。
 - `--json` 模式只输出机器可读 JSON，不混入人类进度文本。
-- `pages deploy --dry-run` 的人类输出必须明确说明：这是本地预演，不会创建站点、不会创建 deployment、不会上传文件，也没有检查远端权限和 slug 可用性。
+- `xd-cell deploy --dry-run` 的人类输出必须明确说明：这是本地预演，不会创建站点、不会创建 deployment、不会上传文件，也没有检查远端权限和 slug 可用性。
 - 真实 deploy 如果通过 preflight 后在远端阶段失败，必须说明失败阶段、是否可重试、是否已经产生 deployment 或 route 变更。
 
 人类输出样例：
 
 ```text
-$ pages detect ./dist
+$ xd-cell detect ./dist
 发布目录：./dist
 识别结果：静态资源目录
 找不到文件时：返回 404.html 或 404
@@ -532,7 +532,7 @@ $ pages detect ./dist
 ```
 
 ```text
-$ pages deploy ./dist example-site --dry-run
+$ xd-cell deploy ./dist example-site --dry-run
 本地预演，不会创建站点、不会创建 deployment、不会上传文件，也不会检查远端权限或站点名。
 检查发布目录完成：42 files / 12.4 MB
 识别结果：静态资源目录
@@ -541,7 +541,7 @@ $ pages deploy ./dist example-site --dry-run
 ```
 
 ```text
-$ pages deploy ./dist example-site
+$ xd-cell deploy ./dist example-site
 读取配置...
 检查发布目录完成：42 files / 12.4 MB
 识别结果：静态资源目录

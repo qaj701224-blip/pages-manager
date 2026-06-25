@@ -26,8 +26,8 @@ test('docs/api-boundary.md documents API boundary without duplicating CLI guide'
   assert.match(api, /不公开 `\/openapi\.json`/);
   assert.match(api, /不是 endpoint reference|不是 CLI 使用指南/);
   assert.match(api, /apps\/server\/README\.md/);
-  assert.doesNotMatch(api, /pages detect \.\/dist --json/);
-  assert.doesNotMatch(api, /pages deploy \.\/dist demo --dry-run --json/);
+  assert.doesNotMatch(api, /xd-cell detect \.\/dist --json/);
+  assert.doesNotMatch(api, /xd-cell deploy \.\/dist demo --dry-run --json/);
   assert.doesNotMatch(api, /"worker": \{/);
   assert.doesNotMatch(api, /fallback` 表达|fallback` 可取/);
   assert.doesNotMatch(api, /### POST|### GET|### ACL/);
@@ -36,19 +36,19 @@ test('docs/api-boundary.md documents API boundary without duplicating CLI guide'
   assert.doesNotMatch(api, /api\.workers\.xd\.team/);
 });
 
-test('public docs recommend pages CLI instead of legacy deploy curl', () => {
+test('public docs recommend xd-cell CLI instead of legacy deploy curl', () => {
   const docs = [readDoc('README.md'), readDoc('pages-deploy.skill.md')].join('\n');
 
-  assert.match(docs, /pages deploy \.\/dist demo/);
-  assert.match(docs, /pages detect \.\/dist --json/);
+  assert.match(docs, /xd-cell deploy \.\/dist demo/);
+  assert.match(docs, /xd-cell detect \.\/dist --json/);
   assert.doesNotMatch(docs, /curl -X POST https:\/\/api\.workers\.xd\.team\/deploy/);
   assert.doesNotMatch(docs, /X-Pages-Token/);
 });
 
-test('README deploy examples use pages CLI and automatic detection', () => {
+test('README deploy examples use xd-cell CLI and automatic detection', () => {
   const readme = readDoc('README.md');
 
-  assert.match(readme, /pages deploy \.\/dist demo --visibility org/);
+  assert.match(readme, /xd-cell deploy \.\/dist demo --visibility org/);
   assert.match(readme, /fallback/);
   assert.match(readme, /"worker": \{/);
   assert.match(readme, /"entry": "\.\/worker\.mjs"/);
@@ -68,7 +68,7 @@ test('public docs describe config discovery without platform internals', () => {
     assert.doesNotMatch(doc, /不自动发现/, `${name} does not contradict config auto-discovery`);
     assert.doesNotMatch(
       doc,
-      /--access-key|--env|pages env|"environment"/,
+      /--access-key|--env|xd-cell env|"environment"/,
       `${name} keeps hidden options out of user docs`
     );
     assert.doesNotMatch(
@@ -91,8 +91,9 @@ test('each public doc says v1 Pages KV is retired and avoids private capability 
     assert.doesNotMatch(doc, /KV 能力.*平台规划|后续 v2 `pages\.xd\.team`/, `${name} does not describe KV as future-only`);
     assert.doesNotMatch(doc, /static \+ kv=true/, `${name} no longer documents v1 static KV rejection`);
     assert.doesNotMatch(doc, /\/\.xd-pages\/runtime\/v1/, `${name} does not document retired runtime path`);
-    assert.doesNotMatch(doc, /@xd\/pages-sdk\/browser/, `${name} does not document retired browser SDK entry`);
-    assert.doesNotMatch(doc, /@xd\/pages-sdk\/worker/, `${name} does not document retired worker SDK entry`);
+    assert.doesNotMatch(doc, /@xd\/pages-sdk/, `${name} does not document retired pages-sdk package`);
+    assert.doesNotMatch(doc, /@xd-pages\/worker-sdk\/browser/, `${name} does not document retired browser SDK entry`);
+    assert.doesNotMatch(doc, /@xd-pages\/worker-sdk\/worker/, `${name} does not document retired worker SDK entry`);
 
     assert.doesNotMatch(doc, /PAGES_CAP_JWT_SECRET/, `${name} does not mention internal JWT secret env`);
     assert.doesNotMatch(doc, /SITE_DATA_KV_NAMESPACE_ID/, `${name} does not mention platform KV namespace env`);
@@ -115,11 +116,65 @@ test('README local deployment commands use package scripts or wrangler directly'
 });
 
 test('published SDK README does not demonstrate bypassing runtime access checks', () => {
-  const sdkReadme = readDoc('apps/pages-sdk/README.md');
+  const sdkReadme = readDoc('apps/worker-sdk/README.md');
 
   assert.doesNotMatch(sdkReadme, /checkAccess:\s*\(\)\s*=>\s*null/);
-  assert.match(sdkReadme, /checkAccess/);
-  assert.match(sdkReadme, /allowlist|auth|IP/i);
+  assert.match(sdkReadme, /^# @xd-cell\/worker-sdk/m);
+  assert.match(sdkReadme, /pnpm add @xd-cell\/worker-sdk/);
+  assert.match(sdkReadme, /from '@xd-cell\/worker-sdk'/);
+  assert.match(sdkReadme, /Cloudflare API 心智/);
+  assert.match(sdkReadme, /runtime\.kv\.get/);
+  assert.match(sdkReadme, /runtime\.kv\.put/);
+  assert.match(sdkReadme, /D1\/R2 公开前/);
+  assert.match(sdkReadme, /skill 不复制 Worker SDK 领域产物/);
+  assert.doesNotMatch(sdkReadme, /@xd-pages\/sdk\/worker/);
+  assert.doesNotMatch(sdkReadme, /createPagesRuntime/);
+  assert.doesNotMatch(sdkReadme, /readPlatformContext/);
+  assert.doesNotMatch(sdkReadme, /只暴露 `\.\/worker` export/);
+  assert.doesNotMatch(sdkReadme, /handlePagesRuntimeRequest/);
+  assert.doesNotMatch(sdkReadme, /Runtime adapter（运行时适配器）/);
+});
+
+test('Worker SDK AI-readable docs are generated from package truth sources', () => {
+  const workerDoc = readDoc('apps/worker-sdk/docs/llms/worker-sdk.md');
+  const apiDoc = readDoc('apps/worker-sdk/docs/llms/worker-sdk-api.md');
+  const index = readDoc('llms.txt');
+  const breakingChanges = readDoc('apps/worker-sdk/BREAKING_CHANGES.md');
+
+  assert.match(workerDoc, /^# @xd-cell\/worker-sdk/m);
+  assert.match(workerDoc, /生成来源/);
+  assert.match(workerDoc, /skill 不复制 Worker SDK 领域产物/);
+  assert.match(workerDoc, /from '@xd-cell\/worker-sdk'/);
+  assert.match(workerDoc, /Cloudflare API 心智/);
+  assert.match(workerDoc, /runtime\.kv\.get/);
+  assert.match(workerDoc, /runtime\.kv\.put/);
+  assert.match(workerDoc, /未实现的 D1\/R2 空壳 API/);
+  assert.match(workerDoc, /安全约束/);
+  assert.match(workerDoc, /非目标/);
+  assert.match(workerDoc, /BREAKING_CHANGES\.md/);
+  assert.match(workerDoc, /默认按 text/);
+  assert.doesNotMatch(workerDoc, /src\/worker\/runtime\.ts|capability\.jwt|PAGES_CAP_JWT_SECRET/);
+  assert.doesNotMatch(workerDoc, /createPagesRuntime|readPlatformContext|runtime\.data|kv\.site|kv\.user/);
+
+  assert.match(apiDoc, /^# @xd-cell\/worker-sdk API/m);
+  assert.match(apiDoc, /createRuntime/);
+  assert.match(apiDoc, /export declare function createRuntime/);
+  assert.match(apiDoc, /readContext/);
+  assert.match(apiDoc, /export declare function readContext/);
+  assert.match(apiDoc, /SDKError/);
+  assert.match(apiDoc, /export declare class SDKError/);
+  assert.match(apiDoc, /export interface RuntimeEnv/);
+  assert.match(apiDoc, /export interface Runtime/);
+  assert.match(apiDoc, /export interface KVNamespace/);
+  assert.match(apiDoc, /get\(key: string, options\?: \{/);
+  assert.match(apiDoc, /put\(key: string, value: string/);
+  assert.doesNotMatch(apiDoc, /capabilities\.ts|gateway\.ts|platform-context\.ts/);
+  assert.doesNotMatch(apiDoc, /createPagesRuntime|readPlatformContext|Pages|set\(key|KVResources/);
+
+  assert.match(index, /apps\/worker-sdk\/docs\/llms\/worker-sdk\.md/);
+  assert.match(index, /apps\/worker-sdk\/docs\/llms\/worker-sdk-api\.md/);
+  assert.match(index, /apps\/worker-sdk\/BREAKING_CHANGES\.md/);
+  assert.match(breakingChanges, /无破坏性变更|存在破坏性变更/);
 });
 
 test('demo README scopes openapi.json references to v1 legacy only', () => {

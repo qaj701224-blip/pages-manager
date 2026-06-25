@@ -36,7 +36,7 @@
 
 <script setup>
 import { ref } from 'vue';
-import { createPagesClient, PagesSDKError } from '@xd/pages-sdk/browser';
+import { createPagesClient, PagesSDKError } from '../../../xd-pages-kv-smoke/vendor/xd-pages-sdk/browser.js';
 
 const count = ref(0);
 const pages = createPagesClient();

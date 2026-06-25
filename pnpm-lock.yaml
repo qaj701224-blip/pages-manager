@@ -84,25 +84,19 @@ importers:
         specifier: 'catalog:'
         version: 4.91.0
 
-  apps/pages-sdk:
-    devDependencies:
-      typescript:
-        specifier: ^5.8.0
-        version: 5.9.3
-
   apps/pages-skill: {}
 
   apps/server:
     dependencies:
+      '@xd-cell/worker-sdk':
+        specifier: workspace:*
+        version: link:../worker-sdk
       '@xd/ip-guard':
         specifier: workspace:*
         version: link:../../packages/ip-guard
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
-      '@xd/pages-sdk':
-        specifier: workspace:*
-        version: link:../pages-sdk
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
@@ -110,6 +104,12 @@ importers:
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
+
+  apps/worker-sdk:
+    devDependencies:
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
 
   apps/xdads-302:
     devDependencies:

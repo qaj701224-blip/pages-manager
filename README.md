@@ -1,6 +1,6 @@
 # pages-manager
 
-`pages-manager` 是 XD Pages 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `pages` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
+`pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `xd-cell` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
 
 v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 维护，后续不再作为新能力的设计目标。
 
@@ -8,7 +8,7 @@ v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 
 
 ```text
 用户 / AI / CI
-  -> pages CLI
+  -> xd-cell CLI
   -> apps/pages-api       管理 API、部署编排、站点与版本数据
   -> apps/pages-auth      登录、SSO、session 和 token 相关能力
   -> apps/pages-router    子站访问入口、visibility、ACL、路由快照
@@ -19,8 +19,8 @@ v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 
 核心包：
 
 - `apps/pages-cli/`：用户和 agent 使用的 CLI。
-- `apps/pages-skill/`：随 CLI 发布给 AI agent 的 XD Pages skill。
-- `apps/pages-sdk/`：站点 runtime helper。
+- `apps/pages-skill/`：随 CLI 发布给 AI agent 的 `xd-cell` skill。
+- `apps/worker-sdk/`：业务自定义 Worker 使用的 runtime helper SDK，包名 `@xd-cell/worker-sdk`。
 - `packages/wfp-client/`：Cloudflare Workers for Platforms 客户端。
 - `packages/pages-runtime-protocol/`：runtime 协议共享定义。
 - `packages/worker-kit/`、`packages/ip-guard/`：Worker 公共工具。
@@ -28,19 +28,19 @@ v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 
 ## 用户入口
 
 ```bash
-pages login
-pages detect ./dist --json
-pages deploy ./dist demo --dry-run --json
-pages deploy ./dist demo --visibility org
-pages status demo
-pages open demo
-pages rollback demo <version-id>
+xd-cell login
+xd-cell detect ./dist --json
+xd-cell deploy ./dist demo --dry-run --json
+xd-cell deploy ./dist demo --visibility org
+xd-cell status demo
+xd-cell open demo
+xd-cell rollback demo <version-id>
 ```
 
 CI 或 AI agent 可以使用发布 token：
 
 ```bash
-pages deploy ./dist demo --token <token> --json
+xd-cell deploy ./dist demo --token <token> --json
 ```
 
 CLI 会自动识别发布目录：
@@ -63,7 +63,7 @@ CLI 会自动识别发布目录：
 }
 ```
 
-保存为项目根目录的 `pages.config.json` 后，可以直接运行 `pages deploy`；也可以用 `--config <file>` 显式指定其它配置文件。命令行位置参数和 flag 会覆盖配置文件里的同名发布意图。
+保存为项目根目录的 `pages.config.json` 后，可以直接运行 `xd-cell deploy`；也可以用 `--config <file>` 显式指定其它配置文件。命令行位置参数和 flag 会覆盖配置文件里的同名发布意图。
 
 `fallback` 可取 `auto`、`index`、`not-found`。普通用户优先使用默认 `auto`；只有需要明确控制深链刷新行为时才显式设置。
 
@@ -86,8 +86,8 @@ pages-manager/
 ├── apps/pages-cli/      # 用户和 agent 使用的 CLI
 ├── apps/pages-router/   # 子站访问 router
 ├── apps/pages-auth/     # 登录和认证相关 Worker
-├── apps/pages-sdk/      # runtime helper SDK
-├── apps/pages-skill/    # 发布给 AI agent 的 XD Pages skill
+├── apps/worker-sdk/     # Worker runtime helper SDK
+├── apps/pages-skill/    # 发布给 AI agent 的 xd-cell skill
 ├── packages/wfp-client/ # 平台执行客户端
 ├── packages/worker-kit/
 ├── packages/ip-guard/
@@ -99,7 +99,7 @@ legacy v1 目录：
 
 ```text
 apps/server/              # v1 管理 API Worker，仅维护旧 workers.xd.team 链路
-pages-deploy.skill.md     # v1 文件名兼容入口，内容指向当前 XD Pages skill
+pages-deploy.skill.md     # v1 文件名兼容入口，内容指向当前 xd-cell skill
 ```
 
 ## 开发
@@ -133,4 +133,4 @@ production 部署必须人工在 GitHub Actions 中手动触发；改动 workflo
 
 ## Pages KV
 
-v1 不再提供 Pages KV。需要 runtime helper 或 KV 相关能力时，按 `@xd/pages-sdk` 和当前平台文档接入，不要使用旧部署参数。
+v1 不再提供 Pages KV。业务自定义 Worker 需要 runtime helper 或 KV 相关能力时，按 `@xd-cell/worker-sdk` 和当前平台文档接入，不要使用旧部署参数。

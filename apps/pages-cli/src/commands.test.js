@@ -859,7 +859,7 @@ test('access grant explains that the site must use acl visibility first', async 
       }),
     {
       code: 'ACCESS_VISIBILITY_NOT_ACL',
-      action: '请先运行 pages access set demo --visibility acl --email user@example.com。',
+      action: '请先运行 xd-cell access set demo --visibility acl --email user@example.com。',
     }
   );
 });
@@ -895,12 +895,12 @@ test('prints help and version for top-level CLI aliases', async () => {
   const helpOutput = [];
   assert.equal(await executeCommand(['--help'], { output: (line) => helpOutput.push(line) }), 0);
   const help = helpOutput.join('\n');
-  assert.match(help, /用法：pages/);
-  assert.match(help, /pages help deploy/);
+  assert.match(help, /用法：xd-cell/);
+  assert.match(help, /xd-cell help deploy/);
   assert.match(help, /^\s+logout\s/m);
   assert.match(help, /^\s+whoami\s/m);
   assert.match(help, /^\s+detect\s/m);
-  assert.doesNotMatch(help, /--access-key|--env|pages env|^\s+env\s|^\s+auth\s/m);
+  assert.doesNotMatch(help, /--access-key|--env|xd-cell env|^\s+env\s|^\s+auth\s/m);
   assert.doesNotMatch(
     help,
     new RegExp(
@@ -922,7 +922,7 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     const output = [];
     assert.equal(await executeCommand(argv, { output: (line) => output.push(line) }), 0);
     const text = output.join('\n');
-    assert.match(text, /用法：pages deploy <目录> <站点名>/);
+    assert.match(text, /用法：xd-cell deploy <目录> <站点名>/);
     assert.match(text, /--visibility <internal\|org\|acl\|owner\|disabled>/);
     assert.match(text, /--token <token>/);
     assert.match(text, /--config <file>/);
@@ -945,9 +945,9 @@ test('prints command-specific access help with Chinese visibility wording', asyn
   assert.equal(await executeCommand(['help', 'access'], { output: (line) => output.push(line) }), 0);
 
   const text = output.join('\n');
-  assert.match(text, /用法：pages access get <站点名>/);
-  assert.match(text, /pages access set <站点名> --visibility <范围>/);
-  assert.match(text, /pages access grant <站点名>/);
+  assert.match(text, /用法：xd-cell access get <站点名>/);
+  assert.match(text, /xd-cell access set <站点名> --visibility <范围>/);
+  assert.match(text, /xd-cell access grant <站点名>/);
   assert.match(text, /公司网络内，需命中邮箱或部门授权/);
   assert.match(text, /--department <部门路径>/);
   assert.doesNotMatch(text, /ACL 表|site_acl_entries|WFP|slot|v2/i);
