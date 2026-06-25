@@ -167,7 +167,9 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       ? await platformCiPassedForItem(store, repoFullName, platformItem, effectiveNormalized)
       : false;
     const nextStatus = reviewIsBlocking
-      ? 'review_blocked'
+      ? platformItem.status === 'ci_failed'
+        ? 'ci_failed'
+        : 'review_blocked'
       : ciPassed
         ? 'ready_to_merge'
         : ['pr_created', 'ci_running'].includes(platformItem.status)
@@ -232,7 +234,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       });
     }
     const autoFix =
-      commentIsOpen && nextStatus === 'review_blocked'
+      reviewIsBlocking
         ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, {
             trigger: 'review_blocked',
             reviewSummary: contextPatch.reviewSummary,

@@ -261,9 +261,7 @@ test/build notes
 ## 发起人
 
 - 发起人：张三
-- 邮箱：zhangsan@example.com
-- Slack 用户：`U123`
-- 平台身份：`user:slack:T123:U123`
+- 联系方式：已由平台保留，不写入公开 issue。
 
 ## 目标站点
 
@@ -274,9 +272,7 @@ test/build notes
 ## 来源上下文
 
 - 来源：Slack
-- Team：`T123`
-- Channel：`D123`
-- Thread：`1710000000.000100`
+- Slack thread：已由平台保留，不写入公开 issue。
 
 ## 自动化边界
 
@@ -296,8 +292,7 @@ test/build notes
 ```text
 PublishingJob: job_xxx
 Source: slack
-Requested by: user:slack:T123:U123
-Requester: user:slack:T123:U123
+Requester: managed-by-pages-gateway
 Target: smoke-a1b2c3/profile
 Allowed path: sites/smoke-a1b2c3/profile
 Base ref: staging

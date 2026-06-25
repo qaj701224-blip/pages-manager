@@ -10,6 +10,7 @@ import {
   buildPagesPreviewInputs,
   buildPlatformAgentInputs,
   buildPlatformDevIssue,
+  buildPlatformDevFollowupComment,
   buildProjectIndexInputs,
   buildPublishingIssue,
   buildSmokeIssue,
@@ -93,11 +94,32 @@ test('builds publishing issue with stable job marker and path boundary', () => {
   assert.ok(issue.body.includes('Platform deployment: out of scope'));
   assert.ok(issue.body.includes('## 发布需求'));
   assert.ok(issue.body.includes('- 发起人：张三'));
-  assert.ok(issue.body.includes('- 邮箱：zhangsan@example.com'));
+  assert.doesNotMatch(issue.body, /zhangsan@example\.com|Slack 用户|user:slack:T1:U1|Team：|Channel：|Thread：/);
   assert.ok(
     issue.body.includes('不允许修改平台代码、GitHub Actions、Kubernetes manifests、Dockerfile、部署脚本或任何 secret 配置')
   );
   assert.deepEqual(issue.labels, ['pages-publishing-job', 'site-change']);
+});
+
+test('redacts public issue text before publishing GitHub issues and comments', () => {
+  const secretSummary = [
+    '请使用 CF_API_TOKEN=cf-secret-value。',
+    'Bearer bearer-secret-value',
+    '{"AGENT_CODE_API_KEY":"sk-secret-value-1234567890"}',
+  ].join('\n');
+  const issue = buildPublishingIssue({ ...job, summary: secretSummary });
+  const platformIssue = buildPlatformDevIssue({ ...platformItem, summary: secretSummary });
+  const smokeIssue = buildSmokeIssue({ ...job, summary: secretSummary });
+  const smokeComment = buildSmokeIssueComment({ ...job, summary: secretSummary });
+  const followup = buildFollowupIssueComment({ ...job, summary: secretSummary });
+  const platformFollowup = buildPlatformDevFollowupComment({ ...platformItem, summary: secretSummary });
+  const publicText = [issue.body, platformIssue.body, smokeIssue.body, smokeComment, followup, platformFollowup].join('\n');
+
+  assert.match(publicText, /CF_API_TOKEN=\[REDACTED_SECRET\]/);
+  assert.match(publicText, /Bearer \[REDACTED_TOKEN\]/);
+  assert.match(publicText, /"AGENT_CODE_API_KEY":"\[REDACTED_SECRET\]"/);
+  assert.doesNotMatch(publicText, /cf-secret-value|bearer-secret-value|sk-secret-value/);
+  assert.doesNotMatch(publicText, /zhangsan@example\.com|slack:T1:U1|Team：|Channel：|Thread：/);
 });
 
 test('builds platform dev issue with stable marker and enterprise boundaries', () => {
