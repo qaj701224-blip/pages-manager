@@ -1,0 +1,30 @@
+:80 {
+  encode gzip
+
+  @public_callbacks path /integrations/slack/events /integrations/slack/interactions /integrations/github/webhook /internal/executor-callback
+  handle @public_callbacks {
+    reverse_proxy pages-gateway:8788
+  }
+
+  @prefixed_callbacks path {$PUBLIC_PATH_PREFIX}/integrations/slack/events {$PUBLIC_PATH_PREFIX}/integrations/slack/interactions {$PUBLIC_PATH_PREFIX}/integrations/github/webhook {$PUBLIC_PATH_PREFIX}/internal/executor-callback
+  handle @prefixed_callbacks {
+    uri strip_prefix {$PUBLIC_PATH_PREFIX}
+    reverse_proxy pages-gateway:8788
+  }
+
+  handle /health {
+    reverse_proxy pages-gateway:8788
+  }
+
+  handle /ready {
+    reverse_proxy pages-gateway:8788
+  }
+
+  @prefixed_health path {$PUBLIC_PATH_PREFIX}/health {$PUBLIC_PATH_PREFIX}/ready
+  handle @prefixed_health {
+    uri strip_prefix {$PUBLIC_PATH_PREFIX}
+    reverse_proxy pages-gateway:8788
+  }
+
+  respond "not found" 404
+}

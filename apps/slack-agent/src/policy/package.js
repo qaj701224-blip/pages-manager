@@ -1,0 +1,37 @@
+export const SLACK_AGENT_POLICY_PACKAGE_VERSION = 'slack-agent-policy-2026-06-25.1';
+
+export const SLACK_AGENT_POLICY_PACKAGE = {
+  version: SLACK_AGENT_POLICY_PACKAGE_VERSION,
+  skills: [
+    'core',
+    'routing-priority',
+    'safety',
+    'tool-contract',
+    'card-intent',
+    'product-language',
+    'output-schema',
+    'conversation-context',
+    'work-item-continuation',
+    'repo-question',
+    'diagnostics',
+    'platform-dev',
+    'site-publishing',
+    'product-design',
+  ],
+  fragments: [
+    'core',
+    'routing-priority',
+    'safety',
+    'tool-contract',
+    'card-intent',
+    'product-language',
+    'output-schema',
+    'conversation-context',
+    'work-item-continuation',
+    'repo-question',
+    'diagnostics',
+    'platform-dev',
+    'site-publishing',
+    'product-design',
+  ],
+};

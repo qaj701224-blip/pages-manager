@@ -47,7 +47,7 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /^name: Sync Master PR To Staging$/m);
   assert.match(
     workflow,
-    /pull_request:[\s\S]*types: \[opened, synchronize, reopened, ready_for_review\][\s\S]*branches: \[master\]/,
+    /pull_request:[\s\S]*types: \[opened, synchronize, reopened, ready_for_review\][\s\S]*branches: \[master\]/
   );
   assert.match(workflow, /permissions:[\s\S]*actions: write[\s\S]*contents: write[\s\S]*pull-requests: read/);
   assert.doesNotMatch(workflow, /pull_request_target/);
@@ -110,4 +110,36 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(policy, /dispatch `Deploy XD Pages Staging`/);
   assert.match(policy, /等待 `Deploy XD Pages Staging` 完成/);
   assert.match(policy, /纯 `sites\/\*\*` 用户站点 PR/);
+});
+
+test('platform dev lane documents Slack-to-platform PR flow and isolates deployment secrets', () => {
+  const doc = readDoc('docs/architecture/platform-dev-lane.md');
+  const workflow = readDoc('.github/workflows/platform-agent.yml');
+
+  assert.match(doc, /Platform Dev Lane/);
+  assert.match(doc, /Site Publishing Lane/);
+  assert.match(doc, /PlatformDevItem/);
+  assert.match(doc, /type:ci/);
+  assert.match(doc, /risk:high/);
+  assert.match(doc, /PlatformDevItem: pdev_xxx/);
+  assert.match(doc, /不生成 Cloudflare preview/);
+  assert.match(readDoc('docs/architecture/db-schema.md'), /gate_type=risk,status=approved/);
+  assert.doesNotMatch(readDoc('docs/architecture/db-schema.md'), /gate_type=coding|platform-dev\.js`（计划）|work-items\.js`（计划）/);
+
+  assert.match(workflow, /^name: Platform Agent$/m);
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /platformDevItemId:/);
+  assert.match(workflow, /gateApproved:/);
+  assert.match(workflow, /effective_risk/);
+  assert.match(workflow, /AGENT_CODE_API_KEY/);
+  assert.match(workflow, /post-executor-callback\.js/);
+  assert.match(workflow, /pnpm lint/);
+  assert.match(workflow, /pnpm test/);
+  assert.match(workflow, /EFFECTIVE_RISK/);
+  assert.match(workflow, /sensitive_paths/);
+  assert.match(workflow, /deploy\//);
+  assert.match(workflow, /High-risk paths require gate-approved Platform Dev work/);
+  assert.match(workflow, /Potential secret detected/);
+  assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
+  assert.doesNotMatch(workflow, /pages-preview\.yml|deploy-pages-v2|Deploy Production/);
 });

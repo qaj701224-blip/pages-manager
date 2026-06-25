@@ -75,6 +75,8 @@ function stripCodeFence(value) {
   return fence ? fence[1].trim() : text;
 }
 
+const NON_CODING_ISSUE_TYPES = new Set(['type:feedback', 'type:question']);
+
 async function readResponseJson(response) {
   const text = await response.text();
   if (!text) return {};
@@ -157,6 +159,8 @@ function contextFromEnv(env) {
     platformDevItemId: required(env.PLATFORM_DEV_ITEM_ID, 'PLATFORM_DEV_ITEM_ID'),
     agentMode: env.AGENT_MODE || 'initial',
     issueNumber: env.ISSUE_NUMBER || '',
+    prNumber: env.PR_NUMBER || '',
+    headSha: env.HEAD_SHA || '',
     requestTitle: env.REQUEST_TITLE || 'Platform change',
     requestSummary: env.REQUEST_SUMMARY || 'No summary provided.',
     issueType: required(env.ISSUE_TYPE, 'ISSUE_TYPE'),
@@ -169,6 +173,10 @@ function contextFromEnv(env) {
     gatewayUrl: required(env.AGENT_GATEWAY_URL, 'AGENT_GATEWAY_URL'),
     apiKey: required(env.AGENT_CODE_API_KEY, 'AGENT_CODE_API_KEY'),
     modelName: env.AGENT_MODEL_NAME || '',
+    reviewContext: env.REVIEW_CONTEXT || '',
+    memoryContext: env.MEMORY_CONTEXT || '',
+    statusContext: env.STATUS_CONTEXT || '',
+    followupContext: env.FOLLOWUP_CONTEXT || '',
   };
 }
 
@@ -178,6 +186,11 @@ function validateContext(context) {
   }
   if (!/^type:(dev|bug|docs|feedback|question|ci|ops|security)$/.test(context.issueType)) {
     throw new Error('ISSUE_TYPE is invalid');
+  }
+  if (NON_CODING_ISSUE_TYPES.has(context.issueType)) {
+    throw new Error(
+      `${context.issueType} is not code-eligible; keep it as a GitHub issue record without dispatching Platform Agent`
+    );
   }
   if (!/^risk:(low|medium|high)$/.test(context.risk)) {
     throw new Error('RISK is invalid');
@@ -236,6 +249,8 @@ function buildCodingMessages(context) {
         platformDevItemId: context.platformDevItemId,
         mode: context.agentMode,
         issueNumber: context.issueNumber || null,
+        prNumber: context.prNumber || null,
+        headSha: context.headSha || null,
         issueType: context.issueType,
         areas: context.areas,
         risk: context.effectiveRisk,
@@ -245,6 +260,10 @@ function buildCodingMessages(context) {
         branchName: context.branchName || null,
         requestTitle: context.requestTitle,
         requestSummary: context.requestSummary,
+        reviewContext: context.reviewContext,
+        memoryContext: context.memoryContext,
+        statusContext: context.statusContext,
+        followupContext: context.followupContext,
         currentFiles: collectContextFiles(),
       }),
     },
@@ -350,7 +369,13 @@ function generatedFilesFromResult(result, context, seen = new Set(), depth = 0) 
 }
 
 function validateGeneratedFiles(files, context = {}) {
-  if (!files.length) throw new Error('Platform Coding Agent response did not include files');
+  if (!files.length) {
+    const error = new Error(
+      'Platform Coding Agent response did not include files; check whether this is a question/diagnosis request or needs a clearer code-change goal'
+    );
+    error.code = 'missing_files';
+    throw error;
+  }
 
   const seen = new Set();
   return files.map((file) => {
@@ -417,7 +442,8 @@ export async function runPlatformCodingAgent(options = {}) {
   try {
     files = validateGeneratedFiles(files, context);
   } catch (error) {
-    writeDiagnostic({ body, modelResult, context, reason: 'invalid_files' });
+    const reason = error.code === 'missing_files' ? 'missing_files' : 'invalid_files';
+    writeDiagnostic({ body, modelResult, context, reason });
     throw error;
   }
   writeGeneratedFiles(files);
@@ -426,12 +452,20 @@ export async function runPlatformCodingAgent(options = {}) {
   const report = {
     platformDevItemId: context.platformDevItemId,
     issueNumber: context.issueNumber || null,
+    prNumber: context.prNumber || null,
+    headSha: context.headSha || null,
     issueType: context.issueType,
     areas: context.areas,
     risk: context.effectiveRisk,
     declaredRisk: context.risk,
     gateApproved: context.gateApproved,
     baseRef: context.baseRef,
+    contextReceived: {
+      review: Boolean(String(context.reviewContext || '').trim()),
+      memory: Boolean(String(context.memoryContext || '').trim()),
+      status: Boolean(String(context.statusContext || '').trim()),
+      followup: Boolean(String(context.followupContext || '').trim()),
+    },
     generatedFiles: files.map((file) => file.path),
     modelName: context.modelName || null,
     summary: summaryFromResult(modelResult),

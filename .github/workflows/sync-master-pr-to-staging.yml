@@ -137,6 +137,21 @@ jobs:
           git config user.name "pages-manager-bot"
           git config user.email "pages-manager-bot@users.noreply.github.com"
 
+          wait_for_remote_branch_sha() {
+            local branch="$1"
+            local expected_sha="$2"
+            local actual_sha=""
+            for _ in {1..30}; do
+              actual_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null || true)"
+              if [[ "$actual_sha" == "$expected_sha" ]]; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "Timed out waiting for ${branch} to point at ${expected_sha}; latest was ${actual_sha:-unknown}." >&2
+            return 1
+          }
+
           sync_branch=""
           cleanup_sync_branch() {
             if [[ -n "$sync_branch" ]]; then
@@ -212,6 +227,7 @@ jobs:
           fi
 
           deploy_head_sha="$(git rev-parse HEAD)"
+          wait_for_remote_branch_sha staging "$deploy_head_sha"
 
           if [[ "$V1_CHANGED" == "true" ]]; then
             v1_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

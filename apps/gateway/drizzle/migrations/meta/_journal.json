@@ -1,0 +1,90 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1781363465847,
+      "tag": "0000_charming_multiple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1781411745010,
+      "tag": "0001_quiet_pet_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1781415144485,
+      "tag": "0002_unique_silhouette",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1781496803840,
+      "tag": "0003_smiling_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1781525669749,
+      "tag": "0004_acoustic_zaran",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1781581516663,
+      "tag": "0005_wonderful_mariko_yashida",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1781583303868,
+      "tag": "0006_whole_namorita",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1782192000000,
+      "tag": "0007_platform_dev_lane",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1782220550974,
+      "tag": "0008_repo_question_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1782229367372,
+      "tag": "0009_medical_phalanx",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1782273362017,
+      "tag": "0010_glorious_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1782300000000,
+      "tag": "0011_witty_talos",
+      "breakpoints": true
+    }
+  ]
+}

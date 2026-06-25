@@ -1,0 +1,124 @@
+import { slackAgentCapabilityForIntent, slackAgentCapabilityForTool } from '@xd/workflow-core';
+
+import { normalizeSlackWorkItemQueryState, slackWorkItemQueryStateFromText } from './work-item-query.js';
+
+export function slackAgentToolArgs(slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const toolCall = analysis.toolCall || analysis.tool_call || {};
+  const args = toolCall.args || toolCall.arguments || analysis.toolArgs || analysis.tool_args || {};
+  return args && typeof args === 'object' ? args : {};
+}
+
+function normalizeSlackAgentToolName(rawName = '') {
+  const name = String(rawName || '')
+    .trim()
+    .toLowerCase();
+  if (!name) return null;
+  const aliases = {
+    list_work_items: 'list_my_work_items',
+    list_tasks: 'list_my_work_items',
+    search_work_items: 'list_my_work_items',
+    switch_pr: 'switch_work_item',
+    switch_to_work_item: 'switch_work_item',
+    reopen: 'reopen_work_item',
+    reopen_issue: 'reopen_work_item',
+    reopen_pr: 'reopen_work_item',
+    reopen_work_item: 'reopen_work_item',
+    restore_work_item: 'reopen_work_item',
+    status_query: 'get_current_status',
+    get_status: 'get_current_status',
+    diagnose: 'diagnose_current_work_item',
+    diagnose_work_item: 'diagnose_current_work_item',
+    diagnose_current_task: 'diagnose_current_work_item',
+    diagnose_current_work_item: 'diagnose_current_work_item',
+    explain_work_item_blocker: 'diagnose_current_work_item',
+    get_work_item_timeline: 'diagnose_current_work_item',
+    get_workflow_status: 'diagnose_current_work_item',
+    get_logs: 'diagnose_current_work_item',
+    summarize_work_item_logs: 'diagnose_current_work_item',
+    summarize_review_results: 'summarize_review_results',
+    list_review_results: 'summarize_review_results',
+    review_results: 'summarize_review_results',
+    summarize_pr_review: 'summarize_review_results',
+    list_review_comments: 'summarize_review_results',
+    answer_repo_question: 'answer_repo_question',
+    repo_question: 'answer_repo_question',
+    architecture_question: 'answer_repo_question',
+    explain_repo: 'answer_repo_question',
+    search_repo: 'answer_repo_question',
+    repeat_previous_message: 'repeat_previous_message',
+    repeat_last_message: 'repeat_previous_message',
+    repeat_previous: 'repeat_previous_message',
+    retry_work_item: 'request_retry_work_item',
+    request_retry_work_item: 'request_retry_work_item',
+    append_diagnosis_comment: 'request_append_diagnosis_comment',
+    request_append_diagnosis_comment: 'request_append_diagnosis_comment',
+    human_triage: 'request_human_triage',
+    request_human_triage: 'request_human_triage',
+    close_issue: 'unsupported_destructive_request',
+    close_pr: 'unsupported_destructive_request',
+    close_work_item: 'unsupported_destructive_request',
+    delete_issue: 'unsupported_destructive_request',
+    delete_pr: 'unsupported_destructive_request',
+    archive_issue: 'unsupported_destructive_request',
+    archive_pr: 'unsupported_destructive_request',
+    reject_unsupported_destructive_request: 'unsupported_destructive_request',
+    unsupported_destructive: 'unsupported_destructive_request',
+    create_issue: 'confirm_create_issue',
+    create_job: 'confirm_create_issue',
+    confirm_issue: 'confirm_create_issue',
+    confirm_before_issue: 'confirm_create_issue',
+    create_or_update_site: 'confirm_create_issue',
+    new_site_request: 'confirm_create_issue',
+    create_site: 'confirm_create_issue',
+    update_site: 'confirm_create_issue',
+    create_platform_issue: 'confirm_platform_issue',
+    confirm_platform_issue: 'confirm_platform_issue',
+    platform_dev: 'confirm_platform_issue',
+    platform_development: 'confirm_platform_issue',
+    platform_feedback: 'confirm_platform_issue',
+    pages_manager_change: 'confirm_platform_issue',
+    update_current_work_item: 'record_followup',
+    followup: 'record_followup',
+    modify_existing_preview: 'record_followup',
+  };
+  const normalized = aliases[name] || name;
+  return slackAgentCapabilityForTool(normalized)?.name || normalized;
+}
+
+export function slackAgentToolName(slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const toolCall = analysis.toolCall || analysis.tool_call || {};
+  const rawName = toolCall.name || analysis.tool || analysis.toolName || analysis.tool_name || analysis.action;
+  return normalizeSlackAgentToolName(rawName);
+}
+
+export function slackAgentExplicitToolName(slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const toolCall = analysis.toolCall || analysis.tool_call || {};
+  return normalizeSlackAgentToolName(toolCall.name || toolCall.tool);
+}
+
+export function slackAgentCapability(slackAgentAnalysis = {}) {
+  const toolName = slackAgentExplicitToolName(slackAgentAnalysis);
+  return slackAgentCapabilityForTool(toolName) || slackAgentCapabilityForIntent(slackAgentAnalysis?.intent);
+}
+
+export function slackAgentWorkItemState(intake = {}, slackAgentAnalysis = {}) {
+  const analysis = slackAgentAnalysis || {};
+  const args = slackAgentToolArgs(slackAgentAnalysis);
+  const explicit =
+    args.state ||
+    args.workItemState ||
+    args.work_item_state ||
+    analysis.workItemState ||
+    analysis.work_item_state ||
+    intake.workItemState;
+  if (explicit) return normalizeSlackWorkItemQueryState(explicit);
+
+  return slackWorkItemQueryStateFromText(
+    [intake.text, args.query, analysis.visibleReply, analysis.summary, analysis.title, analysis.clarifyingQuestion]
+      .filter(Boolean)
+      .join('\n')
+  );
+}

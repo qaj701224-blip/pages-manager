@@ -163,14 +163,15 @@ jobs:
           fi
           echo "AGENT_BRANCH_NAME=$branch" >> "$GITHUB_ENV"
 
-          if [[ "$AGENT_MODE" == "fix" ]]; then
-            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+          if git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"; then
             git switch -C "$branch" "origin/$branch"
             if ! git merge --no-edit "origin/$BASE_REF"; then
               git merge --abort || true
               echo "agent branch cannot be merged cleanly with $BASE_REF" >&2
               exit 1
             fi
+          else
+            git switch -C "$branch" "origin/$BASE_REF"
           fi
 
       - name: Run Coding Agent
@@ -183,13 +184,15 @@ jobs:
           set -euo pipefail
           node "$RUNNER_TEMP/pages-agent-coding.mjs"
           git add -N "$ALLOWED_PATH"
-          git diff -- "$ALLOWED_PATH" > .pages-artifacts/site.patch
+          git diff HEAD -- "$ALLOWED_PATH" > .pages-artifacts/site.patch
 
       - name: Validate generated diff boundary
         shell: bash
         run: |
           set -euo pipefail
-          changed="$(git diff --name-only)"
+          git reset
+          git add -N "$ALLOWED_PATH"
+          changed="$(git diff HEAD --name-only)"
           echo "$changed"
 
           while IFS= read -r path; do
@@ -203,7 +206,11 @@ jobs:
             esac
           done <<< "$changed"
 
-          if grep -REn 'xoxb-|xapp-|ghp_|github_pat_|ghs_|sk-[A-Za-z0-9]|CF_API_TOKEN|SLACK_AGENT_API_KEY|AGENT_CODE_API_KEY' "$ALLOWED_PATH"; then
+          added_lines="$(git diff HEAD --unified=0 -- "$ALLOWED_PATH" | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
+          token_shape_re='xox[baprs]-[A-Za-z0-9-]{8,}|xapp-[A-Za-z0-9-]{8,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}'
+          secret_field_re='([A-Za-z0-9]+[_-])*(api[_-]?key|secret([_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)([_-][A-Za-z0-9]+)*'
+          secret_value_re="${secret_field_re}[[:space:]]*[:=][[:space:]]*['\"]?[^[:space:]'\",}]+"
+          if printf '%s\n' "$added_lines" | grep -Ein "${token_shape_re}|${secret_value_re}"; then
             echo "Generated files contain secret-looking content" >&2
             exit 1
           fi
@@ -235,10 +242,9 @@ jobs:
 
           git config user.name "pages-manager-bot"
           git config user.email "pages-manager-bot@users.noreply.github.com"
-          git switch -C "$branch"
+          git reset
           git add "$ALLOWED_PATH"
           git commit -m "chore: update $EMPLOYEE_SLUG/$SITE_SLUG" || true
-          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" || true
           git push --force-with-lease origin "HEAD:$branch"
 
           {

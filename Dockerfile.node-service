@@ -12,10 +12,15 @@ ENV NODE_ENV=production
 ENV PAGES_SERVICE=${SERVICE}
 
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+RUN rm -rf /app/apps /app/packages /app/docs /app/scripts /app/.github /app/node_modules \
+  /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps ./apps
 COPY packages ./packages
+COPY docs ./docs
+COPY scripts ./scripts
+COPY .github ./.github
 
 RUN pnpm install --frozen-lockfile --prod
 

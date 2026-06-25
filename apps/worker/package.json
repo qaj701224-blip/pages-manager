@@ -1,0 +1,13 @@
+{
+  "name": "@xd/worker",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "node src/dev.js"
+  },
+  "dependencies": {
+    "@xd/git-client": "workspace:*",
+    "@xd/worker-kit": "workspace:*"
+  }
+}

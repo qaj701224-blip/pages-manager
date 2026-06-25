@@ -1,0 +1,26 @@
+{
+  "name": "@xd/gateway",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "node src/dev.js",
+    "drizzle:generate": "drizzle-kit generate --config drizzle.config.js",
+    "drizzle:migrate": "node scripts/migrate.js",
+    "setup-db": "node scripts/setup-db.js",
+    "setup-db:reset": "node scripts/setup-db.js --reset"
+  },
+  "dependencies": {
+    "@xd/git-client": "workspace:*",
+    "@xd/slack-notifier-core": "workspace:*",
+    "@xd/worker-kit": "workspace:*",
+    "@xd/workflow-core": "workspace:*",
+    "bullmq": "^5.76.4",
+    "drizzle-orm": "^0.45.2",
+    "ioredis": "^5.10.1",
+    "mysql2": "^3.22.1"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10"
+  }
+}

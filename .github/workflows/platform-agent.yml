@@ -16,6 +16,14 @@ on:
         description: GitHub issue number
         required: false
         type: string
+      prNumber:
+        description: GitHub PR number for fix rounds
+        required: false
+        type: string
+      headSha:
+        description: Current PR head SHA for fix rounds
+        required: false
+        type: string
       requestTitle:
         description: Request title
         required: true
@@ -39,7 +47,7 @@ on:
       gateApproved:
         description: Whether the high-risk gate has been approved
         required: false
-        default: "false"
+        default: 'false'
         type: string
       baseRef:
         description: Base ref for platform PR
@@ -52,6 +60,22 @@ on:
         type: string
       callbackUrl:
         description: Gateway callback URL
+        required: false
+        type: string
+      reviewContext:
+        description: Review comments for the next agent round
+        required: false
+        type: string
+      memoryContext:
+        description: Cross-round platform agent memory
+        required: false
+        type: string
+      statusContext:
+        description: Current Platform Dev status context
+        required: false
+        type: string
+      followupContext:
+        description: Slack or issue follow-up context for the next agent round
         required: false
         type: string
 
@@ -71,6 +95,8 @@ jobs:
       PLATFORM_DEV_ITEM_ID: ${{ inputs.platformDevItemId }}
       AGENT_MODE: ${{ inputs.mode }}
       ISSUE_NUMBER: ${{ inputs.issueNumber }}
+      PR_NUMBER: ${{ inputs.prNumber }}
+      HEAD_SHA: ${{ inputs.headSha }}
       REQUEST_TITLE: ${{ inputs.requestTitle }}
       REQUEST_SUMMARY: ${{ inputs.requestSummary }}
       ISSUE_TYPE: ${{ inputs.issueType }}
@@ -79,10 +105,13 @@ jobs:
       GATE_APPROVED: ${{ inputs.gateApproved }}
       BASE_REF: ${{ inputs.baseRef || 'master' }}
       BRANCH_NAME_OVERRIDE: ${{ inputs.branchName }}
+      REVIEW_CONTEXT: ${{ inputs.reviewContext }}
+      MEMORY_CONTEXT: ${{ inputs.memoryContext }}
+      STATUS_CONTEXT: ${{ inputs.statusContext }}
+      FOLLOWUP_CONTEXT: ${{ inputs.followupContext }}
+      WORKFLOW_RUN_ID: ${{ github.run_id }}
       PAGES_CALLBACK_URL: ${{ inputs.callbackUrl || vars.PAGES_GATEWAY_CALLBACK_URL }}
-      PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
       PAGES_CALLBACK_ALLOWED_ORIGINS: ${{ vars.PAGES_CALLBACK_ALLOWED_ORIGINS }}
-      AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
     steps:
       - name: Checkout trusted helper
         uses: actions/checkout@v6
@@ -96,6 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           cp .pages-trusted/scripts/post-executor-callback.js "$RUNNER_TEMP/post-executor-callback.js"
+          cp .pages-trusted/scripts/platform-agent-runner.mjs "$RUNNER_TEMP/platform-agent-runner.mjs"
           cp .pages-trusted/scripts/platform-agent-coding.mjs "$RUNNER_TEMP/platform-agent-coding.mjs"
 
       - name: Checkout platform workspace
@@ -104,6 +134,7 @@ jobs:
           ref: ${{ env.BASE_REF }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Validate platform inputs
         shell: bash
@@ -113,6 +144,10 @@ jobs:
           [[ "$ISSUE_TYPE" =~ ^type:(dev|bug|docs|feedback|question|ci|ops|security)$ ]]
           [[ "$RISK" =~ ^risk:(low|medium|high)$ ]]
           [[ "$GATE_APPROVED" =~ ^(true|false)$ ]]
+          if [[ "$ISSUE_TYPE" =~ ^type:(feedback|question)$ ]]; then
+            echo "Question/feedback issues are records only and must not dispatch Platform Agent." >&2
+            exit 1
+          fi
           effective_risk="$RISK"
           if [[ "$ISSUE_TYPE" =~ ^type:(ci|ops|security)$ ]]; then
             effective_risk="risk:high"
@@ -135,6 +170,36 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install Codex CLI
+        shell: bash
+        env:
+          PLATFORM_AGENT_BACKEND: ${{ vars.PLATFORM_AGENT_BACKEND || vars.AGENT_BACKEND || 'codex' }}
+          AGENT_BACKEND: ${{ vars.AGENT_BACKEND || 'codex' }}
+          PLATFORM_AGENT_CODEX_PACKAGE: ${{ vars.PLATFORM_AGENT_CODEX_PACKAGE || '@openai/codex@0.142.0' }}
+        run: |
+          set -euo pipefail
+          backend="${PLATFORM_AGENT_BACKEND:-${AGENT_BACKEND:-codex}}"
+          if [[ ! "$backend" =~ ^(codex|codex-cli)$ ]]; then
+            echo "Skipping Codex CLI install for Platform Agent backend: $backend"
+            exit 0
+          fi
+          npm install -g "$PLATFORM_AGENT_CODEX_PACKAGE"
+          codex --version
+
+      - name: Preflight Codex CLI
+        shell: bash
+        env:
+          PLATFORM_AGENT_BACKEND: ${{ vars.PLATFORM_AGENT_BACKEND || vars.AGENT_BACKEND || 'codex' }}
+          AGENT_BACKEND: ${{ vars.AGENT_BACKEND || 'codex' }}
+          PLATFORM_AGENT_CODEX_MODEL: ${{ vars.PLATFORM_AGENT_CODEX_MODEL || vars.AGENT_MODEL_NAME }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL || vars.AGENT_MODEL_NAME }}
+          AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
+          AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+          AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          node "$RUNNER_TEMP/platform-agent-runner.mjs" --codex-preflight
 
       - name: Prepare branch
         id: branch
@@ -173,6 +238,8 @@ jobs:
             workItemKind: 'platform_dev',
             platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
             executorType: 'platform_agent',
+            workflowName: 'platform-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'succeeded',
             stageResult: 'agent_running',
             branchName: process.env.BRANCH_NAME,
@@ -182,48 +249,97 @@ jobs:
           node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-running.json
         env:
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
 
       - name: Run platform coding agent
         shell: bash
         env:
+          PLATFORM_AGENT_BACKEND: ${{ vars.PLATFORM_AGENT_BACKEND || vars.AGENT_BACKEND || 'codex' }}
+          AGENT_BACKEND: ${{ vars.AGENT_BACKEND || 'codex' }}
+          PLATFORM_AGENT_MAX_ROUNDS: ${{ vars.PLATFORM_AGENT_MAX_ROUNDS || '3' }}
+          PLATFORM_AGENT_CHECK_COMMANDS: |
+            pnpm lint
+            pnpm test
+          PLATFORM_AGENT_CODEX_MODEL: ${{ vars.PLATFORM_AGENT_CODEX_MODEL || vars.AGENT_MODEL_NAME }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL || vars.AGENT_MODEL_NAME }}
           AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
           AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+          AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
         run: |
           set -euo pipefail
-          if [[ -z "${AGENT_CODE_API_KEY:-}" ]]; then
-            echo "AGENT_CODE_API_KEY is required for Platform Agent." >&2
+          backend="${PLATFORM_AGENT_BACKEND:-${AGENT_BACKEND:-codex}}"
+          if [[ "$backend" =~ ^(codex|codex-cli)$ && ( -z "${AGENT_GATEWAY_URL:-}" || -z "${AGENT_CODE_API_KEY:-}" ) ]]; then
+            echo "AGENT_GATEWAY_URL and AGENT_CODE_API_KEY are required for Codex Platform Agent backend." >&2
             exit 1
           fi
-          node "$RUNNER_TEMP/platform-agent-coding.mjs"
+          if [[ "$backend" =~ ^(company-json|legacy-json|platform-agent-coding)$ && -z "${AGENT_CODE_API_KEY:-}" ]]; then
+            echo "AGENT_CODE_API_KEY is required for legacy Platform Agent backend." >&2
+            exit 1
+          fi
+          node "$RUNNER_TEMP/platform-agent-runner.mjs"
 
       - name: Platform secret scan
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --name-only | grep -E '(^|/)(\.env|\.env\..*|wrangler\.toml)$'; then
-            echo "Refusing to commit local env or wrangler secret files." >&2
+          changed_files="$(node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const raw = execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+            encoding: 'utf8',
+          });
+          const parts = raw.split('\0').filter(Boolean);
+          const paths = [];
+          for (let index = 0; index < parts.length; index += 1) {
+            const entry = parts[index];
+            const status = entry.slice(0, 2);
+            let file = entry.slice(3);
+            if (status[0] === 'R' || status[1] === 'R' || status[0] === 'C' || status[1] === 'C') {
+              file = parts[index + 1] || file;
+              index += 1;
+            }
+            if (!file || /^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(file)) continue;
+            paths.push(file);
+          }
+          process.stdout.write([...new Set(paths)].join('\n'));
+          NODE
+          )"
+          if printf '%s\n' "$changed_files" | grep -E '(^|/)(\.env(\..*)?|.*\.env|wrangler\.toml|\.pages\.json)$'; then
+            echo "Refusing to commit local env, wrangler, or pages config secret files." >&2
             exit 1
           fi
-          if git diff --name-only | grep -E '(^|/)(node_modules|dist|build|\.pages-artifacts)(/|$)'; then
+          if printf '%s\n' "$changed_files" | grep -E '(^|/)(node_modules|dist|build)(/|$)'; then
             echo "Refusing to commit generated build artifacts." >&2
             exit 1
           fi
-          sensitive_paths="$(git diff --name-only | grep -E '^(\.github/|k8s/|deploy/|docker/|Dockerfile($|\.)|scripts/(deploy|k8s|put-)|.*(/deploy|/k8s))' || true)"
+          sensitive_paths="$(printf '%s\n' "$changed_files" | grep -E '^(\.github/|k8s/|deploy/|docker/|Dockerfile($|\.)|scripts/(deploy|k8s|put-)|.*(/deploy|/k8s))' || true)"
           if [[ -n "$sensitive_paths" && ( "${EFFECTIVE_RISK:-$RISK}" != "risk:high" || "$GATE_APPROVED" != "true" ) ]]; then
             echo "High-risk paths require gate-approved Platform Dev work:" >&2
             echo "$sensitive_paths" >&2
             exit 1
           fi
-          if git diff -- . ':(exclude)pnpm-lock.yaml' | grep -E '(xox[baprs]-|xapp-|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' >/dev/null; then
-            echo "Potential secret detected in diff." >&2
-            exit 1
-          fi
-          if git diff -- . ':(exclude)pnpm-lock.yaml' | grep -Ei '(CF[_]API[_]TOKEN|SLACK[_]AGENT[_]API[_]KEY|AGENT_CODE_API_KEY)\s*[:=]\s*['\''"]?([A-Za-z0-9_./+=-]{8,})' | grep -Eiv 'secrets\.|process\.env\.|\$\{|<|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set' >/dev/null; then
-            echo "Potential secret detected in diff." >&2
-            exit 1
-          fi
+          token_shape_re='xox[baprs]-[A-Za-z0-9-]{8,}|xapp-[A-Za-z0-9-]{8,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY'
+          secret_field_re='([A-Za-z0-9]+[_-])*(api[_-]?key|secret([_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)([_-][A-Za-z0-9]+)*'
+          secret_value_re="${secret_field_re}[[:space:]]*[:=][[:space:]]*['\"]?[^[:space:]'\",}]+"
+          while IFS= read -r path; do
+            [[ -z "$path" || "$path" == "pnpm-lock.yaml" || ! -f "$path" ]] && continue
+            if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+              added_lines="$(git diff HEAD --unified=0 -- "$path" | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
+            else
+              added_lines="$(sed 's/^/+/' "$path")"
+            fi
+            if printf '%s\n' "$added_lines" | grep -Ei "${token_shape_re}|${secret_value_re}" \
+              | grep -Eiv 'secrets\.|process\.env\.|\$\{|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set' >/dev/null; then
+              echo "Potential secret detected in changed file: $path" >&2
+              exit 1
+            fi
+          done <<< "$changed_files"
 
       - name: Run platform checks
+        env:
+          AGENT_CODE_API_KEY: ''
+          PAGES_CALLBACK_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
         run: |
           pnpm lint
           pnpm test
@@ -231,18 +347,20 @@ jobs:
       - name: Commit changes
         id: commit
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if git diff --quiet; then
+          git config user.name "pages-platform-agent"
+          git config user.email "pages-platform-agent@users.noreply.github.com"
+          git add -A -- . ':(exclude).pages-artifacts' ':(exclude).pages-trusted'
+          if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Platform Coding Agent produced no repository changes." >&2
             exit 1
           fi
-          git config user.name "pages-platform-agent"
-          git config user.email "pages-platform-agent@users.noreply.github.com"
-          git add -A -- . ':(exclude).pages-artifacts' ':(exclude).pages-trusted'
           git commit -m "feat: 处理平台需求 ${PLATFORM_DEV_ITEM_ID}"
-          git push origin "HEAD:${{ steps.branch.outputs.branch }}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${{ steps.branch.outputs.branch }}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -255,19 +373,60 @@ jobs:
         run: |
           set -euo pipefail
           body_file="$RUNNER_TEMP/platform-pr-body.md"
-          cat > "$body_file" <<EOF
-          ## 背景
+          title_file="$RUNNER_TEMP/platform-pr-title.txt"
+          BODY_FILE="$body_file" TITLE_FILE="$title_file" node <<'NODE'
+          const { writeFileSync } = require('node:fs');
 
-          ${REQUEST_SUMMARY}
+          const env = process.env;
+          const secretFieldNamePattern = [
+            '(?:[A-Za-z0-9]+[_-])*',
+            '(?:api[_-]?key|secret(?:[_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)',
+            '(?:[_-][A-Za-z0-9]+)*',
+          ].join('');
+          const jsonSecretFieldPattern = new RegExp(
+            `((["'])(?:${secretFieldNamePattern})\\2\\s*:\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*')`,
+            'gi'
+          );
+          const quotedSecretAssignmentPattern = new RegExp(
+            `\\b(${secretFieldNamePattern})\\b\\s*([:=])\\s*("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*')`,
+            'gi'
+          );
+          const secretAssignmentPattern = new RegExp(`\\b(${secretFieldNamePattern})\\b\\s*([:=])\\s*[^"',\\s}]+`, 'gi');
+          function redactPublicText(value = '') {
+            return String(value || '')
+              .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED_TOKEN]')
+              .replace(/\b(xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_TOKEN]')
+              .replace(/\b(xapp-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_APP_TOKEN]')
+              .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+              .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+              .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
+              .replace(jsonSecretFieldPattern, (_, prefix, _keyQuote, valueText) => {
+                const quote = valueText[0];
+                return `${prefix}${quote}[REDACTED_SECRET]${quote}`;
+              })
+              .replace(quotedSecretAssignmentPattern, (_, key, operator, valueText) => {
+                const quote = valueText[0];
+                return `${key}${operator}${quote}[REDACTED_SECRET]${quote}`;
+              })
+              .replace(secretAssignmentPattern, '$1$2[REDACTED_SECRET]');
+          }
+          const issueNumber = String(env.ISSUE_NUMBER || '').trim();
+          const issueReference = issueNumber ? `#${issueNumber}` : '未关联';
+          const closeLine = issueNumber ? `\nCloses #${issueNumber}\n` : '';
+          const requestTitle = redactPublicText(env.REQUEST_TITLE || '平台需求').trim() || '平台需求';
+          const requestSummary = redactPublicText(env.REQUEST_SUMMARY || '');
+          const body = `## 背景
 
+          ${requestSummary}
+          ${closeLine}
           ## 平台需求
 
-          - Item: ${PLATFORM_DEV_ITEM_ID}
-          - Type: ${ISSUE_TYPE}
-          - Areas: ${AREAS}
-          - Risk: ${RISK}
-          - Gate approved: ${GATE_APPROVED}
-          - Issue: #${ISSUE_NUMBER}
+          - Item: ${env.PLATFORM_DEV_ITEM_ID || ''}
+          - Type: ${env.ISSUE_TYPE || ''}
+          - Areas: ${env.AREAS || ''}
+          - Risk: ${env.RISK || ''}
+          - Gate approved: ${env.GATE_APPROVED || ''}
+          - Issue: ${issueReference}
 
           ## 验证
 
@@ -276,7 +435,7 @@ jobs:
 
           ## 风险与边界
 
-          - Risk: ${RISK}
+          - Risk: ${env.RISK || ''}
           - Platform Dev Lane 可以修改 pages-manager repo 内与 issue 直接相关的文件。
           - 本 PR 不触发 production deploy，不读取 Cloudflare / Aliyun / ACK / K8s 部署 secret。
           - 如涉及 .github/**、k8s/**、Dockerfile 或部署脚本，必须按 high risk 走人工 gate 后再 dispatch。
@@ -288,13 +447,17 @@ jobs:
           - [ ] 行为变更已有测试覆盖
           - [ ] 已跑 pnpm lint
           - [ ] 已跑 pnpm test
-          EOF
+          `;
+          writeFileSync(env.TITLE_FILE, `feat: ${requestTitle}\n`);
+          writeFileSync(env.BODY_FILE, body);
+          NODE
+          pr_title="$(cat "$title_file")"
           existing="$(gh pr list --head "${{ steps.branch.outputs.branch }}" --json number --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
-            gh pr edit "$existing" --title "feat: ${REQUEST_TITLE}" --body-file "$body_file"
+            gh pr edit "$existing" --title "$pr_title" --body-file "$body_file"
             pr_number="$existing"
           else
-            pr_url="$(gh pr create --base "$BASE_REF" --head "${{ steps.branch.outputs.branch }}" --title "feat: ${REQUEST_TITLE}" --body-file "$body_file")"
+            pr_url="$(gh pr create --base "$BASE_REF" --head "${{ steps.branch.outputs.branch }}" --title "$pr_title" --body-file "$body_file")"
             pr_number="${pr_url##*/}"
           fi
           gh pr comment "$pr_number" --body "@codex review"
@@ -314,6 +477,8 @@ jobs:
             workItemKind: 'platform_dev',
             platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
             executorType: 'platform_agent',
+            workflowName: 'platform-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'succeeded',
             stageResult: 'pr_created',
             prNumber: process.env.PR_NUMBER,
@@ -329,10 +494,13 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
 
       - name: Callback failure
         if: failure() && env.PAGES_CALLBACK_URL != ''
         shell: bash
+        env:
+          PAGES_CALLBACK_TOKEN: ${{ secrets.PAGES_CALLBACK_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p .pages-artifacts
@@ -342,6 +510,8 @@ jobs:
             workItemKind: 'platform_dev',
             platformDevItemId: process.env.PLATFORM_DEV_ITEM_ID,
             executorType: 'platform_agent',
+            workflowName: 'platform-agent.yml',
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
             status: 'failed',
             errorCode: 'platform_agent_failed',
             errorMessage: 'platform-agent.yml failed before completing the PR flow',
@@ -349,3 +519,18 @@ jobs:
           }, null, 2)}\n`);
           NODE
           node "$RUNNER_TEMP/post-executor-callback.js" .pages-artifacts/platform-agent-failed.json
+
+      - name: Upload platform agent diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-agent-diagnostics-${{ github.run_id }}
+          path: |
+            .pages-artifacts/platform-agent-report.json
+            .pages-artifacts/platform-agent-debug.json
+            .pages-artifacts/platform-agent-running.json
+            .pages-artifacts/platform-agent-pr.json
+            .pages-artifacts/platform-agent-failed.json
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true

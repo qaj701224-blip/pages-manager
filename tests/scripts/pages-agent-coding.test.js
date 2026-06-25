@@ -67,14 +67,55 @@ test('runs Coding Agent and writes only the allowed site files', async () => {
     assert.equal(calls[0].url, 'https://agent.example/v1/chat/completions');
     assert.equal(calls[0].request.headers.Authorization, 'Bearer code-key');
     assert.equal(requestBody.model, 'company-coder');
+    assert.equal('temperature' in requestBody, false);
+    assert.equal(requestBody.max_tokens, 8192);
+    assert.equal(requestBody.max_completion_tokens, 8192);
+    assert.equal(requestBody.reasoning_effort, 'minimal');
     assert.deepEqual(requestBody.response_format, { type: 'json_object' });
     assert.match(html, /<h1>Alice<\/h1>/);
     assert.equal(siteJson.generatedBy, 'pages-agent-coding');
     assert.equal(siteJson.publishingJobId, 'job_abc123');
-    assert.deepEqual(report.generatedFiles, [
-      'sites/alice/profile/src/index.html',
-      'sites/alice/profile/site.json',
-    ]);
+    assert.deepEqual(report.generatedFiles, ['sites/alice/profile/src/index.html', 'sites/alice/profile/site.json']);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('redacts secret-like request metadata before writing public site manifest', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-agent-coding-redacted-title-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await runCodingAgent({
+      env: {
+        ...env,
+        REQUEST_TITLE: 'Alice profile password=super-secret',
+      },
+      async fetchImpl() {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    html: '<!doctype html><html><body><h1>Alice</h1></body></html>',
+                    summary: 'Generated with CF_API_TOKEN=cf-secret-value.',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const siteJson = JSON.parse(await readFile(path.join(dir, 'sites/alice/profile/site.json'), 'utf8'));
+
+    assert.equal(siteJson.title, 'Alice profile password=[REDACTED_SECRET]');
+    assert.equal(siteJson.codingSummary, 'Generated with CF_API_TOKEN=[REDACTED_SECRET]');
+    assert.doesNotMatch(JSON.stringify(siteJson), /super-secret|cf-secret-value/);
   } finally {
     process.chdir(previousCwd);
     await rm(dir, { recursive: true, force: true });
@@ -117,6 +158,129 @@ test('fix mode sends existing site HTML to the Coding Agent', async () => {
     assert.equal(userPayload.mode, 'fix');
     assert.equal(userPayload.currentFiles[0].path, 'sites/alice/profile/src/index.html');
     assert.match(userPayload.currentFiles[0].content, /Old title/);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('accepts Coding Agent file output with the full allowed index path', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-agent-coding-files-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await runCodingAgent({
+      env,
+      async fetchImpl() {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    result: {
+                      files: [
+                        {
+                          path: 'sites/alice/profile/src/index.html',
+                          content: '<!doctype html><html><body><main>Full path output</main></body></html>',
+                        },
+                      ],
+                      summary: 'Generated from files array.',
+                    },
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const html = await readFile(path.join(dir, 'sites/alice/profile/src/index.html'), 'utf8');
+    assert.match(html, /Full path output/);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('accepts Coding Agent content parts and snake_case index_html output', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-agent-coding-content-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await runCodingAgent({
+      env,
+      async fetchImpl() {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: [
+                    {
+                      type: 'text',
+                      text: JSON.stringify({
+                        data: {
+                          index_html: '<!doctype html><html><body><section>Content parts output</section></body></html>',
+                          summary: 'Generated from content parts.',
+                        },
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const html = await readFile(path.join(dir, 'sites/alice/profile/src/index.html'), 'utf8');
+    assert.match(html, /Content parts output/);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('writes sanitized diagnostics when Coding Agent response has no html', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-agent-coding-debug-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await assert.rejects(
+      () =>
+        runCodingAgent({
+          env,
+          async fetchImpl() {
+            return new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: JSON.stringify({
+                        summary: 'No generated file.',
+                        files: [{ path: 'README.md', content: 'not html' }],
+                      }),
+                    },
+                  },
+                ],
+              }),
+              { status: 200 }
+            );
+          },
+        }),
+      /did not include html/
+    );
+
+    const diagnostic = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/agent-debug.json'), 'utf8'));
+    assert.equal(diagnostic.reason, 'missing_html');
+    assert.equal(diagnostic.publishingJobId, 'job_abc123');
+    assert.deepEqual(diagnostic.modelResultShape.keys, ['summary', 'files']);
+    assert.equal(JSON.stringify(diagnostic).includes('not html'), false);
   } finally {
     process.chdir(previousCwd);
     await rm(dir, { recursive: true, force: true });

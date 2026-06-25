@@ -15,17 +15,21 @@ data:
   PAGES_PR_MODE: per_job
   PAGES_PREVIEW_MODE: actions
   PAGES_WORKFLOW_REF: staging
+  PAGES_PLATFORM_WORKFLOW_REF: master
   PAGES_BASE_REF: staging
+  PAGES_PLATFORM_BASE_REF: master
   PAGES_GATEWAY_URL: http://pages-gateway:8788
   PAGES_GATEWAY_PUBLIC_URL: https://replace-me.example.com
   PAGES_GATEWAY_CALLBACK_URL: https://replace-me.example.com/internal/executor-callback
   PAGES_WORKER_START_URL: http://pages-worker:8790/internal/publishing-jobs/start
-  SLACK_AGENT_ANALYZE_URL: http://slack-agent:8791/internal/slack-agent/analyze
+  SLACK_AGENT_TURN_URL: http://slack-agent:8791/internal/slack-agent/turn
   SLACK_NOTIFIER_URL: http://slack-notifier:8792
   SLACK_EVENTS_PROCESSING_MODE: async
   SLACK_SIGNATURE_REQUIRED: 'true'
   SLACK_REACTION_ON_RECEIVE: 'true'
   SLACK_WORKING_REACTION: eyes
+  SLACK_DONE_REACTION: white_check_mark
+  SLACK_FAILED_REACTION: x
   SLACK_SIGNATURE_MAX_SKEW_SECONDS: '300'
   AGENT_MODEL_PROVIDER: company-agent
   AGENT_MODEL_NAME: ''
@@ -46,3 +50,7 @@ data:
   GITHUB_REPO: owner/pages-manager
   SLACK_API_URL: https://slack.com/api/chat.postMessage
   GITHUB_REVIEW_AGENT_LOGINS: greptile[bot],greptile-bot,copilot-pull-request-reviewer[bot],chatgpt-codex-connector,chatgpt-codex-connector[bot]
+  GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS: '180'
+  GITHUB_REVIEW_GATE_RECONCILE_INTERVAL_SECONDS: '30'
+  PAGES_PLATFORM_GATE_APPROVERS: ''
+  PAGES_PLATFORM_GATE_APPROVER_IDS: ''

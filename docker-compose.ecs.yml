@@ -1,0 +1,231 @@
+name: pages-manager-ecs
+
+x-pages-service: &pages-service
+  restart: unless-stopped
+  networks:
+    - pages-manager
+
+services:
+  caddy:
+    image: ${PAGES_IMAGE_REGISTRY:-xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public}/pages-manager/caddy:${CADDY_IMAGE_TAG:-2.10-alpine}
+    restart: unless-stopped
+    command:
+      - caddy
+      - run
+      - --config
+      - /etc/caddy/Caddyfile
+      - --adapter
+      - caddyfile
+    environment:
+      PUBLIC_PATH_PREFIX: ${PUBLIC_PATH_PREFIX:-/publisher-test}
+    ports:
+      - '80:80'
+    volumes:
+      - ./deploy/ecs/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      pages-gateway:
+        condition: service_healthy
+    networks:
+      - pages-manager
+
+  pages-gateway:
+    <<: *pages-service
+    image: ${PAGES_IMAGE_REGISTRY:-xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public}/pages-manager/gateway:${PAGES_IMAGE_TAG:-latest}
+    environment:
+      PORT: '8788'
+      NODE_ENV: production
+      PAGES_STORE_BACKEND: mysql
+      PAGES_REPO_ROOT: ${PAGES_REPO_ROOT:-/app}
+      PAGES_DB_AUTO_MIGRATE: ${PAGES_DB_AUTO_MIGRATE:-true}
+      MYSQL_ADDR: pages-mysql:3306
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER in .env.ecs}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.ecs}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-pages_manager}
+      REDIS_URL: redis://pages-redis:6379/11
+      INTERNAL_CALLBACK_TOKEN: ${INTERNAL_CALLBACK_TOKEN:?set INTERNAL_CALLBACK_TOKEN in .env.ecs}
+      PAGES_GATEWAY_API_TOKEN: ${PAGES_GATEWAY_API_TOKEN:?set PAGES_GATEWAY_API_TOKEN in .env.ecs}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:?set SLACK_SIGNING_SECRET in .env.ecs}
+      SLACK_SIGNATURE_REQUIRED: ${SLACK_SIGNATURE_REQUIRED:-true}
+      SLACK_EVENTS_PROCESSING_MODE: ${SLACK_EVENTS_PROCESSING_MODE:-async}
+      SLACK_REACTION_ON_RECEIVE: ${SLACK_REACTION_ON_RECEIVE:-true}
+      SLACK_WORKING_REACTION: ${SLACK_WORKING_REACTION:-eyes}
+      SLACK_DONE_REACTION: ${SLACK_DONE_REACTION:-white_check_mark}
+      SLACK_FAILED_REACTION: ${SLACK_FAILED_REACTION:-x}
+      PAGES_WORKER_START_URL: http://pages-worker:8790/internal/publishing-jobs/start
+      PAGES_WORKER_SHARED_SECRET: ${PAGES_WORKER_SHARED_SECRET:?set PAGES_WORKER_SHARED_SECRET in .env.ecs}
+      SLACK_AGENT_TURN_URL: http://slack-agent:8791/internal/slack-agent/turn
+      SLACK_AGENT_SHARED_SECRET: ${SLACK_AGENT_SHARED_SECRET:?set SLACK_AGENT_SHARED_SECRET in .env.ecs}
+      SLACK_NOTIFIER_URL: http://slack-notifier:8792
+      SLACK_NOTIFIER_SHARED_SECRET: ${SLACK_NOTIFIER_SHARED_SECRET:?set SLACK_NOTIFIER_SHARED_SECRET in .env.ecs}
+      MERGE_ANNOUNCEMENT_ENABLED: ${MERGE_ANNOUNCEMENT_ENABLED:-false}
+      MERGE_ANNOUNCEMENT_CHANNEL_ID: ${MERGE_ANNOUNCEMENT_CHANNEL_ID:-}
+      MERGE_ANNOUNCEMENT_BASE_REFS: ${MERGE_ANNOUNCEMENT_BASE_REFS:-master}
+      MERGE_ANNOUNCEMENT_AGENT_ENABLED: ${MERGE_ANNOUNCEMENT_AGENT_ENABLED:-true}
+      MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS: ${MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS:-false}
+      SLACK_AGENT_MERGE_SUMMARY_URL: ${SLACK_AGENT_MERGE_SUMMARY_URL:-}
+      GITHUB_REPO: ${GITHUB_REPO:?set GITHUB_REPO in .env.ecs}
+      GITHUB_ENTERPRISE_API_BASE_URL: ${GITHUB_ENTERPRISE_API_BASE_URL:-https://api.github.com}
+      GITHUB_STATUS_TOKEN: ${GITHUB_STATUS_TOKEN:-}
+      GITHUB_APP_INSTALLATION_TOKEN: ${GITHUB_APP_INSTALLATION_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env.ecs}
+      GITHUB_REVIEW_AGENT_LOGINS: ${GITHUB_REVIEW_AGENT_LOGINS:-}
+      GITHUB_SITE_CHECK_NAMES: ${GITHUB_SITE_CHECK_NAMES:-}
+      GITHUB_SITE_CHECK_APP_LOGINS: ${GITHUB_SITE_CHECK_APP_LOGINS:-}
+      GITHUB_PLATFORM_CI_CHECK_NAMES: ${GITHUB_PLATFORM_CI_CHECK_NAMES:-}
+      GITHUB_PLATFORM_CI_APP_LOGINS: ${GITHUB_PLATFORM_CI_APP_LOGINS:-}
+      GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS: ${GITHUB_REVIEW_AGENT_TIMEOUT_SECONDS:-180}
+      GITHUB_REVIEW_GATE_RECONCILE_INTERVAL_SECONDS: ${GITHUB_REVIEW_GATE_RECONCILE_INTERVAL_SECONDS:-30}
+      PAGES_PLATFORM_GATE_APPROVERS: ${PAGES_PLATFORM_GATE_APPROVERS:-}
+      PAGES_PLATFORM_GATE_APPROVER_IDS: ${PAGES_PLATFORM_GATE_APPROVER_IDS:-}
+      SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS: ${SLACK_AGENT_ACTIVE_CONTEXT_TTL_HOURS:-2}
+      SLACK_AGENT_WAITING_CLARIFICATION_TTL_DAYS: ${SLACK_AGENT_WAITING_CLARIFICATION_TTL_DAYS:-1}
+      SLACK_AGENT_RECENT_SESSION_DAYS: ${SLACK_AGENT_RECENT_SESSION_DAYS:-14}
+      SLACK_AGENT_ARCHIVE_AFTER_DAYS: ${SLACK_AGENT_ARCHIVE_AFTER_DAYS:-90}
+      SLACK_AGENT_TURN_TIMEOUT_SECONDS: ${SLACK_AGENT_TURN_TIMEOUT_SECONDS:-120}
+      SLACK_AGENT_SESSION_LEASE_SECONDS: ${SLACK_AGENT_SESSION_LEASE_SECONDS:-180}
+      SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS: ${SLACK_AGENT_PROVIDER_THREAD_TTL_HOURS:-24}
+      CODING_AGENT_RUN_TIMEOUT_MINUTES: ${CODING_AGENT_RUN_TIMEOUT_MINUTES:-30}
+    depends_on:
+      pages-mysql:
+        condition: service_healthy
+      pages-redis:
+        condition: service_healthy
+      pages-worker:
+        condition: service_started
+      slack-agent:
+        condition: service_started
+      slack-notifier:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  pages-worker:
+    <<: *pages-service
+    image: ${PAGES_IMAGE_REGISTRY:-xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public}/pages-manager/worker:${PAGES_IMAGE_TAG:-latest}
+    environment:
+      PORT: '8790'
+      NODE_ENV: production
+      PAGES_GATEWAY_URL: http://pages-gateway:8788
+      PAGES_GATEWAY_CALLBACK_URL: ${PAGES_GATEWAY_PUBLIC_URL:?set PAGES_GATEWAY_PUBLIC_URL in .env.ecs}/internal/executor-callback
+      INTERNAL_CALLBACK_TOKEN: ${INTERNAL_CALLBACK_TOKEN:?set INTERNAL_CALLBACK_TOKEN in .env.ecs}
+      PAGES_WORKER_SHARED_SECRET: ${PAGES_WORKER_SHARED_SECRET:?set PAGES_WORKER_SHARED_SECRET in .env.ecs}
+      GITHUB_ENTERPRISE_API_BASE_URL: ${GITHUB_ENTERPRISE_API_BASE_URL:-https://api.github.com}
+      GITHUB_APP_INSTALLATION_TOKEN: ${GITHUB_APP_INSTALLATION_TOKEN:?set GITHUB_APP_INSTALLATION_TOKEN in .env.ecs}
+      GITHUB_REPO: ${GITHUB_REPO:?set GITHUB_REPO in .env.ecs}
+      PAGES_WORKFLOW_REF: ${PAGES_WORKFLOW_REF:-staging}
+      PAGES_PLATFORM_WORKFLOW_REF: ${PAGES_PLATFORM_WORKFLOW_REF:-master}
+      PAGES_BASE_REF: ${PAGES_BASE_REF:-staging}
+      PAGES_PLATFORM_BASE_REF: ${PAGES_PLATFORM_BASE_REF:-master}
+      PAGES_EXECUTOR_MODE: ${PAGES_EXECUTOR_MODE:-github_issue_webhook}
+      PAGES_ISSUE_MODE: ${PAGES_ISSUE_MODE:-per_job}
+      PAGES_PR_MODE: ${PAGES_PR_MODE:-per_job}
+      PAGES_PREVIEW_MODE: ${PAGES_PREVIEW_MODE:-actions}
+      PAGES_API: ${PAGES_API:-https://api-staging.workers.xd.team}
+      PAGES_PREVIEW_TOKEN: ${PAGES_PREVIEW_TOKEN:-}
+      PAGES_PREVIEW_IP_RESTRICT: ${PAGES_PREVIEW_IP_RESTRICT:-true}
+      PAGES_PREVIEW_SITE_NAME_PATTERN: ${PAGES_PREVIEW_SITE_NAME_PATTERN:-pm-pr-{prNumber}-{employeeSlug}-{siteSlug}}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  slack-agent:
+    <<: *pages-service
+    image: ${PAGES_IMAGE_REGISTRY:-xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public}/pages-manager/slack-agent:${PAGES_IMAGE_TAG:-latest}
+    environment:
+      PORT: '8791'
+      NODE_ENV: production
+      SLACK_AGENT_SHARED_SECRET: ${SLACK_AGENT_SHARED_SECRET:?set SLACK_AGENT_SHARED_SECRET in .env.ecs}
+      AGENT_MODEL_PROVIDER: ${AGENT_MODEL_PROVIDER:-company-agent}
+      AGENT_MODEL_NAME: ${AGENT_MODEL_NAME:-}
+      AGENT_GATEWAY_URL: ${AGENT_GATEWAY_URL:?set AGENT_GATEWAY_URL in .env.ecs}
+      SLACK_AGENT_API_KEY: ${SLACK_AGENT_API_KEY:?set SLACK_AGENT_API_KEY in .env.ecs}
+      SLACK_AGENT_MAX_CONTEXT_MESSAGES: ${SLACK_AGENT_MAX_CONTEXT_MESSAGES:-50}
+      SLACK_AGENT_MAX_OUTPUT_TOKENS: ${SLACK_AGENT_MAX_OUTPUT_TOKENS:-2048}
+      SLACK_AGENT_REQUEST_TIMEOUT_SECONDS: ${SLACK_AGENT_REQUEST_TIMEOUT_SECONDS:-120}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:8791/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  slack-notifier:
+    <<: *pages-service
+    image: ${PAGES_IMAGE_REGISTRY:-xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public}/pages-manager/slack-notifier:${PAGES_IMAGE_TAG:-latest}
+    environment:
+      PORT: '8792'
+      NODE_ENV: production
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:?set SLACK_BOT_TOKEN in .env.ecs}
+      SLACK_API_BASE_URL: ${SLACK_API_BASE_URL:-https://slack.com/api}
+      SLACK_NOTIFIER_SHARED_SECRET: ${SLACK_NOTIFIER_SHARED_SECRET:?set SLACK_NOTIFIER_SHARED_SECRET in .env.ecs}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:8792/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  pages-mysql:
+    image: ${PAGES_IMAGE_REGISTRY:-xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public}/pages-manager/mysql:${MYSQL_IMAGE_TAG:-8.4}
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env.ecs}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-pages_manager}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER in .env.ecs}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.ecs}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -u"$${MYSQL_USER}" -p"$${MYSQL_PASSWORD}" --silent
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    networks:
+      - pages-manager
+
+  pages-redis:
+    image: ${PAGES_IMAGE_REGISTRY:-xdclaw-hub-registry-vpc.cn-shanghai.cr.aliyuncs.com/public}/pages-manager/redis:${REDIS_IMAGE_TAG:-7-alpine}
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - pages-manager
+
+networks:
+  pages-manager:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:

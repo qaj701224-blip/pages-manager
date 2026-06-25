@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { jsonResponse } from './index.js';
+import { jsonResponse, timingSafeEqualString } from './index.js';
 
 test('jsonResponse uses status 200 by default', () => {
   const response = jsonResponse({ status: 'ok' });
@@ -35,4 +35,13 @@ test('jsonResponse prevents Content-Type override', () => {
   });
 
   assert.equal(response.headers.get('Content-Type'), 'application/json');
+});
+
+test('timingSafeEqualString matches equal strings', () => {
+  assert.equal(timingSafeEqualString('secret', 'secret'), true);
+});
+
+test('timingSafeEqualString rejects different strings even with different lengths', () => {
+  assert.equal(timingSafeEqualString('secret', 'secret-2'), false);
+  assert.equal(timingSafeEqualString('secret', 'secrex'), false);
 });

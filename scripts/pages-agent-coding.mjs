@@ -7,8 +7,57 @@ function required(value, name) {
   return value;
 }
 
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function optionalReasoningEffort(value) {
+  const normalized = String(value === undefined || value === null ? 'minimal' : value)
+    .trim()
+    .toLowerCase();
+  if (!normalized || ['off', 'false', 'none', 'disabled'].includes(normalized)) return undefined;
+  return normalized;
+}
+
 function trimTrailingSlash(value = '') {
   return String(value || '').replace(/\/+$/, '');
+}
+
+const SECRET_FIELD_NAME_PATTERN =
+  [
+    '(?:[A-Za-z0-9]+[_-])*',
+    '(?:api[_-]?key|secret(?:[_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)',
+    '(?:[_-][A-Za-z0-9]+)*',
+  ].join('');
+const jsonSecretFieldPattern = new RegExp(
+  `((["'])(?:${SECRET_FIELD_NAME_PATTERN})\\2\\s*:\\s*)("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*')`,
+  'gi'
+);
+const quotedSecretAssignmentPattern = new RegExp(
+  `\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*')`,
+  'gi'
+);
+const secretAssignmentPattern = new RegExp(`\\b(${SECRET_FIELD_NAME_PATTERN})\\b\\s*([:=])\\s*[^"',\\s}]+`, 'gi');
+
+function redactPublicText(value = '') {
+  return String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED_TOKEN]')
+    .replace(/\b(xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_TOKEN]')
+    .replace(/\b(xapp-[A-Za-z0-9-]{8,})\b/g, '[REDACTED_SLACK_APP_TOKEN]')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,})\b/g, '[REDACTED_API_KEY]')
+    .replace(jsonSecretFieldPattern, (_, prefix, _keyQuote, valueText) => {
+      const quote = valueText[0];
+      return `${prefix}${quote}[REDACTED_SECRET]${quote}`;
+    })
+    .replace(quotedSecretAssignmentPattern, (_, key, operator, valueText) => {
+      const quote = valueText[0];
+      return `${key}${operator}${quote}[REDACTED_SECRET]${quote}`;
+    })
+    .replace(secretAssignmentPattern, '$1$2[REDACTED_SECRET]');
 }
 
 export function companyChatCompletionsUrl(baseUrl) {
@@ -37,6 +86,37 @@ function parseJsonObject(text) {
   }
 }
 
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function textFromContentParts(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!isPlainObject(item)) return '';
+        return textFromContentParts(item.text || item.content || item.value || '');
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function stripCodeFence(value) {
+  const text = String(value || '').trim();
+  const fence = text.match(/^```(?:html|json)?\s*\n([\s\S]*?)\n```$/i);
+  return fence ? fence[1].trim() : text;
+}
+
+function looksLikeHtml(value) {
+  return /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]|<main[\s>]|<section[\s>]|<article[\s>]|<div[\s>]|<h1[\s>]|<style[\s>]/i.test(
+    String(value || '')
+  );
+}
+
 async function readResponseJson(response) {
   const text = await response.text();
   if (!text) return {};
@@ -49,17 +129,162 @@ async function readResponseJson(response) {
 
 function extractModelJson(body) {
   const content = body?.choices?.[0]?.message?.content || body?.choices?.[0]?.text || body?.output_text;
-  if (content && typeof content === 'object') return content;
-  return parseJsonObject(content) || body?.data || body?.result || body || null;
+  if (isPlainObject(content)) return content;
+  if (isPlainObject(body?.choices?.[0]?.message?.parsed)) return body.choices[0].message.parsed;
+  const contentText = textFromContentParts(content);
+  const parsedContent = parseJsonObject(contentText);
+  if (parsedContent) return parsedContent;
+  if (isPlainObject(body?.data)) return body.data;
+  if (isPlainObject(body?.result)) return body.result;
+  if (isPlainObject(body?.output)) return body.output;
+  if (typeof body?.output === 'string') return parseJsonObject(body.output);
+  if (typeof body?.content === 'string') return parseJsonObject(body.content);
+  if (typeof body?.rawText === 'string') return parseJsonObject(body.rawText);
+  return body || null;
 }
 
-function htmlFromModelResult(result) {
-  if (typeof result?.html === 'string') return result.html;
-  if (typeof result?.indexHtml === 'string') return result.indexHtml;
-  const file = Array.isArray(result?.files)
-    ? result.files.find((item) => item?.path === 'src/index.html' && typeof item.content === 'string')
-    : null;
-  return file?.content || '';
+function pathMatchesIndexHtml(path, context = {}) {
+  const value = String(path || '').replace(/^\.\/+/, '');
+  const allowedPath = String(context.allowedPath || '').replace(/^\.\/+/, '');
+  return (
+    value === 'src/index.html' ||
+    value === 'index.html' ||
+    (allowedPath && value === `${allowedPath}/src/index.html`) ||
+    value.endsWith('/src/index.html')
+  );
+}
+
+function htmlFromFiles(files, context) {
+  if (Array.isArray(files)) {
+    const file = files.find((item) => pathMatchesIndexHtml(item?.path || item?.name || item?.filename, context));
+    const content = file?.content || file?.html || file?.body;
+    if (typeof content === 'string' && looksLikeHtml(stripCodeFence(content))) {
+      return stripCodeFence(content);
+    }
+  }
+
+  if (isPlainObject(files)) {
+    for (const [path, content] of Object.entries(files)) {
+      if (!pathMatchesIndexHtml(path, context)) continue;
+      if (typeof content === 'string' && looksLikeHtml(stripCodeFence(content))) {
+        return stripCodeFence(content);
+      }
+      if (isPlainObject(content)) {
+        const nested = content.content || content.html || content.body;
+        if (typeof nested === 'string' && looksLikeHtml(stripCodeFence(nested))) {
+          return stripCodeFence(nested);
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
+function htmlFromModelResult(result, context = {}, seen = new Set(), depth = 0) {
+  if (!result || depth > 6) return '';
+
+  if (typeof result === 'string') {
+    const parsed = parseJsonObject(result);
+    if (parsed) return htmlFromModelResult(parsed, context, seen, depth + 1);
+    const normalized = stripCodeFence(result);
+    return looksLikeHtml(normalized) ? normalized : '';
+  }
+
+  if (!isPlainObject(result) || seen.has(result)) return '';
+  seen.add(result);
+
+  const directKeys = ['html', 'indexHtml', 'indexHTML', 'index_html', 'index', 'content', 'fileContent', 'code'];
+  for (const key of directKeys) {
+    const value = result[key];
+    if (typeof value !== 'string') continue;
+    const parsed = parseJsonObject(value);
+    if (parsed) {
+      const nestedHtml = htmlFromModelResult(parsed, context, seen, depth + 1);
+      if (nestedHtml) return nestedHtml;
+    }
+    const normalized = stripCodeFence(value);
+    if (looksLikeHtml(normalized)) return normalized;
+  }
+
+  const fileHtml = htmlFromFiles(result.files || result.outputFiles || result.generatedFiles, context);
+  if (fileHtml) return fileHtml;
+
+  const nestedKeys = ['result', 'data', 'output', 'response', 'message'];
+  for (const key of nestedKeys) {
+    const nestedHtml = htmlFromModelResult(result[key], context, seen, depth + 1);
+    if (nestedHtml) return nestedHtml;
+  }
+
+  return '';
+}
+
+function summarizeShape(value, depth = 0) {
+  if (value === null || value === undefined) return { type: String(value) };
+  if (typeof value === 'string') {
+    return {
+      type: 'string',
+      length: value.length,
+      looksLikeHtml: looksLikeHtml(value),
+      looksLikeJsonObject: Boolean(parseJsonObject(value)),
+    };
+  }
+  if (typeof value !== 'object') return { type: typeof value };
+  if (Array.isArray(value)) {
+    return {
+      type: 'array',
+      length: value.length,
+      sample: depth >= 2 ? undefined : value.slice(0, 3).map((item) => summarizeShape(item, depth + 1)),
+    };
+  }
+
+  const keys = Object.keys(value);
+  const sample = {};
+  if (depth < 2) {
+    for (const key of keys.slice(0, 12)) {
+      sample[key] = summarizeShape(value[key], depth + 1);
+    }
+  }
+
+  return {
+    type: 'object',
+    keys: keys.slice(0, 30),
+    sample,
+  };
+}
+
+function writeMissingHtmlDiagnostic({ body, modelResult, context }) {
+  mkdirSync('.pages-artifacts', { recursive: true });
+  const firstChoice = body?.choices?.[0] || {};
+  const firstMessage = firstChoice.message || {};
+  const diagnostic = {
+    reason: 'missing_html',
+    publishingJobId: context.publishingJobId,
+    allowedPath: context.allowedPath,
+    modelName: context.modelName || null,
+    finishReason: firstChoice.finish_reason || null,
+    messageContentLength: typeof firstMessage.content === 'string' ? firstMessage.content.length : null,
+    completionTokens: body?.usage?.completion_tokens ?? null,
+    reasoningTokens: body?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+    responseShape: summarizeShape(body),
+    modelResultShape: summarizeShape(modelResult),
+  };
+  writeFileSync('.pages-artifacts/agent-debug.json', `${JSON.stringify(diagnostic, null, 2)}\n`);
+  console.error(
+    JSON.stringify({
+      service: 'pages-agent-coding',
+      message: 'coding_agent_missing_html',
+      publishingJobId: context.publishingJobId,
+      allowedPath: context.allowedPath,
+      modelName: context.modelName || null,
+      finishReason: diagnostic.finishReason,
+      messageContentLength: diagnostic.messageContentLength,
+      completionTokens: diagnostic.completionTokens,
+      reasoningTokens: diagnostic.reasoningTokens,
+      responseShape: diagnostic.responseShape,
+      modelResultShape: diagnostic.modelResultShape,
+    })
+  );
 }
 
 function contextFromEnv(env) {
@@ -98,7 +323,9 @@ function buildCodingMessages(context) {
         'You are the pages-manager Coding Agent.',
         'Generate a complete static personal website for an internal employee page request.',
         'When mode is fix, update the existing site according to the latest follow-up while preserving useful prior content.',
+        'Do not think step by step. Produce the final JSON immediately.',
         'Return only JSON. Required shape: {"html":"<!doctype html>...","summary":"short implementation summary"}.',
+        'Keep the HTML concise, self-contained, and under 16000 characters.',
         'Do not include secrets, tokens, API keys, cookies, private credentials, or instructions to reveal them.',
         'The implementation must be self-contained HTML/CSS and must not require external build steps.',
       ].join('\n'),
@@ -128,19 +355,29 @@ export async function runCodingAgent(options = {}) {
   const context = contextFromEnv(env);
   validateContext(context);
 
+  const requestBody = {
+    model: context.modelName || undefined,
+    messages: buildCodingMessages(context),
+    max_tokens: Number(env.AGENT_CODE_MAX_OUTPUT_TOKENS || 8192),
+    max_completion_tokens: Number(env.AGENT_CODE_MAX_COMPLETION_TOKENS || env.AGENT_CODE_MAX_OUTPUT_TOKENS || 8192),
+    response_format: { type: 'json_object' },
+  };
+  const temperature = optionalNumber(env.AGENT_CODE_TEMPERATURE || env.AGENT_MODEL_TEMPERATURE);
+  if (temperature !== undefined) {
+    requestBody.temperature = temperature;
+  }
+  const reasoningEffort = optionalReasoningEffort(env.AGENT_CODE_REASONING_EFFORT);
+  if (reasoningEffort !== undefined) {
+    requestBody.reasoning_effort = reasoningEffort;
+  }
+
   const response = await fetchImpl(companyChatCompletionsUrl(context.gatewayUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${context.apiKey}`,
     },
-    body: JSON.stringify({
-      model: context.modelName || undefined,
-      messages: buildCodingMessages(context),
-      temperature: 0.2,
-      max_tokens: Number(env.AGENT_CODE_MAX_OUTPUT_TOKENS || 4096),
-      response_format: { type: 'json_object' },
-    }),
+    body: JSON.stringify(requestBody),
   });
   const body = await readResponseJson(response);
   if (!response.ok) {
@@ -148,8 +385,9 @@ export async function runCodingAgent(options = {}) {
   }
 
   const modelResult = extractModelJson(body);
-  const html = htmlFromModelResult(modelResult);
+  const html = htmlFromModelResult(modelResult, context);
   if (!html.trim()) {
+    writeMissingHtmlDiagnostic({ body, modelResult, context });
     throw new Error('Coding Agent response did not include html');
   }
 
@@ -157,14 +395,14 @@ export async function runCodingAgent(options = {}) {
   const siteJson = {
     employeeSlug: context.employeeSlug,
     siteSlug: context.siteSlug,
-    title: context.requestTitle,
+    title: redactPublicText(context.requestTitle),
     publishingJobId: context.publishingJobId,
     issueNumber: context.issueNumber || null,
     indexSnapshotId: context.indexSnapshotId || null,
     baseRef: context.baseRef,
     generatedBy: 'pages-agent-coding',
     generatedAt,
-    codingSummary: modelResult?.summary || '',
+    codingSummary: redactPublicText(modelResult?.summary || ''),
     modelName: context.modelName || null,
   };
 

@@ -23,10 +23,26 @@ v1 位于 `apps/server`，服务旧 `workers.xd.team` 链路。v1 只做 legacy 
 - `packages/pages-runtime-protocol/`：runtime 协议共享定义。
 - `packages/worker-kit/`、`packages/ip-guard/`：Worker 公共工具。
 - `apps/server/`：v1 legacy 管理 API Worker，仅维护旧 `workers.xd.team` 链路。
+- `apps/gateway/src/`：平台控制面，接收 Slack Events、Slack Interactivity、GitHub webhook、executor callback 和内部 API。
+- `apps/gateway/src/routes/`：gateway HTTP 路由注册，按 health / publishing / Slack / GitHub / internal lane 拆分。
+- `apps/gateway/src/control-plane/`：AI 发布控制面 orchestration，承接 Slack、GitHub、Review gate 的运行时处理和通用上下文。
+- `apps/gateway/src/publishing/`：PublishingJob HTTP API、输入归一化和 worker 调度 adapter。
+- `apps/gateway/src/slack/`：Slack 验签、会话、消息解析、状态卡 adapter。
+- `apps/gateway/src/github/`：GitHub webhook 和 Review Agent comment 归一化。
+- `apps/gateway/src/db/`：MySQL / Redis runtime store、Drizzle schema、rows、repositories。
+- `apps/worker/src/`：发布任务调度 worker，按 jobs / integrations 拆分 issue、Coding Agent、preview 和 gateway callback。
+- `apps/slack-agent/src/`：常驻 Slack Agent，负责自由对话、需求整理、会话续接，不写代码。
+- `apps/slack-notifier/src/`：Slack Web API 输出服务，负责 reaction、thread 回复和 Block Kit 状态卡。
+- `packages/git-client/`：GitHub API helper。
+- `packages/slack-notifier/`：Slack notifier shared Block Kit / Web API helper。
+- `packages/workflow-core/`：PublishingJob、PlatformDevItem 状态机、ID 和事件 helper。
+- `tests/`：所有单元测试和脚本测试，测试 helper 不属于运行时架构。
 - `.github/workflows/`：CI、staging、production 和用户站点发布 workflow。
 - `docs/`：文档索引、架构、运维、安全和 ADR。
 
 文档入口和真相源矩阵见 `docs/README.md`。
+
+Gateway 运行态必须是 MySQL-backed。`apps/gateway/src/db/gateway-store.js` 里的 `Map` 只能作为单进程缓存，不能作为跨请求真相源。不要重新引入 `PAGES_GATEWAY_STORE_FILE`、JSON 文件 store、SQLite、单 pod PVC 或运行时 `MemoryGatewayStore`。`tests/helpers/gateway-store-fixture.js` 只服务单元测试，不得被生产代码 import。
 
 ## 开发命令
 
@@ -43,7 +59,7 @@ pnpm test
 - Node.js `>=22.12.0`
 - pnpm `>=9.15.0`
 
-不要把 `.env`、`.staging.env`、`apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、demo 目录里的 `.pages.json` 提交到 Git。
+不要把 `.env`、`.env.ecs`、`.ack-preview.env`、`.staging.env`、`apps/server/wrangler.toml`、`apps/xdads-302/wrangler.toml`、demo 目录里的 `.pages.json` 提交到 Git。
 
 ## 分支与部署
 
@@ -92,7 +108,7 @@ CI/CD 隔离要求：
 - 自动生成的 `sites/**` PR 不得修改 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档。
 
 改动 GitHub Actions 时，必须确认不会让 production 在 push/PR 时自动部署。
-详细分支和发布规则见 `docs/deployment-branch-policy.md`。
+详细 GitHub、分支和发布规则见 `docs/architecture/github-automation.md`。
 
 ## 敏感信息规则
 
@@ -180,6 +196,11 @@ Title 格式：
 - `docs`
 - `ci`
 - `demo`
+- `gateway`
+- `worker`
+- `slack-agent`
+- `slack-notifier`
+- `db`
 
 Title 和 Description 主体使用中文；技术术语、文件名、命令、API 名称、域名保留英文。禁止含糊标题，例如 `fix: bug`、`feat: 优化`、`chore: misc`、`update xxx`。
 
@@ -195,6 +216,7 @@ Title 和 Description 主体使用中文；技术术语、文件名、命令、A
 ## 风险与回滚
 
 ## Self-review Checklist
+
 - [ ] Title 符合 `<type>(<scope>): <精准中文描述>`
 - [ ] 没有提交 secret、真实 token、真实 `.env` 或本地部署配置
 - [ ] staging / production 配置没有串环境

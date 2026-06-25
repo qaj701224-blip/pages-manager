@@ -1,0 +1,282 @@
+import {
+  buildPublishingJob,
+  canTransition,
+  idempotencyScopeForInput,
+  transitionJob,
+} from '@xd/workflow-core';
+
+import { eventToRow, jobToRow, rowToEvent, rowToJob } from '../rows/publishing-job-row.js';
+import { execute, insertRowIfNotDuplicate, limitOffsetSql, queryPlaceholders, upsertRow, withTransaction } from '../sql.js';
+
+const REVIEW_ACTIVE_JOB_STATUSES = new Set(['pr_created', 'reviewing', 'changes_requested', 'fixing', 'previewing']);
+const LIKE_SEARCH_FIELDS = [
+  'LOWER(id)',
+  'LOWER(title)',
+  'LOWER(summary)',
+  'LOWER(employee_slug)',
+  'LOWER(site_slug)',
+  'LOWER(requested_by_id)',
+  'CAST(issue_number AS CHAR)',
+  'CAST(pr_number AS CHAR)',
+  'LOWER(preview_url)',
+];
+
+function escapeLikeSearch(value) {
+  return String(value).replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+}
+
+function shaMatches(left, right) {
+  if (!left || !right) return false;
+  const normalizedLeft = String(left).toLowerCase();
+  const normalizedRight = String(right).toLowerCase();
+  if (normalizedLeft.length < 7 || normalizedRight.length < 7) return false;
+  return normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
+}
+
+export const publishingJobRepositoryMethods = {
+  canTransition,
+  transitionJob,
+
+  async upsertJob(job) {
+    await upsertRow(this.pool, 'publishing_jobs', jobToRow(job), { excludeUpdate: ['id', 'created_at'] });
+  },
+
+  async insertEvents(events = []) {
+    for (const event of events) {
+      await upsertRow(this.pool, 'job_events', eventToRow(event), { excludeUpdate: ['id', 'created_at'] });
+    }
+  },
+
+  async getJobByIdempotency(input) {
+    const rows = await execute(
+      this.pool,
+      [
+        'SELECT * FROM publishing_jobs',
+        'WHERE source = ? AND requested_by_type = ? AND requested_by_id = ? AND idempotency_key = ?',
+        'LIMIT 1',
+      ].join(' '),
+      [
+        input.source || 'api',
+        input.requestedByType || input.requested_by_type || 'user',
+        input.requestedById || input.requested_by_id,
+        input.idempotencyKey || input.idempotency_key,
+      ]
+    );
+    return this.cacheJob(rowToJob(rows[0]));
+  },
+
+  async createJob(input) {
+    const existing = await this.getJobByIdempotency(input);
+    if (existing) return { job: existing, created: false };
+
+    const scope = idempotencyScopeForInput(input);
+    if (this.idempotency.has(scope)) {
+      return { job: this.jobs.get(this.idempotency.get(scope)), created: false };
+    }
+
+    const job = buildPublishingJob(input);
+    this.appendEvent(job, 'PublishingJob received');
+    const events = this.events.get(job.id) || [];
+
+    let inserted = false;
+    await withTransaction(this.pool, async (connection) => {
+      inserted = await insertRowIfNotDuplicate(connection, 'publishing_jobs', jobToRow(job));
+      if (!inserted) return;
+      for (const event of events) {
+        await upsertRow(connection, 'job_events', eventToRow(event), { excludeUpdate: ['id', 'created_at'] });
+      }
+    });
+
+    if (!inserted) {
+      this.events.delete(job.id);
+      const duplicate = await this.getJobByIdempotency(input);
+      if (duplicate) return { job: duplicate, created: false };
+      throw new Error('Duplicate PublishingJob idempotency row could not be loaded');
+    }
+
+    this.cacheJob(job);
+    return { job, created: true };
+  },
+
+  async getJob(jobId) {
+    const rows = await execute(this.pool, 'SELECT * FROM publishing_jobs WHERE id = ? LIMIT 1', [jobId]);
+    return this.cacheJob(rowToJob(rows[0]));
+  },
+
+  async listJobs(options = {}) {
+    const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
+    const offset = Math.max(Number(options.offset) || 0, 0);
+    const where = [];
+    const params = [];
+
+    if (options.status) {
+      where.push('status = ?');
+      params.push(String(options.status));
+    }
+    if (options.source) {
+      where.push('source = ?');
+      params.push(String(options.source));
+    }
+    if (options.requestedById) {
+      where.push('requested_by_id = ?');
+      params.push(String(options.requestedById));
+    }
+    if (options.statuses?.length) {
+      where.push(`status IN (${queryPlaceholders(options.statuses.length)})`);
+      params.push(...options.statuses);
+    }
+    if (options.q) {
+      const like = `%${escapeLikeSearch(String(options.q).trim().toLowerCase())}%`;
+      where.push(LIKE_SEARCH_FIELDS.map((field) => `${field} LIKE ? ESCAPE '\\\\'`).join(' OR '));
+      params.push(...LIKE_SEARCH_FIELDS.map(() => like));
+    }
+
+    const whereSql = where.length ? `WHERE ${where.map((item) => `(${item})`).join(' AND ')}` : '';
+    const countRows = await execute(this.pool, `SELECT COUNT(*) AS total FROM publishing_jobs ${whereSql}`, params);
+    const rows = await execute(
+      this.pool,
+      `SELECT * FROM publishing_jobs ${whereSql} ORDER BY updated_at DESC ${limitOffsetSql(limit, offset)}`,
+      params
+    );
+
+    const jobs = rows.map((row) => this.cacheJob(rowToJob(row)));
+    return {
+      jobs,
+      total: Number(countRows[0]?.total || 0),
+      limit,
+      offset,
+    };
+  },
+
+  async listEvents(jobId) {
+    const rows = await execute(this.pool, 'SELECT * FROM job_events WHERE publishing_job_id = ? ORDER BY created_at ASC', [
+      jobId,
+    ]);
+    const events = rows.map(rowToEvent);
+    this.events.set(jobId, events);
+    return events;
+  },
+
+  async updateJob(jobId, status, patch = {}) {
+    const job = await this.getJob(jobId);
+    if (!job) return null;
+    const beforeCount = this.events.get(jobId)?.length || 0;
+    const updated = this.transitionWithBridge(job, status, patch);
+    this.appendEvent(updated, `PublishingJob moved to ${status}`);
+    const events = this.events.get(jobId)?.slice(beforeCount) || [];
+    try {
+      await this.upsertJob(updated);
+      await this.insertEvents(events);
+    } catch (error) {
+      this.events.set(jobId, this.events.get(jobId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cacheJob(updated);
+    return updated;
+  },
+
+  async moveJobToFixing(jobId, patch = {}) {
+    let job = await this.getJob(jobId);
+    if (!job) return null;
+    if (job.status === 'fixing') return this.patchJob(jobId, patch);
+    if (job.status === 'pr_created') job = await this.updateJob(jobId, 'reviewing');
+    if (!job) return null;
+    if (!canTransition(job.status, 'fixing')) return null;
+    return this.updateJob(jobId, 'fixing', patch);
+  },
+
+  async patchJob(jobId, patch = {}) {
+    const job = await this.getJob(jobId);
+    if (!job) return null;
+    const updated = {
+      ...job,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.upsertJob(updated);
+    this.cacheJob(updated);
+    return updated;
+  },
+
+  async failJob(jobId, errorCode, errorMessage, patch = {}) {
+    const job = await this.getJob(jobId);
+    if (!job) return null;
+    const beforeCount = this.events.get(jobId)?.length || 0;
+    const updated = transitionJob(job, 'failed', { ...patch, errorCode, errorMessage });
+    this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob failed');
+    const events = this.events.get(jobId)?.slice(beforeCount) || [];
+    try {
+      await this.upsertJob(updated);
+      await this.insertEvents(events);
+    } catch (error) {
+      this.events.set(jobId, this.events.get(jobId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cacheJob(updated);
+    return updated;
+  },
+
+  async cancelJob(jobId, errorCode = 'cancelled', errorMessage = 'PublishingJob cancelled') {
+    const job = await this.getJob(jobId);
+    if (!job) return null;
+    const beforeCount = this.events.get(jobId)?.length || 0;
+    const updated = {
+      ...job,
+      status: 'cancelled',
+      errorCode,
+      errorMessage,
+      updatedAt: new Date().toISOString(),
+    };
+    this.appendEvent(updated, errorMessage || errorCode || 'PublishingJob cancelled');
+    const events = this.events.get(jobId)?.slice(beforeCount) || [];
+    try {
+      await this.upsertJob(updated);
+      await this.insertEvents(events);
+    } catch (error) {
+      this.events.set(jobId, this.events.get(jobId)?.slice(0, beforeCount) || []);
+      throw error;
+    }
+    this.cacheJob(updated);
+    return updated;
+  },
+
+  async findJobByPrNumber(prNumber, options = {}) {
+    const rows = await execute(this.pool, 'SELECT * FROM publishing_jobs WHERE pr_number = ? ORDER BY updated_at DESC', [
+      Number(prNumber),
+    ]);
+    const candidates = rows.map((row) => this.cacheJob(rowToJob(row)));
+    if (!candidates.length) return null;
+
+    if (options.headSha) {
+      const matched = candidates.find((job) => shaMatches(job.headSha, options.headSha));
+      if (matched) return matched;
+      return null;
+    }
+
+    return candidates.find((job) => REVIEW_ACTIVE_JOB_STATUSES.has(job.status)) || candidates[0];
+  },
+
+  async listWorkItemsForSlackUser(teamId, slackUserId, options = {}) {
+    const limit = Math.min(Math.max(Number(options.limit) || 5, 1), 20);
+    const requestedById = `slack:${teamId || 'unknown-team'}:${slackUserId || 'unknown-user'}`;
+    const where = ['source = ?', 'requested_by_id = ?'];
+    const params = ['slack', requestedById];
+    if (options.statuses?.length) {
+      where.push(`status IN (${queryPlaceholders(options.statuses.length)})`);
+      params.push(...options.statuses);
+    }
+    const whereSql = `WHERE ${where.join(' AND ')}`;
+    const countRows = await execute(this.pool, `SELECT COUNT(*) AS total FROM publishing_jobs ${whereSql}`, params);
+    const rows = await execute(
+      this.pool,
+      `SELECT * FROM publishing_jobs ${whereSql} ORDER BY updated_at DESC ${limitOffsetSql(limit, 0)}`,
+      params
+    );
+    return {
+      jobs: rows.map((row) => this.cacheJob(rowToJob(row))),
+      total: Number(countRows[0]?.total || 0),
+      limit,
+      offset: 0,
+    };
+  },
+};

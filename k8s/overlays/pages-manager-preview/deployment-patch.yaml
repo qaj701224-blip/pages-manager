@@ -18,6 +18,12 @@ spec:
                   name: callback-secrets
                   key: internal-callback-token
                   optional: false
+            - name: PAGES_GATEWAY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: callback-secrets
+                  key: pages-gateway-api-token
+                  optional: false
             - name: PAGES_WORKER_SHARED_SECRET
               valueFrom:
                 secretKeyRef:
@@ -30,6 +36,24 @@ spec:
                   name: github-platform-secret
                   key: github-webhook-secret
                   optional: false
+            - name: GITHUB_STATUS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-platform-secret
+                  key: github-status-token
+                  optional: true
+            - name: GITHUB_APP_INSTALLATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-platform-secret
+                  key: github-app-installation-token
+                  optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-platform-secret
+                  key: github-token
+                  optional: true
             - name: SLACK_SIGNING_SECRET
               valueFrom:
                 secretKeyRef:
@@ -48,11 +72,29 @@ spec:
                   name: slack-platform-secret
                   key: slack-notifier-shared-secret
                   optional: false
-            - name: DATABASE_URL
+            - name: MYSQL_ADDR
               valueFrom:
                 secretKeyRef:
                   name: database-secret
-                  key: database-url
+                  key: mysql-addr
+                  optional: false
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-user
+                  optional: false
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-password
+                  optional: false
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-database
                   optional: false
             - name: REDIS_URL
               valueFrom:
@@ -87,11 +129,29 @@ spec:
                   name: callback-secrets
                   key: pages-worker-shared-secret
                   optional: false
-            - name: DATABASE_URL
+            - name: MYSQL_ADDR
               valueFrom:
                 secretKeyRef:
                   name: database-secret
-                  key: database-url
+                  key: mysql-addr
+                  optional: false
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-user
+                  optional: false
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-password
+                  optional: false
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-database
                   optional: false
             - name: REDIS_URL
               valueFrom:
@@ -138,11 +198,29 @@ spec:
                   name: model-provider-secret
                   key: slack-agent-model-name
                   optional: false
-            - name: DATABASE_URL
+            - name: MYSQL_ADDR
               valueFrom:
                 secretKeyRef:
                   name: database-secret
-                  key: database-url
+                  key: mysql-addr
+                  optional: false
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-user
+                  optional: false
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-password
+                  optional: false
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: mysql-database
                   optional: false
             - name: REDIS_URL
               valueFrom:
