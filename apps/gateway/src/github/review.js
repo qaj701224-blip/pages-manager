@@ -6,6 +6,18 @@ const DEFAULT_REVIEW_AGENT_LOGINS = [
   'chatgpt-codex-connector[bot]',
 ];
 
+const REVIEW_RISK_NOUN = `(?:${[
+  'issues?',
+  'risks?',
+  'vulnerabilit(?:y|ies)',
+  'findings?',
+  'problems?',
+  'concerns?',
+  'bugs?',
+  'failures?',
+  'errors?',
+].join('|')})`;
+
 const NOTE_PATTERNS = [
   /\bno blockers?\b/i,
   /\bno blocking issues?\b/i,
@@ -17,6 +29,10 @@ const NOTE_PATTERNS = [
   /\bno (major )?issues\b/i,
   /\bdid(?: not|n't) find (any )?(major )?issues\b/i,
   /\bno action required\b/i,
+  new RegExp(String.raw`\bno (?:known )?(?:security|critical) ${REVIEW_RISK_NOUN}\b`, 'i'),
+  new RegExp(String.raw`\bwithout (?:known )?(?:security|critical) ${REVIEW_RISK_NOUN}\b`, 'i'),
+  new RegExp(String.raw`\b(?:security|critical) ${REVIEW_RISK_NOUN}\s*:\s*(?:0|zero|none)\b`, 'i'),
+  new RegExp(String.raw`\b0\s+(?:security|critical) ${REVIEW_RISK_NOUN}\b`, 'i'),
   /\bno errors? (found|detected)\b/i,
   /\b0\s+failed(?:\s+(?:tests?|checks?))?\b/i,
   /\b0\s+errors?(?:\s+(?:found|detected))?\b/i,
@@ -38,8 +54,9 @@ const ENGLISH_BLOCKING_PATTERNS = [
   /\brequired changes\b/i,
   /\bfailing\b/i,
   /\bfailure\b/i,
-  /\bsecurity\b/i,
-  /\bcritical\b/i,
+  new RegExp(String.raw`\bsecurity ${REVIEW_RISK_NOUN}\b`, 'i'),
+  new RegExp(String.raw`\bcritical ${REVIEW_RISK_NOUN}\b`, 'i'),
+  new RegExp(String.raw`\b${REVIEW_RISK_NOUN}(?:\s+(?:is|are))?\s+critical\b`, 'i'),
 ];
 
 const ZERO_COUNT_PASS_PATTERNS = [
@@ -49,6 +66,13 @@ const ZERO_COUNT_PASS_PATTERNS = [
   /\bzero\s+errors?(?:\s+(?:found|detected))?\b/i,
   /\bfailed(?:\s+(?:tests?|checks?))?\s*:\s*(?:0|zero)\b/i,
   /\berrors?(?:\s+(?:found|detected))?\s*:\s*(?:0|zero)\b/i,
+];
+
+const NO_RISK_PASS_PATTERNS = [
+  new RegExp(String.raw`\bno (?:known )?(?:security|critical) ${REVIEW_RISK_NOUN}\b`, 'i'),
+  new RegExp(String.raw`\bwithout (?:known )?(?:security|critical) ${REVIEW_RISK_NOUN}\b`, 'i'),
+  new RegExp(String.raw`\b(?:security|critical) ${REVIEW_RISK_NOUN}\s*:\s*(?:0|zero|none)\b`, 'i'),
+  new RegExp(String.raw`\b0\s+(?:security|critical) ${REVIEW_RISK_NOUN}\b`, 'i'),
 ];
 
 const POSITIVE_COUNT_BLOCKING_PATTERNS = [
@@ -140,8 +164,9 @@ function reviewPriorityFromBody(body = '') {
 function hasBlockingReviewSignal(body = '') {
   const text = String(body || '');
   const zeroCountPass = ZERO_COUNT_PASS_PATTERNS.some((pattern) => pattern.test(text));
+  const noRiskPass = NO_RISK_PASS_PATTERNS.some((pattern) => pattern.test(text));
   if (POSITIVE_COUNT_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
-  if (ENGLISH_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (!noRiskPass && ENGLISH_BLOCKING_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (/\bfailed\b/i.test(text) && !/\bno failed\b/i.test(text) && !zeroCountPass) return true;
   if (/\berrors?\b/i.test(text) && !/\bno errors?(?: found| detected)?\b/i.test(text) && !zeroCountPass) return true;
   if (/\bblocking\b/i.test(text) && !/\b(no blocking issues?|not blocking|without blocking)\b/i.test(text)) return true;

@@ -119,6 +119,15 @@ test('ECS gateway exposes check allowlists for review gate webhooks', () => {
   }
 });
 
+test('ECS gateway container healthcheck uses liveness while deploy script waits for readiness', () => {
+  const compose = readRepoFile('docker-compose.ecs.yml');
+  const deployScript = readRepoFile('scripts/deploy-ecs.sh');
+
+  assert.match(compose, /pages-gateway:[\s\S]*127\.0\.0\.1:8788\/health/);
+  assert.doesNotMatch(compose, /pages-gateway:[\s\S]*127\.0\.0\.1:8788\/ready[\s\S]*pages-worker:/);
+  assert.match(deployScript, /gateway ready', 'http:\/\/127\.0\.0\.1:8788\/ready'/);
+});
+
 test('ECS local preview stays IP restricted unless explicitly disabled', () => {
   const compose = readRepoFile('docker-compose.ecs.yml');
   const envExample = readRepoFile('.env.ecs.example');

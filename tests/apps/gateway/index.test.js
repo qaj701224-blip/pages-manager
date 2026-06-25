@@ -849,6 +849,29 @@ test('gateway liveness does not initialize the runtime store', async () => {
   assert.equal(body.storeBackend, 'mysql');
 });
 
+test('gateway liveness does not call the Node runtime store factory', async () => {
+  let createStoreCalls = 0;
+  const app = createRuntimeGatewayApp({
+    async createStore() {
+      createStoreCalls += 1;
+      throw new Error('database unavailable during startup');
+    },
+  });
+
+  const healthResponse = await app.fetch(new Request('http://gateway.test/health'), { PAGES_STORE_BACKEND: 'mysql' });
+  const health = await json(healthResponse);
+  assert.equal(createStoreCalls, 0);
+
+  const readyResponse = await app.fetch(new Request('http://gateway.test/ready'), { PAGES_STORE_BACKEND: 'mysql' });
+  const ready = await json(readyResponse);
+
+  assert.equal(healthResponse.status, 200);
+  assert.equal(health.status, 'ok');
+  assert.equal(createStoreCalls, 1);
+  assert.equal(readyResponse.status, 500);
+  assert.equal(ready.error, 'database unavailable during startup');
+});
+
 test('gateway readiness returns JSON when runtime store initialization fails', async () => {
   const app = createRuntimeGatewayApp();
   const response = await app.fetch(new Request('http://gateway.test/ready'), {});
