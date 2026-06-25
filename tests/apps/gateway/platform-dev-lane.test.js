@@ -2209,7 +2209,7 @@ test('platform deleted blocking review comment is recorded without dispatching a
   assert.equal(workerCalls.length, 0);
 });
 
-test('platform blocking review recovers a failed PR item and dispatches a fix round', async () => {
+test('platform blocking review after a failed PR item is ignored as terminal', async () => {
   const app = createGatewayApp();
   const headSha = '9'.repeat(40);
   const item = createOpenPlatformPr(app, {
@@ -2220,7 +2220,7 @@ test('platform blocking review recovers a failed PR item and dispatches a fix ro
     slackSessionId: 'sess_platform_review_failed_fix',
   });
   app.store.updateSessionMemory('sess_platform_review_failed_fix', {
-    summary: '用户希望失败后仍能继续处理 Review blocking comment。',
+    summary: '用户希望失败后的 Review webhook 不回滚终态。',
   });
   const failed = app.store.updatePlatformDevItem(item.id, 'failed', {
     errorCode: 'platform_agent_failed',
@@ -2265,16 +2265,10 @@ test('platform blocking review recovers a failed PR item and dispatches a fix ro
   const updated = app.store.getPlatformDevItem(item.id);
 
   assert.equal(response.status, 200);
-  assert.equal(body.reviewAction, 'platform_review_fix_dispatched');
-  assert.equal(updated.status, 'agent_queued');
-  assert.equal(updated.errorCode, null);
-  assert.equal(workerCalls.length, 1);
-  assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
-  assert.equal(workerCalls[0].body.platformDevItem.githubPrNumber, 98);
-  assert.equal(workerCalls[0].body.platformDevItem.headSha, headSha);
-  assert.match(workerCalls[0].body.platformDevItem.reviewContext, /README 说明还没有补齐/);
-  assert.match(workerCalls[0].body.platformDevItem.memoryContext, /失败后仍能继续处理 Review/);
-  assert.match(workerCalls[0].body.platformDevItem.statusContext, /failed -> review_blocked/);
+  assert.equal(body.reviewAction, 'platform_review_stale_ignored');
+  assert.equal(updated.status, 'failed');
+  assert.equal(updated.errorCode, 'platform_agent_failed');
+  assert.equal(workerCalls.length, 0);
 });
 
 test('stale platform CI failure does not regress an active fix round', async () => {

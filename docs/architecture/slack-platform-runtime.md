@@ -621,7 +621,7 @@ Platform Dev Lane 的确认卡片必须展示：
 - 修改类消息写入 job / work item 时必须按并发失败处理；如果状态已被其它回调收口或记录消失，Slack 应给出“重新查询状态后再继续”的可见提示，不继续启动 worker 或写成功进度。executor 的迟到 failed callback 命中 `merged`、`closed_unmerged`、`cancelled` 等 terminal 状态时只能 ignore，不能把已完成/关闭的工作项回退成 failed。
 - 已有 active job / issue / PR 后，修改类消息不再创建“正在整理需求”的 Agent 占位回复；Agent 对用户修改意图的理解进入进度消息的“本轮修改 / 最终需求”。如果 Agent 需要追问、解释、返回查询结果或说明无法处理，仍然在同一 thread 里直接回复用户。
 - 每条用户输入的即时反馈优先用 reaction 表示：收到时加 working reaction，完成时换成 done，失败时换成 failed。文字消息只承载真正的信息，不重复刷“我已收到”。
-- repo 问答和任务诊断属于查询类体验，只使用 reaction 表示处理中，不创建“正在整理需求...”占位消息。回复应是一条克制的答案，包含 2-5 个最相关文件路径作为依据；不泄露 secret、原始日志或内部 token。所有进入 Slack 卡片、session memory、诊断摘要和 GitHub-facing 摘要的文本都必须先做 secret-like 脱敏，覆盖 `CF_API_TOKEN=...`、`SLACK_BOT_TOKEN=...`、`AWS_SECRET_ACCESS_KEY=...`、JSON `*_API_KEY` 等环境变量式凭据。
+- repo 问答和任务诊断属于查询类体验，只使用 reaction 表示处理中，不创建“正在整理需求...”占位消息。回复应是一条克制的答案，包含 2-5 个最相关文件路径作为依据；不泄露 secret、原始日志或内部 token。所有进入 Slack 卡片、session memory、诊断摘要和 GitHub-facing 摘要的文本都必须先做 secret-like 脱敏，覆盖 `CF_API_TOKEN=...`、`SLACK_BOT_TOKEN=...`、`AWS_SECRET_ACCESS_KEY=...`、JSON / JSON-like `*_API_KEY` 等环境变量式凭据。
 - PR 合并后的固定频道公告属于 GitHub webhook 触发的系统里程碑消息，不继承用户 Slack session。webhook 只负责校验、登记 pending / 幂等键并快速返回，摘要生成和 Slack 投递在后台执行。它可以复用 Slack Agent 的摘要能力生成中文富文本摘要，但触发判断、幂等、脱敏、频道选择和 `chat.postMessage` 仍由 gateway / slack-notifier 控制；详细合同见 [github-automation.md](./github-automation.md#merge-announcement-agent)。
 
 ```text

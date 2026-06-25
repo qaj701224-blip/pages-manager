@@ -165,6 +165,35 @@ const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的)
 const TERMINAL_FAILED_CALLBACK_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
 const TERMINAL_FAILED_CALLBACK_PLATFORM_STATUSES = new Set(['failed', 'cancelled', 'merged', 'closed_unmerged']);
 
+function shaMatches(left, right) {
+  if (!left || !right) return false;
+  const normalizedLeft = String(left).toLowerCase();
+  const normalizedRight = String(right).toLowerCase();
+  if (normalizedLeft.length < 7 || normalizedRight.length < 7) return false;
+  return normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
+}
+
+function prNumberMatches(left, right) {
+  if (!left || !right) return false;
+  return Number(left) === Number(right);
+}
+
+function isPreviewFailureCallback(body = {}) {
+  const workflowName = body.workflowName || body.workflow_name || '';
+  const errorCode = body.errorCode || body.error_code || '';
+  return workflowName === 'pages-preview.yml' || errorCode === 'PREVIEW_DEPLOY_FAILED';
+}
+
+function shouldIgnoreStaleFailedPreviewCallback(existingJob = {}, body = {}) {
+  if (!isPreviewFailureCallback(body)) return false;
+  const callbackHeadSha = body.headSha || body.head_sha || null;
+  const callbackPrNumber = body.prNumber || body.pr_number || null;
+  if (existingJob.headSha && !callbackHeadSha) return true;
+  if (existingJob.headSha && callbackHeadSha && !shaMatches(existingJob.headSha, callbackHeadSha)) return true;
+  if (existingJob.prNumber && !prNumberMatches(existingJob.prNumber, callbackPrNumber)) return true;
+  return false;
+}
+
 function csvSet(value = '') {
   return new Set(
     String(value || '')
@@ -3160,6 +3189,16 @@ export async function handleExecutorCallback(request, env) {
         ignored: true,
         ignoredStatus: existingJob.status,
         ignoredCallbackStatus: 'failed',
+      });
+    }
+    if (shouldIgnoreStaleFailedPreviewCallback(existingJob, body)) {
+      await store.linkJobToSlackSession(existingJob);
+      return jsonResponse({
+        job: existingJob,
+        ignored: true,
+        ignoredStatus: existingJob.status,
+        ignoredCallbackStatus: 'failed',
+        ignoredReason: 'stale_preview_callback',
       });
     }
     const job = await store.failJob(jobId, body.errorCode || body.error_code, body.errorMessage || body.error_message, {

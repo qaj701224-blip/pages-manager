@@ -56,7 +56,8 @@ test('Slack text redacts environment-style secret variable values', () => {
       'AWS_SECRET_ACCESS_KEY=abcdef1234567890',
       'CF_API_TOKEN="cf-token-value"',
       "SLACK_BOT_TOKEN='xoxb-secret'",
-      '{"AGENT_CODE_API_KEY":"sk-secret-value"}',
+      '{"AGENT_CODE_API_KEY":"sk-secret-value","CF_API_TOKEN":"tok\'en","PASSWORD":"tok\\u0022en"}',
+      "{'PRIVATE_KEY':'single-secret'}",
       'normal_key=value',
     ].join('\n')
   );
@@ -65,8 +66,11 @@ test('Slack text redacts environment-style secret variable values', () => {
   assert.match(redacted, /CF_API_TOKEN="\[REDACTED_SECRET\]"/);
   assert.match(redacted, /SLACK_BOT_TOKEN='\[REDACTED_SECRET\]'/);
   assert.match(redacted, /"AGENT_CODE_API_KEY":"\[REDACTED_SECRET\]"/);
+  assert.match(redacted, /"CF_API_TOKEN":"\[REDACTED_SECRET\]"/);
+  assert.match(redacted, /"PASSWORD":"\[REDACTED_SECRET\]"/);
+  assert.match(redacted, /'PRIVATE_KEY':'\[REDACTED_SECRET\]'/);
   assert.match(redacted, /normal_key=value/);
-  assert.doesNotMatch(redacted, /abcdef1234567890|cf-token-value|xoxb-secret|sk-secret-value/);
+  assert.doesNotMatch(redacted, /abcdef1234567890|cf-token-value|xoxb-secret|sk-secret-value|tok'en|tok\\u0022en|single-secret/);
 });
 
 async function fetchAndDrainWaitUntil(app, request, env = {}) {
@@ -11908,6 +11912,51 @@ test('stale preview callback is ignored when headSha no longer matches', async (
   assert.equal(body.job.previewUrl, null);
   assert.equal(body.job.headSha, 'b'.repeat(40));
   assert.equal(workerStarts.length, 0);
+  assert.equal(notifierCalls.length, 0);
+});
+
+test('stale failed preview callback is ignored when headSha no longer matches', async () => {
+  const app = createGatewayApp();
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 95,
+    headSha: 'd'.repeat(40),
+    idempotencyKey: 'api-stale-failed-preview-callback',
+  });
+  app.store.updateJob(jobId, 'previewing', { headSha: 'e'.repeat(40), prNumber: 95 });
+  const notifierCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: jobId,
+        prNumber: 95,
+        headSha: 'd'.repeat(40),
+        workflowName: 'pages-preview.yml',
+        status: 'failed',
+        errorCode: 'PREVIEW_DEPLOY_FAILED',
+        errorMessage: 'late preview failure',
+      }),
+    }),
+    {
+      SLACK_NOTIFIER_URL: 'http://slack-notifier.test',
+      SLACK_NOTIFIER_SHARED_SECRET: 'secret',
+      async SLACK_NOTIFIER_FETCH(url, request) {
+        notifierCalls.push({ url: String(url), request });
+        return new Response(JSON.stringify({ ok: true, channel: 'D1', ts: '1710000001.000202' }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getJob(jobId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, true);
+  assert.equal(body.ignoredReason, 'stale_preview_callback');
+  assert.equal(updated.status, 'previewing');
+  assert.equal(updated.errorCode, null);
+  assert.equal(updated.headSha, 'e'.repeat(40));
   assert.equal(notifierCalls.length, 0);
 });
 
