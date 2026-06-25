@@ -43,6 +43,21 @@ describe('slack agent', () => {
     assert.equal(analysis.requiresHumanGate, false);
   });
 
+  it('routes repository file modification requests to platform dev lane', () => {
+    for (const text of [
+      '我想修改一个 readme.md 的标题的字体，让他变小一号',
+      '修改 README.md 标题字体小一号',
+      '请调整 apps/slack-agent/src/analysis.js 的路由规则',
+    ]) {
+      const analysis = analyzeSlackRequirement({ text });
+
+      assert.equal(analysis.lane, 'platform-dev');
+      assert.equal(analysis.intent, 'create_platform_issue');
+      assert.equal(analysis.toolCall.name, 'confirm_platform_issue');
+      assert.notEqual(analysis.toolCall.name, 'confirm_create_issue');
+    }
+  });
+
   it('marks CI and ops platform requests as high risk with human gate', () => {
     const analysis = analyzeSlackRequirement({
       text: '修改 pages-manager 的 CI workflow 和 ECS 部署脚本',
@@ -198,6 +213,26 @@ describe('slack agent', () => {
     assert.doesNotMatch(messages[0].content, /skill:repo-question/);
   });
 
+  it('keeps repo file routing policy visible when fallback sees a code file request', () => {
+    const fallback = analyzeSlackRequirementDeterministic({
+      text: '我想修改一个 readme.md 的标题的字体，让他变小一号',
+    });
+    const messages = buildSlackAgentMessages(
+      {
+        text: '我想修改一个 readme.md 的标题的字体，让他变小一号',
+      },
+      fallback
+    );
+    const payload = JSON.parse(messages[1].content);
+
+    assert.equal(fallback.lane, 'platform-dev');
+    assert.equal(fallback.intent, 'create_platform_issue');
+    assert.ok(payload.selectedSkills.includes('platform-dev'));
+    assert.equal(payload.selectedSkills.includes('site-publishing'), false);
+    assert.match(messages[0].content, /README\.md/);
+    assert.match(messages[0].content, /不要当作个人站点发布/);
+  });
+
   it('continues the active platform issue for implicit follow-up wording', () => {
     const analysis = analyzeSlackRequirement({
       text: '不再修改 README.md，改为在仓库中新增 DIY.md，文件内容只需要一个标题。',
@@ -241,6 +276,29 @@ describe('slack agent', () => {
     assert.equal(analysis.lane, 'platform-dev');
     assert.equal(analysis.intent, 'append_requirement');
     assert.deepEqual(analysis.toolCall, { name: 'record_followup', args: {} });
+  });
+
+  it('overrides model site publishing output for repository file modification requests', () => {
+    const input = {
+      text: '我想修改一个 readme.md 的标题的字体，让他变小一号',
+    };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const analysis = normalizeModelAnalysis(
+      {
+        lane: 'site-publishing',
+        intent: 'create_or_update_site',
+        siteSlug: 'profile',
+        summary: input.text,
+        toolCall: { name: 'confirm_create_issue', args: {} },
+        needsClarification: false,
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(analysis.lane, 'platform-dev');
+    assert.equal(analysis.intent, 'create_platform_issue');
+    assert.equal(analysis.toolCall.name, 'confirm_platform_issue');
   });
 
   it('routes repeat requests to a constrained repeat tool', () => {
@@ -1055,6 +1113,63 @@ describe('slack agent', () => {
     assert.equal(body.analysis.intent, 'append_requirement');
     assert.equal(body.analysis.modelProvider, 'company-agent');
     assert.equal(body.analysis.modelApiStyle, 'company-openai-compatible');
+  });
+
+  it('keeps repository file requests in platform lane when company model returns site publishing', async () => {
+    const calls = [];
+    const app = createSlackAgentApp({
+      config: {
+        modelProvider: 'company-agent',
+        gatewayUrl: 'https://agent-gateway.example/v1',
+        apiKey: 'gateway-key',
+        modelName: 'company-agent',
+        maxOutputTokens: 512,
+        requestTimeoutMs: 1000,
+        sharedSecret: 'secret',
+      },
+      async fetchImpl(url, request) {
+        calls.push({ url: String(url), request });
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    lane: 'site-publishing',
+                    intent: 'create_or_update_site',
+                    siteSlug: 'profile',
+                    title: '调小 README 标题',
+                    summary: '将 README.md 中标题字体调小一号。',
+                    toolCall: { name: 'confirm_create_issue', args: {} },
+                    needsClarification: false,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const response = await app.fetch(
+      new Request('http://localhost/internal/slack-agent/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Pages-Slack-Agent-Token': 'secret' },
+        body: JSON.stringify({ text: '我想修改一个 readme.md 的标题的字体，让他变小一号' }),
+      })
+    );
+    const body = await response.json();
+    const payload = JSON.parse(calls[0].request.body);
+    const userPayload = JSON.parse(payload.messages[1].content);
+
+    assert.equal(response.status, 200);
+    assert.ok(userPayload.selectedSkills.includes('platform-dev'));
+    assert.equal(userPayload.selectedSkills.includes('site-publishing'), false);
+    assert.equal(body.analysis.lane, 'platform-dev');
+    assert.equal(body.analysis.intent, 'create_platform_issue');
+    assert.equal(body.analysis.toolCall.name, 'confirm_platform_issue');
+    assert.equal(body.analysis.modelProvider, 'company-agent');
   });
 
   it('streams company gateway visible replies as semantic ndjson chunks', async () => {

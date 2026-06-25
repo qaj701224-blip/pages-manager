@@ -10,6 +10,10 @@ import {
   WORK_ITEM_STATES,
 } from './schema.js';
 
+const ROUTING_DECISION_TEXT_RE = /(创建|新建|新增|生成|制作|做|更新|修改|调整|删除|发布|部署|create|build|make|update|publish|deploy)/i;
+const REPO_FILE_TEXT_RE =
+  /(?:^|[\s`'"])(?:(?:\.github|apps|packages|scripts|docs|k8s|deploy|tests|migrations)\/[^\s`'",，。；;)]+|(?:README|AGENTS|CLAUDE|CHANGELOG|LICENSE|package|pnpm-lock|pnpm-workspace|wrangler|docker-compose|Dockerfile|tsconfig(?:\.[\w-]+)?|eslint\.config|vitest\.config)(?:\.(?:md|json|ya?ml|mjs|js|toml|lock))?\b|[\w.-]+\.(?:md|mjs|cjs|js|ts|tsx|json|ya?ml|toml)\b)/i; // eslint-disable-line max-len
+
 export const SLACK_AGENT_POLICY_SKILLS = [
   {
     id: 'core',
@@ -130,6 +134,11 @@ export const SLACK_AGENT_POLICY_SKILLS = [
         '当用户明确要求修改 pages-manager 自身、Slack 流程、GitHub issue/PR、CI/CD、数据库、',
         '架构文档、权限、状态机、通知、部署脚本或仓库代码时，lane 必须是 platform-dev。',
       ].join(''),
+      [
+        '当用户提到仓库文件或路径，例如 README.md、AGENTS.md、CLAUDE.md、package.json、',
+        '.github/**、apps/**、packages/**、scripts/**、docs/**、k8s/** 或 deploy/**，',
+        '并要求新增、修改、删除或调整时，必须归类为 platform-dev，不要当作个人站点发布。',
+      ].join(''),
       'Platform Dev 创建类 intent 返回 create_platform_issue，toolCall.name 返回 confirm_platform_issue。',
       'Platform Dev Lane 下必须给出 issueType、areas、risk、agentEligible、requiresHumanGate。',
       [
@@ -145,6 +154,11 @@ export const SLACK_AGENT_POLICY_SKILLS = [
     title: 'Site Publishing',
     content: [
       '新建个人网站时，先通过 Slack 对话整理需求；信息足够时返回 create_or_update_site 且 needsClarification=false，让 gateway 展示确认按钮。',
+      'Site Publishing 只处理个人站点、网页、主页、preview 或当前站点任务续接；不要仅凭“修改 / 更新 / 创建”这些动词创建站点发布任务。',
+      [
+        'README.md、AGENTS.md、.github/**、apps/**、packages/**、scripts/**、docs/** 等仓库文件或路径不属于个人站点发布，',
+        '除非当前会话已经绑定了一个站点 preview 且用户明确在续接它。',
+      ].join(''),
       '员工可以有多个网站；你可以给出 employeeSlug hint，但最终归属目录必须由 gateway 根据 Slack 身份派生。',
       'siteSlug 表示该用户名下的具体站点。',
       '如果用户是在修改已有 preview，优先保留当前 sessionContext 的 activeJobId / issue / PR / preview 关系，并使用 record_followup。',
@@ -267,6 +281,16 @@ function shouldSelectProductDesignSkill(text, fallbackAnalysis = {}) {
   );
 }
 
+function hasRepoFileReference(text = '') {
+  return REPO_FILE_TEXT_RE.test(String(text || ''));
+}
+
+function shouldSelectLaneDecisionSkills(text = '', fallbackAnalysis = {}, input = {}, sessionContext = {}) {
+  if (hasWorkItemContext(input, sessionContext)) return false;
+  if (['create_or_update_site', 'create_platform_issue', 'platform_feedback'].includes(fallbackAnalysis.intent)) return true;
+  return ROUTING_DECISION_TEXT_RE.test(text);
+}
+
 export function selectSlackAgentSkills(input = {}, fallbackAnalysis = {}, sessionContext = {}) {
   const selected = new Set(
     SLACK_AGENT_POLICY_SKILLS.filter((skill) => skill.alwaysOn).map((skill) => skill.id)
@@ -275,12 +299,20 @@ export function selectSlackAgentSkills(input = {}, fallbackAnalysis = {}, sessio
   const intent = fallbackAnalysis.intent || input.intent || '';
   const toolName = fallbackAnalysis.toolCall?.name || input.toolCall?.name || '';
   const text = normalizedText(input, fallbackAnalysis);
+  const repoFileReference = hasRepoFileReference(text);
 
   if (hasWorkItemContext(input, sessionContext) || /这个|那个|刚才|上一条|继续|还有|只有/.test(text)) {
     selected.add('conversation-context');
     selected.add('work-item-continuation');
   }
 
+  if (shouldSelectLaneDecisionSkills(text, fallbackAnalysis, input, sessionContext)) {
+    selected.add('platform-dev');
+    if (!repoFileReference) selected.add('site-publishing');
+  }
+  if (repoFileReference) {
+    selected.add('platform-dev');
+  }
   if (lane === 'repo-question' || ['repo_question', 'architecture_question'].includes(intent)) {
     selected.add('repo-question');
   }
@@ -290,7 +322,10 @@ export function selectSlackAgentSkills(input = {}, fallbackAnalysis = {}, sessio
   if (lane === 'platform-dev' || ['create_platform_issue', 'platform_feedback'].includes(intent)) {
     selected.add('platform-dev');
   }
-  if (lane === 'site-publishing' || ['create_or_update_site', 'modify_existing_preview'].includes(intent)) {
+  if (
+    !repoFileReference &&
+    (lane === 'site-publishing' || ['create_or_update_site', 'modify_existing_preview'].includes(intent))
+  ) {
     selected.add('site-publishing');
   }
   if (

@@ -58,6 +58,8 @@ platform-dev
   约束：repo 全目录可改，但按 issue type、risk gate、CI、review 和 GitHub Rulesets 控制
 ```
 
+Slack Agent 的 deterministic fallback 只用于模型不可用、字段缺失和安全兜底，不能把模型 prompt 提前锁死到某一条 lane。新建自然语言 turn 需要让模型看到完整 lane 边界；仓库文件或路径信号（例如 `README.md`、`AGENTS.md`、`.github/**`、`apps/**`、`packages/**`、`scripts/**`、`docs/**`）默认属于 `platform-dev`，除非当前会话已经绑定站点 preview 且用户明确在续接这个站点任务。仅有“修改 / 更新 / 创建”等宽泛动词不能触发 `site-publishing`。
+
 ## 推荐目录
 
 ```text
@@ -163,6 +165,8 @@ gateway 只有在 `toolCall.name=confirm_create_issue`、创建类 `intent` 且 
 Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platform-dev` 且 `needsClarification=false` 时展示平台 issue 创建确认卡。gateway 必须二次校验 `issueType`、`areas`、`risk` 和 `agentEligible`，不能完全信任模型。`type:feedback`、`type:question` 默认不触发 Coding Agent；`type:ci`、`type:ops`、`type:security` 默认需要人工 gate。
 
 Repo 问答是独立查询类 intent。用户询问 pages-manager 当前实现、代码位置、数据如何保存、workflow 如何触发或架构细节时，Slack Agent 必须返回 `repo_question` / `answer_repo_question`，不返回 `confirm_platform_issue`。gateway 只执行受控 repo search/read，并把答案作为查询结果回 Slack；只有用户明确要求“修改 / 修复 / 创建 issue / 支持这个能力”时，才转为 Platform Dev Lane。
+
+Site Publishing 只处理个人站点、网页、主页、preview 或当前站点任务续接。Slack Agent 或模型如果把明显的仓库文件修改请求误判为 `create_or_update_site`，Slack Agent normalization 必须拉回 `platform-dev`；gateway 仍只做执行权限收口，不在 gateway 里重写自然语言路由。
 
 产品边界上，gateway 不应该把自然语言需求拆成大量硬编码分支。除了 Slack 协议命令、显式 `issue:` / `status:` / `/close` 兼容入口、GitHub URL / issue / PR 编号等结构化引用提取、Slack / GitHub 签名校验、幂等和执行权限收口，正常的“查询我的任务”“继续 issue / PR”“重新打开 issue / PR”“追加修改”“关闭 / 删除 issue 或 PR”都应先进 Slack Agent，由 Agent 输出 toolCall，再由 gateway 做权限收口和执行。
 
