@@ -328,7 +328,7 @@ jobs:
               added_lines="$(sed 's/^/+/' "$path")"
             fi
             if printf '%s\n' "$added_lines" | grep -Ei "${token_shape_re}|${secret_value_re}" \
-              | grep -Eiv 'secrets\.|process\.env\.|\$\{|<|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set' >/dev/null; then
+              | grep -Eiv 'secrets\.|process\.env\.|\$\{|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set' >/dev/null; then
               echo "Potential secret detected in changed file: $path" >&2
               exit 1
             fi
