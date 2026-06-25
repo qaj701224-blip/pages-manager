@@ -36,6 +36,7 @@ async function moveJobToChangesRequestedForSiteCheck(store, job, patch = {}) {
 function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}) {
   if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion === 'success') {
     if (platformItem.status === 'review_blocked') return 'review_blocked';
+    if (platformItem.status === 'ready_to_merge') return 'ready_to_merge';
     return platformItem.status === 'review_waiting' ? 'ready_to_merge' : 'review_waiting';
   }
   if (siteCheckRun.status === 'completed' && siteCheckRun.conclusion && siteCheckRun.conclusion !== 'success') {
