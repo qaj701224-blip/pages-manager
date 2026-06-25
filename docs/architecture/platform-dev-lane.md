@@ -188,7 +188,7 @@ Platform Agent 是真实 repo-editing coding runner，不是只生成 JSON patch
 4. runner 在 repo checkout 内调用 coding backend。backend 必须直接编辑工作区文件，不能只返回游离的 patch 或报告。
 5. runner 运行验证命令，并在失败时把错误摘要、当前 diff 和上下文继续交给 backend 做 fix round。
 6. runner 输出报告 artifact，包含 backend、轮次、验证结果、失败原因、changed files 和可回传摘要。
-7. workflow 对工作区做 changed-file 枚举、secret scan、lint/test 结果归档、commit、push 和 callback。
+7. workflow 对工作区做 changed-file 枚举、secret scan、lint/test 结果归档、commit、push 和 callback。secret scan 只检查本轮新增行，覆盖 token 形态和 `AWS_SECRET_ACCESS_KEY=`、`DATABASE_PASSWORD=`、`private_key=` 这类通用敏感字段赋值，同时允许 `process.env.*`、`${{ secrets.* }}` 和 placeholder 示例。
 
 Codex CLI backend 是主路径。它在当前 checkout 中执行，读取 runner 生成的任务和上下文文件，按普通 coding agent 方式修改仓库文件，并通过验证 / 修复循环收敛。Codex CLI provider 使用 `AGENT_GATEWAY_URL` 归一化后的 `/v1` base URL、`AGENT_CODE_API_KEY` 和 `wire_api="responses"`，并通过 `model_providers.<id>={...}` TOML inline table 注入 provider 配置；runner 会复用同一段配置构造逻辑做 `debug models --bundled` preflight，防止无效 provider id、坏 TOML 或缺失凭据进入长任务。实际执行时 Codex CLI 使用 `--ignore-user-config`，避免 runner 机器上的个人 Codex 配置污染自动化。company agent gateway 必须兼容 `/v1/responses`。`scripts/platform-agent-coding.mjs` 保留为 legacy JSON backend / fallback，只能用于受限场景；它的局限是更偏一次性 JSON 输出，不能完整表达多轮 repo 编辑、真实命令验证、复杂冲突处理和已有工作区状态，因此不能作为 Platform Agent 的长期主路径。
 

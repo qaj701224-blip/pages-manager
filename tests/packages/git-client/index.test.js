@@ -107,18 +107,29 @@ test('redacts public issue text before publishing GitHub issues and comments', (
     'Bearer bearer-secret-value',
     '{"AGENT_CODE_API_KEY":"sk-secret-value-1234567890"}',
   ].join('\n');
-  const issue = buildPublishingIssue({ ...job, summary: secretSummary });
-  const platformIssue = buildPlatformDevIssue({ ...platformItem, summary: secretSummary });
+  const secretTitle = '处理 DATABASE_PASSWORD=db-secret-value 和 Bearer bearer-title-secret';
+  const issue = buildPublishingIssue({ ...job, title: secretTitle, summary: secretSummary });
+  const platformIssue = buildPlatformDevIssue({ ...platformItem, title: secretTitle, summary: secretSummary });
   const smokeIssue = buildSmokeIssue({ ...job, summary: secretSummary });
   const smokeComment = buildSmokeIssueComment({ ...job, summary: secretSummary });
   const followup = buildFollowupIssueComment({ ...job, summary: secretSummary });
   const platformFollowup = buildPlatformDevFollowupComment({ ...platformItem, summary: secretSummary });
-  const publicText = [issue.body, platformIssue.body, smokeIssue.body, smokeComment, followup, platformFollowup].join('\n');
+  const publicText = [
+    issue.title,
+    issue.body,
+    platformIssue.title,
+    platformIssue.body,
+    smokeIssue.body,
+    smokeComment,
+    followup,
+    platformFollowup,
+  ].join('\n');
 
   assert.match(publicText, /CF_API_TOKEN=\[REDACTED_SECRET\]/);
+  assert.match(publicText, /DATABASE_PASSWORD=\[REDACTED_SECRET\]/);
   assert.match(publicText, /Bearer \[REDACTED_TOKEN\]/);
   assert.match(publicText, /"AGENT_CODE_API_KEY":"\[REDACTED_SECRET\]"/);
-  assert.doesNotMatch(publicText, /cf-secret-value|bearer-secret-value|sk-secret-value/);
+  assert.doesNotMatch(publicText, /cf-secret-value|db-secret-value|bearer-secret-value|bearer-title-secret|sk-secret-value/);
   assert.doesNotMatch(publicText, /zhangsan@example\.com|slack:T1:U1|Team：|Channel：|Thread：/);
 });
 

@@ -204,7 +204,7 @@ function platformDevAutomationMetadataLines(item, options = {}) {
 
 export function buildPublishingIssue(job, options = {}) {
   const allowedPath = options.allowedPath || allowedPathForJob(job);
-  const title = `[pages] ${job.employeeSlug}/${job.siteSlug}：${job.title || job.intent || '站点发布需求'}`;
+  const title = `[pages] ${job.employeeSlug}/${job.siteSlug}：${safePublicText(job.title || job.intent, '站点发布需求')}`;
   const summary = safePublicText(job.summary || job.brief, '未提供需求摘要。');
 
   return {
@@ -258,7 +258,7 @@ export function buildPlatformDevIssue(item, options = {}) {
   const issueType = item.issueType || 'type:dev';
   const areas = Array.isArray(item.areas) && item.areas.length ? item.areas : ['area:platform'];
   const risk = item.risk || 'risk:medium';
-  const title = `[pages-platform] ${item.title || '平台改造需求'}`;
+  const title = `[pages-platform] ${safePublicText(item.title, '平台改造需求')}`;
   const summary = safePublicText(item.summary || item.brief, '未提供需求摘要。');
 
   return {
@@ -277,7 +277,7 @@ export function buildPlatformDevIssue(item, options = {}) {
       '',
       '## 目标',
       '',
-      safeText(item.title, 'pages-manager 平台能力改造'),
+      safePublicText(item.title, 'pages-manager 平台能力改造'),
       '',
       '## 范围',
       '',

@@ -100,6 +100,10 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /\(\^\|\/\)\(node_modules\|dist\|build\)\(\/\|\$\)/);
   assert.match(workflow, /while IFS= read -r path; do[\s\S]*done <<< "\$changed_files"/);
   assert.match(workflow, /Potential secret detected in changed file: \$path/);
+  assert.match(workflow, /secret_field_re=/);
+  assert.match(workflow, /private\[_-\]\?key/);
+  assert.match(workflow, /password\|passwd\|pwd/);
+  assert.match(workflow, /secret_value_re=/);
   assert.match(workflow, /Copy trusted callback helper[\s\S]*platform-agent-runner\.mjs/);
   assert.match(workflow, /Install Codex CLI[\s\S]*PLATFORM_AGENT_CODEX_PACKAGE/);
   assert.match(workflow, /npm install -g "\$PLATFORM_AGENT_CODEX_PACKAGE"/);
