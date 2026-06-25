@@ -26,10 +26,11 @@ export function createGatewayApp(options = {}) {
   const router = new Router();
   let store = options.store || null;
   let storePromise = store ? Promise.resolve(store) : null;
+  const createStore = options.createStore || MySqlGatewayStore.create;
 
   async function resolveStore(env) {
     if (!storePromise) {
-      storePromise = MySqlGatewayStore.create(env).catch((error) => {
+      storePromise = createStore(env).catch((error) => {
         storePromise = null;
         throw error;
       });

@@ -17,8 +17,7 @@ async function createStoreFromEnv() {
   return MySqlGatewayStore.create(process.env);
 }
 
-const store = await createStoreFromEnv();
-const app = createGatewayApp({ store });
+const app = createGatewayApp({ createStore: createStoreFromEnv });
 const port = Number(process.env.PORT || 8788);
 
 function gatewayEnv() {
