@@ -47,7 +47,6 @@ function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}) {
 
 function shouldIgnoreStalePlatformCheck(platformItem = {}, nextStatus = '') {
   if (TERMINAL_PLATFORM_STATUSES.has(platformItem.status)) return true;
-  if (platformItem.status === 'ready_to_merge' && nextStatus === 'ci_failed') return true;
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
 

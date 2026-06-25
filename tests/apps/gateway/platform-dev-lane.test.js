@@ -2141,6 +2141,63 @@ test('platform CI automatic fix marks item failed when worker start fails', asyn
   assert.equal(updated.errorMessage, 'worker unavailable');
 });
 
+test('platform blocking review after CI failure keeps ci_failed and dispatches a fix round', async () => {
+  const app = createGatewayApp();
+  const headSha = '4'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-review-after-ci-failure',
+    issueNumber: 84,
+    prNumber: 94,
+    headSha,
+    slackSessionId: 'sess_platform_review_after_ci_failure',
+  });
+  const ciFailed = app.store.updatePlatformDevItem(item.id, 'ci_failed', { headSha });
+  assert.equal(ciFailed.status, 'ci_failed');
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-review-after-ci-failure',
+        'X-GitHub-Event': 'pull_request_review',
+      },
+      body: JSON.stringify({
+        action: 'submitted',
+        repository: { full_name: 'org/pages-manager' },
+        pull_request: { number: 94, head: { sha: headSha } },
+        review: {
+          id: 9402,
+          node_id: 'PRR_PLATFORM_9402',
+          state: 'changes_requested',
+          body: 'blocking: CI failure context still needs a fix round.',
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_review_fix_dispatched');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
+  assert.match(workerCalls[0].body.platformDevItem.statusContext, /status: ci_failed/);
+  assert.match(workerCalls[0].body.platformDevItem.reviewContext, /CI failure context/);
+});
+
 test('platform CI success waits for Review before marking merge-ready', async () => {
   const app = createGatewayApp();
   const headSha = '1'.repeat(40);
@@ -2304,6 +2361,64 @@ test('duplicate successful platform CI keeps a merge-ready item ready', async ()
   assert.equal(response.status, 200);
   assert.equal(body.reviewAction, 'platform_ci_recorded');
   assert.equal(updated.status, 'ready_to_merge');
+});
+
+test('later platform CI failure after merge-ready dispatches an automatic fix round', async () => {
+  const app = createGatewayApp();
+  const headSha = '5'.repeat(40);
+  const item = createOpenPlatformPr(app, {
+    idempotencyKey: 'platform-ci-failure-after-ready',
+    issueNumber: 85,
+    prNumber: 95,
+    headSha,
+    slackSessionId: 'sess_platform_ci_failure_after_ready',
+  });
+  app.store.updatePlatformDevItem(item.id, 'review_waiting', { headSha });
+  const ready = app.store.updatePlatformDevItem(item.id, 'ready_to_merge', { headSha });
+  assert.equal(ready.status, 'ready_to_merge');
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-platform-ci-failure-after-ready',
+        'X-GitHub-Event': 'check_run',
+      },
+      body: JSON.stringify({
+        action: 'completed',
+        repository: { full_name: 'org/pages-manager' },
+        check_run: {
+          id: 9502,
+          node_id: 'SCR_PLATFORM_9502',
+          name: 'Platform CI',
+          status: 'completed',
+          conclusion: 'failure',
+          head_sha: headSha,
+          app: { slug: 'github-actions', name: 'GitHub Actions' },
+          pull_requests: [{ number: 95 }],
+        },
+        sender: { login: 'github-actions[bot]' },
+      }),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.reviewAction, 'platform_ci_fix_dispatched');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
 });
 
 test('platform blocking review dispatches an automatic fix round', async () => {
