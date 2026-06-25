@@ -162,6 +162,7 @@ import {
 const LOCAL_FOLLOWUP_CUE_RE =
   /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|再加|再补|再改)/i;
 const EXPLICIT_NEW_WORK_ITEM_RE = /(?:新建|创建|另开|新开|另外|新的).*(?:issue|需求|任务)|(?:另开一个|新开一个)/i;
+const TERMINAL_FAILED_CALLBACK_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
 
 function csvSet(value = '') {
   return new Set(
@@ -3129,11 +3130,21 @@ export async function handleExecutorCallback(request, env) {
 
   if (body.status === 'failed') {
     const store = getStore(env);
+    const existingJob = await store.getJob(jobId);
+    if (!existingJob) return jsonResponse({ error: 'PublishingJob not found' }, 404);
+    if (TERMINAL_FAILED_CALLBACK_JOB_STATUSES.has(existingJob.status)) {
+      await store.linkJobToSlackSession(existingJob);
+      return jsonResponse({
+        job: existingJob,
+        ignored: true,
+        ignoredStatus: existingJob.status,
+        ignoredCallbackStatus: 'failed',
+      });
+    }
     const job = await store.failJob(jobId, body.errorCode || body.error_code, body.errorMessage || body.error_message, {
       workflowName: body.workflowName || body.workflow_name || undefined,
       workflowRunId: body.workflowRunId || body.workflow_run_id || undefined,
     });
-    if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
     await store.linkJobToSlackSession(job);
     const slackStatusNotification = await notifySlackJobStatus(env, store, job, {
       stage: 'failed',
@@ -3371,7 +3382,33 @@ async function handlePlatformDevExecutorCallback(body, env) {
       gateReason: item.gateReason || '人工批准自动开发。',
     });
     if (!item) return jsonResponse({ error: 'PlatformDevItem not found after gate approval dispatch' }, 404);
-    workerStart = await startWorkerForPlatformDevItemIfConfigured(item, env);
+    try {
+      workerStart = await startWorkerForPlatformDevItemIfConfigured(item, env);
+    } catch (error) {
+      workerStart = { started: false, error: error.message || 'Worker start failed' };
+    }
+    if (workerStart?.started === false) {
+      item =
+        (await store.failPlatformDevItem?.(item.id, 'worker_start_failed', workerStart.error || 'Worker start failed', {
+          workflowName: item.workflowName || undefined,
+          workflowRunId: item.workflowRunId || undefined,
+        })) || item;
+      await store.linkPlatformDevItemToSlackSession(item);
+      const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, item, {
+        stage: 'failed',
+        text: item.errorMessage || item.errorCode || '平台需求处理失败',
+        statusText: ':x: 平台需求处理失败',
+        skipDuplicate: false,
+      });
+      return jsonResponse(
+        {
+          item,
+          workerStart,
+          ...(slackStatusNotification ? { slackStatusNotification } : {}),
+        },
+        502
+      );
+    }
   }
   await store.linkPlatformDevItemToSlackSession(item);
   const queuedFollowupRerun =

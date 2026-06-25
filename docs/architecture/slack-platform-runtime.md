@@ -68,6 +68,7 @@ Slack 体验分成两层：
 - 不让 Slack Agent 直接写代码、创建 PR、部署 preview 或读取 GitHub / Cloudflare 写权限。
 - 不把 Slack bot token 传给 GitHub Actions runner、coding-agent、builder、site-check 或 deployer。
 - 不把模型内部推理、system prompt、provider 原始 response、debug trace、token、secret 回写到 Slack。
+- Slack Agent 的 NDJSON `reply_delta`、确认卡片、session memory 和 GitHub-facing 摘要都必须先做 secret-like 脱敏。
 
 ## 总体拓扑
 
@@ -132,6 +133,7 @@ Slack thread
 - `pages-worker` 和 executor 推进 issue、PR、review、preview，但不直接发 Slack。
 - executor 不直接写 MySQL / Redis 最终业务状态；它只能 callback gateway。
 - MySQL 是最终状态真相源；Redis / queue 只做 lease、事件分发、短期协调和 rate limit。
+- gateway `/health` 是不依赖 MySQL / Redis 的 liveness；`/ready` 才检查运行态依赖，避免数据库异常触发 K8s 误杀进程。
 - gateway 调 `slack-notifier` 发 `job-message` 前必须先在 MySQL 原子 claim dedupe key；claim 失败直接跳过，避免多 gateway pod 同时把同一条普通进度消息发到 Slack。
 
 ## K8s 运行位置

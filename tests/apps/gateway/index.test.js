@@ -835,9 +835,19 @@ test('gateway readiness fails closed when store health fails', async () => {
   assert.equal(body.error, 'database unavailable');
 });
 
-test('gateway returns JSON when runtime store initialization fails', async () => {
+test('gateway liveness does not initialize the runtime store', async () => {
   const app = createRuntimeGatewayApp();
-  const response = await app.fetch(new Request('http://gateway.test/health'), {});
+  const response = await app.fetch(new Request('http://gateway.test/health'), { PAGES_STORE_BACKEND: 'mysql' });
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.status, 'ok');
+  assert.equal(body.storeBackend, 'mysql');
+});
+
+test('gateway readiness returns JSON when runtime store initialization fails', async () => {
+  const app = createRuntimeGatewayApp();
+  const response = await app.fetch(new Request('http://gateway.test/ready'), {});
   const body = await json(response);
 
   assert.equal(response.status, 500);
@@ -9466,7 +9476,7 @@ test('GitHub issue webhook retries deliveries that failed after insertion', asyn
       PAGES_EXECUTOR_MODE: 'github_issue_webhook',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH() {
-        throw new Error('worker temporarily unavailable');
+        return new Response(JSON.stringify({ ok: false, error: 'worker temporarily unavailable' }), { status: 503 });
       },
     }
   );
@@ -9656,6 +9666,49 @@ test('executor callback after cancellation is ignored without failing workflow',
   assert.equal(body.ignored, true);
   assert.equal(body.job.status, 'cancelled');
   assert.equal(body.job.previewUrl, null);
+});
+
+test('failed executor callback after cancellation is ignored without failing workflow', async () => {
+  const app = createGatewayApp();
+  const createBody = await json(
+    await app.fetch(
+      new Request('http://gateway.test/api/publishing-jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'api-cancelled-failed-callback',
+          'X-Pages-Actor-Id': 'usr_1',
+        },
+        body: JSON.stringify({
+          employeeSlug: 'zhangsan',
+          siteSlug: 'profile',
+          summary: 'Create a personal website.',
+        }),
+      })
+    )
+  );
+  app.store.cancelJob(createBody.job.id, 'github_issue_closed', 'GitHub issue #35 已关闭，发布任务已停止。');
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishingJobId: createBody.job.id,
+        status: 'failed',
+        errorCode: 'PREVIEW_DEPLOY_FAILED',
+        errorMessage: 'late workflow failure',
+      }),
+    })
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ignored, true);
+  assert.equal(body.ignoredStatus, 'cancelled');
+  assert.equal(body.ignoredCallbackStatus, 'failed');
+  assert.equal(body.job.status, 'cancelled');
+  assert.equal(body.job.errorCode, 'github_issue_closed');
 });
 
 test('GitHub pull_request webhook marks closed PR inactive and restores reopened PR', async () => {
@@ -11006,6 +11059,53 @@ test('GitHub Review Agent issue comment retries preview worker when job is alrea
   assert.equal(retryBody.job.status, 'previewing');
   assert.equal(retryBody.workerStart.started, true);
   assert.equal(workerStarts.length, 1);
+});
+
+test('GitHub Review Agent issue comment fails delivery when preview worker does not start', async () => {
+  const app = createGatewayApp();
+  const headSha = '7'.repeat(40);
+  const jobId = await moveJobToPrCreated(app, {
+    prNumber: 28,
+    headSha,
+    idempotencyKey: 'api-review-preview-worker-failure',
+  });
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/github/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-review-preview-worker-failure',
+        'X-GitHub-Event': 'issue_comment',
+      },
+      body: JSON.stringify({
+        action: 'created',
+        repository: { full_name: 'org/pages-manager' },
+        issue: { number: 28, pull_request: { url: 'https://github.example/org/pages-manager/pulls/28' } },
+        comment: {
+          id: 107,
+          node_id: 'IC_107',
+          body: `Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`${headSha.slice(0, 10)}\``,
+          user: { login: 'chatgpt-codex-connector' },
+        },
+        sender: { login: 'chatgpt-codex-connector' },
+      }),
+    }),
+    {
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      async WORKER_FETCH() {
+        return new Response(JSON.stringify({ ok: false, error: 'worker unavailable' }), { status: 503 });
+      },
+    }
+  );
+  const body = await json(response);
+  const delivery = app.store.listGithubDeliveries({ eventName: 'issue_comment' }).deliveries[0];
+
+  assert.equal(response.status, 500);
+  assert.match(body.error, /Preview worker start failed/);
+  assert.match(body.error, /worker unavailable/);
+  assert.equal(delivery.status, 'failed');
+  assert.equal(app.store.getJob(jobId).status, 'previewing');
 });
 
 test('GitHub Review Agent issue comment targets latest reused PR job by reviewed commit', async () => {

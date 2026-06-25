@@ -13,12 +13,14 @@ function readRepoFile(path) {
 test('pages-manager preview overlay derives preview owner markers per employee', () => {
   const configMapPatch = readRepoFile('k8s/overlays/pages-manager-preview/configmap-patch.yaml');
   const baseConfigMap = readRepoFile('k8s/base/pages-system/configmap.yaml');
+  const baseGateway = readRepoFile('k8s/base/pages-system/gateway.yaml');
 
   assert.match(configMapPatch, /PAGES_PREVIEW_MODE: local_deploy/);
   assert.match(baseConfigMap, /PAGES_PLATFORM_WORKFLOW_REF: master/);
   assert.match(baseConfigMap, /PAGES_PLATFORM_BASE_REF: master/);
   assert.match(baseConfigMap, /PAGES_PLATFORM_GATE_APPROVERS: ''/);
   assert.match(baseConfigMap, /PAGES_PLATFORM_GATE_APPROVER_IDS: ''/);
+  assert.match(baseGateway, /envFrom:[\s\S]*configMapRef:[\s\S]*name: pages-config/);
   assert.match(configMapPatch, /PAGES_PLATFORM_WORKFLOW_REF: master/);
   assert.match(configMapPatch, /PAGES_PLATFORM_BASE_REF: master/);
   assert.match(configMapPatch, /PAGES_PREVIEW_IP_RESTRICT: 'true'/);

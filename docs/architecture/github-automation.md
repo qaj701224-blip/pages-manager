@@ -162,7 +162,7 @@ base: master
 
 executor callback 只能推进仍可转换的当前任务。已取消、已合并、已部署或已失败的终态 job 收到迟到 callback 时，gateway 返回 200 并标记 ignored，不能让 workflow 因有意取消而失败。`pages-preview.yml` 的成功和失败 callback 必须携带 `prNumber` 与 `headSha`；已绑定 `headSha` 的 job 收到 `preview_deployed` 时，如果 callback 缺少 `headSha` 或不匹配当前 job head，只保留当前 DB 状态，不触发 Slack 成功卡片、plain progress、reaction settlement 或新的 worker dispatch。已绑定 PR 但没有持久化 `headSha` 的 job 也必须匹配 `prNumber`；只有没有 PR/head 元数据的 legacy / manual job 才接受无 `headSha` callback。
 
-`pages-preview.yml` 在部署前必须重新读取当前 PR head，并在 head 已移动时跳过 deploy、artifact 和 callback，避免旧 workflow run 覆盖同一个 preview site。预览内容只从 `sites/<employeeSlug>/<siteSlug>/src` 发布；没有 `src/` 时 workflow 失败，而不是回退发布整个站点根目录。
+`pages-preview.yml` 在部署前必须重新读取当前 PR head，并在 head 已移动时跳过 deploy、artifact 和 callback，避免旧 workflow run 覆盖同一个 preview site。该 workflow 还必须按 `prNumber` 设置 `concurrency` 且 `cancel-in-progress: true`，让同一 PR 的旧 preview run 在发布前被取消。预览内容只从 `sites/<employeeSlug>/<siteSlug>/src` 发布；没有 `src/` 时 workflow 失败，而不是回退发布整个站点根目录。
 
 ## Worker 配置
 

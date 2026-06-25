@@ -51,6 +51,9 @@ permissions:
 jobs:
   pages-preview:
     runs-on: ubuntu-latest
+    concurrency:
+      group: pages-preview-pr-${{ inputs.prNumber }}
+      cancel-in-progress: true
     env:
       PUBLISHING_JOB_ID: ${{ inputs.publishingJobId }}
       PR_NUMBER: ${{ inputs.prNumber }}
