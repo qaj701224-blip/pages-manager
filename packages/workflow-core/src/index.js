@@ -411,9 +411,9 @@ const PLATFORM_DEV_ALLOWED_TRANSITIONS = {
     'cancelled',
   ],
   merged: [],
-  closed_unmerged: ['issue_created', 'gate_pending', 'agent_queued', 'agent_running', 'pr_created'],
-  failed: ['agent_queued', 'review_blocked', 'cancelled'],
-  cancelled: [],
+  failed: ['agent_queued', 'review_blocked', 'cancelled', 'merged'],
+  cancelled: ['merged'],
+  closed_unmerged: ['issue_created', 'gate_pending', 'agent_queued', 'agent_running', 'pr_created', 'merged'],
 };
 
 export function isPublishingJobStatus(status) {

@@ -6,7 +6,7 @@
 
 ## 当前调用路径
 
-当前 ECS 验证路径：
+当前 ECS worker 本地 preview 调用路径：
 
 ```text
 pages-worker

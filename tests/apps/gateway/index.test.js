@@ -10271,6 +10271,61 @@ test('GitHub merged platform PR keeps merged status after linked issue closes', 
   assert.equal(app.store.getPlatformDevItem(item.id).status, 'merged');
 });
 
+test('GitHub merged platform PR corrects failed item to merged', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-failed-merge-truth',
+    title: '同步 GitHub merge 真相',
+    summary: '人工合并后，失败态平台工单应修正为 merged。',
+    issueType: 'type:dev',
+    areas: ['area:github'],
+    risk: 'risk:medium',
+    agentEligible: true,
+    requiresHumanGate: false,
+  });
+  let updated = app.store.updatePlatformDevItem(item.id, 'issue_created', {
+    githubIssueNumber: 189,
+    githubIssueUrl: 'https://github.example/org/pages-manager/issues/189',
+  });
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_queued');
+  updated = app.store.updatePlatformDevItem(updated.id, 'agent_running');
+  updated = app.store.updatePlatformDevItem(updated.id, 'branch_committed');
+  updated = app.store.updatePlatformDevItem(updated.id, 'pr_created', {
+    githubPrNumber: 289,
+    githubPrUrl: 'https://github.example/org/pages-manager/pull/289',
+    branchName: 'feat/platform-failed-merge-truth',
+    headSha: 'e'.repeat(40),
+  });
+  app.store.updatePlatformDevItem(updated.id, 'failed', {
+    errorCode: 'PLATFORM_AGENT_FAILED',
+    errorMessage: 'previous run failed',
+  });
+
+  const response = await postPullRequestWebhook(
+    app,
+    'delivery-platform-failed-merged',
+    {
+      action: 'closed',
+      repository: { full_name: 'org/pages-manager' },
+      pull_request: {
+        number: 289,
+        state: 'closed',
+        merged: true,
+        html_url: 'https://github.example/org/pages-manager/pull/289',
+        head: { ref: 'feat/platform-failed-merge-truth', sha: 'e'.repeat(40) },
+      },
+    },
+    {}
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.item.status, 'merged');
+  assert.equal(app.store.getPlatformDevItem(item.id).status, 'merged');
+});
+
 test('GitHub merged PR webhook uses Slack Agent merge summary when configured', async () => {
   const app = createGatewayApp();
   const notifierCalls = [];

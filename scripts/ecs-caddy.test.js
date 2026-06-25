@@ -84,6 +84,16 @@ test('ECS worker exposes platform workflow and base refs separately', () => {
   assert.match(envExample, /^PAGES_PLATFORM_BASE_REF=master$/m);
 });
 
+test('ECS compose defaults to production runtime database name', () => {
+  const compose = readRepoFile('docker-compose.ecs.yml');
+  const envExample = readRepoFile('.env.ecs.example');
+
+  assert.match(compose, /MYSQL_DATABASE: \$\{MYSQL_DATABASE:-pages_manager\}/);
+  assert.match(envExample, /^MYSQL_DATABASE=pages_manager$/m);
+  assert.doesNotMatch(compose, /pages_manager_preview/);
+  assert.doesNotMatch(envExample, /pages_manager_preview/);
+});
+
 test('ECS gateway exposes platform gate approver allowlist', () => {
   const compose = readRepoFile('docker-compose.ecs.yml');
   const envExample = readRepoFile('.env.ecs.example');

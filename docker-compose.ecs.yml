@@ -40,7 +40,7 @@ services:
       MYSQL_ADDR: pages-mysql:3306
       MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER in .env.ecs}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.ecs}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-pages_manager_preview}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-pages_manager}
       REDIS_URL: redis://pages-redis:6379/11
       INTERNAL_CALLBACK_TOKEN: ${INTERNAL_CALLBACK_TOKEN:?set INTERNAL_CALLBACK_TOKEN in .env.ecs}
       PAGES_GATEWAY_API_TOKEN: ${PAGES_GATEWAY_API_TOKEN:?set PAGES_GATEWAY_API_TOKEN in .env.ecs}
@@ -181,7 +181,7 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env.ecs}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-pages_manager_preview}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-pages_manager}
       MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER in .env.ecs}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env.ecs}
     volumes:

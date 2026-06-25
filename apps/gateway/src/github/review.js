@@ -20,7 +20,7 @@ const NOTE_PATTERNS = [
 ];
 
 const DEFAULT_SITE_CHECK_NAMES = ['site-check', 'Site Check / site-check'];
-const DEFAULT_PLATFORM_CI_CHECK_NAMES = ['Platform CI'];
+const DEFAULT_PLATFORM_CI_CHECK_NAMES = ['Platform CI', 'check'];
 const DEFAULT_SITE_CHECK_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 const DEFAULT_PLATFORM_CI_APP_LOGINS = ['github-actions', 'github-actions[bot]', 'GitHub Actions'];
 
@@ -73,11 +73,11 @@ export function platformCiCheckNames(env = {}) {
 }
 
 export function siteCheckAppLogins(env = {}) {
-  return configuredSet(env.GITHUB_SITE_CHECK_APP_LOGINS, DEFAULT_SITE_CHECK_APP_LOGINS);
+  return configuredSet(env.GITHUB_SITE_CHECK_APP_LOGINS, DEFAULT_SITE_CHECK_APP_LOGINS, listFromCsv);
 }
 
 export function platformCiAppLogins(env = {}) {
-  return configuredSet(env.GITHUB_PLATFORM_CI_APP_LOGINS, DEFAULT_PLATFORM_CI_APP_LOGINS);
+  return configuredSet(env.GITHUB_PLATFORM_CI_APP_LOGINS, DEFAULT_PLATFORM_CI_APP_LOGINS, listFromCsv);
 }
 
 function commentStatusForAction(action) {

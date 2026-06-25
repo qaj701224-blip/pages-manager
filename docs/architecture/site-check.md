@@ -22,7 +22,7 @@ gateway 通过 GitHub `check_run` webhook 记录 `site_check_runs`，再和 Revi
 
 `Platform CI` 是 Platform Dev Lane 的平台 PR 检查，不属于 Site Publishing Lane 的 site-check。gateway 可以消费 `Platform CI` 来推进平台任务，但不能把它写成站点 PR 的 site-check 通过记录，也不能用它放行站点 preview。二者的 check name 和 GitHub App allowlist 也必须分开配置，避免收紧 site-check app 后误伤平台 PR CI。
 
-`GITHUB_SITE_CHECK_NAMES` 和 `GITHUB_PLATFORM_CI_CHECK_NAMES` 按逗号分隔完整 check name；名称里的空格或 `/` 是 check 名称本身的一部分，不能再按空白拆分。
+`GITHUB_SITE_CHECK_NAMES`、`GITHUB_PLATFORM_CI_CHECK_NAMES` 和对应 `*_APP_LOGINS` 按逗号分隔完整 check / app 名称；名称里的空格或 `/` 是名称本身的一部分，不能再按空白拆分。Platform CI 默认同时接受 workflow 展示名 `Platform CI` 和当前 job context `check`。
 
 ## 必跑检查
 

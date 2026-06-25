@@ -85,9 +85,9 @@ cancelled
 | `review_blocked` | review 阻塞 | `agent_queued` / `agent_running` / `ci_running` |
 | `ready_to_merge` | 技术上可合并，但仍需人类 merge | `merged` / `closed_unmerged` |
 | `merged` | PR 已合并 | 终态 |
-| `closed_unmerged` | issue / PR 已关闭未合并 | 终态 |
-| `failed` | 自动化失败 | 可恢复到 `agent_queued`；后续 `agent_running` callback 桥接为新一轮运行 |
-| `cancelled` | 用户或维护者取消 | 终态 |
+| `closed_unmerged` | issue / PR 已关闭未合并 | 可由 GitHub `merged: true` PR webhook 修正为 `merged` |
+| `failed` | 自动化失败 | 可恢复到 `agent_queued`；后续 `agent_running` callback 桥接为新一轮运行；也可由 GitHub `merged: true` 修正 |
+| `cancelled` | 用户或维护者取消 | 可由 GitHub `merged: true` PR webhook 修正为 `merged` |
 
 索引建议：
 
