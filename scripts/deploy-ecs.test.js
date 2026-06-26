@@ -36,8 +36,13 @@ test('ECS deploy uses immutable full-service deployment defaults', () => {
   assert.match(script, /BUILD_FROM_PREVIOUS="\$\{ECS_BUILD_FROM_PREVIOUS:-false\}"/);
   assert.match(script, /UPDATE_LATEST_ALIAS="\$\{ECS_UPDATE_LATEST_ALIAS:-false\}"/);
   assert.match(script, /LATEST_ALIAS_TAG="\$\{ECS_LATEST_ALIAS_TAG:-latest\}"/);
+  assert.match(script, /IMAGE_REGISTRY="\$\{ECS_IMAGE_REGISTRY:-\}"/);
   assert.match(script, /IMAGE_RETENTION="\$\{ECS_IMAGE_RETENTION:-5\}"/);
   assert.match(script, /BUILD_DIR_RETENTION="\$\{ECS_BUILD_DIR_RETENTION:-5\}"/);
+  assert.match(script, /RUNTIME_BACKUP_RETENTION="\$\{ECS_RUNTIME_BACKUP_RETENTION:-0\}"/);
+  assert.match(script, /image_registry="\$previous_image_registry"/);
+  assert.match(script, /PAGES_IMAGE_REGISTRY is missing from \$\{env_file\}/);
+  assert.match(script, /image registry: \$\{IMAGE_REGISTRY:-<preserve existing \.env\.ecs value>\}/);
   assert.match(envExample, /^PAGES_IMAGE_TAG=ecs-YYYYMMDDHHMMSS-sha$/m);
   assert.doesNotMatch(envExample, /^PAGES_IMAGE_TAG=latest$/m);
 });
@@ -45,7 +50,7 @@ test('ECS deploy uses immutable full-service deployment defaults', () => {
 test('ECS deploy supports local mode for self-hosted runner deploys', () => {
   const script = readRepoFile('scripts/deploy-ecs.sh');
 
-  assert.match(script, /ECS_DEPLOY_MODE      Optional\. ssh\/local/);
+  assert.match(script, /ECS_DEPLOY_MODE {6}Optional\. ssh\/local/);
   assert.match(script, /case "\$\{DEPLOY_MODE\}" in\n {2}ssh \| local/);
   assert.match(script, /if \[\[ "\$\{DEPLOY_MODE\}" == "ssh" && -z "\$\{SSH_TARGET\}" \]\]; then/);
   assert.match(script, /run_target_shell\(\)/);
@@ -86,30 +91,43 @@ test('ECS deploy writes runtime env only after candidate compose smoke succeeds'
   assert.match(script, /restore_runtime_files\(\)/);
   assert.match(script, /cleanup_runtime_backup\(\)/);
   assert.match(script, /runtime_backup_dir="\$\{remote_dir\}\/\.deploy-backups\/\$\{image_tag\}"/);
+  assert.match(script, /rm -rf "\$runtime_backup_dir" \|\| echo "\[ecs:remote\] warning: failed to reset runtime backup/);
   assert.match(script, /cp "\$\{remote_dir\}\/docker-compose\.ecs\.yml" "\$runtime_backup_dir\/docker-compose\.ecs\.yml"/);
   assert.match(script, /cp "\$runtime_backup_dir\/docker-compose\.ecs\.yml" "\$\{remote_dir\}\/docker-compose\.ecs\.yml"/);
   assert.match(script, /trap on_deploy_error ERR/);
-  assert.match(script, /compose_services=\(\)\n\s*backup_runtime_files/);
+  assert.match(script, /compose_services=\(\)\n\s*cleanup_old_runtime_backups\n\s*backup_runtime_files/);
   assert.match(script, /candidate_env_file="\$\{env_file\}\.candidate\.\$\{image_tag\}"/);
   assert.match(script, /update_env_file "\$candidate_env_file" PAGES_IMAGE_REGISTRY "\$image_registry"/);
   assert.match(script, /update_env_file "\$candidate_env_file" PAGES_IMAGE_TAG "\$image_tag"/);
   assert.match(script, /compose_env_file="\$candidate_env_file"/);
   assert.match(script, /if ! smoke_services; then[\s\S]*rollback_env_and_services[\s\S]*false[\s\S]*fi/);
   assert.match(script, /cat "\$candidate_env_file" >"\$env_file"/);
-  assert.match(script, /rm -f "\$candidate_env_file"/);
-  assert.match(script, /cleanup_runtime_backup\n\s*deploy_completed=true/);
+  assert.match(script, /cat "\$candidate_env_file" >"\$env_file"\n\s*deploy_completed=true/);
+  assert.match(script, /rm -f "\$candidate_env_file" \|\| echo "\[ecs:remote\] warning: failed to remove candidate env/);
+  assert.match(script, /deploy_completed=true\n\s*rm -f "\$candidate_env_file"[\s\S]*cleanup_runtime_backup/);
   assert.match(script, /deploy_completed=true/);
 });
 
-test('ECS deploy smoke checks all app services, not only gateway ready', () => {
+test('ECS deploy smoke checks only selected app services', () => {
   const script = readRepoFile('scripts/deploy-ecs.sh');
 
-  assert.match(script, /probe_internal_services\(\)/);
-  assert.match(script, /\['gateway ready', 'http:\/\/127\.0\.0\.1:8788\/ready'\]/);
-  assert.match(script, /\['worker health', 'http:\/\/pages-worker:8790\/health'\]/);
-  assert.match(script, /\['slack-agent health', 'http:\/\/slack-agent:8791\/health'\]/);
-  assert.match(script, /\['slack-notifier health', 'http:\/\/slack-notifier:8792\/health'\]/);
-  assert.match(script, /curl -fsS http:\/\/127\.0\.0\.1:80\/ready[\s\S]*probe_internal_services/);
+  assert.match(script, /smoke_service_health\(\)/);
+  assert.match(script, /smoke_app_services\(\)/);
+  assert.match(script, /smoke_targets=\("\$\{selected_services\[@\]\}"\)/);
+  assert.match(script, /if is_truthy "\$restart_all"; then\n\s*smoke_targets=\("\$\{all_services\[@\]\}"\)/);
+  assert.match(script, /smoke_service_health pages-gateway "gateway ready" "http:\/\/127\.0\.0\.1:8788\/ready" \|\| return 1/);
+  assert.match(script, /smoke_service_health pages-worker "worker health" "http:\/\/127\.0\.0\.1:8790\/health" \|\| return 1/);
+  assert.match(
+    script,
+    /smoke_service_health slack-agent "slack-agent health" "http:\/\/127\.0\.0\.1:8791\/health" \|\| return 1/
+  );
+  assert.match(
+    script,
+    /smoke_service_health slack-notifier "slack-notifier health" "http:\/\/127\.0\.0\.1:8792\/health" \|\| return 1/
+  );
+  assert.match(script, /if contains_service gateway "\$\{smoke_targets\[@\]\}" && ! smoke_gateway_frontdoor; then/);
+  assert.doesNotMatch(script, /ECS_SMOKE_CHECKS/);
+  assert.doesNotMatch(script, /exec -T pages-gateway \\\n\s*env "ECS_SMOKE_CHECKS/);
   assert.match(script, /deployment smoke ok/);
   assert.doesNotMatch(script, /gateway did not become ready in time/);
 });
@@ -145,4 +163,8 @@ test('ECS deploy rolls back services and keeps image/build retention bounded', (
   assert.match(script, /cleanup_old_release_dirs\(\)/);
   assert.match(script, /find "\$remote_build_dir" -maxdepth 1 -mindepth 1 -type d -name 'ecs-\*'/);
   assert.match(script, /rm -rf "\$dir" \|\| echo "\[ecs:remote\] warning: failed to prune old release dir \$\{dir\}"/);
+  assert.match(script, /cleanup_old_runtime_backups\(\)/);
+  assert.match(script, /find "\$backup_root" -maxdepth 1 -mindepth 1 -type d -name 'ecs-\*'/);
+  assert.match(script, /if \(\( kept > runtime_backup_retention \)\); then/);
+  assert.match(script, /rm -rf "\$dir" \|\| echo "\[ecs:remote\] warning: failed to prune old runtime backup \$\{dir\}"/);
 });

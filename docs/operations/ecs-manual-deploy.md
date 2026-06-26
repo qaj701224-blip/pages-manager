@@ -95,15 +95,16 @@ runner 上。
 ECS_REMOTE_DIR=/opt/pages-manager
 ECS_REMOTE_BUILD_DIR=/opt/pages-manager-build
 ECS_ENV_FILE_REMOTE=/opt/pages-manager/.env.ecs
-ECS_IMAGE_REGISTRY=local
 ECS_DOCKER_PLATFORM=linux/amd64
 ECS_SMOKE_TIMEOUT_SECONDS=120
 ECS_IMAGE_RETENTION=5
 ECS_BUILD_DIR_RETENTION=5
+ECS_RUNTIME_BACKUP_RETENTION=0
 ```
 
-如果 ECS 使用远端镜像仓库，把 `ECS_IMAGE_REGISTRY` 设置为对应 registry；
-当前本机 build / compose 部署可以使用 `local`。
+`ECS_IMAGE_REGISTRY` 可以不配置；未配置时部署脚本沿用 ECS `.env.ecs` 里的
+`PAGES_IMAGE_REGISTRY`，避免 GitHub vars 覆盖当前生产 registry。只有需要迁移
+registry 时才显式设置 `ECS_IMAGE_REGISTRY`。
 
 以下值应继续只保存在 ECS `.env.ecs`：
 
@@ -136,16 +137,20 @@ ECS_DEPLOY_MODE=local bash scripts/deploy-ecs.sh
 
 1. 把当前 checkout 打包到 ECS build 目录。
 2. 为四个 app service 构建不可变 tag。
-3. 备份当前 runtime env、compose、Caddyfile 和 Dockerfile。
-4. 写 candidate env，只修改 `PAGES_IMAGE_REGISTRY` 和 `PAGES_IMAGE_TAG`。
-5. `docker compose up` 目标服务。
-6. 等待 gateway ready、worker health、slack-agent health、slack-notifier health。
-7. smoke 通过后再写回 `/opt/pages-manager/.env.ecs`。
-8. 构建、镜像检查、compose 或 smoke 任一阶段失败时，回滚 runtime 文件、env
+3. 部署前清理旧 runtime backup 目录；默认 `ECS_RUNTIME_BACKUP_RETENTION=0`
+   表示不保留历史 backup，只保留本轮失败回滚所需的临时备份。
+4. 备份当前 runtime env、compose、Caddyfile 和 Dockerfile。
+5. 写 candidate env，只修改 `PAGES_IMAGE_REGISTRY` 和 `PAGES_IMAGE_TAG`；如果
+   未配置 `ECS_IMAGE_REGISTRY`，则沿用 `.env.ecs` 原值。
+6. `docker compose up` 目标服务。
+7. 等待目标服务 health；只有部署 gateway 时额外检查 Caddy `/ready`。
+8. smoke 通过后再写回 `/opt/pages-manager/.env.ecs`。
+9. 构建、镜像检查、compose 或 smoke 任一阶段失败时，回滚 runtime 文件、env
    和服务；成功或回滚完成后清理包含 `.env.ecs` 副本的临时备份目录。
 
-默认 `ECS_SERVICES=all`。第一版保持四服务一起部署，避免拆分服务后出现旧镜像
-组合不一致。后续可以基于路径进一步拆成单服务部署。
+默认 `ECS_SERVICES=all`。测试阶段可以传 `services=gateway`、`services=worker`、
+`services=slack-agent` 或 `services=slack-notifier` 做单服务部署；smoke 只校验
+本次目标服务，避免非目标服务短暂异常误阻塞部署。
 
 ## 测试路径
 
@@ -191,7 +196,8 @@ services=gateway
 
 1. 在 GitHub repository variables 配置非敏感 ECS 变量：
    `ECS_REMOTE_DIR`、`ECS_REMOTE_BUILD_DIR`、`ECS_ENV_FILE_REMOTE`、
-   `ECS_IMAGE_REGISTRY`、`ECS_DOCKER_PLATFORM`、`ECS_SMOKE_TIMEOUT_SECONDS`。
+   `ECS_DOCKER_PLATFORM`、`ECS_SMOKE_TIMEOUT_SECONDS`。`ECS_IMAGE_REGISTRY`
+   只有迁移 registry 时才需要配置。
 2. 在 ECS 上安装 GitHub self-hosted runner，并确保 label 包含
    `pages-manager-ecs`。
 3. 在 ECS 上完成 preflight：确认 `.env.ecs` 存在、Docker / Docker Compose

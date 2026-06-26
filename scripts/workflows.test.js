@@ -156,7 +156,13 @@ test('deploy workflows keep production manual and separate wrangler token from r
   assert.match(combined, /printf '%s' "\$CF_API_TOKEN" \| pnpm --dir apps\/server exec wrangler secret put CF_API_TOKEN/);
   assert.match(
     production,
-    /Generate Server Wrangler config[\s\S]*HOSTNAME_CLAIMS_MODE: enforce[\s\S]*run: scripts\/gen-wrangler\.sh apps\/server production/,
+    new RegExp(
+      [
+        'Generate Server Wrangler config',
+        '[\\s\\S]*HOSTNAME_CLAIMS_MODE: enforce',
+        '[\\s\\S]*run: scripts/gen-wrangler\\.sh apps/server production',
+      ].join('')
+    ),
     'v1 production deploy fails closed on hostname claim conflicts'
   );
   assert.doesNotMatch(combined, /RUNTIME_CF_API_TOKEN/);
@@ -186,10 +192,24 @@ test('ECS deploy workflow uses self-hosted runner and is manually dispatched onl
   assert.match(workflow, /test -w "\$ECS_REMOTE_DIR\/Dockerfile\.node-service"/);
   assert.match(workflow, /test -w "\$ECS_REMOTE_DIR\/deploy\/ecs"/);
   assert.match(workflow, /test -w "\$ECS_REMOTE_DIR\/deploy\/ecs\/Caddyfile"/);
+  assert.match(workflow, /ECS_IMAGE_REGISTRY: \$\{\{ vars\.ECS_IMAGE_REGISTRY \}\}/);
+  assert.doesNotMatch(workflow, /ECS_IMAGE_REGISTRY: \$\{\{ vars\.ECS_IMAGE_REGISTRY \|\| 'local' \}\}/);
   assert.match(workflow, /bash scripts\/deploy-ecs\.sh/);
   assert.match(workflow, /concurrency:[\s\S]*group: ecs-production[\s\S]*cancel-in-progress: false/);
   assert.match(workflow, /permissions:\n {2}contents: read/);
-  assert.doesNotMatch(workflow, /ECS_SSH_PRIVATE_KEY|ECS_SSH_TARGET|ssh |scp |CLOUDFLARE_API_TOKEN|CF_API_TOKEN|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID/);
+  for (const forbidden of [
+    'ECS_SSH_PRIVATE_KEY',
+    'ECS_SSH_TARGET',
+    'ssh ',
+    'scp ',
+    'CLOUDFLARE_API_TOKEN',
+    'CF_API_TOKEN',
+    'KUBE_CONFIG_B64',
+    'ALIYUN_ACCESS_KEY',
+    'ACR_INSTANCE_ID',
+  ]) {
+    assert.doesNotMatch(workflow, new RegExp(forbidden));
+  }
 
   const detector = readWorkflow('scripts/detect-ecs-deploy.sh');
   assert.match(detector, /ecs_path_re='.*apps\/\(gateway\|worker\|slack-agent\|slack-notifier\)\//);

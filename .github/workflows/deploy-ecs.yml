@@ -110,7 +110,7 @@ jobs:
           ECS_REMOTE_DIR: ${{ vars.ECS_REMOTE_DIR || '/opt/pages-manager' }}
           ECS_REMOTE_BUILD_DIR: ${{ vars.ECS_REMOTE_BUILD_DIR || '/opt/pages-manager-build' }}
           ECS_ENV_FILE_REMOTE: ${{ vars.ECS_ENV_FILE_REMOTE || '/opt/pages-manager/.env.ecs' }}
-          ECS_IMAGE_REGISTRY: ${{ vars.ECS_IMAGE_REGISTRY || 'local' }}
+          ECS_IMAGE_REGISTRY: ${{ vars.ECS_IMAGE_REGISTRY }}
           ECS_DOCKER_PLATFORM: ${{ vars.ECS_DOCKER_PLATFORM || 'linux/amd64' }}
           ECS_SMOKE_TIMEOUT_SECONDS: ${{ vars.ECS_SMOKE_TIMEOUT_SECONDS || '120' }}
           ECS_IMAGE_RETENTION: ${{ vars.ECS_IMAGE_RETENTION || '5' }}
