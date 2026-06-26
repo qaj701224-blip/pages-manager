@@ -95,6 +95,7 @@ jobs:
               name: parsed.name || name,
               preset: parsed.preset || null,
               scriptName: parsed.scriptName || null,
+              ownerId: parsed.ownerId || null,
               url: parsed.url || null,
               createdAt: parsed.createdAt || null,
               updatedAt: parsed.updatedAt || null,
@@ -142,6 +143,31 @@ jobs:
             --v2-routes .hostname-claims/v2-routes.json \
             --out .hostname-claims/out
 
+      - name: Write hostname claims summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .hostname-claims/out/summary.json ]]; then
+            exit 0
+          fi
+          node --input-type=module <<'NODE'
+          import { appendFile, readFile } from 'node:fs/promises';
+          const summary = JSON.parse(await readFile('.hostname-claims/out/summary.json', 'utf8'));
+          const lines = [
+            '## Hostname Claims Conflict Check',
+            '',
+            `- environment: \`${summary.environment}\``,
+            `- v1 sites: \`${summary.v1Sites}\``,
+            `- v2 routes: \`${summary.v2Routes}\``,
+            `- claims: \`${summary.claims}\``,
+            `- blocking conflicts: \`${summary.conflicts}\``,
+            `- slug coexistence groups: \`${summary.slugCoexistence}\``,
+            '',
+          ];
+          await appendFile(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
+          NODE
+
       - name: Apply hostname claims backfill
         if: ${{ inputs.apply }}
         shell: bash
@@ -172,5 +198,6 @@ jobs:
             .hostname-claims/v1-sites.sanitized.json
             .hostname-claims/v2-routes.json
             .hostname-claims/out/summary.json
+            .hostname-claims/out/slug-coexistence.json
             .hostname-claims/out/claims.sql
             .hostname-claims/out/conflicts.sql

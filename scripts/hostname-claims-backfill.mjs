@@ -17,7 +17,7 @@ export function buildHostnameClaimBackfillPlan({ environment, v1Sites = [], v2Ro
       normalizedSlug: name,
       hostnameFamily: 'workers',
       ownerSystem: 'v1',
-      ownerId: `v1:${environment}:${name}`,
+      ownerId: normalizeOptionalString(site.ownerId) || `v1:${environment}:${name}`,
       ownerRef: normalizeOptionalString(site.scriptName) || null,
       source: 'backfill_v1_sites',
     };
@@ -45,7 +45,7 @@ export function buildHostnameClaimBackfillPlan({ environment, v1Sites = [], v2Ro
 
   const conflicts = [];
   const blockedHostnames = new Set();
-  const blockedSlugs = new Set();
+  const slugCoexistence = [];
   for (const [hostname, candidates] of candidatesByHostname.entries()) {
     if (hasMultipleOwners(candidates)) {
       blockedHostnames.add(hostname);
@@ -53,20 +53,25 @@ export function buildHostnameClaimBackfillPlan({ environment, v1Sites = [], v2Ro
     }
   }
   for (const [slugKey, candidates] of candidatesBySlug.entries()) {
-    if (hasMultipleOwners(candidates)) {
-      blockedSlugs.add(slugKey);
-      for (const candidate of candidates) conflicts.push(conflictFromCandidate(candidate, 'slug_duplicate'));
+    const liveCandidates = candidates.filter((candidate) => !blockedHostnames.has(candidate.hostname));
+    if (!hasMultipleOwners(liveCandidates)) continue;
+    if (isAllowedLegacySlugCoexistence(liveCandidates)) {
+      slugCoexistence.push(coexistenceFromCandidates(slugKey, liveCandidates));
+      continue;
+    }
+    for (const candidate of liveCandidates) {
+      blockedHostnames.add(candidate.hostname);
+      conflicts.push(conflictFromCandidate(candidate, 'slug_duplicate'));
     }
   }
 
   for (const [hostname, candidates] of candidatesByHostname.entries()) {
     const candidate = candidates[0];
-    const slugKey = `${candidate.environment}:${candidate.normalizedSlug}`;
-    if (blockedHostnames.has(hostname) || blockedSlugs.has(slugKey)) continue;
+    if (blockedHostnames.has(hostname)) continue;
     claims.push(candidate);
   }
 
-  return { claims, conflicts };
+  return { claims, conflicts, slugCoexistence };
 }
 
 export function renderHostnameClaimBackfillSql(plan, { observedAt = new Date().toISOString() } = {}) {
@@ -90,6 +95,7 @@ export async function runHostnameClaimBackfillCli(argv = process.argv.slice(2), 
   await Promise.all([
     writeFile(resolve(outputDir, 'claims.sql'), `${sql.claimsSql}\n`),
     writeFile(resolve(outputDir, 'conflicts.sql'), `${sql.conflictsSql}\n`),
+    writeFile(resolve(outputDir, 'slug-coexistence.json'), `${JSON.stringify(plan.slugCoexistence, null, 2)}\n`),
     writeFile(
       resolve(outputDir, 'summary.json'),
       `${JSON.stringify(
@@ -99,6 +105,7 @@ export async function runHostnameClaimBackfillCli(argv = process.argv.slice(2), 
           v2Routes: v2Routes.length,
           claims: plan.claims.length,
           conflicts: plan.conflicts.length,
+          slugCoexistence: plan.slugCoexistence.length,
           observedAt,
         },
         null,
@@ -107,7 +114,9 @@ export async function runHostnameClaimBackfillCli(argv = process.argv.slice(2), 
     ),
   ]);
 
-  const summary = `hostname-claims-backfill ${environment}: claims=${plan.claims.length} conflicts=${plan.conflicts.length}`;
+  const summary =
+    `hostname-claims-backfill ${environment}: claims=${plan.claims.length} ` +
+    `conflicts=${plan.conflicts.length} slugCoexistence=${plan.slugCoexistence.length}`;
   if (io.stdout?.write) io.stdout.write(`${summary}\n`);
   else console.log(summary);
   if (plan.conflicts.length > 0 && !allowConflicts) return 1;
@@ -129,6 +138,19 @@ function hasMultipleOwners(candidates) {
   return new Set(candidates.map((candidate) => `${candidate.ownerSystem}:${candidate.ownerId}`)).size > 1;
 }
 
+function isAllowedLegacySlugCoexistence(candidates) {
+  if (candidates.length !== 2) return false;
+  const [first, second] = candidates;
+  return (
+    first.ownerId === second.ownerId &&
+    new Set(candidates.map((candidate) => candidate.ownerSystem)).size === 2 &&
+    candidates.every((candidate) => ['v1', 'v2'].includes(candidate.ownerSystem)) &&
+    new Set(candidates.map((candidate) => candidate.hostnameFamily)).size === 2 &&
+    candidates.every((candidate) => ['workers', 'pages'].includes(candidate.hostnameFamily)) &&
+    first.hostname !== second.hostname
+  );
+}
+
 function conflictFromCandidate(candidate, reason) {
   return {
     environment: candidate.environment,
@@ -139,6 +161,20 @@ function conflictFromCandidate(candidate, reason) {
     candidateRef: candidate.ownerRef,
     candidateHostname: candidate.hostname,
     reason,
+  };
+}
+
+function coexistenceFromCandidates(slugKey, candidates) {
+  const [environment, normalizedSlug] = slugKey.split(':');
+  return {
+    environment,
+    normalizedSlug,
+    candidates: candidates.map((candidate) => ({
+      hostname: candidate.hostname,
+      ownerSystem: candidate.ownerSystem,
+      ownerId: candidate.ownerId,
+      ownerRef: candidate.ownerRef,
+    })),
   };
 }
 

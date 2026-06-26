@@ -113,7 +113,7 @@ CREATE TABLE hostname_claims (
 CREATE UNIQUE INDEX idx_hostname_claims_hostname
   ON hostname_claims(hostname);
 
-CREATE UNIQUE INDEX idx_hostname_claims_environment_slug_live
+CREATE INDEX idx_hostname_claims_environment_slug_live
   ON hostname_claims(environment, normalized_slug)
   WHERE status IN ('pending', 'active', 'held', 'conflicted');
 ```
@@ -123,12 +123,13 @@ CREATE UNIQUE INDEX idx_hostname_claims_environment_slug_live
 - `hostname` 是真实访问域名，例如 `test.workers.xd.team` 或 `test.pages.xd.team`。
 - `normalized_slug` 是跨 suffix 的站点名，例如 production `test.workers.xd.team`、production `test.pages.xd.team` 都归一为 `test`；staging `test-staging.workers.xd.team` 也归一为 `test`。
 - `hostname_family` 区分 `workers`、`pages` 或其它系统保留 host family，用于迁移期审计和 slug 互斥判断。
-- `owner_system` 只能是 `v1`、`v2` 或 `system`；`owner_id` 对 v1 使用 `v1:<environment>:<name>`，对 v2 使用 `site_id`。
+- `owner_system` 只能是 `v1`、`v2` 或 `system`；`owner_id` 对 v1 默认使用 `v1:<environment>:<name>`，如迁移输入中已有非敏感、稳定的跨系统 owner 标识，也可以使用该标识来证明 legacy v1/v2 同 owner 共存；v2 使用 `site_id`。
 - `owner_ref` 只做诊断定位，v1 可写 `scriptName`，v2 可写 `site_routes.id`。
 - `status` 取值为 `pending`、`active`、`released`、`held`、`conflicted`。同一 hostname 复用时优先更新原 claim 行的状态，不通过重复插入绕过唯一约束。
 - `pending` 只用于 v1 新建这类无法和 Cloudflare / KV 放进同一事务的外部操作；v1 在 Cloudflare deploy、route bind、`SITES.put` 全部成功后确认成 `active`，过期 pending 由 reconciliation 处理。
 - `reuse_hold_until` 是删除后的短暂复用保护，不是长期观察期。它只用于避免 v1 exact route、Worker script、KV/D1 删除尚未全部确认时立刻把 hostname 分配给另一方；如果 release 时已同步确认 Cloudflare route/script 和业务源数据都清理完成，可以把 hold 设得很短。
-- `normalized_slug` 通过 partial unique index 约束同一 environment 下的 live claim（`pending`、`active`、`held`、`conflicted`）。存量 v2 `pages.xd.team` claim 必须能与自身访问保留共存；如果同 owner 沿用原 hostname，acquire 幂等返回 ok。跨 v1/v2 同名互斥不能只靠 app 层先查后写：新建 workers host 时，不允许存在他方 live claim；存量 pages host 的 deploy / rollback / policy update 只读取既有 `site_routes.hostname`，不重新 acquire 新 hostname。
+- `normalized_slug` 不是唯一 key，而是同名站点释放组。只有能够证明是同一 owner 的 legacy v1/v2、且分别占用 `workers` / `pages` 两个不同 hostname 时，回填才允许同时写入 active claim，保证两边原 host 都能继续 deploy / rollback / policy update。
+- 新增 claim 仍必须检查同一 `environment + normalized_slug` 下是否存在他方 live claim。也就是说，只有明确同 owner 的存量 legacy v1/v2 同 slug 可以共存；同系统多 owner、无法证明同 owner 的 v1/v2、第三个 owner、新建 `pages.xd.team` 到 `workers.xd.team` 静默迁移都必须阻断。只有同 slug 组内所有 claim 都 release / delete，且 reuse hold 到期后，该 slug 才重新可用。
 
 v1 `SITES` KV 回填示例：
 
@@ -159,7 +160,7 @@ source: backfill_v1_sites
 acquired_at: 2026-05-14T02:43:13.845Z
 ```
 
-`hostname_claim_conflicts` 是不丢数据的诊断队列，不是所有行都必须人工处理。建议字段：
+`hostname_claim_conflicts` 是不丢数据的阻断冲突诊断队列，不是所有同 slug 情况都写入该表。建议字段：
 
 ```sql
 CREATE TABLE hostname_claim_conflicts (
@@ -182,20 +183,24 @@ CREATE TABLE hostname_claim_conflicts (
 
 - 可以自动 resolve：同源同 owner 重复回填、已 release 且 reuse hold 已过并确认源数据不存在、重复运行回填产生的完全相同候选。
 - 可由脚本二次确认后批量 resolve：v1 KV 有记录但 exact route / Worker script 缺失，或 Cloudflare route 存在但 KV 缺失。这类必须输出脱敏摘要，不能静默删除线上资源。
-- 必须人工处理：v1 和 v2 都有 live 数据且 `normalized_slug` 相同；同一 hostname 被不同 owner 声称；v1 KV、Cloudflare route、Worker script 三者不一致且无法判断真实线上入口。
-- 冲突存在时，`hostname_claims.status` 置为 `conflicted`，v1 deploy / v2 create 对同 hostname 或同 `normalized_slug` 返回 409，直到冲突被 resolve。
+- 必须人工处理：同一 hostname 被不同 owner 声称；v1 KV、Cloudflare route、Worker script 三者不一致且无法判断真实线上入口。
+- v1 和 v2 已有 live 数据且 `normalized_slug` 相同、hostname 不同、并且能通过非敏感 `owner_id` 证明同 owner，才是 legacy coexistence，不写入 `hostname_claim_conflicts`，也不阻断回填 apply。无法证明同 owner 的同 slug 多 owner 候选默认写入 blocking conflict，避免 `apply=true` 写出运行时会拒绝的新权威状态。
+- 阻断冲突存在时，对应 hostname 不写入 active claim；v1 deploy / v2 create 对同 hostname 或同 `normalized_slug` 的新增申请返回 409，直到冲突被 resolve。
 
 ## 快速上线流程
 
 当前用户量较小，可以不做独立双写观察阶段。实现仍按 PR 1、PR 2、PR 3 三段拆分，便于 review 和回滚；上线时允许 PR 2 + PR 3 合并到同一个 production 发布窗口，一次手动部署完成 delete/reuse hold 与 workers 默认域切换。
 
-PR 2 + PR 3 一次部署的硬门禁是 `.github/workflows/hostname-claims-conflict-check.yml`：
+PR 2 + PR 3 一次部署的硬门禁是 `.github/workflows/hostname-claims-conflict-check.yml`。这个 workflow 有两种运行方式：
 
-1. 手动触发 `Hostname Claims Conflict Check`，选择目标 `environment`。
+1. 先手动触发 `Hostname Claims Conflict Check`，选择目标 `environment`，`apply=false` 做 dry-run。
 2. workflow 只读导出目标环境 v1 `SITES` KV 的脱敏字段和 v2 未删除站点对应的全部 `site_routes`，包括 disabled route。
-3. workflow 运行 `scripts/hostname-claims-backfill.mjs` 生成 `claims.sql`、`conflicts.sql` 和 `summary.json` artifact，不 apply SQL、不 deploy、不写 Cloudflare 资源。
-4. 只有 summary 中冲突数量为 0，且 v1/v2 数量与预期一致时，才能进入 production 手动部署。
-5. 冲突不为 0 时停止 cutover；先按 `hostname_claim_conflicts` 的 owner/hostname 摘要处理数据，不允许带冲突部署 workers wildcard。
+3. workflow 运行 `scripts/hostname-claims-backfill.mjs` 生成 `claims.sql`、`conflicts.sql`、`slug-coexistence.json` 和 `summary.json` artifact；dry-run 不 apply SQL、不 deploy、不写 Cloudflare 资源。
+4. 只有 summary 中 blocking 冲突数量为 0，且 v1/v2 数量与预期一致时，才能执行初次写入 D1。
+5. `slugCoexistence` 可以大于 0；它表示存量 v1/v2 同 owner、同 slug 但不同 hostname 的共存组。上线前通过 `slug-coexistence.json` 人工抽样确认这些站点两边都应保留，不能把它当成 `HOSTNAME_CLAIM_CONFLICT`。
+6. 确认 dry-run 结果后，重新触发同一个 workflow，保持相同 `environment`，勾选 `apply=true`。workflow 会重新导出实时 v1/v2 数据，并且只有 blocking 冲突仍为 0 时才把 `claims.sql` 写入目标 D1。
+7. D1 写入完成后再手动触发 v1 / v2 production deploy；deploy workflow 仍不自动触发。
+8. blocking 冲突不为 0 时停止 cutover；先按 `hostname_claim_conflicts` 的 owner/hostname 摘要处理数据，不允许带同 hostname 多 owner 冲突部署 workers wildcard。
 
 这条门禁替代长时间 shadow/observe，但不删除 `record_only` / `enforce` 开关。异常时可以把 v1 claim gate 临时降级到 `record_only` 继续收集审计，同时停止新增 workers v2 站点或撤下 v2 workers wildcard。
 
@@ -207,15 +212,15 @@ PR 2 + PR 3 一次部署的硬门禁是 `.github/workflows/hostname-claims-confl
 
 - D1 migration 增加 `hostname_claims`，以 `hostname` 作为唯一权威 key。
 - store helper 支持 `acquire`、`confirm pending` 和失败新建的 `release pending`，覆盖幂等、同主体重入、他方冲突和 released hostname retry。
-- acquire 必须靠 hostname 唯一约束和 live slug partial unique index 保证原子性，不能只做 app 层 SELECT 后 INSERT。
+- acquire 必须靠 hostname 唯一约束保证真实访问域名原子占用；同 slug 组锁由同一 D1 batch / transaction 内的 live claim 查询保证，不能只在外层调用方做松散 SELECT。
 - claim enforcement 必须有环境级开关，至少支持 `record_only` 和 `enforce`。可以缩短 record-only 时间，但不能删除这条能力；回填、normalize 或内部调用出错时必须能临时切回只记录不拒绝。
 - v1 通过 `HOSTNAME_CLAIMS` service binding 调用 pages-api internal endpoint `https://pages-api.internal/.xd-pages/internal/hostname-claims/acquire`。wrangler 默认 `HOSTNAME_CLAIMS_MODE=record_only`；staging binding 指向 `pages-api-staging`，production binding 指向 `pages-api`。
 - 新增一次性回填脚本或内部管理命令：
   - 输入必须来自目标环境的脱敏导出：v1 `SITES` KV 只保留 `name`、`scriptName`、时间等非 secret 字段；v2 D1 只导出未删除站点对应的 `site_routes` 字段。
   - 读取 v1 导出，生成 `<name>.workers.xd.team` 或 `<name>-staging.workers.xd.team` claim。
   - 读取 v2 所有未删除站点对应的 `site_routes`，生成当前 `{slug}.pages.xd.team` / `{slug}-staging.pages.xd.team` claim；不能只读取 active route，`disabled` 站点同样占用 hostname。
-  - 生成 insert-if-hostname-absent SQL，不覆盖已有 claim；live slug 唯一约束冲突必须让 D1 写入失败，不能静默吞掉。
-  - 发现重复 hostname 或 normalized slug 时输出 `hostname_claim_conflicts` SQL 和摘要，并默认 fail closed。
+  - 生成 insert-if-hostname-absent SQL，不覆盖已有 claim；同 hostname 多 owner 必须输出 `hostname_claim_conflicts` SQL 和摘要，并默认 fail closed。
+  - 发现同 `normalized_slug`、不同 hostname、同 owner 的存量 v1/v2 候选时，写入两条 hostname claim，并在 summary 中增加 `slugCoexistence` 计数；无法证明同 owner 或同系统多 owner 的同 slug 候选写入 blocking conflict。
 - v1 deploy 在 Cloudflare 上传 / `bindRoute` 前检查 v2 统一 slug/reserved 规则，并 `acquire(hostname, 'v1', owner_id)`。新建成功写入 `SITES` KV 后确认 pending claim 为 active；Cloudflare / route / `SITES.put` 失败时只释放本次新建的 pending claim，更新已有 v1 站点失败不得释放原 active claim。
 - v2 create 必须把 claim、`sites`、`site_routes`、`site_members` 放在同一个 D1 batch / transaction 中提交。v2 不采用“先 acquire 再补偿 release”的外部操作模型；只有 v1 因为涉及 Cloudflare route / KV 需要 pending lease 和 reconciliation。
 - 内部接口只供 v1 / pages-api 内部链路使用，不能变成公开用户 API。
@@ -225,10 +230,11 @@ PR 2 + PR 3 一次部署的硬门禁是 `.github/workflows/hostname-claims-confl
 - staging apply migration。
 - staging 先以 `record_only` 模式跑 v1 deploy / v2 create 冒烟，确认会记录预期 claim 决策。
 - staging 跑回填，确认 claim 行数与 v1 `SITES` + v2 未删除站点对应 `site_routes` 对齐。
-- 冲突清单为空；如果不为空，先人工处理冲突，不进入下一步。
+- blocking 冲突清单为空；如果不为空，先人工处理冲突，不进入下一步。`slugCoexistence` 不要求为 0，但必须人工确认属于已证明同 owner 的预期存量共存。
 - staging 验证：v1 新 deploy、v2 新 create、v1/v2 同名互斥 409。
 - production apply migration 前确认 production 回填命令使用 production v1 KV 和 production v2 D1，不读取 staging 资源。
-- production 跑回填后导出摘要：v1 数量、v2 数量、claim 数量、冲突数量。
+- production 先 dry-run 回填并复核摘要：v1 数量、v2 数量、claim 数量、blocking 冲突数量和 `slugCoexistence` 数量。
+- production dry-run 通过后，用同一个 `Hostname Claims Conflict Check` 勾选 `apply=true` 写入 D1；workflow 会重新导出实时数据并再次校验 blocking 冲突为 0。
 
 ### PR 2: 删除回收和 hostname 释放
 
@@ -247,7 +253,7 @@ PR 2 + PR 3 一次部署的硬门禁是 `.github/workflows/hostname-claims-confl
 - staging 跑通创建、删除、reuse hold 内拒绝、reuse hold 后复用。
 - v1 已存在时 v2 同名创建被拒；v2 已存在时 v1 同名 deploy 被拒。
 - v1 delete 后 exact route 不再悬挂遮蔽 v2 wildcard。
-- production 开启前确认 v1 delete route unbind 使用 production zone，且不会删除 v2 wildcard route。PR 2 可以和 PR 3 同一个 production deploy 落地，但必须等 conflict-check workflow 显示冲突为 0。
+- production 开启前确认 v1 delete route unbind 使用 production zone，且不会删除 v2 wildcard route。PR 2 可以和 PR 3 同一个 production deploy 落地，但必须等 conflict-check workflow 显示 blocking 冲突为 0。
 
 ### PR 3: 放开 workers.xd.team 并切默认域
 
@@ -279,7 +285,7 @@ staging 必测：
 - 既有 v1 workers 站点抽样无影响。
 - router/auth 安全测试覆盖 workers host。
 - production router 新增 `*.workers.xd.team/*` 时必须保留 `*.pages.xd.team/*`。
-- production cutover 前必须运行 `Hostname Claims Conflict Check`，确认 claim 回填输入与当前 production KV/D1 对齐且冲突数量为 0。
+- production cutover 前必须运行 `Hostname Claims Conflict Check`，确认 claim 回填输入与当前 production KV/D1 对齐、blocking 冲突数量为 0，且 `slugCoexistence` 全部属于已证明同 owner 的预期存量共存。
 - 手动触发 `Deploy XD Pages Production`，每个组件部署后立即冒烟；异常即停，不继续后续步骤。
 
 ## cutover 后的 v1 deploy 流程
@@ -339,7 +345,7 @@ staging 必测：
 1. v2 校验 actor 权限。
 2. v2 写 `sites.deleted_at`，并回收或失效 `site_routes` 当前 hostname。
 3. v2 release claim 进入 reuse hold；release 必须校验 `owner_system='v2'` 且 `owner_id=site_id`。
-4. reuse hold 内 v1/v2 同名新建都返回 409；reuse hold 到期后才允许重新 acquire。
+4. reuse hold 内 v1/v2 同名新建都返回 409；只有同 slug 组内所有 live / held claim 都释放且 reuse hold 到期后，才允许重新 acquire。
 
 ## 上线后验证
 
@@ -372,15 +378,15 @@ Checklist 只记录每步必须完成的内容和人工配置项，不要求长�
 
 ### PR 1 checklist
 
-- [ ] migration 建 `hostname_claims`，`hostname` 唯一，并用 partial unique index 保证同环境 live `normalized_slug` 互斥。
+- [ ] migration 建 `hostname_claims`，`hostname` 唯一，并为同环境 live `normalized_slug` 建普通索引用于新增门禁查询。
 - [ ] helper / 内部接口支持 acquire、confirm pending、失败新建 release pending 和幂等重入。
 - [ ] claim enforcement 支持 `record_only` / `enforce` 环境开关。
-- [ ] 回填脚本读取脱敏 v1 `SITES` 导出和 v2 未删除站点对应 `site_routes` 导出，生成 insert-if-hostname-absent SQL 和冲突 SQL，冲突默认 fail closed。
+- [ ] 回填脚本读取脱敏 v1 `SITES` 导出和 v2 未删除站点对应 `site_routes` 导出，生成 insert-if-hostname-absent SQL 和冲突 SQL；同 hostname 多 owner、同系统同 slug 多 owner、无法证明同 owner 的 v1/v2 同 slug 默认 fail closed，只有已证明同 owner 的 legacy v1/v2 `workers` / `pages` pair 记为 `slugCoexistence`。
 - [ ] v1 deploy 使用 v2 统一 slug/reserved 校验，并在 Cloudflare deploy 前 acquire claim。
 - [ ] v1 新建成功后 confirm active，Cloudflare / route / `SITES.put` 失败时 best-effort release pending；更新已有站点失败不得 release 原 claim。
 - [ ] v2 create 把 claim、site、route、member 放入同一个 D1 batch / transaction。
 - [ ] staging migration + 回填 + v1/v2 新建互斥测试通过。
-- [ ] production migration + 回填前确认使用 production KV/D1；回填后冲突数量为 0。
+- [ ] production migration + 回填前确认使用 production KV/D1；dry-run 后 blocking 冲突数量为 0，`slugCoexistence` 已按同 owner 证据人工复核；再用 `apply=true` 写入 D1。
 
 ### PR 2 + PR 3 一次部署 checklist
 
@@ -397,7 +403,8 @@ Checklist 只记录每步必须完成的内容和人工配置项，不要求长�
 - [ ] 默认新站点 hostname 切到 workers suffix。
 - [ ] 存量 v2 站点 deploy / rollback / policy update 沿用原 `site_routes.hostname`。
 - [ ] docs / skill / README / CLI help / OpenAPI 开发合约同步。
-- [ ] 手动运行 `Hostname Claims Conflict Check`，artifact 中 v1/v2 输入脱敏且 `summary.json` 冲突数为 0。
+- [ ] 手动运行 `Hostname Claims Conflict Check` dry-run，artifact 中 v1/v2 输入脱敏、`summary.json` blocking 冲突数为 0，且 `slugCoexistence` 只包含已证明同 owner 的预期存量共存。
+- [ ] production D1 已通过 `Hostname Claims Conflict Check` 的 `apply=true` 写入初始 `hostname_claims`。
 - [ ] staging 实测 exact route 优先于 wildcard、partial zone wildcard 可用、auth/cookie 正常、ACL fail-closed。
 - [ ] production 冒烟新 v2 workers 站点、存量 v1 workers 站点、存量 v2 pages 站点，以及存量 v2 pages 站点重新部署后仍保留老域名。
 
