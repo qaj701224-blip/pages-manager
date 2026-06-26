@@ -98,7 +98,7 @@ if [[ "$app" == "apps/server" ]]; then
       public_manager_dev_base="https://pages-manager.xd-cf-2022.workers.dev"
       domain_label=""
       worker_prefix="pages-"
-      api_route="api.workers.xd.team"
+      api_route="api.workers.xd.team/*"
       pages_api_service="pages-api"
       ;;
     staging)
@@ -108,7 +108,7 @@ if [[ "$app" == "apps/server" ]]; then
       public_manager_dev_base="https://pages-manager-staging.xd-cf-2022.workers.dev"
       domain_label="-staging"
       worker_prefix="pages-staging-"
-      api_route="api-staging.workers.xd.team"
+      api_route="api-staging.workers.xd.team/*"
       pages_api_service="pages-api-staging"
       ;;
   esac
@@ -160,7 +160,8 @@ if [[ "$app" == "apps/server" ]]; then
       "$rendered" != *'PUBLIC_API_BASE = "https://api-staging.workers.xd.team"'* ||
       "$rendered" != *'DOMAIN_LABEL = "-staging"'* ||
       "$rendered" != *'WORKER_PREFIX = "pages-staging-"'* ||
-      "$rendered" != *'pattern = "api-staging.workers.xd.team"'* ]]; then
+      "$rendered" != *'pattern = "api-staging.workers.xd.team/*"'* ||
+      "$rendered" != *'zone_name = "xd.team"'* ]]; then
       die "staging config is missing expected staging values"
     fi
   fi

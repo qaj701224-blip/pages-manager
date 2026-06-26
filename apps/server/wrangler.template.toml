@@ -33,7 +33,7 @@ service = "__PAGES_API_SERVICE__"
 
 [[routes]]
 pattern = "__API_ROUTE__"
-custom_domain = true
+zone_name = "xd.team"
 
 # Runtime secrets, set outside the repository:
 # npx wrangler secret put CF_ZONE_ID_NEW
