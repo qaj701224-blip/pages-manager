@@ -214,7 +214,7 @@ PR 2 + PR 3 一次部署的硬门禁是 `.github/workflows/hostname-claims-confl
 - store helper 支持 `acquire`、`confirm pending` 和失败新建的 `release pending`，覆盖幂等、同主体重入、他方冲突和 released hostname retry。
 - acquire 必须靠 hostname 唯一约束保证真实访问域名原子占用；同 slug 组锁由同一 D1 batch / transaction 内的 live claim 查询保证，不能只在外层调用方做松散 SELECT。
 - claim enforcement 必须有环境级开关，至少支持 `record_only` 和 `enforce`。可以缩短 record-only 时间，但不能删除这条能力；回填、normalize 或内部调用出错时必须能临时切回只记录不拒绝。
-- v1 通过 `HOSTNAME_CLAIMS` service binding 调用 pages-api internal endpoint `https://pages-api.internal/.xd-pages/internal/hostname-claims/acquire`。wrangler 默认 `HOSTNAME_CLAIMS_MODE=record_only`；staging binding 指向 `pages-api-staging`，production binding 指向 `pages-api`。
+- v1 通过 `HOSTNAME_CLAIMS` service binding 调用 pages-api internal endpoint `https://pages-api.internal/.xd-pages/internal/hostname-claims/acquire`。wrangler 生成器默认 `HOSTNAME_CLAIMS_MODE=record_only`；staging binding 指向 `pages-api-staging`，production binding 指向 `pages-api`。production 正式上线后，`Deploy Production` workflow 必须显式设置 `HOSTNAME_CLAIMS_MODE=enforce`，否则 v1 会在 claim 冲突或 service binding 写入失败时继续部署，跨 v1/v2 同 slug 互斥无法 fail closed。
 - 新增一次性回填脚本或内部管理命令：
   - 输入必须来自目标环境的脱敏导出：v1 `SITES` KV 只保留 `name`、`scriptName`、时间等非 secret 字段；v2 D1 只导出未删除站点对应的 `site_routes` 字段。
   - 读取 v1 导出，生成 `<name>.workers.xd.team` 或 `<name>-staging.workers.xd.team` claim。
@@ -405,6 +405,7 @@ Checklist 只记录每步必须完成的内容和人工配置项，不要求长�
 - [ ] docs / skill / README / CLI help / OpenAPI 开发合约同步。
 - [ ] 手动运行 `Hostname Claims Conflict Check` dry-run，artifact 中 v1/v2 输入脱敏、`summary.json` blocking 冲突数为 0，且 `slugCoexistence` 只包含预期存量共存。
 - [ ] production D1 已通过 `Hostname Claims Conflict Check` 的 `apply=true` 写入初始 `hostname_claims`。
+- [ ] production v1 `Deploy Production` 使用 `HOSTNAME_CLAIMS_MODE=enforce` 生成并部署 `pages-manager`，Wrangler 日志中可见 `env.HOSTNAME_CLAIMS_MODE ("enforce")`。
 - [ ] staging 实测 exact route 优先于 wildcard、partial zone wildcard 可用、auth/cookie 正常、ACL fail-closed。
 - [ ] production 冒烟新 v2 workers 站点、存量 v1 workers 站点、存量 v2 pages 站点，以及存量 v2 pages 站点重新部署后仍保留老域名。
 

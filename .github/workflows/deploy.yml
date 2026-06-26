@@ -45,6 +45,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
+          HOSTNAME_CLAIMS_MODE: enforce
         run: scripts/gen-wrangler.sh apps/server production
 
       - name: Validate Server secrets
