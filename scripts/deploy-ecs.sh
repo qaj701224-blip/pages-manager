@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SSH_TARGET="${ECS_SSH_TARGET:-}"
+DEPLOY_MODE="${ECS_DEPLOY_MODE:-ssh}"
 REMOTE_DIR="${ECS_REMOTE_DIR:-/opt/pages-manager}"
 REMOTE_BUILD_DIR="${ECS_REMOTE_BUILD_DIR:-/opt/pages-manager-build}"
 ENV_FILE_REMOTE="${ECS_ENV_FILE_REMOTE:-${REMOTE_DIR}/.env.ecs}"
@@ -38,6 +39,7 @@ Fast ECS deploy path:
   - falls back to the previous ECS app image if the stable Node base cannot be pulled
 
 Environment:
+  ECS_DEPLOY_MODE      Optional. ssh/local. Default: ssh. Use local on an ECS self-hosted runner.
   ECS_SSH_TARGET       Required. SSH target for the ECS host.
   ECS_SSH_OPTS         Optional. Extra ssh options, for example "-i ~/.ssh/pages-manager-ecs -o BatchMode=yes".
   ECS_REMOTE_DIR       Optional. Runtime dir. Default: /opt/pages-manager.
@@ -60,6 +62,7 @@ Environment:
 Examples:
   ECS_SSH_TARGET=root@123.56.251.50 ECS_SSH_OPTS="-i ~/.ssh/pages-manager-ecs" bash scripts/deploy-ecs.sh
   ECS_SSH_TARGET=root@123.56.251.50 ECS_SSH_OPTS="-i ~/.ssh/pages-manager-ecs" ECS_SERVICES=all bash scripts/deploy-ecs.sh
+  ECS_DEPLOY_MODE=local ECS_SERVICES=all bash scripts/deploy-ecs.sh
 USAGE
 }
 
@@ -68,7 +71,15 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if [[ -z "${SSH_TARGET}" ]]; then
+case "${DEPLOY_MODE}" in
+  ssh | local) ;;
+  *)
+    echo "error: ECS_DEPLOY_MODE must be ssh or local" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "${DEPLOY_MODE}" == "ssh" && -z "${SSH_TARGET}" ]]; then
   usage >&2
   echo "error: ECS_SSH_TARGET is required" >&2
   exit 1
@@ -100,6 +111,22 @@ read -r -a SSH_OPTS <<<"${ECS_SSH_OPTS:-}"
 
 ssh_ecs() {
   ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "$@"
+}
+
+run_target_shell() {
+  if [[ "${DEPLOY_MODE}" == "local" ]]; then
+    bash -c "$1"
+  else
+    ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "$1"
+  fi
+}
+
+run_target_script() {
+  if [[ "${DEPLOY_MODE}" == "local" ]]; then
+    bash -s -- "$@"
+  else
+    ssh_ecs "bash -s" -- "$@"
+  fi
 }
 
 is_all_service() {
@@ -142,7 +169,12 @@ while IFS= read -r service; do
   SELECTED_SERVICES+=("${service}")
 done < <(normalize_services)
 
-echo "[ecs] target: ${SSH_TARGET}"
+echo "[ecs] deploy mode: ${DEPLOY_MODE}"
+if [[ "${DEPLOY_MODE}" == "ssh" ]]; then
+  echo "[ecs] target: ${SSH_TARGET}"
+else
+  echo "[ecs] target: local host"
+fi
 echo "[ecs] remote dir: ${REMOTE_DIR}"
 echo "[ecs] remote build dir: ${REMOTE_BUILD_DIR}"
 echo "[ecs] image registry: ${IMAGE_REGISTRY}"
@@ -176,10 +208,10 @@ echo "[ecs] sync source to remote build dir"
     --exclude='.DS_Store' \
     --exclude='._*' \
     -czf - .
-) | ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "set -euo pipefail; rm -rf '${REMOTE_BUILD_DIR}/${IMAGE_TAG}'; mkdir -p '${REMOTE_BUILD_DIR}/${IMAGE_TAG}'; LC_ALL=C tar -xzf - -C '${REMOTE_BUILD_DIR}/${IMAGE_TAG}'"
+) | run_target_shell "set -euo pipefail; rm -rf '${REMOTE_BUILD_DIR}/${IMAGE_TAG}'; mkdir -p '${REMOTE_BUILD_DIR}/${IMAGE_TAG}'; LC_ALL=C tar -xzf - -C '${REMOTE_BUILD_DIR}/${IMAGE_TAG}'"
 
 echo "[ecs] build and deploy on remote host"
-ssh_ecs "bash -s" -- \
+run_target_script \
   "${REMOTE_DIR}" \
   "${REMOTE_BUILD_DIR}" \
   "${ENV_FILE_REMOTE}" \
@@ -284,6 +316,56 @@ update_env() {
   update_env_file "$env_file" "$key" "$value"
 }
 
+backup_runtime_files() {
+  runtime_backup_dir="${remote_dir}/.deploy-backups/${image_tag}"
+  mkdir -p "$runtime_backup_dir/deploy/ecs"
+
+  cp "$env_file" "$runtime_backup_dir/.env.ecs"
+  if [[ -f "${remote_dir}/docker-compose.ecs.yml" ]]; then
+    cp "${remote_dir}/docker-compose.ecs.yml" "$runtime_backup_dir/docker-compose.ecs.yml"
+  fi
+  if [[ -f "${remote_dir}/Dockerfile.node-service" ]]; then
+    cp "${remote_dir}/Dockerfile.node-service" "$runtime_backup_dir/Dockerfile.node-service"
+  fi
+  if [[ -f "${remote_dir}/deploy/ecs/Caddyfile" ]]; then
+    cp "${remote_dir}/deploy/ecs/Caddyfile" "$runtime_backup_dir/deploy/ecs/Caddyfile"
+  fi
+}
+
+restore_runtime_files() {
+  if [[ -z "${runtime_backup_dir:-}" || ! -d "$runtime_backup_dir" ]]; then
+    return 0
+  fi
+
+  if [[ -f "$runtime_backup_dir/.env.ecs" ]]; then
+    cat "$runtime_backup_dir/.env.ecs" >"$env_file"
+  fi
+  if [[ -f "$runtime_backup_dir/docker-compose.ecs.yml" ]]; then
+    cp "$runtime_backup_dir/docker-compose.ecs.yml" "${remote_dir}/docker-compose.ecs.yml"
+  fi
+  if [[ -f "$runtime_backup_dir/Dockerfile.node-service" ]]; then
+    cp "$runtime_backup_dir/Dockerfile.node-service" "${remote_dir}/Dockerfile.node-service"
+  fi
+  if [[ -f "$runtime_backup_dir/deploy/ecs/Caddyfile" ]]; then
+    mkdir -p "${remote_dir}/deploy/ecs"
+    cp "$runtime_backup_dir/deploy/ecs/Caddyfile" "${remote_dir}/deploy/ecs/Caddyfile"
+  fi
+}
+
+cleanup_runtime_backup() {
+  if [[ -n "${runtime_backup_dir:-}" && -d "$runtime_backup_dir" ]]; then
+    rm -rf "$runtime_backup_dir" || echo "[ecs:remote] warning: failed to remove runtime backup ${runtime_backup_dir}" >&2
+  fi
+}
+
+on_deploy_error() {
+  local status=$?
+  if [[ "${deploy_completed:-false}" != "true" && "${rollback_started:-false}" != "true" ]]; then
+    rollback_env_and_services || true
+  fi
+  exit "$status"
+}
+
 compose_up_services() {
   if [[ "${#compose_services[@]}" -eq 0 ]]; then
     return 0
@@ -346,14 +428,15 @@ smoke_services() {
 }
 
 rollback_env_and_services() {
+  rollback_started=true
   echo "[ecs:remote] rollback to ${previous_image_tag:-previous runtime tag}" >&2
   if [[ -n "${candidate_env_file:-}" ]]; then
     rm -f "$candidate_env_file"
   fi
 
-  if [[ -n "${env_backup:-}" && -f "$env_backup" ]]; then
-    cat "$env_backup" >"$env_file"
-  else
+  restore_runtime_files
+
+  if [[ ! -f "$env_file" ]]; then
     if [[ -n "${previous_image_registry:-}" ]]; then
       update_env PAGES_IMAGE_REGISTRY "$previous_image_registry"
     fi
@@ -366,6 +449,7 @@ rollback_env_and_services() {
   cd "$remote_dir"
   compose_up_services || true
   docker compose --env-file "$compose_env_file" -f docker-compose.ecs.yml ps || true
+  cleanup_runtime_backup
 }
 
 print_deploy_logs() {
@@ -409,7 +493,7 @@ cleanup_old_release_dirs() {
     kept=$((kept + 1))
     if (( kept > build_dir_retention )); then
       echo "[ecs:remote] prune old release dir ${dir}"
-      rm -rf "$dir"
+      rm -rf "$dir" || echo "[ecs:remote] warning: failed to prune old release dir ${dir}" >&2
     fi
   done < <(find "$remote_build_dir" -maxdepth 1 -mindepth 1 -type d -name 'ecs-*' | sort -r)
 }
@@ -428,6 +512,12 @@ fallback_base_image_tag=""
 if [[ -z "$base_image_tag" && -n "$previous_image_tag" ]]; then
   fallback_base_image_tag="$previous_image_tag"
 fi
+
+compose_services=()
+backup_runtime_files
+deploy_completed=false
+rollback_started=false
+trap on_deploy_error ERR
 
 cat >"${release_dir}/Dockerfile.node-service.offline" <<'DOCKERFILE'
 ARG NODE_IMAGE
@@ -524,7 +614,6 @@ if is_truthy "$update_latest_alias"; then
   done
 fi
 
-compose_services=()
 if is_truthy "$restart_all"; then
   for service in "${all_services[@]}"; do
     compose_services+=("$(compose_service_for "$service")")
@@ -539,9 +628,7 @@ if contains_service pages-gateway "${compose_services[@]}"; then
   compose_services+=(caddy)
 fi
 
-env_backup="${env_file}.bak.$(date +%Y%m%d%H%M%S)"
 candidate_env_file="${env_file}.candidate.${image_tag}"
-cp "$env_file" "$env_backup"
 cp "$env_file" "$candidate_env_file"
 update_env_file "$candidate_env_file" PAGES_IMAGE_REGISTRY "$image_registry"
 update_env_file "$candidate_env_file" PAGES_IMAGE_TAG "$image_tag"
@@ -553,7 +640,7 @@ if ! compose_up_services; then
   echo "[ecs:remote] compose up failed" >&2
   print_deploy_logs
   rollback_env_and_services
-  exit 1
+  false
 fi
 
 docker compose --env-file "$compose_env_file" -f docker-compose.ecs.yml ps
@@ -561,11 +648,13 @@ if ! smoke_services; then
   echo "[ecs:remote] deployment smoke did not pass in ${smoke_timeout_seconds}s" >&2
   print_deploy_logs
   rollback_env_and_services
-  exit 1
+  false
 fi
 
 cat "$candidate_env_file" >"$env_file"
 rm -f "$candidate_env_file"
+cleanup_runtime_backup
+deploy_completed=true
 
 cleanup_old_images
 cleanup_old_release_dirs

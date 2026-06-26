@@ -39,6 +39,32 @@ test('branch policy documents master PR preview sync and CI lane isolation', () 
   assert.match(agents, /pr-site\.yml/);
 });
 
+test('policy keeps Cloudflare and ECS production deploys manual', () => {
+  const policy = readDoc('docs/deployment-branch-policy.md');
+  const agents = readDoc('AGENTS.md');
+  const docsIndex = readDoc('docs/README.md');
+  const ecsDoc = readDoc('docs/operations/ecs-manual-deploy.md');
+
+  for (const doc of [policy, agents]) {
+    assert.match(doc, /Deploy ECS Production/);
+    assert.match(doc, /pages-gateway/);
+    assert.match(doc, /pages-worker/);
+    assert.match(doc, /slack-agent/);
+    assert.match(doc, /slack-notifier/);
+    assert.match(doc, /Cloudflare[\s\S]*ECS runtime production[\s\S]*人工|production[\s\S]*手动触发/);
+  }
+
+  assert.match(docsIndex, /docs\/operations\/ecs-manual-deploy\.md/);
+  assert.match(ecsDoc, /runs-on: \[self-hosted, linux, x64, pages-manager-ecs\]/);
+  assert.match(ecsDoc, /只允许手动 `workflow_dispatch`/);
+  assert.match(ecsDoc, /GitHub `production` environment/);
+  assert.match(ecsDoc, /不要把 `\.env\.ecs` 的运行时 secret 复制到 GitHub secrets/);
+  assert.match(ecsDoc, /读写 `\/opt\/pages-manager\/\.env\.ecs`/);
+  assert.match(ecsDoc, /权限为 `660`/);
+  assert.match(ecsDoc, /首次需要先合入默认分支/);
+  assert.match(ecsDoc, /ECS_DEPLOY_MODE=local bash scripts\/deploy-ecs\.sh/);
+});
+
 test('master PR sync workflow merges project PR heads to staging and skips user-site PRs', () => {
   const workflow = readDoc('.github/workflows/sync-master-pr-to-staging.yml');
   const compatibilityCi = readDoc('.github/workflows/ci.yml');

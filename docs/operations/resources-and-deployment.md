@@ -50,7 +50,7 @@ staging 与 production 必须继续物理隔离：
 - 不同 KV/D1/R2。
 - 不同 signing key。
 - 不同 SSO redirect URI。
-- production 不允许 push/PR 自动部署。
+- Cloudflare 和 ECS runtime production 不允许 push/PR 自动部署；ECS runtime 手动部署边界见 `docs/operations/ecs-manual-deploy.md`。
 
 默认路由方案也必须物理隔离：
 

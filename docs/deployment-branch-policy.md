@@ -10,10 +10,10 @@ feature branch
   -> sync PR head to staging preview
   -> staging preview / validation
   -> merge PR to master
-  -> manual production deploy
+  -> manual Cloudflare / ECS production deploy when needed
 ```
 
-`master` 是生产真相源。`staging` 不是晋级来源，允许暂时包含尚未合入 `master` 的 PR 代码；生产部署只允许人工触发 `Deploy Production`。
+`master` 是生产真相源。`staging` 不是晋级来源，允许暂时包含尚未合入 `master` 的 PR 代码；Cloudflare production 部署只允许人工触发 `Deploy Production` / `Deploy XD Pages Production`。ECS runtime production 也只允许人工触发 `Deploy ECS Production`。
 
 ## 分支规则
 
@@ -69,7 +69,7 @@ base: master
 2. 由维护者把 `staging` 重新对齐到 `master`。
 3. 对仍需验证的 PR 重新运行 `Sync Master PR To Staging`。
 4. `staging` 验证通过后，只能作为该 master PR 的检查信号，不能反向晋级到 `master`。
-5. PR 合入 `master` 后，只允许人工触发 production deploy。
+5. PR 合入 `master` 后，Cloudflare 和 ECS runtime production 仍只允许人工触发。
 
 不要从 `staging` 反向 cherry-pick 或开 PR 到 `master`。这样会把 preview 分支里的其它未合入 PR 一起带进主线。
 
@@ -87,6 +87,7 @@ base: master
 .github/workflows/deploy.yml
 .github/workflows/deploy-pages-v2.yml
 .github/workflows/deploy-ack-preview.yml
+.github/workflows/deploy-ecs.yml
 ```
 
 职责：
@@ -94,7 +95,7 @@ base: master
 - v1 部署 `apps/server` Cloudflare Worker。
 - v2 部署 `apps/pages-api`、`apps/pages-auth`、`apps/pages-router`、`apps/kv-gateway` Cloudflare Worker。
 - 构建并发布 ACK 平台镜像。
-- 滚动平台 Pod，例如 `gateway`、`worker`、`slack-agent`、`slack-notifier`。
+- ECS runtime 部署 Docker Compose 服务：`pages-gateway`、`pages-worker`、`slack-agent`、`slack-notifier`。
 
 允许使用：
 
@@ -168,6 +169,7 @@ CLAUDE.md
 - Cloudflare production secret 只放在 `production` environment。
 - 用户站点发布执行器只能读取 repo secret / variable 中的 callback、GitHub App、Coding Agent、preview marker 配置。
 - `production` environment 应配置人工审批；production workflow 只保留 `workflow_dispatch`。
+- `Deploy ECS Production` 只允许手动触发，真实部署 job 必须运行在带 `pages-manager-ecs` label 的 self-hosted runner；不要让 PR workflow 或 fork 代码运行在该 runner 上。
 
 ## 验证要求
 
