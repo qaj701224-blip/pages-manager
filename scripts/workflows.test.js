@@ -82,6 +82,11 @@ test('deploy workflows keep production manual and separate wrangler token from r
   assert.match(combined, /CF_API_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/);
   assert.match(combined, /: "\$\{CF_API_TOKEN:\?CF_API_TOKEN is required\}"/);
   assert.match(combined, /printf '%s' "\$CF_API_TOKEN" \| pnpm --dir apps\/server exec wrangler secret put CF_API_TOKEN/);
+  assert.match(
+    production,
+    /Generate Server Wrangler config[\s\S]*HOSTNAME_CLAIMS_MODE: enforce[\s\S]*run: scripts\/gen-wrangler\.sh apps\/server production/,
+    'v1 production deploy fails closed on hostname claim conflicts'
+  );
   assert.doesNotMatch(combined, /RUNTIME_CF_API_TOKEN/);
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
 });
