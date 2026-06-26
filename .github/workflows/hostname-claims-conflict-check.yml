@@ -60,7 +60,7 @@ jobs:
           : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
           : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
           : "${SITES_KV_NAMESPACE_ID:?SITES_KV_NAMESPACE_ID is required}"
-          pnpm exec wrangler kv key list --namespace-id "$SITES_KV_NAMESPACE_ID" --remote > .hostname-claims/v1-keys.json
+          pnpm --dir apps/server exec wrangler kv key list --namespace-id "$SITES_KV_NAMESPACE_ID" --remote > .hostname-claims/v1-keys.json
           node --input-type=module <<'NODE'
           import { readFile, writeFile } from 'node:fs/promises';
           const keys = JSON.parse(await readFile('.hostname-claims/v1-keys.json', 'utf8'));
@@ -74,10 +74,14 @@ jobs:
           const namespaceId = process.env.SITES_KV_NAMESPACE_ID;
           const sites = [];
           for (const name of names) {
-            const result = spawnSync('pnpm', ['exec', 'wrangler', 'kv', 'key', 'get', name, '--namespace-id', namespaceId, '--remote'], {
-              encoding: 'utf8',
-              stdio: ['ignore', 'pipe', 'pipe'],
-            });
+            const result = spawnSync(
+              'pnpm',
+              ['--dir', 'apps/server', 'exec', 'wrangler', 'kv', 'key', 'get', name, '--namespace-id', namespaceId, '--remote'],
+              {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe'],
+              }
+            );
             if (result.status !== 0) throw new Error(`failed to read v1 site key ${name}`);
             const raw = result.stdout.trim();
             if (!raw) continue;

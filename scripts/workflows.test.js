@@ -481,8 +481,8 @@ test('hostname claims conflict check is manual, read-only, and gates v1/v2 rollo
   assert.match(workflow, /- production/);
   assert.match(workflow, /- staging/);
   assert.match(workflow, /permissions:\n {2}contents: read/);
-  assert.match(workflow, /wrangler kv key list/);
-  assert.match(workflow, /'wrangler', 'kv', 'key', 'get'/);
+  assert.match(workflow, /pnpm --dir apps\/server exec wrangler kv key list/);
+  assert.match(workflow, /'--dir', 'apps\/server', 'exec', 'wrangler', 'kv', 'key', 'get'/);
   assert.match(workflow, /SELECT[\s\S]*FROM site_routes[\s\S]*LEFT JOIN sites/);
   assert.match(workflow, /scripts\/hostname-claims-backfill\.mjs/);
   assert.match(workflow, /--v1-sites \.hostname-claims\/v1-sites\.sanitized\.json/);
