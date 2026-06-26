@@ -11,24 +11,48 @@ const otherUuid = '11111111111111111111111111111111';
 class MemoryKv {
   constructor() {
     this.values = new Map();
+    this.metadatas = new Map();
     this.puts = [];
     this.deletes = [];
     this.failPut = null;
   }
 
-  async get(key) {
-    return this.values.get(key) ?? null;
+  async get(key, options) {
+    const value = this.values.get(key) ?? null;
+    if (options?.type === 'json' && typeof value === 'string') return JSON.parse(value);
+    return value;
+  }
+
+  async getWithMetadata(key, options) {
+    return {
+      value: await this.get(key, options),
+      metadata: this.metadatas.get(key) ?? null,
+    };
   }
 
   async put(key, value, options) {
     if (this.failPut) throw this.failPut;
     this.values.set(key, value);
+    if (Object.hasOwn(options || {}, 'metadata')) this.metadatas.set(key, options.metadata);
     this.puts.push({ key, value, options });
   }
 
   async delete(key) {
     this.values.delete(key);
     this.deletes.push(key);
+  }
+
+  async list(options = {}) {
+    const prefix = options.prefix || '';
+    const keys = [...this.values.keys()]
+      .filter((key) => key.startsWith(prefix))
+      .sort()
+      .slice(0, options.limit || 1000)
+      .map((name) => {
+        const metadata = this.metadatas.get(name);
+        return metadata ? { name, metadata } : { name };
+      });
+    return { keys, list_complete: true };
   }
 }
 
@@ -185,7 +209,7 @@ test('user data writes under claims subject prefix', async () => {
   const storageKey = buildUserStorageKey({ siteSlug: siteId, siteUuid, userId: 'usr_123', userKey: 'draft' });
   assert.equal(response.status, 200);
   assert.equal(gatewayEnv.SITE_DATA.puts[0].key, storageKey);
-  assert.deepEqual(gatewayEnv.SITE_DATA.puts[0].options.metadata.userId, 'usr_123');
+  assert.equal(gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages.userId, 'usr_123');
 });
 
 test('anonymous user data get returns null and writes fail with USER_REQUIRED', async () => {
@@ -274,11 +298,337 @@ test('set stores text and ttl metadata under prefixed key', async () => {
   assert.equal(gatewayEnv.SITE_DATA.puts[0].value, 'hello');
   assert.equal(gatewayEnv.SITE_DATA.puts[0].options.expirationTtl, 60);
   assert.deepEqual(gatewayEnv.SITE_DATA.puts[0].options.metadata, {
-    siteId,
-    type: 'text',
-    updatedAt: gatewayEnv.SITE_DATA.puts[0].options.metadata.updatedAt,
+    user: null,
+    __xd_pages: {
+      schemaVersion: 1,
+      siteId,
+      type: 'text',
+      updatedAt: gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages.updatedAt,
+    },
   });
-  assert.match(gatewayEnv.SITE_DATA.puts[0].options.metadata.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('set stores user metadata and absolute expiration without exposing platform metadata', async () => {
+  const gatewayEnv = env();
+
+  const response = await worker.fetch(
+    await request(
+      '/v1/kv/set',
+      {
+        key: 'notes/welcome',
+        value: 'hello',
+        type: 'text',
+        expiration: 1_900_000_000,
+        metadata: { owner: 'docs', tags: ['welcome'] },
+      },
+      { authorization: await authHeader(claims({ scope: ['kv:set'] })) }
+    ),
+    gatewayEnv
+  );
+
+  const storageKey = buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'notes/welcome' });
+  assert.equal(response.status, 200);
+  assert.equal(gatewayEnv.SITE_DATA.puts[0].key, storageKey);
+  assert.equal(gatewayEnv.SITE_DATA.puts[0].options.expiration, 1_900_000_000);
+  assert.deepEqual(gatewayEnv.SITE_DATA.puts[0].options.metadata, {
+    user: { owner: 'docs', tags: ['welcome'] },
+    __xd_pages: {
+      schemaVersion: 1,
+      siteId,
+      type: 'text',
+      updatedAt: gatewayEnv.SITE_DATA.puts[0].options.metadata.__xd_pages.updatedAt,
+    },
+  });
+});
+
+test('getWithMetadata returns only user metadata and distinguishes missing keys', async () => {
+  const gatewayEnv = env();
+  const storageKey = buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/config' });
+  gatewayEnv.SITE_DATA.values.set(storageKey, JSON.stringify({ enabled: true }));
+  gatewayEnv.SITE_DATA.metadatas.set(storageKey, {
+    user: { owner: 'docs' },
+    __xd_pages: {
+      schemaVersion: 1,
+      siteId,
+      type: 'json',
+      updatedAt: '2026-06-26T00:00:00.000Z',
+    },
+  });
+
+  const found = await worker.fetch(
+    await request(
+      '/v1/kv/get-with-metadata',
+      { key: 'app/config', type: 'json' },
+      { authorization: await authHeader(claims({ scope: ['kv:get'] })) }
+    ),
+    gatewayEnv
+  );
+  const missing = await worker.fetch(
+    await request(
+      '/v1/kv/get-with-metadata',
+      { key: 'app/missing', type: 'json' },
+      { authorization: await authHeader(claims({ scope: ['kv:get'] })) }
+    ),
+    gatewayEnv
+  );
+
+  assert.equal(found.status, 200);
+  assert.deepEqual(await json(found), {
+    ok: true,
+    key: 'app/config',
+    found: true,
+    value: { enabled: true },
+    metadata: { owner: 'docs' },
+  });
+  assert.equal(missing.status, 200);
+  assert.deepEqual(await json(missing), {
+    ok: true,
+    key: 'app/missing',
+    found: false,
+    value: null,
+    metadata: null,
+  });
+});
+
+test('list requires kv:list and returns decoded current-site keys only', async () => {
+  const gatewayEnv = env();
+  const configKey = buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/config' });
+  const draftKey = buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'draft' });
+  const otherSiteKey = buildStorageKey({ siteSlug: 'other-site', siteUuid, userKey: 'app/config' });
+  gatewayEnv.SITE_DATA.values.set(configKey, 'config');
+  gatewayEnv.SITE_DATA.values.set(draftKey, 'draft');
+  gatewayEnv.SITE_DATA.values.set(otherSiteKey, 'other');
+  gatewayEnv.SITE_DATA.metadatas.set(configKey, {
+    user: { owner: 'docs' },
+    __xd_pages: { schemaVersion: 1, siteId, type: 'text', updatedAt: '2026-06-26T00:00:00.000Z' },
+  });
+
+  const denied = await worker.fetch(
+    await request('/v1/kv/list', { prefix: 'app/' }, { authorization: await authHeader(claims({ scope: ['kv:get'] })) }),
+    gatewayEnv
+  );
+  const response = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 10 },
+      { authorization: await authHeader(claims({ scope: ['kv:get', 'kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+
+  assert.equal(denied.status, 403);
+  assert.equal((await json(denied)).error.code, 'CAPABILITY_SCOPE_DENIED');
+  assert.equal(response.status, 200);
+  assert.deepEqual(await json(response), {
+    ok: true,
+    keys: [{ name: 'app/config', metadata: { owner: 'docs' } }],
+    list_complete: true,
+  });
+});
+
+test('list accumulates provider pages until requested prefixed keys are filled', async () => {
+  const gatewayEnv = env();
+  const seenRequests = [];
+  const storageItemsByCursor = new Map([
+    [
+      null,
+      {
+        keys: [
+          { name: buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'draft/1' }) },
+          { name: buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'draft/2' }) },
+        ],
+        list_complete: false,
+        cursor: 'provider-page-2',
+      },
+    ],
+    [
+      'provider-page-2',
+      {
+        keys: [
+          { name: buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/a' }) },
+          { name: buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/b' }) },
+        ],
+        list_complete: false,
+        cursor: 'provider-page-3',
+      },
+    ],
+  ]);
+  gatewayEnv.SITE_DATA.list = async (options = {}) => {
+    seenRequests.push({ limit: options.limit, cursor: options.cursor ?? null });
+    return storageItemsByCursor.get(options.cursor ?? null);
+  };
+
+  const response = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 2 },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.keys, [{ name: 'app/a' }, { name: 'app/b' }]);
+  assert.equal(body.list_complete, false);
+  assert.equal(typeof body.cursor, 'string');
+  assert.deepEqual(seenRequests, [
+    { limit: 2, cursor: null },
+    { limit: 2, cursor: 'provider-page-2' },
+  ]);
+});
+
+test('list cursors continue after returned matching keys without skipping extras', async () => {
+  const gatewayEnv = env();
+  const storageKeys = ['app/a', 'app/b', 'app/c'].map((userKey) =>
+    buildStorageKey({ siteSlug: siteId, siteUuid, userKey })
+  );
+  const seenRequests = [];
+  gatewayEnv.SITE_DATA.list = async (options = {}) => {
+    const start = options.cursor ? Number(options.cursor) : 0;
+    const end = start + options.limit;
+    seenRequests.push({ limit: options.limit, cursor: options.cursor ?? null });
+    return {
+      keys: storageKeys.slice(start, end).map((name) => ({ name })),
+      list_complete: end >= storageKeys.length,
+      cursor: end < storageKeys.length ? String(end) : undefined,
+    };
+  };
+
+  const first = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 2 },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+  const firstBody = await json(first);
+  assert.equal(first.status, 200);
+  assert.deepEqual(firstBody.keys, [{ name: 'app/a' }, { name: 'app/b' }]);
+  assert.equal(firstBody.list_complete, false);
+  assert.equal(typeof firstBody.cursor, 'string');
+
+  const second = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 2, cursor: firstBody.cursor },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+  const secondBody = await json(second);
+  assert.equal(second.status, 200);
+  assert.deepEqual(secondBody.keys, [{ name: 'app/c' }]);
+  assert.equal(secondBody.list_complete, true);
+  assert.deepEqual(seenRequests, [
+    { limit: 2, cursor: null },
+    { limit: 2, cursor: '2' },
+  ]);
+});
+
+test('list bounds provider page scans for sparse prefixes', async () => {
+  const gatewayEnv = env();
+  const seenProviderCursors = [];
+  gatewayEnv.SITE_DATA.list = async (options = {}) => {
+    const page = options.cursor ? Number(options.cursor) : 0;
+    seenProviderCursors.push(options.cursor ?? null);
+    return {
+      keys: [{ name: buildStorageKey({ siteSlug: siteId, siteUuid, userKey: `draft/${page}` }) }],
+      list_complete: false,
+      cursor: String(page + 1),
+    };
+  };
+
+  const response = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 1 },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.keys, []);
+  assert.equal(body.list_complete, false);
+  assert.equal(typeof body.cursor, 'string');
+  assert.equal(seenProviderCursors.length, 16);
+});
+
+test('list wraps provider cursors and binds them to list context', async () => {
+  const gatewayEnv = env();
+  const seenProviderCursors = [];
+  gatewayEnv.SITE_DATA.list = async (options = {}) => {
+    seenProviderCursors.push(options.cursor ?? null);
+    return options.cursor
+      ? { keys: [], list_complete: true }
+      : {
+          keys: [{ name: buildStorageKey({ siteSlug: siteId, siteUuid, userKey: 'app/config' }) }],
+          list_complete: false,
+          cursor: 'raw-provider-cursor',
+        };
+  };
+
+  const first = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 1 },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+  const firstBody = await json(first);
+  assert.equal(first.status, 200);
+  assert.equal(firstBody.list_complete, false);
+  assert.equal(typeof firstBody.cursor, 'string');
+  assert.notEqual(firstBody.cursor, 'raw-provider-cursor');
+
+  const second = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'app/', limit: 1, cursor: firstBody.cursor },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+  assert.equal(second.status, 200);
+  assert.deepEqual(seenProviderCursors, [null, 'raw-provider-cursor']);
+
+  const mismatched = await worker.fetch(
+    await request(
+      '/v1/kv/list',
+      { prefix: 'other/', limit: 1, cursor: firstBody.cursor },
+      { authorization: await authHeader(claims({ scope: ['kv:list'] })) }
+    ),
+    gatewayEnv
+  );
+  assert.equal(mismatched.status, 400);
+  assert.deepEqual((await json(mismatched)).error, { code: 'INVALID_CURSOR', message: 'Invalid data list cursor' });
+});
+
+test('set validates final wrapped metadata size before provider write', async () => {
+  const gatewayEnv = env();
+
+  const response = await worker.fetch(
+    await request(
+      '/v1/kv/set',
+      {
+        key: 'notes/welcome',
+        value: 'hello',
+        type: 'text',
+        metadata: { value: 'x'.repeat(980) },
+      },
+      { authorization: await authHeader(claims({ scope: ['kv:set'] })) }
+    ),
+    gatewayEnv
+  );
+
+  assert.equal(response.status, 400);
+  assert.deepEqual((await json(response)).error, { code: 'INVALID_METADATA', message: 'Invalid data metadata' });
+  assert.equal(gatewayEnv.SITE_DATA.puts.length, 0);
 });
 
 test('set rejects missing json value before writing', async () => {

@@ -100,7 +100,9 @@ const textValue = await runtime.kv.get('app/message');
 const jsonValue = await runtime.kv.get('app/config', { type: 'json' });
 
 await runtime.kv.put('app/message', 'hello', { expirationTtl: 60 });
-await runtime.kv.put('app/config', { enabled: true }, { type: 'json' });
+await runtime.kv.put('app/config', { enabled: true }, { type: 'json', metadata: { owner: 'docs' } });
+const configWithMetadata = await runtime.kv.getWithMetadata('app/config', { type: 'json' });
+const appKeys = await runtime.kv.list({ prefix: 'app/' });
 await runtime.kv.delete('app/message');
 ```
 
@@ -109,8 +111,10 @@ await runtime.kv.delete('app/message');
 - `get()` 默认按 text 读取，返回 `string | null`，对齐 Cloudflare KV。
 - `put()` 默认按 text 写入，写 JSON 必须显式传入 `{ type: 'json' }`。
 - `get(key, { type: 'json' })` 是 SDK 提供的 JSON convenience，返回解析后的对象或 `null`。
-- `put()` 支持 `expirationTtl`，后端是否支持更细的过期语义由平台能力决定。
-- `getWithMetadata()`、`list()`、`metadata`、`expiration`、`arrayBuffer` 和 `stream` 尚未公开；公开前需要先补齐 gateway/protocol 支持。
+- `getWithMetadata()` 支持单 key 的 text / JSON 读取，返回 `{ value, metadata }`；metadata 只包含业务写入的用户 metadata，不包含平台内部字段。
+- `list()` 支持 `{ prefix, limit, cursor }`，返回 Cloudflare KV 风格的 `{ keys, list_complete, cursor }`；`runtime.kv` 的 list 只枚举当前站点级 namespace。
+- `put()` 支持 `expirationTtl`、`expiration` 和 `metadata`；`expiration` 与 `expirationTtl` 不能同时使用，metadata 必须是 JSON 可序列化对象。
+- 当前不公开 bulk `get(keys)`、bulk `getWithMetadata(keys)`、`cacheTtl`、`arrayBuffer` 和 `stream`。这些能力需要额外的 gateway 协议、payload 限制和二进制/流式传输语义，后续单独评估。
 - SDK 内部通过受控 gateway 和 capability 调用资源，业务代码不直接拿底层 KV binding。
 
 ## 运行时边界

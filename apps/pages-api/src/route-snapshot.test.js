@@ -51,7 +51,7 @@ test('builds immutable route snapshot from authority records', () => {
     },
     kv: {
       enabled: true,
-      scopes: ['kv:get', 'kv:set', 'kv:delete'],
+      scopes: ['kv:get', 'kv:set', 'kv:delete', 'kv:list'],
     },
     activeVersionId: 'ver_1',
     contentHash: 'sha256:abc',

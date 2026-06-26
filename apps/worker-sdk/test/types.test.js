@@ -103,6 +103,8 @@ import {
   createRuntime,
   readContext,
   type KVNamespace,
+  type KVGetWithMetadataResult,
+  type KVListResult,
   type Runtime,
   type RuntimeContext,
   type RuntimeEnv,
@@ -121,7 +123,12 @@ const runtimeTextValueWithOption: Promise<string | null> = runtime.kv.get('app/t
 const runtimeJsonValue: Promise<{ enabled: boolean } | null> =
   runtime.kv.get<{ enabled: boolean }>('app/config', { type: 'json' });
 const runtimePutTextValue: Promise<void> = runtime.kv.put('app/message', 'hello');
-const runtimePutJsonValue: Promise<void> = runtime.kv.put('app/config', { enabled: true }, { type: 'json' });
+const runtimePutJsonValue: Promise<void> =
+  runtime.kv.put('app/config', { enabled: true }, { type: 'json', metadata: { owner: 'docs' }, expiration: 1900000000 });
+const runtimeMetadataValue: Promise<KVGetWithMetadataResult<{ enabled: boolean }, { owner: string }>> =
+  runtime.kv.getWithMetadata<{ enabled: boolean }, { owner: string }>('app/config', { type: 'json' });
+const runtimeListValue: Promise<KVListResult<{ owner: string }>> =
+  runtime.kv.list<{ owner: string }>({ prefix: 'app/', limit: 10 });
 
 void typedRuntime;
 void kv;
@@ -130,6 +137,8 @@ void runtimeTextValueWithOption;
 void runtimeJsonValue;
 void runtimePutTextValue;
 void runtimePutJsonValue;
+void runtimeMetadataValue;
+void runtimeListValue;
 void context;
 `,
     'utf8'
