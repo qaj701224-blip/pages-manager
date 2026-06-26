@@ -142,7 +142,6 @@ function isAllowedLegacySlugCoexistence(candidates) {
   if (candidates.length !== 2) return false;
   const [first, second] = candidates;
   return (
-    first.ownerId === second.ownerId &&
     new Set(candidates.map((candidate) => candidate.ownerSystem)).size === 2 &&
     candidates.every((candidate) => ['v1', 'v2'].includes(candidate.ownerSystem)) &&
     new Set(candidates.map((candidate) => candidate.hostnameFamily)).size === 2 &&

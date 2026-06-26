@@ -148,7 +148,7 @@ test('backfills legacy v1 and v2 claims for the same owner on different hostname
   );
 });
 
-test('blocks unrelated same-slug candidates instead of writing active claims', () => {
+test('backfills legacy v1 and v2 same-slug claims without requiring shared owner identity', () => {
   const plan = buildHostnameClaimBackfillPlan({
     environment: 'production',
     v1Sites: [{ name: 'docs', scriptName: 'pages-docs', token: 'pages_owner@example.com' }],
@@ -163,31 +163,14 @@ test('blocks unrelated same-slug candidates instead of writing active claims', (
     ],
   });
 
-  assert.equal(plan.claims.length, 0);
-  assert.equal(plan.slugCoexistence.length, 0);
+  assert.equal(plan.conflicts.length, 0);
+  assert.equal(plan.claims.length, 2);
+  assert.equal(plan.slugCoexistence.length, 1);
   assert.deepEqual(
-    plan.conflicts.map((conflict) => ({
-      hostname: conflict.hostname,
-      normalizedSlug: conflict.normalizedSlug,
-      candidateSystem: conflict.candidateSystem,
-      candidateOwnerId: conflict.candidateOwnerId,
-      reason: conflict.reason,
-    })),
+    plan.slugCoexistence[0].candidates.map((candidate) => [candidate.hostname, candidate.ownerSystem, candidate.ownerId]),
     [
-      {
-        hostname: 'docs.workers.xd.team',
-        normalizedSlug: 'docs',
-        candidateSystem: 'v1',
-        candidateOwnerId: 'v1:production:docs',
-        reason: 'slug_duplicate',
-      },
-      {
-        hostname: 'docs.pages.xd.team',
-        normalizedSlug: 'docs',
-        candidateSystem: 'v2',
-        candidateOwnerId: 'site_docs',
-        reason: 'slug_duplicate',
-      },
+      ['docs.workers.xd.team', 'v1', 'v1:production:docs'],
+      ['docs.pages.xd.team', 'v2', 'site_docs'],
     ]
   );
 });
@@ -226,10 +209,7 @@ test('cli writes coexisting slug claims and reports them without blocking apply'
     const v1Path = join(dir, 'v1.json');
     const v2Path = join(dir, 'v2.json');
     const outPath = join(dir, 'out');
-    await writeFile(
-      v1Path,
-      JSON.stringify([{ name: 'docs', scriptName: 'pages-docs', ownerId: 'site_docs', token: 'pages_owner@example.com' }])
-    );
+    await writeFile(v1Path, JSON.stringify([{ name: 'docs', scriptName: 'pages-docs', token: 'pages_owner@example.com' }]));
     await writeFile(
       v2Path,
       JSON.stringify([{ siteId: 'site_docs', routeId: 'route_docs', slug: 'docs', hostname: 'docs.pages.xd.team' }])
@@ -258,7 +238,7 @@ test('cli writes coexisting slug claims and reports them without blocking apply'
           {
             hostname: 'docs.workers.xd.team',
             ownerSystem: 'v1',
-            ownerId: 'site_docs',
+            ownerId: 'v1:production:docs',
             ownerRef: 'pages-docs',
           },
           {

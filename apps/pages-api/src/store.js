@@ -218,7 +218,6 @@ export class D1PagesStore {
                   OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
                 )
                 AND hostname != ?
-                AND NOT ${hostnameClaimConflictExclusionSql()}
             )`
         )
         .bind(
@@ -239,8 +238,7 @@ export class D1PagesStore {
           hostnameClaim.environment,
           hostnameClaim.normalizedSlug,
           now,
-          hostnameClaim.hostname,
-          ...hostnameClaimConflictExclusionBinds(hostnameClaim)
+          hostnameClaim.hostname
         );
     } else {
       if (await this.findConflictingHostnameClaim(hostnameClaim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
@@ -261,7 +259,6 @@ export class D1PagesStore {
                   OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
                 )
                 AND hostname != ?
-                AND NOT ${hostnameClaimConflictExclusionSql()}
             )`
         )
         .bind(
@@ -285,8 +282,7 @@ export class D1PagesStore {
           hostnameClaim.environment,
           hostnameClaim.normalizedSlug,
           now,
-          hostnameClaim.hostname,
-          ...hostnameClaimConflictExclusionBinds(hostnameClaim)
+          hostnameClaim.hostname
         );
     }
 
@@ -389,16 +385,9 @@ export class D1PagesStore {
             OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
           )
           AND hostname != ?
-          AND NOT ${hostnameClaimConflictExclusionSql()}
         LIMIT 1`
       )
-      .bind(
-        input.environment,
-        input.normalizedSlug,
-        now,
-        input.excludeHostname || '',
-        ...hostnameClaimConflictExclusionBinds(input)
-      )
+      .bind(input.environment, input.normalizedSlug, now, input.excludeHostname || '')
       .first();
     return row ? mapHostnameClaim(row) : null;
   }
@@ -493,7 +482,6 @@ export class D1PagesStore {
                   OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
                 )
                 AND hostname != ?
-                AND NOT ${hostnameClaimConflictExclusionSql()}
             )`
         )
         .bind(
@@ -514,8 +502,7 @@ export class D1PagesStore {
           claim.environment,
           claim.normalizedSlug,
           now,
-          claim.hostname,
-          ...hostnameClaimConflictExclusionBinds(claim)
+          claim.hostname
         )
         .run();
       if (result?.meta?.changes === 0) return null;
@@ -617,7 +604,6 @@ export class D1PagesStore {
               OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
             )
             AND hostname != ?
-            AND NOT ${hostnameClaimConflictExclusionSql()}
         )`
       )
       .bind(
@@ -641,8 +627,7 @@ export class D1PagesStore {
         claim.environment,
         claim.normalizedSlug,
         now,
-        claim.hostname,
-        ...hostnameClaimConflictExclusionBinds(claim)
+        claim.hostname
       )
       .run();
   }
@@ -1696,45 +1681,6 @@ function mapHostnameClaim(row) {
 
 function hostnameClaimOwnerMatches(existing, input) {
   return existing.ownerSystem === input.ownerSystem && existing.ownerId === input.ownerId;
-}
-
-export function hostnameClaimsCanLegacyCoexist(existing, input) {
-  return (
-    existing.ownerId === input.ownerId &&
-    existing.ownerSystem !== input.ownerSystem &&
-    ['v1', 'v2'].includes(existing.ownerSystem) &&
-    ['v1', 'v2'].includes(input.ownerSystem) &&
-    existing.hostnameFamily !== input.hostnameFamily &&
-    ['workers', 'pages'].includes(existing.hostnameFamily) &&
-    ['workers', 'pages'].includes(input.hostnameFamily)
-  );
-}
-
-function hostnameClaimConflictExclusionSql() {
-  return `(
-    (owner_system = ? AND owner_id = ?)
-    OR (
-      owner_id = ?
-      AND owner_system IN ('v1', 'v2')
-      AND ? IN ('v1', 'v2')
-      AND owner_system != ?
-      AND hostname_family IN ('workers', 'pages')
-      AND ? IN ('workers', 'pages')
-      AND hostname_family != ?
-    )
-  )`;
-}
-
-function hostnameClaimConflictExclusionBinds(input) {
-  return [
-    input.ownerSystem,
-    input.ownerId,
-    input.ownerId,
-    input.ownerSystem,
-    input.ownerSystem,
-    input.hostnameFamily,
-    input.hostnameFamily,
-  ];
 }
 
 function isSqliteConstraintError(error) {
