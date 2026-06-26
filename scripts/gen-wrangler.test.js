@@ -69,7 +69,9 @@ test('production server config renders production values only', () => {
   assert.doesNotMatch(config, /KV_GATEWAY_SERVICE/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_ACTIVE_KID/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_KEYS/);
-  assert.match(config, /pattern = "api\.workers\.xd\.team"/);
+  assert.match(config, /pattern = "api\.workers\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
   assert.doesNotMatch(config, /api-staging/);
   assert.doesNotMatch(config, /pages-staging-/);
   assert.doesNotMatch(config, /pages-kv-gateway-staging/);
@@ -91,7 +93,9 @@ test('staging server config renders staging values', () => {
   assert.doesNotMatch(config, /KV_GATEWAY_SERVICE/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_ACTIVE_KID/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_KEYS/);
-  assert.match(config, /pattern = "api-staging\.workers\.xd\.team"/);
+  assert.match(config, /pattern = "api-staging\.workers\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
 });
 
 test('rejects unknown environment', () => {
