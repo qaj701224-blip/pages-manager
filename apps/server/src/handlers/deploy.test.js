@@ -50,6 +50,21 @@ function envWithExistingSite(existing) {
   };
 }
 
+function hostnameClaimsBinding(handler) {
+  return {
+    async fetch(request) {
+      const operation = new URL(request.url).pathname.split('/').pop();
+      const body = await request.json();
+      const result = await handler(operation, body.claim);
+      if (result instanceof Response) return result;
+      if (result?.ok === false) {
+        return Response.json({ error: { code: result.code, message: result.message } }, { status: 409 });
+      }
+      return Response.json(result || { claim: body.claim });
+    },
+  };
+}
+
 test('deploy rejects requests without a token before touching storage or Cloudflare', async () => {
   const calls = [];
   const originalFetch = globalThis.fetch;
@@ -250,16 +265,15 @@ test('deploy enforces hostname claim before touching Cloudflare', async () => {
     const env = {
       ...envForDeploy(null),
       HOSTNAME_CLAIMS_MODE: 'enforce',
-      HOSTNAME_CLAIMS: {
-        async acquire(input) {
-          claimCalls.push(input);
-          return {
-            ok: false,
-            code: 'HOSTNAME_CLAIM_CONFLICT',
-            message: 'hostname is already claimed',
-          };
-        },
-      },
+      HOSTNAME_CLAIMS: hostnameClaimsBinding(async (operation, input) => {
+        assert.equal(operation, 'acquire');
+        claimCalls.push(input);
+        return {
+          ok: false,
+          code: 'HOSTNAME_CLAIM_CONFLICT',
+          message: 'hostname is already claimed',
+        };
+      }),
     };
 
     const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
@@ -295,12 +309,11 @@ test('deploy record_only hostname claim mode records but does not block deploy',
     const env = {
       ...envForDeploy(null, putCalls),
       HOSTNAME_CLAIMS_MODE: 'record_only',
-      HOSTNAME_CLAIMS: {
-        async acquire(input) {
-          claimCalls.push(input);
-          return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT' };
-        },
-      },
+      HOSTNAME_CLAIMS: hostnameClaimsBinding(async (operation, input) => {
+        assert.equal(operation, 'acquire');
+        claimCalls.push(input);
+        return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT' };
+      }),
     };
 
     const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
@@ -351,16 +364,11 @@ test('deploy confirms pending hostname claims after metadata is written', async 
     const env = {
       ...envForDeploy(null),
       HOSTNAME_CLAIMS_MODE: 'enforce',
-      HOSTNAME_CLAIMS: {
-        async acquire(input) {
-          operations.push(['acquire', input.status]);
-          return { ok: true };
-        },
-        async confirm(input) {
-          operations.push(['confirm', input.hostname]);
-          return { ok: true };
-        },
-      },
+      HOSTNAME_CLAIMS: hostnameClaimsBinding(async (operation, input) => {
+        if (operation === 'acquire') operations.push(['acquire', input.status]);
+        if (operation === 'confirm') operations.push(['confirm', input.hostname]);
+        return { claim: input };
+      }),
     };
 
     const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
@@ -388,16 +396,11 @@ test('deploy releases pending hostname claim when new site deploy fails', async 
     const env = {
       ...envForDeploy(null),
       HOSTNAME_CLAIMS_MODE: 'enforce',
-      HOSTNAME_CLAIMS: {
-        async acquire(input) {
-          operations.push(['acquire', input.status]);
-          return { ok: true };
-        },
-        async release(input) {
-          operations.push(['release', input.releaseReason]);
-          return { ok: true };
-        },
-      },
+      HOSTNAME_CLAIMS: hostnameClaimsBinding(async (operation, input) => {
+        if (operation === 'acquire') operations.push(['acquire', input.status]);
+        if (operation === 'release') operations.push(['release', input.releaseReason]);
+        return { claim: input };
+      }),
     };
 
     await assert.rejects(() => handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env), /deploy failed/);
@@ -419,20 +422,18 @@ test('deploy does not release pending hostname claim after metadata is written',
     const env = {
       ...envForDeploy(null, putCalls),
       HOSTNAME_CLAIMS_MODE: 'enforce',
-      HOSTNAME_CLAIMS: {
-        async acquire(input) {
+      HOSTNAME_CLAIMS: hostnameClaimsBinding(async (operation, input) => {
+        if (operation === 'acquire') {
           operations.push(['acquire', input.status]);
-          return { ok: true };
-        },
-        async confirm() {
+          return { claim: input };
+        }
+        if (operation === 'confirm') {
           operations.push(['confirm', 'failed']);
           return { ok: false, code: 'HOSTNAME_CLAIM_CONFIRM_FAILED' };
-        },
-        async release(input) {
-          operations.push(['release', input.releaseReason]);
-          return { ok: true };
-        },
-      },
+        }
+        if (operation === 'release') operations.push(['release', input.releaseReason]);
+        return { claim: input };
+      }),
     };
 
     await assert.rejects(
@@ -475,6 +476,46 @@ test('deploy can acquire hostname claims through pages-api service binding witho
     assert.equal(serviceRequests[0].method, 'POST');
     assert.doesNotMatch(JSON.stringify(serviceRequests[0].body), /pages_owner@xd\.com/);
     assert.equal(serviceRequests[1].url, 'https://pages-api.internal/.xd-pages/internal/hostname-claims/confirm');
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy uses service binding fetch even when hostname claim RPC-like methods exist', async () => {
+  const mock = installCloudflareMock();
+  const serviceRequests = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null),
+      HOSTNAME_CLAIMS_MODE: 'enforce',
+      HOSTNAME_CLAIMS: {
+        async acquire() {
+          throw new Error('rpc acquire must not be called');
+        },
+        async confirm() {
+          throw new Error('rpc confirm must not be called');
+        },
+        async fetch(request) {
+          serviceRequests.push({
+            url: request.url,
+            method: request.method,
+          });
+          return Response.json({ claim: { hostname: 'demo.workers.xd.team' } });
+        },
+      },
+    };
+
+    const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      serviceRequests.map((request) => [request.method, request.url]),
+      [
+        ['POST', 'https://pages-api.internal/.xd-pages/internal/hostname-claims/acquire'],
+        ['POST', 'https://pages-api.internal/.xd-pages/internal/hostname-claims/confirm'],
+      ]
+    );
   } finally {
     mock.restore();
   }

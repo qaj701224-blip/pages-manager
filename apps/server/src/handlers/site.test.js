@@ -27,6 +27,20 @@ function envWithSite(site) {
   };
 }
 
+function hostnameClaimsBinding(handler) {
+  return {
+    async fetch(request) {
+      const body = await request.json();
+      const result = await handler(body.claim);
+      if (result instanceof Response) return result;
+      if (result?.ok === false) {
+        return Response.json({ error: { code: result.code, message: result.message } }, { status: 409 });
+      }
+      return Response.json(result || { claim: body.claim });
+    },
+  };
+}
+
 test('site detail requires a token before reading metadata', async () => {
   const response = await handleGetSite(
     siteRequest(),
@@ -299,12 +313,10 @@ test('site delete releases hostname claim into a short reuse hold after metadata
   env.CF_ZONE_ID_NEW = 'dummy-zone';
   env.HOSTNAME_CLAIMS_MODE = 'enforce';
   env.now = () => '2026-06-15T00:00:00.000Z';
-  env.HOSTNAME_CLAIMS = {
-    release: async (claim) => {
-      releases.push(claim);
-      return { ok: true };
-    },
-  };
+  env.HOSTNAME_CLAIMS = hostnameClaimsBinding(async (claim) => {
+    releases.push(claim);
+    return { claim };
+  });
 
   try {
     const response = await handleDeleteSite(siteRequest('/site/demo', 'pages_owner@xd.com'), env, { name: 'demo' });
@@ -323,6 +335,56 @@ test('site delete releases hostname claim into a short reuse hold after metadata
         status: 'active',
         releaseReason: 'site_deleted',
         reuseHoldUntil: '2026-06-15T00:05:00.000Z',
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('site delete uses service binding fetch even when hostname claim release method exists', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/zones/dummy-zone/workers/routes')) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [{ id: 'route_1', pattern: 'demo.workers.xd.team/*', script: 'pages-demo' }],
+        })
+      );
+    }
+    return new Response(JSON.stringify({ success: true, result: {} }));
+  };
+  const serviceRequests = [];
+  const env = envWithSite({
+    name: 'demo',
+    token: 'pages_owner@xd.com',
+    scriptName: 'pages-demo',
+    url: 'https://demo.workers.xd.team',
+  });
+  env.CF_ZONE_ID_NEW = 'dummy-zone';
+  env.HOSTNAME_CLAIMS_MODE = 'enforce';
+  env.HOSTNAME_CLAIMS = {
+    async release() {
+      throw new Error('rpc release must not be called');
+    },
+    async fetch(request) {
+      serviceRequests.push({
+        url: request.url,
+        method: request.method,
+      });
+      return Response.json({ claim: { hostname: 'demo.workers.xd.team' } });
+    },
+  };
+
+  try {
+    const response = await handleDeleteSite(siteRequest('/site/demo', 'pages_owner@xd.com'), env, { name: 'demo' });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(serviceRequests, [
+      {
+        url: 'https://pages-api.internal/.xd-pages/internal/hostname-claims/release',
+        method: 'POST',
       },
     ]);
   } finally {

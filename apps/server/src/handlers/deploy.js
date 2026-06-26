@@ -299,11 +299,7 @@ async function writeHostnameClaim(env, operation, input) {
   if (mode === 'off' || !env.HOSTNAME_CLAIMS) return { ok: true };
 
   try {
-    const method = env.HOSTNAME_CLAIMS[operation];
-    const result =
-      typeof method === 'function'
-        ? await method.call(env.HOSTNAME_CLAIMS, input)
-        : await writeHostnameClaimViaServiceBinding(env.HOSTNAME_CLAIMS, operation, input);
+    const result = await writeHostnameClaimViaServiceBinding(env.HOSTNAME_CLAIMS, operation, input);
     if (result?.ok === false && mode === 'enforce') return result;
     return { ok: true, recorded: result || null };
   } catch (error) {

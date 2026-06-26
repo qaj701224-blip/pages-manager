@@ -153,10 +153,7 @@ async function releaseDeletedHostnameClaim(env, claim) {
   if (mode === 'off' || !env.HOSTNAME_CLAIMS) return { ok: true };
 
   try {
-    const result =
-      typeof env.HOSTNAME_CLAIMS.release === 'function'
-        ? await env.HOSTNAME_CLAIMS.release(claim)
-        : await releaseViaServiceBinding(env.HOSTNAME_CLAIMS, claim);
+    const result = await releaseViaServiceBinding(env.HOSTNAME_CLAIMS, claim);
     if (result?.ok === false && mode === 'enforce') return result;
     return { ok: true, recorded: result || null };
   } catch (error) {
