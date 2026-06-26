@@ -3,6 +3,10 @@ export { readContext } from './platform-context.js';
 export { SDKError } from '../errors.js';
 export type {
   KVGetOptions,
+  KVGetWithMetadataResult,
+  KVListKey,
+  KVListOptions,
+  KVListResult,
   KVNamespace,
   KVPutOptions,
   KVValueType,

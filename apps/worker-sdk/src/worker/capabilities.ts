@@ -3,18 +3,22 @@ import { SDKError } from '../errors.js';
 import type { RuntimeEnv } from '../types.js';
 import { DATA_SITE_CAPABILITY_HEADER, KV_CAPABILITY_HEADER } from './constants.js';
 
-export type GatewayPaths = { get: string; set: string; delete: string };
+export type GatewayPaths = { get: string; getWithMetadata: string; list: string; set: string; delete: string };
 export type DataEndpoint = { capability: string; paths: GatewayPaths };
 export type DataEndpointReader = () => DataEndpoint;
 
 const DATA_SITE_PATHS = {
   get: GATEWAY.DATA_SITE_GET_PATH,
+  getWithMetadata: GATEWAY.DATA_SITE_GET_WITH_METADATA_PATH,
+  list: GATEWAY.DATA_SITE_LIST_PATH,
   set: GATEWAY.DATA_SITE_SET_PATH,
   delete: GATEWAY.DATA_SITE_DELETE_PATH,
 };
 
 const LEGACY_PATHS = {
   get: GATEWAY.KV_GET_PATH,
+  getWithMetadata: GATEWAY.KV_GET_WITH_METADATA_PATH,
+  list: GATEWAY.KV_LIST_PATH,
   set: GATEWAY.KV_SET_PATH,
   delete: GATEWAY.KV_DELETE_PATH,
 };

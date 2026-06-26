@@ -239,6 +239,81 @@ test('proxies browser site data runtime requests with site data capability', asy
   assert.equal(claims.sub, 'anonymous');
 });
 
+test('proxies browser site data list requests with explicit list capability', async () => {
+  let gatewayRequest;
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get', 'kv:list'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        gatewayRequest = request;
+        return Response.json({ ok: true, keys: [], list_complete: true });
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/site/list', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+      },
+      body: JSON.stringify({ prefix: 'app/' }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, keys: [], list_complete: true });
+  assert.equal(gatewayRequest.url, 'https://pages-kv-gateway.local/v1/data/site/list');
+  await verifyCapability(gatewayRequest.headers.get('Authorization'), gatewayEnv(), {
+    requiredScope: 'data:site:list',
+    requiredDataScope: 'site',
+    now: 1_700_000_000,
+  });
+});
+
+test('browser site data list requests fail closed without list scope', async () => {
+  let gatewayRequest;
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        kv: { enabled: true, scopes: ['kv:get'] },
+      }),
+    },
+    XD_PAGES_KV_GATEWAY: {
+      async fetch(request) {
+        gatewayRequest = request;
+        return kvGatewayWorker.fetch(request, gatewayEnv());
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/data/site/list', {
+      method: 'POST',
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        'Content-Type': 'application/json',
+        'X-XD-Pages-Runtime': '1',
+        Origin: 'https://demo.pages.xd.team',
+      },
+      body: JSON.stringify({ prefix: 'app/' }),
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'CAPABILITY_SCOPE_DENIED');
+  assert.equal(gatewayRequest.url, 'https://pages-kv-gateway.local/v1/data/site/list');
+});
+
 test('proxies browser user data runtime requests with request identity capability', async () => {
   let gatewayRequest;
   const env = routeEnv({
@@ -597,6 +672,45 @@ test('data capabilities injected into user workers inherit legacy kv scopes', as
   await assert.rejects(
     verifyCapability(`Bearer ${userCapability}`, gatewayEnv(), {
       requiredScope: 'data:user:set',
+      requiredDataScope: 'user',
+      now: 1_700_000_000,
+    }),
+    /scope/i
+  );
+});
+
+test('user data capabilities do not inherit site-level list scope', async () => {
+  const session = await siteSession({ audience: 'demo.pages.xd.team', userId: 'usr_1' });
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({
+        visibility: 'org',
+        kv: { enabled: true, scopes: ['kv:get', 'kv:list'] },
+      }),
+    },
+  });
+
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  const siteCapability = env.dispatchedRequest.headers.get('CF-Platform-Data-Site-Capability');
+  const userCapability = env.dispatchedRequest.headers.get('CF-Platform-Data-User-Capability');
+  await verifyCapability(`Bearer ${siteCapability}`, gatewayEnv(), {
+    requiredScope: 'data:site:list',
+    requiredDataScope: 'site',
+    now: 1_700_000_000,
+  });
+  await assert.rejects(
+    verifyCapability(`Bearer ${userCapability}`, gatewayEnv(), {
+      requiredScope: 'data:user:list',
       requiredDataScope: 'user',
       now: 1_700_000_000,
     }),

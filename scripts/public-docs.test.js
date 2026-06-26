@@ -148,6 +148,8 @@ test('Worker SDK AI-readable docs are generated from package truth sources', () 
   assert.match(workerDoc, /Cloudflare API 心智/);
   assert.match(workerDoc, /runtime\.kv\.get/);
   assert.match(workerDoc, /runtime\.kv\.put/);
+  assert.match(workerDoc, /runtime\.kv\.getWithMetadata/);
+  assert.match(workerDoc, /runtime\.kv\.list/);
   assert.match(workerDoc, /未实现的 D1\/R2 空壳 API/);
   assert.match(workerDoc, /安全约束/);
   assert.match(workerDoc, /非目标/);
@@ -167,7 +169,12 @@ test('Worker SDK AI-readable docs are generated from package truth sources', () 
   assert.match(apiDoc, /export interface Runtime/);
   assert.match(apiDoc, /export interface KVNamespace/);
   assert.match(apiDoc, /get\(key: string, options\?: \{/);
-  assert.match(apiDoc, /put\(key: string, value: string/);
+  assert.match(apiDoc, /getWithMetadata<TMetadata = unknown>/);
+  assert.match(apiDoc, /list<TMetadata = unknown>/);
+  assert.match(apiDoc, /export interface KVPutOptions/);
+  assert.match(apiDoc, /expiration\?: number/);
+  assert.match(apiDoc, /metadata\?: TMetadata/);
+  assert.match(apiDoc, /put<TMetadata = unknown>\(key: string, value: string/);
   assert.doesNotMatch(apiDoc, /capabilities\.ts|gateway\.ts|platform-context\.ts/);
   assert.doesNotMatch(apiDoc, /createPagesRuntime|readPlatformContext|Pages|set\(key|KVResources/);
 

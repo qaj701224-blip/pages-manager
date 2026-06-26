@@ -15,7 +15,7 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
     dispatch: buildDispatchSnapshot(route, version),
     kv: {
       enabled: true,
-      scopes: ['kv:get', 'kv:set', 'kv:delete'],
+      scopes: ['kv:get', 'kv:set', 'kv:delete', 'kv:list'],
     },
     activeVersionId: route.activeVersionId,
     contentHash: version.contentHash,

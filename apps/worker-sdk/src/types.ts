@@ -26,16 +26,54 @@ export interface KVGetOptions {
   type?: KVValueType;
 }
 
-export interface KVPutOptions {
+export interface KVPutOptions<TMetadata = unknown> {
   type?: KVValueType;
+  expiration?: number;
   expirationTtl?: number;
+  metadata?: TMetadata;
+}
+
+export interface KVGetWithMetadataResult<TValue = string, TMetadata = unknown> {
+  value: TValue | null;
+  metadata: TMetadata | null;
+}
+
+export interface KVListKey<TMetadata = unknown> {
+  name: string;
+  expiration?: number;
+  metadata?: TMetadata;
+}
+
+export interface KVListOptions {
+  prefix?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface KVListResult<TMetadata = unknown> {
+  keys: KVListKey<TMetadata>[];
+  list_complete: boolean;
+  cursor?: string;
 }
 
 export interface KVNamespace {
   get(key: string, options?: { type?: 'text' }): Promise<string | null>;
   get<T = unknown>(key: string, options: { type: 'json' }): Promise<T | null>;
-  put(key: string, value: string, options?: { type?: 'text'; expirationTtl?: number }): Promise<void>;
-  put(key: string, value: unknown, options: { type: 'json'; expirationTtl?: number }): Promise<void>;
+  getWithMetadata<TMetadata = unknown>(
+    key: string,
+    options?: { type?: 'text' }
+  ): Promise<KVGetWithMetadataResult<string, TMetadata>>;
+  getWithMetadata<T = unknown, TMetadata = unknown>(
+    key: string,
+    options: { type: 'json' }
+  ): Promise<KVGetWithMetadataResult<T, TMetadata>>;
+  list<TMetadata = unknown>(options?: KVListOptions): Promise<KVListResult<TMetadata>>;
+  put<TMetadata = unknown>(key: string, value: string, options?: KVPutOptions<TMetadata> & { type?: 'text' }): Promise<void>;
+  put<TMetadata = unknown>(
+    key: string,
+    value: unknown,
+    options: KVPutOptions<TMetadata> & { type: 'json' }
+  ): Promise<void>;
   delete(key: string): Promise<void>;
 }
 

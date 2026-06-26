@@ -25,9 +25,16 @@ const KV_CAPABILITY_AUDIENCE = 'pages-kv-gateway';
 const DEFAULT_KV_CAPABILITY_TTL_SECONDS = 60;
 const RUNTIME_GATEWAY_PATHS = new Map([
   [RUNTIME.KV_GET_PATH, legacyRuntimeRoute(GATEWAY.KV_GET_PATH)],
+  [RUNTIME.KV_GET_WITH_METADATA_PATH, legacyRuntimeRoute(GATEWAY.KV_GET_WITH_METADATA_PATH)],
+  [RUNTIME.KV_LIST_PATH, legacyRuntimeRoute(GATEWAY.KV_LIST_PATH)],
   [RUNTIME.KV_SET_PATH, legacyRuntimeRoute(GATEWAY.KV_SET_PATH)],
   [RUNTIME.KV_DELETE_PATH, legacyRuntimeRoute(GATEWAY.KV_DELETE_PATH)],
   [RUNTIME.DATA_SITE_GET_PATH, dataRuntimeRoute(GATEWAY.DATA_SITE_GET_PATH, 'site', 'get')],
+  [
+    RUNTIME.DATA_SITE_GET_WITH_METADATA_PATH,
+    dataRuntimeRoute(GATEWAY.DATA_SITE_GET_WITH_METADATA_PATH, 'site', 'get'),
+  ],
+  [RUNTIME.DATA_SITE_LIST_PATH, dataRuntimeRoute(GATEWAY.DATA_SITE_LIST_PATH, 'site', 'list')],
   [RUNTIME.DATA_SITE_SET_PATH, dataRuntimeRoute(GATEWAY.DATA_SITE_SET_PATH, 'site', 'set')],
   [RUNTIME.DATA_SITE_DELETE_PATH, dataRuntimeRoute(GATEWAY.DATA_SITE_DELETE_PATH, 'site', 'delete')],
   [RUNTIME.DATA_USER_GET_PATH, dataRuntimeRoute(GATEWAY.DATA_USER_GET_PATH, 'user', 'get')],
@@ -513,6 +520,7 @@ function dataScopes(route, dataScope) {
     if (scope === 'kv:get') operations.add('get');
     if (scope === 'kv:set') operations.add('set');
     if (scope === 'kv:delete') operations.add('delete');
+    if (scope === 'kv:list' && dataScope === 'site') operations.add('list');
   }
   return [...operations].map((operation) => scopeForDataOperation(dataScope, operation));
 }

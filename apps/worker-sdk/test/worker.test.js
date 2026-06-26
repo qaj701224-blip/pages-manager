@@ -185,6 +185,100 @@ test('createRuntime().kv.put writes JSON only when explicitly requested', async 
   });
 });
 
+test('createRuntime().kv.put forwards user metadata and absolute expiration', async () => {
+  let captured;
+  const request = new Request('https://demo.pages.xd.team/', {
+    headers: { 'CF-Platform-Data-Site-Capability': 'site-request-capability' },
+  });
+  const runtime = createRuntime({
+    request,
+    env: {
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({ ok: true });
+        },
+      },
+    },
+  });
+
+  await runtime.kv.put('app/config', 'hello', {
+    expiration: 1_900_000_000,
+    metadata: { owner: 'docs' },
+  });
+
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/set');
+  assert.deepEqual(await captured.json(), {
+    key: 'app/config',
+    value: 'hello',
+    type: 'text',
+    expiration: 1_900_000_000,
+    metadata: { owner: 'docs' },
+  });
+});
+
+test('createRuntime().kv.getWithMetadata maps gateway metadata envelope', async () => {
+  let captured;
+  const request = new Request('https://demo.pages.xd.team/', {
+    headers: { 'CF-Platform-Data-Site-Capability': 'site-request-capability' },
+  });
+  const runtime = createRuntime({
+    request,
+    env: {
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({
+            ok: true,
+            found: true,
+            value: { enabled: true },
+            metadata: { owner: 'docs' },
+          });
+        },
+      },
+    },
+  });
+
+  const result = await runtime.kv.getWithMetadata('app/config', { type: 'json' });
+
+  assert.deepEqual(result, { value: { enabled: true }, metadata: { owner: 'docs' } });
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/get-with-metadata');
+  assert.deepEqual(await captured.json(), { key: 'app/config', type: 'json' });
+});
+
+test('createRuntime().kv.list maps gateway list envelope', async () => {
+  let captured;
+  const request = new Request('https://demo.pages.xd.team/', {
+    headers: { 'CF-Platform-Data-Site-Capability': 'site-request-capability' },
+  });
+  const runtime = createRuntime({
+    request,
+    env: {
+      XD_PAGES_KV_GATEWAY: {
+        fetch: async (gatewayRequest) => {
+          captured = gatewayRequest;
+          return Response.json({
+            ok: true,
+            keys: [{ name: 'app/config', metadata: { owner: 'docs' }, expiration: 1_900_000_000 }],
+            list_complete: false,
+            cursor: 'cursor_2',
+          });
+        },
+      },
+    },
+  });
+
+  const result = await runtime.kv.list({ prefix: 'app/', limit: 10, cursor: 'cursor_1' });
+
+  assert.deepEqual(result, {
+    keys: [{ name: 'app/config', metadata: { owner: 'docs' }, expiration: 1_900_000_000 }],
+    list_complete: false,
+    cursor: 'cursor_2',
+  });
+  assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/list');
+  assert.deepEqual(await captured.json(), { prefix: 'app/', limit: 10, cursor: 'cursor_1' });
+});
+
 test('createRuntime().kv can fall back to env site data capability', async () => {
   let captured;
   const runtime = createRuntime({

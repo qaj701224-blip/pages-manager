@@ -19,6 +19,7 @@ import {
   scopeForDataOperation,
   validateSiteSlug,
   validateKvType,
+  validateListOptions,
   validateTtl,
   validateUserKey,
 } from './index.js';
@@ -26,17 +27,31 @@ import {
 test('exports stable runtime, gateway, header, binding and error constants', () => {
   assert.equal(RUNTIME.BASE_PATH, '/.xd-pages/runtime/v1');
   assert.equal(RUNTIME.KV_GET_PATH, '/.xd-pages/runtime/v1/kv/get');
+  assert.equal(RUNTIME.KV_GET_WITH_METADATA_PATH, '/.xd-pages/runtime/v1/kv/get-with-metadata');
+  assert.equal(RUNTIME.KV_LIST_PATH, '/.xd-pages/runtime/v1/kv/list');
   assert.equal(RUNTIME.KV_SET_PATH, '/.xd-pages/runtime/v1/kv/set');
   assert.equal(GATEWAY.KV_SET_PATH, '/v1/kv/set');
+  assert.equal(GATEWAY.KV_GET_WITH_METADATA_PATH, '/v1/kv/get-with-metadata');
+  assert.equal(GATEWAY.KV_LIST_PATH, '/v1/kv/list');
   assert.equal(RUNTIME.DATA_SITE_GET_PATH, '/.xd-pages/runtime/v1/data/site/get');
+  assert.equal(RUNTIME.DATA_SITE_GET_WITH_METADATA_PATH, '/.xd-pages/runtime/v1/data/site/get-with-metadata');
+  assert.equal(RUNTIME.DATA_SITE_LIST_PATH, '/.xd-pages/runtime/v1/data/site/list');
   assert.equal(RUNTIME.DATA_USER_SET_PATH, '/.xd-pages/runtime/v1/data/user/set');
+  assert.equal(GATEWAY.DATA_SITE_GET_WITH_METADATA_PATH, '/v1/data/site/get-with-metadata');
+  assert.equal(GATEWAY.DATA_SITE_LIST_PATH, '/v1/data/site/list');
   assert.equal(GATEWAY.DATA_SITE_DELETE_PATH, '/v1/data/site/delete');
   assert.equal(GATEWAY.DATA_USER_GET_PATH, '/v1/data/user/get');
   assert.equal(HEADERS.RUNTIME_REQUEST, 'X-XD-Pages-Runtime');
   assert.equal(BINDINGS.KV_GATEWAY, 'XD_PAGES_KV_GATEWAY');
   assert.equal(ERROR_CODES.INVALID_RUNTIME_RESPONSE, 'INVALID_RUNTIME_RESPONSE');
   assert.equal(ERROR_CODES.USER_REQUIRED, 'USER_REQUIRED');
+  assert.equal(ERROR_CODES.INVALID_METADATA, 'INVALID_METADATA');
+  assert.equal(ERROR_CODES.INVALID_LIMIT, 'INVALID_LIMIT');
+  assert.equal(ERROR_CODES.INVALID_CURSOR, 'INVALID_CURSOR');
+  assert.equal(ERROR_CODES.INVALID_EXPIRATION, 'INVALID_EXPIRATION');
+  assert.equal(ERROR_CODES.UNSUPPORTED_KV_OPTION, 'UNSUPPORTED_KV_OPTION');
   assert.equal(scopeForDataOperation('site', 'get'), 'data:site:get');
+  assert.equal(scopeForDataOperation('site', 'list'), 'data:site:list');
   assert.equal(scopeForDataOperation('user', 'delete'), 'data:user:delete');
 });
 
@@ -103,6 +118,15 @@ test('user key validation rejects empty, reserved and oversized keys', () => {
   assert.equal(validateUserKey('.xd-pages/runtime').error.code, 'INVALID_KEY');
   assert.equal(validateUserKey('__xd_pages/runtime').error.code, 'INVALID_KEY');
   assert.equal(validateUserKey('a'.repeat(257)).error.code, 'INVALID_KEY');
+});
+
+test('list options allow empty prefix while validating real prefixes', () => {
+  assert.deepEqual(validateListOptions({ prefix: '' }), {
+    ok: true,
+    value: { prefix: '', limit: undefined, cursor: undefined },
+  });
+  assert.equal(validateListOptions({ prefix: 'app/' }).ok, true);
+  assert.equal(validateListOptions({ prefix: '.xd-pages/' }).error.code, 'INVALID_KEY');
 });
 
 test('user key validation rejects unpaired surrogate code units', () => {
