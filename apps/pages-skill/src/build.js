@@ -63,7 +63,7 @@ async function renderedReleaseManifest({ cliDistDir, workerSdkPackageDir }) {
     schemaVersion: 1,
     product: {
       name: 'XD Cell',
-      siteDomainSuffix: 'pages.xd.team',
+      siteDomainSuffix: 'workers.xd.team',
     },
     skill: {
       name: 'xd-cell',

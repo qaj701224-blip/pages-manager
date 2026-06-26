@@ -3,13 +3,13 @@ export const FIXED_ENVIRONMENTS = {
     environment: 'production',
     apiBaseUrl: 'https://api.pages.xd.team',
     authBaseUrl: 'https://auth.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   },
   staging: {
     environment: 'staging',
     apiBaseUrl: 'https://api-staging.pages.xd.team',
     authBaseUrl: 'https://auth-staging.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   },
 };
 
@@ -52,7 +52,7 @@ export function validateTrustedOrigin(value, { environment }) {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Invalid URL origin.');
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Invalid URL origin.');
   if (url.hostname === 'workers.xd.team' || url.hostname.endsWith('.workers.xd.team')) {
-    throw new Error('workers.xd.team is a legacy domain and is not supported by the CLI.');
+    throw new Error('workers.xd.team API origins belong to v1 legacy and are not supported by XD Cell CLI.');
   }
 
   if (environment === 'custom') {
@@ -80,9 +80,6 @@ function normalizeSiteDomainSuffix(value, { environment } = {}) {
     .trim()
     .toLowerCase();
   if (!suffix || suffix.includes('/') || suffix.includes(':')) throw new Error('Site domain suffix is invalid.');
-  if (suffix === 'workers.xd.team' || suffix.endsWith('.workers.xd.team')) {
-    throw new Error('workers.xd.team is a legacy domain and is not supported by the CLI.');
-  }
   if (environment === 'custom' && !isLoopbackHost(suffix)) throw new Error('Pages custom site suffix must be loopback.');
   return suffix;
 }

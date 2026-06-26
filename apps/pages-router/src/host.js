@@ -1,7 +1,7 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
-const PROD_SUFFIX = '.pages.xd.team';
-const STAGING_SUFFIX = '-staging.pages.xd.team';
+const PROD_SUFFIXES = ['.pages.xd.team', '.workers.xd.team'];
+const STAGING_SUFFIXES = ['-staging.pages.xd.team', '-staging.workers.xd.team'];
 
 const RESERVED_HOSTS = new Set([
   'api.pages.xd.team',
@@ -12,6 +12,14 @@ const RESERVED_HOSTS = new Set([
   'auth-staging.pages.xd.team',
   'router-staging.pages.xd.team',
   'kv-gateway-staging.pages.xd.team',
+  'api.workers.xd.team',
+  'auth.workers.xd.team',
+  'router.workers.xd.team',
+  'kv-gateway.workers.xd.team',
+  'api-staging.workers.xd.team',
+  'auth-staging.workers.xd.team',
+  'router-staging.workers.xd.team',
+  'kv-gateway-staging.workers.xd.team',
 ]);
 
 export function classifyHost(hostname, { environment }) {
@@ -27,11 +35,12 @@ export function classifyHost(hostname, { environment }) {
 }
 
 function classifyProductionHost(hostname) {
-  if (!hostname.endsWith(PROD_SUFFIX) || hostname === 'pages.xd.team') {
+  const suffix = PROD_SUFFIXES.find((candidate) => hostname.endsWith(candidate));
+  if (!suffix || hostname === suffix.slice(1)) {
     return rejected('INVALID_HOST', hostname, 'production');
   }
 
-  const slug = hostname.slice(0, -PROD_SUFFIX.length);
+  const slug = hostname.slice(0, -suffix.length);
   if (slug.includes('.')) return rejected('INVALID_HOST', hostname, 'production');
   if (slug === 'staging' || slug.startsWith('staging-') || slug.endsWith('-staging')) {
     return rejected('RESERVED_SLUG', hostname, 'production');
@@ -41,12 +50,13 @@ function classifyProductionHost(hostname) {
 }
 
 function classifyStagingHost(hostname) {
-  if (!hostname.endsWith(STAGING_SUFFIX)) {
-    if (hostname.endsWith(PROD_SUFFIX)) return rejected('HOST_ENV_MISMATCH', hostname, 'staging');
+  const suffix = STAGING_SUFFIXES.find((candidate) => hostname.endsWith(candidate));
+  if (!suffix) {
+    if (PROD_SUFFIXES.some((candidate) => hostname.endsWith(candidate))) return rejected('HOST_ENV_MISMATCH', hostname, 'staging');
     return rejected('INVALID_HOST', hostname, 'staging');
   }
 
-  const slug = hostname.slice(0, -STAGING_SUFFIX.length);
+  const slug = hostname.slice(0, -suffix.length);
   if (slug.includes('.')) return rejected('INVALID_HOST', hostname, 'staging');
 
   return validateHostSlug({ hostname, slug, environment: 'staging' });

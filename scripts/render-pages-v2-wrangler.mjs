@@ -45,6 +45,7 @@ const TEMPLATE_EXPECTATIONS = {
     forbidden: [
       /api-staging\.pages\.xd\.team/,
       /auth-staging\.pages\.xd\.team/,
+      /\*-staging\.workers\.xd\.team/,
       /PAGES_ENV = "staging"/,
       /pages-staging/,
       /service = "pages-(?:api|auth)-staging"/,
@@ -53,7 +54,7 @@ const TEMPLATE_EXPECTATIONS = {
     required: [/PAGES_ENV = "production"/],
   },
   staging: {
-    forbidden: [/PAGES_ENV = "production"/, /namespace = "pages-production"/],
+    forbidden: [/PAGES_ENV = "production"/, /namespace = "pages-production"/, /pattern = "\*\.workers\.xd\.team\/\*"/],
     required: [/PAGES_ENV = "staging"/, /-staging/],
   },
 };

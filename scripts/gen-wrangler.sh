@@ -99,6 +99,7 @@ if [[ "$app" == "apps/server" ]]; then
       domain_label=""
       worker_prefix="pages-"
       api_route="api.workers.xd.team"
+      pages_api_service="pages-api"
       ;;
     staging)
       worker_name="pages-manager-staging"
@@ -108,8 +109,14 @@ if [[ "$app" == "apps/server" ]]; then
       domain_label="-staging"
       worker_prefix="pages-staging-"
       api_route="api-staging.workers.xd.team"
+      pages_api_service="pages-api-staging"
       ;;
   esac
+  hostname_claims_mode="${HOSTNAME_CLAIMS_MODE:-record_only}"
+  hostname_reuse_hold_seconds="${HOSTNAME_REUSE_HOLD_SECONDS:-300}"
+  if [[ ! "$hostname_reuse_hold_seconds" =~ ^[0-9]+$ ]]; then
+    die "HOSTNAME_REUSE_HOLD_SECONDS must be a non-negative integer"
+  fi
 
   for name in \
     worker_name \
@@ -120,6 +127,9 @@ if [[ "$app" == "apps/server" ]]; then
     domain_label \
     worker_prefix \
     workers_dev_subdomain \
+    hostname_claims_mode \
+    hostname_reuse_hold_seconds \
+    pages_api_service \
     api_route; do
     require_toml_safe "$name" "${!name}"
   done
@@ -133,6 +143,9 @@ if [[ "$app" == "apps/server" ]]; then
   replace_token "__WORKER_PREFIX__" "$worker_prefix"
   replace_token "__WORKERS_DEV_SUBDOMAIN__" "$workers_dev_subdomain"
   replace_token "__IP_ALLOWLIST__" "$IP_ALLOWLIST"
+  replace_token "__HOSTNAME_CLAIMS_MODE__" "$hostname_claims_mode"
+  replace_token "__HOSTNAME_REUSE_HOLD_SECONDS__" "$hostname_reuse_hold_seconds"
+  replace_token "__PAGES_API_SERVICE__" "$pages_api_service"
   replace_token "__SITES_KV_NAMESPACE_ID__" "$SITES_KV_NAMESPACE_ID"
   replace_token "__API_ROUTE__" "$api_route"
 

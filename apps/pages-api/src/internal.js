@@ -10,6 +10,18 @@ export async function handleInternalApi(request, env, store) {
     if (request.method !== 'POST') return methodNotAllowed();
     return upsertUser(request, env, store);
   }
+  if (url.pathname === '/.xd-pages/internal/hostname-claims/acquire') {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return acquireHostnameClaim(request, env, store);
+  }
+  if (url.pathname === '/.xd-pages/internal/hostname-claims/confirm') {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return confirmHostnameClaim(request, env, store);
+  }
+  if (url.pathname === '/.xd-pages/internal/hostname-claims/release') {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return releaseHostnameClaim(request, env, store);
+  }
 
   return null;
 }
@@ -35,6 +47,76 @@ async function upsertUser(request, env, store) {
       lastLoginAt: record.lastLoginAt,
     },
   });
+}
+
+async function acquireHostnameClaim(request, env, store) {
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const claim = normalizeClaim(body.claim);
+  if (!claim) return jsonError('HOSTNAME_CLAIM_INVALID', 'Hostname claim request is invalid.', 400);
+
+  const result = await store.acquireHostnameClaim({
+    ...claim,
+    acquiredAt: new Date(readNow(env) * 1000).toISOString(),
+  });
+  if (!result.ok) {
+    return jsonError(
+      result.code || 'HOSTNAME_CLAIM_CONFLICT',
+      'Hostname is already claimed.',
+      409,
+      'Use the original owner or choose another site name.'
+    );
+  }
+  return jsonOk({ claim: result.claim });
+}
+
+async function confirmHostnameClaim(request, env, store) {
+  const claim = await readAndNormalizeClaimRequest(request);
+  if (claim instanceof Response) return claim;
+
+  const result = await store.confirmHostnameClaim({
+    ...claim,
+    confirmedAt: new Date(readNow(env) * 1000).toISOString(),
+  });
+  if (!result.ok) {
+    return jsonError(result.code || 'HOSTNAME_CLAIM_NOT_FOUND', 'Hostname claim was not found.', 404);
+  }
+  return jsonOk({ claim: result.claim });
+}
+
+async function releaseHostnameClaim(request, env, store) {
+  const claim = await readAndNormalizeClaimRequest(request);
+  if (claim instanceof Response) return claim;
+
+  const result = await store.releaseHostnameClaim({
+    ...claim,
+    releaseReason: claim.releaseReason || 'v1_deploy_failed',
+    releasedAt: new Date(readNow(env) * 1000).toISOString(),
+  });
+  if (!result.ok) {
+    return jsonError(result.code || 'HOSTNAME_CLAIM_NOT_FOUND', 'Hostname claim was not found.', 404);
+  }
+  return jsonOk({ claim: result.claim });
+}
+
+async function readAndNormalizeClaimRequest(request) {
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const claim = normalizeClaim(body.claim);
+  if (!claim) return jsonError('HOSTNAME_CLAIM_INVALID', 'Hostname claim request is invalid.', 400);
+  claim.releaseReason = normalizeOptionalString(body.claim?.releaseReason) || null;
+  claim.reuseHoldUntil = normalizeOptionalIsoString(body.claim?.reuseHoldUntil);
+  return claim;
 }
 
 function normalizeUser(value, now) {
@@ -65,6 +147,37 @@ function normalizeRequiredString(value) {
 
 function normalizeOptionalString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeOptionalIsoString(value) {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) return null;
+  if (Number.isNaN(Date.parse(normalized))) return null;
+  return normalized;
+}
+
+function normalizeClaim(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const environment = normalizeRequiredString(value.environment);
+  const hostname = normalizeRequiredString(value.hostname).toLowerCase();
+  const normalizedSlug = normalizeRequiredString(value.normalizedSlug);
+  const hostnameFamily = normalizeRequiredString(value.hostnameFamily);
+  const ownerSystem = normalizeRequiredString(value.ownerSystem);
+  const ownerId = normalizeRequiredString(value.ownerId);
+  const source = normalizeRequiredString(value.source);
+  if (!['production', 'staging', 'local'].includes(environment)) return null;
+  if (!hostname || !normalizedSlug || !hostnameFamily || !ownerSystem || !ownerId || !source) return null;
+  return {
+    environment,
+    hostname,
+    normalizedSlug,
+    hostnameFamily,
+    ownerSystem,
+    ownerId,
+    ownerRef: normalizeOptionalString(value.ownerRef) || null,
+    source,
+    status: normalizeOptionalString(value.status) || 'active',
+  };
 }
 
 function isInternalRequest(request) {

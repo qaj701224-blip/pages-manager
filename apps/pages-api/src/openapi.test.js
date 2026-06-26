@@ -9,7 +9,7 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
     environment: 'production',
     apiBaseUrl: 'https://api.pages.xd.team',
     authBaseUrl: 'https://auth.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   });
   const serialized = JSON.stringify(body);
 
@@ -19,6 +19,7 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
   assert.deepEqual(body.servers, [{ url: 'https://api.pages.xd.team' }]);
   assert.ok(body.paths['/.xd-pages/api/sites']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}'].delete);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
@@ -95,7 +96,7 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
         `${['--save', '-config'].join('')}|${['\\.pages', '\\.json'].join('')}|public.+公司网络`
     )
   );
-  assert.doesNotMatch(serialized, /workers\.xd\.team/);
+  assert.doesNotMatch(serialized, /api\.workers\.xd\.team|X-Pages-Token/);
   assert.doesNotMatch(serialized, /WFP|SLOT|worker slot|execution provider|dispatch namespace|service binding/i);
   assert.doesNotMatch(serialized, /X-Pages-Token/);
   assert.doesNotMatch(serialized, /CLOUDFLARE|client_secret|zone_id|account_id/i);
@@ -128,11 +129,11 @@ test('staging OpenAPI contract uses staging server URL without v1 addresses', ()
     environment: 'staging',
     apiBaseUrl: 'https://api-staging.pages.xd.team',
     authBaseUrl: 'https://auth-staging.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   });
 
   assert.deepEqual(body.servers, [{ url: 'https://api-staging.pages.xd.team' }]);
-  assert.doesNotMatch(JSON.stringify(body), /workers\.xd\.team/);
+  assert.doesNotMatch(JSON.stringify(body), /api\.workers\.xd\.team|X-Pages-Token/);
 });
 
 test('legacy token headers are rejected before route matching', async () => {
@@ -163,6 +164,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.match(body, /--config pages\.config\.json/);
   assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);
+  assert.match(body, /workers\.xd\.team/);
   assert.doesNotMatch(
     body,
     new RegExp(
@@ -170,7 +172,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
         `${['--save', '-config'].join('')}|${['\\.pages', '\\.json'].join('')}|PAGES_ACCESS_KEY|\`public\``
     )
   );
-  assert.doesNotMatch(body, /--access-key|curl|X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
+  assert.doesNotMatch(body, /--access-key|curl|X-Pages-Token|api\.workers\.xd\.team/);
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
   assert.doesNotMatch(body, /XD Pages/);
 });
@@ -189,7 +191,8 @@ test('serves staging skill with explicit staging CLI environment', async () => {
   assert.match(body, /xd-cell deploy <dir> <site> --env staging --visibility org/);
   assert.match(body, /xd-cell deploy <dir> <site> --env staging --token <token> --json/);
   assert.doesNotMatch(body, /api\.pages\.xd\.team(?![\\w.-])/);
-  assert.doesNotMatch(body, /workers\.xd\.team/);
+  assert.match(body, /workers\.xd\.team/);
+  assert.doesNotMatch(body, /api\.workers\.xd\.team/);
 });
 
 test('serves readme docs without legacy API addresses', async () => {
@@ -202,6 +205,7 @@ test('serves readme docs without legacy API addresses', async () => {
   const body = await response.text();
   assert.match(body, /^# XD Cell/m);
   assert.match(body, /api-staging\.pages\.xd\.team/);
+  assert.match(body, /workers\.xd\.team/);
   assert.match(body, /xd-cell login/);
   assert.match(body, /xd-cell detect \.\/dist --json/);
   assert.match(body, /xd-cell deploy \.\/dist demo --visibility org/);
@@ -215,6 +219,6 @@ test('serves readme docs without legacy API addresses', async () => {
         `${['--save', '-config'].join('')}|${['\\.pages', '\\.json'].join('')}|PAGES_ACCESS_KEY|\`public\``
     )
   );
-  assert.doesNotMatch(body, /X-Pages-Token|api\.workers\.xd\.team|workers\.xd\.team/);
+  assert.doesNotMatch(body, /X-Pages-Token|api\.workers\.xd\.team/);
   assert.doesNotMatch(body, /XD Pages/);
 });

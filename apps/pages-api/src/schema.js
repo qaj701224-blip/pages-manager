@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 7;
 
 export function createSchemaSql() {
   return [
@@ -46,6 +46,39 @@ export function createSchemaSql() {
       cache_tier TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS hostname_claims (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      hostname TEXT NOT NULL,
+      normalized_slug TEXT NOT NULL,
+      hostname_family TEXT NOT NULL,
+      owner_system TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      owner_ref TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      source TEXT NOT NULL,
+      acquired_at TEXT NOT NULL,
+      lease_expires_at TEXT,
+      released_at TEXT,
+      reuse_hold_until TEXT,
+      release_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS hostname_claim_conflicts (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      hostname TEXT NOT NULL,
+      normalized_slug TEXT NOT NULL,
+      candidate_system TEXT NOT NULL,
+      candidate_owner_id TEXT NOT NULL,
+      candidate_ref TEXT,
+      candidate_hostname TEXT,
+      reason TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolution TEXT
     )`,
     `CREATE TABLE IF NOT EXISTS site_versions (
       id TEXT PRIMARY KEY,
@@ -174,10 +207,18 @@ export function createSchemaSql() {
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_environment_slug
       ON sites(environment, slug)
       WHERE deleted_at IS NULL`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname
-      ON site_routes(hostname)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname_live
+      ON site_routes(hostname)
+      WHERE route_status != 'deleted'`,
     `CREATE INDEX IF NOT EXISTS idx_site_routes_site_id
       ON site_routes(site_id)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname
+      ON hostname_claims(hostname)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live
+      ON hostname_claims(environment, normalized_slug)
+      WHERE status IN ('pending', 'active', 'held', 'conflicted')`,
+    `CREATE INDEX IF NOT EXISTS idx_hostname_claim_conflicts_hostname
+      ON hostname_claim_conflicts(hostname)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_number
       ON worker_slots(environment, slot_number)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_slots_environment_binding

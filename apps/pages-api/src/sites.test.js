@@ -19,14 +19,42 @@ test('creates a production site with owner membership and inactive route', async
   const body = await response.json();
   assert.equal(body.site.id, 'site_1');
   assert.equal(body.site.slug, 'guide');
-  assert.equal(body.site.url, 'https://guide.pages.xd.team');
+  assert.equal(body.site.url, 'https://guide.workers.xd.team');
   assert.equal(body.site.defaultVisibility, 'org');
   assert.equal('token' in body.site, false);
 
-  assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'guide.pages.xd.team');
+  assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'guide.workers.xd.team');
   assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'disabled');
   assert.equal((await store.getSite('site_1')).siteUuid, '4b4c8e8361ef4b47b64f5c20a7db7c47');
   assert.equal((await store.listSiteMembers('site_1'))[0].role, 'owner');
+});
+
+test('create site returns conflict when hostname claim belongs to another owner', async () => {
+  const store = await createSeededStore();
+  await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'guide.pages.xd.team',
+    normalizedSlug: 'guide',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:guide',
+    ownerRef: 'pages-guide',
+    source: 'backfill_v1_sites',
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'guide',
+      visibility: 'org',
+    }),
+    testEnv(store)
+  );
+
+  const body = await response.json();
+  assert.equal(response.status, 409);
+  assert.equal(body.error.code, 'HOSTNAME_CLAIM_CONFLICT');
+  assert.match(body.error.action, /换一个站点名|原站点/);
+  assert.equal(await store.getSite('site_1'), null);
 });
 
 test('creates a site with internal visibility', async () => {
@@ -140,6 +168,92 @@ test('gets a site by id for members and hides unknown sites', async () => {
   assert.equal(found.status, 200);
   assert.equal((await found.json()).site.slug, 'guide');
   assert.equal(missing.status, 404);
+});
+
+test('deletes owned site by soft-deleting site and holding hostname claim for reuse protection', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.workers.xd.team',
+  });
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    testEnv(store, { now: () => '2026-06-15T00:00:00.000Z' })
+  );
+  const getAfterDelete = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1'), testEnv(store));
+  const listAfterDelete = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites'), testEnv(store));
+  const claim = await store.getHostnameClaim('guide.workers.xd.team');
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).site.deletedAt, '2026-06-15T00:00:00.000Z');
+  assert.equal(getAfterDelete.status, 404);
+  assert.deepEqual((await listAfterDelete.json()).sites, []);
+  assert.equal((await store.getSite('site_1')).deletedAt, '2026-06-15T00:00:00.000Z');
+  assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'deleted');
+  assert.equal(claim.status, 'held');
+  assert.equal(claim.releaseReason, 'site_deleted');
+  assert.equal(claim.reuseHoldUntil, '2026-06-15T00:05:00.000Z');
+});
+
+test('site delete rejects access keys and non-owner members', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_2',
+    email: 'member@example.com',
+    realname: 'Member User',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.workers.xd.team',
+  });
+  await store.addSiteMember({
+    siteId: 'site_1',
+    userId: 'usr_2',
+    role: 'viewer',
+    createdBy: 'usr_1',
+    createdAt: '2026-06-15T00:00:00.000Z',
+  });
+  const readKey = await seedAccessKey(store, 'ak_read', ['read:site'], 'site_1');
+
+  const memberDelete = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    testEnv(store, {
+      verifyCliToken: async () => ({
+        sub: 'usr_2',
+        purpose: 'cli_token',
+        aud: 'pages-cli',
+        env: 'production',
+        jti: 'cli_2',
+      }),
+    })
+  );
+  const accessKeyDelete = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
+      Authorization: `Bearer ${readKey}`,
+    }, { method: 'DELETE' }),
+    testEnv(store)
+  );
+
+  assert.equal(memberDelete.status, 403);
+  assert.equal((await memberDelete.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+  assert.equal(accessKeyDelete.status, 403);
+  assert.equal((await accessKeyDelete.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+  assert.equal((await store.getSite('site_1')).deletedAt, null);
+  assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).status, 'active');
 });
 
 test('requires read:site scope for access key site reads', async () => {
@@ -600,8 +714,9 @@ function jsonMethodRequest(method, url, body) {
   });
 }
 
-function authRequest(url, headers = {}) {
+function authRequest(url, headers = {}, init = {}) {
   return new Request(url, {
+    ...init,
     headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
   });
 }

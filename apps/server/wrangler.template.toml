@@ -15,6 +15,8 @@ DOMAIN_LABEL = "__DOMAIN_LABEL__"
 WORKER_PREFIX = "__WORKER_PREFIX__"
 WORKERS_DEV_SUBDOMAIN = "__WORKERS_DEV_SUBDOMAIN__"
 IP_ALLOWLIST = "__IP_ALLOWLIST__"
+HOSTNAME_CLAIMS_MODE = "__HOSTNAME_CLAIMS_MODE__"
+HOSTNAME_REUSE_HOLD_SECONDS = "__HOSTNAME_REUSE_HOLD_SECONDS__"
 
 [[rules]]
 type = "Text"
@@ -24,6 +26,10 @@ fallthrough = true
 [[kv_namespaces]]
 binding = "SITES"
 id = "__SITES_KV_NAMESPACE_ID__"
+
+[[services]]
+binding = "HOSTNAME_CLAIMS"
+service = "__PAGES_API_SERVICE__"
 
 [[routes]]
 pattern = "__API_ROUTE__"

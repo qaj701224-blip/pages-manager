@@ -27,6 +27,21 @@ test('creates OAuth state bound to site host and return_to', async () => {
   assert.equal(tx.record.consumedAt, null);
 });
 
+test('creates OAuth state for v2 workers.xd.team site hosts', async () => {
+  const tx = await createOAuthState({
+    environment: 'production',
+    siteHost: 'demo.workers.xd.team',
+    returnTo: 'https://demo.workers.xd.team/reports?q=1',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_state',
+    stateSecret: 'secret',
+  });
+
+  assert.equal(tx.record.siteHost, 'demo.workers.xd.team');
+  assert.equal(tx.record.returnTo, 'https://demo.workers.xd.team/reports?q=1');
+});
+
 test('creates OAuth state for CLI login without site redirect fields', async () => {
   const tx = await createOAuthState({
     environment: 'production',

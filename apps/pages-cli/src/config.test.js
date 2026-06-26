@@ -8,14 +8,14 @@ test('reads fixed production and staging endpoints', () => {
     environment: 'production',
     apiBaseUrl: 'https://api.pages.xd.team',
     authBaseUrl: 'https://auth.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   });
 
   assert.deepEqual(readCliConfig({ PAGES_CLI_ENV: 'staging' }), {
     environment: 'staging',
     apiBaseUrl: 'https://api-staging.pages.xd.team',
     authBaseUrl: 'https://auth-staging.pages.xd.team',
-    siteDomainSuffix: 'pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
   });
 });
 
@@ -38,7 +38,7 @@ test('rejects overriding fixed production and staging endpoints', () => {
   );
 });
 
-test('rejects v1 workers.xd.team and arbitrary custom endpoints', () => {
+test('rejects v1 api.workers.xd.team and arbitrary custom endpoints', () => {
   assert.throws(
     () =>
       readCliConfig({
@@ -58,6 +58,10 @@ test('rejects v1 workers.xd.team and arbitrary custom endpoints', () => {
       }),
     /custom endpoints must be loopback/
   );
+});
+
+test('allows workers.xd.team as a fixed site suffix while keeping custom endpoints loopback-only', () => {
+  assert.equal(readCliConfig({ PAGES_CLI_ENV: 'production' }).siteDomainSuffix, 'workers.xd.team');
 });
 
 test('allows loopback custom endpoints for local development', () => {

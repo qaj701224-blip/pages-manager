@@ -64,8 +64,10 @@ test('validates auth host by environment', () => {
 
 test('validates site session host by environment and rejects platform hosts', () => {
   assert.equal(isSiteSessionHost('demo.pages.xd.team', 'production'), true);
+  assert.equal(isSiteSessionHost('demo.workers.xd.team', 'production'), true);
   assert.equal(isSiteSessionHost('demo-staging.pages.xd.team', 'staging'), true);
+  assert.equal(isSiteSessionHost('demo-staging.workers.xd.team', 'staging'), true);
   assert.equal(isSiteSessionHost('demo.pages.xd.team', 'staging'), false);
   assert.equal(isSiteSessionHost('auth.pages.xd.team', 'production'), false);
-  assert.equal(isSiteSessionHost('demo.workers.xd.team', 'production'), false);
+  assert.equal(isSiteSessionHost('auth.workers.xd.team', 'production'), false);
 });

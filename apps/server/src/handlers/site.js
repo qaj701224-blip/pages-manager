@@ -1,7 +1,9 @@
 import { jsonResponse } from '@xd/worker-kit';
 
-import { deleteScript } from '../lib/cf-api.js';
+import { deleteScript, unbindExactRoute } from '../lib/cf-api.js';
 import { isReservedSiteName, RESERVED_SITE_NAMES } from '../lib/site-names.js';
+
+const DEFAULT_REUSE_HOLD_SECONDS = 300;
 
 function getRequestToken(request) {
   const url = new URL(request.url);
@@ -103,8 +105,112 @@ export async function handleDeleteSite(request, env, params) {
     );
   }
 
+  const hostname = hostnameFromSite(data, env, name);
+  const routePattern = `${hostname}/*`;
+  try {
+    await unbindExactRoute(env.CF_API_TOKEN, env.CF_ZONE_ID_NEW, routePattern, data.scriptName);
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: error instanceof Error ? error.message : '安全拦截：route 解绑失败',
+        routePattern,
+      },
+      403
+    );
+  }
+
   await deleteScript(env.CF_API_TOKEN, env.CF_ACCOUNT_ID, data.scriptName);
   await env.SITES.delete(name);
+  const release = await releaseDeletedHostnameClaim(env, {
+    environment: readPublicEnvironment(env),
+    hostname,
+    normalizedSlug: name,
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: `v1:${readPublicEnvironment(env)}:${name}`,
+    ownerRef: data.scriptName,
+    source: 'v1_delete',
+    status: 'active',
+    releaseReason: 'site_deleted',
+    reuseHoldUntil: addSecondsIso(readNowIso(env), readReuseHoldSeconds(env)),
+  });
+  if (!release.ok && env.HOSTNAME_CLAIMS_MODE === 'enforce') {
+    return jsonResponse(
+      {
+        error: '站点已删除，但域名占用记录释放失败',
+        code: release.code || 'HOSTNAME_CLAIM_RELEASE_FAILED',
+        hint: '请重试删除或由平台管理员检查 hostname_claims。',
+      },
+      503
+    );
+  }
 
   return jsonResponse({ status: 'ok', name, message: `站点 ${name} 已删除` });
+}
+
+async function releaseDeletedHostnameClaim(env, claim) {
+  const mode = env.HOSTNAME_CLAIMS_MODE || 'off';
+  if (mode === 'off' || !env.HOSTNAME_CLAIMS) return { ok: true };
+
+  try {
+    const result =
+      typeof env.HOSTNAME_CLAIMS.release === 'function'
+        ? await env.HOSTNAME_CLAIMS.release(claim)
+        : await releaseViaServiceBinding(env.HOSTNAME_CLAIMS, claim);
+    if (result?.ok === false && mode === 'enforce') return result;
+    return { ok: true, recorded: result || null };
+  } catch (error) {
+    if (mode === 'enforce') {
+      return {
+        ok: false,
+        code: 'HOSTNAME_CLAIM_RELEASE_FAILED',
+        message: error instanceof Error ? error.message : 'Hostname claim release failed',
+      };
+    }
+    return { ok: true, recorded: { ok: false, code: 'HOSTNAME_CLAIM_RECORD_FAILED' } };
+  }
+}
+
+async function releaseViaServiceBinding(binding, claim) {
+  const response = await binding.fetch(
+    new Request('https://pages-api.internal/.xd-pages/internal/hostname-claims/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claim }),
+    })
+  );
+  if (response.ok) return { ok: true, response: await response.json().catch(() => null) };
+  const body = await response.json().catch(() => null);
+  return {
+    ok: false,
+    code: body?.error?.code || 'HOSTNAME_CLAIM_RELEASE_FAILED',
+    message: body?.error?.message || 'Hostname claim release failed',
+  };
+}
+
+function hostnameFromSite(site, env, name) {
+  try {
+    const url = new URL(site.url);
+    if (url.hostname.endsWith('.workers.xd.team')) return url.hostname;
+  } catch {}
+  return `${name}${env.DOMAIN_LABEL || ''}.${env.DOMAIN_BASE || 'workers.xd.team'}`;
+}
+
+function readPublicEnvironment(env) {
+  return env.PUBLIC_ENVIRONMENT === 'staging' ? 'staging' : 'production';
+}
+
+function readNowIso(env) {
+  if (typeof env?.now === 'function') return env.now();
+  return new Date().toISOString();
+}
+
+function readReuseHoldSeconds(env) {
+  const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || DEFAULT_REUSE_HOLD_SECONDS);
+  if (!Number.isInteger(value) || value < 0 || value > 86_400) return DEFAULT_REUSE_HOLD_SECONDS;
+  return value;
+}
+
+function addSecondsIso(iso, seconds) {
+  return new Date(Date.parse(iso) + seconds * 1000).toISOString();
 }

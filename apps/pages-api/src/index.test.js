@@ -142,6 +142,96 @@ test('internal user upsert is only callable through internal service host', asyn
   assert.equal((await store.getUser('usr_1')).sessionVersion, 2);
 });
 
+test('internal hostname claim acquire is only callable through internal service host', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'demo.workers.xd.team',
+    normalizedSlug: 'demo',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:demo',
+    ownerRef: 'pages-demo',
+    source: 'backfill_v1_sites',
+  });
+
+  const body = {
+    claim: {
+      environment: 'production',
+      hostname: 'demo.workers.xd.team',
+      normalizedSlug: 'demo',
+      hostnameFamily: 'workers',
+      ownerSystem: 'v2',
+      ownerId: 'site_demo',
+      ownerRef: 'route_demo',
+      source: 'v2_create',
+    },
+  };
+  const publicResponse = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/internal/hostname-claims/acquire', body, {
+      'CF-Connecting-IP': '10.1.2.3',
+    }),
+    { PAGES_ENV: 'production', PAGES_STORE: store, IP_ALLOWLIST: '10.0.0.0/8' }
+  );
+  const internalResponse = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/hostname-claims/acquire', body),
+    { PAGES_ENV: 'production', PAGES_STORE: store }
+  );
+
+  assert.equal(publicResponse.status, 404);
+  assert.equal((await publicResponse.json()).error.code, 'NOT_FOUND');
+  assert.equal(internalResponse.status, 409);
+  const conflictBody = await internalResponse.json();
+  assert.equal(conflictBody.error.code, 'HOSTNAME_CLAIM_CONFLICT');
+});
+
+test('internal hostname claim confirm and release stay on internal service host', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  const claim = {
+    environment: 'production',
+    hostname: 'demo.workers.xd.team',
+    normalizedSlug: 'demo',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'v1:production:demo',
+    ownerRef: 'pages-demo',
+    source: 'v1_deploy',
+    status: 'pending',
+  };
+  await store.acquireHostnameClaim(claim);
+
+  const publicConfirm = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/internal/hostname-claims/confirm', { claim }, {
+      'CF-Connecting-IP': '10.1.2.3',
+    }),
+    { PAGES_ENV: 'production', PAGES_STORE: store, IP_ALLOWLIST: '10.0.0.0/8' }
+  );
+  const internalConfirm = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/hostname-claims/confirm', { claim }),
+    { PAGES_ENV: 'production', PAGES_STORE: store }
+  );
+
+  assert.equal(publicConfirm.status, 404);
+  assert.equal(internalConfirm.status, 200, await internalConfirm.clone().text());
+  assert.equal((await store.getHostnameClaim(claim.hostname)).status, 'active');
+
+  const pendingClaim = { ...claim, hostname: 'retry.workers.xd.team', normalizedSlug: 'retry', ownerId: 'v1:production:retry' };
+  await store.acquireHostnameClaim(pendingClaim);
+  const internalRelease = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/hostname-claims/release', {
+      claim: { ...pendingClaim, releaseReason: 'v1_deploy_failed' },
+    }),
+    { PAGES_ENV: 'production', PAGES_STORE: store }
+  );
+
+  assert.equal(internalRelease.status, 200, await internalRelease.clone().text());
+  assert.equal((await store.getHostnameClaim(pendingClaim.hostname)).status, 'released');
+});
+
 test('wrangler templates include required WFP vars without runtime token placeholders', async () => {
   const productionTemplate = await readFile(new URL('../wrangler.production.template.toml', import.meta.url), 'utf8');
   const stagingTemplate = await readFile(new URL('../wrangler.staging.template.toml', import.meta.url), 'utf8');

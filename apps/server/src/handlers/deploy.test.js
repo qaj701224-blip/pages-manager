@@ -229,10 +229,7 @@ test('deploy rejects ip_restrict=false before touching Cloudflare', async () => 
   const mock = installCloudflareMock();
 
   try {
-    const response = await handleDeploy(
-      deployRequest({ token: 'pages_owner@xd.com', ipRestrict: 'false' }),
-      envForDeploy(null)
-    );
+    const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', ipRestrict: 'false' }), envForDeploy(null));
     const body = await response.json();
 
     assert.equal(response.status, 400);
@@ -240,6 +237,244 @@ test('deploy rejects ip_restrict=false before touching Cloudflare', async () => 
     assert.equal(body.field, 'ip_restrict');
     assert.equal(body.value, 'false');
     assert.equal(mock.calls.length, 0);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy enforces hostname claim before touching Cloudflare', async () => {
+  const mock = installCloudflareMock();
+  const claimCalls = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null),
+      HOSTNAME_CLAIMS_MODE: 'enforce',
+      HOSTNAME_CLAIMS: {
+        async acquire(input) {
+          claimCalls.push(input);
+          return {
+            ok: false,
+            code: 'HOSTNAME_CLAIM_CONFLICT',
+            message: 'hostname is already claimed',
+          };
+        },
+      },
+    };
+
+    const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
+    const body = await response.json();
+
+    assert.equal(response.status, 409);
+    assert.equal(body.code, 'HOSTNAME_CLAIM_CONFLICT');
+    assert.equal(mock.calls.length, 0);
+    assert.deepEqual(claimCalls, [
+      {
+        environment: 'production',
+        hostname: 'demo.workers.xd.team',
+        normalizedSlug: 'demo',
+        hostnameFamily: 'workers',
+        ownerSystem: 'v1',
+        ownerId: 'v1:production:demo',
+        ownerRef: 'pages-demo',
+        source: 'v1_deploy',
+        status: 'pending',
+      },
+    ]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy record_only hostname claim mode records but does not block deploy', async () => {
+  const mock = installCloudflareMock();
+  const putCalls = [];
+  const claimCalls = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null, putCalls),
+      HOSTNAME_CLAIMS_MODE: 'record_only',
+      HOSTNAME_CLAIMS: {
+        async acquire(input) {
+          claimCalls.push(input);
+          return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT' };
+        },
+      },
+    };
+
+    const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.name, 'demo');
+    assert.equal(putCalls.length, 1);
+    assert.equal(claimCalls.length, 1);
+    assert.ok(mock.calls.some((call) => call.url.includes('/workers/scripts/pages-demo')));
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy record_only hostname claim mode ignores claim service failures', async () => {
+  const mock = installCloudflareMock();
+  const putCalls = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null, putCalls),
+      HOSTNAME_CLAIMS_MODE: 'record_only',
+      HOSTNAME_CLAIMS: {
+        async acquire() {
+          throw new Error('service unavailable');
+        },
+      },
+    };
+
+    const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.name, 'demo');
+    assert.equal(putCalls.length, 1);
+    assert.ok(mock.calls.some((call) => call.url.includes('/workers/scripts/pages-demo')));
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy confirms pending hostname claims after metadata is written', async () => {
+  const mock = installCloudflareMock();
+  const operations = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null),
+      HOSTNAME_CLAIMS_MODE: 'enforce',
+      HOSTNAME_CLAIMS: {
+        async acquire(input) {
+          operations.push(['acquire', input.status]);
+          return { ok: true };
+        },
+        async confirm(input) {
+          operations.push(['confirm', input.hostname]);
+          return { ok: true };
+        },
+      },
+    };
+
+    const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(operations, [
+      ['acquire', 'pending'],
+      ['confirm', 'demo.workers.xd.team'],
+    ]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy releases pending hostname claim when new site deploy fails', async () => {
+  const mock = installCloudflareMock({
+    deployFailure: {
+      status: 400,
+      body: { success: false, errors: [{ message: 'deploy failed' }] },
+    },
+  });
+  const operations = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null),
+      HOSTNAME_CLAIMS_MODE: 'enforce',
+      HOSTNAME_CLAIMS: {
+        async acquire(input) {
+          operations.push(['acquire', input.status]);
+          return { ok: true };
+        },
+        async release(input) {
+          operations.push(['release', input.releaseReason]);
+          return { ok: true };
+        },
+      },
+    };
+
+    await assert.rejects(() => handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env), /deploy failed/);
+    assert.deepEqual(operations, [
+      ['acquire', 'pending'],
+      ['release', 'v1_deploy_failed'],
+    ]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy does not release pending hostname claim after metadata is written', async () => {
+  const mock = installCloudflareMock();
+  const operations = [];
+  const putCalls = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null, putCalls),
+      HOSTNAME_CLAIMS_MODE: 'enforce',
+      HOSTNAME_CLAIMS: {
+        async acquire(input) {
+          operations.push(['acquire', input.status]);
+          return { ok: true };
+        },
+        async confirm() {
+          operations.push(['confirm', 'failed']);
+          return { ok: false, code: 'HOSTNAME_CLAIM_CONFIRM_FAILED' };
+        },
+        async release(input) {
+          operations.push(['release', input.releaseReason]);
+          return { ok: true };
+        },
+      },
+    };
+
+    await assert.rejects(
+      () => handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env),
+      /HOSTNAME_CLAIM_CONFIRM_FAILED/
+    );
+    assert.equal(putCalls.length, 1);
+    assert.deepEqual(operations, [
+      ['acquire', 'pending'],
+      ['confirm', 'failed'],
+    ]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test('deploy can acquire hostname claims through pages-api service binding without leaking token', async () => {
+  const mock = installCloudflareMock();
+  const serviceRequests = [];
+
+  try {
+    const env = {
+      ...envForDeploy(null),
+      HOSTNAME_CLAIMS_MODE: 'enforce',
+      HOSTNAME_CLAIMS: {
+        async fetch(request) {
+          serviceRequests.push({
+            url: request.url,
+            method: request.method,
+            body: await request.json(),
+          });
+          return Response.json({ claim: { hostname: 'demo.workers.xd.team' } });
+        },
+      },
+    };
+
+    const response = await handleDeploy(deployRequest({ token: 'pages_owner@xd.com', preset: 'spa' }), env);
+    assert.equal(response.status, 200);
+    assert.equal(serviceRequests[0].url, 'https://pages-api.internal/.xd-pages/internal/hostname-claims/acquire');
+    assert.equal(serviceRequests[0].method, 'POST');
+    assert.doesNotMatch(JSON.stringify(serviceRequests[0].body), /pages_owner@xd\.com/);
+    assert.equal(serviceRequests[1].url, 'https://pages-api.internal/.xd-pages/internal/hostname-claims/confirm');
   } finally {
     mock.restore();
   }
@@ -286,9 +521,7 @@ test('deploy failure response redacts Cloudflare JWT echo', async () => {
         errors: [
           {
             code: 10021,
-            message: [
-              'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature',
-            ].join(' '),
+            message: ['Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature'].join(' '),
             source: {
               pointer: '/bindings/SECRET/Bearer nested.token.value',
             },

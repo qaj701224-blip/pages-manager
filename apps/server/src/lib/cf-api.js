@@ -312,6 +312,36 @@ export async function bindRoute(token, zoneId, pattern, scriptName) {
   });
 }
 
+export async function unbindExactRoute(token, zoneId, pattern, expectedScriptName) {
+  if (!isExactHostnameRoutePattern(pattern)) {
+    throw new Error('安全拦截：只能解绑精确 hostname route');
+  }
+  if (!expectedScriptName || !expectedScriptName.startsWith('pages-')) {
+    throw new Error('安全拦截：route 预期 Worker 不合法');
+  }
+
+  const routes = await cfFetch(`/zones/${zoneId}/workers/routes`, token);
+  const exact = routes.find((route) => route.pattern === pattern);
+  if (!exact) {
+    throw new Error(`安全拦截：未找到精确 route ${pattern}，拒绝删除`);
+  }
+  if (exact.script !== expectedScriptName) {
+    throw new Error(`安全拦截：route script 与预期不一致，拒绝解绑 ${pattern}`);
+  }
+  return cfFetch(`/zones/${zoneId}/workers/routes/${exact.id}`, token, {
+    method: 'DELETE',
+  });
+}
+
+function isExactHostnameRoutePattern(pattern) {
+  if (typeof pattern !== 'string' || !pattern.endsWith('/*')) return false;
+  const hostname = pattern.slice(0, -2);
+  if (!hostname || hostname.includes('*') || hostname.includes('/')) return false;
+  if (!hostname.endsWith('.workers.xd.team')) return false;
+  const label = hostname.slice(0, -'.workers.xd.team'.length);
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
+}
+
 export async function listDomains(token, accountId) {
   return cfFetch(`/accounts/${accountId}/workers/domains`, token);
 }

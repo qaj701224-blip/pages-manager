@@ -176,66 +176,373 @@ export class D1PagesStore {
     };
     const route = createInitialRoute(input, now);
     const member = createOwnerMember(input.id, input.ownerUserId, now);
+    const hostnameClaim = createHostnameClaim(
+      {
+        environment: input.environment,
+        hostname: input.hostname,
+        normalizedSlug: input.slug,
+        hostnameFamily: hostnameFamilyForHostname(input.hostname),
+        ownerSystem: 'v2',
+        ownerId: input.id,
+        ownerRef: input.routeId,
+        source: 'v2_create',
+      },
+      now
+    );
+    const existingHostnameClaim = await this.getHostnameClaim(hostnameClaim.hostname);
+    let hostnameClaimStatement;
+    if (existingHostnameClaim) {
+      if (!['released', 'held'].includes(existingHostnameClaim.status)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      if (existingHostnameClaim.reuseHoldUntil && existingHostnameClaim.reuseHoldUntil > now) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      if (await this.findConflictingHostnameClaim({ ...hostnameClaim, excludeHostname: hostnameClaim.hostname })) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      hostnameClaimStatement = this.db
+        .prepare(
+          `UPDATE hostname_claims
+          SET environment = ?, normalized_slug = ?, hostname_family = ?, owner_system = ?, owner_id = ?,
+            owner_ref = ?, status = ?, source = ?, acquired_at = ?, lease_expires_at = ?,
+            released_at = NULL, reuse_hold_until = ?, release_reason = NULL, updated_at = ?
+          WHERE hostname = ?
+            AND status IN ('released', 'held')
+            AND (reuse_hold_until IS NULL OR reuse_hold_until <= ?)`
+        )
+        .bind(
+          hostnameClaim.environment,
+          hostnameClaim.normalizedSlug,
+          hostnameClaim.hostnameFamily,
+          hostnameClaim.ownerSystem,
+          hostnameClaim.ownerId,
+          hostnameClaim.ownerRef,
+          hostnameClaim.status,
+          hostnameClaim.source,
+          hostnameClaim.acquiredAt,
+          hostnameClaim.leaseExpiresAt,
+          hostnameClaim.reuseHoldUntil,
+          hostnameClaim.updatedAt,
+          hostnameClaim.hostname,
+          now
+        );
+    } else {
+      if (await this.findConflictingHostnameClaim(hostnameClaim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      hostnameClaimStatement = this.db
+        .prepare(
+          `INSERT INTO hostname_claims (
+              id, environment, hostname, normalized_slug, hostname_family, owner_system, owner_id,
+              owner_ref, status, source, acquired_at, lease_expires_at, released_at, reuse_hold_until,
+              release_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          hostnameClaim.id,
+          hostnameClaim.environment,
+          hostnameClaim.hostname,
+          hostnameClaim.normalizedSlug,
+          hostnameClaim.hostnameFamily,
+          hostnameClaim.ownerSystem,
+          hostnameClaim.ownerId,
+          hostnameClaim.ownerRef,
+          hostnameClaim.status,
+          hostnameClaim.source,
+          hostnameClaim.acquiredAt,
+          hostnameClaim.leaseExpiresAt,
+          hostnameClaim.releasedAt,
+          hostnameClaim.reuseHoldUntil,
+          hostnameClaim.releaseReason,
+          hostnameClaim.createdAt,
+          hostnameClaim.updatedAt
+        );
+    }
 
-    await this.db.batch([
-      this.db
-        .prepare(
-          `INSERT INTO sites (
-            id, slug, environment, owner_user_id, default_visibility, execution_mode_override, site_uuid,
-            created_at, updated_at, deleted_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .bind(
-          site.id,
-          site.slug,
-          site.environment,
-          site.ownerUserId,
-          site.defaultVisibility,
-          site.executionModeOverride,
-          site.siteUuid,
-          site.createdAt,
-          site.updatedAt,
-          site.deletedAt
-        ),
-      this.db
-        .prepare(
-          `INSERT INTO site_routes (
-            id, hostname, site_id, environment, runtime, execution_provider, worker_name,
-            dispatch_type, dispatch_binding_name, slot_id,
-            active_version_id, visibility, policy_version, route_generation,
-            route_status, cache_tier, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .bind(
-          route.id,
-          route.hostname,
-          route.siteId,
-          route.environment,
-          route.runtime,
-          route.executionProvider,
-          route.workerName,
-          route.dispatchType,
-          route.dispatchBindingName,
-          route.slotId,
-          route.activeVersionId,
-          route.visibility,
-          route.policyVersion,
-          route.routeGeneration,
-          route.routeStatus,
-          route.cacheTier,
-          route.createdAt,
-          route.updatedAt
-        ),
-      this.db
-        .prepare(
-          `INSERT INTO site_members (
-            site_id, user_id, role, created_by, created_at
-          ) VALUES (?, ?, ?, ?, ?)`
-        )
-        .bind(member.siteId, member.userId, member.role, member.createdBy, member.createdAt),
-    ]);
+    try {
+      await this.db.batch([
+        hostnameClaimStatement,
+        this.db
+          .prepare(
+            `INSERT INTO sites (
+              id, slug, environment, owner_user_id, default_visibility, execution_mode_override, site_uuid,
+              created_at, updated_at, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .bind(
+            site.id,
+            site.slug,
+            site.environment,
+            site.ownerUserId,
+            site.defaultVisibility,
+            site.executionModeOverride,
+            site.siteUuid,
+            site.createdAt,
+            site.updatedAt,
+            site.deletedAt
+          ),
+        this.db
+          .prepare(
+            `INSERT INTO site_routes (
+              id, hostname, site_id, environment, runtime, execution_provider, worker_name,
+              dispatch_type, dispatch_binding_name, slot_id,
+              active_version_id, visibility, policy_version, route_generation,
+              route_status, cache_tier, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .bind(
+            route.id,
+            route.hostname,
+            route.siteId,
+            route.environment,
+            route.runtime,
+            route.executionProvider,
+            route.workerName,
+            route.dispatchType,
+            route.dispatchBindingName,
+            route.slotId,
+            route.activeVersionId,
+            route.visibility,
+            route.policyVersion,
+            route.routeGeneration,
+            route.routeStatus,
+            route.cacheTier,
+            route.createdAt,
+            route.updatedAt
+          ),
+        this.db
+          .prepare(
+            `INSERT INTO site_members (
+              site_id, user_id, role, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?)`
+          )
+          .bind(member.siteId, member.userId, member.role, member.createdBy, member.createdAt),
+      ]);
+    } catch (error) {
+      if (!isSqliteConstraintError(error)) throw error;
+      if (await this.findSiteBySlug(input.environment, input.slug)) throw new Error('SITE_SLUG_CONFLICT');
+      throw new Error('HOSTNAME_CLAIM_CONFLICT');
+    }
 
     return cloneRecord(site);
+  }
+
+  async getHostnameClaim(hostname) {
+    const row = await this.db.prepare('SELECT * FROM hostname_claims WHERE hostname = ?').bind(hostname).first();
+    return row ? mapHostnameClaim(row) : null;
+  }
+
+  async findConflictingHostnameClaim(input) {
+    const row = await this.db
+      .prepare(
+        `SELECT * FROM hostname_claims
+        WHERE environment = ?
+          AND normalized_slug = ?
+          AND status IN ('pending', 'active', 'held', 'conflicted')
+          AND hostname != ?
+          AND NOT (owner_system = ? AND owner_id = ?)
+        LIMIT 1`
+      )
+      .bind(input.environment, input.normalizedSlug, input.excludeHostname || '', input.ownerSystem, input.ownerId)
+      .first();
+    return row ? mapHostnameClaim(row) : null;
+  }
+
+  async getHostnameClaimForOwner(input) {
+    const row = await this.db
+      .prepare(
+        `SELECT * FROM hostname_claims
+        WHERE environment = ? AND normalized_slug = ? AND owner_system = ? AND owner_id = ?
+          AND status IN ('pending', 'active', 'held', 'conflicted')
+        LIMIT 1`
+      )
+      .bind(input.environment, input.normalizedSlug, input.ownerSystem, input.ownerId)
+      .first();
+    return row ? mapHostnameClaim(row) : null;
+  }
+
+  async acquireHostnameClaim(input) {
+    const now = input.acquiredAt || this.now();
+    const existing = await this.getHostnameClaim(input.hostname);
+    if (existing) {
+      if (existing.status === 'released' || existing.status === 'held') {
+        const revived = await this.reacquireReleasedHostnameClaim(input, now);
+        if (revived) return { ok: true, claim: revived };
+        return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: existing };
+      }
+      if (hostnameClaimOwnerMatches(existing, input) && existing.status !== 'conflicted') return { ok: true, claim: existing };
+      return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: existing };
+    }
+    const existingOwnerClaim = await this.getHostnameClaimForOwner(input);
+    if (existingOwnerClaim) {
+      if (existingOwnerClaim.hostname === String(input.hostname || '').toLowerCase()) {
+        return { ok: true, claim: existingOwnerClaim };
+      }
+      return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: existingOwnerClaim };
+    }
+    const conflicting = await this.findConflictingHostnameClaim(input);
+    if (conflicting) return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: conflicting };
+
+    const claim = createHostnameClaim(input, now);
+    try {
+      await this.insertHostnameClaim(claim);
+    } catch (error) {
+      if (isSqliteConstraintError(error)) {
+        return {
+          ok: false,
+          code: 'HOSTNAME_CLAIM_CONFLICT',
+          claim: (await this.getHostnameClaim(claim.hostname)) || (await this.findConflictingHostnameClaim(claim)),
+        };
+      }
+      throw error;
+    }
+    return { ok: true, claim };
+  }
+
+  async reacquireReleasedHostnameClaim(input, now) {
+    const claim = createHostnameClaim(input, now);
+    const conflicting = await this.findConflictingHostnameClaim({
+      ...claim,
+      ownerSystem: '__reacquire__',
+      ownerId: claim.id,
+      excludeHostname: claim.hostname,
+    });
+    if (conflicting) return null;
+    try {
+      const result = await this.db
+        .prepare(
+          `UPDATE hostname_claims
+          SET environment = ?, normalized_slug = ?, hostname_family = ?, owner_system = ?, owner_id = ?,
+            owner_ref = ?, status = ?, source = ?, acquired_at = ?, lease_expires_at = ?,
+            released_at = NULL, reuse_hold_until = ?, release_reason = NULL, updated_at = ?
+          WHERE hostname = ?
+            AND status IN ('released', 'held')
+            AND (reuse_hold_until IS NULL OR reuse_hold_until <= ?)`
+        )
+        .bind(
+          claim.environment,
+          claim.normalizedSlug,
+          claim.hostnameFamily,
+          claim.ownerSystem,
+          claim.ownerId,
+          claim.ownerRef,
+          claim.status,
+          claim.source,
+          claim.acquiredAt,
+          claim.leaseExpiresAt,
+          claim.reuseHoldUntil,
+          claim.updatedAt,
+          claim.hostname,
+          now
+        )
+        .run();
+      if (result?.meta?.changes === 0) return null;
+      return this.getHostnameClaim(claim.hostname);
+    } catch (error) {
+      if (isSqliteConstraintError(error)) return null;
+      throw error;
+    }
+  }
+
+  async confirmHostnameClaim(input) {
+    const now = input.confirmedAt || this.now();
+    const result = await this.db
+      .prepare(
+        `UPDATE hostname_claims
+        SET status = 'active', lease_expires_at = NULL, updated_at = ?
+        WHERE hostname = ? AND owner_system = ? AND owner_id = ?
+          AND status IN ('pending', 'active')`
+      )
+      .bind(now, String(input.hostname || '').toLowerCase(), input.ownerSystem, input.ownerId)
+      .run();
+    if (result?.meta?.changes === 0) return { ok: false, code: 'HOSTNAME_CLAIM_NOT_FOUND' };
+    return { ok: true, claim: await this.getHostnameClaim(input.hostname) };
+  }
+
+  async releaseHostnameClaim(input) {
+    const now = input.releasedAt || this.now();
+    const targetStatus = input.reuseHoldUntil ? 'held' : 'released';
+    const allowedStatuses = input.reuseHoldUntil ? ['pending', 'active', 'held'] : ['pending'];
+    const result = await this.db
+      .prepare(
+        `UPDATE hostname_claims
+        SET status = ?, released_at = ?, reuse_hold_until = ?, release_reason = ?, updated_at = ?
+        WHERE hostname = ? AND owner_system = ? AND owner_id = ?
+          AND status IN (${allowedStatuses.map(() => '?').join(', ')})`
+      )
+      .bind(
+        targetStatus,
+        now,
+        input.reuseHoldUntil || null,
+        input.releaseReason || null,
+        now,
+        String(input.hostname || '').toLowerCase(),
+        input.ownerSystem,
+        input.ownerId,
+        ...allowedStatuses
+      )
+      .run();
+    if (result?.meta?.changes === 0) return { ok: false, code: 'HOSTNAME_CLAIM_NOT_FOUND' };
+    return { ok: true, claim: await this.getHostnameClaim(input.hostname) };
+  }
+
+  async deleteSite(siteId, { deletedAt, reuseHoldUntil, releaseReason = 'site_deleted' } = {}, environment) {
+    const site = await this.getSite(siteId);
+    const route = await this.getRouteBySiteId(siteId, environment);
+    if (!site || site.deletedAt || !route) return null;
+    if (environment && site.environment !== environment) return null;
+    const now = deletedAt || this.now();
+    await this.db.batch([
+      this.db
+        .prepare(`UPDATE sites SET deleted_at = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+        .bind(...(environment ? [now, now, siteId, environment] : [now, now, siteId])),
+      this.db
+        .prepare(
+          `UPDATE site_routes
+          SET route_status = 'deleted', runtime = 'disabled', active_version_id = NULL,
+            worker_name = NULL, dispatch_type = NULL, dispatch_binding_name = NULL, slot_id = NULL,
+            route_generation = route_generation + 1, updated_at = ?
+          WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+        )
+        .bind(...(environment ? [now, siteId, environment] : [now, siteId])),
+      this.db
+        .prepare(
+          `UPDATE hostname_claims
+          SET status = 'held', released_at = ?, reuse_hold_until = ?, release_reason = ?, updated_at = ?
+          WHERE hostname = ? AND owner_system = 'v2' AND owner_id = ?
+            AND status IN ('pending', 'active', 'held')`
+        )
+        .bind(now, reuseHoldUntil || null, releaseReason, now, route.hostname, siteId),
+    ]);
+    return this.getSite(siteId);
+  }
+
+  async insertHostnameClaim(claim) {
+    return this.db
+      .prepare(
+        `INSERT INTO hostname_claims (
+          id, environment, hostname, normalized_slug, hostname_family, owner_system, owner_id,
+          owner_ref, status, source, acquired_at, lease_expires_at, released_at, reuse_hold_until,
+          release_reason, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        claim.id,
+        claim.environment,
+        claim.hostname,
+        claim.normalizedSlug,
+        claim.hostnameFamily,
+        claim.ownerSystem,
+        claim.ownerId,
+        claim.ownerRef,
+        claim.status,
+        claim.source,
+        claim.acquiredAt,
+        claim.leaseExpiresAt,
+        claim.releasedAt,
+        claim.reuseHoldUntil,
+        claim.releaseReason,
+        claim.createdAt,
+        claim.updatedAt
+      )
+      .run();
   }
 
   async findSiteBySlug(environment, slug) {
@@ -1113,6 +1420,35 @@ export function createOwnerMember(siteId, ownerUserId, now) {
   };
 }
 
+export function createHostnameClaim(input, now) {
+  return {
+    id: input.id || `claim_${input.ownerRef || input.ownerId}`,
+    environment: input.environment,
+    hostname: String(input.hostname || '').toLowerCase(),
+    normalizedSlug: input.normalizedSlug,
+    hostnameFamily: input.hostnameFamily || hostnameFamilyForHostname(input.hostname),
+    ownerSystem: input.ownerSystem,
+    ownerId: input.ownerId,
+    ownerRef: input.ownerRef || null,
+    status: input.status || 'active',
+    source: input.source,
+    acquiredAt: input.acquiredAt || now,
+    leaseExpiresAt: input.leaseExpiresAt || null,
+    releasedAt: input.releasedAt || null,
+    reuseHoldUntil: input.reuseHoldUntil || null,
+    releaseReason: input.releaseReason || null,
+    createdAt: input.createdAt || now,
+    updatedAt: input.updatedAt || now,
+  };
+}
+
+export function hostnameFamilyForHostname(hostname) {
+  const value = String(hostname || '').toLowerCase();
+  if (value.endsWith('.workers.xd.team')) return 'workers';
+  if (value.endsWith('.pages.xd.team')) return 'pages';
+  return 'custom';
+}
+
 export function cloneRecord(record) {
   return record == null ? null : JSON.parse(JSON.stringify(record));
 }
@@ -1232,6 +1568,37 @@ function mapSiteRoute(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function mapHostnameClaim(row) {
+  return {
+    id: row.id,
+    environment: row.environment,
+    hostname: row.hostname,
+    normalizedSlug: row.normalized_slug,
+    hostnameFamily: row.hostname_family,
+    ownerSystem: row.owner_system,
+    ownerId: row.owner_id,
+    ownerRef: row.owner_ref,
+    status: row.status,
+    source: row.source,
+    acquiredAt: row.acquired_at,
+    leaseExpiresAt: row.lease_expires_at,
+    releasedAt: row.released_at,
+    reuseHoldUntil: row.reuse_hold_until,
+    releaseReason: row.release_reason,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function hostnameClaimOwnerMatches(existing, input) {
+  return existing.ownerSystem === input.ownerSystem && existing.ownerId === input.ownerId;
+}
+
+function isSqliteConstraintError(error) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /constraint|unique/i.test(message);
 }
 
 function mapSiteMember(row) {

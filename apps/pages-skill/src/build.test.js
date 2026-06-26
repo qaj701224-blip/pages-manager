@@ -51,6 +51,7 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
 
     const releaseManifest = JSON.parse(await readFile(path.join(outDir, 'manifest.json'), 'utf8'));
     assert.equal(releaseManifest.product.name, 'XD Cell');
+    assert.equal(releaseManifest.product.siteDomainSuffix, 'workers.xd.team');
     assert.equal(releaseManifest.skill.packageName, '@xd-cell/skill');
     assert.equal(releaseManifest.skill.version, await readPackageVersion());
     assert.deepEqual(releaseManifest.dependencies.cli, {

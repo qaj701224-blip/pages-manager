@@ -31,6 +31,7 @@ const publishingExecutorWorkflows = [
 ];
 
 const platformAgentWorkflow = '.github/workflows/platform-agent.yml';
+const hostnameClaimsConflictWorkflow = '.github/workflows/hostname-claims-conflict-check.yml';
 
 test('deploy workflows expose component choice for manual deploys', () => {
   for (const [name, path] of deployWorkflows) {
@@ -467,6 +468,28 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
   assert.match(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
   assert.doesNotMatch(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ vars\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
+});
+
+test('hostname claims conflict check is manual, read-only, and gates v1/v2 rollout data', () => {
+  const workflow = readWorkflow(hostnameClaimsConflictWorkflow);
+  const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
+
+  assert.match(workflow, /^name: Hostname Claims Conflict Check$/m);
+  assert.match(triggers, /^ {2}workflow_dispatch:/m);
+  assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m);
+  assert.match(workflow, /environment:\n(?: {8}.+\n)* {8}type: choice/);
+  assert.match(workflow, /- production/);
+  assert.match(workflow, /- staging/);
+  assert.match(workflow, /permissions:\n {2}contents: read/);
+  assert.match(workflow, /wrangler kv key list/);
+  assert.match(workflow, /'wrangler', 'kv', 'key', 'get'/);
+  assert.match(workflow, /SELECT[\s\S]*FROM site_routes[\s\S]*LEFT JOIN sites/);
+  assert.match(workflow, /scripts\/hostname-claims-backfill\.mjs/);
+  assert.match(workflow, /--v1-sites \.hostname-claims\/v1-sites\.sanitized\.json/);
+  assert.match(workflow, /--v2-routes \.hostname-claims\/v2-routes\.json/);
+  assert.match(workflow, /actions\/upload-artifact@v6/);
+  assert.doesNotMatch(workflow, /wrangler deploy|wrangler secret put|wrangler d1 execute[\s\S]*INSERT|wrangler d1 execute[\s\S]*UPDATE|kubectl|docker buildx?|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
+  assert.doesNotMatch(workflow, /CF_API_TOKEN|X-Pages-Token|PAGES_TOKEN|parsed\.token/);
 });
 
 test('router slot expansion workflow is manual and only touches router slot resources', () => {
