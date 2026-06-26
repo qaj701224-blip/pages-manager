@@ -308,7 +308,12 @@ class TestPagesStore {
     route.updatedAt = now;
 
     const claim = this.hostnameClaims.get(route.hostname);
-    if (claim && claim.ownerSystem === 'v2' && claim.ownerId === site.id && ['pending', 'active', 'held'].includes(claim.status)) {
+    if (
+      claim &&
+      claim.ownerSystem === 'v2' &&
+      claim.ownerId === site.id &&
+      ['pending', 'active', 'held'].includes(claim.status)
+    ) {
       claim.status = 'held';
       claim.releasedAt = now;
       claim.reuseHoldUntil = reuseHoldUntil || null;
@@ -731,10 +736,11 @@ class TestPagesStore {
   }
 
   findConflictingHostnameClaimSync(input) {
+    const now = input.now || this.now();
     for (const claim of this.hostnameClaims.values()) {
       if (claim.environment !== input.environment) continue;
       if (claim.normalizedSlug !== input.normalizedSlug) continue;
-      if (!['pending', 'active', 'held', 'conflicted'].includes(claim.status)) continue;
+      if (!isBlockingHostnameClaim(claim, now)) continue;
       if (input.excludeHostname && claim.hostname === input.excludeHostname) continue;
       if (hostnameClaimOwnerMatches(claim, input)) continue;
       return claim;
@@ -743,11 +749,12 @@ class TestPagesStore {
   }
 
   findHostnameClaimForOwnerSync(input) {
+    const now = input.now || this.now();
     for (const claim of this.hostnameClaims.values()) {
       if (claim.environment !== input.environment) continue;
       if (claim.normalizedSlug !== input.normalizedSlug) continue;
       if (claim.ownerSystem !== input.ownerSystem || claim.ownerId !== input.ownerId) continue;
-      if (!['pending', 'active', 'held', 'conflicted'].includes(claim.status)) continue;
+      if (!isBlockingHostnameClaim(claim, now)) continue;
       return claim;
     }
     return null;
@@ -782,6 +789,12 @@ function routesMatch(actual, expected) {
 
 function hostnameClaimOwnerMatches(existing, input) {
   return existing.ownerSystem === input.ownerSystem && existing.ownerId === input.ownerId;
+}
+
+function isBlockingHostnameClaim(claim, now) {
+  if (['pending', 'active', 'conflicted'].includes(claim.status)) return true;
+  if (claim.status !== 'held') return false;
+  return !claim.reuseHoldUntil || claim.reuseHoldUntil > now;
 }
 
 function siteAclEntryKey(entry) {

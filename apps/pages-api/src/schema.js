@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export function createSchemaSql() {
   return [
@@ -214,7 +214,7 @@ export function createSchemaSql() {
       ON site_routes(site_id)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname
       ON hostname_claims(hostname)`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live
+    `CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live
       ON hostname_claims(environment, normalized_slug)
       WHERE status IN ('pending', 'active', 'held', 'conflicted')`,
     `CREATE INDEX IF NOT EXISTS idx_hostname_claim_conflicts_hostname

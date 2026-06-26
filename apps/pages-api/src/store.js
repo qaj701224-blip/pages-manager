@@ -191,6 +191,7 @@ export class D1PagesStore {
     );
     const existingHostnameClaim = await this.getHostnameClaim(hostnameClaim.hostname);
     let hostnameClaimStatement;
+    const hostnameClaimGuardStatement = this.createHostnameClaimGuardStatement(hostnameClaim);
     if (existingHostnameClaim) {
       if (!['released', 'held'].includes(existingHostnameClaim.status)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
       if (existingHostnameClaim.reuseHoldUntil && existingHostnameClaim.reuseHoldUntil > now) {
@@ -207,7 +208,18 @@ export class D1PagesStore {
             released_at = NULL, reuse_hold_until = ?, release_reason = NULL, updated_at = ?
           WHERE hostname = ?
             AND status IN ('released', 'held')
-            AND (reuse_hold_until IS NULL OR reuse_hold_until <= ?)`
+            AND (reuse_hold_until IS NULL OR reuse_hold_until <= ?)
+            AND NOT EXISTS (
+              SELECT 1 FROM hostname_claims
+              WHERE environment = ?
+                AND normalized_slug = ?
+                AND (
+                  status IN ('pending', 'active', 'conflicted')
+                  OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
+                )
+                AND hostname != ?
+                AND NOT (owner_system = ? AND owner_id = ?)
+            )`
         )
         .bind(
           hostnameClaim.environment,
@@ -223,7 +235,13 @@ export class D1PagesStore {
           hostnameClaim.reuseHoldUntil,
           hostnameClaim.updatedAt,
           hostnameClaim.hostname,
-          now
+          now,
+          hostnameClaim.environment,
+          hostnameClaim.normalizedSlug,
+          now,
+          hostnameClaim.hostname,
+          hostnameClaim.ownerSystem,
+          hostnameClaim.ownerId
         );
     } else {
       if (await this.findConflictingHostnameClaim(hostnameClaim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
@@ -233,7 +251,19 @@ export class D1PagesStore {
               id, environment, hostname, normalized_slug, hostname_family, owner_system, owner_id,
               owner_ref, status, source, acquired_at, lease_expires_at, released_at, reuse_hold_until,
               release_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+              SELECT 1 FROM hostname_claims
+              WHERE environment = ?
+                AND normalized_slug = ?
+                AND (
+                  status IN ('pending', 'active', 'conflicted')
+                  OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
+                )
+                AND hostname != ?
+                AND NOT (owner_system = ? AND owner_id = ?)
+            )`
         )
         .bind(
           hostnameClaim.id,
@@ -252,13 +282,20 @@ export class D1PagesStore {
           hostnameClaim.reuseHoldUntil,
           hostnameClaim.releaseReason,
           hostnameClaim.createdAt,
-          hostnameClaim.updatedAt
+          hostnameClaim.updatedAt,
+          hostnameClaim.environment,
+          hostnameClaim.normalizedSlug,
+          now,
+          hostnameClaim.hostname,
+          hostnameClaim.ownerSystem,
+          hostnameClaim.ownerId
         );
     }
 
     try {
       await this.db.batch([
         hostnameClaimStatement,
+        hostnameClaimGuardStatement,
         this.db
           .prepare(
             `INSERT INTO sites (
@@ -324,36 +361,57 @@ export class D1PagesStore {
     return cloneRecord(site);
   }
 
+  createHostnameClaimGuardStatement(claim) {
+    return this.db
+      .prepare(
+        `INSERT INTO hostname_claims (id, environment)
+        SELECT ?, NULL
+        WHERE NOT EXISTS (
+          SELECT 1 FROM hostname_claims
+          WHERE hostname = ? AND owner_system = ? AND owner_id = ? AND status = ?
+        )`
+      )
+      .bind(`claim_guard_${claim.id}`, claim.hostname, claim.ownerSystem, claim.ownerId, claim.status);
+  }
+
   async getHostnameClaim(hostname) {
     const row = await this.db.prepare('SELECT * FROM hostname_claims WHERE hostname = ?').bind(hostname).first();
     return row ? mapHostnameClaim(row) : null;
   }
 
   async findConflictingHostnameClaim(input) {
+    const now = input.now || this.now();
     const row = await this.db
       .prepare(
         `SELECT * FROM hostname_claims
         WHERE environment = ?
           AND normalized_slug = ?
-          AND status IN ('pending', 'active', 'held', 'conflicted')
+          AND (
+            status IN ('pending', 'active', 'conflicted')
+            OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
+          )
           AND hostname != ?
           AND NOT (owner_system = ? AND owner_id = ?)
         LIMIT 1`
       )
-      .bind(input.environment, input.normalizedSlug, input.excludeHostname || '', input.ownerSystem, input.ownerId)
+      .bind(input.environment, input.normalizedSlug, now, input.excludeHostname || '', input.ownerSystem, input.ownerId)
       .first();
     return row ? mapHostnameClaim(row) : null;
   }
 
   async getHostnameClaimForOwner(input) {
+    const now = input.now || this.now();
     const row = await this.db
       .prepare(
         `SELECT * FROM hostname_claims
         WHERE environment = ? AND normalized_slug = ? AND owner_system = ? AND owner_id = ?
-          AND status IN ('pending', 'active', 'held', 'conflicted')
+          AND (
+            status IN ('pending', 'active', 'conflicted')
+            OR (status = 'held' AND (reuse_hold_until IS NULL OR reuse_hold_until > ?))
+          )
         LIMIT 1`
       )
-      .bind(input.environment, input.normalizedSlug, input.ownerSystem, input.ownerId)
+      .bind(input.environment, input.normalizedSlug, input.ownerSystem, input.ownerId, now)
       .first();
     return row ? mapHostnameClaim(row) : null;
   }

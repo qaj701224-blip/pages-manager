@@ -489,6 +489,8 @@ test('hostname claims conflict check is manual, read-only by default, and can ap
   assert.match(workflow, /scripts\/hostname-claims-backfill\.mjs/);
   assert.match(workflow, /--v1-sites \.hostname-claims\/v1-sites\.sanitized\.json/);
   assert.match(workflow, /--v2-routes \.hostname-claims\/v2-routes\.json/);
+  assert.match(workflow, /GITHUB_STEP_SUMMARY/);
+  assert.match(workflow, /slug coexistence groups/);
   assert.match(workflow, /if: \$\{\{ inputs\.apply \}\}/);
   assert.match(workflow, /claims_sql="\$PWD\/\.hostname-claims\/out\/claims\.sql"/);
   assert.match(workflow, /pnpm --dir apps\/pages-api exec wrangler d1 execute "\$d1_name" --remote --file "\$claims_sql" --yes/);
@@ -498,6 +500,7 @@ test('hostname claims conflict check is manual, read-only by default, and can ap
     'D1 apply happens after conflict check'
   );
   assert.match(workflow, /actions\/upload-artifact@v6/);
+  assert.match(workflow, /\.hostname-claims\/out\/slug-coexistence\.json/);
   for (const forbidden of [
     /wrangler deploy/,
     /wrangler secret put/,

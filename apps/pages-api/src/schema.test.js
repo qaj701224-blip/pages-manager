@@ -21,7 +21,7 @@ test('schema defines all v2 authority tables', () => {
     'audit_events',
   ];
 
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.equal(SCHEMA_VERSION, 8);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -34,7 +34,8 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname_live/);
   assert.match(sql, /WHERE route_status != 'deleted'/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname/);
-  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
+  assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
   assert.match(sql, /WHERE status IN \('pending', 'active', 'held', 'conflicted'\)/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site/);
