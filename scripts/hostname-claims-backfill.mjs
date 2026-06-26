@@ -17,7 +17,7 @@ export function buildHostnameClaimBackfillPlan({ environment, v1Sites = [], v2Ro
       normalizedSlug: name,
       hostnameFamily: 'workers',
       ownerSystem: 'v1',
-      ownerId: `v1:${environment}:${name}`,
+      ownerId: normalizeOptionalString(site.ownerId) || `v1:${environment}:${name}`,
       ownerRef: normalizeOptionalString(site.scriptName) || null,
       source: 'backfill_v1_sites',
     };
@@ -54,7 +54,15 @@ export function buildHostnameClaimBackfillPlan({ environment, v1Sites = [], v2Ro
   }
   for (const [slugKey, candidates] of candidatesBySlug.entries()) {
     const liveCandidates = candidates.filter((candidate) => !blockedHostnames.has(candidate.hostname));
-    if (hasMultipleOwners(liveCandidates)) slugCoexistence.push(coexistenceFromCandidates(slugKey, liveCandidates));
+    if (!hasMultipleOwners(liveCandidates)) continue;
+    if (isAllowedLegacySlugCoexistence(liveCandidates)) {
+      slugCoexistence.push(coexistenceFromCandidates(slugKey, liveCandidates));
+      continue;
+    }
+    for (const candidate of liveCandidates) {
+      blockedHostnames.add(candidate.hostname);
+      conflicts.push(conflictFromCandidate(candidate, 'slug_duplicate'));
+    }
   }
 
   for (const [hostname, candidates] of candidatesByHostname.entries()) {
@@ -128,6 +136,19 @@ function appendMap(map, key, value) {
 
 function hasMultipleOwners(candidates) {
   return new Set(candidates.map((candidate) => `${candidate.ownerSystem}:${candidate.ownerId}`)).size > 1;
+}
+
+function isAllowedLegacySlugCoexistence(candidates) {
+  if (candidates.length !== 2) return false;
+  const [first, second] = candidates;
+  return (
+    first.ownerId === second.ownerId &&
+    new Set(candidates.map((candidate) => candidate.ownerSystem)).size === 2 &&
+    candidates.every((candidate) => ['v1', 'v2'].includes(candidate.ownerSystem)) &&
+    new Set(candidates.map((candidate) => candidate.hostnameFamily)).size === 2 &&
+    candidates.every((candidate) => ['workers', 'pages'].includes(candidate.hostnameFamily)) &&
+    first.hostname !== second.hostname
+  );
 }
 
 function conflictFromCandidate(candidate, reason) {

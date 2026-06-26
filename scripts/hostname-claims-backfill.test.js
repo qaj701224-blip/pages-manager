@@ -92,10 +92,10 @@ test('renders insert-if-hostname-absent SQL without overwriting existing hostnam
   assert.match(conflictsSql, /No hostname claim conflicts observed/);
 });
 
-test('backfills existing v1 and v2 claims that share a normalized slug on different hostnames', () => {
+test('backfills legacy v1 and v2 claims for the same owner on different hostnames', () => {
   const plan = buildHostnameClaimBackfillPlan({
     environment: 'production',
-    v1Sites: [{ name: 'docs', scriptName: 'pages-docs', token: 'pages_owner@example.com' }],
+    v1Sites: [{ name: 'docs', scriptName: 'pages-docs', ownerId: 'site_docs', token: 'pages_owner@example.com' }],
     v2Routes: [
       {
         siteId: 'site_docs',
@@ -122,7 +122,7 @@ test('backfills existing v1 and v2 claims that share a normalized slug on differ
         hostname: 'docs.workers.xd.team',
         normalizedSlug: 'docs',
         ownerSystem: 'v1',
-        ownerId: 'v1:production:docs',
+        ownerId: 'site_docs',
         ownerRef: 'pages-docs',
       },
       {
@@ -148,13 +148,88 @@ test('backfills existing v1 and v2 claims that share a normalized slug on differ
   );
 });
 
+test('blocks unrelated same-slug candidates instead of writing active claims', () => {
+  const plan = buildHostnameClaimBackfillPlan({
+    environment: 'production',
+    v1Sites: [{ name: 'docs', scriptName: 'pages-docs', token: 'pages_owner@example.com' }],
+    v2Routes: [
+      {
+        siteId: 'site_docs',
+        routeId: 'route_docs',
+        slug: 'docs',
+        hostname: 'docs.pages.xd.team',
+        siteDeletedAt: null,
+      },
+    ],
+  });
+
+  assert.equal(plan.claims.length, 0);
+  assert.equal(plan.slugCoexistence.length, 0);
+  assert.deepEqual(
+    plan.conflicts.map((conflict) => ({
+      hostname: conflict.hostname,
+      normalizedSlug: conflict.normalizedSlug,
+      candidateSystem: conflict.candidateSystem,
+      candidateOwnerId: conflict.candidateOwnerId,
+      reason: conflict.reason,
+    })),
+    [
+      {
+        hostname: 'docs.workers.xd.team',
+        normalizedSlug: 'docs',
+        candidateSystem: 'v1',
+        candidateOwnerId: 'v1:production:docs',
+        reason: 'slug_duplicate',
+      },
+      {
+        hostname: 'docs.pages.xd.team',
+        normalizedSlug: 'docs',
+        candidateSystem: 'v2',
+        candidateOwnerId: 'site_docs',
+        reason: 'slug_duplicate',
+      },
+    ]
+  );
+});
+
+test('blocks same-system same-slug candidates on different hostnames', () => {
+  const plan = buildHostnameClaimBackfillPlan({
+    environment: 'production',
+    v1Sites: [],
+    v2Routes: [
+      {
+        siteId: 'site_docs_a',
+        routeId: 'route_docs_a',
+        slug: 'docs',
+        hostname: 'docs.pages.xd.team',
+        siteDeletedAt: null,
+      },
+      {
+        siteId: 'site_docs_b',
+        routeId: 'route_docs_b',
+        slug: 'docs',
+        hostname: 'docs.workers.xd.team',
+        siteDeletedAt: null,
+      },
+    ],
+  });
+
+  assert.equal(plan.claims.length, 0);
+  assert.equal(plan.slugCoexistence.length, 0);
+  assert.equal(plan.conflicts.length, 2);
+  assert.deepEqual(new Set(plan.conflicts.map((conflict) => conflict.reason)), new Set(['slug_duplicate']));
+});
+
 test('cli writes coexisting slug claims and reports them without blocking apply', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hostname-claims-'));
   try {
     const v1Path = join(dir, 'v1.json');
     const v2Path = join(dir, 'v2.json');
     const outPath = join(dir, 'out');
-    await writeFile(v1Path, JSON.stringify([{ name: 'docs', scriptName: 'pages-docs', token: 'pages_owner@example.com' }]));
+    await writeFile(
+      v1Path,
+      JSON.stringify([{ name: 'docs', scriptName: 'pages-docs', ownerId: 'site_docs', token: 'pages_owner@example.com' }])
+    );
     await writeFile(
       v2Path,
       JSON.stringify([{ siteId: 'site_docs', routeId: 'route_docs', slug: 'docs', hostname: 'docs.pages.xd.team' }])
@@ -183,7 +258,7 @@ test('cli writes coexisting slug claims and reports them without blocking apply'
           {
             hostname: 'docs.workers.xd.team',
             ownerSystem: 'v1',
-            ownerId: 'v1:production:docs',
+            ownerId: 'site_docs',
             ownerRef: 'pages-docs',
           },
           {

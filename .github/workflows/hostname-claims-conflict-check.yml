@@ -95,6 +95,7 @@ jobs:
               name: parsed.name || name,
               preset: parsed.preset || null,
               scriptName: parsed.scriptName || null,
+              ownerId: parsed.ownerId || null,
               url: parsed.url || null,
               createdAt: parsed.createdAt || null,
               updatedAt: parsed.updatedAt || null,
