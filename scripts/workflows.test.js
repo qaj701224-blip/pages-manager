@@ -490,16 +490,11 @@ test('hostname claims conflict check is manual, read-only by default, and can ap
   assert.match(workflow, /--v1-sites \.hostname-claims\/v1-sites\.sanitized\.json/);
   assert.match(workflow, /--v2-routes \.hostname-claims\/v2-routes\.json/);
   assert.match(workflow, /if: \$\{\{ inputs\.apply \}\}/);
-  assert.match(
-    workflow,
-    new RegExp(
-      String.raw`pnpm --dir apps/pages-api exec wrangler d1 execute "\$d1_name" --remote --file ` +
-        String.raw`\.hostname-claims/out/claims\.sql`
-    )
-  );
+  assert.match(workflow, /claims_sql="\$PWD\/\.hostname-claims\/out\/claims\.sql"/);
+  assert.match(workflow, /pnpm --dir apps\/pages-api exec wrangler d1 execute "\$d1_name" --remote --file "\$claims_sql" --yes/);
   assert.ok(
     workflow.indexOf('node scripts/hostname-claims-backfill.mjs') <
-      workflow.indexOf('pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --file'),
+      workflow.indexOf('pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --file "$claims_sql"'),
     'D1 apply happens after conflict check'
   );
   assert.match(workflow, /actions\/upload-artifact@v6/);

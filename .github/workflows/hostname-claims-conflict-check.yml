@@ -160,7 +160,8 @@ jobs:
           }
           NODE
           d1_name="$(cat .hostname-claims/v2-d1-name.txt)"
-          pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --file .hostname-claims/out/claims.sql --yes
+          claims_sql="$PWD/.hostname-claims/out/claims.sql"
+          pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --file "$claims_sql" --yes
 
       - name: Upload conflict check artifacts
         if: always()
