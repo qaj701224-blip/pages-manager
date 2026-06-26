@@ -11,6 +11,11 @@ on:
         options:
           - production
           - staging
+      apply:
+        description: Apply generated claims SQL to D1 when conflicts are zero
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -136,6 +141,26 @@ jobs:
             --v1-sites .hostname-claims/v1-sites.sanitized.json \
             --v2-routes .hostname-claims/v2-routes.json \
             --out .hostname-claims/out
+
+      - name: Apply hostname claims backfill
+        if: ${{ inputs.apply }}
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const summary = JSON.parse(await readFile('.hostname-claims/out/summary.json', 'utf8'));
+          if (summary.conflicts !== 0) {
+            throw new Error(`hostname claims conflicts must be zero before apply, got ${summary.conflicts}`);
+          }
+          NODE
+          d1_name="$(cat .hostname-claims/v2-d1-name.txt)"
+          pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --file .hostname-claims/out/claims.sql --yes
 
       - name: Upload conflict check artifacts
         if: always()
