@@ -62,10 +62,16 @@ test('production server config renders production values only', () => {
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.workers\.xd\.team"/);
   assert.match(config, /PUBLIC_MANAGER_DEV_BASE = "https:\/\/pages-manager\.xd-cf-2022\.workers\.dev"/);
   assert.match(config, /WORKER_PREFIX = "pages-"/);
+  assert.match(config, /HOSTNAME_CLAIMS_MODE = "record_only"/);
+  assert.match(config, /HOSTNAME_REUSE_HOLD_SECONDS = "300"/);
+  assert.match(config, /binding = "HOSTNAME_CLAIMS"/);
+  assert.match(config, /service = "pages-api"/);
   assert.doesNotMatch(config, /KV_GATEWAY_SERVICE/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_ACTIVE_KID/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_KEYS/);
-  assert.match(config, /pattern = "api\.workers\.xd\.team"/);
+  assert.match(config, /pattern = "api\.workers\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
   assert.doesNotMatch(config, /api-staging/);
   assert.doesNotMatch(config, /pages-staging-/);
   assert.doesNotMatch(config, /pages-kv-gateway-staging/);
@@ -80,10 +86,16 @@ test('staging server config renders staging values', () => {
   assert.match(config, /PUBLIC_MANAGER_DEV_BASE = "https:\/\/pages-manager-staging\.xd-cf-2022\.workers\.dev"/);
   assert.match(config, /DOMAIN_LABEL = "-staging"/);
   assert.match(config, /WORKER_PREFIX = "pages-staging-"/);
+  assert.match(config, /HOSTNAME_CLAIMS_MODE = "record_only"/);
+  assert.match(config, /HOSTNAME_REUSE_HOLD_SECONDS = "300"/);
+  assert.match(config, /binding = "HOSTNAME_CLAIMS"/);
+  assert.match(config, /service = "pages-api-staging"/);
   assert.doesNotMatch(config, /KV_GATEWAY_SERVICE/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_ACTIVE_KID/);
   assert.doesNotMatch(config, /PAGES_CAP_JWT_KEYS/);
-  assert.match(config, /pattern = "api-staging\.workers\.xd\.team"/);
+  assert.match(config, /pattern = "api-staging\.workers\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.doesNotMatch(config, /custom_domain = true/);
 });
 
 test('rejects unknown environment', () => {

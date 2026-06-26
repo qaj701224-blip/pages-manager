@@ -10,6 +10,12 @@ test('classifies production site hostnames', () => {
     hostname: 'demo.pages.xd.team',
     slug: 'demo',
   });
+  assert.deepEqual(classifyHost('demo.workers.xd.team', { environment: 'production' }), {
+    ok: true,
+    environment: 'production',
+    hostname: 'demo.workers.xd.team',
+    slug: 'demo',
+  });
 });
 
 test('classifies staging site hostnames', () => {
@@ -17,6 +23,12 @@ test('classifies staging site hostnames', () => {
     ok: true,
     environment: 'staging',
     hostname: 'demo-staging.pages.xd.team',
+    slug: 'demo',
+  });
+  assert.deepEqual(classifyHost('demo-staging.workers.xd.team', { environment: 'staging' }), {
+    ok: true,
+    environment: 'staging',
+    hostname: 'demo-staging.workers.xd.team',
     slug: 'demo',
   });
 });
@@ -37,7 +49,7 @@ test('rejects invalid hostnames and cross-environment hosts', () => {
   assert.equal(classifyHost('demo-staging.pages.xd.team', { environment: 'production' }).code, 'RESERVED_SLUG');
   assert.equal(classifyHost('foo.bar.pages.xd.team', { environment: 'production' }).code, 'INVALID_HOST');
   assert.equal(classifyHost('pages.xd.team', { environment: 'production' }).code, 'INVALID_HOST');
-  assert.equal(classifyHost('demo.workers.xd.team', { environment: 'production' }).code, 'INVALID_HOST');
+  assert.equal(classifyHost('demo.workers.xd.team', { environment: 'staging' }).code, 'HOST_ENV_MISMATCH');
 });
 
 test('rejects reserved slugs and invalid slug syntax', () => {

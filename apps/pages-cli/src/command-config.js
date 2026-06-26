@@ -26,7 +26,7 @@ export async function readCommandConfig(filePath, { cwd = process.cwd(), discove
 export function validateCommandConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('COMMAND_CONFIG_INVALID');
   assertNoSecretFields(value);
-  assertNoLegacyDomain(value);
+  assertNoLegacyApiOrigin(value);
 
   const output = {};
   for (const [key, entry] of Object.entries(value)) {
@@ -51,7 +51,9 @@ function normalizeField(key, value) {
   }
   if (key === 'worker') return normalizeWorkerConfig(value);
   if (typeof value !== 'string' || value.trim() === '') throw new Error(`COMMAND_CONFIG_${key.toUpperCase()}_INVALID`);
-  return value.trim();
+  const normalized = value.trim();
+  if (key === 'site' && /:\/\//.test(normalized)) throw new Error('COMMAND_CONFIG_SITE_INVALID');
+  return normalized;
 }
 
 function normalizeWorkerConfig(value) {
@@ -79,10 +81,10 @@ function assertNoSecretFields(value, pathParts = []) {
   }
 }
 
-function assertNoLegacyDomain(value) {
-  if (typeof value === 'string' && /(^|\.)workers\.xd\.team(?::|\/|$)/i.test(value)) {
-    throw new Error('COMMAND_CONFIG_LEGACY_DOMAIN_UNSUPPORTED');
+function assertNoLegacyApiOrigin(value) {
+  if (typeof value === 'string' && /(^|:\/\/)api(?:-staging)?\.workers\.xd\.team(?::|\/|$)/i.test(value)) {
+    throw new Error('COMMAND_CONFIG_LEGACY_API_UNSUPPORTED');
   }
   if (!value || typeof value !== 'object') return;
-  for (const nested of Object.values(value)) assertNoLegacyDomain(nested);
+  for (const nested of Object.values(value)) assertNoLegacyApiOrigin(nested);
 }

@@ -49,6 +49,8 @@ test('strips platform response headers and platform Set-Cookie values', async ()
   headers.append('Set-Cookie', 'app=ok; Path=/; Secure');
   headers.append('Set-Cookie', 'bad=parent; Domain=.pages.xd.team; Path=/; Secure');
   headers.append('Set-Cookie', 'bad=apex; Domain=pages.xd.team; Path=/; Secure');
+  headers.append('Set-Cookie', 'bad=workers-parent; Domain=.workers.xd.team; Path=/; Secure');
+  headers.append('Set-Cookie', 'bad=workers-apex; Domain=workers.xd.team; Path=/; Secure');
   headers.append('Set-Cookie', 'bad=xd-parent; Domain=.xd.team; Path=/; Secure');
   headers.append('Set-Cookie', 'bad=xd-apex; Domain=xd.team; Path=/; Secure');
   headers.append('Set-Cookie', 'bad=generic; Domain=example.com; Path=/; Secure');

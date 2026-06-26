@@ -162,74 +162,111 @@ export async function handleDeploy(request, env) {
   const hostname = `${name}${env.DOMAIN_LABEL}.${env.DOMAIN_BASE}`;
   const siteUuid = existing?.siteUuid || crypto.randomUUID().replaceAll('-', '');
   const siteGeneration = Number(existing?.siteGeneration || 0) + 1;
+  const claim = {
+    environment: readPublicEnvironment(env),
+    hostname,
+    normalizedSlug: name,
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: `v1:${readPublicEnvironment(env)}:${name}`,
+    ownerRef: scriptName,
+    source: 'v1_deploy',
+    status: existing ? 'active' : 'pending',
+  };
 
-  const { manifest, fileMap } = await buildManifest(fileEntries);
-
-  const session = await registerUploadSession(token, accountId, scriptName, manifest);
-  console.log('upload session:', JSON.stringify({ buckets: session.buckets?.length || 0 }));
-
-  let completionJwt;
-  if (session.buckets && session.buckets.length > 0) {
-    completionJwt = await uploadAssetBuckets(session.jwt, accountId, session.buckets, fileMap);
-    console.log('asset buckets uploaded:', JSON.stringify({ buckets: session.buckets.length }));
-  } else {
-    completionJwt = session.jwt;
-    console.log('asset buckets skipped:', JSON.stringify({ buckets: 0 }));
+  const claimResult = await acquireHostnameClaim(env, claim);
+  if (!claimResult.ok) {
+    return jsonResponse(
+      {
+        error: '站点域名已被占用',
+        code: claimResult.code || 'HOSTNAME_CLAIM_CONFLICT',
+        field: 'name',
+        name,
+        hint: '该站点名已被 v1/v2 其它站点占用，请换一个名称或使用原站点 owner 继续部署',
+      },
+      409
+    );
   }
 
-  const deployResult = await deployScript(
-    token,
-    accountId,
-    scriptName,
-    completionJwt,
-    preset,
-    workerCode,
-    ipRestrict,
-    env.IP_ALLOWLIST
-  );
-  console.log('deploy result:', JSON.stringify({ ok: Boolean(deployResult) }));
+  let metadata;
+  let metadataWritten = false;
+  try {
+    const { manifest, fileMap } = await buildManifest(fileEntries);
 
-  await bindRoute(token, zoneId, `${hostname}/*`, scriptName);
+    const session = await registerUploadSession(token, accountId, scriptName, manifest);
+    console.log('upload session:', JSON.stringify({ buckets: session.buckets?.length || 0 }));
 
-  await enableSubdomain(token, accountId, scriptName).catch(() => {});
+    let completionJwt;
+    if (session.buckets && session.buckets.length > 0) {
+      completionJwt = await uploadAssetBuckets(session.jwt, accountId, session.buckets, fileMap);
+      console.log('asset buckets uploaded:', JSON.stringify({ buckets: session.buckets.length }));
+    } else {
+      completionJwt = session.jwt;
+      console.log('asset buckets skipped:', JSON.stringify({ buckets: 0 }));
+    }
 
-  const workersDev = env.WORKERS_DEV_SUBDOMAIN;
-  const devUrl = workersDev ? `https://${scriptName}.${workersDev}.workers.dev` : null;
-
-  const now = new Date().toISOString();
-  const metadata = {
-    name,
-    preset,
-    scriptName,
-    url: `https://${hostname}`,
-    devUrl,
-    fileCount: fileEntries.length,
-    ipRestrict,
-    kvEnabled,
-    siteUuid,
-    siteGeneration,
-    token: userToken,
-    createdAt: existing?.createdAt || now,
-    updatedAt: now,
-  };
-  await env.SITES.put(name, JSON.stringify(metadata), {
-    metadata: {
-      url: metadata.url,
+    const deployResult = await deployScript(
+      token,
+      accountId,
+      scriptName,
+      completionJwt,
       preset,
+      workerCode,
+      ipRestrict,
+      env.IP_ALLOWLIST
+    );
+    console.log('deploy result:', JSON.stringify({ ok: Boolean(deployResult) }));
+
+    await bindRoute(token, zoneId, `${hostname}/*`, scriptName);
+
+    await enableSubdomain(token, accountId, scriptName).catch(() => {});
+
+    const workersDev = env.WORKERS_DEV_SUBDOMAIN;
+    const devUrl = workersDev ? `https://${scriptName}.${workersDev}.workers.dev` : null;
+
+    const now = new Date().toISOString();
+    metadata = {
+      name,
+      preset,
+      scriptName,
+      url: `https://${hostname}`,
+      devUrl,
+      fileCount: fileEntries.length,
       ipRestrict,
       kvEnabled,
       siteUuid,
       siteGeneration,
-      updatedAt: now,
       token: userToken,
-    },
-  });
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    await env.SITES.put(name, JSON.stringify(metadata), {
+      metadata: {
+        url: metadata.url,
+        preset,
+        ipRestrict,
+        kvEnabled,
+        siteUuid,
+        siteGeneration,
+        updatedAt: now,
+        token: userToken,
+      },
+    });
+    metadataWritten = true;
+    const confirmResult = await confirmHostnameClaim(env, claim);
+    if (!confirmResult.ok && env.HOSTNAME_CLAIMS_MODE === 'enforce') {
+      throw new Error(confirmResult.code || 'HOSTNAME_CLAIM_CONFIRM_FAILED');
+    }
+  } catch (error) {
+    if (!existing && !metadataWritten) await releaseHostnameClaim(env, { ...claim, releaseReason: 'v1_deploy_failed' });
+    throw error;
+  }
 
   const result = {
     status: 'ok',
     name,
     url: metadata.url,
-    devUrl,
+    devUrl: metadata.devUrl,
     fileCount: fileEntries.length,
     preset,
     ipRestrict,
@@ -243,4 +280,61 @@ export async function handleDeploy(request, env) {
   }
   if (warnings.length) result.warning = warnings.join(' ');
   return jsonResponse(result);
+}
+
+async function acquireHostnameClaim(env, input) {
+  return writeHostnameClaim(env, 'acquire', input);
+}
+
+async function confirmHostnameClaim(env, input) {
+  return writeHostnameClaim(env, 'confirm', input);
+}
+
+async function releaseHostnameClaim(env, input) {
+  return writeHostnameClaim(env, 'release', input);
+}
+
+async function writeHostnameClaim(env, operation, input) {
+  const mode = env.HOSTNAME_CLAIMS_MODE || 'off';
+  if (mode === 'off' || !env.HOSTNAME_CLAIMS) return { ok: true };
+
+  try {
+    const method = env.HOSTNAME_CLAIMS[operation];
+    const result =
+      typeof method === 'function'
+        ? await method.call(env.HOSTNAME_CLAIMS, input)
+        : await writeHostnameClaimViaServiceBinding(env.HOSTNAME_CLAIMS, operation, input);
+    if (result?.ok === false && mode === 'enforce') return result;
+    return { ok: true, recorded: result || null };
+  } catch (error) {
+    if (mode === 'enforce') {
+      return {
+        ok: false,
+        code: 'HOSTNAME_CLAIM_FAILED',
+        message: error instanceof Error ? error.message : 'Hostname claim write failed',
+      };
+    }
+    return { ok: true, recorded: { ok: false, code: 'HOSTNAME_CLAIM_RECORD_FAILED' } };
+  }
+}
+
+async function writeHostnameClaimViaServiceBinding(binding, operation, input) {
+  const response = await binding.fetch(
+    new Request(`https://pages-api.internal/.xd-pages/internal/hostname-claims/${operation}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claim: input }),
+    })
+  );
+  if (response.ok) return { ok: true, response: await response.json().catch(() => null) };
+  const body = await response.json().catch(() => null);
+  return {
+    ok: false,
+    code: body?.error?.code || 'HOSTNAME_CLAIM_FAILED',
+    message: body?.error?.message || 'Hostname claim failed',
+  };
+}
+
+function readPublicEnvironment(env) {
+  return env.PUBLIC_ENVIRONMENT === 'staging' ? 'staging' : 'production';
 }

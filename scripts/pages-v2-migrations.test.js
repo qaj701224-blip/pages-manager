@@ -19,6 +19,18 @@ const resolvedMetadataMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0004_pages_v2_resolved_deployment_metadata.sql'),
   'utf8'
 );
+const hostnameClaimsMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0005_hostname_claims.sql'),
+  'utf8'
+);
+const routeDeletedHostnameReuseMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0006_site_route_deleted_hostname_reuse.sql'),
+  'utf8'
+);
+const hostnameClaimSlugCoexistenceMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0007_hostname_claim_slug_coexistence.sql'),
+  'utf8'
+);
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -75,6 +87,37 @@ test('resolved deployment metadata migration removes artifact kind storage', () 
   assert.match(resolvedMetadataMigration, /DROP TABLE site_versions/);
   assert.match(resolvedMetadataMigration, /ALTER TABLE site_versions_next RENAME TO site_versions/);
   assert.doesNotMatch(tableDefinition(resolvedMetadataMigration, 'site_versions_next'), /\bartifact_kind\b/);
+});
+
+test('hostname claims migration creates the claim and conflict ledgers', () => {
+  assert.match(hostnameClaimsMigration, /CREATE TABLE IF NOT EXISTS hostname_claims \(/);
+  assert.match(hostnameClaimsMigration, /CREATE TABLE IF NOT EXISTS hostname_claim_conflicts \(/);
+  assert.match(hostnameClaimsMigration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname/);
+  assert.match(hostnameClaimsMigration, /ON hostname_claims\(hostname\)/);
+  assert.match(hostnameClaimsMigration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
+  assert.match(hostnameClaimsMigration, /ON hostname_claims\(environment, normalized_slug\)/);
+  assert.match(hostnameClaimsMigration, /WHERE status IN \('pending', 'active', 'held', 'conflicted'\)/);
+  assert.doesNotMatch(hostnameClaimsMigration, /X-Pages-Token|PAGES_TOKEN|token/i);
+});
+
+test('hostname claim slug coexistence migration keeps hostname unique and makes slug lookups non-unique', () => {
+  assert.match(hostnameClaimSlugCoexistenceMigration, /DROP INDEX IF EXISTS idx_hostname_claims_environment_slug_live/);
+  assert.match(hostnameClaimSlugCoexistenceMigration, /CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
+  assert.doesNotMatch(
+    hostnameClaimSlugCoexistenceMigration,
+    /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/
+  );
+  assert.match(hostnameClaimSlugCoexistenceMigration, /ON hostname_claims\(environment, normalized_slug\)/);
+  assert.match(hostnameClaimSlugCoexistenceMigration, /WHERE status IN \('pending', 'active', 'held', 'conflicted'\)/);
+  assert.doesNotMatch(hostnameClaimSlugCoexistenceMigration, /DROP TABLE|DELETE FROM hostname_claims/i);
+});
+
+test('deleted route hostname reuse migration keeps only live route hostnames unique', () => {
+  assert.match(routeDeletedHostnameReuseMigration, /DROP INDEX IF EXISTS idx_site_routes_hostname/);
+  assert.match(routeDeletedHostnameReuseMigration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname_live/);
+  assert.match(routeDeletedHostnameReuseMigration, /ON site_routes\(hostname\)/);
+  assert.match(routeDeletedHostnameReuseMigration, /WHERE route_status != 'deleted'/);
+  assert.doesNotMatch(routeDeletedHostnameReuseMigration, /DROP TABLE|DELETE FROM site_routes/i);
 });
 
 function tableDefinition(sql, tableName) {

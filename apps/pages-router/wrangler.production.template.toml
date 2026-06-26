@@ -13,11 +13,15 @@ invocation_logs = false
 pattern = "*.pages.xd.team/*"
 zone_name = "xd.team"
 
+[[routes]]
+pattern = "*.workers.xd.team/*"
+zone_name = "xd.team"
+
 [vars]
 PAGES_ENV = "production"
 PUBLIC_AUTH_BASE = "https://auth.pages.xd.team"
 PUBLIC_API_BASE = "https://api.pages.xd.team"
-PUBLIC_SITE_SUFFIX = "pages.xd.team"
+PUBLIC_SITE_SUFFIX = "workers.xd.team"
 PAGES_EXECUTION_MODE = "normal-worker-slot"
 PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"
 PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"

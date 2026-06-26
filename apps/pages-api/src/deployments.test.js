@@ -46,6 +46,23 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   ]);
 });
 
+test('deployment preserves an existing pages.xd.team route hostname during workers-domain rollout', async () => {
+  const store = await createSeededStore();
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    testEnv(store, snapshots)
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(body.route.hostname, 'guide.pages.xd.team');
+  assert.equal((await store.getRouteBySiteId('site_1')).hostname, 'guide.pages.xd.team');
+  assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').routeGeneration, 1);
+  assert.equal(snapshots.read('production:route_pointer:guide.workers.xd.team'), undefined);
+});
+
 test('uploads and verifies WFP worker before route activation', async () => {
   const store = await createSeededStore();
   const events = [];

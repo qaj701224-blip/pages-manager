@@ -1,0 +1,203 @@
+name: Hostname Claims Conflict Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to check
+        required: true
+        type: choice
+        default: production
+        options:
+          - production
+          - staging
+      apply:
+        description: Apply generated claims SQL to D1 when conflicts are zero
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      CHECK_ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Resolve Cloudflare resource names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .hostname-claims
+          if [[ "$CHECK_ENVIRONMENT" == "staging" ]]; then
+            printf 'pages-manager-staging\n' > .hostname-claims/v1-worker-name.txt
+            printf 'pages-v2-metadata-staging\n' > .hostname-claims/v2-d1-name.txt
+          else
+            printf 'pages-manager\n' > .hostname-claims/v1-worker-name.txt
+            printf 'pages-v2-metadata\n' > .hostname-claims/v2-d1-name.txt
+          fi
+
+      - name: Export sanitized v1 SITES KV
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          SITES_KV_NAMESPACE_ID: ${{ secrets.SITES_KV_NAMESPACE_ID }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+          : "${SITES_KV_NAMESPACE_ID:?SITES_KV_NAMESPACE_ID is required}"
+          pnpm --dir apps/server exec wrangler kv key list --namespace-id "$SITES_KV_NAMESPACE_ID" --remote > .hostname-claims/v1-keys.json
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          const keys = JSON.parse(await readFile('.hostname-claims/v1-keys.json', 'utf8'));
+          const names = keys.map((entry) => entry.name).filter(Boolean);
+          await writeFile('.hostname-claims/v1-key-names.json', JSON.stringify(names));
+          NODE
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import { spawnSync } from 'node:child_process';
+          const names = JSON.parse(await readFile('.hostname-claims/v1-key-names.json', 'utf8'));
+          const namespaceId = process.env.SITES_KV_NAMESPACE_ID;
+          const sites = [];
+          for (const name of names) {
+            const result = spawnSync(
+              'pnpm',
+              ['--dir', 'apps/server', 'exec', 'wrangler', 'kv', 'key', 'get', name, '--namespace-id', namespaceId, '--remote'],
+              {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe'],
+              }
+            );
+            if (result.status !== 0) throw new Error(`failed to read v1 site key ${name}`);
+            const raw = result.stdout.trim();
+            if (!raw) continue;
+            const parsed = JSON.parse(raw);
+            sites.push({
+              name: parsed.name || name,
+              preset: parsed.preset || null,
+              scriptName: parsed.scriptName || null,
+              ownerId: parsed.ownerId || null,
+              url: parsed.url || null,
+              createdAt: parsed.createdAt || null,
+              updatedAt: parsed.updatedAt || null,
+            });
+          }
+          await writeFile('.hostname-claims/v1-sites.sanitized.json', `${JSON.stringify(sites, null, 2)}\n`);
+          NODE
+
+      - name: Export v2 undeleted and disabled route records
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+          d1_name="$(cat .hostname-claims/v2-d1-name.txt)"
+          pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --json --command "
+            SELECT
+              site_routes.id AS routeId,
+              site_routes.site_id AS siteId,
+              sites.slug AS slug,
+              site_routes.hostname AS hostname,
+              site_routes.route_status AS routeStatus,
+              sites.deleted_at AS siteDeletedAt
+            FROM site_routes
+            LEFT JOIN sites ON sites.id = site_routes.site_id
+            WHERE sites.deleted_at IS NULL
+          " > .hostname-claims/v2-routes.raw.json
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          const raw = JSON.parse(await readFile('.hostname-claims/v2-routes.raw.json', 'utf8'));
+          const rows = raw.flatMap((entry) => entry?.results || entry?.result?.results || []);
+          await writeFile('.hostname-claims/v2-routes.json', `${JSON.stringify(rows, null, 2)}\n`);
+          NODE
+
+      - name: Check hostname claim conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/hostname-claims-backfill.mjs \
+            --environment "$CHECK_ENVIRONMENT" \
+            --v1-sites .hostname-claims/v1-sites.sanitized.json \
+            --v2-routes .hostname-claims/v2-routes.json \
+            --out .hostname-claims/out
+
+      - name: Write hostname claims summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .hostname-claims/out/summary.json ]]; then
+            exit 0
+          fi
+          node --input-type=module <<'NODE'
+          import { appendFile, readFile } from 'node:fs/promises';
+          const summary = JSON.parse(await readFile('.hostname-claims/out/summary.json', 'utf8'));
+          const lines = [
+            '## Hostname Claims Conflict Check',
+            '',
+            `- environment: \`${summary.environment}\``,
+            `- v1 sites: \`${summary.v1Sites}\``,
+            `- v2 routes: \`${summary.v2Routes}\``,
+            `- claims: \`${summary.claims}\``,
+            `- blocking conflicts: \`${summary.conflicts}\``,
+            `- slug coexistence groups: \`${summary.slugCoexistence}\``,
+            '',
+          ];
+          await appendFile(process.env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
+          NODE
+
+      - name: Apply hostname claims backfill
+        if: ${{ inputs.apply }}
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const summary = JSON.parse(await readFile('.hostname-claims/out/summary.json', 'utf8'));
+          if (summary.conflicts !== 0) {
+            throw new Error(`hostname claims conflicts must be zero before apply, got ${summary.conflicts}`);
+          }
+          NODE
+          d1_name="$(cat .hostname-claims/v2-d1-name.txt)"
+          claims_sql="$PWD/.hostname-claims/out/claims.sql"
+          pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --file "$claims_sql" --yes
+
+      - name: Upload conflict check artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: hostname-claims-conflict-check-${{ inputs.environment }}
+          path: |
+            .hostname-claims/v1-sites.sanitized.json
+            .hostname-claims/v2-routes.json
+            .hostname-claims/out/summary.json
+            .hostname-claims/out/slug-coexistence.json
+            .hostname-claims/out/claims.sql
+            .hostname-claims/out/conflicts.sql

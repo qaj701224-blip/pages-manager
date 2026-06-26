@@ -190,11 +190,25 @@ test('site delete rejects platform reserved names before deleting Cloudflare res
 test('site delete allows the owning token', async () => {
   const fetchCalls = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
-    fetchCalls.push(String(url));
+  globalThis.fetch = async (url, options = {}) => {
+    fetchCalls.push({ url: String(url), method: options.method || 'GET', body: options.body || null });
+    if (String(url).endsWith('/zones/dummy-zone/workers/routes')) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [{ id: 'route_1', pattern: 'demo.workers.xd.team/*', script: 'pages-demo' }],
+        })
+      );
+    }
     return new Response(JSON.stringify({ success: true, result: {} }));
   };
-  const env = envWithSite({ name: 'demo', token: 'pages_owner@xd.com', scriptName: 'pages-demo' });
+  const env = envWithSite({
+    name: 'demo',
+    token: 'pages_owner@xd.com',
+    scriptName: 'pages-demo',
+    url: 'https://demo.workers.xd.team',
+  });
+  env.CF_ZONE_ID_NEW = 'dummy-zone';
 
   try {
     const response = await handleDeleteSite(siteRequest('/site/demo', 'pages_owner@xd.com'), env, { name: 'demo' });
@@ -203,7 +217,114 @@ test('site delete allows the owning token', async () => {
     assert.equal(response.status, 200);
     assert.equal(body.status, 'ok');
     assert.deepEqual(env.deleted, ['demo']);
-    assert.equal(fetchCalls.length, 1);
+    assert.deepEqual(
+      fetchCalls.map((call) => [call.method, call.url.replace(/https:\/\/api\.cloudflare\.com\/client\/v4/, '')]),
+      [
+        ['GET', '/zones/dummy-zone/workers/routes'],
+        ['DELETE', '/zones/dummy-zone/workers/routes/route_1'],
+        ['DELETE', '/accounts/dummy-account/workers/scripts/pages-demo?force=true'],
+      ]
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('site delete refuses to unbind wildcard or script-mismatched routes', async () => {
+  const originalFetch = globalThis.fetch;
+  const cases = [
+    {
+      name: 'wildcard route',
+      routes: [{ id: 'route_wildcard', pattern: '*.workers.xd.team/*', script: 'pages-router' }],
+      message: /精确 route/,
+    },
+    {
+      name: 'script mismatch',
+      routes: [{ id: 'route_other', pattern: 'demo.workers.xd.team/*', script: 'pages-other' }],
+      message: /script/i,
+    },
+  ];
+
+  try {
+    for (const item of cases) {
+      const fetchCalls = [];
+      globalThis.fetch = async (url, options = {}) => {
+        fetchCalls.push({ url: String(url), method: options.method || 'GET' });
+        if (String(url).endsWith('/zones/dummy-zone/workers/routes')) {
+          return new Response(JSON.stringify({ success: true, result: item.routes }));
+        }
+        return new Response(JSON.stringify({ success: true, result: {} }));
+      };
+      const env = envWithSite({
+        name: 'demo',
+        token: 'pages_owner@xd.com',
+        scriptName: 'pages-demo',
+        url: 'https://demo.workers.xd.team',
+      });
+      env.CF_ZONE_ID_NEW = 'dummy-zone';
+
+      const response = await handleDeleteSite(siteRequest('/site/demo', 'pages_owner@xd.com'), env, { name: 'demo' });
+      const body = await response.json();
+
+      assert.equal(response.status, 403, item.name);
+      assert.match(body.error, item.message, item.name);
+      assert.equal(env.deleted.length, 0, item.name);
+      assert.equal(fetchCalls.some((call) => call.method === 'DELETE'), false, item.name);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('site delete releases hostname claim into a short reuse hold after metadata delete', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/zones/dummy-zone/workers/routes')) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [{ id: 'route_1', pattern: 'demo.workers.xd.team/*', script: 'pages-demo' }],
+        })
+      );
+    }
+    return new Response(JSON.stringify({ success: true, result: {} }));
+  };
+  const releases = [];
+  const env = envWithSite({
+    name: 'demo',
+    token: 'pages_owner@xd.com',
+    scriptName: 'pages-demo',
+    url: 'https://demo.workers.xd.team',
+  });
+  env.CF_ZONE_ID_NEW = 'dummy-zone';
+  env.HOSTNAME_CLAIMS_MODE = 'enforce';
+  env.now = () => '2026-06-15T00:00:00.000Z';
+  env.HOSTNAME_CLAIMS = {
+    release: async (claim) => {
+      releases.push(claim);
+      return { ok: true };
+    },
+  };
+
+  try {
+    const response = await handleDeleteSite(siteRequest('/site/demo', 'pages_owner@xd.com'), env, { name: 'demo' });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(releases, [
+      {
+        environment: 'production',
+        hostname: 'demo.workers.xd.team',
+        normalizedSlug: 'demo',
+        hostnameFamily: 'workers',
+        ownerSystem: 'v1',
+        ownerId: 'v1:production:demo',
+        ownerRef: 'pages-demo',
+        source: 'v1_delete',
+        status: 'active',
+        releaseReason: 'site_deleted',
+        reuseHoldUntil: '2026-06-15T00:05:00.000Z',
+      },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -13,6 +13,7 @@
 5. [路由与访问边界](./security/routing-and-access.md)
 6. [发布与运行时模型](./architecture/publishing-and-runtime.md)
 7. [审计、监控与上线阶段](./operations/observability-and-rollout.md)
+8. [v2 workers.xd.team 域名共存上线流程](./operations/v2-workers-domain-rollout.md)
 
 ## 文档维护规则
 

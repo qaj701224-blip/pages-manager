@@ -8,11 +8,15 @@ workers_dev = false
 pattern = "*-staging.pages.xd.team/*"
 zone_name = "xd.team"
 
+[[routes]]
+pattern = "*-staging.workers.xd.team/*"
+zone_name = "xd.team"
+
 [vars]
 PAGES_ENV = "staging"
 PUBLIC_AUTH_BASE = "https://auth-staging.pages.xd.team"
 PUBLIC_API_BASE = "https://api-staging.pages.xd.team"
-PUBLIC_SITE_SUFFIX = "pages.xd.team"
+PUBLIC_SITE_SUFFIX = "workers.xd.team"
 PAGES_EXECUTION_MODE = "normal-worker-slot"
 PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"
 PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"

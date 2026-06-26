@@ -1,9 +1,11 @@
 import {
   cacheTierForVisibility,
   cloneRecord,
+  createHostnameClaim,
   createInitialRoute,
   createOwnerMember,
   deploymentIdempotencyScope,
+  hostnameFamilyForHostname,
 } from './store.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString() } = {}) {
@@ -17,6 +19,7 @@ class TestPagesStore {
     this.sites = new Map();
     this.siteSlugIndex = new Map();
     this.routes = new Map();
+    this.hostnameClaims = new Map();
     this.routeBySiteId = new Map();
     this.siteMembers = new Map();
     this.siteAclEntries = new Map();
@@ -100,6 +103,34 @@ class TestPagesStore {
     };
     const route = createInitialRoute(input, now);
     const owner = createOwnerMember(site.id, site.ownerUserId, now);
+    const claim = createHostnameClaim(
+      {
+        environment: input.environment,
+        hostname: input.hostname,
+        normalizedSlug: input.slug,
+        hostnameFamily: hostnameFamilyForHostname(input.hostname),
+        ownerSystem: 'v2',
+        ownerId: input.id,
+        ownerRef: input.routeId,
+        source: 'v2_create',
+      },
+      now
+    );
+
+    const existingClaim = this.hostnameClaims.get(claim.hostname);
+    if (existingClaim) {
+      if (!['released', 'held'].includes(existingClaim.status)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      if (existingClaim.reuseHoldUntil && existingClaim.reuseHoldUntil > now) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      if (this.findConflictingHostnameClaimSync({ ...claim, excludeHostname: claim.hostname })) {
+        throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      }
+      this.hostnameClaims.set(claim.hostname, { ...claim, id: existingClaim.id, createdAt: existingClaim.createdAt });
+    } else {
+      if (this.findConflictingHostnameClaimSync(claim)) throw new Error('HOSTNAME_CLAIM_CONFLICT');
+      this.hostnameClaims.set(claim.hostname, claim);
+    }
 
     this.sites.set(site.id, site);
     this.siteSlugIndex.set(slugKey, site.id);
@@ -111,8 +142,73 @@ class TestPagesStore {
     return cloneRecord(site);
   }
 
+  async getHostnameClaim(hostname) {
+    return cloneRecord(this.hostnameClaims.get(String(hostname || '').toLowerCase()) || null);
+  }
+
+  async findConflictingHostnameClaim(input) {
+    return cloneRecord(this.findConflictingHostnameClaimSync(input));
+  }
+
+  async acquireHostnameClaim(input) {
+    const now = input.acquiredAt || this.now();
+    const claim = createHostnameClaim(input, now);
+    const existing = this.hostnameClaims.get(claim.hostname);
+    if (existing) {
+      if (existing.status === 'released' || existing.status === 'held') {
+        if (existing.reuseHoldUntil && existing.reuseHoldUntil > now) {
+          return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: cloneRecord(existing) };
+        }
+        const conflicting = this.findConflictingHostnameClaimSync({ ...claim, excludeHostname: claim.hostname });
+        if (conflicting) return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: cloneRecord(conflicting) };
+        const revived = { ...claim, id: existing.id, createdAt: existing.createdAt };
+        this.hostnameClaims.set(claim.hostname, revived);
+        return { ok: true, claim: cloneRecord(revived) };
+      }
+      if (hostnameClaimOwnerMatches(existing, claim) && existing.status !== 'conflicted') {
+        return { ok: true, claim: cloneRecord(existing) };
+      }
+      return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: cloneRecord(existing) };
+    }
+    const existingOwnerClaim = this.findHostnameClaimForOwnerSync(claim);
+    if (existingOwnerClaim) {
+      if (existingOwnerClaim.hostname === claim.hostname) return { ok: true, claim: cloneRecord(existingOwnerClaim) };
+      return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: cloneRecord(existingOwnerClaim) };
+    }
+    const conflicting = this.findConflictingHostnameClaimSync(claim);
+    if (conflicting) return { ok: false, code: 'HOSTNAME_CLAIM_CONFLICT', claim: cloneRecord(conflicting) };
+    this.hostnameClaims.set(claim.hostname, claim);
+    return { ok: true, claim: cloneRecord(claim) };
+  }
+
+  async confirmHostnameClaim(input) {
+    const claim = this.hostnameClaims.get(String(input.hostname || '').toLowerCase());
+    if (!claim || !hostnameClaimOwnerMatches(claim, input) || !['pending', 'active'].includes(claim.status)) {
+      return { ok: false, code: 'HOSTNAME_CLAIM_NOT_FOUND' };
+    }
+    claim.status = 'active';
+    claim.leaseExpiresAt = null;
+    claim.updatedAt = input.confirmedAt || this.now();
+    return { ok: true, claim: cloneRecord(claim) };
+  }
+
+  async releaseHostnameClaim(input) {
+    const claim = this.hostnameClaims.get(String(input.hostname || '').toLowerCase());
+    const allowedStatuses = input.reuseHoldUntil ? ['pending', 'active', 'held'] : ['pending'];
+    if (!claim || !hostnameClaimOwnerMatches(claim, input) || !allowedStatuses.includes(claim.status)) {
+      return { ok: false, code: 'HOSTNAME_CLAIM_NOT_FOUND' };
+    }
+    claim.status = input.reuseHoldUntil ? 'held' : 'released';
+    claim.releasedAt = input.releasedAt || this.now();
+    claim.reuseHoldUntil = input.reuseHoldUntil || null;
+    claim.releaseReason = input.releaseReason || null;
+    claim.updatedAt = claim.releasedAt;
+    return { ok: true, claim: cloneRecord(claim) };
+  }
+
   async findSiteBySlug(environment, slug) {
-    return this.getSite(this.siteSlugIndex.get(`${environment}:${slug}`));
+    const site = await this.getSite(this.siteSlugIndex.get(`${environment}:${slug}`));
+    return site?.deletedAt ? null : site;
   }
 
   async getSite(id) {
@@ -133,6 +229,7 @@ class TestPagesStore {
       [...siteIds]
         .map((siteId) => this.siteWithRoute(siteId))
         .filter(Boolean)
+        .filter((site) => !site.deletedAt)
         .filter((site) => !environment || site.environment === environment)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     );
@@ -143,12 +240,26 @@ class TestPagesStore {
     const members = this.siteMembers.get(siteId) || [];
     if (actor.type !== 'access_key' && !members.some((member) => member.userId === userId)) return null;
     const site = this.siteWithRoute(siteId);
+    if (site?.deletedAt) return null;
     if (environment && site?.environment !== environment) return null;
     return cloneRecord(site);
   }
 
   async listSiteMembers(siteId) {
     return cloneRecord(this.siteMembers.get(siteId) || []);
+  }
+
+  async addSiteMember(input) {
+    const members = this.siteMembers.get(input.siteId) || [];
+    members.push({
+      siteId: input.siteId,
+      userId: input.userId,
+      role: input.role,
+      createdBy: input.createdBy,
+      createdAt: input.createdAt || this.now(),
+    });
+    this.siteMembers.set(input.siteId, members);
+    return cloneRecord(members.at(-1));
   }
 
   async listSiteAclEntries(siteId) {
@@ -174,6 +285,43 @@ class TestPagesStore {
     route.cacheTier = cacheTierForVisibility(visibility);
     route.updatedAt = updatedAt || this.now();
     return cloneRecord(route);
+  }
+
+  async deleteSite(siteId, { deletedAt, reuseHoldUntil, releaseReason = 'site_deleted' } = {}, environment) {
+    const site = this.sites.get(siteId);
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!site || site.deletedAt || !route) return null;
+    if (environment && site.environment !== environment) return null;
+
+    const now = deletedAt || this.now();
+    site.deletedAt = now;
+    site.updatedAt = now;
+    this.siteSlugIndex.delete(`${site.environment}:${site.slug}`);
+    route.routeStatus = 'deleted';
+    route.runtime = 'disabled';
+    route.activeVersionId = null;
+    route.workerName = null;
+    route.dispatchType = null;
+    route.dispatchBindingName = null;
+    route.slotId = null;
+    route.routeGeneration += 1;
+    route.updatedAt = now;
+
+    const claim = this.hostnameClaims.get(route.hostname);
+    if (
+      claim &&
+      claim.ownerSystem === 'v2' &&
+      claim.ownerId === site.id &&
+      ['pending', 'active', 'held'].includes(claim.status)
+    ) {
+      claim.status = 'held';
+      claim.releasedAt = now;
+      claim.reuseHoldUntil = reuseHoldUntil || null;
+      claim.releaseReason = releaseReason;
+      claim.updatedAt = now;
+    }
+
+    return cloneRecord(site);
   }
 
   async restoreSiteVisibility(siteId, previousSite, previousRoute, environment) {
@@ -586,6 +734,30 @@ class TestPagesStore {
     }
     return false;
   }
+
+  findConflictingHostnameClaimSync(input) {
+    const now = input.now || this.now();
+    for (const claim of this.hostnameClaims.values()) {
+      if (claim.environment !== input.environment) continue;
+      if (claim.normalizedSlug !== input.normalizedSlug) continue;
+      if (!isBlockingHostnameClaim(claim, now)) continue;
+      if (input.excludeHostname && claim.hostname === input.excludeHostname) continue;
+      return claim;
+    }
+    return null;
+  }
+
+  findHostnameClaimForOwnerSync(input) {
+    const now = input.now || this.now();
+    for (const claim of this.hostnameClaims.values()) {
+      if (claim.environment !== input.environment) continue;
+      if (claim.normalizedSlug !== input.normalizedSlug) continue;
+      if (claim.ownerSystem !== input.ownerSystem || claim.ownerId !== input.ownerId) continue;
+      if (!isBlockingHostnameClaim(claim, now)) continue;
+      return claim;
+    }
+    return null;
+  }
 }
 
 function resolveSsoEmployeeStatus(existingStatus, incomingStatus) {
@@ -612,6 +784,16 @@ function routesMatch(actual, expected) {
     actual.routeGeneration === expected.routeGeneration &&
     actual.routeStatus === expected.routeStatus
   );
+}
+
+function hostnameClaimOwnerMatches(existing, input) {
+  return existing.ownerSystem === input.ownerSystem && existing.ownerId === input.ownerId;
+}
+
+function isBlockingHostnameClaim(claim, now) {
+  if (['pending', 'active', 'conflicted'].includes(claim.status)) return true;
+  if (claim.status !== 'held') return false;
+  return !claim.reuseHoldUntil || claim.reuseHoldUntil > now;
 }
 
 function siteAclEntryKey(entry) {
