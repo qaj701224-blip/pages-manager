@@ -322,6 +322,44 @@ test('hostname claim rejects slug conflicts even when hostname differs', async (
   assert.equal(result.claim.ownerSystem, 'v1');
 });
 
+test('hostname claim allows legacy v1/v2 same-owner coexistence and blocks third owners', async () => {
+  const store = createSeededStore();
+  const v1 = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.workers.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'workers',
+    ownerSystem: 'v1',
+    ownerId: 'owner_a',
+    source: 'v1_deploy',
+  });
+  const v2 = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'owner_a',
+    source: 'v2_create',
+  });
+  const third = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal-preview.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'owner_b',
+    source: 'v2_create',
+  });
+
+  assert.equal(v1.ok, true);
+  assert.equal(v2.ok, true);
+  assert.equal((await store.getHostnameClaim('portal.workers.xd.team')).ownerSystem, 'v1');
+  assert.equal((await store.getHostnameClaim('portal.pages.xd.team')).ownerSystem, 'v2');
+  assert.equal(third.ok, false);
+  assert.equal(third.code, 'HOSTNAME_CLAIM_CONFLICT');
+});
+
 test('hostname claim releases a slug group after all delete holds expire', async () => {
   const now = '2026-06-15T00:06:00.000Z';
   const store = createSeededStore({ now: () => now });
@@ -1006,6 +1044,147 @@ test('D1 store createSite revives an expired held hostname claim', async () => {
   ]);
 });
 
+test('D1 store acquireHostnameClaim rejects a same-slug claim inserted before the final insert', async () => {
+  const db = fakeCreateSiteD1Db({
+    beforeInsertHostnameClaim(state) {
+      state.claims.set(
+        'portal.workers.xd.team',
+        hostnameClaimRow({
+          id: 'claim_v1_portal',
+          environment: 'production',
+          hostname: 'portal.workers.xd.team',
+          normalizedSlug: 'portal',
+          hostnameFamily: 'workers',
+          ownerSystem: 'v1',
+          ownerId: 'v1:production:portal',
+          ownerRef: 'pages-portal',
+          source: 'v1_deploy',
+        })
+      );
+    },
+  });
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const result = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'site_portal',
+    ownerRef: 'route_portal',
+    source: 'v2_create',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HOSTNAME_CLAIM_CONFLICT');
+  assert.equal(result.claim.ownerSystem, 'v1');
+  assert.equal(await store.getHostnameClaim('portal.pages.xd.team'), null);
+});
+
+test('D1 store acquireHostnameClaim allows legacy v1/v2 same-owner coexistence', async () => {
+  const db = fakeCreateSiteD1Db({
+    claims: [
+      hostnameClaimRow({
+        id: 'claim_v1_portal',
+        environment: 'production',
+        hostname: 'portal.workers.xd.team',
+        normalizedSlug: 'portal',
+        hostnameFamily: 'workers',
+        ownerSystem: 'v1',
+        ownerId: 'owner_a',
+        ownerRef: 'pages-portal',
+        source: 'v1_deploy',
+      }),
+    ],
+  });
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const result = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'owner_a',
+    ownerRef: 'route_portal',
+    source: 'v2_create',
+  });
+  const third = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal-preview.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'owner_b',
+    ownerRef: 'route_portal_preview',
+    source: 'v2_create',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal((await store.getHostnameClaim('portal.pages.xd.team')).ownerSystem, 'v2');
+  assert.equal(third.ok, false);
+  assert.equal(third.code, 'HOSTNAME_CLAIM_CONFLICT');
+});
+
+test('D1 store acquireHostnameClaim rejects an expired held reacquire when another same-slug claim appears', async () => {
+  const db = fakeCreateSiteD1Db({
+    claims: [
+      hostnameClaimRow({
+        id: 'claim_route_old',
+        environment: 'production',
+        hostname: 'portal.pages.xd.team',
+        normalizedSlug: 'portal',
+        hostnameFamily: 'pages',
+        ownerSystem: 'v2',
+        ownerId: 'site_old',
+        ownerRef: 'route_old',
+        status: 'held',
+        source: 'v2_delete',
+        acquiredAt: '2026-06-15T00:00:00.000Z',
+        releasedAt: '2026-06-15T00:01:00.000Z',
+        reuseHoldUntil: '2026-06-15T00:05:00.000Z',
+        releaseReason: 'site_deleted',
+      }),
+    ],
+    beforeUpdateHostnameClaim(state) {
+      state.claims.set(
+        'portal.workers.xd.team',
+        hostnameClaimRow({
+          id: 'claim_v1_portal',
+          environment: 'production',
+          hostname: 'portal.workers.xd.team',
+          normalizedSlug: 'portal',
+          hostnameFamily: 'workers',
+          ownerSystem: 'v1',
+          ownerId: 'v1:production:portal',
+          ownerRef: 'pages-portal',
+          source: 'v1_deploy',
+        })
+      );
+    },
+  });
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:06:00.000Z' });
+
+  const result = await store.acquireHostnameClaim({
+    environment: 'production',
+    hostname: 'portal.pages.xd.team',
+    normalizedSlug: 'portal',
+    hostnameFamily: 'pages',
+    ownerSystem: 'v2',
+    ownerId: 'site_new',
+    ownerRef: 'route_new',
+    source: 'v2_create',
+  });
+  const oldClaim = await store.getHostnameClaim('portal.pages.xd.team');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HOSTNAME_CLAIM_CONFLICT');
+  assert.equal(oldClaim.ownerId, 'site_old');
+  assert.equal(oldClaim.status, 'held');
+  assert.equal((await store.getHostnameClaim('portal.workers.xd.team')).ownerSystem, 'v1');
+});
+
 function createSeededStore(options = {}) {
   const store = createTestPagesStore({
     now: options.now || (() => '2026-06-15T00:00:00.000Z'),
@@ -1019,7 +1198,7 @@ function createSeededStore(options = {}) {
   return store;
 }
 
-function fakeCreateSiteD1Db({ claims = [], beforeBatch } = {}) {
+function fakeCreateSiteD1Db({ claims = [], beforeBatch, beforeInsertHostnameClaim, beforeUpdateHostnameClaim } = {}) {
   const state = {
     sites: new Map(),
     routes: new Map(),
@@ -1027,6 +1206,8 @@ function fakeCreateSiteD1Db({ claims = [], beforeBatch } = {}) {
     claims: new Map(claims.map((claim) => [claim.hostname, claim])),
   };
   let beforeBatchRan = false;
+  let beforeInsertHostnameClaimRan = false;
+  let beforeUpdateHostnameClaimRan = false;
   const db = {
     state,
     prepare(sql) {
@@ -1035,7 +1216,23 @@ function fakeCreateSiteD1Db({ claims = [], beforeBatch } = {}) {
           return {
             first: () => fakeCreateSiteFirst(state, sql, args),
             all: () => fakeCreateSiteAll(state, sql, args),
-            run: () => fakeCreateSiteRun(state, sql, args),
+            run: () =>
+              fakeCreateSiteRun(state, sql, args, {
+                beforeInsertHostnameClaim:
+                  beforeInsertHostnameClaim && !beforeInsertHostnameClaimRan
+                    ? () => {
+                        beforeInsertHostnameClaimRan = true;
+                        beforeInsertHostnameClaim(state);
+                      }
+                    : null,
+                beforeUpdateHostnameClaim:
+                  beforeUpdateHostnameClaim && !beforeUpdateHostnameClaimRan
+                    ? () => {
+                        beforeUpdateHostnameClaimRan = true;
+                        beforeUpdateHostnameClaim(state);
+                      }
+                    : null,
+              }),
           };
         },
       };
@@ -1068,8 +1265,21 @@ async function fakeCreateSiteFirst(state, sql, args) {
   }
   if (/SELECT \* FROM sites WHERE id = \?/.test(sql)) return state.sites.get(args[0]) || null;
   if (/SELECT \* FROM hostname_claims WHERE hostname = \?/.test(sql)) return state.claims.get(args[0]) || null;
+  if (/WHERE environment = \? AND normalized_slug = \? AND owner_system = \? AND owner_id = \?/.test(sql)) {
+    const [environment, normalizedSlug, ownerSystem, ownerId, now] = args;
+    return (
+      [...state.claims.values()].find(
+        (claim) =>
+          claim.environment === environment &&
+          claim.normalized_slug === normalizedSlug &&
+          claim.owner_system === ownerSystem &&
+          claim.owner_id === ownerId &&
+          isBlockingCreateSiteClaim(claim, now)
+      ) || null
+    );
+  }
   if (/SELECT \* FROM hostname_claims\s+WHERE environment = \?/.test(sql)) {
-    const [environment, normalizedSlug, now, excludeHostname, ownerSystem, ownerId] = args;
+    const [environment, normalizedSlug, now, excludeHostname, ownerSystem, ownerId, , , , hostnameFamily] = args;
     return (
       [...state.claims.values()].find(
         (claim) =>
@@ -1077,7 +1287,12 @@ async function fakeCreateSiteFirst(state, sql, args) {
           claim.normalized_slug === normalizedSlug &&
           isBlockingCreateSiteClaim(claim, now) &&
           claim.hostname !== excludeHostname &&
-          !(claim.owner_system === ownerSystem && claim.owner_id === ownerId)
+          !(claim.owner_system === ownerSystem && claim.owner_id === ownerId) &&
+          !hostnameClaimRowsCanLegacyCoexist(claim, {
+            owner_system: ownerSystem,
+            owner_id: ownerId,
+            hostname_family: hostnameFamily,
+          })
       ) || null
     );
   }
@@ -1099,7 +1314,7 @@ async function fakeCreateSiteAll(state, sql, args) {
   throw new Error(`Unhandled all SQL: ${sql}`);
 }
 
-async function fakeCreateSiteRun(state, sql, args) {
+async function fakeCreateSiteRun(state, sql, args, hooks = {}) {
   if (/INSERT INTO hostname_claims \(id, environment\)/.test(sql)) {
     const [, hostname, ownerSystem, ownerId, status] = args;
     const claim = state.claims.get(hostname);
@@ -1108,8 +1323,14 @@ async function fakeCreateSiteRun(state, sql, args) {
     }
     throw new Error('constraint failed: hostname_claims.environment');
   }
-  if (/UPDATE hostname_claims\s+SET environment = \?/.test(sql)) return updateCreateSiteHostnameClaim(state, args);
-  if (/INSERT INTO hostname_claims/.test(sql)) return insertCreateSiteHostnameClaim(state, args);
+  if (/UPDATE hostname_claims\s+SET environment = \?/.test(sql)) {
+    if (hooks.beforeUpdateHostnameClaim) hooks.beforeUpdateHostnameClaim();
+    return updateCreateSiteHostnameClaim(state, args);
+  }
+  if (/INSERT INTO hostname_claims/.test(sql)) {
+    if (hooks.beforeInsertHostnameClaim) hooks.beforeInsertHostnameClaim();
+    return insertCreateSiteHostnameClaim(state, args);
+  }
   if (/INSERT INTO sites/.test(sql)) return insertCreateSiteSite(state, args);
   if (/INSERT INTO site_routes/.test(sql)) return insertCreateSiteRoute(state, args);
   if (/INSERT INTO site_members/.test(sql)) return insertCreateSiteMember(state, args);
@@ -1150,7 +1371,8 @@ function updateCreateSiteHostnameClaim(state, args) {
       conflictNow,
       excludeHostname,
       conflictOwnerSystem,
-      conflictOwnerId
+      conflictOwnerId,
+      hostnameFamily
     )
   ) {
     return { meta: { changes: 0 } };
@@ -1209,7 +1431,8 @@ function insertCreateSiteHostnameClaim(state, args) {
       conflictNow,
       excludeHostname,
       conflictOwnerSystem,
-      conflictOwnerId
+      conflictOwnerId,
+      hostnameFamily
     )
   ) {
     return { meta: { changes: 0 } };
@@ -1325,14 +1548,28 @@ function insertCreateSiteMember(state, args) {
   return { meta: { changes: 1 } };
 }
 
-function hasBlockingCreateSiteClaim(state, environment, normalizedSlug, now, excludeHostname, ownerSystem, ownerId) {
+function hasBlockingCreateSiteClaim(
+  state,
+  environment,
+  normalizedSlug,
+  now,
+  excludeHostname,
+  ownerSystem,
+  ownerId,
+  hostnameFamily
+) {
   return [...state.claims.values()].some(
     (claim) =>
       claim.environment === environment &&
       claim.normalized_slug === normalizedSlug &&
       isBlockingCreateSiteClaim(claim, now) &&
       claim.hostname !== excludeHostname &&
-      !(claim.owner_system === ownerSystem && claim.owner_id === ownerId)
+      !(claim.owner_system === ownerSystem && claim.owner_id === ownerId) &&
+      !hostnameClaimRowsCanLegacyCoexist(claim, {
+        owner_system: ownerSystem,
+        owner_id: ownerId,
+        hostname_family: hostnameFamily,
+      })
   );
 }
 
@@ -1340,6 +1577,18 @@ function isBlockingCreateSiteClaim(claim, now) {
   if (['pending', 'active', 'conflicted'].includes(claim.status)) return true;
   if (claim.status !== 'held') return false;
   return !claim.reuse_hold_until || claim.reuse_hold_until > now;
+}
+
+function hostnameClaimRowsCanLegacyCoexist(existing, input) {
+  return (
+    existing.owner_id === input.owner_id &&
+    existing.owner_system !== input.owner_system &&
+    ['v1', 'v2'].includes(existing.owner_system) &&
+    ['v1', 'v2'].includes(input.owner_system) &&
+    existing.hostname_family !== input.hostname_family &&
+    ['workers', 'pages'].includes(existing.hostname_family) &&
+    ['workers', 'pages'].includes(input.hostname_family)
+  );
 }
 
 function cloneCreateSiteD1State(state) {

@@ -6,6 +6,7 @@ import {
   createOwnerMember,
   deploymentIdempotencyScope,
   hostnameFamilyForHostname,
+  hostnameClaimsCanLegacyCoexist,
 } from './store.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString() } = {}) {
@@ -743,6 +744,7 @@ class TestPagesStore {
       if (!isBlockingHostnameClaim(claim, now)) continue;
       if (input.excludeHostname && claim.hostname === input.excludeHostname) continue;
       if (hostnameClaimOwnerMatches(claim, input)) continue;
+      if (hostnameClaimsCanLegacyCoexist(claim, input)) continue;
       return claim;
     }
     return null;
