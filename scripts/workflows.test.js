@@ -470,7 +470,7 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
   assert.doesNotMatch(combined, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ vars\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
 });
 
-test('hostname claims conflict check is manual, read-only, and gates v1/v2 rollout data', () => {
+test('hostname claims conflict check is manual, read-only by default, and can apply verified backfill', () => {
   const workflow = readWorkflow(hostnameClaimsConflictWorkflow);
   const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
 
@@ -480,6 +480,8 @@ test('hostname claims conflict check is manual, read-only, and gates v1/v2 rollo
   assert.match(workflow, /environment:\n(?: {8}.+\n)* {8}type: choice/);
   assert.match(workflow, /- production/);
   assert.match(workflow, /- staging/);
+  assert.match(workflow, /apply:\n(?: {8}.+\n)* {8}type: boolean/);
+  assert.match(workflow, /apply:\n(?: {8}.+\n)* {8}default: false/);
   assert.match(workflow, /permissions:\n {2}contents: read/);
   assert.match(workflow, /pnpm --dir apps\/server exec wrangler kv key list/);
   assert.match(workflow, /'--dir', 'apps\/server', 'exec', 'wrangler', 'kv', 'key', 'get'/);
@@ -487,8 +489,26 @@ test('hostname claims conflict check is manual, read-only, and gates v1/v2 rollo
   assert.match(workflow, /scripts\/hostname-claims-backfill\.mjs/);
   assert.match(workflow, /--v1-sites \.hostname-claims\/v1-sites\.sanitized\.json/);
   assert.match(workflow, /--v2-routes \.hostname-claims\/v2-routes\.json/);
+  assert.match(workflow, /if: \$\{\{ inputs\.apply \}\}/);
+  assert.match(workflow, /claims_sql="\$PWD\/\.hostname-claims\/out\/claims\.sql"/);
+  assert.match(workflow, /pnpm --dir apps\/pages-api exec wrangler d1 execute "\$d1_name" --remote --file "\$claims_sql" --yes/);
+  assert.ok(
+    workflow.indexOf('node scripts/hostname-claims-backfill.mjs') <
+      workflow.indexOf('pnpm --dir apps/pages-api exec wrangler d1 execute "$d1_name" --remote --file "$claims_sql"'),
+    'D1 apply happens after conflict check'
+  );
   assert.match(workflow, /actions\/upload-artifact@v6/);
-  assert.doesNotMatch(workflow, /wrangler deploy|wrangler secret put|wrangler d1 execute[\s\S]*INSERT|wrangler d1 execute[\s\S]*UPDATE|kubectl|docker buildx?|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
+  for (const forbidden of [
+    /wrangler deploy/,
+    /wrangler secret put/,
+    /wrangler d1 execute[\s\S]*INSERT/,
+    /wrangler d1 execute[\s\S]*UPDATE/,
+    /kubectl/,
+    /docker buildx?/,
+    /ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/,
+  ]) {
+    assert.doesNotMatch(workflow, forbidden);
+  }
   assert.doesNotMatch(workflow, /CF_API_TOKEN|X-Pages-Token|PAGES_TOKEN|parsed\.token/);
 });
 
