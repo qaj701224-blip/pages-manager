@@ -354,6 +354,50 @@ test('rolls back visibility changes when active route snapshot write fails', asy
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 1);
 });
 
+test('rolls back visibility changes when snapshot write fails after runtime config changes', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const previousRoute = await store.getRouteBySiteId('site_1', 'production');
+
+  const response = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', { visibility: 'disabled' }),
+    testEnv(store, {
+      ROUTE_SNAPSHOTS: {
+        put: async () => {
+          await store.putSiteSecret({
+            id: 'sec_1',
+            environment: 'production',
+            siteId: 'site_1',
+            name: 'API_TOKEN',
+            value: 'changed-during-policy-update',
+            actorId: 'usr_1',
+            updatedAt: '2026-06-15T00:00:02.000Z',
+          });
+          throw new Error('snapshot write failed');
+        },
+      },
+    })
+  );
+  const route = await store.getRouteBySiteId('site_1', 'production');
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await store.getSite('site_1')).defaultVisibility, 'org');
+  assert.equal(route.visibility, 'org');
+  assert.equal(route.policyVersion, previousRoute.policyVersion);
+  assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
+});
+
 test('replaces site ACL with allow-only OR entries and rejects unsupported policy features', async () => {
   const store = await createSeededStore();
   await store.createSite({
@@ -563,6 +607,60 @@ test('rolls back ACL changes when active route snapshot write fails', async () =
     [{ id: 'acl_existing', subjectValue: 'existing@example.com' }]
   );
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 2);
+});
+
+test('rolls back ACL changes when snapshot write fails after runtime config changes', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.replaceSiteAclEntries(
+    'site_1',
+    [{ id: 'acl_existing', subjectType: 'email', subjectValue: 'existing@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  await activateSite(store, site.id, { visibility: 'acl' });
+  const previousRoute = await store.getRouteBySiteId('site_1', 'production');
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      entries: [{ subjectType: 'email', subjectValue: 'new@example.com' }],
+    }),
+    testEnv(store, {
+      ROUTE_SNAPSHOTS: {
+        put: async () => {
+          await store.putSiteSecret({
+            id: 'sec_1',
+            environment: 'production',
+            siteId: 'site_1',
+            name: 'API_TOKEN',
+            value: 'changed-during-acl-update',
+            actorId: 'usr_1',
+            updatedAt: '2026-06-15T00:00:02.000Z',
+          });
+          throw new Error('snapshot write failed');
+        },
+      },
+    })
+  );
+  const route = await store.getRouteBySiteId('site_1', 'production');
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.deepEqual(
+    (await store.listSiteAclEntries('site_1')).map(({ id, subjectValue }) => ({ id, subjectValue })),
+    [{ id: 'acl_existing', subjectValue: 'existing@example.com' }]
+  );
+  assert.equal(route.policyVersion, previousRoute.policyVersion);
+  assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
 });
 
 test('rejects invalid visibility, duplicate slugs, reserved slugs, and invalid slug shape', async () => {

@@ -12,6 +12,8 @@ test('schema defines all v2 authority tables', () => {
     'hostname_claims',
     'hostname_claim_conflicts',
     'site_versions',
+    'site_secrets',
+    'site_vars',
     'worker_slots',
     'deployments',
     'site_members',
@@ -21,7 +23,7 @@ test('schema defines all v2 authority tables', () => {
     'audit_events',
   ];
 
-  assert.equal(SCHEMA_VERSION, 8);
+  assert.equal(SCHEMA_VERSION, 10);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -45,6 +47,14 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /dispatch_binding_name TEXT/);
   assert.match(sql, /deployment_shape TEXT/);
   assert.match(sql, /assets_config_json TEXT/);
+  assert.match(sql, /var_names_json TEXT/);
+  assert.match(sql, /secret_names_json TEXT/);
+  assert.match(sql, /encrypted_value TEXT NOT NULL/);
+  assert.match(sql, /value TEXT NOT NULL/);
+  assert.match(sql, /runtime_config_generation INTEGER NOT NULL DEFAULT 0/);
+  assert.match(sql, /runtime_config_lock_id TEXT/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_secrets_live/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_vars_live/);
   assert.match(sql, /artifact_availability TEXT NOT NULL DEFAULT 'active'/);
   assert.doesNotMatch(sql, /\bartifact_kind\b/);
   assert.match(sql, /user_id TEXT PRIMARY KEY/);

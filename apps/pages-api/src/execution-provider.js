@@ -4,6 +4,7 @@ import {
   kvGatewayServiceBinding,
   normalizeWorkerBundle,
 } from './wfp-provider.js';
+import { runtimeBindingsForProvider } from './runtime-config.js';
 
 const EXECUTION_MODES = new Set(['wfp', 'normal-worker-slot']);
 const DEFAULT_EXECUTION_MODE = 'wfp';
@@ -69,12 +70,18 @@ function createNormalWorkerSlotProvider(env, config, store) {
             assetManifest: input.assetManifest,
             assetFiles: input.assetFiles,
             compatibilityDate: env.WFP_COMPATIBILITY_DATE,
-            bindings: [kvGatewayServiceBinding(config.environment)],
+            bindings: [kvGatewayServiceBinding(config.environment), ...runtimeBindingsForProvider(input.runtimeBindings)],
           });
         }
       } catch (error) {
-        const releaseStatus = error?.code === WORKER_SUBDOMAIN_DISABLE_FAILED ? 'disabled' : 'available';
-        await releaseSlot(store, slot.id, env, releaseStatus);
+        await cleanupAssignedSlotAfterUploadFailure({
+          store,
+          slot,
+          input: { ...input, errorCode: error?.code },
+          env,
+          getClient,
+          injectedProvider,
+        });
         throw error;
       }
 
@@ -87,6 +94,7 @@ function createNormalWorkerSlotProvider(env, config, store) {
         dispatchBindingName: slot.bindingName,
         slotId: slot.id,
         slot,
+        versionId: input.versionId,
       };
     },
 
@@ -96,7 +104,16 @@ function createNormalWorkerSlotProvider(env, config, store) {
     },
 
     async delete(input) {
-      if (input?.slotId) await releaseSlot(store, input.slotId, env);
+      if (input?.slotId) {
+        await cleanupUploadedSlotBeforeReuse({
+          store,
+          input,
+          env,
+          getClient,
+          injectedProvider,
+        });
+        return null;
+      }
       if (injectedProvider?.delete) return injectedProvider.delete(input);
       return null;
     },
@@ -313,7 +330,12 @@ function normalizeAssetPath(value) {
 function assetConfigForDecision(decision) {
   if (!decisionRequiresAssets(decision)) throw new Error('ASSET_UPLOAD_PLAN_INVALID');
   return {
-    not_found_handling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+    not_found_handling:
+      decision.resolvedFallback === 'index'
+        ? 'single-page-application'
+        : decision.resolvedFallback === 'not-found'
+          ? '404-page'
+          : 'none',
     ...(decision.routingMode === 'worker-first' ? { run_worker_first: true } : {}),
   };
 }
@@ -343,6 +365,60 @@ function bytesToBase64(bytes) {
 async function releaseSlot(store, slotId, env, status = 'available') {
   if (typeof store.releaseWorkerSlot === 'function') {
     await store.releaseWorkerSlot(slotId, { status, updatedAt: readNow(env) });
+  }
+}
+
+async function cleanupUploadedSlotBeforeReuse({ store, input, env, getClient, injectedProvider }) {
+  if (!input?.versionId) {
+    await releaseSlot(store, input.slotId, env, 'disabled');
+    return;
+  }
+  await cleanupAssignedSlotAfterUploadFailure({
+    store,
+    slot: input.slot || { id: input.slotId },
+    input,
+    env,
+    getClient,
+    injectedProvider,
+  });
+}
+
+async function cleanupAssignedSlotAfterUploadFailure({ store, slot, input, env, getClient, injectedProvider }) {
+  if (input?.errorCode === WORKER_SUBDOMAIN_DISABLE_FAILED) {
+    await releaseSlot(store, slot.id, env, 'disabled');
+    return;
+  }
+  if (
+    typeof store.markWorkerSlotCleanupPending !== 'function' ||
+    typeof store.releaseCleanupWorkerSlot !== 'function'
+  ) {
+    await releaseSlot(store, slot.id, env, 'disabled');
+    return;
+  }
+  const cleanupSlot = await store.markWorkerSlotCleanupPending(slot.id, {
+    expectedVersionId: input.versionId,
+    updatedAt: readNow(env),
+  });
+  if (!cleanupSlot) {
+    await releaseSlot(store, slot.id, env, 'disabled');
+    return;
+  }
+  try {
+    if (injectedProvider?.cleanupRetainedSlot) {
+      await injectedProvider.cleanupRetainedSlot({ ...input, slot: cleanupSlot });
+    } else {
+      await getClient().putPlaceholderWorker({
+        scriptName: cleanupSlot.workerName,
+        compatibilityDate: env.WFP_COMPATIBILITY_DATE,
+      });
+    }
+    const released = await store.releaseCleanupWorkerSlot(cleanupSlot.id, {
+      expectedVersionId: cleanupSlot.assignedVersionId || input.versionId,
+      updatedAt: readNow(env),
+    });
+    if (!released) await releaseSlot(store, cleanupSlot.id, env, 'disabled');
+  } catch {
+    await releaseSlot(store, cleanupSlot.id, env, 'disabled');
   }
 }
 

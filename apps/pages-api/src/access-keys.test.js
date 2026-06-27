@@ -128,6 +128,43 @@ test('rejects access key creation for inaccessible sites and invalid scopes', as
   assert.equal((await missingSite.json()).error.code, 'SITE_NOT_FOUND');
 });
 
+test('rejects deploy-capable access key creation for non-owner site members', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_viewer',
+    email: 'viewer@example.com',
+    employeeStatus: 'active',
+  });
+  await store.addSiteMember({
+    siteId: 'site_1',
+    userId: 'usr_viewer',
+    role: 'viewer',
+    createdBy: 'usr_1',
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/access-keys', {
+      name: 'viewer-ci',
+      siteId: 'site_1',
+      scopes: ['deploy:site'],
+      expiresAt: '2026-07-15T00:00:00.000Z',
+    }),
+    testEnv(store, {
+      verifyCliToken: async () => ({
+        sub: 'usr_viewer',
+        purpose: 'cli_token',
+        aud: 'pages-cli',
+        env: 'production',
+        jti: 'cli_viewer',
+      }),
+    })
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'ACCESS_KEY_SITE_FORBIDDEN');
+  assert.equal(await store.getAccessKeyById('ak_1'), null);
+});
+
 async function createSeededStore() {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
@@ -151,7 +188,7 @@ async function createSeededStore() {
   return store;
 }
 
-function testEnv(store) {
+function testEnv(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
@@ -169,6 +206,7 @@ function testEnv(store) {
       env: 'production',
       jti: 'cli_1',
     }),
+    ...overrides,
   };
 }
 

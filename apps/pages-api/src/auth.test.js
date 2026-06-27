@@ -9,7 +9,7 @@ const config = {
   environment: 'production',
   apiBaseUrl: 'https://api.pages.xd.team',
   authBaseUrl: 'https://auth.pages.xd.team',
-  siteDomainSuffix: 'workers.xd.team',
+  siteDomainSuffix: 'pages.xd.team',
 };
 
 test('rejects legacy X-Pages-Token before bearer auth', async () => {

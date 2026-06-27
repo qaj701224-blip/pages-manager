@@ -1,6 +1,6 @@
 # pages-manager
 
-`pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 `pages.xd.team` 站点域名下。用户入口是 `xd-cell` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
+`pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把构建产物目录或自定义 Worker 发布到 XD Cell 托管站点。新建站点默认使用 `workers.xd.team` 站点后缀；已存在的 `pages.xd.team` 路由会继续保留。用户入口是 `xd-cell` CLI；平台负责认证、上传、访问策略、路由快照和执行隔离。
 
 v1 位于 `apps/server`，服务 `workers.xd.team` 旧链路。v1 只做 legacy 维护，后续不再作为新能力的设计目标。
 
@@ -32,51 +32,60 @@ xd-cell login
 xd-cell detect ./dist --json
 xd-cell deploy ./dist demo --dry-run --json
 xd-cell deploy ./dist demo --visibility org
+xd-cell deploy --config xd-cell.config.json
+xd-cell secrets put demo API_TOKEN
+xd-cell secrets delete demo API_TOKEN
 xd-cell status demo
 xd-cell open demo
-xd-cell rollback demo <version-id>
 ```
 
-CI 或 AI agent 可以使用发布 token：
+CI 或 AI agent 可以使用一次性 API token；也可以手动设置 `XD_CELL_API_TOKEN`，避免交互登录或在命令里显式传 token：
 
 ```bash
 xd-cell deploy ./dist demo --token <token> --json
+XD_CELL_API_TOKEN=<token> xd-cell deploy ./dist demo --json
 ```
 
 CLI 会自动识别发布目录：
 
 - 普通构建目录直接发布为静态资源。
-- 单入口前端应用会自动使用 `/index.html` 作为未命中回退。
-- 多页面导出、文档站或包含 `404.html` 的目录默认按 404 行为处理。
-- 需要自定义请求逻辑时，通过配置文件指定 Worker 入口。
+- 需要自定义请求逻辑时，可以把 Worker 入口作为 `entry`，并用 `--assets <dir>` 附带静态资源目录。
+- `xd-cell.config.json` 可以保存非敏感发布模板；未传 `--config` 时，只自动读取当前目录的 `xd-cell.config.json`。
+- 静态资源未命中行为通过 `assets.not_found_handling` 配置，不提供单独的 `--fallback` 命令行入口。
+- `vars` 是站点级当前 runtime config，由 Worker deploy 时的 `xd-cell.config.json` 同步；省略 `vars` 会沿用站点当前值，显式 `"vars": {}` 会在下一次 Worker deploy 清空。
+- 站点级 secret 使用 `xd-cell secrets put/delete` 管理；secret value 不进入配置文件、deploy metadata、日志或响应。
+- `vars` 和站点级 secrets 只会注入 Worker 发布；静态资源发布不会携带 runtime bindings。单个 var / secret value 当前限制为 8 KiB，单次 Worker 发布最多 64 个 runtime bindings。
 
 配置文件只保存非敏感发布意图：
 
 ```json
 {
-  "site": "demo",
-  "source": "./dist",
-  "fallback": "auto",
-  "worker": {
-    "entry": "./worker.mjs"
-  }
+  "name": "demo",
+  "main": "./src/index.js",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "API_BASE": "https://api.example.com"
+  },
+  "visibility": "org"
 }
 ```
 
-保存为项目根目录的 `pages.config.json` 后，可以直接运行 `xd-cell deploy`；也可以用 `--config <file>` 显式指定其它配置文件。命令行位置参数和 flag 会覆盖配置文件里的同名发布意图。
-
-`fallback` 可取 `auto`、`index`、`not-found`。普通用户优先使用默认 `auto`；只有需要明确控制深链刷新行为时才显式设置。
+保存为项目根目录的 `xd-cell.config.json` 后，可以直接运行 `xd-cell deploy`；也可以用 `--config <file>` 显式指定其它配置文件。命令行位置参数和 flag 会覆盖配置文件里的同名发布意图。
 
 更多 API 边界见 [docs/api-boundary.md](./docs/api-boundary.md)。文档索引和真相源矩阵见 [docs/README.md](./docs/README.md)。
 
 ## 安全边界
 
-- 发布必须通过 CLI token 或发布 token 强认证。
+- 发布必须通过 CLI token 或 API token 强认证。
 - 除 `/skill.md`、`/readme.md` 外，管理 API 受公司网络 / VPN / 办公网出口 IP allowlist 约束。
 - 子站访问由 router 执行 IP allowlist、visibility、SSO 和 ACL。
 - `internal` 表示公司网络内匿名可访问，不代表互联网公开。
 - `acl` 支持邮箱和完整部门路径授权，部门路径默认包含子部门。
-- 发布 token、CLI token、cookie、SSO code、Cloudflare token 和平台能力不得写入项目文件、日志、README、截图或聊天消息。
+- API token、CLI token、cookie、SSO code、Cloudflare token、secret value 和平台能力不得写入项目文件、日志、README、截图或聊天消息。
+- 站点发布权限是高信任权限：能发布 Worker 代码，也能设置并使用该站点 secrets；只读成员不能创建 deploy-capable access key。
 
 ## 代码目录
 

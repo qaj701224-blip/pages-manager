@@ -31,6 +31,18 @@ const hostnameClaimSlugCoexistenceMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0007_hostname_claim_slug_coexistence.sql'),
   'utf8'
 );
+const runtimeBindingsMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0008_runtime_bindings.sql'),
+  'utf8'
+);
+const runtimeConfigGenerationMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0009_runtime_config_generation.sql'),
+  'utf8'
+);
+const siteVarsMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0010_site_vars.sql'),
+  'utf8'
+);
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -118,6 +130,43 @@ test('deleted route hostname reuse migration keeps only live route hostnames uni
   assert.match(routeDeletedHostnameReuseMigration, /ON site_routes\(hostname\)/);
   assert.match(routeDeletedHostnameReuseMigration, /WHERE route_status != 'deleted'/);
   assert.doesNotMatch(routeDeletedHostnameReuseMigration, /DROP TABLE|DELETE FROM site_routes/i);
+});
+
+test('runtime bindings migration adds site-level secret store without value digests', () => {
+  assert.match(runtimeBindingsMigration, /ALTER TABLE site_versions ADD COLUMN var_names_json TEXT/);
+  assert.match(runtimeBindingsMigration, /ALTER TABLE site_versions ADD COLUMN secret_names_json TEXT/);
+  assert.match(runtimeBindingsMigration, /CREATE TABLE IF NOT EXISTS site_secrets \(/);
+  assert.match(runtimeBindingsMigration, /\benvironment TEXT NOT NULL\b/);
+  assert.match(runtimeBindingsMigration, /\bsite_id TEXT NOT NULL\b/);
+  assert.match(runtimeBindingsMigration, /\bname TEXT NOT NULL\b/);
+  assert.match(runtimeBindingsMigration, /\bencrypted_value TEXT NOT NULL\b/);
+  assert.match(runtimeBindingsMigration, /\brevision INTEGER NOT NULL\b/);
+  assert.match(runtimeBindingsMigration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_secrets_live/);
+  assert.match(runtimeBindingsMigration, /ON site_secrets\(environment, site_id, name\)/);
+  assert.match(runtimeBindingsMigration, /WHERE deleted_at IS NULL/);
+  assert.doesNotMatch(runtimeBindingsMigration, /value_digest|secret_value|plaintext|DROP TABLE|DELETE FROM/i);
+});
+
+test('runtime config generation migration tracks route-level runtime config changes', () => {
+  assert.match(
+    runtimeConfigGenerationMigration,
+    /ALTER TABLE site_routes ADD COLUMN runtime_config_generation INTEGER NOT NULL DEFAULT 0/
+  );
+  assert.match(runtimeConfigGenerationMigration, /ALTER TABLE site_routes ADD COLUMN runtime_config_lock_id TEXT/);
+  assert.doesNotMatch(runtimeConfigGenerationMigration, /DROP TABLE|DELETE FROM site_routes/i);
+});
+
+test('site vars migration adds site-level runtime var store without secret encryption fields', () => {
+  assert.match(siteVarsMigration, /CREATE TABLE IF NOT EXISTS site_vars \(/);
+  assert.match(siteVarsMigration, /\benvironment TEXT NOT NULL\b/);
+  assert.match(siteVarsMigration, /\bsite_id TEXT NOT NULL\b/);
+  assert.match(siteVarsMigration, /\bname TEXT NOT NULL\b/);
+  assert.match(siteVarsMigration, /\bvalue TEXT NOT NULL\b/);
+  assert.match(siteVarsMigration, /\brevision INTEGER NOT NULL\b/);
+  assert.match(siteVarsMigration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_vars_live/);
+  assert.match(siteVarsMigration, /ON site_vars\(environment, site_id, name\)/);
+  assert.match(siteVarsMigration, /WHERE deleted_at IS NULL/);
+  assert.doesNotMatch(siteVarsMigration, /encrypted_value|secret_value|DROP TABLE|DELETE FROM/i);
 });
 
 function tableDefinition(sql, tableName) {

@@ -1,13 +1,16 @@
 export function createPagesStore(env = {}) {
   if (env.PAGES_STORE) return env.PAGES_STORE;
   if (!env.PAGES_METADATA) throw new Error('PAGES_METADATA binding is required');
-  return new D1PagesStore(env.PAGES_METADATA);
+  return new D1PagesStore(env.PAGES_METADATA, {
+    secretEncryptionKey: env.SITE_SECRET_ENCRYPTION_KEY || env.PAGES_SECRET_ENCRYPTION_KEY,
+  });
 }
 
 export class D1PagesStore {
-  constructor(db, { now = () => new Date().toISOString() } = {}) {
+  constructor(db, { now = () => new Date().toISOString(), secretEncryptionKey = null } = {}) {
     this.db = db;
     this.now = now;
+    this.secretEncryptionKey = secretEncryptionKey;
   }
 
   async createUser(input) {
@@ -315,8 +318,8 @@ export class D1PagesStore {
               id, hostname, site_id, environment, runtime, execution_provider, worker_name,
               dispatch_type, dispatch_binding_name, slot_id,
               active_version_id, visibility, policy_version, route_generation,
-              route_status, cache_tier, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              runtime_config_generation, runtime_config_lock_id, route_status, cache_tier, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             route.id,
@@ -333,6 +336,8 @@ export class D1PagesStore {
             route.visibility,
             route.policyVersion,
             route.routeGeneration,
+            route.runtimeConfigGeneration,
+            null,
             route.routeStatus,
             route.cacheTier,
             route.createdAt,
@@ -647,6 +652,33 @@ export class D1PagesStore {
 
   async listSitesForUser(userId, actor = {}, environment) {
     const siteScope = actor.type === 'access_key' && actor.siteId ? actor.siteId : null;
+    if (actor.type === 'access_key') {
+      if (!siteScope) return [];
+      const result = await this.db
+        .prepare(
+          `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
+            site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+            site_routes.execution_provider AS route_execution_provider,
+            site_routes.dispatch_type AS route_dispatch_type,
+            site_routes.dispatch_binding_name AS route_dispatch_binding_name,
+            site_routes.slot_id AS route_slot_id,
+            site_routes.active_version_id AS route_active_version_id,
+            site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+            site_routes.route_generation AS route_route_generation,
+            site_routes.runtime_config_generation AS route_runtime_config_generation,
+            site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
+            site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
+          FROM sites
+          LEFT JOIN site_routes ON site_routes.site_id = sites.id
+          WHERE sites.id = ? AND sites.deleted_at IS NULL
+            ${environment ? 'AND sites.environment = ?' : ''}
+          ORDER BY sites.created_at DESC`
+        )
+        .bind(...(environment ? [siteScope, environment] : [siteScope]))
+        .all();
+      return (result.results || []).map(mapSiteWithJoinedRoute);
+    }
+
     const query = `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
           site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
           site_routes.execution_provider AS route_execution_provider,
@@ -656,6 +688,7 @@ export class D1PagesStore {
           site_routes.active_version_id AS route_active_version_id,
           site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
+          site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
         FROM sites
@@ -663,11 +696,9 @@ export class D1PagesStore {
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
         WHERE site_members.user_id = ? AND sites.deleted_at IS NULL
           ${environment ? 'AND sites.environment = ?' : ''}
-          ${siteScope ? 'AND sites.id = ?' : ''}
         ORDER BY sites.created_at DESC`;
     const binds = [userId];
     if (environment) binds.push(environment);
-    if (siteScope) binds.push(siteScope);
     const result = await this.db
       .prepare(query)
       .bind(...binds)
@@ -677,6 +708,8 @@ export class D1PagesStore {
 
   async getSiteForUser(siteId, userId, actor = {}, environment) {
     if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return null;
+    const accessKeyActor = actor.type === 'access_key';
+    if (accessKeyActor && !actor.siteId) return null;
 
     const row = await this.db
       .prepare(
@@ -689,15 +722,20 @@ export class D1PagesStore {
           site_routes.active_version_id AS route_active_version_id,
           site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
           site_routes.route_generation AS route_route_generation,
+          site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
         FROM sites
-        JOIN site_members ON site_members.site_id = sites.id
+        ${accessKeyActor ? '' : 'JOIN site_members ON site_members.site_id = sites.id'}
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
-        WHERE sites.id = ? AND site_members.user_id = ? AND sites.deleted_at IS NULL` +
+        WHERE sites.id = ?${accessKeyActor ? '' : ' AND site_members.user_id = ?'} AND sites.deleted_at IS NULL` +
           (environment ? ' AND sites.environment = ?' : '')
       )
-      .bind(...(environment ? [siteId, userId, environment] : [siteId, userId]))
+      .bind(
+        ...(environment
+          ? [siteId, ...(accessKeyActor ? [] : [userId]), environment]
+          : [siteId, ...(accessKeyActor ? [] : [userId])])
+      )
       .first();
     return row ? mapSiteWithJoinedRoute(row) : null;
   }
@@ -751,8 +789,9 @@ export class D1PagesStore {
 
   async restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, expectedRoute, environment) {
     if (!previousRoute) return null;
-    if (expectedRoute && !routesMatch(await this.getRouteBySiteId(siteId, environment), expectedRoute)) {
-      return this.getRouteBySiteId(siteId, environment);
+    const currentRoute = await this.getRouteBySiteId(siteId, environment);
+    if (expectedRoute && !routesMatchIgnoringRuntimeConfigGeneration(currentRoute, expectedRoute)) {
+      return currentRoute;
     }
     await this.db
       .prepare(`UPDATE sites SET default_visibility = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
@@ -762,7 +801,7 @@ export class D1PagesStore {
           : [previousSite.defaultVisibility, previousSite.updatedAt, siteId])
       )
       .run();
-    return this.restoreSiteRoute(siteId, previousRoute, environment);
+    return this.restoreSiteRoute(siteId, routeWithLatestRuntimeConfig(previousRoute, currentRoute), environment);
   }
 
   async replaceSiteAclEntries(siteId, entries, { createdBy, updatedAt }, environment) {
@@ -873,7 +912,8 @@ export class D1PagesStore {
 
   async restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, expectedRoute, environment) {
     if (!previousRoute) return [];
-    if (expectedRoute && !routesMatch(await this.getRouteBySiteId(siteId, environment), expectedRoute)) {
+    const currentRoute = await this.getRouteBySiteId(siteId, environment);
+    if (expectedRoute && !routesMatchIgnoringRuntimeConfigGeneration(currentRoute, expectedRoute)) {
       return this.listSiteAclEntries(siteId);
     }
     const statements = [
@@ -904,7 +944,7 @@ export class D1PagesStore {
       );
     }
     await this.db.batch(statements);
-    await this.restoreSiteRoute(siteId, previousRoute, environment);
+    await this.restoreSiteRoute(siteId, routeWithLatestRuntimeConfig(previousRoute, currentRoute), environment);
     return this.listSiteAclEntries(siteId);
   }
 
@@ -931,6 +971,9 @@ export class D1PagesStore {
       workerModulesJson: input.workerModulesJson ?? null,
       assetManifestJson: input.assetManifestJson ?? null,
       canonicalContentHash: input.canonicalContentHash || input.contentHash,
+      varNamesJson: input.varNamesJson ?? null,
+      secretNamesJson: input.secretNamesJson ?? null,
+      runtimeConfigSnapshotJson: input.runtimeConfigSnapshotJson ?? null,
       artifactAvailability: input.artifactAvailability || 'active',
       createdBy: input.createdBy,
       createdAt: now,
@@ -943,8 +986,9 @@ export class D1PagesStore {
           artifact_ref, content_hash, deployment_shape, requested_fallback,
           resolved_fallback, routing_mode, worker_entry, assets_config_json,
           worker_modules_json, asset_manifest_json, canonical_content_hash,
+          var_names_json, secret_names_json, runtime_config_snapshot_json,
           artifact_availability, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -967,12 +1011,638 @@ export class D1PagesStore {
         stringifyJsonColumn(record.workerModulesJson),
         stringifyJsonColumn(record.assetManifestJson),
         record.canonicalContentHash,
+        stringifyJsonColumn(record.varNamesJson),
+        stringifyJsonColumn(record.secretNamesJson),
+        stringifyJsonColumn(record.runtimeConfigSnapshotJson),
         record.artifactAvailability,
         record.createdBy,
         record.createdAt
       )
       .run();
     return cloneRecord(record);
+  }
+
+  async putSiteSecret(input) {
+    const now = input.updatedAt || this.now();
+    const encryptedValue = await encryptSiteSecretValue(input.value, this.secretEncryptionKey);
+    const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
+    const revision = (await this.nextSiteSecretRevision(input.environment, input.siteId, input.name)) + 1;
+    const id = existing?.id || input.id;
+    if (existing) {
+      const results = await this.db.batch([
+        this.db
+          .prepare(
+            `UPDATE site_secrets
+            SET encrypted_value = ?, revision = ?, updated_at = ?
+            WHERE id = ? AND revision = ? AND deleted_at IS NULL`
+          )
+          .bind(encryptedValue, revision, now, existing.id, Number(existing.revision || 0)),
+        this.bumpRuntimeConfigGenerationForPutStatement(input.environment, input.siteId, now, {
+          secretId: id,
+          revision,
+          encryptedValue,
+        }),
+      ]);
+      if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1) {
+        throw new Error('SITE_SECRET_REVISION_CONFLICT');
+      }
+    } else {
+      const results = await this.db.batch([
+        this.siteSecretInsertStatement({
+          id,
+          environment: input.environment,
+          siteId: input.siteId,
+          name: input.name,
+          encryptedValue,
+          revision,
+          createdBy: input.actorId || input.createdBy,
+          createdAt: now,
+          updatedAt: now,
+        }),
+        this.bumpRuntimeConfigGenerationForPutStatement(input.environment, input.siteId, now, {
+          secretId: id,
+          revision,
+          encryptedValue,
+        }),
+      ]);
+      if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1) {
+        throw new Error('SITE_SECRET_REVISION_CONFLICT');
+      }
+    }
+    return {
+      id,
+      environment: input.environment,
+      siteId: input.siteId,
+      name: input.name,
+      value: input.value,
+      revision,
+      createdBy: input.actorId || input.createdBy,
+      createdAt: existing?.created_at || now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+  }
+
+  async putSiteSecretWithAudit(input) {
+    const now = input.updatedAt || this.now();
+    const encryptedValue = await encryptSiteSecretValue(input.value, this.secretEncryptionKey);
+    const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
+    const revision = (await this.nextSiteSecretRevision(input.environment, input.siteId, input.name)) + 1;
+    const id = existing?.id || input.id;
+    const secretStatement = existing
+      ? this.db
+          .prepare(
+            `UPDATE site_secrets
+            SET encrypted_value = ?, revision = ?, updated_at = ?
+            WHERE id = ? AND revision = ? AND deleted_at IS NULL`
+          )
+          .bind(encryptedValue, revision, now, existing.id, Number(existing.revision || 0))
+      : this.siteSecretInsertStatement({
+            id,
+            environment: input.environment,
+            siteId: input.siteId,
+            name: input.name,
+            encryptedValue,
+            revision,
+            createdBy: input.actorId || input.createdBy,
+            createdAt: now,
+            updatedAt: now,
+          });
+    const auditRecord = secretAuditEvent(input, 'site_secret.put', { name: input.name, revision }, now);
+    const auditStatement = this.siteSecretPutAuditEventStatement(auditRecord, {
+      secretId: id,
+      revision,
+      encryptedValue,
+      updatedAt: now,
+    });
+    const results = await this.db.batch([
+      secretStatement,
+      this.bumpRuntimeConfigGenerationForPutStatement(input.environment, input.siteId, now, {
+        secretId: id,
+        revision,
+        encryptedValue,
+      }),
+      auditStatement,
+    ]);
+    if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1 || results?.[2]?.meta?.changes !== 1) {
+      throw new Error('SITE_SECRET_REVISION_CONFLICT');
+    }
+    return {
+      id,
+      environment: input.environment,
+      siteId: input.siteId,
+      name: input.name,
+      value: input.value,
+      revision,
+      createdBy: input.actorId || input.createdBy,
+      createdAt: existing?.created_at || now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+  }
+
+  async getLiveSiteSecretRow(environment, siteId, name) {
+    return this.db
+      .prepare(
+        `SELECT * FROM site_secrets
+        WHERE environment = ? AND site_id = ? AND name = ? AND deleted_at IS NULL`
+      )
+      .bind(environment, siteId, name)
+      .first();
+  }
+
+  async nextSiteSecretRevision(environment, siteId, name) {
+    const row = await this.db
+      .prepare(
+        `SELECT MAX(revision) AS max_revision FROM site_secrets
+        WHERE environment = ? AND site_id = ? AND name = ?`
+      )
+      .bind(environment, siteId, name)
+      .first();
+    return Number(row?.max_revision || 0);
+  }
+
+  siteSecretInsertStatement({ id, environment, siteId, name, encryptedValue, revision, createdBy, createdAt, updatedAt }) {
+    return this.db
+      .prepare(
+        `INSERT INTO site_secrets (
+          id, environment, site_id, name, encrypted_value, revision,
+          created_by, created_at, updated_at, deleted_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL
+        WHERE NOT EXISTS (
+          SELECT 1 FROM site_secrets
+          WHERE environment = ? AND site_id = ? AND name = ? AND deleted_at IS NULL
+        )`
+      )
+      .bind(
+        id,
+        environment,
+        siteId,
+        name,
+        encryptedValue,
+        revision,
+        createdBy,
+        createdAt,
+        updatedAt,
+        environment,
+        siteId,
+        name
+      );
+  }
+
+  bumpRuntimeConfigGenerationForPutStatement(environment, siteId, updatedAt, { secretId, revision, encryptedValue }) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_generation = runtime_config_generation + 1, updated_at = ?
+        WHERE environment = ? AND site_id = ?
+          AND EXISTS (
+            SELECT 1 FROM site_secrets
+            WHERE id = ? AND revision = ? AND encrypted_value = ? AND deleted_at IS NULL
+          )`
+      )
+      .bind(updatedAt, environment, siteId, secretId, revision, encryptedValue);
+  }
+
+  bumpRuntimeConfigGenerationForDeleteStatement(environment, siteId, updatedAt, { secretId, revision, deletedAt }) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_generation = runtime_config_generation + 1, updated_at = ?
+        WHERE environment = ? AND site_id = ?
+          AND EXISTS (
+            SELECT 1 FROM site_secrets
+            WHERE id = ? AND revision = ? AND deleted_at = ?
+          )`
+      )
+      .bind(updatedAt, environment, siteId, secretId, revision, deletedAt);
+  }
+
+  async deleteSiteSecret(environment, siteId, name, { deletedAt } = {}) {
+    const now = deletedAt || this.now();
+    const existing = await this.db
+      .prepare(
+        `SELECT * FROM site_secrets
+        WHERE environment = ? AND site_id = ? AND name = ? AND deleted_at IS NULL`
+      )
+      .bind(environment, siteId, name)
+      .first();
+    if (!existing) return null;
+    const results = await this.db.batch([
+      this.db
+        .prepare('UPDATE site_secrets SET deleted_at = ?, updated_at = ? WHERE id = ? AND revision = ? AND deleted_at IS NULL')
+        .bind(now, now, existing.id, Number(existing.revision || 0)),
+      this.bumpRuntimeConfigGenerationForDeleteStatement(environment, siteId, now, {
+        secretId: existing.id,
+        revision: Number(existing.revision || 0),
+        deletedAt: now,
+      }),
+    ]);
+    if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1) {
+      throw new Error('SITE_SECRET_REVISION_CONFLICT');
+    }
+    return mapSiteSecretMetadata({ ...existing, deleted_at: now, updated_at: now });
+  }
+
+  async deleteSiteSecretWithAudit(input) {
+    const now = input.deletedAt || this.now();
+    const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
+    const secret = existing ? mapSiteSecretMetadata({ ...existing, deleted_at: now, updated_at: now }) : null;
+    if (!existing) {
+      await this.auditEventStatement(secretAuditEvent(input, 'site_secret.delete', { name: input.name }, now)).run();
+      return null;
+    }
+    const auditRecord = secretAuditEvent(input, 'site_secret.delete', secret, now);
+    const results = await this.db.batch([
+      this.db
+        .prepare('UPDATE site_secrets SET deleted_at = ?, updated_at = ? WHERE id = ? AND revision = ? AND deleted_at IS NULL')
+        .bind(now, now, existing.id, Number(existing.revision || 0)),
+      this.bumpRuntimeConfigGenerationForDeleteStatement(input.environment, input.siteId, now, {
+        secretId: existing.id,
+        revision: Number(existing.revision || 0),
+        deletedAt: now,
+      }),
+      this.siteSecretDeleteAuditEventStatement(auditRecord, {
+        secretId: existing.id,
+        revision: Number(existing.revision || 0),
+        deletedAt: now,
+      }),
+    ]);
+    if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1 || results?.[2]?.meta?.changes !== 1) {
+      throw new Error('SITE_SECRET_REVISION_CONFLICT');
+    }
+    return secret;
+  }
+
+  async listEnabledSiteSecrets(environment, siteId) {
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM site_secrets
+        WHERE environment = ? AND site_id = ? AND deleted_at IS NULL
+        ORDER BY name ASC`
+      )
+      .bind(environment, siteId)
+      .all();
+    const secrets = [];
+    for (const row of result.results || []) {
+      secrets.push(await mapSiteSecret(row, this.secretEncryptionKey));
+    }
+    return secrets;
+  }
+
+  async listEnabledSiteVars(environment, siteId) {
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM site_vars
+        WHERE environment = ? AND site_id = ? AND deleted_at IS NULL
+        ORDER BY name ASC`
+      )
+      .bind(environment, siteId)
+      .all();
+    return (result.results || []).map(mapSiteVar);
+  }
+
+  async replaceSiteVars(input) {
+    const now = input.updatedAt || this.now();
+    const vars = input.vars || {};
+    const lockId = input.lockId || randomStoreId('runtime_lock');
+    const lock = await this.acquireRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+    if (lock?.meta?.changes !== 1) throw new Error('SITE_VAR_REVISION_CONFLICT');
+
+    let released = false;
+    try {
+      const routeState = await this.getRuntimeConfigRouteState(input.environment, input.siteId);
+      if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('SITE_VAR_REVISION_CONFLICT');
+      const liveVars = await this.listEnabledSiteVars(input.environment, input.siteId);
+      const liveByName = new Map(liveVars.map((record) => [record.name, record]));
+      const desiredNames = Object.keys(vars).sort();
+      const liveNames = [...liveByName.keys()].sort();
+      const hasChanges =
+        desiredNames.length !== liveNames.length ||
+        desiredNames.some((name) => {
+          const existing = liveByName.get(name);
+          return !existing || existing.value !== vars[name];
+        });
+      if (!hasChanges) {
+        const release = await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+        released = release?.meta?.changes === 1;
+        if (!released) throw new Error('SITE_VAR_REVISION_CONFLICT');
+        return liveVars;
+      }
+
+      const statements = [];
+      for (const name of desiredNames) {
+        const existing = liveByName.get(name);
+        if (existing && existing.value === vars[name]) continue;
+        const revision = (await this.nextSiteVarRevision(input.environment, input.siteId, name)) + 1;
+        if (existing) {
+          this.pushRuntimeChangeStatement(
+            statements,
+            this.db
+              .prepare(
+                `UPDATE site_vars
+                SET value = ?, revision = ?, updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL
+                  AND EXISTS (
+                    SELECT 1 FROM site_routes
+                    WHERE environment = ? AND site_id = ?
+                      AND runtime_config_lock_id = ?
+                  )`
+              )
+              .bind(vars[name], revision, now, existing.id, input.environment, input.siteId, lockId)
+          );
+        } else {
+          const id = input.createId ? input.createId(name) : randomStoreId('var');
+          this.pushRuntimeChangeStatement(
+            statements,
+            this.siteVarInsertStatement({
+              id,
+              environment: input.environment,
+              siteId: input.siteId,
+              name,
+              value: vars[name],
+              revision,
+              createdBy: input.actorId || input.createdBy,
+              createdAt: now,
+              updatedAt: now,
+              lockId,
+            })
+          );
+        }
+      }
+      for (const name of liveNames) {
+        if (desiredNames.includes(name)) continue;
+        const existing = liveByName.get(name);
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.db
+            .prepare(
+              `UPDATE site_vars
+              SET deleted_at = ?, updated_at = ?
+              WHERE id = ? AND deleted_at IS NULL
+                AND EXISTS (
+                  SELECT 1 FROM site_routes
+                  WHERE environment = ? AND site_id = ?
+                    AND runtime_config_lock_id = ?
+                )`
+            )
+            .bind(now, now, existing.id, input.environment, input.siteId, lockId)
+        );
+      }
+      this.pushRuntimeChangeStatement(
+        statements,
+        this.bumpRuntimeConfigGenerationAndReleaseLockStatement(input.environment, input.siteId, now, lockId)
+      );
+
+      await this.db.batch(statements);
+      released = true;
+      return this.listEnabledSiteVars(input.environment, input.siteId);
+    } catch (error) {
+      if (!released) {
+        try {
+          await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+        } catch {
+          // Best effort: the next runtime config operation will fail closed if the lock remains.
+        }
+      }
+      throw error;
+    }
+  }
+
+  async getRuntimeConfigRouteState(environment, siteId) {
+    const row = await this.db
+      .prepare(
+        `SELECT runtime_config_generation, runtime_config_lock_id
+        FROM site_routes
+        WHERE environment = ? AND site_id = ?`
+      )
+      .bind(environment, siteId)
+      .first();
+    return row
+      ? {
+          runtimeConfigGeneration: row.runtime_config_generation || 0,
+          runtimeConfigLockId: row.runtime_config_lock_id || null,
+        }
+      : null;
+  }
+
+  async nextSiteVarRevision(environment, siteId, name) {
+    const row = await this.db
+      .prepare(
+        `SELECT MAX(revision) AS max_revision FROM site_vars
+        WHERE environment = ? AND site_id = ? AND name = ?`
+      )
+      .bind(environment, siteId, name)
+      .first();
+    return Number(row?.max_revision || 0);
+  }
+
+  siteVarInsertStatement({
+    id,
+    environment,
+    siteId,
+    name,
+    value,
+    revision,
+    createdBy,
+    createdAt,
+    updatedAt,
+    lockId,
+  }) {
+    return this.db
+      .prepare(
+        `INSERT INTO site_vars (
+          id, environment, site_id, name, value, revision,
+          created_by, created_at, updated_at, deleted_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL
+        WHERE EXISTS (
+          SELECT 1 FROM site_routes
+          WHERE environment = ? AND site_id = ?
+            AND runtime_config_lock_id = ?
+        )`
+      )
+      .bind(
+        id,
+        environment,
+        siteId,
+        name,
+        value,
+        revision,
+        createdBy,
+        createdAt,
+        updatedAt,
+        environment,
+        siteId,
+        lockId
+      );
+  }
+
+  acquireRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_lock_id = ?, updated_at = ?
+        WHERE environment = ? AND site_id = ? AND runtime_config_lock_id IS NULL`
+      )
+      .bind(lockId, updatedAt, environment, siteId);
+  }
+
+  releaseRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_lock_id = NULL, updated_at = ?
+        WHERE environment = ? AND site_id = ? AND runtime_config_lock_id = ?`
+      )
+      .bind(updatedAt, environment, siteId, lockId);
+  }
+
+  bumpRuntimeConfigGenerationAndReleaseLockStatement(environment, siteId, updatedAt, lockId) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_generation = runtime_config_generation + 1,
+          runtime_config_lock_id = NULL,
+          updated_at = ?
+        WHERE environment = ? AND site_id = ?
+          AND runtime_config_lock_id = ?`
+      )
+      .bind(updatedAt, environment, siteId, lockId);
+  }
+
+  pushRuntimeChangeStatement(statements, statement) {
+    statements.push(statement, this.runtimeChangeGuardStatement());
+  }
+
+  runtimeChangeGuardStatement(errorCode = 'SITE_VAR_REVISION_CONFLICT') {
+    return this.db
+      .prepare(`SELECT json_extract('{"ok":true}', CASE WHEN changes() = 1 THEN '$.ok' ELSE ? END)`)
+      .bind(errorCode);
+  }
+
+  bumpRuntimeConfigGenerationStatement(environment, siteId, updatedAt) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_generation = runtime_config_generation + 1, updated_at = ?
+        WHERE environment = ? AND site_id = ?`
+      )
+      .bind(updatedAt, environment, siteId);
+  }
+
+  async recordAuditEvent(input) {
+    const now = input.createdAt || this.now();
+    const record = {
+      id: input.id,
+      traceId: input.traceId || null,
+      eventType: input.eventType,
+      actorUserId: input.actorUserId || null,
+      actorType: input.actorType,
+      siteId: input.siteId || null,
+      routeId: input.routeId || null,
+      versionId: input.versionId || null,
+      decision: input.decision,
+      statusCode: input.statusCode ?? null,
+      ipHash: input.ipHash || null,
+      userAgentHash: input.userAgentHash || null,
+      metadata: input.metadata || null,
+      createdAt: now,
+    };
+    await this.auditEventStatement(record).run();
+    return cloneRecord(record);
+  }
+
+  auditEventStatement(record) {
+    return this.db
+      .prepare(
+        `INSERT INTO audit_events (
+          id, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
+          decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        record.id,
+        record.traceId,
+        record.eventType,
+        record.actorUserId,
+        record.actorType,
+        record.siteId,
+        record.routeId,
+        record.versionId,
+        record.decision,
+        record.statusCode,
+        record.ipHash,
+        record.userAgentHash,
+        stringifyJsonColumn(record.metadata),
+        record.createdAt
+      );
+  }
+
+  siteSecretPutAuditEventStatement(record, { secretId, revision, encryptedValue, updatedAt }) {
+    return this.db
+      .prepare(
+        `INSERT INTO audit_events (
+          id, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
+          decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM site_secrets
+        WHERE id = ? AND revision = ? AND encrypted_value = ? AND updated_at = ? AND deleted_at IS NULL`
+      )
+      .bind(
+        record.id,
+        record.traceId,
+        record.eventType,
+        record.actorUserId,
+        record.actorType,
+        record.siteId,
+        record.routeId,
+        record.versionId,
+        record.decision,
+        record.statusCode,
+        record.ipHash,
+        record.userAgentHash,
+        stringifyJsonColumn(record.metadata),
+        record.createdAt,
+        secretId,
+        revision,
+        encryptedValue,
+        updatedAt
+      );
+  }
+
+  siteSecretDeleteAuditEventStatement(record, { secretId, revision, deletedAt }) {
+    return this.db
+      .prepare(
+        `INSERT INTO audit_events (
+          id, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
+          decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM site_secrets
+        WHERE id = ? AND revision = ? AND deleted_at = ?`
+      )
+      .bind(
+        record.id,
+        record.traceId,
+        record.eventType,
+        record.actorUserId,
+        record.actorType,
+        record.siteId,
+        record.routeId,
+        record.versionId,
+        record.decision,
+        record.statusCode,
+        record.ipHash,
+        record.userAgentHash,
+        stringifyJsonColumn(record.metadata),
+        record.createdAt,
+        secretId,
+        revision,
+        deletedAt
+      );
   }
 
   async activateSiteVersion(
@@ -992,7 +1662,7 @@ export class D1PagesStore {
     expectedRoute = null
   ) {
     const expectedConditions = expectedRoute
-      ? ' AND route_generation = ? AND policy_version = ? AND active_version_id IS ?'
+      ? ' AND route_generation = ? AND policy_version = ? AND runtime_config_generation = ? AND active_version_id IS ?'
       : '';
     const result = await this.db
       .prepare(
@@ -1018,7 +1688,12 @@ export class D1PagesStore {
               siteId,
               environment,
               ...(expectedRoute
-                ? [expectedRoute.routeGeneration, expectedRoute.policyVersion, expectedRoute.activeVersionId]
+                ? [
+                    expectedRoute.routeGeneration,
+                    expectedRoute.policyVersion,
+                    expectedRoute.runtimeConfigGeneration || 0,
+                    expectedRoute.activeVersionId,
+                  ]
                 : []),
             ]
           : [
@@ -1033,7 +1708,12 @@ export class D1PagesStore {
               updatedAt,
               siteId,
               ...(expectedRoute
-                ? [expectedRoute.routeGeneration, expectedRoute.policyVersion, expectedRoute.activeVersionId]
+                ? [
+                    expectedRoute.routeGeneration,
+                    expectedRoute.policyVersion,
+                    expectedRoute.runtimeConfigGeneration || 0,
+                    expectedRoute.activeVersionId,
+                  ]
                 : []),
             ])
       )
@@ -1050,7 +1730,7 @@ export class D1PagesStore {
         SET active_version_id = ?, worker_name = ?, runtime = ?,
           execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
           visibility = ?, policy_version = ?, route_generation = ?,
-          route_status = ?, cache_tier = ?, updated_at = ?
+          runtime_config_generation = ?, route_status = ?, cache_tier = ?, updated_at = ?
         WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
       )
       .bind(
@@ -1066,6 +1746,7 @@ export class D1PagesStore {
               route.visibility,
               route.policyVersion,
               route.routeGeneration,
+              route.runtimeConfigGeneration || 0,
               route.routeStatus,
               route.cacheTier,
               route.updatedAt,
@@ -1083,6 +1764,7 @@ export class D1PagesStore {
               route.visibility,
               route.policyVersion,
               route.routeGeneration,
+              route.runtimeConfigGeneration || 0,
               route.routeStatus,
               route.cacheTier,
               route.updatedAt,
@@ -1094,10 +1776,15 @@ export class D1PagesStore {
   }
 
   async restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment) {
-    if (!routesMatch(await this.getRouteBySiteId(siteId, environment), expectedRoute)) {
-      return this.getRouteBySiteId(siteId, environment);
+    const currentRoute = await this.getRouteBySiteId(siteId, environment);
+    if (!routesMatchExecutionState(currentRoute, expectedRoute)) {
+      return currentRoute;
     }
-    return this.restoreSiteRoute(siteId, previousRoute, environment);
+    return this.restoreSiteRoute(
+      siteId,
+      routeRestoredAsNewCommit(previousRoute, currentRoute),
+      environment
+    );
   }
 
   async getSiteVersion(id, environment) {
@@ -1490,6 +2177,7 @@ export function createInitialRoute(input, now) {
     visibility: input.defaultVisibility,
     policyVersion: 1,
     routeGeneration: 0,
+    runtimeConfigGeneration: 0,
     routeStatus: 'disabled',
     cacheTier: cacheTierForVisibility(input.defaultVisibility),
     createdAt: now,
@@ -1567,8 +2255,57 @@ function routesMatch(actual, expected) {
     actual.visibility === expected.visibility &&
     actual.policyVersion === expected.policyVersion &&
     actual.routeGeneration === expected.routeGeneration &&
+    (actual.runtimeConfigGeneration || 0) === (expected.runtimeConfigGeneration || 0) &&
     actual.routeStatus === expected.routeStatus
   );
+}
+
+function routesMatchIgnoringRuntimeConfigGeneration(actual, expected) {
+  if (!actual || !expected) return false;
+  return routesMatch(
+    {
+      ...actual,
+      runtimeConfigGeneration: expected.runtimeConfigGeneration || 0,
+    },
+    expected
+  );
+}
+
+function routesMatchExecutionState(actual, expected) {
+  if (!actual || !expected) return false;
+  return (
+    actual.id === expected.id &&
+    actual.activeVersionId === expected.activeVersionId &&
+    actual.workerName === expected.workerName &&
+    actual.runtime === expected.runtime &&
+    actual.executionProvider === expected.executionProvider &&
+    actual.dispatchType === expected.dispatchType &&
+    actual.dispatchBindingName === expected.dispatchBindingName &&
+    actual.slotId === expected.slotId &&
+    actual.routeGeneration === expected.routeGeneration &&
+    actual.routeStatus === expected.routeStatus
+  );
+}
+
+function routeWithLatestRuntimeConfig(route, latestRoute) {
+  if (!route || !latestRoute) return route;
+  return {
+    ...route,
+    runtimeConfigGeneration: latestRoute.runtimeConfigGeneration || 0,
+    updatedAt: latestRoute.updatedAt,
+  };
+}
+
+function routeRestoredAsNewCommit(previousRoute, currentRoute) {
+  return {
+    ...previousRoute,
+    visibility: currentRoute.visibility,
+    policyVersion: currentRoute.policyVersion,
+    cacheTier: currentRoute.cacheTier,
+    routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,
+    runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    updatedAt: currentRoute.updatedAt,
+  };
 }
 
 function siteAclEntryKey(entry) {
@@ -1625,6 +2362,7 @@ function mapSiteWithJoinedRoute(row) {
         visibility: row.route_visibility,
         policyVersion: row.route_policy_version,
         routeGeneration: row.route_route_generation,
+        runtimeConfigGeneration: row.route_runtime_config_generation || 0,
         routeStatus: row.route_route_status,
         cacheTier: row.route_cache_tier,
         createdAt: row.route_created_at,
@@ -1650,6 +2388,7 @@ function mapSiteRoute(row) {
     visibility: row.visibility,
     policyVersion: row.policy_version,
     routeGeneration: row.route_generation,
+    runtimeConfigGeneration: row.runtime_config_generation || 0,
     routeStatus: row.route_status,
     cacheTier: row.cache_tier,
     createdAt: row.created_at,
@@ -1733,9 +2472,127 @@ function mapSiteVersion(row) {
     workerModulesJson: parseJsonColumn(row.worker_modules_json),
     assetManifestJson: parseJsonColumn(row.asset_manifest_json),
     canonicalContentHash: row.canonical_content_hash || row.content_hash,
+    varNamesJson: parseJsonColumn(row.var_names_json),
+    secretNamesJson: parseJsonColumn(row.secret_names_json),
+    runtimeConfigSnapshotJson: parseJsonColumn(row.runtime_config_snapshot_json),
     artifactAvailability: row.artifact_availability || 'active',
     createdBy: row.created_by,
     createdAt: row.created_at,
+  };
+}
+
+async function mapSiteSecret(row, secretEncryptionKey) {
+  return {
+    id: row.id,
+    environment: row.environment,
+    siteId: row.site_id,
+    name: row.name,
+    value: await decryptSiteSecretValue(row.encrypted_value, secretEncryptionKey),
+    revision: Number(row.revision || 0),
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at || null,
+  };
+}
+
+function mapSiteSecretMetadata(row) {
+  return {
+    id: row.id,
+    environment: row.environment,
+    siteId: row.site_id,
+    name: row.name,
+    revision: Number(row.revision || 0),
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at || null,
+  };
+}
+
+function mapSiteVar(row) {
+  return {
+    id: row.id,
+    environment: row.environment,
+    siteId: row.site_id,
+    name: row.name,
+    value: row.value,
+    revision: Number(row.revision || 0),
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at || null,
+  };
+}
+
+function randomStoreId(prefix) {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  if (!bytes.some(Boolean)) throw new Error('STORE_ID_CRYPTO_UNAVAILABLE');
+  return `${prefix}_${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
+async function encryptSiteSecretValue(value, secretEncryptionKey) {
+  if (!secretEncryptionKey) throw new Error('SITE_SECRET_ENCRYPTION_KEY_REQUIRED');
+  const cryptoImpl = globalThis.crypto;
+  if (!cryptoImpl?.subtle || !cryptoImpl.getRandomValues) throw new Error('SITE_SECRET_CRYPTO_UNAVAILABLE');
+  const iv = new Uint8Array(12);
+  cryptoImpl.getRandomValues(iv);
+  const key = await importSiteSecretKey(secretEncryptionKey);
+  const bytes = new globalThis.TextEncoder().encode(value);
+  const encrypted = new Uint8Array(await cryptoImpl.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes));
+  return `v1:${base64UrlEncode(iv)}:${base64UrlEncode(encrypted)}`;
+}
+
+async function decryptSiteSecretValue(value, secretEncryptionKey) {
+  if (!secretEncryptionKey) throw new Error('SITE_SECRET_ENCRYPTION_KEY_REQUIRED');
+  const parts = String(value || '').split(':');
+  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error('SITE_SECRET_CIPHERTEXT_INVALID');
+  const key = await importSiteSecretKey(secretEncryptionKey);
+  const iv = base64UrlDecode(parts[1]);
+  const encrypted = base64UrlDecode(parts[2]);
+  const decrypted = await globalThis.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted);
+  return new TextDecoder().decode(decrypted);
+}
+
+async function importSiteSecretKey(secretEncryptionKey) {
+  const material = new globalThis.TextEncoder().encode(String(secretEncryptionKey));
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', material);
+  return globalThis.crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+function base64UrlEncode(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+function base64UrlDecode(value) {
+  const normalized = String(value || '').replaceAll('-', '+').replaceAll('_', '/');
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function secretAuditEvent(input, eventType, secret, createdAt) {
+  return {
+    id: input.auditId,
+    traceId: null,
+    eventType,
+    actorUserId: input.actorId,
+    actorType: input.actorType,
+    siteId: input.siteId,
+    routeId: input.routeId || null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      siteSlug: input.siteSlug,
+      revision: secret.revision ?? null,
+    },
+    createdAt,
   };
 }
 

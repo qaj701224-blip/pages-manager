@@ -1,18 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { parseArgs } from './args.js';
 import { createApiClient } from './api-client.js';
 import { createUploadPlan, detectPublishTarget } from './artifact.js';
 import { readCommandConfig } from './command-config.js';
-import { FIXED_ENVIRONMENTS, readCliConfig, resolveEnvironment } from './config.js';
+import { FIXED_ENVIRONMENTS, readCliConfig } from './config.js';
 import { loginWithAccessKey, loginWithBrowser } from './login.js';
 import { loadProfile, resolveProfileDir, saveProfile as saveProfileFile } from './profile.js';
 import { createSecretStore } from './secret-store.js';
 
 const VALID_VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
-const USER_ENVIRONMENTS = ['production', 'staging'];
 const HELP_FLAGS = new Set(['help', 'json', 'token', 'accessKey']);
 const VERSION_FLAGS = new Set(['help', 'token', 'accessKey']);
 const LOGIN_FLAGS = new Set(['env', 'token', 'accessKey', 'noOpen', 'json', 'help']);
@@ -20,6 +19,7 @@ const DEPLOY_FLAGS = new Set([
   'env',
   'visibility',
   'fallback',
+  'assets',
   'workerEntry',
   'dryRun',
   'token',
@@ -33,14 +33,12 @@ const DEPLOY_FLAGS = new Set([
 ]);
 const DETECT_FLAGS = new Set(['config', 'fallback', 'workerEntry', 'json', 'help']);
 const API_READ_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
+const SECRETS_FLAGS = new Set(['env', 'token', 'accessKey', 'stdin', 'json', 'help']);
 const SITES_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help', 'details']);
 const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'token', 'accessKey']);
 const STATUS_FLAGS = new Set(['env', 'deployment', 'token', 'accessKey', 'json', 'help']);
-const ROLLBACK_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
 const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'token', 'accessKey']);
 const ACCESS_FLAGS = new Set(['env', 'visibility', 'email', 'department', 'token', 'accessKey', 'json', 'help']);
-const ENV_FLAGS = new Set(['json', 'help', 'token', 'accessKey']);
-const ENV_CUSTOM_FLAGS = new Set(['api', 'auth', 'siteDomainSuffix', 'json', 'help', 'token', 'accessKey']);
 const DEPRECATED_HIDDEN_TOKEN_FLAGS = new Set(['accessKey']);
 
 export async function executeCommand(argv = [], options = {}) {
@@ -77,10 +75,10 @@ export async function executeCommand(argv = [], options = {}) {
       return runDeploy(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'detect':
       return runDetect(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'secrets':
+      return runSecrets(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'status':
       return runStatus(parsed, { ...options, cwd, env, profileDir, profile, output });
-    case 'rollback':
-      return runRollback(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'open':
       return runOpen(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'sites':
@@ -88,8 +86,7 @@ export async function executeCommand(argv = [], options = {}) {
     case 'access':
       return runAccess(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'env':
-      assertTokenNotUsed(parsed);
-      return runEnv(parsed, { ...options, env, profileDir, profile, output });
+      throw unsupportedEnvError();
     default:
       throw new Error(`UNKNOWN_COMMAND:${parsed.command}`);
   }
@@ -204,18 +201,21 @@ async function runAuthLogout(parsed, context) {
 }
 
 async function runDetect(parsed, context) {
+  rejectPublicFallbackFlag(parsed);
   if (parsed.positional.length > 1) {
-    throw usageError('DETECT_USAGE_INVALID', 'detect 参数过多。', '请使用 xd-cell detect <目录>。');
+    throw usageError('DETECT_USAGE_INVALID', 'detect 参数过多。', '请使用 xd-cell detect <entry>。');
   }
-  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: true });
-  const dirInput = parsed.positional[0] || commandConfig?.source || commandConfig?.dir || '.';
-  const requestedFallback = parsed.flags.fallback || commandConfig?.fallback || 'auto';
-  const workerEntry = parsed.flags.workerEntry || commandConfig?.worker?.entry || null;
-  const targetPath = path.resolve(context.cwd, dirInput);
-  const decision = await detectPublishTarget(targetPath, { requestedFallback, workerEntry });
+  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: !parsed.flags.config });
+  const deployConfig = await resolveDeployConfig(parsed, commandConfig, context, { requireSite: false, defaultEntry: '.' });
+  const decision = await detectPublishTarget(deployConfig.targetPath, {
+    requestedFallback: deployConfig.requestedFallback,
+    workerEntry: deployConfig.workerEntry,
+    assetsPath: deployConfig.assetsPath,
+  });
   const payload = preflightEnvelope({
     mode: 'detect',
-    target: { source: dirInput, kind: 'directory', requestedFallback, workerEntry },
+    configPath: deployConfig.configPath,
+    target: deployTargetEnvelope(deployConfig),
     decision,
     checks: {
       localDetectionPassed: true,
@@ -231,39 +231,26 @@ async function runDetect(parsed, context) {
     context.output(JSON.stringify(payload));
     return 0;
   }
-  outputHumanDetection(context.output, dirInput, decision);
+  outputHumanDetection(context.output, deployConfig.entry, decision);
   return 0;
 }
 
 async function runDeploy(parsed, context) {
   rejectRemovedProjectFlags(parsed);
-  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: true });
+  rejectPublicFallbackFlag(parsed);
+  const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: !parsed.flags.config });
   const config = readConfigForCommand(parsed, { ...context, commandConfig });
   if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 xd-cell deploy <目录> <站点名>。');
-
-  const dirInput = parsed.positional[0] || commandConfig?.source || commandConfig?.dir;
-  const siteSlug = normalizeSiteSlug(parsed.positional[1] || commandConfig?.site);
-  if (!dirInput) {
-    throw usageError(
-      'DIR_REQUIRED',
-      '缺少发布目录。',
-      '请使用 xd-cell deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 source。'
-    );
-  }
-  if (!siteSlug) {
-    throw usageError(
-      'SITE_REQUIRED',
-      '缺少站点名。',
-      '请使用 xd-cell deploy <目录> <站点名>，或在 pages.config.json / --config <file> 中提供 site。'
-    );
-  }
-
-  const targetPath = path.resolve(context.cwd, dirInput);
-  const requestedFallback = parsed.flags.fallback || commandConfig?.fallback || 'auto';
-  const workerEntry = parsed.flags.workerEntry || commandConfig?.worker?.entry || null;
+  const deployConfig = await resolveDeployConfig(parsed, commandConfig, context, { requireSite: true });
+  const { siteSlug } = deployConfig;
   outputProgress(parsed, context, '检查发布目录...');
-  const decision = await detectPublishTarget(targetPath, { requestedFallback, workerEntry });
-  const uploadPlan = await createUploadPlan(targetPath, decision);
+  const decision = await detectPublishTarget(deployConfig.targetPath, {
+    requestedFallback: deployConfig.requestedFallback,
+    workerEntry: deployConfig.workerEntry,
+    assetsPath: deployConfig.assetsPath,
+  });
+  const runtime = runtimeConfigForDecision(deployConfig, decision);
+  const uploadPlan = await createUploadPlan(deployConfig.targetPath, decision);
   outputProgress(parsed, context, `检查发布目录完成：${uploadPlan.fileCount} files / ${formatBytes(uploadPlan.sizeBytes)}`);
   outputProgress(parsed, context, `识别结果：${humanDeploymentLabel(decision)}`);
   outputProgress(parsed, context, `找不到文件时：${humanFallbackLabel(decision.resolvedFallback)}`);
@@ -271,7 +258,8 @@ async function runDeploy(parsed, context) {
     const payload = preflightEnvelope({
       mode: 'dry-run',
       site: siteSlug,
-      target: { source: dirInput, kind: 'directory', requestedFallback, workerEntry },
+      configPath: deployConfig.configPath,
+      target: deployTargetEnvelope(deployConfig),
       decision,
       uploadPlan,
       checks: {
@@ -289,12 +277,13 @@ async function runDeploy(parsed, context) {
         filesUploaded: false,
         routeChanged: false,
       },
+      runtime,
     });
     if (parsed.flags.json) {
       context.output(JSON.stringify(payload));
       return 0;
     }
-    outputHumanDryRun(context.output, dirInput, siteSlug, decision, uploadPlan);
+    outputHumanDryRun(context.output, deployConfig.entry, siteSlug, decision, uploadPlan);
     return 0;
   }
 
@@ -308,7 +297,8 @@ async function runDeploy(parsed, context) {
   }
 
   let siteCreated = false;
-  if (credential.type !== 'access_key') {
+  const actorInfo = await readCredentialActor(client, credential);
+  if (actorInfo?.type !== 'access_key') {
     outputProgress(parsed, context, '准备站点...');
     const visibility = requestedVisibility || 'org';
     try {
@@ -323,7 +313,12 @@ async function runDeploy(parsed, context) {
   const deployed = await client.requestApiForm(
     'POST',
     '/.xd-pages/api/deployments',
-    buildPublishPlanDeploymentForm({ siteSlug, uploadPlan }),
+    buildPublishPlanDeploymentForm({
+      siteSlug,
+      uploadPlan,
+      vars: runtime.varsObject,
+      varsProvided: runtime.varsProvided,
+    }),
     { idempotencyKey: nextIdempotencyKey(context) }
   );
 
@@ -335,7 +330,8 @@ async function runDeploy(parsed, context) {
       mode: 'deploy',
       environment: config.environment,
       site: siteSlug,
-      target: { source: dirInput, kind: 'directory', requestedFallback, workerEntry },
+      configPath: deployConfig.configPath,
+      target: deployTargetEnvelope(deployConfig),
       decision: finalDecision,
       uploadPlanSummary: uploadPlanSummary(uploadPlan),
       checks: {
@@ -358,6 +354,7 @@ async function runDeploy(parsed, context) {
         warnings: (decision.diagnostics || []).filter((diagnostic) => diagnostic.severity !== 'error'),
         errors: (decision.diagnostics || []).filter((diagnostic) => diagnostic.severity === 'error'),
       },
+      runtime: runtimeEnvelope(runtime),
       deployment: deployed.deployment || null,
       version: deployed.version || null,
       route: deployed.route || null,
@@ -374,7 +371,7 @@ async function runDeploy(parsed, context) {
   return 0;
 }
 
-function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan }) {
+function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, vars = {}, varsProvided = false }) {
   const form = new FormData();
   const metadata = {
     schemaVersion: 1,
@@ -394,6 +391,7 @@ function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan }) {
     })),
     controlSignals: uploadPlan.controlSignals,
   };
+  if (varsProvided) metadata.vars = vars;
   form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
   for (const file of uploadPlan.assetFiles) {
     form.set(file.partName, new Blob([file.bytes], { type: file.contentType }), file.relativePath);
@@ -404,13 +402,89 @@ function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan }) {
   return form;
 }
 
-function preflightEnvelope({ mode, site, target, decision, uploadPlan, checks, sideEffects }) {
+async function resolveDeployConfig(parsed, commandConfig, context, { requireSite, defaultEntry = null } = {}) {
+  const positionalEntry = parsed.positional[0];
+  const positionalSite = parsed.positional[1];
+  const configDir = commandConfig?.configDir || context.cwd;
+  const configMain = commandConfig?.main || null;
+  const configAssets = commandConfig?.assets?.directory || null;
+  const hasWorkerConfig = Boolean(configMain);
+  const configEntry = configMain || configAssets || defaultEntry;
+  const entry = positionalEntry || configEntry;
+  const siteSlug = normalizeSiteSlug(positionalSite || commandConfig?.name);
+  if (!entry) {
+    throw usageError(
+      'DIR_REQUIRED',
+      '缺少发布入口。',
+      '请使用 xd-cell deploy <entry> <site>，或在 xd-cell.config.json / --config <file> 中配置 main 或 assets.directory。'
+    );
+  }
+  if (requireSite && !siteSlug) {
+    throw usageError(
+      'SITE_REQUIRED',
+      '缺少站点名。',
+      '请使用 xd-cell deploy <entry> <site>，或在 xd-cell.config.json / --config <file> 中配置 name。'
+    );
+  }
+
+  const entryBaseDir = positionalEntry || !commandConfig ? context.cwd : configDir;
+  const targetPath = path.resolve(entryBaseDir, entry);
+  const positionalEntryStats = positionalEntry && configAssets && !parsed.flags.assets ? await stat(targetPath) : null;
+  const positionalEntryIsFile = Boolean(positionalEntryStats?.isFile());
+  const shouldUseConfigAssets = !positionalEntry || positionalEntryIsFile;
+  const cliAssets = parsed.flags.assets || null;
+  const assetsEntry = cliAssets || (shouldUseConfigAssets ? configAssets : null) || null;
+  const assetsBaseDir = cliAssets || !commandConfig ? context.cwd : configDir;
+  const assetsPath = assetsEntry ? path.resolve(assetsBaseDir, assetsEntry) : null;
+  const requestedFallback = commandConfig?.assets?.not_found_handling || 'none';
+  const workerEntry =
+    hasWorkerConfig && !positionalEntry
+      ? entry.replaceAll('\\', '/').replace(/^\.\/+/, '')
+      : positionalEntryIsFile && assetsEntry
+        ? path.basename(targetPath)
+        : null;
+  return {
+    entry,
+    siteSlug,
+    targetPath,
+    assets: assetsEntry,
+    assetsPath,
+    requestedFallback,
+    workerEntry: parsed.flags.workerEntry || workerEntry,
+    vars: commandConfig?.vars || {},
+    varsProvided: Boolean(commandConfig && Object.prototype.hasOwnProperty.call(commandConfig, 'vars')),
+    configPath: commandConfig?.configPath || null,
+  };
+}
+
+function deployTargetEnvelope(deployConfig) {
+  return {
+    source: deployConfig.entry,
+    kind: 'entry',
+    requestedFallback: deployConfig.requestedFallback,
+    workerEntry: deployConfig.workerEntry,
+    ...(deployConfig.assets ? { assets: deployConfig.assets } : {}),
+  };
+}
+
+async function readCredentialActor(client, credential) {
+  if (credential.type !== 'bearer') return credential.type === 'access_key' ? { type: 'access_key' } : { type: 'user' };
+  try {
+    const whoami = await client.requestApi('GET', '/.xd-pages/api/auth/whoami');
+    return whoami?.actor || null;
+  } catch {
+    return null;
+  }
+}
+
+function preflightEnvelope({ mode, site, configPath, target, decision, uploadPlan, checks, sideEffects, runtime = null }) {
   const payload = {
     ok: true,
     schemaVersion: 1,
     type: 'preflight',
     mode,
     ...(site ? { site } : {}),
+    ...(configPath ? { configPath } : {}),
     target,
     decision: decisionSummary(decision),
     checks,
@@ -424,7 +498,30 @@ function preflightEnvelope({ mode, site, target, decision, uploadPlan, checks, s
   if (uploadPlan) {
     payload.uploadPlanSummary = uploadPlanSummary(uploadPlan);
   }
+  if (runtime) payload.runtime = runtimeEnvelope(runtime);
   return payload;
+}
+
+function runtimeConfigForDecision(deployConfig, decision) {
+  const vars = deployConfig.vars || {};
+  const ignoredVars = deployConfig.varsProvided && !decisionRequiresWorker(decision) ? Object.keys(vars).sort() : [];
+  return {
+    varsObject: ignoredVars.length ? {} : vars,
+    vars: ignoredVars.length ? [] : Object.keys(vars).sort(),
+    ignoredVars,
+    varsProvided: deployConfig.varsProvided && decisionRequiresWorker(decision),
+  };
+}
+
+function runtimeEnvelope(runtime) {
+  return {
+    vars: runtime.vars,
+    ...(runtime.ignoredVars.length ? { ignoredVars: runtime.ignoredVars } : {}),
+  };
+}
+
+function decisionRequiresWorker(decision) {
+  return decision?.deploymentShape === 'worker-only' || decision?.deploymentShape === 'worker-with-assets';
 }
 
 function uploadPlanSummary(uploadPlan) {
@@ -481,33 +578,13 @@ async function runStatus(parsed, context) {
   return 0;
 }
 
-async function runRollback(parsed, context) {
-  if (parsed.positional.length !== 2) {
-    throw usageError('ROLLBACK_USAGE_INVALID', 'rollback 参数无效。', '请使用 xd-cell rollback <站点名> <version-id>。');
-  }
-  const [site, versionId] = parsed.positional;
-  const config = readConfigForCommand(parsed, context);
-  const credential = await resolveCredential(config.environment, context, parsed);
-  const client = createClient(config, credential, context);
-  const result = await client.requestApi(
-    'POST',
-    `/.xd-pages/api/versions/${encodeURIComponent(versionId)}/rollback`,
-    { siteSlug: site },
-    {
-      idempotencyKey: nextIdempotencyKey(context),
-    }
-  );
-  if (outputJsonResult(parsed, context, { environment: config.environment, site, ...result })) return 0;
-  context.output(`站点名：${site}`);
-  context.output(`回滚：${result.deployment?.id || 'created'} ${result.deployment?.status || ''}`.trim());
-  return 0;
-}
-
 async function runOpen(parsed, context) {
-  assertTokenNotUsed(parsed);
   const config = readConfigForCommand(parsed, context);
   const site = readSingleSiteArg(parsed, 'OPEN_USAGE_INVALID', '请使用 xd-cell open <站点名>。');
-  const url = siteUrlForSlug(site, config);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
+  const result = await readSiteBySlug(client, site);
+  const url = siteUrlForOpen(result.site, config);
   if (outputJsonResult(parsed, context, { environment: config.environment, site, url })) return 0;
   if (parsed.flags.print) {
     context.output(url);
@@ -643,91 +720,96 @@ async function runAccess(parsed, context) {
   );
 }
 
-async function runEnv(parsed, context) {
-  const subcommand = parsed.positional[0] || 'current';
-  if (subcommand === 'current') {
-    assertNoPositionals({ ...parsed, positional: parsed.positional.slice(1) }, 'ENV_USAGE_INVALID', 'env current 参数无效。');
-    const config = readConfigForCommand(parsed, context);
-    const payload = {
-      activeEnvironment: config.environment,
-      source: readEnvironmentSource(context),
-      apiBaseUrl: config.apiBaseUrl,
-      authBaseUrl: config.authBaseUrl,
-      siteUrlExample: siteUrlExampleForConfig(config),
-    };
-    if (outputJsonResult(parsed, context, payload)) return 0;
-    context.output(`当前环境：${payload.activeEnvironment}`);
-    context.output(`API：${payload.apiBaseUrl}`);
-    context.output(`认证：${payload.authBaseUrl}`);
-    context.output(`站点域名：${siteDomainPatternForConfig(config)}`);
-    context.output(`来源：${displayEnvironmentSource(payload.source)}`);
-    return 0;
-  }
-
-  if (USER_ENVIRONMENTS.includes(subcommand) && parsed.positional.length === 1) {
-    return switchEnvironment(parsed, context, resolveEnvironment(subcommand));
-  }
-
-  if (subcommand === 'list') {
-    if (parsed.positional.length !== 1 && parsed.positional.length !== 0) {
-      throw usageError('ENV_USAGE_INVALID', 'env list 参数无效。', '请使用 xd-cell env list。');
-    }
-    if (outputJsonResult(parsed, context, { environments: USER_ENVIRONMENTS })) return 0;
-    for (const name of USER_ENVIRONMENTS) context.output(name);
-    return 0;
-  }
-
-  if (subcommand === 'use') {
-    if (parsed.positional.length !== 2) {
-      throw usageError('ENV_USAGE_INVALID', 'env use 参数无效。', '请使用 xd-cell env <production|staging>。');
-    }
-    const environment = resolveEnvironment(parsed.positional[1]);
-    if (!USER_ENVIRONMENTS.includes(environment) && environment !== 'custom') {
-      throw usageError('ENVIRONMENT_INVALID', '环境无效。', '请使用 production 或 staging。');
-    }
-    return switchEnvironment(parsed, context, environment);
-  }
-
-  if (subcommand === 'set' && parsed.positional[1] === 'custom') {
-    if (parsed.positional.length !== 2) {
-      throw usageError('ENV_USAGE_INVALID', 'env set custom 参数无效。', '请使用 xd-cell env set custom。');
-    }
-    const custom = readCliConfig(context.env, {
-      environment: 'custom',
-      apiBaseUrl: parsed.flags.api,
-      authBaseUrl: parsed.flags.auth,
-      siteDomainSuffix: parsed.flags.siteDomainSuffix,
-    });
-    await saveProfileFile(context.profileDir, {
-      ...context.profile,
-      activeEnvironment: 'custom',
-      environments: {
-        ...(context.profile.environments || {}),
-        custom,
-      },
-    });
-    if (outputJsonResult(parsed, context, { activeEnvironment: 'custom', custom })) return 0;
-    context.output('已保存 custom 环境。');
-    return 0;
-  }
-
-  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 xd-cell env、xd-cell env list 或 xd-cell env <环境>。');
+async function runSecrets(parsed, context) {
+  const subcommand = parsed.positional[0];
+  if (subcommand === 'put') return runSecretsPut({ ...parsed, positional: parsed.positional.slice(1) }, context);
+  if (subcommand === 'delete') return runSecretsDelete({ ...parsed, positional: parsed.positional.slice(1) }, context);
+  throw usageError(
+    'SECRETS_COMMAND_INVALID',
+    'secrets 命令无效。',
+    '请使用 xd-cell secrets put <site> <name> 或 xd-cell secrets delete <site> <name>。'
+  );
 }
 
-async function switchEnvironment(parsed, context, environment) {
-  if (!USER_ENVIRONMENTS.includes(environment) && environment !== 'custom') {
-    throw usageError('ENVIRONMENT_INVALID', '环境无效。', '请使用 production 或 staging。');
+async function runSecretsPut(parsed, context) {
+  if (parsed.positional.length !== 2) {
+    throw usageError(
+      'SECRETS_PUT_USAGE_INVALID',
+      'secrets put 参数无效。',
+      '请使用 xd-cell secrets put <site> <name>，并通过隐藏输入或 --stdin 提供 value。'
+    );
   }
-  await saveProfileFile(context.profileDir, {
-    ...context.profile,
-    activeEnvironment: environment,
-  });
-  if (outputJsonResult(parsed, context, { activeEnvironment: environment })) return 0;
-  context.output(`当前环境：${environment}`);
+  const site = normalizeSiteSlug(parsed.positional[0]);
+  if (!site) throw usageError('SITE_REQUIRED', '缺少站点名。', '请使用 xd-cell secrets put <site> <name>。');
+  const name = normalizeSecretName(parsed.positional[1]);
+  const value = await readSecretValue(parsed, context);
+  const config = readConfigForCommand(parsed, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
+  await client.requestApi('PUT', `/.xd-pages/api/sites/${encodeURIComponent(site)}/secrets`, { name, value });
+  if (outputJsonResult(parsed, context, {
+    type: 'secret',
+    environment: config.environment,
+    site,
+    name,
+    operation: 'put',
+  })) {
+    return 0;
+  }
+  context.output(`已保存 secret：${site}/${name}`);
   return 0;
 }
 
+async function runSecretsDelete(parsed, context) {
+  if (parsed.positional.length !== 2) {
+    throw usageError('SECRETS_DELETE_USAGE_INVALID', 'secrets delete 参数无效。', '请使用 xd-cell secrets delete <site> <name>。');
+  }
+  const site = normalizeSiteSlug(parsed.positional[0]);
+  if (!site) throw usageError('SITE_REQUIRED', '缺少站点名。', '请使用 xd-cell secrets delete <site> <name>。');
+  const name = normalizeSecretName(parsed.positional[1]);
+  const config = readConfigForCommand(parsed, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
+  await client.requestApi('DELETE', `/.xd-pages/api/sites/${encodeURIComponent(site)}/secrets`, { name });
+  if (outputJsonResult(parsed, context, {
+    type: 'secret',
+    environment: config.environment,
+    site,
+    name,
+    operation: 'delete',
+  })) {
+    return 0;
+  }
+  context.output(`已删除 secret：${site}/${name}`);
+  context.output('该操作只影响后续 Worker 发布；已经物化到当前运行 Worker 的 secret 不会被立即撤销。');
+  return 0;
+}
+
+async function readSecretValue(parsed, context) {
+  if (parsed.flags.stdin) {
+    const text = await readAllStdin(context.stdin);
+    const value = text.replace(/\r?\n$/, '');
+    if (!value) throw usageError('SECRET_VALUE_REQUIRED', '缺少 secret value。', '请通过 stdin 传入非空 secret value。');
+    return value;
+  }
+  if (!context.stdin?.isTTY && !process.stdin.isTTY) {
+    throw usageError('SECRET_STDIN_REQUIRED', '当前环境无法隐藏输入 secret。', '请使用 --stdin 从标准输入传入。');
+  }
+  if (typeof context.readSecret === 'function') return context.readSecret('Secret value: ');
+  throw usageError('SECRET_STDIN_REQUIRED', '当前环境无法隐藏输入 secret。', '请使用 --stdin 从标准输入传入。');
+}
+
+async function readAllStdin(stdin) {
+  if (stdin && typeof stdin.text === 'function') return stdin.text();
+  const stream = stdin || process.stdin;
+  let output = '';
+  for await (const chunk of stream) output += chunk;
+  return output;
+}
+
 function validateCommandUsage(parsed) {
+  if (parsed.command === 'rollback') throw unsupportedRollbackError();
+  if (parsed.command === 'env') throw unsupportedEnvError();
   const allowed = allowedFlagsForCommand(parsed);
   if (allowed) assertOnlyAllowedFlags(parsed, allowed);
   if (parsed.command === 'help' && parsed.positional.length > 1) {
@@ -741,15 +823,14 @@ function allowedFlagsForCommand(parsed) {
   if (parsed.command === 'login') return LOGIN_FLAGS;
   if (parsed.command === 'deploy') return DEPLOY_FLAGS;
   if (parsed.command === 'detect') return DETECT_FLAGS;
+  if (parsed.command === 'secrets') return SECRETS_FLAGS;
   if (parsed.command === 'whoami') return API_READ_FLAGS;
   if (parsed.command === 'logout') return AUTH_ENV_FLAGS;
   if (parsed.command === 'status') return STATUS_FLAGS;
-  if (parsed.command === 'rollback') return ROLLBACK_FLAGS;
   if (parsed.command === 'open') return OPEN_FLAGS;
   if (parsed.command === 'sites') return SITES_FLAGS;
   if (parsed.command === 'access') return ACCESS_FLAGS;
   if (parsed.command === 'auth') return allowedAuthFlags(parsed);
-  if (parsed.command === 'env') return allowedEnvFlags(parsed);
   return null;
 }
 
@@ -759,11 +840,6 @@ function allowedAuthFlags(parsed) {
   if (subcommand === 'status' || subcommand === 'logout') return AUTH_ENV_FLAGS;
   if (subcommand === 'whoami') return API_READ_FLAGS;
   return API_READ_FLAGS;
-}
-
-function allowedEnvFlags(parsed) {
-  if (parsed.positional[0] === 'set' && parsed.positional[1] === 'custom') return ENV_CUSTOM_FLAGS;
-  return ENV_FLAGS;
 }
 
 function assertOnlyAllowedFlags(parsed, allowed) {
@@ -790,6 +866,22 @@ function helpActionForCommand(command) {
   return '请运行 xd-cell help 查看可用选项。';
 }
 
+function unsupportedRollbackError() {
+  return usageError(
+    'COMMAND_UNSUPPORTED',
+    '当前 CLI 不支持 rollback 命令。',
+    '请使用 xd-cell status <site> 查看当前版本；如需回滚请联系平台维护者。'
+  );
+}
+
+function unsupportedEnvError() {
+  return usageError(
+    'COMMAND_UNSUPPORTED',
+    '当前 CLI 不支持 env 命令。',
+    '普通发布默认使用 production；内部验证请使用维护者流程。'
+  );
+}
+
 async function readSiteBySlug(client, slug) {
   const result = await client.requestApi('GET', '/.xd-pages/api/sites');
   const site = Array.isArray(result?.sites) ? result.sites.find((candidate) => candidate.slug === slug) : null;
@@ -800,20 +892,14 @@ async function readSiteBySlug(client, slug) {
       `未找到站点：${slug}`,
       suggestion
         ? `未找到 ${slug}。你是不是想查看 ${suggestion}？`
-        : '请确认站点名和当前环境；如果使用发布 token，请确认它绑定的是这个站点。'
+        : '请确认站点名和站点权限；如果使用 API token，请确认它绑定的是这个站点。'
     );
   }
   return { site };
 }
 
 function readConfigForCommand(parsed, context) {
-  const requestedEnvironment =
-    parsed.flags.env ||
-    context.commandConfig?.environment ||
-    context.env.PAGES_CLI_ENV ||
-    context.profile?.activeEnvironment ||
-    context.env.PAGES_ENV ||
-    'production';
+  const requestedEnvironment = parsed.flags.env || context.commandConfig?.environment || 'production';
   if (requestedEnvironment === 'custom') {
     const custom = context.profile?.environments?.custom || {};
     return readCliConfig(context.env, {
@@ -839,8 +925,14 @@ async function resolveCredential(environment, context, parsed) {
   const token = readOneShotToken(parsed);
   if (token) {
     return {
-      type: 'access_key',
+      type: 'bearer',
       value: token,
+    };
+  }
+  if (context.env.XD_CELL_API_TOKEN) {
+    return {
+      type: 'bearer',
+      value: context.env.XD_CELL_API_TOKEN,
     };
   }
   if (context.env.PAGES_ACCESS_KEY) {
@@ -871,33 +963,32 @@ function siteUrlForSlug(slug, config) {
   return `https://${normalized}.${config.siteDomainSuffix}`;
 }
 
-function siteUrlExampleForConfig(config) {
-  if (config.environment === 'staging') return `https://<site>-staging.${config.siteDomainSuffix}`;
-  return `https://<site>.${config.siteDomainSuffix}`;
-}
-
-function siteDomainPatternForConfig(config) {
-  if (config.environment === 'staging') return `*-staging.${config.siteDomainSuffix}`;
-  return `*.${config.siteDomainSuffix}`;
-}
-
-function readEnvironmentSource(context) {
-  if (context.env.PAGES_CLI_ENV) return 'env:PAGES_CLI_ENV';
-  if (context.profile?.activeEnvironment) return 'profile';
-  if (context.env.PAGES_ENV) return 'env:PAGES_ENV';
-  return 'default';
-}
-
-function displayEnvironmentSource(source) {
-  if (source === 'profile') return '本地 profile';
-  if (source === 'env:PAGES_CLI_ENV') return '环境变量 PAGES_CLI_ENV';
-  if (source === 'env:PAGES_ENV') return '环境变量 PAGES_ENV';
-  return '默认值';
+function siteUrlForOpen(site, config) {
+  if (site?.url) return site.url;
+  if (site?.route?.hostname) return `https://${site.route.hostname}`;
+  return siteUrlForSlug(site?.slug, config);
 }
 
 function normalizeSiteSlug(value) {
   const slug = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return slug || null;
+}
+
+function normalizeSecretName(value) {
+  const name = typeof value === 'string' ? value.trim() : '';
+  if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(name)) {
+    throw usageError('SECRET_NAME_INVALID', 'secret 名称无效。', '请使用 Worker binding 名称，例如 API_TOKEN。');
+  }
+  if (
+    name === 'ASSETS' ||
+    name.startsWith('XD_') ||
+    name.startsWith('XD_CELL_') ||
+    name.startsWith('XD_PAGES_') ||
+    name.startsWith('CF_')
+  ) {
+    throw usageError('SECRET_NAME_RESERVED', 'secret 名称是平台保留名。', '请换一个业务 secret 名称。');
+  }
+  return name;
 }
 
 function readSingleSiteArg(parsed, code, action) {
@@ -1058,7 +1149,8 @@ function humanDeploymentLabel(decision) {
 function humanFallbackLabel(value) {
   if (value === 'index') return '返回 /index.html';
   if (value === 'not-found') return '返回 404.html 或 404';
-  return '由 Worker 处理';
+  if (value === null) return '由 Worker 处理';
+  return '平台默认未命中处理';
 }
 
 function formatBytes(value) {
@@ -1136,7 +1228,17 @@ function rejectRemovedProjectFlags(parsed) {
     throw usageError(
       'OPTION_UNSUPPORTED',
       '该参数不再支持。',
-      '请使用位置参数：xd-cell deploy <目录> <站点名>；也可以在当前目录放 pages.config.json 或显式传 --config <file>。'
+      '请使用位置参数：xd-cell deploy <entry> <site>；也可以在当前目录放 xd-cell.config.json 或显式传 --config <file>。'
+    );
+  }
+}
+
+function rejectPublicFallbackFlag(parsed) {
+  if (parsed.flags.fallback !== undefined) {
+    throw usageError(
+      'OPTION_UNSUPPORTED',
+      'deploy 不再支持 --fallback。',
+      '请在 xd-cell.config.json 的 assets.not_found_handling 中设置 none、single-page-application 或 404-page。'
     );
   }
 }
@@ -1146,7 +1248,7 @@ function assertTokenNotUsed(parsed) {
     throw usageError(
       'ACCESS_KEY_NOT_USED',
       '当前命令不会使用 token。',
-      '请只在 login、deploy、status、sites、access、rollback 或 whoami 等需要访问 API 的命令中传 --token。'
+      '请只在 login、deploy、status、sites、access、secrets 或 whoami 等需要访问 API 的命令中传 --token。'
     );
   }
 }
@@ -1168,6 +1270,8 @@ function outputProgress(parsed, context, line) {
 
 function outputHelp(parsed, output) {
   const topic = parsed.command === 'help' ? parsed.positional[0] : parsed.command;
+  if (topic === 'rollback') throw unsupportedRollbackError();
+  if (topic === 'env') throw unsupportedEnvError();
   if (parsed.flags.json) {
     output(formatJson({ ok: true, schemaVersion: 1, help: helpJson(topic || 'overview') }));
     return;
@@ -1181,40 +1285,43 @@ function formatJson(value) {
 
 function helpText(topic) {
   if (topic === 'deploy') {
-    return `用法：xd-cell deploy <目录> <站点名> [选项]
+    return `用法：
+  xd-cell deploy <entry> <site> [选项]
+  xd-cell deploy [entry] [选项]
       xd-cell deploy --config <file> [选项]
 
-发布目录到 XD Cell。CLI 会自动判断发布方式。
+发布业务站点到 XD Cell。
+entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由位置参数或 xd-cell.config.json 的 name 提供。
+未传 --config 时，CLI 会读取当前目录的 xd-cell.config.json；单个位置参数始终按 entry 解释。
 
 选项：
+  --assets <dir>                            Worker 发布时附带静态资源目录。
   --visibility <internal|org|acl|owner|disabled>
-                                            创建站点时的初始可见性；默认 org。
-  --fallback <auto|index|not-found>         设置找不到文件时的行为；默认 auto。
-  --worker-entry <file>                     指定发布目录内的 Worker 入口。
+                                            创建站点时的初始访问范围；默认 org。
   --dry-run                                 只做本地预演，不创建站点、不上传文件。
-  --token <token>                           只在本次命令中使用的发布 token，不写入本地。
-  --config <file>                           一次性读取发布参数；未指定时会读取当前目录的 pages.config.json。
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
+  --config <file>                           读取发布模板。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。
 
 示例：
   xd-cell deploy ./dist demo --visibility org
-  xd-cell deploy ./dist demo --token <token> --json
-  xd-cell deploy --config pages.config.json
+  xd-cell deploy ./src/index.js demo --assets ./dist
+  XD_CELL_API_TOKEN=<token> xd-cell deploy ./dist demo --json
+  xd-cell deploy --config xd-cell.config.json
 
 说明：
-  站点名使用位置参数；CLI 不读取隐藏项目绑定文件。
-  pages.config.json 或 --config 文件只保存非敏感发布参数，例如 site、source、visibility、fallback、worker.entry。
+  xd-cell.config.json 只保存非敏感发布模板字段，例如 name、main、assets.directory、vars、visibility。
+  vars 是站点级当前 runtime config；配置省略 vars 会沿用站点当前值，显式 {} 会在下一次 Worker deploy 清空。
+  静态资源未命中行为使用 assets.not_found_handling 配置；不提供 --fallback。
   CLI 不暴露底层执行平台细节。`;
   }
   if (topic === 'detect') {
-    return `用法：xd-cell detect <目录> [选项]
+    return `用法：xd-cell detect <entry> [选项]
 
-本地识别发布目录，不登录、不联网、不上传文件。
+本地识别发布入口，不登录、不联网、不上传文件。
 
 选项：
-  --fallback <auto|index|not-found>         设置找不到文件时的行为；默认 auto。
-  --worker-entry <file>                     指定发布目录内的 Worker 入口。
   --config <file>                           一次性读取发布参数。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
@@ -1228,7 +1335,7 @@ function helpText(topic) {
 登录、查看或退出 XD Cell CLI。
 
 选项：
-  --token <token>                           显式保存已有发布 token，保存前会先校验 whoami。
+  --token <token>                           显式保存已有站点 access key，保存前会先校验 whoami。
   --no-open                                 只打印浏览器地址，不自动打开。
   --json                                    输出稳定 JSON，不输出 secret。
   --help                                    显示帮助。`;
@@ -1240,7 +1347,7 @@ function helpText(topic) {
 
 选项：
   --deployment <deployment_id>              按部署 ID 查看部署状态。
-  --token <token>                           只在本次命令中使用的发布 token。
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
@@ -1250,7 +1357,7 @@ function helpText(topic) {
 查看当前凭证身份。
 
 选项：
-  --token <token>                           只在本次命令中使用的发布 token。
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
@@ -1270,10 +1377,28 @@ function helpText(topic) {
 查看站点列表或站点详情。
 
 选项：
-  --token <token>                           只在本次命令中使用的发布 token。
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
   --details                                 sites list 输出完整站点详情；默认只显示概要。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
+  }
+  if (topic === 'secrets') {
+    return `用法：
+  xd-cell secrets put <site> <name> [选项]
+  xd-cell secrets delete <site> <name> [选项]
+
+管理站点级 Worker secret。secret value 不放在位置参数、配置文件或输出里。
+
+选项：
+  --stdin                                   从标准输入读取 secret value，适合 CI。
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
+  --json                                    输出稳定 JSON，不输出 secret value。
+  --help                                    显示帮助。
+
+示例：
+  xd-cell secrets put demo API_TOKEN
+  echo "$API_TOKEN" | xd-cell secrets put demo API_TOKEN --stdin
+  xd-cell secrets delete demo API_TOKEN`;
   }
   if (topic === 'access') {
     return `用法：xd-cell access get <站点名> [选项]
@@ -1295,7 +1420,7 @@ function helpText(topic) {
                                             set 命令使用；设置站点访问范围。
   --email <邮箱>                            可重复传入；acl 访问范围下授权邮箱。
   --department <部门路径>                   可重复传入；acl 访问范围下授权部门及子部门。
-  --token <token>                           只在本次命令中使用的发布 token。
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。
 
@@ -1305,58 +1430,33 @@ function helpText(topic) {
   xd-cell access grant demo --email another@xd.com
   xd-cell access revoke demo --department "心动/技术平台部"`;
   }
-  if (topic === 'rollback') {
-    return `用法：xd-cell rollback <站点名> <version-id> [选项]
-
-回滚站点到一个已存在的不可变版本。如果当前站点类型不支持回滚，命令会返回可操作错误。
-
-选项：
-  --token <token>                           只在本次命令中使用的发布 token。
-  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
-  --help                                    显示帮助。`;
-  }
   if (topic === 'open') {
     return `用法：xd-cell open <站点名> [选项]
 
-打开或打印站点地址。
+读取站点真实地址后打开或打印，已有历史路由会按平台保存的 URL 打开。
 
 选项：
   --print                                   只打印 URL，不打开浏览器。
-  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
-  --help                                    显示帮助。`;
-  }
-  if (topic === 'env') {
-    return `用法：xd-cell env [current|list|production|staging] [选项]
-
-管理本地 CLI 环境选择。
-
-命令：
-  xd-cell env
-  xd-cell env current
-  xd-cell env list
-  xd-cell env production
-  xd-cell env staging
-
-选项：
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
   return `用法：xd-cell <命令> [选项]
 
 命令：
-  login       通过浏览器 SSO 登录，或显式保存发布 token。
+  login       通过浏览器 SSO 登录，或保存站点 access key。
   logout      退出本地登录。
   whoami      查看当前凭证身份。
-  detect      本地识别发布目录。
+  detect      本地识别发布入口。
   deploy      发布目录到 XD Cell，自动判断发布方式。
   status      查看登录状态、站点或部署状态。
   sites       查看站点列表或详情。
-  rollback    回滚到不可变版本 ID。
+  secrets     管理站点级 Worker secret。
   access      查看或调整站点访问范围。
   open        打开或打印站点地址。
 
 全局选项：
-  --token <token>                           API 命令的一次性发布 token。
+  --token <token>                           API 命令的一次性 API token；也可以设置 XD_CELL_API_TOKEN。
   --json                                    在支持的命令中输出稳定 JSON，适合 AI agent 和 CI。
   --help, -h                                显示帮助。
   --version, -v                             显示 CLI 版本。
@@ -1368,7 +1468,7 @@ function helpText(topic) {
 function helpJson(topic) {
   return {
     topic,
-    commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'rollback', 'access', 'open'],
+    commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'secrets', 'access', 'open'],
     commandHelp: 'xd-cell help <命令>',
     jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };

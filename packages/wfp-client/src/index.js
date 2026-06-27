@@ -206,7 +206,12 @@ function normalizeAssetPath(value) {
 function assetConfigForDecision(decision) {
   if (!decisionRequiresAssets(decision)) throw new Error('ASSET_UPLOAD_PLAN_INVALID');
   return {
-    not_found_handling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+    not_found_handling:
+      decision.resolvedFallback === 'index'
+        ? 'single-page-application'
+        : decision.resolvedFallback === 'not-found'
+          ? '404-page'
+          : 'none',
     ...(decision.routingMode === 'worker-first' ? { run_worker_first: true } : {}),
   };
 }
@@ -246,16 +251,26 @@ export function normalizeWorkerBindings(bindings = []) {
 
 function normalizeWorkerBinding(binding) {
   if (!binding || typeof binding !== 'object' || Array.isArray(binding)) throw new Error('WORKER_BINDING_INVALID');
-  if (binding.type !== 'service') throw new Error('WORKER_BINDING_TYPE_INVALID');
 
   const name = String(binding.name || '').trim();
   if (!BINDING_NAME_RE.test(name)) throw new Error('WORKER_BINDING_NAME_INVALID');
 
-  return {
-    type: 'service',
-    name,
-    service: validateScriptName(binding.service),
-  };
+  if (binding.type === 'service') {
+    return {
+      type: 'service',
+      name,
+      service: validateScriptName(binding.service),
+    };
+  }
+  if (binding.type === 'plain_text' || binding.type === 'secret_text') {
+    if (typeof binding.text !== 'string') throw new Error('WORKER_BINDING_TEXT_INVALID');
+    return {
+      type: binding.type,
+      name,
+      text: binding.text,
+    };
+  }
+  throw new Error('WORKER_BINDING_TYPE_INVALID');
 }
 
 async function requestCloudflare(fetch, apiToken, url, init) {

@@ -86,8 +86,8 @@ publish -> activate -> drain -> retire
 
 - 确认 Workers for Platforms 可用性、配额、billing 和 staging 资源；如果暂未开通，确认 `normal-worker-slot` 兼容上线范围。
 - 确认普通 Worker slot binding 数量上限、router wrangler template 可读性、扩容 workflow、容量告警和回滚流程。
-- 新增并验证 `pages` / `*.pages` DNS、证书 DCV 和 Cloudflare route；确认不影响 v1 `workers` / `*.workers`。
-- 验证 Cloudflare route：`*-staging.pages.xd.team/*` 是否稳定进入 `pages-router-staging`，且 API/auth exact route 优先级正确。
+- 新增并验证 v2 `workers` / `*.workers` 与存量 v2 `pages` / `*.pages` DNS、证书 DCV 和 Cloudflare route；确认 v2 workers wildcard 不影响 v1 exact route。
+- 验证 Cloudflare route：`*-staging.workers.xd.team/*` 和 `*-staging.pages.xd.team/*` 是否稳定进入 `pages-router-staging`，且 API/auth exact route 优先级正确。
 - 如果 route spike 不满足要求，验证 `pages-edge-router-thin` fallback，确认它不持有业务 secret。
 - 确认 SSO redirect URI。
 - 确认 static/spa assets 在当前 execution mode 下的实现路径。
@@ -148,12 +148,12 @@ publish -> activate -> drain -> retire
 | User Worker 覆盖平台 cookie | 不可信代码可返回 Set-Cookie      | router 清洗平台保留 cookie/header                                    |
 | User Worker 设置父域 cookie | 可污染 sibling 子站或平台 host   | 只允许 host-only cookie，拒绝父域 Domain                             |
 | internal JWT 被当能力凭证   | User Worker 可复制短期 JWT       | 平台能力使用独立 capability，不信 internal JWT                       |
-| 旧版/新架构心智混淆        | 用户可能以为 XD Pages 会接管旧域名 | 文档、CLI help、错误提示和 skill 明确 `workers` 是旧版、`pages` 是新架构 |
+| 旧版/新架构心智混淆        | 用户可能把 v2 新建 `workers.xd.team` 子站和 v1 `apps/server` 旧链路混为一谈 | 文档、CLI help、错误提示和 skill 明确 v2 控制面是 `api/auth.pages.xd.team`，新建子站默认 `workers.xd.team`，但不调用 v1 `api.workers.xd.team` |
 | assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike；DR 0003 的 R2 artifact store 作为低优先级长期候选，不阻塞当前 MVP |
 | WFP 暂未开通                | 首发无法使用目标执行面           | 使用 `normal-worker-slot` 兼容层，用户 API 不变，后续切换默认 mode   |
 | slot binding 数量上限       | 普通 Worker slot 需要 router 静态 binding | 预留小规模池、容量告警、人工扩容 workflow，WFP 开通后停止扩张 |
 | slot 误清理 active 版本      | active slot 被释放会导致当前站点不可访问 | 清理前后都用 D1 条件确认没有 active route 引用该 slot 或 version；失败时保持 `cleanup_pending`，不回到 `available` |
-| 新 wildcard 配置风险        | `*.pages.xd.team` 是 v2 核心入口 | staging 验证、DNS/证书/route 静态校验、快速回滚                      |
+| 新 wildcard 配置风险        | `*.workers.xd.team` 是 v2 新建站点默认入口，`*.pages.xd.team` 仍承载存量 v2 站点 | staging 验证、DNS/证书/route 静态校验、快速回滚                      |
 | production 自动部署风险     | 当前项目要求生产手动部署         | CI 继续保持 production manual                                        |
 
 ## 需要进一步确认的问题
@@ -165,7 +165,7 @@ publish -> activate -> drain -> retire
 5. WFP user Worker 或普通 Worker slot 是否可直接承载 static/spa assets 模型；如果不能，优先选择 R2 还是独立 asset store。
 6. 访问审计的保留周期、查询方式和敏感字段脱敏标准。
 7. CLI custom env 的开放范围：第一版作为隐藏开发保留项，只允许 loopback，不进入用户侧 help/list；无论哪种方式都不用于旧版兼容。
-8. Cloudflare route 是否支持 `*-staging.pages.xd.team/*` 稳定优先于 `*.pages.xd.team/*`；如果不支持，是否接受 `pages-edge-router-thin`。
+8. Cloudflare route 是否支持 `*-staging.workers.xd.team/*` 稳定优先于 `*.workers.xd.team/*`，以及 `*-staging.pages.xd.team/*` 稳定优先于 `*.pages.xd.team/*`；如果不支持，是否接受 `pages-edge-router-thin`。
 9. SSO token endpoint 是否支持 POST；如果只能 GET，日志脱敏链路是否可验证。
 10. SSO profile 中 employee status 原始值到 `active / disabled / left / unknown` 的映射表和 freshness SLA。
 11. MVP 是否必须强制 egress 阻断；如果必须，需要把 Outbound Worker 提前到阶段 2。
@@ -190,6 +190,6 @@ publish -> activate -> drain -> retire
 - API host 不直接依赖 auth host 的 `auth_session`；浏览器态 API 使用独立 host-only `api_session`。
 - `internal` 站点在公司网络内无需登录可访问，但仍有站点 metadata 和审计；第一版不支持互联网公开子站。
 - CLI 支持浏览器登录和 access key 两种模式。
-- CLI 只支持 `pages.xd.team`，不能静默调用 `api.workers.xd.team`，也不能发布或管理 `*.workers.xd.team` 站点。
-- 旧版 `workers.xd.team` 站点、API、skill 和发布链路不受新架构改动影响。
+- CLI 只支持 XD Pages v2 控制面，不能静默调用 v1 `api.workers.xd.team`，也不能绕过 hostname claim 抢占 v1 exact route。
+- 旧版 `apps/server` 站点、API、skill 和发布链路不受新架构改动影响；新建 v2 子站默认 `workers.xd.team` 后缀由 `pages-router` wildcard 承载。
 - 文档、测试和日志不包含真实 secret、真实 token 或真实 Cloudflare 资源 id。

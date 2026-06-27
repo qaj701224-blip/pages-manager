@@ -184,7 +184,7 @@ test('XD Pages architecture keeps execution provider internal to the platform', 
 
   assert.match(doc, /slot 兼容层不是用户可选 provider/);
   assert.match(doc, /CLI 不自动读取、不自动生成隐式项目绑定文件/);
-  assert.match(doc, /xd-cell deploy --config pages\.config\.json/);
+  assert.match(doc, /xd-cell deploy --config xd-cell\.config\.json/);
   assert.match(doc, /xd-cell deploy \.\/dist foo --token <token> --json/);
   assert.match(doc, /--visibility internal\|org\|acl\|owner\|disabled/);
   assert.match(doc, /未知 visibility，包括旧的 public，必须 fail closed/);

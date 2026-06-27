@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { WfpApiError, createWfpClient, readWfpConfig, validateScriptName } from './index.js';
+import { WfpApiError, createWfpClient, normalizeWorkerBindings, readWfpConfig, validateScriptName } from './index.js';
 
 test('readWfpConfig enforces production and staging namespace isolation', () => {
   assert.deepEqual(
@@ -225,6 +225,23 @@ test('get and delete user worker use dispatch namespace script endpoint', async 
   assert.equal(calls[0].method, 'GET');
   assert.equal(calls[1].method, 'DELETE');
   assert.equal(calls[0].url, calls[1].url);
+});
+
+test('normalizeWorkerBindings accepts service plain text and secret text bindings', () => {
+  assert.deepEqual(
+    normalizeWorkerBindings([
+      { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+      { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
+      { type: 'secret_text', name: 'API_TOKEN', text: 'secret-value' },
+    ]),
+    [
+      { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+      { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
+      { type: 'secret_text', name: 'API_TOKEN', text: 'secret-value' },
+    ]
+  );
+  assert.throws(() => normalizeWorkerBindings([{ type: 'plain_text', name: 'bad-name', text: 'x' }]), /WORKER_BINDING_NAME_INVALID/);
+  assert.throws(() => normalizeWorkerBindings([{ type: 'kv_namespace', name: 'KV', namespace_id: 'ns_1' }]), /WORKER_BINDING_TYPE_INVALID/);
 });
 
 test('Cloudflare API errors are redacted', async () => {

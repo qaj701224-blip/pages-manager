@@ -14,12 +14,71 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       ...io,
       env: io.env || process.env,
       stdout,
+      readSecret: io.readSecret || ((prompt) => readHiddenLine(prompt, {
+        stdin: io.stdin || process.stdin,
+        stdout,
+      })),
     });
     return 0;
   } catch (error) {
     write(stderr, wantsJson(argv) ? `${formatErrorJson(error)}\n` : `${formatError(error)}\n`);
     return 1;
   }
+}
+
+export function readHiddenLine(prompt = '', { stdin = process.stdin, stdout = process.stdout } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!stdin?.isTTY || typeof stdin.setRawMode !== 'function' || typeof stdin.resume !== 'function') {
+      reject(codedError('SECRET_STDIN_REQUIRED'));
+      return;
+    }
+
+    let value = '';
+    const previousRawMode = Boolean(stdin.isRaw);
+    const cleanup = () => {
+      stdin.off('data', onData);
+      stdin.setRawMode(previousRawMode);
+      stdin.pause();
+    };
+    const finish = () => {
+      cleanup();
+      write(stdout, '\n');
+      resolve(value);
+    };
+    const cancel = () => {
+      cleanup();
+      write(stdout, '\n');
+      reject(codedError('SECRET_INPUT_CANCELLED'));
+    };
+    const onData = (chunk) => {
+      for (const byte of Buffer.from(chunk)) {
+        if (byte === 3) {
+          cancel();
+          return;
+        }
+        if (byte === 13 || byte === 10) {
+          finish();
+          return;
+        }
+        if (byte === 8 || byte === 127) {
+          value = value.slice(0, -1);
+          continue;
+        }
+        if (byte >= 32) value += String.fromCharCode(byte);
+      }
+    };
+
+    write(stdout, prompt);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('data', onData);
+  });
+}
+
+function codedError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
 }
 
 function write(stream, text) {
@@ -66,7 +125,7 @@ function localizeError(error) {
   const known = {
     PAGES_CREDENTIAL_REQUIRED: {
       message: '缺少 Pages 登录凭证。',
-      action: '请先运行 xd-cell login；CI/agent 可以显式传 --token <token>。',
+      action: '请先运行 xd-cell login，或设置 XD_CELL_API_TOKEN；短期受控场景也可以显式传 --token <token>。',
     },
     SITE_REQUIRED: {
       message: '缺少站点名。',
@@ -78,7 +137,7 @@ function localizeError(error) {
     },
     SITE_NOT_FOUND: {
       message: error.message && /^未找到/.test(error.message) ? error.message : '未找到站点。',
-      action: localizedAction(error, '请确认站点名和当前环境；如果使用发布 token，请确认它绑定的是这个站点。'),
+      action: localizedAction(error, '请确认站点名和站点权限；如果使用 API token，请确认它绑定的是这个站点。'),
     },
     SITE_VISIBILITY_INVALID: {
       message: '站点可见性无效。',
@@ -86,7 +145,7 @@ function localizeError(error) {
     },
     VERSION_REQUIRED: {
       message: '缺少版本 ID。',
-      action: '请使用 xd-cell rollback <站点名> <version-id>。',
+      action: '当前 CLI 不支持 rollback 命令；如需回滚请联系平台维护者。',
     },
     SITE_BINDING_REQUIRED: {
       message: '缺少站点名。',
@@ -94,7 +153,7 @@ function localizeError(error) {
     },
     ENV_COMMAND_INVALID: {
       message: 'env 命令不完整或无效。',
-      action: '请使用 xd-cell env、xd-cell env list 或 xd-cell env <production|staging>。',
+      action: '当前 CLI 不支持切换发布环境；请检查配置或联系平台维护者。',
     },
     UNKNOWN_COMMAND: {
       message: command ? `未知命令：${command}` : '未知命令。',
