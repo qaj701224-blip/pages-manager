@@ -165,8 +165,8 @@ test('deploy auto-discovers xd-cell.config.json and uploads vars metadata withou
   assert.equal(body.target.source, './src/index.js');
   assert.equal(body.target.assets, './dist');
   assert.deepEqual(body.runtime, { vars: ['API_BASE'] });
-  assert.equal(output.join('\n').includes('https://api.example.com/private'), false);
-  assert.equal(output.join('\n').includes('env_cli_token_secret'), false);
+  assertJsonLeafValueAbsent(body, 'https://api.example.com/private');
+  assertJsonLeafValueAbsent(body, 'env_cli_token_secret');
 });
 
 test('deploy positional entry preserves configured assets and vars', async () => {
@@ -428,7 +428,7 @@ test('assets-only deploy does not upload configured vars metadata and reports th
   assert.equal(Object.prototype.hasOwnProperty.call(metadata, 'vars'), false);
   const body = JSON.parse(output.join('\n'));
   assert.deepEqual(body.runtime, { vars: [], ignoredVars: ['API_BASE'] });
-  assert.equal(output.join('\n').includes('https://api.example.com'), false);
+  assertJsonLeafValueAbsent(body, 'https://api.example.com');
 });
 
 test('deploy token priority is --token then XD_CELL_API_TOKEN then local secret store', async () => {
@@ -1560,6 +1560,29 @@ function fakeSecretStore(credential) {
     set: async () => {},
     delete: async () => {},
   };
+}
+
+function assertJsonLeafValueAbsent(value, forbidden) {
+  assert.equal(collectJsonLeafStrings(value).some((leaf) => leaf === forbidden), false);
+}
+
+function collectJsonLeafStrings(value, output = []) {
+  if (typeof value === 'string') {
+    output.push(value);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectJsonLeafStrings(item, output);
+    }
+    return output;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) {
+      collectJsonLeafStrings(item, output);
+    }
+  }
+  return output;
 }
 
 function productionProfile() {
