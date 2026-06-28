@@ -1,4 +1,4 @@
-# XD Pages 一致性与状态机
+# XD Cell 一致性与状态机
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 

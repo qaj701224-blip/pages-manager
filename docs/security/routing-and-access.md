@@ -1,4 +1,4 @@
-# XD Pages 路由与访问边界
+# XD Cell 路由与访问边界
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 

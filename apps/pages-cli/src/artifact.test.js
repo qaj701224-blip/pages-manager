@@ -23,8 +23,11 @@ test('hashArtifact is deterministic for directories and ignores default command 
   const first = await hashArtifact(dir);
   await writeFile(path.join(dir, 'pages.config.json'), '{"site":"docs"}');
   const second = await hashArtifact(dir);
+  await writeFile(path.join(dir, 'xd-cell.config.json'), '{"name":"docs"}');
+  const third = await hashArtifact(dir);
 
   assert.equal(first.contentHash, second.contentHash);
+  assert.equal(first.contentHash, third.contentHash);
   assert.equal(first.fileCount, 2);
   assert.equal(first.sizeBytes, '<h1>Hello</h1>'.length + 'console.log("hi");'.length);
 });
@@ -38,7 +41,7 @@ test('detectPublishTarget treats JavaScript file targets as worker-only', async 
 
   assert.deepEqual(await detectPublishTarget(path.join(dir, 'worker.mjs')), {
     deploymentShape: 'worker-only',
-    requestedFallback: 'auto',
+    requestedFallback: 'none',
     resolvedFallback: null,
     routingMode: 'worker-only',
     workerEntry: 'worker.mjs',
@@ -112,6 +115,23 @@ test('detectPublishTarget treats static and app behavior as fallback decisions',
   assert.equal(decision.routingMode, 'assets-only');
   assert.equal(decision.confidence, 'medium');
   assert.equal(decision.workerEntry, null);
+});
+
+test('detectPublishTarget supports Cloudflare not_found_handling values and defaults to none', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pages-cli-detect-not-found-handling-'));
+  test.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'index.html'), '<div id="app"></div>');
+
+  const defaultDecision = await detectPublishTarget(dir);
+  const noneDecision = await detectPublishTarget(dir, { requestedFallback: 'none' });
+  const spaDecision = await detectPublishTarget(dir, { requestedFallback: 'single-page-application' });
+  const notFoundDecision = await detectPublishTarget(dir, { requestedFallback: '404-page' });
+
+  assert.equal(defaultDecision.requestedFallback, 'none');
+  assert.equal(defaultDecision.resolvedFallback, 'none');
+  assert.equal(noneDecision.resolvedFallback, 'none');
+  assert.equal(spaDecision.resolvedFallback, 'index');
+  assert.equal(notFoundDecision.resolvedFallback, 'not-found');
 });
 
 test('detectPublishTarget prefers not-found for multi-page static exports', async () => {
@@ -197,6 +217,7 @@ test('createUploadPlan returns multipart assets with content-type-versioned hash
   await writeFile(path.join(dir, 'index.html'), content);
   await writeFile(path.join(dir, 'same.txt'), content);
   await writeFile(path.join(dir, 'pages.config.json'), '{"site":"ignored"}');
+  await writeFile(path.join(dir, 'xd-cell.config.json'), '{"name":"ignored"}');
 
   const decision = await detectPublishTarget(dir, { requestedFallback: 'auto' });
   const plan = await createUploadPlan(dir, decision);

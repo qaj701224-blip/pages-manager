@@ -15,7 +15,7 @@ test('capacity alert mentions owner once and shows only environment capacity and
   assert.equal(payload.text, '静态页面池容量不足，需要扩容');
   assert.equal((serialized.match(/<@UTESTMEMBER>/g) || []).length, 1);
   assert.equal(payload.blocks[0].text.text, '静态页面池容量不足');
-  assert.equal(payload.blocks[1].text.text, '<@UTESTMEMBER> *XD Pages Worker 池数量不足，请检查资源池容量。*');
+  assert.equal(payload.blocks[1].text.text, '<@UTESTMEMBER> *XD Cell Worker 池数量不足，请检查资源池容量。*');
   assert.deepEqual(payload.blocks[2].fields, [
     { type: 'mrkdwn', text: '*环境*\nstaging' },
     { type: 'mrkdwn', text: '*容量*\n已用 8 / 总计 10' },

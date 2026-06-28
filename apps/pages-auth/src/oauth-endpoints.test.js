@@ -247,7 +247,7 @@ test('callback errors render a friendly browser page for navigations', async () 
   assert.equal(response.status, 400);
   assert.match(response.headers.get('Content-Type'), /text\/html/);
   const text = await response.text();
-  assert.match(text, /XD Pages/);
+  assert.match(text, /XD Cell/);
   assert.match(text, /登录没有完成/);
   assert.match(text, /这次登录链接可能已经过期或已经使用过/);
   assert.match(text, /重新打开站点或重新执行登录操作即可再次验证/);
@@ -864,7 +864,7 @@ test('CLI OAuth callback shows manual device confirmation and does not create a 
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(response.headers.get('Referrer-Policy'), 'same-origin');
   const text = await response.text();
-  assert.match(text, /XD Pages CLI 登录确认/);
+  assert.match(text, /XD Cell CLI 登录确认/);
   assert.match(text, /--brand: #f37022/);
   assertNoCoolToneFragments(text);
   assert.match(text, /production/);

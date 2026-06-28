@@ -42,4 +42,4 @@
 
 ## v1 文档边界
 
-`workers.xd.team` 和 `apps/server` 属于 v1 legacy。根 README、agent 规范和 API 边界文档默认描述 v2；需要查看 v1 行为时，优先读 `apps/server/README.md`、`apps/server/src/**`、对应测试和 `apps/server/docs/`。
+`apps/server` 属于 v1 legacy，继续维护旧发布 API 和既有 `workers.xd.team` exact route 链路。v2 新建站点默认也使用 `workers.xd.team` 子站后缀，但由 `apps/pages-api`、`apps/pages-router` 和 v2 route/hostname claim 体系承载；根 README、agent 规范和 API 边界文档默认描述 v2。需要查看 v1 行为时，优先读 `apps/server/README.md`、`apps/server/src/**`、对应测试和 `apps/server/docs/`。

@@ -41,8 +41,8 @@ test('deploy requires positional dir and site, then creates and deploys with a C
   assert.equal(metadata.siteSlug, 'docs');
   assert.equal(metadata.source, 'cli');
   assert.equal(metadata.publishPlan.deploymentShape, 'assets-only');
-  assert.equal(metadata.publishPlan.requestedFallback, 'auto');
-  assert.equal(metadata.publishPlan.resolvedFallback, 'index');
+  assert.equal(metadata.publishPlan.requestedFallback, 'none');
+  assert.equal(metadata.publishPlan.resolvedFallback, 'none');
   assert.equal(metadata.publishPlan.routingMode, 'assets-only');
   assert.deepEqual(metadata.assetManifest.map((asset) => asset.path), ['/index.html']);
   assert.equal(deployForm.has('artifactKind'), false);
@@ -53,16 +53,554 @@ test('deploy requires positional dir and site, then creates and deploys with a C
     '检查发布目录...',
     '检查发布目录完成：1 files / 14 B',
     '识别结果：静态资源目录',
-    '找不到文件时：返回 /index.html',
+    '找不到文件时：平台默认未命中处理',
     '准备凭证...',
     '准备站点...',
     '上传并发布...',
     '站点名：docs',
     '识别结果：静态资源目录',
-    '找不到文件时：返回 /index.html',
+    '找不到文件时：平台默认未命中处理',
     '部署：dep_1 succeeded',
     '发布完成：https://docs.pages.xd.team',
   ]);
+  assert.equal(Object.prototype.hasOwnProperty.call(metadata, 'vars'), false);
+});
+
+test('deploy omits vars metadata when xd-cell.config.json does not declare vars', async () => {
+  const dir = await tempProject();
+  await mkdir(path.join(dir, 'dist'));
+  await writeFile(path.join(dir, 'dist', 'index.html'), '<h1>Hello</h1>');
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({
+      name: 'docs',
+      assets: { directory: './dist' },
+    })
+  );
+  const calls = [];
+
+  await executeCommand(['deploy', '--json'], {
+    cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch(calls, [
+      {
+        environment: 'production',
+        actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' },
+      },
+      {
+        deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'docs.pages.xd.team' },
+      },
+    ]),
+    output: () => {},
+  });
+
+  const deployForm = await calls[1].formData();
+  const metadata = JSON.parse(await deployForm.get('metadata').text());
+  assert.equal(Object.prototype.hasOwnProperty.call(metadata, 'vars'), false);
+});
+
+test('deploy auto-discovers xd-cell.config.json and uploads vars metadata without leaking values in output', async () => {
+  const dir = await tempProject();
+  await mkdir(path.join(dir, 'src'));
+  await mkdir(path.join(dir, 'dist'));
+  await writeFile(path.join(dir, 'src', 'index.js'), 'export default { fetch() { return new Response("ok"); } };');
+  await writeFile(path.join(dir, 'dist', 'index.html'), '<div id="app"></div>');
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({
+      name: 'demo',
+      main: './src/index.js',
+      assets: {
+        directory: './dist',
+        not_found_handling: 'single-page-application',
+      },
+      vars: {
+        API_BASE: 'https://api.example.com/private',
+      },
+      visibility: 'owner',
+    })
+  );
+  const calls = [];
+  const output = [];
+
+  await executeCommand(['deploy', '--json'], {
+    cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    secretStore: {
+      get: async () => {
+        throw new Error('env token should avoid local secret reads');
+      },
+    },
+    fetch: fakeFetch(calls, [
+      {
+        environment: 'production',
+        actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' },
+      },
+      {
+        deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'demo.pages.xd.team' },
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/auth/whoami');
+  assert.equal(calls[0].headers.get('Authorization'), 'Bearer env_cli_token_secret');
+  const deployForm = await calls[1].formData();
+  const metadata = JSON.parse(await deployForm.get('metadata').text());
+  assert.equal(metadata.siteSlug, 'demo');
+  assert.deepEqual(metadata.vars, { API_BASE: 'https://api.example.com/private' });
+  assert.equal(metadata.publishPlan.deploymentShape, 'worker-with-assets');
+  assert.equal(metadata.publishPlan.requestedFallback, 'single-page-application');
+  assert.equal(metadata.publishPlan.resolvedFallback, 'index');
+  assert.equal(metadata.workerMainModuleName, 'src/index.js');
+
+  const body = JSON.parse(output.join('\n'));
+  assert.equal(body.configPath, 'xd-cell.config.json');
+  assert.equal(body.site, 'demo');
+  assert.equal(body.target.source, './src/index.js');
+  assert.equal(body.target.assets, './dist');
+  assert.deepEqual(body.runtime, { vars: ['API_BASE'] });
+  assertJsonLeafValueAbsent(body, 'https://api.example.com/private');
+  assertJsonLeafValueAbsent(body, 'env_cli_token_secret');
+});
+
+test('deploy positional entry preserves configured assets and vars', async () => {
+  const dir = await tempProject();
+  await mkdir(path.join(dir, 'src'));
+  await mkdir(path.join(dir, 'dist'));
+  await writeFile(path.join(dir, 'src', 'index.js'), 'export default { fetch() { return new Response("old"); } };');
+  await writeFile(path.join(dir, 'src', 'alt.js'), 'export default { fetch() { return new Response("new"); } };');
+  await writeFile(path.join(dir, 'dist', 'index.html'), '<div id="app"></div>');
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({
+      name: 'demo',
+      main: './src/index.js',
+      assets: {
+        directory: './dist',
+        not_found_handling: 'single-page-application',
+      },
+      vars: {
+        API_BASE: 'https://api.example.com',
+      },
+    })
+  );
+  const calls = [];
+  const output = [];
+
+  await executeCommand(['deploy', './src/alt.js', '--json'], {
+    cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch(calls, [
+      {
+        environment: 'production',
+        actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' },
+      },
+      {
+        deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'demo.pages.xd.team' },
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  const deployForm = await calls[1].formData();
+  const metadata = JSON.parse(await deployForm.get('metadata').text());
+  assert.equal(metadata.siteSlug, 'demo');
+  assert.equal(metadata.publishPlan.deploymentShape, 'worker-with-assets');
+  assert.equal(metadata.publishPlan.requestedFallback, 'single-page-application');
+  assert.equal(metadata.publishPlan.resolvedFallback, 'index');
+  assert.equal(metadata.workerMainModuleName, 'alt.js');
+  assert.deepEqual(metadata.assetManifest.map((asset) => asset.path), ['/index.html']);
+  assert.deepEqual(metadata.vars, { API_BASE: 'https://api.example.com' });
+
+  const body = JSON.parse(output.join('\n'));
+  assert.equal(body.target.source, './src/alt.js');
+  assert.equal(body.target.assets, './dist');
+  assert.deepEqual(body.runtime, { vars: ['API_BASE'] });
+});
+
+test('deploy positional worker entry preserves configured assets even when config has no main', async () => {
+  const dir = await tempProject();
+  await mkdir(path.join(dir, 'src'));
+  await mkdir(path.join(dir, 'dist'));
+  await writeFile(path.join(dir, 'src', 'worker.js'), 'export default { fetch() { return new Response("ok"); } };');
+  await writeFile(path.join(dir, 'dist', 'index.html'), '<div id="app"></div>');
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({
+      name: 'demo',
+      assets: {
+        directory: './dist',
+        not_found_handling: 'single-page-application',
+      },
+      vars: {
+        API_BASE: 'https://api.example.com',
+      },
+    })
+  );
+  const calls = [];
+
+  await executeCommand(['deploy', './src/worker.js', '--json'], {
+    cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch(calls, [
+      {
+        environment: 'production',
+        actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' },
+      },
+      {
+        deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'demo.pages.xd.team' },
+      },
+    ]),
+    output: () => {},
+  });
+
+  const deployForm = await calls[1].formData();
+  const metadata = JSON.parse(await deployForm.get('metadata').text());
+  assert.equal(metadata.publishPlan.deploymentShape, 'worker-with-assets');
+  assert.equal(metadata.workerMainModuleName, 'worker.js');
+  assert.deepEqual(metadata.assetManifest.map((asset) => asset.path), ['/index.html']);
+  assert.deepEqual(metadata.vars, { API_BASE: 'https://api.example.com' });
+});
+
+test('deploy treats a single positional argument as entry and requires site from config', async () => {
+  const missingSite = await tempProject();
+  await writeFile(path.join(missingSite, 'index.html'), '<h1>Hello</h1>');
+  await assert.rejects(
+    () => executeCommand(['deploy', 'demo', '--dry-run'], { cwd: missingSite, output: () => {} }),
+    {
+      code: 'SITE_REQUIRED',
+    }
+  );
+
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Root</h1>');
+  await mkdir(path.join(dir, 'dist'));
+  await writeFile(path.join(dir, 'dist', 'index.html'), '<h1>Dist</h1>');
+  await writeFile(path.join(dir, 'xd-cell.config.json'), JSON.stringify({ name: 'docs', assets: { directory: './missing' } }));
+  const output = [];
+
+  await executeCommand(['deploy', '.', '--dry-run', '--json'], {
+    cwd: dir,
+    output: (line) => output.push(line),
+  });
+
+  const body = JSON.parse(output.join('\n'));
+  assert.equal(body.site, 'docs');
+  assert.equal(body.target.source, '.');
+  assert.equal(body.configPath, 'xd-cell.config.json');
+});
+
+test('deploy positional directory overrides configured worker with assets intent', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Root</h1>');
+  await mkdir(path.join(dir, 'dist'));
+  await writeFile(path.join(dir, 'dist', 'index.html'), '<h1>Dist</h1>');
+  await mkdir(path.join(dir, 'src'));
+  await writeFile(path.join(dir, 'src', 'index.js'), 'export default { fetch() { return new Response("ok"); } };');
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({
+      name: 'docs',
+      main: './src/index.js',
+      assets: { directory: './dist', not_found_handling: 'single-page-application' },
+    })
+  );
+  const output = [];
+
+  await executeCommand(['deploy', '.', '--dry-run', '--json'], {
+    cwd: dir,
+    output: (line) => output.push(line),
+  });
+
+  const body = JSON.parse(output.join('\n'));
+  assert.equal(body.site, 'docs');
+  assert.equal(body.target.source, '.');
+  assert.equal(body.target.workerEntry, null);
+  assert.equal(body.target.assets, undefined);
+  assert.equal(body.decision.deploymentShape, 'assets-only');
+  assert.equal(body.uploadPlanSummary.fileCount, 3);
+});
+
+test('deploy ignores legacy pages.config.json and explicit config does not merge with auto config', async () => {
+  const dir = await tempProject();
+  await mkdist(dir);
+  await writeFile(path.join(dir, 'pages.config.json'), JSON.stringify({ site: 'legacy', source: './dist' }));
+  const legacyOutput = [];
+  await assert.rejects(
+    () => executeCommand(['deploy', '--dry-run', '--json'], { cwd: dir, output: (line) => legacyOutput.push(line) }),
+    {
+      code: 'DIR_REQUIRED',
+    }
+  );
+
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({
+      name: 'auto-config',
+      assets: { directory: './missing' },
+    })
+  );
+  await writeFile(
+    path.join(dir, 'deploy.config.json'),
+    JSON.stringify({
+      name: 'explicit-config',
+      assets: { directory: './dist', not_found_handling: '404-page' },
+    })
+  );
+  const explicitOutput = [];
+
+  await executeCommand(['deploy', '--config', 'deploy.config.json', '--dry-run', '--json'], {
+    cwd: dir,
+    output: (line) => explicitOutput.push(line),
+  });
+
+  const body = JSON.parse(explicitOutput.join('\n'));
+  assert.equal(body.site, 'explicit-config');
+  assert.equal(body.target.source, './dist');
+  assert.equal(body.decision.requestedFallback, '404-page');
+  assert.equal(body.decision.resolvedFallback, 'not-found');
+});
+
+test('deploy rejects public fallback flag but allows unused assets-only vars', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+
+  await assert.rejects(() => executeCommand(['deploy', '.', 'docs', '--fallback', 'spa'], { cwd: dir, output: () => {} }), {
+    code: 'OPTION_UNSUPPORTED',
+  });
+
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({ name: 'docs', assets: { directory: '.' }, vars: { API_BASE: 'x' } })
+  );
+  const output = [];
+  await executeCommand(['deploy', '--dry-run', '--json'], {
+    cwd: dir,
+    output: (line) => output.push(line),
+  });
+  const body = JSON.parse(output.join('\n'));
+  assert.equal(body.decision.deploymentShape, 'assets-only');
+  assert.equal(body.sideEffects.willDeploy, false);
+  assert.deepEqual(body.runtime, { vars: [], ignoredVars: ['API_BASE'] });
+  assert.equal(JSON.stringify(body).includes('"x"'), false);
+});
+
+test('assets-only deploy does not upload configured vars metadata and reports them as ignored', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({ name: 'docs', assets: { directory: '.' }, vars: { API_BASE: 'https://api.example.com' } })
+  );
+  const calls = [];
+  const output = [];
+
+  await executeCommand(['deploy', '--json'], {
+    cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch(calls, [
+      {
+        environment: 'production',
+        actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' },
+      },
+      {
+        deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'docs.pages.xd.team' },
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  const deployForm = await calls[1].formData();
+  const metadata = JSON.parse(await deployForm.get('metadata').text());
+  assert.equal(metadata.publishPlan.deploymentShape, 'assets-only');
+  assert.equal(Object.prototype.hasOwnProperty.call(metadata, 'vars'), false);
+  const body = JSON.parse(output.join('\n'));
+  assert.deepEqual(body.runtime, { vars: [], ignoredVars: ['API_BASE'] });
+  assertJsonLeafValueAbsent(body, 'https://api.example.com');
+});
+
+test('deploy token priority is --token then XD_CELL_API_TOKEN then local secret store', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const explicitCalls = [];
+  const envCalls = [];
+
+  await executeCommand(['deploy', '.', 'docs', '--token', 'explicit_token', '--json'], {
+    cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_token' },
+    secretStore: {
+      get: async () => {
+        throw new Error('explicit token should avoid secret store');
+      },
+    },
+    fetch: fakeFetch(explicitCalls, [
+      { environment: 'production', actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' } },
+      { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
+    ]),
+    output: () => {},
+  });
+  await executeCommand(['deploy', '.', 'docs', '--json'], {
+    cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_token' },
+    secretStore: {
+      get: async () => {
+        throw new Error('env token should avoid secret store');
+      },
+    },
+    fetch: fakeFetch(envCalls, [
+      { environment: 'production', actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' } },
+      { deployment: { id: 'dep_2', status: 'succeeded' }, version: { id: 'ver_2' }, route: {} },
+    ]),
+    output: () => {},
+  });
+
+  assert.equal(explicitCalls[0].headers.get('Authorization'), 'Bearer explicit_token');
+  assert.equal(explicitCalls[1].headers.get('Authorization'), 'Bearer explicit_token');
+  assert.equal(envCalls[0].headers.get('Authorization'), 'Bearer env_token');
+  assert.equal(envCalls[1].headers.get('Authorization'), 'Bearer env_token');
+});
+
+test('API commands default to production without reading profile or environment env vars', async () => {
+  const calls = [];
+  const output = [];
+
+  await executeCommand(['sites', '--json'], {
+    env: { PAGES_CLI_ENV: 'staging', PAGES_ENV: 'staging' },
+    profile: { activeEnvironment: 'staging', environments: {} },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [{ sites: [] }]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.equal(JSON.parse(output.join('\n')).environment, 'production');
+});
+
+test('whoami uses XD_CELL_API_TOKEN while auth status ignores it', async () => {
+  const calls = [];
+  const whoamiOutput = [];
+  const statusOutput = [];
+
+  await executeCommand(['whoami', '--json'], {
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    profile: productionProfile(),
+    secretStore: {
+      get: async () => {
+        throw new Error('whoami should use env token');
+      },
+    },
+    fetch: fakeFetch(calls, [
+      {
+        environment: 'production',
+        actor: { type: 'user', credentialType: 'cli_token', userId: 'usr_1' },
+      },
+    ]),
+    output: (line) => whoamiOutput.push(line),
+  });
+
+  await executeCommand(['auth', 'status', '--json'], {
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    profile: productionProfile(),
+    secretStore: { get: async () => null },
+    output: (line) => statusOutput.push(line),
+  });
+
+  assert.equal(calls[0].headers.get('Authorization'), 'Bearer env_cli_token_secret');
+  assert.equal(JSON.parse(whoamiOutput[0]).actor.userId, 'usr_1');
+  assert.deepEqual(JSON.parse(statusOutput[0]), {
+    ok: true,
+    schemaVersion: 1,
+    environment: 'production',
+    authenticated: false,
+    credentialType: null,
+  });
+});
+
+test('secrets put and delete use site-level secret APIs without accepting value positionals or list', async () => {
+  const putCalls = [];
+  const deleteCalls = [];
+  const putOutput = [];
+  const deleteOutput = [];
+
+  await executeCommand(['secrets', 'put', 'demo', 'API_TOKEN', '--stdin', '--json'], {
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    stdin: { text: async () => 'super-secret-value\n' },
+    fetch: fakeFetch(putCalls, [{ secret: { site: 'demo', name: 'API_TOKEN', updated: true } }]),
+    output: (line) => putOutput.push(line),
+  });
+  await executeCommand(['secrets', 'delete', 'demo', 'API_TOKEN', '--json'], {
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch(deleteCalls, [{ secret: { site: 'demo', name: 'API_TOKEN', deleted: true } }]),
+    output: (line) => deleteOutput.push(line),
+  });
+
+  assert.equal(putCalls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites/demo/secrets');
+  assert.equal(putCalls[0].method, 'PUT');
+  assert.equal(putCalls[0].headers.get('Authorization'), 'Bearer env_cli_token_secret');
+  assert.deepEqual(await putCalls[0].json(), { name: 'API_TOKEN', value: 'super-secret-value' });
+  assert.equal(putOutput.join('\n').includes('super-secret-value'), false);
+  assert.deepEqual(JSON.parse(putOutput[0]), {
+    ok: true,
+    schemaVersion: 1,
+    type: 'secret',
+    environment: 'production',
+    site: 'demo',
+    name: 'API_TOKEN',
+    operation: 'put',
+  });
+
+  assert.equal(deleteCalls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites/demo/secrets');
+  assert.equal(deleteCalls[0].method, 'DELETE');
+  assert.deepEqual(await deleteCalls[0].json(), { name: 'API_TOKEN' });
+  assert.equal(JSON.parse(deleteOutput[0]).operation, 'delete');
+
+  await assert.rejects(
+    () =>
+      executeCommand(['secrets', 'put', 'demo', 'API_TOKEN', 'secret-value'], {
+        env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+        output: () => {},
+      }),
+    { code: 'SECRETS_PUT_USAGE_INVALID' }
+  );
+  await assert.rejects(() => executeCommand(['secrets', 'list', 'demo'], { output: () => {} }), {
+    code: 'SECRETS_COMMAND_INVALID',
+  });
+});
+
+test('secrets commands reject empty site names before reading values', async () => {
+  await assert.rejects(
+    () =>
+      executeCommand(['secrets', 'put', '', 'API_TOKEN', '--stdin'], {
+        stdin: {
+          text: async () => {
+            throw new Error('stdin should not be read for invalid site');
+          },
+        },
+        fetch: fakeFetch([], [{ ok: true }]),
+        output: () => {},
+      }),
+    { code: 'SITE_REQUIRED' }
+  );
+  await assert.rejects(
+    () =>
+      executeCommand(['secrets', 'delete', '', 'API_TOKEN'], {
+        fetch: fakeFetch([], [{ ok: true }]),
+        output: () => {},
+      }),
+    { code: 'SITE_REQUIRED' }
+  );
 });
 
 test('deploy uses explicit token as a one-shot credential without local secret reads', async () => {
@@ -84,6 +622,7 @@ test('deploy uses explicit token as a one-shot credential without local secret r
       },
     },
     fetch: fakeFetch(calls, [
+      { environment: 'production', actor: { type: 'access_key', credentialType: 'access_key', siteId: 'site_1' } },
       {
         deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
         version: { id: 'ver_1' },
@@ -94,10 +633,11 @@ test('deploy uses explicit token as a one-shot credential without local secret r
     output: (line) => output.push(line),
   });
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
-  assert.equal(calls[0].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
-  const metadata = JSON.parse(await (await calls[0].formData()).get('metadata').text());
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/auth/whoami');
+  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
+  assert.equal(calls[1].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
+  const metadata = JSON.parse(await (await calls[1].formData()).get('metadata').text());
   assert.equal(metadata.siteSlug, 'docs');
   assert.equal(metadata.publishPlan.deploymentShape, 'assets-only');
   assert.deepEqual(JSON.parse(output.join('\n')), {
@@ -107,19 +647,20 @@ test('deploy uses explicit token as a one-shot credential without local secret r
     mode: 'deploy',
     environment: 'production',
     site: 'docs',
+    configPath: null,
     target: {
       source: '.',
-      kind: 'directory',
-      requestedFallback: 'auto',
+      kind: 'entry',
+      requestedFallback: 'none',
       workerEntry: null,
     },
     decision: {
       deploymentShape: 'assets-only',
-      requestedFallback: 'auto',
-      resolvedFallback: 'index',
+      requestedFallback: 'none',
+      resolvedFallback: 'none',
       routingMode: 'assets-only',
-      confidence: 'medium',
-      source: 'auto',
+      confidence: 'high',
+      source: 'explicit',
     },
     uploadPlanSummary: {
       contentHash: metadata.contentHash,
@@ -149,6 +690,9 @@ test('deploy uses explicit token as a one-shot credential without local secret r
     diagnostics: {
       warnings: [],
       errors: [],
+    },
+    runtime: {
+      vars: [],
     },
     deployment: { id: 'dep_1', siteId: 'site_1', status: 'succeeded' },
     version: { id: 'ver_1' },
@@ -202,8 +746,8 @@ test('detect --json is local-only and emits resolved decision without upload pla
   assert.equal(body.ok, true);
   assert.equal(body.mode, 'detect');
   assert.equal(body.decision.deploymentShape, 'assets-only');
-  assert.equal(body.decision.requestedFallback, 'auto');
-  assert.equal(body.decision.resolvedFallback, 'index');
+  assert.equal(body.decision.requestedFallback, 'none');
+  assert.equal(body.decision.resolvedFallback, 'none');
   assert.equal(body.checks.packageChecked, false);
   assert.equal(body.checks.canPackage, null);
   assert.equal(body.sideEffects.willDeploy, false);
@@ -211,7 +755,7 @@ test('detect --json is local-only and emits resolved decision without upload pla
   assert.equal('artifactKind' in body, false);
 });
 
-test('detect auto-discovers pages.config.json without network side effects', async () => {
+test('detect ignores legacy pages.config.json and can use xd-cell.config.json without network side effects', async () => {
   const dir = await tempProject();
   await mkdist(dir);
   await writeFile(
@@ -220,6 +764,13 @@ test('detect auto-discovers pages.config.json without network side effects', asy
       site: 'from-config',
       source: './dist',
       fallback: 'not-found',
+    })
+  );
+  await writeFile(
+    path.join(dir, 'xd-cell.config.json'),
+    JSON.stringify({
+      name: 'from-config',
+      assets: { directory: './dist', not_found_handling: '404-page' },
     })
   );
   const output = [];
@@ -240,7 +791,8 @@ test('detect auto-discovers pages.config.json without network side effects', asy
   assert.equal(exitCode, 0);
   const body = JSON.parse(output.join('\n'));
   assert.equal(body.target.source, './dist');
-  assert.equal(body.decision.requestedFallback, 'not-found');
+  assert.equal(body.configPath, 'xd-cell.config.json');
+  assert.equal(body.decision.requestedFallback, '404-page');
   assert.equal(body.decision.resolvedFallback, 'not-found');
   assert.equal('uploadPlanSummary' in body, false);
 });
@@ -276,15 +828,14 @@ test('deploy --dry-run --json packages locally without network side effects', as
   assert.equal('artifactKind' in body, false);
 });
 
-test('deploy auto-discovers pages.config.json for dry-run without network side effects', async () => {
+test('deploy auto-discovers xd-cell.config.json for dry-run without network side effects', async () => {
   const dir = await tempProject();
   await mkdist(dir);
   await writeFile(
-    path.join(dir, 'pages.config.json'),
+    path.join(dir, 'xd-cell.config.json'),
     JSON.stringify({
-      site: 'from-config',
-      source: './dist',
-      fallback: 'not-found',
+      name: 'from-config',
+      assets: { directory: './dist', not_found_handling: '404-page' },
     })
   );
   const output = [];
@@ -306,7 +857,7 @@ test('deploy auto-discovers pages.config.json for dry-run without network side e
   const body = JSON.parse(output.join('\n'));
   assert.equal(body.site, 'from-config');
   assert.equal(body.target.source, './dist');
-  assert.equal(body.decision.requestedFallback, 'not-found');
+  assert.equal(body.decision.requestedFallback, '404-page');
   assert.equal(body.decision.resolvedFallback, 'not-found');
   assert.equal(body.uploadPlanSummary.fileCount, 1);
   assert.equal('artifactKind' in body, false);
@@ -316,31 +867,26 @@ test('deploy reads explicit one-shot command config and lets CLI args override i
   const dir = await tempProject();
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
   await writeFile(
-    path.join(dir, 'pages.config.json'),
+    path.join(dir, 'xd-cell.config.json'),
     JSON.stringify({
-      environment: 'staging',
-      site: 'from-config',
-      source: './dist',
+      name: 'from-config',
+      assets: { directory: './dist', not_found_handling: '404-page' },
       visibility: 'org',
-      fallback: 'not-found',
     })
   );
   await mkdist(dir);
   const calls = [];
 
-  await executeCommand(
-    ['deploy', './dist', 'from-args', '--config', 'pages.config.json', '--env', 'production', '--visibility', 'owner'],
-    {
-      cwd: dir,
-      env: {},
-      secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
-      fetch: fakeFetch(calls, [
-        { site: { id: 'site_1', slug: 'from-args', environment: 'production' } },
-        { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
-      ]),
-      output: () => {},
-    }
-  );
+  await executeCommand(['deploy', './dist', 'from-args', '--config', 'xd-cell.config.json', '--visibility', 'owner'], {
+    cwd: dir,
+    env: {},
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      { site: { id: 'site_1', slug: 'from-args', environment: 'production' } },
+      { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
+    ]),
+    output: () => {},
+  });
 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
   assert.deepEqual(await calls[0].json(), { slug: 'from-args', visibility: 'owner' });
@@ -351,22 +897,21 @@ test('deploy reads explicit one-shot command config and lets CLI args override i
   assert.equal(deployForm.has('artifactKind'), false);
 });
 
-test('explicit --config does not merge with auto-discovered pages.config.json', async () => {
+test('explicit --config does not merge with auto-discovered xd-cell.config.json', async () => {
   const dir = await tempProject();
   await mkdist(dir);
   await writeFile(
-    path.join(dir, 'pages.config.json'),
+    path.join(dir, 'xd-cell.config.json'),
     JSON.stringify({
-      site: 'auto-config',
-      source: './missing',
-      fallback: 'not-found',
+      name: 'auto-config',
+      assets: { directory: './missing', not_found_handling: '404-page' },
     })
   );
   await writeFile(
     path.join(dir, 'deploy.config.json'),
     JSON.stringify({
-      site: 'explicit-config',
-      source: './dist',
+      name: 'explicit-config',
+      assets: { directory: './dist' },
     })
   );
   const output = [];
@@ -379,8 +924,8 @@ test('explicit --config does not merge with auto-discovered pages.config.json', 
   const body = JSON.parse(output.join('\n'));
   assert.equal(body.site, 'explicit-config');
   assert.equal(body.target.source, './dist');
-  assert.equal(body.decision.requestedFallback, 'auto');
-  assert.equal(body.decision.resolvedFallback, 'index');
+  assert.equal(body.decision.requestedFallback, 'none');
+  assert.equal(body.decision.resolvedFallback, 'none');
 });
 
 test('rejects removed project binding flags and invalid visibility', async () => {
@@ -402,7 +947,7 @@ test('rejects removed project binding flags and invalid visibility', async () =>
   );
 });
 
-test('status, sites, rollback, and open use explicit site names', async () => {
+test('status, sites, and open use explicit site names', async () => {
   const dir = await tempProject();
   const calls = [];
   const output = [];
@@ -424,18 +969,23 @@ test('status, sites, rollback, and open use explicit site names', async () => {
     fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'docs', environment: 'production' }] }]),
     output: (line) => siteInfoOutput.push(line),
   });
-  await executeCommand(['rollback', 'docs', 'ver_1'], {
-    cwd: dir,
-    env: {},
-    profile: productionProfile(),
-    secretStore: fakeSecretStore({ type: 'access_key', value: 'xdp_prod_ak_1_secret' }),
-    fetch: fakeFetch(calls, [{ deployment: { id: 'dep_2', status: 'succeeded' } }]),
-    idempotencyKey: () => 'rb_1',
-    output: () => {},
-  });
   const openOutput = [];
   await executeCommand(['open', 'docs', '--env', 'staging', '--print'], {
     cwd: dir,
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch(calls, [
+      {
+        sites: [
+          {
+            id: 'site_2',
+            slug: 'docs',
+            environment: 'staging',
+            url: 'https://docs-staging.pages.xd.team',
+            route: { hostname: 'docs-staging.pages.xd.team' },
+          },
+        ],
+      },
+    ]),
     output: (line) => openOutput.push(line),
   });
 
@@ -443,10 +993,57 @@ test('status, sites, rollback, and open use explicit site names', async () => {
   assert.deepEqual(JSON.parse(output[0]).site, { id: 'site_1', slug: 'docs', environment: 'production' });
   assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
   assert.match(siteInfoOutput.join('\n'), /站点名：docs/);
-  assert.equal(calls[2].url, 'https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback');
-  assert.deepEqual(await calls[2].json(), { siteSlug: 'docs' });
-  assert.equal(calls[2].headers.get('Idempotency-Key'), 'rb_1');
-  assert.deepEqual(openOutput, ['https://docs-staging.workers.xd.team']);
+  assert.equal(calls[2].url, 'https://api-staging.pages.xd.team/.xd-pages/api/sites');
+  assert.equal(calls[2].headers.get('Authorization'), 'Bearer env_cli_token_secret');
+  assert.deepEqual(openOutput, ['https://docs-staging.pages.xd.team']);
+});
+
+test('open preserves the API route hostname instead of fabricating a default site suffix', async () => {
+  const calls = [];
+  const output = [];
+
+  await executeCommand(['open', 'docs', '--print'], {
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch(calls, [
+      {
+        sites: [
+          {
+            id: 'site_1',
+            slug: 'docs',
+            environment: 'production',
+            route: { hostname: 'docs.pages.xd.team' },
+          },
+        ],
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.equal(calls[0].headers.get('Authorization'), 'Bearer env_cli_token_secret');
+  assert.deepEqual(output, ['https://docs.pages.xd.team']);
+});
+
+test('rollback is not supported by the public CLI', async () => {
+  const dir = await tempProject();
+  const calls = [];
+
+  await assert.rejects(
+    () =>
+      executeCommand(['rollback', 'docs', 'ver_1'], {
+        cwd: dir,
+        env: {},
+        profile: productionProfile(),
+        secretStore: fakeSecretStore({ type: 'access_key', value: 'xdp_prod_ak_1_secret' }),
+        fetch: fakeFetch(calls, [{ deployment: { id: 'dep_2', status: 'succeeded' } }]),
+        output: () => {},
+      }),
+    { code: 'COMMAND_UNSUPPORTED' }
+  );
+  await assert.rejects(() => executeCommand(['help', 'rollback'], { cwd: dir, output: () => {} }), {
+    code: 'COMMAND_UNSUPPORTED',
+  });
+  assert.equal(calls.length, 0);
 });
 
 test('sites list defaults to a summary and supports detailed JSON', async () => {
@@ -454,12 +1051,12 @@ test('sites list defaults to a summary and supports detailed JSON', async () => 
     {
       id: 'site_1',
       slug: 'docs',
-      environment: 'staging',
+      environment: 'production',
       defaultVisibility: 'org',
-      url: 'https://docs-staging.pages.xd.team',
+      url: 'https://docs.pages.xd.team',
       route: {
         id: 'route_1',
-        hostname: 'docs-staging.pages.xd.team',
+        hostname: 'docs.pages.xd.team',
         status: 'active',
         runtime: 'worker',
         activeVersionId: 'ver_1',
@@ -495,20 +1092,20 @@ test('sites list defaults to a summary and supports detailed JSON', async () => 
   });
 
   assert.match(summaryOutput.join('\n'), /站点名\s+环境\s+访问范围\s+状态\s+URL/);
-  assert.match(summaryOutput.join('\n'), /docs\s+staging\s+org\s+active\s+https:\/\/docs-staging\.pages\.xd\.team/);
+  assert.match(summaryOutput.join('\n'), /docs\s+production\s+org\s+active\s+https:\/\/docs\.pages\.xd\.team/);
   assert.doesNotMatch(summaryOutput.join('\n'), /route_1/);
 
   assert.deepEqual(JSON.parse(summaryJsonOutput.join('\n')), {
     ok: true,
     schemaVersion: 1,
-    environment: 'staging',
+    environment: 'production',
     sites: [
       {
         site: 'docs',
-        environment: 'staging',
+        environment: 'production',
         visibility: 'org',
         status: 'active',
-        url: 'https://docs-staging.pages.xd.team',
+        url: 'https://docs.pages.xd.team',
       },
     ],
   });
@@ -566,7 +1163,7 @@ test('status and logout can target an environment without switching profile', as
   assert.deepEqual(deleted, ['staging']);
 });
 
-test('whoami uses API validation and env list stays user-facing only', async () => {
+test('whoami uses API validation and env command is not user-facing', async () => {
   const calls = [];
   const output = [];
 
@@ -589,15 +1186,18 @@ test('whoami uses API validation and env list stays user-facing only', async () 
     ]),
     output: (line) => output.push(line),
   });
-  const envOutput = [];
-  await executeCommand(['env', 'list'], { output: (line) => envOutput.push(line) });
+  await assert.rejects(() => executeCommand(['env', 'list'], { output: () => {} }), {
+    code: 'COMMAND_UNSUPPORTED',
+  });
+  await assert.rejects(() => executeCommand(['help', 'env'], { output: () => {} }), {
+    code: 'COMMAND_UNSUPPORTED',
+  });
 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/auth/whoami');
   assert.equal(calls[0].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
   assert.equal(JSON.parse(output[0]).actor.accessKeyId, 'ak_1');
   assert.equal(JSON.parse(output[0]).actor.email, 'user@example.com');
   assert.equal(JSON.parse(output[0]).actor.name, 'User One');
-  assert.deepEqual(envOutput, ['production', 'staging']);
 });
 
 test('auth subcommands remain as hidden compatibility aliases', async () => {
@@ -629,56 +1229,6 @@ test('auth subcommands remain as hidden compatibility aliases', async () => {
 
   assert.equal(JSON.parse(output[0]).actor.accessKeyId, 'ak_1');
   assert.deepEqual(deleted, ['production']);
-});
-
-test('env current reports active environment details', async () => {
-  const output = [];
-  const profile = { activeEnvironment: 'staging', environments: {} };
-
-  await executeCommand(['env'], {
-    env: {},
-    profile,
-    output: (line) => output.push(line),
-  });
-
-  assert.deepEqual(output, [
-    '当前环境：staging',
-    'API：https://api-staging.pages.xd.team',
-    '认证：https://auth-staging.pages.xd.team',
-    '站点域名：*-staging.workers.xd.team',
-    '来源：本地 profile',
-  ]);
-
-  const jsonOutput = [];
-  await executeCommand(['env', 'current', '--json'], {
-    env: {},
-    profile,
-    output: (line) => jsonOutput.push(line),
-  });
-
-  assert.deepEqual(JSON.parse(jsonOutput[0]), {
-    ok: true,
-    schemaVersion: 1,
-    activeEnvironment: 'staging',
-    source: 'profile',
-    apiBaseUrl: 'https://api-staging.pages.xd.team',
-    authBaseUrl: 'https://auth-staging.pages.xd.team',
-    siteUrlExample: 'https://<site>-staging.workers.xd.team',
-  });
-});
-
-test('env can switch directly by environment name', async () => {
-  const output = [];
-  const dir = await tempProject();
-
-  await executeCommand(['env', 'staging'], {
-    env: {},
-    profile: productionProfile(),
-    profileDir: dir,
-    output: (line) => output.push(line),
-  });
-
-  assert.deepEqual(output, ['当前环境：staging']);
 });
 
 test('login --json emits browser challenge before polling', async () => {
@@ -869,7 +1419,7 @@ test('local commands reject unused tokens', async () => {
     code: 'ACCESS_KEY_NOT_USED',
   });
   await assert.rejects(() => executeCommand(['env', 'list', '--token', 'x'], { output: () => {} }), {
-    code: 'ACCESS_KEY_NOT_USED',
+    code: 'COMMAND_UNSUPPORTED',
   });
 });
 
@@ -877,6 +1427,18 @@ test('commands reject unknown flags and extra positional arguments', async () =>
   await assert.rejects(() => executeCommand(['deploy', '.', 'docs', '--print', '1'], { output: () => {} }), {
     code: 'OPTION_UNKNOWN',
   });
+  await assert.rejects(
+    () =>
+      executeCommand(['deploy', '.', 'docs', '--env', 'staging'], {
+        fetch: async () => {
+          throw new Error('deploy --env should be rejected before network access');
+        },
+        output: () => {},
+      }),
+    {
+      code: 'OPTION_UNKNOWN',
+    }
+  );
   await assert.rejects(() => executeCommand(['sites', 'list', '--visibility', 'org'], { output: () => {} }), {
     code: 'OPTION_UNKNOWN',
   });
@@ -884,7 +1446,7 @@ test('commands reject unknown flags and extra positional arguments', async () =>
     code: 'VERSION_USAGE_INVALID',
   });
   await assert.rejects(() => executeCommand(['env', 'use', 'staging', 'extra'], { output: () => {} }), {
-    code: 'ENV_USAGE_INVALID',
+    code: 'COMMAND_UNSUPPORTED',
   });
   await assert.rejects(() => executeCommand(['help', 'deploy', 'extra'], { output: () => {} }), {
     code: 'HELP_USAGE_INVALID',
@@ -922,12 +1484,13 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     const output = [];
     assert.equal(await executeCommand(argv, { output: (line) => output.push(line) }), 0);
     const text = output.join('\n');
-    assert.match(text, /用法：xd-cell deploy <目录> <站点名>/);
+    assert.match(text, /xd-cell deploy <entry> <site>/);
     assert.match(text, /--visibility <internal\|org\|acl\|owner\|disabled>/);
     assert.match(text, /--token <token>/);
     assert.match(text, /--config <file>/);
     assert.match(text, /--json/);
-    assert.doesNotMatch(text, /--access-key|--env|environment/);
+    assert.match(text, /assets\.not_found_handling/);
+    assert.doesNotMatch(text, /--fallback <|--access-key|--env|environment/);
     assert.doesNotMatch(
       text,
       new RegExp(
@@ -937,6 +1500,18 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     );
     assert.doesNotMatch(text, /WFP|slot|dispatch namespace|service binding/i);
   }
+});
+
+test('prints command-specific detect help without hidden worker-entry flag', async () => {
+  const output = [];
+
+  assert.equal(await executeCommand(['help', 'detect'], { output: (line) => output.push(line) }), 0);
+
+  const text = output.join('\n');
+  assert.match(text, /用法：xd-cell detect <entry>/);
+  assert.match(text, /--config <file>/);
+  assert.match(text, /--json/);
+  assert.doesNotMatch(text, /--worker-entry|--fallback|--env|environment/);
 });
 
 test('prints command-specific access help with Chinese visibility wording', async () => {
@@ -951,6 +1526,18 @@ test('prints command-specific access help with Chinese visibility wording', asyn
   assert.match(text, /公司网络内，需命中邮箱或部门授权/);
   assert.match(text, /--department <部门路径>/);
   assert.doesNotMatch(text, /ACL 表|site_acl_entries|WFP|slot|v2/i);
+});
+
+test('prints command-specific open help with API token guidance', async () => {
+  const output = [];
+
+  assert.equal(await executeCommand(['help', 'open'], { output: (line) => output.push(line) }), 0);
+
+  const text = output.join('\n');
+  assert.match(text, /用法：xd-cell open <站点名>/);
+  assert.match(text, /--token <token>/);
+  assert.match(text, /XD_CELL_API_TOKEN/);
+  assert.doesNotMatch(text, /--access-key|--env|environment/);
 });
 
 async function tempProject() {
@@ -982,6 +1569,29 @@ function fakeSecretStore(credential) {
     set: async () => {},
     delete: async () => {},
   };
+}
+
+function assertJsonLeafValueAbsent(value, forbidden) {
+  assert.equal(collectJsonLeafStrings(value).some((leaf) => leaf === forbidden), false);
+}
+
+function collectJsonLeafStrings(value, output = []) {
+  if (typeof value === 'string') {
+    output.push(value);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectJsonLeafStrings(item, output);
+    }
+    return output;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) {
+      collectJsonLeafStrings(item, output);
+    }
+  }
+  return output;
 }
 
 function productionProfile() {

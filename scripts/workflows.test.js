@@ -443,6 +443,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     );
     assert.match(workflow, /PAGES_CAP_JWT_SECRET_202606: \$\{\{ secrets\.PAGES_CAP_JWT_SECRET_202606 \}\}/);
     assert.match(workflow, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
+    assert.match(workflow, /SITE_SECRET_ENCRYPTION_KEY: \$\{\{ secrets\.SITE_SECRET_ENCRYPTION_KEY \}\}/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
@@ -525,7 +526,7 @@ test('router slot expansion workflow is manual and only touches router slot reso
   const workflow = readWorkflow('.github/workflows/expand-pages-router-slots.yml');
   const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
 
-  assert.match(workflow, /^name: Expand XD Pages Router Slots$/m);
+  assert.match(workflow, /^name: Expand XD Cell Router Slots$/m);
   assert.match(triggers, /^ {2}workflow_dispatch:/m, 'router slot expansion is manual');
   assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'router slot expansion has no push or PR trigger');
   assert.match(workflow, /environment:[\s\S]*type: choice[\s\S]*- staging[\s\S]*- production/);

@@ -1,4 +1,4 @@
--- XD Pages v2 authority schema.
+-- XD Cell v2 authority schema.
 -- Apply with wrangler D1 migrations before deploying pages-api.
 
 CREATE TABLE IF NOT EXISTS users (

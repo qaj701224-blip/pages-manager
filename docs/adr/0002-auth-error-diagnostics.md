@@ -174,7 +174,7 @@ DO/service binding 规则：
 
 ## 内部 reason 映射
 
-内部 reason 只描述诊断分类，不自动引入新的准入策略。比如 `profile_missing_email` 或 `profile_subject_untrusted` 只有在对应实现明确新增该校验并补齐测试时才可使用；XD Pages 不应借错误诊断重新引入本地邮箱域或固定字符串人群门禁。
+内部 reason 只描述诊断分类，不自动引入新的准入策略。比如 `profile_missing_email` 或 `profile_subject_untrusted` 只有在对应实现明确新增该校验并补齐测试时才可使用；XD Cell 不应借错误诊断重新引入本地邮箱域或固定字符串人群门禁。
 
 `OAUTH_STATE_INVALID`：
 

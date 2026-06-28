@@ -60,7 +60,7 @@ test('rejects v1 api.workers.xd.team and arbitrary custom endpoints', () => {
   );
 });
 
-test('allows workers.xd.team as a fixed site suffix while keeping custom endpoints loopback-only', () => {
+test('uses workers.xd.team as the fixed v2 site suffix while keeping custom endpoints loopback-only', () => {
   assert.equal(readCliConfig({ PAGES_CLI_ENV: 'production' }).siteDomainSuffix, 'workers.xd.team');
 });
 

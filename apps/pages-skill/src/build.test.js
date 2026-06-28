@@ -81,7 +81,7 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
     assert.doesNotMatch(docs, /--env|xd-cell env|目标环境；默认 production/);
     assert.match(docs, /node tools\/xd-cell-cli\/main\.js help deploy/);
     assert.match(docs, /tools\/xd-cell-cli\/main\.js help deploy/);
-    assert.match(docs, /不要把发布 token 写入本地状态/);
+    assert.match(docs, /不要把 API token 写入本地状态/);
     assert.doesNotMatch(docs, /--access-key/);
     assert.match(docs, /@xd-cell\/cli/);
     assert.match(docs, /@xd-cell\/worker-sdk/);

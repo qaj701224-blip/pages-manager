@@ -16,9 +16,9 @@ export default {
     if (request.headers.has('X-Pages-Token')) {
       return jsonError(
         'LEGACY_TOKEN_UNSUPPORTED',
-        'Legacy Pages tokens are not supported by XD Pages.',
+        'Legacy Pages tokens are not supported by XD Cell.',
         400,
-        'Run `xd-cell login` or use an XD Pages access key.'
+        'Run `xd-cell login` or use an XD Cell access key.'
       );
     }
 

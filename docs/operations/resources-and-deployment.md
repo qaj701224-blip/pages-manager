@@ -1,4 +1,4 @@
-# XD Pages 资源与部署
+# XD Cell 资源与部署
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
@@ -19,7 +19,8 @@ KV/cache: production router snapshots
 audit store: production audit
 system API: api.pages.xd.team
 system auth: auth.pages.xd.team
-site domain: {name}.pages.xd.team
+default site domain: {name}.workers.xd.team
+legacy v2 site domain: {name}.pages.xd.team
 site data KV: pages-shared-data
 ```
 
@@ -38,7 +39,8 @@ KV/cache: staging router snapshots
 audit store: staging audit
 system API: api-staging.pages.xd.team
 system auth: auth-staging.pages.xd.team
-site domain: {name}-staging.pages.xd.team
+default site domain: {name}-staging.workers.xd.team
+legacy v2 site domain: {name}-staging.pages.xd.team
 site data KV: pages-shared-data-staging
 ```
 
@@ -61,6 +63,8 @@ api-staging.pages.xd.team/*     -> pages-api-staging
 auth-staging.pages.xd.team/*    -> pages-auth-staging
 *.pages.xd.team/*               -> pages-router
 *-staging.pages.xd.team/*       -> pages-router-staging
+*.workers.xd.team/*             -> pages-router
+*-staging.workers.xd.team/*     -> pages-router-staging
 ```
 
 `pages-router` 只能绑定 production D1/KV/DO、production WFP dispatch namespace、production slot service binding 和 production signing key；`pages-router-staging` 只能绑定 staging 资源。业务 router 不允许同时持有两套环境的权威存储、dispatch namespace、slot binding 或 signing secret。
@@ -86,17 +90,20 @@ production 和 staging 分开申请或创建：
 | KV namespace               | `pages_router_cache_production`                               | `pages_router_cache_staging`                                                                  | route/policy/JWKS snapshot                    |
 | KV namespace               | `pages-shared-data`                                           | `pages-shared-data-staging`                                                                   | v2 Pages KV 站点数据；现有空 namespace 直接划归 v2 |
 | Durable Object namespaces  | production bindings                                           | staging bindings                                                                              | OAuth、CLI login、session、policy 协调        |
-| Routes / custom domains    | `api.pages.xd.team`、`auth.pages.xd.team`、`*.pages.xd.team/*` | `api-staging.pages.xd.team`、`auth-staging.pages.xd.team`、`*-staging.pages.xd.team/*`        | 由 v2 wrangler template 声明，部署创建/更新 Cloudflare 绑定；不修改 v1 `workers.xd.team` |
-| Advanced certificate / DCV | `*.pages.xd.team`                                             | 同证书覆盖或独立策略                                                                          | 参考 partial zone 约束，单独验证 `pages` 子域 |
+| Routes / custom domains    | `api.pages.xd.team`、`auth.pages.xd.team`、`*.workers.xd.team/*`、`*.pages.xd.team/*` | `api-staging.pages.xd.team`、`auth-staging.pages.xd.team`、`*-staging.workers.xd.team/*`、`*-staging.pages.xd.team/*` | 由 v2 wrangler template 声明，部署创建/更新 Cloudflare 绑定；`workers` wildcard 必须让 v1 exact route 优先 |
+| Advanced certificate / DCV | `*.workers.xd.team`、`*.pages.xd.team`                        | 同证书覆盖或独立策略                                                                          | 参考 partial zone 约束，单独验证 `workers` 与 `pages` 子域 |
 
-需要在阶段 0 做 Cloudflare route / DNS / certificate spike，验证 `pages` 与 `*.pages` CNAME、DCV 和 `*-staging.pages.xd.team/*` route 优先级。API/Auth 固定域名和 router wildcard route 写入 v2 wrangler template，系统 Worker 部署时创建/更新 Cloudflare 绑定；partial zone 下 DNSPod CNAME、DCV 委派和证书状态仍需人工确认。该 spike 只能新增 `pages.xd.team` 相关资源，不能修改 v1 `workers.xd.team` DNS、证书或 route。
+需要在阶段 0 做 Cloudflare route / DNS / certificate spike，验证 `workers` / `pages` wildcard、DCV、`*-staging.workers.xd.team/*` 和 `*-staging.pages.xd.team/*` route 优先级。API/Auth 固定域名和 router wildcard route 写入 v2 wrangler template，系统 Worker 部署时创建/更新 Cloudflare 绑定；partial zone 下 DNSPod CNAME、DCV 委派和证书状态仍需人工确认。新增 `*.workers.xd.team/*` v2 wildcard 时，必须确认 v1 exact route 仍优先。
 
 如果 Cloudflare route 层无法独立匹配 staging 子站，fallback 只能是一个无业务 secret 的 `pages-edge-router-thin`：
 
 ```text
+*.workers.xd.team/* -> pages-edge-router-thin
+  foo.workers.xd.team         -> service binding: pages-router
+  foo-staging.workers.xd.team -> service binding: pages-router-staging
 *.pages.xd.team/* -> pages-edge-router-thin
-  foo.pages.xd.team         -> service binding: pages-router
-  foo-staging.pages.xd.team -> service binding: pages-router-staging
+  foo.pages.xd.team           -> service binding: pages-router
+  foo-staging.pages.xd.team   -> service binding: pages-router-staging
 ```
 
 `pages-edge-router-thin` 只做 hostname 解析和 service binding 转发，不持有 D1/KV/DO、dispatch namespace、slot binding、session/internal signing key、Cloudflare API token 或 SSO secret。它的 L1 cache 只能缓存“hostname -> target service”这类非敏感分流结果，且 production/staging target 必须有 fail-closed 测试覆盖。
@@ -145,7 +152,7 @@ effectiveMode =
   ?? env.PAGES_EXECUTION_MODE
 ```
 
-`site.execution_mode_override` 只允许平台维护者设置，取值为 `null | wfp | normal-worker-slot`。普通用户 `xd-cell deploy` 不允许指定 provider；CLI help、`--config`、OpenAPI 和 AI skill 都只描述“发布到 XD Pages”，不描述 WFP、slot、dispatch namespace 或 service binding。
+`site.execution_mode_override` 只允许平台维护者设置，取值为 `null | wfp | normal-worker-slot`。普通用户 `xd-cell deploy` 不允许指定 provider；CLI help、`--config`、OpenAPI 和 AI skill 都只描述“发布到 XD Cell”，不描述 WFP、slot、dispatch namespace 或 service binding。
 
 slot 兼容层不是用户可选 provider，它只是 WFP 未开通期间的内部上线和回滚手段。
 
@@ -192,7 +199,7 @@ slot 状态由 D1 权威表管理：
 扩容是系统 Worker 部署期动作，不在用户发布请求路径里自动创建 Worker：
 
 ```text
-XD Pages deploy workflow <environment>
+XD Cell deploy workflow <environment>
   1. 执行 D1 migration，确保 worker_slots 表存在。
   2. scripts/provision-pages-v2-slots.mjs <environment> prepare
      - 读取 worker_slots 当前 available 数量和最大 slot_number。
@@ -392,7 +399,7 @@ secrets:
 
 production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `--config` 文件。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
-SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先成功换取 SSO profile，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。SSO profile 成功返回代表用户已通过 `xd_pages` / `xd_pages_staging` 应用授权；XD Pages 不再用本地邮箱域或 `xindong` 字符串二次缩窄允许人群。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `xd-cell login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
+SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先成功换取 SSO profile，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。SSO profile 成功返回代表用户已通过 `xd_pages` / `xd_pages_staging` 应用授权；XD Cell 不再用本地邮箱域或 `xindong` 字符串二次缩窄允许人群。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `xd-cell login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
 
 #### pages-router
 
@@ -545,7 +552,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
 | `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
 
-v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Pages Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Pages Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`。
+v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`。
 
 v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`。
 
@@ -557,7 +564,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 
 - v2 系统 Worker 的拓扑配置以环境显式模板为准：`apps/pages-api/wrangler.production.template.toml`、`apps/pages-api/wrangler.staging.template.toml`、`apps/pages-auth/wrangler.production.template.toml`、`apps/pages-auth/wrangler.staging.template.toml`、`apps/pages-router/wrangler.production.template.toml`、`apps/pages-router/wrangler.staging.template.toml`、`apps/kv-gateway/wrangler.production.template.toml`、`apps/kv-gateway/wrangler.staging.template.toml`。`pages-kv-gateway` 不复用 v1 旧生成链路。
 - v2 使用 `node scripts/render-pages-v2-wrangler.mjs <app> <production|staging>` 渲染最终 `wrangler.toml`。渲染器只做 `__PLACEHOLDER__` 占位符替换、必填项检查和环境串用校验；Worker 名、域名、service binding、dispatch namespace 等拓扑值直接写在对应环境模板里，避免把 v2 环境逻辑藏进 shell 分支。
-- `apps/pages-api/migrations/` 是 v2 D1 authority schema 的显式迁移源。部署 `pages-auth` 或 `pages-api` 前必须先执行对应环境的 `wrangler d1 migrations apply`，确保 `users`、`sites`、`site_routes`、`site_versions`、`worker_slots`、`deployments` 等表结构先于 Worker 代码上线。
+- `apps/pages-api/migrations/` 是 v2 D1 authority schema 的显式迁移源。部署 `pages-auth` 或 `pages-api` 前必须先执行对应环境的 `wrangler d1 migrations apply`，确保 `users`、`sites`、`site_routes`、`site_versions`、`site_vars`、`site_secrets`、`worker_slots`、`deployments` 等表结构先于 Worker 代码上线。
 - `scripts/gen-wrangler.sh` 继续服务 v1 `apps/server` 和 `apps/xdads-302`；`apps/kv-gateway` 的旧 v1 部署链路应退役，v2 gateway 不复用这条旧生成链路。
 - production workflow 只能手动触发。
 - staging workflow 可以由 `staging` 分支触发。
@@ -596,20 +603,23 @@ staging 首次部署前必须完成：
 
 1. GitHub `staging` Environment 已配置上表中的 vars/secrets，且真实 D1/KV/secret 值不出现在仓库、日志或文档中。
 2. Cloudflare 已创建 staging D1、staging route snapshot KV 和 staging site data KV；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，workflow 会在 router 部署前检查并扩容 staging slot 池，再按历史最大 slot number 全量渲染 router service bindings；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
-3. SSO staging 应用 redirect URI 指向 `https://auth-staging.pages.xd.team/.xd-pages/auth/callback`，不指向 `api-staging.pages.xd.team`。
-4. 手动或由 `staging` 分支触发 XD Pages staging 部署 workflow（当前 workflow 文件为 `deploy-pages-v2-staging.yml`），先用 `component=all` 验证四个系统 Worker 一起部署；单组件部署只用于已确认依赖兼容的修复。
-5. workflow 中四个 `DRY_RUN=1 scripts/put-pages-v2-secrets.sh ...` 步骤先通过，再执行真正 secret 注入。
-6. `https://api-staging.pages.xd.team/.xd-pages/health` 返回 staging `pages-api` 状态，且 `/skill.md`、`/readme.md` 只返回 staging API/auth/domain，不出现 production 或 v1 `workers.xd.team` 地址。
-7. `xd-cell login --env staging` 能完成 SSO、device code 手动确认和 CLI token 保存。
-8. `xd-cell deploy --env staging` 至少验证 static、SPA 和 custom `.js/.mjs` Worker 三类 artifact；`.ts` Worker 入口在未接入 bundler 前必须 fail closed。
-9. staging 子站访问验证 IP allowlist、`internal`、`org`、`acl`、`owner`、`disabled`、header/cookie 清洗、`site_session` freshness 和 rollback。
-10. v1 `api.workers.xd.team`、`*.workers.xd.team`、旧 skill 和旧发布 workflow 不受 staging v2 部署影响。
+3. staging D1 已先执行 `0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql` 和 `0010_site_vars.sql`，再部署新的 `pages-api-staging`。
+4. GitHub `staging` Environment 已配置 `SITE_SECRET_ENCRYPTION_KEY`，且 workflow 能通过 `wrangler secret put` 注入到 `pages-api-staging`；该值不得写入 vars、模板正文或日志。
+5. SSO staging 应用 redirect URI 指向 `https://auth-staging.pages.xd.team/.xd-pages/auth/callback`，不指向 `api-staging.pages.xd.team`。
+6. 手动或由 `staging` 分支触发 XD Cell staging 部署 workflow（当前 workflow 文件为 `deploy-pages-v2-staging.yml`），先用 `component=all` 验证四个系统 Worker 一起部署；单组件部署只用于已确认依赖兼容的修复。
+7. workflow 中四个 `DRY_RUN=1 scripts/put-pages-v2-secrets.sh ...` 步骤先通过，再执行真正 secret 注入。
+8. `https://api-staging.pages.xd.team/.xd-pages/health` 返回 staging `pages-api` 状态，且 `/skill.md`、`/readme.md` 只返回 staging API/auth/domain，不出现 production 地址，不把 v2 新建子站误描述为 `pages.xd.team` 默认后缀。
+9. `xd-cell login --env staging` 能完成 SSO、device code 手动确认和 CLI token 保存。
+10. `xd-cell deploy --env staging` 至少验证 static、SPA 和 custom `.js/.mjs` Worker 三类 artifact；`.ts` Worker 入口在未接入 bundler 前必须 fail closed。
+11. 验证 `xd-cell secrets put/delete <site> <name>`、带 `vars` 的 Worker deploy、后续不传 `vars` 的 Worker deploy 沿用站点级 vars、显式空 `vars` 的 Worker deploy 会清空站点级 vars；后续不传 secret 的 deploy 仍能注入站点级 enabled secrets，删除 secret 后下一次 Worker deploy 不再注入。
+12. staging 子站访问验证 IP allowlist、`internal`、`org`、`acl`、`owner`、`disabled`、header/cookie 清洗、`site_session` freshness 和 rollback。
+13. v1 `api.workers.xd.team`、旧 exact route、旧 skill 和旧发布 workflow 不受 staging v2 部署影响；v2 `*.workers.xd.team/*` wildcard 不抢占 v1 exact route。
 
 production 首次部署前必须完成：
 
-1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 只新增 `pages.xd.team` 相关资源。
-2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper 和 IP allowlist。执行面资源按 production template 中的 `PAGES_EXECUTION_MODE` 校验：`normal-worker-slot` 需要 production slot 池，`wfp` 需要 `pages-production` dispatch namespace。
-3. XD Pages production 部署 workflow（当前 workflow 文件为 `deploy-pages-v2.yml`）只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
-4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker。
+1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 已覆盖 v2 `workers.xd.team` 新默认后缀和存量 `pages.xd.team` route，且 v1 exact route 优先级不变。
+2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、`SITE_SECRET_ENCRYPTION_KEY` 和 IP allowlist。执行面资源按 production template 中的 `PAGES_EXECUTION_MODE` 校验：`normal-worker-slot` 需要 production slot 池，`wfp` 需要 `pages-production` dispatch namespace。
+3. XD Cell production 部署 workflow（当前 workflow 文件为 `deploy-pages-v2.yml`）只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
+4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker；`0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql` 和 `0010_site_vars.sql` 必须先于 `pages-api` 新版本生效。
 5. 发布后先验证 `api.pages.xd.team/.xd-pages/health`、`auth.pages.xd.team` 登录入口和一个受控试点站点。
 6. 回滚策略是重新 dispatch 上一个已知好 commit 的 workflow，或按组件手动部署上一个 commit；不得通过修改 v1 `workers.xd.team` route 回滚 v2。

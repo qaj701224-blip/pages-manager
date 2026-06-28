@@ -3,6 +3,7 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 import { authenticateApiRequest } from './auth.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, newId } from './id.js';
+import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName } from './runtime-config.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
@@ -10,7 +11,7 @@ const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
-const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Pages 平台保留项，请换一个业务站点名。';
+const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
 
 export async function handleSitesApi(request, env, config, store) {
@@ -38,6 +39,13 @@ export async function handleSitesApi(request, env, config, store) {
     return methodNotAllowed();
   }
 
+  const secretsSiteSlug = matchSiteSecrets(url.pathname);
+  if (secretsSiteSlug) {
+    if (request.method === 'PUT') return putSiteSecret(request, env, config, store, auth.actor, secretsSiteSlug);
+    if (request.method === 'DELETE') return deleteSiteSecret(request, env, config, store, auth.actor, secretsSiteSlug);
+    return methodNotAllowed();
+  }
+
   const siteId = matchSiteId(url.pathname);
   if (siteId && request.method === 'GET') return getSite(store, auth.actor, siteId, config.environment);
   if (siteId && request.method === 'PATCH') return updateSite(request, env, config, store, auth.actor, siteId);
@@ -45,6 +53,123 @@ export async function handleSitesApi(request, env, config, store) {
   if (siteId) return methodNotAllowed();
 
   return null;
+}
+
+async function putSiteSecret(request, env, config, store, actor, siteSlug) {
+  const site = await getDeployableSiteBySlug(store, actor, siteSlug, config.environment);
+  if (site instanceof Response) return site;
+  if (!store.putSiteSecret) {
+    return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 64 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+  const name = normalizeSecretNameForResponse(body.name);
+  if (name instanceof Response) return name;
+  if (typeof body.value !== 'string' || body.value.length === 0) {
+    return jsonError('SECRET_VALUE_INVALID', 'Secret value is invalid.', 400, 'Send a non-empty string value.');
+  }
+  if (byteLength(body.value) > MAX_SITE_SECRET_VALUE_BYTES) {
+    return jsonError(
+      'SECRET_VALUE_TOO_LARGE',
+      'Secret value is too large.',
+      413,
+      'Use a secret value no larger than 8 KiB.'
+    );
+  }
+  try {
+    const secret = await putSiteSecretWithAudit(store, env, {
+      id: nextId(env, 'sec'),
+      environment: config.environment,
+      siteId: site.id,
+      siteSlug: site.slug,
+      name,
+      value: body.value,
+      actorId: actor.userId,
+      actorType: actor.type,
+      routeId: site.route?.id || null,
+      auditId: nextId(env, 'aud'),
+      updatedAt: readNow(env),
+    });
+    return jsonOk({ secret: formatSecret(site.slug, secret, { deleted: false }) });
+  } catch (error) {
+    if (isRuntimeConfigConflict(error)) {
+      return jsonError(
+        'RUNTIME_CONFIG_CHANGED',
+        'Runtime secret changed while it was being updated.',
+        409,
+        'Retry the secret command.'
+      );
+    }
+    return jsonError(
+      'RUNTIME_CONFIG_UNSUPPORTED',
+      'Runtime secret store is unavailable.',
+      503,
+      'Check runtime secret store configuration.'
+    );
+  }
+}
+
+async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
+  const site = await getDeployableSiteBySlug(store, actor, siteSlug, config.environment);
+  if (site instanceof Response) return site;
+  if (!store.deleteSiteSecret) {
+    return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+  const name = normalizeSecretNameForResponse(body.name);
+  if (name instanceof Response) return name;
+  try {
+    const secret = await deleteSiteSecretWithAudit(store, env, {
+      environment: config.environment,
+      siteId: site.id,
+      siteSlug: site.slug,
+      name,
+      actorId: actor.userId,
+      actorType: actor.type,
+      routeId: site.route?.id || null,
+      auditId: nextId(env, 'aud'),
+      deletedAt: readNow(env),
+    });
+    return jsonOk({ secret: formatSecret(site.slug, secret || { name }, { deleted: true }) });
+  } catch (error) {
+    if (isRuntimeConfigConflict(error)) {
+      return jsonError(
+        'RUNTIME_CONFIG_CHANGED',
+        'Runtime secret changed while it was being deleted.',
+        409,
+        'Retry the secret command.'
+      );
+    }
+    return jsonError(
+      'RUNTIME_CONFIG_UNSUPPORTED',
+      'Runtime secret store is unavailable.',
+      503,
+      'Check runtime secret store configuration.'
+    );
+  }
+}
+
+async function putSiteSecretWithAudit(store, env, input) {
+  if (typeof store.putSiteSecretWithAudit === 'function') return store.putSiteSecretWithAudit(input);
+  void env;
+  throw new Error('RUNTIME_SECRET_STORE_UNAVAILABLE');
+}
+
+async function deleteSiteSecretWithAudit(store, env, input) {
+  if (typeof store.deleteSiteSecretWithAudit === 'function') return store.deleteSiteSecretWithAudit(input);
+  void env;
+  throw new Error('RUNTIME_SECRET_STORE_UNAVAILABLE');
 }
 
 async function listSites(store, actor, environment) {
@@ -356,6 +481,57 @@ async function getOwnerSite(store, actor, siteId, environment) {
   return site;
 }
 
+async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
+  const slug = normalizeSlug(siteSlug);
+  const slugError = validateSlug(slug, environment);
+  if (slugError) return slugError;
+  const site = await store.findSiteBySlug(environment, slug);
+  if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
+  const visible = await store.getSiteForUser(site.id, actor.userId, actor, environment);
+  if (!visible) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug and token scope.');
+  if (!actorCanDeploy(actor, site)) {
+    return jsonError(
+      'DEPLOY_FORBIDDEN',
+      'Actor cannot manage runtime secrets for this site.',
+      403,
+      'Use a token scoped to deploy this site.'
+    );
+  }
+  return visible;
+}
+
+function actorCanDeploy(actor, site) {
+  if (!site) return false;
+  if (actor.type !== 'access_key') return site.ownerUserId === actor.userId;
+  if (!actor.siteId || actor.siteId !== site.id) return false;
+  return actor.scopes.includes('deploy:site');
+}
+
+function normalizeSecretNameForResponse(value) {
+  try {
+    return normalizeRuntimeSecretName(value);
+  } catch {
+    return jsonError('SECRET_NAME_INVALID', 'Secret name is invalid.', 400, 'Use a valid Worker binding name such as API_TOKEN.');
+  }
+}
+
+function formatSecret(siteSlug, secret, { deleted }) {
+  return {
+    site: siteSlug,
+    name: secret.name,
+    updated: !deleted,
+    deleted,
+  };
+}
+
+function isRuntimeConfigConflict(error) {
+  return error instanceof Error && error.message === 'SITE_SECRET_REVISION_CONFLICT';
+}
+
+function byteLength(value) {
+  return new globalThis.TextEncoder().encode(String(value)).byteLength;
+}
+
 function normalizeAclEntries(value, env) {
   if (!Array.isArray(value) || value.length > MAX_ACL_ENTRIES) {
     return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'Send an entries array with at most 200 items.');
@@ -530,6 +706,11 @@ function matchSiteAcl(pathname) {
 function matchSiteAclEntries(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/acl\/entries$/);
   return match ? match[1] : null;
+}
+
+function matchSiteSecrets(pathname) {
+  const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/secrets$/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 function matchSiteId(pathname) {

@@ -27,10 +27,10 @@ function readPagesDocs() {
     .join('\n');
 }
 
-test('XD Pages docs are split into indexed topic files', () => {
+test('XD Cell docs are split into indexed topic files', () => {
   const index = readRepoFile('docs/pages-v2-wfp-architecture.md');
 
-  assert.match(index, /本文是 XD Pages 架构文档索引/);
+  assert.match(index, /本文是 XD Cell 架构文档索引/);
   for (const file of splitDocPaths.slice(1)) {
     assert.match(index, new RegExp(escapeRegExp(file.replace('docs/', './'))), `${file} should be linked`);
     const lineCount = readRepoFile(file).split('\n').length;
@@ -123,7 +123,7 @@ test('ADR 0001 is an index over split topic files', () => {
   }
 });
 
-test('XD Pages architecture documents exact deploy workflow config names', () => {
+test('XD Cell architecture documents exact deploy workflow config names', () => {
   const doc = readPagesDocs();
 
   for (const name of [
@@ -145,13 +145,13 @@ test('XD Pages architecture documents exact deploy workflow config names', () =>
     assert.match(doc, new RegExp(escapeRegExp(name)), `${name} should be documented`);
   }
 
-  assert.match(doc, /Deploy XD Pages Production[\s\S]*workflow_dispatch/);
-  assert.match(doc, /Deploy XD Pages Staging[\s\S]*component=all/);
+  assert.match(doc, /Deploy XD Cell Production[\s\S]*workflow_dispatch/);
+  assert.match(doc, /Deploy XD Cell Staging[\s\S]*component=all/);
   assert.match(doc, /git ls-files --error-unmatch '\*sso\*\.md' # 期望失败/);
   assert.doesNotMatch(doc, /docs\/xd-sso\.md/);
 });
 
-test('XD Pages architecture release gate names the checked workflow and secret scripts', () => {
+test('XD Cell architecture release gate names the checked workflow and secret scripts', () => {
   const doc = readPagesDocs();
 
   assert.match(
@@ -163,7 +163,7 @@ test('XD Pages architecture release gate names the checked workflow and secret s
   assert.match(doc, /deploy-pages-v2-staging\.yml/);
 });
 
-test('XD Pages architecture keeps execution provider internal to the platform', () => {
+test('XD Cell architecture keeps execution provider internal to the platform', () => {
   const doc = readPagesDocs();
 
   for (const text of [
@@ -184,7 +184,7 @@ test('XD Pages architecture keeps execution provider internal to the platform', 
 
   assert.match(doc, /slot 兼容层不是用户可选 provider/);
   assert.match(doc, /CLI 不自动读取、不自动生成隐式项目绑定文件/);
-  assert.match(doc, /xd-cell deploy --config pages\.config\.json/);
+  assert.match(doc, /xd-cell deploy --config xd-cell\.config\.json/);
   assert.match(doc, /xd-cell deploy \.\/dist foo --token <token> --json/);
   assert.match(doc, /--visibility internal\|org\|acl\|owner\|disabled/);
   assert.match(doc, /未知 visibility，包括旧的 public，必须 fail closed/);

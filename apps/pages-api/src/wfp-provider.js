@@ -1,5 +1,6 @@
 import { createWfpClient, readWfpConfig } from '../../../packages/wfp-client/src/index.js';
 import { BINDINGS } from '../../../packages/pages-runtime-protocol/src/index.js';
+import { runtimeBindingsForProvider } from './runtime-config.js';
 
 export function createDeploymentProvider(env, config) {
   if (env.WFP_PROVIDER) return withWfpMetadata(env.WFP_PROVIDER);
@@ -16,7 +17,7 @@ export function createDeploymentProvider(env, config) {
         assetFiles: input.assetFiles,
         compatibilityDate: env.WFP_COMPATIBILITY_DATE,
         tags: ['pages-v2', config.environment, input.site.slug],
-        bindings: [kvGatewayServiceBinding(config.environment)],
+        bindings: [kvGatewayServiceBinding(config.environment), ...runtimeBindingsForProvider(input.runtimeBindings)],
       });
     },
     async verify(input) {

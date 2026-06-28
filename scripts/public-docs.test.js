@@ -49,12 +49,15 @@ test('README deploy examples use xd-cell CLI and automatic detection', () => {
   const readme = readDoc('README.md');
 
   assert.match(readme, /xd-cell deploy \.\/dist demo --visibility org/);
-  assert.match(readme, /fallback/);
-  assert.match(readme, /"worker": \{/);
-  assert.match(readme, /"entry": "\.\/worker\.mjs"/);
+  assert.match(readme, /xd-cell deploy --config xd-cell\.config\.json/);
+  assert.match(readme, /assets\.not_found_handling/);
+  assert.match(readme, /"main": "\.\/src\/index\.js"/);
+  assert.match(readme, /"assets": \{/);
+  assert.match(readme, /"vars": \{/);
   assert.doesNotMatch(readme, /PAGES_TOKEN/);
   assert.doesNotMatch(readme, /--preset/);
   assert.doesNotMatch(readme, /artifactKind/);
+  assert.doesNotMatch(readme, /"worker": \{|pages\.config\.json|--fallback </);
 });
 
 test('public docs describe config discovery without platform internals', () => {
@@ -64,7 +67,8 @@ test('public docs describe config discovery without platform internals', () => {
   ];
 
   for (const [name, doc] of docs) {
-    assert.match(doc, /pages\.config\.json/, `${name} mentions the standard config file`);
+    assert.match(doc, /xd-cell\.config\.json/, `${name} mentions the standard config file`);
+    assert.doesNotMatch(doc, /pages\.config\.json/, `${name} does not mention the old config file`);
     assert.doesNotMatch(doc, /不自动发现/, `${name} does not contradict config auto-discovery`);
     assert.doesNotMatch(
       doc,

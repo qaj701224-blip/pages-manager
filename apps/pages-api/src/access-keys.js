@@ -60,6 +60,14 @@ async function createAccessKey(request, env, config, store, actor) {
 
   const site = await store.getSiteForUser(siteId, actor.userId, actor, config.environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  if (scopes.some((scope) => scope !== 'read:site') && site.ownerUserId !== actor.userId) {
+    return jsonError(
+      'ACCESS_KEY_SITE_FORBIDDEN',
+      'Only the site owner can create deploy-capable access keys.',
+      403,
+      'Use the owner account or create a read-only access key.'
+    );
+  }
 
   const pepper = readActiveAccessKeyPepper(env);
   const keyId = nextId(env, 'ak');

@@ -35,7 +35,7 @@ export function buildCapacityExhaustedPayload({ environment, mentionUserId, curr
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${mention}*XD Pages Worker 池数量不足，请检查资源池容量。*`,
+          text: `${mention}*XD Cell Worker 池数量不足，请检查资源池容量。*`,
         },
       },
       {

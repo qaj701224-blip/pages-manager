@@ -1,11 +1,12 @@
 import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 
 import { authenticateApiRequest } from './auth.js';
-import { canonicalRequestHash, sha256HexForBytes } from './crypto.js';
+import { canonicalRequestHash, hashAccessKey, sha256HexForBytes } from './crypto.js';
 import { jsonError, jsonOk } from './http.js';
 import { newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
+import { normalizeRuntimeVars, runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
 
 const encoder = new globalThis.TextEncoder();
@@ -14,10 +15,10 @@ const MAX_DEPLOYMENT_UPLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_DEPLOYMENT_METADATA_BYTES = 4 * 1024 * 1024;
 const DEPLOYMENT_SHAPES = new Set(['assets-only', 'worker-only', 'worker-with-assets']);
 const ROUTING_MODES = new Set(['assets-only', 'worker-only', 'worker-first']);
-const FALLBACK_MODES = new Set(['auto', 'index', 'not-found']);
+const FALLBACK_MODES = new Set(['auto', 'index', 'not-found', 'none', 'single-page-application', '404-page']);
 const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
 const DENYLISTED_EXTENSIONS = new Set(['.pem', '.key']);
-const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Pages 平台保留项，请换一个业务站点名。';
+const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const CONTROL_ASSET_PATHS = new Set([
   '/_worker.js',
   '/_headers',
@@ -25,6 +26,7 @@ const CONTROL_ASSET_PATHS = new Set([
   '/_routes.json',
   '/.assetsignore',
   '/pages.config.json',
+  '/xd-cell.config.json',
 ]);
 
 export async function handleDeploymentsApi(request, env, config, store) {
@@ -91,7 +93,7 @@ async function createDeployment(request, env, config, store, actor) {
         'FALLBACK_INDEX_REQUIRES_INDEX_HTML',
         'Index fallback requires /index.html.',
         400,
-        'Upload index.html or use --fallback not-found.'
+        'Upload index.html or set assets.not_found_handling to 404-page.'
       );
     }
     if (error?.code === 'PUBLISH_PLAN_VERSION_UNSUPPORTED') {
@@ -99,7 +101,7 @@ async function createDeployment(request, env, config, store, actor) {
         'PUBLISH_PLAN_VERSION_UNSUPPORTED',
         'Publish plan version is unsupported.',
         400,
-        'Upgrade the XD Pages CLI and retry.'
+        'Upgrade the XD Cell CLI and retry.'
       );
     }
     if (error?.code === 'PUBLISH_PLAN_INVALID') {
@@ -113,6 +115,22 @@ async function createDeployment(request, env, config, store, actor) {
         'Run xd-cell deploy --dry-run and retry.'
       );
     }
+    if (error?.code === 'RUNTIME_VARS_INVALID') {
+      return jsonError(
+        'RUNTIME_VARS_INVALID',
+        'Runtime vars are invalid.',
+        400,
+        'Use non-sensitive string vars with valid Worker binding names.'
+      );
+    }
+    if (error?.code === 'RUNTIME_VARS_LIMIT_EXCEEDED') {
+      return jsonError(
+        'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+        'Runtime bindings exceed platform limits.',
+        400,
+        'Reduce vars or secret size/count and retry.'
+      );
+    }
     if (error?.code === 'CLI_UPLOAD_PROTOCOL_REQUIRED') return cliUploadProtocolRequired();
     return jsonError('INVALID_MULTIPART', 'Invalid multipart body.', 400, 'Run xd-cell deploy --dry-run and retry.');
   }
@@ -122,6 +140,10 @@ async function createDeployment(request, env, config, store, actor) {
   const clientContentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
   const decision = body.decision;
+  const workerRuntimeVarsProvided = decisionRequiresWorker(decision) && body.varsProvided;
+  const requestedRuntimeVars = workerRuntimeVarsProvided ? body.vars : undefined;
+  let runtimeVars = {};
+  let runtimeVarRecords = [];
   let artifactBundle;
   let assetManifest;
   let assetFiles;
@@ -188,19 +210,29 @@ async function createDeployment(request, env, config, store, actor) {
   const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
   if (routeSlugError) return routeSlugError;
   const siteId = site.id;
-  if (!actorCanDeploy(actor, siteId, 'deploy:site')) {
+  if (!actorCanDeploy(actor, site, 'deploy:site')) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
   }
-
-  const requestHash = await canonicalRequestHash({
-    operation: 'deploy',
-    siteId,
-    decision,
-    contentHash: canonicalContentHash,
-    artifactBundle,
-    assetManifest,
-    source,
-  });
+  let requestHash;
+  try {
+    requestHash = await canonicalRequestHash({
+      operation: 'deploy',
+      siteId,
+      decision,
+      contentHash: canonicalContentHash,
+      artifactBundle,
+      assetManifest,
+      source,
+      vars: workerRuntimeVarsProvided ? await runtimeConfigHashInput(env, requestedRuntimeVars, []) : undefined,
+    });
+  } catch {
+    return jsonError(
+      'RUNTIME_CONFIG_UNSUPPORTED',
+      'Runtime configuration is unavailable.',
+      503,
+      'Check runtime configuration and retry with a new Idempotency-Key.'
+    );
+  }
   const deploymentResult = await store.createDeploymentForIdempotency({
     id: nextId(env, 'dep'),
     environment: config.environment,
@@ -223,8 +255,101 @@ async function createDeployment(request, env, config, store, actor) {
   }
 
   const deployment = deploymentResult.deployment;
+  let runtimeSecrets = [];
+  let originalRuntimeVarRecords = [];
+  if (decisionRequiresWorker(decision)) {
+    if (typeof store.listEnabledSiteSecrets !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
+      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
+      return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime configuration is unavailable.', 503, 'Retry later.');
+    }
+    try {
+      originalRuntimeVarRecords = await store.listEnabledSiteVars(config.environment, siteId);
+      runtimeVarRecords = workerRuntimeVarsProvided
+        ? siteVarRecordsFromObject(requestedRuntimeVars)
+        : originalRuntimeVarRecords;
+      runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
+      runtimeSecrets = await store.listEnabledSiteSecrets(config.environment, siteId);
+    } catch {
+      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
+      return jsonError(
+        'RUNTIME_CONFIG_UNSUPPORTED',
+        'Runtime configuration is unavailable.',
+        503,
+        'Check runtime configuration and retry with a new Idempotency-Key.'
+      );
+    }
+  }
+  try {
+    validateRuntimeBindingQuotas(runtimeVars, runtimeSecrets);
+  } catch (error) {
+    await markRuntimeConfigDeploymentFailed(store, deployment.id, env, {
+      errorCode:
+        error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
+          ? 'RUNTIME_BINDING_NAME_CONFLICT'
+          : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+      errorMessage: 'Runtime bindings are invalid.',
+    });
+    if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
+      return jsonError(
+        'RUNTIME_BINDING_NAME_CONFLICT',
+        'Runtime binding names conflict.',
+        400,
+        'Use unique names for vars and site secrets.'
+      );
+    }
+    return jsonError(
+      'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+      'Runtime bindings exceed platform limits.',
+      400,
+      'Reduce vars or site secrets and retry.'
+    );
+  }
+  try {
+    await runtimeConfigHashInput(env, runtimeVars, runtimeSecrets);
+  } catch {
+    await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
+    return jsonError(
+      'RUNTIME_CONFIG_UNSUPPORTED',
+      'Runtime configuration is unavailable.',
+      503,
+      'Check runtime configuration and retry with a new Idempotency-Key.'
+    );
+  }
   const versionId = nextId(env, 'ver');
   const plannedWorkerName = workerNameFor(site, versionId, config.environment);
+  try {
+    validateRuntimeBindingQuotas(runtimeVars, runtimeSecrets);
+  } catch (error) {
+    await markRuntimeConfigDeploymentFailed(store, deployment.id, env, {
+      errorCode:
+        error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
+          ? 'RUNTIME_BINDING_NAME_CONFLICT'
+          : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+      errorMessage: 'Runtime bindings are invalid.',
+    });
+    if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
+      return jsonError(
+        'RUNTIME_BINDING_NAME_CONFLICT',
+        'Runtime binding names conflict.',
+        400,
+        'Use unique names for vars and site secrets.'
+      );
+    }
+    return jsonError(
+      'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+      'Runtime bindings exceed platform limits.',
+      400,
+      'Reduce vars or site secrets and retry.'
+    );
+  }
+  const runtimeBindings = {
+    vars: runtimeVars,
+    secrets: runtimeSecrets.map((secret) => ({
+      name: secret.name,
+      value: secret.value,
+      revision: secret.revision,
+    })),
+  };
   let provider;
   try {
     provider = createDeploymentProvider(env, config, store, site);
@@ -249,6 +374,29 @@ async function createDeployment(request, env, config, store, actor) {
     await markDeploymentStateWriteFailed(store, deployment.id, { env });
     return deploymentStateWriteFailed();
   }
+  const runtimeSnapshotError = decisionRequiresWorker(decision)
+    ? await assertRuntimeConfigSnapshotUnchanged(
+        store,
+        config.environment,
+        siteId,
+        workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
+        runtimeSecrets
+      )
+    : null;
+  if (runtimeSnapshotError) {
+    await store.updateDeployment(deployment.id, {
+      status: 'failed',
+      errorCode: runtimeSnapshotError.code,
+      errorMessage: runtimeSnapshotError.message,
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      runtimeSnapshotError.code,
+      runtimeSnapshotError.message,
+      runtimeSnapshotError.status,
+      runtimeSnapshotError.action
+    );
+  }
   let uploaded;
   try {
     uploaded = await provider.upload({
@@ -260,6 +408,7 @@ async function createDeployment(request, env, config, store, actor) {
       artifactBundle,
       assetManifest,
       assetFiles,
+      runtimeBindings,
     });
   } catch (error) {
     const code = publicProviderErrorCode(error, 'upload');
@@ -281,6 +430,30 @@ async function createDeployment(request, env, config, store, actor) {
   }
 
   const workerName = uploaded.workerName || plannedWorkerName;
+  const postUploadRuntimeSnapshotError = decisionRequiresWorker(decision)
+    ? await assertRuntimeConfigSnapshotUnchanged(
+        store,
+        config.environment,
+        siteId,
+        workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
+        runtimeSecrets
+      )
+    : null;
+  if (postUploadRuntimeSnapshotError) {
+    await cleanupUploadedWorker(provider, uploaded);
+    await store.updateDeployment(deployment.id, {
+      status: 'failed',
+      errorCode: postUploadRuntimeSnapshotError.code,
+      errorMessage: postUploadRuntimeSnapshotError.message,
+      completedAt: readNow(env),
+    });
+    return jsonError(
+      postUploadRuntimeSnapshotError.code,
+      postUploadRuntimeSnapshotError.message,
+      postUploadRuntimeSnapshotError.status,
+      postUploadRuntimeSnapshotError.action
+    );
+  }
   try {
     await store.updateDeployment(deployment.id, { status: 'uploaded' });
   } catch {
@@ -308,11 +481,86 @@ async function createDeployment(request, env, config, store, actor) {
     return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with a new Idempotency-Key.');
   }
 
+  if (workerRuntimeVarsProvided) {
+    if (typeof store.replaceSiteVars !== 'function') {
+      await cleanupUploadedWorker(provider, uploaded);
+      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
+      return runtimeConfigUnavailable();
+    }
+    const preCommitRuntimeSnapshotError = await assertRuntimeConfigSnapshotUnchanged(
+      store,
+      config.environment,
+      siteId,
+      originalRuntimeVarRecords,
+      runtimeSecrets
+    );
+    if (preCommitRuntimeSnapshotError) {
+      await cleanupUploadedWorker(provider, uploaded);
+      await store.updateDeployment(deployment.id, {
+        status: 'failed',
+        errorCode: preCommitRuntimeSnapshotError.code,
+        errorMessage: preCommitRuntimeSnapshotError.message,
+        completedAt: readNow(env),
+      });
+      return jsonError(
+        preCommitRuntimeSnapshotError.code,
+        preCommitRuntimeSnapshotError.message,
+        preCommitRuntimeSnapshotError.status,
+        preCommitRuntimeSnapshotError.action
+      );
+    }
+    try {
+      runtimeVarRecords = await store.replaceSiteVars({
+        environment: config.environment,
+        siteId,
+        vars: requestedRuntimeVars,
+        actorId: actor.userId,
+        updatedAt: readNow(env),
+        createId: () => nextId(env, 'var'),
+      });
+      runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
+    } catch {
+      await cleanupUploadedWorker(provider, uploaded);
+      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
+      return runtimeConfigUnavailable();
+    }
+  }
+  const committedRuntimeVarRecords = runtimeVarRecords;
+
   let version;
   let previousRoute;
   let route;
   try {
     await store.updateDeployment(deployment.id, { status: 'verified' });
+    previousRoute = await store.getRouteBySiteId(siteId, config.environment);
+    const preActivationRuntimeSnapshotError = decisionRequiresWorker(decision)
+      ? await assertRuntimeConfigSnapshotUnchanged(store, config.environment, siteId, runtimeVarRecords, runtimeSecrets)
+      : null;
+    if (preActivationRuntimeSnapshotError) {
+      await cleanupUploadedWorker(provider, uploaded);
+      await restoreSiteVarsAfterFailedDeployment(store, {
+        environment: config.environment,
+        siteId,
+        restoreVars: originalRuntimeVarRecords,
+        expectedVars: committedRuntimeVarRecords,
+        actorId: actor.userId,
+        updatedAt: readNow(env),
+        createId: () => nextId(env, 'var'),
+        enabled: workerRuntimeVarsProvided,
+      });
+      await store.updateDeployment(deployment.id, {
+        status: 'failed',
+        errorCode: preActivationRuntimeSnapshotError.code,
+        errorMessage: preActivationRuntimeSnapshotError.message,
+        completedAt: readNow(env),
+      });
+      return jsonError(
+        preActivationRuntimeSnapshotError.code,
+        preActivationRuntimeSnapshotError.message,
+        preActivationRuntimeSnapshotError.status,
+        preActivationRuntimeSnapshotError.action
+      );
+    }
     version = await store.createSiteVersion({
       id: versionId,
       siteId,
@@ -347,10 +595,15 @@ async function createDeployment(request, env, config, store, actor) {
           }))
         : null,
       canonicalContentHash,
+      varNamesJson: Object.keys(runtimeVars).sort(),
+      secretNamesJson: runtimeSecrets.map((secret) => secret.name).sort(),
+      runtimeConfigSnapshotJson: runtimeConfigSnapshot(
+        runtimeVarRecords,
+        await runtimeSecretSnapshotRecords(env, runtimeSecrets)
+      ),
       artifactAvailability: 'active',
       createdBy: actor.userId,
     });
-    previousRoute = await store.getRouteBySiteId(siteId, config.environment);
     await store.updateDeployment(deployment.id, {
       status: 'activating',
       versionId: version.id,
@@ -373,11 +626,66 @@ async function createDeployment(request, env, config, store, actor) {
     );
   } catch {
     await cleanupUploadedWorker(provider, uploaded);
+    await restoreSiteVarsAfterFailedDeployment(store, {
+      environment: config.environment,
+      siteId,
+      restoreVars: originalRuntimeVarRecords,
+      expectedVars: committedRuntimeVarRecords,
+      actorId: actor.userId,
+      updatedAt: readNow(env),
+      createId: () => nextId(env, 'var'),
+      enabled: workerRuntimeVarsProvided,
+    });
     await markDeploymentStateWriteFailed(store, deployment.id, { env, versionId: version?.id });
     return deploymentStateWriteFailed();
   }
   if (!route) {
+    const latestRoute = await store.getRouteBySiteId(siteId, config.environment);
+    const runtimeConfigChanged =
+      decisionRequiresWorker(decision) &&
+      latestRoute &&
+      previousRoute &&
+      latestRoute.routeGeneration === previousRoute.routeGeneration &&
+      latestRoute.policyVersion === previousRoute.policyVersion &&
+      latestRoute.activeVersionId === previousRoute.activeVersionId &&
+      (latestRoute.runtimeConfigGeneration || 0) !== (previousRoute.runtimeConfigGeneration || 0);
+    if (runtimeConfigChanged) {
+      await cleanupUploadedWorker(provider, uploaded);
+      await restoreSiteVarsAfterFailedDeployment(store, {
+        environment: config.environment,
+        siteId,
+        restoreVars: originalRuntimeVarRecords,
+        expectedVars: committedRuntimeVarRecords,
+        actorId: actor.userId,
+        updatedAt: readNow(env),
+        createId: () => nextId(env, 'var'),
+        enabled: workerRuntimeVarsProvided,
+      });
+      await store.updateDeployment(deployment.id, {
+        status: 'failed',
+        versionId: version.id,
+        errorCode: 'RUNTIME_CONFIG_CHANGED',
+        errorMessage: 'Runtime configuration changed while deployment was activating.',
+        completedAt: readNow(env),
+      });
+      return jsonError(
+        'RUNTIME_CONFIG_CHANGED',
+        'Runtime configuration changed while deployment was activating.',
+        409,
+        'Retry the deployment with a new Idempotency-Key.'
+      );
+    }
     await cleanupUploadedWorker(provider, uploaded);
+    await restoreSiteVarsAfterFailedDeployment(store, {
+      environment: config.environment,
+      siteId,
+      restoreVars: originalRuntimeVarRecords,
+      expectedVars: committedRuntimeVarRecords,
+      actorId: actor.userId,
+      updatedAt: readNow(env),
+      createId: () => nextId(env, 'var'),
+      enabled: workerRuntimeVarsProvided,
+    });
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -395,8 +703,27 @@ async function createDeployment(request, env, config, store, actor) {
   try {
     await writeSnapshot(env, store, { site, route, version });
   } catch {
-    await restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, route, config.environment);
-    await cleanupUploadedWorker(provider, uploaded);
+    const restoredRoute = await restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, route, config.environment);
+    await restoreSiteVarsAfterFailedDeployment(store, {
+      environment: config.environment,
+      siteId,
+      restoreVars: originalRuntimeVarRecords,
+      expectedVars: committedRuntimeVarRecords,
+      actorId: actor.userId,
+      updatedAt: readNow(env),
+      createId: () => nextId(env, 'var'),
+      enabled: workerRuntimeVarsProvided,
+    });
+    const restoredSnapshotWritten = await writeRestoredRouteSnapshotAfterFailure(
+      env,
+      store,
+      site,
+      restoredRoute,
+      config.environment
+    );
+    if (restoredSnapshotWritten) {
+      await cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, version.id, config.environment);
+    }
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -429,6 +756,169 @@ async function createDeployment(request, env, config, store, actor) {
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision }), 201);
 }
 
+async function runtimeConfigHashInput(env, vars = {}, secrets = []) {
+  return {
+    vars: await Promise.all(
+      Object.keys(vars)
+        .sort()
+        .map(async (name) => ({
+          name,
+          valueHash: await runtimeVarValueHash(env, name, vars[name]),
+        }))
+    ),
+    secrets: secrets
+      .map((secret) => ({
+        name: secret.name,
+        revision: secret.revision,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+async function runtimeSecretSnapshotRecords(env, secrets = []) {
+  return Promise.all(
+    secrets.map(async (secret) => ({
+      ...secret,
+      valueHash: await runtimeSecretValueHash(env, secret.name, secret.value),
+    }))
+  );
+}
+
+async function runtimeVarValueHash(env, name, value) {
+  return hashAccessKey(`xd-pages-runtime-var-v1\0${name}\0${value}`, readRuntimeConfigHashPepper(env));
+}
+
+async function runtimeSecretValueHash(env, name, value) {
+  return hashAccessKey(`xd-pages-runtime-secret-v1\0${name}\0${value}`, readRuntimeConfigHashPepper(env));
+}
+
+function readRuntimeConfigHashPepper(env) {
+  const explicit = env.RUNTIME_CONFIG_HASH_PEPPER;
+  if (typeof explicit === 'string' && explicit) return explicit;
+  const activePepperId = String(env.ACCESS_KEY_ACTIVE_PEPPER_ID || '').trim();
+  if (activePepperId) {
+    const registry = String(env.ACCESS_KEY_PEPPERS || '').trim();
+    for (const entry of registry.split(',')) {
+      const [pepperId, secretEnvName] = entry.split(':').map((part) => part.trim());
+      if (pepperId !== activePepperId || !secretEnvName) continue;
+      const value = env[secretEnvName];
+      if (typeof value === 'string' && value) return value;
+    }
+  }
+  const requestHashPepper = env.REQUEST_HASH_PEPPER;
+  if (typeof requestHashPepper === 'string' && requestHashPepper) return requestHashPepper;
+  if (!activePepperId) {
+    const registry = String(env.ACCESS_KEY_PEPPERS || '').trim();
+    for (const entry of registry.split(',')) {
+      const [, secretEnvName] = entry.split(':').map((part) => part.trim());
+      if (!secretEnvName) continue;
+      const value = env[secretEnvName];
+      if (typeof value === 'string' && value) return value;
+    }
+  }
+  throw new Error('RUNTIME_CONFIG_HASH_PEPPER_REQUIRED');
+}
+
+async function assertRuntimeConfigSnapshotUnchanged(store, environment, siteId, expectedVars, expectedSecrets) {
+  let actualSecrets;
+  let actualVars;
+  try {
+    actualVars = await store.listEnabledSiteVars(environment, siteId);
+    actualSecrets = await store.listEnabledSiteSecrets(environment, siteId);
+  } catch {
+    return {
+      code: 'RUNTIME_CONFIG_UNSUPPORTED',
+      message: 'Runtime configuration is unavailable.',
+      status: 503,
+      action: 'Check runtime configuration and retry with a new Idempotency-Key.',
+    };
+  }
+  if (runtimeVarSnapshotsEqual(expectedVars, actualVars) && runtimeSecretSnapshotsEqual(expectedSecrets, actualSecrets)) {
+    return null;
+  }
+  return {
+    code: 'RUNTIME_CONFIG_CHANGED',
+    message: 'Runtime configuration changed while deployment was starting.',
+    status: 409,
+    action: 'Retry the deployment with a new Idempotency-Key.',
+  };
+}
+
+function runtimeVarSnapshotsEqual(left = [], right = []) {
+  const normalizedLeft = runtimeVarSnapshot(left);
+  const normalizedRight = runtimeVarSnapshot(right);
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((entry, index) => {
+    const other = normalizedRight[index];
+    return entry.name === other.name && entry.value === other.value && entry.revision === other.revision;
+  });
+}
+
+function runtimeVarSnapshot(vars = []) {
+  const records = Array.isArray(vars)
+    ? vars
+    : Object.keys(vars || {}).map((name) => ({ name, value: vars[name], revision: 0 }));
+  return records
+    .map((record) => ({
+      name: record.name,
+      value: record.value,
+      revision: Number(record.revision || 0),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function runtimeSecretSnapshotsEqual(left = [], right = []) {
+  const normalizedLeft = runtimeSecretSnapshot(left);
+  const normalizedRight = runtimeSecretSnapshot(right);
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((entry, index) => {
+    const other = normalizedRight[index];
+    return entry.name === other.name && entry.revision === other.revision;
+  });
+}
+
+function siteVarRecordsFromObject(vars = {}) {
+  return Object.keys(vars)
+    .sort()
+    .map((name) => ({ name, value: vars[name], revision: 0 }));
+}
+
+function runtimeVarsFromRecords(records = []) {
+  return Object.fromEntries(records.map((record) => [record.name, record.value]));
+}
+
+async function restoreSiteVarsAfterFailedDeployment(
+  store,
+  { environment, siteId, restoreVars, expectedVars, actorId, updatedAt, createId, enabled } = {}
+) {
+  if (!enabled || typeof store.replaceSiteVars !== 'function') return;
+  try {
+    if (typeof store.listEnabledSiteVars === 'function') {
+      const currentVars = await store.listEnabledSiteVars(environment, siteId);
+      if (!runtimeVarSnapshotsEqual(currentVars, expectedVars)) return;
+    }
+    await store.replaceSiteVars({
+      environment,
+      siteId,
+      vars: runtimeVarsFromRecords(restoreVars),
+      actorId,
+      updatedAt,
+      createId,
+    });
+  } catch {
+    // Best effort: the original deployment failure is still the user-facing error.
+  }
+}
+
+function runtimeSecretSnapshot(secrets = []) {
+  return secrets
+    .map((secret) => ({
+      name: secret.name,
+      revision: Number(secret.revision || 0),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function isMultipartRequest(request) {
   const mediaType = (request.headers.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase();
   return mediaType === 'multipart/form-data';
@@ -457,6 +947,8 @@ async function readPublishPlanMultipartBody(form) {
     assetManifest,
     workerModules,
   });
+  const workerRuntimeVarsProvided =
+    decisionRequiresWorker(decision) && Object.prototype.hasOwnProperty.call(metadata, 'vars');
 
   return {
     siteId: metadata.siteId,
@@ -468,7 +960,17 @@ async function readPublishPlanMultipartBody(form) {
     assetManifest: assetManifestObjectForProvider(assetManifest),
     assetFiles: await assetFilesForProvider(assetManifest, uploadedParts),
     artifactBundle: await artifactBundleForProvider(metadata, workerModules, uploadedParts),
+    vars: workerRuntimeVarsProvided ? normalizePublishRuntimeVars(metadata.vars) : {},
+    varsProvided: workerRuntimeVarsProvided,
   };
+}
+
+function normalizePublishRuntimeVars(value) {
+  try {
+    return normalizeRuntimeVars(value);
+  } catch (error) {
+    throwCoded(error?.message === 'RUNTIME_VARS_LIMIT_EXCEEDED' ? 'RUNTIME_VARS_LIMIT_EXCEEDED' : 'RUNTIME_VARS_INVALID');
+  }
 }
 
 async function parseSingleMetadata(form) {
@@ -627,8 +1129,8 @@ function normalizePublishPlanDecision({ publishPlan, requestedFallback, assetMan
   }
 
   if (deploymentShape === 'worker-only') {
-    if (requested !== 'auto' || publishPlan.resolvedFallback !== null) throwCoded('FALLBACK_REQUIRES_ASSETS');
-  } else if (publishPlan.resolvedFallback !== 'index' && publishPlan.resolvedFallback !== 'not-found') {
+    if (!['auto', 'none'].includes(requested) || publishPlan.resolvedFallback !== null) throwCoded('FALLBACK_REQUIRES_ASSETS');
+  } else if (!['index', 'not-found', 'none'].includes(publishPlan.resolvedFallback)) {
     throwCoded('PUBLISH_PLAN_INVALID');
   }
   if (publishPlan.resolvedFallback === 'index' && !assetManifest.some((asset) => asset.path === '/index.html')) {
@@ -644,7 +1146,12 @@ function normalizePublishPlanDecision({ publishPlan, requestedFallback, assetMan
   }
   if (workerEntry && !workerModules.some((module) => module.moduleName === workerEntry)) throwCoded('PUBLISH_PLAN_INVALID');
 
-  const expectedNotFoundHandling = publishPlan.resolvedFallback === 'index' ? 'single-page-application' : '404-page';
+  const expectedNotFoundHandling =
+    publishPlan.resolvedFallback === 'index'
+      ? 'single-page-application'
+      : publishPlan.resolvedFallback === 'not-found'
+        ? '404-page'
+        : 'none';
   const assetsConfig = deploymentShape === 'worker-only' ? null : { notFoundHandling: expectedNotFoundHandling };
   if (publishPlan.assetsConfig?.notFoundHandling && publishPlan.assetsConfig.notFoundHandling !== expectedNotFoundHandling) {
     throwCoded('PUBLISH_PLAN_INVALID');
@@ -771,11 +1278,19 @@ function publishPlanFromDecision(decision) {
     routingMode: decision.routingMode,
     workerEntry: decision.workerEntry,
     workerMainModuleName: decision.workerEntry,
-    assetsConfig: decision.resolvedFallback
-      ? {
-          notFoundHandling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
-        }
-      : null,
+    assetsConfig: assetsConfigForDecisionHash(decision),
+  };
+}
+
+function assetsConfigForDecisionHash(decision) {
+  if (decision.deploymentShape === 'worker-only') return null;
+  return {
+    notFoundHandling:
+      decision.resolvedFallback === 'index'
+        ? 'single-page-application'
+        : decision.resolvedFallback === 'not-found'
+          ? '404-page'
+          : 'none',
   };
 }
 
@@ -919,12 +1434,11 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   if (!version) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
   const requestedSiteError = await validateRequestedRollbackSite(store, version, body, config.environment);
   if (requestedSiteError) return requestedSiteError;
-  if (!actorCanDeploy(actor, version.siteId, 'rollback:site')) {
+  const site = await store.getSiteForUser(version.siteId, actor.userId, actor, config.environment);
+  if (!site || !actorCanDeploy(actor, site, 'rollback:site')) {
     return jsonError('ROLLBACK_FORBIDDEN', 'Actor cannot rollback this site.', 403, 'Use a token scoped to this site.');
   }
 
-  const site = await store.getSiteForUser(version.siteId, actor.userId, actor, config.environment);
-  if (!site) return jsonError('VERSION_NOT_FOUND', 'Version not found.', 404, 'Check the version id.');
   const versionAvailabilityError = await validateRollbackVersion(store, version, config.environment);
   if (versionAvailabilityError) return versionAvailabilityError;
   const currentRoute = await store.getRouteBySiteId(site.id, config.environment);
@@ -992,7 +1506,8 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
   try {
     await writeSnapshot(env, store, { site, route, version });
   } catch {
-    await restoreSiteRouteAfterSnapshotFailure(store, site.id, currentRoute, route, config.environment);
+    const restoredRoute = await restoreSiteRouteAfterSnapshotFailure(store, site.id, currentRoute, route, config.environment);
+    await writeRestoredRouteSnapshotAfterFailure(env, store, site, restoredRoute, config.environment);
     await store.updateDeployment(deploymentResult.deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -1162,7 +1677,12 @@ function formatVersionDecision(version) {
 function assetsConfigForDecisionStorage(decision) {
   if (!decisionRequiresAssets(decision)) return null;
   return {
-    not_found_handling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
+    not_found_handling:
+      decision.resolvedFallback === 'index'
+        ? 'single-page-application'
+        : decision.resolvedFallback === 'not-found'
+          ? '404-page'
+          : 'none',
     ...(decision.routingMode === 'worker-first' ? { run_worker_first: true } : {}),
   };
 }
@@ -1194,6 +1714,34 @@ async function restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute
   return store.restoreSiteRoute(siteId, previousRoute, environment);
 }
 
+async function writeRestoredRouteSnapshotAfterFailure(env, store, site, route, environment) {
+  if (!route) return false;
+  const version = route.activeVersionId
+    ? await store.getSiteVersion(route.activeVersionId, environment)
+    : inactiveRouteVersion(route);
+  if (!version && route.routeStatus === 'active') return false;
+  try {
+    await writeSnapshot(env, store, { site, route, version });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function inactiveRouteVersion(route) {
+  return {
+    id: null,
+    executionProvider: route.executionProvider,
+    dispatchType: route.dispatchType,
+    dispatchBindingName: route.dispatchBindingName,
+    slotId: route.slotId,
+    contentHash: null,
+    deploymentShape: 'inactive',
+    resolvedFallback: null,
+    routingMode: null,
+  };
+}
+
 async function cleanupUploadedWorker(provider, uploaded) {
   if (typeof provider?.delete !== 'function') return;
   try {
@@ -1201,6 +1749,21 @@ async function cleanupUploadedWorker(provider, uploaded) {
   } catch {
     // Best-effort cleanup must not hide the original deployment failure.
   }
+}
+
+async function cleanupUploadedWorkerIfInactive(store, provider, uploaded, siteId, versionId, environment) {
+  const route = await store.getRouteBySiteId(siteId, environment);
+  if (routeReferencesUploadedWorker(route, uploaded, versionId)) return;
+  return cleanupUploadedWorker(provider, uploaded);
+}
+
+function routeReferencesUploadedWorker(route, uploaded, versionId) {
+  if (!route || !uploaded) return false;
+  return (
+    route.activeVersionId === versionId ||
+    (uploaded.workerName && route.workerName === uploaded.workerName) ||
+    (uploaded.slotId && route.slotId === uploaded.slotId)
+  );
 }
 
 async function cleanupPreviousNormalWorkerSlot(provider, previousRoute, activeRoute, env) {
@@ -1269,6 +1832,24 @@ async function markDeploymentStateWriteFailed(store, deploymentId, { env, versio
   }
 }
 
+async function markRuntimeConfigDeploymentFailed(
+  store,
+  deploymentId,
+  env,
+  { errorCode = 'RUNTIME_CONFIG_UNSUPPORTED', errorMessage = 'Runtime configuration is unavailable.' } = {}
+) {
+  try {
+    await store.updateDeployment(deploymentId, {
+      status: 'failed',
+      errorCode,
+      errorMessage,
+      completedAt: readNow(env || {}),
+    });
+  } catch {
+    // Best-effort status update after a runtime config failure.
+  }
+}
+
 function deploymentStateWriteFailed() {
   return jsonError(
     'DEPLOYMENT_STATE_WRITE_FAILED',
@@ -1278,20 +1859,30 @@ function deploymentStateWriteFailed() {
   );
 }
 
+function runtimeConfigUnavailable() {
+  return jsonError(
+    'RUNTIME_CONFIG_UNSUPPORTED',
+    'Runtime configuration is unavailable.',
+    503,
+    'Check runtime configuration and retry with a new Idempotency-Key.'
+  );
+}
+
 function publicProviderErrorCode(error, step) {
   if (error?.code === 'SLOT_CAPACITY_EXHAUSTED') return 'DEPLOYMENT_CAPACITY_EXHAUSTED';
   return step === 'upload' ? 'DEPLOYMENT_UPLOAD_FAILED' : 'DEPLOYMENT_VERIFY_FAILED';
 }
 
-function actorCanDeploy(actor, siteId, requiredScope) {
-  if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return false;
-  if (actor.type === 'access_key' && !actor.scopes.includes(requiredScope)) return false;
-  return true;
+function actorCanDeploy(actor, site, requiredScope) {
+  if (!site) return false;
+  if (actor.type !== 'access_key') return site.ownerUserId === actor.userId;
+  if (!actor.siteId || actor.siteId !== site.id) return false;
+  return actor.scopes.includes(requiredScope);
 }
 
 function actorCanReadSite(actor, siteId) {
   if (actor.type !== 'access_key') return true;
-  if (actor.siteId && actor.siteId !== siteId) return false;
+  if (!actor.siteId || actor.siteId !== siteId) return false;
   return actor.scopes.includes('read:site');
 }
 
@@ -1399,7 +1990,7 @@ function idempotencyConflict() {
 function cliUploadProtocolRequired() {
   return jsonError(
     'CLI_UPLOAD_PROTOCOL_REQUIRED',
-    'Deployment uploads must be generated by the XD Pages CLI.',
+    'Deployment uploads must be generated by the XD Cell CLI.',
     400,
     'Run `xd-cell deploy` or `xd-cell deploy --dry-run --json` and retry.'
   );

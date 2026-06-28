@@ -2,7 +2,7 @@
 
 `apps/server` 是 pages-manager v1 legacy 管理 API Worker，服务旧 `workers.xd.team` 链路。
 
-当前主线是 XD Pages v2，位于 `apps/pages-*` 和 `packages/*`。本目录只做必要维护、bugfix 和安全修复；新能力不要写回 v1。
+当前主线是 XD Cell v2，位于 `apps/pages-*` 和 `packages/*`。本目录只做必要维护、bugfix 和安全修复；新能力不要写回 v1。
 
 ## 维护入口
 

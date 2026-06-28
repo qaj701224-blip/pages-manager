@@ -10,7 +10,7 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
     ownerUserId: site.ownerUserId,
     requiredSessionVersion: site.requiredSessionVersion || 1,
     runtime: route.runtime,
-    executionProvider: route.executionProvider || version.executionProvider || executionProviderFromRuntime(route.runtime),
+    executionProvider: route.executionProvider || version?.executionProvider || executionProviderFromRuntime(route.runtime),
     workerName: route.workerName,
     dispatch: buildDispatchSnapshot(route, version),
     kv: {
@@ -18,10 +18,10 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
       scopes: ['kv:get', 'kv:set', 'kv:delete', 'kv:list'],
     },
     activeVersionId: route.activeVersionId,
-    contentHash: version.contentHash,
-    deploymentShape: version.deploymentShape,
-    resolvedFallback: version.resolvedFallback,
-    routingMode: version.routingMode,
+    contentHash: version?.contentHash || null,
+    deploymentShape: version?.deploymentShape || (route.routeStatus === 'active' ? null : 'inactive'),
+    resolvedFallback: version?.resolvedFallback || null,
+    routingMode: version?.routingMode || null,
     visibility: route.visibility,
     policyVersion: route.policyVersion,
     routeGeneration: route.routeGeneration,
@@ -32,12 +32,12 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
 }
 
 function buildDispatchSnapshot(route, version) {
-  const dispatchType = route.dispatchType || version.dispatchType || dispatchTypeFromExecutionProvider(route.executionProvider);
+  const dispatchType = route.dispatchType || version?.dispatchType || dispatchTypeFromExecutionProvider(route.executionProvider);
   if (dispatchType === 'service-binding') {
     return {
       type: 'service-binding',
-      slotId: route.slotId || version.slotId || null,
-      bindingName: route.dispatchBindingName || version.dispatchBindingName,
+      slotId: route.slotId || version?.slotId || null,
+      bindingName: route.dispatchBindingName || version?.dispatchBindingName,
     };
   }
   return { type: 'dispatch-namespace' };

@@ -145,7 +145,7 @@ test('confirm requires auth_session and manually entered device code', async () 
   assert.match(response.headers.get('Content-Type'), /text\/html/);
   const text = await response.clone().text();
   assert.match(text, /CLI 登录已完成/);
-  assert.match(text, /可以关闭这个浏览器页面，回到终端继续使用 XD Pages/);
+  assert.match(text, /可以关闭这个浏览器页面，回到终端继续使用 XD Cell/);
   assert.match(text, /状态：已授权/);
   assertNoCoolToneFragments(text);
   assert.equal(text.includes(confirmToken), false);

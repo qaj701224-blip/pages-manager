@@ -22,6 +22,9 @@ ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"
 ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"
 IP_ALLOWLIST = "__IP_ALLOWLIST__"
 
+# Required Worker secret:
+# - SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets.
+
 [[d1_databases]]
 binding = "PAGES_METADATA"
 database_name = "pages-v2-metadata-staging"

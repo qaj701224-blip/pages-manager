@@ -9,11 +9,54 @@ export function markdownResponse(body) {
 }
 
 export function buildSkill(config) {
-  const staging = config.environment === 'staging';
-  const envSetup = staging
-    ? `\n当前文档来自 staging API。执行会联网或会修改远端状态的命令时必须显式使用 \`--env staging\`，或先运行：\n\n\`\`\`bash\nxd-cell env staging\n\`\`\`\n`
-    : '';
-  const envFlag = staging ? ' --env staging' : '';
+  const stagingNotice =
+    config.environment === 'staging'
+      ? `
+## Staging 注意
+
+当前文档来自 staging API。普通 \`xd-cell\` CLI 默认操作 production；staging 仅用于平台维护者受控验证。不要从本页复制发布、访问控制或 secrets 命令直接操作 staging，请使用维护流程提供的专用入口。
+`
+      : '';
+  const commandGuide =
+    config.environment === 'staging'
+      ? `## 发布
+
+staging 公共 skill 只提供能力边界说明，不提供可直接复制执行的 deploy / access / secrets 命令。
+`
+      : `## 发布
+
+\`\`\`bash
+xd-cell detect <entry> --json
+xd-cell deploy <entry> <site> --dry-run --json
+xd-cell deploy <entry> <site> --visibility org
+xd-cell deploy --config xd-cell.config.json
+xd-cell status <site>
+xd-cell open <site>
+xd-cell access get <site>
+xd-cell access set <site> --visibility acl --email user@xd.com
+xd-cell access grant <site> --department "心动/技术平台部"
+xd-cell access revoke <site> --email user@xd.com
+xd-cell secrets put <site> API_TOKEN
+echo "$API_TOKEN" | xd-cell secrets put <site> API_TOKEN --stdin
+xd-cell secrets delete <site> API_TOKEN
+\`\`\`
+`;
+  const loginGuide =
+    config.environment === 'staging'
+      ? `staging 登录请使用维护流程提供的专用入口。`
+      : `优先使用浏览器登录：
+
+\`\`\`bash
+xd-cell login
+\`\`\`
+
+agent 或 CI 场景可以使用平台签发的 API token。推荐通过环境变量传入，避免每次命令显式写 token：
+
+\`\`\`bash
+export XD_CELL_API_TOKEN=<token>
+xd-cell whoami --json
+\`\`\``;
+
   return `---
 name: xd-cell
 description: Deploy XD Cell sites through the xd-cell CLI with automatic artifact detection.
@@ -29,47 +72,29 @@ version: 0.1.0
 - API: \`${config.apiBaseUrl}\`
 - Auth: \`${config.authBaseUrl}\`
 - Site suffix: \`${config.siteDomainSuffix}\`
-${envSetup}
+${stagingNotice}
 
 ## 登录
 
-优先使用浏览器登录：
+${loginGuide}
 
-\`\`\`bash
-xd-cell login${envFlag}
-\`\`\`
+不要把 API token、CLI token、cookie、SSO code、secret value 或平台能力写入项目文件、日志、README、截图或聊天消息。
 
-CI 或 agent 环境使用平台签发的发布 token：
-
-\`\`\`bash
-xd-cell deploy <dir> <site>${envFlag} --token <token> --json
-\`\`\`
-
-不要把 CLI token、发布 token、cookie、SSO code 或平台能力写入项目文件、日志、README、截图或聊天消息。
-
-## 发布
-
-\`\`\`bash
-xd-cell detect <dir> --json
-xd-cell deploy <dir> <site>${envFlag} --dry-run --json
-xd-cell deploy <dir> <site>${envFlag} --visibility org
-xd-cell deploy${envFlag} --config pages.config.json
-xd-cell status <site>${envFlag}
-xd-cell open <site>${envFlag}
-xd-cell rollback <site> <version-id>${envFlag}
-xd-cell access get <site>${envFlag}
-xd-cell access set <site>${envFlag} --visibility acl --email user@xd.com
-xd-cell access grant <site>${envFlag} --department "心动/技术平台部"
-xd-cell access revoke <site>${envFlag} --email user@xd.com
-\`\`\`
+${commandGuide}
 
 可见性只使用：\`internal\`、\`org\`、\`acl\`、\`owner\`、\`disabled\`。第一版所有可见性都受公司网络 / VPN / 办公网出口 IP allowlist 约束。
 \`acl\` 使用邮箱和完整部门路径授权，部门路径默认包含子部门；站点 owner 在非 \`disabled\` 状态下隐式可访问。
-\`pages.config.json\` 会在当前目录自动发现；也可以用 \`--config <file>\` 显式指定其它配置文件。
-配置文件不写回、不保存到本地 profile，且不能包含 token、发布 token、cookie 或 secret。
-配置文件可包含 \`site\`、\`source\`、\`fallback\` 和 \`worker.entry\`；命令行位置参数和 flag 会覆盖配置文件里的同名发布意图。
-默认使用 \`fallback: "auto"\`，让 CLI 自动判断目录行为。
-使用 \`--token <token>\` 时，发布 token 只对本次命令生效，CLI 不应把它写入本地状态。
+
+\`xd-cell.config.json\` 是发布模板。未传 \`--config\` 时，CLI 只自动读取当前目录的 \`xd-cell.config.json\`，不会读取父目录。
+模板只能包含非敏感字段，例如 \`name\`、\`main\`、\`assets.directory\`、\`assets.not_found_handling\`、\`vars\`、\`visibility\`。
+\`vars\` 是站点级当前 runtime config，由 Worker deploy 时的 \`xd-cell.config.json\` 同步。
+省略 \`vars\` 会沿用站点当前值，显式 \`"vars": {}\` 会在下一次 Worker deploy 清空。
+secret value 使用 \`xd-cell secrets put/delete\` 管理，不写入配置文件。
+静态资源未命中行为只通过 \`assets.not_found_handling\` 配置。
+runtime bindings 只注入 Worker 发布；单个 var / secret value 当前限制为 8 KiB，单次 Worker 发布最多 64 个 runtime bindings。
+站点发布权限是高信任权限：能发布 Worker 代码，也能设置并使用该站点 secrets；只读成员不能创建 deploy-capable access key。
+
+使用 token 时，\`--token <token>\` 只对本次命令生效；\`XD_CELL_API_TOKEN\` 只来自当前进程环境，不写入本地 profile。
 
 ## 硬性规则
 
@@ -86,12 +111,35 @@ export function buildReadme(config) {
     config.environment === 'staging'
       ? `https://demo-staging.${config.siteDomainSuffix}`
       : `https://demo.${config.siteDomainSuffix}`;
+  const stagingNotice =
+    config.environment === 'staging'
+      ? `
+> 当前 README 来自 staging API。普通 \`xd-cell\` CLI 默认操作 production；staging 仅供平台维护者通过受控流程验证，不在公开 README 中提供可复制的发布 / secrets 命令。
+`
+      : '';
+  const commandGuide =
+    config.environment === 'staging'
+      ? `staging 命令请使用维护流程提供的专用入口。`
+      : `\`\`\`bash
+xd-cell login
+xd-cell detect ./dist --json
+xd-cell deploy ./dist demo --dry-run --json
+xd-cell deploy ./dist demo --visibility org
+xd-cell deploy --config xd-cell.config.json
+xd-cell status demo
+xd-cell open demo
+xd-cell access get demo
+xd-cell access set demo --visibility acl --email user@xd.com
+xd-cell secrets put demo API_TOKEN
+echo "$API_TOKEN" | xd-cell secrets put demo API_TOKEN --stdin
+xd-cell secrets delete demo API_TOKEN
+\`\`\``;
 
   return `# XD Cell
 
 XD Cell 是内部站点发布平台。用户通过 \`xd-cell\` CLI 发布构建目录或带自定义 Worker 入口的站点；平台负责登录、发布鉴权、子站 SSO、访问策略和运行隔离。
 
-## 当前环境
+## 当前入口
 
 | 配置 | 值 |
 | ---- | -- |
@@ -99,26 +147,16 @@ XD Cell 是内部站点发布平台。用户通过 \`xd-cell\` CLI 发布构建�
 | Auth | \`${config.authBaseUrl}\` |
 | Site suffix | \`${config.siteDomainSuffix}\` |
 | Example site | \`${sampleHost}\` |
+${stagingNotice}
 
 ## 常用命令
 
-\`\`\`bash
-xd-cell login
-xd-cell detect ./dist --json
-xd-cell deploy ./dist demo --dry-run --json
-xd-cell deploy ./dist demo --visibility org
-xd-cell deploy --config pages.config.json
-xd-cell status demo
-xd-cell open demo
-xd-cell rollback demo <version-id>
-xd-cell access get demo
-xd-cell access set demo --visibility acl --email user@xd.com
-xd-cell access grant demo --department "心动/技术平台部"
-\`\`\`
+${commandGuide}
 
-CI 使用显式 \`--token <token>\` 和站点名位置参数，不要在仓库中保存发布 token 或 CLI token。
-\`pages.config.json\` 会在当前目录自动发现；也可以用 \`--config <file>\` 显式指定其它配置文件。
-配置文件不写回、不保存到本地 profile，且不能包含敏感字段。普通发布保持 \`fallback: "auto"\`。
+CI 或 agent 场景可以设置 \`XD_CELL_API_TOKEN\`，不要在仓库中保存 API token、CLI token 或 secret value。
+\`xd-cell.config.json\` 只保存非敏感发布模板字段。
+\`vars\` 是站点级当前 runtime config，由 Worker deploy 同步，secret value 使用 \`xd-cell secrets put/delete\` 管理。
+runtime bindings 只注入 Worker 发布；单个 var / secret value 当前限制为 8 KiB，单次 Worker 发布最多 64 个 runtime bindings。
 
 ## 安全边界
 

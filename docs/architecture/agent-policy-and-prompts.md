@@ -93,7 +93,7 @@ Slack Agent 负责“人和需求”：
 - 识别权限、owner scope、站点管理关系。
 - 需要时反问澄清。
 - 输出结构化意图；由 gateway / worker 创建 `PublishingJob`、创建 issue 或追加 issue comment。
-- 作为 XD Pages 的任务管家和问题诊断入口，解释当前任务状态、关联 issue / PR / preview、失败阶段、GitHub Actions 状态和下一步建议。
+- 作为 XD Cell 的任务管家和问题诊断入口，解释当前任务状态、关联 issue / PR / preview、失败阶段、GitHub Actions 状态和下一步建议。
 
 Slack Agent 对外文案必须使用产品语义。用户不需要知道 gateway、worker、MySQL、Redis、callback、status card、message binding、ECS 服务名或内部 job/session 字段；这些只能进入受控诊断数据、日志、审计或内部链接。Slack 可见回复应围绕“任务、阶段、Issue、PR、Preview、Workflow、失败原因、建议操作”组织。
 

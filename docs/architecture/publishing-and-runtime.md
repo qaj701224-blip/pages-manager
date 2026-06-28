@@ -1,4 +1,4 @@
-# XD Pages 发布与运行时模型
+# XD Cell 发布与运行时模型
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
@@ -33,7 +33,7 @@ access permission: 谁能访问子站内容
 ### 首次访问受保护子站
 
 ```text
-1. Browser -> https://foo.pages.xd.team/
+1. Browser -> https://foo.workers.xd.team/
 2. pages-router 校验客户端 IP 命中公司 allowlist
 3. pages-router 读取 route snapshot，发现需要登录
 4. pages-router 检查当前 host 的 site_session，未命中
@@ -61,7 +61,7 @@ access permission: 谁能访问子站内容
 ### 后续访问快路径
 
 ```text
-1. Browser -> https://foo.pages.xd.team/
+1. Browser -> https://foo.workers.xd.team/
 2. pages-router 校验客户端 IP 命中公司 allowlist
 3. pages-router 本地校验 site_session
 4. pages-router 读取 L1/KV route snapshot
@@ -106,7 +106,7 @@ absolute TTL: 30 天
 ### site_session
 
 ```text
-Host: foo.pages.xd.team
+Host: foo.workers.xd.team
 Cookie: __Host-pages_site_session
 属性: Secure; HttpOnly; SameSite=Lax; Path=/
 idle TTL: 1-3 天
@@ -152,21 +152,21 @@ iat / exp
 
 ### CLI 本地状态与配置
 
-CLI 只适配 `pages.xd.team` 平台。它不发布、不管理、不回退兼容旧版 `workers.xd.team` 站点；旧版继续使用现有 API、skill 和发布流程。
+CLI 只适配 XD Cell v2 控制面，即固定的 `api.pages.xd.team` / `auth.pages.xd.team` API/Auth host。新建 v2 子站默认发布到 `workers.xd.team` 后缀；存量 `pages.xd.team` route 保持既有 hostname，不由 CLI 在本地推导。CLI 不调用、不兼容 v1 `api.workers.xd.team` 和 `apps/server` 旧发布链路。
 
 当前 CLI 落地为 `apps/pages-cli` workspace package，npm 包名为 `@xd-cell/cli`，bin 名称为 `xd-cell`。CLI 只负责本地 UX、凭据读取、显式配置读取、artifact hash 和调用 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
 
-CLI 使用 XD Pages 平台签发的 token，不直接持有心动 SSO `access_token`：
+CLI 使用 XD Cell 平台签发的 token，不直接持有心动 SSO `access_token`：
 
 - `xd-cell login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
-- `xd-cell login --env staging` 登录 staging；默认登录 production。
+- 普通用户 CLI 默认登录 production；staging 入口只存在于维护者受控流程，不进入普通 help / skill / README。
 - `xd-cell login --token <token>` 先调用 `/.xd-pages/api/auth/whoami` 验证该 access key 有效，再保存到本地 secret store。
 - 其它需要访问 API 的命令支持全局 `--token <token>`；它只用于本次命令，不保存、不读取本地登录态。
 - CLI token 支持过期、scope、吊销和本地安全存储。
 - CI 默认使用 `access key`，不使用个人浏览器 session。`service token` 只有在后续需要组织级机器人身份时再单独设计，不混入 MVP。
-- CLI token、access key 和本地 profile 必须按 environment 隔离保存，staging token 不能调用 production API。
-- CLI 用户侧内置环境只展示 production/staging：`api.pages.xd.team`、`api-staging.pages.xd.team`、`auth.pages.xd.team`、`auth-staging.pages.xd.team` 和 `*.pages.xd.team`。`custom` 作为隐藏开发保留项，只允许 loopback endpoint；`local` 不进入用户侧 CLI 环境列表。
-- CLI 不得静默调用 `api.workers.xd.team`，也不得把 v2 deploy 发布到 `*.workers.xd.team`。
+- CLI token、access key 和本地 profile 必须由服务端绑定目标 environment，staging token 不能调用 production API。
+- CLI 用户侧不暴露 `env` 心智；公开入口只展示 production 的 `api.pages.xd.team`、`auth.pages.xd.team` 和当前 v2 site suffix `*.workers.xd.team`。`custom` 作为隐藏开发保留项，只允许 loopback endpoint；`local` 不进入用户侧 CLI 环境列表。
+- CLI 不得静默调用 `api.workers.xd.team`，也不得绕过 v2 hostname claim 去抢占 v1 exact route。
 
 凭证边界：
 
@@ -256,33 +256,26 @@ Windows: %APPDATA%\.xd-pages\profile.json
 
 profile 只用于本地显示和用户体验，服务端不能信任。真实权限只看 CLI token、access key 和服务端存储。profile 禁止出现 token、access key、cookie、Cloudflare id、SSO secret 或 capability。
 
-CLI 可以支持：
-
-```bash
-xd-cell env list
-xd-cell env staging
-```
-
-用户侧 `xd-cell env list` 只展示 `production` / `staging`。`custom` 是开发保留项，可以由测试或开发命令显式启用，但不在普通 help 和用户文档主路径中展示。内置 `production` / `staging` 是固定环境，不能被本地 profile、环境变量或普通 override 改写。`custom` 只允许指向 loopback：
+普通 CLI 不提供 `xd-cell env list` / `xd-cell env staging`，也不提供 `--env production|staging`。`custom` 是开发保留项，可以由测试或开发命令显式启用，但不在普通 help 和用户文档主路径中展示。production 是固定默认环境，不能被本地 profile、环境变量或普通 override 改写。`custom` 只允许指向 loopback：
 
 - 本机开发：`localhost` / `127.0.0.1` / `::1`，可使用 HTTP。
 
-如果后续要允许公司专用测试域，必须由 CLI 内置或受信发布配置提供 allowlist；用户本地 profile 不能自行扩大 allowlist。custom env 不能作为旧版 `workers.xd.team` 兼容入口，也不能指向任意第三方 host。
+如果后续要允许公司专用测试域，必须由 CLI 内置或受信发布配置提供 allowlist；用户本地 profile 不能自行扩大 allowlist。custom env 不能作为旧版 `api.workers.xd.team` 兼容入口，也不能指向任意第三方 host。
 
 env 安全规则：
 
-- production/staging 不可变，固定指向 `api.pages.xd.team`、`auth.pages.xd.team`、`api-staging.pages.xd.team`、`auth-staging.pages.xd.team` 和对应 site suffix。
-- 登录前必须展示将要打开的 auth host、API host、environment 和请求 scope。
+- production 不可变，固定指向 `api.pages.xd.team`、`auth.pages.xd.team` 和 `workers.xd.team` site suffix；staging 只通过维护者受控入口使用，不进入普通 CLI。
+- 登录前必须展示将要打开的 auth host、API host 和请求 scope。
 - API host 变化后，旧 token 不自动复用；credential key 以 environment 隔离。
-- 如果 API/auth/site suffix 指向 `workers.xd.team` 或不在 custom env allowlist 中，CLI 应直接拒绝，并提示用户该 host 不属于 XD Pages CLI 信任域。
+- 如果 API/auth 指向 `api.workers.xd.team` / `auth.workers.xd.team` 或不在 custom env allowlist 中，CLI 应直接拒绝，并提示用户该 host 不属于 XD Cell CLI 信任域。site suffix 由平台配置返回，production 当前固定为 `workers.xd.team`。
 
 #### Command config `--config <file>`
 
-XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不提供 `pages link/unlink` 作为项目绑定心智。站点名必须显式来自 positional 参数或显式 `--config <file>`。这样用户、CI 和 AI agent 都不会被项目目录里的隐藏状态影响。
+XD Cell CLI 不自动读取、不自动生成隐式项目绑定文件，也不提供 `pages link/unlink` 作为项目绑定心智。站点名必须显式来自 positional 参数或显式 `--config <file>`。这样用户、CI 和 AI agent 都不会被项目目录里的隐藏状态影响。
 
-`--config <file>` 是一次性输入，不属于本地状态：
+`xd-cell.config.json` 是可自动发现的发布模板；显式 `--config <file>` 是一次性输入，不属于本地状态：
 
-- CLI 不自动发现。
+- CLI 只在当前工作目录自动发现 `xd-cell.config.json`，不向上搜索，也不读取旧 `pages.config.json`。
 - 不写入 `profileDir`。
 - 不更新 `profile.json` 或 `config.json`。
 - 不等价于项目绑定。
@@ -294,13 +287,15 @@ XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不�
 
 ```json
 {
-  "environment": "production",
   "site": "foo",
-  "source": "./dist",
+  "main": "./worker.mjs",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
   "visibility": "org",
-  "fallback": "auto",
-  "worker": {
-    "entry": "./worker.mjs"
+  "vars": {
+    "API_BASE": "https://api.example.com"
   }
 }
 ```
@@ -310,20 +305,18 @@ XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不�
 CLI 日常命令契约建议：
 
 ```bash
-xd-cell login [--env staging] [--token <token>] [--no-open]
-xd-cell auth status [--env staging]
-xd-cell auth whoami [--env staging]
-xd-cell auth logout [--env staging]
+xd-cell login [--token <token>] [--no-open]
+xd-cell whoami --json
+xd-cell logout
 xd-cell deploy ./dist foo --visibility org
-xd-cell deploy --config pages.config.json
+xd-cell deploy --config xd-cell.config.json
 xd-cell deploy ./dist foo --token <token> --json
 xd-cell status foo
-xd-cell rollback foo ver_xxx
 xd-cell open foo [--print]
 xd-cell sites list
 xd-cell sites info foo
-xd-cell env list
-xd-cell env staging
+xd-cell secrets put foo API_TOKEN
+xd-cell secrets delete foo API_TOKEN
 ```
 
 配置优先级从高到低：
@@ -424,12 +417,7 @@ xd-cell deploy ./dist foo --visibility org
   -> pages-api 按 PAGES_EXECUTION_MODE 上传到内部执行面
   -> pages-api verify 后创建 immutable version
   -> pages-api 通过发布状态机切换 active route 和 route snapshot
-  -> 返回 https://foo.pages.xd.team
-
-xd-cell deploy ./dist foo --visibility org --env staging
-  -> CLI 调 api-staging.pages.xd.team
-  -> pages-api-staging 写 staging D1 / 当前执行面
-  -> 返回 https://foo-staging.pages.xd.team
+  -> 返回 https://foo.workers.xd.team
 ```
 
 ### CI / Agent
@@ -450,13 +438,13 @@ access key 要求：
 
 ### AI Skill
 
-XD Pages AI skill 最终只负责调用 CLI：
+XD Cell AI skill 最终只负责调用 CLI：
 
 ```text
 用户 -> AI -> xd-cell CLI -> pages-api
 ```
 
-不再让 AI 直接拼接 API、猜测 token、解释复杂 OpenAPI 或手写 multipart 请求。现有旧版 skill / 文档继续服务 `workers.xd.team`，不因 XD Pages CLI 改造而改变行为。
+不再让 AI 直接拼接 API、猜测 token、解释复杂 OpenAPI 或手写 multipart 请求。v1 legacy skill / 文档如仍存在，只服务 `apps/server` 旧链路，不因 XD Cell CLI 改造而改变行为。
 
 ## 用户 Worker 运行边界
 
@@ -487,7 +475,7 @@ baseline egress policy：
 
 当前 SDK 提供 `readPlatformContext(request)` 读取 router 注入的最小上下文，并校验 `CF-Platform-*` headers 与 `internal_worker_jwt` claims 的一致性。它不会返回 raw JWT 或 capability；User Worker 不能把该 helper 的返回值当作平台能力，也不能用它绕过 gateway scope。由于第一版 internal JWT 使用 router 持有的 HS256 session key，User Worker 侧不持有验签 secret；未来如果升级为非对称签名和 JWKS，再把该 helper 升级为真正的 cryptographic verify。
 
-## XD Pages Data 与平台能力
+## XD Cell Data 与平台能力
 
 现有 `apps/kv-gateway` 代码改为 v2-owned data gateway，不再由 v1 `apps/server` 签发或部署：
 
@@ -586,7 +574,7 @@ user data:
 
 ## 静态站点和 SPA
 
-静态站点和 SPA 是 XD Pages 的默认发布形态。第一版不再使用 generated-worker，不把 dist 文件 base64 内嵌到 `worker.mjs`。CLI 采用文件级 multipart 上传，服务端内部使用 Cloudflare Assets upload session 和薄 assets Worker 承载静态资源。
+静态站点和 SPA 是 XD Cell 的默认发布形态。第一版不再使用 generated-worker，不把 dist 文件 base64 内嵌到 `worker.mjs`。CLI 采用文件级 multipart 上传，服务端内部使用 Cloudflare Assets upload session 和薄 assets Worker 承载静态资源。
 
 ```text
 xd-cell deploy ./dist foo

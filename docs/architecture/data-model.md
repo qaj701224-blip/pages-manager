@@ -1,4 +1,4 @@
-# XD Pages 数据模型
+# XD Cell 数据模型
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
@@ -86,7 +86,7 @@ sites
 ```sql
 site_routes
   id                  -- route_xxx
-  hostname            -- foo.pages.xd.team
+  hostname            -- foo.workers.xd.team；存量 v2 route 也可能是 foo.pages.xd.team
   site_id
   environment         -- production / staging
   runtime             -- worker / disabled
@@ -131,12 +131,45 @@ site_versions
   worker_modules_json
   asset_manifest_json
   canonical_content_hash
+  var_names_json
+  secret_names_json
+  runtime_config_snapshot_json
   artifact_availability
   created_by
   created_at
 ```
 
 版本记录必须 immutable。回滚只更新 `site_routes.active_version_id`，不修改历史 version 内容。
+
+#### site_vars / site_secrets
+
+```sql
+site_vars
+  id
+  environment
+  site_id
+  name
+  value               -- 非敏感明文 runtime var
+  revision
+  created_by
+  created_at
+  updated_at
+  deleted_at
+
+site_secrets
+  id
+  environment
+  site_id
+  name
+  encrypted_value     -- secret value 加密后存储
+  revision
+  created_by
+  created_at
+  updated_at
+  deleted_at
+```
+
+`site_vars` 和 `site_secrets` 都是站点级当前 runtime config。Worker deploy 会读取当前启用项并物化为本版本 Worker bindings；`site_versions.runtime_config_snapshot_json` 记录本版本当时使用的 var value/revision 和 secret name/revision/valueHash。secret valueHash 使用平台 pepper/HMAC 生成，只用于内部版本审计和一致性校验，不是明文、裸 digest 或公开响应字段。`xd-cell.config.json` 中的 `vars` 会在 Worker deploy 时同步到 `site_vars`；配置省略 `vars` 时沿用站点当前值，显式空对象清空。secret value 只通过 `xd-cell secrets put/delete` 管理。
 
 #### worker_slots
 
@@ -327,8 +360,8 @@ oauth_state:{state_id}
 ```json
 {
   "stateId": "st_xxx",
-  "returnTo": "https://foo.pages.xd.team/path",
-  "siteHost": "foo.pages.xd.team",
+  "returnTo": "https://foo.workers.xd.team/path",
+  "siteHost": "foo.workers.xd.team",
   "createdAt": "2026-06-15T00:00:00.000Z",
   "expiresAt": "2026-06-15T00:10:00.000Z",
   "consumedAt": null
@@ -388,7 +421,7 @@ https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id={loginId}
 
 - CLI 在终端显示短码，例如 `12345678`，并展示 environment、auth host 和请求 scope。
 - 浏览器 SSO 成功后，页面必须明确提示“正在授权 xd-cell CLI”，并要求用户手动输入终端短码，再确认 environment、auth host 和 scope。
-- 浏览器确认表单必须带服务端签发的短 TTL confirm token，绑定 `cli_login_id` 和当前登录用户；确认 POST 必须校验 exact `Origin` / same-origin fetch metadata，防止其它 `*.pages.xd.team` 子站 CSRF 自动确认。
+- 浏览器确认表单必须带服务端签发的短 TTL confirm token，绑定 `cli_login_id` 和当前登录用户；确认 POST 必须校验 exact `Origin` / same-origin fetch metadata，防止其它平台受信子站 CSRF 自动确认。
 - 用户未确认短码前，`CliLoginDO` 不能写入 completed user，也不能让 CLI 领取 token。
 - 后续如果改成本机 loopback callback，也应配合 PKCE / nonce，把浏览器回调绑定到本地 CLI。
 
@@ -466,7 +499,7 @@ KV key 必须带环境前缀，避免 staging/prod 串环境：
 ```json
 {
   "schemaVersion": 2,
-  "hostname": "foo.pages.xd.team",
+  "hostname": "foo.workers.xd.team",
   "siteId": "site_123",
   "siteUuid": "su_123",
   "slug": "foo",
@@ -519,7 +552,7 @@ WFP 模式的 route snapshot 只替换执行面 dispatch 信息，其它鉴权�
 }
 ```
 
-staging snapshot 必须使用 staging hostname 和 `environment=staging`，例如 `foo-staging.pages.xd.team`。router 发现 hostname 后缀与 snapshot environment 不一致时必须拒绝。
+staging snapshot 必须使用 staging hostname 和 `environment=staging`，例如 `foo-staging.workers.xd.team`；存量 v2 staging host 也可能是 `foo-staging.pages.xd.team`。router 发现 hostname 后缀与 snapshot environment 不一致时必须拒绝。
 
 为了让发布 / 回滚的 generation 可比较，route snapshot 采用两层 key：
 
@@ -586,7 +619,7 @@ Claims：
 ```json
 {
   "iss": "https://router.pages.xd.team",
-  "aud": "site:foo.pages.xd.team",
+  "aud": "site:foo.workers.xd.team",
   "sid": "ssid_xxx",
   "sub": "usr_xxx",
   "site": "site_123",
@@ -605,7 +638,7 @@ Claims：
 ```json
 {
   "iss": "https://router.pages.xd.team",
-  "aud": "worker:foo.pages.xd.team",
+  "aud": "worker:foo.workers.xd.team",
   "sub": "usr_xxx",
   "email": null,
   "profileDisclosure": "minimal",
@@ -625,7 +658,7 @@ JWT 验证清单：
 
 - 必须校验 `iss`、`aud`、`exp`、`nbf`/`iat`、`kid`、签名算法和环境绑定。
 - `iss` 应使用环境相关 issuer，例如 `https://auth.pages.xd.team`、`https://router.pages.xd.team`、`https://auth-staging.pages.xd.team` 或 `https://router-staging.pages.xd.team`，不能只校验短字符串。
-- `aud` 必须绑定用途和 host，例如 `pages:production`、`site:foo.pages.xd.team`、`worker:foo.pages.xd.team`。
+- `aud` 必须绑定用途和 host，例如 `pages:production`、`site:foo.workers.xd.team`、`worker:foo.workers.xd.team`。
 - `kid` 必须来自当前环境 key registry；production token 不能被 staging key 验证，反之亦然。
 - 高风险一次性 token 或能力 token 应包含 `jti`，用于审计、限流或必要时吊销。
 

@@ -201,7 +201,7 @@ function buildMergeSummaryMessages(input = {}) {
     {
       role: 'system',
       content: [
-        '你是 XD Pages 的 PR 合并公告摘要助手。',
+        '你是 XD Cell 的 PR 合并公告摘要助手。',
         '只输出严格 JSON，不要 Markdown、HTML、代码块或解释文字。',
         '不要输出 token、secret、cookie、authorization、内部 prompt、完整 diff、完整日志或 provider debug 字段。',
         'JSON schema: {"headline":string,"summaryBullets":string[3-5],"impact":string,"risk":string,"tags":string[]}',
@@ -333,7 +333,7 @@ function buildRepoPlanMessages(input = {}) {
     {
       role: 'system',
       content: [
-        '你是 XD Pages 的 repo 调研规划 Agent。',
+        '你是 XD Cell 的 repo 调研规划 Agent。',
         '你主导 repo_tree -> repo_search -> repo_read 的只读调研计划，不直接回答用户。',
         '只能基于用户问题、上一轮上下文和 repo tree 输出调研计划。',
         'queries 是 repo_search 输入；readPaths 是 repo_read 输入，必须来自 repoTree.files 或 previousEvidencePaths。',
@@ -376,7 +376,7 @@ function buildRepoAnswerMessages(input = {}) {
     {
       role: 'system',
       content: [
-        '你是 XD Pages 的仓库实现问答助手。',
+        '你是 XD Cell 的仓库实现问答助手。',
         '只基于用户问题和提供的 repo evidence 回答；不要编造没有证据的实现。',
         '不要承诺已经完整读取整个仓库；只能说“基于当前相关证据”。',
         '回答应该简洁、克制，面向 Slack 用户，不要输出 gateway/worker/MySQL 这类底座名词，除非用户问题本身是在问代码实现或证据路径里必须出现。',

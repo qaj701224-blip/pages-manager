@@ -1,14 +1,14 @@
-# XD Pages 架构总览
+# XD Cell 架构总览
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
-# XD Pages 多租户执行平台架构设计
+# XD Cell 多租户执行平台架构设计
 
 ## 状态
 
-本文是 `pages-manager` 新架构草案，用于在 `pages.xd.team` 新建一套带统一身份、发布鉴权、子站 SSO、多租户执行隔离和统一审计的平台。用户侧产品名统一为 **XD Pages**；`v2` 只作为内部工程边界、资源命名或迁移讨论使用，不出现在 CLI、OpenAPI、skill、readme、错误提示等用户路径中。
+本文是 `pages-manager` v2 架构总览，用于说明一套带统一身份、发布鉴权、子站 SSO、多租户执行隔离和统一审计的平台。控制面继续使用 `api.pages.xd.team` / `auth.pages.xd.team`，新建 v2 子站默认使用 `workers.xd.team` 后缀；存量 v2 `pages.xd.team` 路由继续保留。用户侧产品名统一为 **XD Cell**；`v2` 只作为内部工程边界、资源命名或迁移讨论使用，不出现在 CLI、OpenAPI、skill、readme、错误提示等用户路径中。
 
-设计目标是先明确旧版 / 新架构边界。旧版 `*.workers.xd.team` 保持不动，继续由现有 `apps/server` 和旧发布链路服务；新架构使用全新的 `*.pages.xd.team` 域名、资源和代码目录，不做历史站点迁移、不认领旧版资产、不接管旧版 route。
+设计目标是先明确旧版 / 新架构边界。旧版 `apps/server` 和它已经创建的 `*.workers.xd.team` exact route 保持不动，继续由旧发布链路服务；v2 通过 hostname claim 与 Cloudflare route specificity 避免覆盖 v1 站点，新建站点默认走 v2 `*.workers.xd.team` wildcard，存量 v2 `*.pages.xd.team` 仍可访问。
 
 参考资料：
 
@@ -22,16 +22,17 @@
 域名和产品边界先固定为：
 
 ```text
-legacy / existing: *.workers.xd.team
-  - 当前线上服务继续可访问。
+legacy / existing: apps/server + 已存在的 *.workers.xd.team exact route
+  - 当前线上服务继续可访问，v2 wildcard 不能覆盖 v1 exact route。
   - 现有 README、API、skill、apps/server 行为不因新架构改动而变化。
   - X-Pages-Token 仍只属于旧版归属标记，不升级为新架构强认证。
 
-XD Pages / greenfield: *.pages.xd.team
-  - 新建多租户执行平台架构。
+XD Cell / v2: api/auth.pages.xd.team + 新建 *.workers.xd.team 子站
+  - 新建多租户执行平台架构，默认子站域名为 {slug}.workers.xd.team。
+  - 已存在的 {slug}.pages.xd.team v2 route 保留，不做隐式迁移。
   - WFP 是目标执行模式；在 WFP 暂未开通时，允许使用普通 Worker slot 池作为内部兼容执行模式。
   - 新建 API、Auth、Router、D1/KV/DO、执行资源和 SSO redirect URI。
-  - 用户要使用新架构时重新发布到 pages.xd.team，不从 workers.xd.team 自动迁移。
+  - 旧 v1 站点不会自动迁移到 v2；v2 创建前必须通过 hostname claim 防止抢占。
 ```
 
 当前 `pages-manager` 的核心模型是：
@@ -70,7 +71,7 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 - 支持上千个 Worker，数据面请求不回管理 API Worker。
 - 使用统一 Execution Mode 承载用户 Worker。目标模式是 Workers for Platforms；WFP 暂不可用时使用普通 Worker slot 池兼容上线。
 - 平台 Gateway/Router 统一处理鉴权、审计、header 清洗和分发。
-- 新架构作为 `pages.xd.team` 上的平台独立上线，不影响旧版 `workers.xd.team`。
+- 新架构使用 `pages.xd.team` 控制面和 `workers.xd.team` 子站后缀独立上线，不影响旧版 `apps/server` exact route。
 
 ## 非目标
 
@@ -85,7 +86,7 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 | 维度     | 旧版普通 Workers API                                          | `wfp` 目标模式                                                               | `normal-worker-slot` 兼容模式                                               |
 | -------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | 用户代码 | 每个站点是一个 account-level Worker script，例如 `pages-foo` | 每个站点版本是 dispatch namespace 中的 user Worker                            | 每个激活/待激活版本占用一个预创建普通 Worker slot，例如 `pages-v2-slot-007` |
-| 路由     | 每个站点维护独立 route，例如 `foo.workers.xd.team/*`         | `*.pages.xd.team` 进入 `pages-router`，router 通过 dispatch namespace 分发    | `*.pages.xd.team` 进入 `pages-router`，router 通过静态 service binding 分发  |
+| 路由     | 每个站点维护独立 route，例如 `foo.workers.xd.team/*`         | `*.workers.xd.team` 进入 `pages-router`，并保留存量 `*.pages.xd.team`，router 通过 dispatch namespace 分发 | `*.workers.xd.team` 进入 `pages-router`，并保留存量 `*.pages.xd.team`，router 通过静态 service binding 分发 |
 | 鉴权     | 分散在生成 Worker、用户 Worker 或 IP allowlist 中            | 统一在 `pages-router` 做 visibility、SSO、ACL 和 header 注入                  | 同 WFP，用户侧不感知底层执行模式                                             |
 | 审计     | 管理操作容易审计，子站访问审计分散                           | router 统一记录访问审计，控制面记录管理审计                                   | 同 WFP                                                                       |
 | 隔离     | 每站 Worker 独立，但平台治理分散                             | user Worker 作为不可信租户代码运行在 dispatch namespace                       | slot Worker 作为不可信租户代码运行；能力通过 router 和 gateway 下发          |
@@ -109,15 +110,15 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 
 ## 目标目录
 
-建议新建目录；现有 `apps/server` 继续作为旧版控制面，不参与 `pages.xd.team` 请求路径：
+建议新建目录；现有 `apps/server` 继续作为旧版控制面，不参与 v2 控制面和 v2 wildcard 子站请求路径：
 
 ```text
 apps/
   server/            # 旧版管理 API，继续服务 *.workers.xd.team
-  pages-api/         # XD Pages 控制面 API：deploy/list/site/version/access/audit
-  pages-auth/        # XD Pages SSO 与 session：OAuth callback、CLI login、access key
-  pages-router/      # XD Pages 数据面入口：*.pages.xd.team + execution dispatch
-  kv-gateway/        # XD Pages 平台 KV 能力网关；旧版不再提供 KV
+  pages-api/         # XD Cell 控制面 API：deploy/list/site/version/access/audit
+  pages-auth/        # XD Cell SSO 与 session：OAuth callback、CLI login、access key
+  pages-router/      # XD Cell 数据面入口：*.workers.xd.team / 存量 *.pages.xd.team + execution dispatch
+  kv-gateway/        # XD Cell 平台 KV 能力网关；旧版不再提供 KV
 
 packages/
   auth/              # cookie、session JWT、SSO profile、ACL 校验
@@ -181,7 +182,7 @@ flowchart TD
 
 `pages-router` 是子站访问入口：
 
-- 绑定 `*.pages.xd.team`。
+- 绑定新建 v2 子站默认 `*.workers.xd.team`，并继续绑定存量 v2 `*.pages.xd.team`。
 - 按 hostname 查找站点 metadata 和当前 active version。
 - 根据站点 visibility 判断是否需要登录。
 - 本地校验站点 session，不回 `pages-api`。

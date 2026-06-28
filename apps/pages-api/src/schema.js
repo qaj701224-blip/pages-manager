@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 export function createSchemaSql() {
   return [
@@ -42,6 +42,8 @@ export function createSchemaSql() {
       visibility TEXT NOT NULL,
       policy_version INTEGER NOT NULL,
       route_generation INTEGER NOT NULL,
+      runtime_config_generation INTEGER NOT NULL DEFAULT 0,
+      runtime_config_lock_id TEXT,
       route_status TEXT NOT NULL,
       cache_tier TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -101,9 +103,36 @@ export function createSchemaSql() {
       worker_modules_json TEXT,
       asset_manifest_json TEXT,
       canonical_content_hash TEXT,
+      var_names_json TEXT,
+      secret_names_json TEXT,
+      runtime_config_snapshot_json TEXT,
       artifact_availability TEXT NOT NULL DEFAULT 'active',
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS site_secrets (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      site_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      encrypted_value TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS site_vars (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      site_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      value TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
     )`,
     `CREATE TABLE IF NOT EXISTS worker_slots (
       id TEXT PRIMARY KEY,
@@ -212,6 +241,12 @@ export function createSchemaSql() {
       WHERE route_status != 'deleted'`,
     `CREATE INDEX IF NOT EXISTS idx_site_routes_site_id
       ON site_routes(site_id)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_secrets_live
+      ON site_secrets(environment, site_id, name)
+      WHERE deleted_at IS NULL`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_vars_live
+      ON site_vars(environment, site_id, name)
+      WHERE deleted_at IS NULL`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname
       ON hostname_claims(hostname)`,
     `CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live

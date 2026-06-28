@@ -57,15 +57,16 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
   assert.equal(createSite.status, 201);
   assert.equal(deploy.status, 201);
   assert.equal((await store.getSite(siteBody.site.id)).siteUuid, '4b4c8e8361ef4b47b64f5c20a7db7c47');
+  assert.equal(siteBody.site.url, 'https://guide.workers.xd.team');
 
   const routerResponse = await routerWorker.fetch(
-    new Request('https://guide.workers.xd.team/.xd-pages/runtime/v1/kv/set', {
+    new Request(`${siteBody.site.url}/.xd-pages/runtime/v1/kv/set`, {
       method: 'POST',
       headers: {
         'CF-Connecting-IP': '10.1.2.3',
         'Content-Type': 'application/json',
         'X-XD-Pages-Runtime': '1',
-        Origin: 'https://guide.workers.xd.team',
+        Origin: siteBody.site.url,
       },
       body: JSON.stringify({ key: 'app/config', value: { enabled: true }, type: 'json' }),
     }),

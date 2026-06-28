@@ -4,18 +4,18 @@ import test from 'node:test';
 import worker from './index.js';
 import { buildOpenApi } from './openapi.js';
 
-test('builds production XD Pages OpenAPI skeleton for development checks', () => {
+test('builds production XD Cell OpenAPI skeleton for development checks', () => {
   const body = buildOpenApi({
     environment: 'production',
     apiBaseUrl: 'https://api.pages.xd.team',
     authBaseUrl: 'https://auth.pages.xd.team',
-    siteDomainSuffix: 'workers.xd.team',
+    siteDomainSuffix: 'pages.xd.team',
   });
   const serialized = JSON.stringify(body);
 
   assert.equal(body.openapi, '3.1.0');
-  assert.equal(body.info.title, 'XD Pages API');
-  assert.equal(body.info.description, 'Control plane API for XD Pages.');
+  assert.equal(body.info.title, 'XD Cell API');
+  assert.equal(body.info.description, 'Control plane API for XD Cell.');
   assert.deepEqual(body.servers, [{ url: 'https://api.pages.xd.team' }]);
   assert.ok(body.paths['/.xd-pages/api/sites']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
@@ -23,6 +23,8 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put);
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
   assert.equal(
@@ -53,6 +55,20 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
   ]);
   assert.ok(body.components.schemas.CliManagedDeploymentRequest);
   assert.ok(body.components.schemas.DeploymentDecision);
+  assert.deepEqual(body.components.schemas.DeploymentDecision.properties.requestedFallback.enum, [
+    'auto',
+    'index',
+    'not-found',
+    'none',
+    'single-page-application',
+    '404-page',
+  ]);
+  assert.deepEqual(body.components.schemas.DeploymentDecision.properties.resolvedFallback.enum, [
+    'index',
+    'not-found',
+    'none',
+    null,
+  ]);
   assert.equal(body.paths['/.xd-pages/api/deployments'].post.requestBody.content['application/json'], undefined);
   assert.equal(
     body.paths['/.xd-pages/api/versions/{id}/rollback'].post.requestBody.content['application/json'].schema.$ref,
@@ -81,9 +97,33 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
     'DEPLOYMENT_VERIFY_FAILED',
     'DEPLOYMENT_STATE_WRITE_FAILED',
     'DEPLOYMENT_CAPACITY_EXHAUSTED',
+    'RUNTIME_VARS_INVALID',
+    'RUNTIME_BINDING_NAME_CONFLICT',
+    'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+    'RUNTIME_VARS_REQUIRE_WORKER',
+    'RUNTIME_CONFIG_CHANGED',
+    'RUNTIME_CONFIG_UNSUPPORTED',
     'ROUTE_SNAPSHOT_WRITE_FAILED',
     'IDEMPOTENCY_CONFLICT',
   ]);
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].put.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/SiteSecretPutRequest'
+  );
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].delete.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/SiteSecretDeleteRequest'
+  );
+  assert.ok(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('SECRET_VALUE_TOO_LARGE')
+  );
+  assert.ok(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
+  );
+  assert.ok(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
+  );
+  assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_SITE_FORBIDDEN'));
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email', 'department']);
   assert.deepEqual(body.components.schemas.SiteVisibility.enum, ['internal', 'org', 'acl', 'owner', 'disabled']);
@@ -129,7 +169,7 @@ test('staging OpenAPI contract uses staging server URL without v1 addresses', ()
     environment: 'staging',
     apiBaseUrl: 'https://api-staging.pages.xd.team',
     authBaseUrl: 'https://auth-staging.pages.xd.team',
-    siteDomainSuffix: 'workers.xd.team',
+    siteDomainSuffix: 'pages.xd.team',
   });
 
   assert.deepEqual(body.servers, [{ url: 'https://api-staging.pages.xd.team' }]);
@@ -158,13 +198,17 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.match(body, /name: xd-cell/);
   assert.match(body, /XD Cell/);
   assert.match(body, /xd-cell login/);
-  assert.match(body, /xd-cell detect <dir> --json/);
-  assert.match(body, /xd-cell deploy <dir> <site>/);
+  assert.match(body, /xd-cell detect <entry> --json/);
+  assert.match(body, /xd-cell deploy <entry> <site> --dry-run --json/);
+  assert.match(body, /xd-cell deploy --config xd-cell\.config\.json/);
+  assert.match(body, /XD_CELL_API_TOKEN/);
   assert.match(body, /--token <token>/);
-  assert.match(body, /--config pages\.config\.json/);
+  assert.match(body, /xd-cell secrets put <site> API_TOKEN/);
+  assert.match(body, /xd-cell secrets delete <site> API_TOKEN/);
+  assert.match(body, /assets\.not_found_handling/);
   assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);
-  assert.match(body, /workers\.xd\.team/);
+  assert.match(body, /pages\.xd\.team/);
   assert.doesNotMatch(
     body,
     new RegExp(
@@ -173,25 +217,35 @@ test('serves CLI-only skill without legacy API instructions', async () => {
     )
   );
   assert.doesNotMatch(body, /--access-key|curl|X-Pages-Token|api\.workers\.xd\.team/);
+  assert.doesNotMatch(body, /--fallback <|xd-cell rollback|xd-cell env|--env staging|secrets list/);
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
   assert.doesNotMatch(body, /XD Pages/);
 });
 
-test('serves staging skill with explicit staging CLI environment', async () => {
+test('serves staging skill without exposing user-facing environment switches', async () => {
   const response = await worker.fetch(new Request('https://api-staging.pages.xd.team/skill.md'), {
     PAGES_ENV: 'staging',
   });
 
   assert.equal(response.status, 200);
   const body = await response.text();
-  assert.match(body, /xd-cell env staging/);
-  assert.match(body, /xd-cell login --env staging/);
-  assert.match(body, /xd-cell detect <dir> --json/);
-  assert.match(body, /xd-cell deploy <dir> <site> --env staging --dry-run --json/);
-  assert.match(body, /xd-cell deploy <dir> <site> --env staging --visibility org/);
-  assert.match(body, /xd-cell deploy <dir> <site> --env staging --token <token> --json/);
+  assert.match(body, /API: `https:\/\/api-staging\.pages\.xd\.team`/);
+  assert.match(body, /Auth: `https:\/\/auth-staging\.pages\.xd\.team`/);
+  assert.match(body, /普通 `xd-cell` CLI 默认操作 production/);
+  assert.match(body, /staging 公共 skill 只提供能力边界说明/);
+  assert.doesNotMatch(body, /xd-cell login/);
+  assert.doesNotMatch(body, /xd-cell whoami --json/);
+  assert.doesNotMatch(body, /xd-cell detect <entry> --json/);
+  assert.doesNotMatch(body, /xd-cell deploy <entry> <site> --dry-run --json/);
+  assert.doesNotMatch(body, /xd-cell deploy <entry> <site> --visibility org/);
+  assert.doesNotMatch(body, /^xd-cell access (set|grant|revoke)\b/m);
+  assert.doesNotMatch(body, /^xd-cell secrets (put|delete)\b/m);
+  assert.doesNotMatch(body, /export XD_CELL_API_TOKEN=<token>/);
+  assert.doesNotMatch(body, /xd-cell deploy --config xd-cell\.config\.json/);
+  assert.doesNotMatch(body, /xd-cell env staging|xd-cell login --env staging|--env staging/);
+  assert.doesNotMatch(body, /pages\.config\.json|--fallback <|xd-cell rollback|secrets list/);
   assert.doesNotMatch(body, /api\.pages\.xd\.team(?![\\w.-])/);
-  assert.match(body, /workers\.xd\.team/);
+  assert.match(body, /pages\.xd\.team/);
   assert.doesNotMatch(body, /api\.workers\.xd\.team/);
 });
 
@@ -205,13 +259,18 @@ test('serves readme docs without legacy API addresses', async () => {
   const body = await response.text();
   assert.match(body, /^# XD Cell/m);
   assert.match(body, /api-staging\.pages\.xd\.team/);
-  assert.match(body, /workers\.xd\.team/);
-  assert.match(body, /xd-cell login/);
-  assert.match(body, /xd-cell detect \.\/dist --json/);
-  assert.match(body, /xd-cell deploy \.\/dist demo --visibility org/);
-  assert.match(body, /--token <token>/);
-  assert.match(body, /--config <file>/);
-  assert.doesNotMatch(body, /--access-key|--env|xd-cell env|Environment/);
+  assert.match(body, /pages\.xd\.team/);
+  assert.match(body, /普通 `xd-cell` CLI 默认操作 production/);
+  assert.match(body, /staging 命令请使用维护流程提供的专用入口/);
+  assert.doesNotMatch(body, /xd-cell login/);
+  assert.doesNotMatch(body, /xd-cell detect \.\/dist --json/);
+  assert.doesNotMatch(body, /xd-cell deploy \.\/dist demo --visibility org/);
+  assert.doesNotMatch(body, /xd-cell deploy --config xd-cell\.config\.json/);
+  assert.match(body, /XD_CELL_API_TOKEN/);
+  assert.doesNotMatch(body, /^xd-cell access (set|grant|revoke)\b/m);
+  assert.doesNotMatch(body, /^xd-cell secrets (put|delete)\b/m);
+  assert.doesNotMatch(body, /--access-key|--env|xd-cell env|Environment|当前环境/);
+  assert.doesNotMatch(body, /--fallback <|xd-cell rollback|secrets list|pages\.config\.json/);
   assert.doesNotMatch(
     body,
     new RegExp(

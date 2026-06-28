@@ -8,13 +8,14 @@ import {
   hostnameFamilyForHostname,
 } from './store.js';
 
-export function createTestPagesStore({ now = () => new Date().toISOString() } = {}) {
-  return new TestPagesStore({ now });
+export function createTestPagesStore({ now = () => new Date().toISOString(), failAuditWrites = false } = {}) {
+  return new TestPagesStore({ now, failAuditWrites });
 }
 
 class TestPagesStore {
-  constructor({ now }) {
+  constructor({ now, failAuditWrites }) {
     this.now = now;
+    this.failAuditWrites = failAuditWrites;
     this.users = new Map();
     this.sites = new Map();
     this.siteSlugIndex = new Map();
@@ -24,10 +25,14 @@ class TestPagesStore {
     this.siteMembers = new Map();
     this.siteAclEntries = new Map();
     this.siteVersions = new Map();
+    this.siteSecrets = new Map();
+    this.siteVars = new Map();
+    this.siteVarHistory = new Map();
     this.workerSlots = new Map();
     this.accessKeys = new Map();
     this.deployments = new Map();
     this.deploymentIdempotencyIndex = new Map();
+    this.auditEvents = [];
   }
 
   async createUser(input) {
@@ -217,7 +222,8 @@ class TestPagesStore {
 
   async listSitesForUser(userId, actor = {}, environment) {
     const siteIds = new Set();
-    if (actor.type === 'access_key' && actor.siteId) {
+    if (actor.type === 'access_key') {
+      if (!actor.siteId) return [];
       siteIds.add(actor.siteId);
     } else {
       for (const [siteId, members] of this.siteMembers.entries()) {
@@ -236,7 +242,7 @@ class TestPagesStore {
   }
 
   async getSiteForUser(siteId, userId, actor = {}, environment) {
-    if (actor.type === 'access_key' && actor.siteId && actor.siteId !== siteId) return null;
+    if (actor.type === 'access_key' && (!actor.siteId || actor.siteId !== siteId)) return null;
     const members = this.siteMembers.get(siteId) || [];
     if (actor.type !== 'access_key' && !members.some((member) => member.userId === userId)) return null;
     const site = this.siteWithRoute(siteId);
@@ -333,11 +339,11 @@ class TestPagesStore {
     const route = this.routes.get(this.routeBySiteId.get(siteId));
     if (!site || !route || !previousRoute) return null;
     if (environment && route.environment !== environment) return null;
-    if (expectedRoute && !routesMatch(route, expectedRoute)) return cloneRecord(route);
+    if (expectedRoute && !routesMatchIgnoringRuntimeConfigGeneration(route, expectedRoute)) return cloneRecord(route);
 
     site.defaultVisibility = previousSite.defaultVisibility;
     site.updatedAt = previousSite.updatedAt;
-    Object.assign(route, cloneRecord(previousRoute));
+    Object.assign(route, routeWithLatestRuntimeConfig(cloneRecord(previousRoute), route));
     return cloneRecord(route);
   }
 
@@ -426,11 +432,13 @@ class TestPagesStore {
     const route = this.routes.get(this.routeBySiteId.get(siteId));
     if (!site || !route || !previousRoute) return [];
     if (environment && route.environment !== environment) return [];
-    if (expectedRoute && !routesMatch(route, expectedRoute)) return cloneRecord(this.siteAclEntries.get(siteId) || []);
+    if (expectedRoute && !routesMatchIgnoringRuntimeConfigGeneration(route, expectedRoute)) {
+      return cloneRecord(this.siteAclEntries.get(siteId) || []);
+    }
 
     this.siteAclEntries.set(siteId, cloneRecord(previousEntries));
     site.updatedAt = previousSite.updatedAt;
-    Object.assign(route, cloneRecord(previousRoute));
+    Object.assign(route, routeWithLatestRuntimeConfig(cloneRecord(previousRoute), route));
     return cloneRecord(previousEntries);
   }
 
@@ -458,12 +466,204 @@ class TestPagesStore {
       workerModulesJson: input.workerModulesJson ?? null,
       assetManifestJson: input.assetManifestJson ?? null,
       canonicalContentHash: input.canonicalContentHash || input.contentHash,
+      varNamesJson: input.varNamesJson ?? null,
+      secretNamesJson: input.secretNamesJson ?? null,
+      runtimeConfigSnapshotJson: input.runtimeConfigSnapshotJson ?? null,
       artifactAvailability: input.artifactAvailability || 'active',
       createdBy: input.createdBy,
       createdAt: this.now(),
     };
     this.siteVersions.set(record.id, record);
     return cloneRecord(record);
+  }
+
+  async putSiteSecret(input) {
+    return this.putSiteSecretRecord(input);
+  }
+
+  async putSiteSecretWithAudit(input) {
+    if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+    const secret = this.buildSiteSecretRecord(input);
+    await this.recordAuditEvent(secretAuditEvent(input, 'site_secret.put', secret, input.updatedAt || this.now()));
+    this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
+    this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.updatedAt || this.now());
+    return cloneRecord(secret);
+  }
+
+  putSiteSecretRecord(input) {
+    const record = this.buildSiteSecretRecord(input);
+    this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), record);
+    this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.updatedAt || this.now());
+    return cloneRecord(record);
+  }
+
+  buildSiteSecretRecord(input) {
+    const key = siteSecretKey(input.environment, input.siteId, input.name);
+    const existing = this.siteSecrets.get(key);
+    const now = input.updatedAt || this.now();
+    const revision = this.nextSiteSecretRevision(input.environment, input.siteId, input.name) + 1;
+    const record = {
+      id: input.id || existing?.id,
+      environment: input.environment,
+      siteId: input.siteId,
+      name: input.name,
+      value: input.value,
+      revision,
+      createdBy: input.actorId || input.createdBy,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+    return record;
+  }
+
+  nextSiteSecretRevision(environment, siteId, name) {
+    let revision = 0;
+    for (const secret of this.siteSecrets.values()) {
+      if (secret.environment !== environment || secret.siteId !== siteId || secret.name !== name) continue;
+      revision = Math.max(revision, Number(secret.revision || 0));
+    }
+    return revision;
+  }
+
+  async deleteSiteSecret(environment, siteId, name, { deletedAt } = {}) {
+    return this.deleteSiteSecretRecord(environment, siteId, name, { deletedAt });
+  }
+
+  async deleteSiteSecretWithAudit(input) {
+    if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+    const secret = this.buildDeletedSiteSecretRecord(input.environment, input.siteId, input.name, { deletedAt: input.deletedAt });
+    await this.recordAuditEvent(
+      secretAuditEvent(input, 'site_secret.delete', secret || { name: input.name }, input.deletedAt || this.now())
+    );
+    if (secret) {
+      this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
+      this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.deletedAt || this.now());
+    }
+    return cloneRecord(secret);
+  }
+
+  deleteSiteSecretRecord(environment, siteId, name, { deletedAt } = {}) {
+    const record = this.buildDeletedSiteSecretRecord(environment, siteId, name, { deletedAt });
+    if (!record) return null;
+    this.siteSecrets.set(siteSecretKey(environment, siteId, name), record);
+    this.bumpRuntimeConfigGeneration(environment, siteId, deletedAt || this.now());
+    return cloneRecord(record);
+  }
+
+  buildDeletedSiteSecretRecord(environment, siteId, name, { deletedAt } = {}) {
+    const key = siteSecretKey(environment, siteId, name);
+    const existing = this.siteSecrets.get(key);
+    if (!existing || existing.deletedAt) return null;
+    const record = cloneRecord(existing);
+    record.deletedAt = deletedAt || this.now();
+    record.updatedAt = record.deletedAt;
+    return record;
+  }
+
+  bumpRuntimeConfigGeneration(environment, siteId, updatedAt) {
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!route || route.environment !== environment) throw new Error('SITE_ROUTE_NOT_FOUND');
+    route.runtimeConfigGeneration = (route.runtimeConfigGeneration || 0) + 1;
+    route.updatedAt = updatedAt || this.now();
+  }
+
+  async listEnabledSiteSecrets(environment, siteId) {
+    return cloneRecord(
+      [...this.siteSecrets.values()]
+        .filter((secret) => secret.environment === environment && secret.siteId === siteId && !secret.deletedAt)
+        .sort((left, right) => left.name.localeCompare(right.name))
+    );
+  }
+
+  async listEnabledSiteVars(environment, siteId) {
+    return cloneRecord(this.listEnabledSiteVarsSync(environment, siteId));
+  }
+
+  listEnabledSiteVarsSync(environment, siteId) {
+    return [...this.siteVars.values()]
+      .filter((entry) => entry.environment === environment && entry.siteId === siteId && !entry.deletedAt)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async replaceSiteVars(input) {
+    const existing = this.listEnabledSiteVarsSync(input.environment, input.siteId);
+    const existingByName = new Map(existing.map((entry) => [entry.name, entry]));
+    const vars = input.vars || {};
+    const desiredNames = Object.keys(vars).sort();
+    const existingNames = existing.map((entry) => entry.name).sort();
+    const hasChanges =
+      desiredNames.length !== existingNames.length ||
+      desiredNames.some((name) => {
+        const record = existingByName.get(name);
+        return !record || record.value !== vars[name];
+      });
+    if (!hasChanges) return cloneRecord(existing);
+
+    const now = input.updatedAt || this.now();
+    for (const name of desiredNames) {
+      const current = existingByName.get(name);
+      if (current && current.value === vars[name]) continue;
+      const record = {
+        id: current?.id || input.createId?.(name) || `var_${this.siteVars.size + 1}`,
+        environment: input.environment,
+        siteId: input.siteId,
+        name,
+        value: vars[name],
+        revision: this.nextSiteVarRevision(input.environment, input.siteId, name) + 1,
+        createdBy: current?.createdBy || input.actorId || input.createdBy,
+        createdAt: current?.createdAt || now,
+        updatedAt: now,
+        deletedAt: null,
+      };
+      this.siteVars.set(siteVarKey(input.environment, input.siteId, name), record);
+      this.siteVarHistory.set(siteVarHistoryKey(input.environment, input.siteId, name, record.id), cloneRecord(record));
+    }
+    for (const name of existingNames) {
+      if (desiredNames.includes(name)) continue;
+      const current = this.siteVars.get(siteVarKey(input.environment, input.siteId, name));
+      if (!current || current.deletedAt) continue;
+      current.deletedAt = now;
+      current.updatedAt = now;
+      this.siteVarHistory.set(siteVarHistoryKey(input.environment, input.siteId, name, current.id), cloneRecord(current));
+    }
+    this.bumpRuntimeConfigGeneration(input.environment, input.siteId, now);
+    return cloneRecord(this.listEnabledSiteVarsSync(input.environment, input.siteId));
+  }
+
+  nextSiteVarRevision(environment, siteId, name) {
+    let revision = 0;
+    for (const entry of [...this.siteVars.values(), ...this.siteVarHistory.values()]) {
+      if (entry.environment !== environment || entry.siteId !== siteId || entry.name !== name) continue;
+      revision = Math.max(revision, Number(entry.revision || 0));
+    }
+    return revision;
+  }
+
+  async recordAuditEvent(input) {
+    if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+    const record = {
+      id: input.id,
+      traceId: input.traceId || null,
+      eventType: input.eventType,
+      actorUserId: input.actorUserId || null,
+      actorType: input.actorType,
+      siteId: input.siteId || null,
+      routeId: input.routeId || null,
+      versionId: input.versionId || null,
+      decision: input.decision,
+      statusCode: input.statusCode ?? null,
+      ipHash: input.ipHash || null,
+      userAgentHash: input.userAgentHash || null,
+      metadata: cloneRecord(input.metadata || null),
+      createdAt: input.createdAt || this.now(),
+    };
+    this.auditEvents.push(record);
+    return cloneRecord(record);
+  }
+
+  async listAuditEvents() {
+    return cloneRecord(this.auditEvents);
   }
 
   async activateSiteVersion(
@@ -515,8 +715,8 @@ class TestPagesStore {
     const route = this.routes.get(routeId);
     if (!route || !previousRoute) return null;
     if (environment && route.environment !== environment) return null;
-    if (!routesMatch(route, expectedRoute)) return cloneRecord(route);
-    Object.assign(route, cloneRecord(previousRoute));
+    if (!routesMatchExecutionState(route, expectedRoute)) return cloneRecord(route);
+    Object.assign(route, routeRestoredAsNewCommit(cloneRecord(previousRoute), route));
     return cloneRecord(route);
   }
 
@@ -760,6 +960,28 @@ class TestPagesStore {
   }
 }
 
+function secretAuditEvent(input, eventType, secret, createdAt) {
+  return {
+    id: input.auditId,
+    traceId: null,
+    eventType,
+    actorUserId: input.actorId,
+    actorType: input.actorType,
+    siteId: input.siteId,
+    routeId: input.routeId || null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      siteSlug: input.siteSlug,
+      revision: secret.revision ?? null,
+    },
+    createdAt,
+  };
+}
+
 function resolveSsoEmployeeStatus(existingStatus, incomingStatus) {
   if (existingStatus === 'left' && incomingStatus !== 'left') return existingStatus;
   if (existingStatus === 'disabled' && (incomingStatus === 'active' || incomingStatus === 'unknown')) {
@@ -782,8 +1004,57 @@ function routesMatch(actual, expected) {
     actual.visibility === expected.visibility &&
     actual.policyVersion === expected.policyVersion &&
     actual.routeGeneration === expected.routeGeneration &&
+    (actual.runtimeConfigGeneration || 0) === (expected.runtimeConfigGeneration || 0) &&
     actual.routeStatus === expected.routeStatus
   );
+}
+
+function routesMatchIgnoringRuntimeConfigGeneration(actual, expected) {
+  if (!actual || !expected) return false;
+  return routesMatch(
+    {
+      ...actual,
+      runtimeConfigGeneration: expected.runtimeConfigGeneration || 0,
+    },
+    expected
+  );
+}
+
+function routesMatchExecutionState(actual, expected) {
+  if (!actual || !expected) return false;
+  return (
+    actual.id === expected.id &&
+    actual.activeVersionId === expected.activeVersionId &&
+    actual.workerName === expected.workerName &&
+    actual.runtime === expected.runtime &&
+    actual.executionProvider === expected.executionProvider &&
+    actual.dispatchType === expected.dispatchType &&
+    actual.dispatchBindingName === expected.dispatchBindingName &&
+    actual.slotId === expected.slotId &&
+    actual.routeGeneration === expected.routeGeneration &&
+    actual.routeStatus === expected.routeStatus
+  );
+}
+
+function routeWithLatestRuntimeConfig(route, latestRoute) {
+  if (!route || !latestRoute) return route;
+  return {
+    ...route,
+    runtimeConfigGeneration: latestRoute.runtimeConfigGeneration || 0,
+    updatedAt: latestRoute.updatedAt,
+  };
+}
+
+function routeRestoredAsNewCommit(previousRoute, currentRoute) {
+  return {
+    ...previousRoute,
+    visibility: currentRoute.visibility,
+    policyVersion: currentRoute.policyVersion,
+    cacheTier: currentRoute.cacheTier,
+    routeGeneration: Math.max(previousRoute.routeGeneration || 0, currentRoute.routeGeneration || 0) + 1,
+    runtimeConfigGeneration: currentRoute.runtimeConfigGeneration || 0,
+    updatedAt: currentRoute.updatedAt,
+  };
 }
 
 function hostnameClaimOwnerMatches(existing, input) {
@@ -800,6 +1071,18 @@ function siteAclEntryKey(entry) {
   return `${entry.effect}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole}`;
 }
 
+function siteSecretKey(environment, siteId, name) {
+  return `${environment}:${siteId}:${name}`;
+}
+
+function siteVarKey(environment, siteId, name) {
+  return `${environment}:${siteId}:${name}`;
+}
+
+function siteVarHistoryKey(environment, siteId, name, id) {
+  return `${environment}:${siteId}:${name}:${id}`;
+}
+
 function validateResolvedDeploymentMetadata(input) {
   if (!input.deploymentShape || !input.requestedFallback || !input.routingMode) {
     throw new Error('VERSION_DEPLOYMENT_METADATA_REQUIRED');
@@ -811,7 +1094,8 @@ function routeActivationMatches(actual, expected) {
   return (
     actual.activeVersionId === expected.activeVersionId &&
     actual.routeGeneration === expected.routeGeneration &&
-    actual.policyVersion === expected.policyVersion
+    actual.policyVersion === expected.policyVersion &&
+    (actual.runtimeConfigGeneration || 0) === (expected.runtimeConfigGeneration || 0)
   );
 }
 

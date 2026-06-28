@@ -118,7 +118,7 @@ apps/worker/src/
     └── gateway-client.js        # executor callback -> gateway
 ```
 
-后续接入 XD Pages / WFP 时，`pages-api-client.js` 应进入 `apps/worker/src/integrations/`，由 preview / publish job step 调用；不要让 `apps/gateway` 直接持有 WFP / Cloudflare 部署细节。
+后续接入 XD Cell / WFP 时，`pages-api-client.js` 应进入 `apps/worker/src/integrations/`，由 preview / publish job step 调用；不要让 `apps/gateway` 直接持有 WFP / Cloudflare 部署细节。
 
 ## 站点目录和 PR 边界
 

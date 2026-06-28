@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-const IGNORED_NAMES = new Set(['.git', 'node_modules', 'pages.config.json', '.DS_Store']);
+const IGNORED_NAMES = new Set(['.git', 'node_modules', 'pages.config.json', 'xd-cell.config.json', '.DS_Store']);
 const CONTROL_FILE_NAMES = new Set([
   '_worker.js',
   '_headers',
@@ -10,6 +10,7 @@ const CONTROL_FILE_NAMES = new Set([
   '_routes.json',
   '.assetsignore',
   'pages.config.json',
+  'xd-cell.config.json',
 ]);
 const SAFE_IGNORED_NAMES = new Set(['.git', 'node_modules', '.DS_Store']);
 const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
@@ -46,18 +47,30 @@ export async function hashArtifact(targetPath) {
 }
 
 export async function detectPublishTarget(targetPath, options = {}) {
-  const requestedFallback = options.requestedFallback || 'auto';
-  if (!['auto', 'index', 'not-found'].includes(requestedFallback)) throw new Error('FALLBACK_INVALID');
+  const requestedFallback = normalizeRequestedFallback(options.requestedFallback);
   const absolute = path.resolve(targetPath);
   const stats = await stat(absolute);
-  if (stats.isFile()) return detectFileTarget(absolute, requestedFallback);
+  if (stats.isFile()) return detectFileTarget(absolute, requestedFallback, options);
   if (!stats.isDirectory()) throw new Error('DETECT_TARGET_NOT_FOUND');
 
   const entries = await scanDirectory(absolute);
   const workerEntry = resolveWorkerEntry(entries, options.workerEntry);
+  const externalAssets = options.assetsPath ? await scanExternalAssets(options.assetsPath) : null;
+  const files = externalAssets?.files || entries.files;
+  const signals = externalAssets?.signals || entries.signals;
   const publicAssets = entries.files.filter((file) => !file.control && file.relativePath !== workerEntry);
-  const deploymentShape = workerEntry ? (publicAssets.length > 0 ? 'worker-with-assets' : 'worker-only') : 'assets-only';
-  const resolvedFallback = resolveFallback({ requestedFallback, deploymentShape, entries, publicAssets });
+  const effectivePublicAssets = externalAssets ? externalAssets.files.filter((file) => !file.control) : publicAssets;
+  const deploymentShape = workerEntry
+    ? effectivePublicAssets.length > 0
+      ? 'worker-with-assets'
+      : 'worker-only'
+    : 'assets-only';
+  const resolvedFallback = resolveFallback({
+    requestedFallback,
+    deploymentShape,
+    entries: { ...entries, files, signals },
+    publicAssets: effectivePublicAssets,
+  });
 
   return {
     deploymentShape,
@@ -65,20 +78,26 @@ export async function detectPublishTarget(targetPath, options = {}) {
     resolvedFallback,
     routingMode: deploymentShape === 'worker-with-assets' ? 'worker-first' : deploymentShape,
     workerEntry,
-    confidence: confidenceFor({ requestedFallback, resolvedFallback, entries }),
+    confidence: confidenceFor({ requestedFallback, resolvedFallback, entries: { ...entries, signals } }),
     source: requestedFallback === 'auto' ? 'auto' : 'explicit',
-    signals: entries.signals,
+    signals,
     diagnostics: entries.diagnostics,
+    assetsPath: options.assetsPath || null,
   };
 }
 
 export async function createUploadPlan(targetPath, decision) {
   const absolute = path.resolve(targetPath);
   const stats = await stat(absolute);
-  if (stats.isFile()) return createFileUploadPlan(absolute, decision);
+  if (stats.isFile()) {
+    if (decision.deploymentShape === 'worker-with-assets') return createFileWithAssetsUploadPlan(absolute, decision);
+    return createFileUploadPlan(absolute, decision);
+  }
   if (!stats.isDirectory()) throw new Error('DETECT_TARGET_NOT_FOUND');
 
-  const entries = await scanDirectory(absolute, { failOnDenylist: true });
+  const entries = decision.assetsPath
+    ? await scanExternalAssets(decision.assetsPath, { failOnDenylist: true })
+    : await scanDirectory(absolute, { failOnDenylist: true });
   const publicFiles = entries.files.filter((file) => !file.control && file.relativePath !== decision.workerEntry);
   if (decision.deploymentShape !== 'worker-only' && publicFiles.length === 0) {
     throw new Error('PACKAGE_NO_PUBLIC_ASSETS_AFTER_EXCLUDES');
@@ -136,6 +155,13 @@ export async function createUploadPlan(targetPath, decision) {
   };
 }
 
+async function scanExternalAssets(assetsPath, options = {}) {
+  const absolute = path.resolve(assetsPath);
+  const stats = await stat(absolute);
+  if (!stats.isDirectory()) throw new Error('ASSETS_DIRECTORY_REQUIRED');
+  return scanDirectory(absolute, options);
+}
+
 async function collectDirectoryFiles(root, dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = [];
@@ -155,20 +181,43 @@ async function collectDirectoryFiles(root, dir) {
   return files;
 }
 
-function detectFileTarget(absolute, requestedFallback) {
+async function detectFileTarget(absolute, requestedFallback, options = {}) {
   const extension = path.extname(absolute).toLowerCase();
   if (extension === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
   if (extension === '.js' || extension === '.mjs') {
-    if (requestedFallback !== 'auto') throw new Error('FALLBACK_REQUIRES_ASSETS');
+    const workerEntry = options.workerEntry || path.basename(absolute);
+    if (options.assetsPath) {
+      const externalAssets = await scanExternalAssets(options.assetsPath);
+      const publicAssets = externalAssets.files.filter((file) => !file.control);
+      const resolvedFallback = resolveFallback({
+        requestedFallback,
+        deploymentShape: 'worker-with-assets',
+        entries: externalAssets,
+        publicAssets,
+      });
+      return {
+        deploymentShape: 'worker-with-assets',
+        requestedFallback,
+        resolvedFallback,
+        routingMode: 'worker-first',
+        workerEntry,
+        confidence: confidenceFor({ requestedFallback, resolvedFallback, entries: externalAssets }),
+        source: requestedFallback === 'auto' ? 'auto' : 'explicit',
+        signals: [{ code: 'WORKER_FILE_TARGET', path: workerEntry }, ...externalAssets.signals],
+        diagnostics: externalAssets.diagnostics,
+        assetsPath: options.assetsPath,
+      };
+    }
+    if (requestedFallback !== 'auto' && requestedFallback !== 'none') throw new Error('FALLBACK_REQUIRES_ASSETS');
     return {
       deploymentShape: 'worker-only',
       requestedFallback,
       resolvedFallback: null,
       routingMode: 'worker-only',
-      workerEntry: path.basename(absolute),
+      workerEntry,
       confidence: 'high',
       source: 'auto',
-      signals: [{ code: 'WORKER_FILE_TARGET', path: path.basename(absolute) }],
+      signals: [{ code: 'WORKER_FILE_TARGET', path: workerEntry }],
       diagnostics: [],
     };
   }
@@ -282,9 +331,15 @@ function resolveWorkerEntry(entries, workerEntry) {
 
 function resolveFallback({ requestedFallback, deploymentShape, entries, publicAssets }) {
   if (deploymentShape === 'worker-only') {
-    if (requestedFallback !== 'auto') throw new Error('FALLBACK_REQUIRES_ASSETS');
+    if (requestedFallback !== 'auto' && requestedFallback !== 'none') throw new Error('FALLBACK_REQUIRES_ASSETS');
     return null;
   }
+  if (requestedFallback === 'none') return 'none';
+  if (requestedFallback === 'single-page-application') {
+    if (!entries.files.some((file) => file.relativePath === 'index.html')) throw new Error('FALLBACK_INDEX_REQUIRES_INDEX_HTML');
+    return 'index';
+  }
+  if (requestedFallback === '404-page') return 'not-found';
   if (requestedFallback === 'index') {
     if (!entries.files.some((file) => file.relativePath === 'index.html')) throw new Error('FALLBACK_INDEX_REQUIRES_INDEX_HTML');
     return 'index';
@@ -307,7 +362,7 @@ function confidenceFor({ requestedFallback, resolvedFallback, entries }) {
 
 async function createFileUploadPlan(absolute, decision) {
   if (decision.deploymentShape !== 'worker-only') throw new Error('STATIC_ARTIFACT_DIRECTORY_REQUIRED');
-  const bundle = await buildWorkerBundle(absolute);
+  const bundle = await buildWorkerBundle(absolute, decision.workerEntry);
   const bytes = Buffer.from(bundle.modules[0].content);
   if (bytes.byteLength > MAX_STATIC_ARTIFACT_BYTES) throw new Error('ARTIFACT_BUNDLE_TOO_LARGE');
   const hashFiles = [{ relativePath: bundle.mainModule, contentType: 'application/javascript+module', bytes }];
@@ -330,6 +385,69 @@ async function createFileUploadPlan(absolute, decision) {
       },
     ],
     controlSignals: [],
+  };
+}
+
+async function createFileWithAssetsUploadPlan(absolute, decision) {
+  if (!decision.assetsPath) throw new Error('ASSETS_DIRECTORY_REQUIRED');
+  const entries = await scanExternalAssets(decision.assetsPath, { failOnDenylist: true });
+  const publicFiles = entries.files.filter((file) => !file.control);
+  if (publicFiles.length === 0) throw new Error('PACKAGE_NO_PUBLIC_ASSETS_AFTER_EXCLUDES');
+
+  const assetManifest = [];
+  const assetFiles = [];
+  let sizeBytes = 0;
+  for (const [index, file] of publicFiles.sort(compareRelativePath).entries()) {
+    const bytes = await readFile(file.absolutePath);
+    sizeBytes += bytes.byteLength;
+    if (sizeBytes > MAX_STATIC_ARTIFACT_BYTES) throw new Error('ARTIFACT_BUNDLE_TOO_LARGE');
+    const contentType = contentTypeFor(file.relativePath);
+    const partName = `asset-file-${index}`;
+    assetManifest.push({
+      path: `/${file.relativePath}`,
+      partName,
+      hash: hashAsset(bytes, contentType),
+      size: bytes.byteLength,
+      contentType,
+    });
+    assetFiles.push({
+      relativePath: file.relativePath,
+      partName,
+      bytes,
+      contentType,
+    });
+  }
+  if (assetFiles.length > MAX_STATIC_ARTIFACT_FILES) throw new Error('ARTIFACT_FILE_COUNT_LIMIT_EXCEEDED');
+
+  const bundle = await buildWorkerBundle(absolute, decision.workerEntry);
+  const workerBytes = Buffer.from(bundle.modules[0].content);
+  sizeBytes += workerBytes.byteLength;
+  if (sizeBytes > MAX_STATIC_ARTIFACT_BYTES) throw new Error('ARTIFACT_BUNDLE_TOO_LARGE');
+  const workerModules = [
+    {
+      moduleName: bundle.mainModule,
+      partName: 'worker-main',
+      content: bundle.modules[0].content,
+      contentType: 'application/javascript+module',
+      hash: hashAsset(workerBytes, 'application/javascript+module'),
+      size: workerBytes.byteLength,
+    },
+  ];
+  const hashFiles = [
+    ...assetFiles.map((file) => ({ relativePath: file.relativePath, contentType: file.contentType, bytes: file.bytes })),
+    { relativePath: bundle.mainModule, contentType: 'application/javascript+module', bytes: workerBytes },
+  ];
+
+  return {
+    publishPlan: publishPlanFromDecision(decision),
+    contentHash: hashUploadPlan(hashFiles, decision),
+    fileCount: assetFiles.length,
+    sizeBytes,
+    assetManifest,
+    assetFiles,
+    workerMainModuleName: bundle.mainModule,
+    workerModules,
+    controlSignals: entries.controlSignals,
   };
 }
 
@@ -359,12 +477,23 @@ function publishPlanFromDecision(decision) {
     routingMode: decision.routingMode,
     workerEntry: decision.workerEntry,
     workerMainModuleName: decision.workerEntry,
-    assetsConfig: decision.resolvedFallback
-      ? {
-          notFoundHandling: decision.resolvedFallback === 'index' ? 'single-page-application' : '404-page',
-        }
-      : null,
+    assetsConfig: assetsConfigForDecision(decision),
   };
+}
+
+function assetsConfigForDecision(decision) {
+  if (decision.deploymentShape === 'worker-only') return null;
+  if (decision.resolvedFallback === 'index') return { notFoundHandling: 'single-page-application' };
+  if (decision.resolvedFallback === 'not-found') return { notFoundHandling: '404-page' };
+  return { notFoundHandling: 'none' };
+}
+
+function normalizeRequestedFallback(value) {
+  const requested = value || 'none';
+  if (!['auto', 'index', 'not-found', 'none', 'single-page-application', '404-page'].includes(requested)) {
+    throw new Error('FALLBACK_INVALID');
+  }
+  return requested;
 }
 
 function hashUploadPlan(files, decision) {
@@ -441,11 +570,11 @@ function isInsidePath(root, target) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-async function buildWorkerBundle(absolutePath) {
+async function buildWorkerBundle(absolutePath, moduleName = null) {
   const stats = await stat(absolutePath);
   if (!stats.isFile()) throw new Error('WORKER_ARTIFACT_FILE_REQUIRED');
   if (path.extname(absolutePath).toLowerCase() === '.ts') throw new Error('WORKER_TYPESCRIPT_UNSUPPORTED');
-  const name = path.basename(absolutePath);
+  const name = moduleName || path.basename(absolutePath);
   const content = await readFile(absolutePath, 'utf8');
   assertNoUnbundledRelativeImports(content);
   return {

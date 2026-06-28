@@ -32,8 +32,8 @@ test('health rejects legacy token headers', async () => {
   assert.equal(response.status, 400);
   const body = await response.json();
   assert.equal(body.error.code, 'LEGACY_TOKEN_UNSUPPORTED');
-  assert.equal(body.error.message, 'Legacy Pages tokens are not supported by XD Pages.');
-  assert.equal(body.error.action, 'Run `xd-cell login` or use an XD Pages access key.');
+  assert.equal(body.error.message, 'Legacy Pages tokens are not supported by XD Cell.');
+  assert.equal(body.error.action, 'Run `xd-cell login` or use an XD Cell access key.');
 });
 
 test('invalid environment fails closed', async () => {
@@ -248,7 +248,10 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.match(stagingTemplate, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(productionTemplate, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(stagingTemplate, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(productionTemplate, /SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets/);
+  assert.match(stagingTemplate, /SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /__PAGES_EXECUTION_MODE__/);
+  assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /SITE_SECRET_ENCRYPTION_KEY\s*=/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /CF_API_TOKEN|CF_ACCOUNT_ID/);
 });
 

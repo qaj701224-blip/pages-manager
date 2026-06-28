@@ -83,7 +83,7 @@ test('rejects reserved platform hosts before dispatch', async () => {
   assert.equal(response.status, 404);
   const body = await response.json();
   assert.equal(body.error.code, 'RESERVED_HOST');
-  assert.match(body.error.message, /routable XD Pages site/);
+  assert.match(body.error.message, /routable XD Cell site/);
   assert.equal(env.dispatchCount, 0);
 });
 
@@ -899,7 +899,7 @@ test('shows a friendly browser page when recovered site auth callback still fail
   assert.equal(response.status, 400);
   assert.match(response.headers.get('Content-Type'), /text\/html/);
   const text = await response.text();
-  assert.match(text, /XD Pages/);
+  assert.match(text, /XD Cell/);
   assert.match(text, /访问验证没有完成/);
   assert.match(text, /这次验证凭证已经失效或已经使用过/);
   assert.match(text, /重新打开站点会自动再次发起验证/);
