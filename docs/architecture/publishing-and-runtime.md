@@ -152,7 +152,7 @@ iat / exp
 
 ### CLI 本地状态与配置
 
-CLI 只适配 XD Cell v2 控制面，即固定的 `api.pages.xd.team` / `auth.pages.xd.team` API/Auth host。新建 v2 子站默认发布到 `pages.xd.team` 后缀；存量 route 保持既有 hostname，不由 CLI 在本地推导。CLI 不调用、不兼容 v1 `api.workers.xd.team` 和 `apps/server` 旧发布链路。
+CLI 只适配 XD Cell v2 控制面，即固定的 `api.pages.xd.team` / `auth.pages.xd.team` API/Auth host。新建 v2 子站默认发布到 `workers.xd.team` 后缀；存量 `pages.xd.team` route 保持既有 hostname，不由 CLI 在本地推导。CLI 不调用、不兼容 v1 `api.workers.xd.team` 和 `apps/server` 旧发布链路。
 
 当前 CLI 落地为 `apps/pages-cli` workspace package，npm 包名为 `@xd-cell/cli`，bin 名称为 `xd-cell`。CLI 只负责本地 UX、凭据读取、显式配置读取、artifact hash 和调用 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
 
@@ -165,7 +165,7 @@ CLI 使用 XD Cell 平台签发的 token，不直接持有心动 SSO `access_tok
 - CLI token 支持过期、scope、吊销和本地安全存储。
 - CI 默认使用 `access key`，不使用个人浏览器 session。`service token` 只有在后续需要组织级机器人身份时再单独设计，不混入 MVP。
 - CLI token、access key 和本地 profile 必须由服务端绑定目标 environment，staging token 不能调用 production API。
-- CLI 用户侧不暴露 `env` 心智；公开入口只展示 production 的 `api.pages.xd.team`、`auth.pages.xd.team` 和当前 v2 site suffix `*.pages.xd.team`。`custom` 作为隐藏开发保留项，只允许 loopback endpoint；`local` 不进入用户侧 CLI 环境列表。
+- CLI 用户侧不暴露 `env` 心智；公开入口只展示 production 的 `api.pages.xd.team`、`auth.pages.xd.team` 和当前 v2 site suffix `*.workers.xd.team`。`custom` 作为隐藏开发保留项，只允许 loopback endpoint；`local` 不进入用户侧 CLI 环境列表。
 - CLI 不得静默调用 `api.workers.xd.team`，也不得绕过 v2 hostname claim 去抢占 v1 exact route。
 
 凭证边界：
@@ -264,10 +264,10 @@ profile 只用于本地显示和用户体验，服务端不能信任。真实权
 
 env 安全规则：
 
-- production 不可变，固定指向 `api.pages.xd.team`、`auth.pages.xd.team` 和 `pages.xd.team` site suffix；staging 只通过维护者受控入口使用，不进入普通 CLI。
+- production 不可变，固定指向 `api.pages.xd.team`、`auth.pages.xd.team` 和 `workers.xd.team` site suffix；staging 只通过维护者受控入口使用，不进入普通 CLI。
 - 登录前必须展示将要打开的 auth host、API host 和请求 scope。
 - API host 变化后，旧 token 不自动复用；credential key 以 environment 隔离。
-- 如果 API/auth 指向 `api.workers.xd.team` / `auth.workers.xd.team` 或不在 custom env allowlist 中，CLI 应直接拒绝，并提示用户该 host 不属于 XD Cell CLI 信任域。site suffix 由平台配置返回，production 当前固定为 `pages.xd.team`。
+- 如果 API/auth 指向 `api.workers.xd.team` / `auth.workers.xd.team` 或不在 custom env allowlist 中，CLI 应直接拒绝，并提示用户该 host 不属于 XD Cell CLI 信任域。site suffix 由平台配置返回，production 当前固定为 `workers.xd.team`。
 
 #### Command config `--config <file>`
 
@@ -417,7 +417,7 @@ xd-cell deploy ./dist foo --visibility org
   -> pages-api 按 PAGES_EXECUTION_MODE 上传到内部执行面
   -> pages-api verify 后创建 immutable version
   -> pages-api 通过发布状态机切换 active route 和 route snapshot
-  -> 返回 https://foo.pages.xd.team
+  -> 返回 https://foo.workers.xd.team
 ```
 
 ### CI / Agent

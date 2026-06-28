@@ -213,16 +213,26 @@ async function createDeployment(request, env, config, store, actor) {
   if (!actorCanDeploy(actor, site, 'deploy:site')) {
     return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to this site.');
   }
-  const requestHash = await canonicalRequestHash({
-    operation: 'deploy',
-    siteId,
-    decision,
-    contentHash: canonicalContentHash,
-    artifactBundle,
-    assetManifest,
-    source,
-    vars: workerRuntimeVarsProvided ? requestedRuntimeVars : undefined,
-  });
+  let requestHash;
+  try {
+    requestHash = await canonicalRequestHash({
+      operation: 'deploy',
+      siteId,
+      decision,
+      contentHash: canonicalContentHash,
+      artifactBundle,
+      assetManifest,
+      source,
+      vars: workerRuntimeVarsProvided ? await runtimeConfigHashInput(env, requestedRuntimeVars, []) : undefined,
+    });
+  } catch {
+    return jsonError(
+      'RUNTIME_CONFIG_UNSUPPORTED',
+      'Runtime configuration is unavailable.',
+      503,
+      'Check runtime configuration and retry with a new Idempotency-Key.'
+    );
+  }
   const deploymentResult = await store.createDeploymentForIdempotency({
     id: nextId(env, 'dep'),
     environment: config.environment,
@@ -246,15 +256,17 @@ async function createDeployment(request, env, config, store, actor) {
 
   const deployment = deploymentResult.deployment;
   let runtimeSecrets = [];
+  let originalRuntimeVarRecords = [];
   if (decisionRequiresWorker(decision)) {
     if (typeof store.listEnabledSiteSecrets !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
       await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
       return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime configuration is unavailable.', 503, 'Retry later.');
     }
     try {
+      originalRuntimeVarRecords = await store.listEnabledSiteVars(config.environment, siteId);
       runtimeVarRecords = workerRuntimeVarsProvided
         ? siteVarRecordsFromObject(runtimeVars = requestedRuntimeVars)
-        : await store.listEnabledSiteVars(config.environment, siteId);
+        : originalRuntimeVarRecords;
       runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
       runtimeSecrets = await store.listEnabledSiteSecrets(config.environment, siteId);
     } catch {
@@ -305,26 +317,6 @@ async function createDeployment(request, env, config, store, actor) {
   }
   const versionId = nextId(env, 'ver');
   const plannedWorkerName = workerNameFor(site, versionId, config.environment);
-  if (workerRuntimeVarsProvided) {
-    if (typeof store.replaceSiteVars !== 'function') {
-      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
-      return runtimeConfigUnavailable();
-    }
-    try {
-      runtimeVarRecords = await store.replaceSiteVars({
-        environment: config.environment,
-        siteId,
-        vars: requestedRuntimeVars,
-        actorId: actor.userId,
-        updatedAt: readNow(env),
-        createId: () => nextId(env, 'var'),
-      });
-      runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
-    } catch {
-      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
-      return runtimeConfigUnavailable();
-    }
-  }
   try {
     validateRuntimeBindingQuotas(runtimeVars, runtimeSecrets);
   } catch (error) {
@@ -383,7 +375,13 @@ async function createDeployment(request, env, config, store, actor) {
     return deploymentStateWriteFailed();
   }
   const runtimeSnapshotError = decisionRequiresWorker(decision)
-    ? await assertRuntimeConfigSnapshotUnchanged(store, config.environment, siteId, runtimeVarRecords, runtimeSecrets)
+    ? await assertRuntimeConfigSnapshotUnchanged(
+        store,
+        config.environment,
+        siteId,
+        workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
+        runtimeSecrets
+      )
     : null;
   if (runtimeSnapshotError) {
     await store.updateDeployment(deployment.id, {
@@ -433,7 +431,13 @@ async function createDeployment(request, env, config, store, actor) {
 
   const workerName = uploaded.workerName || plannedWorkerName;
   const postUploadRuntimeSnapshotError = decisionRequiresWorker(decision)
-    ? await assertRuntimeConfigSnapshotUnchanged(store, config.environment, siteId, runtimeVarRecords, runtimeSecrets)
+    ? await assertRuntimeConfigSnapshotUnchanged(
+        store,
+        config.environment,
+        siteId,
+        workerRuntimeVarsProvided ? originalRuntimeVarRecords : runtimeVarRecords,
+        runtimeSecrets
+      )
     : null;
   if (postUploadRuntimeSnapshotError) {
     await cleanupUploadedWorker(provider, uploaded);
@@ -477,6 +481,52 @@ async function createDeployment(request, env, config, store, actor) {
     return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with a new Idempotency-Key.');
   }
 
+  if (workerRuntimeVarsProvided) {
+    if (typeof store.replaceSiteVars !== 'function') {
+      await cleanupUploadedWorker(provider, uploaded);
+      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
+      return runtimeConfigUnavailable();
+    }
+    const preCommitRuntimeSnapshotError = await assertRuntimeConfigSnapshotUnchanged(
+      store,
+      config.environment,
+      siteId,
+      originalRuntimeVarRecords,
+      runtimeSecrets
+    );
+    if (preCommitRuntimeSnapshotError) {
+      await cleanupUploadedWorker(provider, uploaded);
+      await store.updateDeployment(deployment.id, {
+        status: 'failed',
+        errorCode: preCommitRuntimeSnapshotError.code,
+        errorMessage: preCommitRuntimeSnapshotError.message,
+        completedAt: readNow(env),
+      });
+      return jsonError(
+        preCommitRuntimeSnapshotError.code,
+        preCommitRuntimeSnapshotError.message,
+        preCommitRuntimeSnapshotError.status,
+        preCommitRuntimeSnapshotError.action
+      );
+    }
+    try {
+      runtimeVarRecords = await store.replaceSiteVars({
+        environment: config.environment,
+        siteId,
+        vars: requestedRuntimeVars,
+        actorId: actor.userId,
+        updatedAt: readNow(env),
+        createId: () => nextId(env, 'var'),
+      });
+      runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
+    } catch {
+      await cleanupUploadedWorker(provider, uploaded);
+      await markRuntimeConfigDeploymentFailed(store, deployment.id, env);
+      return runtimeConfigUnavailable();
+    }
+  }
+  const committedRuntimeVarRecords = runtimeVarRecords;
+
   let version;
   let previousRoute;
   let route;
@@ -488,6 +538,16 @@ async function createDeployment(request, env, config, store, actor) {
       : null;
     if (preActivationRuntimeSnapshotError) {
       await cleanupUploadedWorker(provider, uploaded);
+      await restoreSiteVarsAfterFailedDeployment(store, {
+        environment: config.environment,
+        siteId,
+        restoreVars: originalRuntimeVarRecords,
+        expectedVars: committedRuntimeVarRecords,
+        actorId: actor.userId,
+        updatedAt: readNow(env),
+        createId: () => nextId(env, 'var'),
+        enabled: workerRuntimeVarsProvided,
+      });
       await store.updateDeployment(deployment.id, {
         status: 'failed',
         errorCode: preActivationRuntimeSnapshotError.code,
@@ -566,6 +626,16 @@ async function createDeployment(request, env, config, store, actor) {
     );
   } catch {
     await cleanupUploadedWorker(provider, uploaded);
+    await restoreSiteVarsAfterFailedDeployment(store, {
+      environment: config.environment,
+      siteId,
+      restoreVars: originalRuntimeVarRecords,
+      expectedVars: committedRuntimeVarRecords,
+      actorId: actor.userId,
+      updatedAt: readNow(env),
+      createId: () => nextId(env, 'var'),
+      enabled: workerRuntimeVarsProvided,
+    });
     await markDeploymentStateWriteFailed(store, deployment.id, { env, versionId: version?.id });
     return deploymentStateWriteFailed();
   }
@@ -581,6 +651,16 @@ async function createDeployment(request, env, config, store, actor) {
       (latestRoute.runtimeConfigGeneration || 0) !== (previousRoute.runtimeConfigGeneration || 0);
     if (runtimeConfigChanged) {
       await cleanupUploadedWorker(provider, uploaded);
+      await restoreSiteVarsAfterFailedDeployment(store, {
+        environment: config.environment,
+        siteId,
+        restoreVars: originalRuntimeVarRecords,
+        expectedVars: committedRuntimeVarRecords,
+        actorId: actor.userId,
+        updatedAt: readNow(env),
+        createId: () => nextId(env, 'var'),
+        enabled: workerRuntimeVarsProvided,
+      });
       await store.updateDeployment(deployment.id, {
         status: 'failed',
         versionId: version.id,
@@ -596,6 +676,16 @@ async function createDeployment(request, env, config, store, actor) {
       );
     }
     await cleanupUploadedWorker(provider, uploaded);
+    await restoreSiteVarsAfterFailedDeployment(store, {
+      environment: config.environment,
+      siteId,
+      restoreVars: originalRuntimeVarRecords,
+      expectedVars: committedRuntimeVarRecords,
+      actorId: actor.userId,
+      updatedAt: readNow(env),
+      createId: () => nextId(env, 'var'),
+      enabled: workerRuntimeVarsProvided,
+    });
     await store.updateDeployment(deployment.id, {
       status: 'failed',
       versionId: version.id,
@@ -614,6 +704,16 @@ async function createDeployment(request, env, config, store, actor) {
     await writeSnapshot(env, store, { site, route, version });
   } catch {
     const restoredRoute = await restoreSiteRouteAfterSnapshotFailure(store, siteId, previousRoute, route, config.environment);
+    await restoreSiteVarsAfterFailedDeployment(store, {
+      environment: config.environment,
+      siteId,
+      restoreVars: originalRuntimeVarRecords,
+      expectedVars: committedRuntimeVarRecords,
+      actorId: actor.userId,
+      updatedAt: readNow(env),
+      createId: () => nextId(env, 'var'),
+      enabled: workerRuntimeVarsProvided,
+    });
     const restoredSnapshotWritten = await writeRestoredRouteSnapshotAfterFailure(
       env,
       store,
@@ -785,6 +885,29 @@ function siteVarRecordsFromObject(vars = {}) {
 
 function runtimeVarsFromRecords(records = []) {
   return Object.fromEntries(records.map((record) => [record.name, record.value]));
+}
+
+async function restoreSiteVarsAfterFailedDeployment(
+  store,
+  { environment, siteId, restoreVars, expectedVars, actorId, updatedAt, createId, enabled } = {}
+) {
+  if (!enabled || typeof store.replaceSiteVars !== 'function') return;
+  try {
+    if (typeof store.listEnabledSiteVars === 'function') {
+      const currentVars = await store.listEnabledSiteVars(environment, siteId);
+      if (!runtimeVarSnapshotsEqual(currentVars, expectedVars)) return;
+    }
+    await store.replaceSiteVars({
+      environment,
+      siteId,
+      vars: runtimeVarsFromRecords(restoreVars),
+      actorId,
+      updatedAt,
+      createId,
+    });
+  } catch {
+    // Best effort: the original deployment failure is still the user-facing error.
+  }
 }
 
 function runtimeSecretSnapshot(secrets = []) {
