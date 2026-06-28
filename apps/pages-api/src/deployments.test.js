@@ -548,6 +548,76 @@ test('deployments clear site vars when vars is explicitly empty', async () => {
   });
 });
 
+test('failed explicit vars deployment does not update site-level vars used by later omitted-vars deploy', async () => {
+  const store = await createSeededStore();
+  const uploads = [];
+  let failNextUpload = false;
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async (input) => {
+        uploads.push(input.runtimeBindings.vars);
+        if (failNextUpload) throw new Error('upload failed');
+        return { artifactRef: `wfp://test/${input.workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const seed = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ vars: { FEATURE_FLAG: 'on' } }),
+      { 'Idempotency-Key': 'site_vars_seed_before_failure' }
+    ),
+    env
+  );
+  failNextUpload = true;
+  const failed = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({
+        moduleContent: 'export default { fetch() { return new Response("failed"); } };',
+        vars: { FEATURE_FLAG: 'failed' },
+      }),
+      { 'Idempotency-Key': 'site_vars_failed_deploy' }
+    ),
+    env
+  );
+  failNextUpload = false;
+  const omitted = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ moduleContent: 'export default { fetch() { return new Response("omitted"); } };' }),
+      { 'Idempotency-Key': 'site_vars_after_failed_deploy' }
+    ),
+    env
+  );
+
+  assert.equal(seed.status, 201, await seed.clone().text());
+  assert.equal(failed.status, 502, await failed.clone().text());
+  assert.equal(omitted.status, 201, await omitted.clone().text());
+  const omittedBody = await omitted.json();
+  assert.deepEqual(uploads, [{ FEATURE_FLAG: 'on' }, { FEATURE_FLAG: 'failed' }, { FEATURE_FLAG: 'on' }]);
+  assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), [
+    {
+      id: 'var_1',
+      environment: 'production',
+      siteId: 'site_1',
+      name: 'FEATURE_FLAG',
+      value: 'on',
+      revision: 1,
+      createdBy: 'usr_1',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+      deletedAt: null,
+    },
+  ]);
+  assert.deepEqual((await store.getSiteVersion(omittedBody.deployment.versionId)).runtimeConfigSnapshotJson, {
+    vars: [{ name: 'FEATURE_FLAG', value: 'on', revision: 1 }],
+    secrets: [],
+  });
+});
+
 test('assets-only deploys ignore vars metadata without syncing site vars', async () => {
   const store = await createSeededStore();
   await store.replaceSiteVars({
@@ -699,6 +769,33 @@ test('deployment request hash changes when runtime var values change', async () 
   assert.equal(first.status, 201, await first.clone().text());
   assert.equal(second.status, 409, await second.clone().text());
   assert.equal((await second.json()).error.code, 'IDEMPOTENCY_CONFLICT');
+});
+
+test('deployment request hash uses peppered runtime var digests', async () => {
+  async function deployWithPepper(pepper) {
+    const store = await createSeededStore();
+    const env = testEnv(store, createSnapshotStore(), {
+      RUNTIME_CONFIG_HASH_PEPPER: pepper,
+      WFP_PROVIDER: {
+        upload: async (input) => ({ artifactRef: `wfp://test/${input.workerName}` }),
+        verify: async () => ({ ok: true }),
+      },
+    });
+
+    const response = await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ vars: { FEATURE_FLAG: 'on' } }),
+        { 'Idempotency-Key': 'runtime_var_digest' }
+      ),
+      env
+    );
+
+    assert.equal(response.status, 201, await response.clone().text());
+    return (await store.getDeployment('dep_1')).requestHash;
+  }
+
+  assert.notEqual(await deployWithPepper('first-pepper'), await deployWithPepper('second-pepper'));
 });
 
 test('deployment fails closed when runtime config hash pepper is unavailable', async () => {
