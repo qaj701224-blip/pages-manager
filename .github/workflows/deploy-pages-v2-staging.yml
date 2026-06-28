@@ -1,10 +1,10 @@
-name: Deploy XD Pages Staging
+name: Deploy XD Cell Staging
 
 on:
   workflow_dispatch:
     inputs:
       component:
-        description: Deploy XD Pages component
+        description: Deploy XD Cell component
         required: true
         type: choice
         default: all

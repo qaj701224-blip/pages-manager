@@ -526,7 +526,7 @@ test('router slot expansion workflow is manual and only touches router slot reso
   const workflow = readWorkflow('.github/workflows/expand-pages-router-slots.yml');
   const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
 
-  assert.match(workflow, /^name: Expand XD Pages Router Slots$/m);
+  assert.match(workflow, /^name: Expand XD Cell Router Slots$/m);
   assert.match(triggers, /^ {2}workflow_dispatch:/m, 'router slot expansion is manual');
   assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'router slot expansion has no push or PR trigger');
   assert.match(workflow, /environment:[\s\S]*type: choice[\s\S]*- staging[\s\S]*- production/);

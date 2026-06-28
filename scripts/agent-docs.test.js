@@ -17,7 +17,7 @@ test('CLAUDE.md points at the shared AGENTS.md truth source', () => {
 test('agent instructions describe v2 first and v1 as legacy', () => {
   const doc = readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8');
 
-  assert.match(doc, /XD Pages/);
+  assert.match(doc, /XD Cell/);
   assert.match(doc, /apps\/pages-api/);
   assert.match(doc, /apps\/pages-cli/);
   assert.match(doc, /apps\/pages-router/);

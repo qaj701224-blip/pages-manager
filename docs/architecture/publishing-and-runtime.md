@@ -1,4 +1,4 @@
-# XD Pages 发布与运行时模型
+# XD Cell 发布与运行时模型
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
@@ -156,7 +156,7 @@ CLI 只适配 XD Cell v2 控制面，即固定的 `api.pages.xd.team` / `auth.pa
 
 当前 CLI 落地为 `apps/pages-cli` workspace package，npm 包名为 `@xd-cell/cli`，bin 名称为 `xd-cell`。CLI 只负责本地 UX、凭据读取、显式配置读取、artifact hash 和调用 API/Auth；不会直连 Cloudflare，也不会绕过 `pages-api` 的权限判断。
 
-CLI 使用 XD Pages 平台签发的 token，不直接持有心动 SSO `access_token`：
+CLI 使用 XD Cell 平台签发的 token，不直接持有心动 SSO `access_token`：
 
 - `xd-cell login` 打开浏览器，完成 SSO 后 CLI 轮询登录结果。
 - 普通用户 CLI 默认登录 production；staging 入口只存在于维护者受控流程，不进入普通 help / skill / README。
@@ -271,7 +271,7 @@ env 安全规则：
 
 #### Command config `--config <file>`
 
-XD Pages CLI 不自动读取、不自动生成隐式项目绑定文件，也不提供 `pages link/unlink` 作为项目绑定心智。站点名必须显式来自 positional 参数或显式 `--config <file>`。这样用户、CI 和 AI agent 都不会被项目目录里的隐藏状态影响。
+XD Cell CLI 不自动读取、不自动生成隐式项目绑定文件，也不提供 `pages link/unlink` 作为项目绑定心智。站点名必须显式来自 positional 参数或显式 `--config <file>`。这样用户、CI 和 AI agent 都不会被项目目录里的隐藏状态影响。
 
 `xd-cell.config.json` 是可自动发现的发布模板；显式 `--config <file>` 是一次性输入，不属于本地状态：
 
@@ -438,13 +438,13 @@ access key 要求：
 
 ### AI Skill
 
-XD Pages AI skill 最终只负责调用 CLI：
+XD Cell AI skill 最终只负责调用 CLI：
 
 ```text
 用户 -> AI -> xd-cell CLI -> pages-api
 ```
 
-不再让 AI 直接拼接 API、猜测 token、解释复杂 OpenAPI 或手写 multipart 请求。v1 legacy skill / 文档如仍存在，只服务 `apps/server` 旧链路，不因 XD Pages CLI 改造而改变行为。
+不再让 AI 直接拼接 API、猜测 token、解释复杂 OpenAPI 或手写 multipart 请求。v1 legacy skill / 文档如仍存在，只服务 `apps/server` 旧链路，不因 XD Cell CLI 改造而改变行为。
 
 ## 用户 Worker 运行边界
 
@@ -475,7 +475,7 @@ baseline egress policy：
 
 当前 SDK 提供 `readPlatformContext(request)` 读取 router 注入的最小上下文，并校验 `CF-Platform-*` headers 与 `internal_worker_jwt` claims 的一致性。它不会返回 raw JWT 或 capability；User Worker 不能把该 helper 的返回值当作平台能力，也不能用它绕过 gateway scope。由于第一版 internal JWT 使用 router 持有的 HS256 session key，User Worker 侧不持有验签 secret；未来如果升级为非对称签名和 JWKS，再把该 helper 升级为真正的 cryptographic verify。
 
-## XD Pages Data 与平台能力
+## XD Cell Data 与平台能力
 
 现有 `apps/kv-gateway` 代码改为 v2-owned data gateway，不再由 v1 `apps/server` 签发或部署：
 
@@ -574,7 +574,7 @@ user data:
 
 ## 静态站点和 SPA
 
-静态站点和 SPA 是 XD Pages 的默认发布形态。第一版不再使用 generated-worker，不把 dist 文件 base64 内嵌到 `worker.mjs`。CLI 采用文件级 multipart 上传，服务端内部使用 Cloudflare Assets upload session 和薄 assets Worker 承载静态资源。
+静态站点和 SPA 是 XD Cell 的默认发布形态。第一版不再使用 generated-worker，不把 dist 文件 base64 内嵌到 `worker.mjs`。CLI 采用文件级 multipart 上传，服务端内部使用 Cloudflare Assets upload session 和薄 assets Worker 承载静态资源。
 
 ```text
 xd-cell deploy ./dist foo

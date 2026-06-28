@@ -36,7 +36,7 @@ export function browserPageResponse(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <title>${safeTitle} - XD Pages</title>
+  <title>${safeTitle} - XD Cell</title>
   <style>
     :root {
       color-scheme: light;
@@ -169,7 +169,7 @@ export function browserPageResponse(
 </head>
 <body>
   <main class="${toneClass}">
-    <div class="brand"><span class="mark">XD</span><span>XD Pages</span></div>
+    <div class="brand"><span class="mark">XD</span><span>XD Cell</span></div>
     <div class="content">
       <div class="status-pill">状态：${safeStatusLabel}</div>
       <h1>${safeTitle}</h1>

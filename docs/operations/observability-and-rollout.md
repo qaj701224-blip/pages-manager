@@ -1,4 +1,4 @@
-# XD Pages 审计、监控与上线阶段
+# XD Cell 审计、监控与上线阶段
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
@@ -46,7 +46,7 @@
 - dispatch success rate、dispatch 404/5xx、user Worker CPU/subrequest 超限，按 `execution_provider` 维度拆分。
 - WFP deploy success/failure、slot deploy success/failure、deploy duration、orphan worker count。
 - slot capacity：available / assigned / disabled / available_pending_router 数量、容量水位、扩容失败数、长时间未使用 slot。
-- 普通 Worker slot 容量耗尽时，`pages-api` 通过 `SLACK_PAGES_ALERT_WEBHOOK_URL` 发送 Slack 运维告警；第一版消息只 @ `SLACK_PAGES_ALERT_MENTION_USER_ID` 一次，并展示“环境 / 容量 / 剩余 / 扩容”。其中“容量”是当前已用 Worker / 当前总 Worker，“剩余”是当前可被发布使用的 available Worker 数量。按钮使用 GitHub Actions URL button，打开 `https://github.com/xindong/pages-manager/actions` 让维护者手动运行对应环境的 XD Pages deploy workflow。不要在 `pages-api` 中保存 GitHub token，也不要让 Slack button 直接触发部署。
+- 普通 Worker slot 容量耗尽时，`pages-api` 通过 `SLACK_PAGES_ALERT_WEBHOOK_URL` 发送 Slack 运维告警；第一版消息只 @ `SLACK_PAGES_ALERT_MENTION_USER_ID` 一次，并展示“环境 / 容量 / 剩余 / 扩容”。其中“容量”是当前已用 Worker / 当前总 Worker，“剩余”是当前可被发布使用的 available Worker 数量。按钮使用 GitHub Actions URL button，打开 `https://github.com/xindong/pages-manager/actions` 让维护者手动运行对应环境的 XD Cell deploy workflow。不要在 `pages-api` 中保存 GitHub token，也不要让 Slack button 直接触发部署。
 - SSO login start/callback failure、CLI login poll/consume failure。
 - cross-env guard trip、reserved host/path mismatch。
 - audit write backlog、audit dropped/sampled count。
@@ -101,7 +101,7 @@ publish -> activate -> drain -> retire
 - 新增 `pages-auth`。
 - 新增 `pages-api` 的登录态校验和 access key。
 - CLI 支持 `xd-cell login`、`login_id + login_secret` 轮询、`xd-cell login --token <token>` 保存凭证，以及 API 命令的单次 `--token <token>`。
-- AI skill 改为只调用 XD Pages CLI。
+- AI skill 改为只调用 XD Cell CLI。
 - 现有 `apps/server` 继续服务旧版 `workers.xd.team`，新架构不改旧版 API、skill、README 或发布行为。
 
 ### 阶段 2：发布 MVP（可上线受保护站点的最小闭环）
@@ -173,7 +173,7 @@ publish -> activate -> drain -> retire
 
 ## 第一版验收标准
 
-- 用户必须登录后才能发布 XD Pages 站点。
+- 用户必须登录后才能发布 XD Cell 站点。
 - 用户 CLI 不暴露 execution provider；`xd-cell deploy` 由平台 `PAGES_EXECUTION_MODE` 决定部署到 WFP 或 ordinary Worker slot。
 - WFP 未开通时，`normal-worker-slot` 能发布试点站点；WFP 开通后切换默认 mode 不改变用户命令。
 - production/staging 由不同 router Worker 和不同资源承载；如果使用 thin router，它不能持有业务 secret。
@@ -190,6 +190,6 @@ publish -> activate -> drain -> retire
 - API host 不直接依赖 auth host 的 `auth_session`；浏览器态 API 使用独立 host-only `api_session`。
 - `internal` 站点在公司网络内无需登录可访问，但仍有站点 metadata 和审计；第一版不支持互联网公开子站。
 - CLI 支持浏览器登录和 access key 两种模式。
-- CLI 只支持 XD Pages v2 控制面，不能静默调用 v1 `api.workers.xd.team`，也不能绕过 hostname claim 抢占 v1 exact route。
+- CLI 只支持 XD Cell v2 控制面，不能静默调用 v1 `api.workers.xd.team`，也不能绕过 hostname claim 抢占 v1 exact route。
 - 旧版 `apps/server` 站点、API、skill 和发布链路不受新架构改动影响；新建 v2 子站默认 `workers.xd.team` 后缀由 `pages-router` wildcard 承载。
 - 文档、测试和日志不包含真实 secret、真实 token 或真实 Cloudflare 资源 id。

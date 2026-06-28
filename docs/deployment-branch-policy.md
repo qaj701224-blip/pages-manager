@@ -49,8 +49,8 @@ base: master
   `pr-platform.yml` 承接，`ci.yml` 只保留给 staging sync 的迁移期手动校验。
 - `check` 成功后再把同一个已验证 commit push 到 `staging`，满足 `staging` ruleset 的 required status check；dispatch staging deploy 前必须等待 GitHub refs API 确认 `refs/heads/staging` 已指向该 commit，避免部署 workflow 绑定旧 head。
 - 临时分支只用于让 GitHub Actions 给待同步 commit 产生 required check，成功或失败后由 workflow 清理。
-- 由于 GitHub `GITHUB_TOKEN` 产生的 push 不会自动触发后续 push workflow，同步 workflow 必须显式 dispatch `Deploy XD Pages Staging`。
-- 同步 workflow 必须等待 `Deploy XD Pages Staging` 完成并继承其结果；这样 master PR 上能直接看到 staging preview / validation 是否通过。
+- 由于 GitHub `GITHUB_TOKEN` 产生的 push 不会自动触发后续 push workflow，同步 workflow 必须显式 dispatch `Deploy XD Cell Staging`。
+- 同步 workflow 必须等待 `Deploy XD Cell Staging` 完成并继承其结果；这样 master PR 上能直接看到 staging preview / validation 是否通过。
 
 约束：
 
@@ -59,7 +59,7 @@ base: master
 - workflow 必须串行执行，避免多个 master PR 同时改写 `staging`。
 - 如果 PR head 无法干净 merge 到 `staging`，workflow 必须失败，转人工处理冲突。
 - 如果 `Platform CI` 在临时同步分支上失败，workflow 不会更新 `staging`。
-- 如果仓库规则不允许 `GITHUB_TOKEN` dispatch workflow，`Deploy XD Pages Staging` 不会被触发；需要允许 Actions workflow dispatch，或改用 GitHub App token。
+- 如果仓库规则不允许 `GITHUB_TOKEN` dispatch workflow，`Deploy XD Cell Staging` 不会被触发；需要允许 Actions workflow dispatch，或改用 GitHub App token。
 
 ## Staging Preview 整理流程
 

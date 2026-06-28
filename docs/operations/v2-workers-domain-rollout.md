@@ -2,7 +2,7 @@
 
 ## 文档定位
 
-本文记录 XD Pages v2 新站点默认域名从 `{slug}.pages.xd.team` 切到 `{slug}.workers.xd.team`，并与 v1 legacy `workers.xd.team` 链路共存的上线流程。
+本文记录 XD Cell v2 新站点默认域名从 `{slug}.pages.xd.team` 切到 `{slug}.workers.xd.team`，并与 v1 legacy `workers.xd.team` 链路共存的上线流程。
 
 本文是 operations runbook，不是 ADR、spec 或历史 plan：
 
@@ -33,7 +33,7 @@ v2 legacy staging:    <slug>-staging.pages.xd.team        -> 保留既有 v2 sta
 
 ## 核心上线原则
 
-- 生产部署只允许人工触发 `Deploy XD Pages Production`，不得因为本域名切换增加 push / PR 自动 production deploy。
+- 生产部署只允许人工触发 `Deploy XD Cell Production`，不得因为本域名切换增加 push / PR 自动 production deploy。
 - staging 和 production 的 Worker、D1、KV、route、domain、slot pool、dispatch namespace 和 signing key 必须物理隔离。
 - hostname 归属的权威逻辑放在 v2 D1；v1 只通过内部接口或 service binding 调用，不在 v1 引入新的权威 schema。
 - router 和 auth 必须保持 fail-closed。未知 host、未知 route、环境不匹配、visibility/ACL 异常都不得 fall open。
@@ -286,7 +286,7 @@ staging 必测：
 - router/auth 安全测试覆盖 workers host。
 - production router 新增 `*.workers.xd.team/*` 时必须保留 `*.pages.xd.team/*`。
 - production cutover 前必须运行 `Hostname Claims Conflict Check`，确认 claim 回填输入与当前 production KV/D1 对齐、blocking 冲突数量为 0，且 `slugCoexistence` 全部属于预期存量共存。
-- 手动触发 `Deploy XD Pages Production`，每个组件部署后立即冒烟；异常即停，不继续后续步骤。
+- 手动触发 `Deploy XD Cell Production`，每个组件部署后立即冒烟；异常即停，不继续后续步骤。
 
 ## cutover 后的 v1 deploy 流程
 

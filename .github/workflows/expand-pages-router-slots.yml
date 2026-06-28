@@ -1,10 +1,10 @@
-name: Expand XD Pages Router Slots
+name: Expand XD Cell Router Slots
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Target XD Pages environment
+        description: Target XD Cell environment
         required: true
         type: choice
         default: staging

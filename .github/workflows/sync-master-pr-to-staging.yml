@@ -285,11 +285,11 @@ jobs:
             done
 
             if [[ -z "$v2_run_id" ]]; then
-              echo "Deploy XD Pages Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
+              echo "Deploy XD Cell Staging was dispatched but no matching workflow run was found for ${deploy_head_sha}." >&2
               exit 1
             fi
 
-            echo "Waiting for Deploy XD Pages Staging run: ${v2_run_url}"
+            echo "Waiting for Deploy XD Cell Staging run: ${v2_run_url}"
             gh run watch "$v2_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
           fi
 

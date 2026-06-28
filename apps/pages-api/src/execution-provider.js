@@ -17,7 +17,7 @@ const ASSETS_WORKER_MODULE = `export default {
 };`;
 const PLACEHOLDER_WORKER_MODULE = `export default {
   fetch() {
-    return new Response('XD Pages slot is not assigned.', { status: 404 });
+    return new Response('XD Cell slot is not assigned.', { status: 404 });
   },
 };`;
 

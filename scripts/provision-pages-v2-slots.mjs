@@ -9,7 +9,7 @@ const SUPPORTED_PHASES = new Set(['plan', 'prepare', 'activate', 'cleanup-plan',
 const DEFAULT_CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const PLACEHOLDER_WORKER_MODULE = `export default {
   fetch() {
-    return new Response('XD Pages slot is not assigned.', { status: 404 });
+    return new Response('XD Cell slot is not assigned.', { status: 404 });
   },
 };`;
 

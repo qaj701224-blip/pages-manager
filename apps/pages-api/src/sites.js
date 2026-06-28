@@ -11,7 +11,7 @@ const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
-const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Pages 平台保留项，请换一个业务站点名。';
+const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
 
 export async function handleSitesApi(request, env, config, store) {

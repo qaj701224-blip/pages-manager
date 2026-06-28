@@ -581,7 +581,7 @@ function buildCliLoginConfirmationHtml(loginId, deviceCode, config, confirmToken
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <title>XD Pages CLI 登录确认</title>
+  <title>XD Cell CLI 登录确认</title>
   <style>
     :root {
       color-scheme: light;
@@ -761,9 +761,9 @@ function buildCliLoginConfirmationHtml(loginId, deviceCode, config, confirmToken
 <body>
   <main>
     <section class="header">
-      <div class="brand"><span class="mark">XD</span><span>XD Pages</span></div>
-      <h1>XD Pages CLI 登录确认</h1>
-      <p>请确认浏览器中的设备码和终端里显示的一致。确认后，这个终端会获得当前账号的 XD Pages CLI 访问权限。</p>
+      <div class="brand"><span class="mark">XD</span><span>XD Cell</span></div>
+      <h1>XD Cell CLI 登录确认</h1>
+      <p>请确认浏览器中的设备码和终端里显示的一致。确认后，这个终端会获得当前账号的 XD Cell CLI 访问权限。</p>
     </section>
     <section class="body">
       <p class="code-label">设备码</p>

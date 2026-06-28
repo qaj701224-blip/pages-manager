@@ -1,14 +1,14 @@
-# DR 0003: XD Pages artifact store 与可重建发布设计
+# DR 0003: XD Cell artifact store 与可重建发布设计
 
 ## 状态
 
 Proposed。
 
-本文是长期候选设计，不是当前 MVP 已接受范围。优先级暂定为低：只有当 XD Pages 决定对外承诺“成功发布的历史版本在保留期内可重建回滚”，或需要执行面迁移时保留历史版本可恢复性，才应推进实现。
+本文是长期候选设计，不是当前 MVP 已接受范围。优先级暂定为低：只有当 XD Cell 决定对外承诺“成功发布的历史版本在保留期内可重建回滚”，或需要执行面迁移时保留历史版本可恢复性，才应推进实现。
 
 当前 MVP 可以继续把历史回滚定义为 provider best-effort：provider artifact 或旧执行目标仍可用时允许快速回滚；不可用时返回明确错误，不为了历史回滚保留普通 Worker slot。
 
-本文讨论 XD Pages 发布 artifact 的长期保存、索引和重新部署语义。目标是评估是否让一次成功上传的发布内容成为平台可重建的版本输入，而不是只保存执行面的 provider pointer。
+本文讨论 XD Cell 发布 artifact 的长期保存、索引和重新部署语义。目标是评估是否让一次成功上传的发布内容成为平台可重建的版本输入，而不是只保存执行面的 provider pointer。
 
 ## 背景
 
@@ -20,7 +20,7 @@ Proposed。
 - 普通 Worker slot 会在新版本成功后释放旧 slot；旧 slot 被复用后，历史版本无法仅靠 `slot://...` 指针恢复。
 - 如果 provider artifact 被删除、过期、迁移或因为执行模式切换不可用，平台没有原始 bytes 重新 materialize 该版本。
 
-因此，如果 XD Pages 需要稳定承诺历史版本可重建，就需要一个平台自有的 artifact store，把用户上传的发布内容保存为不可变输入。执行 provider 只负责把某个 artifact materialize 到当前执行面；它不再是发布内容的唯一真相源。
+因此，如果 XD Cell 需要稳定承诺历史版本可重建，就需要一个平台自有的 artifact store，把用户上传的发布内容保存为不可变输入。执行 provider 只负责把某个 artifact materialize 到当前执行面；它不再是发布内容的唯一真相源。
 
 ## 采纳条件
 

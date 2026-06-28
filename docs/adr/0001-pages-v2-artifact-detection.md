@@ -1,4 +1,4 @@
-# ADR 0001: XD Pages artifact detection 设计
+# ADR 0001: XD Cell artifact detection 设计
 
 ## 状态
 

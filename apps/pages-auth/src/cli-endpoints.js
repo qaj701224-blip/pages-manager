@@ -144,7 +144,7 @@ export async function handleCliLoginConfirm(request, env, config) {
 
   return browserPageResponse({
     title: 'CLI 登录已完成',
-    message: '可以关闭这个浏览器页面，回到终端继续使用 XD Pages。',
+    message: '可以关闭这个浏览器页面，回到终端继续使用 XD Cell。',
     detail: '这次授权只会用于刚刚发起登录的终端窗口。',
     status: 200,
     statusLabel: '已授权',

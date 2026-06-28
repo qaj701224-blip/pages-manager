@@ -34,7 +34,7 @@ Slack Agent 负责：
 - 为 Platform Dev Lane 输出 issue type、area、risk 和自动化建议。
 - 识别权限、owner scope、站点管理关系。
 - 输出结构化 intent。
-- 作为 XD Pages 的任务管家和问题诊断入口，回答任务状态、关联 issue / PR / preview、失败阶段和下一步建议。
+- 作为 XD Cell 的任务管家和问题诊断入口，回答任务状态、关联 issue / PR / preview、失败阶段和下一步建议。
 
 Slack Agent 不负责：
 

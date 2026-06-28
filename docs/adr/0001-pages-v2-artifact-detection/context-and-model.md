@@ -6,11 +6,11 @@
 
 Accepted。
 
-本文沉淀 XD Pages 发布产物识别和打包语义的长期规则。后续演进应保持本文定义的用户心智和架构边界：用户提供发布来源，平台解释并执行发布方式，公开接口不暴露底层产物枚举。
+本文沉淀 XD Cell 发布产物识别和打包语义的长期规则。后续演进应保持本文定义的用户心智和架构边界：用户提供发布来源，平台解释并执行发布方式，公开接口不暴露底层产物枚举。
 
 ## 背景
 
-XD Pages 的理想发布体验应该是：
+XD Cell 的理想发布体验应该是：
 
 ```bash
 xd-cell deploy ./dist example-site
@@ -25,7 +25,7 @@ xd-cell deploy ./dist example-site
 
 如果把这两个问题压缩成公开枚举，用户和 AI 会被迫先判断“站点类型”。这不仅增加心智负担，也会让 Worker with Assets 这种自然形态变得别扭：目录里既有 Worker，又有图片、CSS、HTML，平台应该把它作为 Worker-first + Assets 发布，而不是要求用户在几个相互重叠的类型里猜一个。
 
-因此，XD Pages 的公开模型必须以“发布来源 + 回退行为 + 可选 Worker 入口”为中心，并由 CLI/API/provider 共同维护 resolved decision。
+因此，XD Cell 的公开模型必须以“发布来源 + 回退行为 + 可选 Worker 入口”为中心，并由 CLI/API/provider 共同维护 resolved decision。
 
 ## 决策
 
@@ -53,7 +53,7 @@ xd-cell deploy ./dist example-site
 - 不在第一阶段读取和执行完整 `wrangler.toml`。即使未来读取，也只读取安全的发布形态字段，不继承 routes、secrets、bindings 等平台敏感配置。
 - 不通过扫描用户 Worker 代码内容判断它是否会调用 `env.ASSETS.fetch(request)`。这类检查只能作为 warning，不能作为形态判断依据。
 - 不把目录内普通 `worker.js` / `worker.mjs` 自动当作 Worker 入口。
-- 不允许用户自定义 Cloudflare assets binding 名。XD Pages 固定使用 `ASSETS`。
+- 不允许用户自定义 Cloudflare assets binding 名。XD Cell 固定使用 `ASSETS`。
 
 ## 用户可见模型
 
@@ -177,15 +177,15 @@ routing mode:
 
 ## Cloudflare 映射
 
-XD Pages 的 `fallback` 映射到 Cloudflare Workers Static Assets 的 assets 配置，不是 Worker 路由 fallback：
+XD Cell 的 `fallback` 映射到 Cloudflare Workers Static Assets 的 assets 配置，不是 Worker 路由 fallback：
 
-| XD Pages resolvedFallback | Cloudflare `assets.not_found_handling` |
+| XD Cell resolvedFallback | Cloudflare `assets.not_found_handling` |
 | --- | --- |
 | `index` | `single-page-application` |
 | `not-found` | `404-page` |
 | `null` | 不上传 assets config |
 
-XD Pages 暂不把 Cloudflare 的 `not_found_handling = "none"` 暴露给用户。`html_handling` 使用 Cloudflare 默认行为，除非后续 ADR 单独定义更细规则。
+XD Cell 暂不把 Cloudflare 的 `not_found_handling = "none"` 暴露给用户。`html_handling` 使用 Cloudflare 默认行为，除非后续 ADR 单独定义更细规则。
 
 `worker-with-assets` 使用 Worker-first 语义：
 

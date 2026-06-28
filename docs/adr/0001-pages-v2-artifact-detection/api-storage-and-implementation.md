@@ -149,7 +149,7 @@ created_at: string
 
 Cloudflare provider 应从 resolved decision 派生 metadata：
 
-- `ASSETS` 是 XD Pages 固定保留 binding 名。
+- `ASSETS` 是 XD Cell 固定保留 binding 名。
 - `resolvedFallback: "index"` 映射到 `assets.not_found_handling = "single-page-application"`。
 - `resolvedFallback: "not-found"` 映射到 `assets.not_found_handling = "404-page"`。
 - `worker-with-assets` 设置 `assets.run_worker_first = true`。

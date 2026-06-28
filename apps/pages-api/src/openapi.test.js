@@ -4,7 +4,7 @@ import test from 'node:test';
 import worker from './index.js';
 import { buildOpenApi } from './openapi.js';
 
-test('builds production XD Pages OpenAPI skeleton for development checks', () => {
+test('builds production XD Cell OpenAPI skeleton for development checks', () => {
   const body = buildOpenApi({
     environment: 'production',
     apiBaseUrl: 'https://api.pages.xd.team',
@@ -14,8 +14,8 @@ test('builds production XD Pages OpenAPI skeleton for development checks', () =>
   const serialized = JSON.stringify(body);
 
   assert.equal(body.openapi, '3.1.0');
-  assert.equal(body.info.title, 'XD Pages API');
-  assert.equal(body.info.description, 'Control plane API for XD Pages.');
+  assert.equal(body.info.title, 'XD Cell API');
+  assert.equal(body.info.description, 'Control plane API for XD Cell.');
   assert.deepEqual(body.servers, [{ url: 'https://api.pages.xd.team' }]);
   assert.ok(body.paths['/.xd-pages/api/sites']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);

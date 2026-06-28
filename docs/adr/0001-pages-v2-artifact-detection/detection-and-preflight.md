@@ -94,7 +94,7 @@ Worker 的自动识别要保守，避免把前端构建产物误判成 Worker。
 - `_redirects` 中有 `/* /index.html 200`。
 - `vercel.json` 中有 catch-all rewrite 到 `/index.html`。
 - `staticwebapp.config.json` 中有 navigation fallback 到 `/index.html`。
-- XD Pages 自己配置中声明 `fallback: "index"`。
+- XD Cell 自己配置中声明 `fallback: "index"`。
 
 这是比“存在 index.html”更可靠的入口回退信号。`_redirects` 可用于判断，但不上传为静态资源。
 

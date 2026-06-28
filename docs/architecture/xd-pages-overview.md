@@ -1,12 +1,12 @@
-# XD Pages 架构总览
+# XD Cell 架构总览
 
 > 本文从 `docs/pages-v2-wfp-architecture.md` 拆分而来，用于控制单篇文档长度。
 
-# XD Pages 多租户执行平台架构设计
+# XD Cell 多租户执行平台架构设计
 
 ## 状态
 
-本文是 `pages-manager` v2 架构总览，用于说明一套带统一身份、发布鉴权、子站 SSO、多租户执行隔离和统一审计的平台。控制面继续使用 `api.pages.xd.team` / `auth.pages.xd.team`，新建 v2 子站默认使用 `workers.xd.team` 后缀；存量 v2 `pages.xd.team` 路由继续保留。用户侧产品名统一为 **XD Pages**；`v2` 只作为内部工程边界、资源命名或迁移讨论使用，不出现在 CLI、OpenAPI、skill、readme、错误提示等用户路径中。
+本文是 `pages-manager` v2 架构总览，用于说明一套带统一身份、发布鉴权、子站 SSO、多租户执行隔离和统一审计的平台。控制面继续使用 `api.pages.xd.team` / `auth.pages.xd.team`，新建 v2 子站默认使用 `workers.xd.team` 后缀；存量 v2 `pages.xd.team` 路由继续保留。用户侧产品名统一为 **XD Cell**；`v2` 只作为内部工程边界、资源命名或迁移讨论使用，不出现在 CLI、OpenAPI、skill、readme、错误提示等用户路径中。
 
 设计目标是先明确旧版 / 新架构边界。旧版 `apps/server` 和它已经创建的 `*.workers.xd.team` exact route 保持不动，继续由旧发布链路服务；v2 通过 hostname claim 与 Cloudflare route specificity 避免覆盖 v1 站点，新建站点默认走 v2 `*.workers.xd.team` wildcard，存量 v2 `*.pages.xd.team` 仍可访问。
 
@@ -27,7 +27,7 @@ legacy / existing: apps/server + 已存在的 *.workers.xd.team exact route
   - 现有 README、API、skill、apps/server 行为不因新架构改动而变化。
   - X-Pages-Token 仍只属于旧版归属标记，不升级为新架构强认证。
 
-XD Pages / v2: api/auth.pages.xd.team + 新建 *.workers.xd.team 子站
+XD Cell / v2: api/auth.pages.xd.team + 新建 *.workers.xd.team 子站
   - 新建多租户执行平台架构，默认子站域名为 {slug}.workers.xd.team。
   - 已存在的 {slug}.pages.xd.team v2 route 保留，不做隐式迁移。
   - WFP 是目标执行模式；在 WFP 暂未开通时，允许使用普通 Worker slot 池作为内部兼容执行模式。
@@ -115,10 +115,10 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 ```text
 apps/
   server/            # 旧版管理 API，继续服务 *.workers.xd.team
-  pages-api/         # XD Pages 控制面 API：deploy/list/site/version/access/audit
-  pages-auth/        # XD Pages SSO 与 session：OAuth callback、CLI login、access key
-  pages-router/      # XD Pages 数据面入口：*.workers.xd.team / 存量 *.pages.xd.team + execution dispatch
-  kv-gateway/        # XD Pages 平台 KV 能力网关；旧版不再提供 KV
+  pages-api/         # XD Cell 控制面 API：deploy/list/site/version/access/audit
+  pages-auth/        # XD Cell SSO 与 session：OAuth callback、CLI login、access key
+  pages-router/      # XD Cell 数据面入口：*.workers.xd.team / 存量 *.pages.xd.team + execution dispatch
+  kv-gateway/        # XD Cell 平台 KV 能力网关；旧版不再提供 KV
 
 packages/
   auth/              # cookie、session JWT、SSO profile、ACL 校验
