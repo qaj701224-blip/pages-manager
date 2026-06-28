@@ -65,7 +65,7 @@ pnpm test
 
 - `master`：生产真相源，feature / fix / ci / build 等项目类 PR 默认直接合入这里；合并后不自动部署。
 - `staging`：共享 preview 分支，用于提前部署和验证指向 `master` 的项目类 PR；不是晋级来源。
-- v2 production 部署必须人工在 GitHub Actions 中手动触发 `Deploy XD Cell Production`。
+- v2 production 部署必须人工在 GitHub Actions 中手动触发 `Deploy XD Pages Production`。
 - v1 production 部署必须人工在 GitHub Actions 中手动触发 `Deploy Production`。
 
 分支整理规则：

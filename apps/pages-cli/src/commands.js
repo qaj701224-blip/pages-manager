@@ -16,7 +16,6 @@ const HELP_FLAGS = new Set(['help', 'json', 'token', 'accessKey']);
 const VERSION_FLAGS = new Set(['help', 'token', 'accessKey']);
 const LOGIN_FLAGS = new Set(['env', 'token', 'accessKey', 'noOpen', 'json', 'help']);
 const DEPLOY_FLAGS = new Set([
-  'env',
   'visibility',
   'fallback',
   'assets',

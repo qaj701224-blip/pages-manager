@@ -877,19 +877,16 @@ test('deploy reads explicit one-shot command config and lets CLI args override i
   await mkdist(dir);
   const calls = [];
 
-  await executeCommand(
-    ['deploy', './dist', 'from-args', '--config', 'xd-cell.config.json', '--env', 'production', '--visibility', 'owner'],
-    {
-      cwd: dir,
-      env: {},
-      secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
-      fetch: fakeFetch(calls, [
-        { site: { id: 'site_1', slug: 'from-args', environment: 'production' } },
-        { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
-      ]),
-      output: () => {},
-    }
-  );
+  await executeCommand(['deploy', './dist', 'from-args', '--config', 'xd-cell.config.json', '--visibility', 'owner'], {
+    cwd: dir,
+    env: {},
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      { site: { id: 'site_1', slug: 'from-args', environment: 'production' } },
+      { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
+    ]),
+    output: () => {},
+  });
 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
   assert.deepEqual(await calls[0].json(), { slug: 'from-args', visibility: 'owner' });
@@ -1430,6 +1427,18 @@ test('commands reject unknown flags and extra positional arguments', async () =>
   await assert.rejects(() => executeCommand(['deploy', '.', 'docs', '--print', '1'], { output: () => {} }), {
     code: 'OPTION_UNKNOWN',
   });
+  await assert.rejects(
+    () =>
+      executeCommand(['deploy', '.', 'docs', '--env', 'staging'], {
+        fetch: async () => {
+          throw new Error('deploy --env should be rejected before network access');
+        },
+        output: () => {},
+      }),
+    {
+      code: 'OPTION_UNKNOWN',
+    }
+  );
   await assert.rejects(() => executeCommand(['sites', 'list', '--visibility', 'org'], { output: () => {} }), {
     code: 'OPTION_UNKNOWN',
   });

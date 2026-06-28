@@ -419,7 +419,7 @@ test('deployments validate vars and pass runtime bindings plus enabled site secr
     },
   ]);
   const body = await response.json();
-  assert.equal(JSON.stringify(body).includes('https://api.example.com/private'), false);
+  assertJsonLeafValueAbsent(body, 'https://api.example.com/private');
   assert.equal(JSON.stringify(body).includes('super-secret-value'), false);
   assertPublicDeploymentEnvelopeHidesRuntimeConfig(body);
   const version = await store.getSiteVersion('ver_1');
@@ -4473,6 +4473,29 @@ function assertPublicDeploymentEnvelopeHidesRuntimeConfig(body) {
   assert.equal(body.version && 'runtimeConfigSnapshotJson' in body.version, false);
   assert.equal(body.version && 'secretNamesJson' in body.version, false);
   assert.equal(body.version && 'varNamesJson' in body.version, false);
+}
+
+function assertJsonLeafValueAbsent(value, forbidden) {
+  assert.equal(collectJsonLeafStrings(value).some((leaf) => leaf === forbidden), false);
+}
+
+function collectJsonLeafStrings(value, output = []) {
+  if (typeof value === 'string') {
+    output.push(value);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectJsonLeafStrings(item, output);
+    }
+    return output;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) {
+      collectJsonLeafStrings(item, output);
+    }
+  }
+  return output;
 }
 
 function workerBundle(content) {

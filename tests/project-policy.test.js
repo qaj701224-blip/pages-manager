@@ -107,8 +107,8 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(policy, /项目类 PR 指向 `master`/);
   assert.match(policy, /staging-sync\/pr-<number>-<sha>/);
   assert.match(policy, /required status check/);
-  assert.match(policy, /dispatch `Deploy XD Pages Staging`/);
-  assert.match(policy, /等待 `Deploy XD Pages Staging` 完成/);
+  assert.match(policy, /dispatch `Deploy XD Cell Staging`/);
+  assert.match(policy, /等待 `Deploy XD Cell Staging` 完成/);
   assert.match(policy, /纯 `sites\/\*\*` 用户站点 PR/);
 });
 
