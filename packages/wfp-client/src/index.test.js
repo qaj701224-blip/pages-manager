@@ -227,6 +227,39 @@ test('get and delete user worker use dispatch namespace script endpoint', async 
   assert.equal(calls[0].url, calls[1].url);
 });
 
+test('put and delete user worker secret use dispatch namespace script secrets endpoint', async () => {
+  const calls = [];
+  const scriptUrl =
+    'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/xd-cell-workers-staging' +
+    '/scripts/pages-v2-staging-docs-ver-1';
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      calls.push(request.clone());
+      return Response.json({ success: true, result: { id: 'API_TOKEN' } });
+    },
+  });
+
+  await client.putUserWorkerSecret('pages-v2-staging-docs-ver-1', {
+    name: 'API_TOKEN',
+    value: 'secret-value',
+  });
+  await client.deleteUserWorkerSecret('pages-v2-staging-docs-ver-1', 'API_TOKEN');
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].url, `${scriptUrl}/secrets`);
+  assert.deepEqual(await calls[0].json(), {
+    name: 'API_TOKEN',
+    text: 'secret-value',
+    type: 'secret_text',
+  });
+  assert.equal(calls[1].method, 'DELETE');
+  assert.equal(calls[1].url, `${scriptUrl}/secrets/API_TOKEN`);
+});
+
 test('normalizeWorkerBindings accepts service plain text and secret text bindings', () => {
   assert.deepEqual(
     normalizeWorkerBindings([
