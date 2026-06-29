@@ -140,6 +140,29 @@ export function createWfpClient({
         method: 'DELETE',
       });
     },
+
+    async putUserWorkerSecret(scriptName, secret) {
+      const safeScriptName = validateScriptName(scriptName);
+      const body = normalizeUserWorkerSecret(secret);
+      return requestCloudflare(fetch, apiToken, `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/secrets`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    },
+
+    async deleteUserWorkerSecret(scriptName, secretName) {
+      const safeScriptName = validateScriptName(scriptName);
+      const name = validateBindingName(secretName);
+      return requestCloudflare(
+        fetch,
+        apiToken,
+        `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/secrets/${encodeURIComponent(name)}`,
+        {
+          method: 'DELETE',
+        }
+      );
+    },
   };
 }
 
@@ -252,8 +275,7 @@ export function normalizeWorkerBindings(bindings = []) {
 function normalizeWorkerBinding(binding) {
   if (!binding || typeof binding !== 'object' || Array.isArray(binding)) throw new Error('WORKER_BINDING_INVALID');
 
-  const name = String(binding.name || '').trim();
-  if (!BINDING_NAME_RE.test(name)) throw new Error('WORKER_BINDING_NAME_INVALID');
+  const name = validateBindingName(binding.name);
 
   if (binding.type === 'service') {
     return {
@@ -271,6 +293,23 @@ function normalizeWorkerBinding(binding) {
     };
   }
   throw new Error('WORKER_BINDING_TYPE_INVALID');
+}
+
+function normalizeUserWorkerSecret(secret) {
+  if (!secret || typeof secret !== 'object' || Array.isArray(secret)) throw new Error('WORKER_SECRET_INVALID');
+  const name = validateBindingName(secret.name);
+  if (typeof secret.value !== 'string') throw new Error('WORKER_SECRET_VALUE_INVALID');
+  return {
+    name,
+    text: secret.value,
+    type: 'secret_text',
+  };
+}
+
+function validateBindingName(value) {
+  const name = String(value || '').trim();
+  if (!BINDING_NAME_RE.test(name)) throw new Error('WORKER_BINDING_NAME_INVALID');
+  return name;
 }
 
 async function requestCloudflare(fetch, apiToken, url, init) {

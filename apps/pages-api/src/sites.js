@@ -5,6 +5,7 @@ import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, newId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName } from './runtime-config.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
+import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
 
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
@@ -95,6 +96,12 @@ async function putSiteSecret(request, env, config, store, actor, siteSlug) {
       auditId: nextId(env, 'aud'),
       updatedAt: readNow(env),
     });
+    const syncError = await syncActiveWfpSecret(store, env, config, site, {
+      operation: 'put',
+      name,
+      value: body.value,
+    });
+    if (syncError) return syncError;
     return jsonOk({ secret: formatSecret(site.slug, secret, { deleted: false }) });
   } catch (error) {
     if (isRuntimeConfigConflict(error)) {
@@ -141,6 +148,11 @@ async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
       auditId: nextId(env, 'aud'),
       deletedAt: readNow(env),
     });
+    const syncError = await syncActiveWfpSecret(store, env, config, site, {
+      operation: 'delete',
+      name,
+    });
+    if (syncError) return syncError;
     return jsonOk({ secret: formatSecret(site.slug, secret || { name }, { deleted: true }) });
   } catch (error) {
     if (isRuntimeConfigConflict(error)) {
@@ -170,6 +182,66 @@ async function deleteSiteSecretWithAudit(store, env, input) {
   if (typeof store.deleteSiteSecretWithAudit === 'function') return store.deleteSiteSecretWithAudit(input);
   void env;
   throw new Error('RUNTIME_SECRET_STORE_UNAVAILABLE');
+}
+
+async function syncActiveWfpSecret(store, env, config, site, input) {
+  if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') return null;
+
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
+
+  const version = await store.getSiteVersion(route.activeVersionId, config.environment);
+  if (!version || (!isWfpRoute(route) && !isWfpVersion(version))) return null;
+  if (!versionRequiresWorker(version)) return null;
+  const workerName = route.workerName || version.workerName;
+  if (!workerName) return null;
+
+  let provider;
+  try {
+    provider = createWfpDeploymentProvider(env, config);
+  } catch (error) {
+    if (input.operation === 'delete' && isNotFoundError(error)) return null;
+    return jsonError(
+      'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+      'Runtime secret was saved but the active Worker could not be updated.',
+      502,
+      'Check platform Worker provider configuration and retry the secret command.'
+    );
+  }
+  try {
+    if (input.operation === 'put') {
+      if (typeof provider.putSecret !== 'function') return null;
+      await provider.putSecret({ workerName, name: input.name, value: input.value });
+    } else {
+      if (typeof provider.deleteSecret !== 'function') return null;
+      await provider.deleteSecret({ workerName, name: input.name });
+    }
+    return null;
+  } catch (error) {
+    if (input.operation === 'delete' && isNotFoundError(error)) return null;
+    return jsonError(
+      'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+      'Runtime secret was saved but the active Worker could not be updated.',
+      502,
+      'Retry the secret command before testing the current Worker.'
+    );
+  }
+}
+
+function isNotFoundError(error) {
+  return Number(error?.status) === 404 || Number(error?.statusCode) === 404;
+}
+
+function isWfpRoute(route) {
+  return route.executionProvider === 'wfp' || route.runtime === 'wfp';
+}
+
+function isWfpVersion(version) {
+  return version.executionProvider === 'wfp' || version.runtime === 'wfp';
+}
+
+function versionRequiresWorker(version) {
+  return version.deploymentShape === 'worker-only' || version.deploymentShape === 'worker-with-assets';
 }
 
 async function listSites(store, actor, environment) {

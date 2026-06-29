@@ -617,6 +617,14 @@ test('secrets put and delete use site-level secret APIs without accepting value 
   assert.deepEqual(await deleteCalls[0].json(), { name: 'API_TOKEN' });
   assert.equal(JSON.parse(deleteOutput[0]).operation, 'delete');
 
+  const deleteTextOutput = [];
+  await executeCommand(['secrets', 'delete', 'demo', 'API_TOKEN'], {
+    env: { XD_CELL_API_TOKEN: 'env_cli_token_secret' },
+    fetch: fakeFetch([], [{ secret: { site: 'demo', name: 'API_TOKEN', deleted: true } }]),
+    output: (line) => deleteTextOutput.push(line),
+  });
+  assert.deepEqual(deleteTextOutput, ['已删除 secret：demo/API_TOKEN']);
+
   await assert.rejects(
     () =>
       executeCommand(['secrets', 'put', 'demo', 'API_TOKEN', 'secret-value'], {

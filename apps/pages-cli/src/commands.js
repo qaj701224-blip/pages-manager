@@ -831,7 +831,6 @@ async function runSecretsDelete(parsed, context) {
     return 0;
   }
   context.output(`已删除 secret：${site}/${name}`);
-  context.output('该操作只影响后续 Worker 发布；已经物化到当前运行 Worker 的 secret 不会被立即撤销。');
   return 0;
 }
 
