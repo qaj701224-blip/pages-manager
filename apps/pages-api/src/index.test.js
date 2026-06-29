@@ -238,8 +238,8 @@ test('wrangler templates include required WFP vars without runtime token placeho
 
   assert.match(productionTemplate, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-production"/);
   assert.match(stagingTemplate, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-staging"/);
-  assert.match(productionTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
-  assert.match(stagingTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
+  assert.match(productionTemplate, /PAGES_EXECUTION_MODE = "wfp"/);
+  assert.match(stagingTemplate, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(productionTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
   assert.match(stagingTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(productionTemplate, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);

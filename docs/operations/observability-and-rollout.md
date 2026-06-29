@@ -109,8 +109,8 @@ publish -> activate -> drain -> retire
 - 新增 `pages-router`。
 - 新增 `pages-router-staging`，production/staging router 物理隔离。
 - 按 `PAGES_EXECUTION_MODE` 启用执行面：
-  - WFP 未开通：`normal-worker-slot`，先创建少量 staging / production slot。
-  - WFP 已开通：`wfp`，使用 dispatch namespace。
+  - 默认：`wfp`，使用 dispatch namespace。
+  - 兼容：`normal-worker-slot`，仅用于历史 route 排空和受控回退。
 - 用户仍只执行 `xd-cell deploy ./dist foo`，不暴露 execution provider 参数。
 - 支持 `internal` 和 `org` visibility。
 - 支持 router IP allowlist 强限制；未命中公司网络直接 403。
@@ -128,7 +128,7 @@ publish -> activate -> drain -> retire
 
 ### 阶段 4：执行面治理
 
-- WFP 开通后，通过 PR 将默认 `PAGES_EXECUTION_MODE` 从 `normal-worker-slot` 切到 `wfp`；`pages-api` 新发布进入 WFP，router 已静态持有 `PAGES_DISPATCH`，只继续保留历史 slot bindings 直到旧 route 排空。
+- 默认 `PAGES_EXECUTION_MODE` 已切到 `wfp`；`pages-api` 新发布进入 WFP，router 静态持有 `PAGES_DISPATCH`，只继续保留历史 slot bindings 直到旧 route 排空。
 - 根据试点情况决定是否迁移已有 slot 站点；不强制迁移也可以作为短期回滚手段保留。
 - 禁用普通 Worker 新站点分配，只允许已有 slot 站点维护或管理员迁移。
 - Outbound Worker / 强制 egress policy。
@@ -150,8 +150,8 @@ publish -> activate -> drain -> retire
 | internal JWT 被当能力凭证   | User Worker 可复制短期 JWT       | 平台能力使用独立 capability，不信 internal JWT                       |
 | 旧版/新架构心智混淆        | 用户可能把 v2 新建 `workers.xd.team` 子站和 v1 `apps/server` 旧链路混为一谈 | 文档、CLI help、错误提示和 skill 明确 v2 控制面是 `api/auth.pages.xd.team`，新建子站默认 `workers.xd.team`，但不调用 v1 `api.workers.xd.team` |
 | assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike；DR 0003 的 R2 artifact store 作为低优先级长期候选，不阻塞当前 MVP |
-| WFP 暂未开通                | 首发无法使用目标执行面           | 使用 `normal-worker-slot` 兼容层，用户 API 不变，后续切换默认 mode   |
-| slot binding 数量上限       | 普通 Worker slot 需要 router 静态 binding | 预留小规模池、容量告警、人工扩容 workflow，WFP 开通后停止扩张 |
+| WFP dispatch 部署失败       | 新版本无法进入目标执行面         | fail closed，保留旧 active route；必要时走 PR 临时回退到 `normal-worker-slot` |
+| slot binding 数量上限       | 历史普通 Worker slot 需要 router 静态 binding | WFP 模式停止扩张，只保留历史最大 slot binding count 用于旧 route 排空 |
 | slot 误清理 active 版本      | active slot 被释放会导致当前站点不可访问 | 清理前后都用 D1 条件确认没有 active route 引用该 slot 或 version；失败时保持 `cleanup_pending`，不回到 `available` |
 | 新 wildcard 配置风险        | `*.workers.xd.team` 是 v2 新建站点默认入口，`*.pages.xd.team` 仍承载存量 v2 站点 | staging 验证、DNS/证书/route 静态校验、快速回滚                      |
 | production 自动部署风险     | 当前项目要求生产手动部署         | CI 继续保持 production manual                                        |
@@ -175,7 +175,7 @@ publish -> activate -> drain -> retire
 
 - 用户必须登录后才能发布 XD Cell 站点。
 - 用户 CLI 不暴露 execution provider；`xd-cell deploy` 由平台 `PAGES_EXECUTION_MODE` 决定部署到 WFP 或 ordinary Worker slot。
-- WFP 未开通时，`normal-worker-slot` 能发布试点站点；WFP 开通后切换默认 mode 不改变用户命令。
+- `wfp` 模式下新发布进入 dispatch namespace，且用户命令不需要感知 execution provider。
 - production/staging 由不同 router Worker 和不同资源承载；如果使用 thin router，它不能持有业务 secret。
 - pages-router 第一版必须强制 IP allowlist；未命中公司网络的请求直接 403，且不 dispatch 到 User Worker。
 - `xd-cell deploy --visibility org` 发布的站点，未登录访问会跳转 SSO。

@@ -161,7 +161,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "workers\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-production"/);
-  assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
+  assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
@@ -192,6 +192,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-staging"/);
+  assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
@@ -232,8 +233,8 @@ test('pages-api config requires resource ids and keeps template execution mode',
     assert.match(`${result.stderr}${result.stdout}`, new RegExp(name));
   }
 
-  const config = renderPagesApi('production', { ...baseEnv, PAGES_EXECUTION_MODE: 'wfp' });
-  assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
+  const config = renderPagesApi('production', { ...baseEnv, PAGES_EXECUTION_MODE: 'normal-worker-slot' });
+  assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
 });
 
 test('production pages-auth config renders explicit production auth settings only', () => {
@@ -370,7 +371,7 @@ test('production pages-router config renders explicit production fast-path setti
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "workers\.xd\.team"/);
-  assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
+  assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL = "100"/);
@@ -416,6 +417,7 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
+  assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(
@@ -463,6 +465,7 @@ test('pages-router config can keep slot bindings in wfp mode while draining slot
 });
 
 test('pages-router config requires deploy-computed binding count in normal worker slot mode', () => {
+  setRouterTemplateExecutionMode('production', 'normal-worker-slot');
   const env = { ...baseEnv };
   delete env.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT;
   const result = runRenderer(['apps/pages-router', 'production'], env);
