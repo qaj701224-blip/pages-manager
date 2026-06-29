@@ -976,6 +976,101 @@ test('manual platform auto-dev trigger starts worker for the existing item', asy
   assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_trigger_platform_auto_dev|pages_stop_platform_auto_dev/);
 });
 
+test('manual platform auto-dev trigger is atomic for concurrent clicks', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-auto-dev-concurrent',
+    title: '平台高风险需求',
+    summary: '修改 CI workflow',
+    issueType: 'type:ci',
+    areas: ['area:ci'],
+    risk: 'risk:high',
+    agentEligible: true,
+    autoDevStatus: 'pending',
+    slackSessionId: 'sess_gate_concurrent',
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  app.store.upsertSlackSession({
+    id: 'sess_gate_concurrent',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_concurrent'));
+  app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
+  const originalTrigger = app.store.triggerPlatformDevAutoDev.bind(app.store);
+  let firstTriggerStarted = false;
+  let releaseFirstTrigger;
+  const firstTriggerWaiting = new Promise((resolve) => {
+    releaseFirstTrigger = resolve;
+  });
+  app.store.triggerPlatformDevAutoDev = async (...args) => {
+    if (!firstTriggerStarted) {
+      firstTriggerStarted = true;
+      await firstTriggerWaiting;
+    }
+    return originalTrigger(...args);
+  };
+  const workerCalls = [];
+  const notifierCalls = [];
+  const waitUntilPromises = [];
+  const env = {
+    ...notifierEnv(notifierCalls),
+    PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+    PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+    waitUntil(promise) {
+      waitUntilPromises.push(promise);
+    },
+    async WORKER_FETCH(url, request) {
+      workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+  };
+  const requestBody = () =>
+    JSON.stringify(
+      interaction(
+        'pages_trigger_platform_auto_dev',
+        JSON.stringify({ workItemKind: 'platform_dev', workItemId: item.id, sessionId: 'sess_gate_concurrent' })
+      )
+    );
+  const firstResponsePromise = app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: requestBody(),
+    }),
+    env
+  );
+
+  await Promise.resolve();
+  const secondResponsePromise = app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: requestBody(),
+    }),
+    env
+  );
+  releaseFirstTrigger();
+
+  const [firstResponse, secondResponse] = await Promise.all([firstResponsePromise, secondResponsePromise]);
+  const firstBody = await json(firstResponse);
+  const secondBody = await json(secondResponse);
+  await Promise.all(waitUntilPromises);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.equal(updated.autoDevStatus, 'triggered');
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(workerCalls.length, 1);
+  assert.ok([firstBody.text, secondBody.text].some((text) => /已经触发自动开发/.test(text)));
+  assert.ok([firstBody.text, secondBody.text].some((text) => /已触发|已手动触发自动开发/.test(text)));
+});
+
 test('manual platform auto-dev trigger handles item disappearing during update', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
@@ -1001,10 +1096,10 @@ test('manual platform auto-dev trigger handles item disappearing during update',
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_disappears'));
   app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
-  const originalPatch = app.store.patchPlatformDevItem.bind(app.store);
-  app.store.patchPlatformDevItem = async (itemId, patch) => {
-    if (itemId === item.id && patch.autoDevStatus === 'triggered') return null;
-    return originalPatch(itemId, patch);
+  const originalTrigger = app.store.triggerPlatformDevAutoDev.bind(app.store);
+  app.store.triggerPlatformDevAutoDev = async (itemId, patch) => {
+    if (itemId === item.id) return null;
+    return originalTrigger(itemId, patch);
   };
 
   const response = await app.fetch(

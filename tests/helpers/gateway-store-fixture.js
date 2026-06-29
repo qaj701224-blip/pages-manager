@@ -217,6 +217,26 @@ export class GatewayStoreFixture {
     return updated;
   }
 
+  triggerPlatformDevAutoDev(itemId, patch = {}) {
+    const item = this.getPlatformDevItem(itemId);
+    if (!item) return null;
+    if (item.autoDevStatus === 'triggered') {
+      return { item, triggered: false, alreadyTriggered: true };
+    }
+    if (item.autoDevStatus !== 'pending') {
+      return { item, triggered: false, alreadyTriggered: false };
+    }
+    const updated = {
+      ...item,
+      ...patch,
+      agentEligible: true,
+      autoDevStatus: 'triggered',
+      updatedAt: new Date().toISOString(),
+    };
+    this.platformDevItems.set(itemId, updated);
+    return { item: updated, triggered: true, alreadyTriggered: false };
+  }
+
   failPlatformDevItem(itemId, errorCode, errorMessage, patch = {}) {
     const item = this.getPlatformDevItem(itemId);
     if (!item) return null;

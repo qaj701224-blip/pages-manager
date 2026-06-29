@@ -232,6 +232,72 @@ test('MySQL PlatformDevItem creation re-reads an idempotency duplicate instead o
   assert.equal(calls.some((call) => /ON DUPLICATE KEY UPDATE/.test(call.sql)), false);
 });
 
+test('MySQL PlatformDevItem auto-dev trigger updates only pending rows', async () => {
+  const calls = [];
+  const rows = [
+    {
+      id: 'pdev_auto',
+      source: 'slack',
+      requested_by_type: 'user',
+      requested_by_id: 'slack:T1:U1',
+      idempotency_key: 'txn-platform-auto',
+      title: 'Existing CI task',
+      summary: 'Existing CI task.',
+      issue_type: 'type:ci',
+      areas_json: '[]',
+      risk: 'risk:high',
+      agent_eligible: true,
+      auto_dev_status: 'pending',
+      status: 'auto_dev_pending',
+      created_at: new Date('2026-06-14T00:00:00.000Z'),
+      updated_at: new Date('2026-06-14T00:00:00.000Z'),
+    },
+    {
+      id: 'pdev_auto',
+      source: 'slack',
+      requested_by_type: 'user',
+      requested_by_id: 'slack:T1:U1',
+      idempotency_key: 'txn-platform-auto',
+      title: 'Existing CI task',
+      summary: 'Existing CI task.',
+      issue_type: 'type:ci',
+      areas_json: '[]',
+      risk: 'risk:high',
+      agent_eligible: true,
+      auto_dev_status: 'triggered',
+      auto_dev_triggered_by: 'slack:T1:U1',
+      auto_dev_triggered_at: new Date('2026-06-29T00:00:00.000Z'),
+      auto_dev_reason: '用户手动触发自动开发。',
+      status: 'auto_dev_pending',
+      created_at: new Date('2026-06-14T00:00:00.000Z'),
+      updated_at: new Date('2026-06-29T00:00:00.000Z'),
+    },
+  ];
+  const pool = {
+    async execute(sql, params = []) {
+      calls.push({ sql, params });
+      if (/^SELECT \* FROM platform_dev_items/.test(sql)) return [[rows.shift()], []];
+      if (/^UPDATE platform_dev_items/.test(sql)) return [{ affectedRows: 1 }, []];
+      return [[], []];
+    },
+  };
+  const store = new MySqlGatewayStore(pool);
+
+  const result = await store.triggerPlatformDevAutoDev('pdev_auto', {
+    autoDevTriggeredBy: 'slack:T1:U1',
+    autoDevTriggeredAt: '2026-06-29T00:00:00.000Z',
+    autoDevReason: '用户手动触发自动开发。',
+  });
+  const updateCall = calls.find((call) => /^UPDATE platform_dev_items/.test(call.sql));
+
+  assert.equal(result.triggered, true);
+  assert.equal(result.item.autoDevStatus, 'triggered');
+  assert.ok(updateCall);
+  assert.match(updateCall.sql, /WHERE id = \? AND auto_dev_status = 'pending'/);
+  assert.doesNotMatch(updateCall.sql, /(^|[^_])status = \?/);
+  assert.equal(calls.some((call) => /ON DUPLICATE KEY UPDATE/.test(call.sql)), false);
+});
+
 test('MySQL Slack work item list filters site jobs by Slack requester before limit', async () => {
   const calls = [];
   const pool = {

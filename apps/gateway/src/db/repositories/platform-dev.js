@@ -16,9 +16,11 @@ import {
 import { rowToWorkItemLink, workItemLinkToRow } from '../rows/slack-row.js';
 import {
   execute,
+  executeResult,
   insertRowIfNotDuplicate,
   limitOffsetSql,
   queryPlaceholders,
+  toDate,
   upsertRow,
   withTransaction,
 } from '../sql.js';
@@ -228,6 +230,49 @@ export const platformDevRepositoryMethods = {
     await this.upsertPlatformDevItem(updated);
     this.cachePlatformDevItem(updated);
     return updated;
+  },
+
+  async triggerPlatformDevAutoDev(itemId, patch = {}) {
+    const item = await this.getPlatformDevItem(itemId);
+    if (!item) return null;
+    if (item.autoDevStatus === 'triggered') {
+      return { item, triggered: false, alreadyTriggered: true };
+    }
+
+    const now = new Date();
+    const result = await executeResult(
+      this.pool,
+      [
+        'UPDATE platform_dev_items SET',
+        [
+          'agent_eligible = ?',
+          'auto_dev_status = ?',
+          'auto_dev_triggered_by = ?',
+          'auto_dev_triggered_at = ?',
+          'auto_dev_reason = ?',
+          'updated_at = ?',
+        ].join(', '),
+        "WHERE id = ? AND auto_dev_status = 'pending'",
+      ].join(' '),
+      [
+        true,
+        'triggered',
+        patch.autoDevTriggeredBy || null,
+        toDate(patch.autoDevTriggeredAt),
+        patch.autoDevReason || null,
+        now,
+        itemId,
+      ]
+    );
+    if (Number(result?.affectedRows || 0) === 0) {
+      const latest = await this.getPlatformDevItem(itemId);
+      return latest
+        ? { item: latest, triggered: false, alreadyTriggered: latest.autoDevStatus === 'triggered' }
+        : null;
+    }
+
+    const latest = await this.getPlatformDevItem(itemId);
+    return { item: latest, triggered: true, alreadyTriggered: false };
   },
 
   async failPlatformDevItem(itemId, errorCode, errorMessage, patch = {}) {

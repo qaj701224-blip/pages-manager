@@ -2742,13 +2742,38 @@ export async function handleSlackInteractions(request, env) {
       });
     }
     const triggeredAt = new Date().toISOString();
-    let approved = await store.patchPlatformDevItem(item.id, {
-      agentEligible: true,
-      autoDevStatus: 'triggered',
-      autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
-      autoDevTriggeredAt: triggeredAt,
-      autoDevReason: item.autoDevReason || '用户手动触发自动开发。',
-    });
+    const triggerResult = store.triggerPlatformDevAutoDev
+      ? await store.triggerPlatformDevAutoDev(item.id, {
+          autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
+          autoDevTriggeredAt: triggeredAt,
+          autoDevReason: item.autoDevReason || '用户手动触发自动开发。',
+        })
+      : {
+          item: await store.patchPlatformDevItem(item.id, {
+            agentEligible: true,
+            autoDevStatus: 'triggered',
+            autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
+            autoDevTriggeredAt: triggeredAt,
+            autoDevReason: item.autoDevReason || '用户手动触发自动开发。',
+          }),
+          triggered: true,
+          alreadyTriggered: false,
+        };
+    let approved = triggerResult?.item || null;
+    if (triggerResult && !triggerResult.triggered) {
+      if (triggerResult.alreadyTriggered) {
+        return slackAckResponse({
+          response_type: 'ephemeral',
+          text: '这个平台需求已经触发自动开发，正在继续处理。',
+          platformDevItemId: item.id,
+        });
+      }
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求当前无法触发自动开发，请刷新状态后重试。',
+        platformDevItemId: item.id,
+      });
+    }
     if (!approved) {
       return slackAckResponse({
         response_type: 'ephemeral',
