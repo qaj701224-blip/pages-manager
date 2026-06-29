@@ -53,7 +53,7 @@ export function platformWorkerStartErrorText(error = '') {
 function canDispatchPlatformFix(item = {}) {
   if (!item?.id) return false;
   if (!item.agentEligible) return false;
-  if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
+  if (item.autoDevStatus !== 'triggered') return false;
   const dispatchableStatuses = [
     'issue_created',
     'pr_created',

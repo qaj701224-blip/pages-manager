@@ -78,7 +78,7 @@
 .github/workflows/platform-agent.yml
 ```
 
-这条 workflow 只处理 `lane:platform-dev` issue。它可以在受控分支上修改 `pages-manager` repo 全目录，但不能读取 Slack bot token、生产部署 secret、Aliyun AK、ACR、`KUBE_CONFIG_B64` 或自动 merge token。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关变更必须走高风险 gate 和人工 review。
+这条 workflow 只处理 `lane:platform-dev` issue。它可以在受控分支上修改 `pages-manager` repo 全目录，但不能读取 Slack bot token、生产部署 secret、Aliyun AK、ACR、`KUBE_CONFIG_B64` 或自动 merge token。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关变更必须标记 `risk:high`，并且只能在发起人手动点击“自动开发”后 dispatch；PR 仍需要人工 review。
 
 当前执行边界：
 
@@ -103,9 +103,9 @@ Platform Dev Lane 执行边界：
 ```text
 Slack / API
   -> apps/gateway 分类 issue type / area / risk
-  -> apps/gateway 创建 PlatformDevItem / work item link / risk gate
+  -> apps/gateway 创建 PlatformDevItem / work item link / auto-dev trigger state
   -> apps/worker 创建 pages-manager issue + label
-  -> gateway 判断 agent eligible / gate approved / blocked
+  -> gateway 判断 agent eligible / auto-dev triggered / blocked
   -> apps/worker dispatch platform-agent.yml
   -> platform-agent.yml 修改 repo 全目录内相关文件并创建 PR
   -> GitHub CI / review / webhook 回到 gateway
@@ -555,13 +555,13 @@ Dockerfile*
 docs/** 中的平台部署文档
 ```
 
-如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk gate、CI 和 review 控制。
+如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk、手动“自动开发”触发、CI 和 review 控制。
 
 `pages-agent.yml` 在提交自动生成站点 PR 前必须清空 index，使用 `git diff HEAD` 同时覆盖 staged 与 unstaged 改动，并只把 `ALLOWED_PATH` 加回提交。secret scan 只扫描本轮新增 diff 行，覆盖 Slack token、`sk-*`、`CF_API_TOKEN`、`SLACK_AGENT_API_KEY`、`AGENT_CODE_API_KEY`、`github_pat_*`、GitHub `gh[pousr]_` token 家族，以及 `AWS_SECRET_ACCESS_KEY=`、`DATABASE_PASSWORD=`、`private_key=` 这类通用敏感字段赋值。扫描必须匹配真实 token 形态或敏感变量赋值，不能因为站点目录历史正文或示例文档里已有短前缀 `ghp_` / `gho_` 就阻断新的 PR 创建和 callback。
 
 ## Platform Dev PR 边界
 
-Platform Dev Lane 的目标就是修改 `pages-manager` 平台代码，因此不使用 `sites/<employeeSlug>/<siteSlug>/` 作为 allowed path。它允许修改 repo 全目录，但必须按 issue type 和 risk gate 控制：
+Platform Dev Lane 的目标就是修改 `pages-manager` 平台代码，因此不使用 `sites/<employeeSlug>/<siteSlug>/` 作为 allowed path。它允许修改 repo 全目录，但必须按 issue type、risk 和手动“自动开发”触发控制：
 
 ```text
 docs/**
@@ -577,9 +577,9 @@ Dockerfile*
 规则：
 
 - 所有改动必须来自 `lane:platform-dev` issue，PR body 必须引用该 issue 和 Slack thread。
-- `type:dev`、`type:bug`、`type:docs` 可以进入自动开发候选。
-- `type:feedback`、`type:question` 默认只沉淀和归纳，不自动改代码。
-- `type:ci`、`type:ops`、`type:security` 默认 `agent:blocked`，需要人工 gate。
+- 所有类型默认只先创建 GitHub issue，不自动改代码。
+- `type:feedback`、`type:question` 也遵循同一模型；是否进入自动开发由发起人在 Slack 进度卡点击“自动开发”决定。
+- `type:ci`、`type:ops`、`type:security` 默认 `risk:high`，但仍由同一个“自动开发”按钮触发，不再走维护者审批名单。
 - `.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动必须在 PR 中标记 `risk:high`，并由人工 review 放行。
 - production workflow 仍只能手动触发；Platform Dev Lane 不能引入 push/PR 自动生产部署。
 - PR body / title / 站点 manifest 生成也属于安全边界：request / review / follow-up 等 workflow input 只能先做 secret-like 脱敏后写入公开 PR、issue 或 `site.json`，并且不能通过 bash heredoc、`eval` 或 shell 模板展开。

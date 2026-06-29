@@ -31,7 +31,7 @@ export const PLATFORM_DEV_ITEM_STATUSES = [
   'triaging',
   'issue_creating',
   'issue_created',
-  'gate_pending',
+  'auto_dev_pending',
   'agent_queued',
   'agent_running',
   'branch_committed',
@@ -59,6 +59,7 @@ export const PLATFORM_DEV_ISSUE_TYPES = [
 ];
 
 export const PLATFORM_DEV_RISKS = ['risk:low', 'risk:medium', 'risk:high'];
+export const PLATFORM_AUTO_DEV_STATUSES = ['pending', 'triggered'];
 
 export const SLACK_AGENT_DIALOG_ACTS = [
   'answer',
@@ -360,11 +361,11 @@ const ALLOWED_TRANSITIONS = {
 };
 
 const PLATFORM_DEV_ALLOWED_TRANSITIONS = {
-  received: ['triaging', 'issue_creating', 'gate_pending', 'failed', 'cancelled'],
-  triaging: ['issue_creating', 'gate_pending', 'failed', 'cancelled'],
+  received: ['triaging', 'issue_creating', 'auto_dev_pending', 'failed', 'cancelled'],
+  triaging: ['issue_creating', 'auto_dev_pending', 'failed', 'cancelled'],
   issue_creating: ['issue_created', 'failed', 'cancelled'],
-  issue_created: ['gate_pending', 'agent_queued', 'agent_running', 'closed_unmerged', 'failed', 'cancelled'],
-  gate_pending: ['agent_queued', 'agent_running', 'closed_unmerged', 'failed', 'cancelled'],
+  issue_created: ['auto_dev_pending', 'agent_queued', 'agent_running', 'closed_unmerged', 'failed', 'cancelled'],
+  auto_dev_pending: ['agent_queued', 'agent_running', 'closed_unmerged', 'failed', 'cancelled'],
   agent_queued: ['agent_running', 'failed', 'cancelled'],
   agent_running: ['branch_committed', 'pr_created', 'ci_running', 'failed', 'cancelled'],
   branch_committed: ['pr_created', 'ci_running', 'failed', 'cancelled'],
@@ -422,7 +423,7 @@ const PLATFORM_DEV_ALLOWED_TRANSITIONS = {
   merged: [],
   failed: ['agent_queued', 'review_blocked', 'cancelled', 'merged'],
   cancelled: ['merged'],
-  closed_unmerged: ['issue_created', 'gate_pending', 'agent_queued', 'agent_running', 'pr_created', 'merged'],
+  closed_unmerged: ['issue_created', 'auto_dev_pending', 'agent_queued', 'agent_running', 'pr_created', 'merged'],
 };
 
 export function isPublishingJobStatus(status) {
@@ -496,23 +497,23 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
     received: ['issue_creating', 'issue_created'],
     triaging: ['issue_creating', 'issue_created'],
   },
-  gate_pending: {
-    received: ['issue_creating', 'issue_created', 'gate_pending'],
-    triaging: ['issue_creating', 'issue_created', 'gate_pending'],
-    issue_creating: ['issue_created', 'gate_pending'],
+  auto_dev_pending: {
+    received: ['issue_creating', 'issue_created', 'auto_dev_pending'],
+    triaging: ['issue_creating', 'issue_created', 'auto_dev_pending'],
+    issue_creating: ['issue_created', 'auto_dev_pending'],
   },
   agent_queued: {
     received: ['issue_creating', 'issue_created', 'agent_queued'],
     triaging: ['issue_creating', 'issue_created', 'agent_queued'],
     issue_creating: ['issue_created', 'agent_queued'],
-    gate_pending: ['agent_queued'],
+    auto_dev_pending: ['agent_queued'],
   },
   agent_running: {
     received: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running'],
     triaging: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running'],
     issue_creating: ['issue_created', 'agent_queued', 'agent_running'],
     issue_created: ['agent_queued', 'agent_running'],
-    gate_pending: ['agent_queued', 'agent_running'],
+    auto_dev_pending: ['agent_queued', 'agent_running'],
     failed: ['agent_queued', 'agent_running'],
   },
   branch_committed: {
@@ -520,7 +521,7 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
     triaging: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running', 'branch_committed'],
     issue_creating: ['issue_created', 'agent_queued', 'agent_running', 'branch_committed'],
     issue_created: ['agent_queued', 'agent_running', 'branch_committed'],
-    gate_pending: ['agent_queued', 'agent_running', 'branch_committed'],
+    auto_dev_pending: ['agent_queued', 'agent_running', 'branch_committed'],
     agent_queued: ['agent_running', 'branch_committed'],
   },
   pr_created: {
@@ -528,7 +529,7 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
     triaging: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running', 'branch_committed', 'pr_created'],
     issue_creating: ['issue_created', 'agent_queued', 'agent_running', 'branch_committed', 'pr_created'],
     issue_created: ['agent_queued', 'agent_running', 'branch_committed', 'pr_created'],
-    gate_pending: ['agent_queued', 'agent_running', 'branch_committed', 'pr_created'],
+    auto_dev_pending: ['agent_queued', 'agent_running', 'branch_committed', 'pr_created'],
     agent_queued: ['agent_running', 'branch_committed', 'pr_created'],
     agent_running: ['branch_committed', 'pr_created'],
   },
@@ -539,7 +540,7 @@ const PLATFORM_DEV_CALLBACK_BRIDGES = {
     triaging: ['issue_creating', 'issue_created', 'agent_queued', 'agent_running', 'branch_committed', 'pr_created', 'ci_running'],
     issue_creating: ['issue_created', 'agent_queued', 'agent_running', 'branch_committed', 'pr_created', 'ci_running'],
     issue_created: ['agent_queued', 'agent_running', 'branch_committed', 'pr_created', 'ci_running'],
-    gate_pending: ['agent_queued', 'agent_running', 'branch_committed', 'pr_created', 'ci_running'],
+    auto_dev_pending: ['agent_queued', 'agent_running', 'branch_committed', 'pr_created', 'ci_running'],
     agent_queued: ['agent_running', 'branch_committed', 'pr_created', 'ci_running'],
     agent_running: ['branch_committed', 'pr_created', 'ci_running'],
     branch_committed: ['pr_created', 'ci_running'],
@@ -746,10 +747,7 @@ export function buildPlatformDevItem(input, options = {}) {
   const issueType = normalizePlatformDevIssueType(input);
   const risk = normalizePlatformDevRisk({ ...input, issueType });
   const rawAgentEligible = input.agentEligible ?? input.agent_eligible;
-  const rawRequiresHumanGate = input.requiresHumanGate ?? input.requires_human_gate;
-  const agentEligible = normalizeBoolean(rawAgentEligible, !['type:feedback', 'type:question'].includes(issueType));
-  const requiresRiskGate = risk === 'risk:high' || HIGH_RISK_PLATFORM_DEV_ISSUE_TYPES.has(issueType);
-  const requiresHumanGate = requiresRiskGate ? true : normalizeBoolean(rawRequiresHumanGate, false);
+  const agentEligible = normalizeBoolean(rawAgentEligible, true);
 
   if (!requestedById) throw new Error('requestedById is required');
   if (!idempotencyKey) throw new Error('idempotencyKey is required');
@@ -766,7 +764,10 @@ export function buildPlatformDevItem(input, options = {}) {
     areas: normalizePlatformDevAreas(input),
     risk,
     agentEligible,
-    requiresHumanGate,
+    autoDevStatus: 'pending',
+    autoDevTriggeredBy: null,
+    autoDevTriggeredAt: null,
+    autoDevReason: input.autoDevReason || input.auto_dev_reason || null,
     status: options.status || input.status || 'received',
     requesterProfile: normalizeRequesterProfile(input),
     slackThread: input.slackThread || input.slack_thread || null,
@@ -786,8 +787,6 @@ export function buildPlatformDevItem(input, options = {}) {
     statusContext: input.statusContext || input.status_context || '',
     followupContext: input.followupContext || input.followup_context || '',
     reviewSummary: input.reviewSummary || input.review_summary || null,
-    gateStatus: input.gateStatus || input.gate_status || (requiresHumanGate ? 'pending' : 'not_required'),
-    gateReason: input.gateReason || input.gate_reason || null,
     errorCode: null,
     errorMessage: null,
     createdAt: now.toISOString(),

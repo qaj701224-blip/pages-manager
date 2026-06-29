@@ -55,7 +55,7 @@ site-publishing
 
 platform-dev
   目标：pages-manager 自身研发 issue / PR
-  约束：repo 全目录可改，但按 issue type、risk gate、CI、review 和 GitHub Rulesets 控制
+  约束：repo 全目录可改，但按 issue type、risk、手动“自动开发”触发、CI、review 和 GitHub Rulesets 控制
 ```
 
 Slack Agent 的 deterministic fallback 只用于模型不可用、字段缺失和安全兜底，不能把模型 prompt 提前锁死到某一条 lane。新建自然语言 turn 需要让模型看到完整 lane 边界；仓库文件或路径信号（例如 `README.md`、`AGENTS.md`、`.github/**`、`apps/**`、`packages/**`、`scripts/**`、`docs/**`）默认属于 `platform-dev`，除非当前会话已经绑定站点 preview 且用户明确在续接这个站点任务。仅有“修改 / 更新 / 创建”等宽泛动词不能触发 `site-publishing`。
@@ -146,7 +146,7 @@ Slack Agent 输出建议是结构化 JSON：
   "areas": ["area:gateway", "area:docs"],
   "risk": "risk:low | risk:medium | risk:high",
   "agentEligible": true,
-  "requiresHumanGate": false,
+  "autoDevStatus": "pending",
   "title": "个人主页",
   "summary": "用户希望生成一个个人主页，并在 preview 中展示唯一测试信息。",
   "needsClarification": false,
@@ -162,7 +162,7 @@ Slack Agent 负责决定下一步要请求哪个受控工具；gateway 负责执
 
 gateway 只有在 `toolCall.name=confirm_create_issue`、创建类 `intent` 且 `needsClarification=false` 时展示确认卡片；真正创建 `PublishingJob` 仍必须等用户点击确认按钮。如果 Slack Agent 返回 `clarify`、`unknown` 或 `needsClarification=true`，gateway 只回 Slack 澄清问题并保存 `SessionMemory`。
 
-Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platform-dev` 且 `needsClarification=false` 时展示平台 issue 创建确认卡。gateway 必须二次校验 `issueType`、`areas`、`risk` 和 `agentEligible`，不能完全信任模型。`type:feedback`、`type:question` 默认不触发 Coding Agent；`type:ci`、`type:ops`、`type:security` 默认需要人工 gate。
+Platform Dev Lane 只有在 `toolCall.name=confirm_platform_issue`、`lane=platform-dev` 且 `needsClarification=false` 时展示平台 issue 创建确认卡。gateway 必须二次校验 `issueType`、`areas`、`risk` 和 `agentEligible`，不能完全信任模型。所有类型默认只创建 GitHub issue；只有发起人在进度卡点击“自动开发”后，才允许进入 Coding Agent。`type:ci`、`type:ops`、`type:security` 默认标记 `risk:high`。
 
 Repo 问答是独立查询类 intent。用户询问 pages-manager 当前实现、代码位置、数据如何保存、workflow 如何触发或架构细节时，Slack Agent 必须返回 `repo_question` / `answer_repo_question`，不返回 `confirm_platform_issue`。gateway 只执行受控 repo search/read，并把答案作为查询结果回 Slack；只有用户明确要求“修改 / 修复 / 创建 issue / 支持这个能力”时，才转为 Platform Dev Lane。
 
@@ -228,7 +228,7 @@ Coding Agent prompt 必须明确禁止：
 Site Publishing Lane: 不要修改 allowedPath 之外的文件
 Site Publishing Lane: 不要修改 apps/**、packages/**、.github/**、k8s/**、templates/**、scripts/**
 Platform Dev Lane: 可以修改 repo 全目录内与 issue 直接相关的文件，但必须声明风险和验证路径
-Platform Dev Lane: .github/**、k8s/**、Dockerfile、部署脚本、secret、production deploy 相关改动必须标记高风险并等待人工 gate
+Platform Dev Lane: .github/**、k8s/**、Dockerfile、部署脚本、secret、production deploy 相关改动必须标记高风险，且必须由发起人手动点击“自动开发”后才可进入 Coding Agent
 不要扩大当前 lane 的权限边界
 不要提交 dist/**、node_modules、缓存或大文件
 不要读取或输出 Slack token、Cloudflare token、GitHub token
@@ -331,7 +331,7 @@ Slack 需求摘要。
 
 - Lane: platform-dev
 - Areas: area:gateway, area:docs
-- Repo 范围：全目录，按 risk gate 约束
+- Repo 范围：全目录，按 risk 和手动“自动开发”触发约束
 
 ## 验收标准
 
@@ -345,7 +345,7 @@ risk:medium
 ## 自动化策略
 
 - agentEligible: true
-- requiresHumanGate: false
+- autoDevStatus: pending
 
 ## Slack 回写
 
@@ -420,7 +420,7 @@ templates/**
 scripts/**
 ```
 
-这些路径只能走 Platform Dev Lane 或人工 review 的平台变更流程。Platform Dev Lane 不使用 `allowedPath=sites/...` 作为主约束，而是使用 issue type、risk gate、CI 和 review 控制 repo 全目录改动。
+这些路径只能走 Platform Dev Lane 或人工 review 的平台变更流程。Platform Dev Lane 不使用 `allowedPath=sites/...` 作为主约束，而是使用 issue type、risk、手动“自动开发”触发、CI 和 review 控制 repo 全目录改动。
 
 ## Review Fix Loop
 

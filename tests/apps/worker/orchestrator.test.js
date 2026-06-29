@@ -31,7 +31,7 @@ const platformItem = {
   areas: ['area:gateway', 'area:github'],
   risk: 'risk:medium',
   agentEligible: true,
-  requiresHumanGate: false,
+  autoDevStatus: 'triggered',
 };
 
 function config() {
@@ -115,7 +115,7 @@ test('worker config falls back platform base ref to platform workflow ref when o
   assert.equal(workerConfig.platformBaseRef, 'feat/slack-preview-gateway');
 });
 
-test('platform dev item creates issue and dispatches platform-agent workflow', async () => {
+test('platform dev item with early manual trigger creates issue before dispatching platform-agent workflow', async () => {
   const requests = [];
   const callbacks = [];
   const result = await runWorkerForWorkItem(
@@ -135,15 +135,6 @@ test('platform dev item creates issue and dispatches platform-agent workflow', a
             status: 201,
           });
         }
-        if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
-          const body = JSON.parse(request.body);
-          assert.equal(body.ref, 'master');
-          assert.equal(body.inputs.platformDevItemId, 'pdev_123');
-          assert.equal(body.inputs.issueNumber, '31');
-          assert.equal(body.inputs.issueType, 'type:dev');
-          assert.equal(body.inputs.gateApproved, 'true');
-          return new Response(null, { status: 204 });
-        }
         throw new Error(`Unexpected request ${request.method} ${url}`);
       },
       async postExecutorCallback(fetchImpl, cfg, payload) {
@@ -153,17 +144,16 @@ test('platform dev item creates issue and dispatches platform-agent workflow', a
     }
   );
 
-  assert.equal(result.action, 'platform_issue_created_and_agent_dispatched');
+  assert.equal(result.action, 'platform_issue_created');
   assert.equal(result.issueNumber, 31);
-  assert.equal(result.workflow.workflowId, 'platform-agent.yml');
   assert.deepEqual(
     callbacks.map((payload) => payload.stageResult),
-    ['issue_created', 'agent_running']
+    ['auto_dev_pending']
   );
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 2);
 });
 
-test('platform dev high risk item creates issue and waits for gate', async () => {
+test('platform dev item creates issue and waits for manual auto-dev trigger', async () => {
   const callbacks = [];
   const result = await runWorkerForWorkItem(
     {
@@ -172,7 +162,7 @@ test('platform dev high risk item creates issue and waits for gate', async () =>
         ...platformItem,
         issueType: 'type:ci',
         risk: 'risk:high',
-        requiresHumanGate: true,
+        autoDevStatus: 'pending',
       },
     },
     config(),
@@ -195,14 +185,14 @@ test('platform dev high risk item creates issue and waits for gate', async () =>
     }
   );
 
-  assert.equal(result.action, 'platform_issue_created_waiting_for_gate');
+  assert.equal(result.action, 'platform_issue_created_waiting_for_auto_dev');
   assert.deepEqual(
     callbacks.map((payload) => payload.stageResult),
-    ['gate_pending']
+    ['auto_dev_pending']
   );
 });
 
-test('platform dev high risk item dispatches platform-agent workflow after gate approval', async () => {
+test('platform dev item dispatches platform-agent workflow after manual auto-dev trigger', async () => {
   const callbacks = [];
   const result = await runWorkerForWorkItem(
     {
@@ -211,8 +201,7 @@ test('platform dev high risk item dispatches platform-agent workflow after gate 
         ...platformItem,
         issueType: 'type:ci',
         risk: 'risk:high',
-        requiresHumanGate: true,
-        gateStatus: 'approved',
+        autoDevStatus: 'triggered',
         status: 'agent_queued',
         githubIssueNumber: 32,
         githubIssueUrl: 'https://github.example/issues/32',
@@ -238,7 +227,7 @@ test('platform dev high risk item dispatches platform-agent workflow after gate 
         if (String(url).endsWith('/actions/workflows/platform-agent.yml/dispatches')) {
           const body = JSON.parse(request.body);
           assert.equal(body.inputs.risk, 'risk:high');
-          assert.equal(body.inputs.gateApproved, 'true');
+          assert.equal(body.inputs.autoDevTriggered, 'true');
           assert.equal(body.inputs.issueNumber, '32');
           return new Response(null, { status: 204 });
         }

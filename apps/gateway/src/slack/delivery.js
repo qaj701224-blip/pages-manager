@@ -129,7 +129,7 @@ function slackResultType(result = {}) {
   }
   if (String(result.action || '').startsWith('followup_')) return 'followup_appended';
   if (result.platformDevItemId || result.workItemKind === 'platform_dev') {
-    return result.action === 'create_platform_issue' ? 'platform_issue_created' : 'platform_gate_pending';
+    return result.action === 'create_platform_issue' ? 'platform_issue_created' : 'platform_auto_dev_pending';
   }
   if (result.jobId) return 'job_created';
   if (result.replyText) return 'agent_replied';

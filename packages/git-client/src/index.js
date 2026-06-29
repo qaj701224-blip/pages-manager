@@ -195,7 +195,7 @@ function platformDevAutomationMetadataLines(item, options = {}) {
     `Areas: ${(item.areas || []).join(', ')}`,
     `Risk: ${item.risk}`,
     `AgentEligible: ${item.agentEligible ? 'true' : 'false'}`,
-    `RequiresHumanGate: ${item.requiresHumanGate ? 'true' : 'false'}`,
+    `AutoDevStatus: ${item.autoDevStatus || 'pending'}`,
     `Base ref: ${options.baseRef || ''}`,
     'Pipeline: platform development',
     'Site publishing: out of scope',
@@ -283,14 +283,15 @@ export function buildPlatformDevIssue(item, options = {}) {
       '',
       '- Lane: platform-dev',
       `- Areas: ${areas.join(', ')}`,
-      '- Repo 范围：全目录，按风险 gate、CI、review 和 GitHub Rulesets 控制。',
+      '- Repo 范围：全目录，按风险、手动“自动开发”触发、CI、review 和 GitHub Rulesets 控制。',
       '',
       '## 验收标准',
       '',
       '- PR 只包含和本 issue 直接相关的代码、测试、文档或工作流改动。',
       '- 修改必须有对应测试或清晰的验证说明。',
       '- 不提交 secret、真实 token、本地 env、构建缓存或大文件。',
-      '- 涉及 CI/CD、K8s、Dockerfile、生产部署、权限或 token 流程时，必须等待人工确认后再进入自动开发。',
+      '- 默认只创建 GitHub issue；必须由发起人在 Slack 进度卡中手动点击「自动开发」后才进入自动开发。',
+      '- 涉及 CI/CD、K8s、Dockerfile、生产部署、权限或 token 流程时，仍需按仓库 review、CI 和规则集约束处理。',
       '',
       '## 风险',
       '',
@@ -299,8 +300,8 @@ export function buildPlatformDevIssue(item, options = {}) {
       '## 自动化策略',
       '',
       `- agentEligible: ${item.agentEligible ? 'true' : 'false'}`,
-      `- requiresHumanGate: ${item.requiresHumanGate ? 'true' : 'false'}`,
-      item.gateReason ? `- gateReason: ${item.gateReason}` : null,
+      `- autoDevStatus: ${item.autoDevStatus || 'pending'}`,
+      item.autoDevReason ? `- autoDevReason: ${item.autoDevReason}` : null,
       '',
       '## 发起人',
       '',
@@ -404,7 +405,7 @@ export function buildPlatformDevFollowupComment(item, options = {}) {
     '',
     `- mode: ${options.mode || 'fix'}`,
     `- risk: ${item.risk || 'risk:medium'}`,
-    `- gateApproved: ${options.gateApproved ? 'true' : 'false'}`,
+    `- autoDevTriggered: ${options.autoDevTriggered ? 'true' : 'false'}`,
     '',
     '## 自动化元数据',
     '',
@@ -459,10 +460,10 @@ export function buildPagesPreviewInputs(job, options = {}) {
 }
 
 export function buildPlatformAgentInputs(item, options = {}) {
-  const gateApproved =
-    options.gateApproved !== undefined
-      ? Boolean(options.gateApproved)
-      : item.gateStatus === 'approved' || item.requiresHumanGate === false;
+  const autoDevTriggered =
+    options.autoDevTriggered !== undefined
+      ? Boolean(options.autoDevTriggered)
+      : item.autoDevStatus === 'triggered';
   return {
     platformDevItemId: item.id,
     mode: options.mode || 'initial',
@@ -474,7 +475,7 @@ export function buildPlatformAgentInputs(item, options = {}) {
     issueType: item.issueType || 'type:dev',
     areas: (item.areas || []).join(','),
     risk: item.risk || 'risk:medium',
-    gateApproved: gateApproved ? 'true' : 'false',
+    autoDevTriggered: autoDevTriggered ? 'true' : 'false',
     baseRef: options.baseRef || item.baseRef || '',
     branchName: options.branchName || item.branchName || '',
     callbackUrl: options.callbackUrl || '',

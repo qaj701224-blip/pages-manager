@@ -66,7 +66,7 @@ const platformItem = {
   areas: ['area:gateway', 'area:github'],
   risk: 'risk:medium',
   agentEligible: true,
-  requiresHumanGate: false,
+  autoDevStatus: 'triggered',
   requesterProfile: job.requesterProfile,
   slackThread: job.slackThread,
   githubIssueNumber: 31,
@@ -139,7 +139,7 @@ test('builds platform dev issue with stable marker and enterprise boundaries', (
   assert.equal(issue.title, '[pages-platform] 支持 Slack 创建平台开发 issue');
   assert.ok(issue.body.includes(platformDevItemMarker('pdev_123')));
   assert.ok(issue.body.includes('Lane: platform-dev'));
-  assert.ok(issue.body.includes('Repo 范围：全目录，按风险 gate、CI、review 和 GitHub Rulesets 控制'));
+  assert.ok(issue.body.includes('Repo 范围：全目录，按风险、手动“自动开发”触发、CI、review 和 GitHub Rulesets 控制'));
   assert.ok(issue.body.includes('Site publishing: out of scope'));
   assert.deepEqual(issue.labels, ['pages-platform-dev', 'type:dev', 'risk:medium', 'area:gateway', 'area:github']);
 });
@@ -223,7 +223,7 @@ test('builds workflow inputs from job fields', () => {
       issueType: 'type:dev',
       areas: 'area:gateway,area:github',
       risk: 'risk:medium',
-      gateApproved: 'true',
+      autoDevTriggered: 'true',
       baseRef: 'master',
       branchName: '',
       callbackUrl: 'https://gateway.test/callback',
@@ -235,16 +235,16 @@ test('builds workflow inputs from job fields', () => {
   );
   assert.equal(
     buildPlatformAgentInputs(
-      { ...platformItem, risk: 'risk:high', requiresHumanGate: true, gateStatus: 'pending' },
+      { ...platformItem, risk: 'risk:high', autoDevStatus: 'pending' },
       { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }
-    ).gateApproved,
+    ).autoDevTriggered,
     'false'
   );
   assert.equal(
     buildPlatformAgentInputs(
-      { ...platformItem, risk: 'risk:high', requiresHumanGate: true, gateStatus: 'approved' },
+      { ...platformItem, risk: 'risk:high', autoDevStatus: 'triggered' },
       { callbackUrl: 'https://gateway.test/callback', baseRef: 'master' }
-    ).gateApproved,
+    ).autoDevTriggered,
     'true'
   );
 });

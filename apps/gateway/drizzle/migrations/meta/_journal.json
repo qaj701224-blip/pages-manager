@@ -85,6 +85,13 @@
       "when": 1782300000000,
       "tag": "0011_witty_talos",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1782732061791,
+      "tag": "0012_new_multiple_man",
+      "breakpoints": true
     }
   ]
 }

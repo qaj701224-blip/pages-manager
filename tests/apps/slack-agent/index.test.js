@@ -40,7 +40,6 @@ describe('slack agent', () => {
     assert.deepEqual(analysis.areas, ['area:github', 'area:slack']);
     assert.equal(analysis.risk, 'risk:medium');
     assert.equal(analysis.agentEligible, true);
-    assert.equal(analysis.requiresHumanGate, false);
   });
 
   it('routes repository file modification requests to platform dev lane', () => {
@@ -58,7 +57,7 @@ describe('slack agent', () => {
     }
   });
 
-  it('marks CI and ops platform requests as high risk with human gate', () => {
+  it('marks CI and ops platform requests as high risk while waiting for manual auto-dev trigger', () => {
     const analysis = analyzeSlackRequirement({
       text: '修改 pages-manager 的 CI workflow 和 ECS 部署脚本',
     });
@@ -67,7 +66,6 @@ describe('slack agent', () => {
     assert.equal(analysis.intent, 'create_platform_issue');
     assert.equal(analysis.issueType, 'type:ci');
     assert.equal(analysis.risk, 'risk:high');
-    assert.equal(analysis.requiresHumanGate, true);
     assert.ok(analysis.areas.includes('area:ci'));
     assert.ok(analysis.areas.includes('area:ops'));
   });
@@ -722,7 +720,6 @@ describe('slack agent', () => {
     assert.equal(analysis.intent, 'unsupported_destructive_request');
     assert.equal(analysis.toolCall.name, 'unsupported_destructive_request');
     assert.equal(analysis.agentEligible, false);
-    assert.equal(analysis.requiresHumanGate, false);
     assert.match(analysis.clarifyingQuestion, /不能.*直接写代码、创建 PR、部署上线或处理凭证/);
   });
 
@@ -738,7 +735,6 @@ describe('slack agent', () => {
         toolCall: { name: 'confirm_platform_issue', args: {} },
         summary: '创建一个自动部署 PR。',
         agentEligible: true,
-        requiresHumanGate: true,
       },
       fallback,
       input

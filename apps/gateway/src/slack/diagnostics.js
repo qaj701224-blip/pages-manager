@@ -37,7 +37,7 @@ const STAGE_DETAILS = {
   received: ['任务已接收。', '等待进入后台处理。'],
   summarizing: ['正在整理需求。', '如果长时间停留，可能是需求整理未完成。'],
   issue_creating: ['正在创建 Issue。', '如果失败，通常和 GitHub 权限、仓库配置或输入校验有关。'],
-  issue_created: ['Issue 已创建。', '下一步应该进入自动处理或等待确认。'],
+  issue_created: ['Issue 已创建。', '下一步应该待手动启动或进入自动开发。'],
   indexing: ['正在固定项目索引。', '如果卡住，可以检查索引 workflow 是否完成。'],
   generating_page: ['正在生成页面改动。', '如果卡住，可以检查页面生成 workflow。'],
   patch_generated: ['页面改动已生成。', '下一步应该提交分支并创建 PR。'],
@@ -51,9 +51,9 @@ const STAGE_DETAILS = {
   approved: ['已批准。', '等待后续合并或部署。'],
   merged: ['PR 已合并。', '任务主流程已完成。'],
   deployed: ['已部署。', '任务已完成。'],
-  triaging: ['正在确认处理策略。', '下一步会决定是否创建 Issue 或等待人工确认。'],
-  gate_pending: ['等待人工确认。', '高风险或敏感范围需要人工批准后才能自动开发。'],
-  agent_queued: ['等待自动开发。', '后台处理已排队，下一步应开始自动开发。'],
+  triaging: ['正在确认处理策略。', '下一步会创建 Issue 或等待补充。'],
+  auto_dev_pending: ['Issue 已创建，待手动启动。', '点击「自动开发」后才会启动自动开发。'],
+  agent_queued: ['自动开发排队中。', '后台处理已排队，下一步应开始自动开发。'],
   agent_running: ['自动开发中。', '如果长时间没有 PR，可以检查自动开发 workflow。'],
   ci_running: ['CI 正在验证。', '等待 GitHub Actions 结束。'],
   ci_failed: ['CI 未通过。', '需要查看失败 workflow，并决定重试或修复。'],
@@ -138,7 +138,7 @@ function reasonForWorkItem(item = {}, events = []) {
 }
 
 function nextActionForWorkItem(item = {}) {
-  if (item.status === 'gate_pending') return '请先确认是否批准自动开发。';
+  if (item.status === 'auto_dev_pending') return '如需继续，请点击「自动开发」。';
   if (item.status === 'ci_failed') return '可以查看 Workflow，或把诊断追加到 Issue 后安排修复。';
   if (item.status === 'review_blocked' || item.status === 'changes_requested') return '可以继续在当前 thread 里描述修复要求。';
   if (item.status === 'failed') return '可以把诊断追加到 Issue，或转人工排查。';
@@ -275,7 +275,7 @@ export function buildSlackWorkItemHumanTriageIssueComment(item = {}, options = {
 function canRetryWorkItem(item = {}) {
   if (workItemKind(item) !== 'platform_dev') return SITE_RETRYABLE_STATUSES.has(item.status);
   if (!item.agentEligible) return false;
-  if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
+  if (item.autoDevStatus !== 'triggered') return false;
   return PLATFORM_RETRYABLE_STATUSES.has(item.status);
 }
 

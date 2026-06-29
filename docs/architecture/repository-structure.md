@@ -142,7 +142,7 @@ Dockerfile*
 docs/** 中的平台部署文档
 ```
 
-如果用户需求需要修改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk gate、CI 和 review 控制。
+如果用户需求需要修改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk、手动“自动开发”触发、CI 和 review 控制。
 
 分支、workflow lane、GitHub App、Review Agent、webhook 和本地 `gh` 边界统一见 [github-automation.md](./github-automation.md)。本文件只描述 repo 结构，不重复展开 GitHub 运行规则。
 

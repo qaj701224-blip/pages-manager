@@ -8,7 +8,7 @@ function shouldStartWorkerForJob(job) {
 function shouldStartWorkerForPlatformDevItem(item = {}) {
   if (item.status === 'received') return true;
   if (!item.agentEligible) return false;
-  if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
+  if (item.autoDevStatus !== 'triggered') return false;
   return ['issue_created', 'agent_queued'].includes(item.status);
 }
 

@@ -137,7 +137,7 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
   } else if (['opened', 'edited'].includes(action)) {
     item =
       item.status === 'received' || item.status === 'issue_creating'
-        ? await store.updatePlatformDevItem(item.id, item.requiresHumanGate ? 'gate_pending' : 'issue_created', patch)
+        ? await store.updatePlatformDevItem(item.id, item.autoDevStatus === 'triggered' ? 'issue_created' : 'auto_dev_pending', patch)
         : await store.patchPlatformDevItem(item.id, patch);
   }
   if (!item) return workItemGoneResponse(result, 'platform_dev', itemId);
