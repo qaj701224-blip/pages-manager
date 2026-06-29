@@ -166,7 +166,7 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
     },
   ];
   const actions = [
-    stage === 'auto_dev_pending'
+    stage === 'auto_dev_pending' && item.agentEligible
       ? {
           type: 'button',
           text: { type: 'plain_text', text: '自动开发' },

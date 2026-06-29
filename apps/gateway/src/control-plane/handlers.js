@@ -2741,6 +2741,13 @@ export async function handleSlackInteractions(request, env) {
         text: '这个平台需求已经触发自动开发，正在继续处理。',
       });
     }
+    if (!item.agentEligible) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求当前不能进入自动开发，请在 Issue 中继续人工处理。',
+        platformDevItemId: item.id,
+      });
+    }
     const triggeredAt = new Date().toISOString();
     const triggerResult = store.triggerPlatformDevAutoDev
       ? await store.triggerPlatformDevAutoDev(item.id, {
@@ -2750,7 +2757,6 @@ export async function handleSlackInteractions(request, env) {
         })
       : {
           item: await store.patchPlatformDevItem(item.id, {
-            agentEligible: true,
             autoDevStatus: 'triggered',
             autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
             autoDevTriggeredAt: triggeredAt,
@@ -2784,7 +2790,6 @@ export async function handleSlackInteractions(request, env) {
     let workerStart = null;
     if (approved.status === 'auto_dev_pending') {
       approved = await store.updatePlatformDevItem(approved.id, 'agent_queued', {
-        agentEligible: true,
         autoDevStatus: 'triggered',
         autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
         autoDevTriggeredAt: triggeredAt,

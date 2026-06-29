@@ -478,6 +478,7 @@ test('platform auto-dev button is visible without approver allowlist', async () 
       summary: '修改 CI workflow',
       issueType: 'type:ci',
       risk: 'risk:high',
+      agentEligible: true,
       slackThread: { channelId: 'D1', threadTs: '1710000000.000100' },
       slackSessionId: 'sess_gate_no_approver',
     },
@@ -492,6 +493,47 @@ test('platform auto-dev button is visible without approver allowlist', async () 
   assert.ok(actionIds.includes('pages_trigger_platform_auto_dev'));
   assert.ok(!actionIds.includes('pages_stop_platform_auto_dev'));
   assert.doesNotMatch(JSON.stringify(blocks), /配置平台维护者审批 allowlist/);
+});
+
+test('platform auto-dev button is hidden when item is not agent eligible', async () => {
+  const calls = [];
+  const store = {
+    getSlackWorkItemStatusMessage() {
+      return null;
+    },
+    recordSlackWorkItemStatusMessage(kind, id, message) {
+      return { id: 'msg_1', workItemKind: kind, workItemId: id, ...message };
+    },
+    recordAgentRunEvent() {
+      return null;
+    },
+  };
+
+  await notifySlackPlatformDevStatus(
+    {
+      ...notifierEnv(calls),
+    },
+    store,
+    {
+      id: 'pdev_not_agent_eligible',
+      status: 'auto_dev_pending',
+      title: '平台记录需求',
+      summary: '只需要记录，不进入自动开发。',
+      issueType: 'type:feedback',
+      risk: 'risk:medium',
+      agentEligible: false,
+      slackThread: { channelId: 'D1', threadTs: '1710000000.000100' },
+      slackSessionId: 'sess_not_agent_eligible',
+    },
+    { stage: 'auto_dev_pending' }
+  );
+
+  const messageCall = calls.find((call) => call.path === '/internal/slack-notifier/message');
+  const blocks = messageCall.body.payload?.blocks || [];
+  const actionIds = blocks
+    .filter((block) => block.type === 'actions')
+    .flatMap((block) => block.elements.map((element) => element.action_id));
+  assert.ok(!actionIds.includes('pages_trigger_platform_auto_dev'));
 });
 
 test('platform status notification uses product labels instead of raw internal labels', async () => {
@@ -1069,6 +1111,65 @@ test('manual platform auto-dev trigger is atomic for concurrent clicks', async (
   assert.equal(workerCalls.length, 1);
   assert.ok([firstBody.text, secondBody.text].some((text) => /已经触发自动开发/.test(text)));
   assert.ok([firstBody.text, secondBody.text].some((text) => /已触发|已手动触发自动开发/.test(text)));
+});
+
+test('manual platform auto-dev trigger rejects ineligible items without elevating policy', async () => {
+  const app = createGatewayApp();
+  const { item } = app.store.createPlatformDevItem({
+    source: 'slack',
+    requestedById: 'slack:T1:U1',
+    idempotencyKey: 'platform-auto-dev-ineligible',
+    title: '平台记录需求',
+    summary: '只记录，不进入自动开发。',
+    issueType: 'type:feedback',
+    areas: ['area:platform'],
+    risk: 'risk:medium',
+    agentEligible: false,
+    autoDevStatus: 'pending',
+    slackSessionId: 'sess_gate_ineligible',
+    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  app.store.upsertSlackSession({
+    id: 'sess_gate_ineligible',
+    teamId: 'T1',
+    primarySlackUserId: 'U1',
+    sessionKey: 'dm:D1',
+    status: 'active',
+  });
+  app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_ineligible'));
+  app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
+  const workerCalls = [];
+
+  const response = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/interactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        interaction(
+          'pages_trigger_platform_auto_dev',
+          JSON.stringify({ workItemKind: 'platform_dev', workItemId: item.id, sessionId: 'sess_gate_ineligible' })
+        )
+      ),
+    }),
+    {
+      ...notifierEnv(),
+      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+      PAGES_WORKER_SHARED_SECRET: 'worker-secret',
+      async WORKER_FETCH(url, request) {
+        workerCalls.push({ url: String(url), body: JSON.parse(request.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }
+  );
+  const body = await json(response);
+  const updated = app.store.getPlatformDevItem(item.id);
+
+  assert.equal(response.status, 200);
+  assert.match(body.text, /不能进入自动开发/);
+  assert.equal(updated.agentEligible, false);
+  assert.equal(updated.autoDevStatus, 'pending');
+  assert.equal(updated.status, 'auto_dev_pending');
+  assert.equal(workerCalls.length, 0);
 });
 
 test('manual platform auto-dev trigger handles item disappearing during update', async () => {

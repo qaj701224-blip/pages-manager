@@ -295,6 +295,7 @@ test('MySQL PlatformDevItem auto-dev trigger updates only pending rows', async (
   assert.ok(updateCall);
   assert.match(updateCall.sql, /WHERE id = \? AND auto_dev_status = 'pending'/);
   assert.doesNotMatch(updateCall.sql, /(^|[^_])status = \?/);
+  assert.doesNotMatch(updateCall.sql, /agent_eligible = \?/);
   assert.equal(calls.some((call) => /ON DUPLICATE KEY UPDATE/.test(call.sql)), false);
 });
 

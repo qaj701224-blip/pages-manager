@@ -229,7 +229,6 @@ export class GatewayStoreFixture {
     const updated = {
       ...item,
       ...patch,
-      agentEligible: true,
       autoDevStatus: 'triggered',
       updatedAt: new Date().toISOString(),
     };

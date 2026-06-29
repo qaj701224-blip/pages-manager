@@ -245,7 +245,6 @@ export const platformDevRepositoryMethods = {
       [
         'UPDATE platform_dev_items SET',
         [
-          'agent_eligible = ?',
           'auto_dev_status = ?',
           'auto_dev_triggered_by = ?',
           'auto_dev_triggered_at = ?',
@@ -255,7 +254,6 @@ export const platformDevRepositoryMethods = {
         "WHERE id = ? AND auto_dev_status = 'pending'",
       ].join(' '),
       [
-        true,
         'triggered',
         patch.autoDevTriggeredBy || null,
         toDate(patch.autoDevTriggeredAt),
