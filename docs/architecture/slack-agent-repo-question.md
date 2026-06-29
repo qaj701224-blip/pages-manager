@@ -8,7 +8,7 @@ Platform Dev 场景必须支持“先问清楚当前实现，再决定是否改�
 
 产品规则：
 
-- 不创建 `PlatformDevItem`，不展示“确认平台需求”卡片。
+- 不创建 `PlatformDevItem`，不展示“确认创建平台 Issue”卡片。
 - 不发送“正在整理需求...”占位；只用 reaction 表示处理中。
 - 回答必须基于 Agent 主导的 repo 调研计划和 gateway 返回的 repo evidence，并列出最相关文件路径。
 - 如果检索不足以回答，应说明“我没有找到足够依据”，而不是编造。
@@ -57,9 +57,9 @@ gateway 执行受控 repo 工具：排除 `.git`、`node_modules`、`.env*`、se
 
 “按方案创建需求 / 记录为问题咨询”只把上一轮方案整理成 Platform Dev confirmation card；真正创建 GitHub issue 仍需用户点击确认按钮。gateway 还会做最后的安全收口：
 
-- 纯“在哪里 / 怎么保存 / 为什么”的咨询只能整理成 `type:question`、`agentEligible=false`，确认后只创建 GitHub issue 记录，不启动自动开发。
-- 明确“让 X 支持 Y / 按方案实现 / 需要改哪里”的改造目标，才整理成可进入自动开发候选的 Platform Dev confirmation card。
-- `type:question` / `type:feedback` 即使被模型误标为可自动开发，gateway、workflow 和 coding script 也必须拒绝 dispatch Platform Agent。
+- 纯“在哪里 / 怎么保存 / 为什么”的咨询整理成 `type:question`，确认后先创建 GitHub issue 记录，不会在确认创建时启动自动开发。
+- 明确“让 X 支持 Y / 按方案实现 / 需要改哪里”的改造目标，整理成对应 Platform Dev confirmation card。
+- 所有 Platform Dev issue 都必须等发起人在进度卡点击“自动开发”后，gateway / workflow / coding script 才允许 dispatch Platform Agent。
 
 这样用户可以先完成咨询和调研，再决定是否进入记录或自动开发。
 

@@ -38,7 +38,7 @@
 - Slack token 只应进入 `slack-notifier`；gateway 持有 signing secret 和内部 shared secret，只有本地 fallback 可临时持有 bot token。
 - 员工是归属主体，站点是发布主体，一个员工可以有多个 `sites/<employeeSlug>/<siteSlug>/`。
 - 自动生成的站点 PR 只能修改目标 `sites/<employeeSlug>/<siteSlug>/`，任何 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档改动都必须走人工平台 PR。
-- Platform Dev Lane 是单独路径：Slack 可以创建 / 分流 `pages-manager` 自身 issue，并在风险 gate、CI 和 review 约束下驱动平台代码 PR。该路径不使用 `sites/<employeeSlug>/<siteSlug>/` 目录白名单作为主约束；详细产品边界见 [platform-dev-lane.md](./platform-dev-lane.md)。
+- Platform Dev Lane 是单独路径：Slack 可以创建 / 分流 `pages-manager` 自身 issue，并在风险、手动“自动开发”触发、CI 和 review 约束下驱动平台代码 PR。该路径不使用 `sites/<employeeSlug>/<siteSlug>/` 目录白名单作为主约束；详细产品边界见 [platform-dev-lane.md](./platform-dev-lane.md)。
 
 ## 文档收敛规则
 

@@ -61,7 +61,7 @@ const SLACK_ACTIVE_PLATFORM_STATUSES = new Set([
   'triaging',
   'issue_creating',
   'issue_created',
-  'gate_pending',
+  'auto_dev_pending',
   'agent_queued',
   'agent_running',
   'branch_committed',
@@ -126,7 +126,6 @@ export class GatewayStoreFixture {
     this.workItemLinks = new Map();
     this.workItemLinkByIssueNumber = new Map();
     this.workItemLinkByPrNumber = new Map();
-    this.workItemGates = new Map();
     this.slackWorkItemStatusMessages = new Map();
     this.agentRuns = new Map();
   }
@@ -162,20 +161,6 @@ export class GatewayStoreFixture {
     this.platformDevItems.set(item.id, item);
     this.platformDevIdempotency.set(idempotencyScopeForPlatformDevItem(item), item.id);
     this.appendPlatformDevEvent(item, 'PlatformDevItem received');
-    if (item.requiresHumanGate) {
-      this.ensureWorkItemGate({
-        workItemKind: 'platform_dev',
-        workItemId: item.id,
-        gateType: 'risk',
-        status: 'pending',
-        reason: item.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
-        metadata: {
-          risk: item.risk,
-          issueType: item.issueType,
-          areas: item.areas || [],
-        },
-      });
-    }
     return { item, created: true };
   }
 
@@ -1099,58 +1084,6 @@ export class GatewayStoreFixture {
 
   linkPlatformDevItemToSlackSession(item, session, now = new Date()) {
     return this.linkWorkItemToSlackSession({ ...item, workItemKind: 'platform_dev' }, session, now);
-  }
-
-  workItemGateKey(workItemKind, workItemId, gateType = 'risk') {
-    return `${workItemKind}:${workItemId}:${gateType}`;
-  }
-
-  ensureWorkItemGate(input = {}) {
-    const workItemKind = input.workItemKind || input.work_item_kind;
-    const workItemId = input.workItemId || input.work_item_id;
-    const gateType = input.gateType || input.gate_type || 'risk';
-    if (!workItemKind || !workItemId) return null;
-    const key = this.workItemGateKey(workItemKind, workItemId, gateType);
-    const existing = this.workItemGates.get(key);
-    const nowIso = new Date().toISOString();
-    const gate = {
-      ...(existing || {}),
-      id: existing?.id || input.id || makeId('gate'),
-      workItemKind,
-      workItemId,
-      gateType,
-      status: input.status || existing?.status || 'pending',
-      reason: input.reason ?? existing?.reason ?? null,
-      decidedBy: input.decidedBy ?? existing?.decidedBy ?? null,
-      decidedAt: input.decidedAt ?? existing?.decidedAt ?? null,
-      metadata: input.metadata ?? input.metadataJson ?? existing?.metadata ?? null,
-      createdAt: existing?.createdAt || nowIso,
-      updatedAt: nowIso,
-    };
-    this.workItemGates.set(key, gate);
-    return gate;
-  }
-
-  getWorkItemGate(workItemKind, workItemId, gateType = 'risk') {
-    return this.workItemGates.get(this.workItemGateKey(workItemKind, workItemId, gateType)) || null;
-  }
-
-  decideWorkItemGate(workItemKind, workItemId, gateType = 'risk', decision = {}) {
-    const existing =
-      this.getWorkItemGate(workItemKind, workItemId, gateType) ||
-      this.ensureWorkItemGate({ workItemKind, workItemId, gateType });
-    const nowIso = new Date().toISOString();
-    const gate = {
-      ...existing,
-      status: decision.status,
-      reason: decision.reason ?? existing.reason ?? null,
-      decidedBy: decision.decidedBy || null,
-      decidedAt: nowIso,
-      metadata: decision.metadata ?? existing.metadata ?? null,
-      updatedAt: nowIso,
-    };
-    this.workItemGates.set(this.workItemGateKey(workItemKind, workItemId, gateType), gate);
-    return gate;
   }
 
   linkWorkItemToSlackSession(workItem, session, now = new Date()) {

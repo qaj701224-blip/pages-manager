@@ -12,8 +12,6 @@ test('gateway runtime env includes merge announcement settings for ECS dev serve
     MERGE_ANNOUNCEMENT_AGENT_ENABLED: 'true',
     MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS: 'false',
     MERGE_ANNOUNCEMENT_MENTION_USER_IDS: 'U123,U456',
-    PAGES_PLATFORM_GATE_APPROVERS: 'alice,bob',
-    PAGES_PLATFORM_GATE_APPROVER_IDS: 'UAPPROVER1,UAPPROVER2',
     GITHUB_SITE_CHECK_NAMES: 'custom-site-check',
     GITHUB_SITE_CHECK_APP_LOGINS: 'custom-site-app',
     GITHUB_PLATFORM_CI_CHECK_NAMES: 'custom-platform-ci',
@@ -30,8 +28,8 @@ test('gateway runtime env includes merge announcement settings for ECS dev serve
   assert.equal(env.MERGE_ANNOUNCEMENT_AGENT_ENABLED, 'true');
   assert.equal(env.MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS, 'false');
   assert.equal(env.MERGE_ANNOUNCEMENT_MENTION_USER_IDS, 'U123,U456');
-  assert.equal(env.PAGES_PLATFORM_GATE_APPROVERS, 'alice,bob');
-  assert.equal(env.PAGES_PLATFORM_GATE_APPROVER_IDS, 'UAPPROVER1,UAPPROVER2');
+  assert.equal(env.PAGES_PLATFORM_GATE_APPROVERS, undefined);
+  assert.equal(env.PAGES_PLATFORM_GATE_APPROVER_IDS, undefined);
   assert.equal(env.GITHUB_SITE_CHECK_NAMES, 'custom-site-check');
   assert.equal(env.GITHUB_SITE_CHECK_APP_LOGINS, 'custom-site-app');
   assert.equal(env.GITHUB_PLATFORM_CI_CHECK_NAMES, 'custom-platform-ci');

@@ -42,7 +42,7 @@
 当前实现状态：
 
 - `publishing_jobs`、`job_events`、`slack_events`、`slack_sessions`、`session_memories`、`issue_links`、`agent_runs`、`agent_run_events`、`github_webhook_deliveries`、`review_agent_comments`、`site_check_runs`、`slack_job_status_messages`、`slack_notification_dedupes`、`audit_logs`、`external_api_call_logs` 已在 schema / migration 中存在。
-- `platform_dev_items`、`platform_dev_events`、`work_item_links`、`work_item_gates`、`work_item_followups`、`slack_work_item_status_messages` 已作为 Platform Dev Lane 的运行表新增。
+- `platform_dev_items`、`platform_dev_events`、`work_item_links`、`work_item_followups`、`slack_work_item_status_messages` 已作为 Platform Dev Lane 的运行表新增。
 - `slack_events`、`slack_sessions`、`agent_runs`、`agent_run_events`、`slack_notification_dedupes` 和 `external_api_call_logs` 已具备 `work_item_kind + work_item_id` 或 Platform Dev 关联字段。
 - 后续如果要统一 Site Publishing 与 Platform Dev 的 CI 明细，可以再新增 `ci_check_runs`；当前 Platform Dev CI / review 回写先落主表、事件和 Slack 进度消息。
 
@@ -52,7 +52,7 @@
 - `platform_dev_items` 只表示 Platform Dev Lane。
 - Slack session、Agent run、Slack 进度消息绑定、通知去重、外部 API 日志、audit log 都必须能绑定 `site_publishing` 或 `platform_dev`。
 - GitHub issue / PR lookup 必须能从 `repo_full_name + issue_number / pr_number` 找到对应 work item。
-- 高风险 gate、多轮补充、PR merge / close 回写必须落 MySQL，不能只靠 Redis、Slack message 或 GitHub UI。
+- 自动开发触发、多轮补充、PR merge / close 回写必须落 MySQL，不能只靠 Redis、Slack message 或 GitHub UI。
 
 ## 表结构详表
 
@@ -60,7 +60,7 @@
 
 当前运行态表按职责分为：
 
-- Platform Dev Lane：`platform_dev_items`、`platform_dev_events`、`work_item_links`、`work_item_gates`、`work_item_followups`、`slack_work_item_status_messages`。
+- Platform Dev Lane：`platform_dev_items`、`platform_dev_events`、`work_item_links`、`work_item_followups`、`slack_work_item_status_messages`。
 - Site Publishing Lane：`publishing_jobs`、`job_events`、`issue_links`、`slack_job_status_messages`。
 - 共享运行态：`slack_events`、`slack_sessions`、`session_memories`、`agent_runs`、`agent_run_events`、`github_webhook_deliveries`、`review_agent_comments`、`site_check_runs`、`slack_notification_dedupes`、`audit_logs`、`external_api_call_logs`。
 
@@ -70,7 +70,7 @@
 
 | Repository               | 表                                                        |
 | ------------------------ | --------------------------------------------------------- |
-| `platform-dev.js` | `platform_dev_items`、`platform_dev_events`、`work_item_links`、`work_item_gates` |
+| `platform-dev.js` | `platform_dev_items`、`platform_dev_events`、`work_item_links` |
 | `publishing-jobs.js`     | `publishing_jobs`、`job_events`                           |
 | `slack-deliveries.js`    | `slack_events`                                            |
 | `slack-sessions.js`      | `slack_sessions`、`session_memories`、`issue_links`       |
@@ -100,9 +100,6 @@ findWorkItemLinkByIssueNumber(issueNumber)
 findWorkItemLinkByPrNumber(prNumber)
 listWorkItemLinksForSlackSession(slackSessionId)
 listWorkItemsForSlackUser(teamId, slackUserId, options)
-ensureWorkItemGate(input)
-getWorkItemGate(workItemKind, workItemId, gateType)
-decideWorkItemGate(workItemKind, workItemId, gateType, decision)
 ```
 
 共享 repository 的改造原则：
@@ -156,13 +153,13 @@ Issue / PR / check webhook 的归属顺序：
 3. 明确提到的 issue / PR number。
 4. 无法定位时进入 Slack Agent 澄清，不创建新 item。
 
-### 高风险 gate
+### 自动开发触发
 
 进入 Platform Dev Coding Agent 前：
 
 ```text
-if risk=high or requires_human_gate=true:
-  require work_item_gates(kind=platform_dev,item_id,gate_type=risk,status=approved)
+require platform_dev_items.agent_eligible = true
+require platform_dev_items.auto_dev_status = triggered
 ```
 
 进入 ready-to-merge 前：
@@ -170,18 +167,17 @@ if risk=high or requires_human_gate=true:
 ```text
 require CI success
 require review_status != blocked
-require no pending high-risk gate
 require human merge outside Slack automation
 ```
 
-Slack 只能记录 gate approval 或请求人工处理，不能执行 merge。
+Slack 只能记录发起人点击“自动开发”的触发状态或请求人工处理，不能执行 merge。
 
 ## Migration 落地状态
 
 ### Phase A：DB 合同
 
 - 已新增 `platform_dev_items`、`platform_dev_events`。
-- 已新增 `work_item_links`、`work_item_gates`、`work_item_followups`。
+- 已新增 `work_item_links`、`work_item_followups`。
 - 已给共享表新增 nullable `work_item_kind`、`work_item_id`：
   - `slack_events`
   - `agent_runs`

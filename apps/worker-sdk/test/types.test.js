@@ -146,8 +146,9 @@ void context;
 
   try {
     runTypeScriptSmoke(
-      'pnpm',
+      'corepack',
       [
+        'pnpm',
         '--filter',
         '@xd-cell/worker-sdk',
         'exec',
@@ -198,8 +199,9 @@ export default {
 
   try {
     runTypeScriptSmoke(
-      'pnpm',
+      'corepack',
       [
+        'pnpm',
         '--filter',
         '@xd-cell/worker-sdk',
         'exec',

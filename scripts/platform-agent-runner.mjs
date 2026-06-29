@@ -5,7 +5,6 @@ import path from 'node:path';
 
 import { runPlatformCodingAgent } from './platform-agent-coding.mjs';
 
-const NON_CODING_ISSUE_TYPES = new Set(['type:feedback', 'type:question']);
 const LEGACY_BACKENDS = new Set(['company-json', 'legacy-json', 'platform-agent-coding']);
 const DEFAULT_CHECK_COMMANDS = ['pnpm lint', 'pnpm test'];
 const DEFAULT_MAX_ROUNDS = 3;
@@ -78,7 +77,7 @@ function contextFromEnv(env) {
     areas: env.AREAS || '',
     risk: required(env.RISK, 'RISK'),
     effectiveRisk: required(env.RISK, 'RISK'),
-    gateApproved: boolFromEnv(env.GATE_APPROVED, false),
+    autoDevTriggered: boolFromEnv(env.AUTO_DEV_TRIGGERED, false),
     baseRef: env.BASE_REF || 'master',
     branchName: env.AGENT_BRANCH_NAME || env.BRANCH_NAME || '',
     reviewContext: env.REVIEW_CONTEXT || '',
@@ -95,17 +94,12 @@ function validateContext(context) {
   if (!/^type:(dev|bug|docs|feedback|question|ci|ops|security)$/.test(context.issueType)) {
     throw new Error('ISSUE_TYPE is invalid');
   }
-  if (NON_CODING_ISSUE_TYPES.has(context.issueType)) {
-    throw new Error(
-      `${context.issueType} is not code-eligible; keep it as a GitHub issue record without dispatching Platform Agent`
-    );
-  }
   if (!/^risk:(low|medium|high)$/.test(context.risk)) {
     throw new Error('RISK is invalid');
   }
   context.effectiveRisk = ['type:ci', 'type:ops', 'type:security'].includes(context.issueType) ? 'risk:high' : context.risk;
-  if (context.effectiveRisk === 'risk:high' && !context.gateApproved) {
-    throw new Error('High risk platform work must be gate-approved before coding agent execution');
+  if (!context.autoDevTriggered) {
+    throw new Error('Platform work must be manually triggered before coding agent execution');
   }
 }
 
@@ -247,7 +241,7 @@ function buildTaskMarkdown(context, details) {
     areas: context.areas,
     risk: context.effectiveRisk,
     declaredRisk: context.risk,
-    gateApproved: context.gateApproved,
+    autoDevTriggered: context.autoDevTriggered,
     baseRef: context.baseRef,
     branchName: context.branchName || null,
   };
@@ -591,7 +585,7 @@ function baseReport(context, backendName, extra = {}) {
     areas: context.areas,
     risk: context.effectiveRisk,
     declaredRisk: context.risk,
-    gateApproved: context.gateApproved,
+    autoDevTriggered: context.autoDevTriggered,
     baseRef: context.baseRef,
     backend: backendName,
     backendKind: LEGACY_BACKENDS.has(backendName) ? 'legacy-json' : 'repo-editing',

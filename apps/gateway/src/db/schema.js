@@ -59,7 +59,7 @@ export const slackResultTypeValues = [
   'clarification_requested',
   'job_created',
   'platform_issue_created',
-  'platform_gate_pending',
+  'platform_auto_dev_pending',
   'followup_appended',
   'status_returned',
   'session_closed',
@@ -72,7 +72,7 @@ export const platformDevStatusValues = [
   'triaging',
   'issue_creating',
   'issue_created',
-  'gate_pending',
+  'auto_dev_pending',
   'agent_queued',
   'agent_running',
   'branch_committed',
@@ -98,8 +98,7 @@ export const platformDevIssueTypeValues = [
   'type:security',
 ];
 export const platformDevRiskValues = ['risk:low', 'risk:medium', 'risk:high'];
-export const workItemGateStatusValues = ['not_required', 'pending', 'approved', 'rejected', 'expired'];
-export const workItemGateTypeValues = ['risk', 'ci_cd', 'ops', 'security', 'manual'];
+export const platformAutoDevStatusValues = ['pending', 'triggered'];
 export const workItemFollowupStatusValues = ['queued', 'applied', 'skipped', 'failed'];
 
 export const publishingJobs = mysqlTable(
@@ -263,7 +262,10 @@ export const platformDevItems = mysqlTable(
     areasJson: json('areas_json'),
     risk: mysqlEnum('risk', platformDevRiskValues).notNull(),
     agentEligible: boolean('agent_eligible').notNull().default(false),
-    requiresHumanGate: boolean('requires_human_gate').notNull().default(false),
+    autoDevStatus: mysqlEnum('auto_dev_status', platformAutoDevStatusValues).notNull().default('pending'),
+    autoDevTriggeredBy: varchar('auto_dev_triggered_by', { length: 255 }),
+    autoDevTriggeredAt: datetime('auto_dev_triggered_at', { mode: 'date', fsp: 3 }),
+    autoDevReason: text('auto_dev_reason'),
     status: mysqlEnum('status', platformDevStatusValues).notNull(),
     requesterProfileJson: json('requester_profile_json'),
     slackThreadJson: json('slack_thread_json'),
@@ -283,8 +285,6 @@ export const platformDevItems = mysqlTable(
     statusContext: text('status_context'),
     followupContext: text('followup_context'),
     reviewSummary: text('review_summary'),
-    gateStatus: mysqlEnum('gate_status', workItemGateStatusValues).notNull().default('not_required'),
-    gateReason: text('gate_reason'),
     errorCode: varchar('error_code', { length: 128 }),
     errorMessage: text('error_message'),
     createdAt: createdAt(),
@@ -343,27 +343,6 @@ export const workItemLinks = mysqlTable(
     sessionIdx: index('work_item_links_session_idx').on(table.slackSessionId, table.updatedAt),
     issueIdx: index('work_item_links_issue_idx').on(table.issueNumber),
     prIdx: index('work_item_links_pr_idx').on(table.prNumber),
-  })
-);
-
-export const workItemGates = mysqlTable(
-  'work_item_gates',
-  {
-    id: id('id').primaryKey(),
-    workItemKind: mysqlEnum('work_item_kind', workItemKindValues).notNull(),
-    workItemId: id('work_item_id').notNull(),
-    gateType: mysqlEnum('gate_type', workItemGateTypeValues).notNull(),
-    status: mysqlEnum('status', workItemGateStatusValues).notNull().default('pending'),
-    reason: text('reason'),
-    decidedBy: varchar('decided_by', { length: 255 }),
-    decidedAt: datetime('decided_at', { mode: 'date', fsp: 3 }),
-    metadataJson: json('metadata_json'),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (table) => ({
-    workItemGateUk: uniqueIndex('work_item_gates_work_item_type_uk').on(table.workItemKind, table.workItemId, table.gateType),
-    statusIdx: index('work_item_gates_status_idx').on(table.status, table.updatedAt),
   })
 );
 

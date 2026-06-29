@@ -307,7 +307,7 @@ function shouldQueueFixForJob(job) {
 
 function canDispatchFixForPlatformDevItem(item = {}) {
   if (!item.agentEligible) return false;
-  if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
+  if (item.autoDevStatus !== 'triggered') return false;
   return ['issue_created', 'pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge', 'agent_queued', 'failed'].includes(
     item.status
   );
@@ -347,7 +347,7 @@ async function appendPlatformFollowupIssueCommentIfPossible(env, item, feedback)
         feedback,
         issueNumber: item.githubIssueNumber,
         mode: 'followup',
-        gateApproved: item.gateStatus === 'approved' || item.requiresHumanGate === false,
+        autoDevTriggered: item.autoDevStatus === 'triggered',
       }
     );
     return { ok: true, comment };

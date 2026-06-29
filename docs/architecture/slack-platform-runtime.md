@@ -440,7 +440,6 @@ Session 选择：
 | `WorkItemLink`                                       | session 与 work item / issue / PR / preview 的关联     |
 | `PublishingJob`                                      | Site Publishing Lane 发布任务状态机                    |
 | `PlatformDevItem`                                    | Platform Dev Lane issue / PR 状态机                    |
-| `WorkItemGate`                                       | 高风险 coding / merge / deploy gate                    |
 | `WorkItemFollowup`                                   | Agent running 时排队的 Slack 补充                      |
 | `AgentRun`                                           | Slack Agent 或 Coding Agent 的单轮运行                 |
 | `AgentRunEvent`                                      | Agent 对用户可见的进度、摘要、澄清、错误               |
@@ -571,7 +570,7 @@ flowchart TD
   O --> P["用户在同一 thread 继续反馈"]
   Q --> R["用户点击确认"]
   R --> S["gateway 创建 pages-manager issue"]
-  S --> T["按类型分流：反馈归纳或 Agent 开发"]
+  S --> T["等待发起人点击自动开发"]
   T --> U["PR / CI / review / merge 回写 Slack"]
   U --> P
   P --> C
@@ -583,10 +582,10 @@ flowchart TD
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | 任意自然语言需求                      | 进入 Slack Agent；识别 Site Publishing Lane 或 Platform Dev Lane；信息足够时展示确认卡片 |
 | 模糊闲聊 / 信息不足                   | 进入 Slack Agent；回复澄清问题，不创建 job / issue                          |
-| pages-manager 开发需求 / bug / 文档   | 创建 `lane:platform-dev` issue；符合策略时进入 Agent 开发                   |
-| 产品意见 / 反馈                       | 创建或更新 `type:feedback` issue；默认不直接改代码                          |
+| pages-manager 开发需求 / bug / 文档   | 创建 `lane:platform-dev` issue；等待进度卡“自动开发”触发后进入 Agent 开发   |
+| 产品意见 / 反馈                       | 创建或更新 `type:feedback` issue；同样等待手动“自动开发”触发                |
 | repo 实现 / 架构咨询                  | 进入只读 repo 问答；检索当前仓库代码和文档后直接回答，不创建 issue           |
-| CI/CD / K8s / secret 相关诉求         | 创建高风险 issue；默认 `agent:blocked`，等待人工 gate                       |
+| CI/CD / K8s / secret 相关诉求         | 创建高风险 issue；等待发起人手动点击“自动开发”                              |
 | 查询我的任务 / PR                     | Slack Agent 请求 `list_my_work_items`；gateway 只返回当前用户可见任务       |
 | 查询历史 / 全部任务                   | `state=all`，返回当前用户 active + inactive 任务                            |
 | 查询已关闭 issue / PR                 | `state=closed`，只返回当前用户已关闭、已取消或失败任务；可恢复项展示 reopen |
@@ -607,10 +606,10 @@ Platform Dev Lane 的确认卡片必须展示：
 - issue 类型：type:dev / type:bug / type:feedback / ...
 - 影响 area：gateway / worker / ci / docs / ...
 - 风险等级：risk:low / risk:medium / risk:high
-- 默认动作：仅创建 issue / 创建 issue 并进入 Agent 开发候选 / 等待人工 gate
+- 默认动作：仅创建 issue；进度卡里的“自动开发”按钮控制是否启动 Agent
 ```
 
-`type:feedback`、`type:question` 默认不进入 Coding Agent。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关 issue 默认 high risk，进入开发前需要人工确认。
+所有 Platform Dev issue 默认只创建 GitHub issue。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关 issue 默认 high risk，但启动自动开发仍统一由发起人在进度卡点击“自动开发”触发；后续 PR 仍必须经过 CI、review 和人工 merge。
 
 当前产品化消息形态：
 

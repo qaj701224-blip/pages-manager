@@ -23,7 +23,10 @@ Platform Dev Lane 的主状态表。它服务 `pages-manager` 自身研发工作
 | `areas_json` | `json` | `area:*` 列表 |
 | `risk` | `risk:low | risk:medium | risk:high` | 当前风险等级 |
 | `agent_eligible` | `boolean` | 是否可进入自动开发候选 |
-| `requires_human_gate` | `boolean` | 当前是否需要人工 gate |
+| `auto_dev_status` | `pending | triggered` | 是否已由发起人手动触发自动开发 |
+| `auto_dev_triggered_by` | `varchar(255)` | 触发自动开发的 Slack actor |
+| `auto_dev_triggered_at` | `datetime(3)` | 自动开发触发时间 |
+| `auto_dev_reason` | `text` | 触发原因或说明 |
 | `status` | enum | 见下方状态机 |
 | `requester_profile_json` | `json` | 发起人 profile 快照，脱敏保存 |
 | `slack_thread_json` | `json` | team / channel / thread / requester 快照 |
@@ -36,8 +39,6 @@ Platform Dev Lane 的主状态表。它服务 `pages-manager` 自身研发工作
 | `branch_name` | `varchar(255)` | Platform Agent 分支 |
 | `base_ref` | `varchar(128)` | 默认 `master` |
 | `head_sha` | `char(40)` | 当前 PR head SHA |
-| `gate_status` | `not_required | pending | approved | rejected | expired` | 当前风险 gate 状态 |
-| `gate_reason` | `text` | gate 原因或决策说明 |
 | `error_code` | `varchar(128)` | 失败码 |
 | `error_message` | `text` | 面向维护者的错误摘要，脱敏 |
 | `created_at` | `datetime(3)` | 创建时间 |
@@ -50,7 +51,7 @@ received
 triaging
 issue_creating
 issue_created
-gate_pending
+auto_dev_pending
 agent_queued
 agent_running
 branch_committed
@@ -71,10 +72,10 @@ cancelled
 | 状态 | 用户可见含义 | 允许的下一步 |
 | ---- | ------------ | ------------ |
 | `received` | 已接收 Slack 确认 | `triaging` / `issue_creating` |
-| `triaging` | 正在分类和整理 issue | `issue_creating` / `gate_pending` |
+| `triaging` | 正在分类和整理 issue | `issue_creating` / `auto_dev_pending` |
 | `issue_creating` | 正在创建 GitHub issue | `issue_created` / `failed` |
-| `issue_created` | issue 已创建 | `gate_pending` / `agent_queued` / `agent_running` |
-| `gate_pending` | 等待风险确认 | `agent_queued` / `closed_unmerged` / `cancelled` |
+| `issue_created` | issue 已创建 | `auto_dev_pending` / `agent_queued` / `agent_running` |
+| `auto_dev_pending` | Issue 已创建，待发起人手动点击“自动开发” | `agent_queued` / `closed_unmerged` / `cancelled` |
 | `agent_queued` | Coding Agent 已排队 | `agent_running` / `failed` |
 | `agent_running` | 正在生成平台代码改动 | `branch_committed` / `pr_created` / `failed` |
 | `branch_committed` | 分支已提交 | `pr_created` / `failed` |
@@ -175,37 +176,11 @@ updated_at
 - Slack “我的任务”从 `work_item_links` 和两个主表 union 出站点发布任务与平台研发任务。
 - `issue_links` 可以保留为 Site Publishing 的兼容表，但新代码应优先读写 `work_item_links`。
 
-### `work_item_gates`
-
-高风险确认不能只靠 Slack 按钮文本或 GitHub label。所有会影响自动开发、merge、production deploy、secret / 权限策略的确认都需要落库。
-
-当前字段：
-
-```text
-id
-work_item_kind              -- site_publishing | platform_dev
-work_item_id
-gate_type                   -- risk | ci_cd | ops | security | manual
-status                      -- not_required | pending | approved | rejected | expired
-reason
-decided_by
-decided_at
-metadata_json
-created_at
-updated_at
-```
-
-索引建议：
-
-- `work_item_gates_item_idx`：`work_item_kind + work_item_id + status + updated_at`
-- `work_item_gates_pending_idx`：`status + gate_type + updated_at`
-- `work_item_gates_source_idx`：`source + updated_at`
-
 产品规则：
 
-- `risk:high` 的 Platform Dev item 进入 Coding Agent 前必须存在 `gate_type=risk,status=approved`。
-- `.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动至少需要 `gate_type=risk`；如果 PR 已经产生，还需要 GitHub required review。
-- Slack 进度消息展示最近一个 pending gate 和操作人，不展示 secret 或内部 token。
+- Platform Dev item 进入 Coding Agent 前必须满足 `auto_dev_status=triggered`。
+- `.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动必须标记 `risk:high`；如果 PR 已经产生，还需要 GitHub required review。
+- Slack 进度消息展示“Issue 已创建，待手动启动 / 自动开发中 / PR 状态”等用户可理解阶段，不展示 secret 或内部 token。
 
 ### `work_item_followups`（计划新增）
 
@@ -586,5 +561,5 @@ platform_dev_item_id
 ## 写入原子性要求
 
 - `PublishingJob` 创建必须把 `publishing_jobs` 和首条 `job_events` 放在同一个 MySQL transaction 内。
-- `PlatformDevItem` 创建必须把 `platform_dev_items`、首条 `platform_dev_events` 和需要的 `work_item_gates` 放在同一个 MySQL transaction 内。
-- 同一 idempotency key 的重试必须 insert-only 后读取已有主表记录，不能通过 upsert 重置既有状态，也不能留下只有主表、没有事件或 gate 的半成品。
+- `PlatformDevItem` 创建必须把 `platform_dev_items` 和首条 `platform_dev_events` 放在同一个 MySQL transaction 内。
+- 同一 idempotency key 的重试必须 insert-only 后读取已有主表记录，不能通过 upsert 重置既有状态，也不能留下只有主表、没有事件的半成品。

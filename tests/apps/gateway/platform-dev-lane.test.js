@@ -113,12 +113,17 @@ function createOpenPlatformPr(app, options = {}) {
     areas: options.areas || ['area:platform'],
     risk: options.risk || 'risk:medium',
     agentEligible: options.agentEligible ?? true,
-    requiresHumanGate: options.requiresHumanGate ?? false,
-    gateStatus: options.gateStatus || 'not_required',
     slackSessionId: options.slackSessionId || 'sess_platform_pr',
     slackSessionKey: 'dm:D1',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
+  if (options.autoDevStatus !== 'pending') {
+    app.store.patchPlatformDevItem(item.id, {
+      autoDevStatus: 'triggered',
+      autoDevTriggeredBy: 'slack:T1:U1',
+      autoDevTriggeredAt: new Date('2026-06-29T00:00:00.000Z').toISOString(),
+    });
+  }
   app.store.upsertSlackSession({
     id: options.slackSessionId || 'sess_platform_pr',
     teamId: 'T1',
@@ -155,7 +160,7 @@ function latestSlackStatusBlocks(notifierCalls = []) {
   return JSON.stringify(call?.body?.payload?.blocks || []);
 }
 
-test('platform question input cannot be forced into agent dispatch by model output', () => {
+test('platform question input waits for manual auto-dev trigger', () => {
   const input = platformDevInput({
     team_id: 'T1',
     event_id: 'Ev-platform-question',
@@ -173,18 +178,16 @@ test('platform question input cannot be forced into agent dispatch by model outp
       issueType: 'type:question',
       risk: 'risk:medium',
       agentEligible: true,
-      requiresHumanGate: true,
       summary: '目前这个对话的 sessions 是保存在哪里？',
     },
   });
 
   assert.equal(input.issueType, 'type:question');
-  assert.equal(input.agentEligible, false);
-  assert.equal(input.requiresHumanGate, false);
-  assert.equal(input.gateStatus, 'not_required');
+  assert.equal(input.agentEligible, true);
+  assert.equal(input.autoDevStatus, 'pending');
 });
 
-test('high-risk platform input forces a human gate even when model opts out', () => {
+test('high-risk platform input still waits for manual auto-dev trigger', () => {
   const input = platformDevInput({
     team_id: 'T1',
     event_id: 'Ev-platform-high-risk-force-gate',
@@ -202,15 +205,13 @@ test('high-risk platform input forces a human gate even when model opts out', ()
       issueType: 'type:ci',
       risk: 'risk:medium',
       agentEligible: true,
-      requiresHumanGate: false,
       summary: '修改 Platform Agent workflow',
     },
   });
 
   assert.equal(input.issueType, 'type:ci');
   assert.equal(input.risk, 'risk:high');
-  assert.equal(input.requiresHumanGate, true);
-  assert.equal(input.gateStatus, 'pending');
+  assert.equal(input.autoDevStatus, 'pending');
 });
 
 test('platform question confirmation card does not promise automatic development', () => {
@@ -225,8 +226,8 @@ test('platform question confirmation card does not promise automatic development
   const blocks = slackPlatformIssueConfirmationBlocks({ id: 'sess_question' }, analysis);
   const serializedBlocks = JSON.stringify(blocks);
 
-  assert.match(text, /不会启动自动开发/);
-  assert.match(serializedBlocks, /不会启动自动开发/);
+  assert.match(text, /确认后只创建 GitHub issue/);
+  assert.match(serializedBlocks, /Issue 创建后，进度卡会出现「自动开发」按钮/);
   assert.doesNotMatch(text, /进入后续处理/);
 });
 
@@ -273,13 +274,13 @@ test('platform CI confirmation is shown as high risk without leaking raw labels'
   const blockText = JSON.stringify(blocks);
 
   assert.match(text, /类型：自动化流程调整/);
-  assert.match(text, /风险：高，需要人工确认/);
-  assert.match(text, /等待人工确认/);
+  assert.match(text, /风险：高/);
+  assert.match(text, /确认后只创建 GitHub issue/);
   assert.doesNotMatch(`${text}\n${blockText}`, /type:ci|risk:high|area:gateway|area:worker/);
   assert.doesNotMatch(`${text}\n${blockText}`, /\b(gateway|worker|mysql)\b/i);
 });
 
-test('confirming platform request creates PlatformDevItem and starts worker when gate is not required', async () => {
+test('confirming platform request creates PlatformDevItem and waits for manual auto-dev trigger', async () => {
   const app = createGatewayApp();
   const notifierCalls = [];
   const workerCalls = [];
@@ -303,7 +304,6 @@ test('confirming platform request creates PlatformDevItem and starts worker when
     }),
     {
       ...notifierEnv(notifierCalls),
-      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U2',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -321,10 +321,11 @@ test('confirming platform request creates PlatformDevItem and starts worker when
   assert.equal(body.created, true);
   assert.equal(item.status, 'received');
   assert.equal(item.issueType, 'type:dev');
-  assert.equal(item.requiresHumanGate, false);
+  assert.equal(item.autoDevStatus, 'pending');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.workItemKind, 'platform_dev');
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  assert.equal(workerCalls[0].body.platformDevItem.autoDevStatus, 'pending');
   assert.equal(app.store.getSlackSession(sessionId).activeWorkItemId, item.id);
   assert.ok(notifierCalls.some((call) => call.path === '/internal/slack-notifier/message'));
 });
@@ -353,7 +354,6 @@ test('confirming platform request fails item when queued worker start fails', as
     }),
     {
       ...notifierEnv(notifierCalls),
-      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U2',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH() {
@@ -379,7 +379,7 @@ test('confirming platform request fails item when queued worker start fails', as
   assert.ok(events.some((event) => event.stage === 'failed' && /worker unavailable/.test(event.text)));
 });
 
-test('high-risk platform request creates issue work and waits for gate before coding dispatch', async () => {
+test('platform request creates issue work and waits for manual auto-dev trigger', async () => {
   const app = createGatewayApp();
   const first = await json(
     await app.fetch(
@@ -401,7 +401,6 @@ test('high-risk platform request creates issue work and waits for gate before co
     }),
     {
       ...notifierEnv(notifierCalls),
-      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U2',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -415,22 +414,45 @@ test('high-risk platform request creates issue work and waits for gate before co
 
   assert.equal(item.issueType, 'type:ci');
   assert.equal(item.risk, 'risk:high');
-  assert.equal(item.requiresHumanGate, true);
-  assert.equal(item.gateStatus, 'pending');
+  assert.equal(item.autoDevStatus, 'pending');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.workItemKind, 'platform_dev');
-  assert.equal(workerCalls[0].body.platformDevItem.requiresHumanGate, true);
-  assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'pending');
+  assert.equal(workerCalls[0].body.platformDevItem.autoDevStatus, 'pending');
   const progressCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message');
   const blocks = progressCall.body.payload?.blocks || progressCall.body.blocks || progressCall.body.message?.blocks || [];
-  const actionIds = blocks
+  const initialActionIds = blocks
     .filter((block) => block.type === 'actions')
     .flatMap((block) => block.elements.map((element) => element.action_id));
-  assert.ok(actionIds.includes('pages_approve_platform_gate'));
-  assert.ok(actionIds.includes('pages_reject_platform_gate'));
+  assert.match(JSON.stringify(blocks), /创建 GitHub issue/);
+  assert.equal(initialActionIds.includes('pages_trigger_platform_auto_dev'), false);
+
+  const callbackResponse = await app.fetch(
+    new Request('http://gateway.test/internal/executor-callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workItemKind: 'platform_dev',
+        platformDevItemId: item.id,
+        stageResult: 'auto_dev_pending',
+        issueNumber: 77,
+        issueUrl: 'https://github.example/org/pages-manager/issues/77',
+      }),
+    }),
+    notifierEnv(notifierCalls)
+  );
+  assert.equal(callbackResponse.status, 200);
+
+  const waitingCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/update').at(-1);
+  const waitingBlocks = waitingCall.body.payload?.blocks || waitingCall.body.blocks || waitingCall.body.message?.blocks || [];
+  const actionIds = waitingBlocks
+    .filter((block) => block.type === 'actions')
+    .flatMap((block) => block.elements.map((element) => element.action_id));
+  assert.match(JSON.stringify(waitingBlocks), /Issue 已创建，待手动启动/);
+  assert.ok(actionIds.includes('pages_trigger_platform_auto_dev'));
+  assert.ok(!actionIds.includes('pages_stop_platform_auto_dev'));
 });
 
-test('high-risk platform gate card hides approve action when approver allowlist is missing', async () => {
+test('platform auto-dev button is visible without approver allowlist', async () => {
   const calls = [];
   const store = {
     getSlackWorkItemStatusMessage() {
@@ -451,7 +473,7 @@ test('high-risk platform gate card hides approve action when approver allowlist 
     store,
     {
       id: 'pdev_gate_no_approver',
-      status: 'gate_pending',
+      status: 'auto_dev_pending',
       title: '平台高风险需求',
       summary: '修改 CI workflow',
       issueType: 'type:ci',
@@ -459,7 +481,7 @@ test('high-risk platform gate card hides approve action when approver allowlist 
       slackThread: { channelId: 'D1', threadTs: '1710000000.000100' },
       slackSessionId: 'sess_gate_no_approver',
     },
-    { stage: 'gate_pending' }
+    { stage: 'auto_dev_pending' }
   );
 
   const messageCall = calls.find((call) => call.path === '/internal/slack-notifier/message');
@@ -467,9 +489,9 @@ test('high-risk platform gate card hides approve action when approver allowlist 
   const actionIds = blocks
     .filter((block) => block.type === 'actions')
     .flatMap((block) => block.elements.map((element) => element.action_id));
-  assert.ok(!actionIds.includes('pages_approve_platform_gate'));
-  assert.ok(actionIds.includes('pages_reject_platform_gate'));
-  assert.match(JSON.stringify(blocks), /配置平台维护者审批 allowlist/);
+  assert.ok(actionIds.includes('pages_trigger_platform_auto_dev'));
+  assert.ok(!actionIds.includes('pages_stop_platform_auto_dev'));
+  assert.doesNotMatch(JSON.stringify(blocks), /配置平台维护者审批 allowlist/);
 });
 
 test('platform status notification uses product labels instead of raw internal labels', async () => {
@@ -487,7 +509,7 @@ test('platform status notification uses product labels instead of raw internal l
   };
   const item = {
     id: 'pdev_notify',
-    status: 'gate_pending',
+    status: 'auto_dev_pending',
     title: '调整 gateway worker mysql 流程',
     summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
     issueType: 'type:ci',
@@ -512,7 +534,7 @@ test('platform status notification uses product labels instead of raw internal l
 
   const payload = JSON.stringify(calls[0].body);
   assert.match(payload, /自动化流程调整/);
-  assert.match(payload, /高，需要人工确认/);
+  assert.match(payload, /高/);
   assert.doesNotMatch(payload, /type:ci|risk:high|area:gateway|area:worker/);
   assert.doesNotMatch(payload, /\b(gateway|worker|mysql)\b/i);
 });
@@ -524,7 +546,7 @@ test('platform task list uses product labels instead of raw internal labels', ()
       {
         id: 'pdev_list',
         workItemKind: 'platform_dev',
-        status: 'gate_pending',
+        status: 'auto_dev_pending',
         title: '调整 gateway worker mysql 流程',
         summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
         issueType: 'type:ci',
@@ -537,7 +559,7 @@ test('platform task list uses product labels instead of raw internal labels', ()
   const payload = JSON.stringify(blocks);
 
   assert.match(payload, /自动化流程调整/);
-  assert.match(payload, /高，需要人工确认/);
+  assert.match(payload, /高/);
   assert.match(payload, /平台入口/);
   assert.match(payload, /后台处理/);
   assert.match(payload, /自动化流程/);
@@ -553,7 +575,6 @@ test('platform diagnosis reports blocker without leaking substrate terms', async
     summary: '调整 gateway worker mysql 和 GitHub Actions 检查。',
     issueType: 'type:ci',
     risk: 'risk:high',
-    gateStatus: 'approved',
   });
   app.store.updatePlatformDevItem(item.id, 'ci_running');
   app.store.updatePlatformDevItem(item.id, 'ci_failed', {
@@ -584,7 +605,6 @@ test('model-requested retry returns diagnosis confirmation instead of dispatchin
     slackSessionId: 'sess_diagnosis_retry_confirm',
     issueType: 'type:ci',
     risk: 'risk:high',
-    gateStatus: 'approved',
   });
   app.store.updatePlatformDevItem(item.id, 'ci_running');
   app.store.updatePlatformDevItem(item.id, 'ci_failed', {
@@ -743,7 +763,6 @@ test('retry diagnosis button dispatches a scoped platform fix round', async () =
     slackSessionId: 'sess_diagnosis_retry',
     issueType: 'type:ci',
     risk: 'risk:high',
-    gateStatus: 'approved',
   });
   app.store.updatePlatformDevItem(item.id, 'ci_running');
   app.store.updatePlatformDevItem(item.id, 'ci_failed', {
@@ -892,7 +911,7 @@ test('platform failure notification filters internal substrate terms from error 
   assert.doesNotMatch(payload, /\b(gateway|worker|mysql|status card)\b/i);
 });
 
-test('approving high-risk platform gate starts worker for the existing item', async () => {
+test('manual platform auto-dev trigger starts worker for the existing item', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
     source: 'slack',
@@ -904,8 +923,7 @@ test('approving high-risk platform gate starts worker for the existing item', as
     areas: ['area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
     slackSessionId: 'sess_gate',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
@@ -917,7 +935,7 @@ test('approving high-risk platform gate starts worker for the existing item', as
     status: 'active',
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate'));
-  app.store.updatePlatformDevItem(item.id, 'gate_pending');
+  app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
   const workerCalls = [];
   const notifierCalls = [];
 
@@ -927,14 +945,13 @@ test('approving high-risk platform gate starts worker for the existing item', as
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
         interaction(
-          'pages_approve_platform_gate',
-          JSON.stringify({ workItemKind: 'platform_dev', workItemId: item.id, sessionId: 'sess_gate', gateType: 'risk' })
+          'pages_trigger_platform_auto_dev',
+          JSON.stringify({ workItemKind: 'platform_dev', workItemId: item.id, sessionId: 'sess_gate' })
         )
       ),
     }),
     {
       ...notifierEnv(notifierCalls),
-      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U1',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -948,18 +965,18 @@ test('approving high-risk platform gate starts worker for the existing item', as
 
   assert.equal(response.status, 200);
   assert.equal(body.platformDevItemId, item.id);
-  assert.equal(updated.gateStatus, 'approved');
+  assert.equal(updated.autoDevStatus, 'triggered');
   assert.equal(updated.status, 'agent_queued');
-  assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'approved');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.platformDevItem.id, item.id);
+  assert.equal(workerCalls[0].body.platformDevItem.autoDevStatus, 'triggered');
   const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
   assert.ok(updateCall);
-  assert.match(JSON.stringify(updateCall.body.payload), /自动开发已批准/);
-  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_approve_platform_gate|pages_reject_platform_gate/);
+  assert.match(JSON.stringify(updateCall.body.payload), /自动开发已触发/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_trigger_platform_auto_dev|pages_stop_platform_auto_dev/);
 });
 
-test('approving high-risk platform gate handles item disappearing during update', async () => {
+test('manual platform auto-dev trigger handles item disappearing during update', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
     source: 'slack',
@@ -971,8 +988,7 @@ test('approving high-risk platform gate handles item disappearing during update'
     areas: ['area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
     slackSessionId: 'sess_gate_disappears',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
@@ -984,10 +1000,10 @@ test('approving high-risk platform gate handles item disappearing during update'
     status: 'active',
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_disappears'));
-  app.store.updatePlatformDevItem(item.id, 'gate_pending');
+  app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
   const originalPatch = app.store.patchPlatformDevItem.bind(app.store);
   app.store.patchPlatformDevItem = async (itemId, patch) => {
-    if (itemId === item.id && patch.gateStatus === 'approved') return null;
+    if (itemId === item.id && patch.autoDevStatus === 'triggered') return null;
     return originalPatch(itemId, patch);
   };
 
@@ -997,7 +1013,7 @@ test('approving high-risk platform gate handles item disappearing during update'
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
         interaction(
-          'pages_approve_platform_gate',
+          'pages_trigger_platform_auto_dev',
           JSON.stringify({
             workItemKind: 'platform_dev',
             workItemId: item.id,
@@ -1008,7 +1024,6 @@ test('approving high-risk platform gate handles item disappearing during update'
       ),
     }),
     {
-      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U1',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       async WORKER_FETCH() {
         throw new Error('worker should not start after disappeared item');
@@ -1022,7 +1037,7 @@ test('approving high-risk platform gate handles item disappearing during update'
   assert.match(body.text, /已不存在/);
 });
 
-test('allowlisted maintainer can approve a high-risk platform gate for another requester', async () => {
+test('manual platform auto-dev trigger is limited to the requester', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
     source: 'slack',
@@ -1034,8 +1049,7 @@ test('allowlisted maintainer can approve a high-risk platform gate for another r
     areas: ['area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
     slackSessionId: 'sess_gate_maintainer',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
@@ -1047,11 +1061,11 @@ test('allowlisted maintainer can approve a high-risk platform gate for another r
     status: 'active',
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_maintainer'));
-  app.store.updatePlatformDevItem(item.id, 'gate_pending');
+  app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
   const workerCalls = [];
 
   const body = interaction(
-    'pages_approve_platform_gate',
+    'pages_trigger_platform_auto_dev',
     JSON.stringify({
       workItemKind: 'platform_dev',
       workItemId: item.id,
@@ -1069,7 +1083,6 @@ test('allowlisted maintainer can approve a high-risk platform gate for another r
     }),
     {
       ...notifierEnv(),
-      PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U2',
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
       PAGES_WORKER_SHARED_SECRET: 'worker-secret',
       async WORKER_FETCH(url, request) {
@@ -1082,13 +1095,13 @@ test('allowlisted maintainer can approve a high-risk platform gate for another r
   const updated = app.store.getPlatformDevItem(item.id);
 
   assert.equal(response.status, 200);
-  assert.equal(result.platformDevItemId, item.id);
-  assert.equal(updated.gateStatus, 'approved');
-  assert.equal(updated.status, 'agent_queued');
-  assert.equal(workerCalls.length, 1);
+  assert.match(result.text, /不存在，或不属于当前 Slack 用户/);
+  assert.equal(updated.autoDevStatus, 'pending');
+  assert.equal(updated.status, 'auto_dev_pending');
+  assert.equal(workerCalls.length, 0);
 });
 
-test('early high-risk platform gate approval waits for gate callback before dispatching agent', async () => {
+test('early manual platform auto-dev trigger waits for issue callback before dispatching agent', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
     source: 'slack',
@@ -1100,8 +1113,7 @@ test('early high-risk platform gate approval waits for gate callback before disp
     areas: ['area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
     slackSessionId: 'sess_gate_early',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
@@ -1114,9 +1126,9 @@ test('early high-risk platform gate approval waits for gate callback before disp
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_early'));
   const workerCalls = [];
+  const notifierCalls = [];
   const env = {
-    ...notifierEnv(),
-    PAGES_PLATFORM_GATE_APPROVERS: 'slack:T1:U1',
+    ...notifierEnv(notifierCalls),
     PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
     PAGES_WORKER_SHARED_SECRET: 'worker-secret',
     async WORKER_FETCH(url, request) {
@@ -1131,7 +1143,7 @@ test('early high-risk platform gate approval waits for gate callback before disp
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
         interaction(
-          'pages_approve_platform_gate',
+          'pages_trigger_platform_auto_dev',
           JSON.stringify({
             workItemKind: 'platform_dev',
             workItemId: item.id,
@@ -1148,7 +1160,7 @@ test('early high-risk platform gate approval waits for gate callback before disp
   assert.equal(approvalResponse.status, 200);
   assert.match(approval.text, /issue 创建完成/);
   assert.equal(app.store.getPlatformDevItem(item.id).status, 'received');
-  assert.equal(app.store.getPlatformDevItem(item.id).gateStatus, 'approved');
+  assert.equal(app.store.getPlatformDevItem(item.id).autoDevStatus, 'triggered');
   assert.equal(workerCalls.length, 0);
 
   const callbackResponse = await app.fetch(
@@ -1158,7 +1170,7 @@ test('early high-risk platform gate approval waits for gate callback before disp
       body: JSON.stringify({
         workItemKind: 'platform_dev',
         platformDevItemId: item.id,
-        stageResult: 'gate_pending',
+        stageResult: 'auto_dev_pending',
         issueNumber: 81,
         issueUrl: 'https://github.example/org/pages-manager/issues/81',
       }),
@@ -1171,10 +1183,14 @@ test('early high-risk platform gate approval waits for gate callback before disp
   assert.equal(callback.item.status, 'agent_queued');
   assert.equal(workerCalls.length, 1);
   assert.equal(workerCalls[0].body.platformDevItem.status, 'agent_queued');
-  assert.equal(workerCalls[0].body.platformDevItem.gateStatus, 'approved');
+  assert.equal(workerCalls[0].body.platformDevItem.autoDevStatus, 'triggered');
+  const updateCall = notifierCalls.filter((call) => call.path === '/internal/slack-notifier/update').at(-1);
+  assert.ok(updateCall);
+  assert.match(JSON.stringify(updateCall.body.payload), /自动开发排队中/);
+  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_trigger_platform_auto_dev/);
 });
 
-test('early high-risk platform gate callback fails item when worker start fails', async () => {
+test('early manual platform auto-dev callback fails item when worker start fails', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
     source: 'slack',
@@ -1186,8 +1202,7 @@ test('early high-risk platform gate callback fails item when worker start fails'
     areas: ['area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
     slackSessionId: 'sess_gate_callback_failure',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
@@ -1199,7 +1214,7 @@ test('early high-risk platform gate callback fails item when worker start fails'
     status: 'active',
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_callback_failure'));
-  app.store.patchPlatformDevItem(item.id, { gateStatus: 'approved' });
+  app.store.patchPlatformDevItem(item.id, { autoDevStatus: 'triggered' });
 
   const callbackResponse = await app.fetch(
     new Request('http://gateway.test/internal/executor-callback', {
@@ -1208,7 +1223,7 @@ test('early high-risk platform gate callback fails item when worker start fails'
       body: JSON.stringify({
         workItemKind: 'platform_dev',
         platformDevItemId: item.id,
-        stageResult: 'gate_pending',
+        stageResult: 'auto_dev_pending',
         issueNumber: 82,
         issueUrl: 'https://github.example/org/pages-manager/issues/82',
       }),
@@ -1234,7 +1249,7 @@ test('early high-risk platform gate callback fails item when worker start fails'
   assert.equal(updated.errorMessage, 'worker unavailable');
 });
 
-test('high-risk platform gate approval fails closed without approver allowlist', async () => {
+test('requester can trigger platform auto-dev without approver allowlist', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
     source: 'slack',
@@ -1246,8 +1261,7 @@ test('high-risk platform gate approval fails closed without approver allowlist',
     areas: ['area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
     slackSessionId: 'sess_gate_allowlist_missing',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
@@ -1259,7 +1273,7 @@ test('high-risk platform gate approval fails closed without approver allowlist',
     status: 'active',
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_allowlist_missing'));
-  app.store.updatePlatformDevItem(item.id, 'gate_pending');
+  app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
   const workerCalls = [];
 
   const response = await app.fetch(
@@ -1268,7 +1282,7 @@ test('high-risk platform gate approval fails closed without approver allowlist',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
         interaction(
-          'pages_approve_platform_gate',
+          'pages_trigger_platform_auto_dev',
           JSON.stringify({
             workItemKind: 'platform_dev',
             workItemId: item.id,
@@ -1292,14 +1306,13 @@ test('high-risk platform gate approval fails closed without approver allowlist',
   const updated = app.store.getPlatformDevItem(item.id);
 
   assert.equal(response.status, 200);
-  assert.match(body.text, /指定维护者批准/);
-  assert.equal(updated.status, 'gate_pending');
-  assert.equal(updated.gateStatus, 'pending');
-  assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'pending');
-  assert.equal(workerCalls.length, 0);
+  assert.match(body.text, /自动开发已启动|后续处理已排队/);
+  assert.equal(updated.status, 'agent_queued');
+  assert.equal(updated.autoDevStatus, 'triggered');
+  assert.equal(workerCalls.length, 1);
 });
 
-test('high-risk platform gate cannot be approved by another Slack user', async () => {
+test('platform auto-dev cannot be triggered by another Slack user', async () => {
   const app = createGatewayApp();
   const { item } = app.store.createPlatformDevItem({
     source: 'slack',
@@ -1311,8 +1324,7 @@ test('high-risk platform gate cannot be approved by another Slack user', async (
     areas: ['area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
     slackSessionId: 'sess_gate_actor',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
@@ -1324,10 +1336,10 @@ test('high-risk platform gate cannot be approved by another Slack user', async (
     status: 'active',
   });
   app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_actor'));
-  app.store.updatePlatformDevItem(item.id, 'gate_pending');
+  app.store.updatePlatformDevItem(item.id, 'auto_dev_pending');
   const workerCalls = [];
   const payload = interaction(
-    'pages_approve_platform_gate',
+    'pages_trigger_platform_auto_dev',
     JSON.stringify({ workItemKind: 'platform_dev', workItemId: item.id, sessionId: 'sess_gate_actor', gateType: 'risk' })
   );
   payload.user.id = 'U2';
@@ -1353,114 +1365,8 @@ test('high-risk platform gate cannot be approved by another Slack user', async (
 
   assert.equal(response.status, 200);
   assert.match(body.text, /不存在，或不属于当前 Slack 用户/);
-  assert.equal(updated.gateStatus, 'pending');
-  assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'pending');
+  assert.equal(updated.autoDevStatus, 'pending');
   assert.equal(workerCalls.length, 0);
-});
-
-test('rejecting high-risk platform gate closes the item without starting worker', async () => {
-  const app = createGatewayApp();
-  const { item } = app.store.createPlatformDevItem({
-    source: 'slack',
-    requestedById: 'slack:T1:U1',
-    idempotencyKey: 'platform-gate-reject',
-    title: '平台高风险需求',
-    summary: '修改 CI workflow',
-    issueType: 'type:ci',
-    areas: ['area:ci'],
-    risk: 'risk:high',
-    agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
-    slackSessionId: 'sess_gate_reject',
-    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
-  });
-  app.store.upsertSlackSession({
-    id: 'sess_gate_reject',
-    teamId: 'T1',
-    primarySlackUserId: 'U1',
-    sessionKey: 'dm:D1',
-    status: 'active',
-  });
-  app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_reject'));
-  app.store.updatePlatformDevItem(item.id, 'gate_pending');
-  const notifierCalls = [];
-
-  const response = await app.fetch(
-    new Request('http://gateway.test/integrations/slack/interactions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(
-        interaction(
-          'pages_reject_platform_gate',
-          JSON.stringify({ workItemKind: 'platform_dev', workItemId: item.id, sessionId: 'sess_gate_reject', gateType: 'risk' })
-        )
-      ),
-    }),
-    notifierEnv(notifierCalls)
-  );
-  const updated = app.store.getPlatformDevItem(item.id);
-
-  assert.equal(response.status, 200);
-  assert.equal(updated.status, 'closed_unmerged');
-  assert.equal(updated.gateStatus, 'rejected');
-  assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'rejected');
-  const updateCall = notifierCalls.find((call) => call.path === '/internal/slack-notifier/update');
-  assert.ok(updateCall);
-  assert.match(JSON.stringify(updateCall.body.payload), /自动开发已停止/);
-  assert.doesNotMatch(JSON.stringify(updateCall.body.payload), /pages_approve_platform_gate|pages_reject_platform_gate/);
-});
-
-test('rejecting high-risk platform gate works before issue callback reaches gate_pending', async () => {
-  const app = createGatewayApp();
-  const { item } = app.store.createPlatformDevItem({
-    source: 'slack',
-    requestedById: 'slack:T1:U1',
-    idempotencyKey: 'platform-gate-reject-received',
-    title: '平台高风险需求',
-    summary: '修改 CI workflow',
-    issueType: 'type:ci',
-    areas: ['area:ci'],
-    risk: 'risk:high',
-    agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
-    slackSessionId: 'sess_gate_reject_received',
-    slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
-  });
-  app.store.upsertSlackSession({
-    id: 'sess_gate_reject_received',
-    teamId: 'T1',
-    primarySlackUserId: 'U1',
-    sessionKey: 'dm:D1',
-    status: 'active',
-  });
-  app.store.linkPlatformDevItemToSlackSession(item, app.store.getSlackSession('sess_gate_reject_received'));
-
-  const response = await app.fetch(
-    new Request('http://gateway.test/integrations/slack/interactions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(
-        interaction(
-          'pages_reject_platform_gate',
-          JSON.stringify({
-            workItemKind: 'platform_dev',
-            workItemId: item.id,
-            sessionId: 'sess_gate_reject_received',
-            gateType: 'risk',
-          })
-        )
-      ),
-    }),
-    notifierEnv()
-  );
-  const updated = app.store.getPlatformDevItem(item.id);
-
-  assert.equal(response.status, 200);
-  assert.equal(updated.status, 'closed_unmerged');
-  assert.equal(updated.gateStatus, 'rejected');
-  assert.equal(app.store.getWorkItemGate('platform_dev', item.id, 'risk').status, 'rejected');
 });
 
 test('platform executor callback updates PlatformDevItem PR state', async () => {
@@ -1907,11 +1813,14 @@ test('Slack follow-up continues the failed platform issue instead of creating a 
     areas: ['area:docs'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
-    gateStatus: 'not_required',
     slackSessionId: 'sess_platform_failed_followup',
     slackSessionKey: 'dm:D1',
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
+  });
+  app.store.patchPlatformDevItem(item.id, {
+    autoDevStatus: 'triggered',
+    autoDevTriggeredBy: 'slack:T1:U1',
+    autoDevTriggeredAt: new Date('2026-06-29T00:00:00.000Z').toISOString(),
   });
   let updated = app.store.updatePlatformDevItem(item.id, 'issue_created', {
     githubIssueNumber: 91,

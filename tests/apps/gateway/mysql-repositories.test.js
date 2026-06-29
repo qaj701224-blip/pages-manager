@@ -132,7 +132,7 @@ test('MySQL PublishingJob creation re-reads an idempotency duplicate instead of 
   assert.equal(calls.some((call) => /ON DUPLICATE KEY UPDATE/.test(call.sql)), false);
 });
 
-test('MySQL PlatformDevItem creation writes item event and gate in one transaction', async () => {
+test('MySQL PlatformDevItem creation writes item event and manual auto-dev fields in one transaction', async () => {
   const pool = transactionalPool();
   const store = new MySqlGatewayStore(pool);
 
@@ -146,8 +146,7 @@ test('MySQL PlatformDevItem creation writes item event and gate in one transacti
     issueType: 'type:ci',
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
+    autoDevStatus: 'pending',
   });
 
   assert.equal(result.created, true);
@@ -157,7 +156,7 @@ test('MySQL PlatformDevItem creation writes item event and gate in one transacti
   );
   assert.ok(pool.calls.some((call) => /^INSERT INTO `platform_dev_items`/.test(call)));
   assert.ok(pool.calls.some((call) => /^INSERT INTO `platform_dev_events`/.test(call)));
-  assert.ok(pool.calls.some((call) => /^INSERT INTO `work_item_gates`/.test(call)));
+  assert.equal(result.item.autoDevStatus, 'pending');
 });
 
 test('MySQL PlatformDevItem creation re-reads an idempotency duplicate instead of upserting', async () => {
@@ -176,9 +175,7 @@ test('MySQL PlatformDevItem creation re-reads an idempotency duplicate instead o
     areas_json: '[]',
     risk: 'risk:high',
     agent_eligible: true,
-    requires_human_gate: true,
-    status: 'gate_pending',
-    gate_status: 'pending',
+    status: 'auto_dev_pending',
     created_at: new Date('2026-06-14T00:00:00.000Z'),
     updated_at: new Date('2026-06-14T00:00:00.000Z'),
   };
@@ -227,14 +224,11 @@ test('MySQL PlatformDevItem creation re-reads an idempotency duplicate instead o
     issueType: 'type:ci',
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
   });
 
   assert.equal(result.created, false);
   assert.equal(result.item.id, 'pdev_existing');
   assert.equal(calls.some((call) => /^INSERT INTO `platform_dev_events`/.test(call.sql)), false);
-  assert.equal(calls.some((call) => /^INSERT INTO `work_item_gates`/.test(call.sql)), false);
   assert.equal(calls.some((call) => /ON DUPLICATE KEY UPDATE/.test(call.sql)), false);
 });
 

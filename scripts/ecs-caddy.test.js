@@ -94,16 +94,6 @@ test('ECS compose defaults to production runtime database name', () => {
   assert.doesNotMatch(envExample, /pages_manager_preview/);
 });
 
-test('ECS gateway exposes platform gate approver allowlist', () => {
-  const compose = readRepoFile('docker-compose.ecs.yml');
-  const envExample = readRepoFile('.env.ecs.example');
-
-  assert.match(compose, /PAGES_PLATFORM_GATE_APPROVERS: \$\{PAGES_PLATFORM_GATE_APPROVERS:-\}/);
-  assert.match(compose, /PAGES_PLATFORM_GATE_APPROVER_IDS: \$\{PAGES_PLATFORM_GATE_APPROVER_IDS:-\}/);
-  assert.match(envExample, /^PAGES_PLATFORM_GATE_APPROVERS=$/m);
-  assert.match(envExample, /^PAGES_PLATFORM_GATE_APPROVER_IDS=$/m);
-});
-
 test('ECS gateway exposes check allowlists for review gate webhooks', () => {
   const compose = readRepoFile('docker-compose.ecs.yml');
   const envExample = readRepoFile('.env.ecs.example');

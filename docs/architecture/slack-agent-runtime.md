@@ -329,8 +329,7 @@ failed
 | --------------------------- | --------------------------------- | -------------------------- |
 | `pages_confirm_requirement` | 确认摘要并创建 job                | `job.confirm_requested`    |
 | `pages_confirm_platform_issue` | 确认摘要并创建 Platform Dev issue | `platform_issue.confirm_requested` |
-| `pages_approve_work_item_gate` | 批准 high-risk gate               | `gate.approve_requested`   |
-| `pages_reject_work_item_gate`  | 拒绝 high-risk gate               | `gate.reject_requested`    |
+| `pages_trigger_platform_auto_dev` | 发起人手动触发 Platform Dev 自动开发 | `platform_item.auto_dev_requested` |
 | `pages_close_session`       | 关闭当前用户拥有的 session        | `session.close_requested`  |
 | `pages_cancel_job`          | 请求取消或转人工确认              | `job.cancel_requested`     |
 | `pages_cancel_platform_item` | 请求取消平台研发 item             | `platform_item.cancel_requested` |
@@ -345,7 +344,7 @@ failed
 - Slack retry 不能重复触发命令。
 - URL button 只打开 issue / PR / preview；改变状态的动作必须走 callback。
 - action `value` 只能放短 id 或无敏 JSON，例如 `{"workItemKind":"platform_dev","workItemId":"pdev_xxx","sessionId":"sess_xxx"}`。Site Publishing 兼容按钮可以继续放 `jobId`，但 gateway 内部应归一化成 `workItemKind=site_publishing`。
-- high-risk gate 按钮必须携带 `gateId`，gateway 重新从 MySQL 读取 gate 和 work item 校验 caller 权限，不能信任 Slack button value 里的 risk / area。
+- “自动开发”按钮只携带 work item id / session id；gateway 必须重新从 MySQL 读取 item 和 Slack session，校验 caller 是发起人 / session owner，不能信任 Slack button value 里的 risk / area。
 
 ## slack-notifier
 
@@ -614,7 +613,7 @@ slack-notifier 更新进度消息或追加图片消息
 - 用户点击确认后，进度消息接管执行阶段。
 - issue / PR / preview 生成后都有稳定 thread 消息。
 - Platform Dev Lane 的 issue 有稳定 type / area / risk label，PR merge / close 会回写原 Slack thread。
-- 高风险平台 issue 不会在没有人工 gate 的情况下进入 Coding Agent。
+- Platform Dev issue 不会在发起人点击“自动开发”前进入 Coding Agent。
 - 同一 Slack user 的不同 session 不串线。
 - 同一 thread 中不同用户不共享 memory、active job 或 pending questions。
 - 同一 session 同时只允许一个 running `AgentRun`。

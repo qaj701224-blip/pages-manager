@@ -75,8 +75,6 @@ function stripCodeFence(value) {
   return fence ? fence[1].trim() : text;
 }
 
-const NON_CODING_ISSUE_TYPES = new Set(['type:feedback', 'type:question']);
-
 async function readResponseJson(response) {
   const text = await response.text();
   if (!text) return {};
@@ -167,7 +165,7 @@ function contextFromEnv(env) {
     areas: env.AREAS || '',
     risk: required(env.RISK, 'RISK'),
     effectiveRisk: required(env.RISK, 'RISK'),
-    gateApproved: String(env.GATE_APPROVED || 'false').toLowerCase() === 'true',
+    autoDevTriggered: String(env.AUTO_DEV_TRIGGERED || 'false').toLowerCase() === 'true',
     baseRef: env.BASE_REF || 'master',
     branchName: env.AGENT_BRANCH_NAME || env.BRANCH_NAME || '',
     gatewayUrl: required(env.AGENT_GATEWAY_URL, 'AGENT_GATEWAY_URL'),
@@ -187,17 +185,12 @@ function validateContext(context) {
   if (!/^type:(dev|bug|docs|feedback|question|ci|ops|security)$/.test(context.issueType)) {
     throw new Error('ISSUE_TYPE is invalid');
   }
-  if (NON_CODING_ISSUE_TYPES.has(context.issueType)) {
-    throw new Error(
-      `${context.issueType} is not code-eligible; keep it as a GitHub issue record without dispatching Platform Agent`
-    );
-  }
   if (!/^risk:(low|medium|high)$/.test(context.risk)) {
     throw new Error('RISK is invalid');
   }
   context.effectiveRisk = ['type:ci', 'type:ops', 'type:security'].includes(context.issueType) ? 'risk:high' : context.risk;
-  if (context.effectiveRisk === 'risk:high' && !context.gateApproved) {
-    throw new Error('High risk platform work must be gate-approved before coding agent execution');
+  if (!context.autoDevTriggered) {
+    throw new Error('Platform work must be manually triggered before coding agent execution');
   }
 }
 
@@ -238,7 +231,7 @@ function buildCodingMessages(context) {
         'Each file content must be the complete final content for that file, not a patch.',
         'Keep changes directly scoped to the Platform Dev issue.',
         'Do not include secrets, tokens, cookies, private credentials, local env values, or real internal account data.',
-        'Do not modify production deploy behavior, Cloudflare runtime resources, Aliyun credentials, ACK/K8s secrets, or user site content unless the issue explicitly asks and risk gate has approved it.',
+        'Do not modify production deploy behavior, Cloudflare runtime resources, Aliyun credentials, ACK/K8s secrets, or user site content unless the issue explicitly asks and auto-dev has been manually triggered.',
         'Do not write files under node_modules, .git, .pages-artifacts, dist, build outputs, local env files, or wrangler.toml.',
         'Prefer existing project patterns, node:test coverage, and the documented architecture.',
       ].join('\n'),
@@ -255,7 +248,7 @@ function buildCodingMessages(context) {
         areas: context.areas,
         risk: context.effectiveRisk,
         declaredRisk: context.risk,
-        gateApproved: context.gateApproved,
+        autoDevTriggered: context.autoDevTriggered,
         baseRef: context.baseRef,
         branchName: context.branchName || null,
         requestTitle: context.requestTitle,
@@ -297,7 +290,7 @@ function isForbiddenPath(path) {
   );
 }
 
-function requiresHighRiskGateForPath(path) {
+function requiresHighRiskManualTriggerForPath(path) {
   return (
     path.startsWith('.github/') ||
     path.startsWith('k8s/') ||
@@ -383,8 +376,8 @@ function validateGeneratedFiles(files, context = {}) {
     if (seen.has(path)) throw new Error(`Generated duplicate file path: ${path}`);
     seen.add(path);
     if (isForbiddenPath(path)) throw new Error(`Generated path is forbidden for Platform Agent: ${path}`);
-    if (requiresHighRiskGateForPath(path) && (context.effectiveRisk !== 'risk:high' || !context.gateApproved)) {
-      throw new Error(`Generated path requires a high-risk gate approval: ${path}`);
+    if (requiresHighRiskManualTriggerForPath(path) && (context.effectiveRisk !== 'risk:high' || !context.autoDevTriggered)) {
+      throw new Error(`Generated path requires a manual auto-dev trigger: ${path}`);
     }
     if (hasSecretLikeContent(file.content)) throw new Error(`Generated file contains secret-looking content: ${path}`);
     return { path, content: file.content.endsWith('\n') ? file.content : `${file.content}\n` };
@@ -458,7 +451,7 @@ export async function runPlatformCodingAgent(options = {}) {
     areas: context.areas,
     risk: context.effectiveRisk,
     declaredRisk: context.risk,
-    gateApproved: context.gateApproved,
+    autoDevTriggered: context.autoDevTriggered,
     baseRef: context.baseRef,
     contextReceived: {
       review: Boolean(String(context.reviewContext || '').trim()),

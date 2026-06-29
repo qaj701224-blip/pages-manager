@@ -18,8 +18,7 @@ test('pages-manager preview overlay derives preview owner markers per employee',
   assert.match(configMapPatch, /PAGES_PREVIEW_MODE: local_deploy/);
   assert.match(baseConfigMap, /PAGES_PLATFORM_WORKFLOW_REF: master/);
   assert.match(baseConfigMap, /PAGES_PLATFORM_BASE_REF: master/);
-  assert.match(baseConfigMap, /PAGES_PLATFORM_GATE_APPROVERS: ''/);
-  assert.match(baseConfigMap, /PAGES_PLATFORM_GATE_APPROVER_IDS: ''/);
+  assert.doesNotMatch(baseConfigMap, /PAGES_PLATFORM_GATE_APPROVERS|PAGES_PLATFORM_GATE_APPROVER_IDS/);
   assert.match(baseGateway, /envFrom:[\s\S]*configMapRef:[\s\S]*name: pages-config/);
   assert.match(configMapPatch, /PAGES_PLATFORM_WORKFLOW_REF: master/);
   assert.match(configMapPatch, /PAGES_PLATFORM_BASE_REF: master/);

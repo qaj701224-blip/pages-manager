@@ -9,7 +9,7 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
-    "test": "pnpm --filter @xd-cell/worker-sdk build && node apps/worker-sdk/scripts/generate-llms.js --check && node --test \"apps/*/src/**/*.test.js\" \"apps/worker-sdk/test/**/*.test.js\" \"packages/**/*.test.js\" \"scripts/**/*.test.js\" \"tests/**/*.test.js\"",
+    "test": "corepack pnpm --filter @xd-cell/worker-sdk build && node apps/worker-sdk/scripts/generate-llms.js --check && node --test \"apps/*/src/**/*.test.js\" \"apps/worker-sdk/test/**/*.test.js\" \"packages/**/*.test.js\" \"scripts/**/*.test.js\" \"tests/**/*.test.js\"",
     "db:generate": "corepack pnpm --filter @xd/gateway drizzle:generate",
     "db:migrate": "corepack pnpm --filter @xd/gateway drizzle:migrate",
     "db:setup": "corepack pnpm --filter @xd/gateway setup-db",

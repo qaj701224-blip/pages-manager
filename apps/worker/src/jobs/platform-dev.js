@@ -8,17 +8,20 @@ import { postExecutorCallback } from '../integrations/gateway-client.js';
 
 function shouldDispatchPlatformAgent(item = {}) {
   if (!item.agentEligible) return false;
-  if (item.requiresHumanGate && item.gateStatus !== 'approved') return false;
+  if (item.autoDevStatus !== 'triggered') return false;
+  if (item.status === 'received') return false;
   return true;
 }
 
 function platformAgentMode(item = {}) {
-  const fixStatuses = ['agent_queued', 'ci_failed', 'review_blocked', 'ready_to_merge', 'pr_created'];
+  const fixStatuses = ['ci_failed', 'review_blocked', 'ready_to_merge', 'pr_created'];
+  if (item.status === 'agent_queued' && item.githubPrNumber) return 'fix';
   return fixStatuses.includes(item.status) && item.githubPrNumber ? 'fix' : 'initial';
 }
 
 function stageResultForIssueCreated(item = {}) {
-  if (item.requiresHumanGate && item.gateStatus !== 'approved') return 'gate_pending';
+  if (item.autoDevStatus !== 'triggered') return 'auto_dev_pending';
+  if (item.status === 'received') return 'auto_dev_pending';
   if (item.status === 'agent_queued') return 'agent_queued';
   return 'issue_created';
 }
@@ -67,7 +70,7 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
       issueUrl,
     });
     return {
-      action: item.requiresHumanGate ? 'platform_issue_created_waiting_for_gate' : 'platform_issue_created',
+      action: item.autoDevStatus === 'triggered' ? 'platform_issue_created' : 'platform_issue_created_waiting_for_auto_dev',
       issueNumber,
       issueUrl,
       issueCreated: issueResult.created,
@@ -86,7 +89,7 @@ export async function startPlatformDevItem(item, config, adapters = {}) {
       issueNumber,
       prNumber: itemWithIssue.githubPrNumber,
       headSha: itemWithIssue.headSha,
-      gateApproved: itemWithIssue.gateStatus === 'approved' || itemWithIssue.requiresHumanGate === false,
+      autoDevTriggered: itemWithIssue.autoDevStatus === 'triggered',
       ...platformAgentContextInputs(itemWithIssue),
     }),
   });

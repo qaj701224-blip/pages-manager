@@ -5,7 +5,7 @@
 产品目标有两条 Slack 主线：
 
 - Site Publishing Lane：Slack 到个人网站 preview 的闭环，当前已有 `PublishingJob` / PR / preview 底座。
-- Platform Dev Lane：Slack 到 `pages-manager` 自身 issue / PR / merge 通知的闭环，使用独立 PlatformDevItem 状态机、风险 gate 和 `platform-agent.yml`。
+- Platform Dev Lane：Slack 到 `pages-manager` 自身 issue / PR / merge 通知的闭环，使用独立 PlatformDevItem 状态机、手动“自动开发”触发和 `platform-agent.yml`。
 
 Site Publishing Lane：
 
@@ -26,7 +26,7 @@ Platform Dev Lane：
 Slack 需求 / 反馈 / 问题
   -> 需求整理和分类
   -> pages-manager issue
-  -> 按 issue 类型和风险 gate 分流
+  -> 等待手动“自动开发”触发
   -> Coding Agent PR
   -> CI / review / merge
   -> Slack thread 回写
@@ -101,7 +101,7 @@ sequenceDiagram
 
 ## Platform Dev Lane 时序
 
-这是 Slack 到 `pages-manager` 自身 issue / PR 的当前闭环。它使用独立 `PlatformDevItem` 状态机、平台确认卡、风险 gate、`work_item_links`、`work_item_gates`、`platform-agent.yml` 和 GitHub webhook 回写，不复用 `PublishingJob` 或站点 preview 语义。
+这是 Slack 到 `pages-manager` 自身 issue / PR 的当前闭环。它使用独立 `PlatformDevItem` 状态机、平台确认卡、手动“自动开发”触发、`work_item_links`、`platform-agent.yml` 和 GitHub webhook 回写，不复用 `PublishingJob` 或站点 preview 语义。
 
 ```mermaid
 sequenceDiagram
@@ -133,17 +133,12 @@ sequenceDiagram
     W->>G: callback issue_created
     G->>N: 回写 issue 链接和类型
 
-    alt 高风险
-      G->>DB: 写 pending risk gate
-      G->>N: 回写人工确认按钮
-      U->>S: 点击批准或拒绝
-      S->>G: POST /integrations/slack/interactions
-      G->>DB: 更新 gate approved / rejected
-    else 低中风险
-      G->>DB: 允许自动开发
-    end
+    G->>N: 回写自动开发按钮
+    U->>S: 点击自动开发
+    S->>G: POST /integrations/slack/interactions
+    G->>DB: 更新 auto_dev_status=triggered
 
-    alt agent eligible 且 gate 通过
+    alt agent eligible 且已手动触发
       G->>W: 触发平台代码开发
       W->>ACT: dispatch platform agent workflow
       ACT->>GH: 创建 / 更新 PR
@@ -152,9 +147,9 @@ sequenceDiagram
       G->>N: 回写 PR / CI / review 状态
       GH->>G: pull_request merged / closed webhook
       G->>N: 回写 merge / close 结果
-    else feedback / question / gate rejected
-      G->>DB: 标记 agent blocked 或 closed_unmerged
-      G->>N: 回写下一步或停止原因
+    else 未触发自动开发
+      G->>DB: 保持 issue 记录
+      G->>N: 回写 Issue 已创建，待手动启动
     end
   end
 ```
@@ -166,7 +161,7 @@ sequenceDiagram
 | Slack 接收 | `apps/gateway` | 验签、幂等、写 `slack_events` |
 | 需求分类 | `apps/slack-agent` | issue type、area、risk、summary |
 | issue 创建 | `apps/worker` + `packages/git-client` | `lane:platform-dev` issue、label、Slack 元数据 |
-| 自动化分流 | `apps/gateway` | `agent:eligible` / `agent:blocked` / `waiting-triage` |
+| 自动化分流 | `apps/gateway` | `autoDevStatus=pending/triggered`、`agent:eligible`、`waiting-triage` |
 | Coding Agent | 专用 platform workflow | 修改 `pages-manager` repo 全目录内的相关代码 |
 | PR | 专用 platform workflow | 受控 branch / PR，回调 `pr_created` |
 | CI / review | GitHub Actions + reviewer | 决定是否 blocked / mergeable |
@@ -226,7 +221,6 @@ Site Publishing Lane 的 preview 是默认交付物，不自动发布 production
 - `platform_dev_items`
 - `platform_dev_events`
 - `work_item_links`
-- `work_item_gates`
 - `work_item_followups`
 - `publishing_jobs`
 - `job_events`
