@@ -145,27 +145,23 @@ void context;
   );
 
   try {
-    runTypeScriptSmoke(
-      'corepack',
-      [
-        'pnpm',
-        '--filter',
-        '@xd-cell/worker-sdk',
-        'exec',
-        'tsc',
-        '--module',
-        'NodeNext',
-        '--moduleResolution',
-        'NodeNext',
-        '--target',
-        'ES2022',
-        '--lib',
-        'ES2022,WebWorker',
-        '--strict',
-        '--noEmit',
-        file,
-      ],
-    );
+    runTypeScriptSmoke('pnpm', [
+      '--filter',
+      '@xd-cell/worker-sdk',
+      'exec',
+      'tsc',
+      '--module',
+      'NodeNext',
+      '--moduleResolution',
+      'NodeNext',
+      '--target',
+      'ES2022',
+      '--lib',
+      'ES2022,WebWorker',
+      '--strict',
+      '--noEmit',
+      file,
+    ]);
     assert.ok(true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -198,27 +194,23 @@ export default {
   );
 
   try {
-    runTypeScriptSmoke(
-      'corepack',
-      [
-        'pnpm',
-        '--filter',
-        '@xd-cell/worker-sdk',
-        'exec',
-        'tsc',
-        '--module',
-        'ES2022',
-        '--moduleResolution',
-        'Bundler',
-        '--target',
-        'ES2022',
-        '--lib',
-        'ES2022,WebWorker',
-        '--strict',
-        '--noEmit',
-        file,
-      ],
-    );
+    runTypeScriptSmoke('pnpm', [
+      '--filter',
+      '@xd-cell/worker-sdk',
+      'exec',
+      'tsc',
+      '--module',
+      'ES2022',
+      '--moduleResolution',
+      'Bundler',
+      '--target',
+      'ES2022',
+      '--lib',
+      'ES2022,WebWorker',
+      '--strict',
+      '--noEmit',
+      file,
+    ]);
     assert.ok(true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
