@@ -11,6 +11,7 @@
 | `nuxt-app` | `spa` | Nuxt 3 generated static output | `demos/nuxt-app/.output/public` after generate |
 | `api-demo` | `worker` | Custom `_worker.js`, explicit IP guard, and static assets through `env.ASSETS` | `demos/api-demo` |
 | `xd-pages-kv-smoke` | `static` | Browser SDK runtime data smoke test | `demos/xd-pages-kv-smoke` |
+| `xd-cell-capability-smoke` | `worker-with-assets` | v2 CLI smoke for Worker with Assets, SPA fallback, vars, secrets, and runtime data | `demos/xd-cell-capability-smoke` |
 
 ## Staging Test Script
 

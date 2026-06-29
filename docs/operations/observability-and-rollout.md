@@ -128,7 +128,7 @@ publish -> activate -> drain -> retire
 
 ### 阶段 4：执行面治理
 
-- WFP 开通后，通过 PR 将 `pages-api` 和 `pages-router` 的默认 `PAGES_EXECUTION_MODE` 从 `normal-worker-slot` 切到 `wfp`。
+- WFP 开通后，通过 PR 将默认 `PAGES_EXECUTION_MODE` 从 `normal-worker-slot` 切到 `wfp`；`pages-api` 新发布进入 WFP，router 已静态持有 `PAGES_DISPATCH`，只继续保留历史 slot bindings 直到旧 route 排空。
 - 根据试点情况决定是否迁移已有 slot 站点；不强制迁移也可以作为短期回滚手段保留。
 - 禁用普通 Worker 新站点分配，只允许已有 slot 站点维护或管理员迁移。
 - Outbound Worker / 强制 egress policy。

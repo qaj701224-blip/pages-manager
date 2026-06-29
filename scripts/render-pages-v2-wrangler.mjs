@@ -47,14 +47,18 @@ const TEMPLATE_EXPECTATIONS = {
       /auth-staging\.pages\.xd\.team/,
       /\*-staging\.workers\.xd\.team/,
       /PAGES_ENV = "staging"/,
-      /pages-staging/,
+      /xd-cell-workers-staging/,
       /service = "pages-(?:api|auth)-staging"/,
       /name = "pages-[^"]+-staging"/,
     ],
     required: [/PAGES_ENV = "production"/],
   },
   staging: {
-    forbidden: [/PAGES_ENV = "production"/, /namespace = "pages-production"/, /pattern = "\*\.workers\.xd\.team\/\*"/],
+    forbidden: [
+      /PAGES_ENV = "production"/,
+      /xd-cell-workers-production/,
+      /pattern = "\*\.workers\.xd\.team\/\*"/,
+    ],
     required: [/PAGES_ENV = "staging"/, /-staging/],
   },
 };
@@ -90,10 +94,6 @@ async function renderWrangler(appName, envName) {
   rendered = rendered.replaceAll(
     '__NORMAL_WORKER_SLOT_SERVICES__',
     renderNormalWorkerSlotServices(appName, envName, replacements, executionMode)
-  );
-  rendered = rendered.replaceAll(
-    '__WFP_DISPATCH_NAMESPACE_BINDING__',
-    renderWfpDispatchNamespaceBinding(appName, envName, executionMode)
   );
 
   assertRenderedConfigPolicy(rendered, appName);
@@ -210,11 +210,12 @@ function readExecutionMode(rendered, appName) {
 
 function renderNormalWorkerSlotServices(appName, envName, replacements, executionMode) {
   if (appName !== 'apps/pages-router') return '';
-  if (executionMode !== 'normal-worker-slot' && replacements.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT === '') {
+  const rawCount = replacements.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT;
+  if (rawCount === '' && executionMode !== 'normal-worker-slot') {
     return '';
   }
 
-  const count = Number(replacements.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT);
+  const count = Number(rawCount);
   if (!Number.isInteger(count) || count <= 0) {
     throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT is required when PAGES_EXECUTION_MODE=normal-worker-slot');
   }
@@ -229,16 +230,6 @@ binding = "SITE_SLOT_${slotNumber}"
 service = "${servicePrefix}-${slotNumber}"`);
   }
   return entries.join('\n\n');
-}
-
-function renderWfpDispatchNamespaceBinding(appName, envName, executionMode) {
-  if (appName !== 'apps/pages-router') return '';
-  if (executionMode === 'normal-worker-slot') return '';
-
-  const namespace = envName === 'staging' ? 'pages-staging' : 'pages-production';
-  return `[[dispatch_namespaces]]
-binding = "PAGES_DISPATCH"
-namespace = "${namespace}"`;
 }
 
 function assertHttpsUrl(name, value) {

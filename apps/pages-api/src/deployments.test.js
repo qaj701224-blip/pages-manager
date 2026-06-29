@@ -2063,7 +2063,7 @@ test('WFP upload metadata binds Pages KV gateway and runtime bindings to user wo
     WFP_PROVIDER: undefined,
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'cf_secret_token',
-    WFP_DISPATCH_NAMESPACE: 'pages-production',
+    WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
     fetch: async (request) => {
       requests.push(request);
       return Response.json({ success: true, result: { id: 'ok' } });
@@ -2099,7 +2099,7 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
     WFP_PROVIDER: undefined,
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'cf_secret_token',
-    WFP_DISPATCH_NAMESPACE: 'pages-production',
+    WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
     fetch: async (request) => {
       requests.push(request.clone());
       if (request.url.includes('/assets-upload-session')) {
@@ -2131,7 +2131,7 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
   assert.equal(response.status, 201, await response.clone().text());
   assert.ok(
     requests.some((request) =>
-      request.url.includes('/workers/dispatch/namespaces/pages-production/scripts/pages-v2-guide-ver-1/assets-upload-session')
+      request.url.includes('/workers/dispatch/namespaces/xd-cell-workers-production/scripts/pages-v2-guide-ver-1/assets-upload-session')
     )
   );
   assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));
@@ -3980,7 +3980,7 @@ test('fails deployment when production WFP namespace points at staging', async (
     WFP_PROVIDER: undefined,
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'cf_secret_token',
-    WFP_DISPATCH_NAMESPACE: 'pages-staging',
+    WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-staging',
   });
 
   const response = await worker.fetch(

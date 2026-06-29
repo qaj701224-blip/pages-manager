@@ -236,8 +236,8 @@ test('wrangler templates include required WFP vars without runtime token placeho
   const productionTemplate = await readFile(new URL('../wrangler.production.template.toml', import.meta.url), 'utf8');
   const stagingTemplate = await readFile(new URL('../wrangler.staging.template.toml', import.meta.url), 'utf8');
 
-  assert.match(productionTemplate, /WFP_DISPATCH_NAMESPACE = "pages-production"/);
-  assert.match(stagingTemplate, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
+  assert.match(productionTemplate, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-production"/);
+  assert.match(stagingTemplate, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-staging"/);
   assert.match(productionTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(stagingTemplate, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(productionTemplate, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);

@@ -1,0 +1,14 @@
+{
+  "name": "xd-cell-capability-smoke",
+  "main": "./src/worker.js",
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "API_BASE": "https://api.example.test",
+    "DEMO_LABEL": "XD Cell capability smoke",
+    "FEATURE_FLAG": "enabled"
+  },
+  "visibility": "internal"
+}

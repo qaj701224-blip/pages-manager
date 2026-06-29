@@ -12,7 +12,7 @@ production 和 staging 使用显式环境域名，不通过 query、header 或�
 | 认证服务           | `auth.pages.xd.team`   | `auth-staging.pages.xd.team`   |
 | 新建子站默认域名  | `{name}.workers.xd.team` | `{name}-staging.workers.xd.team` |
 | 既有 v2 子站域名  | `{name}.pages.xd.team` | `{name}-staging.pages.xd.team` |
-| 目标 WFP namespace | `pages-production`     | `pages-staging`                |
+| 目标 WFP namespace | `xd-cell-workers-production` | `xd-cell-workers-staging`      |
 | 普通 Worker slot   | `pages-v2-production-slot-*` | `pages-v2-staging-slot-*` |
 
 长期路由目标：

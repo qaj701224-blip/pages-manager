@@ -48,4 +48,6 @@ __NORMAL_WORKER_SLOT_SERVICES__
 binding = "ROUTE_SNAPSHOTS"
 id = "__ROUTE_SNAPSHOTS_KV_ID__"
 
-__WFP_DISPATCH_NAMESPACE_BINDING__
+[[dispatch_namespaces]]
+binding = "PAGES_DISPATCH"
+namespace = "xd-cell-workers-staging"

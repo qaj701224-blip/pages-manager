@@ -11,11 +11,13 @@ const pagesApiWranglerPath = join(repoRoot, 'apps/pages-api/wrangler.toml');
 const pagesAuthWranglerPath = join(repoRoot, 'apps/pages-auth/wrangler.toml');
 const pagesRouterWranglerPath = join(repoRoot, 'apps/pages-router/wrangler.toml');
 const kvGatewayWranglerPath = join(repoRoot, 'apps/kv-gateway/wrangler.toml');
+const pagesApiStagingTemplatePath = join(repoRoot, 'apps/pages-api/wrangler.staging.template.toml');
 const pagesRouterProductionTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.production.template.toml');
 const pagesRouterStagingTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.staging.template.toml');
 const pagesAuthProductionTemplatePath = join(repoRoot, 'apps/pages-auth/wrangler.production.template.toml');
 const pagesAuthStagingTemplatePath = join(repoRoot, 'apps/pages-auth/wrangler.staging.template.toml');
-const originalRouterTemplates = new Map([
+const originalTemplates = new Map([
+  [pagesApiStagingTemplatePath, readFileSync(pagesApiStagingTemplatePath, 'utf8')],
   [pagesRouterProductionTemplatePath, readFileSync(pagesRouterProductionTemplatePath, 'utf8')],
   [pagesRouterStagingTemplatePath, readFileSync(pagesRouterStagingTemplatePath, 'utf8')],
   [pagesAuthProductionTemplatePath, readFileSync(pagesAuthProductionTemplatePath, 'utf8')],
@@ -48,7 +50,7 @@ afterEach(() => {
   rmSync(pagesAuthWranglerPath, { force: true });
   rmSync(pagesRouterWranglerPath, { force: true });
   rmSync(kvGatewayWranglerPath, { force: true });
-  for (const [path, content] of originalRouterTemplates.entries()) {
+  for (const [path, content] of originalTemplates.entries()) {
     writeFileSync(path, content);
   }
 });
@@ -113,6 +115,14 @@ function setPagesAuthTemplateSsoTokenUrl(environment, value) {
   writeFileSync(path, content);
 }
 
+function setPagesApiStagingTemplateWfpDispatchNamespace(value) {
+  const content = readFileSync(pagesApiStagingTemplatePath, 'utf8').replace(
+    /^WFP_DISPATCH_NAMESPACE = "[^"]+"$/m,
+    `WFP_DISPATCH_NAMESPACE = "${value}"`,
+  );
+  writeFileSync(pagesApiStagingTemplatePath, content);
+}
+
 test('generated pages v2 wrangler configs are ignored', () => {
   const result = spawnSync(
     'git',
@@ -150,7 +160,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_SITE_SUFFIX = "workers\.xd\.team"/);
-  assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-production"/);
+  assert.match(config, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-production"/);
   assert.match(config, /PAGES_EXECUTION_MODE = "normal-worker-slot"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "2"/);
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
@@ -166,7 +176,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /service = "pages-auth"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
-  assert.doesNotMatch(config, /pages-staging/);
+  assert.doesNotMatch(config, /xd-cell-workers-staging/);
   assert.doesNotMatch(config, /__[A-Z0-9_]+__/);
 });
 
@@ -181,7 +191,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
-  assert.match(config, /WFP_DISPATCH_NAMESPACE = "pages-staging"/);
+  assert.match(config, /WFP_DISPATCH_NAMESPACE = "xd-cell-workers-staging"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
@@ -189,6 +199,14 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
   assert.match(config, /service = "pages-auth-staging"/);
+});
+
+test('staging pages-api config rejects production WFP namespace', () => {
+  setPagesApiStagingTemplateWfpDispatchNamespace('xd-cell-workers-production');
+  const result = runRenderer(['apps/pages-api', 'staging']);
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /cross-environment value/);
 });
 
 test('pages-api config keeps committed WFP compatibility date', () => {
@@ -376,12 +394,12 @@ test('production pages-router config renders explicit production fast-path setti
   assert.match(config, /service = "pages-v2-production-slot-002"/);
   assert.match(config, /binding = "ROUTE_SNAPSHOTS"/);
   assert.match(config, /id = "dummy-route-snapshots-kv"/);
-  assert.doesNotMatch(config, /binding = "PAGES_DISPATCH"/);
-  assert.doesNotMatch(config, /namespace = "pages-production"/);
+  assert.match(config, /binding = "PAGES_DISPATCH"/);
+  assert.match(config, /namespace = "xd-cell-workers-production"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /\*-staging\.workers\.xd\.team/);
-  assert.doesNotMatch(config, /namespace = "pages-staging"/);
+  assert.doesNotMatch(config, /namespace = "xd-cell-workers-staging"/);
   assert.doesNotMatch(config, /service = "pages-auth-staging"/);
   assert.doesNotMatch(config, /CF_API_TOKEN|CLOUDFLARE_API_TOKEN|SSO_CLIENT_SECRET/);
   assert.doesNotMatch(config, /__[A-Z0-9_]+__/);
@@ -411,12 +429,12 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   assert.match(config, /service = "pages-v2-staging-slot-001"/);
   assert.match(config, /binding = "SITE_SLOT_002"/);
   assert.match(config, /service = "pages-v2-staging-slot-002"/);
-  assert.doesNotMatch(config, /binding = "PAGES_DISPATCH"/);
-  assert.doesNotMatch(config, /namespace = "pages-staging"/);
+  assert.match(config, /binding = "PAGES_DISPATCH"/);
+  assert.match(config, /namespace = "xd-cell-workers-staging"/);
   assert.doesNotMatch(config, /pattern = "\*\.workers\.xd\.team\/\*"/);
 });
 
-test('pages-router config renders WFP dispatch namespace and omits slot bindings in wfp mode', () => {
+test('pages-router config keeps static WFP dispatch namespace in wfp mode without historical slots', () => {
   setRouterTemplateExecutionMode('production', 'wfp');
   const config = renderPagesRouter('production', {
     ...baseEnv,
@@ -426,7 +444,7 @@ test('pages-router config renders WFP dispatch namespace and omits slot bindings
   assert.doesNotMatch(config, /SITE_SLOT_001/);
   assert.doesNotMatch(config, /pages-v2-production-slot-001/);
   assert.match(config, /binding = "PAGES_DISPATCH"/);
-  assert.match(config, /namespace = "pages-production"/);
+  assert.match(config, /namespace = "xd-cell-workers-production"/);
 });
 
 test('pages-router config can keep slot bindings in wfp mode while draining slot routes', () => {
@@ -437,7 +455,7 @@ test('pages-router config can keep slot bindings in wfp mode while draining slot
   });
 
   assert.match(config, /binding = "PAGES_DISPATCH"/);
-  assert.match(config, /namespace = "pages-production"/);
+  assert.match(config, /namespace = "xd-cell-workers-production"/);
   assert.match(config, /binding = "SITE_SLOT_001"/);
   assert.match(config, /service = "pages-v2-production-slot-001"/);
   assert.match(config, /binding = "SITE_SLOT_002"/);
