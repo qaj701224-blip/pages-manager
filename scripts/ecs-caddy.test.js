@@ -125,7 +125,11 @@ test('ECS gateway container healthcheck uses liveness while deploy script waits 
 
   assert.match(compose, /pages-gateway:[\s\S]*127\.0\.0\.1:8788\/health/);
   assert.doesNotMatch(compose, /pages-gateway:[\s\S]*127\.0\.0\.1:8788\/ready[\s\S]*pages-worker:/);
-  assert.match(deployScript, /gateway ready', 'http:\/\/127\.0\.0\.1:8788\/ready'/);
+  assert.match(
+    deployScript,
+    /smoke_service_health pages-gateway "gateway ready" "http:\/\/127\.0\.0\.1:8788\/ready"/
+  );
+  assert.match(deployScript, /if contains_service gateway "\$\{smoke_targets\[@\]\}" && ! smoke_gateway_frontdoor; then/);
 });
 
 test('ECS local preview stays IP restricted unless explicitly disabled', () => {

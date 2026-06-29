@@ -1,0 +1,122 @@
+name: Deploy ECS Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy after detection. Real deploy requires master unless allowNonMasterDeploy=true.
+        required: false
+        type: boolean
+        default: false
+      forceDeploy:
+        description: Deploy even when no ECS runtime path changed. Requires master unless allowNonMasterDeploy=true.
+        required: false
+        type: boolean
+        default: false
+      allowNonMasterDeploy:
+        description: Temporary testing override. Allows manual deploy from a non-master ref.
+        required: false
+        type: boolean
+        default: false
+      services:
+        description: Space or comma separated ECS app services, or all.
+        required: false
+        type: string
+        default: all
+      baseSha:
+        description: Optional base commit for deterministic dry-run path detection.
+        required: false
+        type: string
+      headSha:
+        description: Optional head commit for deterministic dry-run path detection.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecs-production
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect ECS Production changes
+    runs-on: ubuntu-latest
+    outputs:
+      ecs_changed: ${{ steps.changes.outputs.ecs_changed }}
+      should_deploy: ${{ steps.changes.outputs.should_deploy }}
+      reason: ${{ steps.changes.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: changes
+        name: Classify changed paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME_VALUE: ${{ github.ref_name }}
+          GITHUB_REF_VALUE: ${{ github.ref }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+          INPUT_DEPLOY: ${{ inputs.deploy || 'false' }}
+          INPUT_FORCE_DEPLOY: ${{ inputs.forceDeploy || 'false' }}
+          INPUT_ALLOW_NON_MASTER_DEPLOY: ${{ inputs.allowNonMasterDeploy || 'false' }}
+          INPUT_BASE_SHA: ${{ inputs.baseSha }}
+          INPUT_HEAD_SHA: ${{ inputs.headSha }}
+        run: |
+          set -euo pipefail
+          bash scripts/detect-ecs-deploy.sh
+
+  deploy:
+    name: Deploy ECS Production runtime
+    needs: detect
+    if: needs.detect.outputs.should_deploy == 'true'
+    runs-on: [self-hosted, linux, x64, pages-manager-ecs]
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preflight ECS host
+        env:
+          ECS_REMOTE_DIR: ${{ vars.ECS_REMOTE_DIR || '/opt/pages-manager' }}
+          ECS_REMOTE_BUILD_DIR: ${{ vars.ECS_REMOTE_BUILD_DIR || '/opt/pages-manager-build' }}
+          ECS_ENV_FILE_REMOTE: ${{ vars.ECS_ENV_FILE_REMOTE || '/opt/pages-manager/.env.ecs' }}
+        run: |
+          set -euo pipefail
+          env_dir="$(dirname "$ECS_ENV_FILE_REMOTE")"
+          test -d "$ECS_REMOTE_DIR"
+          test -w "$ECS_REMOTE_DIR"
+          test -d "$ECS_REMOTE_BUILD_DIR"
+          test -w "$ECS_REMOTE_BUILD_DIR"
+          test -f "$ECS_ENV_FILE_REMOTE"
+          test -r "$ECS_ENV_FILE_REMOTE"
+          test -w "$ECS_ENV_FILE_REMOTE"
+          test -w "$env_dir"
+          test -w "$ECS_REMOTE_DIR/docker-compose.ecs.yml"
+          test -w "$ECS_REMOTE_DIR/Dockerfile.node-service"
+          test -w "$ECS_REMOTE_DIR/deploy/ecs"
+          test -w "$ECS_REMOTE_DIR/deploy/ecs/Caddyfile"
+          docker info >/dev/null
+          docker compose version
+          bash -n scripts/deploy-ecs.sh
+
+      - name: Deploy on ECS self-hosted runner
+        env:
+          ECS_DEPLOY_MODE: local
+          ECS_REMOTE_DIR: ${{ vars.ECS_REMOTE_DIR || '/opt/pages-manager' }}
+          ECS_REMOTE_BUILD_DIR: ${{ vars.ECS_REMOTE_BUILD_DIR || '/opt/pages-manager-build' }}
+          ECS_ENV_FILE_REMOTE: ${{ vars.ECS_ENV_FILE_REMOTE || '/opt/pages-manager/.env.ecs' }}
+          ECS_IMAGE_REGISTRY: ${{ vars.ECS_IMAGE_REGISTRY }}
+          ECS_DOCKER_PLATFORM: ${{ vars.ECS_DOCKER_PLATFORM || 'linux/amd64' }}
+          ECS_SMOKE_TIMEOUT_SECONDS: ${{ vars.ECS_SMOKE_TIMEOUT_SECONDS || '120' }}
+          ECS_IMAGE_RETENTION: ${{ vars.ECS_IMAGE_RETENTION || '5' }}
+          ECS_BUILD_DIR_RETENTION: ${{ vars.ECS_BUILD_DIR_RETENTION || '5' }}
+          ECS_SERVICES: ${{ inputs.services || 'all' }}
+        run: |
+          set -euo pipefail
+          export ECS_IMAGE_TAG="ecs-${GITHUB_RUN_ID}-${GITHUB_SHA::7}"
+          bash scripts/deploy-ecs.sh

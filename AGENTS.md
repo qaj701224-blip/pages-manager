@@ -63,10 +63,11 @@ pnpm test
 
 ## 分支与部署
 
-- `master`：生产真相源，feature / fix / ci / build 等项目类 PR 默认直接合入这里；合并后不自动部署。
+- `master`：生产真相源，feature / fix / ci / build 等项目类 PR 默认直接合入这里；production 合并后不自动部署，Cloudflare 和 ECS runtime production 都必须在 GitHub Actions 中手动触发。
 - `staging`：共享 preview 分支，用于提前部署和验证指向 `master` 的项目类 PR；不是晋级来源。
-- v2 production 部署必须人工在 GitHub Actions 中手动触发 `Deploy XD Pages Production`。
-- v1 production 部署必须人工在 GitHub Actions 中手动触发 `Deploy Production`。
+- v2 Cloudflare production 部署必须人工在 GitHub Actions 中手动触发 `Deploy XD Pages Production`。
+- v1 Cloudflare production 部署必须人工在 GitHub Actions 中手动触发 `Deploy Production`。
+- ECS runtime production 部署必须人工在 GitHub Actions 中手动触发 `Deploy ECS Production`，只部署 `pages-gateway`、`pages-worker`、`slack-agent`、`slack-notifier` 四个 Docker Compose 服务。
 
 分支整理规则：
 
@@ -102,12 +103,12 @@ CI/CD 隔离要求：
 
 - 所有 PR 先由 `pr-classify.yml` 按目录分类：只改 `sites/<employee>/<site>/` 是个人站点线，只改非 `sites/**` 是平台线，同时改两者的 mixed PR 不支持，必须拆分。
 - 平台代码 PR 走 `pr-platform.yml`（Platform CI），个人站点 PR 走 `pr-site.yml`；自动站点 PR 还会由 `pages-agent.yml` 显式 dispatch `pr-classify.yml`、`pr-platform.yml` 和 `pr-site.yml`。
-- 平台本体部署包括 `deploy-staging.yml`、`deploy.yml`、`deploy-pages-v2-staging.yml`、`deploy-pages-v2.yml`、`deploy-ack-preview.yml`，只能构建 / 部署平台 Worker、ACK 镜像和 K8s Deployment。
+- 平台本体部署包括 `deploy-staging.yml`、`deploy.yml`、`deploy-pages-v2-staging.yml`、`deploy-pages-v2.yml`、`deploy-ack-preview.yml`、`deploy-ecs.yml`，只能构建 / 部署平台 Worker、ACK 镜像、K8s Deployment 和 ECS Docker Compose runtime；production 部署必须保持手动触发。
 - 用户站点发布执行器包括 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml`、`pr-site.yml`，只能处理 `PublishingJob`、`sites/<employee>/<site>/`、生成 PR 和 preview。
 - 用户站点发布 workflow 禁止使用 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、production Wrangler token 或 ACK namespace 权限。
 - 自动生成的 `sites/**` PR 不得修改 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档。
 
-改动 GitHub Actions 时，必须确认不会让 production 在 push/PR 时自动部署。
+改动 GitHub Actions 时，必须确认不会让 Cloudflare 或 ECS runtime production 在 push/PR 时自动部署；ECS runtime 只能由 `Deploy ECS Production` 手动触发部署。
 详细 GitHub、分支和发布规则见 `docs/architecture/github-automation.md`。
 
 ## 敏感信息规则

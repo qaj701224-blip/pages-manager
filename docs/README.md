@@ -15,7 +15,7 @@
 | Worker SDK / runtime helper | `apps/worker-sdk/README.md`、`apps/worker-sdk/docs/llms/*.md`、`apps/worker-sdk/BREAKING_CHANGES.md`、`docs/adr/0004-cli-sdk-skill-release-boundaries.md` | `@xd-cell/worker-sdk` 包定位、用法、AI 快照、公开 API 摘要和破坏性变更 | Worker SDK 行为变更时先更新包内 README、类型声明、测试和生成文档；skill 只引用依赖关系 |
 | Worker SDK agent 接入 | `apps/pages-skill/skill/references/sdk.md` | agent 在用户项目中安装、读取和安全使用 `@xd-cell/worker-sdk` 的流程 | 不复制 SDK API 细节，不打包 Worker SDK 领域产物 |
 | API 边界说明 | `docs/api-boundary.md` | 说明 CLI-managed API 边界和开发合约位置 | 不列不完整 endpoint 清单 |
-| 分支与部署 | `docs/deployment-branch-policy.md` | master/staging/production 部署规则 | workflow 变更必须同步核对 |
+| 分支与部署 | `docs/deployment-branch-policy.md`、`docs/operations/ecs-manual-deploy.md` | master/staging/production 部署规则，以及 ECS runtime 手动部署边界 | workflow 变更必须同步核对 |
 | v2 运行与部署 | `docs/operations/`、`docs/operations/v2-workers-domain-rollout.md` | 资源、部署、状态、一致性、上线、观测和 v2 切换 `workers.xd.team` 的共存流程 | 单篇过长时拆子主题并从索引链接 |
 | v2 数据与运行时模型 | `docs/architecture/` | 数据模型、发布、runtime、组件边界 | 避免混入临时手工待办 |
 | Slack Agent policy skill | `docs/architecture/slack-agent-policy-skill.md` | Slack Agent 生产级 prompt package、tool contract、golden cases 和迁移计划 | 语义边界、intent、toolCall 或 prompt package 变更时同步 |

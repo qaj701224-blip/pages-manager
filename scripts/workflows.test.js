@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +34,76 @@ const publishingExecutorWorkflows = [
 
 const platformAgentWorkflow = '.github/workflows/platform-agent.yml';
 const hostnameClaimsConflictWorkflow = '.github/workflows/hostname-claims-conflict-check.yml';
+const ecsDeployWorkflow = '.github/workflows/deploy-ecs.yml';
+
+function runGit(cwd, args) {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result;
+}
+
+function parseOutputFile(content) {
+  return Object.fromEntries(
+    content
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const index = line.indexOf('=');
+        assert.notEqual(index, -1, `invalid output line: ${line}`);
+        return [line.slice(0, index), line.slice(index + 1)];
+      })
+  );
+}
+
+function assertDecision(
+  script,
+  cwd,
+  {
+    ref,
+    base,
+    head,
+    deploy,
+    forceDeploy = 'false',
+    allowNonMaster = 'false',
+    expectedDeploy,
+    expectedChanged,
+    expectedReason,
+  }
+) {
+  const outputPath = join(cwd, `github-output-${Math.random().toString(16).slice(2)}`);
+  const summaryPath = join(cwd, `github-summary-${Math.random().toString(16).slice(2)}`);
+  const result = spawnSync('bash', [script], {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_STEP_SUMMARY: summaryPath,
+      EVENT_NAME: 'workflow_dispatch',
+      GITHUB_REF_NAME_VALUE: ref.replace('refs/heads/', ''),
+      GITHUB_REF_VALUE: ref,
+      GITHUB_SHA_VALUE: head,
+      INPUT_DEPLOY: deploy,
+      INPUT_FORCE_DEPLOY: forceDeploy,
+      INPUT_ALLOW_NON_MASTER_DEPLOY: allowNonMaster,
+      INPUT_BASE_SHA: base,
+      INPUT_HEAD_SHA: head,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const outputs = parseOutputFile(readFileSync(outputPath, 'utf8'));
+  const summary = readFileSync(summaryPath, 'utf8');
+  assert.equal(outputs.should_deploy, expectedDeploy);
+  assert.equal(outputs.ecs_changed, expectedChanged);
+  assert.match(outputs.reason, new RegExp(escapeRegExp(expectedReason)));
+  assert.match(summary, new RegExp(`- Deploy: \`${expectedDeploy}\``));
+  assert.match(summary, new RegExp(`- ECS paths changed: \`${expectedChanged}\``));
+}
 
 test('deploy workflows expose component choice for manual deploys', () => {
   for (const [name, path] of deployWorkflows) {
@@ -84,11 +156,152 @@ test('deploy workflows keep production manual and separate wrangler token from r
   assert.match(combined, /printf '%s' "\$CF_API_TOKEN" \| pnpm --dir apps\/server exec wrangler secret put CF_API_TOKEN/);
   assert.match(
     production,
-    /Generate Server Wrangler config[\s\S]*HOSTNAME_CLAIMS_MODE: enforce[\s\S]*run: scripts\/gen-wrangler\.sh apps\/server production/,
+    new RegExp(
+      [
+        'Generate Server Wrangler config',
+        '[\\s\\S]*HOSTNAME_CLAIMS_MODE: enforce',
+        '[\\s\\S]*run: scripts/gen-wrangler\\.sh apps/server production',
+      ].join('')
+    ),
     'v1 production deploy fails closed on hostname claim conflicts'
   );
   assert.doesNotMatch(combined, /RUNTIME_CF_API_TOKEN/);
   assert.doesNotMatch(combined, /CF_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
+});
+
+test('ECS deploy workflow uses self-hosted runner and is manually dispatched only', () => {
+  const workflow = readWorkflow(ecsDeployWorkflow);
+  const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
+
+  assert.match(workflow, /^name: Deploy ECS Production$/m);
+  assert.match(triggers, /^ {2}workflow_dispatch:/m);
+  assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m);
+  assert.match(workflow, /scripts\/deploy-ecs\.sh/);
+  assert.match(workflow, /bash scripts\/detect-ecs-deploy\.sh/);
+  assert.doesNotMatch(workflow, /PUSH_BEFORE_SHA|github\.event\.before|master push changed ECS runtime paths/);
+  assert.match(workflow, /allowNonMasterDeploy/);
+  assert.match(workflow, /INPUT_ALLOW_NON_MASTER_DEPLOY/);
+  assert.match(workflow, /runs-on: \[self-hosted, linux, x64, pages-manager-ecs\]/);
+  assert.match(workflow, /environment: production/);
+  assert.match(workflow, /ECS_DEPLOY_MODE: local/);
+  assert.match(workflow, /test -w "\$ECS_REMOTE_DIR"/);
+  assert.match(workflow, /test -w "\$ECS_REMOTE_BUILD_DIR"/);
+  assert.match(workflow, /test -w "\$ECS_ENV_FILE_REMOTE"/);
+  assert.match(workflow, /test -w "\$env_dir"/);
+  assert.match(workflow, /test -w "\$ECS_REMOTE_DIR\/docker-compose\.ecs\.yml"/);
+  assert.match(workflow, /test -w "\$ECS_REMOTE_DIR\/Dockerfile\.node-service"/);
+  assert.match(workflow, /test -w "\$ECS_REMOTE_DIR\/deploy\/ecs"/);
+  assert.match(workflow, /test -w "\$ECS_REMOTE_DIR\/deploy\/ecs\/Caddyfile"/);
+  assert.match(workflow, /ECS_IMAGE_REGISTRY: \$\{\{ vars\.ECS_IMAGE_REGISTRY \}\}/);
+  assert.doesNotMatch(workflow, /ECS_IMAGE_REGISTRY: \$\{\{ vars\.ECS_IMAGE_REGISTRY \|\| 'local' \}\}/);
+  assert.match(workflow, /bash scripts\/deploy-ecs\.sh/);
+  assert.match(workflow, /concurrency:[\s\S]*group: ecs-production[\s\S]*cancel-in-progress: false/);
+  assert.match(workflow, /permissions:\n {2}contents: read/);
+  for (const forbidden of [
+    'ECS_SSH_PRIVATE_KEY',
+    'ECS_SSH_TARGET',
+    'ssh ',
+    'scp ',
+    'CLOUDFLARE_API_TOKEN',
+    'CF_API_TOKEN',
+    'KUBE_CONFIG_B64',
+    'ALIYUN_ACCESS_KEY',
+    'ACR_INSTANCE_ID',
+  ]) {
+    assert.doesNotMatch(workflow, new RegExp(forbidden));
+  }
+
+  const detector = readWorkflow('scripts/detect-ecs-deploy.sh');
+  assert.match(detector, /ecs_path_re='.*apps\/\(gateway\|worker\|slack-agent\|slack-notifier\)\//);
+  assert.match(detector, /packages\/\(worker-kit\|workflow-core\|git-client\|slack-notifier\)\//);
+  assert.match(detector, /scripts\/deploy-ecs\\\.sh/);
+  assert.match(detector, /Manual ECS deploy is only allowed from master unless allowNonMasterDeploy=true/);
+  assert.match(detector, /Manual ECS deploy requested from non-master ref .* with allowNonMasterDeploy=true/);
+});
+
+test('ECS deploy decision script covers manual master and testing branch gates', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'ecs-deploy-detect-'));
+  const script = join(repoRoot, 'scripts/detect-ecs-deploy.sh');
+
+  try {
+    runGit(tmp, ['init']);
+    runGit(tmp, ['config', 'user.email', 'test@example.com']);
+    runGit(tmp, ['config', 'user.name', 'Test']);
+    writeFileSync(join(tmp, 'README.md'), 'initial\n');
+    runGit(tmp, ['add', 'README.md']);
+    runGit(tmp, ['commit', '-m', 'initial']);
+    const base = runGit(tmp, ['rev-parse', 'HEAD']).stdout.trim();
+
+    mkdirSync(join(tmp, 'apps/gateway'), { recursive: true });
+    writeFileSync(join(tmp, 'apps/gateway/index.js'), 'console.log("gateway");\n');
+    runGit(tmp, ['add', 'apps/gateway/index.js']);
+    runGit(tmp, ['commit', '-m', 'gateway change']);
+    const ecsHead = runGit(tmp, ['rev-parse', 'HEAD']).stdout.trim();
+
+    writeFileSync(join(tmp, 'docs.md'), 'docs\n');
+    runGit(tmp, ['add', 'docs.md']);
+    runGit(tmp, ['commit', '-m', 'docs change']);
+    const docsHead = runGit(tmp, ['rev-parse', 'HEAD']).stdout.trim();
+
+    assertDecision(script, tmp, {
+      ref: 'refs/heads/master',
+      base,
+      head: ecsHead,
+      deploy: 'false',
+      expectedDeploy: 'false',
+      expectedChanged: 'true',
+      expectedReason: 'Dry run only; deploy=false.',
+    });
+    assertDecision(script, tmp, {
+      ref: 'refs/heads/master',
+      base,
+      head: ecsHead,
+      deploy: 'true',
+      expectedDeploy: 'true',
+      expectedChanged: 'true',
+      expectedReason: 'Manual ECS deploy requested on master.',
+    });
+    assertDecision(script, tmp, {
+      ref: 'refs/heads/ci/ecs_deploy',
+      base,
+      head: ecsHead,
+      deploy: 'true',
+      expectedDeploy: 'false',
+      expectedChanged: 'true',
+      expectedReason: 'Manual ECS deploy is only allowed from master unless allowNonMasterDeploy=true',
+    });
+    assertDecision(script, tmp, {
+      ref: 'refs/heads/ci/ecs_deploy',
+      base,
+      head: ecsHead,
+      deploy: 'true',
+      allowNonMaster: 'true',
+      expectedDeploy: 'true',
+      expectedChanged: 'true',
+      expectedReason: 'Manual ECS deploy requested from non-master ref ci/ecs_deploy with allowNonMasterDeploy=true.',
+    });
+    assertDecision(script, tmp, {
+      ref: 'refs/heads/master',
+      base: ecsHead,
+      head: docsHead,
+      deploy: 'true',
+      expectedDeploy: 'false',
+      expectedChanged: 'false',
+      expectedReason: 'Manual deploy requested, but no ECS runtime paths changed and forceDeploy=false.',
+    });
+    assertDecision(script, tmp, {
+      ref: 'refs/heads/master',
+      base: ecsHead,
+      head: docsHead,
+      deploy: 'true',
+      forceDeploy: 'true',
+      expectedDeploy: 'true',
+      expectedChanged: 'false',
+      expectedReason: 'Manual ECS deploy requested on master.',
+    });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('PR classification, platform CI, and site check keep platform and site lanes separate', () => {
