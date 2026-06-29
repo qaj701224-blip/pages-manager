@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XD Cell Capability Smoke</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">XD Cell v2</p>
+        <h1>Capability Smoke</h1>
+        <p class="lede">
+          One deploy target for checking Worker with Assets, SPA fallback, runtime vars, site secrets, and runtime data.
+        </p>
+      </section>
+
+      <section class="grid" aria-label="Smoke checks">
+        <article class="panel">
+          <h2>Runtime</h2>
+          <button data-action="health">Check health</button>
+          <button data-action="env">Inspect bindings</button>
+          <pre id="runtime-output">No request yet.</pre>
+        </article>
+
+        <article class="panel">
+          <h2>Runtime Data</h2>
+          <label>
+            Key
+            <input id="runtime-data-key" value="smoke-key" />
+          </label>
+          <div class="button-row">
+            <button data-action="runtime-data">Check binding</button>
+          </div>
+          <pre id="runtime-data-output">No request yet.</pre>
+        </article>
+
+        <article class="panel">
+          <h2>Routing</h2>
+          <button data-action="echo">Echo request</button>
+          <a href="/client/route/deep-link">Open SPA deep link</a>
+          <pre id="routing-output">No request yet.</pre>
+        </article>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

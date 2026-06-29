@@ -5,8 +5,8 @@ const ASSETS_WORKER_MODULE = `export default {
   },
 };`;
 const EXPECTED_NAMESPACE_BY_ENV = {
-  production: 'pages-production',
-  staging: 'pages-staging',
+  production: 'xd-cell-workers-production',
+  staging: 'xd-cell-workers-staging',
 };
 const SCRIPT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const BINDING_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;

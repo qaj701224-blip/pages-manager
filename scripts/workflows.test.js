@@ -605,12 +605,12 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-router ${environment}`),
-      `${name} renders pages-router ${environment} template after slot provisioning`
+      `${name} renders pages-router ${environment} template after slot binding preparation`
     );
     assert.ok(
       workflow.indexOf(`node scripts/provision-pages-v2-slots.mjs ${environment} prepare`) <
         workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`),
-      `${name} provisions slots before rendering router bindings`
+      `${name} prepares slot bindings before rendering router bindings`
     );
     assert.ok(
       workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`) <

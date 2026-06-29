@@ -472,6 +472,57 @@ test('deploy token priority is --token then XD_CELL_API_TOKEN then local secret 
   assert.equal(envCalls[1].headers.get('Authorization'), 'Bearer env_token');
 });
 
+test('deploy supports hidden staging environment selection without exposing it in help', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const explicitCalls = [];
+  const envCalls = [];
+  const credentialLookups = [];
+
+  await executeCommand(['deploy', '.', 'docs', '--env', 'staging', '--json'], {
+    cwd: dir,
+    env: {},
+    secretStore: {
+      get: async (environment) => {
+        credentialLookups.push(environment);
+        return { type: 'cli_token', value: 'staging_cli_token' };
+      },
+    },
+    fetch: fakeFetch(explicitCalls, [
+      { site: { id: 'site_1', slug: 'docs', environment: 'staging' } },
+      { deployment: { id: 'dep_1', status: 'succeeded' }, version: { id: 'ver_1' }, route: {} },
+    ]),
+    output: () => {},
+  });
+  await executeCommand(['deploy', '.', 'docs', '--json'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'staging' },
+    secretStore: {
+      get: async (environment) => {
+        credentialLookups.push(environment);
+        return { type: 'cli_token', value: 'env_staging_cli_token' };
+      },
+    },
+    fetch: fakeFetch(envCalls, [
+      { site: { id: 'site_1', slug: 'docs', environment: 'staging' } },
+      { deployment: { id: 'dep_2', status: 'succeeded' }, version: { id: 'ver_2' }, route: {} },
+    ]),
+    output: () => {},
+  });
+
+  assert.deepEqual(credentialLookups, ['staging', 'staging']);
+  assert.equal(explicitCalls[0].url, 'https://api-staging.pages.xd.team/.xd-pages/api/sites');
+  assert.equal(explicitCalls[1].url, 'https://api-staging.pages.xd.team/.xd-pages/api/deployments');
+  assert.equal(envCalls[0].url, 'https://api-staging.pages.xd.team/.xd-pages/api/sites');
+  assert.equal(envCalls[1].url, 'https://api-staging.pages.xd.team/.xd-pages/api/deployments');
+  assert.equal(explicitCalls[1].headers.get('Authorization'), 'Bearer staging_cli_token');
+  assert.equal(envCalls[1].headers.get('Authorization'), 'Bearer env_staging_cli_token');
+
+  await assert.rejects(() => executeCommand(['deploy', '.', 'docs', '--env', 'custom'], { output: () => {} }), {
+    code: 'ENVIRONMENT_INVALID',
+  });
+});
+
 test('API commands default to production without reading profile or environment env vars', async () => {
   const calls = [];
   const output = [];
@@ -1166,6 +1217,9 @@ test('status and logout can target an environment without switching profile', as
 test('whoami uses API validation and env command is not user-facing', async () => {
   const calls = [];
   const output = [];
+  const envOutput = [];
+  const listOutput = [];
+  const profileDir = await tempProject();
 
   await executeCommand(['whoami', '--token', 'xdp_prod_ak_1_secret', '--json'], {
     env: {},
@@ -1186,8 +1240,18 @@ test('whoami uses API validation and env command is not user-facing', async () =
     ]),
     output: (line) => output.push(line),
   });
-  await assert.rejects(() => executeCommand(['env', 'list'], { output: () => {} }), {
-    code: 'COMMAND_UNSUPPORTED',
+  await executeCommand(['env', 'current', '--json'], {
+    env: { PAGES_CLI_ENV: 'staging' },
+    output: (line) => envOutput.push(line),
+  });
+  await executeCommand(['env', 'list', '--json'], {
+    output: (line) => listOutput.push(line),
+  });
+  await executeCommand(['env', 'use', 'staging', '--json'], {
+    env: {},
+    profile: productionProfile(),
+    profileDir,
+    output: (line) => envOutput.push(line),
   });
   await assert.rejects(() => executeCommand(['help', 'env'], { output: () => {} }), {
     code: 'COMMAND_UNSUPPORTED',
@@ -1198,6 +1262,13 @@ test('whoami uses API validation and env command is not user-facing', async () =
   assert.equal(JSON.parse(output[0]).actor.accessKeyId, 'ak_1');
   assert.equal(JSON.parse(output[0]).actor.email, 'user@example.com');
   assert.equal(JSON.parse(output[0]).actor.name, 'User One');
+  assert.equal(JSON.parse(envOutput[0]).activeEnvironment, 'staging');
+  assert.equal(JSON.parse(envOutput[0]).source, 'env:PAGES_CLI_ENV');
+  assert.deepEqual(JSON.parse(listOutput[0]).environments, ['production', 'staging']);
+  assert.equal(JSON.parse(envOutput[1]).activeEnvironment, 'staging');
+  await assert.rejects(() => executeCommand(['env', 'use', 'custom'], { output: () => {} }), {
+    code: 'ENVIRONMENT_INVALID',
+  });
 });
 
 test('auth subcommands remain as hidden compatibility aliases', async () => {
@@ -1419,7 +1490,7 @@ test('local commands reject unused tokens', async () => {
     code: 'ACCESS_KEY_NOT_USED',
   });
   await assert.rejects(() => executeCommand(['env', 'list', '--token', 'x'], { output: () => {} }), {
-    code: 'COMMAND_UNSUPPORTED',
+    code: 'ACCESS_KEY_NOT_USED',
   });
 });
 
@@ -1427,18 +1498,6 @@ test('commands reject unknown flags and extra positional arguments', async () =>
   await assert.rejects(() => executeCommand(['deploy', '.', 'docs', '--print', '1'], { output: () => {} }), {
     code: 'OPTION_UNKNOWN',
   });
-  await assert.rejects(
-    () =>
-      executeCommand(['deploy', '.', 'docs', '--env', 'staging'], {
-        fetch: async () => {
-          throw new Error('deploy --env should be rejected before network access');
-        },
-        output: () => {},
-      }),
-    {
-      code: 'OPTION_UNKNOWN',
-    }
-  );
   await assert.rejects(() => executeCommand(['sites', 'list', '--visibility', 'org'], { output: () => {} }), {
     code: 'OPTION_UNKNOWN',
   });
@@ -1446,7 +1505,7 @@ test('commands reject unknown flags and extra positional arguments', async () =>
     code: 'VERSION_USAGE_INVALID',
   });
   await assert.rejects(() => executeCommand(['env', 'use', 'staging', 'extra'], { output: () => {} }), {
-    code: 'COMMAND_UNSUPPORTED',
+    code: 'ENV_USAGE_INVALID',
   });
   await assert.rejects(() => executeCommand(['help', 'deploy', 'extra'], { output: () => {} }), {
     code: 'HELP_USAGE_INVALID',

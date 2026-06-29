@@ -12,10 +12,12 @@ import { loadProfile, resolveProfileDir, saveProfile as saveProfileFile } from '
 import { createSecretStore } from './secret-store.js';
 
 const VALID_VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
+const USER_ENVIRONMENTS = ['production', 'staging'];
 const HELP_FLAGS = new Set(['help', 'json', 'token', 'accessKey']);
 const VERSION_FLAGS = new Set(['help', 'token', 'accessKey']);
 const LOGIN_FLAGS = new Set(['env', 'token', 'accessKey', 'noOpen', 'json', 'help']);
 const DEPLOY_FLAGS = new Set([
+  'env',
   'visibility',
   'fallback',
   'assets',
@@ -38,6 +40,7 @@ const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'token', 'accessKey']);
 const STATUS_FLAGS = new Set(['env', 'deployment', 'token', 'accessKey', 'json', 'help']);
 const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'token', 'accessKey']);
 const ACCESS_FLAGS = new Set(['env', 'visibility', 'email', 'department', 'token', 'accessKey', 'json', 'help']);
+const ENV_FLAGS = new Set(['json', 'help', 'token', 'accessKey']);
 const DEPRECATED_HIDDEN_TOKEN_FLAGS = new Set(['accessKey']);
 
 export async function executeCommand(argv = [], options = {}) {
@@ -85,7 +88,7 @@ export async function executeCommand(argv = [], options = {}) {
     case 'access':
       return runAccess(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'env':
-      throw unsupportedEnvError();
+      return runEnv(parsed, { ...options, cwd, env, profileDir, profile, output });
     default:
       throw new Error(`UNKNOWN_COMMAND:${parsed.command}`);
   }
@@ -238,7 +241,7 @@ async function runDeploy(parsed, context) {
   rejectRemovedProjectFlags(parsed);
   rejectPublicFallbackFlag(parsed);
   const commandConfig = await readCommandConfig(parsed.flags.config, { cwd: context.cwd, discover: !parsed.flags.config });
-  const config = readConfigForCommand(parsed, { ...context, commandConfig });
+  const config = readConfigForCommand(parsed, { ...context, commandConfig }, { allowHiddenEnvironmentSources: true });
   if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 xd-cell deploy <目录> <站点名>。');
   const deployConfig = await resolveDeployConfig(parsed, commandConfig, context, { requireSite: true });
   const { siteSlug } = deployConfig;
@@ -368,6 +371,54 @@ async function runDeploy(parsed, context) {
   context.output(`部署：${deployed.deployment?.id || 'created'} ${deployed.deployment?.status || ''}`.trim());
   if (url) context.output(`发布完成：${url}`);
   return 0;
+}
+
+async function runEnv(parsed, context) {
+  assertTokenNotUsed(parsed);
+  const subcommand = parsed.positional[0] || 'current';
+  if (subcommand === 'current') {
+    assertNoPositionals({ ...parsed, positional: parsed.positional.slice(1) }, 'ENV_USAGE_INVALID', 'env current 参数无效。');
+    const config = readConfigForCommand(parsed, context, { allowHiddenEnvironmentSources: true });
+    const payload = {
+      activeEnvironment: config.environment,
+      source: readEnvironmentSource(context),
+      apiBaseUrl: config.apiBaseUrl,
+      authBaseUrl: config.authBaseUrl,
+      siteUrlExample: siteUrlExampleForConfig(config),
+    };
+    if (outputJsonResult(parsed, context, payload)) return 0;
+    context.output(`当前环境：${payload.activeEnvironment}`);
+    context.output(`API：${payload.apiBaseUrl}`);
+    context.output(`认证：${payload.authBaseUrl}`);
+    context.output(`站点域名：${siteDomainPatternForConfig(config)}`);
+    context.output(`来源：${displayEnvironmentSource(payload.source)}`);
+    return 0;
+  }
+
+  if (subcommand === 'list') {
+    if (parsed.positional.length !== 1 && parsed.positional.length !== 0) {
+      throw usageError('ENV_USAGE_INVALID', 'env list 参数无效。', '请使用 xd-cell env list。');
+    }
+    if (outputJsonResult(parsed, context, { environments: USER_ENVIRONMENTS })) return 0;
+    for (const name of USER_ENVIRONMENTS) context.output(name);
+    return 0;
+  }
+
+  if (subcommand === 'use') {
+    if (parsed.positional.length !== 2) {
+      throw usageError('ENV_USAGE_INVALID', 'env use 参数无效。', '请使用 xd-cell env use <production|staging>。');
+    }
+    const environment = readHiddenEnvironment(parsed.positional[1]);
+    await saveProfileFile(context.profileDir, {
+      ...context.profile,
+      activeEnvironment: environment,
+    });
+    if (outputJsonResult(parsed, context, { activeEnvironment: environment })) return 0;
+    context.output(`当前环境：${environment}`);
+    return 0;
+  }
+
+  throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 xd-cell env、xd-cell env list 或 xd-cell env use <环境>。');
 }
 
 function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, vars = {}, varsProvided = false }) {
@@ -808,7 +859,6 @@ async function readAllStdin(stdin) {
 
 function validateCommandUsage(parsed) {
   if (parsed.command === 'rollback') throw unsupportedRollbackError();
-  if (parsed.command === 'env') throw unsupportedEnvError();
   const allowed = allowedFlagsForCommand(parsed);
   if (allowed) assertOnlyAllowedFlags(parsed, allowed);
   if (parsed.command === 'help' && parsed.positional.length > 1) {
@@ -830,6 +880,7 @@ function allowedFlagsForCommand(parsed) {
   if (parsed.command === 'sites') return SITES_FLAGS;
   if (parsed.command === 'access') return ACCESS_FLAGS;
   if (parsed.command === 'auth') return allowedAuthFlags(parsed);
+  if (parsed.command === 'env') return ENV_FLAGS;
   return null;
 }
 
@@ -897,8 +948,18 @@ async function readSiteBySlug(client, slug) {
   return { site };
 }
 
-function readConfigForCommand(parsed, context) {
-  const requestedEnvironment = parsed.flags.env || context.commandConfig?.environment || 'production';
+function readConfigForCommand(parsed, context, options = {}) {
+  const requestedEnvironment =
+    parsed.flags.env ||
+    context.commandConfig?.environment ||
+    (options.allowHiddenEnvironmentSources
+      ? context.env.PAGES_CLI_ENV || context.profile?.activeEnvironment || context.env.PAGES_ENV
+      : null) ||
+    'production';
+  if (parsed.flags.env) readHiddenEnvironment(parsed.flags.env);
+  if (options.allowHiddenEnvironmentSources && !context.commandConfig?.environment) {
+    readHiddenEnvironment(requestedEnvironment);
+  }
   if (requestedEnvironment === 'custom') {
     const custom = context.profile?.environments?.custom || {};
     return readCliConfig(context.env, {
@@ -909,6 +970,11 @@ function readConfigForCommand(parsed, context) {
     });
   }
   return readCliConfig(context.env, { environment: requestedEnvironment });
+}
+
+function readHiddenEnvironment(value) {
+  if (USER_ENVIRONMENTS.includes(value)) return value;
+  throw usageError('ENVIRONMENT_INVALID', '环境无效。', '请使用 production 或 staging。');
 }
 
 function readOneShotToken(parsed) {
@@ -960,6 +1026,30 @@ function siteUrlForSlug(slug, config) {
   if (!normalized) throw usageError('SITE_REQUIRED', '缺少站点名。', '请传入站点名。');
   if (config.environment === 'staging') return `https://${normalized}-staging.${config.siteDomainSuffix}`;
   return `https://${normalized}.${config.siteDomainSuffix}`;
+}
+
+function siteUrlExampleForConfig(config) {
+  if (config.environment === 'staging') return `https://<site>-staging.${config.siteDomainSuffix}`;
+  return `https://<site>.${config.siteDomainSuffix}`;
+}
+
+function siteDomainPatternForConfig(config) {
+  if (config.environment === 'staging') return `*-staging.${config.siteDomainSuffix}`;
+  return `*.${config.siteDomainSuffix}`;
+}
+
+function readEnvironmentSource(context) {
+  if (context.env.PAGES_CLI_ENV) return 'env:PAGES_CLI_ENV';
+  if (context.profile?.activeEnvironment) return 'profile';
+  if (context.env.PAGES_ENV) return 'env:PAGES_ENV';
+  return 'default';
+}
+
+function displayEnvironmentSource(source) {
+  if (source === 'profile') return '本地 profile';
+  if (source === 'env:PAGES_CLI_ENV') return '环境变量 PAGES_CLI_ENV';
+  if (source === 'env:PAGES_ENV') return '环境变量 PAGES_ENV';
+  return '默认值';
 }
 
 function siteUrlForOpen(site, config) {

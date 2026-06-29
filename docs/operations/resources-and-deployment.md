@@ -11,7 +11,7 @@ pages-api
 pages-auth
 pages-router
 pages-kv-gateway
-target WFP dispatch namespace: pages-production
+target WFP dispatch namespace: xd-cell-workers-production
 normal Worker slot pool: pages-v2-production-slot-001..N
 D1 authority: production pages metadata
 Durable Objects: production auth/session coordination
@@ -31,7 +31,7 @@ pages-api-staging
 pages-auth-staging
 pages-router-staging
 pages-kv-gateway-staging
-target WFP dispatch namespace: pages-staging
+target WFP dispatch namespace: xd-cell-workers-staging
 normal Worker slot pool: pages-v2-staging-slot-001..N
 D1 authority: staging pages metadata
 Durable Objects: staging auth/session coordination
@@ -73,7 +73,7 @@ auth-staging.pages.xd.team/*    -> pages-auth-staging
 
 v2 上线前需要把 Cloudflare 资源、心动 SSO 应用和 GitHub Actions 配置一次性梳理清楚。文档、代码和 CI 中只能出现占位名称，不能写真实 account id、zone id、namespace id、client secret 或 token。
 
-WFP 是最终执行面目标；在账号暂未开通 WFP 时，第一版把 wrangler template 里的 `PAGES_EXECUTION_MODE` 固定为 `normal-worker-slot`，使用预创建普通 Worker slot 池上线。这个兼容层只存在于平台内部：用户 CLI、`--config`、AI skill 和 deploy API 都不暴露 execution provider 或 runtime 选择参数。
+WFP 是最终执行面目标；router template 始终静态声明当前环境的 WFP dispatch namespace binding。`PAGES_EXECUTION_MODE` 只决定 `pages-api` 新部署写入哪个执行面，以及普通 Worker slot 兼容层是否继续扩容。这个兼容层只存在于平台内部：用户 CLI、`--config`、AI skill 和 deploy API 都不暴露 execution provider 或 runtime 选择参数。
 
 `pages-kv-gateway`、`pages-kv-gateway-staging`、`pages-shared-data`、`pages-shared-data-staging` 原先只是 v1 预留；确认未投入使用且 KV key count 为 0 后，直接划归 v2。v1 `workers.xd.team` 不再提供 Pages KV，`apps/server` 不签发 KV capability，也不在 v1 deploy workflow 中部署 gateway。
 
@@ -84,8 +84,8 @@ production 和 staging 分开申请或创建：
 | 类型                       | production                                                    | staging                                                                                       | 说明                                          |
 | -------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------- |
 | Workers                    | `pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway` | `pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` | 系统 Worker 物理隔离                          |
-| WFP dispatch namespace     | `pages-production`                                            | `pages-staging`                                                                               | 目标执行面；WFP 未开通时可先不启用，但配置仍保留 |
-| 普通 Worker slot 池        | `pages-v2-production-slot-001..N`                             | `pages-v2-staging-slot-001..N`                                                                | WFP 不可用时的内部兼容执行面                  |
+| WFP dispatch namespace     | `xd-cell-workers-production`                                  | `xd-cell-workers-staging`                                                                     | 当前默认执行面；router 静态绑定对应环境 namespace |
+| 普通 Worker slot 池        | `pages-v2-production-slot-001..N`                             | `pages-v2-staging-slot-001..N`                                                                | 历史兼容执行面，只保留旧 route 排空和管理员回退 |
 | D1 database                | `pages_metadata_production`                                   | `pages_metadata_staging`                                                                      | 权威业务库                                    |
 | KV namespace               | `pages_router_cache_production`                               | `pages_router_cache_staging`                                                                  | route/policy/JWKS snapshot                    |
 | KV namespace               | `pages-shared-data`                                           | `pages-shared-data-staging`                                                                   | v2 Pages KV 站点数据；现有空 namespace 直接划归 v2 |
@@ -114,16 +114,16 @@ production 和 staging 分开申请或创建：
 
 | mode | 用途 | 用户可见性 | 上线建议 |
 | ---- | ---- | ---------- | -------- |
-| `wfp` | 目标模式，部署到 Workers for Platforms dispatch namespace | 不可见 | WFP 开通后 production 默认 |
-| `normal-worker-slot` | 兼容模式，部署到预创建普通 Worker slot，并由 router 通过静态 service binding 调用 | 不可见 | WFP 未开通时首发默认 |
+| `wfp` | 目标模式，部署到 Workers for Platforms dispatch namespace | 不可见 | production / staging 当前默认 |
+| `normal-worker-slot` | 兼容模式，部署到预创建普通 Worker slot，并由 router 通过静态 service binding 调用 | 不可见 | 仅用于历史 route 排空和受控回退 |
 
 唯一核心开关是 wrangler template 中随 Git 提交的运行时 var：
 
 ```text
-PAGES_EXECUTION_MODE=normal-worker-slot | wfp
+PAGES_EXECUTION_MODE=wfp
 ```
 
-当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，router template 固定声明部署期 slot 扩容策略：
+router template 同时固定声明当前环境的 `PAGES_DISPATCH` binding 和部署期 slot 扩容策略：
 
 ```text
 production:
@@ -138,9 +138,9 @@ PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL=100
 PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0
 ```
 
-这些值不是用户发布参数，也不是 GitHub Environment Var。部署脚本 `scripts/provision-pages-v2-slots.mjs` 会在 router 部署前读取 D1 `worker_slots`，当 `available < MIN_AVAILABLE` 时按 `EXPAND_BY` 创建缺失 slot Worker，并受 `MAX_TOTAL` fail closed 保护。脚本随后计算实际需要全量绑定的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)`，通过 `$GITHUB_ENV` 传给 `scripts/render-pages-v2-wrangler.mjs`。router 渲染必须绑定 `SITE_SLOT_001..SITE_SLOT_N` 的完整历史范围，不能只绑定本次新增 slot。`PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0` 表示普通 Worker slot 不作为历史版本归档；非 active 旧 slot 可以立即清理复用。DR 0003 讨论的 artifact store 是低优先级长期候选，未采纳前历史回滚仍是 provider best-effort。
+这些值不是用户发布参数，也不是 GitHub Environment Var。部署脚本 `scripts/provision-pages-v2-slots.mjs` 会在 router 部署前读取 D1 `worker_slots`。当 `PAGES_EXECUTION_MODE=normal-worker-slot` 且 `available < MIN_AVAILABLE` 时，脚本按 `EXPAND_BY` 创建缺失 slot Worker，并受 `MAX_TOTAL` fail closed 保护。脚本随后计算实际需要全量绑定的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=max(worker_slots.slot_number)`，通过 `$GITHUB_ENV` 传给 `scripts/render-pages-v2-wrangler.mjs`。router 渲染必须绑定 `SITE_SLOT_001..SITE_SLOT_N` 的完整历史范围，不能只绑定本次新增 slot。`PAGES_EXECUTION_MODE=wfp` 时脚本不再扩容普通 Worker slot，只输出历史最大 slot number 以便 router 继续服务尚未排空的旧 slot route；没有历史 slot 时 binding count 可以为空。`PAGES_NORMAL_WORKER_SLOT_CLEANUP_RETENTION_SECONDS=0` 表示普通 Worker slot 不作为历史版本归档；非 active 旧 slot 可以立即清理复用。DR 0003 讨论的 artifact store 是低优先级长期候选，未采纳前历史回滚仍是 provider best-effort。
 
-`PAGES_EXECUTION_MODE` 不放 GitHub Environment Vars；当前默认值直接写在 `apps/pages-api/wrangler.*.template.toml` 和 `apps/pages-router/wrangler.*.template.toml`。切到 `wfp` 必须走 PR 修改对应 template。`PAGES_EXECUTION_MODE=wfp` 时可以没有 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`；但如果仍有 active route 指向 `service-binding` slot，部署脚本必须继续提供原全量 binding count 并部署同时持有 WFP dispatch namespace 与 slot bindings 的 router，直到这些 slot route 全部迁移或释放。
+`PAGES_EXECUTION_MODE` 不放 GitHub Environment Vars；当前 production / staging 默认值直接以 `wfp` 写在 `apps/pages-api/wrangler.*.template.toml` 和 `apps/pages-router/wrangler.*.template.toml`。如需临时回退到 `normal-worker-slot`，必须走 PR 修改对应 template。router 的 WFP dispatch namespace binding 不由这个 mode 动态生成，而是随 production / staging template 静态配置。`PAGES_EXECUTION_MODE=wfp` 时可以没有 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`；但如果仍有 active route 指向 `service-binding` slot，部署脚本必须继续提供原全量 binding count 并部署同时持有 WFP dispatch namespace 与 slot bindings 的 router，直到这些 slot route 全部迁移或释放。
 
 不建议再增加 `DEFAULT_EXECUTION_PROVIDER`、`ALLOWED_EXECUTION_PROVIDERS`、`NORMAL_WORKER_NEW_DEPLOY_ENABLED` 这类组合开关。原因是这些开关会把“默认值、允许值、是否新建普通 Worker”拆成多个状态，容易出现互相矛盾的配置。第一版用一个 mode 表达平台当前策略；更细粒度的灰度或站点例外写入 D1 权威表，由管理员 API 或后台任务管理，不暴露给普通用户。
 
@@ -154,11 +154,11 @@ effectiveMode =
 
 `site.execution_mode_override` 只允许平台维护者设置，取值为 `null | wfp | normal-worker-slot`。普通用户 `xd-cell deploy` 不允许指定 provider；CLI help、`--config`、OpenAPI 和 AI skill 都只描述“发布到 XD Cell”，不描述 WFP、slot、dispatch namespace 或 service binding。
 
-slot 兼容层不是用户可选 provider，它只是 WFP 未开通期间的内部上线和回滚手段。
+slot 兼容层不是用户可选 provider，它只是历史 route 排空和受控回退手段。
 
 #### normal-worker-slot 设计
 
-普通 Worker slot 池用于解决 WFP 暂未开通时的首发上线问题，同时尽量不改变最终架构：
+普通 Worker slot 池是 WFP 切换前留下的兼容执行面，用于继续服务尚未排空的旧 route，并在必要时作为受控回退手段：
 
 ```text
 SITE_SLOT_001 -> pages-v2-production-slot-001
@@ -196,14 +196,15 @@ slot 状态由 D1 权威表管理：
 
 `pages-api` 只能分配 `available` slot。若没有可用 slot，deploy 返回可操作错误，例如 `DEPLOYMENT_CAPACITY_EXHAUSTED`，提示平台维护者扩容；用户不应看到 Cloudflare binding 细节。
 
-扩容是系统 Worker 部署期动作，不在用户发布请求路径里自动创建 Worker：
+扩容是系统 Worker 部署期动作，不在用户发布请求路径里自动创建 Worker。WFP mode 下这一步只计算历史 slot binding count，不创建新的普通 Worker：
 
 ```text
 XD Cell deploy workflow <environment>
   1. 执行 D1 migration，确保 worker_slots 表存在。
   2. scripts/provision-pages-v2-slots.mjs <environment> prepare
      - 读取 worker_slots 当前 available 数量和最大 slot_number。
-     - available < PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE 时，从 max(slot_number)+1 创建 PAGES_NORMAL_WORKER_SLOT_EXPAND_BY 个 ordinary Workers。
+     - normal-worker-slot mode 且 available < PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE 时，从 max(slot_number)+1 创建 PAGES_NORMAL_WORKER_SLOT_EXPAND_BY 个 ordinary Workers。
+     - wfp mode 不创建 ordinary Workers，只保留历史最大 slot_number 作为兼容 binding count。
      - 创建 ordinary Worker 后必须关闭对应 `workers.dev` subdomain；关闭失败时不得写入可分配 slot。
      - 创建数量受 PAGES_NORMAL_WORKER_SLOT_MAX_TOTAL 限制，超过则 fail closed。
      - 新 slot 写入 available_pending_router。
@@ -214,14 +215,14 @@ XD Cell deploy workflow <environment>
      - 只把已经被当前 router 全量 binding 覆盖的 available_pending_router 标记为 available。
 ```
 
-第一次创建和后续扩容使用同一套 workflow。脚本必须幂等，只创建缺失编号，不覆盖已 assigned 的 slot，不复用 `disabled` / `cleanup_pending` 中间编号。router 每次部署都必须全量绑定 `SITE_SLOT_001..SITE_SLOT_N`，其中 `N` 是当前环境历史最大 slot 编号；不能只绑定本次新增 slot，否则旧 route snapshot 可能指向缺失 binding。
+第一次创建和后续扩容使用同一套 workflow。脚本必须幂等，只创建缺失编号，不覆盖已 assigned 的 slot，不复用 `disabled` / `cleanup_pending` 中间编号。router template 每次部署都静态声明 `PAGES_DISPATCH`，并在有历史 slot count 时全量绑定 `SITE_SLOT_001..SITE_SLOT_N`，其中 `N` 是当前环境历史最大 slot 编号；不能只绑定本次新增 slot，否则旧 route snapshot 可能指向缺失 binding。
 
 普通 Worker slot 与 WFP 的主要差别只在执行面 dispatch：
 
 - WFP：`pages-router` 通过 dispatch namespace 按 user Worker name 获取执行目标。
 - slot：`pages-router` 通过 route snapshot 中的 `dispatch.bindingName` 调静态 service binding。
 
-其它架构保持一致：SSO、ACL、route snapshot、KV gateway capability、审计、header/cookie 清洗和发布状态机都走同一套平台逻辑。WFP 开通后，新增站点默认使用 `wfp`；已在 slot 上的试点站点可以通过一次显式管理员迁移重新发布到 WFP。切到 `wfp` 时不要立刻去掉 slot bindings，除非 D1 和 route snapshot 已确认不存在任何 active `normal-worker-slot` route。第一版不强制立即迁移，因为 slot 数量不大，保留兼容路径更利于平稳上线。
+其它架构保持一致：SSO、ACL、route snapshot、KV gateway capability、审计、header/cookie 清洗和发布状态机都走同一套平台逻辑。当前新增站点默认使用 `wfp`；已在 slot 上的试点站点可以通过一次显式管理员迁移重新发布到 WFP。切到 `wfp` 后不要立刻去掉 slot bindings，除非 D1 和 route snapshot 已确认不存在任何 active `normal-worker-slot` route。第一版不强制立即迁移，因为 slot 数量不大，保留兼容路径更利于平稳上线。
 
 ### 心动 SSO 应用配置
 
@@ -361,13 +362,13 @@ secrets:
   ACCESS_KEY_PEPPER_*
 ```
 
-`PAGES_EXECUTION_MODE` 是平台内部执行模式总开关。WFP 未开通时在 template 中设为 `normal-worker-slot`；WFP 开通且验证完成后通过 PR 改为 `wfp`。它是 Git 可审查的架构配置，不是 GitHub Environment Var，不能由 CLI、`--config` 或用户请求覆盖。`pages-api` 运行时读取这个值决定新发布部署到哪个内部执行面；`pages-router` 的 wrangler 渲染会结合 `PAGES_EXECUTION_MODE` 和部署脚本计算出的 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 决定持有哪些 dispatch binding。第一版不提供 `auto` fallback；如果后续要做灰度自动回退，必须同时设计 router 双绑定、部署状态机和失败回滚语义。
+`PAGES_EXECUTION_MODE` 是平台内部执行模式开关，当前 production / staging template 都设为 `wfp`。它是 Git 可审查的架构配置，不是 GitHub Environment Var，不能由 CLI、`--config` 或用户请求覆盖。`pages-api` 运行时读取这个值决定新发布部署到哪个内部执行面；slot provision 脚本读取这个值决定是否继续扩普通 Worker slot。`pages-router` 的 `PAGES_DISPATCH` dispatch namespace binding 是 production / staging template 静态配置，不由这个开关动态生成。第一版不提供 `auto` fallback；如果后续要做灰度自动回退，必须同时设计 router 双绑定、部署状态机和失败回滚语义。
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`--config` 文件或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
 `IP_ALLOWLIST` 是 `pages-api` 管理 API 门禁配置，复用 v1 的公司内网 / VPN / 办公出口 CIDR 列表。除 `/skill.md`、`/readme.md` 和 health 外，`pages-api` 在进入站点、access key、部署、回滚等业务 handler 前必须先校验 `CF-Connecting-IP`；未命中时直接 403，不进入 token 校验和业务逻辑。内部 service binding host 不走公网 IP allowlist，由 internal host 校验保护。
 
-`WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `pages-production`，staging 只能是 `pages-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
+`WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `xd-cell-workers-production`，staging 只能是 `xd-cell-workers-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
 `ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。registry 只包含 secret env 名，可以写入 wrangler template 和 workflow 接受 Git 审查；真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`--config` 文件或文档示例。
 
@@ -435,7 +436,7 @@ secrets:
 
 router 不需要 Cloudflare API token。router 只能 dispatch 到当前环境的 WFP namespace 或当前环境预绑定的 slot service binding。`ROUTER_IP_ALLOWLIST_CIDRS` 是第一版强制配置；缺失或格式错误时 router 必须 fail closed。当前实现用统一的 `PAGES_SESSION_JWT_*` registry 签发和校验 `site_session` 与 `internal_worker_jwt`，通过 `PAGES_SESSION_JWT_ISSUER`、`purpose`、`aud`、`kid` 和 `env` 区分用途；不要再配置独立的 `INTERNAL_JWT_*` 或 `SESSION_SIGNING_*` 名称，避免文档和 wrangler template 串线。
 
-router wrangler 渲染阶段会从 template 读取 `PAGES_EXECUTION_MODE`，并从部署脚本输出读取 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`。当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，`PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 必填，用于生成 `SITE_SLOT_001..N` service binding；当 `PAGES_EXECUTION_MODE=wfp` 时，这个值可为空，也可以保留为正整数，用于让 router 在 WFP 新发布之外继续服务尚未排空的 slot route。生成后的 router 业务逻辑不依赖扩容阈值。binding count 必须和 D1 `worker_slots` 当前环境历史最大 `slot_number` 保持一致；扩容时先创建缺失 slot 并写入 `available_pending_router`，再重新渲染并部署对应环境 router，router 部署与 secret 注入成功后才能把新 slot 标记为 `available`。确认不存在 active slot route 后，才可以让部署脚本输出空 binding count 并重新部署 router 去掉 slot bindings。
+router wrangler template 静态声明当前环境的 `PAGES_DISPATCH` dispatch namespace。渲染阶段只从部署脚本输出读取 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 来生成旧 slot route 所需的 `SITE_SLOT_001..N` service binding。当 `PAGES_EXECUTION_MODE=normal-worker-slot` 时，`PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT` 必填；当 `PAGES_EXECUTION_MODE=wfp` 时，这个值可为空，也可以保留为正整数，用于让 router 在 WFP 新发布之外继续服务尚未排空的 slot route。生成后的 router 业务逻辑不依赖扩容阈值。binding count 必须和 D1 `worker_slots` 当前环境历史最大 `slot_number` 保持一致；normal-worker-slot mode 扩容时先创建缺失 slot 并写入 `available_pending_router`，再重新渲染并部署对应环境 router，router 部署与 secret 注入成功后才能把新 slot 标记为 `available`。确认不存在 active slot route 后，才可以让部署脚本输出空 binding count 并重新部署 router 去掉 slot bindings。
 
 slot cleanup 不会减少 `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT`。被清理的 slot Worker 仍保留稳定 Worker 名和 router service binding，只是内容被重置为安全 placeholder，D1 状态回到 `available`，供后续发布复用。
 
@@ -573,7 +574,8 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - signing key registry 中的 active kid 必须能找到对应 secret。
 - `PAGES_EXECUTION_MODE` 必须在 `pages-api` 和 `pages-router` 对应环境 template 中各出现一次，只能是 `normal-worker-slot` 或 `wfp`；不得从 GitHub Environment Vars 注入。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
-- `PAGES_EXECUTION_MODE=wfp` 时必须配置并验证当前环境 WFP dispatch namespace；`normal-worker-slot` 时部署脚本必须先完成 slot provision，至少存在一个 `available` slot，且最终渲染出的 router wrangler 配置中有对应 service binding。
+- router template 必须静态配置当前环境 WFP dispatch namespace：production 为 `xd-cell-workers-production`，staging 为 `xd-cell-workers-staging`。
+- `PAGES_EXECUTION_MODE=normal-worker-slot` 时部署脚本必须先完成 slot provision，至少存在一个 `available` slot，且最终渲染出的 router wrangler 配置中有对应 service binding；`PAGES_EXECUTION_MODE=wfp` 时不得自动扩展普通 Worker slot，只能保留历史 slot binding count 用于排空旧 route。
 - `CF_ACCOUNT_ID` / `CF_API_TOKEN` 必须只出现在 `pages-api` runtime；router/auth/thin router 不能持有。
 - production / staging 的 `CF_API_BASE_URL` 必须是 `https://api.cloudflare.com/client/v4`，不能把 `CF_API_TOKEN` 发送到其它 host。
 - `SLACK_PAGES_ALERT_WEBHOOK_URL` 必须作为 GitHub Environment secret 注入 `pages-api`，不能放 GitHub Vars、wrangler template 或日志；告警发送失败不得影响用户部署响应。
@@ -602,7 +604,7 @@ pnpm test
 staging 首次部署前必须完成：
 
 1. GitHub `staging` Environment 已配置上表中的 vars/secrets，且真实 D1/KV/secret 值不出现在仓库、日志或文档中。
-2. Cloudflare 已创建 staging D1、staging route snapshot KV 和 staging site data KV；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。如果 staging template 中 `PAGES_EXECUTION_MODE=normal-worker-slot`，workflow 会在 router 部署前检查并扩容 staging slot 池，再按历史最大 slot number 全量渲染 router service bindings；如果为 `wfp`，已创建 `pages-staging` dispatch namespace。
+2. Cloudflare 已创建 staging D1、staging route snapshot KV、staging site data KV 和 `xd-cell-workers-staging` dispatch namespace；`pages-api-staging`、`pages-auth-staging`、`pages-router-staging`、`pages-kv-gateway-staging` 以及对应 route/custom domain 由 workflow 的 wrangler deploy 创建/更新。partial zone 的 DNSPod CNAME 和证书 DCV 已提前准备或确认可生效。当前 staging template 为 `PAGES_EXECUTION_MODE=wfp`，workflow 只保留历史 slot binding count，不再扩容 slot 池。
 3. staging D1 已先执行 `0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql` 和 `0010_site_vars.sql`，再部署新的 `pages-api-staging`。
 4. GitHub `staging` Environment 已配置 `SITE_SECRET_ENCRYPTION_KEY`，且 workflow 能通过 `wrangler secret put` 注入到 `pages-api-staging`；该值不得写入 vars、模板正文或日志。
 5. SSO staging 应用 redirect URI 指向 `https://auth-staging.pages.xd.team/.xd-pages/auth/callback`，不指向 `api-staging.pages.xd.team`。
@@ -618,7 +620,7 @@ staging 首次部署前必须完成：
 production 首次部署前必须完成：
 
 1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 已覆盖 v2 `workers.xd.team` 新默认后缀和存量 `pages.xd.team` route，且 v1 exact route 优先级不变。
-2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、`SITE_SECRET_ENCRYPTION_KEY` 和 IP allowlist。执行面资源按 production template 中的 `PAGES_EXECUTION_MODE` 校验：`normal-worker-slot` 需要 production slot 池，`wfp` 需要 `pages-production` dispatch namespace。
+2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、`SITE_SECRET_ENCRYPTION_KEY` 和 IP allowlist。production router template 必须固定绑定 `xd-cell-workers-production` dispatch namespace；执行面资源按 production template 中的 `PAGES_EXECUTION_MODE` 校验：`normal-worker-slot` 需要 production slot 池，`wfp` 不再扩展 slot 池但可保留历史 slot bindings。
 3. XD Cell production 部署 workflow（当前 workflow 文件为 `deploy-pages-v2.yml`）只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
 4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker；`0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql` 和 `0010_site_vars.sql` 必须先于 `pages-api` 新版本生效。
 5. 发布后先验证 `api.pages.xd.team/.xd-pages/health`、`auth.pages.xd.team` 登录入口和一个受控试点站点。

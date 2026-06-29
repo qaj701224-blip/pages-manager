@@ -9,14 +9,14 @@ test('readWfpConfig enforces production and staging namespace isolation', () => 
       {
         CF_ACCOUNT_ID: 'account_1',
         CF_API_TOKEN: 'cf_secret_token',
-        WFP_DISPATCH_NAMESPACE: 'pages-production',
+        WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
       },
       { environment: 'production' }
     ),
     {
       accountId: 'account_1',
       apiToken: 'cf_secret_token',
-      dispatchNamespace: 'pages-production',
+      dispatchNamespace: 'xd-cell-workers-production',
       apiBaseUrl: 'https://api.cloudflare.com/client/v4',
       environment: 'production',
     }
@@ -28,7 +28,7 @@ test('readWfpConfig enforces production and staging namespace isolation', () => 
         {
           CF_ACCOUNT_ID: 'account_1',
           CF_API_TOKEN: 'cf_secret_token',
-          WFP_DISPATCH_NAMESPACE: 'pages-staging',
+          WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-staging',
         },
         { environment: 'production' }
       ),
@@ -40,7 +40,7 @@ test('readWfpConfig enforces production and staging namespace isolation', () => 
         {
           CF_ACCOUNT_ID: 'account_1',
           CF_API_TOKEN: 'cf_secret_token',
-          WFP_DISPATCH_NAMESPACE: 'pages-production',
+          WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
         },
         { environment: 'staging' }
       ),
@@ -49,15 +49,15 @@ test('readWfpConfig enforces production and staging namespace isolation', () => 
 });
 
 test('readWfpConfig fails closed on missing credentials and unsafe API origins', () => {
-  assert.throws(() => readWfpConfig({ CF_API_TOKEN: 'token', WFP_DISPATCH_NAMESPACE: 'pages-production' }), /CF_ACCOUNT_ID/);
-  assert.throws(() => readWfpConfig({ CF_ACCOUNT_ID: 'account', WFP_DISPATCH_NAMESPACE: 'pages-production' }), /CF_API_TOKEN/);
+  assert.throws(() => readWfpConfig({ CF_API_TOKEN: 'token', WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production' }), /CF_ACCOUNT_ID/);
+  assert.throws(() => readWfpConfig({ CF_ACCOUNT_ID: 'account', WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production' }), /CF_API_TOKEN/);
   assert.throws(
     () =>
       readWfpConfig(
         {
           CF_ACCOUNT_ID: 'account',
           CF_API_TOKEN: 'token',
-          WFP_DISPATCH_NAMESPACE: 'pages-production',
+          WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
           CF_API_BASE_URL: 'https://api.cloudflare.com/client/v4/path',
         },
         { environment: 'production' }
@@ -70,7 +70,7 @@ test('readWfpConfig fails closed on missing credentials and unsafe API origins',
         {
           CF_ACCOUNT_ID: 'account',
           CF_API_TOKEN: 'token',
-          WFP_DISPATCH_NAMESPACE: 'pages-production',
+          WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
           CF_API_BASE_URL: 'https://example.com/client/v4',
         },
         { environment: 'production' }
@@ -96,7 +96,7 @@ test('uploadUserWorker sends multipart metadata and module to dispatch namespace
   const client = createWfpClient({
     accountId: 'account_1',
     apiToken: 'cf_secret_token',
-    dispatchNamespace: 'pages-production',
+    dispatchNamespace: 'xd-cell-workers-production',
     apiBaseUrl: 'https://api.cloudflare.com/client/v4',
     fetch: async (request) => {
       requests.push(request);
@@ -115,14 +115,14 @@ test('uploadUserWorker sends multipart metadata and module to dispatch namespace
 
   assert.deepEqual(result, {
     scriptName: 'pages-v2-docs-ver-1',
-    dispatchNamespace: 'pages-production',
-    artifactRef: 'wfp://pages-production/pages-v2-docs-ver-1',
+    dispatchNamespace: 'xd-cell-workers-production',
+    artifactRef: 'wfp://xd-cell-workers-production/pages-v2-docs-ver-1',
   });
   assert.equal(
     requests[0].url,
     [
       'https://api.cloudflare.com/client/v4/accounts/account_1',
-      'workers/dispatch/namespaces/pages-production/scripts/pages-v2-docs-ver-1',
+      'workers/dispatch/namespaces/xd-cell-workers-production/scripts/pages-v2-docs-ver-1',
     ].join('/')
   );
   assert.equal(requests[0].method, 'PUT');
@@ -143,7 +143,7 @@ test('uploadUserWorker can upload static assets before deploying thin assets wor
   const client = createWfpClient({
     accountId: 'account_1',
     apiToken: 'cf_secret_token',
-    dispatchNamespace: 'pages-production',
+    dispatchNamespace: 'xd-cell-workers-production',
     apiBaseUrl: 'https://api.cloudflare.com/client/v4',
     fetch: async (request) => {
       requests.push(request.clone());
@@ -177,8 +177,8 @@ test('uploadUserWorker can upload static assets before deploying thin assets wor
 
   assert.deepEqual(result, {
     scriptName: 'pages-v2-docs-ver-1',
-    dispatchNamespace: 'pages-production',
-    artifactRef: 'wfp://pages-production/pages-v2-docs-ver-1',
+    dispatchNamespace: 'xd-cell-workers-production',
+    artifactRef: 'wfp://xd-cell-workers-production/pages-v2-docs-ver-1',
   });
   assert.equal(requests[0].method, 'POST');
   assert.ok(requests[0].url.endsWith('/scripts/pages-v2-docs-ver-1/assets-upload-session'));
@@ -210,7 +210,7 @@ test('get and delete user worker use dispatch namespace script endpoint', async 
   const client = createWfpClient({
     accountId: 'account_1',
     apiToken: 'token',
-    dispatchNamespace: 'pages-staging',
+    dispatchNamespace: 'xd-cell-workers-staging',
     apiBaseUrl: 'https://api.cloudflare.com/client/v4',
     fetch: async (request) => {
       calls.push(request);
@@ -248,7 +248,7 @@ test('Cloudflare API errors are redacted', async () => {
   const client = createWfpClient({
     accountId: 'account_1',
     apiToken: 'super-secret-token',
-    dispatchNamespace: 'pages-production',
+    dispatchNamespace: 'xd-cell-workers-production',
     apiBaseUrl: 'https://api.cloudflare.com/client/v4',
     fetch: async () =>
       Response.json(

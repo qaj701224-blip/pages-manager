@@ -79,6 +79,31 @@ test('wfp mode keeps historical slot binding count without expanding', async () 
   assert.deepEqual(result.createSlotNumbers, []);
 });
 
+test('wfp mode plan reports historical slot binding count without planning expansion', async () => {
+  const d1 = {
+    async listWorkerSlots() {
+      return [
+        buildSlotRecord({ environment: 'staging', slotNumber: 1, status: 'assigned' }),
+        buildSlotRecord({ environment: 'staging', slotNumber: 4, status: 'cleanup_pending' }),
+      ];
+    },
+  };
+  const result = await provisionNormalWorkerSlots({
+    phase: 'plan',
+    config: { ...baseConfig, executionMode: 'wfp' },
+    d1,
+    cloudflare: {
+      async putWorker() {
+        throw new Error('should not create slot workers in wfp mode');
+      },
+    },
+  });
+
+  assert.equal(result.dryRun, true);
+  assert.equal(result.bindingCount, 4);
+  assert.deepEqual(result.createSlotNumbers, []);
+});
+
 test('caps expansion at max total and fails closed when capacity cannot be restored', () => {
   const slotsAt99 = Array.from({ length: 99 }, (_, index) =>
     buildSlotRecord({ environment: 'staging', slotNumber: index + 1, status: 'assigned' })

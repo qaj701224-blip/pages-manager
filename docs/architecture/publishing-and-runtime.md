@@ -256,7 +256,7 @@ Windows: %APPDATA%\.xd-pages\profile.json
 
 profile 只用于本地显示和用户体验，服务端不能信任。真实权限只看 CLI token、access key 和服务端存储。profile 禁止出现 token、access key、cookie、Cloudflare id、SSO secret 或 capability。
 
-普通 CLI 不提供 `xd-cell env list` / `xd-cell env staging`，也不提供 `--env production|staging`。`custom` 是开发保留项，可以由测试或开发命令显式启用，但不在普通 help 和用户文档主路径中展示。production 是固定默认环境，不能被本地 profile、环境变量或普通 override 改写。`custom` 只允许指向 loopback：
+普通 help、skill 和用户文档主路径不展示环境切换；维护者验证可以使用隐藏固定环境入口，且只接受 `production` / `staging`。`custom` 不作为 CLI 用户入口；本机开发如需连接本地 Worker，应通过测试 harness 或受控开发配置显式启用。production 是普通发布默认环境，不能被公开文档里的用户配置覆盖。本机开发自定义 endpoint 只允许指向 loopback：
 
 - 本机开发：`localhost` / `127.0.0.1` / `::1`，可使用 HTTP。
 
