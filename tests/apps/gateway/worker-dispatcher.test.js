@@ -44,7 +44,6 @@ test('worker dispatcher returns platform item start failure when fetch rejects',
       id: 'pdev_fetch_reject',
       status: 'received',
       agentEligible: true,
-      requiresHumanGate: false,
     },
     {
       PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',

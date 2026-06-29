@@ -96,7 +96,7 @@ test('production deploy cannot happen before production merge states', () => {
   assert.throws(() => transitionJob({ id: 'job_test', status: 'preview_deployed' }, 'deploying'), /Invalid/);
 });
 
-test('buildPlatformDevItem normalizes enterprise lane metadata and gate policy', () => {
+test('buildPlatformDevItem normalizes enterprise lane metadata and manual auto-dev policy', () => {
   const item = buildPlatformDevItem(
     {
       source: 'slack',
@@ -116,12 +116,11 @@ test('buildPlatformDevItem normalizes enterprise lane metadata and gate policy',
   assert.deepEqual(item.areas, ['area:gateway', 'area:github']);
   assert.equal(item.risk, 'risk:high');
   assert.equal(item.agentEligible, true);
-  assert.equal(item.requiresHumanGate, true);
-  assert.equal(item.gateStatus, 'pending');
+  assert.equal(item.autoDevStatus, 'pending');
   assert.equal(idempotencyScopeForPlatformDevItem(item), 'slack:user:slack:T:user:evt_platform_1');
 });
 
-test('buildPlatformDevItem fails closed for explicit platform policy overrides', () => {
+test('buildPlatformDevItem ignores explicit auto-dev trigger overrides at creation time', () => {
   const feedback = buildPlatformDevItem(
     {
       requestedById: 'usr_1',
@@ -137,7 +136,9 @@ test('buildPlatformDevItem fails closed for explicit platform policy overrides',
       idempotencyKey: 'ci_1',
       issueType: 'type:ci',
       risk: 'risk:medium',
-      requiresHumanGate: false,
+      autoDevStatus: 'triggered',
+      autoDevTriggeredBy: 'slack:T1:U1',
+      autoDevTriggeredAt: '2026-06-29T00:00:00.000Z',
     },
     { id: 'pdev_ci' }
   );
@@ -152,10 +153,11 @@ test('buildPlatformDevItem fails closed for explicit platform policy overrides',
   );
 
   assert.equal(feedback.agentEligible, false);
-  assert.equal(feedback.requiresHumanGate, false);
   assert.equal(explicitBlockedDev.agentEligible, false);
   assert.equal(ci.risk, 'risk:high');
-  assert.equal(ci.requiresHumanGate, true);
+  assert.equal(ci.autoDevStatus, 'pending');
+  assert.equal(ci.autoDevTriggeredBy, null);
+  assert.equal(ci.autoDevTriggeredAt, null);
 });
 
 test('PlatformDevItem transitions cover issue, agent, PR, CI, review and merge', () => {

@@ -16,12 +16,11 @@ import {
 import { rowToWorkItemLink, workItemLinkToRow } from '../rows/slack-row.js';
 import {
   execute,
-  fromDbJson,
+  executeResult,
   insertRowIfNotDuplicate,
   limitOffsetSql,
   queryPlaceholders,
-  toDbJson,
-  toIso,
+  toDate,
   upsertRow,
   withTransaction,
 } from '../sql.js';
@@ -31,7 +30,7 @@ const ACTIVE_PLATFORM_DEV_STATUSES = new Set([
   'triaging',
   'issue_creating',
   'issue_created',
-  'gate_pending',
+  'auto_dev_pending',
   'agent_queued',
   'agent_running',
   'branch_committed',
@@ -71,39 +70,6 @@ function itemForSlackList(item) {
     prNumber: item.githubPrNumber,
     prUrl: item.githubPrUrl,
     siteSlug: 'pages-manager',
-  };
-}
-
-function workItemGateToRow(gate) {
-  return {
-    id: gate.id,
-    work_item_kind: gate.workItemKind,
-    work_item_id: gate.workItemId,
-    gate_type: gate.gateType,
-    status: gate.status,
-    reason: gate.reason,
-    decided_by: gate.decidedBy,
-    decided_at: gate.decidedAt ? new Date(gate.decidedAt) : null,
-    metadata_json: toDbJson(gate.metadata),
-    created_at: gate.createdAt ? new Date(gate.createdAt) : new Date(),
-    updated_at: gate.updatedAt ? new Date(gate.updatedAt) : new Date(),
-  };
-}
-
-function rowToWorkItemGate(row) {
-  if (!row) return null;
-  return {
-    id: row.id,
-    workItemKind: row.work_item_kind,
-    workItemId: row.work_item_id,
-    gateType: row.gate_type,
-    status: row.status,
-    reason: row.reason || null,
-    decidedBy: row.decided_by || null,
-    decidedAt: toIso(row.decided_at),
-    metadata: fromDbJson(row.metadata_json, null),
-    createdAt: toIso(row.created_at),
-    updatedAt: toIso(row.updated_at),
   };
 }
 
@@ -163,27 +129,6 @@ export const platformDevRepositoryMethods = {
         await upsertRow(connection, 'platform_dev_events', platformDevEventToRow(event), {
           excludeUpdate: ['id', 'created_at'],
         });
-      }
-      if (item.requiresHumanGate) {
-        const nowIso = new Date().toISOString();
-        const gate = {
-          id: makeId('gate'),
-          workItemKind: 'platform_dev',
-          workItemId: item.id,
-          gateType: 'risk',
-          status: 'pending',
-          reason: item.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
-          decidedBy: null,
-          decidedAt: null,
-          metadata: {
-            risk: item.risk,
-            issueType: item.issueType,
-            areas: item.areas || [],
-          },
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        };
-        await upsertRow(connection, 'work_item_gates', workItemGateToRow(gate), { excludeUpdate: ['id', 'created_at'] });
       }
     });
 
@@ -287,6 +232,47 @@ export const platformDevRepositoryMethods = {
     return updated;
   },
 
+  async triggerPlatformDevAutoDev(itemId, patch = {}) {
+    const item = await this.getPlatformDevItem(itemId);
+    if (!item) return null;
+    if (item.autoDevStatus === 'triggered') {
+      return { item, triggered: false, alreadyTriggered: true };
+    }
+
+    const now = new Date();
+    const result = await executeResult(
+      this.pool,
+      [
+        'UPDATE platform_dev_items SET',
+        [
+          'auto_dev_status = ?',
+          'auto_dev_triggered_by = ?',
+          'auto_dev_triggered_at = ?',
+          'auto_dev_reason = ?',
+          'updated_at = ?',
+        ].join(', '),
+        "WHERE id = ? AND auto_dev_status = 'pending'",
+      ].join(' '),
+      [
+        'triggered',
+        patch.autoDevTriggeredBy || null,
+        toDate(patch.autoDevTriggeredAt),
+        patch.autoDevReason || null,
+        now,
+        itemId,
+      ]
+    );
+    if (Number(result?.affectedRows || 0) === 0) {
+      const latest = await this.getPlatformDevItem(itemId);
+      return latest
+        ? { item: latest, triggered: false, alreadyTriggered: latest.autoDevStatus === 'triggered' }
+        : null;
+    }
+
+    const latest = await this.getPlatformDevItem(itemId);
+    return { item: latest, triggered: true, alreadyTriggered: false };
+  },
+
   async failPlatformDevItem(itemId, errorCode, errorMessage, patch = {}) {
     const item = await this.getPlatformDevItem(itemId);
     if (!item) return null;
@@ -387,64 +373,6 @@ export const platformDevRepositoryMethods = {
 
   async linkPlatformDevItemToSlackSession(item, session, now = new Date()) {
     return this.linkWorkItemToSlackSession({ ...item, workItemKind: 'platform_dev' }, session, now);
-  },
-
-  async ensureWorkItemGate(input = {}) {
-    const workItemKind = input.workItemKind || input.work_item_kind;
-    const workItemId = input.workItemId || input.work_item_id;
-    const gateType = input.gateType || input.gate_type || 'risk';
-    if (!workItemKind || !workItemId) return null;
-
-    const existing = await this.getWorkItemGate(workItemKind, workItemId, gateType);
-    const nowIso = new Date().toISOString();
-    const gate = {
-      ...(existing || {}),
-      id: existing?.id || input.id || makeId('gate'),
-      workItemKind,
-      workItemId,
-      gateType,
-      status: input.status || existing?.status || 'pending',
-      reason: input.reason ?? existing?.reason ?? null,
-      decidedBy: input.decidedBy ?? existing?.decidedBy ?? null,
-      decidedAt: input.decidedAt ?? existing?.decidedAt ?? null,
-      metadata: input.metadata ?? input.metadataJson ?? existing?.metadata ?? null,
-      createdAt: existing?.createdAt || nowIso,
-      updatedAt: nowIso,
-    };
-    await upsertRow(this.pool, 'work_item_gates', workItemGateToRow(gate), { excludeUpdate: ['id', 'created_at'] });
-    return gate;
-  },
-
-  async getWorkItemGate(workItemKind, workItemId, gateType = 'risk') {
-    const rows = await execute(
-      this.pool,
-      'SELECT * FROM work_item_gates WHERE work_item_kind = ? AND work_item_id = ? AND gate_type = ? LIMIT 1',
-      [workItemKind, workItemId, gateType]
-    );
-    return rowToWorkItemGate(rows[0]);
-  },
-
-  async decideWorkItemGate(workItemKind, workItemId, gateType = 'risk', decision = {}) {
-    const existing =
-      (await this.getWorkItemGate(workItemKind, workItemId, gateType)) ||
-      (await this.ensureWorkItemGate({
-        workItemKind,
-        workItemId,
-        gateType,
-        reason: decision.reason || null,
-      }));
-    const nowIso = new Date().toISOString();
-    const gate = {
-      ...existing,
-      status: decision.status,
-      reason: decision.reason ?? existing?.reason ?? null,
-      decidedBy: decision.decidedBy || null,
-      decidedAt: nowIso,
-      metadata: decision.metadata ?? existing?.metadata ?? null,
-      updatedAt: nowIso,
-    };
-    await upsertRow(this.pool, 'work_item_gates', workItemGateToRow(gate), { excludeUpdate: ['id', 'created_at'] });
-    return gate;
   },
 
   async findWorkItemLink(workItemKind, workItemId, relationship = 'primary') {

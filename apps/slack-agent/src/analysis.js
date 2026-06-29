@@ -694,12 +694,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
     agentEligible: isUnsupportedDestructive
       ? false
       : shouldCreatePlatform
-        ? !['type:feedback', 'type:question'].includes(inferPlatformIssueType(text))
-        : undefined,
-    requiresHumanGate: isUnsupportedDestructive
-      ? false
-      : shouldCreatePlatform
-        ? inferPlatformRisk(text, inferPlatformIssueType(text)) === 'risk:high'
+        ? true
         : undefined,
     workItemState,
     toolCall:
@@ -838,14 +833,6 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
           : typeof modelAnalysis.agent_eligible === 'boolean'
             ? modelAnalysis.agent_eligible
             : fallback.agentEligible,
-    requiresHumanGate:
-      modelIntent === UNSUPPORTED_DESTRUCTIVE_INTENT
-        ? fallback.requiresHumanGate
-        : typeof modelAnalysis.requiresHumanGate === 'boolean'
-          ? modelAnalysis.requiresHumanGate
-          : typeof modelAnalysis.requires_human_gate === 'boolean'
-            ? modelAnalysis.requires_human_gate
-            : fallback.requiresHumanGate,
     workItemState: stringOrFallback(
       modelAnalysis.workItemState || modelAnalysis.work_item_state,
       fallback.workItemState || workItemStateFromText(input.text || input.event?.text || fallback.summary || '')

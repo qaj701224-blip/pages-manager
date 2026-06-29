@@ -11,7 +11,7 @@ const PLATFORM_STAGE_ORDER = [
   'triaging',
   'issue_creating',
   'issue_created',
-  'gate_pending',
+  'auto_dev_pending',
   'agent_queued',
   'agent_running',
   'branch_committed',
@@ -54,8 +54,8 @@ function platformStageLabel(stage, item = {}) {
     triaging: '确认处理策略',
     issue_creating: '创建 GitHub issue',
     issue_created: 'Issue 已创建',
-    gate_pending: '等待人工确认',
-    agent_queued: '等待自动开发',
+    auto_dev_pending: 'Issue 已创建，待手动启动',
+    agent_queued: '自动开发排队中',
     agent_running: '自动开发中',
     branch_committed: '已提交分支',
     pr_created: 'PR 已创建',
@@ -100,7 +100,9 @@ function linkFields(item = {}) {
 }
 
 function contextText(item = {}, statusText = '') {
-  if (item.status === 'gate_pending') return `${statusText || ':hourglass_flowing_sand: 等待确认'} · 高风险或敏感范围需要人工确认。`;
+  if (item.status === 'auto_dev_pending') {
+    return `${statusText || ':hourglass_flowing_sand: Issue 已创建，待手动启动'} · 默认不会自动开发；需要继续时点击「自动开发」。`;
+  }
   if (item.status === 'merged') return `${statusText || ':white_check_mark: 已完成'} · PR 已合并。`;
   if (item.status === 'failed') return `${statusText || ':x: 失败'} · 可以打开 Issue 查看记录。`;
   if (item.status === 'closed_unmerged' || item.status === 'cancelled') {
@@ -109,26 +111,13 @@ function contextText(item = {}, statusText = '') {
   return `${statusText || ':hourglass_flowing_sand: 处理中'} · 后续进度会继续在当前对话更新。`;
 }
 
-function csvSet(value = '') {
-  return new Set(
-    String(value || '')
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean)
-  );
-}
-
-function hasPlatformGateApprover(env = {}) {
-  return Boolean(csvSet(env.PAGES_PLATFORM_GATE_APPROVERS).size || csvSet(env.PAGES_PLATFORM_GATE_APPROVER_IDS).size);
-}
-
 export function platformNotificationText(stage, item = {}) {
   if (stage === 'issue_created') {
     if (item.githubIssueUrl) return `已创建 GitHub issue：#${item.githubIssueNumber}\n${item.githubIssueUrl}`;
     if (item.githubIssueNumber) return `已创建 GitHub issue：#${item.githubIssueNumber}`;
     return '已创建 GitHub issue。';
   }
-  if (stage === 'gate_pending') return '已创建 GitHub issue，等待人工确认后再进入自动开发。';
+  if (stage === 'auto_dev_pending') return '已创建 GitHub issue，等待手动启动自动开发。';
   if (stage === 'agent_running') return '自动开发已开始。';
   if (stage === 'pr_created') {
     if (item.githubPrUrl) return `已创建 PR：#${item.githubPrNumber}\n${item.githubPrUrl}`;
@@ -146,7 +135,6 @@ export function platformNotificationText(stage, item = {}) {
 
 function buildPlatformStatusBlocks(item = {}, options = {}) {
   const stage = options.stage || item.status;
-  const gateApproverConfigured = options.gateApproverConfigured !== false;
   const label = platformStageLabel(stage, item);
   const statusText = options.statusText || options.text || ':hourglass_flowing_sand: 处理中';
   const title = userFacingPlatformTitle({
@@ -157,9 +145,9 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
   const currentChange = String(options.currentChange || '').trim();
   const fields = [
     { type: 'mrkdwn', text: `*当前阶段*\n${label}` },
+    ...linkFields(item),
     { type: 'mrkdwn', text: `*类型*\n${platformIssueTypeLabel(item.issueType)}` },
     { type: 'mrkdwn', text: `*风险*\n${platformRiskLabel(item.risk)}` },
-    ...linkFields(item),
   ];
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'Pages 平台需求进度' } },
@@ -172,40 +160,22 @@ function buildPlatformStatusBlocks(item = {}, options = {}) {
       elements: [
         {
           type: 'mrkdwn',
-          text:
-            stage === 'gate_pending' && !gateApproverConfigured
-              ? `${contextText(item, statusText)} 请先配置平台维护者审批 allowlist。`
-              : contextText(item, statusText),
+          text: contextText(item, statusText),
         },
       ],
     },
   ];
   const actions = [
-    stage === 'gate_pending' && gateApproverConfigured
+    stage === 'auto_dev_pending' && item.agentEligible
       ? {
           type: 'button',
-          text: { type: 'plain_text', text: '批准自动开发' },
+          text: { type: 'plain_text', text: '自动开发' },
           style: 'primary',
-          action_id: 'pages_approve_platform_gate',
+          action_id: 'pages_trigger_platform_auto_dev',
           value: JSON.stringify({
             workItemKind: 'platform_dev',
             workItemId: item.id,
             sessionId: item.slackSessionId || null,
-            gateType: 'risk',
-          }),
-        }
-      : null,
-    stage === 'gate_pending'
-      ? {
-          type: 'button',
-          text: { type: 'plain_text', text: '不进入自动开发' },
-          style: 'danger',
-          action_id: 'pages_reject_platform_gate',
-          value: JSON.stringify({
-            workItemKind: 'platform_dev',
-            workItemId: item.id,
-            sessionId: item.slackSessionId || null,
-            gateType: 'risk',
           }),
         }
       : null,
@@ -247,10 +217,7 @@ export async function notifySlackPlatformDevStatus(env, store, item, options = {
     return { skipped: true, reason: 'duplicate_stage', message: existing };
   }
 
-  const blocks = buildPlatformStatusBlocks(item, {
-    ...options,
-    gateApproverConfigured: hasPlatformGateApprover(env),
-  });
+  const blocks = buildPlatformStatusBlocks(item, options);
   const text = `Pages 平台需求进度：${platformStageLabel(stage, item)}`;
   const result = existing?.messageTs
     ? await updateSlackMessage(env, {

@@ -21,6 +21,7 @@ const baseEnv = {
   ISSUE_TYPE: 'type:dev',
   AREAS: 'area:gateway,area:github',
   RISK: 'risk:medium',
+  AUTO_DEV_TRIGGERED: 'true',
   BASE_REF: 'master',
   AGENT_BACKEND: 'mock-codex',
   AGENT_GATEWAY_URL: 'https://agent.example/v1/chat/completions',

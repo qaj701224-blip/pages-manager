@@ -1932,7 +1932,7 @@ test('Slack repo questions answer from repo context without creating platform is
   assert.equal(body.accepted, true);
   assert.equal(app.store.platformDevItems.size, 0);
   assert.equal(notifierCalls.some((call) => call.path === '/internal/slack-notifier/agent-reply/start'), false);
-  assert.equal(notifierCalls.some((call) => JSON.stringify(call.body).includes('确认平台需求')), false);
+  assert.equal(notifierCalls.some((call) => JSON.stringify(call.body).includes('确认创建平台 Issue')), false);
   assert.match(payloadText, /slack_sessions/);
   assert.match(payloadText, /session_memories/);
   assert.match(payloadText, /apps\/gateway\/src\/db\/schema\.js/);
@@ -2171,7 +2171,7 @@ test('Slack repo answer view evidence action posts bounded snippets without crea
   assert.equal(app.store.platformDevItems.size, 0);
   assert.match(messageCall.body.payload.text, /不是完整文件/);
   assert.match(messageCall.body.payload.text, /session_memories/);
-  assert.doesNotMatch(JSON.stringify(notifierCalls), /确认平台需求|pages_confirm_platform_issue/);
+  assert.doesNotMatch(JSON.stringify(notifierCalls), /确认创建平台 Issue|pages_confirm_platform_issue/);
 });
 
 test('Slack repo answer generate plan action allows creating a platform draft only after the plan', async () => {
@@ -2265,7 +2265,6 @@ test('Slack repo answer platform draft preserves high-risk CI and deploy scope',
 
   assert.equal(draft.issueType, 'type:ci');
   assert.equal(draft.risk, 'risk:high');
-  assert.equal(draft.requiresHumanGate, true);
   assert.ok(draft.areas.includes('area:ci'));
   assert.ok(draft.areas.includes('area:ops'));
 });
@@ -2320,7 +2319,7 @@ test('Slack repo answer can be converted into a platform issue confirmation card
   assert.equal(body.action, 'repo_question_platform_issue_draft');
   assert.equal(app.store.platformDevItems.size, 0);
   assert.ok(updateCall);
-  assert.match(JSON.stringify(updateCall.body.payload), /确认平台需求|pages_confirm_platform_issue/);
+  assert.match(JSON.stringify(updateCall.body.payload), /确认创建平台 Issue|pages_confirm_platform_issue/);
   assert.equal(memory.requirements.lane, 'platform-dev');
   assert.equal(memory.requirements.toolCall.name, 'confirm_platform_issue');
   assert.equal(memory.requirements.issueType, 'type:dev');
@@ -2377,9 +2376,8 @@ test('Slack repo answer records pure questions without starting Platform Agent',
   assert.equal(body.action, 'repo_question_platform_issue_draft');
   assert.equal(app.store.platformDevItems.size, 0);
   assert.equal(memory.requirements.issueType, 'type:question');
-  assert.equal(memory.requirements.agentEligible, false);
-  assert.equal(memory.requirements.requiresHumanGate, false);
-  assert.match(JSON.stringify(updateCall.body.payload), /问题咨询|不会启动自动开发/);
+  assert.equal(memory.requirements.agentEligible, true);
+  assert.match(JSON.stringify(updateCall.body.payload), /问题咨询|Issue 创建后，进度卡会出现「自动开发」按钮/);
 });
 
 test('Slack repo question intent overrides conflicting create-platform tool call', async () => {
@@ -2459,7 +2457,7 @@ test('Slack repo question intent overrides conflicting create-platform tool call
   assert.equal(app.store.platformDevItems.size, 0);
   assert.equal(agentCalls.filter((call) => call.url.endsWith('/repo-answer')).length, 1);
   assert.match(payloadText, /仓库实现咨询/);
-  assert.doesNotMatch(JSON.stringify(notifierCalls), /确认平台需求|错误创建需求/);
+  assert.doesNotMatch(JSON.stringify(notifierCalls), /确认创建平台 Issue|错误创建需求/);
 });
 
 test('repo question tool searches controlled repo files without reading secrets', async () => {
@@ -3574,8 +3572,6 @@ test('Slack work item list shows platform tasks without preview wording', async 
     areas: ['area:gateway', 'area:worker', 'area:ci'],
     risk: 'risk:high',
     agentEligible: true,
-    requiresHumanGate: true,
-    gateStatus: 'pending',
   });
   app.store.patchPlatformDevItem(item.id, {
     githubIssueNumber: 72,
@@ -3609,7 +3605,7 @@ test('Slack work item list shows platform tasks without preview wording', async 
   assert.equal(body.jobs[0].id, item.id);
   assert.match(visible, /你的任务/);
   assert.match(visible, /自动化流程调整/);
-  assert.match(visible, /高，需要人工确认/);
+  assert.match(visible, /高/);
   assert.doesNotMatch(visible, /你的发布任务|PR \/ Preview/);
   assert.doesNotMatch(visible, /type:ci|risk:high|area:gateway|area:worker/);
 });
@@ -3627,8 +3623,6 @@ test('Slack work item list does not run site cancellation reconciler on platform
     areas: ['area:gateway'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
-    gateStatus: 'not_required',
   });
   app.store.patchPlatformDevItem(item.id, {
     status: 'pr_created',
@@ -3687,7 +3681,6 @@ test('Slack issue list includes active and closed issue records', async () => {
     areas: ['area:slack'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   }).item;
   app.store.patchPlatformDevItem(active.id, {
     githubIssueNumber: 88,
@@ -3704,7 +3697,6 @@ test('Slack issue list includes active and closed issue records', async () => {
     areas: ['area:platform'],
     risk: 'risk:low',
     agentEligible: false,
-    requiresHumanGate: false,
   }).item;
   app.store.patchPlatformDevItem(closed.id, {
     status: 'closed_unmerged',
@@ -3757,7 +3749,6 @@ test('Slack issue list follow-up reuses previous list context', async () => {
     areas: ['area:slack'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   }).item;
   app.store.patchPlatformDevItem(firstItem.id, {
     githubIssueNumber: 88,
@@ -3774,7 +3765,6 @@ test('Slack issue list follow-up reuses previous list context', async () => {
     areas: ['area:platform'],
     risk: 'risk:low',
     agentEligible: false,
-    requiresHumanGate: false,
   }).item;
   app.store.patchPlatformDevItem(secondItem.id, {
     status: 'closed_unmerged',
@@ -3896,7 +3886,6 @@ test('Slack explicit issue and PR count query is not swallowed by active platfor
     areas: ['area:slack'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   }).item;
   app.store.patchPlatformDevItem(activeItem.id, {
     githubIssueNumber: 88,
@@ -3913,7 +3902,6 @@ test('Slack explicit issue and PR count query is not swallowed by active platfor
     areas: ['area:github'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   }).item;
   app.store.patchPlatformDevItem(otherIssue.id, {
     githubIssueNumber: 91,
@@ -3930,7 +3918,6 @@ test('Slack explicit issue and PR count query is not swallowed by active platfor
     areas: ['area:ci'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   }).item;
   app.store.patchPlatformDevItem(prItem.id, {
     status: 'pr_created',
@@ -4142,7 +4129,6 @@ test('Slack Agent can switch to a platform issue without site publishing status 
     areas: ['area:slack'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   });
   const itemWithIssue = app.store.patchPlatformDevItem(item.id, {
     githubIssueNumber: 72,
@@ -4234,7 +4220,6 @@ test('Slack work item selector handles platform item disappearing during switch'
     areas: ['area:slack'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
     slackThread: { teamId: 'T1', channelId: 'D1', threadTs: '1710000000.000100', userId: 'U1' },
   });
   const itemWithIssue = app.store.patchPlatformDevItem(item.id, {
@@ -5591,7 +5576,6 @@ test('Slack Agent reopens platform issues through platform recovery without site
     areas: ['area:slack'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   });
   const itemWithIssue = app.store.updatePlatformDevItem(item.id, 'issue_created', {
     githubIssueNumber: 73,
@@ -5664,7 +5648,8 @@ test('Slack Agent reopens platform issues through platform recovery without site
   assert.equal(body.workItemKind, 'platform_dev');
   assert.equal(body.workItemId, item.id);
   assert.match(body.replyText, /平台需求/);
-  assert.equal(updatedItem.status, 'agent_queued');
+  assert.equal(updatedItem.status, 'auto_dev_pending');
+  assert.equal(updatedItem.autoDevStatus, 'pending');
   assert.equal(updatedItem.errorCode, null);
   assert.equal(githubRequests.length, 1);
   assert.match(githubRequests[0].url, /\/issues\/73$/);
@@ -6339,7 +6324,6 @@ test('platform executor failure callback stores workflow run identity for diagno
     areas: ['area:slack'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   });
   app.store.updatePlatformDevItem(item.id, 'issue_created', {
     githubIssueNumber: 91,
@@ -10215,7 +10199,6 @@ test('failed platform executor callback after terminal state is ignored without 
     areas: ['area:gateway'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   });
   const itemWithIssue = app.store.updatePlatformDevItem(item.id, 'issue_created', {
     githubIssueNumber: 36,
@@ -10496,7 +10479,6 @@ test('GitHub merged platform PR keeps merged status after linked issue closes', 
     areas: ['area:github'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   });
   let updated = app.store.updatePlatformDevItem(item.id, 'issue_created', {
     githubIssueNumber: 188,
@@ -10572,7 +10554,6 @@ test('GitHub merged platform PR corrects failed item to merged', async () => {
     areas: ['area:github'],
     risk: 'risk:medium',
     agentEligible: true,
-    requiresHumanGate: false,
   });
   let updated = app.store.updatePlatformDevItem(item.id, 'issue_created', {
     githubIssueNumber: 189,

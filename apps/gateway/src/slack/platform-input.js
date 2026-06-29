@@ -1,7 +1,6 @@
 import { slackUserIdFromBody, surfaceForSlackBody } from './session.js';
 
 const HIGH_RISK_TYPE_SET = new Set(['type:ci', 'type:ops', 'type:security']);
-const FEEDBACK_TYPE_SET = new Set(['type:feedback', 'type:question']);
 
 function normalizeLabel(value, prefix, fallback) {
   const raw = String(value || '').trim();
@@ -69,16 +68,7 @@ export function platformDevInput(body = {}) {
       : typeof analysis.agent_eligible === 'boolean'
         ? analysis.agent_eligible
         : true;
-  const agentEligible = FEEDBACK_TYPE_SET.has(issueType) ? false : modelAgentEligible;
-  const modelRequiresHumanGate =
-    typeof analysis.requiresHumanGate === 'boolean'
-      ? analysis.requiresHumanGate
-      : typeof analysis.requires_human_gate === 'boolean'
-        ? analysis.requires_human_gate
-        : risk === 'risk:high' || HIGH_RISK_TYPE_SET.has(issueType);
-  const requiresHumanGate = FEEDBACK_TYPE_SET.has(issueType)
-    ? false
-    : risk === 'risk:high' || HIGH_RISK_TYPE_SET.has(issueType) || modelRequiresHumanGate;
+  const agentEligible = modelAgentEligible;
   const requesterProfile = body.requesterProfile || body.requester_profile || null;
 
   return {
@@ -92,9 +82,8 @@ export function platformDevInput(body = {}) {
     areas: normalizePlatformAreas(analysis.areas || analysis.areaLabels || analysis.area_labels || body.areas),
     risk,
     agentEligible,
-    requiresHumanGate,
-    gateStatus: requiresHumanGate ? 'pending' : 'not_required',
-    gateReason: requiresHumanGate ? '高风险或敏感范围需要人工确认后再进入自动开发。' : null,
+    autoDevStatus: 'pending',
+    autoDevReason: '用户手动触发后才进入自动开发。',
     requesterProfile,
     slackSessionId: slackSession?.id || body.slackSessionId || null,
     slackSessionKey: slackSession?.sessionKey || body.slackSessionKey || null,

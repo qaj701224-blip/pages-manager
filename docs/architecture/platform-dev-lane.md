@@ -7,9 +7,9 @@ Platform Dev Lane 让 Slack 可以创建和跟踪 `pages-manager` 自身的开�
 用户在 Slack 里描述平台改造需求后，系统负责：
 
 1. 判断需求属于个人站点发布还是平台自身开发。
-2. 整理标题、摘要、类型、范围、风险和是否允许自动开发。
+2. 整理标题、摘要、类型、范围和风险。
 3. 在用户确认后创建 GitHub issue。
-4. 对高风险需求等待人工确认；对低 / 中风险且适合自动开发的需求启动平台开发执行器。
+4. GitHub issue 创建后，在 Slack 进度卡展示“自动开发”按钮；只有发起人点击后才启动平台开发执行器。
 5. 跟踪 PR、CI、Review 和合并状态，并把进度回写到原 Slack 对话。
 
 用户不需要理解 gateway、worker、webhook、MySQL、PublishingJob 或内部 message binding。Slack 上只展示“需求摘要、当前进度、下一步动作和 GitHub 链接”。
@@ -29,7 +29,7 @@ Platform Dev Lane：
 
 - 目标是 `pages-manager` 自身。
 - 数据模型是 `PlatformDevItem`。
-- repo 全目录可以被人工或受控 agent 修改，但必须受 issue type、risk gate、CI、Review 和 GitHub Rulesets 约束。
+- repo 全目录可以被人工或受控 agent 修改，但必须受 issue type、risk、手动“自动开发”触发、CI、Review 和 GitHub Rulesets 约束。
 - 不生成 Cloudflare preview，不触发站点发布 workflow。
 
 Slack Agent 输出必须包含：
@@ -43,7 +43,7 @@ Slack Agent 输出必须包含：
   "areas": ["area:gateway", "area:github"],
   "risk": "risk:medium",
   "agentEligible": true,
-  "requiresHumanGate": false
+  "autoDevStatus": "pending"
 }
 ```
 
@@ -54,8 +54,8 @@ Slack Agent 输出必须包含：
 - `type:dev`：平台功能开发。
 - `type:bug`：平台 bug 修复。
 - `type:docs`：架构、宣讲、使用文档。
-- `type:feedback`：意见收集，不默认进入自动开发。
-- `type:question`：问题咨询，不默认进入自动开发。
+- `type:feedback`：意见收集；确认后仍只先创建 issue，是否自动开发由后续“自动开发”按钮决定。
+- `type:question`：问题咨询；确认后仍只先创建 issue，是否自动开发由后续“自动开发”按钮决定。
 - `type:ci`：CI/CD 或 GitHub Actions 改造，默认高风险。
 - `type:ops`：ECS、K8s、Docker、部署脚本、运行时配置，默认高风险。
 - `type:security`：权限、token、secret、认证授权，默认高风险。
@@ -66,16 +66,11 @@ Slack Agent 输出必须包含：
 - `risk:medium`：gateway、worker、Slack、GitHub 自动化、DB 状态机等常规平台改动。
 - `risk:high`：CI/CD、部署、K8s、ECS、Dockerfile、secret、生产行为、权限模型或 schema 迁移。
 
-高风险需求必须先创建 issue 并等待人工确认，不能直接启动自动开发。创建时 worker 只负责确保 GitHub issue 和返回 `gate_pending` callback；真正的 Platform Agent dispatch 必须等 gate 已批准后由 gateway 从当前 MySQL 状态触发。
+所有 Platform Dev 需求都必须先创建 GitHub issue，不能在确认创建 issue 的同时自动启动开发。创建时 worker 只负责确保 GitHub issue，并在 `auto_dev_status=pending` 时返回 `auto_dev_pending` callback。这里的 `auto_dev_pending` 表示“等待发起人手动触发自动开发”，不是高风险审批。
 
-人工确认入口在 Slack 进度消息中展示：
+“自动开发”入口在 Slack 进度消息中展示。发起人点击后，gateway 把 `PlatformDevItem.autoDevStatus` 置为 `triggered`，记录 `autoDevTriggeredBy` / `autoDevTriggeredAt`，并启动 `platform-agent.yml`。如果 item 仍处于 `received`，只记录触发状态，等待 issue 创建 callback 到达后再推进，避免重复启动 worker。
 
-- “批准自动开发”：把 `work_item_gates` 的 risk gate 置为 `approved`，`PlatformDevItem.gateStatus=approved`。如果 item 已在 `gate_pending`，gateway 推进到 `agent_queued` 并启动 `platform-agent.yml`；如果 item 仍是 `received`，只记录批准，等待正在运行的 issue 创建回调到达后再推进，避免重复启动 worker。
-- “不进入自动开发”：把 gate 置为 `rejected`，`PlatformDevItem` 进入 `closed_unmerged`，保留 GitHub issue 作为需求记录。
-
-批准高风险自动开发必须 fail-closed。gateway 只有在 `PAGES_PLATFORM_GATE_APPROVERS` 或 `PAGES_PLATFORM_GATE_APPROVER_IDS` 配置了当前 Slack 用户时才接受批准；值支持 `U123` 或 `slack:T1:U123`。未配置维护者 allowlist 时，同一需求发起人也不能批准，高风险 item 必须保持 `gate_pending`，不能 dispatch worker。
-
-按钮 value 只携带 work item id / session id / gate type；gateway 必须重新从 MySQL 读取 item 和 gate，并校验当前 Slack 用户归属，不能信任按钮里的风险或范围字段。
+触发必须 fail-closed：gateway 必须重新从 MySQL 读取 item 和 Slack session，并校验当前 Slack 用户就是需求发起人 / session owner；不能信任按钮 value 里的 work item id、风险或范围字段。
 
 ## 状态机
 
@@ -83,7 +78,7 @@ Slack Agent 输出必须包含：
 received
   -> issue_creating
   -> issue_created
-  -> gate_pending | agent_queued | agent_running
+  -> auto_dev_pending | agent_queued | agent_running
   -> branch_committed
   -> pr_created
   -> ci_running
@@ -98,9 +93,9 @@ received
 - `failed`
 - `cancelled`
 
-`gate_pending` 只对需要人工确认的需求出现。`ci_failed` 和 `review_blocked` 可以回到 `agent_queued` 或 `agent_running` 继续修复。`failed` 表示某一轮自动化失败，但有关联 PR 的工单仍可被受控恢复：用户 follow-up 会先回到 `agent_queued`，Review Agent 的 blocking / unknown comment 会先进入 `review_blocked`，再由 gateway dispatch `mode=fix` 的 Platform Agent；后续 workflow 的 `agent_running` callback 会桥接成 `failed -> agent_queued -> agent_running`，避免重试卡死在旧失败态。fix 轮次写 follow-up comment 或 dispatch workflow 失败时，worker 必须通过 executor callback 把任务标记为 `failed`，不能让用户看到“已追加/启动”但任务停在旧状态。
+`auto_dev_pending` 表示 issue 已创建、等待发起人点击“自动开发”。`ci_failed` 和 `review_blocked` 可以回到 `agent_queued` 或 `agent_running` 继续修复。`failed` 表示某一轮自动化失败，但有关联 PR 的工单仍可被受控恢复：用户 follow-up 会先回到 `agent_queued`，Review Agent 的 blocking / unknown comment 会先进入 `review_blocked`，再由 gateway dispatch `mode=fix` 的 Platform Agent；后续 workflow 的 `agent_running` callback 会桥接成 `failed -> agent_queued -> agent_running`，避免重试卡死在旧失败态。fix 轮次写 follow-up comment 或 dispatch workflow 失败时，worker 必须通过 executor callback 把任务标记为 `failed`，不能让用户看到“已追加/启动”但任务停在旧状态。
 
-自动修复、人工 gate 放行后 dispatch Platform Agent 时，如果 worker start 返回失败或 worker endpoint 网络请求抛错，item 必须落到 `failed` 并记录可见错误；迟到的 Platform Agent `failed` callback 必须按当前 `workflowRunId` / `headSha` 校验，不能回退已经进入更新轮次或已成功的 item。GitHub webhook 驱动的 site preview / Pages Agent dispatch 则必须让 delivery 保持可重试，启动失败时回滚到 dispatch 前阶段，不能把未启动的 worker 当成已处理。
+手动触发自动开发后 dispatch Platform Agent 时，如果 worker start 返回失败或 worker endpoint 网络请求抛错，item 必须落到 `failed` 并记录可见错误；迟到的 Platform Agent `failed` callback 必须按当前 `workflowRunId` / `headSha` 校验，不能回退已经进入更新轮次或已成功的 item。GitHub webhook 驱动的 site preview / Pages Agent dispatch 则必须让 delivery 保持可重试，启动失败时回滚到 dispatch 前阶段，不能把未启动的 worker 当成已处理。
 
 ## 数据模型
 
@@ -109,11 +104,10 @@ received
 - `platform_dev_items`：平台开发工单主表。
 - `platform_dev_events`：平台工单状态事件。
 - `work_item_links`：统一绑定 Slack session、issue、PR 和 work item。
-- `work_item_gates`：人工确认、风险 gate 和审核结论。
 - `work_item_followups`：Slack 后续补充。
 - `slack_work_item_status_messages`：平台进度消息 message binding。
 
-`platform_dev_items`、初始 `platform_dev_events` 和需要的 `work_item_gates` 必须在同一个 MySQL transaction 内创建；同一 idempotency key 的重试必须 insert-only 后读取已有 item，不能用 upsert 重置既有 item，也不能留下只有 item、没有事件或 gate 的半成品。
+`platform_dev_items` 和初始 `platform_dev_events` 必须在同一个 MySQL transaction 内创建；同一 idempotency key 的重试必须 insert-only 后读取已有 item，不能用 upsert 重置既有 item，也不能留下只有 item、没有事件的半成品。
 
 兼容扩展：
 
@@ -158,7 +152,7 @@ issue body 必须包含：
 - Areas
 - Risk
 - AgentEligible
-- RequiresHumanGate
+- AutoDevStatus
 - Slack thread 来源
 - 自动化边界
 
@@ -201,12 +195,12 @@ fix round 必须带上当前 PR 上下文。GitHub webhook 收到 Review Agent �
 确认前：
 
 - 展示平台需求标题、摘要、类型、范围、风险。
-- 按钮是“确认创建平台需求”。
-- 高风险时明确说明“先创建 issue，等待人工确认后再进入自动开发”。
+- 按钮是“创建 Issue”。
+- 明确说明“确认后只创建 issue，Issue 创建后进度卡会出现自动开发按钮”。
 
 处理中：
 
-- Slack 只展示用户可理解的进度：创建 issue、等待人工确认、自动开发中、PR 已创建、CI 验证中、等待 Review、可合并、已合并或失败。
+- Slack 只展示用户可理解的进度：创建 issue、Issue 已创建待手动启动、自动开发中、PR 已创建、CI 验证中、等待 Review、可合并、已合并或失败。
 - 不展示内部服务名、DB 表名、webhook、worker 或 message binding 实现。
 
 后续补充：
@@ -255,7 +249,7 @@ Issue：#123
 - 个人站点发布路径仍只改 `sites/<employeeSlug>/<siteSlug>/`，且 preview 逻辑不变。
 - 平台 issue 创建后能通过 marker 被 GitHub webhook 找回。
 - 平台 PR 的 CI / Review / merge 只更新 Platform Dev Lane，不触发 pages preview。
-- 高风险需求不会在人工 gate 前启动 `platform-agent.yml`。
-- 高风险 gate 的批准 / 拒绝会写入 `work_item_gates`，并同步更新 Slack 进度消息。
+- Platform Dev 需求不会在发起人点击“自动开发”前启动 `platform-agent.yml`。
+- “自动开发”触发会写入 `platform_dev_items.auto_dev_status`、`auto_dev_triggered_by`、`auto_dev_triggered_at`，并同步更新 Slack 进度消息。
 - 所有行为有单元测试或集成测试覆盖。
 - Slack 诊断回复不泄露 gateway / worker / MySQL / callback / status card 等底座细节，只展示任务阶段、链接、失败原因和建议操作。

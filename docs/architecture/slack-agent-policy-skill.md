@@ -153,7 +153,7 @@ Context / lane skill：
 - `work-item-continuation`：`这个 issue / 接着改 / 改为 / 不再修改 X / 换成 Y` 续接当前任务。
 - `repo-question`：仓库只读问答、实现方案咨询和 evidence 限制。
 - `diagnostics`：状态、失败、日志、workflow、重试和转人工入口。
-- `platform-dev`：明确平台研发需求、风险、area 和人工 gate。
+- `platform-dev`：明确平台研发需求、风险、area 和手动自动开发触发边界。
 - `site-publishing`：个人站点创建、preview follow-up 和站点归属 hint。
 - `product-design`：产品视角、方案评审、用户心智和是否偏离初衷。
 
@@ -446,7 +446,7 @@ Gateway 必须继续：
   "areas": ["area:gateway"],
   "risk": "risk:low | risk:medium | risk:high",
   "agentEligible": false,
-  "requiresHumanGate": false,
+  "autoDevStatus": "pending",
   "title": "简短标题",
   "summary": "简短摘要",
   "approvalMode": "manual_required",
@@ -467,8 +467,8 @@ Normalization 规则：
 - 缺失 `toolCall` 时可以按 `intent` 推导。
 - `repo_question`、`architecture_question`、`platform_question` 必须强制 `answer_repo_question`。
 - `needsClarification=true` 时，gateway 不执行 `confirm_create_issue`、`confirm_platform_issue`、`record_followup`、`switch_work_item`、`reopen_work_item`。
-- `issueType=type:feedback | type:question` 默认 `agentEligible=false`。
-- `issueType=type:ci | type:ops | type:security` 默认 `risk=risk:high`、`requiresHumanGate=true`。
+- 所有 Platform Dev issue 默认只创建 GitHub issue，不自动开发；必须由发起人在进度卡点击“自动开发”后才启动。
+- `issueType=type:ci | type:ops | type:security` 默认 `risk=risk:high`。
 - `contextResolution` 是可选审计字段，进入 `AgentRun.reportJson`，不直接展示给用户。
 
 ### repo-question.md
@@ -495,10 +495,9 @@ Normalization 规则：
 必须包含：
 
 - 只有明确要求“修改 pages-manager / 修复平台 bug / 创建平台 issue / 按方案实现”才进入 `platform-dev`。
-- 必须输出 `issueType`、`areas`、`risk`、`agentEligible`、`requiresHumanGate`。
+- 必须输出 `issueType`、`areas`、`risk`、`agentEligible`、`autoDevStatus`。
 - `area` 常用值：`area:gateway`、`area:worker`、`area:github`、`area:ci`、`area:db`、`area:slack-agent`、`area:slack-notifier`、`area:slack`、`area:docs`、`area:ops`、`area:platform`。
-- CI/CD、部署、ECS、k8s、schema、权限、secret、production 相关默认高风险并需要人工 gate。
-- feedback/question 类默认不触发 Coding Agent。
+- CI/CD、部署、ECS、k8s、schema、权限、secret、production 相关默认高风险，但仍由同一个“自动开发”按钮手动触发。
 
 ### site-publishing.md
 
@@ -561,8 +560,8 @@ Normalization 规则：
 - Repo 咨询：`sessions 是怎么保存的？` -> `repo_question`。
 - 咨询里带修改词：`如果后续要修改 CI workflow，会影响原先 CF 那条线吗？` -> `repo_question`。
 - 明确平台需求：`帮我实现 Slack Agent 的 repo 只读问答` -> `create_platform_issue` / `confirm_platform_issue`。
-- 平台反馈：`Slack Agent 经常误判，记录一个反馈` -> `platform_feedback` 或 `create_platform_issue` with `type:feedback`、`agentEligible=false`。
-- CI 高风险：`修改 pages-manager 的 CI workflow 和 ECS 部署脚本` -> `risk:high`、`requiresHumanGate=true`。
+- 平台反馈：`Slack Agent 经常误判，记录一个反馈` -> `platform_feedback` 或 `create_platform_issue` with `type:feedback`，确认后先创建 issue，等待进度卡手动触发自动开发。
+- CI 高风险：`修改 pages-manager 的 CI workflow 和 ECS 部署脚本` -> `risk:high`、`autoDevStatus=pending`。
 - 取消意图：`取消` -> `cancel_request`，不直接取消已有 issue。
 - 关闭当前会话：`这个 preview 不用了` -> `close_session`。
 

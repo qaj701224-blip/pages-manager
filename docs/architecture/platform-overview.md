@@ -9,7 +9,7 @@
 - `apps/server`、KV SDK、Cloudflare staging / production 发布底座属于已有能力，改动时要保守处理公开 API、token 归属、staging / production 隔离和现有站点行为。
 - Slack / gateway / worker / slack-agent / slack-notifier / MySQL / Redis 这条新平台线尚未正式上线，不承担旧版本用户兼容。相关数据结构、内部 API、Slack 卡片和状态机可以优先按目标架构直接收敛，不需要为了临时测试版本保留 file store、MemoryGatewayStore、旧 Socket Mode、本地脚本或过渡字段。
 - Slack 新平台线分为两条 lane：Site Publishing Lane 处理员工个人站点；Platform Dev Lane 处理 `pages-manager` 自身 issue / PR。两条 lane 可以复用 gateway、agent、worker、notifier 和 webhook 基建，但权限边界、issue 模板、PR 改动范围和验收标准必须显式区分。
-- 自动生成的 `sites/**` 用户站点仍然必须被隔离，不能因为新平台未上线就放松路径、secret 或 workflow 权限边界。Platform Dev Lane 不使用 `sites/**` 白名单作为主约束，而是使用 issue 类型、风险 gate、CI、review 和 GitHub Rulesets 约束 repo 全目录改动。
+- 自动生成的 `sites/**` 用户站点仍然必须被隔离，不能因为新平台未上线就放松路径、secret 或 workflow 权限边界。Platform Dev Lane 不使用 `sites/**` 白名单作为主约束，而是使用 issue 类型、风险、手动“自动开发”触发、CI、review 和 GitHub Rulesets 约束 repo 全目录改动。
 
 核心模型：
 
@@ -28,7 +28,7 @@ Platform Dev Lane 核心模型：
 ```text
 Slack requester
   -> PlatformIssue
-  -> issue type / label / risk gate
+  -> issue type / label / risk / auto-dev trigger
   -> Coding Agent PR
   -> CI / review / merge
   -> Slack merge / close notification
@@ -36,7 +36,7 @@ Slack requester
 
 ## 当前分层
 
-下面是 Slack 新平台线的运行分层。当前代码具备 gateway、worker、slack-agent、slack-notifier、MySQL-backed store、Site Publishing Lane，以及 Platform Dev Lane 的独立状态机、确认卡、`platform-agent.yml`、风险 gate、PR / CI / merge 回写。
+下面是 Slack 新平台线的运行分层。当前代码具备 gateway、worker、slack-agent、slack-notifier、MySQL-backed store、Site Publishing Lane，以及 Platform Dev Lane 的独立状态机、确认卡、`platform-agent.yml`、手动“自动开发”触发、PR / CI / merge 回写。
 
 ```text
 Slack / Browser / Internal API / GitHub webhook

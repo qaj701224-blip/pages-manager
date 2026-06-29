@@ -1010,8 +1010,7 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
     : ['type:ci', 'type:ops', 'type:security'].includes(issueType) || highRiskPath
       ? 'risk:high'
       : 'risk:medium';
-  const agentEligible = !['type:feedback', 'type:question'].includes(issueType);
-  const requiresHumanGate = risk === 'risk:high';
+  const agentEligible = true;
   const internalSummaryLines = [
     `用户基于仓库问答希望继续推进：${titleSource}`,
     lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
@@ -1026,7 +1025,7 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
     : [
         `把刚才的仓库问答记录为问题咨询：${titleSource}`,
         lastTurn.answerSummary ? `当前结论：${lastTurn.answerSummary}` : '',
-        '这类记录不会启动自动开发；如果后续要改代码，请在当前对话明确要实现的目标。',
+        '确认后只会先创建 issue；如果后续要改代码，请在进度卡点击“自动开发”并在当前对话明确实现目标。',
       ].filter(Boolean);
   const text = `${titleSource}\n${internalSummaryLines.join('\n')}`;
   return {
@@ -1038,7 +1037,6 @@ export function platformDraftFromRepoQuestionContext(sessionMemory = {}) {
     areas: areas.length ? areas : ['area:platform'],
     risk,
     agentEligible,
-    requiresHumanGate,
     title: titleSource.length > 80 ? `${titleSource.slice(0, 77)}...` : titleSource,
     summary: visibleSummaryLines.join('\n').slice(0, 1800),
     needsClarification: false,

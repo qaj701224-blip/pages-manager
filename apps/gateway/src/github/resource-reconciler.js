@@ -104,7 +104,7 @@ function restoredStatusForReopenedGithubResource(job = {}, target = '') {
 
 function restoredStatusForReopenedPlatformItem(item = {}, target = '') {
   if (target === 'pr' || item.githubPrNumber) return 'pr_created';
-  if (item.requiresHumanGate && item.gateStatus !== 'approved') return 'gate_pending';
+  if (item.autoDevStatus !== 'triggered') return 'auto_dev_pending';
   return item.agentEligible ? 'agent_queued' : 'issue_created';
 }
 

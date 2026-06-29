@@ -149,13 +149,13 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(doc, /risk:high/);
   assert.match(doc, /PlatformDevItem: pdev_xxx/);
   assert.match(doc, /不生成 Cloudflare preview/);
-  assert.match(readDoc('docs/architecture/db-schema.md'), /gate_type=risk,status=approved/);
+  assert.match(readDoc('docs/architecture/db-schema.md'), /auto_dev_status = triggered/);
   assert.doesNotMatch(readDoc('docs/architecture/db-schema.md'), /gate_type=coding|platform-dev\.js`（计划）|work-items\.js`（计划）/);
 
   assert.match(workflow, /^name: Platform Agent$/m);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /platformDevItemId:/);
-  assert.match(workflow, /gateApproved:/);
+  assert.match(workflow, /autoDevTriggered:/);
   assert.match(workflow, /effective_risk/);
   assert.match(workflow, /AGENT_CODE_API_KEY/);
   assert.match(workflow, /post-executor-callback\.js/);
@@ -164,8 +164,42 @@ test('platform dev lane documents Slack-to-platform PR flow and isolates deploym
   assert.match(workflow, /EFFECTIVE_RISK/);
   assert.match(workflow, /sensitive_paths/);
   assert.match(workflow, /deploy\//);
-  assert.match(workflow, /High-risk paths require gate-approved Platform Dev work/);
+  assert.match(workflow, /High-risk paths require manually triggered Platform Dev work/);
   assert.match(workflow, /Potential secret detected/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
   assert.doesNotMatch(workflow, /pages-preview\.yml|deploy-pages-v2|Deploy Production/);
+});
+
+test('platform auto-dev migration preserves deployability for old gate rows', () => {
+  const migration = readDoc('apps/gateway/drizzle/migrations/0012_new_multiple_man.sql');
+  const compatEnum = migration.indexOf(
+    "enum('received','triaging','issue_creating','issue_created','gate_pending','auto_dev_pending'"
+  );
+  const updateEventGate = migration.indexOf(
+    "UPDATE `platform_dev_events` SET `status` = 'auto_dev_pending' WHERE `status` = 'gate_pending'"
+  );
+  const updateItemGate = migration.indexOf(
+    "UPDATE `platform_dev_items` SET `status` = 'auto_dev_pending' WHERE `status` = 'gate_pending'"
+  );
+  const updateItemIssue = migration.indexOf(
+    [
+      "UPDATE `platform_dev_items` SET `status` = 'auto_dev_pending'",
+      "WHERE `status` = 'issue_created' AND `auto_dev_status` = 'pending'",
+    ].join(' ')
+  );
+  const updateSlackResult = migration.indexOf(
+    "UPDATE `slack_events` SET `result_type` = 'platform_auto_dev_pending' WHERE `result_type` = 'platform_gate_pending'"
+  );
+  const finalEnum = migration.lastIndexOf(
+    "enum('received','triaging','issue_creating','issue_created','auto_dev_pending'"
+  );
+
+  assert.ok(compatEnum >= 0, 'migration must temporarily accept old and new platform statuses');
+  assert.ok(updateEventGate > compatEnum, 'old event statuses must be rewritten after enum compatibility');
+  assert.ok(updateItemGate > compatEnum, 'old item gate statuses must be rewritten after enum compatibility');
+  assert.ok(updateItemIssue > compatEnum, 'old untriggered issue_created rows must become button-visible');
+  assert.ok(updateSlackResult > compatEnum, 'old Slack result types must be rewritten after enum compatibility');
+  assert.ok(finalEnum > updateItemGate, 'final platform enum tightening must happen after item status rewrites');
+  assert.ok(finalEnum > updateEventGate, 'final platform enum tightening must happen after event status rewrites');
+  assert.match(migration, /DROP TABLE IF EXISTS `work_item_gates`/);
 });

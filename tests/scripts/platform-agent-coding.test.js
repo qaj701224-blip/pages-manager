@@ -17,6 +17,7 @@ const env = {
   ISSUE_TYPE: 'type:dev',
   AREAS: 'area:gateway,area:github',
   RISK: 'risk:medium',
+  AUTO_DEV_TRIGGERED: 'true',
   BASE_REF: 'master',
   REVIEW_CONTEXT: 'Review context for PR #88:\n1. [blocking] README 缺说明',
   MEMORY_CONTEXT: 'Session summary: previous run changed docs.',
@@ -108,52 +109,110 @@ test('runs Platform Coding Agent and writes repo relative files', async () => {
   }
 });
 
-test('rejects high risk platform coding without gate', async () => {
+test('rejects platform coding before manual auto-dev trigger', async () => {
   await assert.rejects(
     () =>
       runPlatformCodingAgent({
-        env: { ...env, RISK: 'risk:high' },
+        env: { ...env, AUTO_DEV_TRIGGERED: 'false' },
         fetchImpl: async () => {
           throw new Error('fetch should not be called');
         },
       }),
-    /High risk platform work/
+    /manually triggered/
   );
 });
 
-test('treats CI, ops, and security work as high risk even when declared risk is lower', async () => {
+test('allows CI, ops, and security work after manual auto-dev trigger', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-ci-triggered-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await runPlatformCodingAgent({
+      env: { ...env, ISSUE_TYPE: 'type:ci', RISK: 'risk:medium', AUTO_DEV_TRIGGERED: 'true' },
+      async fetchImpl() {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    files: [{ path: 'docs/architecture/platform-dev-lane.md', content: '# CI triggered\n' }],
+                    summary: 'CI work manually triggered.',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const report = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-report.json'), 'utf8'));
+    assert.equal(report.issueType, 'type:ci');
+    assert.equal(report.risk, 'risk:high');
+    assert.equal(report.autoDevTriggered, true);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('rejects CI, ops, and security work before manual auto-dev trigger', async () => {
   await assert.rejects(
     () =>
       runPlatformCodingAgent({
-        env: { ...env, ISSUE_TYPE: 'type:ci', RISK: 'risk:medium' },
+        env: { ...env, ISSUE_TYPE: 'type:ci', RISK: 'risk:medium', AUTO_DEV_TRIGGERED: 'false' },
         fetchImpl: async () => {
           throw new Error('fetch should not be called');
         },
       }),
-    /High risk platform work/
+    /manually triggered/
   );
 });
 
-test('rejects question and feedback issues before calling Platform Coding Agent', async () => {
-  await assert.rejects(
-    () =>
-      runPlatformCodingAgent({
-        env: { ...env, ISSUE_TYPE: 'type:question', RISK: 'risk:low' },
-        fetchImpl: async () => {
-          throw new Error('fetch should not be called');
-        },
-      }),
-    /not code-eligible/
-  );
+test('allows question and feedback issues after manual auto-dev trigger', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-question-triggered-'));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    await runPlatformCodingAgent({
+      env: { ...env, ISSUE_TYPE: 'type:question', RISK: 'risk:low', AUTO_DEV_TRIGGERED: 'true' },
+      async fetchImpl() {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    files: [{ path: 'docs/questions/session-storage.md', content: '# Session storage\n' }],
+                    summary: 'Question handled after manual trigger.',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+
+    const report = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-report.json'), 'utf8'));
+    assert.equal(report.issueType, 'type:question');
+    assert.equal(report.autoDevTriggered, true);
+  } finally {
+    process.chdir(previousCwd);
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
-test('allows high risk platform coding after gate approval', async () => {
+test('allows high risk platform coding after manual auto-dev trigger', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-approved-'));
   const previousCwd = process.cwd();
   try {
     process.chdir(dir);
     await runPlatformCodingAgent({
-      env: { ...env, RISK: 'risk:high', GATE_APPROVED: 'true' },
+      env: { ...env, RISK: 'risk:high', AUTO_DEV_TRIGGERED: 'true' },
       async fetchImpl() {
         return new Response(
           JSON.stringify({
@@ -162,7 +221,7 @@ test('allows high risk platform coding after gate approval', async () => {
                 message: {
                   content: JSON.stringify({
                     files: [{ path: 'docs/architecture/platform-dev-lane.md', content: '# Approved\n' }],
-                    summary: 'High risk gate approved.',
+                    summary: 'High risk auto-dev triggered.',
                   }),
                 },
               },
@@ -175,14 +234,14 @@ test('allows high risk platform coding after gate approval', async () => {
 
     const report = JSON.parse(await readFile(path.join(dir, '.pages-artifacts/platform-agent-report.json'), 'utf8'));
     assert.equal(report.risk, 'risk:high');
-    assert.equal(report.gateApproved, true);
+    assert.equal(report.autoDevTriggered, true);
   } finally {
     process.chdir(previousCwd);
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test('rejects high-risk repository paths without gate approval', async () => {
+test('rejects high-risk repository paths without manual auto-dev trigger', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-sensitive-path-'));
   const previousCwd = process.cwd();
   try {
@@ -208,7 +267,7 @@ test('rejects high-risk repository paths without gate approval', async () => {
             );
           },
         }),
-      /high-risk gate approval/
+      /manual auto-dev trigger/
     );
   } finally {
     process.chdir(previousCwd);
@@ -216,7 +275,7 @@ test('rejects high-risk repository paths without gate approval', async () => {
   }
 });
 
-test('rejects root deploy paths without gate approval', async () => {
+test('rejects root deploy paths without manual auto-dev trigger', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-deploy-path-'));
   const previousCwd = process.cwd();
   try {
@@ -242,7 +301,7 @@ test('rejects root deploy paths without gate approval', async () => {
             );
           },
         }),
-      /high-risk gate approval/
+      /manual auto-dev trigger/
     );
   } finally {
     process.chdir(previousCwd);
@@ -250,13 +309,13 @@ test('rejects root deploy paths without gate approval', async () => {
   }
 });
 
-test('allows high-risk repository paths after gate approval', async () => {
+test('allows high-risk repository paths after manual auto-dev trigger', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'platform-agent-sensitive-approved-'));
   const previousCwd = process.cwd();
   try {
     process.chdir(dir);
     await runPlatformCodingAgent({
-      env: { ...env, RISK: 'risk:high', GATE_APPROVED: 'true' },
+      env: { ...env, RISK: 'risk:high', AUTO_DEV_TRIGGERED: 'true' },
       async fetchImpl() {
         return new Response(
           JSON.stringify({

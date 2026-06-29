@@ -63,7 +63,7 @@ Site Publishing Coding Agent 不能做：
 
 当前 `pages-agent.yml` 会在创建 / 更新 PR 前执行 allowed path 校验。PR 创建后仍必须跑 `site-check.yml`。
 
-Platform Dev Coding Agent 能修改 `pages-manager` repo 全目录内与 issue 直接相关的文件，但必须通过 `lane:platform-dev` issue、risk gate、CI 和 review 约束。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动默认 high risk，不能绕过人工 gate。
+Platform Dev Coding Agent 能修改 `pages-manager` repo 全目录内与 issue 直接相关的文件，但必须通过 `lane:platform-dev` issue、risk、发起人手动“自动开发”触发、CI 和 review 约束。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动默认 high risk，不能绕过 PR review 和人工 merge。
 
 ## Code 更新和编译跑在哪
 

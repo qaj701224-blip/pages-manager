@@ -44,8 +44,8 @@ on:
         description: Risk label
         required: true
         type: string
-      gateApproved:
-        description: Whether the high-risk gate has been approved
+      autoDevTriggered:
+        description: Whether the requester clicked the auto-dev trigger
         required: false
         default: 'false'
         type: string
@@ -102,7 +102,7 @@ jobs:
       ISSUE_TYPE: ${{ inputs.issueType }}
       AREAS: ${{ inputs.areas }}
       RISK: ${{ inputs.risk }}
-      GATE_APPROVED: ${{ inputs.gateApproved }}
+      AUTO_DEV_TRIGGERED: ${{ inputs.autoDevTriggered }}
       BASE_REF: ${{ inputs.baseRef || 'master' }}
       BRANCH_NAME_OVERRIDE: ${{ inputs.branchName }}
       REVIEW_CONTEXT: ${{ inputs.reviewContext }}
@@ -143,17 +143,13 @@ jobs:
           [[ "$PLATFORM_DEV_ITEM_ID" =~ ^pdev_[A-Za-z0-9_]{1,80}$ ]]
           [[ "$ISSUE_TYPE" =~ ^type:(dev|bug|docs|feedback|question|ci|ops|security)$ ]]
           [[ "$RISK" =~ ^risk:(low|medium|high)$ ]]
-          [[ "$GATE_APPROVED" =~ ^(true|false)$ ]]
-          if [[ "$ISSUE_TYPE" =~ ^type:(feedback|question)$ ]]; then
-            echo "Question/feedback issues are records only and must not dispatch Platform Agent." >&2
-            exit 1
-          fi
+          [[ "$AUTO_DEV_TRIGGERED" =~ ^(true|false)$ ]]
           effective_risk="$RISK"
           if [[ "$ISSUE_TYPE" =~ ^type:(ci|ops|security)$ ]]; then
             effective_risk="risk:high"
           fi
-          if [[ "$effective_risk" == "risk:high" && "$GATE_APPROVED" != "true" ]]; then
-            echo "High risk platform changes must be gate-approved before dispatch." >&2
+          if [[ "$AUTO_DEV_TRIGGERED" != "true" ]]; then
+            echo "Platform changes must be manually triggered before dispatch." >&2
             exit 1
           fi
           echo "EFFECTIVE_RISK=$effective_risk" >> "$GITHUB_ENV"
@@ -312,8 +308,8 @@ jobs:
             exit 1
           fi
           sensitive_paths="$(printf '%s\n' "$changed_files" | grep -E '^(\.github/|k8s/|deploy/|docker/|Dockerfile($|\.)|scripts/(deploy|k8s|put-)|.*(/deploy|/k8s))' || true)"
-          if [[ -n "$sensitive_paths" && ( "${EFFECTIVE_RISK:-$RISK}" != "risk:high" || "$GATE_APPROVED" != "true" ) ]]; then
-            echo "High-risk paths require gate-approved Platform Dev work:" >&2
+          if [[ -n "$sensitive_paths" && ( "${EFFECTIVE_RISK:-$RISK}" != "risk:high" || "$AUTO_DEV_TRIGGERED" != "true" ) ]]; then
+            echo "High-risk paths require manually triggered Platform Dev work:" >&2
             echo "$sensitive_paths" >&2
             exit 1
           fi
@@ -425,7 +421,7 @@ jobs:
           - Type: ${env.ISSUE_TYPE || ''}
           - Areas: ${env.AREAS || ''}
           - Risk: ${env.RISK || ''}
-          - Gate approved: ${env.GATE_APPROVED || ''}
+          - Auto-dev triggered: ${env.AUTO_DEV_TRIGGERED || ''}
           - Issue: ${issueReference}
 
           ## 验证
@@ -438,7 +434,7 @@ jobs:
           - Risk: ${env.RISK || ''}
           - Platform Dev Lane 可以修改 pages-manager repo 内与 issue 直接相关的文件。
           - 本 PR 不触发 production deploy，不读取 Cloudflare / Aliyun / ACK / K8s 部署 secret。
-          - 如涉及 .github/**、k8s/**、Dockerfile 或部署脚本，必须按 high risk 走人工 gate 后再 dispatch。
+          - 如涉及 .github/**、k8s/**、Dockerfile 或部署脚本，必须标记 high risk，并且只能在用户点击“自动开发”后 dispatch。
 
           ## Self-review Checklist
 

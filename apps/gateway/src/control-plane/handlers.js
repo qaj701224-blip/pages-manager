@@ -212,25 +212,6 @@ function shouldIgnoreStaleFailedPlatformCallback(existingItem = {}, body = {}) {
   return false;
 }
 
-function csvSet(value = '') {
-  return new Set(
-    String(value || '')
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean)
-  );
-}
-
-function platformGateApproverSet(env = {}) {
-  return new Set([...csvSet(env.PAGES_PLATFORM_GATE_APPROVERS), ...csvSet(env.PAGES_PLATFORM_GATE_APPROVER_IDS)]);
-}
-
-function platformGateApprovalAllowed(env = {}, teamId, slackUserId) {
-  const allowlist = platformGateApproverSet(env);
-  if (!allowlist.size) return false;
-  return allowlist.has(slackUserId) || allowlist.has(`slack:${teamId}:${slackUserId}`);
-}
-
 async function failQueuedSlackWorkerStart(store, context = {}, errorMessage = 'Worker start failed') {
   if (context.workItemKind === 'site_publishing' && context.publishingJobId) {
     return (
@@ -1137,13 +1118,13 @@ async function processSlackEventBody(body, env, options = {}) {
         })
       );
       const workItemLink = await store.linkPlatformDevItemToSlackSession(item, slackSession);
-      const initialStage = item.requiresHumanGate ? 'gate_pending' : 'received';
+      const autoDevPending = item.autoDevStatus !== 'triggered';
       const slackStatusNotification = created
         ? await notifySlackPlatformDevStatus(env, store, item, {
-            stage: initialStage,
-            text: item.requiresHumanGate ? '平台需求已记录，等待人工确认。' : '平台需求已进入处理队列。',
-            statusText: item.requiresHumanGate
-              ? ':hourglass_flowing_sand: 已记录，等待人工确认。'
+            stage: 'issue_creating',
+            text: autoDevPending ? '平台需求已记录，正在创建 GitHub issue。' : '平台需求已进入处理队列。',
+            statusText: autoDevPending
+              ? ':hourglass_flowing_sand: 正在创建 GitHub issue...'
               : ':hourglass_flowing_sand: 正在创建 GitHub issue...',
           })
         : null;
@@ -2401,20 +2382,20 @@ export async function handleSlackInteractions(request, env) {
       {
         summary: redactSecretLikeText(slackAgentAnalysis.summary || sessionMemory.summary),
         requirements: redactSlackAnalysis({ ...slackAgentAnalysis, lane: 'platform-dev' }),
-        lastAgentResponse: '已确认创建平台需求。',
+        lastAgentResponse: '已确认创建平台 Issue。',
         pendingQuestions: [],
         conversationKind: 'confirmation_card',
       },
-      '已确认创建平台需求。'
+      '已确认创建平台 Issue。'
     );
 
-    const initialStage = item.requiresHumanGate ? 'gate_pending' : 'received';
+    const autoDevPending = item.autoDevStatus !== 'triggered';
     const slackStatusNotification = created
       ? await notifySlackPlatformDevStatus(env, store, item, {
-          stage: initialStage,
-          text: item.requiresHumanGate ? '平台需求已确认，等待人工确认。' : '平台需求已确认，正在创建 GitHub issue。',
-          statusText: item.requiresHumanGate
-            ? ':hourglass_flowing_sand: 已确认，等待人工确认。'
+          stage: 'issue_creating',
+          text: autoDevPending ? '平台需求已确认，正在创建 GitHub issue。' : '平台需求已确认，正在创建 GitHub issue。',
+          statusText: autoDevPending
+            ? ':hourglass_flowing_sand: 已确认，正在创建 GitHub issue...'
             : ':hourglass_flowing_sand: 已确认，正在创建 GitHub issue...',
           skipDuplicate: false,
         })
@@ -2736,131 +2717,88 @@ export async function handleSlackInteractions(request, env) {
     });
   }
 
-  if (actionId === 'pages_approve_platform_gate' || actionId === 'pages_reject_platform_gate') {
+  if (actionId === 'pages_trigger_platform_auto_dev') {
     const value = parseSlackButtonValue(action.value);
     const itemId = value.workItemId || value.platformDevItemId || value.jobId || '';
     const session = value.sessionId ? await store.getSlackSession(value.sessionId) : null;
     const item = itemId ? await store.getPlatformDevItem(itemId) : null;
-    const isGateApprover = platformGateApprovalAllowed(env, teamId, slackUserId);
     const visibleToRequester = item ? slackJobVisibleToActor(item, body) : false;
-    if (!item || (!visibleToRequester && !(actionId === 'pages_approve_platform_gate' && isGateApprover))) {
+    if (!item || !visibleToRequester) {
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '这个平台需求不存在，或不属于当前 Slack 用户。',
       });
     }
-    const maintainerApproval = actionId === 'pages_approve_platform_gate' && isGateApprover;
-    if (session && (session.teamId !== teamId || (!maintainerApproval && session.primarySlackUserId !== slackUserId))) {
+    if (session && (session.teamId !== teamId || session.primarySlackUserId !== slackUserId)) {
       return slackAckResponse({
         response_type: 'ephemeral',
         text: '这个确认操作不属于当前 Slack 用户。',
       });
     }
-    if (!item.requiresHumanGate) {
+    if (item.autoDevStatus === 'triggered') {
       return slackAckResponse({
         response_type: 'ephemeral',
-        text: '这个平台需求不需要人工确认。',
+        text: '这个平台需求已经触发自动开发，正在继续处理。',
       });
     }
-    if (item.gateStatus === 'approved' && actionId === 'pages_approve_platform_gate') {
+    if (!item.agentEligible) {
       return slackAckResponse({
         response_type: 'ephemeral',
-        text: '这个平台需求已经批准，正在继续处理。',
+        text: '这个平台需求当前不能进入自动开发，请在 Issue 中继续人工处理。',
+        platformDevItemId: item.id,
       });
     }
-    if (['rejected', 'cancelled', 'expired'].includes(item.gateStatus || '')) {
-      return slackAckResponse({
-        response_type: 'ephemeral',
-        text: '这个平台需求的人工确认已经结束，不能重复操作。',
-      });
-    }
-
-    const gateType = value.gateType || 'risk';
-    if (actionId === 'pages_reject_platform_gate') {
-      let itemForRejection = item;
-      if (itemForRejection.status === 'received') {
-        itemForRejection = await store.updatePlatformDevItem(itemForRejection.id, 'gate_pending', {
-          gateStatus: itemForRejection.gateStatus || 'pending',
-          gateReason: itemForRejection.gateReason || '高风险或敏感范围需要人工确认后再进入自动开发。',
-        });
-        if (!itemForRejection) return slackAckResponse({ response_type: 'ephemeral', text: '这个平台需求已经不存在。' });
-      }
-      const gate = store.decideWorkItemGate
-        ? await store.decideWorkItemGate('platform_dev', itemForRejection.id, gateType, {
-            status: 'rejected',
-            decidedBy: `slack:${teamId}:${slackUserId}`,
-            reason: itemForRejection.gateReason || '人工拒绝自动开发。',
-          })
-        : null;
-      const rejected = await store.updatePlatformDevItem(itemForRejection.id, 'closed_unmerged', {
-        gateStatus: 'rejected',
-        gateReason: itemForRejection.gateReason || '人工拒绝自动开发。',
-      });
-      if (!rejected) return slackAckResponse({ response_type: 'ephemeral', text: '这个平台需求已经不存在。' });
-      await store.linkPlatformDevItemToSlackSession(rejected, session || undefined);
-      const slackStatusNotification = await notifySlackPlatformDevStatus(env, store, rejected, {
-        stage: 'closed_unmerged',
-        text: '人工确认未通过，这个需求不会进入自动开发。',
-        statusText: ':white_check_mark: 已停止自动开发。',
-        skipDuplicate: false,
-        slackSessionId: session?.id || rejected.slackSessionId || null,
-      });
-      const gateCardUpdate = await updateInteractionAsHandled(env, body, session, {
-        header: '自动开发已停止',
-        text: '*处理结果*\n这个平台需求不会进入自动开发。',
-        contextText: '如需继续，可以在当前对话补充新的处理方式。',
-        links: [
-          { text: '查看 Issue', url: rejected.githubIssueUrl, actionId: 'open_issue' },
-          { text: '查看 PR', url: rejected.githubPrUrl, actionId: 'open_pr' },
-        ],
-      });
-      return slackAckResponse({
-        response_type: 'ephemeral',
-        text: '已记录：这个平台需求不会进入自动开发。',
-        gate,
-        platformDevItemId: rejected.id,
-        ...(slackStatusNotification ? { slackStatusNotification } : {}),
-        ...(gateCardUpdate ? { gateCardUpdate } : {}),
-      });
-    }
-
-    if (!isGateApprover) {
-      return slackAckResponse({
-        response_type: 'ephemeral',
-        text: '这个高风险平台需求需要指定维护者批准后才能进入自动开发。',
-      });
-    }
-
-    const gate = store.decideWorkItemGate
-      ? await store.decideWorkItemGate('platform_dev', item.id, gateType, {
-          status: 'approved',
-          decidedBy: `slack:${teamId}:${slackUserId}`,
-          reason: item.gateReason || '人工批准自动开发。',
+    const triggeredAt = new Date().toISOString();
+    const triggerResult = store.triggerPlatformDevAutoDev
+      ? await store.triggerPlatformDevAutoDev(item.id, {
+          autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
+          autoDevTriggeredAt: triggeredAt,
+          autoDevReason: item.autoDevReason || '用户手动触发自动开发。',
         })
-      : null;
-    let approved = await store.patchPlatformDevItem(item.id, {
-      gateStatus: 'approved',
-      gateReason: item.gateReason || '人工批准自动开发。',
-    });
+      : {
+          item: await store.patchPlatformDevItem(item.id, {
+            autoDevStatus: 'triggered',
+            autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
+            autoDevTriggeredAt: triggeredAt,
+            autoDevReason: item.autoDevReason || '用户手动触发自动开发。',
+          }),
+          triggered: true,
+          alreadyTriggered: false,
+        };
+    let approved = triggerResult?.item || null;
+    if (triggerResult && !triggerResult.triggered) {
+      if (triggerResult.alreadyTriggered) {
+        return slackAckResponse({
+          response_type: 'ephemeral',
+          text: '这个平台需求已经触发自动开发，正在继续处理。',
+          platformDevItemId: item.id,
+        });
+      }
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: '这个平台需求当前无法触发自动开发，请刷新状态后重试。',
+        platformDevItemId: item.id,
+      });
+    }
     if (!approved) {
       return slackAckResponse({
         response_type: 'ephemeral',
-        text: '这个平台需求已不存在，无法继续批准。',
-        gate,
+        text: '这个平台需求已不存在，无法继续触发。',
         platformDevItemId: item.id,
       });
     }
     let workerStart = null;
-    if (approved.status === 'gate_pending') {
+    if (approved.status === 'auto_dev_pending') {
       approved = await store.updatePlatformDevItem(approved.id, 'agent_queued', {
-        gateStatus: 'approved',
-        gateReason: approved.gateReason,
+        autoDevStatus: 'triggered',
+        autoDevTriggeredBy: `slack:${teamId}:${slackUserId}`,
+        autoDevTriggeredAt: triggeredAt,
+        autoDevReason: approved.autoDevReason || '用户手动触发自动开发。',
       });
       if (!approved) {
         return slackAckResponse({
           response_type: 'ephemeral',
-          text: '这个平台需求已不存在，无法继续批准。',
-          gate,
+          text: '这个平台需求已不存在，无法继续触发。',
           platformDevItemId: item.id,
         });
       }
@@ -2879,18 +2817,18 @@ export async function handleSlackInteractions(request, env) {
       stage: approved.status,
       text:
         approved.status === 'received'
-          ? '人工确认已通过，等待当前 issue 创建完成后继续自动开发。'
-          : '人工确认已通过，正在进入后续处理。',
+          ? '已手动触发自动开发，等待当前 issue 创建完成后继续。'
+          : '已手动触发自动开发，正在进入后续处理。',
       statusText:
         approved.status === 'received'
-          ? ':white_check_mark: 已批准，等待 issue 创建完成。'
-          : ':white_check_mark: 已批准自动开发。',
+          ? ':white_check_mark: 已触发，等待 issue 创建完成。'
+          : ':white_check_mark: 已触发自动开发。',
       skipDuplicate: false,
       slackSessionId: session?.id || approved.slackSessionId || null,
     });
-    const gateCardUpdate = await updateInteractionAsHandled(env, body, session, {
-      header: '自动开发已批准',
-      text: '*处理结果*\n已批准自动开发，任务正在进入后续处理。',
+    const triggerCardUpdate = await updateInteractionAsHandled(env, body, session, {
+      header: '自动开发已触发',
+      text: '*处理结果*\n已触发自动开发，任务正在进入后续处理。',
       contextText: '后续进度会在当前对话更新。',
       links: [
         { text: '查看 Issue', url: approved.githubIssueUrl, actionId: 'open_issue' },
@@ -2901,15 +2839,14 @@ export async function handleSlackInteractions(request, env) {
       response_type: 'ephemeral',
       text:
         approved.status === 'received'
-          ? '已批准，当前 issue 创建完成后会继续自动开发。'
+          ? '已触发，当前 issue 创建完成后会继续自动开发。'
           : workerStart?.started
-            ? '已批准，自动开发已启动。'
-            : '已批准，后续处理已排队。',
-      gate,
+            ? '已触发，自动开发已启动。'
+            : '已触发，后续处理已排队。',
       platformDevItemId: approved.id,
       ...(workerStart ? { workerStart } : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
-      ...(gateCardUpdate ? { gateCardUpdate } : {}),
+      ...(triggerCardUpdate ? { triggerCardUpdate } : {}),
     });
   }
 
@@ -3490,7 +3427,7 @@ export async function handleExecutorCallback(request, env) {
 
 const PLATFORM_CALLBACK_STATUS = {
   issue_created: 'issue_created',
-  gate_pending: 'gate_pending',
+  auto_dev_pending: 'auto_dev_pending',
   agent_queued: 'agent_queued',
   agent_running: 'agent_running',
   branch_committed: 'branch_committed',
@@ -3592,12 +3529,12 @@ async function handlePlatformDevExecutorCallback(body, env) {
   }
   if (!item) return jsonResponse({ error: 'PlatformDevItem not found after update' }, 404);
   let workerStart = null;
-  if (stageResult === 'gate_pending' && item.gateStatus === 'approved' && item.agentEligible) {
+  if (stageResult === 'auto_dev_pending' && item.autoDevStatus === 'triggered' && item.agentEligible) {
     item = await store.updatePlatformDevItem(item.id, 'agent_queued', {
-      gateStatus: 'approved',
-      gateReason: item.gateReason || '人工批准自动开发。',
+      autoDevStatus: 'triggered',
+      autoDevReason: item.autoDevReason || '用户手动触发自动开发。',
     });
-    if (!item) return jsonResponse({ error: 'PlatformDevItem not found after gate approval dispatch' }, 404);
+    if (!item) return jsonResponse({ error: 'PlatformDevItem not found after auto-dev trigger dispatch' }, 404);
     try {
       workerStart = await startWorkerForPlatformDevItemIfConfigured(item, env);
     } catch (error) {
@@ -3632,12 +3569,13 @@ async function handlePlatformDevExecutorCallback(body, env) {
       ? await dispatchQueuedPlatformDevFollowupIfNeeded(store, item, env)
       : null;
   if (queuedFollowupRerun?.item) item = queuedFollowupRerun.item;
+  const notificationStage = stageResult === 'auto_dev_pending' && item.status !== stageResult ? item.status : stageResult;
   const slackStatusNotification = queuedFollowupRerun?.slackStatusNotification
     ? queuedFollowupRerun.slackStatusNotification
     : await notifySlackPlatformDevStatus(env, store, item, {
-    stage: stageResult,
-    text: platformNotificationText(stageResult, item) || `平台需求进入：${item.status}`,
-    skipDuplicate: false,
+        stage: notificationStage,
+        text: platformNotificationText(notificationStage, item) || `平台需求进入：${item.status}`,
+        skipDuplicate: false,
       });
 
   return jsonResponse({
