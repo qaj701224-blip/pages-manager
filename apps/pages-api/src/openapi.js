@@ -349,7 +349,7 @@ export function buildOpenApi(config) {
       },
       '/.xd-pages/api/sites/{site}/secrets': {
         put: {
-          summary: 'Set a site-level runtime secret for future Worker deployments',
+          summary: 'Set a site-level runtime secret and sync the active Worker when present',
           parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -368,6 +368,7 @@ export function buildOpenApi(config) {
             'DEPLOY_FORBIDDEN',
             'RUNTIME_CONFIG_CHANGED',
             'RUNTIME_CONFIG_UNSUPPORTED',
+            'SECRET_ACTIVE_WORKER_SYNC_FAILED',
           ],
           responses: {
             200: { description: 'Secret metadata returned without value' },
@@ -376,11 +377,12 @@ export function buildOpenApi(config) {
             404: { description: 'Site not found' },
             409: { description: 'Runtime secret changed while updating' },
             413: { description: 'Secret value too large' },
+            502: { description: 'Active Worker secret sync failed after store update' },
             503: { description: 'Secret store or audit store unavailable' },
           },
         },
         delete: {
-          summary: 'Disable a site-level runtime secret for future Worker deployments',
+          summary: 'Disable a site-level runtime secret and sync the active Worker when present',
           parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -397,6 +399,7 @@ export function buildOpenApi(config) {
             'DEPLOY_FORBIDDEN',
             'RUNTIME_CONFIG_CHANGED',
             'RUNTIME_CONFIG_UNSUPPORTED',
+            'SECRET_ACTIVE_WORKER_SYNC_FAILED',
           ],
           responses: {
             200: { description: 'Secret deletion metadata returned without value' },
@@ -404,6 +407,7 @@ export function buildOpenApi(config) {
             403: { description: 'Actor cannot manage runtime secrets for this site' },
             404: { description: 'Site not found' },
             409: { description: 'Runtime secret changed while deleting' },
+            502: { description: 'Active Worker secret sync failed after store update' },
             503: { description: 'Secret store or audit store unavailable' },
           },
         },

@@ -398,6 +398,230 @@ test('rolls back visibility changes when snapshot write fails after runtime conf
   assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
 });
 
+test('secrets put updates current active WFP worker without changing active route', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const previousRoute = await store.getRouteBySiteId('site_1', 'production');
+  const providerCalls = [];
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    }),
+    testEnv(store, {
+      WFP_PROVIDER: {
+        putSecret: async (input) => providerCalls.push(input),
+      },
+    })
+  );
+
+  const route = await store.getRouteBySiteId('site_1', 'production');
+  assert.equal(response.status, 200);
+  assert.deepEqual(providerCalls, [
+    {
+      workerName: 'pages-v2-guide-ver-1',
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    },
+  ]);
+  assert.equal(route.activeVersionId, previousRoute.activeVersionId);
+  assert.equal(route.workerName, previousRoute.workerName);
+  assert.equal(route.routeGeneration, previousRoute.routeGeneration);
+  assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
+});
+
+test('secrets put skips active worker sync for assets-only active versions', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id, {
+    deploymentShape: 'assets-only',
+    routingMode: 'assets-only',
+    resolvedFallback: 'index',
+  });
+  const providerCalls = [];
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    }),
+    testEnv(store, {
+      WFP_PROVIDER: {
+        putSecret: async (input) => providerCalls.push(input),
+      },
+    })
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(providerCalls, []);
+});
+
+test('secrets delete removes secret from current active WFP worker', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  await store.putSiteSecret({
+    id: 'sec_1',
+    environment: 'production',
+    siteId: 'site_1',
+    name: 'API_TOKEN',
+    value: 'old-secret-value',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  const previousRoute = await store.getRouteBySiteId('site_1', 'production');
+  const providerCalls = [];
+
+  const response = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_TOKEN',
+    }),
+    testEnv(store, {
+      WFP_PROVIDER: {
+        deleteSecret: async (input) => providerCalls.push(input),
+      },
+    })
+  );
+
+  const route = await store.getRouteBySiteId('site_1', 'production');
+  assert.equal(response.status, 200);
+  assert.deepEqual(providerCalls, [
+    {
+      workerName: 'pages-v2-guide-ver-1',
+      name: 'API_TOKEN',
+    },
+  ]);
+  assert.equal(route.activeVersionId, previousRoute.activeVersionId);
+  assert.equal(route.workerName, previousRoute.workerName);
+  assert.equal(route.routeGeneration, previousRoute.routeGeneration);
+  assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
+});
+
+test('secrets delete still cleans active worker when the store secret is already absent', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const providerCalls = [];
+
+  const response = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_TOKEN',
+    }),
+    testEnv(store, {
+      WFP_PROVIDER: {
+        deleteSecret: async (input) => providerCalls.push(input),
+      },
+    })
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(providerCalls, [{ workerName: 'pages-v2-guide-ver-1', name: 'API_TOKEN' }]);
+});
+
+test('secrets delete treats missing active worker secret as already cleaned up', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const response = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_TOKEN',
+    }),
+    testEnv(store, {
+      WFP_PROVIDER: {
+        deleteSecret: async () => {
+          const error = new Error('not found');
+          error.status = 404;
+          throw error;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200);
+});
+
+test('secrets put reports when active WFP worker sync fails after saving secret', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    }),
+    testEnv(store, {
+      WFP_PROVIDER: {
+        putSecret: async () => {
+          throw new Error('cloudflare failed');
+        },
+      },
+    })
+  );
+
+  const body = await response.json();
+  assert.equal(response.status, 502);
+  assert.equal(body.error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
+  assert.equal((await store.listEnabledSiteSecrets('production', 'site_1'))[0].name, 'API_TOKEN');
+});
+
 test('replaces site ACL with allow-only OR entries and rejects unsupported policy features', async () => {
   const store = await createSeededStore();
   await store.createSite({
@@ -841,10 +1065,10 @@ async function activateSite(store, siteId, overrides = {}) {
     runtime: 'wfp',
     artifactRef: 'wfp://test/pages-v2-guide-ver-1',
     contentHash: 'sha256:abc',
-    deploymentShape: 'worker-only',
+    deploymentShape: overrides.deploymentShape || 'worker-only',
     requestedFallback: 'auto',
-    resolvedFallback: null,
-    routingMode: 'worker-only',
+    resolvedFallback: overrides.resolvedFallback ?? null,
+    routingMode: overrides.routingMode || 'worker-only',
     createdBy: 'usr_1',
   });
   return store.activateSiteVersion(

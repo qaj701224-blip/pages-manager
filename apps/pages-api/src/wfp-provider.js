@@ -26,6 +26,15 @@ export function createDeploymentProvider(env, config) {
     async delete(input) {
       return client.deleteUserWorker(input.workerName);
     },
+    async putSecret(input) {
+      return client.putUserWorkerSecret(input.workerName, {
+        name: input.name,
+        value: input.value,
+      });
+    },
+    async deleteSecret(input) {
+      return client.deleteUserWorkerSecret(input.workerName, input.name);
+    },
   });
 }
 
@@ -57,6 +66,12 @@ function withWfpMetadata(provider) {
     },
     async delete(input) {
       return provider.delete?.(input);
+    },
+    async putSecret(input) {
+      return provider.putSecret?.(input);
+    },
+    async deleteSecret(input) {
+      return provider.deleteSecret?.(input);
     },
   };
 }
