@@ -95,7 +95,7 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /followupContext:/);
   assert.match(workflow, /execFileSync\('git', \['status', '--porcelain=v1', '-z', '--untracked-files=all'\]/);
   assert.match(workflow, /\^\(\\\.pages-artifacts\|\\\.pages-trusted\)\(\\\/\|\$\)/);
-  assert.ok(workflow.includes("git add -A -- . ':(exclude).pages-artifacts' ':(exclude).pages-trusted'"));
+  assert.match(workflow, /platform-agent-finalize\.mjs/);
   assert.match(workflow, /Refusing to commit generated build artifacts/);
   assert.match(workflow, /\(\^\|\/\)\(node_modules\|dist\|build\)\(\/\|\$\)/);
   assert.match(workflow, /while IFS= read -r path; do[\s\S]*done <<< "\$changed_files"/);
@@ -105,6 +105,7 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /password\|passwd\|pwd/);
   assert.match(workflow, /secret_value_re=/);
   assert.match(workflow, /Copy trusted callback helper[\s\S]*platform-agent-runner\.mjs/);
+  assert.match(workflow, /Copy trusted callback helper[\s\S]*platform-agent-finalize\.mjs/);
   assert.match(workflow, /Install Codex CLI[\s\S]*PLATFORM_AGENT_CODEX_PACKAGE/);
   assert.match(workflow, /npm install -g "\$PLATFORM_AGENT_CODEX_PACKAGE"/);
   assert.match(workflow, /Preflight Codex CLI[\s\S]*platform-agent-runner\.mjs" --codex-preflight/);
@@ -113,6 +114,9 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
   assert.match(workflow, /AGENT_BACKEND:[^\n]*(vars\.AGENT_BACKEND|codex)/);
   assert.doesNotMatch(workflow, /AGENT_CODE_API_KEY is required for Platform Agent/);
   assert.match(workflow, /Run platform checks[\s\S]*AGENT_CODE_API_KEY: ''/);
+  assert.match(workflow, /Commit changes[\s\S]*platform-agent-finalize\.mjs/);
+  assert.match(workflow, /Commit changes[\s\S]*PLATFORM_AGENT_RUNNER_PATH/);
+  assert.match(workflow, /Commit changes[\s\S]*AGENT_BRANCH_NAME/);
   assert.match(workflow, /BODY_FILE="\$body_file" TITLE_FILE="\$title_file" node <<'NODE'/);
   assert.match(workflow, /const issueNumber = String\(env\.ISSUE_NUMBER \|\| ''\)\.trim\(\);/);
   assert.match(workflow, /const requestSummary = redactPublicText\(env\.REQUEST_SUMMARY \|\| ''\);/);
