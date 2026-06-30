@@ -92,8 +92,12 @@ function githubAppJwt(config, now = Date.now()) {
 }
 
 function githubAppCacheKey(config = {}) {
+  let apiBaseUrl = String(config.apiBaseUrl || DEFAULT_GITHUB_API_BASE_URL);
+  while (apiBaseUrl.endsWith('/')) {
+    apiBaseUrl = apiBaseUrl.slice(0, -1);
+  }
   return [
-    String(config.apiBaseUrl || DEFAULT_GITHUB_API_BASE_URL).replace(/\/+$/, ''),
+    apiBaseUrl,
     String(config.appId || ''),
     String(config.appInstallationId || ''),
   ].join('|');
