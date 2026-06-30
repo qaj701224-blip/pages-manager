@@ -186,3 +186,133 @@ test('finalizer lets Platform Agent repair non-fast-forward push failures', asyn
     assert.match(remoteLog, new RegExp(result.headSha));
   });
 });
+
+test('finalizer rejects local env files before the initial commit', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, '.env'), 'TOKEN=local-secret\n');
+    const runnerPath = await createMockRepairRunner(work, '');
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: baseEnv({ remote, runnerPath, outputPath }),
+      }),
+      /Refusing to commit local env/
+    );
+
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /TOKEN/);
+  });
+});
+
+test('finalizer rejects unsafe repair changes before amend and push', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, 'target.txt'), 'unsafe repair\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      "writeFileSync('.env', 'TOKEN=repair-secret\\n');"
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: {
+          ...baseEnv({ remote, runnerPath, outputPath }),
+          PLATFORM_AGENT_COMMIT_MESSAGE: 'bad message',
+        },
+      }),
+      /Refusing to commit local env/
+    );
+
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /repair-secret/);
+  });
+});
+
+test('finalizer rejects unauthorized high-risk repair paths before amend and push', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, 'target.txt'), 'high risk repair\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      "execFileSync('mkdir', ['-p', '.github/workflows']);\nwriteFileSync('.github/workflows/unsafe.yml', 'name: unsafe\\n');"
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: {
+          ...baseEnv({ remote, runnerPath, outputPath }),
+          PLATFORM_AGENT_COMMIT_MESSAGE: 'bad message',
+          RISK: 'risk:medium',
+          EFFECTIVE_RISK: 'risk:medium',
+        },
+      }),
+      /High-risk paths require manually triggered high-risk Platform Dev work/
+    );
+
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /unsafe/);
+  });
+});
+
+test('finalizer rejects unsafe repair commits even when the repair agent amends HEAD itself', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, 'target.txt'), 'committed unsafe repair\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      [
+        "writeFileSync('target.txt', 'committed unsafe repair\\nAPI_KEY=repair-secret-value\\n');",
+        "execFileSync('git', ['add', 'target.txt'], { stdio: 'inherit' });",
+        "execFileSync('git', ['commit', '--amend', '--no-edit'], { stdio: 'inherit' });",
+      ].join('\n')
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: {
+          ...baseEnv({ remote, runnerPath, outputPath }),
+          PLATFORM_AGENT_COMMIT_MESSAGE: 'bad message',
+        },
+      }),
+      /Potential secret detected in changed file: target\.txt/
+    );
+
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /repair-secret-value/);
+  });
+});
+
+test('finalizer repairs base fetch failures instead of trusting stale origin refs', async () => {
+  await createRepositoryFixture(async ({ remote, seed, work }) => {
+    await writeFile(path.join(seed, 'master-only.txt'), 'new master\n');
+    await git(seed, ['checkout', 'master']);
+    await git(seed, ['add', 'master-only.txt']);
+    await git(seed, ['commit', '-m', 'chore: 推进 master']);
+    await git(seed, ['push', 'origin', 'master']);
+
+    const staleRemote = path.join(path.dirname(remote), 'missing-remote.git');
+    await writeFile(path.join(work, 'target.txt'), 'base fetch failed\n');
+    const runnerPath = await createMockRepairRunner(work, '');
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: {
+          ...baseEnv({ remote: staleRemote, runnerPath, outputPath }),
+          PLATFORM_AGENT_FINALIZATION_MAX_ATTEMPTS: '1',
+        },
+      }),
+      /Platform Agent finalization did not complete/
+    );
+
+    assert.match(await readFile(path.join(work, '.pages-artifacts/repair-contexts.log'), 'utf8'), /base_fetch_failed/);
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /base fetch failed/);
+  });
+});
