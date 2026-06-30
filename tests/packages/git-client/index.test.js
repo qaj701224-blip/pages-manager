@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import test from 'node:test';
 
 import {
@@ -15,14 +16,17 @@ import {
   buildPublishingIssue,
   buildSmokeIssue,
   buildSmokeIssueComment,
+  clearGithubAppInstallationTokenCache,
   dispatchWorkflow,
   ensurePlatformDevIssue,
   ensureSmokeIssue,
   ensurePublishingIssue,
   githubApiUrl,
+  githubConfigFromEnv,
   parseRepoFullName,
   platformDevItemMarker,
   publishingJobMarker,
+  resolveGithubToken,
   smokeIssueMarker,
 } from '../../../packages/git-client/src/index.js';
 
@@ -72,6 +76,16 @@ const platformItem = {
   githubIssueNumber: 31,
 };
 
+function testPrivateKey() {
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  return privateKey.export({ type: 'pkcs8', format: 'pem' });
+}
+
+function decodeJwtPayload(jwt) {
+  const [, payload] = String(jwt).split('.');
+  return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+}
+
 test('parses GitHub repo full name and API URLs', () => {
   assert.deepEqual(parseRepoFullName('org/pages-manager'), { owner: 'org', repo: 'pages-manager' });
   assert.throws(() => parseRepoFullName('bad'), /owner\/repo/);
@@ -79,6 +93,124 @@ test('parses GitHub repo full name and API URLs', () => {
     githubApiUrl({ apiBaseUrl: 'https://github.example/api/v3/' }, '/repos/org/repo').toString(),
     'https://github.example/api/v3/repos/org/repo'
   );
+});
+
+test('builds GitHub config from App environment without requiring a static token', () => {
+  const key = testPrivateKey();
+  const config = githubConfigFromEnv({
+    GITHUB_REPO: 'org/pages-manager',
+    GITHUB_APP_ID: '12345',
+    GITHUB_APP_INSTALLATION_ID: '67890',
+    GITHUB_APP_PRIVATE_KEY_B64: Buffer.from(key).toString('base64'),
+  });
+
+  assert.equal(config.repoFullName, 'org/pages-manager');
+  assert.equal(config.token, '');
+  assert.equal(config.appId, '12345');
+  assert.equal(config.appInstallationId, '67890');
+  assert.ok(config.appPrivateKeyB64);
+});
+
+test('resolves GitHub App installation token before static fallback token when App credentials are complete', async () => {
+  clearGithubAppInstallationTokenCache();
+  const requests = [];
+  const token = await resolveGithubToken(
+    async (url, request) => {
+      requests.push({ url: String(url), request });
+      return new Response(JSON.stringify({ token: 'ghs_installation', expires_at: '2030-01-01T00:00:00Z' }), {
+        status: 201,
+      });
+    },
+    {
+      token: 'ghs_static',
+      repoFullName: 'org/pages-manager',
+      appId: '12345',
+      appInstallationId: '67890',
+      appPrivateKeyB64: Buffer.from(testPrivateKey()).toString('base64'),
+    }
+  );
+
+  assert.equal(token, 'ghs_installation');
+  assert.equal(requests.length, 1);
+});
+
+test('resolves static GitHub token when GitHub App credentials are incomplete', async () => {
+  clearGithubAppInstallationTokenCache();
+  const token = await resolveGithubToken(
+    async () => {
+      throw new Error('fetch should not be called for static token fallback');
+    },
+    {
+      token: 'ghs_static',
+      repoFullName: 'org/pages-manager',
+      appId: '12345',
+      appInstallationId: '',
+      appPrivateKeyB64: Buffer.from(testPrivateKey()).toString('base64'),
+    }
+  );
+
+  assert.equal(token, 'ghs_static');
+});
+
+test('exchanges GitHub App credentials for an installation token and caches it', async () => {
+  clearGithubAppInstallationTokenCache();
+  const key = testPrivateKey();
+  const requests = [];
+  const config = {
+    apiBaseUrl: 'https://github.example/api/v3',
+    repoFullName: 'org/pages-manager',
+    appId: '12345',
+    appInstallationId: '67890',
+    appPrivateKeyB64: Buffer.from(key).toString('base64'),
+  };
+  const fetchImpl = async (url, request) => {
+    requests.push({ url: String(url), request });
+    const jwt = request.headers.Authorization.replace(/^Bearer\s+/, '');
+    const payload = decodeJwtPayload(jwt);
+    assert.equal(payload.iss, '12345');
+    assert.ok(payload.exp - payload.iat <= 10 * 60);
+    return new Response(JSON.stringify({ token: `ghs_installation_${requests.length}`, expires_at: '2030-01-01T00:00:00Z' }), {
+      status: 201,
+    });
+  };
+
+  const first = await resolveGithubToken(fetchImpl, config, { now: Date.parse('2026-06-30T00:00:00Z') });
+  const second = await resolveGithubToken(fetchImpl, config, { now: Date.parse('2026-06-30T00:01:00Z') });
+
+  assert.equal(first, 'ghs_installation_1');
+  assert.equal(second, 'ghs_installation_1');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://github.example/api/v3/app/installations/67890/access_tokens');
+  assert.equal(requests[0].request.method, 'POST');
+});
+
+test('refreshes GitHub App installation token near expiry and accepts escaped private keys', async () => {
+  clearGithubAppInstallationTokenCache();
+  const key = testPrivateKey();
+  const requests = [];
+  const fetchImpl = async () => {
+    requests.push(true);
+    return new Response(
+      JSON.stringify({
+        token: `ghs_installation_${requests.length}`,
+        expires_at: new Date(Date.parse('2026-06-30T00:10:00Z')).toISOString(),
+      }),
+      { status: 201 }
+    );
+  };
+  const config = {
+    repoFullName: 'org/pages-manager',
+    appId: '12345',
+    appInstallationId: '67890',
+    appPrivateKey: key.replaceAll('\n', '\\n'),
+  };
+
+  const first = await resolveGithubToken(fetchImpl, config, { now: Date.parse('2026-06-30T00:00:00Z') });
+  const second = await resolveGithubToken(fetchImpl, config, { now: Date.parse('2026-06-30T00:06:00Z') });
+
+  assert.equal(first, 'ghs_installation_1');
+  assert.equal(second, 'ghs_installation_2');
+  assert.equal(requests.length, 2);
 });
 
 test('builds publishing issue with stable job marker and path boundary', () => {
