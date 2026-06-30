@@ -1,4 +1,4 @@
-import { appendPlatformDevFollowupIssueComment } from '@xd/git-client';
+import { appendPlatformDevFollowupIssueComment, githubConfigFromEnv, hasGithubAuthConfig } from '@xd/git-client';
 
 import { deleteRedisKeyIfValueMatches } from '../db/redis.js';
 import { reconcileClosedGithubIssueForJob } from '../github/resource-reconciler.js';
@@ -323,14 +323,8 @@ function platformFollowupCardSummary(feedback = '') {
 }
 
 function githubWriteConfigForFollowup(env = {}) {
-  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
-  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
-  if (!token || !repoFullName) return null;
-  return {
-    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
-    token,
-    repoFullName,
-  };
+  const config = githubConfigFromEnv(env);
+  return config.repoFullName && hasGithubAuthConfig(config) ? config : null;
 }
 
 async function appendPlatformFollowupIssueCommentIfPossible(env, item, feedback) {

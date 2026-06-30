@@ -1,5 +1,8 @@
 import {
+  githubConfigFromEnv,
   githubApiUrl,
+  githubHeaders,
+  hasGithubAuthConfig,
   githubRequest,
   parseRepoFullName,
 } from '@xd/git-client';
@@ -28,14 +31,8 @@ const SITE_WORKFLOWS_BY_STATUS = {
 };
 
 function githubActionsConfig(env = {}) {
-  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
-  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
-  if (!token || !repoFullName) return null;
-  return {
-    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
-    token,
-    repoFullName,
-  };
+  const config = githubConfigFromEnv(env);
+  return config.repoFullName && hasGithubAuthConfig(config) ? config : null;
 }
 
 function fetchImplFromEnv(env = {}) {
@@ -174,9 +171,8 @@ async function readJobLog(fetchImpl, config, jobId) {
   const response = await fetchImpl(url, {
     method: 'GET',
     headers: {
+      ...(await githubHeaders(fetchImpl, config, { Accept: 'text/plain' })),
       Accept: 'text/plain',
-      Authorization: `Bearer ${config.token}`,
-      'X-GitHub-Api-Version': '2022-11-28',
     },
   });
   if (!response.ok) {

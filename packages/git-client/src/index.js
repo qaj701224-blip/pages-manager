@@ -1,7 +1,13 @@
+import crypto from 'node:crypto';
+
 const DEFAULT_GITHUB_API_BASE_URL = 'https://api.github.com';
 const JOB_MARKER_PREFIX = 'PublishingJob:';
 const PLATFORM_DEV_MARKER_PREFIX = 'PlatformDevItem:';
 const SMOKE_MARKER_PREFIX = 'PagesSmokeIssue:';
+const GITHUB_APP_JWT_TTL_SECONDS = 9 * 60;
+const GITHUB_APP_JWT_IAT_SKEW_SECONDS = 60;
+const GITHUB_APP_INSTALLATION_TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000;
+const installationTokenCache = new Map();
 
 export function parseRepoFullName(repoFullName) {
   const [owner, repo, extra] = String(repoFullName || '').split('/');
@@ -27,14 +33,129 @@ export function githubApiUrl(config, pathname, searchParams = {}) {
   return url;
 }
 
-function githubHeaders(config, extra = {}) {
-  if (!config.token) {
+function base64Url(value) {
+  return Buffer.from(value).toString('base64url');
+}
+
+function normalizePrivateKey(value) {
+  const text = String(value || '').trim();
+  return text ? text.replaceAll('\\n', '\n') : '';
+}
+
+function decodeBase64PrivateKey(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return Buffer.from(text, 'base64').toString('utf8');
+}
+
+function githubAppPrivateKey(config = {}) {
+  return normalizePrivateKey(config.appPrivateKey) || normalizePrivateKey(decodeBase64PrivateKey(config.appPrivateKeyB64));
+}
+
+function githubAppConfigComplete(config = {}) {
+  return Boolean(config.appId && config.appInstallationId && githubAppPrivateKey(config));
+}
+
+export function hasGithubAuthConfig(config = {}) {
+  return Boolean(config.token || githubAppConfigComplete(config));
+}
+
+export function githubConfigFromEnv(env = {}, options = {}) {
+  const tokenKeys = options.tokenKeys || ['GITHUB_APP_INSTALLATION_TOKEN', 'GITHUB_TOKEN'];
+  const token = tokenKeys.map((key) => env[key]).find(Boolean) || '';
+  return {
+    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || DEFAULT_GITHUB_API_BASE_URL,
+    token,
+    repoFullName: env.GITHUB_REPO || env.GITHUB_REPOSITORY || '',
+    appId: env.GITHUB_APP_ID || '',
+    appInstallationId: env.GITHUB_APP_INSTALLATION_ID || '',
+    appPrivateKey: env.GITHUB_APP_PRIVATE_KEY || '',
+    appPrivateKeyB64: env.GITHUB_APP_PRIVATE_KEY_B64 || '',
+  };
+}
+
+export function requireGithubConfig(config = {}, options = {}) {
+  const name = options.name || 'GitHub';
+  if (!config.repoFullName) throw new Error(`${name} repo is required`);
+  if (!hasGithubAuthConfig(config)) throw new Error(`${name} token or GitHub App credentials are required`);
+  return config;
+}
+
+function githubAppJwt(config, now = Date.now()) {
+  const iat = Math.floor(now / 1000) - GITHUB_APP_JWT_IAT_SKEW_SECONDS;
+  const exp = iat + GITHUB_APP_JWT_TTL_SECONDS;
+  const header = base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = base64Url(JSON.stringify({ iat, exp, iss: String(config.appId) }));
+  const input = `${header}.${payload}`;
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(input), githubAppPrivateKey(config)).toString('base64url');
+  return `${input}.${signature}`;
+}
+
+function githubAppCacheKey(config = {}) {
+  return [
+    String(config.apiBaseUrl || DEFAULT_GITHUB_API_BASE_URL).replace(/\/+$/, ''),
+    String(config.appId || ''),
+    String(config.appInstallationId || ''),
+  ].join('|');
+}
+
+function parseExpiresAt(value) {
+  const time = new Date(value || 0).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+export function clearGithubAppInstallationTokenCache() {
+  installationTokenCache.clear();
+}
+
+export async function resolveGithubToken(fetchImpl, config = {}, options = {}) {
+  if (!githubAppConfigComplete(config)) {
+    if (config.token) return config.token;
     throw new Error('GitHub token is required');
   }
 
+  const now = options.now ?? Date.now();
+  const cacheKey = githubAppCacheKey(config);
+  const cached = installationTokenCache.get(cacheKey);
+  if (cached?.token && cached.expiresAt - GITHUB_APP_INSTALLATION_TOKEN_REFRESH_SKEW_MS > now) {
+    return cached.token;
+  }
+
+  const url = githubApiUrl(config, `/app/installations/${encodeURIComponent(config.appInstallationId)}/access_tokens`);
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${githubAppJwt(config, now)}`,
+      'Content-Type': 'application/json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  const body = await readJsonResponse(response);
+
+  if (!response.ok) {
+    const message = body?.message || response.statusText || `HTTP ${response.status}`;
+    const error = new Error(`GitHub App installation token request failed: ${message}`);
+    error.status = response.status;
+    error.body = body;
+    throw error;
+  }
+
+  if (!body?.token) {
+    throw new Error('GitHub App installation token response did not include a token');
+  }
+
+  const expiresAt = parseExpiresAt(body.expires_at);
+  installationTokenCache.set(cacheKey, { token: body.token, expiresAt });
+  return body.token;
+}
+
+export async function githubHeaders(fetchImpl, config, extra = {}) {
+  const token = await resolveGithubToken(fetchImpl, config);
+
   return {
     Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${config.token}`,
+    Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
     'X-GitHub-Api-Version': '2022-11-28',
     ...extra,
@@ -54,7 +175,7 @@ async function readJsonResponse(response) {
 export async function githubRequest(fetchImpl, config, request) {
   const response = await fetchImpl(request.url, {
     method: request.method || 'GET',
-    headers: githubHeaders(config, request.headers),
+    headers: await githubHeaders(fetchImpl, config, request.headers),
     body: request.body === undefined ? undefined : JSON.stringify(request.body),
   });
   const body = await readJsonResponse(response);

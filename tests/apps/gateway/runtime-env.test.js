@@ -16,6 +16,9 @@ test('gateway runtime env includes merge announcement settings for ECS dev serve
     GITHUB_SITE_CHECK_APP_LOGINS: 'custom-site-app',
     GITHUB_PLATFORM_CI_CHECK_NAMES: 'custom-platform-ci',
     GITHUB_PLATFORM_CI_APP_LOGINS: 'custom-platform-app',
+    GITHUB_APP_ID: '12345',
+    GITHUB_APP_INSTALLATION_ID: '67890',
+    GITHUB_APP_PRIVATE_KEY_B64: 'private-key-b64-placeholder',
     SLACK_AGENT_MERGE_SUMMARY_URL: 'http://slack-agent:8791/internal/slack-agent/merge-summary',
     SLACK_AGENT_SHARED_SECRET: 'agent-secret',
     SLACK_NOTIFIER_URL: 'http://slack-notifier:8792',
@@ -34,6 +37,9 @@ test('gateway runtime env includes merge announcement settings for ECS dev serve
   assert.equal(env.GITHUB_SITE_CHECK_APP_LOGINS, 'custom-site-app');
   assert.equal(env.GITHUB_PLATFORM_CI_CHECK_NAMES, 'custom-platform-ci');
   assert.equal(env.GITHUB_PLATFORM_CI_APP_LOGINS, 'custom-platform-app');
+  assert.equal(env.GITHUB_APP_ID, '12345');
+  assert.equal(env.GITHUB_APP_INSTALLATION_ID, '67890');
+  assert.equal(env.GITHUB_APP_PRIVATE_KEY_B64, 'private-key-b64-placeholder');
   assert.equal(env.SLACK_AGENT_MERGE_SUMMARY_URL, 'http://slack-agent:8791/internal/slack-agent/merge-summary');
   assert.equal(env.SLACK_AGENT_SHARED_SECRET, 'agent-secret');
   assert.equal(env.SLACK_NOTIFIER_URL, 'http://slack-notifier:8792');
