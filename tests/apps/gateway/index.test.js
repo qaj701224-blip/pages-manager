@@ -10459,7 +10459,10 @@ test('GitHub merged PR webhook queues and posts one Slack merge announcement', a
   assert.match(visibleText, /合并了 <https:\/\/github.example\/org\/pages-manager\/pull\/82\|PR #82>/);
   assert.match(visibleText, /要点/);
   assert.doesNotMatch(visibleText, /alice|bob|bbbbbbb/);
-  assert.doesNotMatch(visibleText, /\b(gateway|worker|mysql|status card|job id|callback)\b/i);
+  assert.doesNotMatch(
+    visibleText,
+    /\b(slack[_-]?session[_-]?id|agent[_-]?run[_-]?id|session[_-]?key|job_[A-Za-z0-9_]{6,}|sess_[A-Za-z0-9_]{6,})\b/i
+  );
   assert.equal(events.some((event) => event.stage === 'pending'), true);
   assert.equal(events.some((event) => event.stage === 'sent' && event.slackMessageTs), true);
   assert.equal(runs.length, 1);
@@ -10634,11 +10637,110 @@ test('GitHub merged PR webhook uses Slack Agent merge summary when configured', 
   assert.equal(agentCalls[0].body.prNumber, 82);
   assert.match(visibleText, /补齐任务诊断入口/);
   assert.match(visibleText, /未改变生产部署路径/);
-  assert.doesNotMatch(visibleText, /\b(gateway|worker|mysql|status card|job id|callback)\b/i);
+  assert.doesNotMatch(
+    visibleText,
+    /\b(slack[_-]?session[_-]?id|agent[_-]?run[_-]?id|session[_-]?key|job_[A-Za-z0-9_]{6,}|sess_[A-Za-z0-9_]{6,})\b/i
+  );
   assert.equal(
     [...app.store.agentRuns.values()].find((run) => run.agentKind === 'merge_announcement')?.report.summarySource,
     'agent'
   );
+});
+
+test('GitHub merged PR webhook accepts platform component terms in Agent merge summary', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const response = await postPullRequestWebhook(
+    app,
+    'delivery-merge-announcement-gateway-summary',
+    mergedPullRequestPayload({
+      title: 'fix(gateway): 支持 GitHub App 自动刷新 token',
+      head: { ref: 'fix/github-app-token-refresh', sha: 'c'.repeat(40) },
+      changed_files: 12,
+      additions: 328,
+      deletions: 62,
+    }),
+    {
+      ...mockSlackNotifier(notifierCalls),
+      GITHUB_REPO: 'org/pages-manager',
+      MERGE_ANNOUNCEMENT_ENABLED: 'true',
+      MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+      SLACK_AGENT_MERGE_SUMMARY_URL: 'http://slack-agent.test/internal/slack-agent/merge-summary',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            summary: {
+              headline: '支持 GitHub App token 自动刷新',
+              summaryBullets: [
+                'gateway 在 GitHub App token 过期前自动刷新凭据。',
+                'worker 侧继续使用受控回调路径，不需要持有敏感凭据。',
+                '新增 job_status 与 agent_summary 回归覆盖刷新失败和重试提示。',
+              ],
+              impact: '影响平台服务的 GitHub webhook 处理链路。',
+              risk: '低风险；不改变 Slack 通知投递通道。',
+              tags: ['gateway', 'github-app'],
+            },
+          })
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const slackPayload = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message')?.body?.payload || {};
+  const visibleText = JSON.stringify(slackPayload);
+  const run = [...app.store.agentRuns.values()].find((item) => item.agentKind === 'merge_announcement');
+
+  assert.equal(response.status, 200);
+  assert.equal(body.mergeAnnouncement.queued, true);
+  assert.match(visibleText, /gateway 在 GitHub App token 过期前自动刷新凭据/);
+  assert.match(visibleText, /worker 侧继续使用受控回调路径/);
+  assert.match(visibleText, /job_status 与 agent_summary/);
+  assert.equal(run?.report.summarySource, 'agent');
+});
+
+test('GitHub merged PR webhook truncates long Agent headline', async () => {
+  const app = createGatewayApp();
+  const notifierCalls = [];
+  const longPrefix = '排查合并通知摘要时发现需要先脱敏再截断避免半截内部标识残留';
+  const response = await postPullRequestWebhook(
+    app,
+    'delivery-merge-announcement-long-headline-redaction',
+    mergedPullRequestPayload(),
+    {
+      ...mockSlackNotifier(notifierCalls),
+      GITHUB_REPO: 'org/pages-manager',
+      MERGE_ANNOUNCEMENT_ENABLED: 'true',
+      MERGE_ANNOUNCEMENT_CHANNEL_ID: 'C-MERGES',
+      SLACK_AGENT_MERGE_SUMMARY_URL: 'http://slack-agent.test/internal/slack-agent/merge-summary',
+      SLACK_AGENT_SHARED_SECRET: 'agent-secret',
+      async SLACK_AGENT_FETCH() {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            summary: {
+              headline: `${longPrefix}${'。'.repeat(120)}`,
+              summaryBullets: ['保留正常摘要。', '继续展示 Agent 内容。', '只脱敏关键内部标识。'],
+              impact: '影响 Slack 通知。',
+              risk: '低风险。',
+              tags: [],
+            },
+          })
+        );
+      },
+    }
+  );
+  const body = await json(response);
+  const slackPayload = notifierCalls.find((call) => call.path === '/internal/slack-notifier/message')?.body?.payload || {};
+  const visibleText = JSON.stringify(slackPayload);
+  const run = [...app.store.agentRuns.values()].find((item) => item.agentKind === 'merge_announcement');
+
+  assert.equal(response.status, 200);
+  assert.equal(body.mergeAnnouncement.queued, true);
+  assert.equal(run?.report.summarySource, 'agent');
+  assert.match(visibleText, /排查合并通知摘要/);
+  assert.match(visibleText, /继续展示 Agent 内容/);
 });
 
 test('GitHub merged PR webhook falls back when Slack Agent merge summary fails', async () => {
