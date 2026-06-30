@@ -126,6 +126,7 @@ jobs:
           set -euo pipefail
           cp .pages-trusted/scripts/post-executor-callback.js "$RUNNER_TEMP/post-executor-callback.js"
           cp .pages-trusted/scripts/platform-agent-runner.mjs "$RUNNER_TEMP/platform-agent-runner.mjs"
+          cp .pages-trusted/scripts/platform-agent-finalize.mjs "$RUNNER_TEMP/platform-agent-finalize.mjs"
           cp .pages-trusted/scripts/platform-agent-coding.mjs "$RUNNER_TEMP/platform-agent-coding.mjs"
 
       - name: Checkout platform workspace
@@ -345,20 +346,23 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLATFORM_AGENT_BACKEND: ${{ vars.PLATFORM_AGENT_BACKEND || vars.AGENT_BACKEND || 'codex' }}
+          AGENT_BACKEND: ${{ vars.AGENT_BACKEND || 'codex' }}
+          PLATFORM_AGENT_MAX_ROUNDS: ${{ vars.PLATFORM_AGENT_MAX_ROUNDS || '3' }}
+          PLATFORM_AGENT_FINALIZATION_REPAIR_MAX_ROUNDS: ${{ vars.PLATFORM_AGENT_FINALIZATION_REPAIR_MAX_ROUNDS || '3' }}
+          PLATFORM_AGENT_CHECK_COMMANDS: |
+            pnpm lint
+            pnpm test
+          PLATFORM_AGENT_CODEX_MODEL: ${{ vars.PLATFORM_AGENT_CODEX_MODEL || vars.AGENT_MODEL_NAME }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL || vars.AGENT_MODEL_NAME }}
+          AGENT_GATEWAY_URL: ${{ vars.AGENT_GATEWAY_URL }}
+          AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME }}
+          AGENT_CODE_API_KEY: ${{ secrets.AGENT_CODE_API_KEY }}
+          PLATFORM_AGENT_RUNNER_PATH: ${{ runner.temp }}/platform-agent-runner.mjs
+          AGENT_BRANCH_NAME: ${{ steps.branch.outputs.branch }}
         run: |
           set -euo pipefail
-          git config user.name "pages-platform-agent"
-          git config user.email "pages-platform-agent@users.noreply.github.com"
-          git add -A -- . ':(exclude).pages-artifacts' ':(exclude).pages-trusted'
-          if git diff --cached --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Platform Coding Agent produced no repository changes." >&2
-            exit 1
-          fi
-          git commit -m "feat: 处理平台需求 ${PLATFORM_DEV_ITEM_ID}"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${{ steps.branch.outputs.branch }}"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          node "$RUNNER_TEMP/platform-agent-finalize.mjs"
 
       - name: Open or update PR
         id: pr

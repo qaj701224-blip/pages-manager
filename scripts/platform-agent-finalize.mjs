@@ -1,0 +1,794 @@
+import { spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
+const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
+const LOG_LIMIT = 24_000;
+const COMMIT_SUBJECT_RE = /^(feat|fix|refactor|perf|chore|docs|test|revert|build|ci)(\([a-z0-9-]+\))?: .+\S$/;
+const CJK_RE = /[\u3400-\u9fff]/;
+const NON_FAST_FORWARD_RE = /(non-fast-forward|fetch first|stale info|failed to push some refs)/i;
+const LOCAL_SECRET_FILE_RE = /(^|\/)(\.env(\..*)?|.*\.env|wrangler\.toml|\.pages\.json)$/;
+const GENERATED_ARTIFACT_RE = /(^|\/)(node_modules|dist|build)(\/|$)/;
+const HIGH_RISK_PATH_RE = /^(\.github\/|k8s\/|deploy\/|docker\/|Dockerfile($|\.)|scripts\/(deploy|k8s|put-)|.*(\/deploy|\/k8s))/;
+const SECRET_FIELD_NAME_PATTERN = [
+  '(?:[A-Za-z0-9]+[_-])*',
+  '(?:api[_-]?key|secret(?:[_-]access)?[_-]?key|private[_-]?key|secret|token|password|passwd|pwd)',
+  '(?:[_-][A-Za-z0-9]+)*',
+].join('');
+const TOKEN_SHAPE_RE =
+  /xox[baprs]-[A-Za-z0-9-]{8,}|xapp-[A-Za-z0-9-]{8,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY/i;
+const SECRET_VALUE_RE = new RegExp(`${SECRET_FIELD_NAME_PATTERN}[\\s]*[:=][\\s]*['"]?[^\\s'",}]+`, 'i');
+const SECRET_ALLOWLIST_RE = /secrets\.|process\.env\.|\$\{|YOUR_|REPLACE_|example|placeholder|xxx|redacted|not-set|do-not-set/i;
+
+function required(value, name) {
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+function numberFromEnv(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function truncateLog(value = '', limit = LOG_LIMIT) {
+  const text = String(value || '');
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n\n[truncated ${text.length - limit} chars]`;
+}
+
+function redact(value = '', env = {}) {
+  let text = String(value || '');
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'AGENT_CODE_API_KEY', 'PAGES_CALLBACK_TOKEN']) {
+    const secret = env[key];
+    if (secret) text = text.split(secret).join(`[REDACTED_${key}]`);
+  }
+  return text.replace(/(https?:\/\/[^:\s/@]+:)[^@\s]+(@)/g, '$1[REDACTED_TOKEN]$2');
+}
+
+async function runProcess(command, args, options = {}) {
+  const { cwd, env, input, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  return await new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => {
+      stdout = truncateLog(stdout + chunk.toString(), LOG_LIMIT * 2);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = truncateLog(stderr + chunk.toString(), LOG_LIMIT * 2);
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({ ok: false, code: null, stdout, stderr: `${stderr}\n${error.message}`.trim(), timedOut });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0 && !timedOut, code, stdout, stderr, timedOut });
+    });
+    if (input) child.stdin.end(input);
+    else child.stdin.end();
+  });
+}
+
+async function git(cwd, args, options = {}) {
+  const env = options.env || process.env;
+  const result = await runProcess('git', args, { cwd, env, timeoutMs: options.timeoutMs || 60_000 });
+  if (!result.ok) {
+    const log = truncateLog(redact(`${result.stdout}\n${result.stderr}`.trim(), env));
+    throw new Error(`git ${redact(args.join(' '), env)} failed${log ? `:\n${log}` : ''}`);
+  }
+  return result.stdout.trim();
+}
+
+async function tryGit(cwd, args, options = {}) {
+  return await runProcess('git', args, { cwd, env: options.env || process.env, timeoutMs: options.timeoutMs || 60_000 });
+}
+
+function parsePorcelainPaths(raw) {
+  const parts = raw.split('\0').filter(Boolean);
+  const paths = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const entry = parts[index];
+    const status = entry.slice(0, 2);
+    const file = entry.slice(3);
+    if (status[0] === 'R' || status[1] === 'R' || status[0] === 'C' || status[1] === 'C') {
+      index += 1;
+    }
+    if (!file || /^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(file)) continue;
+    paths.push(file);
+  }
+  return paths;
+}
+
+function parseDiffNameStatusPaths(raw) {
+  const parts = raw.split('\0').filter(Boolean);
+  const paths = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const status = parts[index];
+    const file = parts[index + 1];
+    index += 1;
+    if (!file) continue;
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const nextFile = parts[index + 1];
+      index += 1;
+      if (nextFile && !/^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(nextFile)) paths.push(nextFile);
+      continue;
+    }
+    if (!/^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(file)) paths.push(file);
+  }
+  return paths;
+}
+
+async function headParent(cwd) {
+  return await git(cwd, ['rev-parse', 'HEAD^']).catch(() => '');
+}
+
+async function commitsSince(cwd, base) {
+  if (!base) return [];
+  const output = await git(cwd, ['rev-list', '--reverse', `${base}..HEAD`]).catch(() => '');
+  return output.split('\n').filter(Boolean);
+}
+
+async function verifiedCommitRef(cwd, ref) {
+  const result = await tryGit(cwd, ['rev-parse', '--verify', `${ref}^{commit}`]);
+  return result.ok ? result.stdout.trim() : '';
+}
+
+async function isAncestorOfAnyRef(cwd, commit, refs) {
+  for (const ref of refs) {
+    const result = await tryGit(cwd, ['merge-base', '--is-ancestor', commit, ref]);
+    if (result.ok) return true;
+  }
+  return false;
+}
+
+async function untrustedCommitsSince(cwd, base, options = {}) {
+  const commits = await commitsSince(cwd, base);
+  const refs = [];
+  for (const ref of options.trustedRefs || []) {
+    const verified = await verifiedCommitRef(cwd, ref);
+    if (verified) refs.push(verified);
+  }
+  const untrusted = [];
+  for (const commit of commits) {
+    if (!(await isAncestorOfAnyRef(cwd, commit, refs))) untrusted.push(commit);
+  }
+  return untrusted;
+}
+
+async function treeHash(cwd, ref, file) {
+  const result = await tryGit(cwd, ['rev-parse', `${ref}:${file}`]);
+  return result.ok ? result.stdout.trim() : '';
+}
+
+async function existsInCommit(cwd, ref, file) {
+  const result = await tryGit(cwd, ['cat-file', '-e', `${ref}:${file}`]);
+  return result.ok;
+}
+
+async function differsFromAllTrustedRefs(cwd, file, refs) {
+  if (refs.length === 0) return true;
+  const currentExists = await existsInCommit(cwd, 'HEAD', file);
+  const currentTreeHash = currentExists ? await treeHash(cwd, 'HEAD', file) : '';
+  for (const ref of refs) {
+    const trustedExists = await existsInCommit(cwd, ref, file);
+    if (!currentExists && !trustedExists) return false;
+    if (currentExists && trustedExists && currentTreeHash && currentTreeHash === (await treeHash(cwd, ref, file))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function repairRangeFinalPaths(cwd, base, options = {}) {
+  if (!base) return [];
+  const refs = [];
+  for (const ref of options.trustedRefs || []) {
+    const verified = await verifiedCommitRef(cwd, ref);
+    if (verified) refs.push(verified);
+  }
+  const raw = await git(cwd, ['diff', '--name-status', '-z', `${base}..HEAD`]);
+  const paths = parseDiffNameStatusPaths(raw);
+  const untrusted = [];
+  for (const file of paths) {
+    if (await differsFromAllTrustedRefs(cwd, file, refs)) untrusted.push(file);
+  }
+  return untrusted;
+}
+
+async function patchIds(cwd, range) {
+  const output = await git(cwd, ['log', '--patch', '--no-ext-diff', '--reverse', range]).catch(() => '');
+  if (!output.trim()) return [];
+  const result = await runProcess('git', ['patch-id', '--stable'], {
+    cwd,
+    input: output,
+    timeoutMs: 60_000,
+  });
+  if (!result.ok) return [];
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+async function targetBaseDeletionPaths(cwd, options = {}) {
+  if (!options.targetBaseRef) return [];
+  const base = await verifiedCommitRef(cwd, options.targetBaseRef);
+  if (!base) return [];
+  const raw = await git(cwd, ['diff', '--name-only', '--diff-filter=D', '-z', `${base}..HEAD`]);
+  return parseNullSeparatedPaths(raw);
+}
+
+async function commitParents(cwd, commit) {
+  const output = await git(cwd, ['rev-list', '--parents', '-n', '1', commit]).catch(() => '');
+  const parts = output.split(/\s+/).filter(Boolean);
+  return parts.slice(1);
+}
+
+function parseNullSeparatedPaths(raw) {
+  return raw
+    .split('\0')
+    .filter(Boolean)
+    .filter((file) => !/^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(file));
+}
+
+async function commitRangeBase(cwd, options = {}) {
+  if (options.commitRangeBase) return options.commitRangeBase;
+  if (options.includeHeadCommit) return await headParent(cwd);
+  return '';
+}
+
+async function changedFilesForCommit(cwd, commit) {
+  const parents = await commitParents(cwd, commit);
+  if (parents.length > 1) {
+    const raw = await git(cwd, ['diff-tree', '--cc', '--root', '--no-commit-id', '--name-only', '-r', '-z', commit]);
+    return parseNullSeparatedPaths(raw);
+  }
+  const raw = await git(cwd, ['diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-z', commit]);
+  return parseDiffNameStatusPaths(raw);
+}
+
+async function changedRepositoryFiles(cwd, options = {}) {
+  const raw = await git(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  const paths = parsePorcelainPaths(raw);
+  const rangeBase = await commitRangeBase(cwd, options);
+  if (rangeBase) {
+    paths.push(...(await repairRangeFinalPaths(cwd, rangeBase, options)));
+    paths.push(...(await targetBaseDeletionPaths(cwd, options)));
+    const commits = await untrustedCommitsSince(cwd, rangeBase, options);
+    for (const commit of commits) {
+      paths.push(...(await changedFilesForCommit(cwd, commit)));
+    }
+  }
+  return [...new Set(paths)];
+}
+
+async function isTrackedFile(cwd, file) {
+  const result = await tryGit(cwd, ['ls-files', '--error-unmatch', '--', file]);
+  return result.ok;
+}
+
+async function addedLinesForFile(cwd, file, options = {}) {
+  const lines = [];
+  const rangeBase = await commitRangeBase(cwd, options);
+  if (rangeBase) {
+    const commits = await untrustedCommitsSince(cwd, rangeBase, options);
+    for (const commit of commits) {
+      const parents = await commitParents(cwd, commit);
+      const showArgs =
+        parents.length > 1
+          ? ['show', '--cc', '--format=', '--unified=0', commit, '--', file]
+          : ['show', '--format=', '--unified=0', commit, '--', file];
+      const committedDiff = await git(cwd, showArgs);
+      lines.push(
+        ...committedDiff
+          .split('\n')
+          .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+          .map((line) => line.slice(1))
+      );
+    }
+  }
+  if (!existsSync(path.join(cwd, file))) return lines;
+  if (await isTrackedFile(cwd, file)) {
+    const diff = await git(cwd, ['diff', 'HEAD', '--unified=0', '--', file]);
+    lines.push(
+      ...diff
+        .split('\n')
+        .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+        .map((line) => line.slice(1))
+    );
+    return lines;
+  }
+  lines.push(...readFileSync(path.join(cwd, file), 'utf8').split('\n'));
+  return lines;
+}
+
+async function assertPlatformAgentChangeGuard(cwd, env, options = {}) {
+  const changedFiles = await changedRepositoryFiles(cwd, options);
+  const localSecretFiles = changedFiles.filter((file) => LOCAL_SECRET_FILE_RE.test(file));
+  if (localSecretFiles.length > 0) {
+    throw new Error(
+      `Refusing to commit local env, wrangler, or pages config secret files:\n${localSecretFiles.join('\n')}`
+    );
+  }
+  const generatedArtifacts = changedFiles.filter((file) => GENERATED_ARTIFACT_RE.test(file));
+  if (generatedArtifacts.length > 0) {
+    throw new Error(`Refusing to commit generated build artifacts:\n${generatedArtifacts.join('\n')}`);
+  }
+  const highRiskPaths = changedFiles.filter((file) => HIGH_RISK_PATH_RE.test(file));
+  if (
+    highRiskPaths.length > 0 &&
+    ((env.EFFECTIVE_RISK || env.RISK) !== 'risk:high' || String(env.AUTO_DEV_TRIGGERED || '') !== 'true')
+  ) {
+    throw new Error(`High-risk paths require manually triggered high-risk Platform Dev work:\n${highRiskPaths.join('\n')}`);
+  }
+  for (const file of changedFiles) {
+    if (file === 'pnpm-lock.yaml') continue;
+    const addedLines = await addedLinesForFile(cwd, file, options);
+    const leakedLine = addedLines.find(
+      (line) => (TOKEN_SHAPE_RE.test(line) || SECRET_VALUE_RE.test(line)) && !SECRET_ALLOWLIST_RE.test(line)
+    );
+    if (leakedLine) {
+      throw new Error(`Potential secret detected in changed file: ${file}`);
+    }
+  }
+}
+
+async function stageRepositoryChanges(cwd) {
+  await git(cwd, ['add', '-A', '--', '.', ':(exclude).pages-artifacts', ':(exclude).pages-trusted']);
+}
+
+async function hasStagedChanges(cwd) {
+  const result = await tryGit(cwd, ['diff', '--cached', '--quiet']);
+  return result.code !== 0;
+}
+
+async function hasWorktreeChanges(cwd) {
+  const result = await tryGit(cwd, ['diff', '--quiet']);
+  if (result.code !== 0) return true;
+  const staged = await tryGit(cwd, ['diff', '--cached', '--quiet']);
+  return staged.code !== 0;
+}
+
+async function commitSubject(cwd) {
+  return await git(cwd, ['log', '-1', '--pretty=%s']);
+}
+
+async function headSha(cwd) {
+  return await git(cwd, ['rev-parse', 'HEAD']);
+}
+
+function defaultCommitMessage(env) {
+  return env.PLATFORM_AGENT_COMMIT_MESSAGE || `feat: 处理平台需求 ${required(env.PLATFORM_DEV_ITEM_ID, 'PLATFORM_DEV_ITEM_ID')}`;
+}
+
+function defaultRemoteUrl(env) {
+  if (env.PLATFORM_AGENT_PUSH_REMOTE_URL) return env.PLATFORM_AGENT_PUSH_REMOTE_URL;
+  const token = required(env.GH_TOKEN, 'GH_TOKEN');
+  return `https://x-access-token:${token}@github.com/${required(env.GITHUB_REPOSITORY, 'GITHUB_REPOSITORY')}.git`;
+}
+
+async function currentBranch(cwd) {
+  return await git(cwd, ['branch', '--show-current']);
+}
+
+async function gitStatus(cwd) {
+  return await git(cwd, ['status', '--short', '--branch', '--untracked-files=all']);
+}
+
+async function recentCommits(cwd) {
+  return await git(cwd, ['log', '--oneline', '--decorate', '--max-count=8']);
+}
+
+async function writeFinalizationContext({ cwd, env, artifactsDir, branch, baseRef, failureKind, failureLog }) {
+  await mkdir(artifactsDir, { recursive: true });
+  const contextPath = path.join(artifactsDir, 'platform-agent-finalization-failure.md');
+  const subject = await commitSubject(cwd).catch(() => '(unavailable)');
+  const status = await gitStatus(cwd).catch((error) => error.message);
+  const commits = await recentCommits(cwd).catch((error) => error.message);
+  const current = await currentBranch(cwd).catch(() => '(detached or unavailable)');
+  const context = [
+    '# Platform Agent Finalization Failure',
+    '',
+    `Failure kind: ${failureKind}`,
+    `Target branch: ${branch}`,
+    `Base ref: ${baseRef}`,
+    `Current branch: ${current}`,
+    `HEAD: ${await headSha(cwd).catch(() => '(unavailable)')}`,
+    `Commit subject: ${subject}`,
+    '',
+    '## Failure Log',
+    '',
+    '```text',
+    truncateLog(redact(failureLog, env)),
+    '```',
+    '',
+    '## Git Status',
+    '',
+    '```text',
+    status,
+    '```',
+    '',
+    '## Recent Commits',
+    '',
+    '```text',
+    commits,
+    '```',
+    '',
+    '## Expected Repair',
+    '',
+    '- Fix local git state only; do not push or force-push.',
+    `- If the branch is behind the base, merge the latest local \`origin/${baseRef}\` with a conventional Chinese commit subject and resolve conflicts.`,
+    `- If the push failed because \`origin/${branch}\` advanced, rebase the current unpushed Platform Agent commit onto \`origin/${branch}\`; do not force-push.`,
+    '- If the commit message is invalid, amend it to match `<type>(<scope>): <精准中文描述>` or `<type>: <精准中文描述>`.',
+    '- Leave the branch ready for the workflow finalizer to retry push/PR creation.',
+    '',
+  ].join('\n');
+  await writeFile(contextPath, context);
+  return contextPath;
+}
+
+async function runRepairRound({ cwd, env, contextPath }) {
+  const runnerPath = required(
+    env.PLATFORM_AGENT_RUNNER_PATH || path.join(env.RUNNER_TEMP || '', 'platform-agent-runner.mjs'),
+    'PLATFORM_AGENT_RUNNER_PATH'
+  );
+  if (!existsSync(runnerPath)) throw new Error(`Platform Agent runner not found: ${runnerPath}`);
+  const repairBin = await createFinalizationRepairBin({ env, artifactsDir: path.dirname(contextPath) });
+  const repairEnv = {
+    ...env,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: '',
+    ACTIONS_RUNTIME_TOKEN: '',
+    GH_TOKEN: '',
+    GITHUB_TOKEN: '',
+    GIT_ASKPASS: '',
+    GIT_SSH_COMMAND: '',
+    GIT_TERMINAL_PROMPT: '0',
+    PAGES_CALLBACK_TOKEN: '',
+    PLATFORM_AGENT_PUSH_REMOTE_URL: '',
+    PLATFORM_AGENT_REPAIR_MODE: 'finalization',
+    PLATFORM_AGENT_FINALIZATION_CONTEXT_FILE: contextPath,
+    PLATFORM_AGENT_FINALIZATION_ALLOWED_BASE_REF: env.BASE_REF || 'master',
+    PLATFORM_AGENT_MAX_ROUNDS:
+      env.PLATFORM_AGENT_FINALIZATION_REPAIR_MAX_ROUNDS || env.PLATFORM_AGENT_MAX_ROUNDS || '3',
+    PATH: `${repairBin}${path.delimiter}${env.PATH || process.env.PATH || ''}`,
+    SSH_ASKPASS: '',
+  };
+  const result = await runProcess(process.execPath, [runnerPath], {
+    cwd,
+    env: repairEnv,
+    timeoutMs: numberFromEnv(env.PLATFORM_AGENT_FINALIZATION_REPAIR_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+  });
+  if (!result.ok) {
+    throw new Error(
+      `Platform Agent finalization repair failed${result.timedOut ? ' (timeout)' : ''}:\n${truncateLog(
+        redact(`${result.stdout}\n${result.stderr}`.trim(), env)
+      )}`
+    );
+  }
+}
+
+async function findGitExecutable(env) {
+  const result = await runProcess('sh', ['-c', 'command -v git'], {
+    env: env || process.env,
+    timeoutMs: 10_000,
+  });
+  const executable = result.stdout.trim();
+  if (result.ok && executable) return executable;
+  return '/usr/bin/git';
+}
+
+async function createFinalizationRepairBin({ env, artifactsDir }) {
+  const binDir = path.join(artifactsDir, 'finalization-repair-bin');
+  await mkdir(binDir, { recursive: true });
+  const gitPath = path.join(binDir, 'git');
+  const realGit = await findGitExecutable(env);
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+
+real_git=${JSON.stringify(realGit)}
+args=("$@")
+subcmd=""
+index=0
+while [[ "$index" -lt "$#" ]]; do
+  arg="\${args[$index]}"
+  case "$arg" in
+    -C|-c|--git-dir|--work-tree|--namespace)
+      index=$((index + 2))
+      continue
+      ;;
+    --git-dir=*|--work-tree=*|--namespace=*)
+      index=$((index + 1))
+      continue
+      ;;
+    --*)
+      index=$((index + 1))
+      continue
+      ;;
+    -*)
+      index=$((index + 1))
+      continue
+      ;;
+    *)
+      subcmd="$arg"
+      break
+      ;;
+  esac
+done
+
+deny() {
+  echo "Platform Agent finalization repair cannot run git $1" >&2
+  exit 126
+}
+
+contains_network_url() {
+  for value in "$@"; do
+    case "$value" in
+      http://*|https://*|ssh://*|git://*|*@github.com:*|*x-access-token:*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+if [[ -z "$subcmd" ]]; then
+  exec "$real_git" "$@"
+fi
+
+case "$subcmd" in
+  merge)
+    allowed_base="\${PLATFORM_AGENT_FINALIZATION_ALLOWED_BASE_REF:-master}"
+    allowed_merge=0
+    for value in "$@"; do
+      case "$value" in
+        "origin/$allowed_base"|"refs/remotes/origin/$allowed_base"|--continue|--abort)
+          allowed_merge=1
+          ;;
+      esac
+    done
+    if [[ "$allowed_merge" -ne 1 ]]; then
+      deny "merge outside origin/$allowed_base"
+    fi
+    ;;
+  push)
+    deny "push"
+    ;;
+  clone|fetch|ls-remote|pull)
+    if contains_network_url "$@"; then
+      deny "$subcmd with an explicit network URL"
+    fi
+    ;;
+  remote)
+    for value in "$@"; do
+      case "$value" in
+        add|remove|rename|rm|set-url)
+          deny "remote $value"
+          ;;
+      esac
+    done
+    ;;
+  config)
+    non_option_count=0
+    for value in "$@"; do
+      case "$value" in
+        --add|--replace-all|--unset|--unset-all|--rename-section|--remove-section)
+          deny "config mutation"
+          ;;
+        credential.*|http.*|remote.*.url|remote.*.pushurl|url.*)
+          deny "config $value"
+          ;;
+        -*|config)
+          ;;
+        *)
+          non_option_count=$((non_option_count + 1))
+          ;;
+      esac
+    done
+    if [[ "$non_option_count" -ge 2 ]]; then
+      deny "config mutation"
+    fi
+    ;;
+esac
+
+exec "$real_git" "$@"
+`;
+  await writeFile(gitPath, script);
+  await chmod(gitPath, 0o755);
+  return binDir;
+}
+
+async function assertPreRepairChangesPreserved(cwd, preRepairSha, preRepairPatchIds = []) {
+  if (!preRepairSha) return;
+  const containsPreRepairCommit = await tryGit(cwd, ['merge-base', '--is-ancestor', preRepairSha, 'HEAD']);
+  if (containsPreRepairCommit.ok) return;
+
+  const preRepairParent = await git(cwd, ['rev-parse', `${preRepairSha}^`]).catch(() => '');
+  if (!preRepairParent) return;
+
+  const originalPatchIds = preRepairPatchIds.length ? preRepairPatchIds : await patchIds(cwd, `${preRepairParent}..${preRepairSha}`);
+  if (originalPatchIds.length === 0) return;
+  const repairedPatchIds = new Set(await patchIds(cwd, `${preRepairParent}..HEAD`));
+  for (const patchId of originalPatchIds) {
+    if (repairedPatchIds.has(patchId)) {
+      return;
+    }
+  }
+
+  throw new Error(
+    'Platform Agent finalization repair dropped the agent commit changes; preserve the generated commit via merge/rebase before retrying.'
+  );
+}
+
+async function amendStagedRepairChanges(cwd) {
+  await stageRepositoryChanges(cwd);
+  if (await hasStagedChanges(cwd)) {
+    await git(cwd, ['commit', '--amend', '--no-edit']);
+  }
+}
+
+async function repairFinalization({ cwd, env, artifactsDir, branch, baseRef, failureKind, failureLog }) {
+  const contextPath = await writeFinalizationContext({
+    cwd,
+    env,
+    artifactsDir,
+    branch,
+    baseRef,
+    failureKind,
+    failureLog,
+  });
+  const preRepairSha = await headSha(cwd).catch(() => '');
+  const preRepairParent = preRepairSha ? await git(cwd, ['rev-parse', `${preRepairSha}^`]).catch(() => '') : '';
+  const preRepairPatchIds = preRepairParent ? await patchIds(cwd, `${preRepairParent}..${preRepairSha}`) : [];
+  await runRepairRound({ cwd, env, contextPath });
+  await assertPlatformAgentChangeGuard(cwd, env, {
+    commitRangeBase: preRepairSha,
+    targetBaseRef: `origin/${baseRef}`,
+    trustedRefs: [`origin/${baseRef}`, `origin/${branch}`],
+  });
+  await amendStagedRepairChanges(cwd);
+  await assertPlatformAgentChangeGuard(cwd, env, {
+    commitRangeBase: preRepairSha,
+    targetBaseRef: `origin/${baseRef}`,
+    trustedRefs: [`origin/${baseRef}`, `origin/${branch}`],
+  });
+  await assertPreRepairChangesPreserved(cwd, preRepairSha, preRepairPatchIds);
+}
+
+async function validateCommitMessageOrRepair(params) {
+  const subject = await commitSubject(params.cwd);
+  if (COMMIT_SUBJECT_RE.test(subject) && CJK_RE.test(subject)) return true;
+  await repairFinalization({
+    ...params,
+    failureKind: 'invalid_commit_message',
+    failureLog: `Commit subject does not match pages-manager convention: ${subject}`,
+  });
+  return false;
+}
+
+async function ensureLatestBaseOrRepair(params) {
+  const { cwd, env, baseRef, remoteUrl } = params;
+  const fetchResult = await tryGit(cwd, ['fetch', remoteUrl, `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`], {
+    env,
+  });
+  if (!fetchResult.ok) {
+    await repairFinalization({
+      ...params,
+      failureKind: 'base_fetch_failed',
+      failureLog: `git fetch latest ${baseRef} failed:\n${redact(`${fetchResult.stdout}\n${fetchResult.stderr}`, env)}`,
+    });
+    return false;
+  }
+  const result = await tryGit(cwd, ['merge-base', '--is-ancestor', `origin/${baseRef}`, 'HEAD'], { env });
+  if (result.ok) return true;
+  await repairFinalization({
+    ...params,
+    failureKind: 'base_not_current',
+    failureLog: `HEAD does not contain latest origin/${baseRef}. Merge the latest base into the Platform Agent branch before finalizing.`,
+  });
+  return false;
+}
+
+async function pushOrRepair(params) {
+  const { cwd, env, branch, remoteUrl } = params;
+  const result = await tryGit(cwd, ['push', remoteUrl, `HEAD:${branch}`], { env });
+  if (result.ok) return true;
+  const log = redact(`${result.stdout}\n${result.stderr}`.trim(), env);
+  if (!NON_FAST_FORWARD_RE.test(log)) {
+    throw new Error(`git push failed for a non-retryable reason:\n${truncateLog(log)}`);
+  }
+  const fetchResult = await tryGit(cwd, ['fetch', remoteUrl, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
+    env,
+  });
+  if (!fetchResult.ok) {
+    await repairFinalization({
+      ...params,
+      failureKind: 'branch_fetch_failed',
+      failureLog: `git fetch latest ${branch} failed after non-fast-forward push:\n${redact(
+        `${fetchResult.stdout}\n${fetchResult.stderr}`,
+        env
+      )}`,
+    });
+    return false;
+  }
+  await repairFinalization({
+    ...params,
+    failureKind: 'push_non_fast_forward',
+    failureLog: log,
+  });
+  return false;
+}
+
+function appendGithubOutput(env, values) {
+  const outputPath = env.GITHUB_OUTPUT;
+  if (!outputPath) return;
+  const lines = Object.entries(values).map(([key, value]) => `${key}=${value}`);
+  const previous = existsSync(outputPath) ? readFileSync(outputPath, 'utf8') : '';
+  return writeFile(outputPath, `${previous}${lines.join('\n')}\n`);
+}
+
+export async function runPlatformAgentFinalizer(options = {}) {
+  const cwd = path.resolve(options.cwd || process.cwd());
+  const env = options.env || process.env;
+  if (!existsSync(path.join(cwd, '.git'))) {
+    throw new Error(`Platform Agent finalizer must run inside a git checkout: ${cwd}`);
+  }
+
+  const branch = required(env.AGENT_BRANCH_NAME || env.BRANCH_NAME, 'AGENT_BRANCH_NAME');
+  const baseRef = env.BASE_REF || 'master';
+  const artifactsDir = path.join(cwd, '.pages-artifacts');
+  const remoteUrl = defaultRemoteUrl(env);
+  const maxAttempts = numberFromEnv(env.PLATFORM_AGENT_FINALIZATION_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS);
+
+  await git(cwd, ['config', 'user.name', env.PLATFORM_AGENT_GIT_USER_NAME || 'pages-platform-agent']);
+  await git(cwd, ['config', 'user.email', env.PLATFORM_AGENT_GIT_USER_EMAIL || 'pages-platform-agent@users.noreply.github.com']);
+  await assertPlatformAgentChangeGuard(cwd, env);
+  await stageRepositoryChanges(cwd);
+  if (!(await hasStagedChanges(cwd))) {
+    throw new Error('Platform Coding Agent produced no repository changes.');
+  }
+  await git(cwd, ['commit', '-m', defaultCommitMessage(env)]);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await amendStagedRepairChanges(cwd);
+    const params = { cwd, env, artifactsDir, branch, baseRef, remoteUrl };
+    if (!(await validateCommitMessageOrRepair(params))) continue;
+    if (!(await ensureLatestBaseOrRepair(params))) continue;
+    if (await pushOrRepair(params)) {
+      const sha = await headSha(cwd);
+      await appendGithubOutput(env, {
+        changed: 'true',
+        head_sha: sha,
+      });
+      return { changed: true, headSha: sha, attempts: attempt };
+    }
+  }
+
+  const dirty = await hasWorktreeChanges(cwd);
+  throw new Error(
+    `Platform Agent finalization did not complete after ${maxAttempts} attempt(s). Worktree has changes: ${dirty}`
+  );
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runPlatformAgentFinalizer()
+    .then((result) => {
+      console.log(JSON.stringify({ ok: true, generatedBy: 'platform-agent-finalize', ...result }));
+    })
+    .catch((error) => {
+      console.error(redact(error instanceof Error ? error.message : String(error), process.env));
+      process.exitCode = 1;
+    });
+}

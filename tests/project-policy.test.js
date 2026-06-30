@@ -99,6 +99,8 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /sync_branch="staging-sync\/pr-\$\{PR_NUMBER\}-\$\{short_sha\}"/);
   assert.match(workflow, /git push origin "HEAD:refs\/heads\/\$\{sync_branch\}"/);
   assert.match(workflow, /gh workflow run ci\.yml[\s\S]*--ref "\$sync_branch"/);
+  assert.match(workflow, /ci_dispatch_url="\$\(gh workflow run ci\.yml/);
+  assert.match(workflow, /ci_dispatch_url[\s\S]*\/actions\/runs\/\(\[0-9\]\+\)\$/);
   assert.match(workflow, /gh run list[\s\S]*--workflow ci\.yml[\s\S]*--branch "\$sync_branch"/);
   assert.match(workflow, /gh run watch "\$ci_run_id"[\s\S]*--exit-status/);
   assert.match(workflow, /git push origin "HEAD:staging"/);
