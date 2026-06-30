@@ -134,7 +134,7 @@ test('finalizer asks Platform Agent to repair non-Chinese commit subjects', asyn
   });
 });
 
-test('finalizer lets Platform Agent rebase stale branch on latest master before push', async () => {
+test('finalizer asks Platform Agent to merge stale branch on latest master before push', async () => {
   await createRepositoryFixture(async ({ remote, seed, work }) => {
     await writeFile(path.join(seed, 'master-only.txt'), 'new master\n');
     await git(seed, ['checkout', 'master']);
@@ -145,7 +145,7 @@ test('finalizer lets Platform Agent rebase stale branch on latest master before 
     await writeFile(path.join(work, 'target.txt'), 'stale base repair\n');
     const runnerPath = await createMockRepairRunner(
       work,
-      "execFileSync('git', ['rebase', 'origin/master'], { stdio: 'inherit' });"
+      "execFileSync('git', ['merge', 'origin/master', '-m', 'fix(gateway): 合并最新 master'], { stdio: 'inherit' });"
     );
     const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
 
@@ -156,7 +156,59 @@ test('finalizer lets Platform Agent rebase stale branch on latest master before 
 
     assert.equal(result.changed, true);
     assert.equal(await git(work, ['merge-base', '--is-ancestor', 'origin/master', 'HEAD']).then(() => 'yes'), 'yes');
-    assert.match(await readFile(path.join(work, '.pages-artifacts/repair-contexts.log'), 'utf8'), /base_not_current/);
+    const context = await readFile(path.join(work, '.pages-artifacts/repair-contexts.log'), 'utf8');
+    assert.match(context, /base_not_current/);
+    assert.match(context, /conventional Chinese commit subject/);
+    assert.match(context, /do not rebase published branch history/);
+  });
+});
+
+test('finalizer preserves fast-forward push when repairing a published branch against latest master', async () => {
+  await createRepositoryFixture(async ({ remote, seed, work }) => {
+    await git(seed, ['checkout', 'feat/platform-pdev_runner123-test']);
+    await writeFile(path.join(seed, 'published.txt'), 'published branch commit\n');
+    await git(seed, ['add', 'published.txt']);
+    await git(seed, ['commit', '-m', 'fix(gateway): 已发布分支提交']);
+    await git(seed, ['push', 'origin', 'feat/platform-pdev_runner123-test']);
+
+    await git(work, [
+      'fetch',
+      'origin',
+      '+refs/heads/feat/platform-pdev_runner123-test:refs/remotes/origin/feat/platform-pdev_runner123-test',
+    ]);
+    await git(work, ['reset', '--hard', 'origin/feat/platform-pdev_runner123-test']);
+
+    await git(seed, ['checkout', 'master']);
+    await writeFile(path.join(seed, 'master-only.txt'), 'new master after branch publish\n');
+    await git(seed, ['add', 'master-only.txt']);
+    await git(seed, ['commit', '-m', 'chore: 推进 master']);
+    await git(seed, ['push', 'origin', 'master']);
+
+    await writeFile(path.join(work, 'target.txt'), 'published branch base repair\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      "execFileSync('git', ['merge', 'origin/master', '-m', 'fix(gateway): 合并最新 master'], { stdio: 'inherit' });"
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    const result = await runPlatformAgentFinalizer({
+      cwd: work,
+      env: baseEnv({ remote, runnerPath, outputPath }),
+    });
+
+    assert.equal(result.changed, true);
+    assert.equal(await git(work, ['merge-base', '--is-ancestor', 'origin/master', 'HEAD']).then(() => 'yes'), 'yes');
+    assert.equal(
+      await git(work, [
+        'merge-base',
+        '--is-ancestor',
+        'origin/feat/platform-pdev_runner123-test',
+        'HEAD',
+      ]).then(() => 'yes'),
+      'yes'
+    );
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.match(remoteLog, new RegExp(result.headSha));
   });
 });
 
@@ -203,6 +255,29 @@ test('finalizer rejects local env files before the initial commit', async () => 
 
     const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
     assert.doesNotMatch(remoteLog, /TOKEN/);
+  });
+});
+
+test('finalizer rejects renames into local env files before the initial commit', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, 'safe.txt'), 'TOKEN=renamed-secret\n');
+    await git(work, ['add', 'safe.txt']);
+    await git(work, ['commit', '-m', 'chore: 添加普通文件']);
+    await git(work, ['mv', 'safe.txt', '.env']);
+    const runnerPath = await createMockRepairRunner(work, '');
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: baseEnv({ remote, runnerPath, outputPath }),
+      }),
+      /Refusing to commit local env/
+    );
+
+    assert.match(await git(work, ['status', '--porcelain=v1', '-z', '--untracked-files=all']), /\.env/);
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /renamed-secret/);
   });
 });
 

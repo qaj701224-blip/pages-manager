@@ -183,11 +183,21 @@ jobs:
             git push origin "HEAD:refs/heads/${sync_branch}"
 
             ci_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$sync_branch"
+            ci_dispatch_url="$(gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$sync_branch")"
 
             ci_run_id=""
             ci_run_url=""
+            if [[ "$ci_dispatch_url" =~ /actions/runs/([0-9]+)$ ]]; then
+              ci_run_id="${BASH_REMATCH[1]}"
+              ci_run_url="$ci_dispatch_url"
+            fi
             for _ in {1..60}; do
+              if [[ -n "$ci_run_id" ]]; then
+                ci_status="$(gh run view "$ci_run_id" --repo "$GITHUB_REPOSITORY" --json status --jq '.status' 2>/dev/null || true)"
+                if [[ -n "$ci_status" ]]; then
+                  break
+                fi
+              fi
               ci_run_line="$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
                 --workflow ci.yml \
@@ -205,7 +215,7 @@ jobs:
             done
 
             if [[ -z "$ci_run_id" ]]; then
-              echo "CI was dispatched but no matching run was found for ${sync_branch}." >&2
+              echo "CI was dispatched but no matching run was found for ${sync_branch}. Dispatch output: ${ci_dispatch_url:-empty}" >&2
               exit 1
             fi
 

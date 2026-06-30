@@ -100,9 +100,8 @@ function parsePorcelainPaths(raw) {
   for (let index = 0; index < parts.length; index += 1) {
     const entry = parts[index];
     const status = entry.slice(0, 2);
-    let file = entry.slice(3);
+    const file = entry.slice(3);
     if (status[0] === 'R' || status[1] === 'R' || status[0] === 'C' || status[1] === 'C') {
-      file = parts[index + 1] || file;
       index += 1;
     }
     if (!file || /^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(file)) continue;
@@ -296,7 +295,7 @@ async function writeFinalizationContext({ cwd, env, artifactsDir, branch, baseRe
     '## Expected Repair',
     '',
     '- Fix local git state only; do not push or force-push.',
-    '- If the branch is behind, fetch/rebase onto the latest local origin refs and resolve conflicts.',
+    '- If the branch is behind the base or remote branch, merge the latest local origin refs with a conventional Chinese commit subject and resolve conflicts; do not rebase published branch history.',
     '- If the commit message is invalid, amend it to match `<type>(<scope>): <精准中文描述>` or `<type>: <精准中文描述>`.',
     '- Leave the branch ready for the workflow finalizer to retry push/PR creation.',
     '',
