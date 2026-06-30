@@ -140,7 +140,7 @@ export const SLACK_AGENT_POLICY_SKILLS = [
         '并要求新增、修改、删除或调整时，必须归类为 platform-dev，不要当作个人站点发布。',
       ].join(''),
       'Platform Dev 创建类 intent 返回 create_platform_issue，toolCall.name 返回 confirm_platform_issue。',
-      'Platform Dev Lane 下必须给出 issueType、areas、risk、agentEligible。',
+      'Platform Dev Lane 下必须给出 issueType、areas、risk、agentEligible、autoDevStatus。',
       '所有 Platform Dev issue 默认只创建 GitHub issue，不自动开发；必须由发起人在进度卡点击“自动开发”后才启动。',
       'type:ci、type:ops、type:security 默认 risk=risk:high。',
       'CI/CD、部署、ECS、k8s、schema、权限、secret、production 相关默认高风险，并仍受 CI、Review 和 GitHub Rulesets 约束。',
@@ -230,7 +230,7 @@ export const SLACK_AGENT_POLICY_SKILLS = [
       `intent 常用值：${SLACK_AGENT_INTENTS.join(', ')}。`,
       [
         'JSON 字段：visibleReply, dialogAct, lane, intent, toolCall, workItemState, focus, card, confirmationRequirement,',
-        'employeeSlug, siteSlug, issueType, areas, risk, agentEligible, title, summary, approvalMode,',
+        'employeeSlug, siteSlug, issueType, areas, risk, agentEligible, autoDevStatus, title, summary, approvalMode,',
         'needsClarification, clarifyingQuestion, contextResolution, sourceMessages。',
       ].join(' '),
       'dialogAct 只能是 answer、ask_clarification、request_confirmation、run_tool、deny、handoff；需要按钮确认时使用 request_confirmation。',

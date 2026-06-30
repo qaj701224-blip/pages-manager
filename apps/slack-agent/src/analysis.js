@@ -696,6 +696,7 @@ export function analyzeSlackRequirementDeterministic(input = {}) {
       : shouldCreatePlatform
         ? true
         : undefined,
+    autoDevStatus: shouldCreatePlatform ? 'pending' : undefined,
     workItemState,
     toolCall:
       finalIntent === 'list_work_items'
@@ -728,6 +729,10 @@ function stringOrFallback(value, fallback) {
 
 function arrayOrFallback(value, fallback) {
   return Array.isArray(value) ? value : fallback;
+}
+
+function autoDevStatusOrFallback(value, fallback = 'pending') {
+  return value === 'triggered' || value === 'pending' ? value : fallback;
 }
 
 function objectOrNull(value) {
@@ -833,6 +838,13 @@ export function normalizeModelAnalysis(modelAnalysis = {}, fallback, input = {})
           : typeof modelAnalysis.agent_eligible === 'boolean'
             ? modelAnalysis.agent_eligible
             : fallback.agentEligible,
+    autoDevStatus:
+      modelIntent === 'create_platform_issue' || modelIntent === 'platform_dev' || modelIntent === 'platform_feedback'
+        ? autoDevStatusOrFallback(
+            modelAnalysis.autoDevStatus || modelAnalysis.auto_dev_status,
+            autoDevStatusOrFallback(fallback.autoDevStatus, 'pending')
+          )
+        : fallback.autoDevStatus,
     workItemState: stringOrFallback(
       modelAnalysis.workItemState || modelAnalysis.work_item_state,
       fallback.workItemState || workItemStateFromText(input.text || input.event?.text || fallback.summary || '')

@@ -1,4 +1,4 @@
-export const SLACK_AGENT_POLICY_PACKAGE_VERSION = 'slack-agent-policy-2026-06-25.1';
+export const SLACK_AGENT_POLICY_PACKAGE_VERSION = 'slack-agent-policy-2026-06-30.1';
 
 export const SLACK_AGENT_POLICY_PACKAGE = {
   version: SLACK_AGENT_POLICY_PACKAGE_VERSION,

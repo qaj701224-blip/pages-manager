@@ -40,6 +40,7 @@ describe('slack agent', () => {
     assert.deepEqual(analysis.areas, ['area:github', 'area:slack']);
     assert.equal(analysis.risk, 'risk:medium');
     assert.equal(analysis.agentEligible, true);
+    assert.equal(analysis.autoDevStatus, 'pending');
   });
 
   it('routes repository file modification requests to platform dev lane', () => {
@@ -68,6 +69,7 @@ describe('slack agent', () => {
     assert.equal(analysis.risk, 'risk:high');
     assert.ok(analysis.areas.includes('area:ci'));
     assert.ok(analysis.areas.includes('area:ops'));
+    assert.equal(analysis.autoDevStatus, 'pending');
   });
 
   it('routes repo implementation questions to read-only repo answer tool', () => {
@@ -744,6 +746,28 @@ describe('slack agent', () => {
     assert.equal(normalized.intent, 'unsupported_destructive_request');
     assert.equal(normalized.toolCall.name, 'unsupported_destructive_request');
     assert.equal(normalized.agentEligible, false);
+  });
+
+  it('normalizes model platform auto-dev status to pending by default', () => {
+    const input = {
+      text: '请实现 pages-manager Slack 自动开发确认流程',
+    };
+    const fallback = analyzeSlackRequirementDeterministic(input);
+    const normalized = normalizeModelAnalysis(
+      {
+        intent: 'create_platform_issue',
+        lane: 'platform-dev',
+        toolCall: { name: 'confirm_platform_issue', args: {} },
+        summary: '请实现 pages-manager Slack 自动开发确认流程。',
+        agentEligible: true,
+        autoDevStatus: 'auto',
+      },
+      fallback,
+      input
+    );
+
+    assert.equal(fallback.autoDevStatus, 'pending');
+    assert.equal(normalized.autoDevStatus, 'pending');
   });
 
   it('answers work item close capability questions from current context instead of asking which object', () => {
