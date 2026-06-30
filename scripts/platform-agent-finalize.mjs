@@ -709,7 +709,20 @@ async function pushOrRepair(params) {
   if (!NON_FAST_FORWARD_RE.test(log)) {
     throw new Error(`git push failed for a non-retryable reason:\n${truncateLog(log)}`);
   }
-  await tryGit(cwd, ['fetch', remoteUrl, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { env });
+  const fetchResult = await tryGit(cwd, ['fetch', remoteUrl, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
+    env,
+  });
+  if (!fetchResult.ok) {
+    await repairFinalization({
+      ...params,
+      failureKind: 'branch_fetch_failed',
+      failureLog: `git fetch latest ${branch} failed after non-fast-forward push:\n${redact(
+        `${fetchResult.stdout}\n${fetchResult.stderr}`,
+        env
+      )}`,
+    });
+    return false;
+  }
   await repairFinalization({
     ...params,
     failureKind: 'push_non_fast_forward',

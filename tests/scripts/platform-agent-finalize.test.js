@@ -513,6 +513,58 @@ test('finalizer lets Platform Agent repair non-fast-forward push failures', asyn
   });
 });
 
+test('finalizer repairs branch fetch failures after non-fast-forward push', async () => {
+  await createRepositoryFixture(async ({ remote, seed, work }) => {
+    await git(seed, ['checkout', 'feat/platform-pdev_runner123-test']);
+    await writeFile(path.join(seed, 'remote-branch.txt'), 'remote branch advanced\n');
+    await git(seed, ['add', 'remote-branch.txt']);
+    await git(seed, ['commit', '-m', 'fix(gateway): 远端分支先推进']);
+    await git(seed, ['push', 'origin', 'feat/platform-pdev_runner123-test']);
+
+    const wrapperDir = path.join(work, '.pages-artifacts/finalizer-test-bin');
+    await mkdir(wrapperDir, { recursive: true });
+    const realGit = (await execFileAsync('sh', ['-c', 'command -v git'])).stdout.trim();
+    const wrapperPath = path.join(wrapperDir, 'git');
+    const branchRefspec =
+      'refs/heads/feat/platform-pdev_runner123-test:refs/remotes/origin/feat/platform-pdev_runner123-test';
+    await writeFile(
+      wrapperPath,
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        `real_git=${JSON.stringify(realGit)}`,
+        `branch_refspec=${JSON.stringify(branchRefspec)}`,
+        'if [[ "${1:-}" == "fetch" && "$*" == *"$branch_refspec"* ]]; then',
+        '  echo "simulated branch fetch failure" >&2',
+        '  exit 128',
+        'fi',
+        'exec "$real_git" "$@"',
+      ].join('\n')
+    );
+    await chmod(wrapperPath, 0o755);
+
+    await writeFile(path.join(work, 'target.txt'), 'branch fetch failed\n');
+    const runnerPath = await createMockRepairRunner(work, '');
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: {
+          ...baseEnv({ remote, runnerPath, outputPath }),
+          PATH: `${wrapperDir}${path.delimiter}${process.env.PATH || ''}`,
+          PLATFORM_AGENT_FINALIZATION_MAX_ATTEMPTS: '1',
+        },
+      }),
+      /Platform Agent finalization did not complete/
+    );
+
+    assert.match(await readFile(path.join(work, '.pages-artifacts/repair-contexts.log'), 'utf8'), /branch_fetch_failed/);
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /branch fetch failed/);
+  });
+});
+
 test('finalizer rejects local env files before the initial commit', async () => {
   await createRepositoryFixture(async ({ remote, work }) => {
     await writeFile(path.join(work, '.env'), 'TOKEN=local-secret\n');
