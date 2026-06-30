@@ -141,7 +141,7 @@ async function commitsSince(cwd, base) {
 
 async function verifiedCommitRef(cwd, ref) {
   const result = await tryGit(cwd, ['rev-parse', '--verify', `${ref}^{commit}`]);
-  return result.ok ? ref : '';
+  return result.ok ? result.stdout.trim() : '';
 }
 
 async function isAncestorOfAnyRef(cwd, commit, refs) {
@@ -162,6 +162,46 @@ async function untrustedCommitsSince(cwd, base, options = {}) {
   const untrusted = [];
   for (const commit of commits) {
     if (!(await isAncestorOfAnyRef(cwd, commit, refs))) untrusted.push(commit);
+  }
+  return untrusted;
+}
+
+async function treeHash(cwd, ref, file) {
+  const result = await tryGit(cwd, ['rev-parse', `${ref}:${file}`]);
+  return result.ok ? result.stdout.trim() : '';
+}
+
+async function existsInCommit(cwd, ref, file) {
+  const result = await tryGit(cwd, ['cat-file', '-e', `${ref}:${file}`]);
+  return result.ok;
+}
+
+async function differsFromAllTrustedRefs(cwd, file, refs) {
+  if (refs.length === 0) return true;
+  const currentExists = await existsInCommit(cwd, 'HEAD', file);
+  const currentTreeHash = currentExists ? await treeHash(cwd, 'HEAD', file) : '';
+  for (const ref of refs) {
+    const trustedExists = await existsInCommit(cwd, ref, file);
+    if (!currentExists && !trustedExists) return false;
+    if (currentExists && trustedExists && currentTreeHash && currentTreeHash === (await treeHash(cwd, ref, file))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function repairRangeFinalPaths(cwd, base, options = {}) {
+  if (!base) return [];
+  const refs = [];
+  for (const ref of options.trustedRefs || []) {
+    const verified = await verifiedCommitRef(cwd, ref);
+    if (verified) refs.push(verified);
+  }
+  const raw = await git(cwd, ['diff', '--name-status', '-z', `${base}..HEAD`]);
+  const paths = parseDiffNameStatusPaths(raw);
+  const untrusted = [];
+  for (const file of paths) {
+    if (await differsFromAllTrustedRefs(cwd, file, refs)) untrusted.push(file);
   }
   return untrusted;
 }
@@ -200,6 +240,7 @@ async function changedRepositoryFiles(cwd, options = {}) {
   const paths = parsePorcelainPaths(raw);
   const rangeBase = await commitRangeBase(cwd, options);
   if (rangeBase) {
+    paths.push(...(await repairRangeFinalPaths(cwd, rangeBase, options)));
     const commits = await untrustedCommitsSince(cwd, rangeBase, options);
     for (const commit of commits) {
       paths.push(...(await changedFilesForCommit(cwd, commit)));

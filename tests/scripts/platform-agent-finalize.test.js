@@ -279,6 +279,39 @@ test('finalizer rejects unsafe files introduced by repair merge commits', async 
   });
 });
 
+test('finalizer rejects repair merge commits that change agent-owned files unsafely', async () => {
+  await createRepositoryFixture(async ({ remote, seed, work }) => {
+    await git(seed, ['checkout', 'master']);
+    await writeFile(path.join(seed, 'master-only.txt'), 'new master\n');
+    await git(seed, ['add', 'master-only.txt']);
+    await git(seed, ['commit', '-m', 'chore: 推进 master']);
+    await git(seed, ['push', 'origin', 'master']);
+
+    await writeFile(path.join(work, 'target.txt'), 'stale base with unsafe agent file repair\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      [
+        "execFileSync('git', ['merge', 'origin/master', '--no-commit'], { stdio: 'inherit' });",
+        "writeFileSync('target.txt', 'API_KEY=repair-merge-secret-value\\n');",
+        "execFileSync('git', ['add', 'target.txt'], { stdio: 'inherit' });",
+        "execFileSync('git', ['commit', '-m', 'fix(gateway): 合并最新 master'], { stdio: 'inherit' });",
+      ].join('\n')
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: baseEnv({ remote, runnerPath, outputPath }),
+      }),
+      /Potential secret detected in changed file: target\.txt/
+    );
+
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /repair-merge-secret-value/);
+  });
+});
+
 test('finalizer lets Platform Agent repair non-fast-forward push failures', async () => {
   await createRepositoryFixture(async ({ remote, seed, work }) => {
     await git(seed, ['checkout', 'feat/platform-pdev_runner123-test']);
