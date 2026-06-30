@@ -139,10 +139,60 @@ async function commitsSince(cwd, base) {
   return output.split('\n').filter(Boolean);
 }
 
+async function verifiedCommitRef(cwd, ref) {
+  const result = await tryGit(cwd, ['rev-parse', '--verify', `${ref}^{commit}`]);
+  return result.ok ? ref : '';
+}
+
+async function isAncestorOfAnyRef(cwd, commit, refs) {
+  for (const ref of refs) {
+    const result = await tryGit(cwd, ['merge-base', '--is-ancestor', commit, ref]);
+    if (result.ok) return true;
+  }
+  return false;
+}
+
+async function untrustedCommitsSince(cwd, base, options = {}) {
+  const commits = await commitsSince(cwd, base);
+  const refs = [];
+  for (const ref of options.trustedRefs || []) {
+    const verified = await verifiedCommitRef(cwd, ref);
+    if (verified) refs.push(verified);
+  }
+  const untrusted = [];
+  for (const commit of commits) {
+    if (!(await isAncestorOfAnyRef(cwd, commit, refs))) untrusted.push(commit);
+  }
+  return untrusted;
+}
+
+async function commitParents(cwd, commit) {
+  const output = await git(cwd, ['rev-list', '--parents', '-n', '1', commit]).catch(() => '');
+  const parts = output.split(/\s+/).filter(Boolean);
+  return parts.slice(1);
+}
+
+function parseNullSeparatedPaths(raw) {
+  return raw
+    .split('\0')
+    .filter(Boolean)
+    .filter((file) => !/^(\.pages-artifacts|\.pages-trusted)(\/|$)/.test(file));
+}
+
 async function commitRangeBase(cwd, options = {}) {
   if (options.commitRangeBase) return options.commitRangeBase;
   if (options.includeHeadCommit) return await headParent(cwd);
   return '';
+}
+
+async function changedFilesForCommit(cwd, commit) {
+  const parents = await commitParents(cwd, commit);
+  if (parents.length > 1) {
+    const raw = await git(cwd, ['diff-tree', '--cc', '--root', '--no-commit-id', '--name-only', '-r', '-z', commit]);
+    return parseNullSeparatedPaths(raw);
+  }
+  const raw = await git(cwd, ['diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-z', commit]);
+  return parseDiffNameStatusPaths(raw);
 }
 
 async function changedRepositoryFiles(cwd, options = {}) {
@@ -150,10 +200,9 @@ async function changedRepositoryFiles(cwd, options = {}) {
   const paths = parsePorcelainPaths(raw);
   const rangeBase = await commitRangeBase(cwd, options);
   if (rangeBase) {
-    const commits = await commitsSince(cwd, rangeBase);
+    const commits = await untrustedCommitsSince(cwd, rangeBase, options);
     for (const commit of commits) {
-      const diffRaw = await git(cwd, ['diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-z', commit]);
-      paths.push(...parseDiffNameStatusPaths(diffRaw));
+      paths.push(...(await changedFilesForCommit(cwd, commit)));
     }
   }
   return [...new Set(paths)];
@@ -168,9 +217,14 @@ async function addedLinesForFile(cwd, file, options = {}) {
   const lines = [];
   const rangeBase = await commitRangeBase(cwd, options);
   if (rangeBase) {
-    const commits = await commitsSince(cwd, rangeBase);
+    const commits = await untrustedCommitsSince(cwd, rangeBase, options);
     for (const commit of commits) {
-      const committedDiff = await git(cwd, ['show', '--format=', '--unified=0', commit, '--', file]);
+      const parents = await commitParents(cwd, commit);
+      const showArgs =
+        parents.length > 1
+          ? ['show', '--cc', '--format=', '--unified=0', commit, '--', file]
+          : ['show', '--format=', '--unified=0', commit, '--', file];
+      const committedDiff = await git(cwd, showArgs);
       lines.push(
         ...committedDiff
           .split('\n')
@@ -367,7 +421,10 @@ async function repairFinalization({ cwd, env, artifactsDir, branch, baseRef, fai
   });
   const preRepairSha = await headSha(cwd).catch(() => '');
   await runRepairRound({ cwd, env, contextPath });
-  await assertPlatformAgentChangeGuard(cwd, env, { commitRangeBase: preRepairSha });
+  await assertPlatformAgentChangeGuard(cwd, env, {
+    commitRangeBase: preRepairSha,
+    trustedRefs: [`origin/${baseRef}`, `origin/${branch}`],
+  });
   await amendStagedRepairChanges(cwd);
 }
 
@@ -400,7 +457,7 @@ async function ensureLatestBaseOrRepair(params) {
   await repairFinalization({
     ...params,
     failureKind: 'base_not_current',
-    failureLog: `HEAD does not contain latest origin/${baseRef}. Rebase the Platform Agent branch before finalizing.`,
+    failureLog: `HEAD does not contain latest origin/${baseRef}. Merge the latest base into the Platform Agent branch before finalizing.`,
   });
   return false;
 }

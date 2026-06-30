@@ -163,6 +163,36 @@ test('finalizer asks Platform Agent to merge stale branch on latest master befor
   });
 });
 
+test('finalizer allows high-risk files that already belong to latest master', async () => {
+  await createRepositoryFixture(async ({ remote, seed, work }) => {
+    await git(seed, ['checkout', 'master']);
+    await mkdir(path.join(seed, '.github/workflows'), { recursive: true });
+    await writeFile(path.join(seed, '.github/workflows/base.yml'), 'name: base\n');
+    await git(seed, ['add', '.github/workflows/base.yml']);
+    await git(seed, ['commit', '-m', 'ci: 更新 master 工作流']);
+    await git(seed, ['push', 'origin', 'master']);
+
+    await writeFile(path.join(work, 'target.txt'), 'stale base with upstream workflow\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      "execFileSync('git', ['merge', 'origin/master', '-m', 'fix(gateway): 合并最新 master'], { stdio: 'inherit' });"
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    const result = await runPlatformAgentFinalizer({
+      cwd: work,
+      env: {
+        ...baseEnv({ remote, runnerPath, outputPath }),
+        RISK: 'risk:medium',
+        EFFECTIVE_RISK: 'risk:medium',
+      },
+    });
+
+    assert.equal(result.changed, true);
+    assert.equal(await git(work, ['merge-base', '--is-ancestor', 'origin/master', 'HEAD']).then(() => 'yes'), 'yes');
+  });
+});
+
 test('finalizer preserves fast-forward push when repairing a published branch against latest master', async () => {
   await createRepositoryFixture(async ({ remote, seed, work }) => {
     await git(seed, ['checkout', 'feat/platform-pdev_runner123-test']);
@@ -209,6 +239,43 @@ test('finalizer preserves fast-forward push when repairing a published branch ag
     );
     const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
     assert.match(remoteLog, new RegExp(result.headSha));
+  });
+});
+
+test('finalizer rejects unsafe files introduced by repair merge commits', async () => {
+  await createRepositoryFixture(async ({ remote, seed, work }) => {
+    await git(seed, ['checkout', 'master']);
+    await writeFile(path.join(seed, 'master-only.txt'), 'new master\n');
+    await git(seed, ['add', 'master-only.txt']);
+    await git(seed, ['commit', '-m', 'chore: 推进 master']);
+    await git(seed, ['push', 'origin', 'master']);
+
+    await writeFile(path.join(work, 'target.txt'), 'stale base with unsafe merge repair\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      [
+        "execFileSync('git', ['merge', 'origin/master', '--no-commit'], { stdio: 'inherit' });",
+        "writeFileSync('.env', 'TOKEN=repair-merge-secret\\n');",
+        "execFileSync('git', ['add', '.env'], { stdio: 'inherit' });",
+        "execFileSync('git', ['commit', '-m', 'fix(gateway): 合并最新 master'], { stdio: 'inherit' });",
+      ].join('\n')
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: {
+          ...baseEnv({ remote, runnerPath, outputPath }),
+          RISK: 'risk:medium',
+          EFFECTIVE_RISK: 'risk:medium',
+        },
+      }),
+      /Refusing to commit local env/
+    );
+
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /repair-merge-secret/);
   });
 });
 
