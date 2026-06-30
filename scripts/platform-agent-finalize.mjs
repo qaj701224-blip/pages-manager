@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -419,15 +419,24 @@ async function runRepairRound({ cwd, env, contextPath }) {
     'PLATFORM_AGENT_RUNNER_PATH'
   );
   if (!existsSync(runnerPath)) throw new Error(`Platform Agent runner not found: ${runnerPath}`);
+  const repairBin = await createFinalizationRepairBin({ env, artifactsDir: path.dirname(contextPath) });
   const repairEnv = {
     ...env,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: '',
+    ACTIONS_RUNTIME_TOKEN: '',
     GH_TOKEN: '',
     GITHUB_TOKEN: '',
+    GIT_ASKPASS: '',
+    GIT_SSH_COMMAND: '',
+    GIT_TERMINAL_PROMPT: '0',
     PAGES_CALLBACK_TOKEN: '',
+    PLATFORM_AGENT_PUSH_REMOTE_URL: '',
     PLATFORM_AGENT_REPAIR_MODE: 'finalization',
     PLATFORM_AGENT_FINALIZATION_CONTEXT_FILE: contextPath,
     PLATFORM_AGENT_MAX_ROUNDS:
       env.PLATFORM_AGENT_FINALIZATION_REPAIR_MAX_ROUNDS || env.PLATFORM_AGENT_MAX_ROUNDS || '3',
+    PATH: `${repairBin}${path.delimiter}${env.PATH || process.env.PATH || ''}`,
+    SSH_ASKPASS: '',
   };
   const result = await runProcess(process.execPath, [runnerPath], {
     cwd,
@@ -441,6 +450,122 @@ async function runRepairRound({ cwd, env, contextPath }) {
       )}`
     );
   }
+}
+
+async function findGitExecutable(env) {
+  const result = await runProcess('sh', ['-c', 'command -v git'], {
+    env: env || process.env,
+    timeoutMs: 10_000,
+  });
+  const executable = result.stdout.trim();
+  if (result.ok && executable) return executable;
+  return '/usr/bin/git';
+}
+
+async function createFinalizationRepairBin({ env, artifactsDir }) {
+  const binDir = path.join(artifactsDir, 'finalization-repair-bin');
+  await mkdir(binDir, { recursive: true });
+  const gitPath = path.join(binDir, 'git');
+  const realGit = await findGitExecutable(env);
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+
+real_git=${JSON.stringify(realGit)}
+args=("$@")
+subcmd=""
+index=0
+while [[ "$index" -lt "$#" ]]; do
+  arg="\${args[$index]}"
+  case "$arg" in
+    -C|-c|--git-dir|--work-tree|--namespace)
+      index=$((index + 2))
+      continue
+      ;;
+    --git-dir=*|--work-tree=*|--namespace=*)
+      index=$((index + 1))
+      continue
+      ;;
+    --*)
+      index=$((index + 1))
+      continue
+      ;;
+    -*)
+      index=$((index + 1))
+      continue
+      ;;
+    *)
+      subcmd="$arg"
+      break
+      ;;
+  esac
+done
+
+deny() {
+  echo "Platform Agent finalization repair cannot run git $1" >&2
+  exit 126
+}
+
+contains_network_url() {
+  for value in "$@"; do
+    case "$value" in
+      http://*|https://*|ssh://*|git://*|*@github.com:*|*x-access-token:*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+if [[ -z "$subcmd" ]]; then
+  exec "$real_git" "$@"
+fi
+
+case "$subcmd" in
+  push)
+    deny "push"
+    ;;
+  clone|fetch|ls-remote|pull)
+    if contains_network_url "$@"; then
+      deny "$subcmd with an explicit network URL"
+    fi
+    ;;
+  remote)
+    for value in "$@"; do
+      case "$value" in
+        add|remove|rename|rm|set-url)
+          deny "remote $value"
+          ;;
+      esac
+    done
+    ;;
+  config)
+    non_option_count=0
+    for value in "$@"; do
+      case "$value" in
+        --add|--replace-all|--unset|--unset-all|--rename-section|--remove-section)
+          deny "config mutation"
+          ;;
+        credential.*|http.*|remote.*.url|remote.*.pushurl|url.*)
+          deny "config $value"
+          ;;
+        -*|config)
+          ;;
+        *)
+          non_option_count=$((non_option_count + 1))
+          ;;
+      esac
+    done
+    if [[ "$non_option_count" -ge 2 ]]; then
+      deny "config mutation"
+    fi
+    ;;
+esac
+
+exec "$real_git" "$@"
+`;
+  await writeFile(gitPath, script);
+  await chmod(gitPath, 0o755);
+  return binDir;
 }
 
 async function amendStagedRepairChanges(cwd) {

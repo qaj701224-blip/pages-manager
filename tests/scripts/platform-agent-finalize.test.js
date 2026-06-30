@@ -134,6 +134,82 @@ test('finalizer asks Platform Agent to repair non-Chinese commit subjects', asyn
   });
 });
 
+test('finalizer removes write credentials from finalization repair environment', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, 'target.txt'), 'scrubbed repair env\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      [
+        "writeFileSync('.pages-artifacts/repair-env.json', JSON.stringify({",
+        "  ghToken: process.env.GH_TOKEN || null,",
+        "  githubToken: process.env.GITHUB_TOKEN || null,",
+        "  callbackToken: process.env.PAGES_CALLBACK_TOKEN || null,",
+        "  pushRemoteUrl: process.env.PLATFORM_AGENT_PUSH_REMOTE_URL || null,",
+        "  path: process.env.PATH || null,",
+        "}, null, 2));",
+        "execFileSync('git', ['commit', '--amend', '-m', 'fix(gateway): 修复收尾环境隔离'], { stdio: 'inherit' });",
+      ].join('\n')
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    const result = await runPlatformAgentFinalizer({
+      cwd: work,
+      env: {
+        ...baseEnv({ remote, runnerPath, outputPath }),
+        PLATFORM_AGENT_COMMIT_MESSAGE: 'bad message',
+        GITHUB_TOKEN: 'ghs_should_not_reach_repair',
+        PAGES_CALLBACK_TOKEN: 'callback_should_not_reach_repair',
+      },
+    });
+
+    const repairEnv = JSON.parse(await readFile(path.join(work, '.pages-artifacts/repair-env.json'), 'utf8'));
+    assert.equal(result.changed, true);
+    assert.equal(repairEnv.ghToken, null);
+    assert.equal(repairEnv.githubToken, null);
+    assert.equal(repairEnv.callbackToken, null);
+    assert.equal(repairEnv.pushRemoteUrl, null);
+    assert.match(repairEnv.path, /finalization-repair-bin/);
+  });
+});
+
+test('finalizer blocks git push commands during finalization repair', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, 'target.txt'), 'blocked repair push\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      [
+        'let pushStatus = 0;',
+        "let pushStderr = '';",
+        'try {',
+        "  execFileSync('git', ['push', 'origin', 'HEAD:refs/heads/blocked-repair-push'], { stdio: 'pipe' });",
+        '} catch (error) {',
+        '  pushStatus = error.status || 1;',
+        "  pushStderr = error.stderr ? error.stderr.toString() : '';",
+        '}',
+        "writeFileSync('.pages-artifacts/repair-push.json', JSON.stringify({ pushStatus, pushStderr }, null, 2));",
+        'if (pushStatus === 0) process.exit(9);',
+        "execFileSync('git', ['commit', '--amend', '-m', 'fix(gateway): 修复收尾推送隔离'], { stdio: 'inherit' });",
+      ].join('\n')
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    const result = await runPlatformAgentFinalizer({
+      cwd: work,
+      env: {
+        ...baseEnv({ remote, runnerPath, outputPath }),
+        PLATFORM_AGENT_COMMIT_MESSAGE: 'bad message',
+      },
+    });
+
+    const repairPush = JSON.parse(await readFile(path.join(work, '.pages-artifacts/repair-push.json'), 'utf8'));
+    const blockedRemote = await git(work, ['ls-remote', remote, 'refs/heads/blocked-repair-push']);
+    assert.equal(result.changed, true);
+    assert.equal(repairPush.pushStatus, 126);
+    assert.match(repairPush.pushStderr, /cannot run git push/);
+    assert.equal(blockedRemote, '');
+  });
+});
+
 test('finalizer asks Platform Agent to merge stale branch on latest master before push', async () => {
   await createRepositoryFixture(async ({ remote, seed, work }) => {
     await writeFile(path.join(seed, 'master-only.txt'), 'new master\n');
