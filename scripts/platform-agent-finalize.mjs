@@ -48,12 +48,12 @@ function redact(value = '', env = {}) {
 }
 
 async function runProcess(command, args, options = {}) {
-  const { cwd, env, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  const { cwd, env, input, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
   return await new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
@@ -77,6 +77,8 @@ async function runProcess(command, args, options = {}) {
       clearTimeout(timer);
       resolve({ ok: code === 0 && !timedOut, code, stdout, stderr, timedOut });
     });
+    if (input) child.stdin.end(input);
+    else child.stdin.end();
   });
 }
 
@@ -206,6 +208,29 @@ async function repairRangeFinalPaths(cwd, base, options = {}) {
   return untrusted;
 }
 
+async function patchIds(cwd, range) {
+  const output = await git(cwd, ['log', '--patch', '--no-ext-diff', '--reverse', range]).catch(() => '');
+  if (!output.trim()) return [];
+  const result = await runProcess('git', ['patch-id', '--stable'], {
+    cwd,
+    input: output,
+    timeoutMs: 60_000,
+  });
+  if (!result.ok) return [];
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+async function targetBaseDeletionPaths(cwd, options = {}) {
+  if (!options.targetBaseRef) return [];
+  const base = await verifiedCommitRef(cwd, options.targetBaseRef);
+  if (!base) return [];
+  const raw = await git(cwd, ['diff', '--name-only', '--diff-filter=D', '-z', `${base}..HEAD`]);
+  return parseNullSeparatedPaths(raw);
+}
+
 async function commitParents(cwd, commit) {
   const output = await git(cwd, ['rev-list', '--parents', '-n', '1', commit]).catch(() => '');
   const parts = output.split(/\s+/).filter(Boolean);
@@ -241,6 +266,7 @@ async function changedRepositoryFiles(cwd, options = {}) {
   const rangeBase = await commitRangeBase(cwd, options);
   if (rangeBase) {
     paths.push(...(await repairRangeFinalPaths(cwd, rangeBase, options)));
+    paths.push(...(await targetBaseDeletionPaths(cwd, options)));
     const commits = await untrustedCommitsSince(cwd, rangeBase, options);
     for (const commit of commits) {
       paths.push(...(await changedFilesForCommit(cwd, commit)));
@@ -404,7 +430,8 @@ async function writeFinalizationContext({ cwd, env, artifactsDir, branch, baseRe
     '## Expected Repair',
     '',
     '- Fix local git state only; do not push or force-push.',
-    '- If the branch is behind the base or remote branch, merge the latest local origin refs with a conventional Chinese commit subject and resolve conflicts; do not rebase published branch history.',
+    `- If the branch is behind the base, merge the latest local \`origin/${baseRef}\` with a conventional Chinese commit subject and resolve conflicts.`,
+    `- If the push failed because \`origin/${branch}\` advanced, rebase the current unpushed Platform Agent commit onto \`origin/${branch}\`; do not force-push.`,
     '- If the commit message is invalid, amend it to match `<type>(<scope>): <精准中文描述>` or `<type>: <精准中文描述>`.',
     '- Leave the branch ready for the workflow finalizer to retry push/PR creation.',
     '',
@@ -433,6 +460,7 @@ async function runRepairRound({ cwd, env, contextPath }) {
     PLATFORM_AGENT_PUSH_REMOTE_URL: '',
     PLATFORM_AGENT_REPAIR_MODE: 'finalization',
     PLATFORM_AGENT_FINALIZATION_CONTEXT_FILE: contextPath,
+    PLATFORM_AGENT_FINALIZATION_ALLOWED_BASE_REF: env.BASE_REF || 'master',
     PLATFORM_AGENT_MAX_ROUNDS:
       env.PLATFORM_AGENT_FINALIZATION_REPAIR_MAX_ROUNDS || env.PLATFORM_AGENT_MAX_ROUNDS || '3',
     PATH: `${repairBin}${path.delimiter}${env.PATH || process.env.PATH || ''}`,
@@ -521,6 +549,20 @@ if [[ -z "$subcmd" ]]; then
 fi
 
 case "$subcmd" in
+  merge)
+    allowed_base="\${PLATFORM_AGENT_FINALIZATION_ALLOWED_BASE_REF:-master}"
+    allowed_merge=0
+    for value in "$@"; do
+      case "$value" in
+        "origin/$allowed_base"|"refs/remotes/origin/$allowed_base"|--continue|--abort)
+          allowed_merge=1
+          ;;
+      esac
+    done
+    if [[ "$allowed_merge" -ne 1 ]]; then
+      deny "merge outside origin/$allowed_base"
+    fi
+    ;;
   push)
     deny "push"
     ;;
@@ -568,6 +610,28 @@ exec "$real_git" "$@"
   return binDir;
 }
 
+async function assertPreRepairChangesPreserved(cwd, preRepairSha, preRepairPatchIds = []) {
+  if (!preRepairSha) return;
+  const containsPreRepairCommit = await tryGit(cwd, ['merge-base', '--is-ancestor', preRepairSha, 'HEAD']);
+  if (containsPreRepairCommit.ok) return;
+
+  const preRepairParent = await git(cwd, ['rev-parse', `${preRepairSha}^`]).catch(() => '');
+  if (!preRepairParent) return;
+
+  const originalPatchIds = preRepairPatchIds.length ? preRepairPatchIds : await patchIds(cwd, `${preRepairParent}..${preRepairSha}`);
+  if (originalPatchIds.length === 0) return;
+  const repairedPatchIds = new Set(await patchIds(cwd, `${preRepairParent}..HEAD`));
+  for (const patchId of originalPatchIds) {
+    if (repairedPatchIds.has(patchId)) {
+      return;
+    }
+  }
+
+  throw new Error(
+    'Platform Agent finalization repair dropped the agent commit changes; preserve the generated commit via merge/rebase before retrying.'
+  );
+}
+
 async function amendStagedRepairChanges(cwd) {
   await stageRepositoryChanges(cwd);
   if (await hasStagedChanges(cwd)) {
@@ -586,12 +650,21 @@ async function repairFinalization({ cwd, env, artifactsDir, branch, baseRef, fai
     failureLog,
   });
   const preRepairSha = await headSha(cwd).catch(() => '');
+  const preRepairParent = preRepairSha ? await git(cwd, ['rev-parse', `${preRepairSha}^`]).catch(() => '') : '';
+  const preRepairPatchIds = preRepairParent ? await patchIds(cwd, `${preRepairParent}..${preRepairSha}`) : [];
   await runRepairRound({ cwd, env, contextPath });
   await assertPlatformAgentChangeGuard(cwd, env, {
     commitRangeBase: preRepairSha,
+    targetBaseRef: `origin/${baseRef}`,
     trustedRefs: [`origin/${baseRef}`, `origin/${branch}`],
   });
   await amendStagedRepairChanges(cwd);
+  await assertPlatformAgentChangeGuard(cwd, env, {
+    commitRangeBase: preRepairSha,
+    targetBaseRef: `origin/${baseRef}`,
+    trustedRefs: [`origin/${baseRef}`, `origin/${branch}`],
+  });
+  await assertPreRepairChangesPreserved(cwd, preRepairSha, preRepairPatchIds);
 }
 
 async function validateCommitMessageOrRepair(params) {
