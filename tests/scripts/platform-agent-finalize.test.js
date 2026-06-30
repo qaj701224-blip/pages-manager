@@ -362,6 +362,39 @@ test('finalizer rejects unsafe repair commits even when the repair agent amends 
   });
 });
 
+test('finalizer rejects unsafe files from any commit created during repair', async () => {
+  await createRepositoryFixture(async ({ remote, work }) => {
+    await writeFile(path.join(work, 'target.txt'), 'multi commit unsafe repair\n');
+    const runnerPath = await createMockRepairRunner(
+      work,
+      [
+        "writeFileSync('.env', 'TOKEN=intermediate-secret\\n');",
+        "execFileSync('git', ['add', '.env'], { stdio: 'inherit' });",
+        "execFileSync('git', ['commit', '-m', 'fix(gateway): 添加临时配置'], { stdio: 'inherit' });",
+        "execFileSync('git', ['rm', '.env'], { stdio: 'inherit' });",
+        "writeFileSync('target.txt', 'multi commit unsafe repair\\nfinal clean commit\\n');",
+        "execFileSync('git', ['add', 'target.txt'], { stdio: 'inherit' });",
+        "execFileSync('git', ['commit', '-m', 'fix(gateway): 清理临时配置'], { stdio: 'inherit' });",
+      ].join('\n')
+    );
+    const outputPath = path.join(work, '.pages-artifacts/github-output.txt');
+
+    await assert.rejects(
+      runPlatformAgentFinalizer({
+        cwd: work,
+        env: {
+          ...baseEnv({ remote, runnerPath, outputPath }),
+          PLATFORM_AGENT_COMMIT_MESSAGE: 'bad message',
+        },
+      }),
+      /Refusing to commit local env/
+    );
+
+    const remoteLog = await git(work, ['ls-remote', remote, 'refs/heads/feat/platform-pdev_runner123-test']);
+    assert.doesNotMatch(remoteLog, /intermediate-secret/);
+  });
+});
+
 test('finalizer repairs base fetch failures instead of trusting stale origin refs', async () => {
   await createRepositoryFixture(async ({ remote, seed, work }) => {
     await writeFile(path.join(seed, 'master-only.txt'), 'new master\n');

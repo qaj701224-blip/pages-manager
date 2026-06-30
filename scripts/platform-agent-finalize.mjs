@@ -133,13 +133,26 @@ async function headParent(cwd) {
   return await git(cwd, ['rev-parse', 'HEAD^']).catch(() => '');
 }
 
-async function changedRepositoryFiles(cwd, { includeHeadCommit = false } = {}) {
+async function commitsSince(cwd, base) {
+  if (!base) return [];
+  const output = await git(cwd, ['rev-list', '--reverse', `${base}..HEAD`]).catch(() => '');
+  return output.split('\n').filter(Boolean);
+}
+
+async function commitRangeBase(cwd, options = {}) {
+  if (options.commitRangeBase) return options.commitRangeBase;
+  if (options.includeHeadCommit) return await headParent(cwd);
+  return '';
+}
+
+async function changedRepositoryFiles(cwd, options = {}) {
   const raw = await git(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
   const paths = parsePorcelainPaths(raw);
-  if (includeHeadCommit) {
-    const parent = await headParent(cwd);
-    if (parent) {
-      const diffRaw = await git(cwd, ['diff', '--name-status', '-z', `${parent}..HEAD`]);
+  const rangeBase = await commitRangeBase(cwd, options);
+  if (rangeBase) {
+    const commits = await commitsSince(cwd, rangeBase);
+    for (const commit of commits) {
+      const diffRaw = await git(cwd, ['diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-z', commit]);
       paths.push(...parseDiffNameStatusPaths(diffRaw));
     }
   }
@@ -151,13 +164,13 @@ async function isTrackedFile(cwd, file) {
   return result.ok;
 }
 
-async function addedLinesForFile(cwd, file, { includeHeadCommit = false } = {}) {
+async function addedLinesForFile(cwd, file, options = {}) {
   const lines = [];
-  if (!existsSync(path.join(cwd, file))) return [];
-  if (includeHeadCommit) {
-    const parent = await headParent(cwd);
-    if (parent) {
-      const committedDiff = await git(cwd, ['diff', `${parent}..HEAD`, '--unified=0', '--', file]);
+  const rangeBase = await commitRangeBase(cwd, options);
+  if (rangeBase) {
+    const commits = await commitsSince(cwd, rangeBase);
+    for (const commit of commits) {
+      const committedDiff = await git(cwd, ['show', '--format=', '--unified=0', commit, '--', file]);
       lines.push(
         ...committedDiff
           .split('\n')
@@ -166,6 +179,7 @@ async function addedLinesForFile(cwd, file, { includeHeadCommit = false } = {}) 
       );
     }
   }
+  if (!existsSync(path.join(cwd, file))) return lines;
   if (await isTrackedFile(cwd, file)) {
     const diff = await git(cwd, ['diff', 'HEAD', '--unified=0', '--', file]);
     lines.push(
@@ -351,8 +365,9 @@ async function repairFinalization({ cwd, env, artifactsDir, branch, baseRef, fai
     failureKind,
     failureLog,
   });
+  const preRepairSha = await headSha(cwd).catch(() => '');
   await runRepairRound({ cwd, env, contextPath });
-  await assertPlatformAgentChangeGuard(cwd, env, { includeHeadCommit: true });
+  await assertPlatformAgentChangeGuard(cwd, env, { commitRangeBase: preRepairSha });
   await amendStagedRepairChanges(cwd);
 }
 
