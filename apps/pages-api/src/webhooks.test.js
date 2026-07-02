@@ -9,6 +9,7 @@ const FULL_WEBHOOK_URL = 'https://hooks.slack.com/services/T000/B000/super-secre
 
 test('console admin creates webhook subscriptions without returning or storing plaintext URL', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   const response = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
       method: 'POST',
@@ -49,6 +50,7 @@ test('console admin creates webhook subscriptions without returning or storing p
 
 test('console admin rejects template payload mode without a restricted template', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   const response = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
       method: 'POST',
@@ -68,6 +70,7 @@ test('console admin rejects template payload mode without a restricted template'
 
 test('console admin can add a restricted template without resending payloadMode on update', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   await store.createWebhookSubscription({
     id: 'wh_1',
     environment: 'production',
@@ -104,6 +107,7 @@ test('console admin can add a restricted template without resending payloadMode 
 
 test('console admin validates webhook target resolution on create and update', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   const privateTargetEnv = env(store, {
     resolveWebhookHost: async () => ['10.0.0.8'],
   });
@@ -156,6 +160,7 @@ test('console admin validates webhook target resolution on create and update', a
 
 test('console admin lists and disables webhook subscriptions without exposing target URL secrets', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   const created = await store.createWebhookSubscription({
     id: 'wh_1',
     environment: 'production',
@@ -196,6 +201,7 @@ test('console admin lists and disables webhook subscriptions without exposing ta
 
 test('console admin webhook deliveries expose metadata without raw payload or target URL', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   await store.createWebhookSubscription({
     id: 'wh_1',
     environment: 'production',
@@ -252,6 +258,7 @@ test('console admin webhook deliveries expose metadata without raw payload or ta
 
 test('deliverWebhookEvent renders template payloads and records successful delivery metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   const testEnv = env(store);
   const create = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
@@ -311,6 +318,7 @@ test('deliverWebhookEvent renders template payloads and records successful deliv
 
 test('deliverWebhookEvent records template render failures without outbound fetch', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   await store.createWebhookSubscription({
     id: 'wh_1',
     environment: 'production',
@@ -390,5 +398,22 @@ function internalConsoleRequest(path, { method = 'GET', body } = {}) {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function seedPlatformAdmin(store, userId = 'usr_root') {
+  if (!(await store.getUser(userId))) {
+    await store.createUser({
+      userId,
+      email: 'root@example.com',
+      employeeStatus: 'active',
+      sessionVersion: 1,
+    });
+  }
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId,
+    grantedByUserId: 'usr_bootstrap',
+    grantReason: 'test',
   });
 }

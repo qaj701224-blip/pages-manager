@@ -283,6 +283,7 @@ test('workspace personal and team sites use owner model and team membership', as
 
 test('workspace team sites can be filtered by team id', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
   const teamA = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
@@ -331,6 +332,7 @@ test('workspace team sites can be filtered by team id', async () => {
 test('console creates personal and team-owned sites without browser upload', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   const testEnvironment = envWithSequencedIds(store);
+  await seedConsoleUsers(store, ['usr_admin', 'usr_owner', 'usr_publisher', 'usr_viewer']);
   const team = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
@@ -420,6 +422,7 @@ test('console creates personal and team-owned sites without browser upload', asy
 
 test('site detail computes permissions from team role for team-owned site', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_other']);
   const team = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
@@ -466,6 +469,7 @@ test('site detail computes permissions from team role for team-owned site', asyn
 
 test('site detail and subresources are internal-only, permission checked, and redacted', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_other');
   await seedSite(store, {
     id: 'site_mine',
     slug: 'mine',
@@ -512,6 +516,7 @@ test('site detail and subresources are internal-only, permission checked, and re
 
 test('site config writes allow publisher vars but require admin for access and secrets', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher']);
   const team = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
@@ -822,6 +827,7 @@ function internalConsoleJsonRequest(path, { userId, email = 'user@example.com', 
 }
 
 async function seedSite(store, { id, slug, ownerUserId, ownerType, ownerId, visibility }) {
+  if (ownerUserId && !(await store.getUser(ownerUserId))) await seedConsoleUser(store, ownerUserId);
   await store.createSite({
     id,
     slug,
@@ -833,6 +839,21 @@ async function seedSite(store, { id, slug, ownerUserId, ownerType, ownerId, visi
     environment: 'production',
     routeId: `route_${id}`,
     hostname: `${slug}.workers.xd.team`,
+  });
+}
+
+async function seedConsoleUsers(store, userIds) {
+  for (const userId of userIds) await seedConsoleUser(store, userId);
+}
+
+async function seedConsoleUser(store, userId, overrides = {}) {
+  if (await store.getUser(userId)) return;
+  await store.createUser({
+    userId,
+    email: `${userId}@example.com`,
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    ...overrides,
   });
 }
 

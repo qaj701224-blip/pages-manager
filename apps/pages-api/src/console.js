@@ -1,5 +1,10 @@
+import {
+  consoleRequiresPlatformAdmin,
+  isConsoleBffRequest,
+  readOptionalConsoleUserSession,
+  requireConsoleUserSession,
+} from './console-auth.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { hydrateUserDepartmentFromDirectory, shouldHydrateUserDepartment } from './department-hydration.js';
 import { newHexId, newId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
 import {
@@ -23,15 +28,18 @@ export async function handleConsoleApi(request, env, config, store) {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONSOLE_PREFIX)) return null;
 
-  const session = readConsoleSession(request);
-
   if (url.pathname === `${CONSOLE_PREFIX}/auth/session`) {
     if (request.method !== 'GET') return methodNotAllowed();
-    return validateConsoleAuthSession(env, config, store, session);
+    return validateConsoleAuthSession(request, env, config, store);
   }
 
   if (url.pathname === `${CONSOLE_PREFIX}/directory`) {
     if (request.method !== 'GET') return methodNotAllowed();
+    const session = await readOptionalConsoleUserSession(request, env, config, store, {
+      includePlatformAdmin: consoleRequiresPlatformAdmin(request),
+      requirePlatformAdmin: consoleRequiresPlatformAdmin(request),
+    });
+    if (session instanceof Response) return session;
     const sites = await store.listConsoleDirectorySites({
       environment: config.environment,
       viewerUserId: session?.userId || null,
@@ -40,7 +48,8 @@ export async function handleConsoleApi(request, env, config, store) {
   }
 
   if (url.pathname === `${CONSOLE_PREFIX}/workspace/sites`) {
-    if (!session) return consoleAuthRequired();
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
     if (request.method === 'POST') return createConsoleSite(request, env, config, store, session);
     if (request.method !== 'GET') return methodNotAllowed();
     const ownerFilter = url.searchParams.get('owner') === 'team' ? 'team' : 'personal';
@@ -56,13 +65,15 @@ export async function handleConsoleApi(request, env, config, store) {
 
   const siteAccessMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/access$/);
   if (siteAccessMatch && request.method === 'PATCH') {
-    if (!session) return consoleAuthRequired();
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
     return updateSiteAccess(request, env, config, store, session, siteAccessMatch[1]);
   }
 
   const siteVarMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/config\/vars\/([^/]+)$/);
   if (siteVarMatch) {
-    if (!session) return consoleAuthRequired();
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
     if (request.method === 'PUT') {
       return putSiteVar(request, env, config, store, session, siteVarMatch[1], decodeURIComponent(siteVarMatch[2]));
     }
@@ -74,7 +85,8 @@ export async function handleConsoleApi(request, env, config, store) {
 
   const siteSecretMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/config\/secrets\/([^/]+)$/);
   if (siteSecretMatch) {
-    if (!session) return consoleAuthRequired();
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
     if (request.method === 'PUT') {
       return putSiteSecret(request, env, config, store, session, siteSecretMatch[1], decodeURIComponent(siteSecretMatch[2]));
     }
@@ -87,7 +99,8 @@ export async function handleConsoleApi(request, env, config, store) {
   const siteMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)(?:\/([^/]+))?$/);
   if (siteMatch) {
     if (request.method !== 'GET') return methodNotAllowed();
-    if (!session) return consoleAuthRequired();
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
 
     const [, siteId, subresource] = siteMatch;
     const site = await store.getConsoleSiteDetail({
@@ -195,41 +208,19 @@ async function createConsoleSite(request, env, config, store, session) {
   return jsonOk({ site: formatWorkspaceSite(detail || site) }, 201);
 }
 
-async function validateConsoleAuthSession(env, config, store, session) {
-  if (!session) return consoleAuthRequired();
-
-  const user = await store.getUser(session.userId);
-  if (!user || user.employeeStatus !== 'active') {
-    return jsonError('CONSOLE_SESSION_INVALID', 'Console session is no longer valid.', 401, 'Sign in again.');
-  }
-  if (session.sessionVersion !== user.sessionVersion) {
-    return jsonError('CONSOLE_SESSION_STALE', 'Console session is stale.', 401, 'Sign in again.');
-  }
-
-  if (shouldHydrateUserDepartment(user)) {
-    try {
-      await hydrateUserDepartmentFromDirectory({
-        env,
-        store,
-        environment: config.environment,
-        user,
-      });
-    } catch {
-      // Department hydration is best-effort; console session validation remains the source of access control.
-    }
-  }
-
-  const isPlatformAdmin = await store.isPlatformAdmin({
-    environment: config.environment,
-    userId: user.id,
+async function validateConsoleAuthSession(request, env, config, store) {
+  const session = await requireConsoleUserSession(request, env, config, store, {
+    hydrateDepartment: true,
+    includePlatformAdmin: true,
   });
+  if (session instanceof Response) return session;
   return jsonOk({
     session: {
-      userId: user.id,
-      email: user.email || session.email,
-      employeeStatus: user.employeeStatus,
-      sessionVersion: user.sessionVersion,
-      isPlatformAdmin,
+      userId: session.userId,
+      email: session.email,
+      employeeStatus: session.employeeStatus,
+      sessionVersion: session.sessionVersion,
+      isPlatformAdmin: session.isPlatformAdmin,
     },
   });
 }
@@ -424,23 +415,6 @@ async function requireConsoleSiteRole(store, config, session, siteId, role) {
     return jsonError('SITE_PUBLISHER_REQUIRED', 'Site publisher role required.', 403, 'Ask a site or team publisher.');
   }
   return site;
-}
-
-function isConsoleBffRequest(request) {
-  const url = new URL(request.url);
-  return url.hostname === 'pages-api.internal' && request.headers.get('X-Console-BFF') === 'pages-console';
-}
-
-function readConsoleSession(request) {
-  const userId = normalizeHeader(request.headers.get('X-Console-User-Id'));
-  if (!userId) return null;
-  const sessionVersion = Number(request.headers.get('X-Console-Session-Version'));
-  return {
-    userId,
-    email: normalizeHeader(request.headers.get('X-Console-Email')),
-    isPlatformAdmin: request.headers.get('X-Console-Admin') === 'true',
-    sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : 1,
-  };
 }
 
 function formatDirectorySite(site) {
@@ -649,16 +623,8 @@ function readNow(env) {
   return new Date().toISOString();
 }
 
-function consoleAuthRequired() {
-  return jsonError('CONSOLE_AUTH_REQUIRED', 'Console login required.', 401, 'Sign in to XD Cell.');
-}
-
 function methodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
-}
-
-function normalizeHeader(value) {
-  return typeof value === 'string' ? value.trim() : '';
 }
 
 function normalizeRequiredString(value) {

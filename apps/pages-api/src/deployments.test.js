@@ -49,6 +49,7 @@ test('creates deployment, immutable version, active route, and route snapshot', 
 
 test('successful deployments deliver site.deployed webhooks for matching subscriptions', async () => {
   const store = await createSeededStore();
+  await seedPlatformAdmin(store);
   const requests = [];
   const env = testEnv(store, createSnapshotStore(), {
     WEBHOOK_URL_ENCRYPTION_KEY: 'test-webhook-url-key',
@@ -4829,6 +4830,23 @@ function internalConsoleRequest(path, { method = 'GET', body } = {}) {
       'X-Console-Admin': 'true',
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function seedPlatformAdmin(store, userId = 'usr_root') {
+  if (!(await store.getUser(userId))) {
+    await store.createUser({
+      userId,
+      email: 'root@example.com',
+      employeeStatus: 'active',
+      sessionVersion: 1,
+    });
+  }
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId,
+    grantedByUserId: 'usr_bootstrap',
+    grantReason: 'test',
   });
 }
 

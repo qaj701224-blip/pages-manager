@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   UserCircle,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { getConsoleEnvironmentBanner, readTopNavUserState } from '../top-nav-model.js';
 import { clearCachedConsoleSession } from '../session-cache.js';
@@ -24,19 +25,19 @@ export function TopNav({ activeSection, sessionState }) {
   return (
     <header className="top-nav">
       <div className="top-nav__left">
-        <a className="brand" href="/">
+        <Link className="brand" to="/">
           <span className="brand-mark">XD</span>
           <span className="brand-copy">
             <strong>XD Cell</strong>
             <span>站点平台</span>
           </span>
-        </a>
-        <a className={activeSection === 'sites' ? 'nav-link active' : 'nav-link'} href="/">
+        </Link>
+        <Link className={activeSection === 'sites' ? 'nav-link active' : 'nav-link'} to="/">
           Sites
-        </a>
-        <a className={activeSection === 'workspace' ? 'nav-link active' : 'nav-link'} href={workspaceHref}>
+        </Link>
+        <Link className={activeSection === 'workspace' ? 'nav-link active' : 'nav-link'} to={workspaceHref}>
           工作台
-        </a>
+        </Link>
         {banner ? <span className="environment-badge">{banner}</span> : null}
       </div>
       <div className="top-nav__actions" aria-label="全局操作">
@@ -62,21 +63,21 @@ export function TopNav({ activeSection, sessionState }) {
                 <span>{userState.label}</span>
               </div>
               <div className="account-menu__group">
-                <a href="/workspace/settings">
+                <Link to="/workspace/settings">
                   <Settings size={17} />
                   <span>账号设置</span>
-                </a>
-                <a href="/workspace/access-keys">
+                </Link>
+                <Link to="/workspace/access-keys">
                   <KeyRound size={17} />
                   <span>Access Keys</span>
-                </a>
+                </Link>
               </div>
               {userState.showAdmin ? (
                 <div className="account-menu__group">
-                  <a className="account-menu__admin" href="/admin">
+                  <Link className="account-menu__admin" to="/admin">
                     <ShieldCheck size={17} />
                     <span>管理员后台</span>
-                  </a>
+                  </Link>
                 </div>
               ) : null}
               <div className="account-menu__group">

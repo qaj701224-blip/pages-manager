@@ -1,4 +1,5 @@
 import { Activity, FileClock, LayoutDashboard, Send, ShieldCheck, UsersRound, Wrench } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { AdminAudit } from './AdminAudit.jsx';
 import { AdminDashboard } from './AdminDashboard.jsx';
@@ -85,10 +86,10 @@ export function AdminShell({ page = 'dashboard' }) {
               {section.items.map((item) => {
                 const Icon = item.icon;
                 return (
-                  <a className={item.id === current ? 'side-link active' : 'side-link'} href={item.href} key={item.id}>
+                  <Link className={item.id === current ? 'side-link active' : 'side-link'} to={item.href} key={item.id}>
                     <Icon size={17} />
                     <span>{item.label}</span>
-                  </a>
+                  </Link>
                 );
               })}
             </div>

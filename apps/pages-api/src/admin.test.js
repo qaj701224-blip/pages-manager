@@ -11,6 +11,8 @@ test('admin dashboard requires platform admin and returns governance counts', as
     email: 'owner@example.com',
     employeeStatus: 'active',
   });
+  await seedConsoleUser(store, 'usr_user');
+  await seedPlatformAdmin(store);
   await store.createTeam({
     id: 'team_console',
     environment: 'production',
@@ -54,7 +56,7 @@ test('admin dashboard requires platform admin and returns governance counts', as
       environment: 'production',
       counts: {
         sites: 1,
-        users: 1,
+        users: 3,
         teams: 1,
         deployments: 1,
         failedDeployments: 1,
@@ -73,8 +75,45 @@ test('admin dashboard requires platform admin and returns governance counts', as
   });
 });
 
+test('admin API ignores forged admin headers and uses platform admin grants', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_root',
+    email: 'root@example.com',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+  });
+
+  const forged = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/dashboard', { userId: 'usr_root', admin: true, sessionVersion: 1 }),
+    env(store)
+  );
+
+  assert.equal(forged.status, 403);
+  assert.equal((await forged.json()).error.code, 'PLATFORM_ADMIN_REQUIRED');
+
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId: 'usr_root',
+    grantedByUserId: 'usr_bootstrap',
+    grantReason: 'test',
+  });
+
+  const granted = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/dashboard', {
+      userId: 'usr_root',
+      admin: false,
+      sessionVersion: 1,
+    }),
+    env(store)
+  );
+
+  assert.equal(granted.status, 200, await granted.clone().text());
+});
+
 test('admin department team merge transfers assets and writes redacted audit metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   const source = await store.findOrCreateDepartmentTeam({
     environment: 'production',
     departmentPath: 'XD/Old/Web',
@@ -171,6 +210,7 @@ test('admin department team merge transfers assets and writes redacted audit met
 
 test('admin sites include readable user and team owner metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
   await store.createUser({
     userId: 'usr_alice',
     email: 'alice@xd.com',
@@ -236,7 +276,10 @@ function env(store, overrides = {}) {
   };
 }
 
-function internalConsoleRequest(path, { userId, email = 'user@example.com', admin = false, method = 'GET', body } = {}) {
+function internalConsoleRequest(
+  path,
+  { userId, email = 'user@example.com', admin = false, sessionVersion, method = 'GET', body } = {}
+) {
   const headers = {
     Host: 'pages-api.internal',
     'X-Console-BFF': 'pages-console',
@@ -245,12 +288,33 @@ function internalConsoleRequest(path, { userId, email = 'user@example.com', admi
     headers['X-Console-User-Id'] = userId;
     headers['X-Console-Email'] = email;
     headers['X-Console-Admin'] = admin ? 'true' : 'false';
+    if (sessionVersion !== undefined) headers['X-Console-Session-Version'] = String(sessionVersion);
   }
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   return new Request(`https://pages-api.internal${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+async function seedConsoleUser(store, userId, overrides = {}) {
+  await store.createUser({
+    userId,
+    email: `${userId}@example.com`,
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    ...overrides,
+  });
+}
+
+async function seedPlatformAdmin(store, userId = 'usr_root') {
+  await seedConsoleUser(store, userId, { email: 'root@example.com' });
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId,
+    grantedByUserId: 'usr_bootstrap',
+    grantReason: 'test',
   });
 }
 

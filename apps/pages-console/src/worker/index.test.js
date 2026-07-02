@@ -133,13 +133,20 @@ test('production root returns app shell', async () => {
 });
 
 test('workspace route with a session falls back to app shell', async () => {
+  const calls = [];
   const response = await worker.fetch(
     request('https://workers.xd.team/workspace/published', { cookie: await sessionCookie() }),
-    env()
+    env({
+      PAGES_API: apiBinding(async () => {
+        calls.push('api');
+        return Response.json({ error: { code: 'UNEXPECTED_API_CALL' } }, { status: 500 });
+      }),
+    })
   );
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get('Content-Type'), /text\/html/);
+  assert.deepEqual(calls, []);
 });
 
 test('workspace route without a session redirects browser navigation to login page', async () => {
@@ -232,7 +239,7 @@ test('workspace proxy forwards only signed session identity to pages-api', async
         assert.equal(apiRequest.url, 'https://pages-api.internal/.xd-pages/api/console/workspace/sites?owner=personal');
         assert.equal(apiRequest.headers.get('X-Console-User-Id'), 'user-1');
         assert.equal(apiRequest.headers.get('X-Console-Email'), 'user@example.com');
-        assert.equal(apiRequest.headers.get('X-Console-Admin'), 'true');
+        assert.equal(apiRequest.headers.get('X-Console-Admin'), null);
         return Response.json({ sites: [] }, { status: 200 });
       }),
     })
@@ -240,6 +247,32 @@ test('workspace proxy forwards only signed session identity to pages-api', async
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { sites: [] });
+});
+
+test('workspace proxy forwards signed identity without auth session preflight', async () => {
+  const cookie = await sessionCookie();
+  const calls = [];
+
+  const response = await worker.fetch(
+    request('https://workers.xd.team/api/console/workspace/sites?owner=personal', { cookie }),
+    env({
+      PAGES_API: apiBinding(
+        async (apiRequest) => {
+          calls.push(new URL(apiRequest.url).pathname);
+          return Response.json({ sites: [] }, { status: 200 });
+        },
+        {
+          session: async (apiRequest) => {
+            calls.push(new URL(apiRequest.url).pathname);
+            return Response.json({ session: echoConsoleSession(apiRequest) });
+          },
+        }
+      ),
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(calls, ['/.xd-pages/api/console/workspace/sites']);
 });
 
 test('teams proxy forwards signed session identity to pages-api', async () => {
@@ -396,7 +429,7 @@ test('admin proxy forwards signed platform admin session and JSON body to pages-
         assert.equal(apiRequest.url, 'https://pages-api.internal/.xd-pages/api/console/admin/platform-admins');
         assert.equal(apiRequest.method, 'POST');
         assert.equal(apiRequest.headers.get('X-Console-User-Id'), 'user-1');
-        assert.equal(apiRequest.headers.get('X-Console-Admin'), 'true');
+        assert.equal(apiRequest.headers.get('X-Console-Admin'), null);
         assert.equal(apiRequest.headers.get('Content-Type'), 'application/json');
         assert.deepEqual(await apiRequest.json(), { userId: 'usr_admin', reason: 'bootstrap' });
         return Response.json({ admin: { userId: 'usr_admin' } }, { status: 200 });
@@ -560,6 +593,43 @@ test('staging API proxy requires a session before pages-api binding', async () =
   assert.deepEqual(calls, []);
 });
 
+test('staging API proxy marks internal pages-api requests as admin required', async () => {
+  const cookie = await sessionCookie({ isPlatformAdmin: true, environment: 'staging' });
+  const calls = [];
+  const response = await worker.fetch(
+    request('https://staging.workers.xd.team/api/console/directory', { cookie }),
+    env({
+      PAGES_ENV: 'staging',
+      PAGES_API: apiBinding(
+        async (apiRequest) => {
+          calls.push(new URL(apiRequest.url).pathname);
+          assert.equal(apiRequest.headers.get('X-Console-Require-Admin'), 'true');
+          assert.equal(apiRequest.headers.get('X-Console-Admin'), null);
+          return Response.json({ sites: [] });
+        },
+        {
+          session: async (apiRequest) => {
+            calls.push(new URL(apiRequest.url).pathname);
+            return Response.json({
+              session: {
+                userId: 'user-1',
+                email: 'user@example.com',
+                employeeStatus: 'active',
+                sessionVersion: 7,
+                isPlatformAdmin: true,
+              },
+            });
+          },
+        }
+      ),
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), { sites: [] });
+  assert.deepEqual(calls, ['/.xd-pages/api/console/directory']);
+});
+
 test('admin browser navigation redirects missing session to login', async () => {
   const response = await worker.fetch(
     request('https://workers.xd.team/admin', {
@@ -621,7 +691,17 @@ test('auth session endpoint returns current console session without exposing coo
     request('https://workers.xd.team/api/console/auth/session', {
       cookie: await sessionCookie({ isPlatformAdmin: true }),
     }),
-    env()
+    env({
+      PAGES_API: apiBinding(async () => Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 }), {
+        session: async (apiRequest) =>
+          Response.json({
+            session: {
+              ...echoConsoleSession(apiRequest),
+              isPlatformAdmin: true,
+            },
+          }),
+      }),
+    })
   );
 
   assert.equal(anonymous.status, 200);
@@ -689,7 +769,18 @@ test('staging root returns app shell for platform admin session', async () => {
     request('https://staging.workers.xd.team/', {
       cookie: await sessionCookie({ isPlatformAdmin: true, environment: 'staging' }),
     }),
-    env({ PAGES_ENV: 'staging' })
+    env({
+      PAGES_ENV: 'staging',
+      PAGES_API: apiBinding(async () => Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 }), {
+        session: async (apiRequest) =>
+          Response.json({
+            session: {
+              ...echoConsoleSession(apiRequest),
+              isPlatformAdmin: true,
+            },
+          }),
+      }),
+    })
   );
 
   assert.equal(response.status, 200);

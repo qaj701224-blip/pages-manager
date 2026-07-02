@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, LockKeyhole, Plus, Rocket, Save, Settings, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import {
   deleteSiteRuntimeSecret,
@@ -105,10 +106,10 @@ function SiteContextSidebar({ site, siteId, activeTab }) {
   const slug = site?.slug || siteId;
   return (
     <aside className="sidebar context-sidebar">
-      <a className="back-link" href="/workspace/published">
+      <Link className="back-link" to="/workspace/published">
         <ArrowLeft size={16} />
         <span>所有站点</span>
-      </a>
+      </Link>
       <div className="context-title">
         <h2>{slug}</h2>
         {site?.hostname ? <p>{site.hostname}</p> : null}
@@ -140,10 +141,10 @@ function SiteContextSidebar({ site, siteId, activeTab }) {
 
 function ContextLink({ href, active, icon, label }) {
   return (
-    <a className={active ? 'side-link active' : 'side-link'} href={href}>
+    <Link className={active ? 'side-link active' : 'side-link'} to={href}>
       {icon}
       <span>{label}</span>
-    </a>
+    </Link>
   );
 }
 

@@ -1,3 +1,4 @@
+import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
@@ -9,8 +10,10 @@ export async function handleConsoleTeamsApi(request, env, config, store) {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(`${CONSOLE_PREFIX}/teams`)) return null;
 
-  const session = readConsoleSession(request);
-  if (!session) return consoleAuthRequired();
+  const session = await requireConsoleUserSession(request, env, config, store, {
+    hydrateDepartment: url.pathname === `${CONSOLE_PREFIX}/teams` && request.method === 'GET',
+  });
+  if (session instanceof Response) return session;
 
   if (url.pathname === `${CONSOLE_PREFIX}/teams`) {
     if (request.method !== 'GET') return methodNotAllowed();
@@ -174,21 +177,6 @@ async function requireTeamMember(store, config, session, teamId) {
   return { team, member };
 }
 
-function isConsoleBffRequest(request) {
-  const url = new URL(request.url);
-  return url.hostname === 'pages-api.internal' && request.headers.get('X-Console-BFF') === 'pages-console';
-}
-
-function readConsoleSession(request) {
-  const userId = normalizeHeader(request.headers.get('X-Console-User-Id'));
-  if (!userId) return null;
-  return {
-    userId,
-    email: normalizeHeader(request.headers.get('X-Console-Email')),
-    isPlatformAdmin: request.headers.get('X-Console-Admin') === 'true',
-  };
-}
-
 function formatTeam(team, member) {
   return {
     id: team.id,
@@ -217,14 +205,6 @@ function formatTeamMember(member) {
   };
 }
 
-function consoleAuthRequired() {
-  return jsonError('CONSOLE_AUTH_REQUIRED', 'Console login required.', 401, 'Sign in to XD Cell.');
-}
-
 function methodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
-}
-
-function normalizeHeader(value) {
-  return typeof value === 'string' ? value.trim() : '';
 }

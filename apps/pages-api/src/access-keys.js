@@ -1,4 +1,5 @@
 import { authenticateApiRequest } from './auth.js';
+import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newId } from './id.js';
@@ -29,11 +30,12 @@ export async function handleConsoleAccessKeysApi(request, env, config, store) {
   if (!isConsoleBffRequest(request)) return null;
 
   const url = new URL(request.url);
-  if (!url.pathname.startsWith('/.xd-pages/api/console')) return null;
+  if (!isConsoleAccessKeyPath(url.pathname)) return null;
+
+  const session = await requireConsoleUserSession(request, env, config, store);
+  if (session instanceof Response) return session;
 
   if (url.pathname === '/.xd-pages/api/console/access-keys') {
-    const session = readConsoleSession(request);
-    if (!session) return consoleAuthRequired();
     if (request.method === 'GET') return listConsoleAccessKeys(store, config, { ownerType: 'user', ownerId: session.userId });
     if (request.method === 'POST') {
       return createAccessKeyForOwner(request, env, config, store, {
@@ -49,8 +51,6 @@ export async function handleConsoleAccessKeysApi(request, env, config, store) {
 
   const teamAccessKeysMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/teams\/([^/]+)\/access-keys(?:\/([^/]+))?$/);
   if (teamAccessKeysMatch) {
-    const session = readConsoleSession(request);
-    if (!session) return consoleAuthRequired();
     const [, teamId, accessKeyId] = teamAccessKeysMatch;
     const access = await requireTeamAdmin(store, config, session, teamId);
     if (access instanceof Response) return access;
@@ -80,8 +80,6 @@ export async function handleConsoleAccessKeysApi(request, env, config, store) {
 
   const userAccessKeyMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/access-keys\/([^/]+)$/);
   if (userAccessKeyMatch) {
-    const session = readConsoleSession(request);
-    if (!session) return consoleAuthRequired();
     if (request.method !== 'DELETE') return methodNotAllowed();
     return revokeOwnedAccessKey(env, config, store, {
       accessKeyId: userAccessKeyMatch[1],
@@ -92,6 +90,12 @@ export async function handleConsoleAccessKeysApi(request, env, config, store) {
   }
 
   return null;
+}
+
+function isConsoleAccessKeyPath(pathname) {
+  if (pathname === '/.xd-pages/api/console/access-keys') return true;
+  if (/^\/\.xd-pages\/api\/console\/access-keys\/[^/]+$/.test(pathname)) return true;
+  return /^\/\.xd-pages\/api\/console\/teams\/[^/]+\/access-keys(?:\/[^/]+)?$/.test(pathname);
 }
 
 async function listAccessKeys(store, actor, environment) {
@@ -253,21 +257,6 @@ async function requireTeamAdmin(store, config, session, teamId) {
   return { team, member };
 }
 
-function isConsoleBffRequest(request) {
-  const url = new URL(request.url);
-  return url.hostname === 'pages-api.internal' && request.headers.get('X-Console-BFF') === 'pages-console';
-}
-
-function readConsoleSession(request) {
-  const userId = normalizeHeader(request.headers.get('X-Console-User-Id'));
-  if (!userId) return null;
-  return {
-    userId,
-    email: normalizeHeader(request.headers.get('X-Console-Email')),
-    isPlatformAdmin: request.headers.get('X-Console-Admin') === 'true',
-  };
-}
-
 function readActiveAccessKeyPepper(env) {
   const activePepperId = String(env?.ACCESS_KEY_ACTIVE_PEPPER_ID || '').trim();
   if (!activePepperId) throw new Error('ACCESS_KEY_ACTIVE_PEPPER_ID is required');
@@ -350,12 +339,4 @@ function methodNotAllowed() {
 
 function accessKeyManagementForbidden() {
   return jsonError('ACCESS_KEY_MANAGEMENT_FORBIDDEN', 'Access keys cannot manage access keys.', 403, 'Use a user CLI token.');
-}
-
-function consoleAuthRequired() {
-  return jsonError('CONSOLE_AUTH_REQUIRED', 'Console login required.', 401, 'Sign in to XD Cell.');
-}
-
-function normalizeHeader(value) {
-  return typeof value === 'string' ? value.trim() : '';
 }

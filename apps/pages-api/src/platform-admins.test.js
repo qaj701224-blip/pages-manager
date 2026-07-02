@@ -74,6 +74,8 @@ test('platform admin store grants, lists, checks, and revokes active admins', as
 
 test('console admin API requires platform admin identity and manages platform admins', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_user');
+  await seedPlatformAdmin(store);
 
   const forbidden = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/admin/platform-admins', { userId: 'usr_user' }),
@@ -114,7 +116,7 @@ test('console admin API requires platform admin identity and manages platform ad
   assert.equal(list.status, 200, await list.clone().text());
   assert.deepEqual(
     (await list.json()).admins.map((admin) => admin.userId),
-    ['usr_admin']
+    ['usr_admin', 'usr_root']
   );
 
   const revoke = await worker.fetch(
@@ -140,6 +142,27 @@ function env(store, overrides = {}) {
     IP_ALLOWLIST: '10.0.0.0/8',
     ...overrides,
   };
+}
+
+async function seedConsoleUser(store, userId, overrides = {}) {
+  if (await store.getUser(userId)) return;
+  await store.createUser({
+    userId,
+    email: `${userId}@example.com`,
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    ...overrides,
+  });
+}
+
+async function seedPlatformAdmin(store, userId = 'usr_root') {
+  await seedConsoleUser(store, userId, { email: 'root@example.com' });
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId,
+    grantedByUserId: 'usr_bootstrap',
+    grantReason: 'test',
+  });
 }
 
 function internalConsoleRequest(path, { userId, email = 'user@example.com', admin = false, method = 'GET', body } = {}) {

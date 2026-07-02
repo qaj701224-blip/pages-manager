@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { fetchJson } from '../api.js';
 import { sitePublicUrl } from '../site-display-model.js';
@@ -51,7 +52,7 @@ export function SiteCard({ site }) {
       <div className="site-card__top">
         <div>
           <h2>
-            <a href={`/workspace/sites/${encodeURIComponent(site.id)}`}>{site.slug || site.hostname}</a>
+            <Link to={`/workspace/sites/${encodeURIComponent(site.id)}`}>{site.slug || site.hostname}</Link>
           </h2>
           <p>{publicUrl || site.slug}</p>
         </div>

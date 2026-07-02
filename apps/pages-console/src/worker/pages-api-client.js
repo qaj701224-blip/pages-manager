@@ -2,7 +2,7 @@ const INTERNAL_API_BASE = 'https://pages-api.internal';
 const BFF_PATH_PREFIX = '/api/console';
 const INTERNAL_PATH_PREFIX = '/.xd-pages/api/console';
 
-export async function callPagesApiConsole(env, request, { session, path } = {}) {
+export async function callPagesApiConsole(env, request, { session, path, requireAdmin = false } = {}) {
   if (!env?.PAGES_API || typeof env.PAGES_API.fetch !== 'function') {
     throw new Error('PAGES_API binding is missing');
   }
@@ -12,7 +12,7 @@ export async function callPagesApiConsole(env, request, { session, path } = {}) 
   const internalUrl = new URL(`${INTERNAL_API_BASE}${internalPath}`);
   internalUrl.search = incomingUrl.search;
 
-  const headers = buildConsoleHeaders(session);
+  const headers = buildConsoleHeaders(session, { requireAdmin });
 
   const init = {
     method: request.method,
@@ -67,15 +67,15 @@ function normalizeConsoleApiPath(pathname) {
   return `${INTERNAL_PATH_PREFIX}${pathname.slice(BFF_PATH_PREFIX.length)}`;
 }
 
-function buildConsoleHeaders(session) {
+function buildConsoleHeaders(session, { requireAdmin = false } = {}) {
   const headers = new Headers({
     Host: 'pages-api.internal',
     'X-Console-BFF': 'pages-console',
   });
+  if (requireAdmin) headers.set('X-Console-Require-Admin', 'true');
   if (session?.userId) {
     headers.set('X-Console-User-Id', session.userId);
     if (session.email) headers.set('X-Console-Email', session.email);
-    headers.set('X-Console-Admin', session.isPlatformAdmin ? 'true' : 'false');
     headers.set('X-Console-Session-Version', String(session.sessionVersion || 1));
   }
   return headers;

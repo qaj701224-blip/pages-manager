@@ -229,6 +229,7 @@ test('custom team deletion is blocked until team sites and active keys are clear
 
 test('team APIs list teams and block department team deletion', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin');
   const custom = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
@@ -265,6 +266,7 @@ test('team APIs list teams and block department team deletion', async () => {
 
 test('team member APIs require team admin and update roles', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin', 'usr_viewer']);
   const team = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
@@ -361,6 +363,21 @@ function internalConsoleJsonRequest(path, { userId, email, admin, method = 'POST
         : {}),
     },
     body: JSON.stringify(body || {}),
+  });
+}
+
+async function seedConsoleUsers(store, userIds) {
+  for (const userId of userIds) await seedConsoleUser(store, userId);
+}
+
+async function seedConsoleUser(store, userId, overrides = {}) {
+  if (await store.getUser(userId)) return;
+  await store.createUser({
+    userId,
+    email: `${userId}@example.com`,
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    ...overrides,
   });
 }
 

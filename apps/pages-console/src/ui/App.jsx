@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { LogIn, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { buildAdminLoginPath, getAdminRouteAccess } from './admin-route-model.js';
 import { TopNav } from './components/TopNav.jsx';
@@ -13,29 +14,62 @@ import { WorkspacePlaceholder, WorkspaceSites } from './pages/WorkspaceSites.jsx
 import { clearCachedConsoleSession, readCachedConsoleSession, writeCachedConsoleSession } from './session-cache.js';
 
 export function App() {
-  const path = window.location.pathname;
-  const route = readRoute(path);
+  const location = useLocation();
+  const route = readRoute(location.pathname);
   const sessionState = useConsoleSession();
 
   return (
     <div className="app-shell">
       <TopNav activeSection={route.section} sessionState={sessionState} />
-      {route.view === 'login' ? <LoginPage /> : null}
-      {route.view === 'directory' ? <SitesDirectory /> : null}
-      {route.view === 'admin' ? (
-        <AdminRouteGuard currentPath={`${window.location.pathname}${window.location.search}`} sessionState={sessionState}>
-          <AdminShell page={route.page} />
-        </AdminRouteGuard>
-      ) : null}
-      {route.view === 'workspace-personal' ? <WorkspaceSites owner="personal" /> : null}
-      {route.view === 'workspace-team' ? <WorkspaceSites owner="team" /> : null}
-      {route.view === 'site-detail' ? <SiteDetail siteId={route.siteId} tab={route.tab} /> : null}
-      {route.view === 'teams' ? <TeamsList /> : null}
-      {route.view === 'team-detail' ? <TeamDetail teamId={route.teamId} tab={route.tab} /> : null}
-      {route.view === 'access-keys' ? <WorkspaceAccessKeys /> : null}
-      {route.view === 'settings' ? <WorkspacePlaceholder active="settings" title="账号设置" /> : null}
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/" element={<SitesDirectory />} />
+        <Route
+          path="/admin"
+          element={
+            <AdminRouteGuard currentPath={`${location.pathname}${location.search}`} sessionState={sessionState}>
+              <AdminShell page="dashboard" />
+            </AdminRouteGuard>
+          }
+        />
+        <Route
+          path="/admin/:page"
+          element={
+            <AdminRouteGuard currentPath={`${location.pathname}${location.search}`} sessionState={sessionState}>
+              <AdminRoute />
+            </AdminRouteGuard>
+          }
+        />
+        <Route path="/workspace" element={<WorkspaceSites owner="personal" />} />
+        <Route path="/workspace/" element={<WorkspaceSites owner="personal" />} />
+        <Route path="/workspace/published" element={<WorkspaceSites owner="personal" />} />
+        <Route path="/workspace/team-sites" element={<WorkspaceSites owner="team" />} />
+        <Route path="/workspace/sites/:siteId" element={<SiteDetailRoute />} />
+        <Route path="/workspace/sites/:siteId/:tab" element={<SiteDetailRoute />} />
+        <Route path="/workspace/teams" element={<TeamsList />} />
+        <Route path="/workspace/teams/:teamId" element={<TeamDetailRoute />} />
+        <Route path="/workspace/teams/:teamId/:tab" element={<TeamDetailRoute />} />
+        <Route path="/workspace/access-keys" element={<WorkspaceAccessKeys />} />
+        <Route path="/workspace/settings" element={<WorkspacePlaceholder active="settings" title="账号设置" />} />
+        <Route path="*" element={<SitesDirectory />} />
+      </Routes>
     </div>
   );
+}
+
+function AdminRoute() {
+  const { page } = useParams();
+  return <AdminShell page={page || 'dashboard'} />;
+}
+
+function SiteDetailRoute() {
+  const { siteId, tab } = useParams();
+  return <SiteDetail siteId={siteId || ''} tab={tab || 'overview'} />;
+}
+
+function TeamDetailRoute() {
+  const { teamId, tab } = useParams();
+  return <TeamDetail teamId={teamId || ''} tab={tab || 'members'} />;
 }
 
 function useConsoleSession() {
@@ -77,10 +111,11 @@ function useConsoleSession() {
 function AdminRouteGuard({ children, currentPath, sessionState }) {
   const access = sessionState.status === 'ready' ? getAdminRouteAccess(sessionState.session) : 'loading';
   const loginPath = buildAdminLoginPath(currentPath);
+  const navigate = useNavigate();
 
   useEffect(() => {
-    if (access === 'login') window.location.replace(loginPath);
-  }, [access, loginPath]);
+    if (access === 'login') navigate(loginPath, { replace: true });
+  }, [access, loginPath, navigate]);
 
   if (sessionState.status === 'loading') {
     return (
@@ -100,7 +135,7 @@ function AdminRouteGuard({ children, currentPath, sessionState }) {
         eyebrow="XD Cell"
         title="需要登录"
         text="正在跳转到登录页。"
-        action={{ href: loginPath, label: '登录' }}
+        action={{ to: loginPath, label: '登录' }}
       />
     );
   }
@@ -112,7 +147,7 @@ function AdminRouteGuard({ children, currentPath, sessionState }) {
         eyebrow="管理员后台"
         title="无权访问"
         text="当前账号不是平台管理员。"
-        action={{ href: '/', label: '返回 Sites' }}
+        action={{ to: '/', label: '返回 Sites' }}
       />
     );
   }
@@ -129,9 +164,9 @@ function AdminAccessPanel({ icon, eyebrow, title, text, action }) {
         <h1 id="admin-access-title">{title}</h1>
         <p className="auth-panel__text">{text}</p>
         {action ? (
-          <a className="primary-button" href={action.href}>
+          <Link className="primary-button" to={action.to}>
             <span>{action.label}</span>
-          </a>
+          </Link>
         ) : null}
       </section>
     </main>

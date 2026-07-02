@@ -39,12 +39,18 @@ function jsonErrorResponse(code, message, status, init = {}) {
   return response;
 }
 
-async function getSession(request, env) {
+async function getSignedSession(request, env) {
   const configError = validateConsoleSessionJwtConfig(env);
   if (configError) return { error: configError };
 
   const signedSession = await readConsoleSession(request, env);
   if (!signedSession) return null;
+  return signedSession;
+}
+
+async function getSession(request, env) {
+  const signedSession = await getSignedSession(request, env);
+  if (!signedSession || signedSession.error) return signedSession;
   return validateConsoleSession(env, signedSession);
 }
 
@@ -94,6 +100,10 @@ function requiresWorkspaceSession(pathname) {
 function requiresAdminSession(url) {
   if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return true;
   return isStagingHost(url) && !isAuthBridgePath(url.pathname) && !isPublicConsoleShellPath(url.pathname);
+}
+
+function requiresProxyAdminSession(url) {
+  return isStagingHost(url) && !isAuthBridgePath(url.pathname);
 }
 
 function redirect(location, headers = {}) {
@@ -276,6 +286,14 @@ export default {
       return handleSession(session);
     }
 
+    if (isPagesApiProxyPath(url.pathname)) {
+      const session = await getSignedSession(request, env);
+      if (session?.error) return session.error;
+      const requireAdmin = requiresProxyAdminSession(url);
+      if (requireAdmin && !session) return jsonError('SESSION_REQUIRED', 'Login is required.', 401, 'Sign in and try again.');
+      return callPagesApiConsole(env, request, { session, requireAdmin });
+    }
+
     if (requiresAdminSession(url)) {
       const session = await getSession(request, env);
       if (session?.error) return session.error;
@@ -289,14 +307,8 @@ export default {
       }
     }
 
-    if (isPagesApiProxyPath(url.pathname)) {
-      const session = await getSession(request, env);
-      if (session?.error) return session.error;
-      return callPagesApiConsole(env, request, { session });
-    }
-
     if (requiresWorkspaceSession(url.pathname)) {
-      const session = await getSession(request, env);
+      const session = await getSignedSession(request, env);
       if (session?.error) return session.error;
       if (!session) {
         if (wantsHtml(request)) return redirect(buildLoginLocation(url));

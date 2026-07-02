@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, KeyRound, Plus, Save, Settings, Trash2, UsersRound } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { deleteTeam, fetchJson, removeTeamMember, updateTeamMember, updateTeamSettings } from '../api.js';
 import { Sidebar } from '../components/Sidebar.jsx';
@@ -132,7 +133,7 @@ function TeamsContent({ state }) {
   return (
     <section className="team-list" aria-label="团队列表">
       {state.teams.map((team) => (
-        <a className="team-row" href={`/workspace/teams/${encodeURIComponent(team.id)}`} key={team.id}>
+        <Link className="team-row" to={`/workspace/teams/${encodeURIComponent(team.id)}`} key={team.id}>
           <div>
             <strong>{team.name}</strong>
             <span>{team.description || team.departmentPath || team.id}</span>
@@ -141,7 +142,7 @@ function TeamsContent({ state }) {
             {team.teamType === 'department' ? <span className="tag">部门团队</span> : null}
             <span className="tag muted">{team.currentUserRole || 'viewer'}</span>
           </div>
-        </a>
+        </Link>
       ))}
     </section>
   );
@@ -151,10 +152,10 @@ function TeamContextSidebar({ team, teamId, activeTab }) {
   const base = `/workspace/teams/${encodeURIComponent(teamId)}`;
   return (
     <aside className="sidebar context-sidebar">
-      <a className="back-link" href="/workspace/teams">
+      <Link className="back-link" to="/workspace/teams">
         <ArrowLeft size={16} />
         <span>所有团队</span>
-      </a>
+      </Link>
       <div className="context-title">
         <h2>{team?.name || teamId}</h2>
         {team?.description ? <p>{team.description}</p> : null}
@@ -179,10 +180,10 @@ function TeamContextSidebar({ team, teamId, activeTab }) {
 
 function ContextLink({ href, active, icon, label }) {
   return (
-    <a className={active ? 'side-link active' : 'side-link'} href={href}>
+    <Link className={active ? 'side-link active' : 'side-link'} to={href}>
       {icon}
       <span>{label}</span>
-    </a>
+    </Link>
   );
 }
 

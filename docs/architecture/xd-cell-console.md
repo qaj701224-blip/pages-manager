@@ -40,6 +40,8 @@ Browser
 
 BFF 只负责浏览器边界和少量聚合，不保存业务真相源。用户、团队、站点、Access Key、Webhook、审计和管理员授权的真相源都在 `apps/pages-api` 的 D1-backed store；登录 code 和 SSO 交换在 `apps/pages-auth`。
 
+前端是 React SPA，使用 `react-router-dom` 的 `BrowserRouter`。Console 内部导航使用客户端路由；登录桥接、退出和真实站点外链仍使用浏览器原生导航。Worker with Assets 继续负责深链刷新和首次 HTML 请求的 fallback，因此 `/workspace/*`、`/admin/*`、站点详情和团队详情可以直接打开。
+
 所有 Console 流量都必须先经过 `@xd/ip-guard`：
 
 - 页面 HTML。
@@ -50,7 +52,7 @@ BFF 只负责浏览器边界和少量聚合，不保存业务真相源。用户�
 
 IP allowlist 不替代身份鉴权。`/workspace/*` 仍要求登录，`/admin/*` 和 staging 非 auth bridge 路径仍要求平台管理员。
 
-## 登录与 Session
+## 登录、Session 与鉴权
 
 Console 登录使用 `pages-auth` 生成一次性 console login code：
 
@@ -77,13 +79,35 @@ SameSite=Lax
 
 cookie value 是 pages-auth 使用既有 `PAGES_SESSION_JWT_*` key registry 签发的 JWT。pages-console 不维护独立 signing secret，也不会设置 `Domain=.xd.team` 共享 cookie；读取时校验 issuer、audience、purpose、environment、过期时间和 HMAC 签名。
 
-BFF 不长期信任 cookie 内的管理员状态。每次读取有效 cookie 后，会调用 `pages-api.internal/.xd-pages/api/console/auth/session` 校验：
+`xd_cell_session` 是单一 Console 用户 session，只表达“这个浏览器是谁”。它不是管理员 session，也不是权限真相源。JWT claims 可以携带 `isPlatformAdmin` 作为 UI hint，但安全判断不能信任该 claim。
 
-- 当前用户存在且 `employeeStatus=active`。
-- cookie 中的 `sessionVersion` 等于当前 `users.session_version`。
-- 当前平台管理员授权状态以 `platform_admins` 表为准。
+Console 鉴权分两层：
 
-因此旧 session 会在用户禁用、离职、`session_version` 变化、平台管理员授权变化、登出或 signing key 轮换后失效。
+1. `pages-console` Worker 处理浏览器边界：
+   - 所有流量先过 host allowlist、IP allowlist。
+   - 写 API 过 CSRF、Origin / Referer 校验。
+   - `/workspace/*` 首次 HTML 请求要求存在有效签名 session。
+   - `/admin/*` 和 staging 需要平台管理员的首次 HTML 请求，会调用 `pages-api.internal/.xd-pages/api/console/auth/session` 做一次权威校验后再决定是否返回 app shell。
+   - `/api/console/*` BFF API 不再固定先调用 `/auth/session`。BFF 只验证 cookie 签名并转发身份 header；production 目录 API 缺少 cookie 时可以匿名转发，缺少 cookie 的受保护 API 由 pages-api 返回 401。
+
+2. `pages-api` 处理业务和权限真相源：
+   - 只接受 host 为 `pages-api.internal` 且带 `X-Console-BFF: pages-console` 的 Console 内部请求。
+   - 每个 Console 业务 endpoint 都回表校验用户存在、`employeeStatus=active`、`sessionVersion` 未过期。
+   - Admin endpoint 回查 `platform_admins` 当前授权，不信任 `X-Console-Admin`。
+   - Workspace、团队、站点、Access Key endpoint 按 owner、team member、site permission 和 role 判断具体权限。
+   - staging BFF 会对内部 API 加 `X-Console-Require-Admin: true`，由 pages-api 在同一次业务请求里校验平台管理员。
+
+因此旧 session 会在用户禁用、离职、`session_version` 变化、平台管理员授权变化、登出或 signing key 轮换后失效。页面层的用户菜单可以短 TTL cache `/api/console/auth/session` 结果用于体验优化，但安全边界以 pages-api 的每个业务 endpoint 为准。
+
+### 与 CLI / Router 的鉴权差异
+
+| 入口 | 调用方 | 凭据 | 鉴权位置 | 适用场景 |
+| ---- | ------ | ---- | -------- | -------- |
+| CLI public API | `xd-cell` CLI、CI、agent | `Authorization: Bearer <cli_token 或 access_key>` | `pages-api.authenticateApiRequest()` 校验 CLI token 或 Access Key，再生成 actor | 发布、创建/管理 access key、读取部署状态 |
+| Console BFF API | 浏览器同源请求 `workers.xd.team/api/console/*` | host-only `xd_cell_session` cookie | `pages-console` 验 cookie 签名和浏览器安全边界，`pages-api` endpoint 回表做用户/session/角色/管理员权威校验 | 站点目录、工作台、团队、admin 后台 |
+| 子站 Router | 访问 `<site>.pages.xd.team` | `__Host-pages_site_session` cookie | `pages-router` 校验 site session freshness、policyVersion、sessionVersion，再执行 visibility/ACL | 高频子站访问 |
+
+`pages-auth` 是 SSO 和 JWT 签发服务。它签发 `auth_session`、`cli_token`、`site_session`、`console_session` 等不同 purpose/audience 的 JWT，但不会替代 `pages-api` 的业务权限判断。`pages-api` public lane 和 console internal lane 分离：CLI 不能伪造 `X-Console-*` 进入 internal console API，Console 浏览器也不持有 CLI Bearer token。
 
 ## 功能导航
 

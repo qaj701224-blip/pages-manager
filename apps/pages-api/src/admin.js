@@ -1,3 +1,4 @@
+import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 
@@ -9,16 +10,8 @@ export async function handleConsoleAdminApi(request, env, config, store) {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(`${CONSOLE_PREFIX}/admin`)) return null;
 
-  const session = readConsoleSession(request);
-  if (!session) return consoleAuthRequired();
-  if (!session.isPlatformAdmin) {
-    return jsonError(
-      'PLATFORM_ADMIN_REQUIRED',
-      'Platform administrator access is required.',
-      403,
-      'Use a platform administrator account.'
-    );
-  }
+  const session = await requireConsoleUserSession(request, env, config, store, { requirePlatformAdmin: true });
+  if (session instanceof Response) return session;
 
   const webhooksResponse = await handleConsoleAdminWebhooksApi(request, env, config, store, session);
   if (webhooksResponse) return webhooksResponse;
@@ -215,21 +208,6 @@ async function revokePlatformAdmin(request, config, store, session, userId) {
   return jsonOk({ admin: formatPlatformAdmin(admin) });
 }
 
-function isConsoleBffRequest(request) {
-  const url = new URL(request.url);
-  return url.hostname === 'pages-api.internal' && request.headers.get('X-Console-BFF') === 'pages-console';
-}
-
-function readConsoleSession(request) {
-  const userId = normalizeRequiredString(request.headers.get('X-Console-User-Id'));
-  if (!userId) return null;
-  return {
-    userId,
-    email: normalizeNullableString(request.headers.get('X-Console-Email')),
-    isPlatformAdmin: request.headers.get('X-Console-Admin') === 'true',
-  };
-}
-
 function formatPlatformAdmin(admin) {
   return {
     environment: admin.environment,
@@ -345,10 +323,6 @@ function adminMergeErrorResponse(error) {
     return jsonError(code, 'Team cannot be merged in its current state.', 409, 'Refresh teams and retry.');
   }
   throw error;
-}
-
-function consoleAuthRequired() {
-  return jsonError('CONSOLE_AUTH_REQUIRED', 'Console login required.', 401, 'Sign in to XD Cell.');
 }
 
 function methodNotAllowed() {
