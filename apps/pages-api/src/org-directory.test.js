@@ -189,6 +189,87 @@ test('internal department hydration requires internal host and hydrates the depa
   );
 });
 
+test('internal department hydration sends XDS requests through the VPC network binding', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@xd.com',
+    employeeStatus: 'active',
+  });
+  let vpcFetchCalled = false;
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/users/hydrate-department', {
+      userId: 'usr_1',
+      email: 'user@xd.com',
+      environment: 'production',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      XDS_OPENAI_TOKEN: 'secret-token',
+      now: () => '2026-07-01T10:00:00.000Z',
+      XD_OFFICE_NET: {
+        fetch: async (url, init) => {
+          vpcFetchCalled = true;
+          assert.equal(url, 'https://xds.xindong.com/xds-open-api/v1/oa-user/list-by-email');
+          assert.equal(init.method, 'POST');
+          return Response.json({
+            code: 0,
+            data: [{ email: 'user@xd.com', departmentPath: '心动/平台支撑部/Web' }],
+          });
+        },
+      },
+    }
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(vpcFetchCalled, true);
+  assert.equal((await store.getUser('usr_1')).departmentPath, '心动/平台支撑部/Web');
+});
+
+test('internal department hydration returns unavailable when XDS VPC binding is missing', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@xd.com',
+    employeeStatus: 'active',
+  });
+  const originalFetch = globalThis.fetch;
+  let publicFetchCalled = false;
+
+  globalThis.fetch = async () => {
+    publicFetchCalled = true;
+    return Response.json({
+      code: 0,
+      data: [{ email: 'user@xd.com', departmentPath: '心动/平台支撑部/Web' }],
+    });
+  };
+
+  let response;
+  try {
+    response = await worker.fetch(
+      jsonRequest('https://pages-api.internal/.xd-pages/internal/users/hydrate-department', {
+        userId: 'usr_1',
+        email: 'user@xd.com',
+        environment: 'production',
+      }),
+      {
+        PAGES_ENV: 'production',
+        PAGES_STORE: store,
+        XDS_OPENAI_TOKEN: 'secret-token',
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { hydration: { status: 'unavailable' } });
+  assert.equal(publicFetchCalled, false);
+  assert.equal((await store.getUser('usr_1')).departmentPath, null);
+});
+
 test('internal department hydration returns unavailable without provider details', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
   await store.createUser({

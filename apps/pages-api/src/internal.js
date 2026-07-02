@@ -57,12 +57,15 @@ async function hydrateUserDepartment(request, env, store) {
   const token = typeof env.XDS_OPENAI_TOKEN === 'string' ? env.XDS_OPENAI_TOKEN.trim() : '';
   if (!token) return unavailableHydration();
 
+  const xdsFetch = resolveXdsFetch(env);
+  if (!xdsFetch) return unavailableHydration();
+
   let directoryUsers;
   try {
     directoryUsers = await fetchOrgUsersByEmail({
       emails: [email],
       token,
-      fetchImpl: typeof env.XDS_FETCH === 'function' ? env.XDS_FETCH : fetch,
+      fetchImpl: xdsFetch,
     });
   } catch {
     return unavailableHydration();
@@ -95,6 +98,14 @@ async function hydrateUserDepartment(request, env, store) {
       teamId: result.team?.id || null,
     },
   });
+}
+
+function resolveXdsFetch(env) {
+  if (typeof env.XDS_FETCH === 'function') return env.XDS_FETCH;
+  if (env?.XD_OFFICE_NET && typeof env.XD_OFFICE_NET.fetch === 'function') {
+    return env.XD_OFFICE_NET.fetch.bind(env.XD_OFFICE_NET);
+  }
+  return null;
 }
 
 async function upsertUser(request, env, store) {

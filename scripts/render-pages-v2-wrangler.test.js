@@ -238,6 +238,18 @@ test('pages-api config renders optional user Worker VPC Tunnel ID from deploymen
   assert.match(emptyConfig, /PAGES_USER_WORKER_VPC_TUNNEL_ID = ""/);
 });
 
+test('pages-api config binds XDS outbound requests to the office VPC network', () => {
+  const config = renderPagesApi('production', {
+    ...baseEnv,
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+  });
+
+  assert.match(config, /\[\[vpc_networks\]\]\nbinding = "XD_OFFICE_NET"\ntunnel_id = "test-office-tunnel-id"/);
+
+  const emptyConfig = renderPagesApi('staging', withoutEnv('PAGES_USER_WORKER_VPC_TUNNEL_ID'));
+  assert.doesNotMatch(emptyConfig, /\[\[vpc_networks\]\]/);
+});
+
 test('pages-api config requires resource ids and keeps template execution mode', () => {
   for (const name of ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID', 'ROUTE_SNAPSHOTS_KV_ID', 'IP_ALLOWLIST']) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));

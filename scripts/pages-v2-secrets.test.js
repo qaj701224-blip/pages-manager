@@ -15,6 +15,7 @@ const baseEnv = {
   CF_API_TOKEN: 'cf-runtime-token',
   SLACK_PAGES_ALERT_WEBHOOK_URL: testSlackWebhookUrl,
   SITE_SECRET_ENCRYPTION_KEY: 'site-secret-encryption-key',
+  XDS_OPENAI_TOKEN: 'xds-openai-token',
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'old:ACCESS_KEY_PEPPER_OLD,pepper_2026_06:ACCESS_KEY_PEPPER_202606',
   ACCESS_KEY_PEPPER_OLD: 'old-pepper',
@@ -46,9 +47,13 @@ test('pages-api secret injection includes WFP runtime secrets and access key pep
   assert.match(result.stdout, /CF_API_TOKEN/);
   assert.match(result.stdout, /SLACK_PAGES_ALERT_WEBHOOK_URL/);
   assert.match(result.stdout, /SITE_SECRET_ENCRYPTION_KEY/);
+  assert.match(result.stdout, /XDS_OPENAI_TOKEN/);
   assert.match(result.stdout, /ACCESS_KEY_PEPPER_OLD/);
   assert.match(result.stdout, /ACCESS_KEY_PEPPER_202606/);
-  assert.doesNotMatch(result.stdout, /cf-runtime-token|hooks\.slack\.com|site-secret-encryption-key|active-pepper|old-pepper/);
+  assert.doesNotMatch(
+    result.stdout,
+    /cf-runtime-token|hooks\.slack\.com|site-secret-encryption-key|xds-openai-token|active-pepper|old-pepper/
+  );
 });
 
 test('pages-auth secret injection includes SSO secret and session signing secrets', () => {

@@ -355,11 +355,13 @@ bindings:
   KV: ROUTE_SNAPSHOTS
   Durable Objects: ROUTE_POINTER_LOCKS
   service: PAGES_AUTH
+  VPC Network: XD_OFFICE_NET
 
 secrets:
   CF_ACCOUNT_ID
   CF_API_TOKEN
   CLOUDFLARE_ZONE_ID
+  XDS_OPENAI_TOKEN
   ACCESS_KEY_PEPPER_*
 ```
 
@@ -372,6 +374,12 @@ secrets:
 `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `xd-cell-workers-production`，staging 只能是 `xd-cell-workers-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
 `PAGES_USER_WORKER_VPC_TUNNEL_ID` 是可选的办公网 Tunnel ID。部署 workflow 从 GitHub Environment Variable `vars.PAGES_USER_WORKER_VPC_TUNNEL_ID` 注入，wrangler template 只保留 `__PAGES_USER_WORKER_VPC_TUNNEL_ID__` 占位符，不在 Git 中提交具体 Cloudflare resource id。为空时不向 WFP User Worker 注入 VPC Network binding；非空时仅 `worker-only` 和 `worker-with-assets` 发布会获得固定 binding `XD_OFFICE_NET`，`assets-only` 发布不绑定。未来开放 `public` 站点时，public 站点必须继续跳过该绑定。
+
+同一个 `PAGES_USER_WORKER_VPC_TUNNEL_ID` 也用于给 `pages-api` 自身渲染 `XD_OFFICE_NET` VPC Network binding。`pages-api` 调用 XDS / OA `list-by-email` 时必须使用 `env.XD_OFFICE_NET.fetch(...)`；如果 `XDS_OPENAI_TOKEN` 或 `XD_OFFICE_NET` binding 缺失，部门 hydration 返回 `unavailable`，SSO 登录继续完成，但不会更新用户部门路径或部门团队关系。不得 fallback 到全局公网 `fetch` 调用 XDS。
+
+`XDS_OPENAI_TOKEN` 只作为 GitHub Environment secret 和 `pages-api` Worker secret 存在；真实值不能进入 wrangler template、日志、响应、测试 fixture 输出或文档示例值。SSO 登录成功后，`pages-auth` 会通过 `PAGES_API` service binding 调用 `/.xd-pages/internal/users/hydrate-department`；`pages-api` 按邮箱查询 XDS 部门路径，成功后更新 `users.department_path` / `department_checked_at`，并创建或迁移部门团队成员关系。
+
+已经落库但没有部门信息的用户，当前不会由部署流程自动批量回填；他们下一次通过 `pages-auth` 完成 SSO 登录时会触发同一条 hydration 链路并补齐部门信息。长期不登录的历史用户会保持 `department_path = NULL`，依赖部门路径的 ACL 按 fail closed 处理。若后续需要一次性修复历史数据，应新增受控的内部 backfill 脚本或管理任务，复用同一 XDS client 和 `XD_OFFICE_NET` VPC binding，分页读取用户邮箱后写回，不在 workflow 中直接拼接临时 curl。
 
 `ACCESS_KEY_PEPPERS` 是 access key HMAC pepper registry，格式为 `pepperId:secretEnvName`，例如 `pepper_2026_06:ACCESS_KEY_PEPPER_202606`。`ACCESS_KEY_ACTIVE_PEPPER_ID` 指向当前签发新 access key 使用的 pepper id。registry 只包含 secret env 名，可以写入 wrangler template 和 workflow 接受 Git 审查；真实 pepper 值只能作为 `ACCESS_KEY_PEPPER_*` Worker secret 注入 `pages-api`，不能写进 wrangler template、GitHub vars、CLI config、`--config` 文件或文档示例。
 
@@ -548,10 +556,12 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` / `pages-auth` wrangler 渲染 | 当前环境的 D1 metadata database id |
 | `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | var     | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
 | `PAGES_V2_SITE_DATA_KV_ID`            | var     | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
+| `PAGES_USER_WORKER_VPC_TUNNEL_ID`     | var     | `pages-api` wrangler 渲染       | 当前环境的办公网 Tunnel ID；用于 User Worker VPC binding，也用于 `pages-api` 通过 `XD_OFFICE_NET` 调用 XDS / OA |
 | `ROUTER_IP_ALLOWLIST_CIDRS`           | var     | `pages-router` wrangler 渲染   | 必填，router 缺失或无效时 fail closed |
 | `CLOUDFLARE_API_TOKEN`                | secret  | Wrangler 部署                  | 只能用于 GitHub Actions / Wrangler，不注入 Worker runtime；权限需覆盖 Worker 部署、Worker route 和 custom domain 绑定 |
 | `CF_API_TOKEN`                        | secret  | `pages-api` runtime            | 通过 `scripts/put-pages-v2-secrets.sh apps/pages-api` 注入，供 Cloudflare Workers / WFP API 调用 |
 | `SLACK_PAGES_ALERT_WEBHOOK_URL`       | secret  | `pages-api` runtime            | Slack Incoming Webhook URL；用于 slot 容量耗尽等平台运维告警，只注入 `pages-api`，不能写入 wrangler template、GitHub Vars 或文档 |
+| `XDS_OPENAI_TOKEN`                    | secret  | `pages-api` runtime            | XDS / OA `list-by-email` 签名 token，只注入 `pages-api`；请求必须通过 `XD_OFFICE_NET` VPC Network binding |
 | `SSO_CLIENT_SECRET`                   | secret  | `pages-auth` runtime           | OAuth token exchange secret，只注入 auth Worker |
 | `ACCESS_KEY_PEPPER_*`                 | secret  | `pages-api` runtime            | 必须覆盖 `ACCESS_KEY_PEPPERS` registry 中每个 `secretEnvName` |
 | `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
@@ -559,7 +569,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 
 v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`。
 
-v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`。
+v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL`、`SITE_SECRET_ENCRYPTION_KEY`、`XDS_OPENAI_TOKEN` 和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`。
 
 `SLACK_PAGES_ALERT_MENTION_USER_ID` 是 `pages-api` wrangler template 中固定的非敏感告警接收人 id，用于 slot 容量告警正文里的单次 Slack mention。`PAGES_NORMAL_WORKER_SLOT_EXPAND_BY` 同时出现在 `pages-router` 和 `pages-api` template：router 部署期用它决定每次新增多少个 slot，`pages-api` 只把它显示在容量不足告警的“扩容”字段里。
 
@@ -578,7 +588,9 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - signing key registry 中的 active kid 必须能找到对应 secret。
 - `PAGES_EXECUTION_MODE` 必须在 `pages-api` 和 `pages-router` 对应环境 template 中各出现一次，只能是 `normal-worker-slot` 或 `wfp`；不得从 GitHub Environment Vars 注入。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
-- `PAGES_USER_WORKER_VPC_TUNNEL_ID` 是 `pages-api` 的可选渲染 token，必须从 GitHub Environment Variable 注入；未配置时渲染为空字符串。
+- `PAGES_USER_WORKER_VPC_TUNNEL_ID` 是 `pages-api` 的可选渲染 token，必须从 GitHub Environment Variable 注入；未配置时渲染为空字符串，且不会渲染 `XD_OFFICE_NET` VPC Network binding。
+- `XDS_OPENAI_TOKEN` 必须作为 GitHub Environment secret 注入 `pages-api` runtime；真实值不得写入 vars、wrangler template、日志或文档示例值。
+- `pages-api` 的 XDS / OA 请求必须通过 `XD_OFFICE_NET` VPC Network binding；缺少 binding 时部门 hydration 返回 `unavailable`，不得 fallback 到公网 `fetch`。
 - router template 必须静态配置当前环境 WFP dispatch namespace：production 为 `xd-cell-workers-production`，staging 为 `xd-cell-workers-staging`。
 - `PAGES_EXECUTION_MODE=normal-worker-slot` 时部署脚本必须先完成 slot provision，至少存在一个 `available` slot，且最终渲染出的 router wrangler 配置中有对应 service binding；`PAGES_EXECUTION_MODE=wfp` 时不得自动扩展普通 Worker slot，只能保留历史 slot binding count 用于排空旧 route。
 - `CF_ACCOUNT_ID` / `CF_API_TOKEN` 必须只出现在 `pages-api` runtime；router/auth/thin router 不能持有。

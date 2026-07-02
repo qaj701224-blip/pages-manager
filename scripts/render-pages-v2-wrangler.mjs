@@ -85,6 +85,7 @@ async function renderWrangler(appName, envName) {
     '__NORMAL_WORKER_SLOT_SERVICES__',
     renderNormalWorkerSlotServices(appName, envName, replacements, executionMode)
   );
+  rendered = rendered.replaceAll('__PAGES_API_XDS_VPC_NETWORK__', renderPagesApiXdsVpcNetwork(appName, replacements));
 
   assertRenderedConfigPolicy(rendered, appName);
   assertNoUnresolvedPlaceholders(rendered, templatePath);
@@ -220,6 +221,17 @@ binding = "SITE_SLOT_${slotNumber}"
 service = "${servicePrefix}-${slotNumber}"`);
   }
   return entries.join('\n\n');
+}
+
+function renderPagesApiXdsVpcNetwork(appName, replacements) {
+  if (appName !== 'apps/pages-api') return '';
+
+  const tunnelId = String(replacements.PAGES_USER_WORKER_VPC_TUNNEL_ID || '').trim();
+  if (!tunnelId) return '';
+
+  return `[[vpc_networks]]
+binding = "XD_OFFICE_NET"
+tunnel_id = "${tunnelId}"`;
 }
 
 function assertHttpsUrl(name, value) {

@@ -91,6 +91,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
           ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-api
@@ -166,6 +167,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
           ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-api
