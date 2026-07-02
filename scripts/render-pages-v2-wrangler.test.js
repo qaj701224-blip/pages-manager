@@ -220,6 +220,18 @@ test('pages-api config keeps committed WFP compatibility date', () => {
   assert.doesNotMatch(config, /2026-07-01/);
 });
 
+test('pages-api config renders optional user Worker VPC Tunnel ID from deployment env', () => {
+  const config = renderPagesApi('production', {
+    ...baseEnv,
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+  });
+
+  assert.match(config, /PAGES_USER_WORKER_VPC_TUNNEL_ID = "test-office-tunnel-id"/);
+
+  const emptyConfig = renderPagesApi('staging', withoutEnv('PAGES_USER_WORKER_VPC_TUNNEL_ID'));
+  assert.match(emptyConfig, /PAGES_USER_WORKER_VPC_TUNNEL_ID = ""/);
+});
+
 test('pages-api config requires resource ids and keeps template execution mode', () => {
   for (const name of [
     'CLOUDFLARE_ACCOUNT_ID',

@@ -9,6 +9,7 @@ const EXECUTION_MODE_APPS = new Set(['apps/pages-api', 'apps/pages-router']);
 
 const DEFAULTS = {
   PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '',
+  PAGES_USER_WORKER_VPC_TUNNEL_ID: '',
 };
 
 const REQUIRED_TOKENS_BY_APP = {
@@ -34,7 +35,7 @@ const REQUIRED_TOKENS_BY_APP = {
 };
 
 const OPTIONAL_TOKENS_BY_APP = {
-  'apps/pages-api': [],
+  'apps/pages-api': ['PAGES_USER_WORKER_VPC_TUNNEL_ID'],
   'apps/pages-auth': [],
   'apps/pages-router': ['PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT'],
   'apps/kv-gateway': [],
