@@ -1,0 +1,224 @@
+# XD Cell Console
+
+本文是 XD Cell Console 当前实现边界。历史设计和评审过程保留在 `docs/superpowers/specs/2026-06-30-xd-cell-console-*.md` 与 `docs/superpowers/plans/2026-07-01-xd-cell-console-implementation.md`，但运行态以本文、代码和测试为准。
+
+## 产品定位
+
+XD Cell Console 是 v2 控制台，面向站点目录、个人工作台、团队协作、站点详情和平台管理员后台。
+
+入口：
+
+| 环境                         | 入口                                  | 权限                                                                                                   |
+| ---------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| production 首页 / 站点目录   | `https://workers.xd.team/`            | 公司网络 IP allowlist 内可访问；未登录只展示 `internal` 站点                                           |
+| production 工作台            | `https://workers.xd.team/workspace/*` | 公司网络 IP allowlist + 登录用户                                                                       |
+| production 管理员后台        | `https://workers.xd.team/admin/*`     | 公司网络 IP allowlist + 平台管理员                                                                     |
+| staging 首页 / 工作台 / 后台 | `https://staging.workers.xd.team/*`   | 公司网络 IP allowlist + 平台管理员；auth login/callback 仅豁免 session/admin gate，不豁免 IP allowlist |
+
+第一版不支持从网页上传并发布站点。Console 可以创建站点记录、hostname claim 和 owner 关系，但不上传 artifact、不创建 deployment；站点 artifact 发布仍通过 CLI / CI / AI / agent 等受控入口完成。`publisher` 表示可创建团队站点记录并通过这些受控入口发布站点，后续增加浏览器上传不会改变该角色语义。
+
+第一版不新增站点标题、分类、简介概念。目录卡片使用 slug、hostname、owner、visibility 和状态 tag 展示；如果站点没有额外 metadata，不做补充字段。
+
+## 架构
+
+`apps/pages-console` 使用 Cloudflare Worker with Assets + 轻 BFF：
+
+```text
+Browser
+  -> workers.xd.team / staging.workers.xd.team
+  -> pages-console Worker with Assets
+      - IP allowlist
+      - browser session cookie
+      - CSRF / Origin / Referer
+      - staging / admin gate
+      - static assets
+      - /api/console/* BFF proxy
+  -> service binding
+      - pages-auth.internal
+      - pages-api.internal
+```
+
+BFF 只负责浏览器边界和少量聚合，不保存业务真相源。用户、团队、站点、Access Key、Webhook、审计和管理员授权的真相源都在 `apps/pages-api` 的 D1-backed store；登录 code 和 SSO 交换在 `apps/pages-auth`。
+
+所有 Console 流量都必须先经过 `@xd/ip-guard`：
+
+- 页面 HTML。
+- 静态 assets。
+- `/login` 前端路由。
+- `/api/console/auth/login` 和 `/api/console/auth/callback`。
+- `/api/console/*` BFF API。
+
+IP allowlist 不替代身份鉴权。`/workspace/*` 仍要求登录，`/admin/*` 和 staging 非 auth bridge 路径仍要求平台管理员。
+
+## 登录与 Session
+
+Console 登录使用 `pages-auth` 生成一次性 console login code：
+
+```text
+1. Browser -> pages-console /api/console/auth/login
+2. pages-console -> pages-auth.internal /.xd-pages/internal/console/login-code
+3. pages-auth 完成 SSO 后生成 console code
+4. Browser -> pages-console /api/console/auth/callback?code=...
+5. pages-console -> pages-auth.internal /.xd-pages/internal/console/exchange
+6. pages-auth 签发 `purpose=console_session`、`aud=xd-cell-console` 的 JWT
+7. pages-console 把 JWT 写入当前 console host 的 host-only HttpOnly cookie
+```
+
+console session cookie 属性：
+
+```text
+Name: xd_cell_session
+Path: /
+HttpOnly
+Secure
+SameSite=Lax
+无 Domain，保持 host-only
+```
+
+cookie value 是 pages-auth 使用既有 `PAGES_SESSION_JWT_*` key registry 签发的 JWT。pages-console 不维护独立 signing secret，也不会设置 `Domain=.xd.team` 共享 cookie；读取时校验 issuer、audience、purpose、environment、过期时间和 HMAC 签名。
+
+BFF 不长期信任 cookie 内的管理员状态。每次读取有效 cookie 后，会调用 `pages-api.internal/.xd-pages/api/console/auth/session` 校验：
+
+- 当前用户存在且 `employeeStatus=active`。
+- cookie 中的 `sessionVersion` 等于当前 `users.session_version`。
+- 当前平台管理员授权状态以 `platform_admins` 表为准。
+
+因此旧 session 会在用户禁用、离职、`session_version` 变化、平台管理员授权变化、登出或 signing key 轮换后失效。
+
+## 功能导航
+
+顶部栏：
+
+- `XD Cell` 品牌。
+- `Sites`：站点目录首页。
+- `工作台`：登录后进入个人站点。
+- 主题、语言、通知。
+- 登录 / 用户菜单。
+- 平台管理员的 `管理员后台` 入口位于用户菜单内，不作为普通用户可见的一级导航。
+
+站点目录：
+
+- 未登录时，在 IP allowlist 内只展示 `internal` 且 active 可访问的站点。
+- 登录后展示当前用户可访问的目录内容。
+- internal 站点可显示 owner；用户 owner 显示姓名/邮箱，团队 owner 显示团队名和团队类型 tag，不泄露内部 team id。
+
+工作台：
+
+- `个人站点`：当前用户名下站点。
+- `团队站点`：当前用户所在团队的站点，支持按团队过滤。
+- `团队`：团队列表与团队详情。
+- `Access Keys`：用户可管理的 user-owned key 索引和创建入口。
+
+不提供独立工作台首页；`/workspace` 默认进入个人站点。
+
+团队详情：
+
+- `成员`：团队成员和角色管理。
+- `Access Keys`：team-owned key 创建和撤销。
+- `设置`：自建团队 admin 可编辑名称、描述，或删除团队；部门团队信息不可编辑。
+
+团队详情不展示站点列表。团队站点统一在工作台的 `团队站点` 页面展示，跨团队过滤。
+
+站点详情：
+
+- `概览`。
+- `部署记录`。
+- `访问控制`。
+- `运行配置`：非敏感 Vars 和 Secrets metadata；secret value 不回显。
+- `设置`：第一版只保留站点设置占位，不支持危险操作自动化。
+
+## 团队与权限
+
+团队分为自建团队和部门团队，二者都属于 `team` owner 模型。部门团队可以显示 `department` tag，名称和描述来自 XDS 部门路径，不允许团队内编辑。
+
+SSO 登录成功后，平台可按邮箱调用 XDS 部门接口获取部门路径，并将其作为默认部门团队。部门团队自动成员首次关联时默认 `admin`，后续由团队自己调整权限。平台管理员可合并部门团队，用于处理部门名称变化导致的重复团队。
+
+团队角色：
+
+| 角色        | 权限                                                                       |
+| ----------- | -------------------------------------------------------------------------- |
+| `admin`     | 管理团队成员、团队 Access Keys、团队设置；管理团队站点访问控制和 secrets   |
+| `publisher` | 创建团队站点记录；通过 CLI / CI / AI / agent 发布；管理非敏感 runtime Vars |
+| `viewer`    | 查看团队和站点基础信息                                                     |
+
+删除团队不做软删除。删除前必须盘点资产，团队名下站点需要手动删除或转移，team-owned Access Keys 需要撤销。平台不会在删除团队时自动删除站点、route、deployment、hostname claim、KV/data 或审计记录。
+
+## Access Keys
+
+Access Key 支持两种归属：
+
+- `user`：从工作台 `Access Keys` 创建，权限按当前用户动态计算。
+- `team`：从团队详情 `Access Keys` 创建，只有团队 admin 可创建；创建者离开团队后，team-owned key 不自动失效。
+
+有效期创建时设置，默认 3 个月，最大 1 年。plaintext 只在创建成功时返回一次；列表、日志、审计和错误响应都不能展示 plaintext。
+
+staging key 不能调用 production，production key 不能调用 staging。
+
+## 管理员后台
+
+管理员后台入口为用户菜单中的 `管理员后台`。
+
+菜单：
+
+- 运营：`Dashboard · 平台概览`、`Ops 运维`。
+- 审核 / 管理：`用户`、`站点管理`、`团队管理`。
+- 审计：`Webhook`、`审计日志`。
+
+管理员后台只允许平台管理员访问。平台管理员可授予或撤销其他用户的平台管理员权限；权限变化会通过 session 校验立即影响 Console 管理权限。
+
+## 出站 Webhook
+
+Admin Webhook 是平台级出站订阅，不是 GitHub / Slack / executor callback 的入站诊断。GitHub / Slack / executor callback 的原始接收、验签和业务处理仍以 `apps/gateway` 及其 MySQL-backed store 为真相源。
+
+Webhook 投递模型：
+
+```text
+XD Cell event
+  -> 标准 payload
+  -> 平台脱敏敏感字段
+  -> 可选受限模板转换
+  -> 投递到 webhookUrl
+  -> 记录 delivery metadata
+```
+
+第一版不提供额外 signing secret 或 HMAC 签名。`webhookUrl` 自身按 bearer secret 处理：
+
+- 创建后不在列表、详情、投递记录或审计中展示完整 URL。
+- URL 存储使用加密密文或受控 secret 存储。
+- 创建、编辑和每次投递都执行 SSRF 校验。
+- 只允许 `https://`。
+- 禁止 localhost、私网、link-local、metadata endpoint。
+- 第一版不跟随 redirect。
+
+受限模板是可选能力。未配置模板时投递标准 payload；配置模板后，标准 payload 先按模板转换，再投递。模板只允许引用 allowlisted 字段，输出必须是 JSON object，大小有限制，不能执行代码或读取环境变量。
+
+## 部署边界
+
+`apps/pages-console` 有独立 wrangler 模板：
+
+| 环境       | Worker                  | Route                       | Service binding                           |
+| ---------- | ----------------------- | --------------------------- | ----------------------------------------- |
+| production | `pages-console`         | `workers.xd.team/*`         | `pages-api`、`pages-auth`                 |
+| staging    | `pages-console-staging` | `staging.workers.xd.team/*` | `pages-api-staging`、`pages-auth-staging` |
+
+Console route 是 exact host route，不能使用 `*.workers.xd.team/*`，避免抢占用户站点 wildcard。用户站点仍由 `pages-router` / `pages-router-staging` 处理。
+
+部署要求：
+
+- production 只允许 `workflow_dispatch` 手动触发。
+- staging 可手动触发，也可由 staging 分支中 v2 相关路径变化触发。
+- renderer 必须注入 `CLOUDFLARE_ACCOUNT_ID`、`IP_ALLOWLIST` 和 `PAGES_SESSION_JWT_KEYS`。
+- Console 登录态复用 pages-auth 的 `PAGES_SESSION_JWT_*` 体系：pages-auth 签发 `purpose=console_session`、`aud=xd-cell-console` 的 JWT，pages-console 只在自身 host-only `xd_cell_session` cookie 中保存并验证该 JWT。
+- `PAGES_SESSION_JWT_SECRET_*` 通过 Worker secret 注入，不进入 wrangler 模板、日志或文档示例；不再维护独立的 console session secret。
+- production / staging 的 Worker、service binding、route、D1/KV 和 signing key 不得混用。
+
+## 安全检查点
+
+- `api.pages.xd.team` 公网请求即使伪造 `X-Console-*` header，也不能进入 console internal API。
+- `pages-api` 只接受 host 为 `pages-api.internal` 且带 `X-Console-BFF: pages-console` 的 console BFF 请求。
+- 浏览器写 API 必须通过 CSRF token 和同源 Origin / Referer 校验。
+- `/workspace/*` 缺少有效 session 时跳转登录或返回 401。
+- `/admin/*` 缺少 session 时跳转登录或返回 401；已登录但非平台管理员时返回 403 或展示无权限页。
+- staging 非 auth bridge 路径缺少 session 时返回 401；已登录但非平台管理员时返回 403。
+- secret value、Access Key plaintext、完整 Webhook URL、Cloudflare resource id、provider resource id 不得出现在列表、日志、审计导出或错误响应中。
+- reserved slug / hostname 不能被用户站点创建或 claim，包括 `admin`、`workspace`、`api`、`auth`、`staging`、`workers.xd.team`、`staging.workers.xd.team`。

@@ -4,27 +4,28 @@
 
 ## 推荐阅读顺序
 
-| 文档                                                               | 说明                                                                               |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| [platform-overview.md](./platform-overview.md)                     | 平台分层、当前运行形态、Cloudflare / Slack / GitHub 的边界                         |
-| [end-to-end-flow.md](./end-to-end-flow.md)                         | Slack 到 issue、Coding Agent、PR、Review、Preview、Slack 回写的完整链路            |
-| [platform-dev-lane.md](./platform-dev-lane.md)                     | Slack 创建 / 分流 pages-manager 自身 issue，并驱动平台代码 PR 的产品和权限边界     |
-| [repository-structure.md](./repository-structure.md)               | 当前 monorepo 目录、gateway 内部结构、站点 PR 和平台 PR 边界                       |
-| [slack-platform-runtime.md](./slack-platform-runtime.md)           | Slack HTTP Events / Interactivity、常驻 Agent、语义分块准流式回复、notifier、session 和进度消息 / message binding |
-| [slack-agent-runtime.md](./slack-agent-runtime.md)                 | Slack Agent turn 协议、语义分块准流式回复、进度消息、notifier 和 FAQ               |
-| [slack-agent-policy-skill.md](./slack-agent-policy-skill.md)       | Slack Agent 生产级 policy skill / prompt package、tool contract、golden cases 和迁移计划 |
-| [slack-agent-repo-question.md](./slack-agent-repo-question.md)     | Slack Agent 面向 pages-manager 当前仓库的只读代码 / 架构问答边界                  |
-| [slack-review-results-summary.md](./slack-review-results-summary.md) | Slack 中查看 Review Agent 评论摘要、blocker、建议和 site-check 结论的只读能力规格 |
-| [github-automation.md](./github-automation.md)                     | GitHub Enterprise、分支策略、Actions executor、webhook、Review Agent、runtime 配置 |
-| [db-schema.md](./db-schema.md)                                     | MySQL / Redis / Drizzle schema、repository 分层和迁移规则                          |
-| [db-schema-tables.md](./db-schema-tables.md)                       | DB 表结构详表、字段、索引和迁移期兼容说明                                          |
-| [workers-and-k8s.md](./workers-and-k8s.md)                         | `pages-worker`、GitHub Actions executor、后续 K8s Job executor 的职责边界          |
-| [site-lifecycle-and-naming.md](./site-lifecycle-and-naming.md)     | 一个员工多个站点时的 slug、目录、hostname 和生命周期规则                           |
-| [site-check.md](./site-check.md)                                   | 站点 PR 的 deterministic check、路径隔离、schema、secret scan                      |
-| [agent-policy-and-prompts.md](./agent-policy-and-prompts.md)       | Slack Agent / Coding Agent 的提示词、公司规则、secret 红线                         |
-| [access-and-integrations.md](./access-and-integrations.md)         | Slack、GitHub、Cloudflare、站点访问和管理权限总览                                  |
-| [cloudflare-resource-pool.md](./cloudflare-resource-pool.md)       | Cloudflare 统一资源池、preview / production 发布隔离                               |
-| [dependency-version-baseline.md](./dependency-version-baseline.md) | Node、pnpm、MySQL、Redis、Docker、K8s 和前端版本基线                               |
+| 文档                                                                 | 说明                                                                                                              |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| [platform-overview.md](./platform-overview.md)                       | 平台分层、当前运行形态、Cloudflare / Slack / GitHub 的边界                                                        |
+| [xd-cell-console.md](./xd-cell-console.md)                           | XD Cell Console 的站点目录、工作台、团队、Admin、Webhook、BFF/session 和部署边界                                  |
+| [end-to-end-flow.md](./end-to-end-flow.md)                           | Slack 到 issue、Coding Agent、PR、Review、Preview、Slack 回写的完整链路                                           |
+| [platform-dev-lane.md](./platform-dev-lane.md)                       | Slack 创建 / 分流 pages-manager 自身 issue，并驱动平台代码 PR 的产品和权限边界                                    |
+| [repository-structure.md](./repository-structure.md)                 | 当前 monorepo 目录、gateway 内部结构、站点 PR 和平台 PR 边界                                                      |
+| [slack-platform-runtime.md](./slack-platform-runtime.md)             | Slack HTTP Events / Interactivity、常驻 Agent、语义分块准流式回复、notifier、session 和进度消息 / message binding |
+| [slack-agent-runtime.md](./slack-agent-runtime.md)                   | Slack Agent turn 协议、语义分块准流式回复、进度消息、notifier 和 FAQ                                              |
+| [slack-agent-policy-skill.md](./slack-agent-policy-skill.md)         | Slack Agent 生产级 policy skill / prompt package、tool contract、golden cases 和迁移计划                          |
+| [slack-agent-repo-question.md](./slack-agent-repo-question.md)       | Slack Agent 面向 pages-manager 当前仓库的只读代码 / 架构问答边界                                                  |
+| [slack-review-results-summary.md](./slack-review-results-summary.md) | Slack 中查看 Review Agent 评论摘要、blocker、建议和 site-check 结论的只读能力规格                                 |
+| [github-automation.md](./github-automation.md)                       | GitHub Enterprise、分支策略、Actions executor、webhook、Review Agent、runtime 配置                                |
+| [db-schema.md](./db-schema.md)                                       | MySQL / Redis / Drizzle schema、repository 分层和迁移规则                                                         |
+| [db-schema-tables.md](./db-schema-tables.md)                         | DB 表结构详表、字段、索引和迁移期兼容说明                                                                         |
+| [workers-and-k8s.md](./workers-and-k8s.md)                           | `pages-worker`、GitHub Actions executor、后续 K8s Job executor 的职责边界                                         |
+| [site-lifecycle-and-naming.md](./site-lifecycle-and-naming.md)       | 一个员工多个站点时的 slug、目录、hostname 和生命周期规则                                                          |
+| [site-check.md](./site-check.md)                                     | 站点 PR 的 deterministic check、路径隔离、schema、secret scan                                                     |
+| [agent-policy-and-prompts.md](./agent-policy-and-prompts.md)         | Slack Agent / Coding Agent 的提示词、公司规则、secret 红线                                                        |
+| [access-and-integrations.md](./access-and-integrations.md)           | Slack、GitHub、Cloudflare、站点访问和管理权限总览                                                                 |
+| [cloudflare-resource-pool.md](./cloudflare-resource-pool.md)         | Cloudflare 统一资源池、preview / production 发布隔离                                                              |
+| [dependency-version-baseline.md](./dependency-version-baseline.md)   | Node、pnpm、MySQL、Redis、Docker、K8s 和前端版本基线                                                              |
 
 ## 当前代码事实
 

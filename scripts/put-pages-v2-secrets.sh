@@ -227,6 +227,9 @@ case "$APP_DIR" in
   apps/kv-gateway)
     collect_capability_jwt_secrets
     ;;
+  apps/pages-console)
+    collect_session_jwt_secrets
+    ;;
   *)
     echo "::error::unsupported app: $APP_DIR" >&2
     exit 2

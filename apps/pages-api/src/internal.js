@@ -1,6 +1,8 @@
 import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { fetchOrgUsersByEmail } from './org-directory.js';
 
 const EMPLOYEE_STATUSES = new Set(['active', 'disabled', 'left', 'unknown']);
+const ENVIRONMENTS = new Set(['production', 'staging', 'local']);
 
 export async function handleInternalApi(request, env, store) {
   if (!isInternalRequest(request)) return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
@@ -9,6 +11,10 @@ export async function handleInternalApi(request, env, store) {
   if (url.pathname === '/.xd-pages/internal/users/upsert') {
     if (request.method !== 'POST') return methodNotAllowed();
     return upsertUser(request, env, store);
+  }
+  if (url.pathname === '/.xd-pages/internal/users/hydrate-department') {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return hydrateUserDepartment(request, env, store);
   }
   if (url.pathname === '/.xd-pages/internal/hostname-claims/acquire') {
     if (request.method !== 'POST') return methodNotAllowed();
@@ -24,6 +30,71 @@ export async function handleInternalApi(request, env, store) {
   }
 
   return null;
+}
+
+async function hydrateUserDepartment(request, env, store) {
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const userId = normalizeRequiredString(body.userId);
+  const email = normalizeEmail(body.email);
+  const environment = normalizeEnvironment(body.environment);
+  if (!userId || !email || !environment) {
+    return jsonError('DEPARTMENT_HYDRATION_INVALID', 'Department hydration request is invalid.', 400);
+  }
+  const workerEnvironment = normalizeEnvironment(env.PAGES_ENV);
+  if (workerEnvironment && environment !== workerEnvironment) {
+    return jsonError('DEPARTMENT_HYDRATION_ENV_MISMATCH', 'Department hydration environment does not match.', 403);
+  }
+
+  const user = await store.getUser(userId);
+  if (!user) return jsonError('USER_NOT_FOUND', 'User was not found.', 404);
+
+  const token = typeof env.XDS_OPENAI_TOKEN === 'string' ? env.XDS_OPENAI_TOKEN.trim() : '';
+  if (!token) return unavailableHydration();
+
+  let directoryUsers;
+  try {
+    directoryUsers = await fetchOrgUsersByEmail({
+      emails: [email],
+      token,
+      fetchImpl: typeof env.XDS_FETCH === 'function' ? env.XDS_FETCH : fetch,
+    });
+  } catch {
+    return unavailableHydration();
+  }
+
+  const directoryUser =
+    directoryUsers.find((item) => item.email === email && item.departmentPath) ||
+    directoryUsers.find((item) => item.departmentPath);
+  const departmentPath = normalizeDepartmentPath(directoryUser?.departmentPath);
+  if (!departmentPath) return unavailableHydration();
+
+  const checkedAt = new Date(readNow(env) * 1000).toISOString();
+  const updatedUser = await store.updateUserDepartmentFromDirectory({
+    userId,
+    departmentPath,
+    departmentCheckedAt: checkedAt,
+  });
+  if (!updatedUser) return jsonError('USER_NOT_FOUND', 'User was not found.', 404);
+
+  const result = await store.hydrateDepartmentMembership({
+    environment,
+    userId,
+    departmentPath,
+  });
+
+  return jsonOk({
+    hydration: {
+      status: 'hydrated',
+      departmentPath,
+      teamId: result.team?.id || null,
+    },
+  });
 }
 
 async function upsertUser(request, env, store) {
@@ -145,8 +216,27 @@ function normalizeRequiredString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
+function normalizeEmail(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function normalizeEnvironment(value) {
+  const normalized = normalizeRequiredString(value);
+  return ENVIRONMENTS.has(normalized) ? normalized : '';
+}
+
 function normalizeOptionalString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeDepartmentPath(value) {
+  return typeof value === 'string'
+    ? value
+        .split('/')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join('/')
+    : '';
 }
 
 function normalizeOptionalIsoString(value) {
@@ -194,6 +284,10 @@ function readNow(env) {
     if (!Number.isNaN(parsed)) return Math.floor(parsed / 1000);
   }
   return Math.floor(Date.now() / 1000);
+}
+
+function unavailableHydration() {
+  return jsonOk({ hydration: { status: 'unavailable' } });
 }
 
 function methodNotAllowed() {

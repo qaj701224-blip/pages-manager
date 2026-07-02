@@ -65,6 +65,58 @@ test('creates OAuth state for CLI login without site redirect fields', async () 
   assert.equal(consumed.deviceCode, '12345678');
 });
 
+test('creates OAuth state for console login with relative return_to', async () => {
+  const tx = await createOAuthState({
+    environment: 'production',
+    consoleLogin: true,
+    returnTo: '/workspace/sites',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_console',
+    stateSecret: 'secret',
+  });
+
+  assert.equal(tx.publicState, 'ost_console.secret');
+  assert.equal(tx.record.kind, 'console');
+  assert.equal(tx.record.siteHost, null);
+  assert.equal(tx.record.returnTo, '/workspace/sites');
+
+  const consumed = await consumeOAuthState(tx.publicState, tx.record, { now: now + 1, environment: 'production' });
+  assert.equal(consumed.kind, 'console');
+  assert.equal(consumed.returnTo, '/workspace/sites');
+  assert.equal(consumed.siteHost, null);
+});
+
+test('console OAuth state only accepts console relative return_to paths', async () => {
+  for (const returnTo of ['https://evil.example/workspace', '//evil.example/workspace', '/evil', '/.xd-pages/auth']) {
+    await assert.rejects(
+      () =>
+        createOAuthState({
+          environment: 'production',
+          consoleLogin: true,
+          returnTo,
+          now,
+          ttlSeconds: 300,
+        }),
+      /return_to/i,
+      returnTo
+    );
+  }
+
+  for (const returnTo of ['/', '/workspace', '/workspace/published', '/admin', '/admin/webhooks']) {
+    const tx = await createOAuthState({
+      environment: 'production',
+      consoleLogin: true,
+      returnTo,
+      now,
+      ttlSeconds: 300,
+      stateId: 'ost_console',
+      stateSecret: 'secret',
+    });
+    assert.equal(tx.record.returnTo, returnTo);
+  }
+});
+
 test('rejects open redirects and cross-environment site hosts', async () => {
   await assert.rejects(
     () =>

@@ -75,12 +75,7 @@ async function putSiteSecret(request, env, config, store, actor, siteSlug) {
     return jsonError('SECRET_VALUE_INVALID', 'Secret value is invalid.', 400, 'Send a non-empty string value.');
   }
   if (byteLength(body.value) > MAX_SITE_SECRET_VALUE_BYTES) {
-    return jsonError(
-      'SECRET_VALUE_TOO_LARGE',
-      'Secret value is too large.',
-      413,
-      'Use a secret value no larger than 8 KiB.'
-    );
+    return jsonError('SECRET_VALUE_TOO_LARGE', 'Secret value is too large.', 413, 'Use a secret value no larger than 8 KiB.');
   }
   try {
     const secret = await putSiteSecretWithAudit(store, env, {
@@ -303,11 +298,15 @@ async function deleteSite(env, config, store, actor, siteId) {
   if (site instanceof Response) return site;
   const deletedAt = readNow(env);
   const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
-  const deleted = await store.deleteSite(site.id, {
-    deletedAt,
-    reuseHoldUntil,
-    releaseReason: 'site_deleted',
-  }, config.environment);
+  const deleted = await store.deleteSite(
+    site.id,
+    {
+      deletedAt,
+      reuseHoldUntil,
+      releaseReason: 'site_deleted',
+    },
+    config.environment
+  );
   if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   return jsonOk({ site: formatSite({ ...deleted, route: await store.getRouteBySiteId(site.id, config.environment) }) });
 }
@@ -470,18 +469,8 @@ async function createSite(request, env, config, store, actor) {
       hostname,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    if (/SITE_SLUG_CONFLICT/.test(message)) {
-      return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
-    }
-    if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
-      return jsonError(
-        'HOSTNAME_CLAIM_CONFLICT',
-        'Site hostname is already claimed.',
-        409,
-        '请换一个站点名，或使用原站点 owner 继续部署。'
-      );
-    }
+    const response = siteCreateErrorResponse(error);
+    if (response) return response;
     throw error;
   }
 
@@ -489,7 +478,23 @@ async function createSite(request, env, config, store, actor) {
   return jsonOk({ site: formatSite({ ...site, route }) }, 201);
 }
 
-function validateSlug(slug, environment) {
+export function siteCreateErrorResponse(error) {
+  const message = error instanceof Error ? error.message : '';
+  if (/SITE_SLUG_CONFLICT/.test(message)) {
+    return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
+  }
+  if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
+    return jsonError(
+      'HOSTNAME_CLAIM_CONFLICT',
+      'Site hostname is already claimed.',
+      409,
+      '请换一个站点名，或使用原站点 owner 继续部署。'
+    );
+  }
+  return null;
+}
+
+export function validateSlug(slug, environment) {
   const validation = validateSiteSlug(slug, { environment });
   if (validation.ok) return null;
   if (validation.error.code === 'RESERVED_SLUG') {
@@ -530,7 +535,7 @@ function formatSite(site) {
   };
 }
 
-function hostnameForSlug(slug, config) {
+export function hostnameForSlug(slug, config) {
   if (config.environment === 'staging') return `${slug}-staging.${config.siteDomainSuffix}`;
   return `${slug}.${config.siteDomainSuffix}`;
 }
@@ -575,8 +580,11 @@ async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
 function actorCanDeploy(actor, site) {
   if (!site) return false;
   if (actor.type !== 'access_key') return site.ownerUserId === actor.userId;
-  if (!actor.siteId || actor.siteId !== site.id) return false;
-  return actor.scopes.includes('deploy:site');
+  if (actor.siteId && actor.siteId !== site.id) return false;
+  if (!actor.scopes.includes('deploy:site')) return false;
+  if ((actor.ownerType || 'user') === 'team') return site.ownerType === 'team' && site.ownerId === actor.ownerId;
+  if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+  return true;
 }
 
 function normalizeSecretNameForResponse(value) {
@@ -604,7 +612,7 @@ function byteLength(value) {
   return new globalThis.TextEncoder().encode(String(value)).byteLength;
 }
 
-function normalizeAclEntries(value, env) {
+export function normalizeAclEntries(value, env) {
   if (!Array.isArray(value) || value.length > MAX_ACL_ENTRIES) {
     return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'Send an entries array with at most 200 items.');
   }
@@ -629,12 +637,7 @@ function normalizeAclEntries(value, env) {
       .trim()
       .toLowerCase();
     if (!ACL_SUBJECT_TYPES.has(subjectType)) {
-      return jsonError(
-        'ACL_SUBJECT_TYPE_UNSUPPORTED',
-        'ACL subject type is not supported.',
-        400,
-        'Use email or department.'
-      );
+      return jsonError('ACL_SUBJECT_TYPE_UNSUPPORTED', 'ACL subject type is not supported.', 400, 'Use email or department.');
     }
 
     const subjectValue = normalizeAclSubjectValue(subjectType, entry.subjectValue);
@@ -716,7 +719,7 @@ function aclEntryKey(entry) {
   return `${entry.effect || 'allow'}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole || 'viewer'}`;
 }
 
-async function refreshActiveRouteSnapshot(env, store, site, route, environment) {
+export async function refreshActiveRouteSnapshot(env, store, site, route, environment) {
   if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
 
   const version = await store.getSiteVersion(route.activeVersionId, environment);
@@ -732,14 +735,21 @@ async function refreshActiveRouteSnapshot(env, store, site, route, environment) 
   return null;
 }
 
-async function restoreSiteVisibilityAfterSnapshotFailure(store, siteId, previousSite, previousRoute, expectedRoute, environment) {
+export async function restoreSiteVisibilityAfterSnapshotFailure(
+  store,
+  siteId,
+  previousSite,
+  previousRoute,
+  expectedRoute,
+  environment
+) {
   if (typeof store.restoreSiteVisibilityIfCurrent === 'function') {
     return store.restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, expectedRoute, environment);
   }
   return store.restoreSiteVisibility(siteId, previousSite, previousRoute, environment);
 }
 
-async function restoreSiteAclAfterSnapshotFailure(
+export async function restoreSiteAclAfterSnapshotFailure(
   store,
   siteId,
   previousEntries,
@@ -766,7 +776,7 @@ function formatAclEntry(entry) {
   };
 }
 
-function normalizeSlug(value) {
+export function normalizeSlug(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 

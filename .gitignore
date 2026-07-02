@@ -40,6 +40,7 @@ apps/xdads-302/wrangler.toml
 apps/pages-api/wrangler.toml
 apps/pages-auth/wrangler.toml
 apps/pages-router/wrangler.toml
+apps/pages-console/wrangler.toml
 
 ### Claude Code (local settings, not shared)
 .claude/settings.local.json

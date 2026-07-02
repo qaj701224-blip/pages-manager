@@ -3,7 +3,13 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SUPPORTED_APPS = new Set(['apps/pages-api', 'apps/pages-auth', 'apps/pages-router', 'apps/kv-gateway']);
+const SUPPORTED_APPS = new Set([
+  'apps/pages-api',
+  'apps/pages-auth',
+  'apps/pages-router',
+  'apps/kv-gateway',
+  'apps/pages-console',
+]);
 const SUPPORTED_ENVIRONMENTS = new Set(['production', 'staging']);
 const EXECUTION_MODE_APPS = new Set(['apps/pages-api', 'apps/pages-router']);
 
@@ -12,25 +18,11 @@ const DEFAULTS = {
 };
 
 const REQUIRED_TOKENS_BY_APP = {
-  'apps/pages-api': [
-    'CLOUDFLARE_ACCOUNT_ID',
-    'D1_DATABASE_ID',
-    'IP_ALLOWLIST',
-    'ROUTE_SNAPSHOTS_KV_ID',
-  ],
-  'apps/pages-auth': [
-    'CLOUDFLARE_ACCOUNT_ID',
-    'D1_DATABASE_ID',
-  ],
-  'apps/pages-router': [
-    'CLOUDFLARE_ACCOUNT_ID',
-    'ROUTER_IP_ALLOWLIST_CIDRS',
-    'ROUTE_SNAPSHOTS_KV_ID',
-  ],
-  'apps/kv-gateway': [
-    'CLOUDFLARE_ACCOUNT_ID',
-    'SITE_DATA_KV_ID',
-  ],
+  'apps/pages-api': ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID', 'IP_ALLOWLIST', 'ROUTE_SNAPSHOTS_KV_ID'],
+  'apps/pages-auth': ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID'],
+  'apps/pages-router': ['CLOUDFLARE_ACCOUNT_ID', 'ROUTER_IP_ALLOWLIST_CIDRS', 'ROUTE_SNAPSHOTS_KV_ID'],
+  'apps/kv-gateway': ['CLOUDFLARE_ACCOUNT_ID', 'SITE_DATA_KV_ID'],
+  'apps/pages-console': ['CLOUDFLARE_ACCOUNT_ID', 'IP_ALLOWLIST', 'PAGES_SESSION_JWT_KEYS'],
 };
 
 const OPTIONAL_TOKENS_BY_APP = {
@@ -38,6 +30,7 @@ const OPTIONAL_TOKENS_BY_APP = {
   'apps/pages-auth': [],
   'apps/pages-router': ['PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT'],
   'apps/kv-gateway': [],
+  'apps/pages-console': [],
 };
 
 const TEMPLATE_EXPECTATIONS = {
@@ -54,11 +47,7 @@ const TEMPLATE_EXPECTATIONS = {
     required: [/PAGES_ENV = "production"/],
   },
   staging: {
-    forbidden: [
-      /PAGES_ENV = "production"/,
-      /xd-cell-workers-production/,
-      /pattern = "\*\.workers\.xd\.team\/\*"/,
-    ],
+    forbidden: [/PAGES_ENV = "production"/, /xd-cell-workers-production/, /pattern = "\*\.workers\.xd\.team\/\*"/],
     required: [/PAGES_ENV = "staging"/, /-staging/],
   },
 };
@@ -334,5 +323,5 @@ function assertEnvironmentBoundary(rendered, envName, appName) {
 
 function usage() {
   console.error('Usage: node scripts/render-pages-v2-wrangler.mjs <app> <production|staging>');
-  console.error('Supported apps: apps/pages-api, apps/pages-auth, apps/pages-router, apps/kv-gateway');
+  console.error('Supported apps: apps/pages-api, apps/pages-auth, apps/pages-router, apps/kv-gateway, apps/pages-console');
 }

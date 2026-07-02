@@ -3,9 +3,11 @@ import { readAuthConfig } from './config.js';
 import {
   confirmStoredCliLogin,
   consumeStoredCliLogin,
+  consumeStoredConsoleLoginCode,
   consumeStoredOAuthSiteCode,
   consumeStoredOAuthState,
   createStoredCliLogin,
+  createStoredConsoleLoginCode,
   createStoredOAuthSiteCode,
   createStoredOAuthState,
   peekStoredCliLogin,
@@ -18,6 +20,8 @@ import {
 import { isPublicRequestId, jsonError, jsonOk, readJsonBody, withRequestId } from './http.js';
 import {
   handleInternalConsumeSiteCode,
+  handleInternalConsoleExchange,
+  handleInternalConsoleLoginCode,
   handleInternalVerifyCliToken,
   handleOAuthAuthorize,
   handleOAuthCallback,
@@ -56,6 +60,12 @@ async function routeAuthRequest(request, env, context) {
   if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config, context);
   if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config, context);
   if (url.pathname === '/.xd-pages/internal/consume-site-code') return handleInternalConsumeSiteCode(request, env, config);
+  if (url.pathname === '/.xd-pages/internal/console/login-code') {
+    return handleInternalConsoleLoginCode(request, env, config);
+  }
+  if (url.pathname === '/.xd-pages/internal/console/exchange') {
+    return handleInternalConsoleExchange(request, env, config);
+  }
   if (url.pathname === '/.xd-pages/internal/verify-cli-token') return handleInternalVerifyCliToken(request, env, config);
 
   return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
@@ -77,6 +87,12 @@ export class OAuthStateDO {
         consumeStoredOAuthSiteCode(storage, body.siteCode, {
           now: body.now,
           siteHost: body.siteHost,
+          environment: body.environment,
+        }),
+      '/create-console-code': (storage, body) => createStoredConsoleLoginCode(storage, body),
+      '/consume-console-code': (storage, body) =>
+        consumeStoredConsoleLoginCode(storage, body.consoleCode, {
+          now: body.now,
           environment: body.environment,
         }),
     });

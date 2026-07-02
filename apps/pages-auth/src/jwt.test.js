@@ -73,6 +73,39 @@ test('signs and verifies local auth_session tokens for local SSO development', a
   assert.equal(verified.sid, 'sid_auth');
 });
 
+test('signs and verifies a console_session token with purpose and audience binding', async () => {
+  const jwt = await signSessionJwt(
+    {
+      purpose: 'console_session',
+      audience: 'xd-cell-console',
+      subject: 'usr_console',
+      now,
+      ttlSeconds: 12 * 60 * 60,
+      claims: {
+        email: 'console@example.com',
+        employeeStatus: 'active',
+        isPlatformAdmin: true,
+        sessionVersion: 4,
+      },
+    },
+    testEnv()
+  );
+
+  const verified = await verifySessionJwt(jwt, testEnv(), {
+    purpose: 'console_session',
+    audience: 'xd-cell-console',
+    now,
+  });
+
+  assert.equal(verified.iss, 'pages-auth');
+  assert.equal(verified.aud, 'xd-cell-console');
+  assert.equal(verified.purpose, 'console_session');
+  assert.equal(verified.sub, 'usr_console');
+  assert.equal(verified.email, 'console@example.com');
+  assert.equal(verified.isPlatformAdmin, true);
+  assert.equal(verified.sessionVersion, 4);
+});
+
 test('rejects tampered tokens, wrong audience, wrong purpose, and wrong env', async () => {
   const jwt = await signSessionJwt(
     {

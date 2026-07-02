@@ -264,9 +264,7 @@ async function createDeployment(request, env, config, store, actor) {
     }
     try {
       originalRuntimeVarRecords = await store.listEnabledSiteVars(config.environment, siteId);
-      runtimeVarRecords = workerRuntimeVarsProvided
-        ? siteVarRecordsFromObject(requestedRuntimeVars)
-        : originalRuntimeVarRecords;
+      runtimeVarRecords = workerRuntimeVarsProvided ? siteVarRecordsFromObject(requestedRuntimeVars) : originalRuntimeVarRecords;
       runtimeVars = runtimeVarsFromRecords(runtimeVarRecords);
       runtimeSecrets = await store.listEnabledSiteSecrets(config.environment, siteId);
     } catch {
@@ -284,9 +282,7 @@ async function createDeployment(request, env, config, store, actor) {
   } catch (error) {
     await markRuntimeConfigDeploymentFailed(store, deployment.id, env, {
       errorCode:
-        error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
-          ? 'RUNTIME_BINDING_NAME_CONFLICT'
-          : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+        error?.message === 'RUNTIME_BINDING_NAME_CONFLICT' ? 'RUNTIME_BINDING_NAME_CONFLICT' : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
       errorMessage: 'Runtime bindings are invalid.',
     });
     if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
@@ -322,9 +318,7 @@ async function createDeployment(request, env, config, store, actor) {
   } catch (error) {
     await markRuntimeConfigDeploymentFailed(store, deployment.id, env, {
       errorCode:
-        error?.message === 'RUNTIME_BINDING_NAME_CONFLICT'
-          ? 'RUNTIME_BINDING_NAME_CONFLICT'
-          : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+        error?.message === 'RUNTIME_BINDING_NAME_CONFLICT' ? 'RUNTIME_BINDING_NAME_CONFLICT' : 'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
       errorMessage: 'Runtime bindings are invalid.',
     });
     if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
@@ -855,9 +849,7 @@ function runtimeVarSnapshotsEqual(left = [], right = []) {
 }
 
 function runtimeVarSnapshot(vars = []) {
-  const records = Array.isArray(vars)
-    ? vars
-    : Object.keys(vars || {}).map((name) => ({ name, value: vars[name], revision: 0 }));
+  const records = Array.isArray(vars) ? vars : Object.keys(vars || {}).map((name) => ({ name, value: vars[name], revision: 0 }));
   return records
     .map((record) => ({
       name: record.name,
@@ -947,8 +939,7 @@ async function readPublishPlanMultipartBody(form) {
     assetManifest,
     workerModules,
   });
-  const workerRuntimeVarsProvided =
-    decisionRequiresWorker(decision) && Object.prototype.hasOwnProperty.call(metadata, 'vars');
+  const workerRuntimeVarsProvided = decisionRequiresWorker(decision) && Object.prototype.hasOwnProperty.call(metadata, 'vars');
 
   return {
     siteId: metadata.siteId,
@@ -992,8 +983,7 @@ async function parseSingleMetadata(form) {
     if (sizeBytes > MAX_DEPLOYMENT_METADATA_BYTES || sizeBytes > MAX_DEPLOYMENT_UPLOAD_BYTES) {
       throwCoded('PAYLOAD_TOO_LARGE');
     }
-  }
-  else throwCoded('PUBLISH_PLAN_INVALID');
+  } else throwCoded('PUBLISH_PLAN_INVALID');
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid');
@@ -1336,7 +1326,9 @@ function validateAssetPath(path) {
 }
 
 function denylistCodeForAssetPath(assetPath) {
-  const normalized = String(assetPath || '').replaceAll('\\', '/').replace(/^\/+/, '');
+  const normalized = String(assetPath || '')
+    .replaceAll('\\', '/')
+    .replace(/^\/+/, '');
   const basename = normalized.split('/').at(-1) || '';
   const comparable = normalized.toLowerCase();
   const comparableBasename = basename.toLowerCase();
@@ -1357,7 +1349,9 @@ function normalizeManifestAssetPath(value) {
 }
 
 function normalizeModuleName(value) {
-  const normalized = String(value || '').replaceAll('\\', '/').replace(/^\.\/+/, '');
+  const normalized = String(value || '')
+    .replaceAll('\\', '/')
+    .replace(/^\.\/+/, '');
   const parts = normalized.split('/');
   if (!normalized || normalized.startsWith('/') || normalized.includes('\0') || parts.includes('..')) {
     throwCoded('PUBLISH_PLAN_INVALID');
@@ -1876,13 +1870,16 @@ function publicProviderErrorCode(error, step) {
 function actorCanDeploy(actor, site, requiredScope) {
   if (!site) return false;
   if (actor.type !== 'access_key') return site.ownerUserId === actor.userId;
-  if (!actor.siteId || actor.siteId !== site.id) return false;
-  return actor.scopes.includes(requiredScope);
+  if (actor.siteId && actor.siteId !== site.id) return false;
+  if (!actor.scopes.includes(requiredScope)) return false;
+  if ((actor.ownerType || 'user') === 'team') return site.ownerType === 'team' && site.ownerId === actor.ownerId;
+  if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+  return true;
 }
 
 function actorCanReadSite(actor, siteId) {
   if (actor.type !== 'access_key') return true;
-  if (!actor.siteId || actor.siteId !== siteId) return false;
+  if (actor.siteId && actor.siteId !== siteId) return false;
   return actor.scopes.includes('read:site');
 }
 

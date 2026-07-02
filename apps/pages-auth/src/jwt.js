@@ -6,6 +6,7 @@ const encoder = new globalThis.TextEncoder();
 const ALLOWED_PURPOSES = new Set([
   'auth_session',
   'site_session',
+  'console_session',
   'cli_token',
   'cli_login_confirm',
   'internal_worker_jwt',

@@ -6,8 +6,10 @@ import { buildAuthSessionCookie } from './cookies.js';
 import {
   consumeStoredOAuthSiteCode,
   consumeStoredOAuthState,
+  consumeStoredConsoleLoginCode,
   createStoredOAuthSiteCode,
   createStoredOAuthState,
+  createStoredConsoleLoginCode,
   createStoredSession,
 } from './do-storage.js';
 import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
@@ -220,6 +222,69 @@ test('authorize with an existing auth session creates a site code without redire
   assert.equal(location.origin, 'https://demo.pages.xd.team');
 });
 
+test('authorize with an existing auth session creates a console code without redirecting to SSO', async () => {
+  const oauthStorage = createFakeStorage();
+  let requestedUserId;
+  const env = testEnv({
+    createOAuthStateRecord: (input) => createStoredOAuthState(oauthStorage, input),
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createConsoleLoginCodeRecord: (input) => createStoredConsoleLoginCode(oauthStorage, input),
+    createOAuthSiteCodeRecord: async () => {
+      throw new Error('site code should not be created for console login');
+    },
+    getUserForAuthSession: async (userId) => {
+      requestedUserId = userId;
+      return {
+        id: userId,
+        email: 'admin@example.test',
+        employeeStatus: 'active',
+        sessionVersion: 9,
+      };
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_admin',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_console' },
+    },
+    env
+  );
+
+  const response = await handleOAuthAuthorize(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/authorize?console=1&return_to=/admin/dashboard', {
+      headers: {
+        Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }),
+        Accept: 'text/html',
+      },
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(requestedUserId, 'usr_admin');
+  const location = new URL(response.headers.get('Location'));
+  assert.equal(location.origin + location.pathname, 'https://workers.xd.team/api/console/auth/callback');
+  const consoleCode = location.searchParams.get('code');
+  assert.match(consoleCode, /^ost_/);
+  assert.equal(location.searchParams.has('state'), false);
+  const consumed = await consumeStoredConsoleLoginCode(oauthStorage, consoleCode, {
+    now: now + 1,
+    environment: 'production',
+  });
+  assert.equal(consumed.returnTo, '/admin/dashboard');
+  assert.deepEqual(consumed.user, {
+    userId: 'usr_admin',
+    email: 'admin@example.test',
+    employeeStatus: 'active',
+    sessionVersion: 9,
+  });
+});
+
 test('callback without code or state returns safe error without echoing OAuth values', async () => {
   const env = testEnv();
   const response = await handleOAuthCallback(
@@ -375,6 +440,165 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     reason: 'oauth_state_invalid_or_expired',
     step: 'oauth.state',
   });
+});
+
+test('callback requests department hydration after SSO user sync', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  const hydrationRequests = [];
+  const env = testEnv({
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile) => ({
+      user: {
+        userId: profile.userId,
+        email: profile.email,
+        employeeStatus: profile.employeeStatus,
+        sessionVersion: profile.sessionVersion,
+      },
+    }),
+    PAGES_API: {
+      fetch: async (request) => {
+        hydrationRequests.push({
+          url: request.url,
+          method: request.method,
+          headers: Object.fromEntries(request.headers),
+          body: await request.json(),
+        });
+        return Response.json({ hydration: { status: 'hydrated' } });
+      },
+    },
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_123',
+      email: 'User@XD.com',
+      employeeStatus: 'active',
+      sessionVersion: 4,
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.deepEqual(hydrationRequests, [
+    {
+      url: 'https://pages-api.internal/.xd-pages/internal/users/hydrate-department',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: {
+        userId: 'usr_123',
+        email: 'user@xd.com',
+        environment: 'production',
+      },
+    },
+  ]);
+});
+
+test('callback ignores department hydration failures after SSO user sync', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let hydrationCalled = false;
+  const env = testEnv({
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile) => ({
+      user: {
+        userId: profile.userId,
+        email: profile.email,
+        employeeStatus: profile.employeeStatus,
+      },
+    }),
+    PAGES_API: {
+      fetch: async () => {
+        hydrationCalled = true;
+        throw new Error('xds unavailable');
+      },
+    },
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_123',
+      email: 'user@xd.com',
+      employeeStatus: 'active',
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(hydrationCalled, true);
+});
+
+test('callback ignores invalid department hydration JSON after SSO user sync', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  const env = testEnv({
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile) => ({
+      user: {
+        userId: profile.userId,
+        email: profile.email,
+        employeeStatus: profile.employeeStatus,
+      },
+    }),
+    PAGES_API: {
+      fetch: async () => new Response('not-json', { status: 200 }),
+    },
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_123',
+      email: 'user@xd.com',
+      employeeStatus: 'active',
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
 });
 
 test('callback exchanges code with configured SSO HTTP endpoints and canonicalizes company profile', async () => {

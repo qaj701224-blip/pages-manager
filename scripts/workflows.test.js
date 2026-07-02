@@ -62,17 +62,7 @@ function parseOutputFile(content) {
 function assertDecision(
   script,
   cwd,
-  {
-    ref,
-    base,
-    head,
-    deploy,
-    forceDeploy = 'false',
-    allowNonMaster = 'false',
-    expectedDeploy,
-    expectedChanged,
-    expectedReason,
-  }
+  { ref, base, head, deploy, forceDeploy = 'false', allowNonMaster = 'false', expectedDeploy, expectedChanged, expectedReason }
 ) {
   const outputPath = join(cwd, `github-output-${Math.random().toString(16).slice(2)}`);
   const summaryPath = join(cwd, `github-summary-${Math.random().toString(16).slice(2)}`);
@@ -447,7 +437,7 @@ test('platform agent workflow is manually dispatched and isolated from deploy cr
   assert.match(workflow, /scripts\/platform-agent-coding\.mjs/, 'platform agent uses the checked-in coding helper');
   assert.doesNotMatch(
     workflow,
-    /(?:^|\n)\s*(?:pnpm\s+.*\s+exec\s+)?(?:kubectl|wrangler)\s+(?:apply|deploy|delete|rollout|secret|d1)\b/,
+    /(?:^|\n)\s*(?:pnpm\s+.*\s+exec\s+)?(?:kubectl|wrangler)\s+(?:apply|deploy|delete|rollout|secret|d1)\b/
   );
   assert.doesNotMatch(workflow, /ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY|CLOUDFLARE_API_TOKEN/);
 });
@@ -535,6 +525,7 @@ test('pages v2 deploy workflows keep production manual and staging scoped to v2 
   assert.match(staging, /- 'apps\/pages-auth\/\*\*'/);
   assert.match(staging, /- 'apps\/pages-router\/\*\*'/);
   assert.match(staging, /- 'apps\/kv-gateway\/\*\*'/);
+  assert.match(staging, /- 'apps\/pages-console\/\*\*'/);
   assert.match(staging, /- 'packages\/pages-runtime-protocol\/\*\*'/);
   assert.match(staging, /- 'packages\/wfp-client\/\*\*'/);
   assert.match(staging, /- 'scripts\/provision-pages-v2-slots\.mjs'/);
@@ -553,6 +544,7 @@ test('pages v2 deploy workflows expose only v2 component choices', () => {
     assert.match(workflow, /- pages-auth/, `${name} supports pages-auth deploys`);
     assert.match(workflow, /- pages-router/, `${name} supports pages-router deploys`);
     assert.match(workflow, /- pages-kv-gateway/, `${name} supports pages-kv-gateway deploys`);
+    assert.match(workflow, /- pages-console/, `${name} supports pages-console deploys`);
     assert.doesNotMatch(workflow, /- server\b|- kv-gateway\b/, `${name} does not expose v1 components`);
   }
 });
@@ -623,6 +615,26 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/kv-gateway ${environment}`),
       `${name} renders kv-gateway ${environment} template`
     );
+    assert.match(
+      workflow,
+      new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-console ${environment}`),
+      `${name} renders pages-console ${environment} template`
+    );
+    assert.match(
+      workflow,
+      new RegExp(
+        String.raw`name: Generate Pages Console Wrangler config[\s\S]*` +
+          String.raw`CLOUDFLARE_ACCOUNT_ID: \$\{\{ vars\.CLOUDFLARE_ACCOUNT_ID \}\}[\s\S]*` +
+          String.raw`IP_ALLOWLIST: \$\{\{ vars\.IP_ALLOWLIST \}\}[\s\S]*` +
+          String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-console`
+      ),
+      `${name} gives pages-console account id and IP allowlist`
+    );
+    assert.ok(
+      workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-console ${environment}`) <
+        workflow.indexOf('pnpm --dir apps/pages-console exec wrangler deploy'),
+      `${name} renders pages-console before deploying pages-console`
+    );
     assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ vars\.CLOUDFLARE_ACCOUNT_ID \}\}/);
     assert.match(workflow, /D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}/);
     assert.match(workflow, /ROUTE_SNAPSHOTS_KV_ID: \$\{\{ vars\.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID \}\}/);
@@ -636,11 +648,11 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /provision-pages-v2-slots\.mjs/);
     assert.doesNotMatch(workflow, /PAGES_NORMAL_WORKER_SLOT_COUNT: \$\{\{ vars\.PAGES_NORMAL_WORKER_SLOT_COUNT \}\}/);
     assert.match(workflow, /ACCESS_KEY_ACTIVE_PEPPER_ID: pepper_2026_06/);
-    assert.match(workflow, /ACCESS_KEY_PEPPERS: "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+    assert.match(workflow, /ACCESS_KEY_PEPPERS: ['"]pepper_2026_06:ACCESS_KEY_PEPPER_202606['"]/);
     assert.match(workflow, /PAGES_SESSION_JWT_ACTIVE_KID: pages-session-2026-06/);
-    assert.match(workflow, /PAGES_SESSION_JWT_KEYS: "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
+    assert.match(workflow, /PAGES_SESSION_JWT_KEYS: ['"]pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606['"]/);
     assert.match(workflow, /PAGES_CAP_JWT_ACTIVE_KID: pages-cap-2026-06/);
-    assert.match(workflow, /PAGES_CAP_JWT_KEYS: "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"/);
+    assert.match(workflow, /PAGES_CAP_JWT_KEYS: ['"]pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606['"]/);
     assert.doesNotMatch(workflow, /vars\.(?:ACCESS_KEY|PAGES_SESSION_JWT|PAGES_CAP_JWT)/);
     assert.doesNotMatch(
       workflow,
@@ -661,10 +673,19 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/kv-gateway/);
+    assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-console/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
     assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/kv-gateway/);
+    assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-console/);
+    assert.match(workflow, /PAGES_SESSION_JWT_SECRET_202606: \$\{\{ secrets\.PAGES_SESSION_JWT_SECRET_202606 \}\}/);
+    assert.doesNotMatch(workflow, /CONSOLE_SESSION_SECRET/);
+    assert.match(
+      workflow,
+      /name: Apply Pages API D1 migrations[\s\S]*env\.DEPLOY_COMPONENT == 'pages-console'/,
+      `${name} runs D1 migrations before pages-console-only deploys`
+    );
     const d1DatabaseName = environment === 'staging' ? 'pages-v2-metadata-staging' : 'pages-v2-metadata';
     assert.match(workflow, new RegExp(`wrangler d1 migrations apply ${d1DatabaseName} --remote`));
     assert.doesNotMatch(workflow, /wrangler d1 migrations apply .+ --yes/);
@@ -672,6 +693,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /pnpm --dir apps\/pages-auth exec wrangler deploy/);
     assert.match(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
     assert.match(workflow, /pnpm --dir apps\/kv-gateway exec wrangler deploy/);
+    assert.match(workflow, /pnpm --dir apps\/pages-console exec wrangler deploy/);
   }
 });
 
