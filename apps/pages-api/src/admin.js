@@ -277,6 +277,10 @@ function formatAdminSite(site) {
     owner: {
       type: site.ownerType || 'user',
       id: site.ownerId || site.ownerUserId,
+      email: site.ownerEmail || null,
+      displayName: site.ownerDisplayName || null,
+      departmentPath: site.ownerDepartmentPath || null,
+      teamType: site.ownerTeamType || null,
     },
     visibility: site.route?.visibility || site.defaultVisibility,
     status: site.route?.routeStatus || 'active',

@@ -1,28 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bell, Globe2, KeyRound, LogIn, LogOut, Moon, ShieldCheck, UserCircle } from 'lucide-react';
+import { useMemo } from 'react';
+import {
+  Bell,
+  ChevronDown,
+  Globe2,
+  KeyRound,
+  LogIn,
+  LogOut,
+  Moon,
+  Settings,
+  ShieldCheck,
+  UserCircle,
+} from 'lucide-react';
 
 import { getConsoleEnvironmentBanner, readTopNavUserState } from '../top-nav-model.js';
+import { clearCachedConsoleSession } from '../session-cache.js';
 
-export function TopNav({ activeSection }) {
-  const [sessionState, setSessionState] = useState(null);
+export function TopNav({ activeSection, sessionState }) {
   const banner = getConsoleEnvironmentBanner(globalThis.location?.hostname || '');
-  const userState = useMemo(() => readTopNavUserState(sessionState), [sessionState]);
+  const sessionPayload = sessionState?.status === 'ready' ? sessionState.session : null;
+  const userState = useMemo(() => readTopNavUserState(sessionPayload), [sessionPayload]);
   const workspaceHref = userState.authenticated ? '/workspace/published' : '/login?returnTo=/workspace/published';
-
-  useEffect(() => {
-    let active = true;
-    fetch('/api/console/auth/session', { credentials: 'same-origin' })
-      .then((response) => response.json())
-      .then((payload) => {
-        if (active) setSessionState(payload);
-      })
-      .catch(() => {
-        if (active) setSessionState(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   return (
     <header className="top-nav">
@@ -52,26 +49,44 @@ export function TopNav({ activeSection }) {
         <button className="icon-button" type="button" aria-label="通知">
           <Bell size={18} />
         </button>
-        {userState.showAdmin ? (
-          <a className="user-menu" href="/admin">
-            <ShieldCheck size={18} />
-            <span>管理员后台</span>
-          </a>
-        ) : null}
         {userState.authenticated ? (
-          <>
-            <a className="user-menu" href="/workspace/access-keys">
-              <KeyRound size={18} />
-              <span>Access Keys</span>
-            </a>
-            <a className="user-menu" href="/workspace/settings">
+          <details className="account-menu">
+            <summary className="account-menu__button" aria-label="用户菜单">
               <UserCircle size={18} />
-              <span>{userState.label}</span>
-            </a>
-            <a className="icon-button" href="/api/console/auth/logout" aria-label="退出">
-              <LogOut size={18} />
-            </a>
-          </>
+              <span>{userState.displayName}</span>
+              <ChevronDown size={14} />
+            </summary>
+            <div className="account-menu__popover">
+              <div className="account-menu__identity">
+                <strong>{userState.displayName}</strong>
+                <span>{userState.label}</span>
+              </div>
+              <div className="account-menu__group">
+                <a href="/workspace/settings">
+                  <Settings size={17} />
+                  <span>账号设置</span>
+                </a>
+                <a href="/workspace/access-keys">
+                  <KeyRound size={17} />
+                  <span>Access Keys</span>
+                </a>
+              </div>
+              {userState.showAdmin ? (
+                <div className="account-menu__group">
+                  <a className="account-menu__admin" href="/admin">
+                    <ShieldCheck size={17} />
+                    <span>管理员后台</span>
+                  </a>
+                </div>
+              ) : null}
+              <div className="account-menu__group">
+                <a href="/api/console/auth/logout" onClick={() => clearCachedConsoleSession()}>
+                  <LogOut size={17} />
+                  <span>退出</span>
+                </a>
+              </div>
+            </div>
+          </details>
         ) : (
           <a className="user-menu" href="/api/console/auth/login?returnTo=/workspace/published">
             <LogIn size={18} />

@@ -169,6 +169,64 @@ test('admin department team merge transfers assets and writes redacted audit met
   assert.doesNotMatch(JSON.stringify(auditEvents), /usr_alice|usr_manual|secret-hash|pepper_1|deploy/);
 });
 
+test('admin sites include readable user and team owner metadata', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_alice',
+    email: 'alice@xd.com',
+    realname: 'Alice',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'alice-home',
+    ownerUserId: 'usr_alice',
+    ownerType: 'user',
+    ownerId: 'usr_alice',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'internal',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'alice-home.workers.xd.team',
+  });
+  const team = await store.findOrCreateDepartmentTeam({
+    environment: 'production',
+    departmentPath: 'XD/Platform/Web',
+  });
+  await seedTeamSite(store, {
+    id: 'site_team',
+    slug: 'team-home',
+    teamId: team.id,
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  const personalSite = body.sites.find((site) => site.id === 'site_personal');
+  const teamSite = body.sites.find((site) => site.id === 'site_team');
+
+  assert.deepEqual(personalSite.owner, {
+    type: 'user',
+    id: 'usr_alice',
+    email: 'alice@xd.com',
+    displayName: 'Alice',
+    departmentPath: null,
+    teamType: null,
+  });
+  assert.deepEqual(teamSite.owner, {
+    type: 'team',
+    id: team.id,
+    email: null,
+    displayName: team.name,
+    departmentPath: 'XD/Platform/Web',
+    teamType: 'department',
+  });
+});
+
 function env(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',

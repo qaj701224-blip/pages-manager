@@ -33,6 +33,7 @@ test('top nav user state exposes admin menu for platform admins', () => {
     {
       authenticated: true,
       label: 'root@example.com',
+      displayName: 'root',
       showAdmin: true,
     }
   );

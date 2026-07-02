@@ -12,9 +12,17 @@ export function readTopNavUserState(payload) {
   }
 
   const email = payload.user?.email || '';
+  const displayName = payload.user?.realname || payload.user?.name || displayNameFromEmail(email) || payload.user?.userId || '用户';
   return {
     authenticated: true,
     label: email || payload.user?.userId || '用户',
+    displayName,
     showAdmin: Boolean(payload.user?.isPlatformAdmin),
   };
+}
+
+function displayNameFromEmail(email) {
+  const localPart = String(email || '').split('@')[0]?.trim();
+  if (!localPart) return '';
+  return localPart;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { listAdminSites } from '../api.js';
+import { adminSiteOwnerView, sitePublicUrl } from '../site-display-model.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 
 export function AdminSites() {
@@ -38,24 +39,37 @@ export function AdminSites() {
         </thead>
         <tbody>
           {state.sites.map((site) => (
-            <tr key={site.id}>
-              <td>
-                <strong>{site.slug}</strong>
-                <span>{site.hostname || site.id}</span>
-              </td>
-              <td>
-                <strong>{site.owner?.type || 'user'}</strong>
-                <span>{site.owner?.id || '无'}</span>
-              </td>
-              <td>{site.visibility}</td>
-              <td>
-                <span className={site.status === 'active' ? 'tag' : 'tag muted'}>{site.status}</span>
-              </td>
-              <td>{formatDate(site.updatedAt)}</td>
-            </tr>
+            <AdminSiteRow key={site.id} site={site} />
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function AdminSiteRow({ site }) {
+  const owner = adminSiteOwnerView(site.owner);
+  const url = sitePublicUrl(site.hostname);
+  return (
+    <tr>
+      <td>
+        <strong>{site.slug}</strong>
+        <span>{url || site.id}</span>
+      </td>
+      <td>
+        <div className="owner-cell">
+          <span className={owner.type === 'team' ? 'tag owner-tag team' : 'tag owner-tag user'}>{owner.tag}</span>
+          <div>
+            <strong>{owner.primary}</strong>
+            {owner.secondary ? <span>{owner.secondary}</span> : null}
+          </div>
+        </div>
+      </td>
+      <td>{site.visibility}</td>
+      <td>
+        <span className={site.status === 'active' ? 'tag' : 'tag muted'}>{site.status}</span>
+      </td>
+      <td>{formatDate(site.updatedAt)}</td>
+    </tr>
   );
 }

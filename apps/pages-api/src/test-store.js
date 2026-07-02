@@ -358,7 +358,7 @@ class TestPagesStore {
       [...this.sites.values()]
         .filter((site) => !site.deletedAt)
         .filter((site) => !environment || site.environment === environment)
-        .map((site) => this.siteWithRoute(site.id))
+        .map((site) => this.decorateAdminSite(this.siteWithRoute(site.id)))
         .filter(Boolean)
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     );
@@ -1792,6 +1792,25 @@ class TestPagesStore {
     const user = this.users.get(site.ownerId || site.ownerUserId);
     return {
       ...site,
+      ownerDisplayName: user?.realname || null,
+    };
+  }
+
+  decorateAdminSite(site) {
+    if (!site) return null;
+    if ((site.ownerType || 'user') === 'team') {
+      const team = this.teams.get(site.ownerId);
+      return {
+        ...site,
+        ownerDisplayName: team?.name || null,
+        ownerTeamType: team?.teamType || null,
+        ownerDepartmentPath: team?.departmentPath || null,
+      };
+    }
+    const user = this.users.get(site.ownerId || site.ownerUserId);
+    return {
+      ...site,
+      ownerEmail: user?.email || null,
       ownerDisplayName: user?.realname || null,
     };
   }

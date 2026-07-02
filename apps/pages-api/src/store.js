@@ -617,15 +617,25 @@ export class D1PagesStore {
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
-          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
+          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
+          owner_users.email AS owner_user_email, owner_users.realname AS owner_user_realname,
+          owner_teams.name AS owner_team_name, owner_teams.team_type AS owner_team_type,
+          owner_teams.department_path AS owner_team_department_path
         FROM sites
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
+        LEFT JOIN users AS owner_users
+          ON COALESCE(sites.owner_type, 'user') = 'user'
+          AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
+        LEFT JOIN teams AS owner_teams
+          ON sites.owner_type = 'team'
+          AND owner_teams.id = sites.owner_id
+          AND owner_teams.deleted_at IS NULL
         WHERE sites.environment = ? AND sites.deleted_at IS NULL
         ORDER BY sites.updated_at DESC`
       )
       .bind(environment)
       .all();
-    return (result.results || []).map(mapSiteWithJoinedRoute);
+    return (result.results || []).map(mapAdminSiteWithOwner);
   }
 
   async listAdminTeams({ environment, teamType, status } = {}) {
@@ -3729,6 +3739,23 @@ function mapConsoleDirectorySite(row) {
   }
   return {
     ...site,
+    ownerDisplayName: row.owner_user_realname || null,
+  };
+}
+
+function mapAdminSiteWithOwner(row) {
+  const site = mapSiteWithJoinedRoute(row);
+  if ((site.ownerType || 'user') === 'team') {
+    return {
+      ...site,
+      ownerDisplayName: row.owner_team_name || null,
+      ownerTeamType: row.owner_team_type || null,
+      ownerDepartmentPath: row.owner_team_department_path || null,
+    };
+  }
+  return {
+    ...site,
+    ownerEmail: row.owner_user_email || null,
     ownerDisplayName: row.owner_user_realname || null,
   };
 }

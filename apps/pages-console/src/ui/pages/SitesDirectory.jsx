@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 
 import { fetchJson } from '../api.js';
+import { sitePublicUrl } from '../site-display-model.js';
 
 export function SitesDirectory() {
   const [state, setState] = useState({ status: 'loading', sites: [], error: null });
@@ -44,6 +45,7 @@ export function SiteWaterfall({ state }) {
 
 export function SiteCard({ site }) {
   const ownerText = site.owner?.displayName || (site.owner?.type === 'team' ? '团队' : '个人');
+  const publicUrl = sitePublicUrl(site.hostname);
   return (
     <article className="site-card">
       <div className="site-card__top">
@@ -51,10 +53,10 @@ export function SiteCard({ site }) {
           <h2>
             <a href={`/workspace/sites/${encodeURIComponent(site.id)}`}>{site.slug || site.hostname}</a>
           </h2>
-          <p>{site.hostname || site.slug}</p>
+          <p>{publicUrl || site.slug}</p>
         </div>
-        {site.hostname ? (
-          <a className="icon-button compact" href={`https://${site.hostname}`} aria-label="打开站点">
+        {publicUrl ? (
+          <a className="site-card__open" href={publicUrl} target="_blank" rel="noreferrer" aria-label="打开站点">
             <ExternalLink size={16} />
           </a>
         ) : null}

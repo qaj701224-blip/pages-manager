@@ -10,18 +10,20 @@ import { SiteDetail } from './pages/SiteDetail.jsx';
 import { SitesDirectory } from './pages/SitesDirectory.jsx';
 import { TeamDetail, TeamsList } from './pages/Teams.jsx';
 import { WorkspacePlaceholder, WorkspaceSites } from './pages/WorkspaceSites.jsx';
+import { clearCachedConsoleSession, readCachedConsoleSession, writeCachedConsoleSession } from './session-cache.js';
 
 export function App() {
   const path = window.location.pathname;
   const route = readRoute(path);
+  const sessionState = useConsoleSession();
 
   return (
     <div className="app-shell">
-      <TopNav activeSection={route.section} />
+      <TopNav activeSection={route.section} sessionState={sessionState} />
       {route.view === 'login' ? <LoginPage /> : null}
       {route.view === 'directory' ? <SitesDirectory /> : null}
       {route.view === 'admin' ? (
-        <AdminRouteGuard currentPath={`${window.location.pathname}${window.location.search}`}>
+        <AdminRouteGuard currentPath={`${window.location.pathname}${window.location.search}`} sessionState={sessionState}>
           <AdminShell page={route.page} />
         </AdminRouteGuard>
       ) : null}
@@ -36,31 +38,51 @@ export function App() {
   );
 }
 
-function AdminRouteGuard({ children, currentPath }) {
-  const [state, setState] = useState({ status: 'loading', session: null });
-  const access = state.status === 'ready' ? getAdminRouteAccess(state.session) : 'loading';
-  const loginPath = buildAdminLoginPath(currentPath);
+function useConsoleSession() {
+  const [state, setState] = useState(() => {
+    const cached = readCachedConsoleSession();
+    if (cached) return { status: 'ready', session: cached.session, source: 'cache' };
+    return { status: 'loading', session: null, source: 'network' };
+  });
 
   useEffect(() => {
+    const cached = readCachedConsoleSession();
+    if (cached?.fresh) return undefined;
+
     let active = true;
     fetch('/api/console/auth/session', { credentials: 'same-origin' })
       .then((response) => response.json())
       .then((session) => {
-        if (active) setState({ status: 'ready', session });
+        if (!active) return;
+        if (session?.authenticated) {
+          writeCachedConsoleSession(session);
+        } else {
+          clearCachedConsoleSession();
+        }
+        setState({ status: 'ready', session, source: 'network' });
       })
       .catch(() => {
-        if (active) setState({ status: 'ready', session: { authenticated: false, user: null } });
+        if (!active) return;
+        clearCachedConsoleSession();
+        setState({ status: 'ready', session: { authenticated: false, user: null }, source: 'network' });
       });
     return () => {
       active = false;
     };
   }, []);
 
+  return state;
+}
+
+function AdminRouteGuard({ children, currentPath, sessionState }) {
+  const access = sessionState.status === 'ready' ? getAdminRouteAccess(sessionState.session) : 'loading';
+  const loginPath = buildAdminLoginPath(currentPath);
+
   useEffect(() => {
     if (access === 'login') window.location.replace(loginPath);
   }, [access, loginPath]);
 
-  if (state.status === 'loading') {
+  if (sessionState.status === 'loading') {
     return (
       <AdminAccessPanel
         icon={<ShieldCheck size={22} />}
