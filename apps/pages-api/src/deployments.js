@@ -1921,9 +1921,11 @@ function actorCanDeploy(actor, site, requiredScope) {
   }
   if (actor.siteId && actor.siteId !== site.id) return false;
   if (!actor.scopes.includes(requiredScope)) return false;
-  if ((actor.ownerType || 'user') === 'team') return site.ownerType === 'team' && site.ownerId === actor.ownerId;
+  const ownerType = actor.ownerType || 'user';
+  const ownerId = actor.ownerId || actor.userId;
+  if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
   if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
-  return true;
+  return (site.ownerId || site.ownerUserId) === ownerId;
 }
 
 function actorCanReadSite(actor, siteId) {

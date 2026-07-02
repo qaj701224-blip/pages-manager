@@ -1976,6 +1976,50 @@ test('access keys can deploy by slug only when the resolved site matches their s
   assert.equal(deniedBody.error.action, 'Check the site slug and access key scope.');
 });
 
+test('user owner-scoped access keys cannot deploy another user personal site', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_2',
+    email: 'other@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_2',
+    slug: 'other',
+    ownerUserId: 'usr_2',
+    ownerType: 'user',
+    ownerId: 'usr_2',
+    siteUuid: 'uuid_2',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_2',
+    hostname: 'other.pages.xd.team',
+  });
+  const ownerScopedKey = await seedAccessKey(store, 'ak_owner', ['deploy:site'], null);
+  const originalGetSiteForUser = store.getSiteForUser.bind(store);
+  store.getSiteForUser = async (siteId, userId, actor, environment) => {
+    if (actor?.type === 'access_key' && siteId === 'site_2') {
+      return store.getSite(siteId, environment);
+    }
+    return originalGetSiteForUser(siteId, userId, actor, environment);
+  };
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: 'site_2', siteSlug: undefined }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'owner_scoped_cross_user_denied',
+      }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'DEPLOY_FORBIDDEN');
+});
+
 test('viewer members cannot deploy rollback or manage site secrets', async () => {
   const store = await createSeededStore();
   await store.createUser({
@@ -4474,6 +4518,7 @@ async function seedAccessKey(store, keyId, scopes, siteId = 'site_1') {
   });
   await store.createAccessKey({
     id: keyId,
+    environment: 'production',
     ownerUserId: 'usr_1',
     keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
     pepperId: 'pepper_1',
