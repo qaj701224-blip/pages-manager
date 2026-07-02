@@ -392,6 +392,42 @@ test('team member APIs require team admin and update roles', async () => {
   assert.equal(removedBody.member.removedAt, '2026-06-15T00:00:00.000Z');
 });
 
+test('team member APIs decode user ids captured from the path', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUsers(store, ['usr_admin']);
+  await seedConsoleUser(store, 'alice@example.com', { email: 'alice@example.com' });
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: null,
+    createdByUserId: 'usr_admin',
+  });
+  const encodedUserId = encodeURIComponent('alice@example.com');
+
+  const updated = await worker.fetch(
+    internalConsoleJsonRequest(`/.xd-pages/api/console/teams/${team.id}/members/${encodedUserId}`, {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { role: 'publisher' },
+    }),
+    env(store)
+  );
+  const removed = await worker.fetch(
+    internalConsoleRequest(`/.xd-pages/api/console/teams/${team.id}/members/${encodedUserId}`, {
+      userId: 'usr_admin',
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+
+  assert.equal(updated.status, 200, await updated.clone().text());
+  assert.equal((await updated.json()).member.userId, 'alice@example.com');
+  assert.equal(removed.status, 200, await removed.clone().text());
+  assert.equal((await removed.json()).member.userId, 'alice@example.com');
+  assert.equal(await store.getTeamMember({ teamId: team.id, userId: encodedUserId }), null);
+});
+
 function env(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',

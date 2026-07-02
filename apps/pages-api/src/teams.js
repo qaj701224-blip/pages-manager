@@ -26,7 +26,9 @@ export async function handleConsoleTeamsApi(request, env, config, store) {
 
   const memberMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/teams\/([^/]+)\/members\/([^/]+)$/);
   if (memberMatch) {
-    const [, teamId, userId] = memberMatch;
+    const teamId = decodePathSegment(memberMatch[1]);
+    const userId = decodePathSegment(memberMatch[2]);
+    if (!teamId || !userId) return invalidPathSegment();
     if (request.method === 'PATCH') return updateTeamMember(request, store, config, session, teamId, userId);
     if (request.method === 'DELETE') return removeTeamMember(store, config, session, teamId, userId);
     return methodNotAllowed();
@@ -35,7 +37,8 @@ export async function handleConsoleTeamsApi(request, env, config, store) {
   const teamMembersMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/teams\/([^/]+)\/members$/);
   if (teamMembersMatch) {
     if (request.method !== 'GET') return methodNotAllowed();
-    const teamId = teamMembersMatch[1];
+    const teamId = decodePathSegment(teamMembersMatch[1]);
+    if (!teamId) return invalidPathSegment();
     const access = await requireTeamMember(store, config, session, teamId);
     if (access instanceof Response) return access;
     const members = await store.listTeamMembers({ teamId });
@@ -45,12 +48,15 @@ export async function handleConsoleTeamsApi(request, env, config, store) {
   const teamSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/teams\/([^/]+)\/settings$/);
   if (teamSettingsMatch) {
     if (request.method !== 'PATCH') return methodNotAllowed();
-    return updateTeamSettings(request, store, config, session, teamSettingsMatch[1]);
+    const teamId = decodePathSegment(teamSettingsMatch[1]);
+    if (!teamId) return invalidPathSegment();
+    return updateTeamSettings(request, store, config, session, teamId);
   }
 
   const teamMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/teams\/([^/]+)$/);
   if (teamMatch) {
-    const teamId = teamMatch[1];
+    const teamId = decodePathSegment(teamMatch[1]);
+    if (!teamId) return invalidPathSegment();
     if (request.method === 'GET') return getTeam(store, config, session, teamId);
     if (request.method === 'DELETE') return deleteTeam(store, config, session, teamId);
     return methodNotAllowed();
@@ -207,4 +213,16 @@ function formatTeamMember(member) {
 
 function methodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
+}
+
+function decodePathSegment(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return '';
+  }
+}
+
+function invalidPathSegment() {
+  return jsonError('PATH_SEGMENT_INVALID', 'Path segment is invalid.', 400, 'Use URL-encoded path segments.');
 }
