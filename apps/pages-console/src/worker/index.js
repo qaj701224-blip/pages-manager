@@ -146,7 +146,14 @@ async function handleAuthLogin(url, env) {
 }
 
 async function handleAuthCallback(url, env) {
-  const exchanged = await exchangeConsoleCode(env, url.searchParams.get('code') || '');
+  let exchanged;
+  try {
+    exchanged = await exchangeConsoleCode(env, url.searchParams.get('code') || '');
+  } catch {
+    return redirect('/login?error=auth_failed', {
+      'Set-Cookie': [clearConsoleSessionCookie(), clearConsoleCsrfCookie()],
+    });
+  }
   if (isStagingHost(url) && !exchanged.isPlatformAdmin) {
     return jsonErrorResponse('ADMIN_REQUIRED', 'Platform administrator access is required.', 403, {
       headers: { 'Set-Cookie': [clearConsoleSessionCookie(), clearConsoleCsrfCookie()] },

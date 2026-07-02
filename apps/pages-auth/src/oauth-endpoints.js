@@ -119,7 +119,10 @@ export async function handleOAuthCallback(request, env, config, context = {}) {
     return authError(request, config, context, 'SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
   }
 
-  await hydrateDepartmentAfterSso(env, config, authoritativeProfile);
+  authoritativeProfile = mergeHydratedDepartmentPath(
+    authoritativeProfile,
+    await hydrateDepartmentAfterSso(env, config, authoritativeProfile)
+  );
 
   let authSession;
   try {
@@ -649,8 +652,16 @@ async function readAuthSessionUserProfile(request, env, now) {
     userId: user.userId || user.id || userId,
     email: user.email || '',
     employeeStatus: user.employeeStatus || 'unknown',
-    departments: Array.isArray(user.departments) ? user.departments : [],
+    departments: mergeDepartments(user.departments, user.departmentPath),
     sessionVersion: user.sessionVersion || 1,
+  };
+}
+
+function mergeHydratedDepartmentPath(profile, hydration) {
+  const departmentPath = hydration?.departmentPath || hydration?.user?.departmentPath;
+  return {
+    ...profile,
+    departments: mergeDepartments(profile?.departments, departmentPath),
   };
 }
 
@@ -1021,6 +1032,10 @@ function normalizeSsoProfile(profile) {
 function normalizeDepartments(value) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map((item) => normalizeOptionalString(item)).filter(Boolean))];
+}
+
+function mergeDepartments(value, departmentPath) {
+  return normalizeDepartments([...(Array.isArray(value) ? value : []), departmentPath]);
 }
 
 function siteCodeUserFromProfile(profile) {

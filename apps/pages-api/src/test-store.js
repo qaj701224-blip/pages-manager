@@ -427,7 +427,20 @@ class TestPagesStore {
         continue;
       }
       const targetKey = teamMemberKey(target.id, member.userId);
-      if (!this.teamMembers.has(targetKey)) {
+      const existingTargetMember = this.teamMembers.get(targetKey) || null;
+      if (existingTargetMember?.membershipSource === 'department_auto') {
+        this.teamMembers.set(targetKey, {
+          ...existingTargetMember,
+          role: member.role,
+          departmentPath: target.departmentPath,
+          roleOverriddenAt: member.roleOverriddenAt || null,
+          removedAt: null,
+          removedByUserId: null,
+          restoredAt: existingTargetMember.removedAt ? now : existingTargetMember.restoredAt,
+          restoredByUserId: existingTargetMember.removedAt ? actorUserId : existingTargetMember.restoredByUserId,
+          updatedAt: now,
+        });
+      } else if (!existingTargetMember) {
         this.teamMembers.set(targetKey, {
           ...member,
           teamId: target.id,
@@ -503,7 +516,7 @@ class TestPagesStore {
     }
     const now = createdAt || this.now();
     const team = {
-      id: departmentTeamId(normalizedPath),
+      id: departmentTeamId(environment, normalizedPath),
       environment,
       name: normalizedPath,
       description: null,
@@ -550,7 +563,14 @@ class TestPagesStore {
     const team = await this.findOrCreateDepartmentTeam({ environment, departmentPath: normalizedPath, createdAt: now });
     const existing = this.teamMembers.get(teamMemberKey(team.id, userId)) || null;
     if (existing) {
+      const shouldRestore = Boolean(existing.removedAt && existing.removedByUserId === 'system:xds');
       existing.departmentPath = normalizedPath;
+      if (shouldRestore) {
+        existing.removedAt = null;
+        existing.removedByUserId = null;
+        existing.restoredAt = now;
+        existing.restoredByUserId = 'system:xds';
+      }
       existing.updatedAt = now;
       this.teamMembers.set(teamMemberKey(team.id, userId), existing);
       await this.recordDepartmentMigrations({
@@ -561,7 +581,7 @@ class TestPagesStore {
         departmentPath: normalizedPath,
         now,
       });
-      return { team, member: cloneRecord(existing), restored: false };
+      return { team, member: cloneRecord(existing), restored: shouldRestore };
     }
 
     const member = {
@@ -941,7 +961,9 @@ class TestPagesStore {
       return cloneRecord(this.decorateAccessKeySite(actor, site));
     }
     const members = this.siteMembers.get(siteId) || [];
-    if (members.some((member) => member.userId === userId)) return cloneRecord(site);
+    if ((site.ownerType || 'user') === 'user' && members.some((member) => member.userId === userId)) {
+      return cloneRecord(site);
+    }
     if (site.ownerType === 'team') {
       const member = this.teamMembers.get(teamMemberKey(site.ownerId, userId));
       if (member && !member.removedAt) {
@@ -1866,12 +1888,11 @@ function normalizeDepartmentPath(value) {
     : '';
 }
 
-function departmentTeamId(departmentPath) {
+function departmentTeamId(environment, departmentPath) {
   const normalizedPath = normalizeDepartmentPath(departmentPath);
+  const normalizedEnvironment = normalizeRequiredString(environment).replaceAll(/[^A-Za-z0-9]+/g, '_') || 'unknown';
   if (!normalizedPath) return 'team_department_unknown';
-  if (!isAsciiText(normalizedPath)) return `team_department_${fnv1a64Hex(normalizedPath)}`;
-  const normalized = normalizedPath.replaceAll(/[^A-Za-z0-9]+/g, '_').replaceAll(/^_+|_+$/g, '');
-  return `team_department_${normalized || fnv1a64Hex(normalizedPath)}`;
+  return `team_department_${normalizedEnvironment}_${fnv1a64Hex(normalizedPath)}`;
 }
 
 function normalizeTeamName(value) {
@@ -1940,13 +1961,6 @@ function assertDepartmentMergeTeams(source, target) {
     throw new Error('TEAM_MERGE_SOURCE_INACTIVE');
   }
   if (target.status !== 'active' || target.deletedAt) throw new Error('TEAM_MERGE_TARGET_INACTIVE');
-}
-
-function isAsciiText(value) {
-  for (let index = 0; index < value.length; index += 1) {
-    if (value.charCodeAt(index) > 0x7f) return false;
-  }
-  return true;
 }
 
 function fnv1a64Hex(value) {

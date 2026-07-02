@@ -724,6 +724,25 @@ export class D1PagesStore {
         this.db
           .prepare(
             `UPDATE team_members
+            SET role = ?, department_path = ?, role_overridden_at = ?,
+              restored_at = CASE WHEN removed_at IS NOT NULL THEN ? ELSE restored_at END,
+              restored_by_user_id = CASE WHEN removed_at IS NOT NULL THEN ? ELSE restored_by_user_id END,
+              removed_at = NULL, removed_by_user_id = NULL, updated_at = ?
+            WHERE team_id = ? AND user_id = ? AND membership_source = 'department_auto'`
+          )
+          .bind(
+            member.role,
+            target.departmentPath,
+            member.role_overridden_at || null,
+            now,
+            actorUserId,
+            now,
+            target.id,
+            member.user_id
+          ),
+        this.db
+          .prepare(
+            `UPDATE team_members
             SET removed_at = ?, removed_by_user_id = ?, updated_at = ?
             WHERE team_id = ? AND user_id = ? AND membership_source = 'department_auto' AND removed_at IS NULL`
           )
@@ -849,7 +868,7 @@ export class D1PagesStore {
 
     const now = createdAt || this.now();
     const team = {
-      id: departmentTeamId(normalizedPath),
+      id: departmentTeamId(environment, normalizedPath),
       environment,
       name: normalizedPath,
       description: null,
@@ -947,10 +966,23 @@ export class D1PagesStore {
     const team = await this.findOrCreateDepartmentTeam({ environment, departmentPath: normalizedPath, createdAt: now });
     const existing = await this.getTeamMember({ teamId: team.id, userId, includeRemoved: true });
     if (existing) {
-      await this.db
-        .prepare('UPDATE team_members SET department_path = ?, updated_at = ? WHERE team_id = ? AND user_id = ?')
-        .bind(normalizedPath, now, team.id, userId)
-        .run();
+      const shouldRestore = Boolean(existing.removedAt && existing.removedByUserId === 'system:xds');
+      if (shouldRestore) {
+        await this.db
+          .prepare(
+            `UPDATE team_members
+            SET department_path = ?, removed_at = NULL, removed_by_user_id = NULL,
+              restored_at = ?, restored_by_user_id = 'system:xds', updated_at = ?
+            WHERE team_id = ? AND user_id = ?`
+          )
+          .bind(normalizedPath, now, now, team.id, userId)
+          .run();
+      } else {
+        await this.db
+          .prepare('UPDATE team_members SET department_path = ?, updated_at = ? WHERE team_id = ? AND user_id = ?')
+          .bind(normalizedPath, now, team.id, userId)
+          .run();
+      }
       await this.recordDepartmentMigrations({
         environment,
         userId,
@@ -962,7 +994,7 @@ export class D1PagesStore {
       return {
         team,
         member: await this.getTeamMember({ teamId: team.id, userId, includeRemoved: true }),
-        restored: false,
+        restored: shouldRestore,
       };
     }
 
@@ -1877,7 +1909,8 @@ export class D1PagesStore {
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
-          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
+          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
+          team_members.role AS management_role
         FROM sites
         LEFT JOIN site_members ON site_members.site_id = sites.id AND site_members.user_id = ?
         LEFT JOIN team_members ON team_members.team_id = sites.owner_id
@@ -1885,7 +1918,7 @@ export class D1PagesStore {
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
         WHERE sites.id = ? AND sites.deleted_at IS NULL
           AND (
-            site_members.user_id IS NOT NULL
+            (site_members.user_id IS NOT NULL AND COALESCE(sites.owner_type, 'user') = 'user')
             OR (sites.owner_type = 'team' AND team_members.user_id IS NOT NULL)
           )` +
           (environment ? ' AND sites.environment = ?' : '')
@@ -4053,12 +4086,11 @@ function normalizeDepartmentPath(value) {
     : '';
 }
 
-function departmentTeamId(departmentPath) {
+function departmentTeamId(environment, departmentPath) {
   const normalizedPath = normalizeDepartmentPath(departmentPath);
+  const normalizedEnvironment = normalizeRequiredString(environment).replaceAll(/[^A-Za-z0-9]+/g, '_') || 'unknown';
   if (!normalizedPath) return 'team_department_unknown';
-  if (!isAsciiText(normalizedPath)) return `team_department_${fnv1a64Hex(normalizedPath)}`;
-  const normalized = normalizedPath.replaceAll(/[^A-Za-z0-9]+/g, '_').replaceAll(/^_+|_+$/g, '');
-  return `team_department_${normalized || fnv1a64Hex(normalizedPath)}`;
+  return `team_department_${normalizedEnvironment}_${fnv1a64Hex(normalizedPath)}`;
 }
 
 function normalizeTeamName(value) {
@@ -4106,13 +4138,6 @@ function normalizeWebhookSubscriptionPatch(patch = {}) {
   if ('disabledAt' in patch) normalized.disabledAt = patch.disabledAt || null;
   if ('disabledByUserId' in patch) normalized.disabledByUserId = patch.disabledByUserId || null;
   return normalized;
-}
-
-function isAsciiText(value) {
-  for (let index = 0; index < value.length; index += 1) {
-    if (value.charCodeAt(index) > 0x7f) return false;
-  }
-  return true;
 }
 
 function fnv1a64Hex(value) {

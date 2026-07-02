@@ -175,6 +175,9 @@ async function grantPlatformAdmin(request, config, store, session) {
   const userId = normalizeRequiredString(body.userId);
   if (!userId) return jsonError('PLATFORM_ADMIN_USER_REQUIRED', 'User id is required.', 400, 'Choose a user to grant.');
 
+  const user = await store.getUser(userId);
+  if (!user) return jsonError('ADMIN_USER_NOT_FOUND', 'User was not found.', 404, 'Choose an existing user.');
+
   const admin = await store.grantPlatformAdmin({
     environment: config.environment,
     userId,

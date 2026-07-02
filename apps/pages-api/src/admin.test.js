@@ -111,6 +111,40 @@ test('admin API ignores forged admin headers and uses platform admin grants', as
   assert.equal(granted.status, 200, await granted.clone().text());
 });
 
+test('admin platform grant requires an existing user', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+
+  const missing = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/platform-admins', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+      body: {
+        userId: 'usr_missing',
+        reason: 'bootstrap',
+      },
+    }),
+    env(store)
+  );
+
+  assert.equal(missing.status, 404, await missing.clone().text());
+  assert.equal((await missing.json()).error.code, 'ADMIN_USER_NOT_FOUND');
+  assert.deepEqual(await store.listPlatformAdmins({ environment: 'production' }), [
+    {
+      environment: 'production',
+      userId: 'usr_root',
+      grantedByUserId: 'usr_bootstrap',
+      grantReason: 'test',
+      revokedAt: null,
+      revokedByUserId: null,
+      revokeReason: null,
+      createdAt: '2026-07-02T00:00:00.000Z',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    },
+  ]);
+});
+
 test('admin department team merge transfers assets and writes redacted audit metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -128,6 +162,19 @@ test('admin department team merge transfers assets and writes redacted audit met
     role: 'admin',
     membershipSource: 'department_auto',
     departmentPath: source.departmentPath,
+    actorUserId: 'system:xds',
+  });
+  await store.addTeamMember({
+    teamId: target.id,
+    userId: 'usr_alice',
+    role: 'viewer',
+    membershipSource: 'department_auto',
+    departmentPath: target.departmentPath,
+    actorUserId: 'system:xds',
+  });
+  await store.removeTeamMember({
+    teamId: target.id,
+    userId: 'usr_alice',
     actorUserId: 'system:xds',
   });
   await store.addTeamMember({
@@ -190,6 +237,8 @@ test('admin department team merge transfers assets and writes redacted audit met
   assert.equal(key.ownerId, target.id);
   assert.equal(movedMember.membershipSource, 'department_auto');
   assert.equal(movedMember.departmentPath, target.departmentPath);
+  assert.equal(movedMember.removedAt, null);
+  assert.equal(movedMember.restoredByUserId, 'usr_root');
   assert.equal(sourceMember.removedAt, '2026-07-02T00:00:00.000Z');
   assert.equal(manualMember, null);
 

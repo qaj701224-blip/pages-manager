@@ -75,6 +75,7 @@ test('platform admin store grants, lists, checks, and revokes active admins', as
 test('console admin API requires platform admin identity and manages platform admins', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_user');
+  await seedConsoleUser(store, 'usr_admin');
   await seedPlatformAdmin(store);
 
   const forbidden = await worker.fetch(

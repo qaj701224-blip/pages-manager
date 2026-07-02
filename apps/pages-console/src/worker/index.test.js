@@ -550,6 +550,23 @@ test('auth callback fails closed when pages-auth does not return a session token
   assert.doesNotMatch(response.headers.get('Set-Cookie') || '', /^xd_cell_session=/);
 });
 
+test('auth callback redirects back to login and clears cookies when code exchange fails', async () => {
+  const response = await worker.fetch(
+    request('https://workers.xd.team/api/console/auth/callback?code=expired-code'),
+    env({
+      PAGES_AUTH: authBinding(async () =>
+        Response.json({ error: { code: 'CONSOLE_CODE_INVALID' } }, { status: 400 })
+      ),
+    })
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get('Location'), '/login?error=auth_failed');
+  const setCookie = response.headers.get('Set-Cookie') || '';
+  assert.match(setCookie, /xd_cell_session=;/);
+  assert.match(setCookie, /xd_cell_csrf=;/);
+});
+
 test('staging auth callback rejects non-platform admins and clears session cookie', async () => {
   const response = await worker.fetch(
     request('https://staging.workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),

@@ -98,6 +98,8 @@ function isForbiddenHostname(hostname) {
 function isForbiddenAddress(value) {
   const address = normalizeHostname(value);
   if (isIpv4MappedIpv6(address)) return true;
+  const compatibleIpv4 = readIpv4CompatibleFromIpv6(address);
+  if (compatibleIpv4) return isForbiddenIpv4(compatibleIpv4);
   const mappedIpv4 = readIpv4MappedFromIpv6(address);
   if (mappedIpv4) return isForbiddenIpv4(mappedIpv4);
   if (isIpv4(address)) return isForbiddenIpv4(address);
@@ -151,4 +153,49 @@ function readIpv4MappedFromIpv6(address) {
 
 function isIpv4MappedIpv6(address) {
   return /^::ffff:/i.test(address);
+}
+
+function readIpv4CompatibleFromIpv6(address) {
+  const hextets = expandIpv6Hextets(address);
+  if (!hextets) return null;
+  if (!hextets.slice(0, 6).every((part) => part === 0)) return null;
+  if (hextets[6] === 0 && hextets[7] === 0) return null;
+  return ipv4FromHextets(hextets[6], hextets[7]);
+}
+
+function expandIpv6Hextets(address) {
+  if (!address.includes(':')) return null;
+  let normalized = address.toLowerCase();
+  if (normalized.includes('.')) {
+    const lastColon = normalized.lastIndexOf(':');
+    const dotted = normalized.slice(lastColon + 1);
+    if (!isIpv4(dotted)) return null;
+    const [first, second, third, fourth] = dotted.split('.').map((part) => Number(part));
+    const high = ((first << 8) | second).toString(16);
+    const low = ((third << 8) | fourth).toString(16);
+    normalized = `${normalized.slice(0, lastColon)}:${high}:${low}`;
+  }
+
+  const sides = normalized.split('::');
+  if (sides.length > 2) return null;
+  const left = splitIpv6Side(sides[0]);
+  const right = sides.length === 2 ? splitIpv6Side(sides[1]) : [];
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if (sides.length === 1 && missing !== 0) return null;
+  if (sides.length === 2 && missing < 1) return null;
+  return [...left, ...Array(Math.max(missing, 0)).fill(0), ...right];
+}
+
+function splitIpv6Side(value) {
+  if (!value) return [];
+  const parts = value.split(':').map((part) => {
+    if (!/^[0-9a-f]{1,4}$/i.test(part)) return Number.NaN;
+    return Number.parseInt(part, 16);
+  });
+  return parts.some((part) => Number.isNaN(part)) ? null : parts;
+}
+
+function ipv4FromHextets(high, low) {
+  return `${(high >> 8) & 255}.${high & 255}.${(low >> 8) & 255}.${low & 255}`;
 }

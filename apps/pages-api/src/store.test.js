@@ -1468,6 +1468,71 @@ test('D1 store authorizes site-scoped access keys without member rows', async ()
   assert.deepEqual(await store.listSitesForUser('usr_owner', { type: 'user' }, 'production'), []);
 });
 
+test('team-owned sites require active team membership instead of stale site member fallback', async () => {
+  const store = createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_publisher',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await store.removeTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    actorUserId: 'usr_admin',
+  });
+
+  const site = await store.getSiteForUser(
+    'site_team',
+    'usr_publisher',
+    { type: 'user', userId: 'usr_publisher' },
+    'production'
+  );
+
+  assert.equal(site, null);
+});
+
+test('D1 getSiteForUser decorates team role and limits site member fallback to user-owned sites', async () => {
+  const capturedSql = [];
+  const db = {
+    prepare(sql) {
+      capturedSql.push(sql);
+      return {
+        bind() {
+          return {
+            first: async () => null,
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  await store.getSiteForUser('site_team', 'usr_publisher', { type: 'user', userId: 'usr_publisher' }, 'production');
+
+  const sql = capturedSql.join('\n');
+  assert.match(sql, /team_members\.role AS management_role/);
+  assert.match(sql, /site_members\.user_id IS NOT NULL\s+AND COALESCE\(sites\.owner_type, 'user'\) = 'user'/);
+});
+
 test('site policy changes update visibility, ACL, cache tier, and policy version', async () => {
   const store = createSeededStore();
   await createSite(store);

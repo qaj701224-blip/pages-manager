@@ -30,13 +30,13 @@ const CONTROL_ASSET_PATHS = new Set([
   '/xd-cell.config.json',
 ]);
 
-export async function handleDeploymentsApi(request, env, config, store) {
+export async function handleDeploymentsApi(request, env, config, store, ctx) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
   if (!auth.ok) return authErrorResponse(auth.error);
 
   const url = new URL(request.url);
   if (url.pathname === '/.xd-pages/api/deployments') {
-    if (request.method === 'POST') return createDeployment(request, env, config, store, auth.actor);
+    if (request.method === 'POST') return createDeployment(request, env, config, store, auth.actor, ctx);
     return methodNotAllowed();
   }
 
@@ -58,7 +58,7 @@ export async function handleVersionsApi(request, env, config, store) {
   return null;
 }
 
-async function createDeployment(request, env, config, store, actor) {
+async function createDeployment(request, env, config, store, actor, ctx) {
   const idempotencyKey = readIdempotencyKey(request);
   if (!idempotencyKey) return idempotencyKeyRequired();
   if (!isMultipartRequest(request)) return cliUploadProtocolRequired();
@@ -747,7 +747,12 @@ async function createDeployment(request, env, config, store, actor) {
   }
 
   await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env);
-  await emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment: completed });
+  const webhookDelivery = emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment: completed });
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(webhookDelivery);
+  } else {
+    await webhookDelivery;
+  }
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision }), 201);
 }

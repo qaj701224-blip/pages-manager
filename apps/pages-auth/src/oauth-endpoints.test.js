@@ -172,16 +172,21 @@ test('authorize for CLI login stores the server-side device code in OAuth state'
 test('authorize with an existing auth session creates a site code without redirecting to SSO', async () => {
   const oauthStorage = createFakeStorage();
   let requestedUserId;
+  let createdSiteCodeInput;
   const env = testEnv({
     createOAuthStateRecord: (input) => createStoredOAuthState(oauthStorage, input),
     consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
-    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createOAuthSiteCodeRecord: (input) => {
+      createdSiteCodeInput = input;
+      return createStoredOAuthSiteCode(oauthStorage, input);
+    },
     getUserForAuthSession: async (userId) => {
       requestedUserId = userId;
       return {
         id: userId,
         email: 'user@example.test',
         employeeStatus: 'active',
+        departmentPath: 'XD/Platform/Web',
         sessionVersion: 7,
       };
     },
@@ -220,6 +225,7 @@ test('authorize with an existing auth session creates a site code without redire
   assert.match(location.searchParams.get('code'), /^ost_/);
   assert.equal(location.searchParams.get('return_to'), 'https://demo.pages.xd.team/private');
   assert.equal(location.origin, 'https://demo.pages.xd.team');
+  assert.deepEqual(createdSiteCodeInput.user.departments, ['XD/Platform/Web']);
 });
 
 test('authorize with an existing auth session creates a console code without redirecting to SSO', async () => {
@@ -536,6 +542,52 @@ test('callback ignores department hydration hook failures after SSO user sync', 
 
   assert.equal(response.status, 302, await response.clone().text());
   assert.equal(hydrationCalled, true);
+});
+
+test('callback propagates hydrated department path into site login code payload', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let createdSiteCodeInput;
+  const env = testEnv({
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => {
+      createdSiteCodeInput = input;
+      return createStoredOAuthSiteCode(oauthStorage, input);
+    },
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile) => ({
+      user: {
+        userId: profile.userId,
+        email: profile.email,
+        employeeStatus: profile.employeeStatus,
+      },
+    }),
+    hydrateDepartmentAfterSso: async () => ({ departmentPath: 'XD/Platform/Web' }),
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_123',
+      email: 'user@xd.com',
+      employeeStatus: 'active',
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.deepEqual(createdSiteCodeInput.user.departments, ['XD/Platform/Web']);
 });
 
 test('callback continues when no department hydration hook is configured', async () => {

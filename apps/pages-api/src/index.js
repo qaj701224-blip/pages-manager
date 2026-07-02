@@ -15,7 +15,7 @@ import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 export { RoutePointerDO } from './route-snapshot.js';
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.headers.has('X-Pages-Token')) {
       return jsonError(
         'LEGACY_TOKEN_UNSUPPORTED',
@@ -127,7 +127,7 @@ export default {
       }
 
       const response = url.pathname.startsWith('/.xd-pages/api/deployments')
-        ? await handleDeploymentsApi(request, env, config, store)
+        ? await handleDeploymentsApi(request, env, config, store, ctx)
         : await handleVersionsApi(request, env, config, store);
       if (response) return response;
     }

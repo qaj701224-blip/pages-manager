@@ -94,6 +94,72 @@ test('successful deployments deliver site.deployed webhooks for matching subscri
   assert.equal(deliveries[0].eventType, 'site.deployed');
 });
 
+test('successful deployment schedules webhook delivery with waitUntil without blocking response', async () => {
+  const store = await createSeededStore();
+  await seedPlatformAdmin(store);
+  let releaseWebhook;
+  const waitUntilPromises = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WEBHOOK_URL_ENCRYPTION_KEY: 'test-webhook-url-key',
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async () =>
+      new Promise((resolve) => {
+        releaseWebhook = () => resolve(new Response('ok', { status: 200 }));
+      }),
+  });
+
+  const created = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+      method: 'POST',
+      body: {
+        name: 'Slow deploy events',
+        url: 'https://hooks.slack.com/services/T000/B000/token',
+        events: ['site.deployed'],
+        payloadMode: 'standard',
+      },
+    }),
+    env
+  );
+  assert.equal(created.status, 201, await created.clone().text());
+
+  const responsePromise = worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'deploy_wait_until',
+    }),
+    env,
+    {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    }
+  );
+  const earlyResult = await Promise.race([
+    responsePromise.then(() => 'response'),
+    new Promise((resolve) => setTimeout(() => resolve('blocked'), 20)),
+  ]);
+  if (earlyResult === 'blocked') {
+    for (let attempt = 0; attempt < 10 && !releaseWebhook; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    releaseWebhook?.();
+  }
+  const response = await responsePromise;
+
+  assert.equal(earlyResult, 'response');
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(waitUntilPromises.length, 1);
+  if (!releaseWebhook) {
+    for (let attempt = 0; attempt < 10 && !releaseWebhook; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  assert.equal(typeof releaseWebhook, 'function');
+  releaseWebhook();
+  await waitUntilPromises[0];
+  const deliveries = await store.listWebhookDeliveries({ environment: 'production', subscriptionId: 'wh_1' });
+  assert.equal(deliveries[0].deliveryStatus, 'succeeded');
+});
+
 test('deployment preserves an existing pages.xd.team route hostname during workers-domain rollout', async () => {
   const store = await createSeededStore();
   const snapshots = createSnapshotStore();

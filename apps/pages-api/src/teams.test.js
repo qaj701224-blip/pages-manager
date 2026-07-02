@@ -103,6 +103,48 @@ test('removed department auto member is not restored by same-department hydratio
   assert.deepEqual(await store.listTeamsForUser({ environment: 'production', userId: 'usr_alice' }), []);
 });
 
+test('same-department hydration restores a membership previously removed by XDS migration', async () => {
+  const store = createTestPagesStore({
+    now: (() => {
+      const values = [
+        '2026-06-15T00:00:00.000Z',
+        '2026-06-15T00:01:00.000Z',
+        '2026-06-15T00:02:00.000Z',
+        '2026-06-15T00:03:00.000Z',
+      ];
+      return () => values.shift() || '2026-06-15T00:04:00.000Z';
+    })(),
+  });
+
+  const oldDepartment = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_alice',
+    departmentPath: 'XD/Web',
+  });
+  await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_alice',
+    departmentPath: 'XD/Platform',
+  });
+
+  const restored = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_alice',
+    departmentPath: 'XD/Web',
+  });
+
+  assert.equal(restored.team.id, oldDepartment.team.id);
+  assert.equal(restored.member.removedAt, null);
+  assert.equal(restored.member.removedByUserId, null);
+  assert.equal(restored.member.restoredAt, '2026-06-15T00:02:00.000Z');
+  assert.equal(restored.member.restoredByUserId, 'system:xds');
+  assert.equal(restored.restored, true);
+  assert.deepEqual(
+    (await store.listTeamsForUser({ environment: 'production', userId: 'usr_alice' })).map((team) => team.departmentPath),
+    ['XD/Web']
+  );
+});
+
 test('department path change moves department_auto membership immediately', async () => {
   const store = createTestPagesStore({
     now: (() => {
@@ -173,6 +215,29 @@ test('department team id remains stable and distinct for Chinese department path
   assert.equal(web.team.departmentPath, '心动/发行服务/平台支撑部/技术/Web');
 });
 
+test('department team ids are scoped by environment and do not collide on ASCII separators', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+
+  const production = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_prod',
+    departmentPath: 'XD/Platform/Web',
+  });
+  const staging = await store.hydrateDepartmentMembership({
+    environment: 'staging',
+    userId: 'usr_staging',
+    departmentPath: 'XD/Platform/Web',
+  });
+  const underscore = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_underscore',
+    departmentPath: 'XD/Platform_Web',
+  });
+
+  assert.notEqual(production.team.id, staging.team.id);
+  assert.notEqual(production.team.id, underscore.team.id);
+});
+
 test('custom team deletion is blocked until team sites and active keys are cleared', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   const team = await store.createTeam({
@@ -230,7 +295,7 @@ test('custom team deletion is blocked until team sites and active keys are clear
 test('team APIs list teams and block department team deletion', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_admin');
-  const custom = await store.createTeam({
+  await store.createTeam({
     environment: 'production',
     teamType: 'custom',
     name: 'Console Team',
@@ -244,20 +309,22 @@ test('team APIs list teams and block department team deletion', async () => {
   });
 
   const list = await worker.fetch(internalConsoleRequest('/.xd-pages/api/console/teams', { userId: 'usr_admin' }), env(store));
+  assert.equal(list.status, 200, await list.clone().text());
+  const teams = (await list.json()).teams;
+  const departmentTeam = teams.find((team) => team.teamType === 'department');
   const deleteDepartment = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/teams/team_department_XD_Platform_Web', {
+    internalConsoleRequest(`/.xd-pages/api/console/teams/${encodeURIComponent(departmentTeam.id)}`, {
       userId: 'usr_admin',
       method: 'DELETE',
     }),
     env(store)
   );
 
-  assert.equal(list.status, 200, await list.clone().text());
   assert.deepEqual(
-    (await list.json()).teams.map((team) => [team.id, team.name, team.teamType, team.currentUserRole]),
+    teams.map((team) => [team.name, team.teamType, team.currentUserRole]),
     [
-      [custom.id, 'Console Team', 'custom', 'admin'],
-      ['team_department_XD_Platform_Web', 'XD/Platform/Web', 'department', 'admin'],
+      ['Console Team', 'custom', 'admin'],
+      ['XD/Platform/Web', 'department', 'admin'],
     ]
   );
   assert.equal(deleteDepartment.status, 403);
