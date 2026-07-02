@@ -118,6 +118,29 @@ export async function deliverWebhookEvent({ store, env, config, subscriptionId, 
   }
 }
 
+export async function deliverWebhookEventToSubscriptions({ store, env, config, event, fetchImpl, resolveHost, now } = {}) {
+  if (!event?.type || typeof store?.listWebhookSubscriptions !== 'function') return [];
+  const environment = config?.environment;
+  const subscriptions = await store.listWebhookSubscriptions({ environment });
+  const matchingSubscriptions = subscriptions.filter(
+    (subscription) => subscription.enabled && subscription.events.includes(event.type)
+  );
+  return Promise.all(
+    matchingSubscriptions.map((subscription) =>
+      deliverWebhookEvent({
+        store,
+        env,
+        config,
+        subscriptionId: subscription.id,
+        event,
+        fetchImpl,
+        resolveHost,
+        now,
+      })
+    )
+  );
+}
+
 async function listWebhookSubscriptions(config, store) {
   const webhooks = await store.listWebhookSubscriptions({ environment: config.environment });
   return jsonOk({ webhooks: webhooks.map(formatWebhookSubscription) });

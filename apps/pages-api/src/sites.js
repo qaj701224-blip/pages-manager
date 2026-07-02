@@ -566,7 +566,7 @@ async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
   const visible = await store.getSiteForUser(site.id, actor.userId, actor, environment);
   if (!visible) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug and token scope.');
-  if (!actorCanDeploy(actor, site)) {
+  if (!actorCanDeploy(actor, visible)) {
     return jsonError(
       'DEPLOY_FORBIDDEN',
       'Actor cannot manage runtime secrets for this site.',

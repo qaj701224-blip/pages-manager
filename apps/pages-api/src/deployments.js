@@ -8,6 +8,7 @@ import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { normalizeRuntimeVars, runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
+import { deliverWebhookEventToSubscriptions } from './webhooks.js';
 
 const encoder = new globalThis.TextEncoder();
 const utf8Decoder = new globalThis.TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -746,8 +747,53 @@ async function createDeployment(request, env, config, store, actor) {
   }
 
   await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env);
+  await emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment: completed });
 
   return jsonOk(await deploymentEnvelope(store, completed, { version, route, decision }), 201);
+}
+
+async function emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment }) {
+  try {
+    await deliverWebhookEventToSubscriptions({
+      store,
+      env,
+      config,
+      event: {
+        id: nextId(env, 'evt'),
+        type: 'site.deployed',
+        environment: config.environment,
+        occurredAt: deployment.completedAt || readNow(env),
+        actor: {
+          type: actor.type,
+          userId: actor.userId || null,
+          email: actor.email || null,
+          name: actor.name || null,
+        },
+        site: {
+          id: site.id,
+          slug: site.slug,
+          hostname: route.hostname,
+          ownerType: site.ownerType || 'user',
+          ownerId: site.ownerId || site.ownerUserId,
+          visibility: route.visibility || site.defaultVisibility,
+          status: route.routeStatus,
+        },
+        deployment: {
+          id: deployment.id,
+          status: deployment.status,
+          source: deployment.source,
+          operation: deployment.operation,
+          createdAt: deployment.createdAt,
+          completedAt: deployment.completedAt || null,
+        },
+      },
+      fetchImpl: typeof env.WEBHOOK_FETCH === 'function' ? env.WEBHOOK_FETCH : undefined,
+      resolveHost: typeof env.resolveWebhookHost === 'function' ? env.resolveWebhookHost : undefined,
+      now: () => deployment.completedAt || readNow(env),
+    });
+  } catch {
+    // Webhook delivery is best-effort and must not mask a committed deployment.
+  }
 }
 
 async function runtimeConfigHashInput(env, vars = {}, secrets = []) {

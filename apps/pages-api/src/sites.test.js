@@ -441,6 +441,85 @@ test('secrets put updates current active WFP worker without changing active rout
   assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
 });
 
+test('team publishers can manage runtime secrets for team-owned sites', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const site = await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await activateSite(store, site.id, { workerName: 'pages-v2-team-guide-ver-1' });
+  const providerCalls = [];
+  const publisherEnv = testEnv(store, {
+    WFP_PROVIDER: {
+      putSecret: async (input) => providerCalls.push({ operation: 'put', ...input }),
+      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...input }),
+    },
+    verifyCliToken: async () => ({
+      sub: 'usr_publisher',
+      purpose: 'cli_token',
+      aud: 'pages-cli',
+      env: 'production',
+      jti: 'cli_publisher',
+    }),
+  });
+
+  const put = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    }),
+    publisherEnv
+  );
+  const del = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+    }),
+    publisherEnv
+  );
+
+  assert.equal(put.status, 200, await put.clone().text());
+  assert.equal(del.status, 200, await del.clone().text());
+  assert.deepEqual(providerCalls, [
+    {
+      operation: 'put',
+      workerName: 'pages-v2-team-guide-ver-1',
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    },
+    {
+      operation: 'delete',
+      workerName: 'pages-v2-team-guide-ver-1',
+      name: 'API_TOKEN',
+    },
+  ]);
+});
+
 test('secrets put skips active worker sync for assets-only active versions', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
@@ -1057,13 +1136,14 @@ async function createSeededStore() {
 }
 
 async function activateSite(store, siteId, overrides = {}) {
+  const workerName = overrides.workerName || 'pages-v2-guide-ver-1';
   await store.createSiteVersion({
     id: 'ver_1',
     siteId,
     deploymentId: 'dep_1',
-    workerName: 'pages-v2-guide-ver-1',
+    workerName,
     runtime: 'wfp',
-    artifactRef: 'wfp://test/pages-v2-guide-ver-1',
+    artifactRef: `wfp://test/${workerName}`,
     contentHash: 'sha256:abc',
     deploymentShape: overrides.deploymentShape || 'worker-only',
     requestedFallback: 'auto',
@@ -1075,7 +1155,7 @@ async function activateSite(store, siteId, overrides = {}) {
     siteId,
     {
       activeVersionId: 'ver_1',
-      workerName: 'pages-v2-guide-ver-1',
+      workerName,
       visibility: overrides.visibility || 'org',
       updatedAt: '2026-06-15T00:00:00.000Z',
     },

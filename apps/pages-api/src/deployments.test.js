@@ -47,6 +47,52 @@ test('creates deployment, immutable version, active route, and route snapshot', 
   ]);
 });
 
+test('successful deployments deliver site.deployed webhooks for matching subscriptions', async () => {
+  const store = await createSeededStore();
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WEBHOOK_URL_ENCRYPTION_KEY: 'test-webhook-url-key',
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async (request) => {
+      requests.push(request);
+      return new Response('ok', { status: 200 });
+    },
+  });
+
+  const created = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+      method: 'POST',
+      body: {
+        name: 'Slack deploy events',
+        url: 'https://hooks.slack.com/services/T000/B000/token',
+        events: ['site.deployed'],
+        payloadMode: 'standard',
+      },
+    }),
+    env
+  );
+  assert.equal(created.status, 201, await created.clone().text());
+
+  const response = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), { 'Idempotency-Key': 'deploy_1' }),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].headers.get('X-XD-Cell-Event'), 'site.deployed');
+  const payload = await requests[0].json();
+  assert.equal(payload.event.type, 'site.deployed');
+  assert.equal(payload.site.slug, 'guide');
+  assert.equal(payload.site.hostname, 'guide.pages.xd.team');
+  assert.equal(payload.deployment.id, 'dep_1');
+  assert.equal(payload.deployment.status, 'succeeded');
+  const deliveries = await store.listWebhookDeliveries({ environment: 'production', subscriptionId: 'wh_1' });
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].deliveryStatus, 'succeeded');
+  assert.equal(deliveries[0].eventType, 'site.deployed');
+});
+
 test('deployment preserves an existing pages.xd.team route hostname during workers-domain rollout', async () => {
   const store = await createSeededStore();
   const snapshots = createSnapshotStore();
@@ -4724,6 +4770,20 @@ function normalizePublishPlanFields(fields) {
 function authRequest(url, headers = {}) {
   return new Request(url, {
     headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
+  });
+}
+
+function internalConsoleRequest(path, { method = 'GET', body } = {}) {
+  return new Request(`https://pages-api.internal${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Console-BFF': 'pages-console',
+      'X-Console-User-Id': 'usr_root',
+      'X-Console-Email': 'root@example.com',
+      'X-Console-Admin': 'true',
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
 
