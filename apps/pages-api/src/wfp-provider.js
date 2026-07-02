@@ -17,7 +17,11 @@ export function createDeploymentProvider(env, config) {
         assetFiles: input.assetFiles,
         compatibilityDate: env.WFP_COMPATIBILITY_DATE,
         tags: ['pages-v2', config.environment, input.site.slug],
-        bindings: [kvGatewayServiceBinding(config.environment), ...runtimeBindingsForProvider(input.runtimeBindings)],
+        bindings: [
+          kvGatewayServiceBinding(config.environment),
+          ...userWorkerVpcNetworkBindings(env, input.decision),
+          ...runtimeBindingsForProvider(input.runtimeBindings),
+        ],
       });
     },
     async verify(input) {
@@ -44,6 +48,23 @@ export function kvGatewayServiceBinding(environment) {
     name: BINDINGS.KV_GATEWAY,
     service: environment === 'staging' ? 'pages-kv-gateway-staging' : 'pages-kv-gateway',
   };
+}
+
+function userWorkerVpcNetworkBindings(env, decision) {
+  if (!decisionUsesUserWorker(decision)) return [];
+  const tunnelId = String(env.PAGES_USER_WORKER_VPC_TUNNEL_ID || '').trim();
+  if (!tunnelId) return [];
+  return [
+    {
+      type: 'vpc_network',
+      name: 'XD_OFFICE_NET',
+      tunnel_id: tunnelId,
+    },
+  ];
+}
+
+function decisionUsesUserWorker(decision) {
+  return decision?.deploymentShape === 'worker-only' || decision?.deploymentShape === 'worker-with-assets';
 }
 
 function withWfpMetadata(provider) {

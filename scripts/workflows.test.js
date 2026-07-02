@@ -587,6 +587,15 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     );
     assert.match(
       workflow,
+      new RegExp(
+        String.raw`name: Generate Pages API Wrangler config[\s\S]*` +
+          String.raw`PAGES_USER_WORKER_VPC_TUNNEL_ID: \$\{\{ vars\.PAGES_USER_WORKER_VPC_TUNNEL_ID \}\}[\s\S]*` +
+          String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-api`
+      ),
+      `${name} passes the optional user Worker VPC Tunnel ID from GitHub vars`
+    );
+    assert.match(
+      workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-auth ${environment}`),
       `${name} renders pages-auth ${environment} template`
     );

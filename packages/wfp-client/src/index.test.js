@@ -49,8 +49,14 @@ test('readWfpConfig enforces production and staging namespace isolation', () => 
 });
 
 test('readWfpConfig fails closed on missing credentials and unsafe API origins', () => {
-  assert.throws(() => readWfpConfig({ CF_API_TOKEN: 'token', WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production' }), /CF_ACCOUNT_ID/);
-  assert.throws(() => readWfpConfig({ CF_ACCOUNT_ID: 'account', WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production' }), /CF_API_TOKEN/);
+  assert.throws(
+    () => readWfpConfig({ CF_API_TOKEN: 'token', WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production' }),
+    /CF_ACCOUNT_ID/
+  );
+  assert.throws(
+    () => readWfpConfig({ CF_ACCOUNT_ID: 'account', WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production' }),
+    /CF_API_TOKEN/
+  );
   assert.throws(
     () =>
       readWfpConfig(
@@ -260,21 +266,41 @@ test('put and delete user worker secret use dispatch namespace script secrets en
   assert.equal(calls[1].url, `${scriptUrl}/secrets/API_TOKEN`);
 });
 
-test('normalizeWorkerBindings accepts service plain text and secret text bindings', () => {
+test('normalizeWorkerBindings accepts service plain text secret text and VPC network bindings', () => {
   assert.deepEqual(
     normalizeWorkerBindings([
       { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
       { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
       { type: 'secret_text', name: 'API_TOKEN', text: 'secret-value' },
+      {
+        type: 'vpc_network',
+        name: 'XD_OFFICE_NET',
+        tunnel_id: 'test-office-tunnel-id',
+      },
     ]),
     [
       { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
       { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
       { type: 'secret_text', name: 'API_TOKEN', text: 'secret-value' },
+      {
+        type: 'vpc_network',
+        name: 'XD_OFFICE_NET',
+        tunnel_id: 'test-office-tunnel-id',
+      },
     ]
   );
-  assert.throws(() => normalizeWorkerBindings([{ type: 'plain_text', name: 'bad-name', text: 'x' }]), /WORKER_BINDING_NAME_INVALID/);
-  assert.throws(() => normalizeWorkerBindings([{ type: 'kv_namespace', name: 'KV', namespace_id: 'ns_1' }]), /WORKER_BINDING_TYPE_INVALID/);
+  assert.throws(
+    () => normalizeWorkerBindings([{ type: 'plain_text', name: 'bad-name', text: 'x' }]),
+    /WORKER_BINDING_NAME_INVALID/
+  );
+  assert.throws(
+    () => normalizeWorkerBindings([{ type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: '' }]),
+    /WORKER_VPC_TUNNEL_ID_INVALID/
+  );
+  assert.throws(
+    () => normalizeWorkerBindings([{ type: 'kv_namespace', name: 'KV', namespace_id: 'ns_1' }]),
+    /WORKER_BINDING_TYPE_INVALID/
+  );
 });
 
 test('Cloudflare API errors are redacted', async () => {
