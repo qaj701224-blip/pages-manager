@@ -21,11 +21,27 @@ test('safe webhook URL validation rejects non-https and private targets', async 
     /WEBHOOK_URL_HOST_FORBIDDEN/
   );
   await assert.rejects(
+    () => assertSafeWebhookUrl('https://100.64.0.1/hook', { resolveHost: publicResolver }),
+    /WEBHOOK_URL_HOST_FORBIDDEN/
+  );
+  await assert.rejects(
     () => assertSafeWebhookUrl('https://service.internal.example/hook', { resolveHost: async () => ['172.16.0.9'] }),
     /WEBHOOK_URL_HOST_FORBIDDEN/
   );
   await assert.rejects(
     () => assertSafeWebhookUrl('https://metadata.google.internal/hook', { resolveHost: async () => ['169.254.169.254'] }),
+    /WEBHOOK_URL_HOST_FORBIDDEN/
+  );
+  await assert.rejects(
+    () => assertSafeWebhookUrl('https://benchmark.example/hook', { resolveHost: async () => ['198.18.0.1'] }),
+    /WEBHOOK_URL_HOST_FORBIDDEN/
+  );
+  await assert.rejects(
+    () => assertSafeWebhookUrl('https://test-net.example/hook', { resolveHost: async () => ['203.0.113.10'] }),
+    /WEBHOOK_URL_HOST_FORBIDDEN/
+  );
+  await assert.rejects(
+    () => assertSafeWebhookUrl('https://[::ffff:100.64.0.1]/hook', { resolveHost: publicResolver }),
     /WEBHOOK_URL_HOST_FORBIDDEN/
   );
   await assert.rejects(

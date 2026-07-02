@@ -660,9 +660,9 @@ export class D1PagesStore {
     return (result.results || []).map(mapTeam);
   }
 
-  async previewDepartmentTeamMerge({ sourceTeamId, targetTeamId }) {
-    const source = await this.getTeamForDepartmentMerge(sourceTeamId);
-    const target = await this.getTeamForDepartmentMerge(targetTeamId);
+  async previewDepartmentTeamMerge({ sourceTeamId, targetTeamId, environment }) {
+    const source = await this.getTeamForDepartmentMerge(sourceTeamId, environment);
+    const target = await this.getTeamForDepartmentMerge(targetTeamId, environment);
     assertDepartmentMergeTeams(source, target);
     return {
       sourceTeam: source,
@@ -671,9 +671,9 @@ export class D1PagesStore {
     };
   }
 
-  async mergeDepartmentTeams({ sourceTeamId, targetTeamId, actorUserId, reason }) {
-    const source = await this.getTeamForDepartmentMerge(sourceTeamId);
-    const target = await this.getTeamForDepartmentMerge(targetTeamId);
+  async mergeDepartmentTeams({ sourceTeamId, targetTeamId, actorUserId, reason, environment }) {
+    const source = await this.getTeamForDepartmentMerge(sourceTeamId, environment);
+    const target = await this.getTeamForDepartmentMerge(targetTeamId, environment);
     assertDepartmentMergeTeams(source, target);
 
     const now = this.now();
@@ -784,14 +784,19 @@ export class D1PagesStore {
 
     await this.db.batch(statements);
     return {
-      sourceTeam: await this.getTeamForDepartmentMerge(source.id),
+      sourceTeam: await this.getTeamForDepartmentMerge(source.id, environment),
       targetTeam: target,
       counts,
     };
   }
 
-  async getTeamForDepartmentMerge(teamId) {
-    const row = await this.db.prepare('SELECT * FROM teams WHERE id = ? AND deleted_at IS NULL').bind(teamId).first();
+  async getTeamForDepartmentMerge(teamId, environment) {
+    const row = environment
+      ? await this.db
+          .prepare('SELECT * FROM teams WHERE id = ? AND environment = ? AND deleted_at IS NULL')
+          .bind(teamId, environment)
+          .first()
+      : await this.db.prepare('SELECT * FROM teams WHERE id = ? AND deleted_at IS NULL').bind(teamId).first();
     return row ? mapTeam(row) : null;
   }
 

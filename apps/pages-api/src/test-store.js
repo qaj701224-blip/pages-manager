@@ -390,9 +390,9 @@ class TestPagesStore {
     };
   }
 
-  async previewDepartmentTeamMerge({ sourceTeamId, targetTeamId }) {
-    const source = this.teams.get(sourceTeamId) || null;
-    const target = this.teams.get(targetTeamId) || null;
+  async previewDepartmentTeamMerge({ sourceTeamId, targetTeamId, environment }) {
+    const source = this.getDepartmentMergeTeam(sourceTeamId, environment);
+    const target = this.getDepartmentMergeTeam(targetTeamId, environment);
     assertDepartmentMergeTeams(source, target);
     return cloneRecord({
       sourceTeam: source,
@@ -401,9 +401,9 @@ class TestPagesStore {
     });
   }
 
-  async mergeDepartmentTeams({ sourceTeamId, targetTeamId, actorUserId, reason }) {
-    const source = this.teams.get(sourceTeamId) || null;
-    const target = this.teams.get(targetTeamId) || null;
+  async mergeDepartmentTeams({ sourceTeamId, targetTeamId, actorUserId, reason, environment }) {
+    const source = this.getDepartmentMergeTeam(sourceTeamId, environment);
+    const target = this.getDepartmentMergeTeam(targetTeamId, environment);
     assertDepartmentMergeTeams(source, target);
     const now = this.now();
     const counts = this.countDepartmentTeamMergeAssets(source.id);
@@ -484,6 +484,13 @@ class TestPagesStore {
       targetTeam: target,
       counts,
     });
+  }
+
+  getDepartmentMergeTeam(teamId, environment) {
+    const team = this.teams.get(teamId) || null;
+    if (!team || team.deletedAt) return null;
+    if (environment && team.environment !== environment) return null;
+    return team;
   }
 
   async updateUserDepartmentFromDirectory({ userId, departmentPath, departmentCheckedAt }) {

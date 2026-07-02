@@ -257,6 +257,54 @@ test('admin department team merge transfers assets and writes redacted audit met
   assert.doesNotMatch(JSON.stringify(auditEvents), /usr_alice|usr_manual|secret-hash|pepper_1|deploy/);
 });
 
+test('admin department team merge cannot mutate teams from another environment', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.grantPlatformAdmin({
+    environment: 'staging',
+    userId: 'usr_root',
+    grantedByUserId: 'usr_bootstrap',
+    grantReason: 'test',
+  });
+  const source = await store.findOrCreateDepartmentTeam({
+    environment: 'production',
+    departmentPath: 'XD/Old/Web',
+  });
+  const target = await store.findOrCreateDepartmentTeam({
+    environment: 'production',
+    departmentPath: 'XD/New/Web',
+  });
+  await seedTeamSite(store, {
+    id: 'site_old',
+    slug: 'old-site',
+    teamId: source.id,
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest(`/.xd-pages/api/console/admin/teams/${encodeURIComponent(source.id)}/merge`, {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+      body: {
+        targetTeamId: target.id,
+        reason: 'staging should not touch production',
+      },
+    }),
+    env(store, { PAGES_ENV: 'staging' })
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_NOT_FOUND');
+  assert.equal((await store.getSite('site_old')).ownerId, source.id);
+  assert.equal((await store.getTeam(source.id)).status, 'active');
+  assert.equal(
+    (await store.listAuditEvents({ environment: 'production' })).some(
+      (event) => event.eventType === 'admin.department_team.merge'
+    ),
+    false
+  );
+});
+
 test('admin sites include readable user and team owner metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
