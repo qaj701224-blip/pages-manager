@@ -566,6 +566,7 @@ test('production pages-console config renders exact console host without wildcar
   assert.match(config, /binding = "PAGES_AUTH"/);
   assert.match(config, /service = "pages-auth"/);
   assert.match(config, /\[assets\]\ndirectory = "\.\/dist\/client"\nbinding = "ASSETS"/);
+  assert.match(config, /run_worker_first = true/);
   assert.doesNotMatch(config, /pattern = "\*\.workers\.xd\.team\/\*"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
@@ -588,6 +589,7 @@ test('staging pages-console config renders staging admin-only console host', () 
   assert.match(config, /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
   assert.match(config, /service = "pages-api-staging"/);
   assert.match(config, /service = "pages-auth-staging"/);
+  assert.match(config, /run_worker_first = true/);
   assert.doesNotMatch(config, /pattern = "\*-staging\.workers\.xd\.team\/\*"/);
 });
 

@@ -208,6 +208,7 @@ Console route 是 exact host route，不能使用 `*.workers.xd.team/*`，避免
 - production 只允许 `workflow_dispatch` 手动触发。
 - staging 可手动触发，也可由 staging 分支中 v2 相关路径变化触发。
 - renderer 必须注入 `CLOUDFLARE_ACCOUNT_ID`、`IP_ALLOWLIST` 和 `PAGES_SESSION_JWT_KEYS`。
+- `pages-console` Worker with Assets 必须设置 `assets.run_worker_first = true`，保证页面、静态资源、登录桥接和 BFF API 都先经过 IP allowlist、staging/admin gate，再由 Worker 决定是否调用 `env.ASSETS.fetch()`。
 - Console 登录态复用 pages-auth 的 `PAGES_SESSION_JWT_*` 体系：pages-auth 签发 `purpose=console_session`、`aud=xd-cell-console` 的 JWT，pages-console 只在自身 host-only `xd_cell_session` cookie 中保存并验证该 JWT。
 - `PAGES_SESSION_JWT_SECRET_*` 通过 Worker secret 注入，不进入 wrangler 模板、日志或文档示例；不再维护独立的 console session secret。
 - production / staging 的 Worker、service binding、route、D1/KV 和 signing key 不得混用。
