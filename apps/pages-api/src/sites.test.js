@@ -256,6 +256,52 @@ test('site delete rejects access keys and non-owner members', async () => {
   assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).status, 'active');
 });
 
+test('team site creator cannot manage policy after losing team admin role', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'viewer',
+    membershipSource: 'manual',
+    actorUserId: 'usr_1',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+
+  const update = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', { visibility: 'disabled' }),
+    testEnv(store)
+  );
+  const del = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', {}, { method: 'DELETE' }),
+    testEnv(store)
+  );
+
+  assert.equal(update.status, 403, await update.clone().text());
+  assert.equal((await update.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+  assert.equal(del.status, 403, await del.clone().text());
+  assert.equal((await del.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+  assert.equal((await store.getSite('site_team')).defaultVisibility, 'org');
+  assert.equal((await store.getSite('site_team')).deletedAt, null);
+});
+
 test('requires read:site scope for access key site reads', async () => {
   const store = await createSeededStore();
   await store.createSite({

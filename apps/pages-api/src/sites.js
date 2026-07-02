@@ -552,6 +552,17 @@ async function getOwnerSite(store, actor, siteId, environment) {
   }
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  if (site.ownerType === 'team') {
+    if (site.managementRole !== 'admin') {
+      return jsonError(
+        'SITE_POLICY_FORBIDDEN',
+        'Only team admins can manage team site policy.',
+        403,
+        'Use a team admin account.'
+      );
+    }
+    return site;
+  }
   if (site.ownerUserId !== actor.userId) {
     return jsonError('SITE_POLICY_FORBIDDEN', 'Only the site owner can manage site policy.', 403, 'Use the owner account.');
   }
