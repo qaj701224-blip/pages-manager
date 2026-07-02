@@ -40,7 +40,7 @@ async function createRepositoryFixture(fn) {
     await git(work, ['checkout', 'feat/platform-pdev_runner123-test']);
     return await fn({ root, remote, seed, work });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
 
