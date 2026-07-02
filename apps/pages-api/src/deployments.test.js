@@ -2091,6 +2091,116 @@ test('WFP upload metadata binds Pages KV gateway and runtime bindings to user wo
   ]);
 });
 
+test('WFP worker deployment binds office VPC network when tunnel id is configured', async () => {
+  const store = await createSeededStore();
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: undefined,
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+    fetch: async (request) => {
+      requests.push(request);
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload(),
+      { 'Idempotency-Key': 'wfp_vpc_network' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+    { type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'test-office-tunnel-id' },
+  ]);
+});
+
+test('WFP worker-with-assets deployment binds office VPC network when tunnel id is configured', async () => {
+  const store = await createSeededStore();
+  const requests = [];
+  const assetHash = hashAsset(Buffer.from('hello'), 'text/html; charset=utf-8');
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: undefined,
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'cf_secret_token',
+    WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+    fetch: async (request) => {
+      requests.push(request.clone());
+      if (request.url.includes('/assets-upload-session')) {
+        return Response.json({ success: true, result: { jwt: 'upload-jwt', buckets: [[assetHash]] } });
+      }
+      if (request.url.includes('/workers/assets/upload')) {
+        return Response.json({ success: true, result: { jwt: 'completion-jwt' } });
+      }
+      return Response.json({ success: true, result: { id: 'ok' } });
+    },
+  });
+
+  const response = await worker.fetch(
+    publishPlanMultipartRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      {
+        siteSlug: 'guide',
+        requestedFallback: 'auto',
+        source: 'cli',
+        publishPlan: {
+          deploymentShape: 'worker-with-assets',
+          requestedFallback: 'auto',
+          resolvedFallback: 'not-found',
+          routingMode: 'worker-first',
+          workerEntry: '_worker.js',
+          workerMainModuleName: '_worker.js',
+          assetsConfig: { notFoundHandling: '404-page' },
+        },
+        assetManifest: [
+          {
+            path: '/index.html',
+            partName: 'asset-file-0',
+            size: 5,
+            contentType: 'text/html; charset=utf-8',
+          },
+        ],
+        workerModules: [
+          {
+            moduleName: '_worker.js',
+            partName: 'worker-main',
+            size: 18,
+            contentType: 'application/javascript+module',
+          },
+        ],
+        files: [{ field: 'asset-file-0', filename: 'index.html', content: 'hello', type: 'text/html; charset=utf-8' }],
+        worker: {
+          field: 'worker-main',
+          filename: '_worker.js',
+          content: 'export default {};',
+          type: 'application/javascript+module',
+        },
+      },
+      { 'Idempotency-Key': 'wfp_worker_assets_vpc_network' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const uploadRequest = requests.find((request) => request.method === 'PUT');
+  const metadata = JSON.parse(await (await uploadRequest.formData()).get('metadata').text());
+  assert.deepEqual(metadata.bindings, [
+    { type: 'assets', name: 'ASSETS' },
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+    { type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'test-office-tunnel-id' },
+  ]);
+});
+
 test('WFP static asset deployment uses Cloudflare assets upload session and ASSETS binding', async () => {
   const store = await createSeededStore();
   const requests = [];
@@ -2100,6 +2210,7 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
     CF_ACCOUNT_ID: 'account_1',
     CF_API_TOKEN: 'cf_secret_token',
     WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
     fetch: async (request) => {
       requests.push(request.clone());
       if (request.url.includes('/assets-upload-session')) {
@@ -2131,7 +2242,9 @@ test('WFP static asset deployment uses Cloudflare assets upload session and ASSE
   assert.equal(response.status, 201, await response.clone().text());
   assert.ok(
     requests.some((request) =>
-      request.url.includes('/workers/dispatch/namespaces/xd-cell-workers-production/scripts/pages-v2-guide-ver-1/assets-upload-session')
+      request.url.includes(
+        '/workers/dispatch/namespaces/xd-cell-workers-production/scripts/pages-v2-guide-ver-1/assets-upload-session'
+      )
     )
   );
   assert.ok(requests.some((request) => request.url.includes('/workers/assets/upload?base64=true')));

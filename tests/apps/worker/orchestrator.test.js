@@ -71,6 +71,21 @@ test('worker config defaults generated work to staging base ref', () => {
   assert.equal(workerConfig.workerCallbackUrl, 'http://localhost:8788/internal/executor-callback');
 });
 
+test('worker config accepts GitHub App credentials without static installation token', () => {
+  const workerConfig = readWorkerConfig({
+    GITHUB_REPO: 'org/pages-manager',
+    GITHUB_APP_ID: '12345',
+    GITHUB_APP_INSTALLATION_ID: '67890',
+    GITHUB_APP_PRIVATE_KEY_B64: 'base64-private-key-placeholder',
+  });
+
+  assert.equal(workerConfig.github.repoFullName, 'org/pages-manager');
+  assert.equal(workerConfig.github.token, '');
+  assert.equal(workerConfig.github.appId, '12345');
+  assert.equal(workerConfig.github.appInstallationId, '67890');
+  assert.equal(workerConfig.github.appPrivateKeyB64, 'base64-private-key-placeholder');
+});
+
 test('worker config keeps platform workflow ref separate from site workflow ref', () => {
   const workerConfig = readWorkerConfig({
     GITHUB_APP_INSTALLATION_TOKEN: 'ghs_test',

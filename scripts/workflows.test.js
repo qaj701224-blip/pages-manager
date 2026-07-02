@@ -470,9 +470,13 @@ test('platform agent commits newly generated files and scans untracked paths', (
   assert.match(workflow, /grep -Ei "\$\{token_shape_re\}\|\$\{secret_value_re\}"/);
   assert.doesNotMatch(workflow, /grep -Eiv '[^']*\|<\|/);
   assert.doesNotMatch(workflow, /git diff -- \. ':\(exclude\)pnpm-lock\.yaml'/);
-  assert.match(workflow, /git add -A -- \. ':\(exclude\)\.pages-artifacts' ':\(exclude\)\.pages-trusted'/);
-  assert.match(workflow, /if git diff --cached --quiet; then/);
+  assert.match(workflow, /platform-agent-finalize\.mjs/);
+  assert.match(workflow, /PLATFORM_AGENT_RUNNER_PATH: \$\{\{ runner\.temp \}\}\/platform-agent-runner\.mjs/);
+  assert.match(workflow, /AGENT_BRANCH_NAME: \$\{\{ steps\.branch\.outputs\.branch \}\}/);
+  assert.match(workflow, /node "\$RUNNER_TEMP\/platform-agent-finalize\.mjs"/);
+  assert.doesNotMatch(workflow, /git push "https:\/\/x-access-token:\$\{GH_TOKEN\}@github\.com/);
   assert.doesNotMatch(workflow, /if git diff --quiet; then[\s\S]*git add -A -- \./);
+  assert.doesNotMatch(workflow, /git push --force/);
 });
 
 test('platform agent diagnostics artifact excludes prompt and context markdown', () => {
@@ -485,6 +489,21 @@ test('platform agent diagnostics artifact excludes prompt and context markdown',
   assert.match(workflow, /\.pages-artifacts\/platform-agent-failed\.json/);
   assert.doesNotMatch(workflow, /\.pages-artifacts\/platform-agent-\*\.md/);
   assert.doesNotMatch(workflow, /\.pages-artifacts\/platform-agent-\*\.json/);
+});
+
+test('platform agent finalizer excludes runtime artifacts and lets agent repair finalization failures', () => {
+  const finalizer = readWorkflow('scripts/platform-agent-finalize.mjs');
+
+  assert.match(
+    finalizer,
+    /git\(cwd, \['add', '-A', '--', '\.', ':\(exclude\)\.pages-artifacts', ':\(exclude\)\.pages-trusted'\]\)/
+  );
+  assert.match(finalizer, /PLATFORM_AGENT_REPAIR_MODE: 'finalization'/);
+  assert.match(finalizer, /PLATFORM_AGENT_FINALIZATION_CONTEXT_FILE/);
+  assert.match(finalizer, /push_non_fast_forward/);
+  assert.match(finalizer, /invalid_commit_message/);
+  assert.match(finalizer, /base_not_current/);
+  assert.doesNotMatch(finalizer, /push.*--force/);
 });
 
 test('platform agent PR body does not shell-expand workflow input text', () => {
@@ -557,6 +576,15 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-api ${environment}`),
       `${name} renders pages-api ${environment} template`
+    );
+    assert.match(
+      workflow,
+      new RegExp(
+        String.raw`name: Generate Pages API Wrangler config[\s\S]*` +
+          String.raw`PAGES_USER_WORKER_VPC_TUNNEL_ID: \$\{\{ vars\.PAGES_USER_WORKER_VPC_TUNNEL_ID \}\}[\s\S]*` +
+          String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-api`
+      ),
+      `${name} passes the optional user Worker VPC Tunnel ID from GitHub vars`
     );
     assert.match(
       workflow,

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -84,6 +84,7 @@ function contextFromEnv(env) {
     memoryContext: env.MEMORY_CONTEXT || '',
     statusContext: env.STATUS_CONTEXT || '',
     followupContext: env.FOLLOWUP_CONTEXT || '',
+    finalizationFailureContext: finalizationFailureContextFromEnv(env),
   };
 }
 
@@ -107,6 +108,12 @@ async function ensureArtifacts(cwd) {
   const artifactsDir = path.join(cwd, '.pages-artifacts');
   await mkdir(artifactsDir, { recursive: true });
   return artifactsDir;
+}
+
+function finalizationFailureContextFromEnv(env) {
+  const filePath = env.PLATFORM_AGENT_FINALIZATION_CONTEXT_FILE || '';
+  if (filePath && existsSync(filePath)) return trimText(readFileSync(filePath, 'utf8'), LOG_LIMIT);
+  return trimText(env.PLATFORM_AGENT_FINALIZATION_CONTEXT || '', LOG_LIMIT);
 }
 
 async function writeJson(filePath, value) {
@@ -230,7 +237,7 @@ function contextReceived(context) {
 }
 
 function buildTaskMarkdown(context, details) {
-  const { round, maxRounds, repoFiles, diff, previousFailure } = details;
+  const { round, maxRounds, repoFiles, diff, previousFailure, repairMode } = details;
   const contextJson = {
     platformDevItemId: context.platformDevItemId,
     mode: context.agentMode,
@@ -260,6 +267,15 @@ function buildTaskMarkdown(context, details) {
     '- Do not write files under `.git/`, `.pages-artifacts/`, `.pages-trusted/`, `node_modules/`, `dist/`, `build/`, local env files, or `wrangler.toml`.',
     '- Keep documentation and code synchronized. Normal Markdown docs must stay under 700 lines.',
     '- When this is a fix round, address the review/comment context directly and keep the PR branch moving forward.',
+    repairMode
+      ? '- This is a workflow finalization repair round: fix local git state or metadata so the workflow can commit/push/open the PR on the next attempt.'
+      : '',
+    repairMode
+      ? '- You may run local git fetch/rebase/status/log and amend the local Platform Agent commit message. Do not push, force-push, merge PRs, or change protected branches.'
+      : '',
+    repairMode
+      ? '- For non-fast-forward push failures, rebase the current branch onto the latest matching origin branch or latest base ref as appropriate, resolve conflicts, and leave the worktree ready for the workflow retry.'
+      : '',
     '',
     '## Structured Context',
     '',
@@ -289,6 +305,14 @@ function buildTaskMarkdown(context, details) {
     '',
     trimText(context.statusContext) || '(none)',
     '',
+    repairMode
+      ? [
+          '## Workflow Finalization Failure',
+          '',
+          trimText(context.finalizationFailureContext || previousFailure?.log || '', LOG_LIMIT) || '(none)',
+          '',
+        ].join('\n')
+      : '',
     previousFailure
       ? ['## Previous Validation Failure', '', trimText(previousFailure.log, LOG_LIMIT), ''].join('\n')
       : '## Previous Validation Failure\n\n(none)\n',
@@ -302,9 +326,13 @@ function buildTaskMarkdown(context, details) {
     '',
     '## Completion Criteria',
     '',
-    '- Relevant files are changed directly in the repo worktree.',
+    repairMode
+      ? '- Local git state is repaired so the workflow can retry commit/push/PR finalization without force-pushing.'
+      : '- Relevant files are changed directly in the repo worktree.',
     '- Validation commands pass or the remaining failure is explained in the final response.',
-    '- `git diff --name-only` shows the intended code/docs/test changes.',
+    repairMode
+      ? '- It is acceptable for `git diff --name-only` to be empty if the repair only rebased or amended Git metadata.'
+      : '- `git diff --name-only` shows the intended code/docs/test changes.',
     '',
   ].join('\n');
 }
@@ -321,6 +349,8 @@ async function writeTaskFiles(cwd, context, details) {
   await writeJson(path.join(artifactsDir, 'platform-agent-context.json'), {
     ...context,
     contextReceived: contextReceived(context),
+    repairMode: Boolean(details.repairMode),
+    finalizationFailureContextReceived: Boolean(context.finalizationFailureContext),
   });
   return taskPath;
 }
@@ -605,12 +635,22 @@ export async function runPlatformAgentRunner(options = {}) {
   validateContext(context);
   await ensureArtifacts(cwd);
 
-  const maxRounds = options.maxRounds || numberFromEnv(env.PLATFORM_AGENT_MAX_ROUNDS, DEFAULT_MAX_ROUNDS);
+  const repairMode = Boolean(options.repairMode || env.PLATFORM_AGENT_REPAIR_MODE === 'finalization');
+  const defaultMaxRounds = repairMode
+    ? numberFromEnv(env.PLATFORM_AGENT_FINALIZATION_REPAIR_MAX_ROUNDS, DEFAULT_MAX_ROUNDS)
+    : DEFAULT_MAX_ROUNDS;
+  const maxRounds = options.maxRounds || numberFromEnv(env.PLATFORM_AGENT_MAX_ROUNDS, defaultMaxRounds);
   const backend = resolveBackend(options, env);
   const runChecks = options.runChecks || runDefaultChecks;
   const allChecks = [];
   const rounds = [];
-  let previousFailure = null;
+  let previousFailure = repairMode && context.finalizationFailureContext
+    ? {
+        round: 0,
+        checks: [],
+        log: context.finalizationFailureContext,
+      }
+    : null;
   let finalChangedFiles = [];
 
   for (let round = 1; round <= maxRounds; round += 1) {
@@ -618,6 +658,7 @@ export async function runPlatformAgentRunner(options = {}) {
       round,
       maxRounds,
       previousFailure,
+      repairMode,
     });
     let backendResult;
     try {
@@ -652,6 +693,7 @@ export async function runPlatformAgentRunner(options = {}) {
           rounds: [...rounds, failedRound],
           checks: allChecks,
           changedFiles: finalChangedFiles,
+          repairMode,
           failed: true,
           failureReason: 'backend_failed',
         })
@@ -668,7 +710,7 @@ export async function runPlatformAgentRunner(options = {}) {
     };
     rounds.push(roundInfo);
 
-    if (!finalChangedFiles.length) {
+    if (!finalChangedFiles.length && !repairMode) {
       const message =
         'Platform Agent backend produced no repository changes. Inspect existing files before editing and modify tracked files directly in the repo worktree.';
       await writeDebug(cwd, {
@@ -684,6 +726,7 @@ export async function runPlatformAgentRunner(options = {}) {
           rounds,
           checks: allChecks,
           changedFiles: finalChangedFiles,
+          repairMode,
           failed: true,
           failureReason: 'no_git_diff',
         })
@@ -704,6 +747,7 @@ export async function runPlatformAgentRunner(options = {}) {
         rounds,
         checks: allChecks,
         changedFiles: finalChangedFiles,
+        repairMode,
       });
       await writeReport(cwd, report);
       return { context, report };
@@ -720,6 +764,7 @@ export async function runPlatformAgentRunner(options = {}) {
     rounds,
     checks: allChecks,
     changedFiles: finalChangedFiles,
+    repairMode,
     failed: true,
   });
   await writeReport(cwd, report);

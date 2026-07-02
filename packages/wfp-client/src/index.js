@@ -292,6 +292,15 @@ function normalizeWorkerBinding(binding) {
       text: binding.text,
     };
   }
+  if (binding.type === 'vpc_network') {
+    const tunnelId = String(binding.tunnel_id || '').trim();
+    if (!tunnelId) throw new Error('WORKER_VPC_TUNNEL_ID_INVALID');
+    return {
+      type: 'vpc_network',
+      name,
+      tunnel_id: tunnelId,
+    };
+  }
   throw new Error('WORKER_BINDING_TYPE_INVALID');
 }
 

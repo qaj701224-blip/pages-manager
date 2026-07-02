@@ -1,4 +1,4 @@
-import { githubApiUrl, githubRequest, parseRepoFullName } from '@xd/git-client';
+import { githubApiUrl, githubConfigFromEnv, githubRequest, hasGithubAuthConfig, parseRepoFullName } from '@xd/git-client';
 
 import { notifySlackJobStatus } from '../slack/notifier.js';
 import { issueUrl } from './webhook.js';
@@ -36,25 +36,17 @@ export async function cancelJobForClosedGithubPr(store, job, pullRequest = {}) {
 }
 
 function gatewayGithubConfig(env = {}) {
-  const token = env.GITHUB_STATUS_TOKEN || env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
-  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
-  if (!token || !repoFullName) return null;
-  return {
-    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
-    token,
-    repoFullName,
-  };
+  const config = githubConfigFromEnv(env, {
+    tokenKeys: ['GITHUB_STATUS_TOKEN', 'GITHUB_APP_INSTALLATION_TOKEN', 'GITHUB_TOKEN'],
+  });
+  return config.repoFullName && hasGithubAuthConfig(config) ? config : null;
 }
 
 function gatewayGithubWriteConfig(env = {}) {
-  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN || env.GITHUB_STATUS_TOKEN;
-  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
-  if (!token || !repoFullName) return null;
-  return {
-    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
-    token,
-    repoFullName,
-  };
+  const config = githubConfigFromEnv(env, {
+    tokenKeys: ['GITHUB_APP_INSTALLATION_TOKEN', 'GITHUB_TOKEN', 'GITHUB_STATUS_TOKEN'],
+  });
+  return config.repoFullName && hasGithubAuthConfig(config) ? config : null;
 }
 
 function githubIssueIsClosed(issue = {}) {

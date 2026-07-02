@@ -75,6 +75,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_ID: ${{ vars.PAGES_V2_D1_DATABASE_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
+          PAGES_USER_WORKER_VPC_TUNNEL_ID: ${{ vars.PAGES_USER_WORKER_VPC_TUNNEL_ID }}
           ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-api staging
 

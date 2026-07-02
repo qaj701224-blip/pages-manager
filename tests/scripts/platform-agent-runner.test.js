@@ -289,6 +289,38 @@ test('runs a second fix round when the first check fails and includes failure lo
   });
 });
 
+test('finalization repair mode includes git failure context and allows no file diff', async () => {
+  await withFixture(async (cwd) => {
+    const contexts = [];
+
+    await runPlatformAgentRunner({
+      cwd,
+      env: {
+        ...baseEnv,
+        PLATFORM_AGENT_REPAIR_MODE: 'finalization',
+        PLATFORM_AGENT_FINALIZATION_CONTEXT:
+          'Failure kind: push_non_fast_forward\nerror: failed to push some refs\ncommit message must match convention',
+      },
+      maxRounds: 1,
+      backend: createBackend(async ({ taskPath }) => {
+        const task = await readFile(taskPath, 'utf8');
+        contexts.push(task);
+        assert.match(task, /workflow finalization repair round/i);
+        assert.match(task, /push_non_fast_forward/);
+        assert.match(task, /failed to push some refs/);
+        assert.match(task, /amend the local Platform Agent commit message/i);
+        assert.match(task, /Do not push, force-push, merge PRs/i);
+      }),
+      runChecks: async () => ({ ok: true, name: 'mock-check', log: 'checks passed' }),
+    });
+
+    const report = await readReport(cwd);
+    assert.equal(contexts.length, 1);
+    assert.equal(report.repairMode, true);
+    assert.deepEqual(report.changedFiles, []);
+  });
+});
+
 test('second fix round includes staged changes in current diff context', async () => {
   await withFixture(async (cwd) => {
     const tasks = [];
@@ -326,7 +358,8 @@ test('default validation checks run with workflow secrets scrubbed', async () =>
       env: {
         ...baseEnv,
         PLATFORM_AGENT_CHECK_COMMANDS:
-          'node -e "if (process.env.GITHUB_TOKEN || process.env.AGENT_CODE_API_KEY || process.env.PAGES_CALLBACK_TOKEN) process.exit(7)"',
+          'node -e "if (process.env.GITHUB_TOKEN || process.env.AGENT_CODE_API_KEY ' +
+          '|| process.env.PAGES_CALLBACK_TOKEN) process.exit(7)"',
         GITHUB_TOKEN: 'ghs_should_not_leak',
         PAGES_CALLBACK_TOKEN: 'callback_should_not_leak',
       },

@@ -1,9 +1,4 @@
-function required(value, name) {
-  if (!value) {
-    throw new Error(`${name} is required`);
-  }
-  return value;
-}
+import { githubConfigFromEnv, requireGithubConfig } from '@xd/git-client';
 
 function readBooleanEnv(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -41,10 +36,6 @@ export function readWorkerConfig(env = process.env) {
     workerCallbackUrl: internalCallbackUrl,
     callbackToken: env.INTERNAL_CALLBACK_TOKEN || '',
     workerSharedSecret: env.PAGES_WORKER_SHARED_SECRET || '',
-    github: {
-      apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
-      token: required(env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN, 'GITHUB_APP_INSTALLATION_TOKEN'),
-      repoFullName: required(env.GITHUB_REPO || env.GITHUB_REPOSITORY, 'GITHUB_REPO'),
-    },
+    github: requireGithubConfig(githubConfigFromEnv(env), { name: 'GitHub' }),
   };
 }

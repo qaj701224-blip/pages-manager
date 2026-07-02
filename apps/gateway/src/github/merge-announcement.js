@@ -3,7 +3,6 @@ import { redactSecretLikeText } from '../slack/text.js';
 
 const DEFAULT_BASE_REFS = ['master'];
 const MAX_TEXT = 2900;
-const FORBIDDEN_SUMMARY_RE = /\b(gateway|worker|mysql|status card|job id|callback)\b/i;
 
 function envFlag(value, defaultValue = false) {
   if (value === undefined || value === null || value === '') return defaultValue;
@@ -51,8 +50,7 @@ function validateSummaryText(summary = {}) {
   ]
     .filter(Boolean)
     .join('\n');
-  if (!text) return false;
-  return !FORBIDDEN_SUMMARY_RE.test(text);
+  return Boolean(text);
 }
 
 function stripConventionalPrefix(title) {
@@ -182,7 +180,7 @@ function normalizeAgentSummary(rawSummary = {}, fallback = {}) {
     .filter(Boolean)
     .slice(0, 5);
 
-  if (!headline || summaryBullets.length < 3) return null;
+  if (!headline || summaryBullets.length < 1) return null;
   const summary = {
     source: 'agent',
     headline,

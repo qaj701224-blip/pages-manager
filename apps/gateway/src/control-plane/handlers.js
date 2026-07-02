@@ -1,5 +1,5 @@
 import { jsonResponse } from '@xd/worker-kit';
-import { createIssueComment } from '@xd/git-client';
+import { createIssueComment, githubConfigFromEnv, hasGithubAuthConfig } from '@xd/git-client';
 
 import {
   parseGithubWebhookBody,
@@ -1380,14 +1380,8 @@ async function workItemForDiagnosis(store, body, slackSession, toolArgs = {}) {
 }
 
 function githubWriteConfigForSlackDiagnosis(env = {}) {
-  const token = env.GITHUB_APP_INSTALLATION_TOKEN || env.GITHUB_TOKEN;
-  const repoFullName = env.GITHUB_REPO || env.GITHUB_REPOSITORY;
-  if (!token || !repoFullName) return null;
-  return {
-    apiBaseUrl: env.GITHUB_ENTERPRISE_API_BASE_URL || env.GITHUB_API_BASE_URL || 'https://api.github.com',
-    token,
-    repoFullName,
-  };
+  const config = githubConfigFromEnv(env);
+  return config.repoFullName && hasGithubAuthConfig(config) ? config : null;
 }
 
 function issueNumberForWorkItem(item = {}) {
