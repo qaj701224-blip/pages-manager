@@ -1869,7 +1869,10 @@ function publicProviderErrorCode(error, step) {
 
 function actorCanDeploy(actor, site, requiredScope) {
   if (!site) return false;
-  if (actor.type !== 'access_key') return site.ownerUserId === actor.userId;
+  if (actor.type !== 'access_key') {
+    if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+    return site.ownerUserId === actor.userId;
+  }
   if (actor.siteId && actor.siteId !== site.id) return false;
   if (!actor.scopes.includes(requiredScope)) return false;
   if ((actor.ownerType || 'user') === 'team') return site.ownerType === 'team' && site.ownerId === actor.ownerId;

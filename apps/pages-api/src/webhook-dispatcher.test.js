@@ -40,6 +40,18 @@ test('safe webhook URL validation rejects non-https and private targets', async 
     () => assertSafeWebhookUrl('https://[fd00::1]/hook', { resolveHost: publicResolver }),
     /WEBHOOK_URL_HOST_FORBIDDEN/
   );
+  await assert.rejects(
+    () => assertSafeWebhookUrl('https://[::ffff:127.0.0.1]/hook', { resolveHost: publicResolver }),
+    /WEBHOOK_URL_HOST_FORBIDDEN/
+  );
+  await assert.rejects(
+    () => assertSafeWebhookUrl('https://[::ffff:7f00:1]/hook', { resolveHost: publicResolver }),
+    /WEBHOOK_URL_HOST_FORBIDDEN/
+  );
+  await assert.rejects(
+    () => assertSafeWebhookUrl('https://public.example/hook', { resolveHost: async () => ['::ffff:7f00:1'] }),
+    /WEBHOOK_URL_HOST_FORBIDDEN/
+  );
 
   await assert.doesNotReject(() =>
     assertSafeWebhookUrl('https://hooks.slack.com/services/T/B/C', { resolveHost: publicResolver })

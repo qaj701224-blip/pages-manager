@@ -93,6 +93,84 @@ test('createSite creates owner membership and inactive route authority record', 
   });
 });
 
+test('D1 store filters audit events by environment', async () => {
+  let capturedSql = '';
+  let capturedArgs = [];
+  const db = {
+    prepare(sql) {
+      capturedSql = sql;
+      return {
+        bind(...args) {
+          capturedArgs = args;
+          return {
+            all: async () => ({
+              results: [
+                {
+                  id: 'audit_prod',
+                  environment: 'production',
+                  event_type: 'site_secret.put',
+                  actor_type: 'user',
+                  decision: 'allow',
+                  created_at: '2026-07-02T00:00:00.000Z',
+                },
+              ],
+            }),
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-07-02T00:00:00.000Z' });
+
+  const events = await store.listAuditEvents({ environment: 'production' });
+
+  assert.match(capturedSql, /WHERE environment = \?/);
+  assert.deepEqual(capturedArgs, ['production']);
+  assert.deepEqual(events, [
+    {
+      id: 'audit_prod',
+      environment: 'production',
+      traceId: null,
+      eventType: 'site_secret.put',
+      actorUserId: null,
+      actorType: 'user',
+      siteId: null,
+      routeId: null,
+      versionId: null,
+      decision: 'allow',
+      statusCode: null,
+      ipHash: null,
+      userAgentHash: null,
+      metadata: null,
+      createdAt: '2026-07-02T00:00:00.000Z',
+    },
+  ]);
+});
+
+test('D1 store admin and route lookups avoid unjoined team member aliases', async () => {
+  const capturedSql = [];
+  const db = {
+    prepare(sql) {
+      capturedSql.push(sql);
+      return {
+        bind() {
+          return {
+            all: async () => ({ results: [] }),
+            first: async () => null,
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-07-02T00:00:00.000Z' });
+
+  await store.listAdminSites({ environment: 'production' });
+  await store.getSiteWithRoute('site_1', 'production');
+
+  assert.equal(capturedSql.length, 2);
+  assert.equal(capturedSql.some((sql) => /team_members\.role/.test(sql)), false);
+});
+
 test('createSite writes hostname claim in the same authority operation', async () => {
   const store = createSeededStore();
 
@@ -674,6 +752,7 @@ test('D1 store encrypts site secrets at rest and decrypts enabled secrets for de
 
   await store.recordAuditEvent({
     id: 'aud_1',
+    environment: 'production',
     eventType: 'site_secret.put',
     actorUserId: 'usr_1',
     actorType: 'user',
@@ -685,9 +764,10 @@ test('D1 store encrypts site secrets at rest and decrypts enabled secrets for de
   });
 
   assert.deepEqual(auditRows, [
-    {
-      id: 'aud_1',
-      trace_id: null,
+      {
+        id: 'aud_1',
+        environment: 'production',
+        trace_id: null,
       event_type: 'site_secret.put',
       actor_user_id: 'usr_1',
       actor_type: 'user',
@@ -3062,6 +3142,7 @@ function fakeSiteSecretsRun(rows, auditRows, routes, sql, args) {
   if (/INSERT INTO audit_events/.test(sql) && /FROM site_secrets/.test(sql)) {
     const [
       id,
+      environment,
       traceId,
       eventType,
       actorUserId,
@@ -3091,6 +3172,7 @@ function fakeSiteSecretsRun(rows, auditRows, routes, sql, args) {
     if (!matches) return { meta: { changes: 0 } };
     auditRows.push({
       id,
+      environment,
       trace_id: traceId,
       event_type: eventType,
       actor_user_id: actorUserId,
@@ -3110,6 +3192,7 @@ function fakeSiteSecretsRun(rows, auditRows, routes, sql, args) {
   if (/INSERT INTO audit_events/.test(sql)) {
     const [
       id,
+      environment,
       traceId,
       eventType,
       actorUserId,
@@ -3126,6 +3209,7 @@ function fakeSiteSecretsRun(rows, auditRows, routes, sql, args) {
     ] = args;
     auditRows.push({
       id,
+      environment,
       trace_id: traceId,
       event_type: eventType,
       actor_user_id: actorUserId,

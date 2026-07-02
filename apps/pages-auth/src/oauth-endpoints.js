@@ -615,26 +615,7 @@ async function hydrateDepartmentAfterSso(env, config, profile) {
     }
   }
 
-  if (!env?.PAGES_API?.fetch) return null;
-  if (!profile?.userId || !profile?.email) return null;
-
-  try {
-    const response = await env.PAGES_API.fetch(
-      new Request('https://pages-api.internal/.xd-pages/internal/users/hydrate-department', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: profile.userId,
-          email: profile.email,
-          environment: config.environment,
-        }),
-      })
-    );
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 async function readAuthSessionUserProfile(request, env, now) {

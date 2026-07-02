@@ -732,6 +732,7 @@ export class D1PagesStore {
         .bind(target.id, now, actorUserId, normalizeNullableString(reason), now, source.id),
       this.auditEventStatement({
         id: randomStoreId('audit'),
+        environment: source.environment,
         traceId: null,
         eventType: 'admin.department_team.merge',
         actorUserId,
@@ -795,14 +796,24 @@ export class D1PagesStore {
     };
   }
 
-  async listAuditEvents() {
-    const result = await this.db
-      .prepare(
-        `SELECT * FROM audit_events
-        ORDER BY created_at DESC
-        LIMIT 100`
-      )
-      .all();
+  async listAuditEvents({ environment } = {}) {
+    const result = environment
+      ? await this.db
+          .prepare(
+            `SELECT * FROM audit_events
+            WHERE environment = ?
+            ORDER BY created_at DESC
+            LIMIT 100`
+          )
+          .bind(environment)
+          .all()
+      : await this.db
+          .prepare(
+            `SELECT * FROM audit_events
+            ORDER BY created_at DESC
+            LIMIT 100`
+          )
+          .all();
     return (result.results || []).map(mapAuditEvent);
   }
 
@@ -1858,16 +1869,18 @@ export class D1PagesStore {
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
         FROM sites
-        ${accessKeyActor ? '' : 'JOIN site_members ON site_members.site_id = sites.id'}
+        LEFT JOIN site_members ON site_members.site_id = sites.id AND site_members.user_id = ?
+        LEFT JOIN team_members ON team_members.team_id = sites.owner_id
+          AND team_members.user_id = ? AND team_members.removed_at IS NULL
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
-        WHERE sites.id = ?${accessKeyActor ? '' : ' AND site_members.user_id = ?'} AND sites.deleted_at IS NULL` +
+        WHERE sites.id = ? AND sites.deleted_at IS NULL
+          AND (
+            site_members.user_id IS NOT NULL
+            OR (sites.owner_type = 'team' AND team_members.user_id IS NOT NULL)
+          )` +
           (environment ? ' AND sites.environment = ?' : '')
       )
-      .bind(
-        ...(environment
-          ? [siteId, ...(accessKeyActor ? [] : [userId]), environment]
-          : [siteId, ...(accessKeyActor ? [] : [userId])])
-      )
+      .bind(...(environment ? [userId, userId, siteId, environment] : [userId, userId, siteId]))
       .first();
     return row ? mapSiteWithJoinedRoute(row) : null;
   }
@@ -2777,6 +2790,7 @@ export class D1PagesStore {
     const now = input.createdAt || this.now();
     const record = {
       id: input.id,
+      environment: input.environment || input.metadata?.environment || null,
       traceId: input.traceId || null,
       eventType: input.eventType,
       actorUserId: input.actorUserId || null,
@@ -2796,15 +2810,17 @@ export class D1PagesStore {
   }
 
   auditEventStatement(record) {
+    const environment = record.environment || record.metadata?.environment || null;
     return this.db
       .prepare(
         `INSERT INTO audit_events (
-          id, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
+          id, environment, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
           decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
+        environment,
         record.traceId,
         record.eventType,
         record.actorUserId,
@@ -2825,15 +2841,16 @@ export class D1PagesStore {
     return this.db
       .prepare(
         `INSERT INTO audit_events (
-          id, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
+          id, environment, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
           decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
         )
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         FROM site_secrets
         WHERE id = ? AND revision = ? AND encrypted_value = ? AND updated_at = ? AND deleted_at IS NULL`
       )
       .bind(
         record.id,
+        record.environment || record.metadata?.environment || null,
         record.traceId,
         record.eventType,
         record.actorUserId,
@@ -2858,15 +2875,16 @@ export class D1PagesStore {
     return this.db
       .prepare(
         `INSERT INTO audit_events (
-          id, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
+          id, environment, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
           decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
         )
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         FROM site_secrets
         WHERE id = ? AND revision = ? AND deleted_at = ?`
       )
       .bind(
         record.id,
+        record.environment || record.metadata?.environment || null,
         record.traceId,
         record.eventType,
         record.actorUserId,
@@ -3717,6 +3735,7 @@ function mapConsoleDirectorySite(row) {
 
 function mapSiteWithJoinedRoute(row) {
   const site = mapSite(row);
+  if (row.management_role !== undefined) site.managementRole = row.management_role || null;
   site.route = row.route_id
     ? {
         id: row.route_id,
@@ -3839,6 +3858,7 @@ function mapPlatformAdmin(row) {
 function mapAuditEvent(row) {
   return {
     id: row.id,
+    environment: row.environment || null,
     traceId: row.trace_id || null,
     eventType: row.event_type,
     actorUserId: row.actor_user_id || null,
@@ -4134,6 +4154,7 @@ function base64UrlDecode(value) {
 function secretAuditEvent(input, eventType, secret, createdAt) {
   return {
     id: input.auditId,
+    environment: input.environment,
     traceId: null,
     eventType,
     actorUserId: input.actorId,
@@ -4156,6 +4177,7 @@ function secretAuditEvent(input, eventType, secret, createdAt) {
 function platformAdminAuditEvent(input, eventType, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: input.environment,
     traceId: null,
     eventType,
     actorUserId: input.actorUserId,
@@ -4178,6 +4200,7 @@ function platformAdminAuditEvent(input, eventType, createdAt) {
 function departmentTeamAuditEvent(team, eventType, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: team.environment,
     traceId: null,
     eventType,
     actorUserId: 'system:xds',
@@ -4201,6 +4224,7 @@ function departmentTeamAuditEvent(team, eventType, createdAt) {
 function departmentMembershipAuditEvent(input, eventType, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: input.environment,
     traceId: null,
     eventType,
     actorUserId: 'system:xds',
@@ -4225,6 +4249,7 @@ function departmentMembershipAuditEvent(input, eventType, createdAt) {
 function departmentMembershipMigrationAuditEvent(input, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: input.environment,
     traceId: null,
     eventType: 'system.department_membership.migrate',
     actorUserId: 'system:xds',
@@ -4251,6 +4276,7 @@ function departmentMembershipMigrationAuditEvent(input, createdAt) {
 function teamDeleteAuditEvent(team, blockingAssets, actorUserId, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: team.environment,
     traceId: null,
     eventType: 'team.delete',
     actorUserId: actorUserId || null,

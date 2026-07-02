@@ -97,6 +97,7 @@ function isForbiddenHostname(hostname) {
 
 function isForbiddenAddress(value) {
   const address = normalizeHostname(value);
+  if (isIpv4MappedIpv6(address)) return true;
   const mappedIpv4 = readIpv4MappedFromIpv6(address);
   if (mappedIpv4) return isForbiddenIpv4(mappedIpv4);
   if (isIpv4(address)) return isForbiddenIpv4(address);
@@ -146,4 +147,8 @@ function isForbiddenIpv6(address) {
 function readIpv4MappedFromIpv6(address) {
   const match = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
   return match ? match[1] : null;
+}
+
+function isIpv4MappedIpv6(address) {
+  return /^::ffff:/i.test(address);
 }

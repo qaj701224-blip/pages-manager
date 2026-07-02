@@ -452,6 +452,7 @@ class TestPagesStore {
 
     await this.recordAuditEvent({
       id: randomStoreId('audit'),
+      environment: source.environment,
       eventType: 'admin.department_team.merge',
       actorUserId,
       actorType: 'user',
@@ -940,8 +941,17 @@ class TestPagesStore {
       return cloneRecord(this.decorateAccessKeySite(actor, site));
     }
     const members = this.siteMembers.get(siteId) || [];
-    if (!members.some((member) => member.userId === userId)) return null;
-    return cloneRecord(site);
+    if (members.some((member) => member.userId === userId)) return cloneRecord(site);
+    if (site.ownerType === 'team') {
+      const member = this.teamMembers.get(teamMemberKey(site.ownerId, userId));
+      if (member && !member.removedAt) {
+        return cloneRecord({
+          ...site,
+          managementRole: member.role,
+        });
+      }
+    }
+    return null;
   }
 
   accessKeyCanSeeSite(actor, site) {
@@ -1444,6 +1454,7 @@ class TestPagesStore {
     if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
     const record = {
       id: input.id,
+      environment: input.environment || input.metadata?.environment || null,
       traceId: input.traceId || null,
       eventType: input.eventType,
       actorUserId: input.actorUserId || null,
@@ -1462,8 +1473,9 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async listAuditEvents() {
-    return cloneRecord(this.auditEvents);
+  async listAuditEvents({ environment } = {}) {
+    const events = environment ? this.auditEvents.filter((event) => event.environment === environment) : this.auditEvents;
+    return cloneRecord(events);
   }
 
   async activateSiteVersion(
@@ -1940,6 +1952,7 @@ function randomStoreId(prefix) {
 function secretAuditEvent(input, eventType, secret, createdAt) {
   return {
     id: input.auditId,
+    environment: input.environment,
     traceId: null,
     eventType,
     actorUserId: input.actorId,
@@ -1962,6 +1975,7 @@ function secretAuditEvent(input, eventType, secret, createdAt) {
 function platformAdminAuditEvent(input, eventType, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: input.environment,
     traceId: null,
     eventType,
     actorUserId: input.actorUserId,
@@ -1984,6 +1998,7 @@ function platformAdminAuditEvent(input, eventType, createdAt) {
 function departmentTeamAuditEvent(team, eventType, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: team.environment,
     traceId: null,
     eventType,
     actorUserId: 'system:xds',
@@ -2007,6 +2022,7 @@ function departmentTeamAuditEvent(team, eventType, createdAt) {
 function departmentMembershipAuditEvent(input, eventType, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: input.environment,
     traceId: null,
     eventType,
     actorUserId: 'system:xds',
@@ -2031,6 +2047,7 @@ function departmentMembershipAuditEvent(input, eventType, createdAt) {
 function departmentMembershipMigrationAuditEvent(input, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: input.environment,
     traceId: null,
     eventType: 'system.department_membership.migrate',
     actorUserId: 'system:xds',
@@ -2057,6 +2074,7 @@ function departmentMembershipMigrationAuditEvent(input, createdAt) {
 function teamDeleteAuditEvent(team, blockingAssets, actorUserId, createdAt) {
   return {
     id: randomStoreId('audit'),
+    environment: team.environment,
     traceId: null,
     eventType: 'team.delete',
     actorUserId: actorUserId || null,

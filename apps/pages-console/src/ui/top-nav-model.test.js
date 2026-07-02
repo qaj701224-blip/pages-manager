@@ -17,7 +17,7 @@ test('top nav user state exposes admin menu for platform admins', () => {
     label: '登录',
     showAdmin: false,
   });
-  assert.deepEqual(readTopNavUserState(null, { forceAdmin: true }), {
+  assert.deepEqual(readTopNavUserState(null), {
     authenticated: false,
     label: '登录',
     showAdmin: false,

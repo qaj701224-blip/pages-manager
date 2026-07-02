@@ -252,6 +252,25 @@ test('routes OAuth authorize and callback public endpoints', async () => {
   assert.match(callbackResponse.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });
 
+test('OAuth logout clears auth session cookie and redirects to console login', async () => {
+  const response = await worker.fetch(
+    new Request(
+      'https://auth.pages.xd.team/.xd-pages/auth/logout?return_to=https%3A%2F%2Fworkers.xd.team%2Flogin%3FloggedOut%3D1'
+    ),
+    testJwtEnv()
+  );
+  const unsafe = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/logout?return_to=https%3A%2F%2Fevil.example%2F'),
+    testJwtEnv()
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get('Location'), 'https://workers.xd.team/login?loggedOut=1');
+  assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=;/);
+  assert.equal(unsafe.status, 302);
+  assert.equal(unsafe.headers.get('Location'), 'https://workers.xd.team/login?loggedOut=1');
+});
+
 test('OAuth callback redirects console login code to console worker callback', async () => {
   const env = {
     ...testJwtEnv(),

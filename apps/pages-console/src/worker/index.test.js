@@ -450,6 +450,18 @@ test('auth login calls pages-auth service binding and redirects to authorize URL
   ]);
 });
 
+test('staging login page is reachable without an existing admin session', async () => {
+  const response = await worker.fetch(
+    request('https://staging.workers.xd.team/login?returnTo=/admin', {
+      headers: { Accept: 'text/html' },
+    }),
+    env({ PAGES_ENV: 'staging' })
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+});
+
 test('auth callback exchanges code, sets host-only console cookie, and redirects to relative returnTo', async () => {
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),
@@ -637,20 +649,21 @@ test('auth session endpoint fails closed when session JWT config is missing', as
   assert.equal((await response.json()).error.code, 'CONSOLE_SESSION_JWT_CONFIG_MISSING');
 });
 
-test('logout clears console session cookie', async () => {
+test('logout clears console session cookie and redirects through pages-auth logout', async () => {
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/auth/logout', {
-      method: 'POST',
       headers: {
         Cookie: 'xd_cell_csrf=csrf-1',
-        Origin: 'https://workers.xd.team',
-        'X-CSRF-Token': 'csrf-1',
       },
     }),
     env()
   );
 
-  assert.equal(response.status, 204);
+  assert.equal(response.status, 302);
+  assert.equal(
+    response.headers.get('Location'),
+    'https://auth.pages.xd.team/.xd-pages/auth/logout?return_to=https%3A%2F%2Fworkers.xd.team%2Flogin%3FloggedOut%3D1'
+  );
   assert.match(response.headers.get('Set-Cookie'), /^xd_cell_session=;/);
   assert.match(response.headers.get('Set-Cookie'), /xd_cell_csrf=;/);
 });

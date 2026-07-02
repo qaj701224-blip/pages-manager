@@ -150,7 +150,7 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
 }
 
 function AccessKeyDialog({ error, ownerType, saving, onClose, onSubmit }) {
-  const [form, setForm] = useState(() => initialAccessKeyForm(ownerType));
+  const [form, setForm] = useState(() => initialAccessKeyForm());
   const ownershipLabel = ownerType === 'team' ? '团队归属' : '个人归属';
 
   const updatePermission = (permission, checked) => {

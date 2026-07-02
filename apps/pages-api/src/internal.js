@@ -1,5 +1,5 @@
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { fetchOrgUsersByEmail } from './org-directory.js';
+import { hydrateUserDepartmentFromDirectory } from './department-hydration.js';
 
 const EMPLOYEE_STATUSES = new Set(['active', 'disabled', 'left', 'unknown']);
 const ENVIRONMENTS = new Set(['production', 'staging', 'local']);
@@ -54,58 +54,22 @@ async function hydrateUserDepartment(request, env, store) {
   const user = await store.getUser(userId);
   if (!user) return jsonError('USER_NOT_FOUND', 'User was not found.', 404);
 
-  const token = typeof env.XDS_OPENAI_TOKEN === 'string' ? env.XDS_OPENAI_TOKEN.trim() : '';
-  if (!token) return unavailableHydration();
-
-  const xdsFetch = resolveXdsFetch(env);
-  if (!xdsFetch) return unavailableHydration();
-
-  let directoryUsers;
-  try {
-    directoryUsers = await fetchOrgUsersByEmail({
-      emails: [email],
-      token,
-      fetchImpl: xdsFetch,
-    });
-  } catch {
-    return unavailableHydration();
-  }
-
-  const directoryUser =
-    directoryUsers.find((item) => item.email === email && item.departmentPath) ||
-    directoryUsers.find((item) => item.departmentPath);
-  const departmentPath = normalizeDepartmentPath(directoryUser?.departmentPath);
-  if (!departmentPath) return unavailableHydration();
-
-  const checkedAt = new Date(readNow(env) * 1000).toISOString();
-  const updatedUser = await store.updateUserDepartmentFromDirectory({
-    userId,
-    departmentPath,
-    departmentCheckedAt: checkedAt,
-  });
-  if (!updatedUser) return jsonError('USER_NOT_FOUND', 'User was not found.', 404);
-
-  const result = await store.hydrateDepartmentMembership({
+  const hydration = await hydrateUserDepartmentFromDirectory({
+    env,
+    store,
     environment,
-    userId,
-    departmentPath,
+    user: { ...user, email },
   });
+  if (hydration.status === 'missing_user') return jsonError('USER_NOT_FOUND', 'User was not found.', 404);
+  if (hydration.status !== 'hydrated') return unavailableHydration();
 
   return jsonOk({
     hydration: {
       status: 'hydrated',
-      departmentPath,
-      teamId: result.team?.id || null,
+      departmentPath: hydration.departmentPath,
+      teamId: hydration.teamId,
     },
   });
-}
-
-function resolveXdsFetch(env) {
-  if (typeof env.XDS_FETCH === 'function') return env.XDS_FETCH;
-  if (env?.XD_OFFICE_NET && typeof env.XD_OFFICE_NET.fetch === 'function') {
-    return env.XD_OFFICE_NET.fetch.bind(env.XD_OFFICE_NET);
-  }
-  return null;
 }
 
 async function upsertUser(request, env, store) {
@@ -238,16 +202,6 @@ function normalizeEnvironment(value) {
 
 function normalizeOptionalString(value) {
   return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeDepartmentPath(value) {
-  return typeof value === 'string'
-    ? value
-        .split('/')
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join('/')
-    : '';
 }
 
 function normalizeOptionalIsoString(value) {

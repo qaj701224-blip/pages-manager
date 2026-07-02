@@ -1,4 +1,5 @@
 import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { hydrateUserDepartmentFromDirectory, shouldHydrateUserDepartment } from './department-hydration.js';
 import { newHexId, newId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
 import {
@@ -25,7 +26,7 @@ export async function handleConsoleApi(request, env, config, store) {
 
   if (url.pathname === `${CONSOLE_PREFIX}/auth/session`) {
     if (request.method !== 'GET') return methodNotAllowed();
-    return validateConsoleAuthSession(config, store, session);
+    return validateConsoleAuthSession(env, config, store, session);
   }
 
   if (url.pathname === `${CONSOLE_PREFIX}/directory`) {
@@ -193,7 +194,7 @@ async function createConsoleSite(request, env, config, store, session) {
   return jsonOk({ site: formatWorkspaceSite(detail || site) }, 201);
 }
 
-async function validateConsoleAuthSession(config, store, session) {
+async function validateConsoleAuthSession(env, config, store, session) {
   if (!session) return consoleAuthRequired();
 
   const user = await store.getUser(session.userId);
@@ -202,6 +203,19 @@ async function validateConsoleAuthSession(config, store, session) {
   }
   if (session.sessionVersion !== user.sessionVersion) {
     return jsonError('CONSOLE_SESSION_STALE', 'Console session is stale.', 401, 'Sign in again.');
+  }
+
+  if (shouldHydrateUserDepartment(user)) {
+    try {
+      await hydrateUserDepartmentFromDirectory({
+        env,
+        store,
+        environment: config.environment,
+        user,
+      });
+    } catch {
+      // Department hydration is best-effort; console session validation remains the source of access control.
+    }
   }
 
   const isPlatformAdmin = await store.isPlatformAdmin({

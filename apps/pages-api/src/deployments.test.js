@@ -1996,6 +1996,60 @@ test('viewer members cannot deploy rollback or manage site secrets', async () =>
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
 });
 
+test('team publishers can deploy team-owned sites with their CLI token', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: 'site_team', siteSlug: undefined }),
+      { 'Idempotency-Key': 'team_publisher_deploy' }
+    ),
+    testEnv(store, createSnapshotStore(), {
+      verifyCliToken: async () => ({
+        sub: 'usr_publisher',
+        purpose: 'cli_token',
+        aud: 'pages-cli',
+        env: 'production',
+        jti: 'cli_publisher',
+      }),
+    })
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal((await response.json()).deployment.siteId, 'site_team');
+});
+
 test('uses bounded WFP worker names for valid long slugs', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',

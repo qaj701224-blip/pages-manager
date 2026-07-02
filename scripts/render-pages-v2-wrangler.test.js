@@ -288,11 +288,11 @@ test('production pages-auth config renders explicit production auth settings onl
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
   assert.doesNotMatch(config, /SSO_ALLOWED_USER_SCOPE/);
+  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+  assert.doesNotMatch(config, /service = "pages-api"/);
   assert.match(config, /binding = "PAGES_METADATA"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
-  assert.doesNotMatch(config, /service = "pages-api"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /service = "pages-api-staging"/);

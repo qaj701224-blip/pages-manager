@@ -579,7 +579,10 @@ async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
 
 function actorCanDeploy(actor, site) {
   if (!site) return false;
-  if (actor.type !== 'access_key') return site.ownerUserId === actor.userId;
+  if (actor.type !== 'access_key') {
+    if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+    return site.ownerUserId === actor.userId;
+  }
   if (actor.siteId && actor.siteId !== site.id) return false;
   if (!actor.scopes.includes('deploy:site')) return false;
   if ((actor.ownerType || 'user') === 'team') return site.ownerType === 'team' && site.ownerId === actor.ownerId;

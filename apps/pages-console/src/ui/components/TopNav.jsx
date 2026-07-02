@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bell, Globe2, KeyRound, LogIn, Moon, ShieldCheck, UserCircle } from 'lucide-react';
+import { Bell, Globe2, KeyRound, LogIn, LogOut, Moon, ShieldCheck, UserCircle } from 'lucide-react';
 
 import { getConsoleEnvironmentBanner, readTopNavUserState } from '../top-nav-model.js';
 
@@ -67,6 +67,9 @@ export function TopNav({ activeSection }) {
             <a className="user-menu" href="/workspace/settings">
               <UserCircle size={18} />
               <span>{userState.label}</span>
+            </a>
+            <a className="icon-button" href="/api/console/auth/logout" aria-label="退出">
+              <LogOut size={18} />
             </a>
           </>
         ) : (

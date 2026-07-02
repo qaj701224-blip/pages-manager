@@ -43,6 +43,10 @@ const siteVarsMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0010_site_vars.sql'),
   'utf8'
 );
+const auditEventsEnvironmentMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0012_audit_events_environment.sql'),
+  'utf8'
+);
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -167,6 +171,12 @@ test('site vars migration adds site-level runtime var store without secret encry
   assert.match(siteVarsMigration, /ON site_vars\(environment, site_id, name\)/);
   assert.match(siteVarsMigration, /WHERE deleted_at IS NULL/);
   assert.doesNotMatch(siteVarsMigration, /encrypted_value|secret_value|DROP TABLE|DELETE FROM/i);
+});
+
+test('audit events environment migration adds queryable environment without deleting history', () => {
+  assert.match(auditEventsEnvironmentMigration, /ALTER TABLE audit_events ADD COLUMN environment TEXT/);
+  assert.match(auditEventsEnvironmentMigration, /CREATE INDEX IF NOT EXISTS idx_audit_events_environment_created/);
+  assert.doesNotMatch(auditEventsEnvironmentMigration, /DROP TABLE|DELETE FROM audit_events/i);
 });
 
 function tableDefinition(sql, tableName) {

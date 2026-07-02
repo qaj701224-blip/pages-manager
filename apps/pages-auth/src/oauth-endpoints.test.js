@@ -442,7 +442,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
   });
 });
 
-test('callback requests department hydration after SSO user sync', async () => {
+test('callback does not call pages-api service binding after SSO user sync', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
   const created = await createStoredOAuthState(oauthStorage, {
@@ -454,7 +454,7 @@ test('callback requests department hydration after SSO user sync', async () => {
     stateId: 'ost_test',
     stateSecret: 'state-secret',
   });
-  const hydrationRequests = [];
+  let pagesApiCalled = false;
   const env = testEnv({
     consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
     createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
@@ -468,13 +468,8 @@ test('callback requests department hydration after SSO user sync', async () => {
       },
     }),
     PAGES_API: {
-      fetch: async (request) => {
-        hydrationRequests.push({
-          url: request.url,
-          method: request.method,
-          headers: Object.fromEntries(request.headers),
-          body: await request.json(),
-        });
+      fetch: async () => {
+        pagesApiCalled = true;
         return Response.json({ hydration: { status: 'hydrated' } });
       },
     },
@@ -494,23 +489,10 @@ test('callback requests department hydration after SSO user sync', async () => {
   );
 
   assert.equal(response.status, 302, await response.clone().text());
-  assert.deepEqual(hydrationRequests, [
-    {
-      url: 'https://pages-api.internal/.xd-pages/internal/users/hydrate-department',
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: {
-        userId: 'usr_123',
-        email: 'user@xd.com',
-        environment: 'production',
-      },
-    },
-  ]);
+  assert.equal(pagesApiCalled, false);
 });
 
-test('callback ignores department hydration failures after SSO user sync', async () => {
+test('callback ignores department hydration hook failures after SSO user sync', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
   const created = await createStoredOAuthState(oauthStorage, {
@@ -534,11 +516,9 @@ test('callback ignores department hydration failures after SSO user sync', async
         employeeStatus: profile.employeeStatus,
       },
     }),
-    PAGES_API: {
-      fetch: async () => {
-        hydrationCalled = true;
-        throw new Error('xds unavailable');
-      },
+    hydrateDepartmentAfterSso: async () => {
+      hydrationCalled = true;
+      throw new Error('xds unavailable');
     },
     fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
     fetchSsoProfile: async () => ({
@@ -558,7 +538,7 @@ test('callback ignores department hydration failures after SSO user sync', async
   assert.equal(hydrationCalled, true);
 });
 
-test('callback ignores invalid department hydration JSON after SSO user sync', async () => {
+test('callback continues when no department hydration hook is configured', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();
   const created = await createStoredOAuthState(oauthStorage, {
@@ -581,9 +561,6 @@ test('callback ignores invalid department hydration JSON after SSO user sync', a
         employeeStatus: profile.employeeStatus,
       },
     }),
-    PAGES_API: {
-      fetch: async () => new Response('not-json', { status: 200 }),
-    },
     fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
     fetchSsoProfile: async () => ({
       userId: 'usr_123',

@@ -83,13 +83,17 @@ function isAuthBridgePath(pathname) {
   return pathname === '/api/console/auth/login' || pathname === '/api/console/auth/callback';
 }
 
+function isPublicConsoleShellPath(pathname) {
+  return pathname === '/login' || pathname.startsWith('/assets/');
+}
+
 function requiresWorkspaceSession(pathname) {
   return pathname === '/workspace' || pathname.startsWith('/workspace/');
 }
 
 function requiresAdminSession(url) {
   if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return true;
-  return isStagingHost(url) && !isAuthBridgePath(url.pathname);
+  return isStagingHost(url) && !isAuthBridgePath(url.pathname) && !isPublicConsoleShellPath(url.pathname);
 }
 
 function redirect(location, headers = {}) {
@@ -153,14 +157,43 @@ async function handleAuthCallback(url, env) {
   });
 }
 
-function handleLogout() {
-  const headers = new Headers({ 'Cache-Control': 'no-store' });
+function handleLogout(url, env) {
+  const headers = new Headers({
+    'Cache-Control': 'no-store',
+    Location: buildAuthLogoutLocation(url, env),
+  });
   headers.append('Set-Cookie', clearConsoleSessionCookie());
   headers.append('Set-Cookie', clearConsoleCsrfCookie());
   return new Response(null, {
-    status: 204,
+    status: 302,
     headers,
   });
+}
+
+function buildAuthLogoutLocation(url, env) {
+  const authBase = normalizeOrigin(env.PUBLIC_AUTH_BASE) || defaultAuthBase(url, env);
+  const consoleBase = normalizeOrigin(env.PUBLIC_CONSOLE_BASE) || url.origin;
+  const returnTo = new URL('/login', consoleBase);
+  returnTo.searchParams.set('loggedOut', '1');
+
+  const logout = new URL('/.xd-pages/auth/logout', authBase);
+  logout.searchParams.set('return_to', returnTo.href);
+  return logout.href;
+}
+
+function normalizeOrigin(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if ((url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password) return url.origin;
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function defaultAuthBase(url, env) {
+  if (env.PAGES_ENV === 'staging' || url.hostname === 'staging.workers.xd.team') return 'https://auth-staging.pages.xd.team';
+  return 'https://auth.pages.xd.team';
 }
 
 function handleSession(session) {
@@ -236,7 +269,7 @@ export default {
 
     if (url.pathname === '/api/console/auth/login') return handleAuthLogin(url, env);
     if (url.pathname === '/api/console/auth/callback') return handleAuthCallback(url, env);
-    if (url.pathname === '/api/console/auth/logout') return handleLogout();
+    if (url.pathname === '/api/console/auth/logout') return handleLogout(url, env);
     if (url.pathname === '/api/console/auth/session') {
       const session = await getSession(request, env);
       if (session?.error) return session.error;

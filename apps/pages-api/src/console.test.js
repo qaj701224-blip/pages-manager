@@ -175,6 +175,51 @@ test('console auth session validates current user, session version, and admin gr
   assert.equal((await stale.json()).error.code, 'CONSOLE_SESSION_STALE');
 });
 
+test('console auth session hydrates missing department team through pages-api XDS binding', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_member',
+    email: 'member@xd.com',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+  });
+  let xdsCalled = false;
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/auth/session', {
+      userId: 'usr_member',
+      email: 'member@xd.com',
+      sessionVersion: 1,
+    }),
+    env(store, {
+      XDS_OPENAI_TOKEN: 'secret-token',
+      now: () => '2026-07-01T10:00:00.000Z',
+      XD_OFFICE_NET: {
+        fetch: async (url, init) => {
+          xdsCalled = true;
+          assert.equal(url, 'https://xds.xindong.com/xds-open-api/v1/oa-user/list-by-email');
+          assert.equal(init.method, 'POST');
+          return Response.json({
+            code: 0,
+            data: [{ email: 'member@xd.com', departmentPath: '心动/平台支撑部/Web' }],
+          });
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(xdsCalled, true);
+  assert.equal((await store.getUser('usr_member')).departmentPath, '心动/平台支撑部/Web');
+  assert.equal((await store.getUser('usr_member')).departmentCheckedAt, '2026-07-01T10:00:00.000Z');
+
+  const teams = await store.listTeamsForUser({ environment: 'production', userId: 'usr_member' });
+  assert.deepEqual(
+    teams.map((team) => [team.name, team.teamType, team.currentUserRole]),
+    [['心动/平台支撑部/Web', 'department', 'admin']]
+  );
+});
+
 test('workspace personal and team sites use owner model and team membership', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {

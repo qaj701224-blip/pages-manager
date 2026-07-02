@@ -311,6 +311,7 @@ export function createSchemaSql() {
     )`,
     `CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,
+      environment TEXT,
       trace_id TEXT,
       event_type TEXT NOT NULL,
       actor_user_id TEXT,
@@ -387,5 +388,7 @@ export function createSchemaSql() {
       ON webhook_deliveries(environment, subscription_id, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_audit_events_site_created
       ON audit_events(site_id, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_audit_events_environment_created
+      ON audit_events(environment, created_at)`,
   ];
 }

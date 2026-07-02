@@ -101,7 +101,7 @@ export async function payloadHash(payload) {
 function renderTemplateValue(value, payload) {
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (Array.isArray(value)) return value.map((item) => renderTemplateValue(item, payload));
-  if (typeof value === 'object' && value) {
+  if (typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, entryValue]) => [key, renderTemplateValue(entryValue, payload)]));
   }
   if (typeof value !== 'string') throw new Error('WEBHOOK_TEMPLATE_VALUE_UNSUPPORTED');
