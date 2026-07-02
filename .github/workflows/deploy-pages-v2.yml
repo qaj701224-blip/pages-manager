@@ -67,6 +67,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_ID: ${{ vars.PAGES_V2_D1_DATABASE_ID }}
+          PAGES_USER_WORKER_VPC_TUNNEL_ID: ${{ vars.PAGES_USER_WORKER_VPC_TUNNEL_ID }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-auth production
 
       - name: Generate Pages KV Gateway Wrangler config
@@ -100,6 +101,7 @@ jobs:
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
         env:
           SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-auth
@@ -147,6 +149,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-auth

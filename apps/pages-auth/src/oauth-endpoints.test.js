@@ -14,6 +14,7 @@ import {
 } from './do-storage.js';
 import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import { createTestPagesStore } from '../../pages-api/src/test-store.js';
 
 const now = 1_800_000_000;
 const coolToneFragments = [
@@ -588,6 +589,86 @@ test('callback propagates hydrated department path into site login code payload'
 
   assert.equal(response.status, 302, await response.clone().text());
   assert.deepEqual(createdSiteCodeInput.user.departments, ['XD/Platform/Web']);
+});
+
+test('callback hydrates department through XDS VPC fetch without pages-api service binding', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const store = createTestPagesStore({ now: () => '2027-01-15T08:00:00.000Z' });
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_test',
+    stateSecret: 'state-secret',
+  });
+  let createdSiteCodeInput;
+  let vpcFetchCalled = false;
+  let pagesApiCalled = false;
+  const env = testEnv({
+    PAGES_STORE: store,
+    XDS_OPENAI_TOKEN: 'secret-token',
+    XD_OFFICE_NET: {
+      fetch: async (url, init = {}) => {
+        vpcFetchCalled = true;
+        assert.equal(url, 'https://xds.xindong.com/xds-open-api/v1/oa-user/list-by-email');
+        assert.equal(init.method, 'POST');
+        return Response.json({
+          code: 0,
+          data: [{ email: 'user@xd.com', departmentPath: '心动/平台支撑部/Web' }],
+        });
+      },
+    },
+    PAGES_API: {
+      fetch: async () => {
+        pagesApiCalled = true;
+        return Response.json({ error: { code: 'UNEXPECTED_PAGES_API_CALL' } }, { status: 500 });
+      },
+    },
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => {
+      createdSiteCodeInput = input;
+      return createStoredOAuthSiteCode(oauthStorage, input);
+    },
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    syncSsoUserProfile: async (profile) => ({
+      user: await store.upsertUserFromSso({
+        userId: profile.userId,
+        email: profile.email,
+        employeeStatus: profile.employeeStatus,
+        departments: profile.departments,
+        sessionVersion: profile.sessionVersion,
+      }),
+    }),
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_123',
+      email: 'user@xd.com',
+      employeeStatus: 'active',
+      sessionVersion: 4,
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(vpcFetchCalled, true);
+  assert.equal(pagesApiCalled, false);
+  assert.deepEqual(createdSiteCodeInput.user.departments, ['心动/平台支撑部/Web']);
+  assert.equal((await store.getUser('usr_123')).departmentPath, '心动/平台支撑部/Web');
+  assert.deepEqual(
+    (await store.listTeamsForUser({ environment: 'production', userId: 'usr_123' })).map((team) => [
+      team.departmentPath,
+      team.currentUserRole,
+    ]),
+    [['心动/平台支撑部/Web', 'admin']]
+  );
 });
 
 test('callback continues when no department hydration hook is configured', async () => {

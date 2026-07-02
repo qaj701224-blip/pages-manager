@@ -3,6 +3,7 @@ import { AUTH_SESSION_COOKIE, buildAuthSessionCookie } from './cookies.js';
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody, safeRedirect } from './http.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import { hydrateUserDepartmentFromDirectory } from '../../pages-api/src/department-hydration.js';
 import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
@@ -618,7 +619,19 @@ async function hydrateDepartmentAfterSso(env, config, profile) {
     }
   }
 
-  return null;
+  try {
+    return await hydrateUserDepartmentFromDirectory({
+      env,
+      store: createPagesStore(env),
+      environment: config.environment,
+      user: {
+        id: profile?.userId,
+        email: profile?.email,
+      },
+    });
+  } catch {
+    return null;
+  }
 }
 
 async function readAuthSessionUserProfile(request, env, now) {

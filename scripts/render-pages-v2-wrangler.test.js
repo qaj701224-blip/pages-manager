@@ -34,6 +34,7 @@ const baseEnv = {
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606',
   PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '2',
+  PAGES_USER_WORKER_VPC_TUNNEL_ID: '',
   PAGES_SESSION_JWT_ACTIVE_KID: 'pages-session-2026-06',
   PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
   PAGES_CAP_JWT_ACTIVE_KID: 'pages-cap-2026-06',
@@ -319,6 +320,19 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
   assert.doesNotMatch(config, /binding = "PAGES_API"/);
   assert.doesNotMatch(config, /service = "pages-api-staging"/);
+});
+
+test('pages-auth config binds XDS outbound requests to the office VPC network when configured', () => {
+  const config = renderPagesAuth('production', {
+    ...baseEnv,
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+  });
+
+  assert.match(config, /\[\[vpc_networks\]\]\nbinding = "XD_OFFICE_NET"\ntunnel_id = "test-office-tunnel-id"/);
+  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+
+  const emptyConfig = renderPagesAuth('staging', withoutEnv('PAGES_USER_WORKER_VPC_TUNNEL_ID'));
+  assert.doesNotMatch(emptyConfig, /\[\[vpc_networks\]\]/);
 });
 
 test('pages-auth config keeps committed ttl, SSO endpoints, and client id defaults', () => {

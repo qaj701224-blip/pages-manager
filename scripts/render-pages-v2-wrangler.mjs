@@ -28,7 +28,7 @@ const REQUIRED_TOKENS_BY_APP = {
 
 const OPTIONAL_TOKENS_BY_APP = {
   'apps/pages-api': ['PAGES_USER_WORKER_VPC_TUNNEL_ID'],
-  'apps/pages-auth': [],
+  'apps/pages-auth': ['PAGES_USER_WORKER_VPC_TUNNEL_ID'],
   'apps/pages-router': ['PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT'],
   'apps/kv-gateway': [],
   'apps/pages-console': [],
@@ -86,6 +86,7 @@ async function renderWrangler(appName, envName) {
     renderNormalWorkerSlotServices(appName, envName, replacements, executionMode)
   );
   rendered = rendered.replaceAll('__PAGES_API_XDS_VPC_NETWORK__', renderPagesApiXdsVpcNetwork(appName, replacements));
+  rendered = rendered.replaceAll('__PAGES_AUTH_XDS_VPC_NETWORK__', renderPagesAuthXdsVpcNetwork(appName, replacements));
 
   assertRenderedConfigPolicy(rendered, appName);
   assertNoUnresolvedPlaceholders(rendered, templatePath);
@@ -225,6 +226,17 @@ service = "${servicePrefix}-${slotNumber}"`);
 
 function renderPagesApiXdsVpcNetwork(appName, replacements) {
   if (appName !== 'apps/pages-api') return '';
+
+  const tunnelId = String(replacements.PAGES_USER_WORKER_VPC_TUNNEL_ID || '').trim();
+  if (!tunnelId) return '';
+
+  return `[[vpc_networks]]
+binding = "XD_OFFICE_NET"
+tunnel_id = "${tunnelId}"`;
+}
+
+function renderPagesAuthXdsVpcNetwork(appName, replacements) {
+  if (appName !== 'apps/pages-auth') return '';
 
   const tunnelId = String(replacements.PAGES_USER_WORKER_VPC_TUNNEL_ID || '').trim();
   if (!tunnelId) return '';

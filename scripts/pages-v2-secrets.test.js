@@ -61,9 +61,10 @@ test('pages-auth secret injection includes SSO secret and session signing secret
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /SSO_CLIENT_SECRET/);
+  assert.match(result.stdout, /XDS_OPENAI_TOKEN/);
   assert.match(result.stdout, /PAGES_SESSION_JWT_SECRET_OLD/);
   assert.match(result.stdout, /PAGES_SESSION_JWT_SECRET_202606/);
-  assert.doesNotMatch(result.stdout, /sso-client-secret|active-session-secret|old-session-secret/);
+  assert.doesNotMatch(result.stdout, /sso-client-secret|xds-openai-token|active-session-secret|old-session-secret/);
 });
 
 test('pages-router secret injection includes session signing and capability signing secrets', () => {

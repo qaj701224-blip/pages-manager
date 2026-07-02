@@ -596,9 +596,10 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       new RegExp(
         String.raw`name: Generate Pages Auth Wrangler config[\s\S]*` +
           String.raw`D1_DATABASE_ID: \$\{\{ vars\.PAGES_V2_D1_DATABASE_ID \}\}[\s\S]*` +
+          String.raw`PAGES_USER_WORKER_VPC_TUNNEL_ID: \$\{\{ vars\.PAGES_USER_WORKER_VPC_TUNNEL_ID \}\}[\s\S]*` +
           String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-auth`
       ),
-      `${name} gives pages-auth the shared metadata D1 id`
+      `${name} gives pages-auth the shared metadata D1 id and XDS VPC tunnel id`
     );
     assert.match(
       workflow,

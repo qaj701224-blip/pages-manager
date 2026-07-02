@@ -217,7 +217,7 @@ case "$APP_DIR" in
     collect_access_key_pepper_secrets
     ;;
   apps/pages-auth)
-    SECRET_NAMES+=(SSO_CLIENT_SECRET)
+    SECRET_NAMES+=(SSO_CLIENT_SECRET XDS_OPENAI_TOKEN)
     collect_session_jwt_secrets
     ;;
   apps/pages-router)
