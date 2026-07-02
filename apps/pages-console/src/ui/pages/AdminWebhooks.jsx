@@ -11,9 +11,6 @@ import {
 
 const EVENT_OPTIONS = [
   { value: 'site.deployed', label: 'site.deployed' },
-  { value: 'site.failed', label: 'site.failed' },
-  { value: 'site.disabled', label: 'site.disabled' },
-  { value: 'team.member.updated', label: 'team.member.updated' },
 ];
 
 const DEFAULT_TEMPLATE = JSON.stringify(

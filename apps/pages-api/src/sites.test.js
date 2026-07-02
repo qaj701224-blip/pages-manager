@@ -441,7 +441,7 @@ test('secrets put updates current active WFP worker without changing active rout
   assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
 });
 
-test('team publishers can manage runtime secrets for team-owned sites', async () => {
+test('team publishers cannot manage runtime secrets for team-owned sites', async () => {
   const store = await createSeededStore();
   await store.createUser({
     userId: 'usr_publisher',
@@ -501,6 +501,57 @@ test('team publishers can manage runtime secrets for team-owned sites', async ()
       name: 'API_TOKEN',
     }),
     publisherEnv
+  );
+
+  assert.equal(put.status, 403, await put.clone().text());
+  assert.equal((await put.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.equal(del.status, 403, await del.clone().text());
+  assert.equal((await del.json()).error.code, 'DEPLOY_FORBIDDEN');
+  assert.deepEqual(providerCalls, []);
+});
+
+test('team admins can manage runtime secrets for team-owned sites', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  const site = await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await activateSite(store, site.id, { workerName: 'pages-v2-team-guide-ver-1' });
+  const providerCalls = [];
+  const adminEnv = testEnv(store, {
+    WFP_PROVIDER: {
+      putSecret: async (input) => providerCalls.push({ operation: 'put', ...input }),
+      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...input }),
+    },
+  });
+
+  const put = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    }),
+    adminEnv
+  );
+  const del = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+    }),
+    adminEnv
   );
 
   assert.equal(put.status, 200, await put.clone().text());

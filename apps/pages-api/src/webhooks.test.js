@@ -68,6 +68,52 @@ test('console admin rejects template payload mode without a restricted template'
   assert.equal((await response.json()).error.code, 'WEBHOOK_TEMPLATE_REQUIRED');
 });
 
+test('console admin rejects webhook events that are not delivered yet', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  const create = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+      method: 'POST',
+      body: {
+        name: 'Unsupported events',
+        url: FULL_WEBHOOK_URL,
+        events: ['site.deployed', 'site.failed'],
+        payloadMode: 'standard',
+      },
+    }),
+    env(store)
+  );
+
+  assert.equal(create.status, 400);
+  assert.equal((await create.json()).error.code, 'WEBHOOK_EVENTS_INVALID');
+
+  await store.createWebhookSubscription({
+    id: 'wh_1',
+    environment: 'production',
+    name: 'Slack deploy events',
+    events: ['site.deployed'],
+    payloadMode: 'standard',
+    restrictedTemplate: null,
+    encryptedUrlCiphertext: 'v1:ciphertext',
+    urlHost: 'hooks.slack.com',
+    urlMasked: 'https://hooks.slack.com/.../token',
+    urlFingerprint: 'sha256:abc',
+    createdByUserId: 'usr_root',
+  });
+  const update = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks/wh_1', {
+      method: 'PATCH',
+      body: {
+        events: ['team.member.updated'],
+      },
+    }),
+    env(store)
+  );
+
+  assert.equal(update.status, 400);
+  assert.equal((await update.json()).error.code, 'WEBHOOK_EVENTS_INVALID');
+});
+
 test('console admin can add a restricted template without resending payloadMode on update', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
   await seedPlatformAdmin(store);

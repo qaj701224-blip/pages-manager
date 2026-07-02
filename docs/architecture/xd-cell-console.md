@@ -205,6 +205,8 @@ XD Cell event
   -> 记录 delivery metadata
 ```
 
+第一版只支持订阅 `site.deployed`。其它平台事件需要等 pages-api 真实产生并投递对应事件后再开放到 Admin Webhook 配置。
+
 第一版不提供额外 signing secret 或 HMAC 签名。`webhookUrl` 自身按 bearer secret 处理：
 
 - 创建后不在列表、详情、投递记录或审计中展示完整 URL。

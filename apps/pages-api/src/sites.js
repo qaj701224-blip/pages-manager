@@ -57,7 +57,7 @@ export async function handleSitesApi(request, env, config, store) {
 }
 
 async function putSiteSecret(request, env, config, store, actor, siteSlug) {
-  const site = await getDeployableSiteBySlug(store, actor, siteSlug, config.environment);
+  const site = await getSecretManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
   if (!store.putSiteSecret) {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -117,7 +117,7 @@ async function putSiteSecret(request, env, config, store, actor, siteSlug) {
 }
 
 async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
-  const site = await getDeployableSiteBySlug(store, actor, siteSlug, config.environment);
+  const site = await getSecretManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
   if (!store.deleteSiteSecret) {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -558,7 +558,7 @@ async function getOwnerSite(store, actor, siteId, environment) {
   return site;
 }
 
-async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
+async function getSecretManageableSiteBySlug(store, actor, siteSlug, environment) {
   const slug = normalizeSlug(siteSlug);
   const slugError = validateSlug(slug, environment);
   if (slugError) return slugError;
@@ -566,30 +566,22 @@ async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
   const visible = await store.getSiteForUser(site.id, actor.userId, actor, environment);
   if (!visible) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug and token scope.');
-  if (!actorCanDeploy(actor, visible)) {
+  if (!actorCanManageSecrets(actor, visible)) {
     return jsonError(
       'DEPLOY_FORBIDDEN',
       'Actor cannot manage runtime secrets for this site.',
       403,
-      'Use a token scoped to deploy this site.'
+      'Use a user CLI token for the personal site owner or a team admin.'
     );
   }
   return visible;
 }
 
-function actorCanDeploy(actor, site) {
+function actorCanManageSecrets(actor, site) {
   if (!site) return false;
-  if (actor.type !== 'access_key') {
-    if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
-    return site.ownerUserId === actor.userId;
-  }
-  if (actor.siteId && actor.siteId !== site.id) return false;
-  if (!actor.scopes.includes('deploy:site')) return false;
-  const ownerType = actor.ownerType || 'user';
-  const ownerId = actor.ownerId || actor.userId;
-  if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
-  if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
-  return (site.ownerId || site.ownerUserId) === ownerId;
+  if (actor.type === 'access_key') return false;
+  if (site.ownerType === 'team') return site.managementRole === 'admin';
+  return (site.ownerUserId || site.ownerId) === actor.userId;
 }
 
 function normalizeSecretNameForResponse(value) {

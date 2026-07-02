@@ -9,6 +9,7 @@ import {
 } from './webhook-payload.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
+const SUPPORTED_WEBHOOK_EVENTS = new Set(['site.deployed']);
 const PAYLOAD_MODES = new Set(['standard', 'template']);
 
 export async function handleConsoleAdminWebhooksApi(request, env, config, store, session) {
@@ -190,6 +191,7 @@ async function updateWebhookSubscription(request, env, config, store, subscripti
   }
   if ('events' in body) {
     const events = normalizeEvents(body.events);
+    if (events instanceof Response) return events;
     if (!events.length) {
       return jsonError('WEBHOOK_EVENTS_INVALID', 'Webhook events are invalid.', 400, 'Choose at least one event.');
     }
@@ -250,6 +252,7 @@ async function normalizeWebhookSubscriptionInput(body, env) {
   if (!name) return jsonError('WEBHOOK_NAME_INVALID', 'Webhook name is invalid.', 400, 'Use a non-empty name.');
 
   const events = normalizeEvents(body.events);
+  if (events instanceof Response) return events;
   if (!events.length) {
     return jsonError('WEBHOOK_EVENTS_INVALID', 'Webhook events are invalid.', 400, 'Choose at least one event.');
   }
@@ -370,7 +373,25 @@ function normalizeName(value) {
 
 function normalizeEvents(value) {
   if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((event) => (typeof event === 'string' ? event.trim() : '')).filter(Boolean))];
+  const events = [];
+  const seen = new Set();
+  for (const item of value) {
+    const event = typeof item === 'string' ? item.trim() : '';
+    if (!event) continue;
+    if (!SUPPORTED_WEBHOOK_EVENTS.has(event)) {
+      return jsonError(
+        'WEBHOOK_EVENTS_INVALID',
+        'Webhook events are invalid.',
+        400,
+        'Use supported events: site.deployed.'
+      );
+    }
+    if (!seen.has(event)) {
+      seen.add(event);
+      events.push(event);
+    }
+  }
+  return events;
 }
 
 function normalizePayloadMode(value) {
