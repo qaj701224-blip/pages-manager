@@ -612,6 +612,77 @@ test('site config writes allow publisher vars but require admin for access and s
   });
 });
 
+test('site admin secret changes sync to active WFP worker', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { workerName: 'pages-v2-mine-ver-1' });
+  const synced = [];
+  const testEnvironment = env(store, {
+    WFP_PROVIDER: {
+      putSecret: async (input) => synced.push(['put', input.workerName, input.name, input.value]),
+      deleteSecret: async (input) => synced.push(['delete', input.workerName, input.name]),
+    },
+  });
+
+  const putSecret = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'super-secret-value' },
+    }),
+    testEnvironment
+  );
+  const deleteSecret = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    testEnvironment
+  );
+
+  assert.equal(putSecret.status, 200, await putSecret.clone().text());
+  assert.equal(deleteSecret.status, 200, await deleteSecret.clone().text());
+  assert.deepEqual(synced, [
+    ['put', 'pages-v2-mine-ver-1', 'API_TOKEN', 'super-secret-value'],
+    ['delete', 'pages-v2-mine-ver-1', 'API_TOKEN'],
+  ]);
+});
+
+test('site admin secret update reports active WFP worker sync failures', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { workerName: 'pages-v2-mine-ver-1' });
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'super-secret-value' },
+    }),
+    env(store, {
+      WFP_PROVIDER: {
+        putSecret: async () => {
+          throw new Error('cloudflare failed');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 502, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
+  assert.equal((await store.listEnabledSiteSecrets('production', 'site_mine'))[0].name, 'API_TOKEN');
+});
+
 test('site admin can update access policy and delete runtime config entries', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
@@ -763,6 +834,33 @@ async function seedSite(store, { id, slug, ownerUserId, ownerType, ownerId, visi
     routeId: `route_${id}`,
     hostname: `${slug}.workers.xd.team`,
   });
+}
+
+async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1' } = {}) {
+  await store.createSiteVersion({
+    id: `ver_${siteId}`,
+    siteId,
+    deploymentId: `dep_${siteId}`,
+    workerName,
+    runtime: 'wfp',
+    artifactRef: `wfp://test/${workerName}`,
+    contentHash: 'sha256:abc',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    createdBy: 'usr_me',
+  });
+  return store.activateSiteVersion(
+    siteId,
+    {
+      activeVersionId: `ver_${siteId}`,
+      workerName,
+      visibility: 'org',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    'production'
+  );
 }
 
 function assertNoSensitiveConsoleFields(value) {

@@ -179,7 +179,7 @@ async function deleteSiteSecretWithAudit(store, env, input) {
   throw new Error('RUNTIME_SECRET_STORE_UNAVAILABLE');
 }
 
-async function syncActiveWfpSecret(store, env, config, site, input) {
+export async function syncActiveWfpSecret(store, env, config, site, input) {
   if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') return null;
 
   const route = await store.getRouteBySiteId(site.id, config.environment);

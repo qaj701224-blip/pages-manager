@@ -124,6 +124,8 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
   );
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_SITE_FORBIDDEN'));
+  assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_INVALID'));
+  assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_TOO_LONG'));
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email', 'department']);
   assert.deepEqual(body.components.schemas.SiteVisibility.enum, ['internal', 'org', 'acl', 'owner', 'disabled']);

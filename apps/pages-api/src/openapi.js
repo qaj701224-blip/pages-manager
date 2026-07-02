@@ -423,6 +423,8 @@ export function buildOpenApi(config) {
           summary: 'Create a site-scoped access key',
           'x-error-codes': [
             'ACCESS_KEY_CREATE_FORBIDDEN',
+            'ACCESS_KEY_EXPIRY_INVALID',
+            'ACCESS_KEY_EXPIRY_TOO_LONG',
             'ACCESS_KEY_NAME_INVALID',
             'ACCESS_KEY_SCOPE_INVALID',
             'ACCESS_KEY_SITE_REQUIRED',

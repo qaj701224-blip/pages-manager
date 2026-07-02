@@ -10,6 +10,7 @@ import {
   restoreSiteAclAfterSnapshotFailure,
   restoreSiteVisibilityAfterSnapshotFailure,
   siteCreateErrorResponse,
+  syncActiveWfpSecret,
   validateSlug,
 } from './sites.js';
 
@@ -362,6 +363,12 @@ async function putSiteSecret(request, env, config, store, session, siteId, name)
     auditId: nextId(env, 'aud'),
     updatedAt: readNow(env),
   });
+  const syncError = await syncActiveWfpSecret(store, env, config, site, {
+    operation: 'put',
+    name: normalizedName,
+    value: body.value,
+  });
+  if (syncError) return syncError;
   return jsonOk({ secret: formatSiteSecret(secret) });
 }
 
@@ -385,6 +392,11 @@ async function deleteSiteSecret(env, config, store, session, siteId, name) {
     auditId: nextId(env, 'aud'),
     deletedAt: readNow(env),
   });
+  const syncError = await syncActiveWfpSecret(store, env, config, site, {
+    operation: 'delete',
+    name: normalizedName,
+  });
+  if (syncError) return syncError;
   return jsonOk({ secret: { name: normalizedName, deleted: true } });
 }
 
