@@ -4,14 +4,17 @@ import * as Select from '@radix-ui/react-select';
 import * as Tabs from '@radix-ui/react-tabs';
 import { Check, ChevronDown, X } from 'lucide-react';
 
-export function SelectField({ label, value, options, disabled = false, onChange }) {
+import { radixValueToSelectValue, selectValueToRadixValue } from '../select-model.js';
+
+export function SelectField({ label, value, options, disabled = false, className = '', onChange }) {
   const selected = options.find((option) => option.value === value) || options[0];
+  const rootValue = selectValueToRadixValue(value);
   return (
-    <label className="field">
+    <label className={className ? `field ${className}` : 'field'}>
       {label ? <span>{label}</span> : null}
-      <Select.Root value={value} disabled={disabled} onValueChange={onChange}>
+      <Select.Root value={rootValue} disabled={disabled} onValueChange={(nextValue) => onChange(radixValueToSelectValue(nextValue))}>
         <Select.Trigger className="radix-select-trigger" aria-label={label}>
-          <Select.Value>{selected?.label}</Select.Value>
+          <Select.Value placeholder={selected?.label} />
           <Select.Icon>
             <ChevronDown size={16} />
           </Select.Icon>
@@ -20,7 +23,7 @@ export function SelectField({ label, value, options, disabled = false, onChange 
           <Select.Content className="radix-select-content" position="popper" sideOffset={6}>
             <Select.Viewport>
               {options.map((option) => (
-                <Select.Item className="radix-select-item" key={option.value} value={option.value}>
+                <Select.Item className="radix-select-item" key={`${option.value}:${option.label}`} value={selectValueToRadixValue(option.value)}>
                   <Select.ItemIndicator className="radix-select-item__indicator">
                     <Check size={13} />
                   </Select.ItemIndicator>

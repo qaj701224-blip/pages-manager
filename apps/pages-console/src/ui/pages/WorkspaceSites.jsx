@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchJson } from '../api.js';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { SelectField } from '../components/RadixPrimitives.jsx';
+import { buildTeamFilterOptions } from '../team-list-model.js';
 import { PageHeading, SiteWaterfall } from './SitesDirectory.jsx';
 
 export function WorkspaceSites({ owner = 'personal', sessionState }) {
@@ -54,8 +55,14 @@ export function WorkspaceSites({ owner = 'personal', sessionState }) {
     <div className="workspace-layout">
       <Sidebar active={active} sessionState={sessionState} />
       <main className="page workspace-page">
-        <PageHeading title={ownerLabel} meta="工作台" />
-        {owner === 'team' ? <TeamSitesFilter teamsState={teamsState} teamId={teamId} onTeamIdChange={setTeamId} /> : null}
+        {owner === 'team' ? (
+          <div className="page-heading-row workspace-sites-heading">
+            <PageHeading title={ownerLabel} meta="工作台" />
+            <TeamSitesFilter teamsState={teamsState} teamId={teamId} onTeamIdChange={setTeamId} />
+          </div>
+        ) : (
+          <PageHeading title={ownerLabel} meta="工作台" />
+        )}
         <SiteWaterfall state={state} />
       </main>
     </div>
@@ -66,15 +73,12 @@ function TeamSitesFilter({ teamsState, teamId, onTeamIdChange }) {
   if (teamsState.status === 'error') return <div className="form-error">无法加载团队筛选</div>;
 
   return (
-    <section className="list-filter-bar" aria-label="团队站点筛选">
+    <section className="list-filter-bar team-sites-filter" aria-label="团队站点筛选">
       <SelectField
         label="团队"
         disabled={teamsState.status === 'loading'}
         value={teamId}
-        options={[
-          { value: '', label: '全部团队' },
-          ...teamsState.teams.map((team) => ({ value: team.id, label: team.name })),
-        ]}
+        options={buildTeamFilterOptions(teamsState.teams)}
         onChange={onTeamIdChange}
       />
     </section>

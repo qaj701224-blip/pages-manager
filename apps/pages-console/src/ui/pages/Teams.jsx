@@ -6,6 +6,7 @@ import { createTeam, deleteTeam, fetchJson, removeTeamMember, updateTeamMember, 
 import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { usePreferences } from '../preferences-context.jsx';
+import { buildTeamCards } from '../team-list-model.js';
 import {
   canDeleteTeam,
   canEditTeamSettings,
@@ -55,7 +56,7 @@ export function TeamsList({ sessionState }) {
             <span>{t('createTeam')}</span>
           </button>
         </div>
-        <TeamsContent state={state} />
+        <TeamsContent state={state} onCreate={() => setDialogOpen(true)} />
         <CreateTeamDialog
           open={dialogOpen}
           onOpenChange={setDialogOpen}
@@ -148,25 +149,33 @@ export function TeamDetail({ teamId, tab = 'members', sessionState }) {
   );
 }
 
-function TeamsContent({ state }) {
+function TeamsContent({ state, onCreate }) {
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载团队</div>;
-  if (!state.teams.length) return <div className="placeholder">暂无团队</div>;
+  const cards = buildTeamCards(state.teams);
 
   return (
-    <section className="team-list" aria-label="团队列表">
-      {state.teams.map((team) => (
-        <Link className="team-row" to={`/workspace/teams/${encodeURIComponent(team.id)}`} key={team.id}>
-          <div>
-            <strong>{team.name}</strong>
-            <span>{team.description || team.departmentPath || team.id}</span>
+    <section className="team-card-grid" aria-label="团队列表">
+      {cards.map((team) => (
+        <Link className="team-card" to={`/workspace/teams/${encodeURIComponent(team.id)}`} key={team.id}>
+          <div className="team-card__top">
+            <span className="team-card__avatar">{team.avatarText}</span>
+            <div>
+              <strong>{team.name}</strong>
+              <span>你的角色：{team.roleLabel}</span>
+            </div>
           </div>
-          <div className="tag-row compact-tags">
-            {team.teamType === 'department' ? <span className="tag">部门团队</span> : null}
-            <span className="tag muted">{team.currentUserRole || 'viewer'}</span>
+          <p>{team.description}</p>
+          <div className="team-card__footer">
+            <span className="tag">{team.typeLabel}</span>
+            <span className="tag muted">{team.roleLabel}</span>
           </div>
         </Link>
       ))}
+      <button className="team-card team-card--create" type="button" onClick={onCreate}>
+        <Plus size={22} />
+        <span>创建新团队</span>
+      </button>
     </section>
   );
 }
