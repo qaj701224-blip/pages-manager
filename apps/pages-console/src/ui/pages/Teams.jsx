@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, KeyRound, Plus, Save, Settings, Trash2, UsersRound } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { deleteTeam, fetchJson, removeTeamMember, updateTeamMember, updateTeamSettings } from '../api.js';
+import { createTeam, deleteTeam, fetchJson, removeTeamMember, updateTeamMember, updateTeamSettings } from '../api.js';
+import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
+import { usePreferences } from '../preferences-context.jsx';
 import {
   canDeleteTeam,
   canEditTeamSettings,
@@ -17,8 +19,16 @@ import { PageHeading } from './SitesDirectory.jsx';
 const TEAM_TABS = new Set(['members', 'access-keys', 'settings']);
 const TEAM_ROLE_OPTIONS = ['viewer', 'publisher', 'admin'];
 
-export function TeamsList() {
+export function TeamsList({ sessionState }) {
   const [state, setState] = useState({ status: 'loading', teams: [], error: null });
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const { t } = usePreferences();
+
+  const loadTeams = useCallback(async () => {
+    const data = await fetchJson('/api/console/teams');
+    setState({ status: 'ready', teams: data.teams || [], error: null });
+    return data.teams || [];
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -36,16 +46,29 @@ export function TeamsList() {
 
   return (
     <div className="workspace-layout">
-      <Sidebar active="teams" />
+      <Sidebar active="teams" sessionState={sessionState} />
       <main className="page workspace-page">
-        <PageHeading title="团队" meta="协作" />
+        <div className="page-heading-row">
+          <PageHeading title={t('teams')} meta={t('collaboration')} />
+          <button className="primary-button" type="button" onClick={() => setDialogOpen(true)}>
+            <Plus size={16} />
+            <span>{t('createTeam')}</span>
+          </button>
+        </div>
         <TeamsContent state={state} />
+        <CreateTeamDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onCreated={async () => {
+            await loadTeams();
+          }}
+        />
       </main>
     </div>
   );
 }
 
-export function TeamDetail({ teamId, tab = 'members' }) {
+export function TeamDetail({ teamId, tab = 'members', sessionState }) {
   const activeTab = TEAM_TABS.has(tab) ? tab : 'members';
   const [state, setState] = useState({ status: 'loading', team: null, error: null });
   const [membersState, setMembersState] = useState({ status: 'idle', members: [], error: null });
@@ -106,7 +129,7 @@ export function TeamDetail({ teamId, tab = 'members' }) {
 
   return (
     <div className="workspace-layout context-layout">
-      <TeamContextSidebar team={state.team} teamId={teamId} activeTab={activeTab} />
+      <TeamContextSidebar team={state.team} teamId={teamId} activeTab={activeTab} sessionState={sessionState} />
       <main className="page workspace-page">
         <PageHeading title={title} meta="团队" />
         {state.status === 'loading' ? <div className="placeholder">加载中</div> : null}
@@ -148,10 +171,72 @@ function TeamsContent({ state }) {
   );
 }
 
-function TeamContextSidebar({ team, teamId, activeTab }) {
+function CreateTeamDialog({ open, onOpenChange, onCreated }) {
+  const { t } = usePreferences();
+  const [form, setForm] = useState({ name: '', description: '' });
+  const [status, setStatus] = useState({ saving: false, error: '' });
+
+  useEffect(() => {
+    if (open) {
+      setForm({ name: '', description: '' });
+      setStatus({ saving: false, error: '' });
+    }
+  }, [open]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!form.name.trim()) return;
+    setStatus({ saving: true, error: '' });
+    try {
+      await createTeam({ name: form.name.trim(), description: form.description.trim() });
+      await onCreated?.();
+      setStatus({ saving: false, error: '' });
+      onOpenChange(false);
+    } catch (error) {
+      setStatus({ saving: false, error: error?.code || error?.message || '创建团队失败' });
+    }
+  };
+
+  return (
+    <AppDialog open={open} title={t('createTeamTitle')} eyebrow={t('collaboration')} onOpenChange={onOpenChange}>
+      <form className="dialog-form" onSubmit={submit}>
+        <p className="dialog-description">{t('createTeamDescription')}</p>
+        <label className="field">
+          <span>{t('teamName')}</span>
+          <input
+            value={form.name}
+            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+            placeholder="Console Team"
+            required
+          />
+        </label>
+        <label className="field">
+          <span>{t('teamDescription')}</span>
+          <textarea
+            value={form.description}
+            onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+            placeholder="站点协作团队"
+          />
+        </label>
+        {status.error ? <div className="form-error">{status.error}</div> : null}
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={() => onOpenChange(false)}>
+            {t('cancel')}
+          </button>
+          <button className="primary-button" type="submit" disabled={status.saving || !form.name.trim()}>
+            <Plus size={16} />
+            <span>{status.saving ? t('creating') : t('create')}</span>
+          </button>
+        </div>
+      </form>
+    </AppDialog>
+  );
+}
+
+function TeamContextSidebar({ team, teamId, activeTab, sessionState }) {
   const base = `/workspace/teams/${encodeURIComponent(teamId)}`;
   return (
-    <aside className="sidebar context-sidebar">
+    <Sidebar active="teams" sessionState={sessionState}>
       <Link className="back-link" to="/workspace/teams">
         <ArrowLeft size={16} />
         <span>所有团队</span>
@@ -174,7 +259,7 @@ function TeamContextSidebar({ team, teamId, activeTab }) {
         />
         <ContextLink href={`${base}/settings`} active={activeTab === 'settings'} icon={<Settings size={17} />} label="设置" />
       </nav>
-    </aside>
+    </Sidebar>
   );
 }
 
@@ -272,16 +357,12 @@ function TeamMemberForm({ team, onReload }) {
           <span>用户 ID / 邮箱</span>
           <input value={form.userId} onChange={(event) => setForm((current) => ({ ...current, userId: event.target.value }))} />
         </label>
-        <label className="field">
-          <span>角色</span>
-          <select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value }))}>
-            {TEAM_ROLE_OPTIONS.map((role) => (
-              <option key={role} value={role}>
-                {role}
-              </option>
-            ))}
-          </select>
-        </label>
+        <SelectField
+          label="角色"
+          value={form.role}
+          options={TEAM_ROLE_OPTIONS.map((role) => ({ value: role, label: role }))}
+          onChange={(role) => setForm((current) => ({ ...current, role }))}
+        />
         {status.error ? <div className="form-error">{status.error}</div> : null}
       </div>
     </form>
@@ -324,13 +405,12 @@ function TeamMemberActions({ team, member, onReload }) {
 
   return (
     <div className="member-role-actions">
-      <select disabled={status.saving || status.removing} value={role} onChange={(event) => setRole(event.target.value)}>
-        {TEAM_ROLE_OPTIONS.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
+      <SelectField
+        disabled={status.saving || status.removing}
+        value={role}
+        options={TEAM_ROLE_OPTIONS.map((option) => ({ value: option, label: option }))}
+        onChange={setRole}
+      />
       <button
         className="icon-button compact"
         type="button"

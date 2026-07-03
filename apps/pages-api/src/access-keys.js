@@ -102,7 +102,7 @@ async function listAccessKeys(store, actor, environment) {
   if (actor.type !== 'user') return accessKeyManagementForbidden();
 
   const keys = await store.listAccessKeysForOwner(actor.userId, environment);
-  return jsonOk({ accessKeys: keys.map(formatAccessKey) });
+  return jsonOk({ accessKeys: keys.filter(isActiveAccessKey).map(formatAccessKey) });
 }
 
 async function listConsoleAccessKeys(store, config, owner) {
@@ -110,7 +110,7 @@ async function listConsoleAccessKeys(store, config, owner) {
     typeof store.listAccessKeys === 'function'
       ? await store.listAccessKeys({ environment: config.environment, ...owner })
       : await store.listAccessKeysForOwner(owner.ownerId, config.environment);
-  return jsonOk({ accessKeys: keys.map(formatAccessKey) });
+  return jsonOk({ accessKeys: keys.filter(isActiveAccessKey).map(formatAccessKey) });
 }
 
 async function createAccessKey(request, env, config, store, actor) {
@@ -242,6 +242,10 @@ function formatAccessKey(accessKey) {
     createdAt: accessKey.createdAt,
     environment: accessKey.environment || null,
   };
+}
+
+function isActiveAccessKey(accessKey) {
+  return !accessKey.revokedAt;
 }
 
 async function requireTeamAdmin(store, config, session, teamId) {

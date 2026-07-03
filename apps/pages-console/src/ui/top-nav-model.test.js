@@ -38,3 +38,24 @@ test('top nav user state exposes admin menu for platform admins', () => {
     }
   );
 });
+
+test('top nav prefers SSO realname over latin account name', () => {
+  assert.deepEqual(
+    readTopNavUserState({
+      authenticated: true,
+      user: {
+        email: 'xutianqi@xd.com',
+        name: 'xutianqi',
+        realname: '徐天麒',
+        departmentPath: '心动/平台支撑部',
+      },
+    }),
+    {
+      authenticated: true,
+      label: 'xutianqi@xd.com',
+      displayName: '徐天麒',
+      departmentPath: '心动/平台支撑部',
+      showAdmin: false,
+    }
+  );
+});

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown, Plus, RotateCw, Terminal, Trash2, X } from 'lucide-react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { ClipboardCopy, MoreHorizontal, Plus, RotateCw, Terminal, Trash2 } from 'lucide-react';
 
 import {
   createAccessKey,
@@ -12,18 +13,22 @@ import {
 import {
   ACCESS_KEY_EXPIRY_OPTIONS,
   ACCESS_KEY_PERMISSION_OPTIONS,
+  buildAccessKeyRows,
   buildAccessKeyCreateBody,
   initialAccessKeyForm,
 } from '../access-keys-model.js';
+import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
+import { usePreferences } from '../preferences-context.jsx';
 import { PageHeading } from './SitesDirectory.jsx';
 
-export function WorkspaceAccessKeys() {
+export function WorkspaceAccessKeys({ sessionState }) {
+  const { t } = usePreferences();
   return (
     <div className="workspace-layout">
-      <Sidebar active="access-keys" />
+      <Sidebar active="access-keys" sessionState={sessionState} />
       <main className="page workspace-page">
-        <PageHeading title="Access Keys" meta="工作台" />
+        <PageHeading title={t('accessKeys')} meta={t('workspace')} />
         <AccessKeysPanel ownerType="user" />
       </main>
     </div>
@@ -36,6 +41,7 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
   const [createdSecret, setCreatedSecret] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const { t } = usePreferences();
 
   const load = async () => {
     setState((current) => ({ ...current, status: 'loading', error: null }));
@@ -101,8 +107,8 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
       <section className="api-token-card" aria-label="API Token">
         <div className="api-token-card__head">
           <div>
-            <h2>API Token</h2>
-            <p>用于 CLI / CI 中无浏览器场景</p>
+            <h2>{t('apiToken')}</h2>
+            <p>{t('tokenUsage')}</p>
           </div>
           {canManage ? (
             <button
@@ -114,19 +120,12 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
               }}
             >
               <Plus size={15} />
-              <span>新建 Token</span>
+              <span>{t('newToken')}</span>
             </button>
           ) : null}
         </div>
 
         {!canManage ? <div className="panel-empty">仅团队 admin 可管理团队 Access Keys</div> : null}
-
-        {createdSecret ? (
-          <div className="secret-once api-token-secret">
-            <p>Token 只显示一次，离开页面后不可再次查看。</p>
-            <pre className="code-preview">{createdSecret}</pre>
-          </div>
-        ) : null}
 
         {error && !dialogOpen ? <div className="form-error api-token-error">{error.code || error.message}</div> : null}
 
@@ -145,6 +144,7 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
           onSubmit={submit}
         />
       ) : null}
+      <TokenCreatedDialog token={createdSecret} onClose={() => setCreatedSecret(null)} />
     </>
   );
 }
@@ -152,6 +152,7 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
 function AccessKeyDialog({ error, ownerType, saving, onClose, onSubmit }) {
   const [form, setForm] = useState(() => initialAccessKeyForm());
   const ownershipLabel = ownerType === 'team' ? '团队归属' : '个人归属';
+  const { t } = usePreferences();
 
   const updatePermission = (permission, checked) => {
     setForm((current) => {
@@ -163,139 +164,80 @@ function AccessKeyDialog({ error, ownerType, saving, onClose, onSubmit }) {
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div className="dialog access-token-dialog" role="dialog" aria-modal="true" aria-labelledby="access-token-dialog-title">
-        <div className="dialog-head">
-          <div>
-            <p>{ownershipLabel}</p>
-            <h2 id="access-token-dialog-title">新建 API Token</h2>
+    <AppDialog open title={t('newToken')} eyebrow={ownershipLabel} onOpenChange={(open) => !open && onClose()}>
+      <form
+        className="api-token-form dialog-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          const ok = await onSubmit(form);
+          if (ok) onClose();
+        }}
+      >
+        <label className="field">
+          <span>名称</span>
+          <input
+            value={form.name}
+            onChange={(event) => setForm({ ...form, name: event.target.value })}
+            placeholder="例如：本地开发 / CI 流水线"
+            required
+          />
+        </label>
+
+        <fieldset className="field-set">
+          <legend>权限</legend>
+          <div className="checkbox-row plain-checkbox-row">
+            {ACCESS_KEY_PERMISSION_OPTIONS.map((permission) => (
+              <label key={permission.value}>
+                <input
+                  checked={form.permissions.includes(permission.value)}
+                  type="checkbox"
+                  onChange={(event) => updatePermission(permission.value, event.target.checked)}
+                />
+                <span>{permission.label}</span>
+              </label>
+            ))}
           </div>
-          <button className="icon-button compact" type="button" title="关闭" onClick={onClose}>
-            <X size={15} />
+        </fieldset>
+
+        <div className="field">
+          <span>有效期</span>
+          <SelectField
+            label=""
+            value={String(form.expiresInDays)}
+            options={ACCESS_KEY_EXPIRY_OPTIONS.map((option) => ({ value: String(option.days), label: option.label }))}
+            onChange={(expiresInDays) => setForm({ ...form, expiresInDays: Number(expiresInDays) })}
+          />
+        </div>
+
+        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>
+            {t('cancel')}
+          </button>
+          <button className="primary-button" type="submit" disabled={saving || form.permissions.length === 0}>
+            <span>{saving ? '创建中' : '创建 Token'}</span>
           </button>
         </div>
-
-        <form
-          className="dialog-body api-token-form"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            const ok = await onSubmit(form);
-            if (ok) onClose();
-          }}
-        >
-          <label className="field">
-            <span>名称</span>
-            <input
-              value={form.name}
-              onChange={(event) => setForm({ ...form, name: event.target.value })}
-              placeholder="例如：本地开发 / CI 流水线"
-              required
-            />
-          </label>
-
-          <fieldset className="field-set">
-            <legend>权限</legend>
-            <div className="checkbox-row plain-checkbox-row">
-              {ACCESS_KEY_PERMISSION_OPTIONS.map((permission) => (
-                <label key={permission.value}>
-                  <input
-                    checked={form.permissions.includes(permission.value)}
-                    type="checkbox"
-                    onChange={(event) => updatePermission(permission.value, event.target.checked)}
-                  />
-                  <span>{permission.label}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          <div className="field">
-            <span>有效期</span>
-            <ExpiryDropdown
-              value={form.expiresInDays}
-              onChange={(expiresInDays) => setForm({ ...form, expiresInDays })}
-            />
-          </div>
-
-          {error ? <div className="form-error">{error.code || error.message}</div> : null}
-
-          <div className="dialog-actions">
-            <button className="secondary-button" type="button" onClick={onClose}>
-              取消
-            </button>
-            <button className="primary-button" type="submit" disabled={saving || form.permissions.length === 0}>
-              <span>{saving ? '创建中' : '创建 Token'}</span>
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function ExpiryDropdown({ value, onChange }) {
-  const [open, setOpen] = useState(false);
-  const selected = ACCESS_KEY_EXPIRY_OPTIONS.find((option) => option.days === value) || ACCESS_KEY_EXPIRY_OPTIONS[1];
-
-  return (
-    <div
-      className="expiry-dropdown"
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') setOpen(false);
-      }}
-    >
-      <button
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        className="expiry-dropdown__button"
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span>{selected.label}</span>
-        <ChevronDown size={16} />
-      </button>
-      {open ? (
-        <div className="expiry-dropdown__menu" role="listbox" aria-label="有效期">
-          {ACCESS_KEY_EXPIRY_OPTIONS.map((option) => {
-            const active = option.days === selected.days;
-            return (
-              <button
-                aria-selected={active}
-                className={active ? 'expiry-dropdown__option active' : 'expiry-dropdown__option'}
-                key={option.days}
-                role="option"
-                type="button"
-                onClick={() => {
-                  onChange(option.days);
-                  setOpen(false);
-                }}
-              >
-                <span className="expiry-dropdown__check">{active ? <Check size={13} /> : null}</span>
-                <span>{option.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
+      </form>
+    </AppDialog>
   );
 }
 
 function AccessKeyList({ state, canManage, onRefresh, onRevoke }) {
+  const { t } = usePreferences();
   if (state.status === 'loading') return <div className="panel-empty">加载中</div>;
   if (state.status === 'error') return <div className="panel-empty">无法加载 Access Keys</div>;
+  const rows = buildAccessKeyRows(state.accessKeys);
 
-  if (!state.accessKeys.length) {
+  if (!rows.length) {
     return (
       <div className="api-token-empty">
         <div className="token-terminal-icon">
           <Terminal size={24} />
         </div>
-        <strong>还没有 Token</strong>
-        <p>新建 Token 后可以在 CLI / CI 里登录、发布站点。</p>
+        <strong>{t('noTokens')}</strong>
+        <p>{t('noTokensHint')}</p>
       </div>
     );
   }
@@ -306,29 +248,48 @@ function AccessKeyList({ state, canManage, onRefresh, onRevoke }) {
         <strong>Access Keys</strong>
         <button className="secondary-button" type="button" onClick={onRefresh}>
           <RotateCw size={15} />
-          刷新
+          {t('refresh')}
         </button>
       </div>
-      {state.accessKeys.map((accessKey) => (
-        <div className="table-row access-key-row" key={accessKey.id}>
+      <div className="api-token-table-head">
+        <span>{t('tokenNamePermission')}</span>
+        <span>{t('tokenPreview')}</span>
+        <span>{t('createdAt')}</span>
+        <span>{t('expiresAt')}</span>
+        <span />
+      </div>
+      {rows.map((row) => (
+        <div className="table-row access-key-row" key={row.id}>
           <div>
-            <strong>{accessKey.name || accessKey.id}</strong>
-            <span>{accessKey.id}</span>
+            <strong>{row.name}</strong>
+            <span className="token-scope-row">
+              {row.scopeLabels.map((scope) => (
+                <span className="tag token-scope-tag" key={scope}>
+                  {scope}
+                </span>
+              ))}
+            </span>
           </div>
-          <div className="tag-row compact-tags">
-            <span className="tag">{ownerLabel(accessKey)}</span>
-            {(accessKey.scopes || []).map((scope) => (
-              <span className="tag muted" key={scope}>
-                {scope}
-              </span>
-            ))}
-          </div>
+          <code>{row.tokenPreview}</code>
+          <span>{row.createdLabel}</span>
+          <span>{row.expiresLabel}</span>
           <div className="row-actions">
-            <span>{expiryLabel(accessKey)}</span>
-            {canManage && !accessKey.revokedAt ? (
-              <button className="icon-button compact" type="button" title="撤销" onClick={() => onRevoke(accessKey)}>
-                <Trash2 size={15} />
-              </button>
+            {canManage ? (
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <button className="icon-button compact" type="button" title="更多">
+                    <MoreHorizontal size={15} />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content className="radix-menu-content" align="end" sideOffset={6}>
+                    <DropdownMenu.Item className="radix-menu-item danger" onSelect={() => onRevoke(row.raw)}>
+                      <Trash2 size={15} />
+                      <span>撤销</span>
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
             ) : null}
           </div>
         </div>
@@ -337,26 +298,29 @@ function AccessKeyList({ state, canManage, onRefresh, onRevoke }) {
   );
 }
 
-function ownerLabel(accessKey) {
-  return accessKey.ownerType === 'team' ? 'team-owned' : 'user-owned';
-}
+function TokenCreatedDialog({ token, onClose }) {
+  const { t } = usePreferences();
+  const open = Boolean(token);
+  const copy = () => {
+    if (!token) return;
+    globalThis.navigator?.clipboard?.writeText?.(token);
+  };
 
-function expiryLabel(accessKey) {
-  if (accessKey.revokedAt) return '已撤销';
-  if (!accessKey.expiresAt) return '无到期时间';
-  return `到期 ${formatDate(accessKey.expiresAt)}`;
-}
-
-function formatDate(value) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date);
+  return (
+    <AppDialog open={open} title={t('tokenOnceTitle')} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <div className="token-created-body">
+        <p>{t('tokenOnceMessage')}</p>
+        <code>{token}</code>
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={copy}>
+            <ClipboardCopy size={16} />
+            <span>{t('copyToken')}</span>
+          </button>
+          <button className="primary-button" type="button" onClick={onClose}>
+            {t('tokenSaved')}
+          </button>
+        </div>
+      </div>
+    </AppDialog>
+  );
 }

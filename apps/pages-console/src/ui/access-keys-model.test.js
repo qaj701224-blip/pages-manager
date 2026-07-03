@@ -5,6 +5,7 @@ import {
   ACCESS_KEY_EXPIRY_OPTIONS,
   ACCESS_KEY_PERMISSION_OPTIONS,
   buildAccessKeyCreateBody,
+  buildAccessKeyRows,
   initialAccessKeyForm,
 } from './access-keys-model.js';
 
@@ -56,4 +57,32 @@ test('access key create body rejects permissions that are not exposed in this ve
       }),
     /ACCESS_KEY_PERMISSION_UNSUPPORTED/
   );
+});
+
+test('access key rows hide revoked keys and expose only token preview', () => {
+  const rows = buildAccessKeyRows([
+    {
+      id: 'ak_00197d61ff057c411c631cde9b67dc04',
+      name: 'Local CLI',
+      scopes: ['read:site', 'deploy:site'],
+      ownerType: 'user',
+      createdAt: '2026-07-01T00:00:00.000Z',
+      expiresAt: null,
+      plaintext: 'xdsk_user_full_secret_should_not_render',
+    },
+    {
+      id: 'ak_revoked',
+      name: 'Old key',
+      scopes: ['read:site'],
+      revokedAt: '2026-07-02T00:00:00.000Z',
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, 'Local CLI');
+  assert.equal(rows[0].tokenPreview, 'ak_00197d61');
+  assert.equal(rows[0].plaintext, undefined);
+  assert.deepEqual(rows[0].scopeLabels, ['read', 'deploy']);
+  assert.equal(rows[0].ownerLabel, '个人');
+  assert.equal(rows[0].expiresLabel, '永久');
 });

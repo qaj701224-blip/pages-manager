@@ -16,6 +16,7 @@ export async function handleConsoleTeamsApi(request, env, config, store) {
   if (session instanceof Response) return session;
 
   if (url.pathname === `${CONSOLE_PREFIX}/teams`) {
+    if (request.method === 'POST') return createCustomTeam(request, store, config, session);
     if (request.method !== 'GET') return methodNotAllowed();
     const teams = await store.listTeamsForUser({
       environment: config.environment,
@@ -63,6 +64,32 @@ export async function handleConsoleTeamsApi(request, env, config, store) {
   }
 
   return null;
+}
+
+async function createCustomTeam(request, store, config, session) {
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  try {
+    const team = await store.createTeam({
+      environment: config.environment,
+      teamType: 'custom',
+      name: body.name,
+      description: body.description,
+      createdByUserId: session.userId,
+    });
+    const member = await store.getTeamMember({ teamId: team.id, userId: session.userId });
+    return jsonOk({ team: formatTeam(team, member) }, 201);
+  } catch (error) {
+    if (String(error?.message || error).includes('TEAM_NAME_REQUIRED')) {
+      return jsonError('TEAM_NAME_REQUIRED', 'Team name is required.', 400, 'Use a non-empty team name.');
+    }
+    throw error;
+  }
 }
 
 async function getTeam(store, config, session, teamId) {

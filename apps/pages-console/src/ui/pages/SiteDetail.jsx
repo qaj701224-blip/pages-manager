@@ -10,6 +10,7 @@ import {
   putSiteRuntimeVar,
   updateSiteAccess,
 } from '../api.js';
+import { Sidebar } from '../components/Sidebar.jsx';
 import { getSiteCapabilities, parseAclEntriesInput } from '../site-detail-model.js';
 import { PageHeading } from './SitesDirectory.jsx';
 
@@ -17,7 +18,7 @@ const SITE_TABS = new Set(['overview', 'deployments', 'access', 'config', 'setti
 const RESOURCE_TABS = new Set(['deployments', 'access', 'config']);
 const VISIBILITY_OPTIONS = ['internal', 'org', 'acl', 'owner', 'disabled'];
 
-export function SiteDetail({ siteId, tab = 'overview' }) {
+export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
   const activeTab = SITE_TABS.has(tab) ? tab : 'overview';
   const [state, setState] = useState({ status: 'loading', site: null, error: null });
   const [resourceState, setResourceState] = useState({ status: 'idle', data: null, error: null });
@@ -79,7 +80,7 @@ export function SiteDetail({ siteId, tab = 'overview' }) {
 
   return (
     <div className="workspace-layout context-layout">
-      <SiteContextSidebar site={state.site} siteId={siteId} activeTab={activeTab} />
+      <SiteContextSidebar site={state.site} siteId={siteId} activeTab={activeTab} sessionState={sessionState} />
       <main className="page workspace-page">
         <PageHeading title={title} meta="站点" />
         {state.status === 'loading' ? <div className="placeholder">加载中</div> : null}
@@ -101,11 +102,11 @@ export function SiteDetail({ siteId, tab = 'overview' }) {
   );
 }
 
-function SiteContextSidebar({ site, siteId, activeTab }) {
+function SiteContextSidebar({ site, siteId, activeTab, sessionState }) {
   const base = `/workspace/sites/${encodeURIComponent(siteId)}`;
   const slug = site?.slug || siteId;
   return (
-    <aside className="sidebar context-sidebar">
+    <Sidebar active="personal" sessionState={sessionState}>
       <Link className="back-link" to="/workspace/published">
         <ArrowLeft size={16} />
         <span>所有站点</span>
@@ -135,7 +136,7 @@ function SiteContextSidebar({ site, siteId, activeTab }) {
         />
         <ContextLink href={`${base}/settings`} active={activeTab === 'settings'} icon={<Settings size={17} />} label="设置" />
       </nav>
-    </aside>
+    </Sidebar>
   );
 }
 

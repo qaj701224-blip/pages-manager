@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { fetchJson } from '../api.js';
 import { Sidebar } from '../components/Sidebar.jsx';
+import { SelectField } from '../components/RadixPrimitives.jsx';
 import { PageHeading, SiteWaterfall } from './SitesDirectory.jsx';
 
-export function WorkspaceSites({ owner = 'personal' }) {
+export function WorkspaceSites({ owner = 'personal', sessionState }) {
   const [state, setState] = useState({ status: 'loading', sites: [], error: null });
   const [teamsState, setTeamsState] = useState({ status: 'idle', teams: [], error: null });
   const [teamId, setTeamId] = useState('');
@@ -51,7 +52,7 @@ export function WorkspaceSites({ owner = 'personal' }) {
 
   return (
     <div className="workspace-layout">
-      <Sidebar active={active} />
+      <Sidebar active={active} sessionState={sessionState} />
       <main className="page workspace-page">
         <PageHeading title={ownerLabel} meta="工作台" />
         {owner === 'team' ? <TeamSitesFilter teamsState={teamsState} teamId={teamId} onTeamIdChange={setTeamId} /> : null}
@@ -66,33 +67,16 @@ function TeamSitesFilter({ teamsState, teamId, onTeamIdChange }) {
 
   return (
     <section className="list-filter-bar" aria-label="团队站点筛选">
-      <label className="field inline-field">
-        <span>团队</span>
-        <select
-          disabled={teamsState.status === 'loading'}
-          value={teamId}
-          onChange={(event) => onTeamIdChange(event.target.value)}
-        >
-          <option value="">全部团队</option>
-          {teamsState.teams.map((team) => (
-            <option key={team.id} value={team.id}>
-              {team.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <SelectField
+        label="团队"
+        disabled={teamsState.status === 'loading'}
+        value={teamId}
+        options={[
+          { value: '', label: '全部团队' },
+          ...teamsState.teams.map((team) => ({ value: team.id, label: team.name })),
+        ]}
+        onChange={onTeamIdChange}
+      />
     </section>
-  );
-}
-
-export function WorkspacePlaceholder({ active, title }) {
-  return (
-    <div className="workspace-layout">
-      <Sidebar active={active} />
-      <main className="page workspace-page">
-        <PageHeading title={title} meta="工作台" />
-        <div className="placeholder">暂无内容</div>
-      </main>
-    </div>
   );
 }

@@ -331,6 +331,33 @@ test('team APIs list teams and block department team deletion', async () => {
   assert.equal((await deleteDepartment.json()).error.code, 'DEPARTMENT_TEAM_DELETE_FORBIDDEN');
 });
 
+test('team API creates custom team with current user as admin', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin');
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/teams', {
+      userId: 'usr_admin',
+      body: {
+        name: 'Console Team',
+        description: 'Console owners',
+      },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.team.name, 'Console Team');
+  assert.equal(body.team.description, 'Console owners');
+  assert.equal(body.team.teamType, 'custom');
+  assert.equal(body.team.currentUserRole, 'admin');
+
+  const member = await store.getTeamMember({ teamId: body.team.id, userId: 'usr_admin' });
+  assert.equal(member.role, 'admin');
+  assert.equal(member.membershipSource, 'manual');
+});
+
 test('team member APIs require team admin and update roles', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUsers(store, ['usr_admin', 'usr_viewer']);

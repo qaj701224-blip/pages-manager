@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   createAdminWebhook,
   createAccessKey,
+  createTeam,
   createWorkspaceSite,
   createTeamAccessKey,
   deleteTeam,
@@ -262,6 +263,22 @@ test('team settings API helpers use workspace team endpoints', async () => {
       ['/api/console/teams/team_1/settings', 'PATCH', 'csrf-1'],
       ['/api/console/teams/team_1', 'DELETE', 'csrf-2'],
     ]
+  );
+  assert.deepEqual(JSON.parse(calls[0].init.body), { name: 'Console Team', description: 'Console owners' });
+});
+
+test('team creation API helper posts custom teams', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ team: { id: 'team_1' } });
+  };
+
+  await createTeam({ name: 'Console Team', description: 'Console owners' }, { fetchImpl, csrfToken: 'csrf-1' });
+
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token']]),
+    [['/api/console/teams', 'POST', 'csrf-1']]
   );
   assert.deepEqual(JSON.parse(calls[0].init.body), { name: 'Console Team', description: 'Console owners' });
 });

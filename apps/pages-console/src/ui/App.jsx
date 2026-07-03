@@ -10,7 +10,8 @@ import { LoginPage } from './pages/Login.jsx';
 import { SiteDetail } from './pages/SiteDetail.jsx';
 import { SitesDirectory } from './pages/SitesDirectory.jsx';
 import { TeamDetail, TeamsList } from './pages/Teams.jsx';
-import { WorkspacePlaceholder, WorkspaceSites } from './pages/WorkspaceSites.jsx';
+import { AccountSettings } from './pages/AccountSettings.jsx';
+import { WorkspaceSites } from './pages/WorkspaceSites.jsx';
 import { clearCachedConsoleSession, readCachedConsoleSession, writeCachedConsoleSession } from './session-cache.js';
 
 export function App() {
@@ -40,17 +41,17 @@ export function App() {
             </AdminRouteGuard>
           }
         />
-        <Route path="/workspace" element={<WorkspaceSites owner="personal" />} />
-        <Route path="/workspace/" element={<WorkspaceSites owner="personal" />} />
-        <Route path="/workspace/published" element={<WorkspaceSites owner="personal" />} />
-        <Route path="/workspace/team-sites" element={<WorkspaceSites owner="team" />} />
-        <Route path="/workspace/sites/:siteId" element={<SiteDetailRoute />} />
-        <Route path="/workspace/sites/:siteId/:tab" element={<SiteDetailRoute />} />
-        <Route path="/workspace/teams" element={<TeamsList />} />
-        <Route path="/workspace/teams/:teamId" element={<TeamDetailRoute />} />
-        <Route path="/workspace/teams/:teamId/:tab" element={<TeamDetailRoute />} />
-        <Route path="/workspace/access-keys" element={<WorkspaceAccessKeys />} />
-        <Route path="/workspace/settings" element={<WorkspacePlaceholder active="settings" title="账号设置" />} />
+        <Route path="/workspace" element={<WorkspaceSites owner="personal" sessionState={sessionState} />} />
+        <Route path="/workspace/" element={<WorkspaceSites owner="personal" sessionState={sessionState} />} />
+        <Route path="/workspace/published" element={<WorkspaceSites owner="personal" sessionState={sessionState} />} />
+        <Route path="/workspace/team-sites" element={<WorkspaceSites owner="team" sessionState={sessionState} />} />
+        <Route path="/workspace/sites/:siteId" element={<SiteDetailRoute sessionState={sessionState} />} />
+        <Route path="/workspace/sites/:siteId/:tab" element={<SiteDetailRoute sessionState={sessionState} />} />
+        <Route path="/workspace/teams" element={<TeamsList sessionState={sessionState} />} />
+        <Route path="/workspace/teams/:teamId" element={<TeamDetailRoute sessionState={sessionState} />} />
+        <Route path="/workspace/teams/:teamId/:tab" element={<TeamDetailRoute sessionState={sessionState} />} />
+        <Route path="/workspace/access-keys" element={<WorkspaceAccessKeys sessionState={sessionState} />} />
+        <Route path="/workspace/settings" element={<AccountSettings sessionState={sessionState} />} />
         <Route path="*" element={<SitesDirectory />} />
       </Routes>
     </div>
@@ -62,14 +63,14 @@ function AdminRoute() {
   return <AdminShell page={page || 'dashboard'} />;
 }
 
-function SiteDetailRoute() {
+function SiteDetailRoute({ sessionState }) {
   const { siteId, tab } = useParams();
-  return <SiteDetail siteId={siteId || ''} tab={tab || 'overview'} />;
+  return <SiteDetail siteId={siteId || ''} tab={tab || 'overview'} sessionState={sessionState} />;
 }
 
-function TeamDetailRoute() {
+function TeamDetailRoute({ sessionState }) {
   const { teamId, tab } = useParams();
-  return <TeamDetail teamId={teamId || ''} tab={tab || 'members'} />;
+  return <TeamDetail teamId={teamId || ''} tab={tab || 'members'} sessionState={sessionState} />;
 }
 
 function useConsoleSession() {

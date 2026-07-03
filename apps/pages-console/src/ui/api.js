@@ -100,6 +100,14 @@ export function listAccessKeys(options = {}) {
   return fetchJson('/api/console/access-keys', options);
 }
 
+export function createTeam(body, options = {}) {
+  return fetchJson('/api/console/teams', {
+    ...options,
+    method: 'POST',
+    body,
+  });
+}
+
 export function createAccessKey(body, options = {}) {
   return fetchJson('/api/console/access-keys', {
     ...options,

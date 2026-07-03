@@ -257,6 +257,53 @@ test('console owner-scoped access keys are isolated by environment', async () =>
   assert.equal((await stagingList.json()).accessKeys.length, 1);
 });
 
+test('console access key lists hide revoked keys', async () => {
+  const store = await createSeededStore();
+  await store.createAccessKey({
+    id: 'ak_active',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: 'hash_active',
+    pepperId: 'pepper_1',
+    name: 'active',
+    scopes: ['read:site'],
+    siteId: null,
+    expiresAt: '2026-07-15T00:00:00.000Z',
+    environment: 'production',
+  });
+  await store.createAccessKey({
+    id: 'ak_revoked',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: 'hash_revoked',
+    pepperId: 'pepper_1',
+    name: 'revoked',
+    scopes: ['read:site'],
+    siteId: null,
+    expiresAt: '2026-07-15T00:00:00.000Z',
+    environment: 'production',
+  });
+  await store.revokeAccessKey('ak_revoked', '2026-06-15T00:30:00.000Z');
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/access-keys', {
+      userId: 'usr_1',
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(
+    body.accessKeys.map((accessKey) => accessKey.id),
+    ['ak_active']
+  );
+});
+
 test('team-owned access keys require team admin and survive creator leaving the team', async () => {
   const store = await createSeededStore();
   await store.createUser({
