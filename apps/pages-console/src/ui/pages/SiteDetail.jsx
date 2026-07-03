@@ -10,13 +10,26 @@ import {
   putSiteRuntimeVar,
   updateSiteAccess,
 } from '../api.js';
+import { SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
-import { getSiteCapabilities, parseAclEntriesInput } from '../site-detail-model.js';
+import {
+  aclSubjectPlaceholder,
+  aclSubjectTypeLabel,
+  appendAclEntry,
+  getSiteCapabilities,
+  normalizeAclEntriesForForm,
+  removeAclEntryAt,
+  toAclUpdatePayload,
+} from '../site-detail-model.js';
 import { PageHeading } from './SitesDirectory.jsx';
 
 const SITE_TABS = new Set(['overview', 'deployments', 'access', 'config', 'settings']);
 const RESOURCE_TABS = new Set(['deployments', 'access', 'config']);
 const VISIBILITY_OPTIONS = ['internal', 'org', 'acl', 'owner', 'disabled'];
+const ACL_SUBJECT_OPTIONS = [
+  { value: 'email', label: '邮箱' },
+  { value: 'department', label: '部门' },
+];
 
 export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
   const activeTab = SITE_TABS.has(tab) ? tab : 'overview';
@@ -203,15 +216,28 @@ function DeploymentsPanel({ state }) {
   if (!deployments.length) return <div className="placeholder">暂无部署记录</div>;
 
   return (
-    <section className="table-list" aria-label="部署记录">
+    <section className="table-list deployment-list" aria-label="部署记录">
+      <div className="table-toolbar">
+        <strong>部署记录</strong>
+        <span className="tag muted">{deployments.length}</span>
+      </div>
+      <div className="deployment-table-head">
+        <span>Deployment</span>
+        <span>来源</span>
+        <span>状态</span>
+        <span>创建时间</span>
+        <span>完成时间</span>
+      </div>
       {deployments.map((deployment) => (
-        <div className="table-row" key={deployment.id}>
+        <div className="table-row deployment-row" key={deployment.id}>
           <div>
-            <strong>{deployment.id}</strong>
-            <span>{deployment.source || 'unknown'}</span>
+            <strong title={deployment.id}>{deployment.id}</strong>
+            <span>{deployment.operation || '-'}</span>
           </div>
+          <span>{deployment.source || 'unknown'}</span>
           <span className="tag muted">{deployment.status || 'unknown'}</span>
           <span>{formatDate(deployment.createdAt)}</span>
+          <span>{formatDate(deployment.completedAt)}</span>
         </div>
       ))}
     </section>
@@ -231,23 +257,7 @@ function AccessPanel({ site, state, fallbackVisibility, onResourceUpdate, onSite
       {capabilities.canEditAccess ? (
         <AccessPolicyForm site={site} access={access} onResourceUpdate={onResourceUpdate} onSitePatch={onSitePatch} />
       ) : (
-        <div className="placeholder">当前角色只能查看访问控制</div>
-      )}
-      {entries.length ? (
-        <section className="table-list" aria-label="ACL">
-          {entries.map((entry) => (
-            <div className="table-row" key={entry.id}>
-              <div>
-                <strong>{entry.subjectValue}</strong>
-                <span>{entry.subjectType}</span>
-              </div>
-              <span className="tag muted">{entry.accessRole || 'viewer'}</span>
-              <span>{entry.effect || 'allow'}</span>
-            </div>
-          ))}
-        </section>
-      ) : (
-        <div className="placeholder">暂无 ACL 条目</div>
+        <ReadOnlyAclList entries={entries} />
       )}
     </section>
   );
@@ -255,14 +265,27 @@ function AccessPanel({ site, state, fallbackVisibility, onResourceUpdate, onSite
 
 function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
   const [visibility, setVisibility] = useState(access.visibility || 'internal');
-  const [aclText, setAclText] = useState(() => JSON.stringify(access.aclEntries || [], null, 2));
+  const [entries, setEntries] = useState(() => normalizeAclEntriesForForm(access.aclEntries || []));
+  const [draft, setDraft] = useState({ subjectType: 'email', subjectValue: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     setVisibility(access.visibility || 'internal');
-    setAclText(JSON.stringify(access.aclEntries || [], null, 2));
+    setEntries(normalizeAclEntriesForForm(access.aclEntries || []));
+    setDraft({ subjectType: 'email', subjectValue: '' });
+    setError(null);
   }, [access]);
+
+  const addEntry = () => {
+    setError(null);
+    try {
+      setEntries((current) => appendAclEntry(current, draft));
+      setDraft((current) => ({ ...current, subjectValue: '' }));
+    } catch (nextError) {
+      setError(nextError);
+    }
+  };
 
   const submit = async (event) => {
     event.preventDefault();
@@ -271,7 +294,7 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
     try {
       const data = await updateSiteAccess(site.id, {
         visibility,
-        aclEntries: parseAclEntriesInput(aclText),
+        aclEntries: toAclUpdatePayload(entries),
       });
       onResourceUpdate?.({ access: data.access });
       onSitePatch?.({
@@ -297,24 +320,92 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
           {saving ? '保存中' : '保存'}
         </button>
       </div>
-      <div className="dialog-body">
-        <label className="field">
-          <span>Visibility</span>
-          <select value={visibility} onChange={(event) => setVisibility(event.target.value)}>
-            {VISIBILITY_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>ACL JSON</span>
-          <textarea value={aclText} onChange={(event) => setAclText(event.target.value)} spellCheck="false" />
-        </label>
+      <div className="access-policy-body">
+        <SelectField
+          label="Visibility"
+          value={visibility}
+          options={VISIBILITY_OPTIONS.map((option) => ({ value: option, label: option }))}
+          onChange={setVisibility}
+        />
+        <div className="acl-editor">
+          <div className="acl-editor__head">
+            <div>
+              <strong>ACL 条目</strong>
+              <span>仅在 visibility 为 acl 时生效。部门路径包含其下级部门。</span>
+            </div>
+          </div>
+          <div className="acl-add-row">
+            <SelectField
+              label="类型"
+              value={draft.subjectType}
+              options={ACL_SUBJECT_OPTIONS}
+              onChange={(subjectType) => setDraft((current) => ({ ...current, subjectType }))}
+            />
+            <label className="field">
+              <span>{aclSubjectTypeLabel(draft.subjectType)}</span>
+              <input
+                value={draft.subjectValue}
+                onChange={(event) => setDraft((current) => ({ ...current, subjectValue: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    addEntry();
+                  }
+                }}
+                placeholder={aclSubjectPlaceholder(draft.subjectType)}
+              />
+            </label>
+            <button className="secondary-button acl-add-button" type="button" onClick={addEntry} disabled={!draft.subjectValue.trim()}>
+              <Plus size={16} />
+              <span>添加</span>
+            </button>
+          </div>
+          <AclEntriesTable entries={entries} onRemove={(index) => setEntries((current) => removeAclEntryAt(current, index))} />
+        </div>
         {error ? <div className="form-error">{error.code || error.message}</div> : null}
       </div>
     </form>
+  );
+}
+
+function ReadOnlyAclList({ entries }) {
+  if (!entries.length) return <div className="placeholder">暂无 ACL 条目</div>;
+  return (
+    <section className="table-list acl-list" aria-label="ACL">
+      <div className="table-toolbar">
+        <strong>ACL 条目</strong>
+        <span className="tag muted">{entries.length}</span>
+      </div>
+      <AclEntriesTable entries={entries} />
+    </section>
+  );
+}
+
+function AclEntriesTable({ entries, onRemove }) {
+  const normalizedEntries = normalizeAclEntriesForForm(entries);
+  if (!normalizedEntries.length) return <div className="placeholder acl-empty">暂无 ACL 条目</div>;
+  return (
+    <div className={onRemove ? 'acl-table acl-table--editable' : 'acl-table'} role="table" aria-label="ACL 条目">
+      <div className="acl-table-head" role="row">
+        <span>类型</span>
+        <span>对象</span>
+        <span>权限</span>
+        {onRemove ? <span>操作</span> : null}
+      </div>
+      {normalizedEntries.map((entry, index) => (
+        <div className="acl-row" role="row" key={`${entry.subjectType}:${entry.subjectValue}:${index}`}>
+          <span className="tag muted">{aclSubjectTypeLabel(entry.subjectType)}</span>
+          <strong title={entry.subjectValue}>{entry.subjectValue}</strong>
+          <span className="tag muted">{entry.accessRole || 'viewer'}</span>
+          {onRemove ? (
+            <button className="table-action danger" type="button" onClick={() => onRemove(index)}>
+              <Trash2 size={15} />
+              <span>移除</span>
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </div>
   );
 }
 
