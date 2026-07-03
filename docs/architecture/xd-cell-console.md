@@ -176,6 +176,10 @@ Access Key 支持两种归属：
 
 有效期创建时设置，默认 3 个月，最大 1 年。plaintext 只在创建成功时返回一次；列表、日志、审计和错误响应都不能展示 plaintext。
 
+owner-scoped Access Key 具备 `deploy:site` 时，可以通过 CLI / CI / agent 发布链路首次创建新站点：
+user-owned key 创建个人站点，team-owned key 创建团队站点。site-scoped key 仍只能部署绑定站点，
+不能创建其它新站点；普通建站 API 不直接对 Access Key 开放。
+
 staging key 不能调用 production，production key 不能调用 staging。
 
 ## 管理员后台

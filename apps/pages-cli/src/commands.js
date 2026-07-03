@@ -318,6 +318,7 @@ async function runDeploy(parsed, context) {
     buildPublishPlanDeploymentForm({
       siteSlug,
       uploadPlan,
+      visibility: requestedVisibility,
       vars: runtime.varsObject,
       varsProvided: runtime.varsProvided,
     }),
@@ -421,7 +422,7 @@ async function runEnv(parsed, context) {
   throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 xd-cell env、xd-cell env list 或 xd-cell env use <环境>。');
 }
 
-function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, vars = {}, varsProvided = false }) {
+function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, visibility = '', vars = {}, varsProvided = false }) {
   const form = new FormData();
   const metadata = {
     schemaVersion: 1,
@@ -441,6 +442,7 @@ function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, vars = {}, varsP
     })),
     controlSignals: uploadPlan.controlSignals,
   };
+  if (visibility) metadata.visibility = visibility;
   if (varsProvided) metadata.vars = vars;
   form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
   for (const file of uploadPlan.assetFiles) {

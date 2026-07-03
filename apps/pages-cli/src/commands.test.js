@@ -668,7 +668,7 @@ test('deploy uses explicit token as a one-shot credential without local secret r
   const calls = [];
   const output = [];
 
-  await executeCommand(['deploy', '.', 'docs', '--token', 'xdp_prod_ak_1_secret', '--json'], {
+  await executeCommand(['deploy', '.', 'docs', '--token', 'xdp_prod_ak_1_secret', '--visibility', 'internal', '--json'], {
     cwd: dir,
     env: {},
     profile: productionProfile(),
@@ -698,6 +698,7 @@ test('deploy uses explicit token as a one-shot credential without local secret r
   assert.equal(calls[1].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
   const metadata = JSON.parse(await (await calls[1].formData()).get('metadata').text());
   assert.equal(metadata.siteSlug, 'docs');
+  assert.equal(metadata.visibility, 'internal');
   assert.equal(metadata.publishPlan.deploymentShape, 'assets-only');
   assert.deepEqual(JSON.parse(output.join('\n')), {
     ok: true,

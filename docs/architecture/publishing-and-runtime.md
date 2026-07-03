@@ -223,7 +223,14 @@ xd-cell login --token <token>
 xd-cell deploy ./dist foo --token <token> --json
 ```
 
-本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。access key 不能创建站点；CI / agent 使用 access key 部署时显式传站点名，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
+本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。
+
+access key 创建站点只允许发生在部署事务内：owner-scoped access key 具备 `deploy:site` 时，
+`xd-cell deploy <entry> <new-site>` 可以按 key 归属自动创建符合 slug / hostname 规则的新站点；
+user-owned key 创建个人站点，team-owned key 创建团队站点。site-scoped access key 仍只能部署绑定站点，
+不能创建其它新站点。普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受用户 CLI token 或后续受控
+console session，不对 access key 开放。access key 的 scope、site 限制、owner 归属、过期时间和
+environment 仍以 `pages-api` 权威记录为准。
 
 #### Global config
 

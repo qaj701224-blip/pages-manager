@@ -467,6 +467,10 @@ export function buildOpenApi(config) {
       '/.xd-pages/api/deployments': {
         post: {
           summary: 'Create a deployment from a CLI-managed upload payload',
+          description:
+            'CLI-managed multipart upload. Owner-scoped access keys with deploy:site may create a new site ' +
+            'during this deployment; site-scoped access keys can only deploy their bound site. Direct site ' +
+            'creation remains outside the access-key API surface.',
           parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -487,8 +491,13 @@ export function buildOpenApi(config) {
             'INVALID_MULTIPART',
             'PAYLOAD_TOO_LARGE',
             'SITE_REQUIRED',
+            'SITE_NOT_FOUND',
             'SITE_SLUG_INVALID',
             'SITE_SLUG_RESERVED',
+            'SITE_SLUG_CONFLICT',
+            'SITE_VISIBILITY_INVALID',
+            'HOSTNAME_CLAIM_CONFLICT',
+            'DEPLOY_FORBIDDEN',
             'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
             'DEPLOYMENT_UPLOAD_FAILED',
             'DEPLOYMENT_VERIFY_FAILED',

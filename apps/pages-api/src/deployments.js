@@ -3,11 +3,12 @@ import { validateSiteSlug } from '@xd/pages-runtime-protocol';
 import { authenticateApiRequest } from './auth.js';
 import { canonicalRequestHash, hashAccessKey, sha256HexForBytes } from './crypto.js';
 import { jsonError, jsonOk } from './http.js';
-import { newId } from './id.js';
+import { newHexId, newId } from './id.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider, normalizeWorkerBundle } from './execution-provider.js';
 import { normalizeRuntimeVars, runtimeConfigSnapshot, validateRuntimeBindingQuotas } from './runtime-config.js';
 import { notifyDeploymentCapacityExhausted } from './slack-alerts.js';
+import { hostnameForSlug, siteCreateErrorResponse } from './sites.js';
 import { deliverWebhookEventToSubscriptions } from './webhooks.js';
 
 const encoder = new globalThis.TextEncoder();
@@ -17,6 +18,7 @@ const MAX_DEPLOYMENT_METADATA_BYTES = 4 * 1024 * 1024;
 const DEPLOYMENT_SHAPES = new Set(['assets-only', 'worker-only', 'worker-with-assets']);
 const ROUTING_MODES = new Set(['assets-only', 'worker-only', 'worker-first']);
 const FALLBACK_MODES = new Set(['auto', 'index', 'not-found', 'none', 'single-page-application', '404-page']);
+const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const DENYLISTED_BASENAMES = new Set(['.env', '.dev.vars', 'wrangler.toml', '.gitlab-ci.yml']);
 const DENYLISTED_EXTENSIONS = new Set(['.pem', '.key']);
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
@@ -138,6 +140,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
 
   const requestedSiteId = normalizeOptionalString(body.siteId);
   const requestedSiteSlug = normalizeOptionalSlug(body.siteSlug ?? body.slug);
+  const requestedVisibility = normalizeOptionalString(body.visibility);
   const clientContentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
   const decision = body.decision;
@@ -156,6 +159,14 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   if (requestedSiteSlug) {
     const slugError = validateDeploySiteSlug(requestedSiteSlug, config.environment, { allowReserved: true });
     if (slugError) return slugError;
+  }
+  if (requestedVisibility && !VISIBILITIES.has(requestedVisibility)) {
+    return jsonError(
+      'SITE_VISIBILITY_INVALID',
+      'Site visibility is invalid.',
+      400,
+      'Use internal, org, acl, owner, or disabled.'
+    );
   }
   if (!clientContentHash.startsWith('sha256:')) {
     return jsonError('CONTENT_HASH_INVALID', 'Content hash is invalid.', 400, 'Pass a sha256 content hash.');
@@ -203,9 +214,10 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       'Run xd-cell deploy --dry-run and retry.'
     );
   }
-  const site = await resolveDeploySite(store, actor, config.environment, {
+  const site = await resolveDeploySite(store, actor, config, env, {
     siteId: requestedSiteId,
     siteSlug: requestedSiteSlug,
+    visibility: requestedVisibility || 'org',
   });
   if (site instanceof Response) return site;
   const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
@@ -995,6 +1007,7 @@ async function readPublishPlanMultipartBody(form) {
   return {
     siteId: metadata.siteId,
     siteSlug: metadata.siteSlug,
+    visibility: metadata.visibility,
     source: typeof metadata.source === 'string' && metadata.source.trim() ? metadata.source.trim() : 'cli',
     contentHash: typeof metadata.contentHash === 'string' ? metadata.contentHash : '',
     decision,
@@ -1611,7 +1624,8 @@ function rollbackSiteMismatch() {
   );
 }
 
-async function resolveDeploySite(store, actor, environment, { siteId, siteSlug }) {
+async function resolveDeploySite(store, actor, config, env, { siteId, siteSlug, visibility }) {
+  const environment = config.environment;
   if (siteId) {
     const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
     return site || siteNotFound('Check the site id.');
@@ -1619,10 +1633,58 @@ async function resolveDeploySite(store, actor, environment, { siteId, siteSlug }
   const bySlug = typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(environment, siteSlug) : null;
   if (!bySlug) {
     const slugError = validateDeploySiteSlug(siteSlug, environment);
-    return slugError || siteNotFound('Check the site slug.');
+    if (slugError) return slugError;
+    return createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, visibility });
   }
   const site = await store.getSiteForUser(bySlug.id, actor.userId, actor, environment);
   return site || siteNotFound('Check the site slug and access key scope.');
+}
+
+async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, visibility }) {
+  if (actor.type !== 'access_key') return siteNotFound('Check the site slug.');
+  if (actor.siteId) return siteNotFound('Check the site slug and access key scope.');
+  if (!actor.scopes.includes('deploy:site')) {
+    return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use a token scoped to deploy sites.');
+  }
+
+  const ownerType = actor.ownerType || 'user';
+  const ownerId = actor.ownerId || actor.userId;
+  const ownerUserId = ownerType === 'team' ? actor.userId : ownerId;
+  if (!ownerId || !ownerUserId) {
+    return jsonError(
+      'DEPLOY_FORBIDDEN',
+      'Actor cannot deploy this site.',
+      403,
+      'Use an active owner-scoped access key.'
+    );
+  }
+
+  try {
+    return await store.createSite({
+      id: nextId(env, 'site'),
+      slug: siteSlug,
+      ownerType,
+      ownerId,
+      ownerUserId,
+      siteUuid: nextSiteUuid(env),
+      defaultVisibility: visibility,
+      environment: config.environment,
+      routeId: nextId(env, 'route'),
+      hostname: hostnameForSlug(siteSlug, config),
+    });
+  } catch (error) {
+    if (error instanceof Error && /SITE_SLUG_CONFLICT/.test(error.message)) {
+      const existing =
+        typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(config.environment, siteSlug) : null;
+      if (existing) {
+        const visible = await store.getSiteForUser(existing.id, actor.userId, actor, config.environment);
+        if (visible) return visible;
+      }
+    }
+    const response = siteCreateErrorResponse(error);
+    if (response) return response;
+    throw error;
+  }
 }
 
 async function validateRollbackVersion(store, version, environment) {
@@ -2007,6 +2069,14 @@ function siteNotFound(action) {
 function nextId(env, prefix) {
   if (typeof env?.nextId === 'function') return env.nextId(prefix);
   return newId(prefix);
+}
+
+function nextSiteUuid(env) {
+  if (typeof env?.nextSiteUuid === 'function') {
+    const id = env.nextSiteUuid();
+    if (id) return id;
+  }
+  return newHexId();
 }
 
 function readNow(env) {

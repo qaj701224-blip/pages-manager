@@ -2043,6 +2043,110 @@ test('access keys can deploy by slug only when the resolved site matches their s
   assert.equal(deniedBody.error.action, 'Check the site slug and access key scope.');
 });
 
+test('user owner-scoped access keys can create a new personal site during deploy', async () => {
+  const store = await createSeededStore();
+  const ownerScopedKey = await seedAccessKey(store, 'ak_owner_create', ['deploy:site'], null);
+  const env = testEnv(store, createSnapshotStore(), {
+    nextId: (prefix) => {
+      if (prefix === 'site') return 'site_new_personal';
+      if (prefix === 'route') return 'route_new_personal';
+      return `${prefix}_1`;
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-personal', visibility: 'internal' }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'owner_scoped_create_personal',
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  const site = await store.findSiteBySlug('production', 'new-personal');
+  assert.equal(body.deployment.siteId, site.id);
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_1');
+  assert.equal(site.ownerUserId, 'usr_1');
+  assert.equal(site.defaultVisibility, 'internal');
+  assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-personal.workers.xd.team');
+});
+
+test('team owner-scoped access keys can create a new team site during deploy', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  const teamKey = await seedAccessKey(store, 'ak_team_create', ['deploy:site'], null, {
+    ownerType: 'team',
+    ownerId: team.id,
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+  });
+
+  const env = testEnv(store, createSnapshotStore(), {
+    nextId: (prefix) => {
+      if (prefix === 'site') return 'site_new_team';
+      if (prefix === 'route') return 'route_new_team';
+      return `${prefix}_1`;
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-team' }),
+      {
+        Authorization: `Bearer ${teamKey}`,
+        'Idempotency-Key': 'owner_scoped_create_team',
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  const site = await store.findSiteBySlug('production', 'new-team');
+  assert.equal(body.deployment.siteId, site.id);
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, team.id);
+  assert.equal(site.ownerUserId, 'usr_1');
+  assert.equal(site.defaultVisibility, 'org');
+  assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-team.workers.xd.team');
+});
+
+test('site-scoped access keys cannot create a new site during deploy', async () => {
+  const store = await createSeededStore();
+  const siteScopedKey = await seedAccessKey(store, 'ak_site_scoped_create_denied', ['deploy:site'], 'site_1');
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-denied' }),
+      {
+        Authorization: `Bearer ${siteScopedKey}`,
+        'Idempotency-Key': 'site_scoped_create_denied',
+      }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 404);
+  const body = await response.json();
+  assert.equal(body.error.code, 'SITE_NOT_FOUND');
+  assert.equal(body.error.action, 'Check the site slug and access key scope.');
+  assert.equal(await store.findSiteBySlug('production', 'new-denied'), null);
+});
+
 test('user owner-scoped access keys cannot deploy another user personal site', async () => {
   const store = await createSeededStore();
   await store.createUser({
@@ -4577,16 +4681,21 @@ async function assertDeployOk(response) {
   return response;
 }
 
-async function seedAccessKey(store, keyId, scopes, siteId = 'site_1') {
+async function seedAccessKey(store, keyId, scopes, siteId = 'site_1', options = {}) {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',
     keyId,
     bytes: new Uint8Array(24).fill(keyId === 'ak_deploy' ? 3 : 4),
   });
+  const ownerType = options.ownerType || 'user';
+  const ownerUserId = options.ownerUserId || 'usr_1';
   await store.createAccessKey({
     id: keyId,
     environment: 'production',
-    ownerUserId: 'usr_1',
+    ownerType,
+    ownerId: options.ownerId || (ownerType === 'user' ? ownerUserId : undefined),
+    ownerUserId,
+    createdByUserId: options.createdByUserId || ownerUserId,
     keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
     pepperId: 'pepper_1',
     name: keyId,
@@ -4683,6 +4792,7 @@ function publishPlanMultipartRequest(url, fields, headers = {}) {
     schemaVersion: normalized.schemaVersion || 1,
     siteId: normalized.siteId,
     siteSlug: normalized.siteSlug,
+    visibility: normalized.visibility,
     requestedFallback: normalized.requestedFallback,
     source: normalized.source || 'cli',
     contentHash: normalized.contentHash,
