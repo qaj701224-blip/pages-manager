@@ -251,8 +251,8 @@ function TeamContextSidebar({ team, teamId, activeTab, sessionState }) {
         <span>所有团队</span>
       </Link>
       <div className="context-title">
-        <h2>{team?.name || teamId}</h2>
-        {team?.description ? <p>{team.description}</p> : null}
+        <h2 title={team?.name || teamId}>{team?.name || teamId}</h2>
+        {team?.description ? <p title={team.description}>{team.description}</p> : null}
         <div className="tag-row compact-tags">
           {team?.teamType === 'department' ? <span className="tag">部门团队</span> : null}
           <span className="tag muted">{team?.currentUserRole || 'viewer'}</span>
@@ -510,7 +510,7 @@ function TeamSettings({ team, onTeamUpdate }) {
           {rows.map(([label, value]) => (
             <div key={label}>
               <dt>{label}</dt>
-              <dd>{value}</dd>
+              <dd title={String(value)}>{value}</dd>
             </div>
           ))}
         </dl>

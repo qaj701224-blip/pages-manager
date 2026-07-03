@@ -112,8 +112,8 @@ function SiteContextSidebar({ site, siteId, activeTab, sessionState }) {
         <span>所有站点</span>
       </Link>
       <div className="context-title">
-        <h2>{slug}</h2>
-        {site?.hostname ? <p>{site.hostname}</p> : null}
+        <h2 title={slug}>{slug}</h2>
+        {site?.hostname ? <p title={site.hostname}>{site.hostname}</p> : null}
         <div className="tag-row compact-tags">
           <span className="tag">{site?.visibility || site?.access?.visibility || 'internal'}</span>
           <span className="tag muted">{site?.status || 'active'}</span>
@@ -421,8 +421,8 @@ function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
         vars.map((item) => (
           <div className="table-row runtime-row" key={item.name}>
             <div>
-              <strong>{item.name}</strong>
-              <span>{item.value || '-'}</span>
+              <strong title={item.name}>{item.name}</strong>
+              <span title={item.value || '-'}>{item.value || '-'}</span>
             </div>
             <span className="tag muted">rev {item.revision || 0}</span>
             <div className="row-actions">
@@ -515,8 +515,8 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
         secrets.map((item) => (
           <div className="table-row runtime-row" key={item.name}>
             <div>
-              <strong>{item.name}</strong>
-              <span>{formatDate(item.updatedAt)}</span>
+              <strong title={item.name}>{item.name}</strong>
+              <span title={formatDate(item.updatedAt)}>{formatDate(item.updatedAt)}</span>
             </div>
             <span className="tag muted">rev {item.revision || 0}</span>
             <div className="row-actions">
@@ -560,7 +560,7 @@ function InfoList({ title, rows }) {
         {rows.map(([label, value]) => (
           <div key={label}>
             <dt>{label}</dt>
-            <dd>{value}</dd>
+            <dd title={String(value)}>{value}</dd>
           </div>
         ))}
       </dl>
