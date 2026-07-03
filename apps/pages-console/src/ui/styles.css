@@ -1671,7 +1671,7 @@ button {
 }
 
 .team-members-panel {
-  background: transparent;
+  background: var(--xd-panel-strong);
 }
 
 .member-panel-head {
@@ -1695,9 +1695,15 @@ button {
   line-height: 1.35;
 }
 
-.member-panel-head span {
+.member-panel-head > div > span {
   color: var(--xd-muted);
   font-size: 13px;
+}
+
+.member-panel-head .primary-button {
+  flex: 0 0 auto;
+  color: #ffffff;
+  white-space: nowrap;
 }
 
 .member-table-head,
@@ -1711,6 +1717,7 @@ button {
 
 .member-table-head {
   min-height: 40px;
+  background: rgba(255, 250, 244, 0.46);
   color: var(--xd-subtle);
   font-size: 12px;
   font-weight: 650;
@@ -1718,7 +1725,9 @@ button {
 
 .member-row {
   min-height: 72px;
+  padding-block: 12px;
   border-top: 1px solid var(--xd-border);
+  background: var(--xd-panel-strong);
 }
 
 .table-row > .member-identity {
@@ -1735,10 +1744,12 @@ button {
   height: 28px;
   place-items: center;
   border-radius: 999px;
-  color: #fff;
+  color: #ffffff;
   background: var(--xd-orange-active);
   font-size: 13px;
   font-weight: 700;
+  line-height: 1;
+  text-align: center;
 }
 
 .member-identity > div,
@@ -2357,12 +2368,22 @@ button {
   min-height: 60px;
   border: 1px solid var(--xd-border);
   border-radius: 8px;
-  padding: 10px;
+  padding: 12px;
   color: var(--xd-text);
-  background: rgba(255, 253, 248, 0.82);
+  background: var(--xd-panel-strong);
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.member-picker-row .member-avatar {
+  width: 30px;
+  height: 30px;
+}
+
+.member-row .member-avatar,
+.member-picker-row .member-avatar {
+  color: #ffffff;
 }
 
 .table-action.danger {
