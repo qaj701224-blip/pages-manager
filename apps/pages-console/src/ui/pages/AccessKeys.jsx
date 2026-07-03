@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { Check, ClipboardCopy, MoreHorizontal, Plus, RotateCw, Terminal, Trash2 } from 'lucide-react';
+import { Check, ClipboardCopy, MoreHorizontal, Plus, Terminal, Trash2 } from 'lucide-react';
 
 import {
   createAccessKey,
@@ -130,7 +130,7 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
 
         {error && !dialogOpen ? <div className="form-error api-token-error">{error.code || error.message}</div> : null}
 
-        <AccessKeyList state={state} canManage={canManage} onRefresh={load} onRevoke={revoke} />
+        <AccessKeyList state={state} canManage={canManage} onRevoke={revoke} />
       </section>
 
       {dialogOpen ? (
@@ -225,7 +225,7 @@ function AccessKeyDialog({ error, ownerType, saving, onClose, onSubmit }) {
   );
 }
 
-function AccessKeyList({ state, canManage, onRefresh, onRevoke }) {
+function AccessKeyList({ state, canManage, onRevoke }) {
   const { t } = usePreferences();
   if (state.status === 'loading') return <div className="panel-empty">加载中</div>;
   if (state.status === 'error') return <div className="panel-empty">无法加载 Access Keys</div>;
@@ -245,13 +245,6 @@ function AccessKeyList({ state, canManage, onRefresh, onRevoke }) {
 
   return (
     <section className="table-list api-token-list" aria-label="Access Keys">
-      <div className="table-toolbar">
-        <strong>Access Keys</strong>
-        <button className="secondary-button" type="button" onClick={onRefresh}>
-          <RotateCw size={15} />
-          {t('refresh')}
-        </button>
-      </div>
       <div className="api-token-table-head">
         <span>{t('tokenNamePermission')}</span>
         <span>{t('tokenPreview')}</span>
