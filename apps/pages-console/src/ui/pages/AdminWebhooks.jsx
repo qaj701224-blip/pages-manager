@@ -332,7 +332,7 @@ function WebhookDialog({ dialog, onClose, onSaved }) {
             </div>
           </fieldset>
 
-          <div className="segmented" role="tablist" aria-label="Payload mode">
+          <div className="segmented webhook-payload-mode" role="tablist" aria-label="Payload mode">
             <button
               className={form.payloadMode === 'standard' ? 'active' : ''}
               type="button"

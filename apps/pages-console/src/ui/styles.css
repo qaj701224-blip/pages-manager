@@ -2115,6 +2115,21 @@ button {
   font-weight: 700;
 }
 
+.webhook-payload-mode {
+  padding: 2px;
+}
+
+.webhook-payload-mode button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.webhook-payload-mode button.active {
+  font-weight: 600;
+}
+
 .code-preview {
   min-height: 176px;
   max-height: 260px;
