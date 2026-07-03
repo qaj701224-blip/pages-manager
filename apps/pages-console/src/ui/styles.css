@@ -186,6 +186,10 @@ button {
   margin: 0 10px;
 }
 
+.nav-link svg {
+  flex: 0 0 auto;
+}
+
 .user-menu {
   padding: 5px 10px 5px 5px;
   border: 1px solid var(--xd-border);
@@ -230,6 +234,7 @@ button {
 
 :root[data-theme='dark'] .user-menu,
 :root[data-theme='dark'] .account-menu__button,
+:root[data-theme='dark'] .language-menu__button,
 :root[data-theme='dark'] .icon-button,
 :root[data-theme='dark'] .secondary-button,
 :root[data-theme='dark'] .table-action {
@@ -394,6 +399,62 @@ button {
   height: 30px;
   border-color: var(--xd-border);
   background: var(--xd-panel-strong);
+}
+
+.language-menu__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(243, 112, 34, 0.5);
+  border-radius: 8px;
+  color: var(--xd-text);
+  background: rgba(255, 253, 248, 0.86);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.language-menu__button:hover,
+.language-menu__button[data-state='open'] {
+  border-color: var(--xd-orange);
+  background: var(--xd-orange-tint);
+}
+
+.language-menu__button svg {
+  color: var(--xd-muted);
+}
+
+.language-menu__content {
+  width: 128px;
+  min-width: 128px;
+}
+
+.language-menu__item {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 7px;
+  color: var(--xd-text-2);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 34px;
+  outline: none;
+  cursor: default;
+  user-select: none;
+}
+
+.language-menu__item[data-highlighted],
+.language-menu__item:hover {
+  color: var(--xd-text);
+  background: var(--xd-orange-tint);
+}
+
+.language-menu__item.active {
+  color: var(--xd-orange-active);
+  background: rgba(243, 112, 34, 0.08);
+  font-weight: 700;
 }
 
 .radix-menu-content,

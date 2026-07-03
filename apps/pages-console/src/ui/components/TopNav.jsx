@@ -27,6 +27,7 @@ export function TopNav({ activeSection, sessionState }) {
   const userState = useMemo(() => readTopNavUserState(sessionPayload), [sessionPayload]);
   const workspaceHref = userState.authenticated ? '/workspace/published' : '/login?returnTo=/workspace/published';
   const { theme, setTheme, locale, setLocale, t } = usePreferences();
+  const localeLabel = locale === 'zh-CN' ? t('Chinese') : t('English');
 
   return (
     <header className="top-nav">
@@ -39,7 +40,8 @@ export function TopNav({ activeSection, sessionState }) {
           </span>
         </Link>
         <Link className={activeSection === 'sites' ? 'nav-link active' : 'nav-link'} to="/">
-          {t('sites')}
+          <Globe2 size={15} />
+          <span>{t('sites')}</span>
         </Link>
         <Link className={activeSection === 'workspace' ? 'nav-link active' : 'nav-link'} to={workspaceHref}>
           {t('workspace')}
@@ -58,14 +60,30 @@ export function TopNav({ activeSection, sessionState }) {
             {t('dark')}
           </MenuItem>
         </IconDropdown>
-        <IconDropdown label={t('language')} icon={<Globe2 size={18} />}>
-          <MenuItem active={locale === 'zh-CN'} icon={<Globe2 size={15} />} onSelect={() => setLocale('zh-CN')}>
-            {t('Chinese')}
-          </MenuItem>
-          <MenuItem active={locale === 'en'} icon={<Globe2 size={15} />} onSelect={() => setLocale('en')}>
-            {t('English')}
-          </MenuItem>
-        </IconDropdown>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button className="language-menu__button" type="button" aria-label={t('language')}>
+              <span>{localeLabel}</span>
+              <ChevronDown size={14} />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content className="radix-menu-content language-menu__content" sideOffset={8} align="end">
+              <DropdownMenu.Item
+                className={locale === 'zh-CN' ? 'language-menu__item active' : 'language-menu__item'}
+                onSelect={() => setLocale('zh-CN')}
+              >
+                {t('Chinese')}
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                className={locale === 'en' ? 'language-menu__item active' : 'language-menu__item'}
+                onSelect={() => setLocale('en')}
+              >
+                {t('English')}
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
         <button className="icon-button" type="button" aria-label={t('notifications')}>
           <Bell size={18} />
         </button>
