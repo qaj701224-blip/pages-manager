@@ -37,9 +37,15 @@ export function AdminTeams() {
     return state.teams;
   }, [filter, state.teams]);
   const activeDepartmentTeams = state.teams.filter((team) => team.teamType === 'department' && team.status === 'active');
+  const mergeDisabled =
+    mergeState.status === 'saving' ||
+    !mergeForm.sourceTeamId ||
+    !mergeForm.targetTeamId ||
+    mergeForm.sourceTeamId === mergeForm.targetTeamId;
 
   const submitMerge = async (event) => {
     event.preventDefault();
+    if (mergeDisabled) return;
     setMergeState({ status: 'saving', error: null });
     try {
       await mergeAdminDepartmentTeam(mergeForm.sourceTeamId, {
@@ -111,7 +117,7 @@ export function AdminTeams() {
           onChange={(event) => setMergeForm((current) => ({ ...current, reason: event.target.value }))}
           placeholder="原因"
         />
-        <button className="primary-button" type="submit" disabled={mergeState.status === 'saving'}>
+        <button className="primary-button" type="submit" disabled={mergeDisabled}>
           <GitMerge size={15} />
           <span>{mergeState.status === 'saving' ? '合并中' : '合并'}</span>
         </button>
@@ -135,16 +141,16 @@ export function AdminTeams() {
             <tbody>
               {visibleTeams.map((team) => (
                 <tr key={team.id}>
-                  <td>
+                  <td data-label="团队">
                     <strong>{team.name}</strong>
                     <span>{team.departmentPath || team.id}</span>
                   </td>
-                  <td>
+                  <td data-label="类型">
                     <span className={team.teamType === 'department' ? 'tag' : 'tag muted'}>{team.teamType}</span>
                   </td>
-                  <td>{team.status}</td>
-                  <td>{team.mergedIntoTeamId || '无'}</td>
-                  <td>{formatDate(team.updatedAt)}</td>
+                  <td data-label="状态">{team.status}</td>
+                  <td data-label="合并到">{team.mergedIntoTeamId || '无'}</td>
+                  <td data-label="更新时间">{formatDate(team.updatedAt)}</td>
                 </tr>
               ))}
             </tbody>

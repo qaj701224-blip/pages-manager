@@ -276,6 +276,11 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
     setDraft({ subjectType: 'email', subjectValue: '' });
     setError(null);
   }, [access]);
+  const initialEntries = useMemo(() => normalizeAclEntriesForForm(access.aclEntries || []), [access.aclEntries]);
+  const isDirty = useMemo(
+    () => visibility !== (access.visibility || 'internal') || JSON.stringify(toAclUpdatePayload(entries)) !== JSON.stringify(toAclUpdatePayload(initialEntries)),
+    [visibility, access.visibility, entries, initialEntries]
+  );
 
   const addEntry = () => {
     setError(null);
@@ -289,6 +294,7 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
 
   const submit = async (event) => {
     event.preventDefault();
+    if (saving || !isDirty) return;
     setSaving(true);
     setError(null);
     try {
@@ -315,7 +321,7 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
           <p>Admin</p>
           <h2>编辑访问控制</h2>
         </div>
-        <button className="primary-button" type="submit" disabled={saving}>
+        <button className="primary-button" type="submit" disabled={saving || !isDirty}>
           <Save size={16} />
           {saving ? '保存中' : '保存'}
         </button>
@@ -519,8 +525,9 @@ function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
             <div className="row-actions">
               <span>{formatDate(item.updatedAt)}</span>
               {canEdit ? (
-                <button className="icon-button compact" type="button" title="删除" onClick={() => remove(item.name)}>
+                <button className="table-action danger" type="button" title={`删除变量 ${item.name}`} onClick={() => remove(item.name)}>
                   <Trash2 size={15} />
+                  <span>删除变量</span>
                 </button>
               ) : null}
             </div>
@@ -613,8 +620,9 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
             <div className="row-actions">
               <span>值已隐藏</span>
               {canEdit ? (
-                <button className="icon-button compact" type="button" title="删除" onClick={() => remove(item.name)}>
+                <button className="table-action danger" type="button" title={`删除 Secret ${item.name}`} onClick={() => remove(item.name)}>
                   <Trash2 size={15} />
+                  <span>删除 Secret</span>
                 </button>
               ) : null}
             </div>

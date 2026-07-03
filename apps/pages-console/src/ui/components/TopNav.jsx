@@ -3,6 +3,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   Bell,
   ChevronDown,
+  Inbox,
   KeyRound,
   LogIn,
   LogOut,
@@ -82,9 +83,22 @@ export function TopNav({ activeSection, sessionState }) {
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
-        <button className="icon-button" type="button" aria-label={t('notifications')}>
-          <Bell size={18} />
-        </button>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button className="icon-button" type="button" aria-label={t('notifications')}>
+              <Bell size={18} />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content className="notification-menu" sideOffset={8} align="end">
+              <div className="notification-empty">
+                <Inbox size={18} />
+                <strong>暂无通知</strong>
+                <span>新的平台提醒会显示在这里。</span>
+              </div>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
         {userState.authenticated ? (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>

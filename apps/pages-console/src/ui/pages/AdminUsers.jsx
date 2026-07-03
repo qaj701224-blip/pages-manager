@@ -1,13 +1,18 @@
 import { ShieldCheck, ShieldOff, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { grantPlatformAdmin, listAdminUsers, revokePlatformAdmin } from '../api.js';
+import { readCachedConsoleSession } from '../session-cache.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 
 export function AdminUsers() {
   const [state, setState] = useState({ status: 'loading', users: [], error: null });
   const [actionState, setActionState] = useState({ userId: '', status: 'idle', error: null });
   const [actionDialog, setActionDialog] = useState(null);
+  const [query, setQuery] = useState('');
+  const [adminFilter, setAdminFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const currentUser = readCachedConsoleSession()?.session?.user || null;
 
   const loadUsers = () => {
     setState((current) => ({ ...current, status: 'loading', error: null }));
@@ -33,6 +38,10 @@ export function AdminUsers() {
       active = false;
     };
   }, []);
+  const visibleUsers = useMemo(
+    () => filterAdminUsers(state.users, { query, adminFilter, statusFilter }),
+    [state.users, query, adminFilter, statusFilter]
+  );
 
   const updatePlatformAdmin = async ({ user, shouldGrant, reason }) => {
     setActionState({ userId: user.id, status: 'saving', error: null });
@@ -56,56 +65,94 @@ export function AdminUsers() {
 
   return (
     <>
-      <div className="table-shell">
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>用户</th>
-              <th>部门</th>
-              <th>状态</th>
-              <th>平台管理员</th>
-              <th>最后登录</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {state.users.map((user) => (
-              <tr key={user.id}>
-                <td>
-                  <strong>{user.realname || user.email}</strong>
-                  <span>{user.email}</span>
-                </td>
-                <td>{user.departmentPath || '无'}</td>
-                <td>{user.employeeStatus}</td>
-                <td>
-                  <span className={user.isPlatformAdmin ? 'tag' : 'tag muted'}>{user.isPlatformAdmin ? 'admin' : 'user'}</span>
-                  {actionState.userId === user.id && actionState.status === 'error' ? (
-                    <span className="row-error">{actionState.error?.code || 'ADMIN_UPDATE_FAILED'}</span>
-                  ) : null}
-                </td>
-                <td>{formatDate(user.lastLoginAt)}</td>
-                <td>
-                  <button
-                    className="table-action"
-                    type="button"
-                    disabled={actionState.status === 'saving'}
-                    onClick={() => setActionDialog({ user, shouldGrant: !user.isPlatformAdmin, reason: '' })}
-                  >
-                    {user.isPlatformAdmin ? <ShieldOff size={15} /> : <ShieldCheck size={15} />}
-                    <span>
-                      {actionState.userId === user.id && actionState.status === 'saving'
-                        ? '处理中'
-                        : user.isPlatformAdmin
-                          ? '撤销'
-                          : '设为管理员'}
-                    </span>
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="list-toolbar admin-list-toolbar" aria-label="用户筛选">
+        <label className="list-search">
+          <span>搜索用户</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索姓名、邮箱、部门" />
+        </label>
+        <div className="segmented compact-segmented" role="tablist" aria-label="管理员状态">
+          {[
+            ['all', '全部'],
+            ['admin', 'Admin'],
+            ['user', 'User'],
+          ].map(([value, label]) => (
+            <button className={adminFilter === value ? 'active' : ''} key={value} type="button" onClick={() => setAdminFilter(value)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="segmented compact-segmented" role="tablist" aria-label="员工状态">
+          {[
+            ['all', '全部状态'],
+            ['active', 'Active'],
+            ['inactive', 'Inactive'],
+          ].map(([value, label]) => (
+            <button className={statusFilter === value ? 'active' : ''} key={value} type="button" onClick={() => setStatusFilter(value)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="toolbar-count">{visibleUsers.length} / {state.users.length}</span>
       </div>
+      {visibleUsers.length ? (
+        <div className="table-shell">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th>部门</th>
+                <th>状态</th>
+                <th>平台管理员</th>
+                <th>最后登录</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleUsers.map((user) => {
+                const isCurrentUser = user.id === currentUser?.userId || user.email === currentUser?.email;
+                const disableRevokeSelf = isCurrentUser && user.isPlatformAdmin;
+                return (
+                  <tr key={user.id}>
+                    <td data-label="用户">
+                      <strong>{user.realname || user.email}</strong>
+                      <span>{user.email}</span>
+                    </td>
+                    <td data-label="部门">{user.departmentPath || '无'}</td>
+                    <td data-label="状态">{user.employeeStatus}</td>
+                    <td data-label="平台管理员">
+                      <span className={user.isPlatformAdmin ? 'tag' : 'tag muted'}>{user.isPlatformAdmin ? 'admin' : 'user'}</span>
+                      {actionState.userId === user.id && actionState.status === 'error' ? (
+                        <span className="row-error">{actionState.error?.code || 'ADMIN_UPDATE_FAILED'}</span>
+                      ) : null}
+                    </td>
+                    <td data-label="最后登录">{formatDate(user.lastLoginAt)}</td>
+                    <td data-label="操作">
+                      <button
+                        className="table-action"
+                        type="button"
+                        disabled={actionState.status === 'saving' || disableRevokeSelf}
+                        title={disableRevokeSelf ? '不能撤销当前登录用户' : undefined}
+                        onClick={() => setActionDialog({ user, shouldGrant: !user.isPlatformAdmin, reason: '' })}
+                      >
+                        {user.isPlatformAdmin ? <ShieldOff size={15} /> : <ShieldCheck size={15} />}
+                        <span>
+                          {actionState.userId === user.id && actionState.status === 'saving'
+                            ? '处理中'
+                            : user.isPlatformAdmin
+                              ? '撤销管理员'
+                              : '设为管理员'}
+                        </span>
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="placeholder">没有匹配的用户</div>
+      )}
       {actionDialog ? (
         <AdminUserActionDialog
           action={actionDialog}
@@ -118,6 +165,22 @@ export function AdminUsers() {
       ) : null}
     </>
   );
+}
+
+function filterAdminUsers(users, { query, adminFilter, statusFilter }) {
+  const normalizedQuery = query.trim().toLowerCase();
+  return users.filter((user) => {
+    if (adminFilter === 'admin' && !user.isPlatformAdmin) return false;
+    if (adminFilter === 'user' && user.isPlatformAdmin) return false;
+    if (statusFilter === 'active' && user.employeeStatus !== 'active') return false;
+    if (statusFilter === 'inactive' && user.employeeStatus === 'active') return false;
+    if (!normalizedQuery) return true;
+    return [user.realname, user.email, user.departmentPath, user.employeeStatus, user.isPlatformAdmin ? 'admin' : 'user']
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
 }
 
 function AdminUserActionDialog({ action, error, saving, onChange, onClose, onConfirm }) {

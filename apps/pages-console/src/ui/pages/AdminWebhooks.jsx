@@ -205,12 +205,12 @@ function WebhookTable({ webhooks, onEdit, onDeliveries, onDisable }) {
         <tbody>
           {webhooks.map((webhook) => (
             <tr key={webhook.id}>
-              <td>
+              <td data-label="名称">
                 <strong>{webhook.name}</strong>
                 <span>{webhook.urlMasked}</span>
               </td>
-              <td>{webhook.urlHost}</td>
-              <td>
+              <td data-label="Target">{webhook.urlHost}</td>
+              <td data-label="事件">
                 <div className="chip-row">
                   {webhook.events.map((event) => (
                     <span className="tag muted" key={event}>
@@ -219,12 +219,12 @@ function WebhookTable({ webhooks, onEdit, onDeliveries, onDisable }) {
                   ))}
                 </div>
               </td>
-              <td>{webhook.payloadMode === 'template' ? '受限模板' : '标准 payload'}</td>
-              <td>
+              <td data-label="Payload">{webhook.payloadMode === 'template' ? '受限模板' : '标准 payload'}</td>
+              <td data-label="状态">
                 <StatusTag active={webhook.enabled} />
               </td>
-              <td>{webhook.lastDeliveryStatus || '暂无'}</td>
-              <td>
+              <td data-label="最后投递">{webhook.lastDeliveryStatus || '暂无'}</td>
+              <td data-label="操作">
                 <div className="action-row">
                   <button className="icon-button compact" type="button" title="编辑" onClick={() => onEdit(webhook)}>
                     <Send size={14} />

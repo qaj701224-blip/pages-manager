@@ -38,13 +38,13 @@ export function AdminOps() {
         <tbody>
           {state.ops.map((item) => (
             <tr key={item.id}>
-              <td>
+              <td data-label="项目">
                 <strong>{item.label}</strong>
                 <span>{item.id}</span>
               </td>
-              <td>{item.status}</td>
-              <td>{item.source}</td>
-              <td>{formatDate(item.checkedAt)}</td>
+              <td data-label="状态">{item.status}</td>
+              <td data-label="来源">{item.source}</td>
+              <td data-label="检查时间">{formatDate(item.checkedAt)}</td>
             </tr>
           ))}
         </tbody>

@@ -375,10 +375,13 @@ function TeamMemberRow({ team, member, canManage, onReload }) {
 function TeamMemberActions({ team, member, onReload }) {
   const [role, setRole] = useState(member.role);
   const [status, setStatus] = useState({ saving: false, removing: false, error: '' });
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const view = buildTeamMemberView(member);
 
   useEffect(() => {
     setRole(member.role);
     setStatus({ saving: false, removing: false, error: '' });
+    setConfirmRemove(false);
   }, [member.role, member.userId]);
 
   const save = async (nextRole) => {
@@ -399,15 +402,12 @@ function TeamMemberActions({ team, member, onReload }) {
   };
 
   const remove = async () => {
-    const view = buildTeamMemberView(member);
-    const confirmed = globalThis.confirm?.(`确认从团队中移除 ${view.displayName}？`);
-    if (!confirmed) return;
-
     setStatus({ saving: false, removing: true, error: '' });
     try {
       await removeTeamMember(team.id, member.userId);
       await onReload?.();
       setStatus({ saving: false, removing: false, error: '' });
+      setConfirmRemove(false);
     } catch (error) {
       setStatus({ saving: false, removing: false, error: error?.code || error?.message || '移除成员失败' });
     }
@@ -427,11 +427,40 @@ function TeamMemberActions({ team, member, onReload }) {
       </div>
       <span>{formatDate(member.createdAt || member.updatedAt)}</span>
       <div className="member-row-actions">
-        <button className="table-action danger" type="button" disabled={status.removing} onClick={remove}>
+        <button className="table-action danger" type="button" disabled={status.removing} onClick={() => setConfirmRemove(true)}>
           <Trash2 size={15} />
           <span>{status.removing ? '移除中' : '移除'}</span>
         </button>
       </div>
+      <AppDialog
+        open={confirmRemove}
+        title="移除成员"
+        eyebrow="高风险操作"
+        onOpenChange={(open) => {
+          if (!open && !status.removing) setConfirmRemove(false);
+        }}
+      >
+        <div className="dialog-form">
+          <div className="danger-summary">
+            <Trash2 size={18} />
+            <span>
+              <strong>{view.displayName}</strong>
+              <small>{view.email || member.userId}</small>
+            </span>
+          </div>
+          <p className="dialog-description">移除后，该用户将失去此团队及团队站点的相关权限。</p>
+          {status.error ? <div className="form-error">{status.error}</div> : null}
+          <div className="dialog-actions">
+            <button className="secondary-button" type="button" onClick={() => setConfirmRemove(false)} disabled={status.removing}>
+              取消
+            </button>
+            <button className="primary-button danger-primary-button" type="button" onClick={remove} disabled={status.removing}>
+              <Trash2 size={15} />
+              <span>{status.removing ? '移除中' : '移除成员'}</span>
+            </button>
+          </div>
+        </div>
+      </AppDialog>
     </>
   );
 }

@@ -73,14 +73,14 @@ export function AdminDashboard() {
               <tbody>
                 {failedDeployments.map((deployment) => (
                   <tr key={deployment.id}>
-                    <td>
+                    <td data-label="部署">
                       <strong>{deployment.id}</strong>
                       <span>{deployment.status}</span>
                     </td>
-                    <td>{deployment.siteId}</td>
-                    <td>{deployment.source || '无'}</td>
-                    <td>{deployment.operation || '无'}</td>
-                    <td>{formatDate(deployment.createdAt)}</td>
+                    <td data-label="站点">{deployment.siteId}</td>
+                    <td data-label="来源">{deployment.source || '无'}</td>
+                    <td data-label="操作">{deployment.operation || '无'}</td>
+                    <td data-label="时间">{formatDate(deployment.createdAt)}</td>
                   </tr>
                 ))}
               </tbody>

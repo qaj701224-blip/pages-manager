@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Check, ClipboardCopy, MoreHorizontal, Plus, Terminal, Trash2 } from 'lucide-react';
 
@@ -40,7 +40,9 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
   const [state, setState] = useState({ status: 'loading', accessKeys: [], error: null });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [createdSecret, setCreatedSecret] = useState(null);
+  const [revokeTarget, setRevokeTarget] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [revoking, setRevoking] = useState(false);
   const [error, setError] = useState(null);
   const { t } = usePreferences();
 
@@ -89,6 +91,7 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
   };
 
   const revoke = async (accessKey) => {
+    setRevoking(true);
     setError(null);
     setCreatedSecret(null);
     try {
@@ -98,8 +101,11 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
         await revokeAccessKey(accessKey.id);
       }
       await load();
+      setRevokeTarget(null);
     } catch (nextError) {
       setError(nextError);
+    } finally {
+      setRevoking(false);
     }
   };
 
@@ -130,7 +136,14 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
 
         {error && !dialogOpen ? <div className="form-error api-token-error">{error.code || error.message}</div> : null}
 
-        <AccessKeyList state={state} canManage={canManage} onRevoke={revoke} />
+        <AccessKeyList
+          state={state}
+          canManage={canManage}
+          onRevoke={(accessKey) => {
+            setError(null);
+            setRevokeTarget(accessKey);
+          }}
+        />
       </section>
 
       {dialogOpen ? (
@@ -146,6 +159,13 @@ export function AccessKeysPanel({ ownerType, teamId, canManage = true }) {
         />
       ) : null}
       <TokenCreatedDialog token={createdSecret} onClose={() => setCreatedSecret(null)} />
+      <RevokeAccessKeyDialog
+        accessKey={revokeTarget}
+        saving={revoking}
+        error={error}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={revoke}
+      />
     </>
   );
 }
@@ -198,6 +218,7 @@ function AccessKeyDialog({ error, ownerType, saving, onClose, onSubmit }) {
               </label>
             ))}
           </div>
+          <p className="form-hint">publish 表示可通过 CLI / CI / agent 发布站点，并可按 Token 归属创建新站点。</p>
         </fieldset>
 
         <div className="field">
@@ -216,7 +237,7 @@ function AccessKeyDialog({ error, ownerType, saving, onClose, onSubmit }) {
           <button className="secondary-button" type="button" onClick={onClose}>
             {t('cancel')}
           </button>
-          <button className="primary-button" type="submit" disabled={saving || form.permissions.length === 0}>
+          <button className="primary-button" type="submit" disabled={saving || !form.name.trim() || form.permissions.length === 0}>
             <span>{saving ? '创建中' : '创建 Token'}</span>
           </button>
         </div>
@@ -227,9 +248,11 @@ function AccessKeyDialog({ error, ownerType, saving, onClose, onSubmit }) {
 
 function AccessKeyList({ state, canManage, onRevoke }) {
   const { t } = usePreferences();
+  const [query, setQuery] = useState('');
+  const rows = useMemo(() => buildAccessKeyRows(state.accessKeys), [state.accessKeys]);
+  const visibleRows = useMemo(() => filterAccessKeyRows(rows, query), [rows, query]);
   if (state.status === 'loading') return <div className="panel-empty">加载中</div>;
   if (state.status === 'error') return <div className="panel-empty">无法加载 Access Keys</div>;
-  const rows = buildAccessKeyRows(state.accessKeys);
 
   if (!rows.length) {
     return (
@@ -245,6 +268,13 @@ function AccessKeyList({ state, canManage, onRevoke }) {
 
   return (
     <section className="table-list api-token-list" aria-label="Access Keys">
+      <div className="list-toolbar api-token-toolbar" aria-label="Access Keys 筛选">
+        <label className="list-search">
+          <span>搜索 Token</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、权限、预览" />
+        </label>
+        <span className="toolbar-count">{visibleRows.length} / {rows.length}</span>
+      </div>
       <div className="api-token-table-head">
         <span>{t('tokenNamePermission')}</span>
         <span>{t('tokenPreview')}</span>
@@ -252,7 +282,7 @@ function AccessKeyList({ state, canManage, onRevoke }) {
         <span>{t('expiresAt')}</span>
         <span />
       </div>
-      {rows.map((row) => (
+      {visibleRows.length ? visibleRows.map((row) => (
         <div className="table-row access-key-row" key={row.id}>
           <div>
             <strong>{row.name}</strong>
@@ -279,7 +309,7 @@ function AccessKeyList({ state, canManage, onRevoke }) {
                   <DropdownMenu.Content className="radix-menu-content" align="end" sideOffset={6}>
                     <DropdownMenu.Item className="radix-menu-item danger" onSelect={() => onRevoke(row.raw)}>
                       <Trash2 size={15} />
-                      <span>撤销</span>
+                      <span>撤销 Token</span>
                     </DropdownMenu.Item>
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>
@@ -287,8 +317,48 @@ function AccessKeyList({ state, canManage, onRevoke }) {
             ) : null}
           </div>
         </div>
-      ))}
+      )) : <div className="panel-empty">没有匹配的 Access Key</div>}
     </section>
+  );
+}
+
+function filterAccessKeyRows(rows, query) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return rows;
+  return rows.filter((row) =>
+    [row.name, row.tokenPreview, row.ownerLabel, ...(row.scopeLabels || [])]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(normalized)
+  );
+}
+
+function RevokeAccessKeyDialog({ accessKey, saving, error, onClose, onConfirm }) {
+  if (!accessKey) return null;
+  return (
+    <AppDialog open title="撤销 Token" eyebrow="高风险操作" onOpenChange={(open) => !open && onClose()}>
+      <div className="dialog-form">
+        <div className="danger-summary">
+          <Trash2 size={18} />
+          <span>
+            <strong>{accessKey.name || accessKey.id}</strong>
+            <small>{accessKey.tokenPreview || accessKey.id}</small>
+          </span>
+        </div>
+        <p className="dialog-description">撤销后，使用该 Token 的 CLI / CI / agent 将无法继续读取或发布站点。</p>
+        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onClose} disabled={saving}>
+            取消
+          </button>
+          <button className="primary-button danger-primary-button" type="button" onClick={() => onConfirm(accessKey)} disabled={saving}>
+            <Trash2 size={15} />
+            <span>{saving ? '撤销中' : '撤销 Token'}</span>
+          </button>
+        </div>
+      </div>
+    </AppDialog>
   );
 }
 
