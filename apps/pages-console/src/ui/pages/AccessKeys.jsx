@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { ClipboardCopy, MoreHorizontal, Plus, RotateCw, Terminal, Trash2 } from 'lucide-react';
+import { Check, ClipboardCopy, MoreHorizontal, Plus, RotateCw, Terminal, Trash2 } from 'lucide-react';
 
 import {
   createAccessKey,
@@ -20,6 +20,7 @@ import {
 import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { usePreferences } from '../preferences-context.jsx';
+import { buildTokenCopyFeedback } from '../token-copy-model.js';
 import { PageHeading } from './SitesDirectory.jsx';
 
 export function WorkspaceAccessKeys({ sessionState }) {
@@ -300,11 +301,28 @@ function AccessKeyList({ state, canManage, onRefresh, onRevoke }) {
 
 function TokenCreatedDialog({ token, onClose }) {
   const { t } = usePreferences();
+  const [copyState, setCopyState] = useState('idle');
   const open = Boolean(token);
-  const copy = () => {
+
+  useEffect(() => {
+    setCopyState('idle');
+  }, [token]);
+
+  const copy = async () => {
     if (!token) return;
-    globalThis.navigator?.clipboard?.writeText?.(token);
+    const writeText = globalThis.navigator?.clipboard?.writeText;
+    if (typeof writeText !== 'function') {
+      setCopyState('failed');
+      return;
+    }
+    try {
+      await writeText.call(globalThis.navigator.clipboard, token);
+      setCopyState('copied');
+    } catch {
+      setCopyState('failed');
+    }
   };
+  const copyFeedback = buildTokenCopyFeedback(copyState, t);
 
   return (
     <AppDialog open={open} title={t('tokenOnceTitle')} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
@@ -313,8 +331,10 @@ function TokenCreatedDialog({ token, onClose }) {
         <code>{token}</code>
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={copy}>
-            <ClipboardCopy size={16} />
-            <span>{t('copyToken')}</span>
+            {copyState === 'copied' ? <Check size={16} /> : <ClipboardCopy size={16} />}
+            <span className={copyFeedback.className} aria-live={copyFeedback.ariaLive}>
+              {copyFeedback.label}
+            </span>
           </button>
           <button className="primary-button" type="button" onClick={onClose}>
             {t('tokenSaved')}

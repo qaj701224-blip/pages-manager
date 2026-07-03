@@ -1302,6 +1302,14 @@ button {
   color: var(--xd-text);
 }
 
+.token-copy-feedback.success {
+  color: #236a3c;
+}
+
+.token-copy-feedback.error {
+  color: #a33b1b;
+}
+
 .dialog-form {
   display: grid;
   gap: 16px;
