@@ -9,7 +9,7 @@
 | 项目架构入口                | `README.md`                                                                                                                                               | 说明 monorepo 架构、v2 主线和 v1 legacy 边界                                      | 保持短入口，不承载运行手册                                                             |
 | agent 协作规范              | `AGENTS.md`                                                                                                                                               | Codex、Claude 和其它 coding agent 的项目规则                                      | `CLAUDE.md` 指向本文件，不维护第二份正文                                               |
 | 文档索引                    | `docs/README.md`                                                                                                                                          | 文档地图和真相源矩阵                                                              | 新增文档时更新本表或对应索引                                                           |
-| 控制台前端设计规范          | `docs/frontend-design-guidelines.md`                                                                                                                      | XD Cell 控制台 UI / 交互开发、评审和验收规范                                      | 控制台页面、组件、表单、列表或高风险操作交互变更时同步核对                             |
+| 控制台前端设计规范          | `apps/pages-console/docs/frontend-design-guidelines.md`                                                                                                   | XD Cell 控制台 UI / 交互开发、评审和验收规范                                      | 控制台页面、组件、表单、列表或高风险操作交互变更时同步核对                             |
 | v2 架构                     | `docs/pages-v2-wfp-architecture.md`                                                                                                                       | XD Cell v2 架构索引                                                               | 正文按 `docs/architecture/`、`docs/operations/`、`docs/security/` 拆分                 |
 | XD Cell Console             | `docs/architecture/xd-cell-console.md`                                                                                                                    | Console 站点目录、工作台、团队、Admin、Webhook、BFF/session 和部署边界            | Console 功能、权限、路由或部署行为变更时同步                                           |
 | v2 API 开发合约             | `apps/pages-api/src/openapi.js`                                                                                                                           | pages-api 开发、测试和受控内部集成合约                                            | 不公开 `/openapi.json`；用户入口是 CLI                                                 |
@@ -44,7 +44,7 @@
 
 ## 前端控制台规范
 
-- [XD Cell 控制台前端设计规范](./frontend-design-guidelines.md)
+- [XD Cell 控制台前端设计规范](../apps/pages-console/docs/frontend-design-guidelines.md)
 - [staging 控制台 UI / 交互走查](./reviews/staging-workers-ui-audit-2026-07-03.md)
 
 ## v1 文档边界

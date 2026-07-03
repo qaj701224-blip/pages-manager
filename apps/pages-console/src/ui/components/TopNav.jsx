@@ -3,7 +3,6 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   Bell,
   ChevronDown,
-  Globe2,
   KeyRound,
   LogIn,
   LogOut,
@@ -40,7 +39,6 @@ export function TopNav({ activeSection, sessionState }) {
           </span>
         </Link>
         <Link className={activeSection === 'sites' ? 'nav-link active' : 'nav-link'} to="/">
-          <Globe2 size={15} />
           <span>{t('sites')}</span>
         </Link>
         <Link className={activeSection === 'workspace' ? 'nav-link active' : 'nav-link'} to={workspaceHref}>

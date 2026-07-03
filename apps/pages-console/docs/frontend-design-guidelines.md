@@ -2,7 +2,7 @@
 
 本文定义 XD Cell 控制台前端开发、评审和验收的 UI / 交互规范。它适用于 `staging.workers.xd.team` / `workers.xd.team` 控制台、工作台、站点详情、团队管理、Access Keys、管理员后台，以及后续同类内部管理界面。
 
-相关走查输入见 [`docs/reviews/staging-workers-ui-audit-2026-07-03.md`](./reviews/staging-workers-ui-audit-2026-07-03.md)。
+本文归属 `apps/pages-console` 领域；全局 `docs/README.md` 只保留索引入口。相关走查输入见 [`docs/reviews/staging-workers-ui-audit-2026-07-03.md`](../../../docs/reviews/staging-workers-ui-audit-2026-07-03.md)。
 
 ## 设计目标
 

@@ -1,4 +1,4 @@
-import { KeyRound, Settings, UsersRound, Workflow } from 'lucide-react';
+import { Globe2, KeyRound, Settings, UsersRound } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { readTopNavUserState } from '../top-nav-model.js';
@@ -28,11 +28,11 @@ export function Sidebar({ active, sessionState, children }) {
           <nav className="side-section" aria-label="工作台导航">
             <p className="side-title">{t('navSites')}</p>
             <Link className={active === 'personal' ? 'side-link active' : 'side-link'} to="/workspace/published">
-              <Workflow size={17} />
+              <Globe2 size={17} />
               <span>{t('personalSites')}</span>
             </Link>
             <Link className={active === 'team-sites' ? 'side-link active' : 'side-link'} to="/workspace/team-sites">
-              <Workflow size={17} />
+              <Globe2 size={17} />
               <span>{t('teamSites')}</span>
             </Link>
           </nav>
