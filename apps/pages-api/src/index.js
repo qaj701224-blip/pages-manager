@@ -5,6 +5,7 @@ import { readApiConfig } from './config.js';
 import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
 import { jsonError, jsonOk } from './http.js';
 import { handleInternalApi } from './internal.js';
+import { handleConsoleUsersApi } from './console-users.js';
 import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
@@ -78,6 +79,7 @@ export default {
         (await handleConsoleAdminApi(request, env, config, store)) ||
         (await handleConsoleAccessKeysApi(request, env, config, store)) ||
         (await handleConsoleTeamsApi(request, env, config, store)) ||
+        (await handleConsoleUsersApi(request, env, config, store)) ||
         (await handleConsoleApi(request, env, config, store));
       if (response) return response;
     }

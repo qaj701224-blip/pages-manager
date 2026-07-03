@@ -1,4 +1,5 @@
 import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
+import { formatConsoleUser } from './console-users.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
@@ -112,6 +113,8 @@ async function updateTeamMember(request, store, config, session, teamId, userId)
   if (!TEAM_ROLES.has(role)) {
     return jsonError('TEAM_ROLE_INVALID', 'Team role is invalid.', 400, 'Use viewer, publisher, or admin.');
   }
+  const user = await store.getUser(userId);
+  if (!user) return jsonError('USER_NOT_FOUND', 'User not found.', 404, 'Pick a user that has signed in to XD Cell.');
 
   const member = await store.addTeamMember({
     teamId,
@@ -229,6 +232,7 @@ function formatTeamMember(member) {
   return {
     teamId: member.teamId,
     userId: member.userId,
+    user: member.user ? formatConsoleUser(member.user) : null,
     role: member.role,
     membershipSource: member.membershipSource,
     departmentPath: member.departmentPath || null,

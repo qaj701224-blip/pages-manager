@@ -297,6 +297,27 @@ test('teams proxy forwards signed session identity to pages-api', async () => {
   assert.deepEqual(await response.json(), { team: { id: 'team_department_XD_Platform_Web', name: 'XD/Platform/Web' } });
 });
 
+test('console users proxy forwards signed session identity to pages-api', async () => {
+  const cookie = await sessionCookie();
+  const response = await worker.fetch(
+    request('https://workers.xd.team/api/console/users?query=xutianqi', {
+      cookie,
+      headers: { 'X-Console-User-Id': 'attacker' },
+    }),
+    env({
+      PAGES_API: apiBinding(async (apiRequest) => {
+        assert.equal(apiRequest.url, 'https://pages-api.internal/.xd-pages/api/console/users?query=xutianqi');
+        assert.equal(apiRequest.headers.get('X-Console-User-Id'), 'user-1');
+        assert.equal(apiRequest.headers.get('X-Console-BFF'), 'pages-console');
+        return Response.json({ users: [] });
+      }),
+    })
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { users: [] });
+});
+
 test('access key proxy forwards signed session identity and JSON body to pages-api', async () => {
   const cookie = await sessionCookie();
   const response = await worker.fetch(

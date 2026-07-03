@@ -360,7 +360,8 @@ test('team API creates custom team with current user as admin', async () => {
 
 test('team member APIs require team admin and update roles', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
-  await seedConsoleUsers(store, ['usr_admin', 'usr_viewer']);
+  await seedConsoleUser(store, 'usr_admin', { realname: '管理员', email: 'admin@xd.com' });
+  await seedConsoleUser(store, 'usr_viewer', { realname: '成员用户', email: 'viewer@xd.com' });
   const team = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
@@ -406,6 +407,14 @@ test('team member APIs require team admin and update roles', async () => {
   assert.deepEqual((await updated.json()).member, {
     teamId: team.id,
     userId: 'usr_viewer',
+    user: {
+      id: 'usr_viewer',
+      email: 'viewer@xd.com',
+      realname: '成员用户',
+      account: null,
+      departmentPath: null,
+      employeeStatus: 'active',
+    },
     role: 'publisher',
     membershipSource: 'manual',
     departmentPath: null,
@@ -417,6 +426,74 @@ test('team member APIs require team admin and update roles', async () => {
   const removedBody = await removed.json();
   assert.equal(removedBody.member.userId, 'usr_viewer');
   assert.equal(removedBody.member.removedAt, '2026-06-15T00:00:00.000Z');
+});
+
+test('team member list includes user profile summary', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin', { realname: '管理员', email: 'admin@xd.com' });
+  await seedConsoleUser(store, 'usr_viewer', {
+    realname: '徐天麒',
+    email: 'xutianqi@xd.com',
+    account: 'xutianqi',
+    departmentPath: 'XD/Platform',
+  });
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: null,
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_viewer',
+    role: 'viewer',
+    membershipSource: 'manual',
+    actorUserId: 'usr_admin',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest(`/.xd-pages/api/console/teams/${team.id}/members`, { userId: 'usr_admin' }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  const viewer = body.members.find((member) => member.userId === 'usr_viewer');
+  assert.deepEqual(viewer.user, {
+    id: 'usr_viewer',
+    email: 'xutianqi@xd.com',
+    realname: '徐天麒',
+    account: 'xutianqi',
+    departmentPath: 'XD/Platform',
+    employeeStatus: 'active',
+  });
+});
+
+test('console user search returns persisted users for team member picker', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin', { realname: '管理员', email: 'admin@xd.com' });
+  await seedConsoleUser(store, 'usr_xutianqi', { realname: '徐天麒', email: 'xutianqi@xd.com', account: 'xutianqi' });
+  await seedConsoleUser(store, 'usr_other', { realname: '其他用户', email: 'other@xd.com', account: 'other' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/users?query=xutian', { userId: 'usr_admin' }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), {
+    users: [
+      {
+        id: 'usr_xutianqi',
+        email: 'xutianqi@xd.com',
+        realname: '徐天麒',
+        account: 'xutianqi',
+        departmentPath: null,
+        employeeStatus: 'active',
+      },
+    ],
+  });
 });
 
 test('team member APIs decode user ids captured from the path', async () => {

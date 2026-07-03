@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, KeyRound, Plus, Save, Settings, Trash2, UsersRound } from 'lucide-react';
+import { ArrowLeft, KeyRound, Plus, Save, Search, Settings, Trash2, UserPlus, UsersRound } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { createTeam, deleteTeam, fetchJson, removeTeamMember, updateTeamMember, updateTeamSettings } from '../api.js';
+import { createTeam, deleteTeam, fetchJson, listConsoleUsers, removeTeamMember, updateTeamMember, updateTeamSettings } from '../api.js';
 import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { usePreferences } from '../preferences-context.jsx';
+import { buildTeamMemberView, buildUserPickerRows } from '../team-members-model.js';
 import { buildTeamCards } from '../team-list-model.js';
 import {
   canDeleteTeam,
@@ -289,92 +290,85 @@ function TeamTabContent({ team, tab, membersState, onTeamUpdate, onMembersReload
 
 function TeamMembers({ team, state, onReload }) {
   const canManage = team.currentUserRole === 'admin';
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const members = state.members || [];
 
   return (
     <section className="detail-stack">
-      {canManage ? (
-        <TeamMemberForm team={team} onReload={onReload} />
-      ) : (
-        <div className="placeholder">仅团队 admin 可管理成员</div>
-      )}
-      <section className="table-list" aria-label="团队成员">
-        <div className="table-toolbar">
-          <strong>团队成员</strong>
-          <span className="tag muted">{state.members.length}</span>
+      <section className="table-list team-members-panel" aria-label="团队成员">
+        <div className="member-panel-head">
+          <div>
+            <strong>{team.name} · 成员</strong>
+            <span>{members.length} 名成员</span>
+          </div>
+          {canManage ? (
+            <button className="primary-button" type="button" onClick={() => setAddDialogOpen(true)}>
+              <UserPlus size={16} />
+              <span>添加成员</span>
+            </button>
+          ) : null}
         </div>
         {state.status === 'loading' ? <div className="placeholder">加载中</div> : null}
         {state.status === 'error' ? <div className="placeholder">无法加载成员</div> : null}
-        {state.status === 'ready' && !state.members.length ? <div className="placeholder">暂无成员</div> : null}
-        {state.status === 'ready'
-          ? state.members.map((member) => (
-              <div className="table-row member-row" key={`${member.teamId}:${member.userId}`}>
-                <div>
-                  <strong>{member.userId}</strong>
-                  <span>{formatDate(member.updatedAt)}</span>
-                </div>
-                <div className="tag-row compact-tags">
-                  <span className="tag muted">{membershipSourceLabel(member.membershipSource)}</span>
-                  {member.departmentPath ? <span className="tag muted">{member.departmentPath}</span> : null}
-                </div>
-                {canManage ? (
-                  <TeamMemberActions team={team} member={member} onReload={onReload} />
-                ) : (
-                  <span className="tag muted">{member.role}</span>
-                )}
-              </div>
-            ))
-          : null}
+        {state.status === 'ready' && !members.length ? <div className="placeholder">暂无成员</div> : null}
+        {state.status === 'ready' && members.length ? (
+          <>
+            <div className="member-table-head">
+              <span>姓名 / 邮箱</span>
+              <span>角色</span>
+              <span>加入时间</span>
+              <span>操作</span>
+            </div>
+            {members.map((member) => (
+              <TeamMemberRow
+                canManage={canManage}
+                key={`${member.teamId}:${member.userId}`}
+                member={member}
+                team={team}
+                onReload={onReload}
+              />
+            ))}
+          </>
+        ) : null}
       </section>
+      {canManage ? (
+        <AddTeamMemberDialog
+          open={addDialogOpen}
+          team={team}
+          members={members}
+          onOpenChange={setAddDialogOpen}
+          onReload={onReload}
+        />
+      ) : null}
     </section>
   );
 }
 
-function TeamMemberForm({ team, onReload }) {
-  const [form, setForm] = useState({ userId: '', role: 'viewer' });
-  const [status, setStatus] = useState({ saving: false, error: '' });
-
-  const submit = async (event) => {
-    event.preventDefault();
-    const userId = form.userId.trim();
-    if (!userId) return;
-
-    setStatus({ saving: true, error: '' });
-    try {
-      await updateTeamMember(team.id, userId, { role: form.role });
-      setForm({ userId: '', role: 'viewer' });
-      await onReload?.();
-      setStatus({ saving: false, error: '' });
-    } catch (error) {
-      setStatus({ saving: false, error: error?.code || error?.message || '保存成员失败' });
-    }
-  };
-
+function TeamMemberRow({ team, member, canManage, onReload }) {
+  const view = buildTeamMemberView(member);
   return (
-    <form className="info-list team-member-form" onSubmit={submit}>
-      <div className="panel-head">
+    <div className="table-row member-row">
+      <div className="member-identity" title={view.userTitle}>
+        <span className="member-avatar">{view.avatarText}</span>
         <div>
-          <p>Admin</p>
-          <h2>添加或更新成员</h2>
+          <strong>{view.displayName}</strong>
+          <span>{view.email || member.userId}</span>
+          <span className="member-source-line">
+            {membershipSourceLabel(member.membershipSource)}
+            {view.departmentPath ? ` · ${view.departmentPath}` : ''}
+          </span>
         </div>
-        <button className="primary-button" type="submit" disabled={status.saving || !form.userId.trim()}>
-          <Plus size={16} />
-          {status.saving ? '保存中' : '保存'}
-        </button>
       </div>
-      <div className="team-member-form-body">
-        <label className="field">
-          <span>用户 ID / 邮箱</span>
-          <input value={form.userId} onChange={(event) => setForm((current) => ({ ...current, userId: event.target.value }))} />
-        </label>
-        <SelectField
-          label="角色"
-          value={form.role}
-          options={TEAM_ROLE_OPTIONS.map((role) => ({ value: role, label: role }))}
-          onChange={(role) => setForm((current) => ({ ...current, role }))}
-        />
-        {status.error ? <div className="form-error">{status.error}</div> : null}
-      </div>
-    </form>
+      {canManage ? (
+        <TeamMemberActions team={team} member={member} onReload={onReload} />
+      ) : (
+        <>
+          <span className="tag muted">{member.role}</span>
+          <span>{formatDate(member.createdAt || member.updatedAt)}</span>
+          <span className="muted-cell">-</span>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -387,19 +381,26 @@ function TeamMemberActions({ team, member, onReload }) {
     setStatus({ saving: false, removing: false, error: '' });
   }, [member.role, member.userId]);
 
-  const save = async () => {
+  const save = async (nextRole) => {
+    if (nextRole === member.role) {
+      setRole(nextRole);
+      return;
+    }
+    setRole(nextRole);
     setStatus({ saving: true, removing: false, error: '' });
     try {
-      await updateTeamMember(team.id, member.userId, { role });
+      await updateTeamMember(team.id, member.userId, { role: nextRole });
       await onReload?.();
       setStatus({ saving: false, removing: false, error: '' });
     } catch (error) {
+      setRole(member.role);
       setStatus({ saving: false, removing: false, error: error?.code || error?.message || '保存角色失败' });
     }
   };
 
   const remove = async () => {
-    const confirmed = globalThis.confirm?.(`确认从团队中移除 ${member.userId}？`);
+    const view = buildTeamMemberView(member);
+    const confirmed = globalThis.confirm?.(`确认从团队中移除 ${view.displayName}？`);
     if (!confirmed) return;
 
     setStatus({ saving: false, removing: true, error: '' });
@@ -413,27 +414,132 @@ function TeamMemberActions({ team, member, onReload }) {
   };
 
   return (
-    <div className="member-role-actions">
-      <SelectField
-        disabled={status.saving || status.removing}
-        value={role}
-        options={TEAM_ROLE_OPTIONS.map((option) => ({ value: option, label: option }))}
-        onChange={setRole}
-      />
-      <button
-        className="icon-button compact"
-        type="button"
-        title="保存角色"
-        disabled={status.saving || role === member.role}
-        onClick={save}
-      >
-        <Save size={15} />
-      </button>
-      <button className="icon-button compact" type="button" title="移除成员" disabled={status.removing} onClick={remove}>
-        <Trash2 size={15} />
-      </button>
-      {status.error ? <span className="row-error">{status.error}</span> : null}
-    </div>
+    <>
+      <div className="member-role-actions">
+        <SelectField
+          disabled={status.saving || status.removing}
+          value={role}
+          options={TEAM_ROLE_OPTIONS.map((option) => ({ value: option, label: option }))}
+          onChange={save}
+        />
+        {status.saving ? <span>保存中</span> : null}
+        {status.error ? <span className="row-error">{status.error}</span> : null}
+      </div>
+      <span>{formatDate(member.createdAt || member.updatedAt)}</span>
+      <div className="member-row-actions">
+        <button className="table-action danger" type="button" disabled={status.removing} onClick={remove}>
+          <Trash2 size={15} />
+          <span>{status.removing ? '移除中' : '移除'}</span>
+        </button>
+      </div>
+    </>
+  );
+}
+
+function AddTeamMemberDialog({ open, team, members, onOpenChange, onReload }) {
+  const [query, setQuery] = useState('');
+  const [role, setRole] = useState('viewer');
+  const [state, setState] = useState({ status: 'idle', users: [], error: null });
+  const [action, setAction] = useState({ userId: '', status: 'idle', error: null });
+
+  useEffect(() => {
+    if (!open) return undefined;
+    setQuery('');
+    setRole('viewer');
+    setAction({ userId: '', status: 'idle', error: null });
+    return undefined;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let active = true;
+    const timer = setTimeout(() => {
+      setState((current) => ({ status: 'loading', users: current.users, error: null }));
+      listConsoleUsers({ query })
+        .then((data) => {
+          if (active) setState({ status: 'ready', users: data.users || [], error: null });
+        })
+        .catch((error) => {
+          if (active) setState({ status: 'error', users: [], error });
+        });
+    }, query ? 180 : 0);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [open, query]);
+
+  const rows = useMemo(() => buildUserPickerRows({ users: state.users, members }), [members, state.users]);
+
+  const addUser = async (row) => {
+    if (row.alreadyMember || action.status === 'saving') return;
+    setAction({ userId: row.id, status: 'saving', error: null });
+    try {
+      await updateTeamMember(team.id, row.id, { role });
+      await onReload?.();
+      setAction({ userId: '', status: 'idle', error: null });
+    } catch (error) {
+      setAction({ userId: row.id, status: 'error', error });
+    }
+  };
+
+  return (
+    <AppDialog open={open} title="添加成员" onOpenChange={onOpenChange}>
+      <div className="member-picker">
+        <label className="field">
+          <span>公司用户</span>
+          <span className="member-search-input">
+            <Search size={16} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索姓名、邮箱或 SSO ID"
+              autoFocus
+            />
+          </span>
+        </label>
+        <SelectField
+          label="角色"
+          value={role}
+          options={TEAM_ROLE_OPTIONS.map((option) => ({ value: option, label: option }))}
+          onChange={setRole}
+        />
+        <p className="dialog-description">默认角色是 viewer。添加前可以选择其他角色，之后也可以从成员列表调整。</p>
+        <div className="member-picker-list">
+          {state.status === 'loading' ? <div className="panel-empty">搜索中</div> : null}
+          {state.status === 'error' ? <div className="form-error">{state.error?.code || 'USER_SEARCH_FAILED'}</div> : null}
+          {state.status === 'ready' && !rows.length ? <div className="panel-empty">暂无匹配用户</div> : null}
+          {state.status === 'ready'
+            ? rows.map((row) => (
+                <button
+                  className="member-picker-row"
+                  type="button"
+                  key={row.id}
+                  disabled={row.alreadyMember || action.status === 'saving'}
+                  onClick={() => addUser(row)}
+                >
+                  <span className="member-avatar">{row.avatarText}</span>
+                  <span className="member-picker-identity">
+                    <strong>{row.displayName}</strong>
+                    <small>{row.email || row.id}</small>
+                  </span>
+                  {row.alreadyMember ? (
+                    <span className="tag muted">已在团队</span>
+                  ) : (
+                    <span className="table-action">
+                      <Plus size={15} />
+                      {action.userId === row.id && action.status === 'saving' ? '添加中' : '添加'}
+                    </span>
+                  )}
+                  {action.userId === row.id && action.status === 'error' ? (
+                    <span className="row-error">{action.error?.code || 'ADD_MEMBER_FAILED'}</span>
+                  ) : null}
+                </button>
+              ))
+            : null}
+        </div>
+      </div>
+    </AppDialog>
   );
 }
 

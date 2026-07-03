@@ -353,6 +353,23 @@ class TestPagesStore {
     );
   }
 
+  async listConsoleUsers({ query, limit = 20 } = {}) {
+    const normalizedQuery = normalizeNullableString(query)?.toLowerCase() || '';
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
+    return cloneRecord(
+      [...this.users.values()]
+        .filter((user) => ['active', 'unknown'].includes(user.employeeStatus || 'unknown'))
+        .filter((user) => {
+          if (!normalizedQuery) return true;
+          return [user.realname, user.email, user.account, user.id]
+            .filter(Boolean)
+            .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+        })
+        .sort((left, right) => (left.realname || left.email || left.id).localeCompare(right.realname || right.email || right.id))
+        .slice(0, normalizedLimit)
+    );
+  }
+
   async listAdminSites({ environment }) {
     return cloneRecord(
       [...this.sites.values()]
@@ -716,7 +733,7 @@ class TestPagesStore {
       updatedAt: now,
     };
     this.teamMembers.set(teamMemberKey(input.teamId, input.userId), member);
-    return cloneRecord(member);
+    return this.decorateTeamMember(member);
   }
 
   async removeTeamMember({ teamId, userId, actorUserId }) {
@@ -727,7 +744,7 @@ class TestPagesStore {
     member.removedByUserId = actorUserId || null;
     member.updatedAt = now;
     this.teamMembers.set(teamMemberKey(teamId, userId), member);
-    return cloneRecord(member);
+    return this.decorateTeamMember(member);
   }
 
   async restoreTeamMember({ teamId, userId, actorUserId }) {
@@ -740,14 +757,14 @@ class TestPagesStore {
     member.restoredByUserId = actorUserId || null;
     member.updatedAt = now;
     this.teamMembers.set(teamMemberKey(teamId, userId), member);
-    return cloneRecord(member);
+    return this.decorateTeamMember(member);
   }
 
   async getTeamMember({ teamId, userId, includeRemoved = false }) {
     const member = this.teamMembers.get(teamMemberKey(teamId, userId)) || null;
     if (!member) return null;
     if (member.removedAt && !includeRemoved) return null;
-    return cloneRecord(member);
+    return this.decorateTeamMember(member);
   }
 
   async listTeamMembers({ teamId, includeRemoved = false } = {}) {
@@ -755,8 +772,26 @@ class TestPagesStore {
       [...this.teamMembers.values()]
         .filter((member) => member.teamId === teamId)
         .filter((member) => includeRemoved || !member.removedAt)
+        .map((member) => this.decorateTeamMember(member))
         .sort((left, right) => left.userId.localeCompare(right.userId))
     );
+  }
+
+  decorateTeamMember(member) {
+    const user = this.users.get(member.userId) || null;
+    return cloneRecord({
+      ...member,
+      user: user
+        ? {
+            id: user.id,
+            email: user.email || null,
+            realname: user.realname || null,
+            account: user.account || null,
+            employeeStatus: user.employeeStatus || null,
+            departmentPath: user.departmentPath || null,
+          }
+        : null,
+    });
   }
 
   async listTeamsForUser({ environment, userId } = {}) {

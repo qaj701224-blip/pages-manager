@@ -245,6 +245,7 @@ function handleSession(session) {
 
 function isPagesApiProxyPath(pathname) {
   if (pathname === '/api/console/directory') return true;
+  if (pathname === '/api/console/users') return true;
   if (pathname === '/api/console/workspace/sites') return true;
   if (pathname === '/api/console/access-keys' || pathname.startsWith('/api/console/access-keys/')) return true;
   if (/^\/api\/console\/teams\/[^/]+\/access-keys(?:\/[^/]+)?$/.test(pathname)) return true;

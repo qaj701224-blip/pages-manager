@@ -20,6 +20,7 @@ import {
   listAdminSites,
   listAdminTeams,
   listAdminUsers,
+  listConsoleUsers,
   listAdminWebhookDeliveries,
   listAdminWebhooks,
   listTeamAccessKeys,
@@ -287,17 +288,19 @@ test('team member API helpers use workspace team member endpoints', async () => 
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
-    return Response.json({ member: { teamId: 'team_1', userId: 'usr_1' } });
+    return Response.json(url.includes('/users') ? { users: [] } : { member: { teamId: 'team_1', userId: 'usr_1' } });
   };
 
   await updateTeamMember('team_1', 'usr_1', { role: 'publisher' }, { fetchImpl, csrfToken: 'csrf-1' });
   await removeTeamMember('team_1', 'usr_1', { fetchImpl, csrfToken: 'csrf-2' });
+  await listConsoleUsers({ query: 'xutianqi', fetchImpl });
 
   assert.deepEqual(
     calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token']]),
     [
       ['/api/console/teams/team_1/members/usr_1', 'PATCH', 'csrf-1'],
       ['/api/console/teams/team_1/members/usr_1', 'DELETE', 'csrf-2'],
+      ['/api/console/users?query=xutianqi', 'GET', undefined],
     ]
   );
   assert.deepEqual(JSON.parse(calls[0].init.body), { role: 'publisher' });

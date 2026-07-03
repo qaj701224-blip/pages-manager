@@ -603,6 +603,33 @@ export class D1PagesStore {
     }));
   }
 
+  async listConsoleUsers({ query, limit = 20 } = {}) {
+    const normalizedQuery = normalizeNullableString(query);
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
+    const conditions = ["COALESCE(employee_status, 'unknown') IN ('active', 'unknown')"];
+    const binds = [];
+    if (normalizedQuery) {
+      const like = `%${normalizedQuery.toLowerCase()}%`;
+      conditions.push(
+        `(LOWER(COALESCE(realname, '')) LIKE ?
+          OR LOWER(COALESCE(email, '')) LIKE ?
+          OR LOWER(COALESCE(account, '')) LIKE ?
+          OR LOWER(user_id) LIKE ?)`
+      );
+      binds.push(like, like, like, like);
+    }
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM users
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY COALESCE(realname, email, user_id) ASC
+        LIMIT ?`
+      )
+      .bind(...binds, normalizedLimit)
+      .all();
+    return (result.results || []).map(mapUser);
+  }
+
   async listAdminSites({ environment }) {
     const result = await this.db
       .prepare(
@@ -1208,8 +1235,17 @@ export class D1PagesStore {
   }
 
   async getTeamMember({ teamId, userId, includeRemoved = false }) {
+    const removedFilter = includeRemoved ? '' : ' AND team_members.removed_at IS NULL';
     const row = await this.db
-      .prepare(`SELECT * FROM team_members WHERE team_id = ? AND user_id = ?${includeRemoved ? '' : ' AND removed_at IS NULL'}`)
+      .prepare(
+        `SELECT team_members.*,
+          users.user_id AS joined_user_id, users.email AS user_email, users.realname AS user_realname,
+          users.account AS user_account, users.employee_status AS user_employee_status,
+          users.department_path AS user_department_path
+        FROM team_members
+        LEFT JOIN users ON users.user_id = team_members.user_id
+        WHERE team_members.team_id = ? AND team_members.user_id = ?${removedFilter}`
+      )
       .bind(teamId, userId)
       .first();
     return row ? mapTeamMember(row) : null;
@@ -1218,9 +1254,14 @@ export class D1PagesStore {
   async listTeamMembers({ teamId, includeRemoved = false } = {}) {
     const result = await this.db
       .prepare(
-        `SELECT * FROM team_members
-        WHERE team_id = ?${includeRemoved ? '' : ' AND removed_at IS NULL'}
-        ORDER BY user_id ASC`
+        `SELECT team_members.*,
+          users.user_id AS joined_user_id, users.email AS user_email, users.realname AS user_realname,
+          users.account AS user_account, users.employee_status AS user_employee_status,
+          users.department_path AS user_department_path
+        FROM team_members
+        LEFT JOIN users ON users.user_id = team_members.user_id
+        WHERE team_members.team_id = ?${includeRemoved ? '' : ' AND team_members.removed_at IS NULL'}
+        ORDER BY COALESCE(users.realname, users.email, team_members.user_id) ASC`
       )
       .bind(teamId)
       .all();
@@ -3738,9 +3779,21 @@ function mapTeamWithCurrentMember(row) {
 }
 
 function mapTeamMember(row) {
+  const user =
+    row.joined_user_id || row.user_email || row.user_realname || row.user_account
+      ? {
+          id: row.joined_user_id || row.user_id,
+          email: row.user_email || null,
+          realname: row.user_realname || null,
+          account: row.user_account || null,
+          employeeStatus: row.user_employee_status || null,
+          departmentPath: row.user_department_path || null,
+        }
+      : null;
   return {
     teamId: row.team_id,
     userId: row.user_id,
+    user,
     role: row.role,
     membershipSource: row.membership_source,
     departmentPath: row.department_path || null,

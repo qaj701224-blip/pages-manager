@@ -1477,14 +1477,92 @@ button {
   padding-block: 6px;
 }
 
+.team-members-panel {
+  background: transparent;
+}
+
+.member-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 66px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--xd-border);
+}
+
+.member-panel-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.member-panel-head strong {
+  color: var(--xd-text);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.member-panel-head span {
+  color: var(--xd-muted);
+  font-size: 13px;
+}
+
+.member-table-head,
 .member-row {
-  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) minmax(260px, auto);
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(150px, 0.44fr) minmax(150px, 0.44fr) minmax(110px, auto);
+  gap: 16px;
+  align-items: center;
+  padding-inline: 18px;
+}
+
+.member-table-head {
+  min-height: 40px;
+  color: var(--xd-subtle);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.member-row {
+  min-height: 72px;
+  border-top: 1px solid var(--xd-border);
+}
+
+.table-row > .member-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.member-avatar {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--xd-orange-active);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.member-identity > div,
+.member-picker-identity {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.member-source-line {
+  color: var(--xd-subtle);
+  font-size: 12px;
 }
 
 .member-role-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 8px;
   min-width: 0;
 }
@@ -1493,16 +1571,17 @@ button {
   width: 132px;
 }
 
-.member-role-actions select {
+.member-role-actions .radix-select-trigger {
   min-height: 32px;
-  min-width: 112px;
-  border: 1px solid var(--xd-border);
-  border-radius: 8px;
-  padding: 0 8px;
-  color: var(--xd-text);
-  background: var(--xd-panel);
-  font: inherit;
-  font-size: 13px;
+}
+
+.member-row-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.muted-cell {
+  color: var(--xd-muted);
 }
 
 .account-settings-page {
@@ -2034,6 +2113,94 @@ button {
 
 .team-member-form-body .form-error {
   grid-column: 1 / -1;
+}
+
+.member-picker {
+  display: grid;
+  gap: 16px;
+}
+
+.member-search-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--xd-panel);
+  color: var(--xd-muted);
+}
+
+.member-search-input:focus-within {
+  border-color: rgba(243, 112, 34, 0.42);
+  box-shadow: 0 0 0 3px rgba(243, 112, 34, 0.1);
+}
+
+.member-search-input input {
+  min-height: 34px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--xd-text);
+  font: inherit;
+  font-size: 13px;
+  outline: 0;
+}
+
+.member-picker-list {
+  display: grid;
+  gap: 8px;
+  min-height: 70px;
+}
+
+.member-picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 60px;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--xd-text);
+  background: rgba(255, 253, 248, 0.82);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.table-action.danger {
+  color: #b73717;
+  border-color: rgba(183, 55, 23, 0.22);
+  background: rgba(255, 247, 242, 0.76);
+}
+
+.table-action.danger:hover {
+  border-color: rgba(183, 55, 23, 0.34);
+  background: rgba(255, 234, 221, 0.84);
+}
+
+.member-picker-row:hover:not(:disabled) {
+  border-color: rgba(243, 112, 34, 0.28);
+  background: var(--xd-orange-tint);
+}
+
+.member-picker-row:disabled {
+  cursor: default;
+}
+
+.member-picker-identity strong {
+  color: var(--xd-text);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.member-picker-identity small {
+  color: var(--xd-muted);
+  font-size: 13px;
 }
 
 .runtime-form-body {
