@@ -1,4 +1,4 @@
-import { KeyRound, LogOut, Monitor, Moon, Sun, UserCircle } from 'lucide-react';
+import { Monitor, Moon, Sun } from 'lucide-react';
 
 import { buildAccountProfile } from '../account-profile-model.js';
 import { AppTabs, SelectField } from '../components/RadixPrimitives.jsx';
@@ -24,29 +24,15 @@ export function AccountSettings({ sessionState }) {
             <AppTabs.Trigger className="tabs-trigger" value="preferences">
               {t('preferences')}
             </AppTabs.Trigger>
-            <AppTabs.Trigger className="tabs-trigger" value="tokens">
-              {t('apiToken')}
-            </AppTabs.Trigger>
-            <AppTabs.Trigger className="tabs-trigger" value="sessions">
-              {t('sessions')}
-            </AppTabs.Trigger>
           </AppTabs.List>
 
           <AppTabs.Content value="basic">
             <section className="settings-card">
               <h2>{t('basicInfo')}</h2>
               <dl className="profile-list">
-                <div>
-                  <dt>{t('avatar')}</dt>
-                  <dd>
-                    <span className="profile-avatar large">{profile.avatarText}</span>
-                    <span>{profile.ssoSource}</span>
-                  </dd>
-                </div>
-                <ProfileRow label={t('name')} value={profile.displayName} note={t('ssoSynced')} />
+                <ProfileRow label={t('name')} value={profile.displayName} note={profile.ssoSource} />
                 <ProfileRow label={t('email')} value={profile.email} />
                 <ProfileRow label={t('department')} value={profile.departmentPath} />
-                <ProfileRow label={t('userId')} value={profile.userId} />
               </dl>
             </section>
           </AppTabs.Content>
@@ -81,32 +67,6 @@ export function AccountSettings({ sessionState }) {
               </div>
             </section>
           </AppTabs.Content>
-
-          <AppTabs.Content value="tokens">
-            <section className="settings-card compact-settings-card">
-              <div>
-                <h2>{t('apiToken')}</h2>
-                <p>{t('tokenUsage')}</p>
-              </div>
-              <a className="primary-button" href="/workspace/access-keys">
-                <KeyRound size={16} />
-                <span>{t('accessKeys')}</span>
-              </a>
-            </section>
-          </AppTabs.Content>
-
-          <AppTabs.Content value="sessions">
-            <section className="settings-card compact-settings-card">
-              <div>
-                <h2>{t('sessionInfo')}</h2>
-                <p>{t('sessionHint')}</p>
-              </div>
-              <a className="secondary-button" href="/api/console/auth/logout">
-                <LogOut size={16} />
-                <span>{t('logout')}</span>
-              </a>
-            </section>
-          </AppTabs.Content>
         </AppTabs.Root>
       </main>
     </div>
@@ -118,7 +78,7 @@ function ProfileRow({ label, value, note }) {
     <div>
       <dt>{label}</dt>
       <dd>
-        <code>{value || '-'}</code>
+        <span className="profile-value">{value || '-'}</span>
         {note ? <span>{note}</span> : null}
       </dd>
     </div>

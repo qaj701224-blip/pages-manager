@@ -56,6 +56,8 @@ export async function validateConsoleSession(env, session) {
     ...session,
     userId: String(current.userId),
     email: typeof current.email === 'string' ? current.email : session.email || '',
+    realname: typeof current.realname === 'string' ? current.realname : '',
+    departmentPath: typeof current.departmentPath === 'string' ? current.departmentPath : '',
     employeeStatus: typeof current.employeeStatus === 'string' ? current.employeeStatus : '',
     isPlatformAdmin: Boolean(current.isPlatformAdmin),
     sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : session.sessionVersion,

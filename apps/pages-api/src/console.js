@@ -218,6 +218,8 @@ async function validateConsoleAuthSession(request, env, config, store) {
     session: {
       userId: session.userId,
       email: session.email,
+      realname: session.user?.realname || null,
+      departmentPath: session.user?.departmentPath || null,
       employeeStatus: session.employeeStatus,
       sessionVersion: session.sessionVersion,
       isPlatformAdmin: session.isPlatformAdmin,

@@ -16,12 +16,22 @@ test('account profile uses SSO realname and department path', () => {
       },
     }),
     {
-      avatarText: '徐',
       displayName: '徐天麒',
       email: 'xutianqi@xd.com',
       departmentPath: '心动/平台支撑部/Web',
-      userId: 'usr_1',
-      ssoSource: '飞书 SSO 同步，不可改',
+      ssoSource: '企业 SSO 同步，不可改',
     }
+  );
+});
+
+test('account profile does not expose user id as display name', () => {
+  assert.equal(
+    buildAccountProfile({
+      authenticated: true,
+      user: {
+        userId: 'usr_secret_id',
+      },
+    }).displayName,
+    '用户'
   );
 });

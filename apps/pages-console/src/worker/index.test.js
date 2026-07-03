@@ -714,6 +714,8 @@ test('auth session endpoint returns current console session without exposing coo
           Response.json({
             session: {
               ...echoConsoleSession(apiRequest),
+              realname: '徐天麒',
+              departmentPath: '心动/平台支撑部/Web',
               isPlatformAdmin: true,
             },
           }),
@@ -729,6 +731,8 @@ test('auth session endpoint returns current console session without exposing coo
     user: {
       userId: 'user-1',
       email: 'user@example.com',
+      realname: '徐天麒',
+      departmentPath: '心动/平台支撑部/Web',
       isPlatformAdmin: true,
     },
   });

@@ -232,6 +232,8 @@ function handleSession(session) {
       user: {
         userId: session.userId,
         email: session.email || '',
+        realname: session.realname || '',
+        departmentPath: session.departmentPath || '',
         isPlatformAdmin: Boolean(session.isPlatformAdmin),
       },
     },

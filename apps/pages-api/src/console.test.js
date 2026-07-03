@@ -116,6 +116,8 @@ test('console auth session validates current user, session version, and admin gr
   await store.createUser({
     userId: 'usr_admin',
     email: 'admin@example.com',
+    realname: '徐天麒',
+    departmentPath: '心动/平台支撑部/Web',
     employeeStatus: 'active',
     sessionVersion: 3,
   });
@@ -140,6 +142,8 @@ test('console auth session validates current user, session version, and admin gr
     session: {
       userId: 'usr_admin',
       email: 'admin@example.com',
+      realname: '徐天麒',
+      departmentPath: '心动/平台支撑部/Web',
       employeeStatus: 'active',
       sessionVersion: 3,
       isPlatformAdmin: true,

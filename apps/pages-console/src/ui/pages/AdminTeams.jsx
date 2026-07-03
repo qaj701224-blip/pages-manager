@@ -79,8 +79,8 @@ export function AdminTeams() {
 
       <form className="merge-panel" onSubmit={submitMerge}>
         <div>
-          <p>部门团队合并</p>
-          <h2>部门名称变化时迁移资产</h2>
+          <h2>部门合并</h2>
+          <p>部门名称变化时迁移资产</p>
         </div>
         <select
           value={mergeForm.sourceTeamId}

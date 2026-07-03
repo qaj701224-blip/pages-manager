@@ -1,14 +1,12 @@
 export function buildAccountProfile(session) {
   const user = session?.user || {};
   const email = user.email || '';
-  const displayName = user.realname || user.name || displayNameFromEmail(email) || user.userId || '用户';
+  const displayName = user.realname || user.name || displayNameFromEmail(email) || '用户';
   return {
-    avatarText: displayName.slice(0, 1).toUpperCase(),
     displayName,
     email: email || '-',
     departmentPath: user.departmentPath || '-',
-    userId: user.userId || '-',
-    ssoSource: '飞书 SSO 同步，不可改',
+    ssoSource: '企业 SSO 同步，不可改',
   };
 }
 

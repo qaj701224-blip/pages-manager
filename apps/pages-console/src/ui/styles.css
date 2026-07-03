@@ -1149,8 +1149,7 @@ button {
 }
 
 .access-key-row code,
-.token-created-body code,
-.profile-list code {
+.token-created-body code {
   min-width: 0;
   width: fit-content;
   max-width: 100%;
@@ -1166,8 +1165,7 @@ button {
 }
 
 :root[data-theme='dark'] .access-key-row code,
-:root[data-theme='dark'] .token-created-body code,
-:root[data-theme='dark'] .profile-list code {
+:root[data-theme='dark'] .token-created-body code {
   background: rgba(255, 255, 255, 0.04);
 }
 
@@ -1508,6 +1506,16 @@ button {
   margin: 0;
   color: var(--xd-text-2);
   font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.profile-value {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--xd-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
@@ -2057,13 +2065,17 @@ button {
   padding: 0 12px;
   color: var(--xd-muted);
   background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
   cursor: pointer;
 }
 
 .segmented button.active {
   color: var(--xd-orange-active);
   background: var(--xd-orange-tint);
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .code-preview {
@@ -2200,9 +2212,9 @@ button {
 
 .merge-panel {
   display: grid;
-  grid-template-columns: minmax(200px, 1fr) minmax(160px, 1fr) minmax(160px, 1fr) minmax(140px, 1fr) auto;
-  gap: 10px;
-  align-items: end;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(170px, 1fr) minmax(170px, 1fr) minmax(150px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
   border: 1px solid var(--xd-border);
   border-radius: 8px;
   padding: 14px;
@@ -2210,16 +2222,18 @@ button {
 }
 
 .merge-panel p {
-  margin: 0 0 2px;
+  margin: 4px 0 0;
   color: var(--xd-muted);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
 }
 
 .merge-panel h2 {
   margin: 0;
   color: var(--xd-text);
   font-size: 15px;
+  font-weight: 700;
   line-height: 1.4;
 }
 
