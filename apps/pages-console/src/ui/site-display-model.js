@@ -11,6 +11,18 @@ export function siteCardOwnerLabel(owner) {
   return normalizeOwnerLabel(owner.displayName || owner.realname || owner.name);
 }
 
+export function siteVisibilityLabel(visibility) {
+  const value = String(visibility || '').trim();
+  const labels = {
+    internal: '内网可见',
+    org: '企业成员可见',
+    acl: '指定成员可见',
+    owner: '仅归属方可见',
+    disabled: '已停用',
+  };
+  return labels[value] || value;
+}
+
 export function adminSiteOwnerView(owner = {}) {
   const type = owner.type === 'team' ? 'team' : 'user';
   if (type === 'team') {

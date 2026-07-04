@@ -71,8 +71,11 @@ test('site cards use owner object label and open the site directly', () => {
   assert.match(sitesDirectorySource, /cardAction = 'detail'/);
   assert.match(sitesDirectorySource, /function SiteCard\(\{ site, cardAction = 'detail' \}\)/);
   assert.match(sitesDirectorySource, /siteCardOwnerLabel\(site\.owner\)/);
+  assert.match(sitesDirectorySource, /siteVisibilityLabel\(visibility\)/);
+  assert.match(sitesDirectorySource, /statusKind === 'disabled' \? <span className="tag tag-disabled">已停用<\/span> : null/);
   assert.match(sitesDirectorySource, /cardAction === 'open' && publicUrl/);
   assert.match(sitesDirectorySource, /cardAction !== 'open' && publicUrl/);
   assert.doesNotMatch(sitesDirectorySource, /const ownerType = site\.owner\?\.type === 'team' \? '团队' : '个人';/);
   assert.doesNotMatch(sitesDirectorySource, /\{ownerType\}/);
+  assert.doesNotMatch(sitesDirectorySource, /tag-success' : 'tag tag-disabled'\}>\{status\}/);
 });

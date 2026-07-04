@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { adminSiteOwnerView, siteCardOwnerLabel, sitePublicUrl } from './site-display-model.js';
+import { adminSiteOwnerView, siteCardOwnerLabel, sitePublicUrl, siteVisibilityLabel } from './site-display-model.js';
 
 test('sitePublicUrl displays hostnames with https protocol', () => {
   assert.equal(sitePublicUrl('demo.workers.xd.team'), 'https://demo.workers.xd.team');
@@ -38,4 +38,13 @@ test('siteCardOwnerLabel shows only the concrete owner object name', () => {
   assert.equal(siteCardOwnerLabel({ type: 'team', departmentPath: '心动/平台支撑部' }), '心动/平台支撑部');
   assert.equal(siteCardOwnerLabel({ type: 'user' }), '');
   assert.equal(siteCardOwnerLabel(null), '');
+});
+
+test('siteVisibilityLabel maps access policy values to readable copy', () => {
+  assert.equal(siteVisibilityLabel('internal'), '内网可见');
+  assert.equal(siteVisibilityLabel('org'), '企业成员可见');
+  assert.equal(siteVisibilityLabel('acl'), '指定成员可见');
+  assert.equal(siteVisibilityLabel('owner'), '仅归属方可见');
+  assert.equal(siteVisibilityLabel('disabled'), '已停用');
+  assert.equal(siteVisibilityLabel('custom'), 'custom');
 });

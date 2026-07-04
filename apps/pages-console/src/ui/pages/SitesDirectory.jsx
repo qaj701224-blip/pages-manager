@@ -3,7 +3,7 @@ import { ExternalLink } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { fetchJson } from '../api.js';
-import { siteCardOwnerLabel, sitePublicUrl } from '../site-display-model.js';
+import { siteCardOwnerLabel, sitePublicUrl, siteVisibilityLabel } from '../site-display-model.js';
 
 export function SitesDirectory() {
   const [state, setState] = useState({ status: 'loading', sites: [], error: null });
@@ -76,6 +76,7 @@ export function SiteCard({ site, cardAction = 'detail' }) {
   const ownerText = siteCardOwnerLabel(site.owner);
   const publicUrl = sitePublicUrl(site.hostname);
   const visibility = site.visibility || site.access?.visibility || 'internal';
+  const visibilityText = siteVisibilityLabel(visibility);
   const status = site.status || (visibility === 'disabled' ? 'disabled' : 'active');
   const statusKind = status === 'disabled' || visibility === 'disabled' ? 'disabled' : 'active';
   const title = site.slug || site.hostname || site.id;
@@ -98,8 +99,8 @@ export function SiteCard({ site, cardAction = 'detail' }) {
       <div className="site-card__footer">
         <div className="tag-row site-card__tags">
           {ownerText ? <span className="tag" title={ownerText}>{ownerText}</span> : null}
-          <span className="tag">{visibility}</span>
-          <span className={statusKind === 'active' ? 'tag tag-success' : 'tag tag-disabled'}>{status}</span>
+          {visibility !== 'disabled' ? <span className="tag" title={visibility}>{visibilityText}</span> : null}
+          {statusKind === 'disabled' ? <span className="tag tag-disabled">已停用</span> : null}
         </div>
         {cardAction !== 'open' && publicUrl ? (
           <a
@@ -137,6 +138,7 @@ function filterSites(sites, { query, status }) {
   const normalizedQuery = query.trim().toLowerCase();
   return sites.filter((site) => {
     const visibility = site.visibility || site.access?.visibility || 'internal';
+    const visibilityText = siteVisibilityLabel(visibility);
     const siteStatus = site.status || (visibility === 'disabled' ? 'disabled' : 'active');
     if (status !== 'all' && siteStatus !== status) return false;
     if (!normalizedQuery) return true;
@@ -148,6 +150,7 @@ function filterSites(sites, { query, status }) {
       site.owner?.email,
       site.owner?.departmentPath,
       visibility,
+      visibilityText,
       siteStatus,
     ]
       .filter(Boolean)
