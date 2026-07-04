@@ -140,6 +140,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
 
   const requestedSiteId = normalizeOptionalString(body.siteId);
   const requestedSiteSlug = normalizeOptionalSlug(body.siteSlug ?? body.slug);
+  const requestedTeamId = normalizeOptionalString(body.teamId);
   const requestedVisibility = normalizeOptionalString(body.visibility);
   const clientContentHash = typeof body.contentHash === 'string' ? body.contentHash : '';
   const source = typeof body.source === 'string' ? body.source : 'api';
@@ -217,6 +218,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   const site = await resolveDeploySite(store, actor, config, env, {
     siteId: requestedSiteId,
     siteSlug: requestedSiteSlug,
+    teamId: requestedTeamId,
     visibility: requestedVisibility || 'org',
   });
   if (site instanceof Response) return site;
@@ -1007,6 +1009,7 @@ async function readPublishPlanMultipartBody(form) {
   return {
     siteId: metadata.siteId,
     siteSlug: metadata.siteSlug,
+    teamId: metadata.teamId,
     visibility: metadata.visibility,
     source: typeof metadata.source === 'string' && metadata.source.trim() ? metadata.source.trim() : 'cli',
     contentHash: typeof metadata.contentHash === 'string' ? metadata.contentHash : '',
@@ -1624,23 +1627,67 @@ function rollbackSiteMismatch() {
   );
 }
 
-async function resolveDeploySite(store, actor, config, env, { siteId, siteSlug, visibility }) {
+async function resolveDeploySite(store, actor, config, env, { siteId, siteSlug, teamId, visibility }) {
   const environment = config.environment;
   if (siteId) {
     const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
-    return site || siteNotFound('Check the site id.');
+    if (!site) return siteNotFound('Check the site id.');
+    return assertRequestedTeamMatchesSite(site, teamId) || site;
   }
   const bySlug = typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(environment, siteSlug) : null;
   if (!bySlug) {
     const slugError = validateDeploySiteSlug(siteSlug, environment);
     if (slugError) return slugError;
-    return createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, visibility });
+    return createSiteFromDeployOwner(store, actor, config, env, { siteSlug, teamId, visibility });
   }
+  const teamMismatch = assertRequestedTeamMatchesSite(bySlug, teamId);
+  if (teamMismatch) return teamMismatch;
   const site = await store.getSiteForUser(bySlug.id, actor.userId, actor, environment);
   return site || siteNotFound('Check the site slug and access key scope.');
 }
 
-async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, visibility }) {
+async function createSiteFromDeployOwner(store, actor, config, env, { siteSlug, teamId, visibility }) {
+  if (actor.type !== 'access_key' && teamId) {
+    return createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility });
+  }
+  return createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, teamId, visibility });
+}
+
+async function createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
+  const teamOwner = await resolveTeamDeployOwner(store, actor.userId, teamId, config.environment);
+  if (teamOwner instanceof Response) return teamOwner;
+  try {
+    const site = await store.createSite({
+      id: nextId(env, 'site'),
+      slug: siteSlug,
+      ownerType: 'team',
+      ownerId: teamOwner.ownerId,
+      ownerUserId: actor.userId,
+      siteUuid: nextSiteUuid(env),
+      defaultVisibility: visibility,
+      environment: config.environment,
+      routeId: nextId(env, 'route'),
+      hostname: hostnameForSlug(siteSlug, config),
+    });
+    return { ...site, managementRole: teamOwner.role };
+  } catch (error) {
+    if (error instanceof Error && /SITE_SLUG_CONFLICT/.test(error.message)) {
+      const existing =
+        typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(config.environment, siteSlug) : null;
+      const teamMismatch = assertRequestedTeamMatchesSite(existing, teamId);
+      if (teamMismatch) return teamMismatch;
+      if (existing) {
+        const visible = await store.getSiteForUser(existing.id, actor.userId, actor, config.environment);
+        if (visible) return visible;
+      }
+    }
+    const response = siteCreateErrorResponse(error);
+    if (response) return response;
+    throw error;
+  }
+}
+
+async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
   if (actor.type !== 'access_key') return siteNotFound('Check the site slug.');
   if (actor.siteId) return siteNotFound('Check the site slug and access key scope.');
   if (!actor.scopes.includes('deploy:site')) {
@@ -1650,6 +1697,14 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
   const ownerType = actor.ownerType || 'user';
   const ownerId = actor.ownerId || actor.userId;
   const ownerUserId = ownerType === 'team' ? actor.userId : ownerId;
+  if (teamId && (ownerType !== 'team' || ownerId !== teamId)) {
+    return jsonError(
+      'DEPLOY_FORBIDDEN',
+      'Actor cannot deploy this site.',
+      403,
+      'Use a user CLI token or an owner-scoped access key for this team.'
+    );
+  }
   if (!ownerId || !ownerUserId) {
     return jsonError(
       'DEPLOY_FORBIDDEN',
@@ -1677,6 +1732,8 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
       const existing =
         typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(config.environment, siteSlug) : null;
       if (existing) {
+        const teamMismatch = assertRequestedTeamMatchesSite(existing, teamId);
+        if (teamMismatch) return teamMismatch;
         const visible = await store.getSiteForUser(existing.id, actor.userId, actor, config.environment);
         if (visible) return visible;
       }
@@ -1685,6 +1742,31 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
     if (response) return response;
     throw error;
   }
+}
+
+async function resolveTeamDeployOwner(store, userId, teamId, environment) {
+  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
+  const team = await store.getTeam(teamId);
+  if (!team || team.environment !== environment) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  const member = await store.getTeamMember({ teamId, userId });
+  if (!member) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  if (member.role !== 'admin' && member.role !== 'publisher') {
+    return jsonError(
+      'TEAM_PUBLISHER_REQUIRED',
+      'Team publisher role required.',
+      403,
+      'Ask a team publisher to deploy this site.'
+    );
+  }
+  return { ownerId: team.id, role: member.role };
+}
+
+function assertRequestedTeamMatchesSite(site, teamId) {
+  if (!teamId || !site) return null;
+  if (site?.ownerType === 'team' && site.ownerId === teamId) return null;
+  return siteNotFound('Check the site slug and team.');
 }
 
 async function validateRollbackVersion(store, version, environment) {

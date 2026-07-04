@@ -18,6 +18,7 @@ const VERSION_FLAGS = new Set(['help', 'token', 'accessKey']);
 const LOGIN_FLAGS = new Set(['env', 'token', 'accessKey', 'noOpen', 'json', 'help']);
 const DEPLOY_FLAGS = new Set([
   'env',
+  'team',
   'visibility',
   'fallback',
   'assets',
@@ -245,6 +246,8 @@ async function runDeploy(parsed, context) {
   if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 xd-cell deploy <目录> <站点名>。');
   const deployConfig = await resolveDeployConfig(parsed, commandConfig, context, { requireSite: true });
   const { siteSlug } = deployConfig;
+  const teamOption = Object.hasOwn(parsed.flags, 'team') ? parsed.flags.team : commandConfig?.team;
+  const teamId = normalizeTeamId(teamOption);
   outputProgress(parsed, context, '检查发布目录...');
   const decision = await detectPublishTarget(deployConfig.targetPath, {
     requestedFallback: deployConfig.requestedFallback,
@@ -260,6 +263,7 @@ async function runDeploy(parsed, context) {
     const payload = preflightEnvelope({
       mode: 'dry-run',
       site: siteSlug,
+      ...(teamId ? { teamId } : {}),
       configPath: deployConfig.configPath,
       target: deployTargetEnvelope(deployConfig),
       decision,
@@ -304,7 +308,7 @@ async function runDeploy(parsed, context) {
     outputProgress(parsed, context, '准备站点...');
     const visibility = requestedVisibility || 'org';
     try {
-      await client.requestApi('POST', '/.xd-pages/api/sites', { slug: siteSlug, visibility });
+      await client.requestApi('POST', '/.xd-pages/api/sites', siteCreateRequest({ slug: siteSlug, visibility, teamId }));
       siteCreated = true;
     } catch (error) {
       if (error?.code !== 'SITE_SLUG_CONFLICT') throw error;
@@ -317,6 +321,7 @@ async function runDeploy(parsed, context) {
     '/.xd-pages/api/deployments',
     buildPublishPlanDeploymentForm({
       siteSlug,
+      teamId,
       uploadPlan,
       visibility: requestedVisibility,
       vars: runtime.varsObject,
@@ -333,6 +338,7 @@ async function runDeploy(parsed, context) {
       mode: 'deploy',
       environment: config.environment,
       site: siteSlug,
+      ...(teamId ? { teamId } : {}),
       configPath: deployConfig.configPath,
       target: deployTargetEnvelope(deployConfig),
       decision: finalDecision,
@@ -422,7 +428,7 @@ async function runEnv(parsed, context) {
   throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 xd-cell env、xd-cell env list 或 xd-cell env use <环境>。');
 }
 
-function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, visibility = '', vars = {}, varsProvided = false }) {
+function buildPublishPlanDeploymentForm({ siteSlug, teamId = '', uploadPlan, visibility = '', vars = {}, varsProvided = false }) {
   const form = new FormData();
   const metadata = {
     schemaVersion: 1,
@@ -442,6 +448,7 @@ function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, visibility = '',
     })),
     controlSignals: uploadPlan.controlSignals,
   };
+  if (teamId) metadata.teamId = teamId;
   if (visibility) metadata.visibility = visibility;
   if (varsProvided) metadata.vars = vars;
   form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
@@ -452,6 +459,15 @@ function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, visibility = '',
     form.set(module.partName, new Blob([module.content], { type: module.contentType }), module.moduleName);
   }
   return form;
+}
+
+function siteCreateRequest({ slug, visibility, teamId }) {
+  const body = { slug, visibility };
+  if (teamId) {
+    body.ownerType = 'team';
+    body.teamId = teamId;
+  }
+  return body;
 }
 
 async function resolveDeployConfig(parsed, commandConfig, context, { requireSite, defaultEntry = null } = {}) {
@@ -507,6 +523,21 @@ async function resolveDeployConfig(parsed, commandConfig, context, { requireSite
     varsProvided: Boolean(commandConfig && Object.prototype.hasOwnProperty.call(commandConfig, 'vars')),
     configPath: commandConfig?.configPath || null,
   };
+}
+
+function normalizeTeamId(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') {
+    throw usageError('TEAM_INVALID', '团队参数无效。', '请传入团队 ID，例如 --team team_xxx。');
+  }
+  const teamId = value.trim();
+  if (!teamId) {
+    throw usageError('TEAM_INVALID', '团队参数无效。', '请传入团队 ID，例如 --team team_xxx。');
+  }
+  if (/[\s/\\]|:\/\//.test(teamId)) {
+    throw usageError('TEAM_INVALID', '团队参数无效。', '请传入团队 ID，例如 --team team_xxx。');
+  }
+  return teamId;
 }
 
 function deployTargetEnvelope(deployConfig) {
@@ -1386,6 +1417,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
 
 选项：
   --assets <dir>                            Worker 发布时附带静态资源目录。
+  --team <teamId>                           以有发布权限的团队身份发布；新站点归属该团队。
   --visibility <internal|org|acl|owner|disabled>
                                             创建站点时的初始访问范围；默认 org。
   --dry-run                                 只做本地预演，不创建站点、不上传文件。
@@ -1396,12 +1428,13 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
 
 示例：
   xd-cell deploy ./dist demo --visibility org
+  xd-cell deploy ./dist demo --team team_xxx
   xd-cell deploy ./src/index.js demo --assets ./dist
   XD_CELL_API_TOKEN=<token> xd-cell deploy ./dist demo --json
   xd-cell deploy --config xd-cell.config.json
 
 说明：
-  xd-cell.config.json 只保存非敏感发布模板字段，例如 name、main、assets.directory、vars、visibility。
+  xd-cell.config.json 只保存非敏感发布模板字段，例如 name、team、main、assets.directory、vars、visibility。
   vars 是站点级当前 runtime config；配置省略 vars 会沿用站点当前值，显式 {} 会在下一次 Worker deploy 清空。
   静态资源未命中行为使用 assets.not_found_handling 配置；不提供 --fallback。
   CLI 不暴露底层执行平台细节。`;

@@ -445,10 +445,18 @@ async function createSite(request, env, config, store, actor) {
 
   const slug = normalizeSlug(body.slug);
   const visibility = body.visibility || 'org';
+  const ownerType = body.ownerType === 'team' ? 'team' : 'user';
   const slugError = validateSlug(slug, config.environment);
   if (slugError) return slugError;
   if (!VISIBILITIES.has(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
+  }
+
+  let ownerId = actor.userId;
+  if (ownerType === 'team') {
+    const teamOwner = await resolveTeamPublishOwner(store, actor.userId, body.teamId, config.environment);
+    if (teamOwner instanceof Response) return teamOwner;
+    ownerId = teamOwner.ownerId;
   }
 
   const siteId = nextId(env, 'site');
@@ -461,6 +469,8 @@ async function createSite(request, env, config, store, actor) {
     site = await store.createSite({
       id: siteId,
       slug,
+      ownerType,
+      ownerId,
       ownerUserId: actor.userId,
       siteUuid,
       defaultVisibility: visibility,
@@ -476,6 +486,26 @@ async function createSite(request, env, config, store, actor) {
 
   const route = await store.getRouteBySiteId(site.id, config.environment);
   return jsonOk({ site: formatSite({ ...site, route }) }, 201);
+}
+
+async function resolveTeamPublishOwner(store, userId, teamIdValue, environment) {
+  const teamId = normalizeRequiredString(teamIdValue);
+  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
+  const team = await store.getTeam(teamId);
+  if (!team || team.environment !== environment) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  const member = await store.getTeamMember({ teamId, userId });
+  if (!member) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  if (member.role !== 'admin' && member.role !== 'publisher') {
+    return jsonError(
+      'TEAM_PUBLISHER_REQUIRED',
+      'Team publisher role required.',
+      403,
+      'Ask a team publisher to create the site.'
+    );
+  }
+  return { ownerId: team.id };
 }
 
 export function siteCreateErrorResponse(error) {
@@ -786,6 +816,10 @@ function formatAclEntry(entry) {
 
 export function normalizeSlug(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function normalizeRequiredString(value) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function matchSiteAcl(pathname) {

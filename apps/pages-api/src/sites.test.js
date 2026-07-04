@@ -73,6 +73,84 @@ test('creates a site with internal visibility', async () => {
   assert.equal(body.site.route.visibility, 'internal');
 });
 
+test('creates a team-owned site when the user is a team publisher', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'team-guide',
+      visibility: 'internal',
+      ownerType: 'team',
+      teamId: team.id,
+    }),
+    testEnv(store, {
+      verifyCliToken: async () => ({
+        sub: 'usr_publisher',
+        purpose: 'cli_token',
+        aud: 'pages-cli',
+        env: 'production',
+        jti: 'cli_publisher',
+      }),
+    })
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const site = await store.getSite('site_1');
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, team.id);
+  assert.equal(site.ownerUserId, 'usr_publisher');
+  assert.equal(site.defaultVisibility, 'internal');
+});
+
+test('rejects team-owned site creation when the user is only a team viewer', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'team-guide',
+      visibility: 'org',
+      ownerType: 'team',
+      teamId: team.id,
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_PUBLISHER_REQUIRED');
+  assert.equal(await store.getSite('site_1'), null);
+});
+
 test('lists only sites visible to the authenticated actor', async () => {
   const store = await createSeededStore();
   await store.createUser({

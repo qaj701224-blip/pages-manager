@@ -2124,6 +2124,91 @@ test('team owner-scoped access keys can create a new team site during deploy', a
   assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-team.workers.xd.team');
 });
 
+test('team publishers can create a new team-owned site during deploy with a CLI token', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const env = testEnv(store, createSnapshotStore(), {
+    nextId: (prefix) => {
+      if (prefix === 'site') return 'site_cli_team';
+      if (prefix === 'route') return 'route_cli_team';
+      return `${prefix}_1`;
+    },
+    verifyCliToken: async () => ({
+      sub: 'usr_publisher',
+      purpose: 'cli_token',
+      aud: 'pages-cli',
+      env: 'production',
+      jti: 'cli_publisher',
+    }),
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-team-cli', teamId: team.id, visibility: 'internal' }),
+      { 'Idempotency-Key': 'cli_team_create' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  const site = await store.findSiteBySlug('production', 'new-team-cli');
+  assert.equal(body.deployment.siteId, site.id);
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, team.id);
+  assert.equal(site.ownerUserId, 'usr_publisher');
+  assert.equal(site.defaultVisibility, 'internal');
+  assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-team-cli.workers.xd.team');
+});
+
+test('team viewers cannot create a new team-owned site during deploy with a CLI token', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-team-cli', teamId: team.id }),
+      { 'Idempotency-Key': 'cli_team_viewer_denied' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_PUBLISHER_REQUIRED');
+  assert.equal(await store.findSiteBySlug('production', 'new-team-cli'), null);
+});
+
 test('site-scoped access keys cannot create a new site during deploy', async () => {
   const store = await createSeededStore();
   const siteScopedKey = await seedAccessKey(store, 'ak_site_scoped_create_denied', ['deploy:site'], 'site_1');
@@ -2293,7 +2378,7 @@ test('team publishers can deploy team-owned sites with their CLI token', async (
   const response = await worker.fetch(
     deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
-      deployPayload({ siteId: 'site_team', siteSlug: undefined }),
+      deployPayload({ siteId: undefined, siteSlug: 'team-guide', teamId: team.id }),
       { 'Idempotency-Key': 'team_publisher_deploy' }
     ),
     testEnv(store, createSnapshotStore(), {
@@ -2309,6 +2394,93 @@ test('team publishers can deploy team-owned sites with their CLI token', async (
 
   assert.equal(response.status, 201, await response.clone().text());
   assert.equal((await response.json()).deployment.siteId, 'site_team');
+});
+
+test('requested team id does not deploy an existing personal site with the same slug', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'guide', teamId: team.id }),
+      { 'Idempotency-Key': 'team_slug_personal_denied' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'SITE_NOT_FOUND');
+  assert.equal(body.error.action, 'Check the site slug and team.');
+});
+
+test('requested team id does not deploy a site owned by another team', async () => {
+  const store = await createSeededStore();
+  const teamA = await store.createTeam({
+    id: 'team_a',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team A',
+    createdByUserId: 'usr_1',
+  });
+  const teamB = await store.createTeam({
+    id: 'team_b',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team B',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: teamA.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.addTeamMember({
+    teamId: teamB.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team_a',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: teamA.id,
+    siteUuid: 'uuid_team_a',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team_a',
+    hostname: 'team-guide.pages.xd.team',
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'team-guide', teamId: teamB.id }),
+      { 'Idempotency-Key': 'team_slug_other_team_denied' }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'SITE_NOT_FOUND');
+  assert.equal(body.error.action, 'Check the site slug and team.');
 });
 
 test('uses bounded WFP worker names for valid long slugs', async () => {
@@ -4792,6 +4964,7 @@ function publishPlanMultipartRequest(url, fields, headers = {}) {
     schemaVersion: normalized.schemaVersion || 1,
     siteId: normalized.siteId,
     siteSlug: normalized.siteSlug,
+    teamId: normalized.teamId,
     visibility: normalized.visibility,
     requestedFallback: normalized.requestedFallback,
     source: normalized.source || 'cli',

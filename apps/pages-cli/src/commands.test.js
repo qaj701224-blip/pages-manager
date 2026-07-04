@@ -66,6 +66,55 @@ test('deploy requires positional dir and site, then creates and deploys with a C
   assert.equal(Object.prototype.hasOwnProperty.call(metadata, 'vars'), false);
 });
 
+test('deploy supports publishing a site as a team owner', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const calls = [];
+
+  await executeCommand(['deploy', '.', 'docs', '--team', 'team_1', '--visibility', 'internal', '--json'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      { site: { id: 'site_1', slug: 'docs', environment: 'production', url: 'https://docs.pages.xd.team' } },
+      {
+        deployment: { id: 'dep_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'docs.pages.xd.team' },
+      },
+    ]),
+    idempotencyKey: () => 'idem_1',
+    output: () => {},
+  });
+
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.deepEqual(await calls[0].json(), {
+    slug: 'docs',
+    visibility: 'internal',
+    ownerType: 'team',
+    teamId: 'team_1',
+  });
+  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
+  const metadata = JSON.parse(await (await calls[1].formData()).get('metadata').text());
+  assert.equal(metadata.siteSlug, 'docs');
+  assert.equal(metadata.teamId, 'team_1');
+});
+
+test('deploy rejects an explicitly empty team flag instead of falling back to config', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeFile(path.join(dir, 'xd-cell.config.json'), JSON.stringify({ name: 'docs', team: 'team_config' }));
+
+  await assert.rejects(
+    () =>
+      executeCommand(['deploy', '.', 'docs', '--team=', '--dry-run'], {
+        cwd: dir,
+        output: () => {},
+      }),
+    { code: 'TEAM_INVALID' }
+  );
+});
+
 test('deploy omits vars metadata when xd-cell.config.json does not declare vars', async () => {
   const dir = await tempProject();
   await mkdir(path.join(dir, 'dist'));
@@ -1554,6 +1603,7 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     const text = output.join('\n');
     assert.match(text, /xd-cell deploy <entry> <site>/);
     assert.match(text, /--visibility <internal\|org\|acl\|owner\|disabled>/);
+    assert.match(text, /--team <teamId>/);
     assert.match(text, /--token <token>/);
     assert.match(text, /--config <file>/);
     assert.match(text, /--json/);
