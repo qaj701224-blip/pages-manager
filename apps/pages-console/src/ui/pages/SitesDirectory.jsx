@@ -3,7 +3,7 @@ import { ExternalLink } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { fetchJson } from '../api.js';
-import { sitePublicUrl } from '../site-display-model.js';
+import { siteCardOwnerLabel, sitePublicUrl } from '../site-display-model.js';
 
 export function SitesDirectory() {
   const [state, setState] = useState({ status: 'loading', sites: [], error: null });
@@ -25,12 +25,12 @@ export function SitesDirectory() {
   return (
     <main className="page">
       <PageHeading title="站点目录" meta="Sites" />
-      <SiteWaterfall state={state} />
+      <SiteWaterfall state={state} cardAction="open" />
     </main>
   );
 }
 
-export function SiteWaterfall({ state }) {
+export function SiteWaterfall({ state, cardAction = 'detail' }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
@@ -61,7 +61,7 @@ export function SiteWaterfall({ state }) {
       {visibleSites.length ? (
         <section className="site-grid" aria-label="站点列表">
           {visibleSites.map((site) => (
-            <SiteCard key={site.id} site={site} />
+            <SiteCard cardAction={cardAction} key={site.id} site={site} />
           ))}
         </section>
       ) : (
@@ -71,10 +71,9 @@ export function SiteWaterfall({ state }) {
   );
 }
 
-export function SiteCard({ site }) {
+export function SiteCard({ site, cardAction = 'detail' }) {
   const navigate = useNavigate();
-  const ownerType = site.owner?.type === 'team' ? '团队' : '个人';
-  const ownerText = site.owner?.displayName || ownerType;
+  const ownerText = siteCardOwnerLabel(site.owner);
   const publicUrl = sitePublicUrl(site.hostname);
   const visibility = site.visibility || site.access?.visibility || 'internal';
   const status = site.status || (visibility === 'disabled' ? 'disabled' : 'active');
@@ -87,9 +86,8 @@ export function SiteCard({ site }) {
     event.preventDefault();
     openDetail();
   };
-
-  return (
-    <article className="site-card" role="button" tabIndex={0} onClick={openDetail} onKeyDown={onKeyDown}>
+  const cardContent = (
+    <>
       <div className="site-card__content">
         <div className="site-card__title-row">
           <span className={`status-dot ${statusKind}`} aria-hidden="true" />
@@ -99,12 +97,11 @@ export function SiteCard({ site }) {
       </div>
       <div className="site-card__footer">
         <div className="tag-row site-card__tags">
-          <span className="tag" title={ownerText}>{ownerType}</span>
-          <span className="tag" title={ownerText}>{ownerText}</span>
+          {ownerText ? <span className="tag" title={ownerText}>{ownerText}</span> : null}
           <span className="tag">{visibility}</span>
           <span className={statusKind === 'active' ? 'tag tag-success' : 'tag tag-disabled'}>{status}</span>
         </div>
-        {publicUrl ? (
+        {cardAction !== 'open' && publicUrl ? (
           <a
             className="site-card__open"
             href={publicUrl}
@@ -118,6 +115,20 @@ export function SiteCard({ site }) {
           </a>
         ) : null}
       </div>
+    </>
+  );
+
+  if (cardAction === 'open' && publicUrl) {
+    return (
+      <a className="site-card" href={publicUrl} target="_blank" rel="noreferrer noopener" aria-label={`打开站点 ${title}`}>
+        {cardContent}
+      </a>
+    );
+  }
+
+  return (
+    <article className="site-card" role="button" tabIndex={0} onClick={openDetail} onKeyDown={onKeyDown}>
+      {cardContent}
     </article>
   );
 }
@@ -133,10 +144,9 @@ function filterSites(sites, { query, status }) {
       site.slug,
       site.hostname,
       sitePublicUrl(site.hostname),
-      site.owner?.displayName,
+      siteCardOwnerLabel(site.owner),
       site.owner?.email,
       site.owner?.departmentPath,
-      site.owner?.type,
       visibility,
       siteStatus,
     ]

@@ -1,14 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getConsoleEnvironmentBanner, readTopNavUserState } from './top-nav-model.js';
+import {
+  getConsoleEnvironmentBanner,
+  getConsoleEnvironmentShortLabel,
+  readTopNavUserState,
+} from './top-nav-model.js';
 
 test('staging console host gets persistent environment banner', () => {
   assert.equal(
     getConsoleEnvironmentBanner('staging.workers.xd.team'),
     'Staging · 仅平台管理员 · 与 production 数据和执行资源物理隔离'
   );
+  assert.equal(getConsoleEnvironmentShortLabel('staging.workers.xd.team'), 'Staging');
   assert.equal(getConsoleEnvironmentBanner('workers.xd.team'), '');
+  assert.equal(getConsoleEnvironmentShortLabel('workers.xd.team'), '');
 });
 
 test('top nav user state exposes admin menu for platform admins', () => {

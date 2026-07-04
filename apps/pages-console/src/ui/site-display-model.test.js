@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { adminSiteOwnerView, sitePublicUrl } from './site-display-model.js';
+import { adminSiteOwnerView, siteCardOwnerLabel, sitePublicUrl } from './site-display-model.js';
 
 test('sitePublicUrl displays hostnames with https protocol', () => {
   assert.equal(sitePublicUrl('demo.workers.xd.team'), 'https://demo.workers.xd.team');
@@ -30,4 +30,12 @@ test('adminSiteOwnerView prefers user email and team department path', () => {
       secondary: 'XD Web',
     }
   );
+});
+
+test('siteCardOwnerLabel shows only the concrete owner object name', () => {
+  assert.equal(siteCardOwnerLabel({ type: 'user', displayName: '徐天麒' }), '徐天麒');
+  assert.equal(siteCardOwnerLabel({ type: 'team', displayName: 'XD Cell' }), 'XD Cell');
+  assert.equal(siteCardOwnerLabel({ type: 'team', departmentPath: '心动/平台支撑部' }), '心动/平台支撑部');
+  assert.equal(siteCardOwnerLabel({ type: 'user' }), '');
+  assert.equal(siteCardOwnerLabel(null), '');
 });

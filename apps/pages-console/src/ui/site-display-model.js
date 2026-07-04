@@ -5,6 +5,12 @@ export function sitePublicUrl(hostname) {
   return `https://${value}`;
 }
 
+export function siteCardOwnerLabel(owner) {
+  if (!owner) return '';
+  if (owner.type === 'team') return normalizeOwnerLabel(owner.displayName || owner.name || owner.departmentPath);
+  return normalizeOwnerLabel(owner.displayName || owner.realname || owner.name);
+}
+
 export function adminSiteOwnerView(owner = {}) {
   const type = owner.type === 'team' ? 'team' : 'user';
   if (type === 'team') {
@@ -22,4 +28,8 @@ export function adminSiteOwnerView(owner = {}) {
     primary: owner.email || owner.displayName || owner.id || '用户',
     secondary: owner.email && owner.id ? owner.id : '',
   };
+}
+
+function normalizeOwnerLabel(value) {
+  return String(value || '').trim();
 }

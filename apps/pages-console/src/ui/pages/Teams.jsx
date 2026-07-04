@@ -427,9 +427,15 @@ function TeamMemberActions({ team, member, onReload }) {
       </div>
       <span>{formatDate(member.createdAt || member.updatedAt)}</span>
       <div className="member-row-actions">
-        <button className="table-action danger" type="button" disabled={status.removing} onClick={() => setConfirmRemove(true)}>
+        <button
+          className="table-action danger"
+          type="button"
+          title="移除成员"
+          disabled={status.removing}
+          onClick={() => setConfirmRemove(true)}
+        >
           <Trash2 size={15} />
-          <span>{status.removing ? '移除中' : '移除'}</span>
+          <span>{status.removing ? '移除中' : '移除成员'}</span>
         </button>
       </div>
       <AppDialog

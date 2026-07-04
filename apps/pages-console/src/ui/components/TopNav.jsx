@@ -17,12 +17,18 @@ import {
 import { Link } from 'react-router-dom';
 
 import { IconDropdown, MenuItem } from './RadixPrimitives.jsx';
-import { getConsoleEnvironmentBanner, readTopNavUserState } from '../top-nav-model.js';
+import {
+  getConsoleEnvironmentBanner,
+  getConsoleEnvironmentShortLabel,
+  readTopNavUserState,
+} from '../top-nav-model.js';
 import { usePreferences } from '../preferences-context.jsx';
 import { clearCachedConsoleSession } from '../session-cache.js';
 
 export function TopNav({ activeSection, sessionState }) {
-  const banner = getConsoleEnvironmentBanner(globalThis.location?.hostname || '');
+  const hostname = globalThis.location?.hostname || '';
+  const banner = getConsoleEnvironmentBanner(hostname);
+  const shortBanner = getConsoleEnvironmentShortLabel(hostname);
   const sessionPayload = sessionState?.status === 'ready' ? sessionState.session : null;
   const userState = useMemo(() => readTopNavUserState(sessionPayload), [sessionPayload]);
   const workspaceHref = userState.authenticated ? '/workspace/published' : '/login?returnTo=/workspace/published';
@@ -45,7 +51,12 @@ export function TopNav({ activeSection, sessionState }) {
         <Link className={activeSection === 'workspace' ? 'nav-link active' : 'nav-link'} to={workspaceHref}>
           {t('workspace')}
         </Link>
-        {banner ? <span className="environment-badge">{banner}</span> : null}
+        {banner ? (
+          <span className="environment-badge" title={banner}>
+            <span className="environment-badge__full">{banner}</span>
+            <span className="environment-badge__short">{shortBanner}</span>
+          </span>
+        ) : null}
       </div>
       <div className="top-nav__actions" aria-label="全局操作">
         <IconDropdown label={t('theme')} icon={theme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}>

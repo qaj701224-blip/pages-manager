@@ -2,6 +2,10 @@ export function getConsoleEnvironmentBanner(hostname) {
   return hostname === 'staging.workers.xd.team' ? 'Staging · 仅平台管理员 · 与 production 数据和执行资源物理隔离' : '';
 }
 
+export function getConsoleEnvironmentShortLabel(hostname) {
+  return hostname === 'staging.workers.xd.team' ? 'Staging' : '';
+}
+
 export function readTopNavUserState(payload) {
   if (!payload?.authenticated) {
     return {

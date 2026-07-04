@@ -10,7 +10,7 @@ import {
   putSiteRuntimeVar,
   updateSiteAccess,
 } from '../api.js';
-import { SelectField } from '../components/RadixPrimitives.jsx';
+import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import {
   aclSubjectPlaceholder,
@@ -496,14 +496,21 @@ function RuntimeVarForm({ siteId, onResourceReload }) {
 
 function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
   const [error, setError] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
-  const remove = async (name) => {
+  const remove = async () => {
+    if (!deleteTarget) return;
     setError(null);
+    setDeleting(true);
     try {
-      await deleteSiteRuntimeVar(siteId, name);
+      await deleteSiteRuntimeVar(siteId, deleteTarget);
       await onResourceReload?.();
+      setDeleteTarget('');
     } catch (nextError) {
       setError(nextError);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -525,7 +532,15 @@ function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
             <div className="row-actions">
               <span>{formatDate(item.updatedAt)}</span>
               {canEdit ? (
-                <button className="table-action danger" type="button" title={`删除变量 ${item.name}`} onClick={() => remove(item.name)}>
+                <button
+                  className="table-action danger"
+                  type="button"
+                  title={`删除变量 ${item.name}`}
+                  onClick={() => {
+                    setError(null);
+                    setDeleteTarget(item.name);
+                  }}
+                >
                   <Trash2 size={15} />
                   <span>删除变量</span>
                 </button>
@@ -536,6 +551,19 @@ function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
       ) : (
         <div className="placeholder">暂无环境变量</div>
       )}
+      <RuntimeDeleteDialog
+        open={Boolean(deleteTarget)}
+        title="删除变量"
+        targetName={deleteTarget}
+        description="删除后，运行时将不再获得该环境变量。"
+        confirmLabel="删除变量"
+        deleting={deleting}
+        error={error}
+        onCancel={() => {
+          if (!deleting) setDeleteTarget('');
+        }}
+        onConfirm={remove}
+      />
     </section>
   );
 }
@@ -591,14 +619,21 @@ function RuntimeSecretForm({ siteId, onResourceReload }) {
 
 function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
   const [error, setError] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
-  const remove = async (name) => {
+  const remove = async () => {
+    if (!deleteTarget) return;
     setError(null);
+    setDeleting(true);
     try {
-      await deleteSiteRuntimeSecret(siteId, name);
+      await deleteSiteRuntimeSecret(siteId, deleteTarget);
       await onResourceReload?.();
+      setDeleteTarget('');
     } catch (nextError) {
       setError(nextError);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -620,7 +655,15 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
             <div className="row-actions">
               <span>值已隐藏</span>
               {canEdit ? (
-                <button className="table-action danger" type="button" title={`删除 Secret ${item.name}`} onClick={() => remove(item.name)}>
+                <button
+                  className="table-action danger"
+                  type="button"
+                  title={`删除 Secret ${item.name}`}
+                  onClick={() => {
+                    setError(null);
+                    setDeleteTarget(item.name);
+                  }}
+                >
                   <Trash2 size={15} />
                   <span>删除 Secret</span>
                 </button>
@@ -631,7 +674,64 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
       ) : (
         <div className="placeholder">暂无 Secrets</div>
       )}
+      <RuntimeDeleteDialog
+        open={Boolean(deleteTarget)}
+        title="删除 Secret"
+        targetName={deleteTarget}
+        description="删除后，运行时将不再获得该 Secret。"
+        confirmLabel="删除 Secret"
+        deleting={deleting}
+        error={error}
+        onCancel={() => {
+          if (!deleting) setDeleteTarget('');
+        }}
+        onConfirm={remove}
+      />
     </section>
+  );
+}
+
+function RuntimeDeleteDialog({
+  open,
+  title,
+  targetName,
+  description,
+  confirmLabel,
+  deleting,
+  error,
+  onCancel,
+  onConfirm,
+}) {
+  return (
+    <AppDialog
+      open={open}
+      title={title}
+      eyebrow="高风险操作"
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && !deleting) onCancel?.();
+      }}
+    >
+      <div className="dialog-form">
+        <div className="danger-summary">
+          <Trash2 size={18} />
+          <span>
+            <strong>{targetName}</strong>
+            <small>{description}</small>
+          </span>
+        </div>
+        <p className="dialog-description">{description}</p>
+        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel} disabled={deleting}>
+            取消
+          </button>
+          <button className="primary-button danger-primary-button" type="button" onClick={onConfirm} disabled={deleting}>
+            <Trash2 size={15} />
+            <span>{deleting ? '删除中' : confirmLabel}</span>
+          </button>
+        </div>
+      </div>
+    </AppDialog>
   );
 }
 

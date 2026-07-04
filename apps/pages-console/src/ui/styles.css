@@ -361,6 +361,18 @@ button {
   white-space: nowrap;
 }
 
+.environment-badge__full,
+.environment-badge__short {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environment-badge__short {
+  display: none;
+}
+
 :root[data-theme='dark'] .environment-badge {
   color: var(--xd-orange-active);
   background: var(--xd-orange-soft);
@@ -689,6 +701,9 @@ button {
 .page-heading {
   display: grid;
   gap: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   margin-bottom: 18px;
 }
 
@@ -708,6 +723,14 @@ button {
   line-height: 1.5;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+.page-heading h1,
+.page-heading p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .page-heading-row {
@@ -950,6 +973,11 @@ button {
   margin: 0;
 }
 
+.workspace-layout > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .workspace-page {
   width: 100%;
   max-width: none;
@@ -1052,6 +1080,7 @@ button {
 
 .context-sidebar {
   min-width: 0;
+  max-width: 100%;
 }
 
 .back-link {
@@ -1074,6 +1103,8 @@ button {
 
 .context-title {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 0 10px 18px;
 }
 
@@ -2187,14 +2218,20 @@ button {
 .primary-button:disabled,
 .secondary-button:disabled {
   cursor: not-allowed;
-  opacity: 0.58;
+  opacity: 0.72;
 }
 
 .primary-button:disabled {
   border-color: var(--xd-border);
-  color: var(--xd-muted);
-  background: #f6f3ef;
+  color: var(--xd-subtle);
+  background: var(--xd-surface);
   box-shadow: none;
+}
+
+.primary-button:disabled:hover {
+  border-color: var(--xd-border);
+  color: var(--xd-subtle);
+  background: var(--xd-surface);
 }
 
 .secondary-button {
@@ -3053,7 +3090,19 @@ button {
   }
 
   .environment-badge {
+    max-width: 74px;
+    min-height: 26px;
+    margin-left: 2px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .environment-badge__full {
     display: none;
+  }
+
+  .environment-badge__short {
+    display: inline;
   }
 
   .account-menu__button {
@@ -3104,7 +3153,7 @@ button {
   }
 
   .context-title {
-    min-width: 210px;
+    min-width: 0;
   }
 
   .team-card-grid {
@@ -3279,12 +3328,16 @@ button {
     background: transparent;
   }
 
+  .context-sidebar {
+    grid-template-columns: 1fr;
+  }
+
   .workspace-page {
     padding: 20px 0 40px;
   }
 
   .context-title {
-    min-width: 210px;
+    min-width: 0;
   }
 
   .page {
