@@ -20,6 +20,7 @@ node tools/xd-cell-cli/main.js help
 node tools/xd-cell-cli/main.js help deploy
 node tools/xd-cell-cli/main.js help status
 node tools/xd-cell-cli/main.js help sites
+node tools/xd-cell-cli/main.js help teams
 node tools/xd-cell-cli/main.js help secrets
 node tools/xd-cell-cli/main.js help access
 node tools/xd-cell-cli/main.js help open

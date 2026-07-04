@@ -318,6 +318,8 @@ xd-cell logout
 xd-cell deploy ./dist foo --visibility org
 xd-cell deploy --config xd-cell.config.json
 xd-cell deploy ./dist foo --token <token> --json
+xd-cell teams
+xd-cell deploy ./dist foo --team <teamId>
 xd-cell status foo
 xd-cell open foo [--print]
 xd-cell sites list

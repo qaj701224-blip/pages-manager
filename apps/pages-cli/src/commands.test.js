@@ -100,6 +100,91 @@ test('deploy supports publishing a site as a team owner', async () => {
   assert.equal(metadata.teamId, 'team_1');
 });
 
+test('teams lists current user teams so deploy can use the team id', async () => {
+  const calls = [];
+  const output = [];
+
+  const exitCode = await executeCommand(['teams'], {
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      {
+        teams: [
+          {
+            id: 'team_department_web',
+            name: '心动/平台支撑部/Web',
+            teamType: 'department',
+            departmentPath: '心动/平台支撑部/Web',
+            status: 'active',
+            currentUserRole: 'admin',
+            currentUserMembershipSource: 'department_auto',
+          },
+          {
+            id: 'team_docs',
+            name: 'Docs Team',
+            teamType: 'custom',
+            departmentPath: null,
+            status: 'active',
+            currentUserRole: 'publisher',
+            currentUserMembershipSource: 'manual',
+          },
+        ],
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/teams');
+  assert.equal(calls[0].headers.get('Authorization'), 'Bearer cli_token_secret');
+  assert.deepEqual(output, [
+    '团队 ID\t名称\t类型\t角色\t来源',
+    'team_department_web\t心动/平台支撑部/Web\tdepartment\tadmin\tdepartment_auto',
+    'team_docs\tDocs Team\tcustom\tpublisher\tmanual',
+  ]);
+});
+
+test('teams supports JSON output for agents and scripts', async () => {
+  const calls = [];
+  const output = [];
+
+  const exitCode = await executeCommand(['teams', '--json'], {
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      {
+        teams: [
+          {
+            id: 'team_docs',
+            name: 'Docs Team',
+            teamType: 'custom',
+            status: 'active',
+            currentUserRole: 'publisher',
+          },
+        ],
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/teams');
+  assert.deepEqual(JSON.parse(output.join('\n')), {
+    ok: true,
+    schemaVersion: 1,
+    environment: 'production',
+    teams: [
+      {
+        id: 'team_docs',
+        name: 'Docs Team',
+        teamType: 'custom',
+        status: 'active',
+        currentUserRole: 'publisher',
+      },
+    ],
+  });
+});
+
 test('deploy rejects an explicitly empty team flag instead of falling back to config', async () => {
   const dir = await tempProject();
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');

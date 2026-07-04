@@ -1,9 +1,36 @@
+import { authenticateApiRequest } from './auth.js';
 import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
 import { formatConsoleUser } from './console-users.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
+
+export async function handleTeamsApi(request, env, config, store) {
+  const url = new URL(request.url);
+  if (url.pathname !== '/.xd-pages/api/teams') return null;
+  if (request.method !== 'GET') return methodNotAllowed();
+
+  const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
+  if (!auth.ok) return jsonError(auth.error.code, auth.error.message, auth.error.status, auth.error.action);
+  if (auth.actor.type !== 'user') {
+    return jsonError(
+      'TEAM_LIST_FORBIDDEN',
+      'Team list requires a user CLI token.',
+      403,
+      'Run `xd-cell login` and retry with the CLI user credential.'
+    );
+  }
+
+  const teams = await store.listTeamsForUser({
+    environment: config.environment,
+    userId: auth.actor.userId,
+  });
+  return jsonOk({
+    environment: config.environment,
+    teams: teams.map(formatTeam),
+  });
+}
 
 export async function handleConsoleTeamsApi(request, env, config, store) {
   if (!isConsoleBffRequest(request)) return null;
@@ -256,4 +283,10 @@ function decodePathSegment(value) {
 
 function invalidPathSegment() {
   return jsonError('PATH_SEGMENT_INVALID', 'Path segment is invalid.', 400, 'Use URL-encoded path segments.');
+}
+
+function readNow(env) {
+  if (typeof env?.now === 'function') return env.now();
+  if (typeof env?.nowIso === 'function') return env.nowIso();
+  return new Date().toISOString();
 }

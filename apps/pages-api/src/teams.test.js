@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
 import { createTestPagesStore } from './test-store.js';
 
@@ -331,6 +332,85 @@ test('team APIs list teams and block department team deletion', async () => {
   assert.equal((await deleteDepartment.json()).error.code, 'DEPARTMENT_TEAM_DELETE_FORBIDDEN');
 });
 
+test('public teams API lists current user teams for CLI tokens only', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_member', { email: 'member@example.com' });
+  const customTeam = await store.createTeam({
+    id: 'team_docs',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Docs Team',
+    description: null,
+    createdByUserId: 'usr_member',
+  });
+  await store.addTeamMember({
+    teamId: customTeam.id,
+    userId: 'usr_member',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const department = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_member',
+    departmentPath: '心动/平台支撑部/Web',
+  });
+  await store.hydrateDepartmentMembership({
+    environment: 'staging',
+    userId: 'usr_member',
+    departmentPath: '心动/平台支撑部/Web',
+  });
+
+  const listed = await worker.fetch(apiRequest('/.xd-pages/api/teams'), env(store, {
+    verifyCliToken: async () => ({
+      sub: 'usr_member',
+      purpose: 'cli_token',
+      aud: 'pages-cli',
+      env: 'production',
+      jti: 'cli_member',
+    }),
+  }));
+  assert.equal(listed.status, 200, await listed.clone().text());
+  assert.deepEqual(await listed.json(), {
+    environment: 'production',
+    teams: [
+      {
+        id: customTeam.id,
+        name: 'Docs Team',
+        description: null,
+        teamType: 'custom',
+        departmentPath: null,
+        status: 'active',
+        currentUserRole: 'publisher',
+        currentUserMembershipSource: 'manual',
+        createdAt: '2026-06-15T00:00:00.000Z',
+        updatedAt: '2026-06-15T00:00:00.000Z',
+      },
+      {
+        id: department.team.id,
+        name: '心动/平台支撑部/Web',
+        description: null,
+        teamType: 'department',
+        departmentPath: '心动/平台支撑部/Web',
+        status: 'active',
+        currentUserRole: 'admin',
+        currentUserMembershipSource: 'department_auto',
+        createdAt: '2026-06-15T00:00:00.000Z',
+        updatedAt: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  });
+
+  const accessKey = await seedAccessKey(store, 'ak_user_team_list', 'usr_member');
+  const forbidden = await worker.fetch(
+    apiRequest('/.xd-pages/api/teams', {
+      Authorization: `Bearer ${accessKey}`,
+    }),
+    env(store)
+  );
+  assert.equal(forbidden.status, 403, await forbidden.clone().text());
+  assert.equal((await forbidden.json()).error.code, 'TEAM_LIST_FORBIDDEN');
+});
+
 test('team API creates custom team with current user as admin', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_admin');
@@ -537,8 +617,20 @@ function env(store, overrides = {}) {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
     IP_ALLOWLIST: '10.0.0.0/8',
+    ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+    ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     ...overrides,
   };
+}
+
+function apiRequest(path, headers = {}) {
+  return new Request(`https://api.pages.xd.team${path}`, {
+    headers: {
+      Authorization: 'Bearer cli-token',
+      'CF-Connecting-IP': '10.1.2.3',
+      ...headers,
+    },
+  });
 }
 
 function internalConsoleRequest(path, { userId, email = 'user@example.com', admin = false, method = 'GET' } = {}) {
@@ -586,6 +678,26 @@ async function seedConsoleUser(store, userId, overrides = {}) {
     sessionVersion: 1,
     ...overrides,
   });
+}
+
+async function seedAccessKey(store, keyId, ownerUserId) {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId,
+    bytes: new Uint8Array(24).fill(7),
+  });
+  await store.createAccessKey({
+    id: keyId,
+    environment: 'production',
+    ownerUserId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: keyId,
+    scopes: ['read:site'],
+    siteId: null,
+    expiresAt: '2026-07-15T00:00:00.000Z',
+  });
+  return plaintext;
 }
 
 async function seedTeamSite(store, { id, slug, teamId, visibility = 'internal' }) {

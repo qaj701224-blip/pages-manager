@@ -81,6 +81,26 @@ test('main does not expose env command guidance for environment errors', async (
   assert.equal(stdout.text(), '');
 });
 
+test('main localizes teams command access-key errors', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const exitCode = await main(['teams'], {
+    stdout,
+    stderr,
+    env: {},
+    commandRunner: async () => {
+      const error = new Error('Team list requires a user CLI token.');
+      error.code = 'TEAM_LIST_FORBIDDEN';
+      throw error;
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr.text(), /当前凭证不能查看用户团队列表/);
+  assert.match(stderr.text(), /xd-cell login/);
+  assert.equal(stdout.text(), '');
+});
+
 test('main prints public request diagnostics for API errors', async () => {
   const stdout = capture();
   const stderr = capture();

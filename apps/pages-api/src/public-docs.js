@@ -29,6 +29,8 @@ staging 公共 skill 只提供能力边界说明，不提供可直接复制执�
 xd-cell detect <entry> --json
 xd-cell deploy <entry> <site> --dry-run --json
 xd-cell deploy <entry> <site> --visibility org
+xd-cell teams
+xd-cell deploy <entry> <site> --team <teamId>
 xd-cell deploy --config xd-cell.config.json
 xd-cell status <site>
 xd-cell open <site>
@@ -87,6 +89,7 @@ ${commandGuide}
 
 \`xd-cell.config.json\` 是发布模板。未传 \`--config\` 时，CLI 只自动读取当前目录的 \`xd-cell.config.json\`，不会读取父目录。
 模板只能包含非敏感字段，例如 \`name\`、\`main\`、\`assets.directory\`、\`assets.not_found_handling\`、\`vars\`、\`visibility\`。
+\`xd-cell teams\` 可查看当前用户所在团队及可用于 \`--team\` 的团队 ID。
 \`vars\` 是站点级当前 runtime config，由 Worker deploy 时的 \`xd-cell.config.json\` 同步。
 省略 \`vars\` 会沿用站点当前值，显式 \`"vars": {}\` 会在下一次 Worker deploy 清空。
 secret value 使用 \`xd-cell secrets put/delete\` 管理，不写入配置文件。
@@ -125,6 +128,8 @@ xd-cell login
 xd-cell detect ./dist --json
 xd-cell deploy ./dist demo --dry-run --json
 xd-cell deploy ./dist demo --visibility org
+xd-cell teams
+xd-cell deploy ./dist demo --team <teamId>
 xd-cell deploy --config xd-cell.config.json
 xd-cell status demo
 xd-cell open demo
@@ -155,6 +160,7 @@ ${commandGuide}
 
 CI 或 agent 场景可以设置 \`XD_CELL_API_TOKEN\`，不要在仓库中保存 API token、CLI token 或 secret value。
 \`xd-cell.config.json\` 只保存非敏感发布模板字段。
+\`xd-cell teams\` 可查看当前用户所在团队及可用于 \`--team\` 的团队 ID。
 \`vars\` 是站点级当前 runtime config，由 Worker deploy 同步，secret value 使用 \`xd-cell secrets put/delete\` 管理。
 runtime bindings 只注入 Worker 发布；单个 var / secret value 当前限制为 8 KiB，单次 Worker 发布最多 64 个 runtime bindings。
 

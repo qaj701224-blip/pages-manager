@@ -9,7 +9,7 @@ import { handleConsoleUsersApi } from './console-users.js';
 import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
-import { handleConsoleTeamsApi } from './teams.js';
+import { handleConsoleTeamsApi, handleTeamsApi } from './teams.js';
 import { handleWhoamiApi } from './whoami.js';
 import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 
@@ -105,6 +105,18 @@ export default {
       }
 
       const response = await handleSitesApi(request, env, config, store);
+      if (response) return response;
+    }
+
+    if (url.pathname.startsWith('/.xd-pages/api/teams')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+
+      const response = await handleTeamsApi(request, env, config, store);
       if (response) return response;
     }
 

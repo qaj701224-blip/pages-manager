@@ -37,6 +37,7 @@ const DETECT_FLAGS = new Set(['config', 'fallback', 'workerEntry', 'json', 'help
 const API_READ_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
 const SECRETS_FLAGS = new Set(['env', 'token', 'accessKey', 'stdin', 'json', 'help']);
 const SITES_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help', 'details']);
+const TEAMS_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
 const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'token', 'accessKey']);
 const STATUS_FLAGS = new Set(['env', 'deployment', 'token', 'accessKey', 'json', 'help']);
 const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'token', 'accessKey']);
@@ -86,6 +87,8 @@ export async function executeCommand(argv = [], options = {}) {
       return runOpen(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'sites':
       return runSites(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'teams':
+      return runTeams(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'access':
       return runAccess(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'env':
@@ -711,6 +714,18 @@ async function runSites(parsed, context) {
   throw usageError('SITES_COMMAND_INVALID', 'sites 命令无效。', '请使用 xd-cell sites list 或 xd-cell sites info <站点名>。');
 }
 
+async function runTeams(parsed, context) {
+  assertNoPositionals(parsed, 'TEAMS_USAGE_INVALID', 'xd-cell teams 不接受位置参数。');
+  const config = readConfigForCommand(parsed, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
+  const result = await client.requestApi('GET', '/.xd-pages/api/teams');
+  const payload = { environment: config.environment, teams: result.teams || [] };
+  if (outputJsonResult(parsed, context, payload)) return 0;
+  outputTeamsSummary(context.output, payload.teams);
+  return 0;
+}
+
 async function runAccess(parsed, context) {
   const subcommand = parsed.positional[0] || 'get';
   const child = { ...parsed, positional: parsed.positional.slice(1) };
@@ -910,6 +925,7 @@ function allowedFlagsForCommand(parsed) {
   if (parsed.command === 'status') return STATUS_FLAGS;
   if (parsed.command === 'open') return OPEN_FLAGS;
   if (parsed.command === 'sites') return SITES_FLAGS;
+  if (parsed.command === 'teams') return TEAMS_FLAGS;
   if (parsed.command === 'access') return ACCESS_FLAGS;
   if (parsed.command === 'auth') return allowedAuthFlags(parsed);
   if (parsed.command === 'env') return ENV_FLAGS;
@@ -1221,6 +1237,25 @@ function outputSitesSummary(output, sites) {
   }
 }
 
+function outputTeamsSummary(output, teams) {
+  if (!teams.length) {
+    output('暂无团队。');
+    return;
+  }
+  output(['团队 ID', '名称', '类型', '角色', '来源'].join('\t'));
+  for (const team of teams) {
+    output(
+      [
+        team.id || '-',
+        team.name || team.departmentPath || '-',
+        team.teamType || '-',
+        team.currentUserRole || '-',
+        team.currentUserMembershipSource || '-',
+      ].join('\t')
+    );
+  }
+}
+
 function outputSiteInfo(output, environment, site) {
   output(`站点名：${site.slug}`);
   output(`环境：${site.environment || environment}`);
@@ -1505,6 +1540,16 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
+  if (topic === 'teams') {
+    return `用法：xd-cell teams [选项]
+
+查看当前登录用户所在团队，获取可用于 xd-cell deploy --team <teamId> 的团队 ID。
+
+选项：
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
+  }
   if (topic === 'secrets') {
     return `用法：
   xd-cell secrets put <site> <name> [选项]
@@ -1574,6 +1619,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   deploy      发布目录到 XD Cell，自动判断发布方式。
   status      查看登录状态、站点或部署状态。
   sites       查看站点列表或详情。
+  teams       查看当前用户所在团队及团队 ID。
   secrets     管理站点级 Worker secret。
   access      查看或调整站点访问范围。
   open        打开或打印站点地址。
@@ -1591,7 +1637,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
 function helpJson(topic) {
   return {
     topic,
-    commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'secrets', 'access', 'open'],
+    commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'teams', 'secrets', 'access', 'open'],
     commandHelp: 'xd-cell help <命令>',
     jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };

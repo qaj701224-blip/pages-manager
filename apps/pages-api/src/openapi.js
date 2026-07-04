@@ -87,6 +87,31 @@ export function buildOpenApi(config) {
             },
           ],
         },
+        Team: {
+          type: 'object',
+          required: ['id', 'name', 'teamType', 'status', 'currentUserRole'],
+          properties: {
+            id: { type: 'string', description: 'Team id used by `xd-cell deploy --team <teamId>`.' },
+            name: { type: 'string' },
+            description: { type: ['string', 'null'] },
+            teamType: { type: 'string', enum: ['custom', 'department'] },
+            departmentPath: { type: ['string', 'null'] },
+            status: { type: 'string' },
+            currentUserRole: { type: ['string', 'null'], enum: ['viewer', 'publisher', 'admin', null] },
+            currentUserMembershipSource: { type: ['string', 'null'] },
+            createdAt: { type: 'string' },
+            updatedAt: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        TeamsResponse: {
+          type: 'object',
+          required: ['environment', 'teams'],
+          properties: {
+            environment: { type: 'string', enum: ['production', 'staging'] },
+            teams: { type: 'array', items: { $ref: '#/components/schemas/Team' } },
+          },
+        },
         DeploymentDecision: {
           type: 'object',
           required: ['deploymentShape', 'requestedFallback', 'resolvedFallback', 'routingMode'],
@@ -474,6 +499,26 @@ export function buildOpenApi(config) {
             },
             401: { description: 'Authentication required or invalid' },
             403: { description: 'Authenticated user is not active' },
+          },
+        },
+      },
+      '/.xd-pages/api/teams': {
+        get: {
+          summary: 'List teams for the authenticated CLI user',
+          description:
+            'Used by `xd-cell teams` to discover team ids for `xd-cell deploy --team <teamId>`. ' +
+            'Requires a user CLI token; access keys cannot list user team memberships.',
+          responses: {
+            200: {
+              description: 'Teams returned',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/TeamsResponse' },
+                },
+              },
+            },
+            401: { description: 'Authentication required or invalid' },
+            403: { description: 'A user CLI token is required' },
           },
         },
       },
