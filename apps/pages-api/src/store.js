@@ -2011,7 +2011,7 @@ export class D1PagesStore {
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
-          owner_users.realname AS owner_user_realname,
+          owner_users.realname AS owner_user_realname, owner_users.email AS owner_user_email,
           teams.id AS owner_team_id, teams.name AS owner_team_name, teams.team_type AS owner_team_type
         FROM sites
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
@@ -2037,7 +2037,7 @@ export class D1PagesStore {
     );
     if (viewerUserId) {
       for (const site of await this.listSitesForUser(viewerUserId, { type: 'user', userId: viewerUserId }, environment)) {
-        sitesById.set(site.id, site);
+        sitesById.set(site.id, await this.decorateConsoleSiteOwner(site));
       }
       for (const site of await this.listTeamOwnedSitesForUser({ environment, userId: viewerUserId })) {
         sitesById.set(site.id, site);
@@ -2049,7 +2049,28 @@ export class D1PagesStore {
   async listWorkspaceSites({ environment, userId, ownerFilter, teamId } = {}) {
     if (ownerFilter === 'team') return this.listTeamOwnedSitesForUser({ environment, userId, teamId });
     const sites = await this.listSitesForUser(userId, { type: 'user', userId }, environment);
-    return sites.filter((site) => (site.ownerType || 'user') === 'user' && (site.ownerId || site.ownerUserId) === userId);
+    const personalSites = sites.filter((site) => {
+      return (site.ownerType || 'user') === 'user' && (site.ownerId || site.ownerUserId) === userId;
+    });
+    return Promise.all(personalSites.map((site) => this.decorateConsoleSiteOwner(site)));
+  }
+
+  async decorateConsoleSiteOwner(site) {
+    if (!site) return site;
+    if ((site.ownerType || 'user') === 'team') {
+      const team = await this.getTeam(site.ownerId);
+      return {
+        ...site,
+        ownerDisplayName: team?.name || null,
+        ownerTeamType: team?.teamType || null,
+        ownerTeamId: team?.id || null,
+      };
+    }
+    const user = await this.getUser(site.ownerId || site.ownerUserId);
+    return {
+      ...site,
+      ownerDisplayName: user?.realname || user?.email || null,
+    };
   }
 
   async listTeamOwnedSitesForUser({ environment, userId, teamId } = {}) {
@@ -2103,10 +2124,11 @@ export class D1PagesStore {
       };
     }
     if ((site.ownerId || site.ownerUserId) !== userId) return null;
+    const ownerUser = await this.getUser(site.ownerId || site.ownerUserId);
     return {
       ...site,
       ownerType: 'user',
-      ownerDisplayName: null,
+      ownerDisplayName: ownerUser?.realname || ownerUser?.email || null,
       currentUserId: userId,
       managementRole: 'admin',
     };
@@ -3830,7 +3852,7 @@ function mapConsoleDirectorySite(row) {
   }
   return {
     ...site,
-    ownerDisplayName: row.owner_user_realname || null,
+    ownerDisplayName: row.owner_user_realname || row.owner_user_email || null,
   };
 }
 

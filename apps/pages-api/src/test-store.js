@@ -1067,7 +1067,9 @@ class TestPagesStore {
   async listWorkspaceSites({ environment, userId, ownerFilter, teamId } = {}) {
     if (ownerFilter === 'team') return this.listTeamOwnedSitesForUser({ environment, userId, teamId });
     const sites = await this.listSitesForUser(userId, { type: 'user', userId }, environment);
-    return sites.filter((site) => (site.ownerType || 'user') === 'user' && (site.ownerId || site.ownerUserId) === userId);
+    return sites
+      .filter((site) => (site.ownerType || 'user') === 'user' && (site.ownerId || site.ownerUserId) === userId)
+      .map((site) => this.decorateDirectorySite(site));
   }
 
   async listTeamOwnedSitesForUser({ environment, userId, teamId } = {}) {
@@ -1108,7 +1110,7 @@ class TestPagesStore {
     return {
       ...site,
       ownerType: 'user',
-      ownerDisplayName: null,
+      ownerDisplayName: this.ownerUserDisplayName(site),
       currentUserId: userId,
       managementRole: 'admin',
     };
@@ -1856,8 +1858,13 @@ class TestPagesStore {
     const user = this.users.get(site.ownerId || site.ownerUserId);
     return {
       ...site,
-      ownerDisplayName: user?.realname || null,
+      ownerDisplayName: user?.realname || user?.email || null,
     };
+  }
+
+  ownerUserDisplayName(site) {
+    const user = this.users.get(site.ownerId || site.ownerUserId);
+    return user?.realname || user?.email || null;
   }
 
   decorateAdminSite(site) {

@@ -226,6 +226,7 @@ test('console auth session hydrates missing department team through pages-api XD
 
 test('workspace personal and team sites use owner model and team membership', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me', { realname: '徐天麒' });
   await seedSite(store, {
     id: 'site_mine',
     slug: 'mine',
@@ -264,10 +265,20 @@ test('workspace personal and team sites use owner model and team membership', as
   );
 
   assert.equal(personal.status, 200, await personal.clone().text());
-  assert.deepEqual(
-    (await personal.json()).sites.map((site) => site.slug),
-    ['mine']
-  );
+  assert.deepEqual(await personal.json(), {
+    sites: [
+      {
+        id: 'site_mine',
+        slug: 'mine',
+        hostname: 'mine.workers.xd.team',
+        owner: { type: 'user', displayName: '徐天麒' },
+        visibility: 'org',
+        status: 'disabled',
+        createdAt: '2026-06-15T00:00:00.000Z',
+        updatedAt: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  });
   assert.equal(teamResponse.status, 200, await teamResponse.clone().text());
   assert.deepEqual(await teamResponse.json(), {
     sites: [
@@ -375,7 +386,7 @@ test('console creates personal and team-owned sites without browser upload', asy
       id: 'site_1',
       slug: 'personal-console',
       hostname: 'personal-console.workers.xd.team',
-      owner: { type: 'user' },
+      owner: { type: 'user', displayName: 'usr_owner@example.com' },
       visibility: 'internal',
       status: 'disabled',
       createdAt: '2026-06-15T00:00:00.000Z',
@@ -474,6 +485,7 @@ test('site detail computes permissions from team role for team-owned site', asyn
 test('site detail and subresources are internal-only, permission checked, and redacted', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_other');
+  await seedConsoleUser(store, 'usr_me', { realname: '徐天麒' });
   await seedSite(store, {
     id: 'site_mine',
     slug: 'mine',
@@ -511,6 +523,7 @@ test('site detail and subresources are internal-only, permission checked, and re
   const detailBody = await detail.json();
   assert.equal(detailBody.site.slug, 'mine');
   assert.equal(detailBody.site.hostname, 'mine.workers.xd.team');
+  assert.deepEqual(detailBody.site.owner, { type: 'user', displayName: '徐天麒' });
   assert.equal(detailBody.site.access.visibility, 'acl');
   assert.deepEqual(await deployments.json(), { deployments: [] });
   assert.deepEqual(await access.json(), { access: { visibility: 'acl', aclEntries: [] } });
