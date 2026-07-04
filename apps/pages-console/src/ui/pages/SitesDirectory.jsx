@@ -25,18 +25,20 @@ export function SitesDirectory() {
   return (
     <main className="page">
       <PageHeading title="站点目录" meta="Sites" />
-      <SiteWaterfall state={state} cardAction="open" />
+      <SiteWaterfall state={state} cardAction="open" activeOnly />
     </main>
   );
 }
 
-export function SiteWaterfall({ state, cardAction = 'detail' }) {
+export function SiteWaterfall({ state, cardAction = 'detail', activeOnly = false }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载站点</div>;
   if (!state.sites.length) return <div className="placeholder">暂无站点</div>;
-  const visibleSites = filterSites(state.sites, { query, status });
+  const selectedStatus = activeOnly ? 'active' : status;
+  const baseSites = filterSites(state.sites, { query: '', status: selectedStatus });
+  const visibleSites = filterSites(state.sites, { query, status: selectedStatus });
 
   return (
     <>
@@ -45,18 +47,20 @@ export function SiteWaterfall({ state, cardAction = 'detail' }) {
           <span>搜索站点</span>
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、URL、Owner" />
         </label>
-        <div className="segmented compact-segmented" role="tablist" aria-label="站点状态">
-          {[
-            ['all', '全部'],
-            ['active', 'Active'],
-            ['disabled', 'Disabled'],
-          ].map(([value, label]) => (
-            <button className={status === value ? 'active' : ''} key={value} type="button" onClick={() => setStatus(value)}>
-              {label}
-            </button>
-          ))}
-        </div>
-        <span className="toolbar-count">{visibleSites.length} / {state.sites.length}</span>
+        {!activeOnly ? (
+          <div className="segmented compact-segmented" role="tablist" aria-label="站点状态">
+            {[
+              ['all', '全部'],
+              ['active', 'Active'],
+              ['disabled', 'Disabled'],
+            ].map(([value, label]) => (
+              <button className={status === value ? 'active' : ''} key={value} type="button" onClick={() => setStatus(value)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <span className="toolbar-count">{visibleSites.length} / {baseSites.length}</span>
       </div>
       {visibleSites.length ? (
         <section className="site-grid" aria-label="站点列表">
@@ -78,7 +82,7 @@ export function SiteCard({ site, cardAction = 'detail' }) {
   const visibility = site.visibility || site.access?.visibility || 'internal';
   const visibilityText = siteVisibilityLabel(visibility);
   const status = site.status || (visibility === 'disabled' ? 'disabled' : 'active');
-  const statusKind = status === 'disabled' || visibility === 'disabled' ? 'disabled' : 'active';
+  const statusKind = siteStatusKind({ status, visibility });
   const title = site.slug || site.hostname || site.id;
   const detailPath = `/workspace/sites/${encodeURIComponent(site.id)}`;
   const openDetail = () => navigate(detailPath);
@@ -140,7 +144,8 @@ function filterSites(sites, { query, status }) {
     const visibility = site.visibility || site.access?.visibility || 'internal';
     const visibilityText = siteVisibilityLabel(visibility);
     const siteStatus = site.status || (visibility === 'disabled' ? 'disabled' : 'active');
-    if (status !== 'all' && siteStatus !== status) return false;
+    const statusKind = siteStatusKind({ status: siteStatus, visibility });
+    if (status !== 'all' && statusKind !== status) return false;
     if (!normalizedQuery) return true;
     const haystack = [
       site.slug,
@@ -151,13 +156,17 @@ function filterSites(sites, { query, status }) {
       site.owner?.departmentPath,
       visibility,
       visibilityText,
-      siteStatus,
+      statusKind,
     ]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
     return haystack.includes(normalizedQuery);
   });
+}
+
+function siteStatusKind({ status, visibility }) {
+  return status === 'disabled' || visibility === 'disabled' ? 'disabled' : 'active';
 }
 
 export function PageHeading({ title, meta }) {

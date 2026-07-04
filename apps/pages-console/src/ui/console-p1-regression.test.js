@@ -67,12 +67,16 @@ test('disabled primary buttons are visually downgraded instead of looking active
 });
 
 test('site cards use owner object label and open the site directly', () => {
-  assert.match(sitesDirectorySource, /<SiteWaterfall state=\{state\} cardAction="open" \/>/);
+  assert.match(sitesDirectorySource, /<SiteWaterfall state=\{state\} cardAction="open" activeOnly \/>/);
   assert.match(sitesDirectorySource, /cardAction = 'detail'/);
   assert.match(sitesDirectorySource, /function SiteCard\(\{ site, cardAction = 'detail' \}\)/);
   assert.match(sitesDirectorySource, /siteCardOwnerLabel\(site\.owner\)/);
   assert.match(sitesDirectorySource, /siteVisibilityLabel\(visibility\)/);
   assert.match(sitesDirectorySource, /statusKind === 'disabled' \? <span className="tag tag-disabled">已停用<\/span> : null/);
+  assert.match(sitesDirectorySource, /const selectedStatus = activeOnly \? 'active' : status;/);
+  assert.match(sitesDirectorySource, /!\s*activeOnly \? \(/);
+  assert.match(sitesDirectorySource, /\{visibleSites\.length\} \/ \{baseSites\.length\}/);
+  assert.match(sitesDirectorySource, /statusKind !== status/);
   assert.match(sitesDirectorySource, /cardAction === 'open' && publicUrl/);
   assert.match(sitesDirectorySource, /cardAction !== 'open' && publicUrl/);
   assert.doesNotMatch(sitesDirectorySource, /const ownerType = site\.owner\?\.type === 'team' \? '团队' : '个人';/);
