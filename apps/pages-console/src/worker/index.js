@@ -7,6 +7,7 @@ import {
   readConsoleSession,
   serializeConsoleCsrfCookie,
   serializeConsoleSessionCookie,
+  signConsoleSession,
 } from './session.js';
 
 function jsonError(code, message, status = 404, action = 'Check the endpoint and try again.') {
@@ -154,24 +155,44 @@ async function handleAuthCallback(url, env) {
       'Set-Cookie': [clearConsoleSessionCookie(), clearConsoleCsrfCookie()],
     });
   }
-  if (isStagingHost(url) && !exchanged.isPlatformAdmin) {
-    return jsonErrorResponse('ADMIN_REQUIRED', 'Platform administrator access is required.', 403, {
-      headers: { 'Set-Cookie': [clearConsoleSessionCookie(), clearConsoleCsrfCookie()] },
-    });
+
+  let session = buildConsoleSessionFromExchange(exchanged);
+  if (isStagingHost(url)) {
+    const currentSession = await validateConsoleSession(env, session);
+    if (!currentSession?.isPlatformAdmin) {
+      return jsonErrorResponse('ADMIN_REQUIRED', 'Platform administrator access is required.', 403, {
+        headers: { 'Set-Cookie': [clearConsoleSessionCookie(), clearConsoleCsrfCookie()] },
+      });
+    }
+    session = currentSession;
   }
-  if (!exchanged.consoleSessionToken) {
+
+  let token;
+  try {
+    token = await signConsoleSession(session, env, url.hostname);
+  } catch {
     return jsonError(
-      'CONSOLE_SESSION_TOKEN_MISSING',
-      'Console session token is missing.',
+      'CONSOLE_SESSION_CREATE_FAILED',
+      'Console session could not be created.',
       500,
-      'Check pages-auth console exchange configuration.'
+      'Check pages-console session JWT configuration.'
     );
   }
 
-  const cookie = serializeConsoleSessionCookie(exchanged.consoleSessionToken);
+  const cookie = serializeConsoleSessionCookie(token);
   return redirect(normalizeConsoleReturnTo(exchanged.returnTo), {
     'Set-Cookie': [cookie, serializeConsoleCsrfCookie()],
   });
+}
+
+function buildConsoleSessionFromExchange(exchanged) {
+  const sessionVersion = Number(exchanged?.sessionVersion);
+  return {
+    userId: String(exchanged?.userId || ''),
+    email: typeof exchanged?.email === 'string' ? exchanged.email : '',
+    employeeStatus: typeof exchanged?.employeeStatus === 'string' ? exchanged.employeeStatus : '',
+    sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : 1,
+  };
 }
 
 function handleLogout(url, env) {

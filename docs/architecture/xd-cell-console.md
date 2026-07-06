@@ -62,8 +62,11 @@ Console 登录使用 `pages-auth` 生成一次性 console login code：
 3. pages-auth 完成 SSO 后生成 console code
 4. Browser -> pages-console /api/console/auth/callback?code=...
 5. pages-console -> pages-auth.internal /.xd-pages/internal/console/exchange
-6. pages-auth 签发 `purpose=console_session`、`aud=xd-cell-console` 的 JWT
-7. pages-console 把 JWT 写入当前 console host 的 host-only HttpOnly cookie
+6. pages-auth 消费一次性 code，只返回用户身份、邮箱、员工状态、sessionVersion、environment 和 returnTo
+7. pages-console 用当前 console host 签发 `purpose=console_session` 的 JWT：
+   - production audience：`workers.xd.team`
+   - staging audience：`staging.workers.xd.team`
+8. pages-console 把 JWT 写入当前 console host 的 host-only HttpOnly cookie
 ```
 
 console session cookie 属性：
@@ -71,15 +74,16 @@ console session cookie 属性：
 ```text
 Name: xd_cell_session
 Path: /
+Max-Age: 604800
 HttpOnly
 Secure
 SameSite=Lax
 无 Domain，保持 host-only
 ```
 
-cookie value 是 pages-auth 使用既有 `PAGES_SESSION_JWT_*` key registry 签发的 JWT。pages-console 不维护独立 signing secret，也不会设置 `Domain=.xd.team` 共享 cookie；读取时校验 issuer、audience、purpose、environment、过期时间和 HMAC 签名。
+cookie value 是 pages-console 使用既有 `PAGES_SESSION_JWT_*` key registry 签发的 JWT。pages-console 不维护独立 signing secret，也不会设置 `Domain=.xd.team` 共享 cookie；读取时用当前请求 hostname 校验 audience，同时校验 issuer、purpose、environment、过期时间和 HMAC 签名。
 
-`xd_cell_session` 是单一 Console 用户 session，只表达“这个浏览器是谁”。它不是管理员 session，也不是权限真相源。JWT claims 可以携带 `isPlatformAdmin` 作为 UI hint，但安全判断不能信任该 claim。
+`xd_cell_session` 是单一 Console 用户 session，只表达“这个浏览器是谁”。它不是管理员 session，也不是权限真相源。Console session JWT 不依赖 pages-auth 的平台管理员判断；staging callback、`/admin/*` 和 admin API 的权限判断都必须回到 pages-api 的当前用户状态和 `platform_admins` 真相源。
 
 Console 鉴权分两层：
 
@@ -88,6 +92,7 @@ Console 鉴权分两层：
    - 写 API 过 CSRF、Origin / Referer 校验。
    - `/workspace/*` 首次 HTML 请求要求存在有效签名 session。
    - `/admin/*` 和 staging 需要平台管理员的首次 HTML 请求，会调用 `pages-api.internal/.xd-pages/api/console/auth/session` 做一次权威校验后再决定是否返回 app shell。
+   - `staging.workers.xd.team` 的登录 callback 在写入 cookie 前，会先用 pages-auth 返回的身份调用 pages-api 做平台管理员校验；非管理员不会得到 staging console session。
    - `/api/console/*` BFF API 不再固定先调用 `/auth/session`。BFF 只验证 cookie 签名并转发身份 header；production 目录 API 缺少 cookie 时可以匿名转发，缺少 cookie 的受保护 API 由 pages-api 返回 401。
 
 2. `pages-api` 处理业务和权限真相源：
@@ -105,9 +110,9 @@ Console 鉴权分两层：
 | ---- | ------ | ---- | -------- | -------- |
 | CLI public API | `xd-cell` CLI、CI、agent | `Authorization: Bearer <cli_token 或 access_key>` | `pages-api.authenticateApiRequest()` 校验 CLI token 或 Access Key，再生成 actor | 发布、创建/管理 access key、读取部署状态 |
 | Console BFF API | 浏览器同源请求 `workers.xd.team/api/console/*` | host-only `xd_cell_session` cookie | `pages-console` 验 cookie 签名和浏览器安全边界，`pages-api` endpoint 回表做用户/session/角色/管理员权威校验 | 站点目录、工作台、团队、admin 后台 |
-| 子站 Router | 访问 `<site>.pages.xd.team` | `__Host-pages_site_session` cookie | `pages-router` 校验 site session freshness、policyVersion、sessionVersion，再执行 visibility/ACL | 高频子站访问 |
+| 子站 Router | 访问 `<site>.pages.xd.team` | `__Host-pages_site_session` cookie | `pages-router` 签发并校验 host-bound site session，再校验 freshness、policyVersion、sessionVersion 和 visibility/ACL | 高频子站访问 |
 
-`pages-auth` 是 SSO 和 JWT 签发服务。它签发 `auth_session`、`cli_token`、`site_session`、`console_session` 等不同 purpose/audience 的 JWT，但不会替代 `pages-api` 的业务权限判断。`pages-api` public lane 和 console internal lane 分离：CLI 不能伪造 `X-Console-*` 进入 internal console API，Console 浏览器也不持有 CLI Bearer token。
+`pages-auth` 是 SSO、auth session、CLI token 和一次性 handoff code 服务。子站 Router 和 Console BFF 都把 pages-auth 的一次性 code 视为登录交接材料，然后在各自 host 边界内签发并验证自己的 host-bound session。各 Worker 复用既有 `PAGES_SESSION_JWT_*` key registry，不新增 Console 专属 secret。`pages-api` public lane 和 console internal lane 分离：CLI 不能伪造 `X-Console-*` 进入 internal console API，Console 浏览器也不持有 CLI Bearer token。
 
 ## 功能导航
 
@@ -261,9 +266,9 @@ Console route 是 exact host route，不能使用 `*.workers.xd.team/*`，避免
 
 - production 只允许 `workflow_dispatch` 手动触发。
 - staging 可手动触发，也可由 staging 分支中 v2 相关路径变化触发。
-- renderer 必须注入 `CLOUDFLARE_ACCOUNT_ID`、`IP_ALLOWLIST` 和 `PAGES_SESSION_JWT_KEYS`。
+- renderer 必须注入 `CLOUDFLARE_ACCOUNT_ID`、`IP_ALLOWLIST`、`PAGES_SESSION_JWT_ACTIVE_KID` 和 `PAGES_SESSION_JWT_KEYS`。
 - `pages-console` Worker with Assets 必须设置 `assets.run_worker_first = true`，保证页面、静态资源、登录桥接和 BFF API 都先经过 IP allowlist、staging/admin gate，再由 Worker 决定是否调用 `env.ASSETS.fetch()`。
-- Console 登录态复用 pages-auth 的 `PAGES_SESSION_JWT_*` 体系：pages-auth 签发 `purpose=console_session`、`aud=xd-cell-console` 的 JWT，pages-console 只在自身 host-only `xd_cell_session` cookie 中保存并验证该 JWT。
+- Console 登录态复用既有 `PAGES_SESSION_JWT_*` key registry：pages-console 在自身 host 边界内签发 `purpose=console_session`、host-bound audience 的 JWT，并只保存在自身 host-only `xd_cell_session` cookie 中。
 - `PAGES_SESSION_JWT_SECRET_*` 通过 Worker secret 注入，不进入 wrangler 模板、日志或文档示例；不再维护独立的 console session secret。
 - production / staging 的 Worker、service binding、route、D1/KV 和 signing key 不得混用。
 

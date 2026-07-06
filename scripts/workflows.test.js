@@ -655,9 +655,11 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
         String.raw`name: Generate Pages Console Wrangler config[\s\S]*` +
           String.raw`CLOUDFLARE_ACCOUNT_ID: \$\{\{ vars\.CLOUDFLARE_ACCOUNT_ID \}\}[\s\S]*` +
           String.raw`IP_ALLOWLIST: \$\{\{ vars\.IP_ALLOWLIST \}\}[\s\S]*` +
+          String.raw`PAGES_SESSION_JWT_ACTIVE_KID: \$\{\{ env\.PAGES_SESSION_JWT_ACTIVE_KID \}\}[\s\S]*` +
+          String.raw`PAGES_SESSION_JWT_KEYS: \$\{\{ env\.PAGES_SESSION_JWT_KEYS \}\}[\s\S]*` +
           String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-console`
       ),
-      `${name} gives pages-console account id and IP allowlist`
+      `${name} gives pages-console account id, IP allowlist, and session JWT settings`
     );
     assert.ok(
       workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-console ${environment}`) <

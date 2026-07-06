@@ -99,6 +99,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ env.PAGES_SESSION_JWT_ACTIVE_KID }}
           PAGES_SESSION_JWT_KEYS: ${{ env.PAGES_SESSION_JWT_KEYS }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-console staging
 

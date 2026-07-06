@@ -16,11 +16,11 @@ function env(overrides = {}) {
   };
 }
 
-async function consoleSessionToken(claims = {}, overrides = {}) {
+async function signedConsoleSessionToken(claims = {}, overrides = {}) {
   return signSessionJwt(
     {
       purpose: 'console_session',
-      audience: 'xd-cell-console',
+      audience: overrides.audience || 'workers.xd.team',
       subject: 'user-1',
       now: overrides.now || now,
       ttlSeconds: overrides.ttlSeconds || 600,
@@ -41,18 +41,19 @@ async function consoleSessionToken(claims = {}, overrides = {}) {
 }
 
 test('session cookie is host-only and browser hardened', async () => {
-  const header = serializeConsoleSessionCookie(await consoleSessionToken());
+  const header = serializeConsoleSessionCookie(await signedConsoleSessionToken());
 
   assert.match(header, /^xd_cell_session=/);
   assert.match(header, /HttpOnly/);
   assert.match(header, /Secure/);
   assert.match(header, /SameSite=Lax/);
   assert.match(header, /Path=\//);
+  assert.match(header, /Max-Age=604800/);
   assert.doesNotMatch(header, /Domain=/i);
 });
 
-test('valid pages-auth console_session JWT cookie returns session identity', async () => {
-  const header = serializeConsoleSessionCookie(await consoleSessionToken());
+test('valid host-bound console_session JWT cookie returns session identity', async () => {
+  const header = serializeConsoleSessionCookie(await signedConsoleSessionToken());
   const cookie = header.split(';')[0];
 
   const session = await readConsoleSession(
@@ -68,8 +69,22 @@ test('valid pages-auth console_session JWT cookie returns session identity', asy
   assert.equal(session.sessionVersion, 7);
 });
 
+test('console_session JWT is scoped to the current console host', async () => {
+  const header = serializeConsoleSessionCookie(await signedConsoleSessionToken({}, { audience: 'workers.xd.team' }));
+  const cookie = header.split(';')[0];
+
+  const session = await readConsoleSession(
+    new Request('https://staging.workers.xd.team/workspace', {
+      headers: { Cookie: cookie },
+    }),
+    env({ PAGES_ENV: 'staging' })
+  );
+
+  assert.equal(session, null);
+});
+
 test('tampered JWT returns null', async () => {
-  const header = serializeConsoleSessionCookie(await consoleSessionToken({ isPlatformAdmin: false }));
+  const header = serializeConsoleSessionCookie(await signedConsoleSessionToken({ isPlatformAdmin: false }));
   const cookie = `${header.split(';')[0]}bad`;
 
   const session = await readConsoleSession(
@@ -84,7 +99,7 @@ test('tampered JWT returns null', async () => {
 
 test('expired console_session JWT returns null', async () => {
   const header = serializeConsoleSessionCookie(
-    await consoleSessionToken({ isPlatformAdmin: false }, { now: now - 700, ttlSeconds: 60 })
+    await signedConsoleSessionToken({ isPlatformAdmin: false }, { now: now - 700, ttlSeconds: 60 })
   );
   const cookie = header.split(';')[0];
 

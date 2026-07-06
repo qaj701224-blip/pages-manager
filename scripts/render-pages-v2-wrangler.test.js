@@ -574,6 +574,7 @@ test('production pages-console config renders exact console host without wildcar
   assert.match(config, /PUBLIC_CONSOLE_BASE = "https:\/\/workers\.xd\.team"/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /PAGES_SESSION_JWT_ISSUER = "pages-auth"/);
+  assert.match(config, /PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"/);
   assert.match(config, /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
   assert.match(config, /binding = "PAGES_API"/);
   assert.match(config, /service = "pages-api"/);
@@ -600,6 +601,7 @@ test('staging pages-console config renders staging admin-only console host', () 
   assert.match(config, /PUBLIC_CONSOLE_BASE = "https:\/\/staging\.workers\.xd\.team"/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /PAGES_SESSION_JWT_ISSUER = "pages-auth"/);
+  assert.match(config, /PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"/);
   assert.match(config, /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
   assert.match(config, /service = "pages-api-staging"/);
   assert.match(config, /service = "pages-auth-staging"/);
@@ -607,8 +609,13 @@ test('staging pages-console config renders staging admin-only console host', () 
   assert.doesNotMatch(config, /pattern = "\*-staging\.workers\.xd\.team\/\*"/);
 });
 
-test('pages-console config requires account id and IP allowlist', () => {
-  for (const name of ['CLOUDFLARE_ACCOUNT_ID', 'IP_ALLOWLIST']) {
+test('pages-console config requires account id, IP allowlist, and session signing key registry', () => {
+  for (const name of [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'IP_ALLOWLIST',
+    'PAGES_SESSION_JWT_ACTIVE_KID',
+    'PAGES_SESSION_JWT_KEYS',
+  ]) {
     const result = runRenderer(['apps/pages-console', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);

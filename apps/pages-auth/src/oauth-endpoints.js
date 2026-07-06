@@ -7,12 +7,10 @@ import { hydrateUserDepartmentFromDirectory } from '../../pages-api/src/departme
 import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
-const CONSOLE_SESSION_AUDIENCE = 'xd-cell-console';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
 const CLI_LOGIN_CONFIRM_AUDIENCE = 'pages-cli-login-confirm';
 const SITE_CODE_TTL_SECONDS = 60;
 const CONSOLE_CODE_TTL_SECONDS = 60;
-const CONSOLE_SESSION_TTL_SECONDS = 12 * 60 * 60;
 const CLI_LOGIN_CONFIRM_TTL_SECONDS = 600;
 const ACTIVE_EMPLOYEE_STATUS = 'active';
 
@@ -242,7 +240,6 @@ export async function handleInternalConsoleExchange(request, env, config) {
   const user = consumed.user || {};
   const userId = user.userId || user.id;
   if (!userId) return jsonError('CONSOLE_LOGIN_INVALID', 'Console login code is invalid.', 400);
-  const isPlatformAdmin = await isConsolePlatformAdmin(env, config.environment, userId);
   const sessionVersion = user.sessionVersion || 1;
   const employeeStatus = user.employeeStatus || 'unknown';
   const email = user.email || '';
@@ -253,28 +250,6 @@ export async function handleInternalConsoleExchange(request, env, config) {
     return jsonError('CONSOLE_LOGIN_INVALID', 'Console login code is invalid.', 400);
   }
 
-  let consoleSessionToken;
-  try {
-    consoleSessionToken = await signSessionJwt(
-      {
-        purpose: 'console_session',
-        audience: CONSOLE_SESSION_AUDIENCE,
-        subject: userId,
-        now,
-        ttlSeconds: CONSOLE_SESSION_TTL_SECONDS,
-        claims: {
-          email,
-          employeeStatus,
-          sessionVersion,
-          isPlatformAdmin,
-        },
-      },
-      env
-    );
-  } catch {
-    return jsonError('CONSOLE_SESSION_CREATE_FAILED', 'Console session could not be created.', 500);
-  }
-
   return jsonOk({
     userId,
     email,
@@ -282,8 +257,6 @@ export async function handleInternalConsoleExchange(request, env, config) {
     sessionVersion,
     environment: consumed.environment || config.environment,
     returnTo,
-    isPlatformAdmin,
-    consoleSessionToken,
   });
 }
 
@@ -1169,13 +1142,6 @@ function validateConsoleReturnTo(returnTo) {
   if (url.pathname === '/' || url.pathname === '/workspace' || url.pathname.startsWith('/workspace/')) return path;
   if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return path;
   throw new Error('Console return_to is invalid');
-}
-
-async function isConsolePlatformAdmin(env, environment, userId) {
-  if (typeof env?.isPlatformAdmin === 'function') return Boolean(await env.isPlatformAdmin({ environment, userId }));
-  const store = createPagesStore(env);
-  if (typeof store?.isPlatformAdmin === 'function') return Boolean(await store.isPlatformAdmin({ environment, userId }));
-  return false;
 }
 
 function readEnvironmentForInternal(env) {

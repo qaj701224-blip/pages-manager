@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { signSessionJwt } from '../../../pages-auth/src/jwt.js';
+import { signSessionJwt, verifySessionJwt } from '../../../pages-auth/src/jwt.js';
 import worker from './index.js';
 import { serializeConsoleSessionCookie } from './session.js';
 
@@ -11,6 +11,7 @@ function env(overrides = {}) {
   return {
     PAGES_ENV: 'production',
     IP_ALLOWLIST: '10.0.0.0/8',
+    PAGES_SESSION_JWT_ACTIVE_KID: 'kid-test',
     PAGES_SESSION_JWT_KEYS: 'kid-test:HS256:PAGES_SESSION_JWT_SECRET_TEST',
     PAGES_SESSION_JWT_SECRET_TEST: 'test-session-secret',
     now: () => NOW,
@@ -67,7 +68,7 @@ async function sessionCookie({ isPlatformAdmin = false, sessionVersion = 7, envi
   const token = await signSessionJwt(
     {
       purpose: 'console_session',
-      audience: 'xd-cell-console',
+      audience: environment === 'staging' ? 'staging.workers.xd.team' : 'workers.xd.team',
       subject: 'user-1',
       now: NOW,
       ttlSeconds: 600,
@@ -83,18 +84,17 @@ async function sessionCookie({ isPlatformAdmin = false, sessionVersion = 7, envi
   return header.split(';')[0];
 }
 
-async function consoleSessionToken({ isPlatformAdmin = false, sessionVersion = 2, environment = 'production' } = {}) {
+async function signedConsoleSessionToken({ userId = 'usr_1', sessionVersion = 2, environment = 'production' } = {}) {
   return signSessionJwt(
     {
       purpose: 'console_session',
-      audience: 'xd-cell-console',
-      subject: 'usr_1',
+      audience: environment === 'staging' ? 'staging.workers.xd.team' : 'workers.xd.team',
+      subject: userId,
       now: NOW,
       ttlSeconds: 600,
       claims: {
         email: 'user@example.com',
         employeeStatus: 'active',
-        isPlatformAdmin,
         sessionVersion,
       },
     },
@@ -110,6 +110,12 @@ function jwtSigningEnv(overrides = {}) {
     PAGES_SESSION_JWT_SECRET_TEST: 'test-session-secret',
     ...overrides,
   };
+}
+
+function extractSessionToken(setCookie) {
+  const match = String(setCookie || '').match(/xd_cell_session=([^;,]+)/);
+  assert.ok(match, 'Set-Cookie should include xd_cell_session');
+  return decodeURIComponent(match[1]);
 }
 
 function request(url, { cookie, method = 'GET', headers = {}, body } = {}) {
@@ -531,8 +537,6 @@ test('auth callback exchanges code, sets host-only console cookie, and redirects
           sessionVersion: 2,
           environment: 'production',
           returnTo: '/workspace',
-          isPlatformAdmin: false,
-          consoleSessionToken: await consoleSessionToken(),
         });
       }),
     })
@@ -546,12 +550,23 @@ test('auth callback exchanges code, sets host-only console cookie, and redirects
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /Secure/);
   assert.doesNotMatch(setCookie, /Domain=/i);
+  const verified = await verifySessionJwt(extractSessionToken(setCookie), jwtSigningEnv(), {
+    purpose: 'console_session',
+    audience: 'workers.xd.team',
+    now: NOW,
+  });
+  assert.equal(verified.sub, 'usr_1');
+  assert.equal(verified.email, 'user@example.com');
+  assert.equal(verified.employeeStatus, 'active');
+  assert.equal(verified.sessionVersion, 2);
+  assert.equal(verified.exp - verified.iat, 7 * 24 * 60 * 60);
 });
 
-test('auth callback fails closed when pages-auth does not return a session token', async () => {
+test('auth callback fails closed when console session signing config is missing', async () => {
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),
     env({
+      PAGES_SESSION_JWT_ACTIVE_KID: '',
       PAGES_AUTH: authBinding(async () =>
         Response.json({
           userId: 'usr_1',
@@ -560,14 +575,13 @@ test('auth callback fails closed when pages-auth does not return a session token
           sessionVersion: 2,
           environment: 'production',
           returnTo: '/workspace',
-          isPlatformAdmin: false,
         })
       ),
     })
   );
 
   assert.equal(response.status, 500);
-  assert.equal((await response.json()).error.code, 'CONSOLE_SESSION_TOKEN_MISSING');
+  assert.equal((await response.json()).error.code, 'CONSOLE_SESSION_CREATE_FAILED');
   assert.doesNotMatch(response.headers.get('Set-Cookie') || '', /^xd_cell_session=/);
 });
 
@@ -589,6 +603,7 @@ test('auth callback redirects back to login and clears cookies when code exchang
 });
 
 test('staging auth callback rejects non-platform admins and clears session cookie', async () => {
+  const calls = [];
   const response = await worker.fetch(
     request('https://staging.workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'),
     env({
@@ -601,16 +616,41 @@ test('staging auth callback rejects non-platform admins and clears session cooki
           sessionVersion: 2,
           environment: 'staging',
           returnTo: '/workspace',
-          isPlatformAdmin: false,
-          consoleSessionToken: await consoleSessionToken({ environment: 'staging' }),
         })
       ),
+      PAGES_API: apiBinding(async () => Response.json({ error: { code: 'UNEXPECTED_PROXY' } }, { status: 500 }), {
+        session: async (apiRequest) => {
+          calls.push({
+            path: new URL(apiRequest.url).pathname,
+            userId: apiRequest.headers.get('X-Console-User-Id'),
+            email: apiRequest.headers.get('X-Console-Email'),
+            sessionVersion: apiRequest.headers.get('X-Console-Session-Version'),
+          });
+          return Response.json({
+            session: {
+              userId: 'usr_1',
+              email: 'user@example.com',
+              employeeStatus: 'active',
+              sessionVersion: 2,
+              isPlatformAdmin: false,
+            },
+          });
+        },
+      }),
     })
   );
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'ADMIN_REQUIRED');
   assert.match(response.headers.get('Set-Cookie'), /^xd_cell_session=;/);
+  assert.deepEqual(calls, [
+    {
+      path: '/.xd-pages/api/console/auth/session',
+      userId: 'usr_1',
+      email: 'user@example.com',
+      sessionVersion: '2',
+    },
+  ]);
 });
 
 test('staging API proxy requires a session before pages-api binding', async () => {
@@ -760,7 +800,7 @@ test('auth session endpoint returns current console session without exposing coo
 });
 
 test('auth session endpoint fails closed when session JWT config is missing', async () => {
-  const forged = serializeConsoleSessionCookie(await consoleSessionToken({ isPlatformAdmin: true }));
+  const forged = serializeConsoleSessionCookie(await signedConsoleSessionToken());
 
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/auth/session', { cookie: forged.split(';')[0] }),

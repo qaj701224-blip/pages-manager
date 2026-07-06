@@ -1,8 +1,9 @@
-import { verifySessionJwt } from '../../../pages-auth/src/jwt.js';
+import { signSessionJwt, verifySessionJwt } from '../../../pages-auth/src/jwt.js';
 
 const SESSION_COOKIE = 'xd_cell_session';
 const CSRF_COOKIE = 'xd_cell_csrf';
-const CONSOLE_SESSION_AUDIENCE = 'xd-cell-console';
+const CONSOLE_SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+const CONSOLE_SESSION_TTL_SECONDS = CONSOLE_SESSION_MAX_AGE_SECONDS;
 
 function bytesToHex(bytes) {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -18,18 +19,47 @@ function getCookie(request, name) {
 }
 
 export function serializeConsoleSessionCookie(token) {
-  return `${SESSION_COOKIE}=${encodeURIComponent(String(token || ''))}; Path=/; HttpOnly; Secure; SameSite=Lax`;
+  const value = encodeURIComponent(String(token || ''));
+  return [
+    `${SESSION_COOKIE}=${value}`,
+    'Path=/',
+    `Max-Age=${CONSOLE_SESSION_MAX_AGE_SECONDS}`,
+    'HttpOnly',
+    'Secure',
+    'SameSite=Lax',
+  ].join('; ');
+}
+
+export async function signConsoleSession(session, env = {}, audience) {
+  const userId = session?.userId ? String(session.userId) : '';
+  if (!userId) throw new Error('Console session user id is missing');
+  return signSessionJwt(
+    {
+      purpose: 'console_session',
+      audience,
+      subject: userId,
+      now: readNow(env),
+      ttlSeconds: CONSOLE_SESSION_TTL_SECONDS,
+      claims: {
+        email: typeof session.email === 'string' ? session.email : '',
+        employeeStatus: typeof session.employeeStatus === 'string' ? session.employeeStatus : '',
+        sessionVersion: session.sessionVersion || 1,
+      },
+    },
+    env
+  );
 }
 
 export async function readConsoleSession(request, env = {}) {
   const token = getCookie(request, SESSION_COOKIE);
   if (!token) return null;
+  const audience = new URL(request.url).hostname;
 
   let payload;
   try {
     payload = await verifySessionJwt(decodeURIComponent(token), env, {
       purpose: 'console_session',
-      audience: CONSOLE_SESSION_AUDIENCE,
+      audience,
       now: readNow(env),
     });
   } catch {
@@ -40,6 +70,7 @@ export async function readConsoleSession(request, env = {}) {
   return {
     userId: String(payload.sub),
     email: typeof payload.email === 'string' ? payload.email : '',
+    employeeStatus: typeof payload.employeeStatus === 'string' ? payload.employeeStatus : '',
     isPlatformAdmin: payload.isPlatformAdmin === true,
     sessionVersion: Number.isInteger(sessionVersion) && sessionVersion > 0 ? sessionVersion : 1,
     expiresAt: Number(payload.exp) * 1000,

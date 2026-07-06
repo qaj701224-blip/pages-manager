@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker, { AuthSessionDO, CliLoginDO, OAuthStateDO } from './index.js';
-import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import { signSessionJwt } from './jwt.js';
 
 test('health endpoint returns non-sensitive environment status without cache', async () => {
   const response = await worker.fetch(new Request('https://auth.pages.xd.team/.xd-pages/health'), {
@@ -400,10 +400,8 @@ test('internal endpoint exchanges console login code once', async () => {
         },
       };
     },
-    isPlatformAdmin: async ({ environment, userId }) => {
-      assert.equal(environment, 'production');
-      assert.equal(userId, 'usr_1');
-      return true;
+    isPlatformAdmin: async () => {
+      throw new Error('console exchange must not query platform admins');
     },
   };
 
@@ -416,35 +414,17 @@ test('internal endpoint exchanges console login code once', async () => {
 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
-  const verified = await verifySessionJwt(body.consoleSessionToken, env, {
-    purpose: 'console_session',
-    audience: 'xd-cell-console',
-    now: 1_800_000_000,
-  });
-  assert.equal(verified.sub, 'usr_1');
-  assert.equal(verified.email, 'user@example.com');
-  assert.equal(verified.employeeStatus, 'active');
-  assert.equal(verified.sessionVersion, 2);
-  assert.equal(verified.isPlatformAdmin, true);
-  assert.deepEqual(
-    {
-      ...body,
-      consoleSessionToken: '<jwt>',
-    },
-    {
+  assert.deepEqual(body, {
     userId: 'usr_1',
     email: 'user@example.com',
     employeeStatus: 'active',
     sessionVersion: 2,
     environment: 'production',
     returnTo: '/workspace',
-    isPlatformAdmin: true,
-      consoleSessionToken: '<jwt>',
-    }
-  );
+  });
 });
 
-test('internal console exchange reports session signing misconfiguration separately from invalid code', async () => {
+test('internal console exchange does not require session JWT signing config', async () => {
   const response = await worker.fetch(
     jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/exchange', {
       code: 'ost_console.console-secret',
@@ -452,6 +432,7 @@ test('internal console exchange reports session signing misconfiguration separat
     {
       ...testJwtEnv(),
       PAGES_SESSION_JWT_KEYS: '',
+      PAGES_SESSION_JWT_ACTIVE_KID: '',
       now: () => 1_800_000_000,
       consumeConsoleLoginCodeRecord: async () => ({
         environment: 'production',
@@ -463,12 +444,21 @@ test('internal console exchange reports session signing misconfiguration separat
           sessionVersion: 2,
         },
       }),
-      isPlatformAdmin: async () => false,
+      isPlatformAdmin: async () => {
+        throw new Error('console exchange must not query platform admins');
+      },
     }
   );
 
-  assert.equal(response.status, 500);
-  assert.equal((await response.json()).error.code, 'CONSOLE_SESSION_CREATE_FAILED');
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), {
+    userId: 'usr_1',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+    sessionVersion: 2,
+    environment: 'production',
+    returnTo: '/workspace',
+  });
 });
 
 test('public auth host cannot call internal endpoints', async () => {
