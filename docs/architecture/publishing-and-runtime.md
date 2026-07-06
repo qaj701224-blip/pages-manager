@@ -227,10 +227,11 @@ xd-cell deploy ./dist foo --token <token> --json
 
 access key 创建站点只允许发生在部署事务内：owner-scoped access key 具备 `deploy:site` 时，
 `xd-cell deploy <entry> <new-site>` 可以按 key 归属自动创建符合 slug / hostname 规则的新站点；
-user-owned key 创建个人站点，team-owned key 创建团队站点。site-scoped access key 仍只能部署绑定站点，
-不能创建其它新站点。普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受用户 CLI token 或后续受控
-console session，不对 access key 开放。access key 的 scope、site 限制、owner 归属、过期时间和
-environment 仍以 `pages-api` 权威记录为准。
+user-owned key 默认创建个人站点，若部署请求显式带 `teamId`，则按 key 所属用户当前在该团队的
+`publisher` / `admin` 权限创建团队站点；team-owned key 创建该团队站点。site-scoped access key
+仍只能部署绑定站点，不能创建其它新站点。普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受用户 CLI
+token 或后续受控 console session，不对 access key 开放。access key 的 scope、site 限制、owner
+归属、过期时间和 environment 仍以 `pages-api` 权威记录为准。
 
 #### Global config
 

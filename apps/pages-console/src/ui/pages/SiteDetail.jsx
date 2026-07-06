@@ -93,7 +93,7 @@ export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
 
   return (
     <div className="workspace-layout context-layout">
-      <SiteContextSidebar site={state.site} siteId={siteId} activeTab={activeTab} sessionState={sessionState} />
+      <SiteContextSidebar siteId={siteId} activeTab={activeTab} sessionState={sessionState} />
       <main className="page workspace-page">
         <PageHeading title={title} meta="站点" />
         {state.status === 'loading' ? <div className="placeholder">加载中</div> : null}
@@ -115,23 +115,14 @@ export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
   );
 }
 
-function SiteContextSidebar({ site, siteId, activeTab, sessionState }) {
+function SiteContextSidebar({ siteId, activeTab, sessionState }) {
   const base = `/workspace/sites/${encodeURIComponent(siteId)}`;
-  const slug = site?.slug || siteId;
   return (
     <Sidebar active="personal" sessionState={sessionState}>
       <Link className="back-link" to="/workspace/published">
         <ArrowLeft size={16} />
         <span>所有站点</span>
       </Link>
-      <div className="context-title">
-        <h2 title={slug}>{slug}</h2>
-        {site?.hostname ? <p title={site.hostname}>{site.hostname}</p> : null}
-        <div className="tag-row compact-tags">
-          <span className="tag">{site?.visibility || site?.access?.visibility || 'internal'}</span>
-          <span className="tag muted">{site?.status || 'active'}</span>
-        </div>
-      </div>
       <nav className="side-section" aria-label="站点导航">
         <ContextLink href={base} active={activeTab === 'overview'} icon={<ShieldCheck size={17} />} label="概览" />
         <ContextLink

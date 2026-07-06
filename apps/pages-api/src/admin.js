@@ -293,6 +293,12 @@ function formatAuditEvent(event) {
     eventType: event.eventType,
     actorUserId: event.actorUserId || null,
     actorType: event.actorType,
+    actor: {
+      type: event.actor?.type || event.actorType || null,
+      userId: event.actor?.userId || event.actorUserId || null,
+      displayName: event.actor?.displayName || null,
+      email: event.actor?.email || null,
+    },
     decision: event.decision,
     statusCode: event.statusCode ?? null,
     metadata: event.metadata || null,

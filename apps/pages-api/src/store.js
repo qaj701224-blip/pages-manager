@@ -861,17 +861,21 @@ export class D1PagesStore {
     const result = environment
       ? await this.db
           .prepare(
-            `SELECT * FROM audit_events
-            WHERE environment = ?
-            ORDER BY created_at DESC
+            `SELECT audit_events.*, actor_users.email AS actor_email, actor_users.realname AS actor_realname
+            FROM audit_events
+            LEFT JOIN users actor_users ON actor_users.user_id = audit_events.actor_user_id
+            WHERE audit_events.environment = ?
+            ORDER BY audit_events.created_at DESC
             LIMIT 100`
           )
           .bind(environment)
           .all()
       : await this.db
           .prepare(
-            `SELECT * FROM audit_events
-            ORDER BY created_at DESC
+            `SELECT audit_events.*, actor_users.email AS actor_email, actor_users.realname AS actor_realname
+            FROM audit_events
+            LEFT JOIN users actor_users ON actor_users.user_id = audit_events.actor_user_id
+            ORDER BY audit_events.created_at DESC
             LIMIT 100`
           )
           .all();
@@ -4012,6 +4016,12 @@ function mapAuditEvent(row) {
     userAgentHash: row.user_agent_hash || null,
     metadata: parseJsonColumn(row.metadata_json),
     createdAt: row.created_at,
+    actor: {
+      type: row.actor_type,
+      userId: row.actor_user_id || null,
+      displayName: row.actor_realname || null,
+      email: row.actor_email || null,
+    },
   };
 }
 

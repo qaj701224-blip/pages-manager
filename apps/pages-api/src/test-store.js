@@ -1541,7 +1541,20 @@ class TestPagesStore {
 
   async listAuditEvents({ environment } = {}) {
     const events = environment ? this.auditEvents.filter((event) => event.environment === environment) : this.auditEvents;
-    return cloneRecord(events);
+    return cloneRecord(events.map((event) => this.decorateAuditEvent(event)));
+  }
+
+  decorateAuditEvent(event) {
+    const actor = event.actorUserId ? this.users.get(event.actorUserId) : null;
+    return {
+      ...event,
+      actor: {
+        type: event.actorType,
+        userId: event.actorUserId || null,
+        displayName: actor?.realname || null,
+        email: actor?.email || null,
+      },
+    };
   }
 
   async activateSiteVersion(

@@ -364,6 +364,45 @@ test('admin sites include readable user and team owner metadata', async () => {
   });
 });
 
+test('admin audit events include readable actor profile', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_actor',
+    email: 'actor@example.com',
+    realname: '徐天麒',
+    employeeStatus: 'active',
+  });
+  await store.recordAuditEvent({
+    id: 'audit_actor_name',
+    environment: 'production',
+    eventType: 'site.publish',
+    actorUserId: 'usr_actor',
+    actorType: 'user',
+    decision: 'allow',
+    statusCode: 200,
+    metadata: {
+      siteSlug: 'demo',
+    },
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/audit', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  const auditEvent = body.events.find((event) => event.id === 'audit_actor_name');
+  assert.ok(auditEvent);
+  assert.deepEqual(auditEvent.actor, {
+    type: 'user',
+    userId: 'usr_actor',
+    displayName: '徐天麒',
+    email: 'actor@example.com',
+  });
+});
+
 function env(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',

@@ -193,7 +193,8 @@ v2 CLI 只使用 `/.xd-pages/api/*`。开发期 API 合约源码位于 `apps/pag
 v2 发布 API 不能依赖 `X-Pages-Token`。`X-Pages-Token` 只属于 v1 归属标记，不进入 v2 鉴权模型。
 
 access key 的建站边界收口在 `deploy-api`：owner-scoped access key 具备 `deploy:site` 时，
-部署新 slug 可自动创建归属内站点；site-scoped access key 只能部署绑定站点。`user-api` 的普通建站
+部署新 slug 可自动创建归属内站点；user-owned key 带 `teamId` 时必须重新校验 key 所属用户当前是否为
+该团队 `publisher` / `admin`。site-scoped access key 只能部署绑定站点。`user-api` 的普通建站
 endpoint 不接受 access key。
 
 ### Router IP Allowlist

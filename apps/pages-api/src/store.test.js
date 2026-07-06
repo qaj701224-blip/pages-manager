@@ -124,7 +124,8 @@ test('D1 store filters audit events by environment', async () => {
 
   const events = await store.listAuditEvents({ environment: 'production' });
 
-  assert.match(capturedSql, /WHERE environment = \?/);
+  assert.match(capturedSql, /LEFT JOIN users actor_users ON actor_users\.user_id = audit_events\.actor_user_id/);
+  assert.match(capturedSql, /WHERE audit_events\.environment = \?/);
   assert.deepEqual(capturedArgs, ['production']);
   assert.deepEqual(events, [
     {
@@ -143,6 +144,12 @@ test('D1 store filters audit events by environment', async () => {
       userAgentHash: null,
       metadata: null,
       createdAt: '2026-07-02T00:00:00.000Z',
+      actor: {
+        type: 'user',
+        userId: null,
+        displayName: null,
+        email: null,
+      },
     },
   ]);
 });

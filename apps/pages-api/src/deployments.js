@@ -1697,6 +1697,9 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
   const ownerType = actor.ownerType || 'user';
   const ownerId = actor.ownerId || actor.userId;
   const ownerUserId = ownerType === 'team' ? actor.userId : ownerId;
+  if (teamId && ownerType === 'user') {
+    return createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility });
+  }
   if (teamId && (ownerType !== 'team' || ownerId !== teamId)) {
     return jsonError(
       'DEPLOY_FORBIDDEN',

@@ -131,7 +131,7 @@ export function TeamDetail({ teamId, tab = 'members', sessionState }) {
 
   return (
     <div className="workspace-layout context-layout">
-      <TeamContextSidebar team={state.team} teamId={teamId} activeTab={activeTab} sessionState={sessionState} />
+      <TeamContextSidebar teamId={teamId} activeTab={activeTab} sessionState={sessionState} />
       <main className="page workspace-page">
         <PageHeading title={title} meta="团队" />
         {state.status === 'loading' ? <div className="placeholder">加载中</div> : null}
@@ -243,7 +243,7 @@ function CreateTeamDialog({ open, onOpenChange, onCreated }) {
   );
 }
 
-function TeamContextSidebar({ team, teamId, activeTab, sessionState }) {
+function TeamContextSidebar({ teamId, activeTab, sessionState }) {
   const base = `/workspace/teams/${encodeURIComponent(teamId)}`;
   return (
     <Sidebar active="teams" sessionState={sessionState}>
@@ -251,14 +251,6 @@ function TeamContextSidebar({ team, teamId, activeTab, sessionState }) {
         <ArrowLeft size={16} />
         <span>所有团队</span>
       </Link>
-      <div className="context-title">
-        <h2 title={team?.name || teamId}>{team?.name || teamId}</h2>
-        {team?.description ? <p title={team.description}>{team.description}</p> : null}
-        <div className="tag-row compact-tags">
-          {team?.teamType === 'department' ? <span className="tag">部门团队</span> : null}
-          <span className="tag muted">{team?.currentUserRole || 'viewer'}</span>
-        </div>
-      </div>
       <nav className="side-section" aria-label="团队导航">
         <ContextLink href={`${base}/members`} active={activeTab === 'members'} icon={<UsersRound size={17} />} label="成员" />
         <ContextLink
@@ -599,6 +591,7 @@ function TeamSettings({ team, onTeamUpdate }) {
 
   const rows = useMemo(
     () => [
+      ['ID', team.id || '-'],
       ['名称', team.name || '-'],
       ['描述', team.description || '-'],
       ['类型', team.teamType === 'department' ? '部门团队' : '自建团队'],

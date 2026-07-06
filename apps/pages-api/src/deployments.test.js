@@ -2124,6 +2124,87 @@ test('team owner-scoped access keys can create a new team site during deploy', a
   assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-team.workers.xd.team');
 });
 
+test('user owner-scoped access keys can create a new team site when the user is a team publisher', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const ownerScopedKey = await seedAccessKey(store, 'ak_user_team_create', ['deploy:site'], null);
+  const env = testEnv(store, createSnapshotStore(), {
+    nextId: (prefix) => {
+      if (prefix === 'site') return 'site_user_team';
+      if (prefix === 'route') return 'route_user_team';
+      return `${prefix}_1`;
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-user-team', teamId: team.id, visibility: 'internal' }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'user_owner_scoped_create_team',
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  const site = await store.findSiteBySlug('production', 'new-user-team');
+  assert.equal(body.deployment.siteId, site.id);
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, team.id);
+  assert.equal(site.ownerUserId, 'usr_1');
+  assert.equal(site.defaultVisibility, 'internal');
+  assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-user-team.workers.xd.team');
+});
+
+test('user owner-scoped access keys cannot create a team site when the user is only a viewer', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+  const ownerScopedKey = await seedAccessKey(store, 'ak_user_team_viewer', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-user-team', teamId: team.id }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'user_owner_scoped_team_viewer_denied',
+      }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_PUBLISHER_REQUIRED');
+  assert.equal(await store.findSiteBySlug('production', 'new-user-team'), null);
+});
+
 test('team publishers can create a new team-owned site during deploy with a CLI token', async () => {
   const store = await createSeededStore();
   await store.createUser({
