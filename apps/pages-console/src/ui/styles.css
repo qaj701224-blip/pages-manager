@@ -1151,6 +1151,81 @@ button {
   gap: 16px;
 }
 
+.site-status-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  padding: 16px;
+  background: rgba(255, 253, 248, 0.94);
+  box-shadow: 0 1px 2px rgba(68, 40, 19, 0.04);
+}
+
+.site-status-summary.disabled {
+  background: rgba(255, 253, 248, 0.84);
+}
+
+.site-status-summary__main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+
+.site-status-summary__main .status-dot {
+  margin-top: 8px;
+}
+
+.site-status-summary__main p,
+.site-status-summary__meta small {
+  margin: 0;
+  color: var(--xd-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.site-status-summary__main h2 {
+  margin: 1px 0 2px;
+  color: var(--xd-text);
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.site-status-summary__main span:not(.status-dot) {
+  color: var(--xd-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.site-status-summary__meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(96px, auto));
+  gap: 10px;
+  min-width: 0;
+}
+
+.site-status-summary__meta > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border-left: 1px solid var(--xd-border);
+  padding-left: 12px;
+}
+
+.site-status-summary__meta strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--xd-text);
+  font-size: 13px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .info-list {
   border: 1px solid var(--xd-border);
   border-radius: 8px;
@@ -3399,6 +3474,7 @@ button {
   }
 
   .site-card__footer,
+  .site-status-summary,
   .api-token-card__head,
   .member-panel-head,
   .table-toolbar,
@@ -3410,6 +3486,16 @@ button {
 
   .site-card__open {
     align-self: flex-end;
+  }
+
+  .site-status-summary__meta {
+    grid-template-columns: 1fr;
+  }
+
+  .site-status-summary__meta > span {
+    border-left: 0;
+    border-top: 1px solid var(--xd-border);
+    padding: 10px 0 0;
   }
 
   .list-toolbar,

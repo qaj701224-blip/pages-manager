@@ -33,6 +33,18 @@ test('site deployments show owner context beside deployment source', () => {
   assert.match(siteDetailSource, /deploymentOwnerLabel\(deployment, site\)/);
 });
 
+test('site overview summarizes service state instead of a raw active status row', () => {
+  const overviewSource = siteDetailSource.slice(
+    siteDetailSource.indexOf('function SiteOverview'),
+    siteDetailSource.indexOf('function DeploymentsPanel')
+  );
+
+  assert.match(overviewSource, /<SiteStatusSummary site=\{site\} \/>/);
+  assert.match(siteDetailSource, /function SiteStatusSummary/);
+  assert.match(siteDetailSource, /site-status-summary/);
+  assert.doesNotMatch(overviewSource, /\['Status', site\.status \|\| 'active'\]/);
+});
+
 test('site access shows ACL editor only for acl visibility and opens add entry dialog', () => {
   assert.match(siteDetailSource, /const aclEnabled = visibility === 'acl';/);
   assert.match(siteDetailSource, /\{aclEnabled \? \(/);

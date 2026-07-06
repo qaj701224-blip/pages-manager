@@ -1,5 +1,6 @@
 import { GitMerge, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { listAdminTeams, mergeAdminDepartmentTeam } from '../api.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
@@ -136,6 +137,7 @@ export function AdminTeams() {
                 <th>状态</th>
                 <th>合并到</th>
                 <th>更新时间</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -151,6 +153,11 @@ export function AdminTeams() {
                   <td data-label="状态">{team.status}</td>
                   <td data-label="合并到">{team.mergedIntoTeamId || '无'}</td>
                   <td data-label="更新时间">{formatDate(team.updatedAt)}</td>
+                  <td data-label="操作">
+                    <Link className="table-action" to={`/workspace/teams/${encodeURIComponent(team.id)}/settings`}>
+                      团队设置
+                    </Link>
+                  </td>
                 </tr>
               ))}
             </tbody>

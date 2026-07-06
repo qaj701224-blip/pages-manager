@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { listAdminSites } from '../api.js';
 import { adminSiteOwnerView, sitePublicUrl } from '../site-display-model.js';
@@ -73,6 +74,7 @@ export function AdminSites() {
                 <th>可见性</th>
                 <th>状态</th>
                 <th>更新时间</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -114,6 +116,11 @@ function AdminSiteRow({ site }) {
         <span className={site.status === 'active' ? 'tag tag-success' : 'tag tag-disabled'}>{site.status}</span>
       </td>
       <td data-label="更新时间">{formatDate(site.updatedAt)}</td>
+      <td data-label="操作">
+        <Link className="table-action" to={`/workspace/sites/${encodeURIComponent(site.id)}`}>
+          查看详情
+        </Link>
+      </td>
     </tr>
   );
 }

@@ -2,6 +2,7 @@ import { Activity, AlertTriangle, Boxes, Rocket, UsersRound } from 'lucide-react
 import { useEffect, useState } from 'react';
 
 import { getAdminDashboard } from '../api.js';
+import { adminSiteOwnerView } from '../site-display-model.js';
 
 const METRICS = [
   { key: 'sites', label: '站点', icon: Boxes },
@@ -66,22 +67,14 @@ export function AdminDashboard() {
                   <th>部署</th>
                   <th>站点</th>
                   <th>来源</th>
+                  <th>归属</th>
                   <th>操作</th>
                   <th>时间</th>
                 </tr>
               </thead>
               <tbody>
                 {failedDeployments.map((deployment) => (
-                  <tr key={deployment.id}>
-                    <td data-label="部署">
-                      <strong>{deployment.id}</strong>
-                      <span>{deployment.status}</span>
-                    </td>
-                    <td data-label="站点">{deployment.siteId}</td>
-                    <td data-label="来源">{deployment.source || '无'}</td>
-                    <td data-label="操作">{deployment.operation || '无'}</td>
-                    <td data-label="时间">{formatDate(deployment.createdAt)}</td>
-                  </tr>
+                  <FailedDeploymentRow deployment={deployment} key={deployment.id} />
                 ))}
               </tbody>
             </table>
@@ -89,6 +82,32 @@ export function AdminDashboard() {
         )}
       </section>
     </div>
+  );
+}
+
+function FailedDeploymentRow({ deployment }) {
+  const owner = adminSiteOwnerView(deployment.owner);
+
+  return (
+    <tr>
+      <td data-label="部署">
+        <strong>{deployment.id}</strong>
+        <span>{deployment.status}</span>
+      </td>
+      <td data-label="站点">{deployment.siteId}</td>
+      <td data-label="来源">{deployment.source || '无'}</td>
+      <td data-label="归属">
+        <div className="owner-cell">
+          <span className={owner.type === 'team' ? 'tag owner-tag team' : 'tag owner-tag user'}>{owner.tag}</span>
+          <div>
+            <strong>{owner.primary}</strong>
+            {owner.secondary ? <span>{owner.secondary}</span> : null}
+          </div>
+        </div>
+      </td>
+      <td data-label="操作">{deployment.operation || '无'}</td>
+      <td data-label="时间">{formatDate(deployment.createdAt)}</td>
+    </tr>
   );
 }
 

@@ -188,17 +188,49 @@ function SiteOverview({ site }) {
 
   return (
     <section className="detail-stack">
+      <SiteStatusSummary site={site} />
       <InfoList
         title="站点信息"
         rows={[
           ['Slug', site.slug || '-'],
           ['Hostname', site.hostname || '-'],
           ['Owner', ownerLabel(site.owner)],
-          ['Visibility', site.access?.visibility || site.visibility || 'internal'],
-          ['Status', site.status || 'active'],
         ]}
       />
       <InfoList title="权限" rows={permissionRows} />
+    </section>
+  );
+}
+
+function SiteStatusSummary({ site }) {
+  const visibility = site.access?.visibility || site.visibility || 'internal';
+  const status = site.status || 'active';
+  const disabled = status === 'disabled' || visibility === 'disabled';
+
+  return (
+    <section className={disabled ? 'site-status-summary disabled' : 'site-status-summary'} aria-label="站点状态">
+      <div className="site-status-summary__main">
+        <span className={disabled ? 'status-dot disabled' : 'status-dot active'} />
+        <div>
+          <p>服务状态</p>
+          <h2>{disabled ? '已停用' : '正常服务'}</h2>
+          <span>{disabled ? '站点当前不会对外提供访问。' : '站点处于可访问状态，具体访问范围由访问控制决定。'}</span>
+        </div>
+      </div>
+      <div className="site-status-summary__meta">
+        <span>
+          <strong>{siteVisibilityText(visibility)}</strong>
+          <small>访问范围</small>
+        </span>
+        <span>
+          <strong>{ownerLabel(site.owner)}</strong>
+          <small>归属</small>
+        </span>
+        <span>
+          <strong>{roleLabel(site.permissions?.role)}</strong>
+          <small>当前角色</small>
+        </span>
+      </div>
     </section>
   );
 }
@@ -894,6 +926,15 @@ function ownerLabel(owner) {
 
 function deploymentOwnerLabel(deployment, site) {
   return ownerLabel(deployment.owner || site?.owner);
+}
+
+function siteVisibilityText(visibility) {
+  if (visibility === 'internal') return '内网可见';
+  if (visibility === 'org') return '企业成员可见';
+  if (visibility === 'acl') return '指定成员可见';
+  if (visibility === 'owner') return '仅归属方可见';
+  if (visibility === 'disabled') return '已停用';
+  return visibility || '内网可见';
 }
 
 function roleLabel(role) {
