@@ -159,6 +159,27 @@ export function buildOpenApi(config) {
             visibility: { $ref: '#/components/schemas/SiteVisibility' },
           },
         },
+        SiteTransferRequest: {
+          type: 'object',
+          required: ['ownerType'],
+          properties: {
+            ownerType: {
+              type: 'string',
+              enum: ['user', 'team'],
+              description:
+                'Target owner type. Team access tokens cannot transfer a team-owned site to a personal owner.',
+            },
+            ownerId: {
+              type: 'string',
+              description:
+                'Target user id for ownerType=user or team id for ownerType=team. Personal transfers are limited to self.',
+            },
+            teamId: {
+              type: 'string',
+              description: 'Target team id. Equivalent to ownerId when ownerType=team.',
+            },
+          },
+        },
         SiteAclEntry: {
           type: 'object',
           required: ['subjectType', 'subjectValue'],
@@ -259,7 +280,7 @@ export function buildOpenApi(config) {
           },
         },
         patch: {
-          summary: 'Update site visibility and invalidate existing site sessions by policyVersion',
+          summary: 'Update site visibility as a site publisher/admin and invalidate sessions by policyVersion',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -273,19 +294,54 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'Site policy updated' },
             400: { description: 'Invalid visibility' },
-            403: { description: 'Only the site owner can manage site policy' },
+            403: { description: 'Actor cannot manage this site' },
             404: { description: 'Site not found' },
             503: { description: 'Route snapshot write failed' },
           },
         },
         delete: {
-          summary: 'Soft-delete an owned site and hold its hostname briefly before reuse',
+          summary: 'Soft-delete a manageable site and hold its hostname briefly before reuse',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           'x-error-codes': ['SITE_POLICY_FORBIDDEN', 'SITE_NOT_FOUND'],
           responses: {
             200: { description: 'Site deleted' },
-            403: { description: 'Only the site owner can delete the site' },
+            403: { description: 'Actor cannot manage this site' },
             404: { description: 'Site not found' },
+          },
+        },
+      },
+      '/.xd-pages/api/sites/{id}/transfer': {
+        post: {
+          summary: 'Transfer a site asset to a personal or team owner',
+          description:
+            'Requires publish-level site management on the source site. Transfers to a team also require publisher/admin ' +
+            'membership on the target team, or a team access token owned by the target team. Team access tokens cannot ' +
+            'transfer sites to personal owners in this release.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteTransferRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'INVALID_JSON',
+            'SITE_TRANSFER_INVALID',
+            'SITE_POLICY_FORBIDDEN',
+            'SITE_TRANSFER_FORBIDDEN',
+            'TEAM_REQUIRED',
+            'TEAM_NOT_FOUND',
+            'SITE_NOT_FOUND',
+            'SITE_TRANSFER_UNSUPPORTED',
+          ],
+          responses: {
+            200: { description: 'Site owner transferred' },
+            400: { description: 'Invalid transfer request' },
+            403: { description: 'Actor cannot transfer this site or target owner is not allowed' },
+            404: { description: 'Site or team not found' },
+            503: { description: 'Site transfer store unavailable' },
           },
         },
       },
@@ -321,7 +377,7 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'ACL entries replaced' },
             400: { description: 'Invalid ACL request' },
-            403: { description: 'Only the site owner can manage site ACL' },
+            403: { description: 'Actor cannot manage site ACL' },
             404: { description: 'Site not found' },
             503: { description: 'Route snapshot write failed' },
           },
@@ -351,7 +407,7 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'ACL entries granted' },
             400: { description: 'Invalid ACL request' },
-            403: { description: 'Only the site owner can manage site ACL' },
+            403: { description: 'Actor cannot manage site ACL' },
             404: { description: 'Site not found' },
             503: { description: 'Route snapshot write failed' },
           },
@@ -379,7 +435,7 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'ACL entries revoked' },
             400: { description: 'Invalid ACL request' },
-            403: { description: 'Only the site owner can manage site ACL' },
+            403: { description: 'Actor cannot manage site ACL' },
             404: { description: 'Site not found' },
             503: { description: 'Route snapshot write failed' },
           },
@@ -458,7 +514,7 @@ export function buildOpenApi(config) {
           },
         },
         post: {
-          summary: 'Create a site-scoped access key',
+          summary: 'Create a personal or team access key, optionally scoped to one site',
           'x-error-codes': [
             'ACCESS_KEY_CREATE_FORBIDDEN',
             'ACCESS_KEY_EXPIRY_INVALID',
@@ -471,7 +527,7 @@ export function buildOpenApi(config) {
           ],
           responses: {
             201: { description: 'Access key created; plaintext returned once' },
-            403: { description: 'Only the site owner can create deploy-capable access keys' },
+            403: { description: 'Actor cannot create an access key for the requested owner or site scope' },
           },
         },
       },
@@ -526,10 +582,11 @@ export function buildOpenApi(config) {
         post: {
           summary: 'Create a deployment from a CLI-managed upload payload',
           description:
-            'CLI-managed multipart upload. Owner-scoped access keys with deploy:site may create a new site ' +
-            'during this deployment; site-scoped access keys can only deploy their bound site. Direct site ' +
-            'creation remains outside the access-key API surface. User CLI tokens may include teamId to deploy ' +
-            'as a team admin or publisher; the resulting new site is owned by that team.',
+            'CLI-managed multipart upload. Personal/team access keys with deploy:site may create a new site ' +
+            'during this deployment; tokens with a site scope can only deploy their bound site. User CLI tokens ' +
+            'or personal access tokens may include teamId to deploy as a team publisher/admin. When the target ' +
+            'slug already belongs to a site the actor can manage, teamId transfers that site to the target team ' +
+            'before deploying.',
           parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
@@ -575,7 +632,7 @@ export function buildOpenApi(config) {
             'IDEMPOTENCY_CONFLICT',
           ],
           responses: {
-            201: { description: 'Deployment created' },
+            201: { description: 'Deployment created; ownerTransfer is present when deployment changed site ownership' },
             400: { description: 'Invalid deployment request' },
             413: { description: 'Deployment payload too large for the current upload path' },
             500: { description: 'Deployment platform configuration invalid' },

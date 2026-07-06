@@ -1206,6 +1206,33 @@ class TestPagesStore {
     return cloneRecord(site);
   }
 
+  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, updatedAt, auditEvent }, environment) {
+    const site = this.sites.get(siteId);
+    if (!site || site.deletedAt) return null;
+    if (environment && site.environment !== environment) return null;
+    if (auditEvent && this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+
+    const now = updatedAt || this.now();
+    site.ownerType = ownerType || 'user';
+    site.ownerId = ownerId;
+    site.ownerUserId = ownerUserId;
+    site.updatedAt = now;
+
+    if (site.ownerType === 'user') {
+      const members = (this.siteMembers.get(site.id) || []).filter((member) => member.userId === ownerUserId);
+      const existing = members.find((member) => member.userId === ownerUserId);
+      if (existing) {
+        existing.role = 'owner';
+      } else {
+        members.push(createOwnerMember(site.id, ownerUserId, now));
+      }
+      this.siteMembers.set(site.id, members);
+    }
+    if (auditEvent) await this.recordAuditEvent(auditEvent);
+
+    return cloneRecord(site);
+  }
+
   async restoreSiteVisibility(siteId, previousSite, previousRoute, environment) {
     return this.restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, null, environment);
   }

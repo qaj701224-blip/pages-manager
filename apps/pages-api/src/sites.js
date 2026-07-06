@@ -47,6 +47,12 @@ export async function handleSitesApi(request, env, config, store) {
     return methodNotAllowed();
   }
 
+  const transferSiteId = matchSiteTransfer(url.pathname);
+  if (transferSiteId) {
+    if (request.method === 'POST') return transferSiteOwner(request, env, config, store, auth.actor, transferSiteId);
+    return methodNotAllowed();
+  }
+
   const siteId = matchSiteId(url.pathname);
   if (siteId && request.method === 'GET') return getSite(store, auth.actor, siteId, config.environment);
   if (siteId && request.method === 'PATCH') return updateSite(request, env, config, store, auth.actor, siteId);
@@ -311,6 +317,150 @@ async function deleteSite(env, config, store, actor, siteId) {
   return jsonOk({ site: formatSite({ ...deleted, route: await store.getRouteBySiteId(site.id, config.environment) }) });
 }
 
+async function transferSiteOwner(request, env, config, store, actor, siteId) {
+  if (typeof store.transferSiteOwner !== 'function') {
+    return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
+  }
+
+  const site = await getOwnerSite(store, actor, siteId, config.environment);
+  if (site instanceof Response) return site;
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const target = await resolveSiteTransferTarget(store, actor, site, body, config.environment);
+  if (target instanceof Response) return target;
+
+  const updatedAt = readNow(env);
+  const updated = await store.transferSiteOwner(
+    site.id,
+    {
+      ownerType: target.ownerType,
+      ownerId: target.ownerId,
+      ownerUserId: target.ownerUserId,
+      updatedAt,
+      auditEvent: buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, {
+        source: 'api',
+        createdAt: updatedAt,
+      }),
+    },
+    config.environment
+  );
+  if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+
+  const visible = await store.getSiteForUser(updated.id, actor.userId, actor, config.environment);
+  const route = await store.getRouteBySiteId(updated.id, config.environment);
+  return jsonOk({ site: formatSite({ ...(visible || updated), route }) });
+}
+
+async function resolveSiteTransferTarget(store, actor, site, body, environment) {
+  const ownerType = body?.ownerType === 'team' || body?.ownerType === 'user' ? body.ownerType : '';
+  if (!ownerType) {
+    return jsonError('SITE_TRANSFER_INVALID', 'Site transfer target is invalid.', 400, 'Use ownerType user or team.');
+  }
+
+  if (ownerType === 'user') {
+    if (actor.type === 'access_key' && (actor.ownerType || 'user') === 'team') {
+      return jsonError(
+        'SITE_TRANSFER_FORBIDDEN',
+        'Team access tokens cannot transfer sites to personal owners.',
+        403,
+        'Use a personal access token or user CLI session.'
+      );
+    }
+    const ownerId = normalizeRequiredString(body.ownerId || body.userId);
+    if (!ownerId || ownerId !== actor.userId) {
+      return jsonError(
+        'SITE_TRANSFER_FORBIDDEN',
+        'Actor cannot transfer this site to the requested personal owner.',
+        403,
+        'Transfer sites only to the authenticated user.'
+      );
+    }
+    const user = typeof store.getUser === 'function' ? await store.getUser(ownerId) : null;
+    if (!user || user.employeeStatus !== 'active') {
+      return jsonError('SITE_TRANSFER_FORBIDDEN', 'Target user is not active.', 403, 'Choose an active user.');
+    }
+    return { ownerType: 'user', ownerId, ownerUserId: ownerId };
+  }
+
+  const teamId = normalizeRequiredString(body.teamId || body.ownerId);
+  const teamTarget = await resolveTeamTransferTarget(store, actor, teamId, environment);
+  if (teamTarget instanceof Response) return teamTarget;
+  return {
+    ownerType: 'team',
+    ownerId: teamTarget.team.id,
+    ownerUserId: actor.userId || site.ownerUserId,
+  };
+}
+
+async function resolveTeamTransferTarget(store, actor, teamId, environment) {
+  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
+  const team = typeof store.getTeam === 'function' ? await store.getTeam(teamId) : null;
+  if (!team || team.environment !== environment || team.deletedAt) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+
+  if (actor.type === 'access_key' && (actor.ownerType || 'user') === 'team') {
+    if (actor.ownerId === team.id && actorHasPublishScope(actor)) return { team, role: 'publisher' };
+    return jsonError(
+      'SITE_TRANSFER_FORBIDDEN',
+      'Team access token cannot transfer sites to this team.',
+      403,
+      'Use a token owned by the target team.'
+    );
+  }
+
+  const member =
+    actor.userId && typeof store.getTeamMember === 'function'
+      ? await store.getTeamMember({ teamId, userId: actor.userId })
+      : null;
+  if (!member || (member.role !== 'admin' && member.role !== 'publisher')) {
+    return jsonError(
+      'SITE_TRANSFER_FORBIDDEN',
+      'Team publisher role required.',
+      403,
+      'Choose a team where the actor is publisher or admin.'
+    );
+  }
+  return { team, role: member.role };
+}
+
+export function buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, { source, createdAt } = {}) {
+  return {
+    id: nextId(env, 'aud'),
+    environment: config.environment,
+    traceId: null,
+    eventType: 'site.owner.transfer',
+    actorUserId: actor.userId || null,
+    actorType: actor.type,
+    siteId: site.id,
+    routeId: site.route?.id || null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      siteSlug: site.slug,
+      fromOwner: {
+        type: site.ownerType || 'user',
+        id: site.ownerId || site.ownerUserId,
+      },
+      toOwner: {
+        type: target.ownerType,
+        id: target.ownerId,
+      },
+      source: source || 'api',
+    },
+    createdAt: createdAt || readNow(env),
+  };
+}
+
 async function listSiteAcl(store, actor, siteId, environment) {
   if (actor.type !== 'user') {
     return jsonError('SITE_POLICY_FORBIDDEN', 'Access keys cannot read site ACL.', 403, 'Use a user CLI token.');
@@ -545,6 +695,9 @@ function formatSite(site) {
     slug: site.slug,
     environment: site.environment,
     defaultVisibility: site.defaultVisibility,
+    owner: {
+      type: site.ownerType || 'user',
+    },
     url: route ? `https://${route.hostname}` : null,
     route: route
       ? {
@@ -577,24 +730,15 @@ function actorCanReadSite(actor, siteId) {
 }
 
 async function getOwnerSite(store, actor, siteId, environment) {
-  if (actor.type !== 'user') {
-    return jsonError('SITE_POLICY_FORBIDDEN', 'Access keys cannot manage site policy.', 403, 'Use a user CLI token.');
-  }
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  if (site.ownerType === 'team') {
-    if (site.managementRole !== 'admin') {
-      return jsonError(
-        'SITE_POLICY_FORBIDDEN',
-        'Only team admins can manage team site policy.',
-        403,
-        'Use a team admin account.'
-      );
-    }
-    return site;
-  }
-  if (site.ownerUserId !== actor.userId) {
-    return jsonError('SITE_POLICY_FORBIDDEN', 'Only the site owner can manage site policy.', 403, 'Use the owner account.');
+  if (!actorCanManageSite(actor, site)) {
+    return jsonError(
+      'SITE_POLICY_FORBIDDEN',
+      'Actor cannot manage this site.',
+      403,
+      'Use a publisher or admin role for this site.'
+    );
   }
   return site;
 }
@@ -612,17 +756,33 @@ async function getSecretManageableSiteBySlug(store, actor, siteSlug, environment
       'DEPLOY_FORBIDDEN',
       'Actor cannot manage runtime secrets for this site.',
       403,
-      'Use a user CLI token for the personal site owner or a team admin.'
+      'Use a publisher or admin role for this site.'
     );
   }
   return visible;
 }
 
 function actorCanManageSecrets(actor, site) {
+  return actorCanManageSite(actor, site);
+}
+
+export function actorCanManageSite(actor, site) {
   if (!site) return false;
-  if (actor.type === 'access_key') return false;
-  if (site.ownerType === 'team') return site.managementRole === 'admin';
-  return (site.ownerUserId || site.ownerId) === actor.userId;
+  if (actor.type === 'access_key') {
+    if (actor.siteId && actor.siteId !== site.id) return false;
+    if (!actorHasPublishScope(actor)) return false;
+    const ownerType = actor.ownerType || 'user';
+    const ownerId = actor.ownerId || actor.userId;
+    if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
+    if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+    return (site.ownerId || site.ownerUserId) === ownerId;
+  }
+  if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+  return (site.ownerId || site.ownerUserId) === actor.userId;
+}
+
+function actorHasPublishScope(actor) {
+  return actor.type !== 'access_key' || actor.scopes.includes('deploy:site') || actor.scopes.includes('*');
 }
 
 function normalizeSecretNameForResponse(value) {
@@ -835,6 +995,11 @@ function matchSiteAclEntries(pathname) {
 function matchSiteSecrets(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/secrets$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function matchSiteTransfer(pathname) {
+  const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/transfer$/);
+  return match ? match[1] : null;
 }
 
 function matchSiteId(pathname) {

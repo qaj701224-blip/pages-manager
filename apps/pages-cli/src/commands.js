@@ -370,6 +370,7 @@ async function runDeploy(parsed, context) {
       deployment: deployed.deployment || null,
       version: deployed.version || null,
       route: deployed.route || null,
+      ...(deployed.ownerTransfer ? { ownerTransfer: deployed.ownerTransfer } : {}),
       url,
     })
   ) {

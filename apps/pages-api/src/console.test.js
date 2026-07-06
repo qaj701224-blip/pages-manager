@@ -478,7 +478,7 @@ test('site detail computes permissions from team role for team-owned site', asyn
   assert.equal(body.site.owner.displayName, 'Console Team');
   assert.equal(body.site.permissions.role, 'publisher');
   assert.equal(body.site.permissions.canManage, true);
-  assert.equal(body.site.permissions.canManageAccess, false);
+  assert.equal(body.site.permissions.canManageAccess, true);
   assertNoSensitiveConsoleFields(body);
 });
 
@@ -531,7 +531,7 @@ test('site detail and subresources are internal-only, permission checked, and re
   assertNoSensitiveConsoleFields(detailBody);
 });
 
-test('site config writes allow publisher vars but require admin for access and secrets', async () => {
+test('site config writes allow publisher access policy and runtime config', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUsers(store, ['usr_admin', 'usr_publisher']);
   const team = await store.createTeam({
@@ -565,7 +565,7 @@ test('site config writes allow publisher vars but require admin for access and s
     }),
     env(store)
   );
-  const accessDenied = await worker.fetch(
+  const access = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/access', {
       userId: 'usr_publisher',
       method: 'PATCH',
@@ -573,7 +573,7 @@ test('site config writes allow publisher vars but require admin for access and s
     }),
     env(store)
   );
-  const secretDenied = await worker.fetch(
+  const putSecret = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/config/secrets/API_TOKEN', {
       userId: 'usr_publisher',
       method: 'PUT',
@@ -581,16 +581,8 @@ test('site config writes allow publisher vars but require admin for access and s
     }),
     env(store)
   );
-  const putSecret = await worker.fetch(
-    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_team/config/secrets/API_TOKEN', {
-      userId: 'usr_admin',
-      method: 'PUT',
-      body: { value: 'super-secret-value' },
-    }),
-    env(store)
-  );
   const config = await worker.fetch(
-    internalConsoleRequest('/.xd-pages/api/console/sites/site_team/config', { userId: 'usr_admin' }),
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_team/config', { userId: 'usr_publisher' }),
     env(store)
   );
 
@@ -601,10 +593,8 @@ test('site config writes allow publisher vars but require admin for access and s
     revision: 1,
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
-  assert.equal(accessDenied.status, 403);
-  assert.equal((await accessDenied.json()).error.code, 'SITE_ADMIN_REQUIRED');
-  assert.equal(secretDenied.status, 403);
-  assert.equal((await secretDenied.json()).error.code, 'SITE_ADMIN_REQUIRED');
+  assert.equal(access.status, 200, await access.clone().text());
+  assert.equal((await access.json()).access.visibility, 'internal');
   assert.equal(putSecret.status, 200, await putSecret.clone().text());
   const secretBody = await putSecret.json();
   assert.deepEqual(secretBody.secret, {
@@ -816,7 +806,7 @@ test('site owner can delete a site from console settings', async () => {
   assert.equal(detail, null);
 });
 
-test('site publisher cannot delete a team site from console settings', async () => {
+test('site publisher can delete a team site from console settings', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await store.createTeam({
     id: 'team_1',
@@ -853,9 +843,9 @@ test('site publisher cannot delete a team site from console settings', async () 
     env(store)
   );
 
-  assert.equal(response.status, 403, await response.clone().text());
-  assert.equal((await response.json()).error.code, 'SITE_DELETE_FORBIDDEN');
-  assert.ok(await store.getConsoleSiteDetail({ environment: 'production', userId: 'usr_admin', siteId: 'site_team' }));
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).site.status, 'deleted');
+  assert.equal(await store.getConsoleSiteDetail({ environment: 'production', userId: 'usr_admin', siteId: 'site_team' }), null);
 });
 
 function env(store, overrides = {}) {

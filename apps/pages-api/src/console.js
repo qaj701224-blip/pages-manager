@@ -211,12 +211,12 @@ async function createConsoleSite(request, env, config, store, session) {
 }
 
 async function deleteConsoleSite(env, config, store, site) {
-  if (!hasAdminRole(site)) {
+  if (!hasPublisherRole(site)) {
     return jsonError(
       'SITE_DELETE_FORBIDDEN',
-      'Only site owners or team admins can delete sites.',
+      'Site publisher role required.',
       403,
-      'Use the site owner account or a team admin account.'
+      'Use the site owner account or a team publisher/admin account.'
     );
   }
 
@@ -256,7 +256,7 @@ async function validateConsoleAuthSession(request, env, config, store) {
 }
 
 async function updateSiteAccess(request, env, config, store, session, siteId) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'admin');
+  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
   if (site instanceof Response) return site;
   const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
   const previousAclEntries = await store.listSiteAclEntries(site.id);
@@ -350,7 +350,7 @@ async function deleteSiteVar(env, config, store, session, siteId, name) {
 }
 
 async function putSiteSecret(request, env, config, store, session, siteId, name) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'admin');
+  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
   if (site instanceof Response) return site;
   if (typeof store.putSiteSecretWithAudit !== 'function') {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -394,7 +394,7 @@ async function putSiteSecret(request, env, config, store, session, siteId, name)
 }
 
 async function deleteSiteSecret(env, config, store, session, siteId, name) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'admin');
+  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
   if (site instanceof Response) return site;
   if (typeof store.deleteSiteSecretWithAudit !== 'function') {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -480,7 +480,7 @@ function formatSiteDetail(site) {
     permissions: {
       role: site.managementRole || (site.ownerUserId ? 'admin' : 'viewer'),
       canManage: canManageSite(site.managementRole) || site.ownerUserId === site.currentUserId,
-      canManageAccess: site.managementRole === 'admin' || site.ownerUserId === site.currentUserId,
+      canManageAccess: canManageSite(site.managementRole) || site.ownerUserId === site.currentUserId,
     },
   };
 }

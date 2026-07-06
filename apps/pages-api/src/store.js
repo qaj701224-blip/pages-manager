@@ -1769,6 +1769,45 @@ export class D1PagesStore {
     return this.getSite(siteId);
   }
 
+  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, updatedAt, auditEvent }, environment) {
+    const site = await this.getSite(siteId);
+    if (!site || site.deletedAt) return null;
+    if (environment && site.environment !== environment) return null;
+
+    const nextOwnerType = ownerType || 'user';
+    const now = updatedAt || this.now();
+    const statements = [
+      this.db
+        .prepare(
+          `UPDATE sites
+          SET owner_type = ?, owner_id = ?, owner_user_id = ?, updated_at = ?
+          WHERE id = ?${environment ? ' AND environment = ?' : ''} AND deleted_at IS NULL`
+        )
+        .bind(
+          ...(environment
+            ? [nextOwnerType, ownerId, ownerUserId, now, siteId, environment]
+            : [nextOwnerType, ownerId, ownerUserId, now, siteId])
+        ),
+    ];
+
+    if (nextOwnerType === 'user') {
+      statements.push(
+        this.db.prepare('DELETE FROM site_members WHERE site_id = ? AND user_id != ?').bind(siteId, ownerUserId),
+        this.db
+          .prepare(
+            `INSERT INTO site_members (site_id, user_id, role, created_by, created_at)
+            VALUES (?, ?, 'owner', ?, ?)
+            ON CONFLICT(site_id, user_id) DO UPDATE SET role = 'owner'`
+          )
+          .bind(siteId, ownerUserId, ownerUserId, now)
+      );
+    }
+    if (auditEvent) statements.push(this.auditEventStatement(auditEvent));
+
+    await this.db.batch(statements);
+    return this.getSite(siteId);
+  }
+
   async insertHostnameClaim(claim, now = claim.acquiredAt || this.now()) {
     return this.db
       .prepare(

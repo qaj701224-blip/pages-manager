@@ -1517,6 +1517,60 @@ test('team-owned sites require active team membership instead of stale site memb
   assert.equal(site, null);
 });
 
+test('D1 transferSiteOwner updates owner fields and removes stale personal members', async () => {
+  const db = fakeTransferSiteOwnerDb({
+    site: siteRow({
+      id: 'site_team',
+      slug: 'team-guide',
+      ownerType: 'team',
+      ownerId: 'team_1',
+      ownerUserId: 'usr_creator',
+      environment: 'production',
+    }),
+    members: [
+      {
+        site_id: 'site_team',
+        user_id: 'usr_creator',
+        role: 'owner',
+        created_by: 'usr_creator',
+        created_at: '2026-06-15T00:00:00.000Z',
+      },
+      {
+        site_id: 'site_team',
+        user_id: 'usr_1',
+        role: 'viewer',
+        created_by: 'usr_creator',
+        created_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  });
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const site = await store.transferSiteOwner(
+    'site_team',
+    {
+      ownerType: 'user',
+      ownerId: 'usr_1',
+      ownerUserId: 'usr_1',
+      updatedAt: '2026-06-15T00:01:00.000Z',
+    },
+    'production'
+  );
+
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_1');
+  assert.equal(site.ownerUserId, 'usr_1');
+  assert.deepEqual(db.state.members, [
+    {
+      site_id: 'site_team',
+      user_id: 'usr_1',
+      role: 'owner',
+      created_by: 'usr_creator',
+      created_at: '2026-06-15T00:00:00.000Z',
+    },
+  ]);
+});
+
 test('D1 getSiteForUser decorates team role and limits site member fallback to user-owned sites', async () => {
   const capturedSql = [];
   const db = {
@@ -2512,6 +2566,67 @@ function restoreCreateSiteD1State(state, snapshot) {
   state.routes = snapshot.routes;
   state.members = snapshot.members;
   state.claims = snapshot.claims;
+}
+
+function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
+  const state = {
+    site: { ...site },
+    members: members.map((member) => ({ ...member })),
+  };
+  return {
+    state,
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            first: async () => {
+              if (/SELECT \* FROM sites WHERE id = \?/.test(sql)) return state.site?.id === args[0] ? state.site : null;
+              throw new Error(`Unhandled transfer first SQL: ${sql}`);
+            },
+            run: async () => {
+              if (/UPDATE sites\s+SET owner_type = \?/.test(sql)) {
+                const [ownerType, ownerId, ownerUserId, updatedAt, siteId, environment] = args;
+                if (state.site?.id !== siteId || state.site?.environment !== environment || state.site?.deleted_at) {
+                  return { meta: { changes: 0 } };
+                }
+                Object.assign(state.site, {
+                  owner_type: ownerType,
+                  owner_id: ownerId,
+                  owner_user_id: ownerUserId,
+                  updated_at: updatedAt,
+                });
+                return { meta: { changes: 1 } };
+              }
+              if (/DELETE FROM site_members WHERE site_id = \? AND user_id != \?/.test(sql)) {
+                const [siteId, userId] = args;
+                state.members = state.members.filter((member) => member.site_id !== siteId || member.user_id === userId);
+                return { meta: { changes: 1 } };
+              }
+              if (/INSERT INTO site_members/.test(sql)) {
+                const [siteId, userId, createdBy, createdAt] = args;
+                const existing = state.members.find((member) => member.site_id === siteId && member.user_id === userId);
+                if (existing) existing.role = 'owner';
+                else {
+                  state.members.push({
+                    site_id: siteId,
+                    user_id: userId,
+                    role: 'owner',
+                    created_by: createdBy,
+                    created_at: createdAt,
+                  });
+                }
+                return { meta: { changes: 1 } };
+              }
+              throw new Error(`Unhandled transfer run SQL: ${sql}`);
+            },
+          };
+        },
+      };
+    },
+    async batch(statements) {
+      for (const statement of statements) await statement.run();
+    },
+  };
 }
 
 function fakeSiteReadDb({ sites = [], routes = [], members = [] } = {}) {

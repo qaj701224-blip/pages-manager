@@ -70,6 +70,7 @@ test('deploy supports publishing a site as a team owner', async () => {
   const dir = await tempProject();
   await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
   const calls = [];
+  const output = [];
 
   await executeCommand(['deploy', '.', 'docs', '--team', 'team_1', '--visibility', 'internal', '--json'], {
     cwd: dir,
@@ -81,10 +82,16 @@ test('deploy supports publishing a site as a team owner', async () => {
         deployment: { id: 'dep_1', status: 'succeeded' },
         version: { id: 'ver_1' },
         route: { hostname: 'docs.pages.xd.team' },
+        ownerTransfer: {
+          siteSlug: 'docs',
+          fromOwner: { type: 'user', id: 'usr_1' },
+          toOwner: { type: 'team', id: 'team_1' },
+          source: 'deploy',
+        },
       },
     ]),
     idempotencyKey: () => 'idem_1',
-    output: () => {},
+    output: (line) => output.push(line),
   });
 
   assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
@@ -98,6 +105,12 @@ test('deploy supports publishing a site as a team owner', async () => {
   const metadata = JSON.parse(await (await calls[1].formData()).get('metadata').text());
   assert.equal(metadata.siteSlug, 'docs');
   assert.equal(metadata.teamId, 'team_1');
+  assert.deepEqual(JSON.parse(output[0]).ownerTransfer, {
+    siteSlug: 'docs',
+    fromOwner: { type: 'user', id: 'usr_1' },
+    toOwner: { type: 'team', id: 'team_1' },
+    source: 'deploy',
+  });
 });
 
 test('teams lists current user teams so deploy can use the team id', async () => {

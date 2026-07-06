@@ -2171,6 +2171,59 @@ test('user owner-scoped access keys can create a new team site when the user is 
   assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-user-team.workers.xd.team');
 });
 
+test('user owner-scoped access keys can transfer a personal site to a team during deploy', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const ownerScopedKey = await seedAccessKey(store, 'ak_user_team_transfer_deploy', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'guide', teamId: team.id, visibility: 'internal' }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'user_owner_scoped_transfer_team_deploy',
+      }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const body = await response.json();
+  const site = await store.findSiteBySlug('production', 'guide');
+  assert.equal(body.deployment.siteId, site.id);
+  assert.deepEqual(body.ownerTransfer, {
+    siteSlug: 'guide',
+    fromOwner: { type: 'user', id: 'usr_1' },
+    toOwner: { type: 'team', id: team.id },
+    source: 'deploy',
+  });
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, team.id);
+  assert.equal(site.ownerUserId, 'usr_1');
+  assert.equal((await store.getRouteBySiteId(site.id)).visibility, 'internal');
+  const transferEvents = (await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer');
+  assert.equal(transferEvents.length, 1);
+  assert.deepEqual(transferEvents[0].metadata, {
+    siteSlug: 'guide',
+    fromOwner: { type: 'user', id: 'usr_1' },
+    toOwner: { type: 'team', id: team.id },
+    source: 'deploy',
+  });
+});
+
 test('user owner-scoped access keys cannot create a team site when the user is only a viewer', async () => {
   const store = await createSeededStore();
   const team = await store.createTeam({
@@ -2477,8 +2530,9 @@ test('team publishers can deploy team-owned sites with their CLI token', async (
   assert.equal((await response.json()).deployment.siteId, 'site_team');
 });
 
-test('requested team id does not deploy an existing personal site with the same slug', async () => {
+test('requested team id transfers an existing personal site when the actor can manage the target team', async () => {
   const store = await createSeededStore();
+  await store.updateSiteVisibility('site_1', { visibility: 'internal', updatedAt: '2026-06-15T00:00:00.000Z' }, 'production');
   const team = await store.createTeam({
     id: 'team_1',
     environment: 'production',
@@ -2502,13 +2556,18 @@ test('requested team id does not deploy an existing personal site with the same 
     testEnv(store, createSnapshotStore())
   );
 
-  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal(response.status, 201, await response.clone().text());
   const body = await response.json();
-  assert.equal(body.error.code, 'SITE_NOT_FOUND');
-  assert.equal(body.error.action, 'Check the site slug and team.');
+  assert.equal(body.deployment.siteId, 'site_1');
+  const site = await store.getSite('site_1');
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, team.id);
+  assert.equal(site.ownerUserId, 'usr_1');
+  assert.equal(site.defaultVisibility, 'internal');
+  assert.equal((await store.getRouteBySiteId('site_1')).visibility, 'internal');
 });
 
-test('requested team id does not deploy a site owned by another team', async () => {
+test('requested team id transfers an existing team site when the actor can manage both teams', async () => {
   const store = await createSeededStore();
   const teamA = await store.createTeam({
     id: 'team_a',
@@ -2558,10 +2617,13 @@ test('requested team id does not deploy a site owned by another team', async () 
     testEnv(store, createSnapshotStore())
   );
 
-  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal(response.status, 201, await response.clone().text());
   const body = await response.json();
-  assert.equal(body.error.code, 'SITE_NOT_FOUND');
-  assert.equal(body.error.action, 'Check the site slug and team.');
+  assert.equal(body.deployment.siteId, 'site_team_a');
+  const site = await store.getSite('site_team_a');
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, teamB.id);
+  assert.equal(site.ownerUserId, 'usr_1');
 });
 
 test('uses bounded WFP worker names for valid long slugs', async () => {
