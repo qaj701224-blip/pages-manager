@@ -1,8 +1,10 @@
-import { GitMerge, RefreshCw } from 'lucide-react';
+import { GitMerge, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { listAdminTeams, mergeAdminDepartmentTeam } from '../api.js';
+import { deleteAdminTeam, listAdminTeams, mergeAdminDepartmentTeam, updateAdminTeamSettings } from '../api.js';
+import { ConfirmDialog } from '../components/RadixPrimitives.jsx';
+import { getTeamDeleteErrorMessage, normalizeTeamSettingsForm } from '../team-settings-model.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 
 export function AdminTeams({ teamId, subpage = 'settings' }) {
@@ -71,7 +73,18 @@ export function AdminTeams({ teamId, subpage = 'settings' }) {
     if (!selectedTeam) {
       return <AdminNotFound backTo="/admin/teams" label="返回团队管理" title="团队不存在" />;
     }
-    return <AdminTeamSettings team={selectedTeam} subpage={subpage} />;
+    return (
+      <AdminTeamSettings
+        team={selectedTeam}
+        subpage={subpage}
+        onTeamUpdate={(team) => {
+          setState((current) => ({
+            ...current,
+            teams: current.teams.map((item) => (item.id === team.id ? { ...item, ...team } : item)),
+          }));
+        }}
+      />
+    );
   }
 
   return (
@@ -178,7 +191,51 @@ export function AdminTeams({ teamId, subpage = 'settings' }) {
   );
 }
 
-function AdminTeamSettings({ team, subpage }) {
+function AdminTeamSettings({ team, subpage, onTeamUpdate }) {
+  const [form, setForm] = useState({ name: team.name || '', description: team.description || '' });
+  const [status, setStatus] = useState({ saving: false, deleting: false, error: '', notice: '' });
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const editable = team.teamType === 'custom';
+
+  useEffect(() => {
+    setForm({ name: team.name || '', description: team.description || '' });
+    setStatus({ saving: false, deleting: false, error: '', notice: '' });
+    setDeleteDialogOpen(false);
+  }, [team.id, team.name, team.description]);
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!editable) return;
+    setStatus({ saving: true, deleting: false, error: '', notice: '' });
+    try {
+      const data = await updateAdminTeamSettings(team.id, normalizeTeamSettingsForm(form));
+      if (data?.team) onTeamUpdate?.(data.team);
+      setStatus({ saving: false, deleting: false, error: '', notice: '团队信息已保存' });
+    } catch (error) {
+      setStatus({
+        saving: false,
+        deleting: false,
+        error: error?.code === 'TEAM_NAME_REQUIRED' ? '团队名称不能为空。' : error?.code || error?.message || '保存失败',
+        notice: '',
+      });
+    }
+  };
+
+  const remove = async () => {
+    setStatus({ saving: false, deleting: true, error: '', notice: '' });
+    try {
+      await deleteAdminTeam(team.id);
+      globalThis.location.assign('/admin/teams');
+    } catch (error) {
+      setStatus({
+        saving: false,
+        deleting: false,
+        error: getTeamDeleteErrorMessage(error),
+        notice: '',
+      });
+    }
+  };
+
   return (
     <div className="admin-stack">
       <div className="panel-head flat">
@@ -204,6 +261,42 @@ function AdminTeamSettings({ team, subpage }) {
           <InfoRow label="更新时间" value={formatDate(team.updatedAt)} />
         </dl>
       </section>
+      <form className="info-list team-settings-form" onSubmit={save}>
+        <div className="panel-head">
+          <div>
+            <p>团队信息</p>
+            <h2>名称与描述</h2>
+          </div>
+          {editable ? (
+            <button className="primary-button" type="submit" disabled={status.saving || status.deleting}>
+              <Save size={16} />
+              {status.saving ? '保存中' : '保存'}
+            </button>
+          ) : null}
+        </div>
+        <div className="team-settings-form-body">
+          <label className="field">
+            <span>名称</span>
+            <input
+              disabled={!editable || status.saving || status.deleting}
+              value={form.name}
+              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              required
+            />
+          </label>
+          <label className="field">
+            <span>描述</span>
+            <textarea
+              disabled={!editable || status.saving || status.deleting}
+              value={form.description}
+              onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+            />
+          </label>
+          {!editable ? <div className="form-note">部门团队信息由 XDS 部门路径同步，不能在控制台直接编辑。</div> : null}
+          {status.notice ? <div className="form-note success">{status.notice}</div> : null}
+          {status.error ? <div className="form-error">{status.error}</div> : null}
+        </div>
+      </form>
       {team.teamType === 'department' ? (
         <section className="info-list">
           <h2>部门团队</h2>
@@ -213,6 +306,41 @@ function AdminTeamSettings({ team, subpage }) {
           </dl>
         </section>
       ) : null}
+      {team.teamType === 'custom' ? (
+        <section className="info-list danger-zone">
+          <div className="panel-head">
+            <div>
+              <p>危险操作</p>
+              <h2>删除团队</h2>
+            </div>
+            <button
+              className="secondary-button danger-button"
+              type="button"
+              disabled={status.deleting || status.saving}
+              onClick={() => setDeleteDialogOpen(true)}
+            >
+              <Trash2 size={16} />
+              {status.deleting ? '删除中' : '删除团队'}
+            </button>
+          </div>
+          <div className="danger-zone-body">
+            <p>删除前必须先手动删除或转移团队站点，并撤销团队归属的 Access Keys。</p>
+          </div>
+        </section>
+      ) : null}
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        title="删除团队"
+        target={team.name || team.id}
+        targetMeta={team.id}
+        description="删除前必须先手动删除或转移团队站点，并撤销团队归属的 Access Keys。此操作不可恢复。"
+        confirmLabel={status.deleting ? '删除中' : '删除团队'}
+        confirming={status.deleting}
+        error={status.error}
+        icon={<Trash2 size={16} />}
+        onCancel={() => setDeleteDialogOpen(false)}
+        onConfirm={remove}
+      />
     </div>
   );
 }

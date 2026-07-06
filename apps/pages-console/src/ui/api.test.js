@@ -7,6 +7,10 @@ import {
   createTeam,
   createWorkspaceSite,
   createTeamAccessKey,
+  deleteAdminSite,
+  deleteAdminSiteRuntimeSecret,
+  deleteAdminSiteRuntimeVar,
+  deleteAdminTeam,
   deleteTeam,
   deleteSite,
   deleteSiteRuntimeSecret,
@@ -15,6 +19,8 @@ import {
   fetchJson,
   getAdminDashboard,
   getAdminOps,
+  getAdminSiteAccess,
+  getAdminSiteConfig,
   grantPlatformAdmin,
   listAccessKeys,
   listAdminAuditEvents,
@@ -33,8 +39,12 @@ import {
   revokeTeamAccessKey,
   putSiteRuntimeSecret,
   putSiteRuntimeVar,
+  putAdminSiteRuntimeSecret,
+  putAdminSiteRuntimeVar,
   updateSiteAccess,
+  updateAdminSiteAccess,
   updateAdminWebhook,
+  updateAdminTeamSettings,
   updateTeamMember,
   updateTeamSettings,
 } from './api.js';
@@ -178,6 +188,41 @@ test('admin governance API helpers use console admin endpoints', async () => {
   assert.equal(calls[8].init.headers['X-CSRF-Token'], 'csrf-3');
   assert.deepEqual(JSON.parse(calls[7].init.body), { userId: 'usr_admin', reason: 'ops owner' });
   assert.deepEqual(JSON.parse(calls[8].init.body), { reason: 'rotation' });
+});
+
+test('admin site and team edit helpers stay under admin endpoints', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ access: {}, config: {}, team: {}, site: {}, var: {}, secret: {} });
+  };
+
+  await getAdminSiteAccess('site_1', { fetchImpl });
+  await updateAdminSiteAccess('site_1', { visibility: 'acl', aclEntries: [] }, { fetchImpl, csrfToken: 'csrf-1' });
+  await getAdminSiteConfig('site_1', { fetchImpl });
+  await putAdminSiteRuntimeVar('site_1', 'API_BASE', 'https://api.example.test', { fetchImpl, csrfToken: 'csrf-2' });
+  await deleteAdminSiteRuntimeVar('site_1', 'API_BASE', { fetchImpl, csrfToken: 'csrf-3' });
+  await putAdminSiteRuntimeSecret('site_1', 'API_TOKEN', 'secret-value', { fetchImpl, csrfToken: 'csrf-4' });
+  await deleteAdminSiteRuntimeSecret('site_1', 'API_TOKEN', { fetchImpl, csrfToken: 'csrf-5' });
+  await deleteAdminSite('site_1', { fetchImpl, csrfToken: 'csrf-6' });
+  await updateAdminTeamSettings('team_1', { name: 'Team', description: 'Admin managed' }, { fetchImpl, csrfToken: 'csrf-7' });
+  await deleteAdminTeam('team_1', { fetchImpl, csrfToken: 'csrf-8' });
+
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token'] || '']),
+    [
+      ['/api/console/admin/sites/site_1/access', 'GET', ''],
+      ['/api/console/admin/sites/site_1/access', 'PATCH', 'csrf-1'],
+      ['/api/console/admin/sites/site_1/config', 'GET', ''],
+      ['/api/console/admin/sites/site_1/config/vars/API_BASE', 'PUT', 'csrf-2'],
+      ['/api/console/admin/sites/site_1/config/vars/API_BASE', 'DELETE', 'csrf-3'],
+      ['/api/console/admin/sites/site_1/config/secrets/API_TOKEN', 'PUT', 'csrf-4'],
+      ['/api/console/admin/sites/site_1/config/secrets/API_TOKEN', 'DELETE', 'csrf-5'],
+      ['/api/console/admin/sites/site_1', 'DELETE', 'csrf-6'],
+      ['/api/console/admin/teams/team_1/settings', 'PATCH', 'csrf-7'],
+      ['/api/console/admin/teams/team_1', 'DELETE', 'csrf-8'],
+    ]
+  );
 });
 
 test('access key API helpers use workspace and team endpoints', async () => {

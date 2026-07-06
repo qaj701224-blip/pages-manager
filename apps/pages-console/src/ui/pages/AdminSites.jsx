@@ -4,8 +4,9 @@ import { Link } from 'react-router-dom';
 import { listAdminSites } from '../api.js';
 import { adminSiteOwnerView, sitePublicUrl } from '../site-display-model.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
+import { SiteDetail } from './SiteDetail.jsx';
 
-export function AdminSites({ siteId }) {
+export function AdminSites({ siteId, subpage }) {
   const [state, setState] = useState({ status: 'loading', sites: [], error: null });
   const [query, setQuery] = useState('');
   const [ownerType, setOwnerType] = useState('all');
@@ -39,7 +40,17 @@ export function AdminSites({ siteId }) {
     if (!selectedSite) {
       return <AdminNotFound backTo="/admin/sites" label="返回站点管理" title="站点不存在" />;
     }
-    return <AdminSiteDetail site={selectedSite} />;
+    return (
+      <SiteDetail
+        siteId={siteId}
+        tab={subpage || 'overview'}
+        scope="admin"
+        embedded
+        basePath={`/admin/sites/${encodeURIComponent(siteId)}`}
+        backTo="/admin/sites"
+        backLabel="返回站点管理"
+      />
+    );
   }
   if (state.sites.length === 0) return <div className="placeholder">暂无站点数据</div>;
 
@@ -132,53 +143,6 @@ function AdminSiteRow({ site }) {
         </Link>
       </td>
     </tr>
-  );
-}
-
-function AdminSiteDetail({ site }) {
-  const owner = adminSiteOwnerView(site.owner);
-  const url = sitePublicUrl(site.hostname);
-  return (
-    <div className="admin-stack">
-      <div className="panel-head flat">
-        <div>
-          <p>站点详情</p>
-          <h2>{site.slug}</h2>
-        </div>
-        <Link className="table-action" to="/admin/sites">
-          返回站点管理
-        </Link>
-      </div>
-      <section className="info-list">
-        <h2>基础信息</h2>
-        <dl>
-          <InfoRow label="站点 ID" value={site.id} />
-          <InfoRow label="Slug" value={site.slug} />
-          <InfoRow label="访问地址" value={url || '无'} />
-          <InfoRow label="可见性" value={site.visibility || '无'} />
-          <InfoRow label="状态" value={site.status || '无'} />
-          <InfoRow label="创建时间" value={formatDate(site.createdAt)} />
-          <InfoRow label="更新时间" value={formatDate(site.updatedAt)} />
-        </dl>
-      </section>
-      <section className="info-list">
-        <h2>归属对象</h2>
-        <dl>
-          <InfoRow label="类型" value={owner.type === 'team' ? '团队' : '用户'} />
-          <InfoRow label="名称" value={owner.primary} />
-          <InfoRow label="补充信息" value={owner.secondary || '无'} />
-        </dl>
-      </section>
-    </div>
-  );
-}
-
-function InfoRow({ label, value }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd title={String(value || '')}>{value || '无'}</dd>
-    </div>
   );
 }
 

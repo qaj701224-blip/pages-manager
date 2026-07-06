@@ -111,7 +111,7 @@ function AdminPageContent({ page, empty, resourceId, subpage }) {
   if (page === 'dashboard') return <AdminDashboard />;
   if (page === 'ops') return <AdminOps />;
   if (page === 'users') return <AdminUsers />;
-  if (page === 'sites') return <AdminSites siteId={resourceId} />;
+  if (page === 'sites') return <AdminSites siteId={resourceId} subpage={subpage} />;
   if (page === 'teams') return <AdminTeams teamId={resourceId} subpage={subpage} />;
   if (page === 'webhooks') return <AdminWebhooks />;
   if (page === 'audit') return <AdminAudit />;

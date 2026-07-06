@@ -2401,6 +2401,46 @@ button {
   gap: 14px;
 }
 
+.admin-detail-head {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-site-detail .page-heading {
+  margin-bottom: 0;
+}
+
+.detail-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.9);
+  width: fit-content;
+  max-width: 100%;
+}
+
+.detail-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: var(--xd-text-2);
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.detail-tabs a:hover,
+.detail-tabs a.active {
+  color: var(--xd-accent-strong);
+  background: var(--xd-accent-soft);
+}
+
 .admin-toolbar,
 .action-row,
 .chip-row,

@@ -3,12 +3,22 @@ import { ArrowLeft, LockKeyhole, Plus, Rocket, Save, Settings, ShieldCheck, Slid
 import { Link, useNavigate } from 'react-router-dom';
 
 import {
+  deleteAdminSite,
+  deleteAdminSiteRuntimeSecret,
+  deleteAdminSiteRuntimeVar,
   deleteSite,
   deleteSiteRuntimeSecret,
   deleteSiteRuntimeVar,
   fetchJson,
+  getAdminSite,
+  getAdminSiteAccess,
+  getAdminSiteConfig,
+  getAdminSiteDeployments,
+  putAdminSiteRuntimeSecret,
+  putAdminSiteRuntimeVar,
   putSiteRuntimeSecret,
   putSiteRuntimeVar,
+  updateAdminSiteAccess,
   updateSiteAccess,
 } from '../api.js';
 import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
@@ -33,15 +43,67 @@ const ACL_SUBJECT_OPTIONS = [
   { value: 'department', label: '部门' },
 ];
 
-export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
+function createSiteApi(scope) {
+  if (scope === 'admin') {
+    return {
+      backTo: '/admin/sites',
+      backLabel: '返回站点管理',
+      deletedRedirect: '/admin/sites',
+      basePath: (siteId) => `/admin/sites/${encodeURIComponent(siteId)}`,
+      getSite: getAdminSite,
+      getResource: (siteId, resource) => {
+        if (resource === 'deployments') return getAdminSiteDeployments(siteId);
+        if (resource === 'access') return getAdminSiteAccess(siteId);
+        if (resource === 'config') return getAdminSiteConfig(siteId);
+        return Promise.resolve(null);
+      },
+      updateAccess: updateAdminSiteAccess,
+      putRuntimeVar: putAdminSiteRuntimeVar,
+      deleteRuntimeVar: deleteAdminSiteRuntimeVar,
+      putRuntimeSecret: putAdminSiteRuntimeSecret,
+      deleteRuntimeSecret: deleteAdminSiteRuntimeSecret,
+      deleteSite: deleteAdminSite,
+    };
+  }
+
+  return {
+    backTo: '/workspace/published',
+    backLabel: '所有站点',
+    deletedRedirect: '/workspace/published',
+    basePath: (siteId) => `/workspace/sites/${encodeURIComponent(siteId)}`,
+    getSite: (siteId) => fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}`),
+    getResource: (siteId, resource) => fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/${resource}`),
+    updateAccess: updateSiteAccess,
+    putRuntimeVar: putSiteRuntimeVar,
+    deleteRuntimeVar: deleteSiteRuntimeVar,
+    putRuntimeSecret: putSiteRuntimeSecret,
+    deleteRuntimeSecret: deleteSiteRuntimeSecret,
+    deleteSite,
+  };
+}
+
+export function SiteDetail({
+  siteId,
+  tab = 'overview',
+  sessionState,
+  scope = 'workspace',
+  embedded = false,
+  basePath,
+  backTo,
+  backLabel,
+}) {
   const activeTab = SITE_TABS.has(tab) ? tab : 'overview';
   const navigate = useNavigate();
+  const siteApi = useMemo(() => createSiteApi(scope), [scope]);
+  const resolvedBasePath = basePath || siteApi.basePath(siteId);
+  const resolvedBackTo = backTo || siteApi.backTo;
+  const resolvedBackLabel = backLabel || siteApi.backLabel;
   const [state, setState] = useState({ status: 'loading', site: null, error: null });
   const [resourceState, setResourceState] = useState({ status: 'idle', data: null, error: null });
 
   const fetchActiveResource = useCallback(
-    () => fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/${activeTab}`),
-    [activeTab, siteId]
+    () => siteApi.getResource(siteId, activeTab),
+    [activeTab, siteApi, siteId]
   );
 
   const reloadResource = useCallback(async () => {
@@ -60,7 +122,8 @@ export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
   useEffect(() => {
     let active = true;
     setState({ status: 'loading', site: null, error: null });
-    fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}`)
+    siteApi
+      .getSite(siteId)
       .then((data) => {
         if (active) setState({ status: 'ready', site: data.site || null, error: null });
       })
@@ -70,7 +133,7 @@ export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
     return () => {
       active = false;
     };
-  }, [siteId]);
+  }, [siteApi, siteId]);
 
   useEffect(() => {
     if (!RESOURCE_TABS.has(activeTab)) {
@@ -94,57 +157,99 @@ export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
 
   const title = state.site?.slug || siteId;
 
+  const content = (
+    <>
+      {embedded ? (
+        <div className="admin-detail-head">
+          <Link className="table-action" to={resolvedBackTo}>
+            {resolvedBackLabel}
+          </Link>
+          <PageHeading title={title} meta="站点详情" />
+          <SiteDetailTabs activeTab={activeTab} basePath={resolvedBasePath} />
+        </div>
+      ) : (
+        <PageHeading title={title} meta="站点" />
+      )}
+      {state.status === 'loading' ? <div className="placeholder">加载中</div> : null}
+      {state.status === 'error' ? <div className="placeholder">无法加载站点</div> : null}
+      {state.status === 'ready' && state.site ? (
+        <SiteTabContent
+          site={state.site}
+          siteApi={siteApi}
+          tab={activeTab}
+          resourceState={resourceState}
+          onResourceUpdate={(data) => setResourceState({ status: 'ready', data, error: null })}
+          onSitePatch={(patch) =>
+            setState((current) => (current.site ? { ...current, site: { ...current.site, ...patch }, error: null } : current))
+          }
+          onResourceReload={reloadResource}
+          onSiteDeleted={() => navigate(siteApi.deletedRedirect)}
+        />
+      ) : null}
+    </>
+  );
+
+  if (embedded) return <div className="admin-stack admin-site-detail">{content}</div>;
+
   return (
     <div className="workspace-layout context-layout">
-      <SiteContextSidebar siteId={siteId} activeTab={activeTab} sessionState={sessionState} />
+      <SiteContextSidebar
+        activeTab={activeTab}
+        backLabel={resolvedBackLabel}
+        backTo={resolvedBackTo}
+        basePath={resolvedBasePath}
+        sessionState={sessionState}
+      />
       <main className="page workspace-page">
-        <PageHeading title={title} meta="站点" />
-        {state.status === 'loading' ? <div className="placeholder">加载中</div> : null}
-        {state.status === 'error' ? <div className="placeholder">无法加载站点</div> : null}
-        {state.status === 'ready' && state.site ? (
-          <SiteTabContent
-            site={state.site}
-            tab={activeTab}
-            resourceState={resourceState}
-            onResourceUpdate={(data) => setResourceState({ status: 'ready', data, error: null })}
-            onSitePatch={(patch) =>
-              setState((current) => (current.site ? { ...current, site: { ...current.site, ...patch }, error: null } : current))
-            }
-            onResourceReload={reloadResource}
-            onSiteDeleted={() => navigate('/workspace/published')}
-          />
-        ) : null}
+        {content}
       </main>
     </div>
   );
 }
 
-function SiteContextSidebar({ siteId, activeTab, sessionState }) {
-  const base = `/workspace/sites/${encodeURIComponent(siteId)}`;
+function SiteContextSidebar({ activeTab, backLabel, backTo, basePath, sessionState }) {
   return (
     <Sidebar active="personal" sessionState={sessionState}>
-      <Link className="back-link" to="/workspace/published">
+      <Link className="back-link" to={backTo}>
         <ArrowLeft size={16} />
-        <span>所有站点</span>
+        <span>{backLabel}</span>
       </Link>
       <nav className="side-section" aria-label="站点导航">
-        <ContextLink href={base} active={activeTab === 'overview'} icon={<ShieldCheck size={17} />} label="概览" />
+        <ContextLink href={basePath} active={activeTab === 'overview'} icon={<ShieldCheck size={17} />} label="概览" />
         <ContextLink
-          href={`${base}/deployments`}
+          href={`${basePath}/deployments`}
           active={activeTab === 'deployments'}
           icon={<Rocket size={17} />}
           label="部署记录"
         />
-        <ContextLink href={`${base}/access`} active={activeTab === 'access'} icon={<LockKeyhole size={17} />} label="访问控制" />
+        <ContextLink href={`${basePath}/access`} active={activeTab === 'access'} icon={<LockKeyhole size={17} />} label="访问控制" />
         <ContextLink
-          href={`${base}/config`}
+          href={`${basePath}/config`}
           active={activeTab === 'config'}
           icon={<SlidersHorizontal size={17} />}
           label="运行配置"
         />
-        <ContextLink href={`${base}/settings`} active={activeTab === 'settings'} icon={<Settings size={17} />} label="设置" />
+        <ContextLink href={`${basePath}/settings`} active={activeTab === 'settings'} icon={<Settings size={17} />} label="设置" />
       </nav>
     </Sidebar>
+  );
+}
+
+function SiteDetailTabs({ activeTab, basePath }) {
+  return (
+    <nav className="detail-tabs" aria-label="站点详情导航">
+      {[
+        ['overview', '概览', basePath],
+        ['deployments', '部署记录', `${basePath}/deployments`],
+        ['access', '访问控制', `${basePath}/access`],
+        ['config', '运行配置', `${basePath}/config`],
+        ['settings', '设置', `${basePath}/settings`],
+      ].map(([id, label, href]) => (
+        <Link className={activeTab === id ? 'active' : ''} key={id} to={href}>
+          {label}
+        </Link>
+      ))}
+    </nav>
   );
 }
 
@@ -157,12 +262,13 @@ function ContextLink({ href, active, icon, label }) {
   );
 }
 
-function SiteTabContent({ site, tab, resourceState, onResourceUpdate, onSitePatch, onResourceReload, onSiteDeleted }) {
+function SiteTabContent({ site, siteApi, tab, resourceState, onResourceUpdate, onSitePatch, onResourceReload, onSiteDeleted }) {
   if (tab === 'deployments') return <DeploymentsPanel state={resourceState} site={site} />;
   if (tab === 'access') {
     return (
       <AccessPanel
         site={site}
+        siteApi={siteApi}
         state={resourceState}
         fallbackVisibility={site.access?.visibility}
         onResourceUpdate={onResourceUpdate}
@@ -171,9 +277,9 @@ function SiteTabContent({ site, tab, resourceState, onResourceUpdate, onSitePatc
     );
   }
   if (tab === 'config') {
-    return <ConfigPanel site={site} state={resourceState} onResourceReload={onResourceReload} />;
+    return <ConfigPanel site={site} siteApi={siteApi} state={resourceState} onResourceReload={onResourceReload} />;
   }
-  if (tab === 'settings') return <SiteSettingsPanel site={site} onSiteDeleted={onSiteDeleted} />;
+  if (tab === 'settings') return <SiteSettingsPanel site={site} siteApi={siteApi} onSiteDeleted={onSiteDeleted} />;
   return <SiteOverview site={site} />;
 }
 
@@ -273,7 +379,7 @@ function DeploymentsPanel({ state, site }) {
   );
 }
 
-function AccessPanel({ site, state, fallbackVisibility, onResourceUpdate, onSitePatch }) {
+function AccessPanel({ site, siteApi, state, fallbackVisibility, onResourceUpdate, onSitePatch }) {
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载访问控制</div>;
   const access = state.data?.access || { visibility: fallbackVisibility || 'internal', aclEntries: [] };
@@ -283,7 +389,13 @@ function AccessPanel({ site, state, fallbackVisibility, onResourceUpdate, onSite
   return (
     <section className="detail-stack">
       {capabilities.canEditAccess ? (
-        <AccessPolicyForm site={site} access={access} onResourceUpdate={onResourceUpdate} onSitePatch={onSitePatch} />
+        <AccessPolicyForm
+          site={site}
+          siteApi={siteApi}
+          access={access}
+          onResourceUpdate={onResourceUpdate}
+          onSitePatch={onSitePatch}
+        />
       ) : (
         <ReadOnlyAccessPolicy access={access} entries={entries} />
       )}
@@ -291,7 +403,7 @@ function AccessPanel({ site, state, fallbackVisibility, onResourceUpdate, onSite
   );
 }
 
-function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
+function AccessPolicyForm({ site, siteApi, access, onResourceUpdate, onSitePatch }) {
   const [visibility, setVisibility] = useState(access.visibility || 'internal');
   const [entries, setEntries] = useState(() => normalizeAclEntriesForForm(access.aclEntries || []));
   const [draft, setDraft] = useState({ subjectType: 'email', subjectValue: '' });
@@ -330,7 +442,7 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
     setSaving(true);
     setError(null);
     try {
-      const data = await updateSiteAccess(site.id, {
+      const data = await siteApi.updateAccess(site.id, {
         visibility,
         aclEntries: toAclUpdatePayload(entries),
       });
@@ -495,7 +607,7 @@ function AclEntriesTable({ entries, onRemove }) {
   );
 }
 
-function ConfigPanel({ site, state, onResourceReload }) {
+function ConfigPanel({ site, siteApi, state, onResourceReload }) {
   const [varDialogOpen, setVarDialogOpen] = useState(false);
   const [secretDialogOpen, setSecretDialogOpen] = useState(false);
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
@@ -510,6 +622,7 @@ function ConfigPanel({ site, state, onResourceReload }) {
         vars={config.vars || []}
         canEdit={capabilities.canEditVars}
         siteId={site.id}
+        siteApi={siteApi}
         onAdd={() => setVarDialogOpen(true)}
         onResourceReload={onResourceReload}
       />
@@ -517,16 +630,24 @@ function ConfigPanel({ site, state, onResourceReload }) {
         secrets={config.secrets || []}
         canEdit={capabilities.canEditSecrets}
         siteId={site.id}
+        siteApi={siteApi}
         onAdd={() => setSecretDialogOpen(true)}
         onResourceReload={onResourceReload}
       />
       {capabilities.canEditVars ? (
-        <RuntimeVarDialog open={varDialogOpen} siteId={site.id} onOpenChange={setVarDialogOpen} onResourceReload={onResourceReload} />
+        <RuntimeVarDialog
+          open={varDialogOpen}
+          siteId={site.id}
+          siteApi={siteApi}
+          onOpenChange={setVarDialogOpen}
+          onResourceReload={onResourceReload}
+        />
       ) : null}
       {capabilities.canEditSecrets ? (
         <RuntimeSecretDialog
           open={secretDialogOpen}
           siteId={site.id}
+          siteApi={siteApi}
           onOpenChange={setSecretDialogOpen}
           onResourceReload={onResourceReload}
         />
@@ -535,7 +656,7 @@ function ConfigPanel({ site, state, onResourceReload }) {
   );
 }
 
-function RuntimeVarDialog({ open, siteId, onOpenChange, onResourceReload }) {
+function RuntimeVarDialog({ open, siteId, siteApi, onOpenChange, onResourceReload }) {
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -554,7 +675,7 @@ function RuntimeVarDialog({ open, siteId, onOpenChange, onResourceReload }) {
     setSaving(true);
     setError(null);
     try {
-      await putSiteRuntimeVar(siteId, name.trim(), value);
+      await siteApi.putRuntimeVar(siteId, name.trim(), value);
       setName('');
       setValue('');
       await onResourceReload?.();
@@ -592,7 +713,7 @@ function RuntimeVarDialog({ open, siteId, onOpenChange, onResourceReload }) {
   );
 }
 
-function RuntimeVarList({ vars, canEdit, siteId, onAdd, onResourceReload }) {
+function RuntimeVarList({ vars, canEdit, siteId, siteApi, onAdd, onResourceReload }) {
   const [error, setError] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -602,7 +723,7 @@ function RuntimeVarList({ vars, canEdit, siteId, onAdd, onResourceReload }) {
     setError(null);
     setDeleting(true);
     try {
-      await deleteSiteRuntimeVar(siteId, deleteTarget);
+      await siteApi.deleteRuntimeVar(siteId, deleteTarget);
       await onResourceReload?.();
       setDeleteTarget('');
     } catch (nextError) {
@@ -674,7 +795,7 @@ function RuntimeVarList({ vars, canEdit, siteId, onAdd, onResourceReload }) {
   );
 }
 
-function RuntimeSecretDialog({ open, siteId, onOpenChange, onResourceReload }) {
+function RuntimeSecretDialog({ open, siteId, siteApi, onOpenChange, onResourceReload }) {
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -693,7 +814,7 @@ function RuntimeSecretDialog({ open, siteId, onOpenChange, onResourceReload }) {
     setSaving(true);
     setError(null);
     try {
-      await putSiteRuntimeSecret(siteId, name.trim(), value);
+      await siteApi.putRuntimeSecret(siteId, name.trim(), value);
       setName('');
       setValue('');
       await onResourceReload?.();
@@ -731,7 +852,7 @@ function RuntimeSecretDialog({ open, siteId, onOpenChange, onResourceReload }) {
   );
 }
 
-function RuntimeSecretList({ secrets, canEdit, siteId, onAdd, onResourceReload }) {
+function RuntimeSecretList({ secrets, canEdit, siteId, siteApi, onAdd, onResourceReload }) {
   const [error, setError] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -741,7 +862,7 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onAdd, onResourceReload }
     setError(null);
     setDeleting(true);
     try {
-      await deleteSiteRuntimeSecret(siteId, deleteTarget);
+      await siteApi.deleteRuntimeSecret(siteId, deleteTarget);
       await onResourceReload?.();
       setDeleteTarget('');
     } catch (nextError) {
@@ -841,7 +962,7 @@ function RuntimeDeleteDialog({
   );
 }
 
-function SiteSettingsPanel({ site, onSiteDeleted }) {
+function SiteSettingsPanel({ site, siteApi, onSiteDeleted }) {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteState, setDeleteState] = useState({ deleting: false, error: null });
   const canDelete = Boolean(site.permissions?.canManageAccess);
@@ -850,7 +971,7 @@ function SiteSettingsPanel({ site, onSiteDeleted }) {
     if (!deleteTarget) return;
     setDeleteState({ deleting: true, error: null });
     try {
-      await deleteSite(site.id);
+      await siteApi.deleteSite(site.id);
       setDeleteState({ deleting: false, error: null });
       onSiteDeleted?.();
     } catch (error) {

@@ -1,4 +1,14 @@
 import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
+import {
+  deleteConsoleSite,
+  deleteSiteSecret,
+  deleteSiteVar,
+  formatAclEntry,
+  putSiteSecret,
+  putSiteVar,
+  readSiteConfig,
+  updateSiteAccess,
+} from './console.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 
@@ -36,9 +46,89 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     return listAdminSites(config, store);
   }
 
+  const adminSiteVarMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/config\/vars\/([^/]+)$/);
+  if (adminSiteVarMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteVarMatch[1]));
+    if (site instanceof Response) return site;
+    const name = decodeURIComponent(adminSiteVarMatch[2]);
+    if (request.method === 'PUT') return putSiteVar(request, env, config, store, session, site.id, name, { site });
+    if (request.method === 'DELETE') return deleteSiteVar(env, config, store, session, site.id, name, { site });
+    return methodNotAllowed();
+  }
+
+  const adminSiteSecretMatch = url.pathname.match(
+    /^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/config\/secrets\/([^/]+)$/
+  );
+  if (adminSiteSecretMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteSecretMatch[1]));
+    if (site instanceof Response) return site;
+    const name = decodeURIComponent(adminSiteSecretMatch[2]);
+    if (request.method === 'PUT') return putSiteSecret(request, env, config, store, session, site.id, name, { site });
+    if (request.method === 'DELETE') return deleteSiteSecret(env, config, store, session, site.id, name, { site });
+    return methodNotAllowed();
+  }
+
+  const adminSiteAccessMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/access$/);
+  if (adminSiteAccessMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteAccessMatch[1]));
+    if (site instanceof Response) return site;
+    if (request.method === 'PATCH') return updateSiteAccess(request, env, config, store, session, site.id, { site });
+    if (request.method !== 'GET') return methodNotAllowed();
+    const aclEntries = typeof store.listSiteAclEntries === 'function' ? await store.listSiteAclEntries(site.id) : [];
+    return jsonOk({
+      access: {
+        visibility: site.route?.visibility || site.defaultVisibility,
+        aclEntries: aclEntries.map(formatAclEntry),
+      },
+    });
+  }
+
+  const adminSiteDeploymentsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/deployments$/);
+  if (adminSiteDeploymentsMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteDeploymentsMatch[1]));
+    if (site instanceof Response) return site;
+    if (request.method !== 'GET') return methodNotAllowed();
+    const deployments =
+      typeof store.listAdminSiteDeployments === 'function'
+        ? await store.listAdminSiteDeployments({ environment: config.environment, siteId: site.id })
+        : [];
+    return jsonOk({ deployments: deployments.map(formatAdminDeployment) });
+  }
+
+  const adminSiteConfigMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/config$/);
+  if (adminSiteConfigMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteConfigMatch[1]));
+    if (site instanceof Response) return site;
+    if (request.method !== 'GET') return methodNotAllowed();
+    return jsonOk({ config: await readSiteConfig(store, config.environment, site.id) });
+  }
+
+  const adminSiteMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)$/);
+  if (adminSiteMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteMatch[1]));
+    if (site instanceof Response) return site;
+    if (request.method === 'GET') return jsonOk({ site: formatAdminSiteDetail(site) });
+    if (request.method === 'DELETE') return deleteConsoleSite(env, config, store, site, { force: true });
+    return methodNotAllowed();
+  }
+
   if (url.pathname === `${CONSOLE_PREFIX}/admin/teams`) {
     if (request.method !== 'GET') return methodNotAllowed();
     return listAdminTeams(url, config, store);
+  }
+
+  const adminTeamSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/teams\/([^/]+)\/settings$/);
+  if (adminTeamSettingsMatch) {
+    if (request.method !== 'PATCH') return methodNotAllowed();
+    return updateAdminTeamSettings(request, config, store, decodeURIComponent(adminTeamSettingsMatch[1]));
+  }
+
+  const adminTeamMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/teams\/([^/]+)$/);
+  if (adminTeamMatch) {
+    const teamId = decodeURIComponent(adminTeamMatch[1]);
+    if (request.method === 'GET') return getAdminTeam(config, store, teamId);
+    if (request.method === 'DELETE') return deleteAdminTeam(config, store, session, teamId);
+    return methodNotAllowed();
   }
 
   if (url.pathname === `${CONSOLE_PREFIX}/admin/audit`) {
@@ -110,6 +200,13 @@ async function listAdminSites(config, store) {
   return jsonOk({ sites: sites.map(formatAdminSite) });
 }
 
+async function getAdminSite(config, store, siteId) {
+  const sites = await store.listAdminSites({ environment: config.environment });
+  const site = sites.find((item) => item.id === siteId);
+  if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  return site;
+}
+
 async function listAdminTeams(url, config, store) {
   const teamType = normalizeNullableString(url.searchParams.get('teamType'));
   const status = normalizeNullableString(url.searchParams.get('status'));
@@ -119,6 +216,77 @@ async function listAdminTeams(url, config, store) {
     status,
   });
   return jsonOk({ teams: teams.map(formatAdminTeam) });
+}
+
+async function getAdminTeam(config, store, teamId) {
+  const team = await store.getTeam(teamId);
+  if (!team || team.environment !== config.environment || team.deletedAt) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  return jsonOk({ team: formatAdminTeam(team) });
+}
+
+async function updateAdminTeamSettings(request, config, store, teamId) {
+  const team = await store.getTeam(teamId);
+  if (!team || team.environment !== config.environment || team.deletedAt) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  if (team.teamType === 'department') {
+    return jsonError(
+      'DEPARTMENT_TEAM_SETTINGS_READONLY',
+      'Department team settings are read-only.',
+      403,
+      'Use admin team merge tooling if the department path changed.'
+    );
+  }
+  if (typeof store.updateTeamSettings !== 'function') {
+    return jsonError('TEAM_SETTINGS_UNSUPPORTED', 'Team settings are unavailable.', 503, 'Retry later.');
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const updated = await store.updateTeamSettings({
+    teamId,
+    name: body.name,
+    description: body.description,
+  });
+  return jsonOk({ team: formatAdminTeam(updated) });
+}
+
+async function deleteAdminTeam(config, store, session, teamId) {
+  const team = await store.getTeam(teamId);
+  if (!team || team.environment !== config.environment || team.deletedAt) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  if (team.teamType === 'department') {
+    return jsonError(
+      'DEPARTMENT_TEAM_DELETE_FORBIDDEN',
+      'Department teams cannot be deleted from admin team settings.',
+      403,
+      'Use platform admin team merge tooling.'
+    );
+  }
+
+  try {
+    const deleted = await store.deleteCustomTeam({ teamId, actorUserId: session.userId });
+    if (!deleted) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+    return jsonOk({ team: formatAdminTeam(deleted) });
+  } catch (error) {
+    if (String(error?.message || error).includes('TEAM_HAS_BLOCKING_ASSETS')) {
+      return jsonError(
+        'TEAM_HAS_BLOCKING_ASSETS',
+        'Team still owns sites or active access keys.',
+        409,
+        'Delete or transfer team sites and revoke team access keys first.'
+      );
+    }
+    throw error;
+  }
 }
 
 async function mergeDepartmentTeam(request, config, store, session, sourceTeamId) {
@@ -275,6 +443,20 @@ function formatAdminSite(site) {
     status: site.route?.routeStatus || 'active',
     createdAt: site.createdAt,
     updatedAt: site.updatedAt,
+  };
+}
+
+function formatAdminSiteDetail(site) {
+  return {
+    ...formatAdminSite(site),
+    access: {
+      visibility: site.route?.visibility || site.defaultVisibility,
+    },
+    permissions: {
+      role: 'admin',
+      canManage: true,
+      canManageAccess: true,
+    },
   };
 }
 

@@ -65,12 +65,88 @@ export function listAdminSites(options = {}) {
   return fetchJson('/api/console/admin/sites', options);
 }
 
+export function getAdminSite(siteId, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}`, options);
+}
+
+export function getAdminSiteAccess(siteId, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/access`, options);
+}
+
+export function updateAdminSiteAccess(siteId, body, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/access`, {
+    ...options,
+    method: 'PATCH',
+    body,
+  });
+}
+
+export function getAdminSiteConfig(siteId, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/config`, options);
+}
+
+export function getAdminSiteDeployments(siteId, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/deployments`, options);
+}
+
+export function putAdminSiteRuntimeVar(siteId, name, value, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/config/vars/${encodeURIComponent(name)}`, {
+    ...options,
+    method: 'PUT',
+    body: { value },
+  });
+}
+
+export function deleteAdminSiteRuntimeVar(siteId, name, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/config/vars/${encodeURIComponent(name)}`, {
+    ...options,
+    method: 'DELETE',
+  });
+}
+
+export function putAdminSiteRuntimeSecret(siteId, name, value, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/config/secrets/${encodeURIComponent(name)}`, {
+    ...options,
+    method: 'PUT',
+    body: { value },
+  });
+}
+
+export function deleteAdminSiteRuntimeSecret(siteId, name, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/config/secrets/${encodeURIComponent(name)}`, {
+    ...options,
+    method: 'DELETE',
+  });
+}
+
+export function deleteAdminSite(siteId, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}`, {
+    ...options,
+    method: 'DELETE',
+  });
+}
+
 export function listAdminTeams({ teamType, status, ...options } = {}) {
   const search = new URLSearchParams();
   if (teamType) search.set('teamType', teamType);
   if (status) search.set('status', status);
   const query = search.toString();
   return fetchJson(`/api/console/admin/teams${query ? `?${query}` : ''}`, options);
+}
+
+export function updateAdminTeamSettings(teamId, body, options = {}) {
+  return fetchJson(`/api/console/admin/teams/${encodeURIComponent(teamId)}/settings`, {
+    ...options,
+    method: 'PATCH',
+    body,
+  });
+}
+
+export function deleteAdminTeam(teamId, options = {}) {
+  return fetchJson(`/api/console/admin/teams/${encodeURIComponent(teamId)}`, {
+    ...options,
+    method: 'DELETE',
+  });
 }
 
 export function listAdminAuditEvents(options = {}) {

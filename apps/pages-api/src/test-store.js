@@ -382,6 +382,16 @@ class TestPagesStore {
     );
   }
 
+  async listAdminSiteDeployments({ environment, siteId }) {
+    return cloneRecord(
+      [...this.deployments.values()]
+        .filter((deployment) => deployment.siteId === siteId)
+        .filter((deployment) => !environment || deployment.environment === environment)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .map((deployment) => this.decorateAdminDeployment(deployment))
+    );
+  }
+
   async listAdminTeams({ environment, teamType, status } = {}) {
     return cloneRecord(
       [...this.teams.values()]
@@ -809,6 +819,17 @@ class TestPagesStore {
       });
     }
     return cloneRecord(teams.sort((left, right) => left.name.localeCompare(right.name)));
+  }
+
+  async updateTeamSettings({ teamId, name, description }) {
+    const team = this.teams.get(teamId) || null;
+    if (!team || team.deletedAt || team.teamType !== 'custom') return null;
+    const now = this.now();
+    team.name = normalizeTeamName(name) || team.name;
+    team.description = normalizeNullableString(description);
+    team.updatedAt = now;
+    this.teams.set(teamId, team);
+    return cloneRecord(team);
   }
 
   async countTeamBlockingAssets({ teamId }) {

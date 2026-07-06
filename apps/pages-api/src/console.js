@@ -210,8 +210,8 @@ async function createConsoleSite(request, env, config, store, session) {
   return jsonOk({ site: formatWorkspaceSite(detail || site) }, 201);
 }
 
-async function deleteConsoleSite(env, config, store, site) {
-  if (!hasPublisherRole(site)) {
+export async function deleteConsoleSite(env, config, store, site, options = {}) {
+  if (!options.force && !hasPublisherRole(site)) {
     return jsonError(
       'SITE_DELETE_FORBIDDEN',
       'Site publisher role required.',
@@ -255,8 +255,8 @@ async function validateConsoleAuthSession(request, env, config, store) {
   });
 }
 
-async function updateSiteAccess(request, env, config, store, session, siteId) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
+export async function updateSiteAccess(request, env, config, store, session, siteId, options = {}) {
+  const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
   const previousAclEntries = await store.listSiteAclEntries(site.id);
@@ -315,8 +315,8 @@ async function updateSiteAccess(request, env, config, store, session, siteId) {
   });
 }
 
-async function putSiteVar(request, env, config, store, session, siteId, name) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
+export async function putSiteVar(request, env, config, store, session, siteId, name, options = {}) {
+  const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.replaceSiteVars !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
@@ -336,8 +336,8 @@ async function putSiteVar(request, env, config, store, session, siteId, name) {
   return jsonOk({ var: formatSiteVar(record) });
 }
 
-async function deleteSiteVar(env, config, store, session, siteId, name) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
+export async function deleteSiteVar(env, config, store, session, siteId, name, options = {}) {
+  const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.replaceSiteVars !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
@@ -349,8 +349,8 @@ async function deleteSiteVar(env, config, store, session, siteId, name) {
   return jsonOk({ var: { name, deleted: true } });
 }
 
-async function putSiteSecret(request, env, config, store, session, siteId, name) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
+export async function putSiteSecret(request, env, config, store, session, siteId, name, options = {}) {
+  const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.putSiteSecretWithAudit !== 'function') {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -393,8 +393,8 @@ async function putSiteSecret(request, env, config, store, session, siteId, name)
   return jsonOk({ secret: formatSiteSecret(secret) });
 }
 
-async function deleteSiteSecret(env, config, store, session, siteId, name) {
-  const site = await requireConsoleSiteRole(store, config, session, siteId, 'publisher');
+export async function deleteSiteSecret(env, config, store, session, siteId, name, options = {}) {
+  const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.deleteSiteSecretWithAudit !== 'function') {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -421,7 +421,7 @@ async function deleteSiteSecret(env, config, store, session, siteId, name) {
   return jsonOk({ secret: { name: normalizedName, deleted: true } });
 }
 
-async function readSiteConfig(store, environment, siteId) {
+export async function readSiteConfig(store, environment, siteId) {
   const vars = typeof store.listEnabledSiteVars === 'function' ? await store.listEnabledSiteVars(environment, siteId) : [];
   const secrets =
     typeof store.listEnabledSiteSecrets === 'function' ? await store.listEnabledSiteSecrets(environment, siteId) : [];
@@ -508,7 +508,7 @@ function formatDeployment(deployment) {
   };
 }
 
-function formatAclEntry(entry) {
+export function formatAclEntry(entry) {
   return {
     id: entry.id,
     subjectType: entry.subjectType,
@@ -564,7 +564,7 @@ async function replaceSiteVars(store, env, config, session, siteId, vars) {
     vars,
     actorId: session.userId,
     updatedAt: readNow(env),
-    createId: (name) => nextId(env, `var_${name.toLowerCase()}`),
+    createId: (name) => nextId(env, `var${name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'runtime'}`),
   });
 }
 

@@ -685,6 +685,38 @@ export class D1PagesStore {
     return (result.results || []).map(mapAdminSiteWithOwner);
   }
 
+  async listAdminSiteDeployments({ environment, siteId }) {
+    const result = await this.db
+      .prepare(
+        `SELECT deployments.*,
+          sites.owner_type AS site_owner_type,
+          sites.owner_id AS site_owner_id,
+          sites.owner_user_id AS site_owner_user_id,
+          owner_users.email AS owner_user_email,
+          owner_users.realname AS owner_user_realname,
+          owner_teams.name AS owner_team_name,
+          owner_teams.team_type AS owner_team_type,
+          owner_teams.department_path AS owner_team_department_path
+        FROM deployments
+        LEFT JOIN sites
+          ON sites.id = deployments.site_id
+          AND sites.environment = deployments.environment
+        LEFT JOIN users AS owner_users
+          ON COALESCE(sites.owner_type, 'user') = 'user'
+          AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
+        LEFT JOIN teams AS owner_teams
+          ON sites.owner_type = 'team'
+          AND owner_teams.id = sites.owner_id
+          AND owner_teams.environment = deployments.environment
+          AND owner_teams.deleted_at IS NULL
+        WHERE deployments.environment = ? AND deployments.site_id = ?
+        ORDER BY deployments.created_at DESC`
+      )
+      .bind(environment, siteId)
+      .all();
+    return (result.results || []).map(mapAdminDeploymentWithOwner);
+  }
+
   async listAdminTeams({ environment, teamType, status } = {}) {
     const conditions = ['environment = ?', 'deleted_at IS NULL'];
     const binds = [environment];

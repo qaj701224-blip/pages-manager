@@ -372,6 +372,85 @@ test('admin sites include readable user and team owner metadata', async () => {
   });
 });
 
+test('platform admin can edit admin-scope site settings without asset membership', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createTeam({
+    id: 'team_console',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    createdByUserId: 'usr_owner',
+  });
+  await seedTeamSite(store, {
+    id: 'site_console',
+    slug: 'console',
+    teamId: 'team_console',
+  });
+
+  const putVar = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/config/vars/API_BASE', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PUT',
+      body: { value: 'https://api.example.com' },
+    }),
+    env(store)
+  );
+  const access = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/access', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { visibility: 'acl', aclEntries: [{ subjectType: 'email', subjectValue: 'viewer@example.com' }] },
+    }),
+    env(store)
+  );
+
+  assert.equal(putVar.status, 200, await putVar.clone().text());
+  assert.equal((await putVar.json()).var.name, 'API_BASE');
+  assert.equal(access.status, 200, await access.clone().text());
+  assert.equal((await access.json()).access.visibility, 'acl');
+});
+
+test('platform admin can edit admin-scope custom team settings without team membership', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createTeam({
+    id: 'team_console',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: 'before',
+    createdByUserId: 'usr_owner',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams/team_console/settings', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { name: 'Console Owners', description: 'after' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.team.name, 'Console Owners');
+  assert.equal(body.team.description, 'after');
+});
+
 test('admin audit events include readable actor profile', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
