@@ -26,6 +26,8 @@ export function normalizeXdsUserItem(item) {
       item.departmentFullPath,
       item.department_full_path,
       item.deptFullPath,
+      item.department,
+      item.dept,
       item.department?.path,
       item.department?.fullPath,
       item.dept?.path,

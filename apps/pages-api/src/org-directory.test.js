@@ -55,6 +55,25 @@ test('normalizeXdsUserItem tolerates XDS responses that only include department 
   );
 });
 
+test('normalizeXdsUserItem accepts string department from XDS list-by-email', () => {
+  assert.deepEqual(
+    normalizeXdsUserItem({
+      email: 'user@xd.com',
+      name: '示例用户',
+      department: '心动/发行服务/平台支撑部',
+      status: '1',
+      userId: 'oa_123',
+    }),
+    {
+      email: 'user@xd.com',
+      userId: 'oa_123',
+      name: '示例用户',
+      employeeStatus: 'active',
+      departmentPath: '心动/发行服务/平台支撑部',
+    }
+  );
+});
+
 test('fetchOrgUsersByEmail posts emails with signed XDS headers', async () => {
   const users = await fetchOrgUsersByEmail({
     emails: [' User@XD.com '],
