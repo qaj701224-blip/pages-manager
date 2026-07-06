@@ -327,7 +327,8 @@ class TestPagesStore {
     const failedDeployments = deployments
       .filter((deployment) => deployment.status === 'failed')
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, 10);
+      .slice(0, 10)
+      .map((deployment) => this.decorateAdminDeployment(deployment));
 
     return cloneRecord({
       environment,
@@ -1923,6 +1924,22 @@ class TestPagesStore {
       ...site,
       ownerEmail: user?.email || null,
       ownerDisplayName: user?.realname || null,
+    };
+  }
+
+  decorateAdminDeployment(deployment) {
+    const site = this.sites.get(deployment.siteId);
+    if (!site) return deployment;
+    const decoratedSite = this.decorateAdminSite(site);
+    return {
+      ...deployment,
+      ownerType: decoratedSite.ownerType || 'user',
+      ownerId: decoratedSite.ownerId || decoratedSite.ownerUserId || null,
+      ownerUserId: decoratedSite.ownerUserId || null,
+      ownerEmail: decoratedSite.ownerEmail || null,
+      ownerDisplayName: decoratedSite.ownerDisplayName || null,
+      ownerDepartmentPath: decoratedSite.ownerDepartmentPath || null,
+      ownerTeamType: decoratedSite.ownerTeamType || null,
     };
   }
 

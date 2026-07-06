@@ -562,9 +562,29 @@ export class D1PagesStore {
         .first(),
       this.db
         .prepare(
-          `SELECT * FROM deployments
-          WHERE environment = ? AND status = 'failed'
-          ORDER BY created_at DESC
+          `SELECT deployments.*,
+            sites.owner_type AS site_owner_type,
+            sites.owner_id AS site_owner_id,
+            sites.owner_user_id AS site_owner_user_id,
+            owner_users.email AS owner_user_email,
+            owner_users.realname AS owner_user_realname,
+            owner_teams.name AS owner_team_name,
+            owner_teams.team_type AS owner_team_type,
+            owner_teams.department_path AS owner_team_department_path
+          FROM deployments
+          LEFT JOIN sites
+            ON sites.id = deployments.site_id
+            AND sites.environment = deployments.environment
+          LEFT JOIN users AS owner_users
+            ON COALESCE(sites.owner_type, 'user') = 'user'
+            AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
+          LEFT JOIN teams AS owner_teams
+            ON sites.owner_type = 'team'
+            AND owner_teams.id = sites.owner_id
+            AND owner_teams.environment = deployments.environment
+            AND owner_teams.deleted_at IS NULL
+          WHERE deployments.environment = ? AND deployments.status = 'failed'
+          ORDER BY deployments.created_at DESC
           LIMIT 10`
         )
         .bind(environment)
@@ -580,7 +600,7 @@ export class D1PagesStore {
         deployments: Number(deploymentRow?.count || 0),
         failedDeployments: Number(failedDeploymentCountRow?.count || 0),
       },
-      failedDeployments: (failedDeploymentsResult.results || []).map(mapDeployment),
+      failedDeployments: (failedDeploymentsResult.results || []).map(mapAdminDeploymentWithOwner),
     };
   }
 
@@ -3911,6 +3931,29 @@ function mapAdminSiteWithOwner(row) {
   }
   return {
     ...site,
+    ownerEmail: row.owner_user_email || null,
+    ownerDisplayName: row.owner_user_realname || null,
+  };
+}
+
+function mapAdminDeploymentWithOwner(row) {
+  const deployment = mapDeployment(row);
+  if (row.site_owner_type === 'team') {
+    return {
+      ...deployment,
+      ownerType: 'team',
+      ownerId: row.site_owner_id || null,
+      ownerDisplayName: row.owner_team_name || null,
+      ownerTeamType: row.owner_team_type || null,
+      ownerDepartmentPath: row.owner_team_department_path || null,
+    };
+  }
+
+  return {
+    ...deployment,
+    ownerType: row.site_owner_type || 'user',
+    ownerId: row.site_owner_id || row.site_owner_user_id || null,
+    ownerUserId: row.site_owner_user_id || row.site_owner_id || null,
     ownerEmail: row.owner_user_email || null,
     ownerDisplayName: row.owner_user_realname || null,
   };

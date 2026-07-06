@@ -34,6 +34,22 @@ export function App() {
           }
         />
         <Route
+          path="/admin/:page/:resourceId/:subpage"
+          element={
+            <AdminRouteGuard currentPath={`${location.pathname}${location.search}`} sessionState={sessionState}>
+              <AdminRoute />
+            </AdminRouteGuard>
+          }
+        />
+        <Route
+          path="/admin/:page/:resourceId"
+          element={
+            <AdminRouteGuard currentPath={`${location.pathname}${location.search}`} sessionState={sessionState}>
+              <AdminRoute />
+            </AdminRouteGuard>
+          }
+        />
+        <Route
           path="/admin/:page"
           element={
             <AdminRouteGuard currentPath={`${location.pathname}${location.search}`} sessionState={sessionState}>
@@ -59,8 +75,8 @@ export function App() {
 }
 
 function AdminRoute() {
-  const { page } = useParams();
-  return <AdminShell page={page || 'dashboard'} />;
+  const { page, resourceId, subpage } = useParams();
+  return <AdminShell page={page || 'dashboard'} resourceId={resourceId} subpage={subpage} />;
 }
 
 function SiteDetailRoute({ sessionState }) {
@@ -194,9 +210,13 @@ function readRoute(path) {
 
 function readAdminRoute(path) {
   if (path === '/admin' || path === '/admin/') return { page: 'dashboard' };
-  const match = path.match(/^\/admin\/([^/]+)$/);
+  const match = path.match(/^\/admin\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/);
   if (!match) return null;
-  return { page: match[1] || 'dashboard' };
+  return {
+    page: match[1] || 'dashboard',
+    resourceId: match[2] ? decodeURIComponent(match[2]) : undefined,
+    subpage: match[3],
+  };
 }
 
 function readSiteRoute(path) {

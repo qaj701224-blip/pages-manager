@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom';
 import { listAdminTeams, mergeAdminDepartmentTeam } from '../api.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 
-export function AdminTeams() {
+export function AdminTeams({ teamId, subpage = 'settings' }) {
   const [state, setState] = useState({ status: 'loading', teams: [], error: null });
   const [filter, setFilter] = useState('all');
   const [mergeForm, setMergeForm] = useState({ sourceTeamId: '', targetTeamId: '', reason: '' });
@@ -37,6 +37,10 @@ export function AdminTeams() {
     if (filter === 'custom') return state.teams.filter((team) => team.teamType === 'custom');
     return state.teams;
   }, [filter, state.teams]);
+  const selectedTeam = useMemo(() => {
+    if (!teamId) return null;
+    return state.teams.find((team) => team.id === teamId) || null;
+  }, [teamId, state.teams]);
   const activeDepartmentTeams = state.teams.filter((team) => team.teamType === 'department' && team.status === 'active');
   const mergeDisabled =
     mergeState.status === 'saving' ||
@@ -63,6 +67,12 @@ export function AdminTeams() {
 
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <AdminError title="团队列表加载失败" error={state.error} />;
+  if (teamId) {
+    if (!selectedTeam) {
+      return <AdminNotFound backTo="/admin/teams" label="返回团队管理" title="团队不存在" />;
+    }
+    return <AdminTeamSettings team={selectedTeam} subpage={subpage} />;
+  }
 
   return (
     <div className="admin-stack">
@@ -154,7 +164,7 @@ export function AdminTeams() {
                   <td data-label="合并到">{team.mergedIntoTeamId || '无'}</td>
                   <td data-label="更新时间">{formatDate(team.updatedAt)}</td>
                   <td data-label="操作">
-                    <Link className="table-action" to={`/workspace/teams/${encodeURIComponent(team.id)}/settings`}>
+                    <Link className="table-action" to={`/admin/teams/${encodeURIComponent(team.id)}/settings`}>
                       团队设置
                     </Link>
                   </td>
@@ -164,6 +174,66 @@ export function AdminTeams() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function AdminTeamSettings({ team, subpage }) {
+  return (
+    <div className="admin-stack">
+      <div className="panel-head flat">
+        <div>
+          <p>{subpage === 'settings' ? '团队设置' : '团队详情'}</p>
+          <h2>{team.name}</h2>
+        </div>
+        <Link className="table-action" to="/admin/teams">
+          返回团队管理
+        </Link>
+      </div>
+      <section className="info-list">
+        <h2>基础信息</h2>
+        <dl>
+          <InfoRow label="团队 ID" value={team.id} />
+          <InfoRow label="名称" value={team.name} />
+          <InfoRow label="描述" value={team.description || '无'} />
+          <InfoRow label="类型" value={team.teamType === 'department' ? '部门团队' : '自建团队'} />
+          <InfoRow label="部门路径" value={team.departmentPath || '无'} />
+          <InfoRow label="状态" value={team.status || '无'} />
+          <InfoRow label="合并到" value={team.mergedIntoTeamId || '无'} />
+          <InfoRow label="创建时间" value={formatDate(team.createdAt)} />
+          <InfoRow label="更新时间" value={formatDate(team.updatedAt)} />
+        </dl>
+      </section>
+      {team.teamType === 'department' ? (
+        <section className="info-list">
+          <h2>部门团队</h2>
+          <dl>
+            <InfoRow label="信息来源" value="企业 SSO 部门路径同步" />
+            <InfoRow label="可编辑性" value="部门团队信息不可在控制台直接编辑" />
+          </dl>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd title={String(value || '')}>{value || '无'}</dd>
+    </div>
+  );
+}
+
+function AdminNotFound({ backTo, label, title }) {
+  return (
+    <div className="empty-panel warning">
+      <strong>{title}</strong>
+      <span>请返回列表确认对象是否仍存在。</span>
+      <Link className="table-action" to={backTo}>
+        {label}
+      </Link>
     </div>
   );
 }

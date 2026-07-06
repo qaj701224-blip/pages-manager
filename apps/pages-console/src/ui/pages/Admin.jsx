@@ -72,7 +72,7 @@ const ADMIN_PAGES = {
   },
 };
 
-export function AdminShell({ page = 'dashboard' }) {
+export function AdminShell({ page = 'dashboard', resourceId, subpage }) {
   const current = ADMIN_PAGES[page] ? page : 'dashboard';
   const config = ADMIN_PAGES[current];
 
@@ -101,18 +101,18 @@ export function AdminShell({ page = 'dashboard' }) {
           <h1>{config.title}</h1>
           <p>{config.meta}</p>
         </div>
-        <AdminPageContent page={current} empty={config.empty} />
+        <AdminPageContent page={current} empty={config.empty} resourceId={resourceId} subpage={subpage} />
       </main>
     </div>
   );
 }
 
-function AdminPageContent({ page, empty }) {
+function AdminPageContent({ page, empty, resourceId, subpage }) {
   if (page === 'dashboard') return <AdminDashboard />;
   if (page === 'ops') return <AdminOps />;
   if (page === 'users') return <AdminUsers />;
-  if (page === 'sites') return <AdminSites />;
-  if (page === 'teams') return <AdminTeams />;
+  if (page === 'sites') return <AdminSites siteId={resourceId} />;
+  if (page === 'teams') return <AdminTeams teamId={resourceId} subpage={subpage} />;
   if (page === 'webhooks') return <AdminWebhooks />;
   if (page === 'audit') return <AdminAudit />;
   return <div className="placeholder">{empty}</div>;

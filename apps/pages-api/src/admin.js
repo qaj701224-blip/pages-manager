@@ -229,6 +229,14 @@ function formatAdminDeployment(deployment) {
   return {
     id: deployment.id,
     siteId: deployment.siteId,
+    owner: {
+      type: deployment.ownerType || 'user',
+      id: deployment.ownerId || deployment.ownerUserId || null,
+      email: deployment.ownerEmail || null,
+      displayName: deployment.ownerDisplayName || null,
+      departmentPath: deployment.ownerDepartmentPath || null,
+      teamType: deployment.ownerTeamType || null,
+    },
     status: deployment.status,
     source: deployment.source || null,
     operation: deployment.operation || null,
