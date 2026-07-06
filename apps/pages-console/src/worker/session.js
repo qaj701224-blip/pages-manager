@@ -1,7 +1,7 @@
 import { signSessionJwt, verifySessionJwt } from '../../../pages-auth/src/jwt.js';
 
-const SESSION_COOKIE = 'xd_cell_session';
-const CSRF_COOKIE = 'xd_cell_csrf';
+const SESSION_COOKIE = '__Host-xd_cell_session';
+const CSRF_COOKIE = '__Host-xd_cell_csrf';
 const CONSOLE_SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 const CONSOLE_SESSION_TTL_SECONDS = CONSOLE_SESSION_MAX_AGE_SECONDS;
 

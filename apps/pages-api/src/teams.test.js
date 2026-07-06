@@ -196,6 +196,47 @@ test('department path change moves department_auto membership immediately', asyn
   });
 });
 
+test('department hydration follows a merged department team to the target team', async () => {
+  const store = createTestPagesStore({
+    now: (() => {
+      const values = ['2026-06-15T00:00:00.000Z', '2026-06-15T00:01:00.000Z', '2026-06-15T00:02:00.000Z'];
+      return () => values.shift() || '2026-06-15T00:03:00.000Z';
+    })(),
+  });
+
+  const source = await store.findOrCreateDepartmentTeam({
+    environment: 'production',
+    departmentPath: 'XD/Old/Web',
+  });
+  const target = await store.findOrCreateDepartmentTeam({
+    environment: 'production',
+    departmentPath: 'XD/New/Web',
+  });
+  await store.mergeDepartmentTeams({
+    sourceTeamId: source.id,
+    targetTeamId: target.id,
+    actorUserId: 'usr_root',
+    reason: 'department renamed',
+    environment: 'production',
+  });
+
+  const hydrated = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_alice',
+    departmentPath: 'XD/Old/Web',
+  });
+
+  assert.equal(hydrated.team.id, target.id);
+  assert.equal(hydrated.team.status, 'active');
+  assert.equal(hydrated.member.teamId, target.id);
+  assert.equal(hydrated.member.departmentPath, target.departmentPath);
+  assert.equal(hydrated.member.removedAt, null);
+  assert.deepEqual(
+    (await store.listTeamsForUser({ environment: 'production', userId: 'usr_alice' })).map((team) => team.id),
+    [target.id]
+  );
+});
+
 test('department team id remains stable and distinct for Chinese department paths', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
 
@@ -615,6 +656,40 @@ test('team member APIs decode user ids captured from the path', async () => {
   assert.equal(removed.status, 200, await removed.clone().text());
   assert.equal((await removed.json()).member.userId, 'alice@example.com');
   assert.equal(await store.getTeamMember({ teamId: team.id, userId: encodedUserId }), null);
+});
+
+test('team member APIs preserve the final custom team admin', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin');
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: null,
+    createdByUserId: 'usr_admin',
+  });
+
+  const demote = await worker.fetch(
+    internalConsoleJsonRequest(`/.xd-pages/api/console/teams/${team.id}/members/usr_admin`, {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { role: 'publisher' },
+    }),
+    env(store)
+  );
+  const remove = await worker.fetch(
+    internalConsoleRequest(`/.xd-pages/api/console/teams/${team.id}/members/usr_admin`, {
+      userId: 'usr_admin',
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+
+  assert.equal(demote.status, 409, await demote.clone().text());
+  assert.equal((await demote.json()).error.code, 'TEAM_LAST_ADMIN');
+  assert.equal(remove.status, 409, await remove.clone().text());
+  assert.equal((await remove.json()).error.code, 'TEAM_LAST_ADMIN');
+  assert.equal((await store.getTeamMember({ teamId: team.id, userId: 'usr_admin' })).role, 'admin');
 });
 
 function env(store, overrides = {}) {

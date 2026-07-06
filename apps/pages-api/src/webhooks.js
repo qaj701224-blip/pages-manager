@@ -158,19 +158,25 @@ async function createWebhookSubscription(request, env, config, store, session) {
   const parsed = await normalizeWebhookSubscriptionInput(body, env);
   if (parsed instanceof Response) return parsed;
 
-  const webhook = await store.createWebhookSubscription({
-    id: nextId(env, 'wh'),
-    environment: config.environment,
-    name: parsed.name,
-    events: parsed.events,
-    payloadMode: parsed.payloadMode,
-    restrictedTemplate: parsed.restrictedTemplate,
-    encryptedUrlCiphertext: parsed.encryptedUrlCiphertext,
-    urlHost: parsed.urlHost,
-    urlMasked: parsed.urlMasked,
-    urlFingerprint: parsed.urlFingerprint,
-    createdByUserId: session.userId,
-  });
+  let webhook;
+  try {
+    webhook = await store.createWebhookSubscription({
+      id: nextId(env, 'wh'),
+      environment: config.environment,
+      name: parsed.name,
+      events: parsed.events,
+      payloadMode: parsed.payloadMode,
+      restrictedTemplate: parsed.restrictedTemplate,
+      encryptedUrlCiphertext: parsed.encryptedUrlCiphertext,
+      urlHost: parsed.urlHost,
+      urlMasked: parsed.urlMasked,
+      urlFingerprint: parsed.urlFingerprint,
+      createdByUserId: session.userId,
+    });
+  } catch (error) {
+    if (isWebhookUrlConflict(error)) return webhookUrlConflict();
+    throw error;
+  }
 
   return jsonOk({ webhook: formatWebhookSubscription(webhook) }, 201);
 }
@@ -214,11 +220,17 @@ async function updateWebhookSubscription(request, env, config, store, subscripti
     Object.assign(patch, urlFields);
   }
 
-  const webhook = await store.updateWebhookSubscription({
-    environment: config.environment,
-    id: subscriptionId,
-    patch,
-  });
+  let webhook;
+  try {
+    webhook = await store.updateWebhookSubscription({
+      environment: config.environment,
+      id: subscriptionId,
+      patch,
+    });
+  } catch (error) {
+    if (isWebhookUrlConflict(error)) return webhookUrlConflict();
+    throw error;
+  }
   if (!webhook) return jsonError('WEBHOOK_NOT_FOUND', 'Webhook was not found.', 404, 'Check the webhook id.');
   return jsonOk({ webhook: formatWebhookSubscription(webhook) });
 }
@@ -433,9 +445,23 @@ function nextId(env, prefix) {
 }
 
 function readWebhookUrlEncryptionKey(env) {
-  const key = env.WEBHOOK_URL_ENCRYPTION_KEY || env.PAGES_SECRET_ENCRYPTION_KEY || env.SITE_SECRET_ENCRYPTION_KEY;
+  const key = env.WEBHOOK_URL_ENCRYPTION_KEY;
   if (typeof key !== 'string' || !key) throw new Error('WEBHOOK_URL_ENCRYPTION_KEY_REQUIRED');
   return key;
+}
+
+function isWebhookUrlConflict(error) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /WEBHOOK_URL_CONFLICT|idx_webhook_subscriptions_fingerprint|url_fingerprint|UNIQUE constraint failed/i.test(message);
+}
+
+function webhookUrlConflict() {
+  return jsonError(
+    'WEBHOOK_URL_CONFLICT',
+    'Webhook URL already exists.',
+    409,
+    'Edit or re-enable the existing webhook subscription.'
+  );
 }
 
 function readNowIso(now) {

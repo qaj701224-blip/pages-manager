@@ -107,10 +107,10 @@ test('fetchJson sends csrf header for write requests', async () => {
   assert.deepEqual(payload, null);
 });
 
-test('readCsrfToken reads xd_cell_csrf cookie when document is available', () => {
+test('readCsrfToken reads __Host-xd_cell_csrf cookie when document is available', () => {
   const previousDocument = globalThis.document;
   globalThis.document = {
-    cookie: 'theme=light; xd_cell_csrf=csrf-2; other=value',
+    cookie: 'theme=light; __Host-xd_cell_csrf=csrf-2; other=value',
   };
 
   try {

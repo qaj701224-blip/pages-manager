@@ -33,7 +33,7 @@ export function readCsrfToken() {
   const cookie = globalThis.document.cookie || '';
   for (const part of cookie.split(';')) {
     const [name, ...rawValue] = part.trim().split('=');
-    if (name === 'xd_cell_csrf') return decodeURIComponent(rawValue.join('='));
+    if (name === '__Host-xd_cell_csrf') return decodeURIComponent(rawValue.join('='));
   }
   return '';
 }

@@ -362,7 +362,7 @@ async function resolveConsoleSiteOwnerTarget(store, config, session, body) {
 }
 
 function isActiveConsoleUser(user) {
-  return Boolean(user?.id) && user.employeeStatus !== 'inactive';
+  return Boolean(user?.id) && user.employeeStatus === 'active';
 }
 
 async function validateConsoleAuthSession(request, env, config, store) {

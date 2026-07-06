@@ -204,6 +204,70 @@ test('console admin validates webhook target resolution on create and update', a
   assert.equal((await update.json()).error.code, 'WEBHOOK_URL_HOST_FORBIDDEN');
 });
 
+test('console admin returns conflict for duplicate webhook URLs', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  let webhookSeq = 0;
+  const testEnv = env(store, {
+    nextId: (prefix) => (prefix === 'wh' ? `wh_${++webhookSeq}` : `${prefix}_${webhookSeq}`),
+  });
+  const first = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+      method: 'POST',
+      body: {
+        name: 'Slack deploy events',
+        url: FULL_WEBHOOK_URL,
+        events: ['site.deployed'],
+        payloadMode: 'standard',
+      },
+    }),
+    testEnv
+  );
+  assert.equal(first.status, 201, await first.clone().text());
+
+  const duplicateCreate = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+      method: 'POST',
+      body: {
+        name: 'Duplicate Slack deploy events',
+        url: FULL_WEBHOOK_URL,
+        events: ['site.deployed'],
+        payloadMode: 'standard',
+      },
+    }),
+    testEnv
+  );
+  assert.equal(duplicateCreate.status, 409);
+  assert.equal((await duplicateCreate.json()).error.code, 'WEBHOOK_URL_CONFLICT');
+
+  const other = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+      method: 'POST',
+      body: {
+        name: 'Other deploy events',
+        url: 'https://hooks.slack.com/services/T000/B000/other-secret-token',
+        events: ['site.deployed'],
+        payloadMode: 'standard',
+      },
+    }),
+    testEnv
+  );
+  assert.equal(other.status, 201, await other.clone().text());
+  const otherId = (await other.json()).webhook.id;
+
+  const duplicateUpdate = await worker.fetch(
+    internalConsoleRequest(`/.xd-pages/api/console/admin/webhooks/${otherId}`, {
+      method: 'PATCH',
+      body: {
+        url: FULL_WEBHOOK_URL,
+      },
+    }),
+    testEnv
+  );
+  assert.equal(duplicateUpdate.status, 409);
+  assert.equal((await duplicateUpdate.json()).error.code, 'WEBHOOK_URL_CONFLICT');
+});
+
 test('console admin lists and disables webhook subscriptions without exposing target URL secrets', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -300,6 +364,53 @@ test('console admin webhook deliveries expose metadata without raw payload or ta
     },
   ]);
   assert.doesNotMatch(JSON.stringify(body), /payload":|rawPayload|https:\/\/hooks\.slack\.com|ciphertext/);
+});
+
+test('console admin webhook deliveries are limited for scan performance', async () => {
+  let tick = 0;
+  const store = createTestPagesStore({
+    now: () => new Date(Date.UTC(2026, 6, 1, 0, 0, tick++)).toISOString(),
+  });
+  await seedPlatformAdmin(store);
+  await store.createWebhookSubscription({
+    id: 'wh_1',
+    environment: 'production',
+    name: 'Slack deploy events',
+    events: ['site.deployed'],
+    payloadMode: 'standard',
+    restrictedTemplate: null,
+    encryptedUrlCiphertext: 'v1:ciphertext',
+    urlHost: 'hooks.slack.com',
+    urlMasked: 'https://hooks.slack.com/.../token',
+    urlFingerprint: 'sha256:abc',
+    createdByUserId: 'usr_root',
+  });
+  for (let index = 0; index < 105; index += 1) {
+    await store.recordWebhookDelivery({
+      id: `whd_${index}`,
+      environment: 'production',
+      subscriptionId: 'wh_1',
+      eventType: 'site.deployed',
+      deliveryStatus: 'succeeded',
+      renderStatus: 'succeeded',
+      payloadMode: 'standard',
+      payloadHash: `sha256:${index}`,
+      targetHost: 'hooks.slack.com',
+      httpStatus: 200,
+      attemptCount: 1,
+    });
+  }
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks/wh_1/deliveries'),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.deliveries.length, 100);
+  assert.equal(body.deliveries[0].id, 'whd_104');
+  assert.equal(body.deliveries.at(-1).id, 'whd_5');
 });
 
 test('deliverWebhookEvent renders template payloads and records successful delivery metadata', async () => {

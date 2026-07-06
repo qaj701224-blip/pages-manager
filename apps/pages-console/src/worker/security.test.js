@@ -119,7 +119,7 @@ test('safe write guard rejects missing same-origin evidence or csrf token', asyn
     request('/api/console/auth/logout', {
       method: 'POST',
       headers: {
-        Cookie: 'xd_cell_csrf=csrf-1',
+        Cookie: '__Host-xd_cell_csrf=csrf-1',
         Origin: 'https://evil.example',
         'X-CSRF-Token': 'csrf-1',
       },
@@ -133,7 +133,7 @@ test('safe write guard accepts same-origin request with matching csrf cookie and
     request('/api/console/auth/logout', {
       method: 'POST',
       headers: {
-        Cookie: 'xd_cell_csrf=csrf-1',
+        Cookie: '__Host-xd_cell_csrf=csrf-1',
         Origin: 'https://workers.xd.team',
         Referer: 'https://workers.xd.team/workspace',
         'X-CSRF-Token': 'csrf-1',

@@ -143,6 +143,9 @@ async function updateTeamMember(request, store, config, session, teamId, userId)
   const user = await store.getUser(userId);
   if (!user) return jsonError('USER_NOT_FOUND', 'User not found.', 404, 'Pick a user that has signed in to XD Cell.');
 
+  const lastAdminError = await ensureCanChangeTeamAdminRole(store, teamId, userId, role);
+  if (lastAdminError) return lastAdminError;
+
   const member = await store.addTeamMember({
     teamId,
     userId,
@@ -156,6 +159,9 @@ async function updateTeamMember(request, store, config, session, teamId, userId)
 async function removeTeamMember(store, config, session, teamId, userId) {
   const access = await requireTeamAdmin(store, config, session, teamId);
   if (access instanceof Response) return access;
+
+  const lastAdminError = await ensureCanRemoveTeamMember(store, teamId, userId);
+  if (lastAdminError) return lastAdminError;
 
   const member = await store.removeTeamMember({ teamId, userId, actorUserId: session.userId });
   if (!member) return jsonError('TEAM_MEMBER_NOT_FOUND', 'Team member not found.', 404, 'Check the user id.');
@@ -238,6 +244,33 @@ async function requireTeamMember(store, config, session, teamId) {
   const member = await store.getTeamMember({ teamId, userId: session.userId });
   if (!member) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
   return { team, member };
+}
+
+async function ensureCanChangeTeamAdminRole(store, teamId, userId, nextRole) {
+  if (nextRole === 'admin') return null;
+  const member = typeof store.getTeamMember === 'function' ? await store.getTeamMember({ teamId, userId }) : null;
+  if (!member || member.role !== 'admin') return null;
+  return ensureTeamHasAnotherAdmin(store, teamId, userId);
+}
+
+async function ensureCanRemoveTeamMember(store, teamId, userId) {
+  const member = typeof store.getTeamMember === 'function' ? await store.getTeamMember({ teamId, userId }) : null;
+  if (!member || member.role !== 'admin') return null;
+  return ensureTeamHasAnotherAdmin(store, teamId, userId);
+}
+
+async function ensureTeamHasAnotherAdmin(store, teamId, userId) {
+  const members = typeof store.listTeamMembers === 'function' ? await store.listTeamMembers({ teamId }) : [];
+  const hasAnotherAdmin = members.some(
+    (member) => member.userId !== userId && !member.removedAt && member.role === 'admin'
+  );
+  if (hasAnotherAdmin) return null;
+  return jsonError(
+    'TEAM_LAST_ADMIN',
+    'Team must keep at least one active admin.',
+    409,
+    'Promote another member to admin before changing this member.'
+  );
 }
 
 function formatTeam(team, member) {

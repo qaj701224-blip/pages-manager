@@ -4,7 +4,7 @@ import test from 'node:test';
 import worker from './index.js';
 import { createTestPagesStore } from './test-store.js';
 
-test('platform admin store grants, lists, checks, and revokes active admins', async () => {
+test('platform admin store grants, lists, checks, and revokes active admins while preserving one admin', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
 
   const granted = await store.grantPlatformAdmin({
@@ -25,6 +25,22 @@ test('platform admin store grants, lists, checks, and revokes active admins', as
     (await store.listPlatformAdmins({ environment: 'production' })).map((admin) => admin.userId),
     ['usr_admin']
   );
+  await assert.rejects(
+    () =>
+      store.revokePlatformAdmin({
+        environment: 'production',
+        userId: 'usr_admin',
+        revokedByUserId: 'usr_root',
+        revokeReason: 'rotation',
+      }),
+    /PLATFORM_ADMIN_LAST_ACTIVE/
+  );
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId: 'usr_root',
+    grantedByUserId: 'usr_root',
+    grantReason: 'bootstrap',
+  });
 
   const revoked = await store.revokePlatformAdmin({
     environment: 'production',
@@ -37,7 +53,10 @@ test('platform admin store grants, lists, checks, and revokes active admins', as
   assert.equal(revoked.revokedByUserId, 'usr_root');
   assert.equal(revoked.revokeReason, 'rotation');
   assert.equal(await store.isPlatformAdmin({ environment: 'production', userId: 'usr_admin' }), false);
-  assert.deepEqual(await store.listPlatformAdmins({ environment: 'production' }), []);
+  assert.deepEqual(
+    (await store.listPlatformAdmins({ environment: 'production' })).map((admin) => admin.userId),
+    ['usr_root']
+  );
 
   assert.deepEqual(
     (await store.listAuditEvents()).map((event) => ({
@@ -56,6 +75,16 @@ test('platform admin store grants, lists, checks, and revokes active admins', as
         metadata: {
           environment: 'production',
           targetUserId: 'usr_admin',
+        },
+      },
+      {
+        eventType: 'admin.platform_admin.grant',
+        actorUserId: 'usr_root',
+        decision: 'allow',
+        statusCode: 200,
+        metadata: {
+          environment: 'production',
+          targetUserId: 'usr_root',
         },
       },
       {
@@ -134,6 +163,21 @@ test('console admin API requires platform admin identity and manages platform ad
   assert.equal(revoke.status, 200, await revoke.clone().text());
   assert.equal((await revoke.json()).admin.revokedByUserId, 'usr_root');
   assert.equal(await store.isPlatformAdmin({ environment: 'production', userId: 'usr_admin' }), false);
+
+  const revokeFinal = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/platform-admins/usr_root', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: {
+        reason: 'rotation',
+      },
+    }),
+    env(store)
+  );
+  assert.equal(revokeFinal.status, 409, await revokeFinal.clone().text());
+  assert.equal((await revokeFinal.json()).error.code, 'PLATFORM_ADMIN_LAST_ACTIVE');
+  assert.equal(await store.isPlatformAdmin({ environment: 'production', userId: 'usr_root' }), true);
 });
 
 function env(store, overrides = {}) {

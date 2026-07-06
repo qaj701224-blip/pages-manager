@@ -113,8 +113,8 @@ function jwtSigningEnv(overrides = {}) {
 }
 
 function extractSessionToken(setCookie) {
-  const match = String(setCookie || '').match(/xd_cell_session=([^;,]+)/);
-  assert.ok(match, 'Set-Cookie should include xd_cell_session');
+  const match = String(setCookie || '').match(/__Host-xd_cell_session=([^;,]+)/);
+  assert.ok(match, 'Set-Cookie should include __Host-xd_cell_session');
   return decodeURIComponent(match[1]);
 }
 
@@ -332,7 +332,7 @@ test('access key proxy forwards signed session identity and JSON body to pages-a
       cookie,
       headers: {
         'Content-Type': 'application/json',
-        Cookie: `${cookie}; xd_cell_csrf=csrf-1`,
+        Cookie: `${cookie}; __Host-xd_cell_csrf=csrf-1`,
         Origin: 'https://workers.xd.team',
         'X-CSRF-Token': 'csrf-1',
         'X-Console-User-Id': 'attacker',
@@ -375,7 +375,7 @@ test('site management proxy forwards access and runtime config writes to pages-a
 
   const writeHeaders = {
     'Content-Type': 'application/json',
-    Cookie: `${cookie}; xd_cell_csrf=csrf-1`,
+    Cookie: `${cookie}; __Host-xd_cell_csrf=csrf-1`,
     Origin: 'https://workers.xd.team',
     'X-CSRF-Token': 'csrf-1',
     'X-Console-User-Id': 'attacker',
@@ -461,7 +461,7 @@ test('admin proxy forwards signed platform admin session and JSON body to pages-
       cookie,
       headers: {
         'Content-Type': 'application/json',
-        Cookie: `${cookie}; xd_cell_csrf=csrf-1`,
+        Cookie: `${cookie}; __Host-xd_cell_csrf=csrf-1`,
         Origin: 'https://workers.xd.team',
         'X-CSRF-Token': 'csrf-1',
         'X-Console-Admin': 'false',
@@ -562,8 +562,8 @@ test('auth callback exchanges code, sets host-only console cookie, and redirects
   assert.equal(response.status, 302);
   assert.equal(response.headers.get('Location'), '/workspace');
   const setCookie = response.headers.get('Set-Cookie');
-  assert.match(setCookie, /^xd_cell_session=/);
-  assert.match(setCookie, /xd_cell_csrf=/);
+  assert.match(setCookie, /^__Host-xd_cell_session=/);
+  assert.match(setCookie, /__Host-xd_cell_csrf=/);
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /Secure/);
   assert.doesNotMatch(setCookie, /Domain=/i);
@@ -599,7 +599,7 @@ test('auth callback fails closed when console session signing config is missing'
 
   assert.equal(response.status, 500);
   assert.equal((await response.json()).error.code, 'CONSOLE_SESSION_CREATE_FAILED');
-  assert.doesNotMatch(response.headers.get('Set-Cookie') || '', /^xd_cell_session=/);
+  assert.doesNotMatch(response.headers.get('Set-Cookie') || '', /^__Host-xd_cell_session=/);
 });
 
 test('auth callback redirects back to login and clears cookies when code exchange fails', async () => {
@@ -613,8 +613,8 @@ test('auth callback redirects back to login and clears cookies when code exchang
   assert.equal(response.status, 302);
   assert.equal(response.headers.get('Location'), '/login?error=auth_failed');
   const setCookie = response.headers.get('Set-Cookie') || '';
-  assert.match(setCookie, /xd_cell_session=;/);
-  assert.match(setCookie, /xd_cell_csrf=;/);
+  assert.match(setCookie, /__Host-xd_cell_session=;/);
+  assert.match(setCookie, /__Host-xd_cell_csrf=;/);
 });
 
 test('staging auth callback rejects non-platform admins and clears session cookie', async () => {
@@ -657,7 +657,7 @@ test('staging auth callback rejects non-platform admins and clears session cooki
 
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'ADMIN_REQUIRED');
-  assert.match(response.headers.get('Set-Cookie'), /^xd_cell_session=;/);
+  assert.match(response.headers.get('Set-Cookie'), /^__Host-xd_cell_session=;/);
   assert.deepEqual(calls, [
     {
       path: '/.xd-pages/api/console/auth/session',
@@ -830,7 +830,7 @@ test('logout clears console session cookie and redirects through pages-auth logo
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/auth/logout', {
       headers: {
-        Cookie: 'xd_cell_csrf=csrf-1',
+        Cookie: '__Host-xd_cell_csrf=csrf-1',
       },
     }),
     env()
@@ -841,8 +841,8 @@ test('logout clears console session cookie and redirects through pages-auth logo
     response.headers.get('Location'),
     'https://auth.pages.xd.team/.xd-pages/auth/logout?return_to=https%3A%2F%2Fworkers.xd.team%2Flogin%3FloggedOut%3D1'
   );
-  assert.match(response.headers.get('Set-Cookie'), /^xd_cell_session=;/);
-  assert.match(response.headers.get('Set-Cookie'), /xd_cell_csrf=;/);
+  assert.match(response.headers.get('Set-Cookie'), /^__Host-xd_cell_session=;/);
+  assert.match(response.headers.get('Set-Cookie'), /__Host-xd_cell_csrf=;/);
 });
 
 test('app shell issues a readable csrf cookie for subsequent write requests', async () => {
@@ -856,8 +856,8 @@ test('app shell issues a readable csrf cookie for subsequent write requests', as
 
   assert.equal(response.status, 200);
   const setCookie = response.headers.get('Set-Cookie') || '';
-  assert.match(setCookie, /xd_cell_csrf=/);
-  assert.doesNotMatch(setCookie, /xd_cell_csrf=[^;]+;[^,]*HttpOnly/i);
+  assert.match(setCookie, /__Host-xd_cell_csrf=/);
+  assert.doesNotMatch(setCookie, /__Host-xd_cell_csrf=[^;]+;[^,]*HttpOnly/i);
   assert.match(setCookie, /SameSite=Lax/);
 });
 

@@ -508,12 +508,25 @@ async function revokePlatformAdmin(request, config, store, session, userId) {
   if (!normalizedUserId)
     return jsonError('PLATFORM_ADMIN_USER_REQUIRED', 'User id is required.', 400, 'Choose a user to revoke.');
 
-  const admin = await store.revokePlatformAdmin({
-    environment: config.environment,
-    userId: normalizedUserId,
-    revokedByUserId: session.userId,
-    revokeReason: normalizeNullableString(body.reason),
-  });
+  let admin;
+  try {
+    admin = await store.revokePlatformAdmin({
+      environment: config.environment,
+      userId: normalizedUserId,
+      revokedByUserId: session.userId,
+      revokeReason: normalizeNullableString(body.reason),
+    });
+  } catch (error) {
+    if (String(error?.message || error).includes('PLATFORM_ADMIN_LAST_ACTIVE')) {
+      return jsonError(
+        'PLATFORM_ADMIN_LAST_ACTIVE',
+        'Platform must keep at least one active administrator.',
+        409,
+        'Grant another platform administrator before revoking this user.'
+      );
+    }
+    throw error;
+  }
   if (!admin) return jsonError('PLATFORM_ADMIN_NOT_FOUND', 'Platform admin was not found.', 404, 'Check the user id.');
   return jsonOk({ admin: formatPlatformAdmin(admin) });
 }

@@ -24,6 +24,8 @@ function publicActor(actor) {
       userId: actor.userId,
       email: actor.email,
       name: actor.name,
+      ownerType: actor.ownerType || 'user',
+      ownerId: actor.ownerId || actor.userId,
       siteId: actor.siteId || null,
       scopes: actor.scopes,
     };

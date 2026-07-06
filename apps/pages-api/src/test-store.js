@@ -143,6 +143,12 @@ class TestPagesStore {
 
     const existing = this.platformAdmins.get(platformAdminKey(normalizedEnvironment, normalizedUserId));
     if (!existing) return null;
+    if (!existing.revokedAt) {
+      const activeCount = [...this.platformAdmins.values()].filter(
+        (admin) => admin.environment === normalizedEnvironment && !admin.revokedAt
+      ).length;
+      if (activeCount <= 1) throw new Error('PLATFORM_ADMIN_LAST_ACTIVE');
+    }
     const now = this.now();
     const record = {
       ...existing,
@@ -213,6 +219,7 @@ class TestPagesStore {
     ) {
       throw new Error('WEBHOOK_SUBSCRIPTION_INVALID');
     }
+    this.ensureWebhookUrlFingerprintAvailable(record.environment, record.urlFingerprint);
     this.webhookSubscriptions.set(record.id, record);
     return cloneRecord(withoutWebhookSecret(record));
   }
@@ -249,8 +256,18 @@ class TestPagesStore {
       next.disabledAt = null;
       next.disabledByUserId = null;
     }
+    this.ensureWebhookUrlFingerprintAvailable(environment, next.urlFingerprint, id);
     this.webhookSubscriptions.set(id, next);
     return cloneRecord(withoutWebhookSecret(next));
+  }
+
+  ensureWebhookUrlFingerprintAvailable(environment, urlFingerprint, currentId = null) {
+    for (const webhook of this.webhookSubscriptions.values()) {
+      if (webhook.environment !== environment) continue;
+      if (webhook.urlFingerprint !== urlFingerprint) continue;
+      if (currentId && webhook.id === currentId) continue;
+      throw new Error('WEBHOOK_URL_CONFLICT');
+    }
   }
 
   async recordWebhookDelivery(input) {
@@ -317,6 +334,7 @@ class TestPagesStore {
           (delivery) => delivery.environment === environment && (!subscriptionId || delivery.subscriptionId === subscriptionId)
         )
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 100)
     );
   }
 
@@ -560,9 +578,17 @@ class TestPagesStore {
         return cloneRecord(team);
       }
     }
+    const deterministicId = departmentTeamId(environment, normalizedPath);
+    const existingById = this.teams.get(deterministicId);
+    if (existingById?.mergedIntoTeamId) {
+      const target = this.teams.get(existingById.mergedIntoTeamId);
+      if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) {
+        return cloneRecord(target);
+      }
+    }
     const now = createdAt || this.now();
     const team = {
-      id: departmentTeamId(environment, normalizedPath),
+      id: deterministicId,
       environment,
       name: normalizedPath,
       description: null,
@@ -607,10 +633,11 @@ class TestPagesStore {
     }
 
     const team = await this.findOrCreateDepartmentTeam({ environment, departmentPath: normalizedPath, createdAt: now });
+    const membershipDepartmentPath = team.departmentPath || normalizedPath;
     const existing = this.teamMembers.get(teamMemberKey(team.id, userId)) || null;
     if (existing) {
       const shouldRestore = Boolean(existing.removedAt && existing.removedByUserId === 'system:xds');
-      existing.departmentPath = normalizedPath;
+      existing.departmentPath = membershipDepartmentPath;
       if (shouldRestore) {
         existing.removedAt = null;
         existing.removedByUserId = null;
@@ -624,7 +651,7 @@ class TestPagesStore {
         userId,
         migratedFrom,
         targetTeam: team,
-        departmentPath: normalizedPath,
+        departmentPath: membershipDepartmentPath,
         now,
       });
       return { team, member: cloneRecord(existing), restored: shouldRestore };
@@ -635,7 +662,7 @@ class TestPagesStore {
       userId,
       role: 'admin',
       membershipSource: 'department_auto',
-      departmentPath: normalizedPath,
+      departmentPath: membershipDepartmentPath,
       roleOverriddenAt: null,
       removedAt: null,
       removedByUserId: null,
@@ -647,7 +674,7 @@ class TestPagesStore {
     this.teamMembers.set(teamMemberKey(team.id, userId), member);
     await this.recordAuditEvent(
       departmentMembershipAuditEvent(
-        { environment, userId, teamId: team.id, departmentPath: normalizedPath },
+        { environment, userId, teamId: team.id, departmentPath: membershipDepartmentPath },
         'system.department_membership.join',
         now
       )
@@ -657,7 +684,7 @@ class TestPagesStore {
       userId,
       migratedFrom,
       targetTeam: team,
-      departmentPath: normalizedPath,
+      departmentPath: membershipDepartmentPath,
       now,
     });
     return { team, member: cloneRecord(member), restored: true };
@@ -1093,10 +1120,11 @@ class TestPagesStore {
       if (site.deletedAt) continue;
       if (environment && site.environment !== environment) continue;
       const route = this.routes.get(this.routeBySiteId.get(site.id));
-      if (route?.visibility === 'internal' || site.defaultVisibility === 'internal') siteIds.add(site.id);
+      if ((route?.visibility || site.defaultVisibility) === 'internal') siteIds.add(site.id);
     }
     if (viewerUserId) {
       for (const site of await this.listSitesForUser(viewerUserId, { type: 'user', userId: viewerUserId }, environment)) {
+        if ((site.ownerType || 'user') !== 'user') continue;
         siteIds.add(site.id);
       }
       for (const site of await this.listTeamOwnedSitesForUser({ environment, userId: viewerUserId })) {
@@ -1171,6 +1199,7 @@ class TestPagesStore {
         .filter((deployment) => deployment.siteId === siteId)
         .filter((deployment) => !environment || deployment.environment === environment)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 100)
     );
   }
 

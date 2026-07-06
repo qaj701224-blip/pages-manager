@@ -74,7 +74,7 @@ jobs:
                 ;;
             esac
             case "$path" in
-              apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | \
+              apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | apps/pages-console/* | \
               packages/ip-guard/* | packages/pages-runtime-protocol/* | packages/worker-kit/* | packages/wfp-client/* | \
               scripts/render-pages-v2-wrangler.mjs | scripts/provision-pages-v2-slots.mjs | \
               scripts/put-pages-v2-secrets.sh | package.json | pnpm-lock.yaml | \

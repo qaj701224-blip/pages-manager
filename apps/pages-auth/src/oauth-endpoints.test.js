@@ -11,6 +11,7 @@ import {
   createStoredOAuthState,
   createStoredConsoleLoginCode,
   createStoredSession,
+  refreshStoredSession,
 } from './do-storage.js';
 import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
@@ -172,6 +173,7 @@ test('authorize for CLI login stores the server-side device code in OAuth state'
 
 test('authorize with an existing auth session creates a site code without redirecting to SSO', async () => {
   const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
   let requestedUserId;
   let createdSiteCodeInput;
   const env = testEnv({
@@ -191,6 +193,15 @@ test('authorize with an existing auth session creates a site code without redire
         sessionVersion: 7,
       };
     },
+    refreshAuthSessionRecord: (sid, options) => refreshStoredSession(sessionStorage, sid, options),
+  });
+  await createStoredSession(sessionStorage, {
+    sid: 'sid_auth',
+    userId: 'usr_123',
+    purpose: 'auth_session',
+    now: now - 100,
+    idleTtlSeconds: 600,
+    absoluteTtlSeconds: 1200,
   });
   const authToken = await signSessionJwt(
     {
@@ -227,10 +238,12 @@ test('authorize with an existing auth session creates a site code without redire
   assert.equal(location.searchParams.get('return_to'), 'https://demo.pages.xd.team/private');
   assert.equal(location.origin, 'https://demo.pages.xd.team');
   assert.deepEqual(createdSiteCodeInput.user.departments, ['XD/Platform/Web']);
+  assert.equal((await sessionStorage.get('session:sid_auth')).lastSeenAt, now);
 });
 
 test('authorize with an existing auth session creates a console code without redirecting to SSO', async () => {
   const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
   let requestedUserId;
   const env = testEnv({
     createOAuthStateRecord: (input) => createStoredOAuthState(oauthStorage, input),
@@ -248,6 +261,15 @@ test('authorize with an existing auth session creates a console code without red
         sessionVersion: 9,
       };
     },
+    refreshAuthSessionRecord: (sid, options) => refreshStoredSession(sessionStorage, sid, options),
+  });
+  await createStoredSession(sessionStorage, {
+    sid: 'sid_console',
+    userId: 'usr_admin',
+    purpose: 'auth_session',
+    now: now - 100,
+    idleTtlSeconds: 600,
+    absoluteTtlSeconds: 1200,
   });
   const authToken = await signSessionJwt(
     {
@@ -290,6 +312,126 @@ test('authorize with an existing auth session creates a console code without red
     employeeStatus: 'active',
     sessionVersion: 9,
   });
+});
+
+test('authorize with an existing auth session rejects missing session record before minting code', async () => {
+  const oauthStorage = createFakeStorage();
+  let siteCodeCreated = false;
+  const env = testEnv({
+    createOAuthStateRecord: (input) => createStoredOAuthState(oauthStorage, input),
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: async () => {
+      siteCodeCreated = true;
+      throw new Error('site code should not be created');
+    },
+    getUserForAuthSession: async (userId) => ({
+      id: userId,
+      email: 'user@example.test',
+      employeeStatus: 'active',
+      sessionVersion: 7,
+    }),
+    refreshAuthSessionRecord: async () => {
+      throw new Error('Session record is missing');
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_missing' },
+    },
+    env
+  );
+
+  const response = await handleOAuthAuthorize(
+    new Request(
+      'https://auth.pages.xd.team/.xd-pages/auth/authorize?' +
+        'site_host=demo.pages.xd.team&return_to=https://demo.pages.xd.team/private',
+      {
+        headers: {
+          Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }),
+          Accept: 'text/html',
+        },
+      }
+    ),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.equal(new URL(response.headers.get('Location')).origin, 'https://sso.example.test');
+  assert.equal(siteCodeCreated, false);
+});
+
+test('authorize with an existing auth session hydrates missing department before console code', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  let hydratedProfile;
+  let createdConsoleCodeInput;
+  const env = testEnv({
+    createOAuthStateRecord: (input) => createStoredOAuthState(oauthStorage, input),
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createConsoleLoginCodeRecord: (input) => {
+      createdConsoleCodeInput = input;
+      return createStoredConsoleLoginCode(oauthStorage, input);
+    },
+    getUserForAuthSession: async (userId) => ({
+      id: userId,
+      email: 'admin@example.test',
+      employeeStatus: 'active',
+      sessionVersion: 9,
+      departmentPath: null,
+      departmentCheckedAt: null,
+    }),
+    hydrateDepartmentAfterSso: async (profile) => {
+      hydratedProfile = profile;
+      return { departmentPath: 'XD/Platform/Web' };
+    },
+    refreshAuthSessionRecord: (sid, options) => refreshStoredSession(sessionStorage, sid, options),
+  });
+  await createStoredSession(sessionStorage, {
+    sid: 'sid_console',
+    userId: 'usr_admin',
+    purpose: 'auth_session',
+    now: now - 100,
+    idleTtlSeconds: 600,
+    absoluteTtlSeconds: 1200,
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_admin',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_console' },
+    },
+    env
+  );
+
+  const response = await handleOAuthAuthorize(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/authorize?console=1&return_to=/workspace/teams', {
+      headers: {
+        Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }),
+        Accept: 'text/html',
+      },
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  assert.deepEqual(hydratedProfile, {
+    userId: 'usr_admin',
+    email: 'admin@example.test',
+    employeeStatus: 'active',
+    sessionVersion: 9,
+    departments: [],
+  });
+  assert.equal(createdConsoleCodeInput.user.userId, 'usr_admin');
 });
 
 test('callback without code or state returns safe error without echoing OAuth values', async () => {

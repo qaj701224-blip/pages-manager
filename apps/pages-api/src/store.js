@@ -222,6 +222,16 @@ export class D1PagesStore {
       includeRevoked: true,
     });
     if (!existing) return null;
+    if (!existing.revokedAt) {
+      const activeCount = await this.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM platform_admins
+          WHERE environment = ? AND revoked_at IS NULL`
+        )
+        .bind(normalizedEnvironment)
+        .first();
+      if (Number(activeCount?.count || 0) <= 1) throw new Error('PLATFORM_ADMIN_LAST_ACTIVE');
+    }
     await this.db.batch([
       this.db
         .prepare(
@@ -320,6 +330,7 @@ export class D1PagesStore {
     ) {
       throw new Error('WEBHOOK_SUBSCRIPTION_INVALID');
     }
+    await this.ensureWebhookUrlFingerprintAvailable(record.environment, record.urlFingerprint);
 
     await this.db
       .prepare(
@@ -399,6 +410,7 @@ export class D1PagesStore {
       next.disabledAt = null;
       next.disabledByUserId = null;
     }
+    await this.ensureWebhookUrlFingerprintAvailable(environment, next.urlFingerprint, id);
 
     await this.db
       .prepare(
@@ -427,6 +439,21 @@ export class D1PagesStore {
       )
       .run();
     return this.getWebhookSubscription({ environment, id });
+  }
+
+  async ensureWebhookUrlFingerprintAvailable(environment, urlFingerprint, currentId = null) {
+    const normalizedEnvironment = normalizeRequiredString(environment);
+    const normalizedFingerprint = normalizeRequiredString(urlFingerprint);
+    if (!normalizedEnvironment || !normalizedFingerprint) return;
+    const row = await this.db
+      .prepare(
+        `SELECT id FROM webhook_subscriptions
+        WHERE environment = ? AND url_fingerprint = ? ${currentId ? 'AND id != ?' : ''}
+        LIMIT 1`
+      )
+      .bind(...(currentId ? [normalizedEnvironment, normalizedFingerprint, currentId] : [normalizedEnvironment, normalizedFingerprint]))
+      .first();
+    if (row) throw new Error('WEBHOOK_URL_CONFLICT');
   }
 
   async recordWebhookDelivery(input) {
@@ -537,7 +564,8 @@ export class D1PagesStore {
       .prepare(
         `SELECT * FROM webhook_deliveries
         WHERE environment = ?${normalizedSubscriptionId ? ' AND subscription_id = ?' : ''}
-        ORDER BY created_at DESC`
+        ORDER BY created_at DESC
+        LIMIT 100`
       )
       .bind(...(normalizedSubscriptionId ? [normalizedEnvironment, normalizedSubscriptionId] : [normalizedEnvironment]))
       .all();
@@ -968,10 +996,16 @@ export class D1PagesStore {
     if (!normalizedPath) throw new Error('DEPARTMENT_PATH_REQUIRED');
     const existing = await this.findDepartmentTeam(environment, normalizedPath);
     if (existing) return existing;
+    const deterministicId = departmentTeamId(environment, normalizedPath);
+    const existingById = await this.getTeam(deterministicId);
+    if (existingById?.mergedIntoTeamId) {
+      const target = await this.getTeam(existingById.mergedIntoTeamId);
+      if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) return target;
+    }
 
     const now = createdAt || this.now();
     const team = {
-      id: departmentTeamId(environment, normalizedPath),
+      id: deterministicId,
       environment,
       name: normalizedPath,
       description: null,
@@ -1014,10 +1048,15 @@ export class D1PagesStore {
           team.deletedAt,
           team.createdAt,
           team.updatedAt
-        ),
+      ),
       this.auditEventStatement(departmentTeamAuditEvent(team, 'system.department_team.create', now)),
     ]);
-    return (await this.getTeam(team.id)) || (await this.findDepartmentTeam(environment, normalizedPath));
+    const inserted = await this.getTeam(team.id);
+    if (inserted?.mergedIntoTeamId) {
+      const target = await this.getTeam(inserted.mergedIntoTeamId);
+      if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) return target;
+    }
+    return inserted || (await this.findDepartmentTeam(environment, normalizedPath));
   }
 
   async findDepartmentTeam(environment, departmentPath) {
@@ -1067,6 +1106,7 @@ export class D1PagesStore {
       .run();
 
     const team = await this.findOrCreateDepartmentTeam({ environment, departmentPath: normalizedPath, createdAt: now });
+    const membershipDepartmentPath = team.departmentPath || normalizedPath;
     const existing = await this.getTeamMember({ teamId: team.id, userId, includeRemoved: true });
     if (existing) {
       const shouldRestore = Boolean(existing.removedAt && existing.removedByUserId === 'system:xds');
@@ -1078,12 +1118,12 @@ export class D1PagesStore {
               restored_at = ?, restored_by_user_id = 'system:xds', updated_at = ?
             WHERE team_id = ? AND user_id = ?`
           )
-          .bind(normalizedPath, now, now, team.id, userId)
+          .bind(membershipDepartmentPath, now, now, team.id, userId)
           .run();
       } else {
         await this.db
           .prepare('UPDATE team_members SET department_path = ?, updated_at = ? WHERE team_id = ? AND user_id = ?')
-          .bind(normalizedPath, now, team.id, userId)
+          .bind(membershipDepartmentPath, now, team.id, userId)
           .run();
       }
       await this.recordDepartmentMigrations({
@@ -1091,7 +1131,7 @@ export class D1PagesStore {
         userId,
         migratedFrom: migratedFrom.results || [],
         targetTeam: team,
-        departmentPath: normalizedPath,
+        departmentPath: membershipDepartmentPath,
         now,
       });
       return {
@@ -1108,11 +1148,11 @@ export class D1PagesStore {
           removed_at, removed_by_user_id, restored_at, restored_by_user_id, created_at, updated_at
         ) VALUES (?, ?, 'admin', 'department_auto', ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`
       )
-      .bind(team.id, userId, normalizedPath, now, now)
+      .bind(team.id, userId, membershipDepartmentPath, now, now)
       .run();
     await this.recordAuditEvent(
       departmentMembershipAuditEvent(
-        { environment, userId, teamId: team.id, departmentPath: normalizedPath },
+        { environment, userId, teamId: team.id, departmentPath: membershipDepartmentPath },
         'system.department_membership.join',
         now
       )
@@ -1122,7 +1162,7 @@ export class D1PagesStore {
       userId,
       migratedFrom: migratedFrom.results || [],
       targetTeam: team,
-      departmentPath: normalizedPath,
+      departmentPath: membershipDepartmentPath,
       now,
     });
     return {
@@ -2150,7 +2190,7 @@ export class D1PagesStore {
           AND teams.deleted_at IS NULL
         WHERE sites.deleted_at IS NULL
           ${environment ? 'AND sites.environment = ?' : ''}
-          AND (site_routes.visibility = 'internal' OR sites.default_visibility = 'internal')
+          AND COALESCE(site_routes.visibility, sites.default_visibility) = 'internal'
         ORDER BY sites.slug ASC`
       )
       .bind(...(environment ? [environment] : []))
@@ -2163,6 +2203,7 @@ export class D1PagesStore {
     );
     if (viewerUserId) {
       for (const site of await this.listSitesForUser(viewerUserId, { type: 'user', userId: viewerUserId }, environment)) {
+        if ((site.ownerType || 'user') !== 'user') continue;
         sitesById.set(site.id, await this.decorateConsoleSiteOwner(site));
       }
       for (const site of await this.listTeamOwnedSitesForUser({ environment, userId: viewerUserId })) {
@@ -2270,7 +2311,8 @@ export class D1PagesStore {
         FROM deployments
         WHERE deployments.site_id = ?
           ${environment ? 'AND deployments.environment = ?' : ''}
-        ORDER BY deployments.created_at DESC`
+        ORDER BY deployments.created_at DESC
+        LIMIT 100`
       )
       .bind(...(environment ? [siteId, environment] : [siteId]))
       .all();

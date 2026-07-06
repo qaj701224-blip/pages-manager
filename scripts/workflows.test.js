@@ -700,6 +700,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /PAGES_CAP_JWT_SECRET_202606: \$\{\{ secrets\.PAGES_CAP_JWT_SECRET_202606 \}\}/);
     assert.match(workflow, /SLACK_PAGES_ALERT_WEBHOOK_URL: \$\{\{ secrets\.SLACK_PAGES_ALERT_WEBHOOK_URL \}\}/);
     assert.match(workflow, /SITE_SECRET_ENCRYPTION_KEY: \$\{\{ secrets\.SITE_SECRET_ENCRYPTION_KEY \}\}/);
+    assert.match(workflow, /WEBHOOK_URL_ENCRYPTION_KEY: \$\{\{ secrets\.WEBHOOK_URL_ENCRYPTION_KEY \}\}/);
     assert.match(workflow, /XDS_OPENAI_TOKEN: \$\{\{ secrets\.XDS_OPENAI_TOKEN \}\}/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
@@ -857,6 +858,7 @@ test('staging sync explicitly dispatches deploy workflows for deploy-affecting p
     'apps/pages-auth/*',
     'apps/pages-router/*',
     'apps/kv-gateway/*',
+    'apps/pages-console/*',
     'packages/ip-guard/*',
     'packages/pages-runtime-protocol/*',
     'packages/worker-kit/*',

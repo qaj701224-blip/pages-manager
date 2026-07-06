@@ -564,13 +564,14 @@ async function readCredentialActor(client, credential) {
   }
 }
 
-function preflightEnvelope({ mode, site, configPath, target, decision, uploadPlan, checks, sideEffects, runtime = null }) {
+function preflightEnvelope({ mode, site, teamId, configPath, target, decision, uploadPlan, checks, sideEffects, runtime = null }) {
   const payload = {
     ok: true,
     schemaVersion: 1,
     type: 'preflight',
     mode,
     ...(site ? { site } : {}),
+    ...(teamId ? { teamId } : {}),
     ...(configPath ? { configPath } : {}),
     target,
     decision: decisionSummary(decision),

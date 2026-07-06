@@ -50,9 +50,15 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'userId',
     'email',
     'name',
+    'ownerType',
+    'ownerId',
     'siteId',
     'scopes',
   ]);
+  assert.equal(
+    body.paths['/.xd-pages/api/access-keys'].post.summary,
+    'Create a personal access key, optionally scoped to one site'
+  );
   assert.ok(body.components.schemas.CliManagedDeploymentRequest);
   assert.equal(body.components.schemas.Team.properties.siteCount.type, 'integer');
   assert.equal(body.components.schemas.Team.properties.memberCount.type, 'integer');

@@ -43,7 +43,7 @@ async function signedConsoleSessionToken(claims = {}, overrides = {}) {
 test('session cookie is host-only and browser hardened', async () => {
   const header = serializeConsoleSessionCookie(await signedConsoleSessionToken());
 
-  assert.match(header, /^xd_cell_session=/);
+  assert.match(header, /^__Host-xd_cell_session=/);
   assert.match(header, /HttpOnly/);
   assert.match(header, /Secure/);
   assert.match(header, /SameSite=Lax/);
@@ -116,7 +116,7 @@ test('expired console_session JWT returns null', async () => {
 test('clear cookie expires the host-only session cookie', () => {
   const header = clearConsoleSessionCookie();
 
-  assert.match(header, /^xd_cell_session=/);
+  assert.match(header, /^__Host-xd_cell_session=/);
   assert.match(header, /Max-Age=0/);
   assert.match(header, /HttpOnly/);
   assert.match(header, /Secure/);

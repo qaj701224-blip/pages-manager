@@ -1035,6 +1035,31 @@ test('deploy --dry-run --json packages locally without network side effects', as
   assert.equal('artifactKind' in body, false);
 });
 
+test('deploy --dry-run --json includes selected team id in preflight output', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const output = [];
+
+  const exitCode = await executeCommand(['deploy', '.', 'docs', '--team', 'team_docs', '--dry-run', '--json'], {
+    cwd: dir,
+    secretStore: {
+      get: async () => {
+        throw new Error('dry-run should not read secrets');
+      },
+    },
+    fetch: async () => {
+      throw new Error('dry-run should not access network');
+    },
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const body = JSON.parse(output.join('\n'));
+  assert.equal(body.mode, 'dry-run');
+  assert.equal(body.site, 'docs');
+  assert.equal(body.teamId, 'team_docs');
+});
+
 test('deploy auto-discovers xd-cell.config.json for dry-run without network side effects', async () => {
   const dir = await tempProject();
   await mkdist(dir);

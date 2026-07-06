@@ -66,6 +66,22 @@ test('unauthenticated directory returns only internal sites with minimal metadat
   assertNoSensitiveConsoleFields(body);
 });
 
+test('unauthenticated directory hides sites whose effective route visibility is no longer internal', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_internal_then_owner',
+    slug: 'internal-then-owner',
+    ownerUserId: 'usr_owner',
+    visibility: 'internal',
+  });
+  await activateSite(store, 'site_internal_then_owner', { visibility: 'owner' });
+
+  const response = await worker.fetch(internalConsoleRequest('/.xd-pages/api/console/directory'), env(store));
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), { sites: [] });
+});
+
 test('unauthenticated directory shows team owner display name without team id', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   const team = await store.createTeam({
@@ -124,6 +140,12 @@ test('console auth session validates current user, session version, and admin gr
   await store.grantPlatformAdmin({
     environment: 'production',
     userId: 'usr_admin',
+    grantedByUserId: 'usr_root',
+    grantReason: 'bootstrap',
+  });
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId: 'usr_root',
     grantedByUserId: 'usr_root',
     grantReason: 'bootstrap',
   });
@@ -222,6 +244,66 @@ test('console auth session hydrates missing department team through pages-api XD
     teams.map((team) => [team.name, team.teamType, team.currentUserRole]),
     [['心动/平台支撑部/Web', 'department', 'admin']]
   );
+});
+
+test('console auth session throttles unavailable department hydration attempts', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_member',
+    email: 'member@xd.com',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+  });
+  let xdsCalls = 0;
+  let nowIso = '2026-07-01T10:00:00.000Z';
+
+  const testEnv = () =>
+    env(store, {
+      XDS_OPENAI_TOKEN: 'secret-token',
+      now: () => nowIso,
+      XD_OFFICE_NET: {
+        fetch: async () => {
+          xdsCalls += 1;
+          return Response.json({ code: 500, message: 'unavailable' }, { status: 503 });
+        },
+      },
+    });
+
+  const first = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/auth/session', {
+      userId: 'usr_member',
+      email: 'member@xd.com',
+      sessionVersion: 1,
+    }),
+    testEnv()
+  );
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.equal(xdsCalls, 1);
+  assert.equal((await store.getUser('usr_member')).departmentPath, null);
+  assert.equal((await store.getUser('usr_member')).departmentCheckedAt, '2026-07-01T10:00:00.000Z');
+
+  const second = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/auth/session', {
+      userId: 'usr_member',
+      email: 'member@xd.com',
+      sessionVersion: 1,
+    }),
+    testEnv()
+  );
+  assert.equal(second.status, 200, await second.clone().text());
+  assert.equal(xdsCalls, 1);
+
+  nowIso = '2026-07-01T10:11:00.000Z';
+  const third = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/auth/session', {
+      userId: 'usr_member',
+      email: 'member@xd.com',
+      sessionVersion: 1,
+    }),
+    testEnv()
+  );
+  assert.equal(third.status, 200, await third.clone().text());
+  assert.equal(xdsCalls, 2);
 });
 
 test('workspace personal and team sites use owner model and team membership', async () => {
@@ -529,6 +611,47 @@ test('site detail and subresources are internal-only, permission checked, and re
   assert.deepEqual(await access.json(), { access: { visibility: 'acl', aclEntries: [] } });
   assert.deepEqual(await config.json(), { config: { vars: [], secrets: [] } });
   assertNoSensitiveConsoleFields(detailBody);
+});
+
+test('site deployments subresource limits deployment history for scan performance', async () => {
+  let tick = 0;
+  const store = createTestPagesStore({
+    now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++)).toISOString(),
+  });
+  await seedConsoleUser(store, 'usr_me', { realname: '徐天麒' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  for (let index = 0; index < 105; index += 1) {
+    await store.createDeploymentForIdempotency({
+      id: `dep_${index}`,
+      environment: 'production',
+      actorId: 'usr_me',
+      actorUserId: 'usr_me',
+      actorType: 'user',
+      source: 'cli',
+      siteId: 'site_mine',
+      operation: 'deploy',
+      idempotencyKey: `idem_${index}`,
+      requestHash: `hash_${index}`,
+      visibility: 'org',
+      status: 'succeeded',
+    });
+  }
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine/deployments', { userId: 'usr_me' }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const deployments = (await response.json()).deployments;
+  assert.equal(deployments.length, 100);
+  assert.equal(deployments[0].id, 'dep_104');
+  assert.equal(deployments.at(-1).id, 'dep_5');
 });
 
 test('site config writes allow publisher access policy and runtime config', async () => {
@@ -843,6 +966,33 @@ test('site publisher can transfer site owner from console settings to an active 
   assert.equal(site.ownerUserId, 'usr_target');
 });
 
+test('site publisher cannot transfer site owner from console settings to a disabled user', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_owner');
+  await seedConsoleUser(store, 'usr_disabled', { employeeStatus: 'disabled' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_owner',
+    visibility: 'org',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_owner',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_disabled' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_TRANSFER_FORBIDDEN');
+  const site = await store.getSite('site_mine');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_owner');
+});
+
 test('site publisher can transfer site owner from console settings to a manageable team', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
@@ -1018,7 +1168,7 @@ async function seedConsoleUser(store, userId, overrides = {}) {
   });
 }
 
-async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1' } = {}) {
+async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1', visibility = 'org' } = {}) {
   await store.createSiteVersion({
     id: `ver_${siteId}`,
     siteId,
@@ -1038,7 +1188,7 @@ async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1' 
     {
       activeVersionId: `ver_${siteId}`,
       workerName,
-      visibility: 'org',
+      visibility,
       updatedAt: '2026-06-15T00:00:00.000Z',
     },
     'production'

@@ -66,7 +66,7 @@ export async function assertSafeWriteRequest(request) {
   const url = new URL(request.url);
   const origin = request.headers.get('Origin');
   const referer = request.headers.get('Referer');
-  const csrfCookie = getCookie(request, 'xd_cell_csrf');
+  const csrfCookie = getCookie(request, '__Host-xd_cell_csrf');
   const csrfHeader = request.headers.get('X-CSRF-Token') || '';
 
   const sameOrigin = isSameOrigin(origin, url.origin) || (!origin && isSameOrigin(referer, url.origin));

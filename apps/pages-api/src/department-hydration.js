@@ -1,15 +1,19 @@
 import { fetchOrgUsersByEmail } from './org-directory.js';
 
+const DEPARTMENT_HYDRATION_SUCCESS_TTL_SECONDS = 24 * 60 * 60;
+const DEPARTMENT_HYDRATION_FAILURE_RETRY_SECONDS = 10 * 60;
+
 export async function hydrateUserDepartmentFromDirectory({ env, store, environment, user }) {
   const userId = normalizeRequiredString(user?.id || user?.userId);
   const email = normalizeEmail(user?.email);
   if (!userId || !email || !environment) return unavailableHydration();
 
+  const checkedAt = new Date(readNow(env) * 1000).toISOString();
   const token = typeof env.XDS_OPENAI_TOKEN === 'string' ? env.XDS_OPENAI_TOKEN.trim() : '';
-  if (!token) return unavailableHydration();
+  if (!token) return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
 
   const xdsFetch = resolveXdsFetch(env);
-  if (!xdsFetch) return unavailableHydration();
+  if (!xdsFetch) return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
 
   let directoryUsers;
   try {
@@ -19,16 +23,15 @@ export async function hydrateUserDepartmentFromDirectory({ env, store, environme
       fetchImpl: xdsFetch,
     });
   } catch {
-    return unavailableHydration();
+    return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
   }
 
   const directoryUser =
     directoryUsers.find((item) => item.email === email && item.departmentPath) ||
     directoryUsers.find((item) => item.departmentPath);
   const departmentPath = normalizeDepartmentPath(directoryUser?.departmentPath);
-  if (!departmentPath) return unavailableHydration();
+  if (!departmentPath) return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
 
-  const checkedAt = new Date(readNow(env) * 1000).toISOString();
   const updatedUser = await store.updateUserDepartmentFromDirectory({
     userId,
     departmentPath,
@@ -49,8 +52,16 @@ export async function hydrateUserDepartmentFromDirectory({ env, store, environme
   };
 }
 
-export function shouldHydrateUserDepartment(user) {
-  return Boolean(user?.email && !user.departmentCheckedAt);
+export function shouldHydrateUserDepartment(user, clock = {}) {
+  if (!user?.email) return false;
+  const checkedAtSeconds = readTimestampSeconds(user.departmentCheckedAt);
+  if (!checkedAtSeconds) return true;
+
+  const now = readNow(clock);
+  const ttlSeconds = user.departmentPath
+    ? DEPARTMENT_HYDRATION_SUCCESS_TTL_SECONDS
+    : DEPARTMENT_HYDRATION_FAILURE_RETRY_SECONDS;
+  return now - checkedAtSeconds >= ttlSeconds;
 }
 
 function resolveXdsFetch(env) {
@@ -89,6 +100,25 @@ function readNow(env) {
     if (!Number.isNaN(parsed)) return Math.floor(parsed / 1000);
   }
   return Math.floor(Date.now() / 1000);
+}
+
+function readTimestampSeconds(value) {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
+}
+
+async function recordUnavailableDepartmentCheck({ store, user, userId, checkedAt }) {
+  try {
+    await store.updateUserDepartmentFromDirectory({
+      userId,
+      departmentPath: user?.departmentPath || null,
+      departmentCheckedAt: checkedAt,
+    });
+  } catch {
+    // Best-effort throttling only; hydration remains unavailable.
+  }
+  return unavailableHydration();
 }
 
 function unavailableHydration() {

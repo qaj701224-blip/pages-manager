@@ -34,7 +34,7 @@ export async function requireConsoleUserSession(request, env, config, store, opt
   }
 
   let currentUser = user;
-  if (options.hydrateDepartment && shouldHydrateUserDepartment(user)) {
+  if (options.hydrateDepartment && shouldHydrateUserDepartment(user, env)) {
     try {
       const hydrated = await hydrateUserDepartmentFromDirectory({
         env,

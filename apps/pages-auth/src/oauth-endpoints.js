@@ -3,7 +3,10 @@ import { AUTH_SESSION_COOKIE, buildAuthSessionCookie } from './cookies.js';
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody, safeRedirect } from './http.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
-import { hydrateUserDepartmentFromDirectory } from '../../pages-api/src/department-hydration.js';
+import {
+  hydrateUserDepartmentFromDirectory,
+  shouldHydrateUserDepartment,
+} from '../../pages-api/src/department-hydration.js';
 import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
@@ -443,7 +446,7 @@ async function createOAuthSiteCodeRecord(env, input) {
 async function tryAuthorizeFromAuthSession(request, env, config, stateInput, now) {
   if (stateInput.cliLoginId) return null;
 
-  const user = await readAuthSessionUserProfile(request, env, now);
+  const user = await readAuthSessionUserProfile(request, env, config, now);
   if (!user || user.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) return null;
 
   let created;
@@ -451,8 +454,8 @@ async function tryAuthorizeFromAuthSession(request, env, config, stateInput, now
   try {
     created = await createOAuthStateRecord(env, stateInput);
     consumedState = await consumeOAuthStateRecord(env, created.publicState, { now, environment: config.environment });
-    if (stateInput.consoleLogin) return createConsoleCodeRedirectResponse(env, config, consumedState, user, now);
-    return createSiteCodeRedirectResponse(env, consumedState, user, now);
+    if (stateInput.consoleLogin) return await createConsoleCodeRedirectResponse(env, config, consumedState, user, now);
+    return await createSiteCodeRedirectResponse(env, consumedState, user, now);
   } catch {
     return null;
   }
@@ -564,6 +567,20 @@ async function createAuthSessionRecord(env, input) {
   return response.json();
 }
 
+async function refreshAuthSessionRecord(env, input) {
+  if (typeof env?.refreshAuthSessionRecord === 'function') {
+    return env.refreshAuthSessionRecord(input.sid, {
+      now: input.now,
+      idleTtlSeconds: input.idleTtlSeconds,
+    });
+  }
+
+  const stub = getAuthSessionStub(env, input.sid);
+  const response = await stub.fetch(jsonDoRequest('https://auth-session-do/refresh', input));
+  if (!response.ok) throw new Error('Auth session refresh failed');
+  return response.json();
+}
+
 async function syncSsoUserProfile(env, profile, now) {
   if (typeof env?.syncSsoUserProfile === 'function') return env.syncSsoUserProfile(profile, { now });
 
@@ -607,7 +624,7 @@ async function hydrateDepartmentAfterSso(env, config, profile) {
   }
 }
 
-async function readAuthSessionUserProfile(request, env, now) {
+async function readAuthSessionUserProfile(request, env, config, now) {
   const token = readCookie(request.headers.get('Cookie'), AUTH_SESSION_COOKIE);
   if (!token) return null;
 
@@ -623,6 +640,21 @@ async function readAuthSessionUserProfile(request, env, now) {
   }
 
   const userId = payload.sub;
+  const sid = typeof payload.sid === 'string' ? payload.sid : '';
+  if (!sid) return null;
+
+  let authSessionRecord;
+  try {
+    authSessionRecord = await refreshAuthSessionRecord(env, {
+      sid,
+      now,
+      idleTtlSeconds: config.authSessionIdleTtlSeconds,
+    });
+  } catch {
+    return null;
+  }
+  if (authSessionRecord?.userId !== userId || authSessionRecord?.purpose !== 'auth_session') return null;
+
   let user;
   try {
     user =
@@ -634,13 +666,19 @@ async function readAuthSessionUserProfile(request, env, now) {
   }
   if (!user) return null;
 
-  return {
+  let profile = {
     userId: user.userId || user.id || userId,
     email: user.email || '',
     employeeStatus: user.employeeStatus || 'unknown',
     departments: mergeDepartments(user.departments, user.departmentPath),
     sessionVersion: user.sessionVersion || 1,
   };
+
+  if (shouldHydrateUserDepartment(user, env)) {
+    profile = mergeHydratedDepartmentPath(profile, await hydrateDepartmentAfterSso(env, config, profile));
+  }
+
+  return profile;
 }
 
 function mergeHydratedDepartmentPath(profile, hydration) {
