@@ -451,6 +451,74 @@ test('platform admin can edit admin-scope custom team settings without team memb
   assert.equal(body.team.description, 'after');
 });
 
+test('platform admin can manage admin-scope team members without team membership', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createUser({
+    userId: 'usr_member',
+    email: 'member@example.com',
+    realname: '成员',
+    employeeStatus: 'active',
+  });
+  await store.createUser({
+    userId: 'usr_new',
+    email: 'new@example.com',
+    realname: '新人',
+    employeeStatus: 'active',
+  });
+  await store.createTeam({
+    id: 'team_console',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    createdByUserId: 'usr_owner',
+  });
+  await store.addTeamMember({
+    teamId: 'team_console',
+    userId: 'usr_member',
+    role: 'viewer',
+    membershipSource: 'manual',
+    actorUserId: 'usr_owner',
+  });
+
+  const members = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams/team_console/members', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  const update = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams/team_console/members/usr_new', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { role: 'publisher' },
+    }),
+    env(store)
+  );
+  const remove = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams/team_console/members/usr_member', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+
+  assert.equal(members.status, 200, await members.clone().text());
+  assert.equal((await members.json()).members.some((member) => member.userId === 'usr_member'), true);
+  assert.equal(update.status, 200, await update.clone().text());
+  assert.equal((await update.json()).member.role, 'publisher');
+  assert.equal(remove.status, 200, await remove.clone().text());
+  assert.ok((await remove.json()).member.removedAt);
+});
+
 test('admin audit events include readable actor profile', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);

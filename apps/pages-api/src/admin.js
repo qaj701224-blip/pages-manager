@@ -10,9 +10,11 @@ import {
   updateSiteAccess,
 } from './console.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
+import { formatConsoleUser } from './console-users.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
+const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
 
 export async function handleConsoleAdminApi(request, env, config, store) {
   if (!isConsoleBffRequest(request)) return null;
@@ -123,6 +125,24 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     return updateAdminTeamSettings(request, config, store, decodeURIComponent(adminTeamSettingsMatch[1]));
   }
 
+  const adminTeamMemberMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/teams\/([^/]+)\/members\/([^/]+)$/);
+  if (adminTeamMemberMatch) {
+    const teamId = decodeURIComponent(adminTeamMemberMatch[1]);
+    const userId = decodeURIComponent(adminTeamMemberMatch[2]);
+    if (request.method === 'PATCH') return updateAdminTeamMember(request, config, store, session, teamId, userId);
+    if (request.method === 'DELETE') return removeAdminTeamMember(config, store, session, teamId, userId);
+    return methodNotAllowed();
+  }
+
+  const adminTeamMembersMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/teams\/([^/]+)\/members$/);
+  if (adminTeamMembersMatch) {
+    const team = await getAdminTeamRecord(config, store, decodeURIComponent(adminTeamMembersMatch[1]));
+    if (team instanceof Response) return team;
+    if (request.method !== 'GET') return methodNotAllowed();
+    const members = typeof store.listTeamMembers === 'function' ? await store.listTeamMembers({ teamId: team.id }) : [];
+    return jsonOk({ members: members.map(formatAdminTeamMember) });
+  }
+
   const adminTeamMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/teams\/([^/]+)$/);
   if (adminTeamMatch) {
     const teamId = decodeURIComponent(adminTeamMatch[1]);
@@ -219,18 +239,59 @@ async function listAdminTeams(url, config, store) {
 }
 
 async function getAdminTeam(config, store, teamId) {
-  const team = await store.getTeam(teamId);
-  if (!team || team.environment !== config.environment || team.deletedAt) {
-    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
-  }
+  const team = await getAdminTeamRecord(config, store, teamId);
+  if (team instanceof Response) return team;
   return jsonOk({ team: formatAdminTeam(team) });
 }
 
-async function updateAdminTeamSettings(request, config, store, teamId) {
+async function getAdminTeamRecord(config, store, teamId) {
   const team = await store.getTeam(teamId);
   if (!team || team.environment !== config.environment || team.deletedAt) {
     return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
   }
+  return team;
+}
+
+async function updateAdminTeamMember(request, config, store, session, teamId, userId) {
+  const team = await getAdminTeamRecord(config, store, teamId);
+  if (team instanceof Response) return team;
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+  const role = typeof body.role === 'string' ? body.role : '';
+  if (!TEAM_ROLES.has(role)) {
+    return jsonError('TEAM_ROLE_INVALID', 'Team role is invalid.', 400, 'Use viewer, publisher, or admin.');
+  }
+
+  const user = await store.getUser(userId);
+  if (!user) return jsonError('USER_NOT_FOUND', 'User not found.', 404, 'Pick a user that has signed in to XD Cell.');
+
+  const member = await store.addTeamMember({
+    teamId: team.id,
+    userId,
+    role,
+    membershipSource: 'manual',
+    actorUserId: session.userId,
+  });
+  return jsonOk({ member: formatAdminTeamMember(member) });
+}
+
+async function removeAdminTeamMember(config, store, session, teamId, userId) {
+  const team = await getAdminTeamRecord(config, store, teamId);
+  if (team instanceof Response) return team;
+
+  const member = await store.removeTeamMember({ teamId: team.id, userId, actorUserId: session.userId });
+  if (!member) return jsonError('TEAM_MEMBER_NOT_FOUND', 'Team member not found.', 404, 'Check the user id.');
+  return jsonOk({ member: formatAdminTeamMember(member) });
+}
+
+async function updateAdminTeamSettings(request, config, store, teamId) {
+  const team = await getAdminTeamRecord(config, store, teamId);
+  if (team instanceof Response) return team;
   if (team.teamType === 'department') {
     return jsonError(
       'DEPARTMENT_TEAM_SETTINGS_READONLY',
@@ -259,10 +320,8 @@ async function updateAdminTeamSettings(request, config, store, teamId) {
 }
 
 async function deleteAdminTeam(config, store, session, teamId) {
-  const team = await store.getTeam(teamId);
-  if (!team || team.environment !== config.environment || team.deletedAt) {
-    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
-  }
+  const team = await getAdminTeamRecord(config, store, teamId);
+  if (team instanceof Response) return team;
   if (team.teamType === 'department') {
     return jsonError(
       'DEPARTMENT_TEAM_DELETE_FORBIDDEN',
@@ -474,6 +533,20 @@ function formatAdminTeam(team) {
     mergeReason: team.mergeReason || null,
     createdAt: team.createdAt,
     updatedAt: team.updatedAt,
+  };
+}
+
+function formatAdminTeamMember(member) {
+  return {
+    teamId: member.teamId,
+    userId: member.userId,
+    user: member.user ? formatConsoleUser(member.user) : null,
+    role: member.role,
+    membershipSource: member.membershipSource,
+    departmentPath: member.departmentPath || null,
+    removedAt: member.removedAt || null,
+    createdAt: member.createdAt,
+    updatedAt: member.updatedAt,
   };
 }
 

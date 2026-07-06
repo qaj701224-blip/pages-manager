@@ -1,14 +1,31 @@
-import { GitMerge, RefreshCw, Save, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { GitMerge, RefreshCw, Save, Settings, Trash2, UsersRound } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { deleteAdminTeam, listAdminTeams, mergeAdminDepartmentTeam, updateAdminTeamSettings } from '../api.js';
+import {
+  deleteAdminTeam,
+  listAdminTeamMembers,
+  listAdminTeams,
+  mergeAdminDepartmentTeam,
+  removeAdminTeamMember,
+  updateAdminTeamMember,
+  updateAdminTeamSettings,
+} from '../api.js';
 import { ConfirmDialog } from '../components/RadixPrimitives.jsx';
 import { getTeamDeleteErrorMessage, normalizeTeamSettingsForm } from '../team-settings-model.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
+import { TeamMembers } from './Teams.jsx';
+
+const ADMIN_TEAM_TABS = new Set(['members', 'settings']);
+const ADMIN_TEAM_MEMBER_API = {
+  updateMember: updateAdminTeamMember,
+  removeMember: removeAdminTeamMember,
+};
 
 export function AdminTeams({ teamId, subpage = 'settings' }) {
+  const activeSubpage = ADMIN_TEAM_TABS.has(subpage) ? subpage : 'settings';
   const [state, setState] = useState({ status: 'loading', teams: [], error: null });
+  const [membersState, setMembersState] = useState({ status: 'idle', members: [], error: null });
   const [filter, setFilter] = useState('all');
   const [mergeForm, setMergeForm] = useState({ sourceTeamId: '', targetTeamId: '', reason: '' });
   const [mergeState, setMergeState] = useState({ status: 'idle', error: null });
@@ -43,6 +60,38 @@ export function AdminTeams({ teamId, subpage = 'settings' }) {
     if (!teamId) return null;
     return state.teams.find((team) => team.id === teamId) || null;
   }, [teamId, state.teams]);
+  const fetchMembers = useCallback(() => listAdminTeamMembers(teamId), [teamId]);
+  const reloadMembers = useCallback(async () => {
+    if (!teamId) return;
+    setMembersState({ status: 'loading', members: [], error: null });
+    try {
+      const data = await fetchMembers();
+      setMembersState({ status: 'ready', members: data.members || [], error: null });
+    } catch (error) {
+      setMembersState({ status: 'error', members: [], error });
+    }
+  }, [fetchMembers, teamId]);
+
+  useEffect(() => {
+    if (!teamId || activeSubpage !== 'members') {
+      setMembersState({ status: 'idle', members: [], error: null });
+      return undefined;
+    }
+
+    let active = true;
+    setMembersState({ status: 'loading', members: [], error: null });
+    fetchMembers()
+      .then((data) => {
+        if (active) setMembersState({ status: 'ready', members: data.members || [], error: null });
+      })
+      .catch((error) => {
+        if (active) setMembersState({ status: 'error', members: [], error });
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeSubpage, fetchMembers, teamId]);
+
   const activeDepartmentTeams = state.teams.filter((team) => team.teamType === 'department' && team.status === 'active');
   const mergeDisabled =
     mergeState.status === 'saving' ||
@@ -74,9 +123,11 @@ export function AdminTeams({ teamId, subpage = 'settings' }) {
       return <AdminNotFound backTo="/admin/teams" label="返回团队管理" title="团队不存在" />;
     }
     return (
-      <AdminTeamSettings
+      <AdminTeamDetail
+        membersState={membersState}
+        onMembersReload={reloadMembers}
         team={selectedTeam}
-        subpage={subpage}
+        subpage={activeSubpage}
         onTeamUpdate={(team) => {
           setState((current) => ({
             ...current,
@@ -191,7 +242,7 @@ export function AdminTeams({ teamId, subpage = 'settings' }) {
   );
 }
 
-function AdminTeamSettings({ team, subpage, onTeamUpdate }) {
+function AdminTeamDetail({ team, subpage, membersState, onMembersReload, onTeamUpdate }) {
   const [form, setForm] = useState({ name: team.name || '', description: team.description || '' });
   const [status, setStatus] = useState({ saving: false, deleting: false, error: '', notice: '' });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -240,13 +291,24 @@ function AdminTeamSettings({ team, subpage, onTeamUpdate }) {
     <div className="admin-stack">
       <div className="panel-head flat">
         <div>
-          <p>{subpage === 'settings' ? '团队设置' : '团队详情'}</p>
+          <p>{subpage === 'members' ? '团队成员' : '团队设置'}</p>
           <h2>{team.name}</h2>
         </div>
         <Link className="table-action" to="/admin/teams">
           返回团队管理
         </Link>
       </div>
+      <AdminTeamTabs activeTab={subpage} teamId={team.id} />
+      {subpage === 'members' ? (
+        <TeamMembers
+          canManageOverride
+          state={membersState}
+          team={team}
+          teamApi={ADMIN_TEAM_MEMBER_API}
+          onReload={onMembersReload}
+        />
+      ) : (
+        <>
       <section className="info-list">
         <h2>基础信息</h2>
         <dl>
@@ -341,7 +403,26 @@ function AdminTeamSettings({ team, subpage, onTeamUpdate }) {
         onCancel={() => setDeleteDialogOpen(false)}
         onConfirm={remove}
       />
+        </>
+      )}
     </div>
+  );
+}
+
+function AdminTeamTabs({ activeTab, teamId }) {
+  const base = `/admin/teams/${encodeURIComponent(teamId)}`;
+  return (
+    <nav className="detail-tabs" aria-label="团队详情导航">
+      {[
+        ['members', '成员', `${base}/members`, UsersRound],
+        ['settings', '设置', `${base}/settings`, Settings],
+      ].map(([id, label, href, Icon]) => (
+        <Link className={activeTab === id ? 'active' : ''} key={id} to={href}>
+          <Icon size={15} />
+          <span>{label}</span>
+        </Link>
+      ))}
+    </nav>
   );
 }
 

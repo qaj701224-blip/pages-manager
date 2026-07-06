@@ -27,6 +27,14 @@ test('admin team management exposes a safe team detail action', () => {
   assert.match(adminTeamsSource, />\s*团队设置\s*<\/Link>/);
 });
 
+test('admin team detail exposes member management with admin-scoped helpers', () => {
+  assert.match(adminTeamsSource, /ADMIN_TEAM_TABS = new Set\(\['members', 'settings'\]\)/);
+  assert.match(adminTeamsSource, /listAdminTeamMembers\(teamId\)/);
+  assert.match(adminTeamsSource, /updateMember: updateAdminTeamMember/);
+  assert.match(adminTeamsSource, /removeMember: removeAdminTeamMember/);
+  assert.match(adminTeamsSource, /<TeamMembers/);
+});
+
 test('admin deep routes stay under the admin guard', () => {
   assert.match(appSource, /path="\/admin\/:page\/:resourceId"/);
   assert.match(appSource, /path="\/admin\/:page\/:resourceId\/:subpage"/);

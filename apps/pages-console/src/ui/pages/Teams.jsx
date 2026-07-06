@@ -20,6 +20,10 @@ import { PageHeading } from './SitesDirectory.jsx';
 
 const TEAM_TABS = new Set(['members', 'access-keys', 'settings']);
 const TEAM_ROLE_OPTIONS = ['viewer', 'publisher', 'admin'];
+const WORKSPACE_TEAM_MEMBER_API = {
+  updateMember: updateTeamMember,
+  removeMember: removeTeamMember,
+};
 
 export function TeamsList({ sessionState }) {
   const [state, setState] = useState({ status: 'loading', teams: [], error: null });
@@ -280,8 +284,8 @@ function TeamTabContent({ team, tab, membersState, onTeamUpdate, onMembersReload
   return <TeamMembers team={team} state={membersState} onReload={onMembersReload} />;
 }
 
-function TeamMembers({ team, state, onReload }) {
-  const canManage = team.currentUserRole === 'admin';
+export function TeamMembers({ team, state, onReload, canManageOverride, teamApi = WORKSPACE_TEAM_MEMBER_API }) {
+  const canManage = canManageOverride ?? team.currentUserRole === 'admin';
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const members = state.members || [];
 
@@ -316,6 +320,7 @@ function TeamMembers({ team, state, onReload }) {
                 canManage={canManage}
                 key={`${member.teamId}:${member.userId}`}
                 member={member}
+                teamApi={teamApi}
                 team={team}
                 onReload={onReload}
               />
@@ -328,6 +333,7 @@ function TeamMembers({ team, state, onReload }) {
           open={addDialogOpen}
           team={team}
           members={members}
+          teamApi={teamApi}
           onOpenChange={setAddDialogOpen}
           onReload={onReload}
         />
@@ -336,7 +342,7 @@ function TeamMembers({ team, state, onReload }) {
   );
 }
 
-function TeamMemberRow({ team, member, canManage, onReload }) {
+function TeamMemberRow({ team, member, canManage, teamApi, onReload }) {
   const view = buildTeamMemberView(member);
   return (
     <div className="table-row member-row">
@@ -352,7 +358,7 @@ function TeamMemberRow({ team, member, canManage, onReload }) {
         </div>
       </div>
       {canManage ? (
-        <TeamMemberActions team={team} member={member} onReload={onReload} />
+        <TeamMemberActions team={team} member={member} teamApi={teamApi} onReload={onReload} />
       ) : (
         <>
           <span className="tag muted">{member.role}</span>
@@ -364,7 +370,7 @@ function TeamMemberRow({ team, member, canManage, onReload }) {
   );
 }
 
-function TeamMemberActions({ team, member, onReload }) {
+function TeamMemberActions({ team, member, teamApi, onReload }) {
   const [role, setRole] = useState(member.role);
   const [status, setStatus] = useState({ saving: false, removing: false, error: '' });
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -384,7 +390,7 @@ function TeamMemberActions({ team, member, onReload }) {
     setRole(nextRole);
     setStatus({ saving: true, removing: false, error: '' });
     try {
-      await updateTeamMember(team.id, member.userId, { role: nextRole });
+      await teamApi.updateMember(team.id, member.userId, { role: nextRole });
       await onReload?.();
       setStatus({ saving: false, removing: false, error: '' });
     } catch (error) {
@@ -396,7 +402,7 @@ function TeamMemberActions({ team, member, onReload }) {
   const remove = async () => {
     setStatus({ saving: false, removing: true, error: '' });
     try {
-      await removeTeamMember(team.id, member.userId);
+      await teamApi.removeMember(team.id, member.userId);
       await onReload?.();
       setStatus({ saving: false, removing: false, error: '' });
       setConfirmRemove(false);
@@ -447,7 +453,7 @@ function TeamMemberActions({ team, member, onReload }) {
   );
 }
 
-function AddTeamMemberDialog({ open, team, members, onOpenChange, onReload }) {
+function AddTeamMemberDialog({ open, team, members, teamApi, onOpenChange, onReload }) {
   const [query, setQuery] = useState('');
   const [role, setRole] = useState('viewer');
   const [state, setState] = useState({ status: 'idle', users: [], error: null });
@@ -486,7 +492,7 @@ function AddTeamMemberDialog({ open, team, members, onOpenChange, onReload }) {
     if (row.alreadyMember || action.status === 'saving') return;
     setAction({ userId: row.id, status: 'saving', error: null });
     try {
-      await updateTeamMember(team.id, row.id, { role });
+      await teamApi.updateMember(team.id, row.id, { role });
       await onReload?.();
       setAction({ userId: '', status: 'idle', error: null });
     } catch (error) {

@@ -142,6 +142,25 @@ export function updateAdminTeamSettings(teamId, body, options = {}) {
   });
 }
 
+export function listAdminTeamMembers(teamId, options = {}) {
+  return fetchJson(`/api/console/admin/teams/${encodeURIComponent(teamId)}/members`, options);
+}
+
+export function updateAdminTeamMember(teamId, userId, body, options = {}) {
+  return fetchJson(`/api/console/admin/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`, {
+    ...options,
+    method: 'PATCH',
+    body,
+  });
+}
+
+export function removeAdminTeamMember(teamId, userId, options = {}) {
+  return fetchJson(`/api/console/admin/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`, {
+    ...options,
+    method: 'DELETE',
+  });
+}
+
 export function deleteAdminTeam(teamId, options = {}) {
   return fetchJson(`/api/console/admin/teams/${encodeURIComponent(teamId)}`, {
     ...options,

@@ -21,6 +21,7 @@ import {
   getAdminOps,
   getAdminSiteAccess,
   getAdminSiteConfig,
+  listAdminTeamMembers,
   grantPlatformAdmin,
   listAccessKeys,
   listAdminAuditEvents,
@@ -33,6 +34,7 @@ import {
   listTeamAccessKeys,
   mergeAdminDepartmentTeam,
   readCsrfToken,
+  removeAdminTeamMember,
   removeTeamMember,
   revokeAccessKey,
   revokePlatformAdmin,
@@ -44,6 +46,7 @@ import {
   updateSiteAccess,
   updateAdminSiteAccess,
   updateAdminWebhook,
+  updateAdminTeamMember,
   updateAdminTeamSettings,
   updateTeamMember,
   updateTeamSettings,
@@ -207,6 +210,9 @@ test('admin site and team edit helpers stay under admin endpoints', async () => 
   await deleteAdminSite('site_1', { fetchImpl, csrfToken: 'csrf-6' });
   await updateAdminTeamSettings('team_1', { name: 'Team', description: 'Admin managed' }, { fetchImpl, csrfToken: 'csrf-7' });
   await deleteAdminTeam('team_1', { fetchImpl, csrfToken: 'csrf-8' });
+  await listAdminTeamMembers('team_1', { fetchImpl });
+  await updateAdminTeamMember('team_1', 'usr_1', { role: 'publisher' }, { fetchImpl, csrfToken: 'csrf-9' });
+  await removeAdminTeamMember('team_1', 'usr_1', { fetchImpl, csrfToken: 'csrf-10' });
 
   assert.deepEqual(
     calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token'] || '']),
@@ -221,6 +227,9 @@ test('admin site and team edit helpers stay under admin endpoints', async () => 
       ['/api/console/admin/sites/site_1', 'DELETE', 'csrf-6'],
       ['/api/console/admin/teams/team_1/settings', 'PATCH', 'csrf-7'],
       ['/api/console/admin/teams/team_1', 'DELETE', 'csrf-8'],
+      ['/api/console/admin/teams/team_1/members', 'GET', ''],
+      ['/api/console/admin/teams/team_1/members/usr_1', 'PATCH', 'csrf-9'],
+      ['/api/console/admin/teams/team_1/members/usr_1', 'DELETE', 'csrf-10'],
     ]
   );
 });
