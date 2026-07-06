@@ -6,7 +6,7 @@ import { createTeam, deleteTeam, fetchJson, listConsoleUsers, removeTeamMember, 
 import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { usePreferences } from '../preferences-context.jsx';
-import { buildTeamMemberView, buildUserPickerRows } from '../team-members-model.js';
+import { buildTeamMemberSourceLine, buildTeamMemberView, buildUserPickerRows } from '../team-members-model.js';
 import { buildTeamCards } from '../team-list-model.js';
 import {
   canDeleteTeam,
@@ -351,6 +351,7 @@ export function TeamMembers({ team, state, onReload, canManageOverride, teamApi 
 
 function TeamMemberRow({ team, member, canManage, teamApi, onReload }) {
   const view = buildTeamMemberView(member);
+  const sourceLine = buildTeamMemberSourceLine(view);
   return (
     <div className="table-row member-row">
       <div className="member-identity" title={view.userTitle}>
@@ -358,10 +359,7 @@ function TeamMemberRow({ team, member, canManage, teamApi, onReload }) {
         <div>
           <strong>{view.displayName}</strong>
           <span>{view.email || member.userId}</span>
-          <span className="member-source-line">
-            {membershipSourceLabel(member.membershipSource)}
-            {view.departmentPath ? ` · ${view.departmentPath}` : ''}
-          </span>
+          {sourceLine ? <span className="member-source-line">{sourceLine}</span> : null}
         </div>
       </div>
       {canManage ? (
@@ -719,12 +717,6 @@ function TeamSettings({ team, onTeamUpdate }) {
       />
     </section>
   );
-}
-
-function membershipSourceLabel(value) {
-  if (value === 'department_auto') return '部门成员';
-  if (value === 'manual') return '成员';
-  return value || '成员';
 }
 
 function formatDate(value) {

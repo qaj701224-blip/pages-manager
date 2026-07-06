@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildTeamMemberView, buildUserPickerRows } from './team-members-model.js';
+import { buildTeamMemberSourceLine, buildTeamMemberView, buildUserPickerRows } from './team-members-model.js';
 
 test('team member view prefers SSO realname and email over opaque user id', () => {
   const view = buildTeamMemberView({
@@ -39,5 +39,22 @@ test('user picker rows mark users already in the team', () => {
       { id: 'usr_xutianqi', displayName: '徐天麒', alreadyMember: true },
       { id: 'usr_other', displayName: '其他用户', alreadyMember: false },
     ]
+  );
+});
+
+test('team member source line omits generic manual member copy', () => {
+  assert.equal(
+    buildTeamMemberSourceLine({
+      membershipSource: 'manual',
+      departmentPath: '',
+    }),
+    ''
+  );
+  assert.equal(
+    buildTeamMemberSourceLine({
+      membershipSource: 'department_auto',
+      departmentPath: 'XD/Platform/Web',
+    }),
+    '部门成员 · XD/Platform/Web'
   );
 });

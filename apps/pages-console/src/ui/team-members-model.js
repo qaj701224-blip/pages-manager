@@ -17,6 +17,14 @@ export function buildTeamMemberView(member = {}) {
   };
 }
 
+export function buildTeamMemberSourceLine(member = {}) {
+  const label = teamMemberSourceLabel(member.membershipSource);
+  const departmentPath = member.departmentPath || '';
+  if (label && departmentPath) return `${label} · ${departmentPath}`;
+  if (label) return label;
+  return departmentPath;
+}
+
 export function buildUserPickerRows({ users = [], members = [] } = {}) {
   const memberIds = new Set(members.map((member) => member.userId).filter(Boolean));
   return users.map((user) => {
@@ -32,6 +40,12 @@ export function buildUserPickerRows({ users = [], members = [] } = {}) {
       alreadyMember: memberIds.has(user.id),
     };
   });
+}
+
+function teamMemberSourceLabel(value) {
+  if (value === 'department_auto') return '部门成员';
+  if (value === 'manual') return '';
+  return value || '';
 }
 
 function avatarText(value) {
