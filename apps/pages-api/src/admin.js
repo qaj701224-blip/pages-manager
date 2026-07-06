@@ -456,6 +456,7 @@ function formatAdminDeployment(deployment) {
   return {
     id: deployment.id,
     siteId: deployment.siteId,
+    siteSlug: deployment.siteSlug || null,
     owner: {
       type: deployment.ownerType || 'user',
       id: deployment.ownerId || deployment.ownerUserId || null,

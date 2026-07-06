@@ -1954,6 +1954,7 @@ class TestPagesStore {
     const decoratedSite = this.decorateAdminSite(site);
     return {
       ...deployment,
+      siteSlug: decoratedSite.slug || null,
       ownerType: decoratedSite.ownerType || 'user',
       ownerId: decoratedSite.ownerId || decoratedSite.ownerUserId || null,
       ownerUserId: decoratedSite.ownerUserId || null,

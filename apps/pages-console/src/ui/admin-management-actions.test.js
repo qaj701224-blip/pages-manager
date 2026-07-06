@@ -12,6 +12,8 @@ test('admin failed deployments show owner context', () => {
   assert.match(adminDashboardSource, /adminSiteOwnerView\(deployment\.owner\)/);
   assert.match(adminDashboardSource, /<th>归属<\/th>/);
   assert.match(adminDashboardSource, /data-label="归属"/);
+  assert.match(adminDashboardSource, /deployment\.siteSlug \|\| deployment\.siteId/);
+  assert.doesNotMatch(adminDashboardSource, /<td data-label="站点">\{deployment\.siteId\}<\/td>/);
 });
 
 test('admin site management exposes a safe detail action', () => {

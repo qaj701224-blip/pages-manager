@@ -94,7 +94,9 @@ function FailedDeploymentRow({ deployment }) {
         <strong>{deployment.id}</strong>
         <span>{deployment.status}</span>
       </td>
-      <td data-label="站点">{deployment.siteId}</td>
+      <td data-label="站点" title={deployment.siteId}>
+        {deployment.siteSlug || deployment.siteId}
+      </td>
       <td data-label="来源">{deployment.source || '无'}</td>
       <td data-label="归属">
         <div className="owner-cell">

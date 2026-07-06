@@ -65,6 +65,7 @@ test('admin dashboard requires platform admin and returns governance counts', as
         {
           id: 'dep_failed',
           siteId: 'site_console',
+          siteSlug: 'console',
           owner: {
             type: 'team',
             id: 'team_console',

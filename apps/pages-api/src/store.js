@@ -563,6 +563,7 @@ export class D1PagesStore {
       this.db
         .prepare(
           `SELECT deployments.*,
+            sites.slug AS site_slug,
             sites.owner_type AS site_owner_type,
             sites.owner_id AS site_owner_id,
             sites.owner_user_id AS site_owner_user_id,
@@ -689,6 +690,7 @@ export class D1PagesStore {
     const result = await this.db
       .prepare(
         `SELECT deployments.*,
+          sites.slug AS site_slug,
           sites.owner_type AS site_owner_type,
           sites.owner_id AS site_owner_id,
           sites.owner_user_id AS site_owner_user_id,
@@ -3973,6 +3975,7 @@ function mapAdminDeploymentWithOwner(row) {
   if (row.site_owner_type === 'team') {
     return {
       ...deployment,
+      siteSlug: row.site_slug || null,
       ownerType: 'team',
       ownerId: row.site_owner_id || null,
       ownerDisplayName: row.owner_team_name || null,
@@ -3983,6 +3986,7 @@ function mapAdminDeploymentWithOwner(row) {
 
   return {
     ...deployment,
+    siteSlug: row.site_slug || null,
     ownerType: row.site_owner_type || 'user',
     ownerId: row.site_owner_id || row.site_owner_user_id || null,
     ownerUserId: row.site_owner_user_id || row.site_owner_id || null,
