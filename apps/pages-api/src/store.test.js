@@ -2585,7 +2585,7 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
             },
             run: async () => {
               if (/UPDATE sites\s+SET owner_type = \?/.test(sql)) {
-                const [ownerType, ownerId, ownerUserId, updatedAt, siteId, environment] = args;
+                const [ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, siteId, environment] = args;
                 if (state.site?.id !== siteId || state.site?.environment !== environment || state.site?.deleted_at) {
                   return { meta: { changes: 0 } };
                 }
@@ -2593,6 +2593,7 @@ function fakeTransferSiteOwnerDb({ site, members = [] } = {}) {
                   owner_type: ownerType,
                   owner_id: ownerId,
                   owner_user_id: ownerUserId,
+                  default_visibility: defaultVisibility,
                   updated_at: updatedAt,
                 });
                 return { meta: { changes: 1 } };

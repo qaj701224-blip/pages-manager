@@ -564,7 +564,7 @@ test('personal access token can transfer a personal site to a team when the user
     routeId: 'route_1',
     hostname: 'guide.pages.xd.team',
   });
-  await activateSite(store, 'site_1', { visibility: 'owner' });
+  await activateSite(store, 'site_1', { visibility: 'org' });
   const team = await store.createTeam({
     id: 'team_1',
     environment: 'production',
@@ -602,7 +602,7 @@ test('personal access token can transfer a personal site to a team when the user
   assert.equal((await store.getSite('site_1')).ownerUserId, 'usr_1');
   const pointer = snapshots.read('production:route_pointer:guide.pages.xd.team');
   const snapshot = snapshots.read(pointer.snapshotKey);
-  assert.equal(snapshot.visibility, 'owner');
+  assert.equal(snapshot.visibility, 'org');
   assert.equal(snapshot.ownerUserId, null);
   const transferEvents = (await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer');
   assert.equal(transferEvents.length, 1);
@@ -612,6 +612,52 @@ test('personal access token can transfer a personal site to a team when the user
     toOwner: { type: 'team', id: team.id },
     source: 'api',
   });
+});
+
+test('personal access token cannot transfer owner-visible sites to teams', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, 'site_1', { visibility: 'owner' });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const key = await seedAccessKey(store, 'ak_publish_team_transfer', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    jsonMethodRequest(
+      'POST',
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1/transfer',
+      {
+        ownerType: 'team',
+        teamId: team.id,
+      },
+      { Authorization: `Bearer ${key}` }
+    ),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_VISIBILITY_INVALID');
+  assert.equal((await store.getSite('site_1')).ownerType, 'user');
 });
 
 test('team access token cannot transfer a team site to a personal owner', async () => {

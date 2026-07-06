@@ -170,6 +170,7 @@ async function createConsoleSite(request, env, config, store, session) {
       '请使用 internal、org、acl、owner 或 disabled。'
     );
   }
+  if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   let ownerId = session.userId;
   if (ownerType === 'team') {
@@ -281,6 +282,8 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
 
   const target = await resolveConsoleSiteOwnerTarget(store, config, session, body);
   if (target instanceof Response) return target;
+  const currentVisibility = site.route?.visibility || site.defaultVisibility;
+  if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   const updatedAt = readNow(env);
   const updated = await store.transferSiteOwner(
@@ -416,6 +419,7 @@ export async function updateSiteAccess(request, env, config, store, session, sit
       '请使用 internal、org、acl、owner 或 disabled。'
     );
   }
+  if (site.ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
   const aclEntries = 'aclEntries' in body ? normalizeAclEntries(body.aclEntries, env) : previousAclEntries;
   if (aclEntries instanceof Response) return aclEntries;
 
@@ -832,6 +836,15 @@ function byteLength(value) {
 
 function isRuntimeConfigConflict(error) {
   return String(error?.message || error).includes('SITE_SECRET_REVISION_CONFLICT');
+}
+
+function teamOwnerVisibilityUnsupported() {
+  return jsonError(
+    'SITE_VISIBILITY_INVALID',
+    'Team-owned sites cannot use owner visibility.',
+    400,
+    '团队站点请使用 internal、org、acl 或 disabled。'
+  );
 }
 
 function nextId(env, prefix) {

@@ -1096,7 +1096,7 @@ test('site publisher can transfer site owner from console settings to a manageab
     ownerUserId: 'usr_me',
     visibility: 'org',
   });
-  await activateSite(store, 'site_mine', { visibility: 'owner' });
+  await activateSite(store, 'site_mine', { visibility: 'org' });
   await store.createTeam({
     id: 'team_console',
     environment: 'production',
@@ -1136,8 +1136,45 @@ test('site publisher can transfer site owner from console settings to a manageab
   assert.equal(site.ownerUserId, 'usr_me');
   const pointer = snapshots.read('production:route_pointer:mine.workers.xd.team');
   const snapshot = snapshots.read(pointer.snapshotKey);
-  assert.equal(snapshot.visibility, 'owner');
+  assert.equal(snapshot.visibility, 'org');
   assert.equal(snapshot.ownerUserId, null);
+});
+
+test('console rejects transferring owner-visible sites to teams', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { visibility: 'owner' });
+  await store.createTeam({
+    id: 'team_console',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    createdByUserId: 'usr_me',
+  });
+  await store.addTeamMember({
+    teamId: 'team_console',
+    userId: 'usr_me',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'team', teamId: 'team_console' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_VISIBILITY_INVALID');
+  assert.equal((await store.getSite('site_mine')).ownerType, 'user');
 });
 
 test('site publisher can delete a team site from console settings', async () => {

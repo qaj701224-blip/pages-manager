@@ -280,6 +280,7 @@ async function updateSite(request, env, config, store, actor, siteId) {
   if (!VISIBILITIES.has(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
+  if (site.ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   const route = await store.updateSiteVisibility(
     site.id,
@@ -341,6 +342,8 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
 
   const target = await resolveSiteTransferTarget(store, actor, site, body, config.environment);
   if (target instanceof Response) return target;
+  const currentVisibility = site.route?.visibility || site.defaultVisibility;
+  if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   const updatedAt = readNow(env);
   const updated = await store.transferSiteOwner(
@@ -611,6 +614,7 @@ async function createSite(request, env, config, store, actor) {
   if (!VISIBILITIES.has(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
+  if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   let ownerId = actor.userId;
   if (ownerType === 'team') {
@@ -1085,6 +1089,15 @@ function addSecondsIso(iso, seconds) {
 
 function authErrorResponse(error) {
   return jsonError(error.code, error.message, error.status, error.action);
+}
+
+function teamOwnerVisibilityUnsupported() {
+  return jsonError(
+    'SITE_VISIBILITY_INVALID',
+    'Team-owned sites cannot use owner visibility.',
+    400,
+    'Use internal, org, acl, or disabled for team-owned sites.'
+  );
 }
 
 function methodNotAllowed() {

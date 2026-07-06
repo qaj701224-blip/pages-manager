@@ -285,18 +285,6 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     }
     site = creationResult.site;
   }
-  if (site.pendingOwnerTransfer) {
-    const transferResult = await applyPendingDeployOwnerTransfer(store, actor, config, env, site, site.pendingOwnerTransfer);
-    if (transferResult instanceof Response) {
-      await markDeploymentFailed(store, deployment.id, env, {
-        errorCode: 'SITE_TRANSFER_FAILED',
-        errorMessage: 'Site owner transfer failed.',
-      });
-      return transferResult;
-    }
-    site = transferResult.site;
-    ownerTransfer = transferResult.ownerTransfer;
-  }
 
   let runtimeSecrets = [];
   let originalRuntimeVarRecords = [];
@@ -567,6 +555,8 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   let version;
   let previousRoute;
   let route;
+  let ownerTransferRollbackSite = null;
+  let ownerTransferApplied = false;
   try {
     await store.updateDeployment(deployment.id, { status: 'verified' });
     previousRoute = await store.getRouteBySiteId(siteId, config.environment);
@@ -597,6 +587,31 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         preActivationRuntimeSnapshotError.status,
         preActivationRuntimeSnapshotError.action
       );
+    }
+    if (site.pendingOwnerTransfer) {
+      ownerTransferRollbackSite = site;
+      const transferResult = await applyPendingDeployOwnerTransfer(store, actor, config, env, site, site.pendingOwnerTransfer);
+      if (transferResult instanceof Response) {
+        await cleanupUploadedWorker(provider, uploaded);
+        await restoreSiteVarsAfterFailedDeployment(store, {
+          environment: config.environment,
+          siteId,
+          restoreVars: originalRuntimeVarRecords,
+          expectedVars: committedRuntimeVarRecords,
+          actorId: actor.userId,
+          updatedAt: readNow(env),
+          createId: () => nextId(env, 'var'),
+          enabled: workerRuntimeVarsProvided,
+        });
+        await markDeploymentFailed(store, deployment.id, env, {
+          errorCode: 'SITE_TRANSFER_FAILED',
+          errorMessage: 'Site owner transfer failed.',
+        });
+        return transferResult;
+      }
+      ownerTransferApplied = true;
+      site = transferResult.site;
+      ownerTransfer = transferResult.ownerTransfer;
     }
     version = await store.createSiteVersion({
       id: versionId,
@@ -673,6 +688,12 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       createId: () => nextId(env, 'var'),
       enabled: workerRuntimeVarsProvided,
     });
+    await restoreDeployOwnerTransferAfterFailure(store, {
+      siteId,
+      previousSite: ownerTransferRollbackSite,
+      environment: config.environment,
+      enabled: ownerTransferApplied,
+    });
     await markDeploymentStateWriteFailed(store, deployment.id, { env, versionId: version?.id });
     return deploymentStateWriteFailed();
   }
@@ -698,6 +719,12 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         createId: () => nextId(env, 'var'),
         enabled: workerRuntimeVarsProvided,
       });
+      await restoreDeployOwnerTransferAfterFailure(store, {
+        siteId,
+        previousSite: ownerTransferRollbackSite,
+        environment: config.environment,
+        enabled: ownerTransferApplied,
+      });
       await store.updateDeployment(deployment.id, {
         status: 'failed',
         versionId: version.id,
@@ -722,6 +749,12 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       updatedAt: readNow(env),
       createId: () => nextId(env, 'var'),
       enabled: workerRuntimeVarsProvided,
+    });
+    await restoreDeployOwnerTransferAfterFailure(store, {
+      siteId,
+      previousSite: ownerTransferRollbackSite,
+      environment: config.environment,
+      enabled: ownerTransferApplied,
     });
     await store.updateDeployment(deployment.id, {
       status: 'failed',
@@ -751,6 +784,13 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       createId: () => nextId(env, 'var'),
       enabled: workerRuntimeVarsProvided,
     });
+    site =
+      (await restoreDeployOwnerTransferAfterFailure(store, {
+        siteId,
+        previousSite: ownerTransferRollbackSite,
+        environment: config.environment,
+        enabled: ownerTransferApplied,
+      })) || site;
     const restoredSnapshotWritten = await writeRestoredRouteSnapshotAfterFailure(
       env,
       store,
@@ -1696,6 +1736,8 @@ async function transferDeploySiteToTeamIfRequested(store, actor, config, env, si
 
   const target = await resolveDeployTransferTeam(store, actor, teamId, config.environment);
   if (target instanceof Response) return target;
+  const nextVisibility = visibility || site.route?.visibility || site.defaultVisibility;
+  if (nextVisibility === 'owner') return teamOwnerVisibilityUnsupported();
   if (typeof store.transferSiteOwner !== 'function') {
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
@@ -1726,6 +1768,7 @@ async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, 
       ownerType: 'team',
       ownerId: transfer.ownerId,
       ownerUserId: actor.userId || site.ownerUserId,
+      defaultVisibility: transfer.visibility || undefined,
       updatedAt,
       auditEvent,
     },
@@ -1733,26 +1776,29 @@ async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, 
   );
   if (!updated) return siteNotFound('Check the site id.');
 
-  let transferred = updated;
-  if (
-    transfer.visibility &&
-    updated.defaultVisibility !== transfer.visibility &&
-    typeof store.updateSiteVisibility === 'function'
-  ) {
-    await store.updateSiteVisibility(
-      updated.id,
-      { visibility: transfer.visibility, updatedAt: readNow(env) },
-      config.environment
-    );
-    transferred = { ...updated, defaultVisibility: transfer.visibility };
-  }
-
-  const visible = await store.getSiteForUser(transferred.id, actor.userId, actor, config.environment);
-  if (!visible) return siteNotFound('Check the site slug and access key scope.');
   return {
-    site: visible,
+    site: updated,
     ownerTransfer: auditEvent.metadata,
   };
+}
+
+async function restoreDeployOwnerTransferAfterFailure(store, { siteId, previousSite, environment, enabled }) {
+  if (!enabled || !previousSite || typeof store.transferSiteOwner !== 'function') return null;
+  try {
+    return await store.transferSiteOwner(
+      siteId,
+      {
+        ownerType: previousSite.ownerType || 'user',
+        ownerId: previousSite.ownerId || previousSite.ownerUserId,
+        ownerUserId: previousSite.ownerUserId,
+        defaultVisibility: previousSite.defaultVisibility,
+        updatedAt: previousSite.updatedAt,
+      },
+      environment
+    );
+  } catch {
+    return null;
+  }
 }
 
 async function resolveDeployTransferTeam(store, actor, teamId, environment) {
@@ -1782,6 +1828,7 @@ async function createSiteFromDeployOwner(store, actor, config, env, { siteSlug, 
 }
 
 async function createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
+  if (visibility === 'owner') return teamOwnerVisibilityUnsupported();
   const teamOwner = await resolveTeamDeployOwner(store, actor.userId, teamId, config.environment);
   if (teamOwner instanceof Response) return teamOwner;
   return pendingDeploySiteCreation(config, env, {
@@ -1823,6 +1870,7 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
       'Use an active owner-scoped access key.'
     );
   }
+  if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   return pendingDeploySiteCreation(config, env, {
     siteSlug,
@@ -1831,6 +1879,15 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
     ownerUserId,
     visibility,
   });
+}
+
+function teamOwnerVisibilityUnsupported() {
+  return jsonError(
+    'SITE_VISIBILITY_INVALID',
+    'Team-owned sites cannot use owner visibility.',
+    400,
+    'Use internal, org, acl, or disabled for team-owned sites.'
+  );
 }
 
 function pendingDeploySiteCreation(config, env, { siteSlug, ownerType, ownerId, ownerUserId, visibility, managementRole }) {

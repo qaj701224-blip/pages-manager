@@ -1900,24 +1900,25 @@ export class D1PagesStore {
     return this.getSite(siteId);
   }
 
-  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, updatedAt, auditEvent }, environment) {
+  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, auditEvent }, environment) {
     const site = await this.getSite(siteId);
     if (!site || site.deletedAt) return null;
     if (environment && site.environment !== environment) return null;
 
     const nextOwnerType = ownerType || 'user';
     const now = updatedAt || this.now();
+    const nextDefaultVisibility = defaultVisibility || site.defaultVisibility;
     const statements = [
       this.db
         .prepare(
           `UPDATE sites
-          SET owner_type = ?, owner_id = ?, owner_user_id = ?, updated_at = ?
+          SET owner_type = ?, owner_id = ?, owner_user_id = ?, default_visibility = ?, updated_at = ?
           WHERE id = ?${environment ? ' AND environment = ?' : ''} AND deleted_at IS NULL`
         )
         .bind(
           ...(environment
-            ? [nextOwnerType, ownerId, ownerUserId, now, siteId, environment]
-            : [nextOwnerType, ownerId, ownerUserId, now, siteId])
+            ? [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, now, siteId, environment]
+            : [nextOwnerType, ownerId, ownerUserId, nextDefaultVisibility, now, siteId])
         ),
     ];
 

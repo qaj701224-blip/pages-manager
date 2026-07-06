@@ -1303,7 +1303,7 @@ class TestPagesStore {
     return cloneRecord(site);
   }
 
-  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, updatedAt, auditEvent }, environment) {
+  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, auditEvent }, environment) {
     const site = this.sites.get(siteId);
     if (!site || site.deletedAt) return null;
     if (environment && site.environment !== environment) return null;
@@ -1313,6 +1313,7 @@ class TestPagesStore {
     site.ownerType = ownerType || 'user';
     site.ownerId = ownerId;
     site.ownerUserId = ownerUserId;
+    if (defaultVisibility) site.defaultVisibility = defaultVisibility;
     site.updatedAt = now;
 
     if (site.ownerType === 'user') {

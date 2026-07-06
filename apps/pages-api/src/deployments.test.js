@@ -2334,6 +2334,78 @@ test('user owner-scoped access keys can transfer a personal site to a team durin
   });
 });
 
+test('deploy rejects owner visibility for team-owned sites', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const ownerScopedKey = await seedAccessKey(store, 'ak_user_team_owner_visibility', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-team-owner', teamId: team.id, visibility: 'owner' }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'team_owner_visibility_rejected',
+      }
+    ),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_VISIBILITY_INVALID');
+  assert.equal(await store.findSiteBySlug('production', 'new-team-owner'), null);
+});
+
+test('deploy rolls back owner transfer when route snapshot write fails', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const ownerScopedKey = await seedAccessKey(store, 'ak_user_team_transfer_snapshot_fail', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'guide', teamId: team.id, visibility: 'internal' }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'team_transfer_snapshot_failure',
+      }
+    ),
+    testEnv(store, failingSnapshotStore())
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  const site = await store.getSite('site_1');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_1');
+  assert.equal(site.ownerUserId, 'usr_1');
+  assert.equal(site.defaultVisibility, 'org');
+});
+
 test('user owner-scoped access keys cannot create a team site when the user is only a viewer', async () => {
   const store = await createSeededStore();
   const team = await store.createTeam({

@@ -251,6 +251,8 @@ async function updateAdminSiteSettings(request, env, config, store, session, sit
 
   const target = await resolveAdminSiteOwnerTarget(store, config, body);
   if (target instanceof Response) return target;
+  const currentVisibility = site.route?.visibility || site.defaultVisibility;
+  if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   const updatedAt = readNow(env);
   const updated = await store.transferSiteOwner(
@@ -693,6 +695,15 @@ function adminMergeErrorResponse(error) {
 
 function methodNotAllowed() {
   return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405, 'Use a supported HTTP method.');
+}
+
+function teamOwnerVisibilityUnsupported() {
+  return jsonError(
+    'SITE_VISIBILITY_INVALID',
+    'Team-owned sites cannot use owner visibility.',
+    400,
+    'Use internal, org, acl, or disabled for team-owned sites.'
+  );
 }
 
 function normalizeRequiredString(value) {
