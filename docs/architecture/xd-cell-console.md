@@ -131,14 +131,14 @@ Console 鉴权分两层：
 - `个人站点`：当前用户名下站点。
 - `团队站点`：当前用户所在团队的站点，支持按团队过滤。
 - `团队`：团队列表与团队详情。
-- `Access Keys`：用户可管理的 user-owned key 索引和创建入口。
+- `Access Keys`：用户可管理的 Personal Access Token 索引和创建入口。
 
 不提供独立工作台首页；`/workspace` 默认进入个人站点。
 
 团队详情：
 
 - `成员`：团队成员和角色管理。
-- `Access Keys`：team-owned key 创建和撤销。
+- `Access Keys`：Team Access Token 创建和撤销。
 - `设置`：自建团队 admin 可编辑名称、描述，或删除团队；部门团队信息不可编辑。
 
 团队详情不展示站点列表。团队站点统一在工作台的 `团队站点` 页面展示，跨团队过滤。
@@ -149,7 +149,7 @@ Console 鉴权分两层：
 - `部署记录`。
 - `访问控制`。
 - `运行配置`：非敏感 Vars 和 Secrets metadata；secret value 不回显。
-- `设置`：第一版只保留站点设置占位，不支持危险操作自动化。
+- `设置`：站点基础信息和危险操作。删除站点必须二次确认；站点归属转移单独设计，不和普通表单保存混在一起。
 
 ## 团队与权限
 
@@ -157,28 +157,52 @@ Console 鉴权分两层：
 
 SSO 登录成功后，平台可按邮箱调用 XDS 部门接口获取部门路径，并将其作为默认部门团队。部门团队自动成员首次关联时默认 `admin`，后续由团队自己调整权限。平台管理员可合并部门团队，用于处理部门名称变化导致的重复团队。
 
-团队角色：
+团队角色目标语义：
 
-| 角色        | 权限                                                                       |
-| ----------- | -------------------------------------------------------------------------- |
-| `admin`     | 管理团队成员、团队 Access Keys、团队设置；管理团队站点访问控制和 secrets   |
-| `publisher` | 创建团队站点记录；通过 CLI / CI / AI / agent 发布；管理非敏感 runtime Vars |
-| `viewer`    | 查看团队和站点基础信息                                                     |
+> 当前代码仍可能存在旧的细粒度限制，例如 `publisher` 只能发布或编辑部分运行配置。后续实现站点归属转移、访问控制管理、删除站点等能力时，以本节目标语义为准，并同步 API、CLI、Console 和测试。
 
-删除团队不做软删除。删除前必须盘点资产，团队名下站点需要手动删除或转移，team-owned Access Keys 需要撤销。平台不会在删除团队时自动删除站点、route、deployment、hostname claim、KV/data 或审计记录。
+| 角色        | 语义       | 权限                                                                                  |
+| ----------- | ---------- | ------------------------------------------------------------------------------------- |
+| `viewer`    | 只读成员   | 查看团队、团队站点、部署记录和基础配置                                                |
+| `publisher` | 站点管理者 | 创建团队站点、发布和更新团队站点、管理访问控制、运行配置、删除站点、转移站点归属      |
+| `admin`     | 团队管理员 | 继承 `publisher`；额外管理团队成员、角色、Team Access Token、团队设置和团队删除前盘点 |
+
+`publisher` 是站点资产管理角色，不等同于控制台网页上传发布。第一版仍不支持从控制台上传 artifact；发布入口仍是 CLI / CI / AI / agent 等受控链路。`admin` 只表示团队治理权限，团队成员管理、角色调整、Team Access Token 创建 / 撤销、团队设置和团队删除等 admin 操作暂时只支持 Console 登录态，不通过 Access Token 暴露。
+
+删除团队不做软删除。删除前必须盘点资产，团队名下站点需要手动删除或转移，Team Access Token 需要撤销。平台不会在删除团队时自动删除站点、route、deployment、hostname claim、KV/data 或审计记录。
 
 ## Access Keys
 
-Access Key 支持两种归属：
+Access Key 目标模型按归属分为两类：
 
-- `user`：从工作台 `Access Keys` 创建，权限按当前用户动态计算。
-- `team`：从团队详情 `Access Keys` 创建，只有团队 admin 可创建；创建者离开团队后，team-owned key 不自动失效。
+> 当前实现仍可能使用 `scopes_json` / `site_id` 等旧字段表达权限和单站点限制。后续实现多站点范围、deploy 复合归属转移和独立 transfer API 时，以本节模型为准，并保留向后兼容迁移。
+
+- Personal Access Token，简称 PAT：从工作台 `Access Keys` 创建，`ownerType=user`，代表某个用户；权限按用户当前状态、个人资产 owner 关系和团队成员角色动态计算。
+- Team Access Token，简称 TAT：从团队详情 `Access Keys` 创建，`ownerType=team`，代表某个团队；只有团队 `admin` 可创建和撤销。创建者后续离开团队不自动影响 TAT，但团队失效、Token 到期或撤销后必须失效。
+
+site-scoped 不再作为第三种 Token 类型，而是 PAT / TAT 创建时的作用范围：
+
+- 默认范围为 `all`：PAT 可作用于用户个人站点，以及用户在目标团队具备 `publisher` / `admin` 角色的团队站点；TAT 可作用于该团队名下站点。
+- 可选范围为 `selected_sites`：只允许操作显式选择的站点。限定站点范围的 Token 不能创建新站点，也不能通过 deploy 隐式改变未选中站点的归属。
+
+Token 权限第一版只暴露站点级能力，不暴露团队 admin 能力：
+
+| 权限      | 语义                                                                                     |
+| --------- | ---------------------------------------------------------------------------------------- |
+| `read`    | 查看 Token 作用范围内的站点、部署记录和必要 metadata                                      |
+| `publish` | 站点管理能力：发布、创建可管理站点、修改站点访问控制和运行配置、删除站点、转移站点归属 |
 
 有效期创建时设置，默认 3 个月，最大 1 年。plaintext 只在创建成功时返回一次；列表、日志、审计和错误响应都不能展示 plaintext。
 
-owner-scoped Access Key 具备 `deploy:site` 时，可以通过 CLI / CI / agent 发布链路首次创建新站点：
-user-owned key 创建个人站点，team-owned key 创建团队站点。site-scoped key 仍只能部署绑定站点，
-不能创建其它新站点；普通建站 API 不直接对 Access Key 开放。
+`publish` 可以在部署事务内复合资产变更，也可以通过独立站点归属转移接口单独执行：
+
+- PAT 不带 `teamId` 发布新 slug 时创建个人站点；带 `teamId` 且用户在目标团队是 `publisher` / `admin` 时创建团队站点。
+- TAT 发布新 slug 时创建该团队站点；如果请求显式指定 `teamId`，必须与 TAT 的 `ownerId` 一致。
+- 已有站点 owner 与 deploy 请求目标 owner 不一致时，API 必须按同一套站点管理权限判断源 owner 和目标 owner；通过后可先转移归属再发布，并在响应、审计和 CLI 计划中明确 `fromOwner` / `toOwner`。
+- PAT 可将团队站点转到个人名下，前提是用户对源团队有 `publisher` / `admin` 权限且 Token 有 `publish`。TAT 暂不支持把团队站点转给个人；该场景应由有权限的团队成员使用 PAT 或 Console 登录态执行。
+- TAT 可管理本团队站点，也可在后续支持团队到团队的转移；目标团队接收规则必须显式校验，不得仅凭源团队 Token 单方面完成跨团队资产迁移。
+
+普通建站 API 不直接对 Access Token 开放；Access Token 创建新站点只允许发生在部署事务内。团队 admin 操作不进入 Access Token 能力面，仍由 Console 登录态完成并写审计。
 
 staging key 不能调用 production，production key 不能调用 staging。
 

@@ -192,10 +192,14 @@ v2 CLI 只使用 `/.xd-pages/api/*`。开发期 API 合约源码位于 `apps/pag
 
 v2 发布 API 不能依赖 `X-Pages-Token`。`X-Pages-Token` 只属于 v1 归属标记，不进入 v2 鉴权模型。
 
-access key 的建站边界收口在 `deploy-api`：owner-scoped access key 具备 `deploy:site` 时，
-部署新 slug 可自动创建归属内站点；user-owned key 带 `teamId` 时必须重新校验 key 所属用户当前是否为
-该团队 `publisher` / `admin`。site-scoped access key 只能部署绑定站点。`user-api` 的普通建站
-endpoint 不接受 access key。
+access key 的建站边界收口在 `deploy-api`。以下为目标安全边界，尚未完全落地的能力必须在实现时补齐
+权限测试和审计测试。Access Token 分为 PAT（Personal Access Token）和
+TAT（Team Access Token）；站点限定只是 Token 的作用范围。PAT 带 `teamId` 时必须重新校验 Token
+所属用户当前是否为该团队 `publisher` / `admin`，TAT 带 `teamId` 时必须与 Token 归属团队一致。
+限定站点范围的 Token 只能部署选中的站点，不能创建新站点。`deploy-api` 可以在同一事务内完成
+“归属转移 + 发布”，但必须同时校验源 owner 和目标 owner 的站点管理权限，并写审计。`user-api`
+的普通建站 endpoint 不接受 access key；团队成员、角色、Team Access Token、团队设置和团队删除等
+admin 操作不通过 access key 暴露。
 
 ### Router IP Allowlist
 

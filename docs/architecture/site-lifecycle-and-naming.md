@@ -129,7 +129,7 @@ deleted
 | restore        | 管理员 / owner 操作                                       |
 | delete         | 软删除，不立即释放 hostname                               |
 | rename         | 显式操作，不能由普通内容修改隐式触发                      |
-| transfer owner | 管理员操作                                                |
+| transfer owner | 站点管理操作；要求 actor 对源 owner 和目标 owner 都具备站点管理权限 |
 | rollback       | 后续通过 `DeployRecord` 实现                              |
 
 ## Quota

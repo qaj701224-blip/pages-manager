@@ -282,18 +282,25 @@ allow if:
 ```sql
 access_keys
   id                  -- ak_xxx
+  environment
   owner_user_id
   key_hash
+  pepper_id
   name
-  scopes              -- JSON array，例如 ["deploy:site"]
-  site_id             -- null 表示用户级 key；非 null 表示限定站点
+  scopes_json         -- 当前存储字段；逻辑权限映射为 read / publish
+  site_id             -- null 表示 all 范围；非 null 表示当前单站点 selected_sites 范围
+  owner_type          -- user / team
+  owner_id            -- user_id / team_id
+  created_by_user_id
   expires_at
   last_used_at
   revoked_at
+  revoked_by_user_id
+  revoked_reason
   created_at
 ```
 
-access key 明文只在创建时显示一次，之后只存 hash。key 的 scope 和 site 限制必须在 `pages-api` 权威校验，不能只靠 CLI 自觉。
+access key 明文只在创建时显示一次，之后只存 hash。key 的权限、作用范围、owner 归属和站点限制必须在 `pages-api` 权威校验，不能只靠 CLI 自觉。
 
 access key 生成与存储规则：
 
@@ -301,7 +308,10 @@ access key 生成与存储规则：
 - 明文格式可以带非敏感前缀和环境提示，例如 `xdp_prod_...`、`xdp_stg_...`，但服务端不能只靠前缀判权。
 - 存储使用 HMAC-SHA-256 + server-side pepper，并记录 `pepper_id` 以支持轮换。
 - 校验使用常量时间比较。
-- 默认创建 site-scoped + expiry 的 key；user-level key 需要 recent login、显式确认和强审计。
+- 默认创建 all 范围 + expiry 的 PAT 或 TAT；用户可在创建时改为 selected sites 以限制到指定站点。
+  当前表结构用 `site_id` 表达单站点限制；后续如果支持多选站点，应迁移为 `access_key_site_scopes` join table 或等价结构。
+- PAT 代表用户，权限按用户当前状态、个人资产 owner 关系和团队成员角色动态计算。TAT 代表团队，由团队 admin 创建和撤销；创建者离开团队不自动影响 TAT。
+- Access Token 第一版不承载团队 admin 能力；团队成员、角色、Team Access Token、团队设置和团队删除等操作必须走 Console 登录态。
 
 #### auth_sessions_index
 
