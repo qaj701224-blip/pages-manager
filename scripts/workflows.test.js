@@ -883,6 +883,10 @@ test('staging sync explicitly dispatches deploy workflows for deploy-affecting p
   assert.doesNotMatch(workflow, /docs\/人工配置待办\.md/, 'deleted manual config todo must not be watched');
   assert.match(workflow, /wait_for_remote_branch_sha staging "\$deploy_head_sha"/);
   assert.match(workflow, /repos\/\$\{GITHUB_REPOSITORY\}\/git\/ref\/heads\/\$\{branch\}/);
+  assert.match(workflow, /watch_run_with_retry\(\)/);
+  assert.match(workflow, /watch_run_with_retry "\$ci_run_id" "CI run"/);
+  assert.match(workflow, /watch_run_with_retry "\$v1_run_id" "Deploy Staging run"/);
+  assert.match(workflow, /watch_run_with_retry "\$v2_run_id" "Deploy XD Cell Staging run"/);
 });
 
 test('ack preview deploy is manual and isolated from Cloudflare production deploy', () => {
