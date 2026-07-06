@@ -166,14 +166,21 @@ function TeamsContent({ state, onCreate }) {
           <div className="team-card__top">
             <span className="team-card__avatar">{team.avatarText}</span>
             <div>
-              <strong>{team.name}</strong>
+              <div className="team-card__name-row">
+                <strong>{team.name}</strong>
+                {team.typeLabel ? <span className="tag muted">{team.typeLabel}</span> : null}
+              </div>
               <span>你的角色：{team.roleLabel}</span>
             </div>
           </div>
           <p>{team.description}</p>
-          <div className="team-card__footer">
-            {team.typeLabel ? <span className="tag">{team.typeLabel}</span> : null}
-            <span className="tag muted">{team.roleLabel}</span>
+          <div className="team-card__stats">
+            <span>
+              <strong>{team.siteCount}</strong> 站点
+            </span>
+            <span>
+              <strong>{team.memberCount}</strong> 成员
+            </span>
           </div>
         </Link>
       ))}

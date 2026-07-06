@@ -296,13 +296,14 @@ test('custom team deletion is blocked until team sites and active keys are clear
 test('team APIs list teams and block department team deletion', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_admin');
-  await store.createTeam({
+  const customTeam = await store.createTeam({
     environment: 'production',
     teamType: 'custom',
     name: 'Console Team',
     description: null,
     createdByUserId: 'usr_admin',
   });
+  await seedTeamSite(store, { id: 'site_console_team', slug: 'console-team', teamId: customTeam.id });
   await store.hydrateDepartmentMembership({
     environment: 'production',
     userId: 'usr_admin',
@@ -322,10 +323,10 @@ test('team APIs list teams and block department team deletion', async () => {
   );
 
   assert.deepEqual(
-    teams.map((team) => [team.name, team.teamType, team.currentUserRole]),
+    teams.map((team) => [team.name, team.teamType, team.currentUserRole, team.siteCount, team.memberCount]),
     [
-      ['Console Team', 'custom', 'admin'],
-      ['XD/Platform/Web', 'department', 'admin'],
+      ['Console Team', 'custom', 'admin', 1, 1],
+      ['XD/Platform/Web', 'department', 'admin', 0, 1],
     ]
   );
   assert.equal(deleteDepartment.status, 403);
@@ -382,6 +383,8 @@ test('public teams API lists current user teams for CLI tokens only', async () =
         status: 'active',
         currentUserRole: 'publisher',
         currentUserMembershipSource: 'manual',
+        siteCount: 0,
+        memberCount: 1,
         createdAt: '2026-06-15T00:00:00.000Z',
         updatedAt: '2026-06-15T00:00:00.000Z',
       },
@@ -394,6 +397,8 @@ test('public teams API lists current user teams for CLI tokens only', async () =
         status: 'active',
         currentUserRole: 'admin',
         currentUserMembershipSource: 'department_auto',
+        siteCount: 0,
+        memberCount: 1,
         createdAt: '2026-06-15T00:00:00.000Z',
         updatedAt: '2026-06-15T00:00:00.000Z',
       },

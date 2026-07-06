@@ -64,9 +64,13 @@ test('runtime config uses add dialogs instead of inline creation forms', () => {
 });
 
 test('team cards stay compact and omit custom team type tag', () => {
-  assert.match(teamsSource, /\{team\.typeLabel \? <span className="tag">\{team\.typeLabel\}<\/span> : null\}/);
-  const compactGridPattern = /\.team-card-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fill, minmax\(240px, 320px\)\);/;
+  assert.match(teamsSource, /\{team\.typeLabel \? <span className="tag muted">\{team\.typeLabel\}<\/span> : null\}/);
+  assert.match(teamsSource, /team-card__stats/);
+  assert.match(teamsSource, /<strong>\{team\.siteCount\}<\/strong> 站点/);
+  assert.match(teamsSource, /<strong>\{team\.memberCount\}<\/strong> 成员/);
+  const compactGridPattern = /\.team-card-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fill, minmax\(260px, 360px\)\);/;
 
   assert.match(stylesSource, compactGridPattern);
-  assert.match(stylesSource, /\.team-card\s*\{[\s\S]*?min-height:\s*150px;/);
+  assert.match(stylesSource, /\.team-card\s*\{[\s\S]*?min-height:\s*168px;/);
+  assert.match(stylesSource, /\.team-card__stats\s*\{[\s\S]*?border-top:\s*1px solid var\(--xd-border\);/);
 });

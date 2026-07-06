@@ -99,6 +99,8 @@ export function buildOpenApi(config) {
             status: { type: 'string' },
             currentUserRole: { type: ['string', 'null'], enum: ['viewer', 'publisher', 'admin', null] },
             currentUserMembershipSource: { type: ['string', 'null'] },
+            siteCount: { type: 'integer', minimum: 0 },
+            memberCount: { type: 'integer', minimum: 0 },
             createdAt: { type: 'string' },
             updatedAt: { type: 'string' },
           },

@@ -6,6 +6,8 @@ export function buildTeamCards(teams) {
     description: team.description || team.departmentPath || '暂无描述',
     roleLabel: team.currentUserRole || 'viewer',
     typeLabel: team.teamType === 'department' ? '部门团队' : '',
+    siteCount: Math.max(0, Number(team.siteCount || 0)),
+    memberCount: Math.max(0, Number(team.memberCount || 0)),
   }));
 }
 

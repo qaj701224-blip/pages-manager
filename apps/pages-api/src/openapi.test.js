@@ -54,6 +54,8 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'scopes',
   ]);
   assert.ok(body.components.schemas.CliManagedDeploymentRequest);
+  assert.equal(body.components.schemas.Team.properties.siteCount.type, 'integer');
+  assert.equal(body.components.schemas.Team.properties.memberCount.type, 'integer');
   assert.ok(body.components.schemas.DeploymentDecision);
   assert.deepEqual(body.components.schemas.DeploymentDecision.properties.requestedFallback.enum, [
     'auto',

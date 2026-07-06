@@ -11,6 +11,8 @@ test('team cards expose skill-hub style display fields', () => {
       description: '测试',
       currentUserRole: 'admin',
       teamType: 'custom',
+      siteCount: 2,
+      memberCount: 5,
     },
     {
       id: 'dept_xd',
@@ -18,6 +20,8 @@ test('team cards expose skill-hub style display fields', () => {
       departmentPath: 'XD/Platform/Web',
       currentUserRole: 'publisher',
       teamType: 'department',
+      siteCount: 1,
+      memberCount: 8,
     },
   ]);
 
@@ -28,6 +32,8 @@ test('team cards expose skill-hub style display fields', () => {
     description: '测试',
     roleLabel: 'admin',
     typeLabel: '',
+    siteCount: 2,
+    memberCount: 5,
   });
   assert.deepEqual(cards[1], {
     id: 'dept_xd',
@@ -36,6 +42,8 @@ test('team cards expose skill-hub style display fields', () => {
     description: 'XD/Platform/Web',
     roleLabel: 'publisher',
     typeLabel: '部门团队',
+    siteCount: 1,
+    memberCount: 8,
   });
 });
 

@@ -1330,9 +1330,25 @@ export class D1PagesStore {
     const result = await this.db
       .prepare(
         `SELECT teams.*, team_members.role AS current_user_role,
-          team_members.membership_source AS current_user_membership_source
+          team_members.membership_source AS current_user_membership_source,
+          COALESCE(site_counts.site_count, 0) AS site_count,
+          COALESCE(member_counts.member_count, 0) AS member_count
         FROM teams
         JOIN team_members ON team_members.team_id = teams.id
+        LEFT JOIN (
+          SELECT environment, owner_id AS team_id, COUNT(*) AS site_count
+          FROM sites
+          WHERE owner_type = 'team' AND deleted_at IS NULL
+          GROUP BY environment, owner_id
+        ) AS site_counts
+          ON site_counts.team_id = teams.id
+          AND site_counts.environment = teams.environment
+        LEFT JOIN (
+          SELECT team_id, COUNT(*) AS member_count
+          FROM team_members
+          WHERE removed_at IS NULL
+          GROUP BY team_id
+        ) AS member_counts ON member_counts.team_id = teams.id
         WHERE team_members.user_id = ? AND team_members.removed_at IS NULL
           AND teams.status = 'active' AND teams.deleted_at IS NULL
           ${environment ? 'AND teams.environment = ?' : ''}
@@ -3894,6 +3910,8 @@ function mapTeamWithCurrentMember(row) {
     ...mapTeam(row),
     currentUserRole: row.current_user_role,
     currentUserMembershipSource: row.current_user_membership_source,
+    siteCount: Number(row.site_count || 0),
+    memberCount: Number(row.member_count || 0),
   };
 }
 

@@ -816,9 +816,23 @@ class TestPagesStore {
         ...team,
         currentUserRole: member.role,
         currentUserMembershipSource: member.membershipSource,
+        siteCount: this.countTeamSites(team.id),
+        memberCount: this.countTeamMembers(team.id),
       });
     }
     return cloneRecord(teams.sort((left, right) => left.name.localeCompare(right.name)));
+  }
+
+  countTeamSites(teamId) {
+    return [...this.sites.values()].filter(
+      (site) => site.ownerType === 'team' && site.ownerId === teamId && !site.deletedAt
+    ).length;
+  }
+
+  countTeamMembers(teamId) {
+    return [...this.teamMembers.values()].filter(
+      (member) => member.teamId === teamId && !member.removedAt
+    ).length;
   }
 
   async updateTeamSettings({ teamId, name, description }) {

@@ -250,6 +250,8 @@ function formatTeam(team, member) {
     status: team.status,
     currentUserRole: team.currentUserRole || member?.role || null,
     currentUserMembershipSource: team.currentUserMembershipSource || member?.membershipSource || null,
+    siteCount: Number(team.siteCount || 0),
+    memberCount: Number(team.memberCount || 0),
     createdAt: team.createdAt,
     updatedAt: team.updatedAt,
   };
