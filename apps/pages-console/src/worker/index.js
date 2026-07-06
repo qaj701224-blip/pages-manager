@@ -272,7 +272,7 @@ function isPagesApiProxyPath(pathname) {
   if (/^\/api\/console\/teams\/[^/]+\/access-keys(?:\/[^/]+)?$/.test(pathname)) return true;
   if (pathname === '/api/console/teams' || pathname.startsWith('/api/console/teams/')) return true;
   if (pathname === '/api/console/admin' || pathname.startsWith('/api/console/admin/')) return true;
-  if (/^\/api\/console\/sites\/[^/]+(?:\/(?:deployments|access|config))?$/.test(pathname)) return true;
+  if (/^\/api\/console\/sites\/[^/]+(?:\/(?:deployments|access|config|settings))?$/.test(pathname)) return true;
   return /^\/api\/console\/sites\/[^/]+\/config\/(?:vars|secrets)\/[^/]+$/.test(pathname);
 }
 

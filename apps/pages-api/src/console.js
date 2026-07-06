@@ -14,6 +14,7 @@ import {
   refreshActiveRouteSnapshot,
   restoreSiteAclAfterSnapshotFailure,
   restoreSiteVisibilityAfterSnapshotFailure,
+  buildSiteOwnerTransferAuditEvent,
   siteCreateErrorResponse,
   syncActiveWfpSecret,
   validateSlug,
@@ -62,6 +63,14 @@ export async function handleConsoleApi(request, env, config, store) {
       teamId,
     });
     return jsonOk({ sites: sites.map(formatWorkspaceSite) });
+  }
+
+  const siteSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/settings$/);
+  if (siteSettingsMatch) {
+    const session = await requireConsoleUserSession(request, env, config, store);
+    if (session instanceof Response) return session;
+    if (request.method !== 'PATCH') return methodNotAllowed();
+    return updateConsoleSiteSettings(request, env, config, store, session, decodeURIComponent(siteSettingsMatch[1]));
   }
 
   const siteAccessMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)\/access$/);
@@ -234,6 +243,126 @@ export async function deleteConsoleSite(env, config, store, site, options = {}) 
   if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   const route = await store.getRouteBySiteId(site.id, config.environment);
   return jsonOk({ site: formatWorkspaceSite({ ...deleted, route }) });
+}
+
+async function updateConsoleSiteSettings(request, env, config, store, session, siteId) {
+  if (typeof store.transferSiteOwner !== 'function') {
+    return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
+  }
+
+  const site = await store.getConsoleSiteDetail({
+    environment: config.environment,
+    userId: session.userId,
+    siteId,
+  });
+  if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  if (!hasPublisherRole(site)) {
+    return jsonError(
+      'SITE_PUBLISHER_REQUIRED',
+      'Site publisher role required.',
+      403,
+      'Use the site owner account or a team publisher/admin account.'
+    );
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const target = await resolveConsoleSiteOwnerTarget(store, config, session, body);
+  if (target instanceof Response) return target;
+
+  const updatedAt = readNow(env);
+  const updated = await store.transferSiteOwner(
+    site.id,
+    {
+      ownerType: target.ownerType,
+      ownerId: target.ownerId,
+      ownerUserId: target.ownerUserId,
+      updatedAt,
+      auditEvent: buildSiteOwnerTransferAuditEvent(env, config, { type: 'user', userId: session.userId }, site, target, {
+        source: 'console',
+        createdAt: updatedAt,
+      }),
+    },
+    config.environment
+  );
+  if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+
+  const visible = await store.getConsoleSiteDetail({
+    environment: config.environment,
+    userId: session.userId,
+    siteId: updated.id,
+  });
+  if (visible) return jsonOk({ site: formatSiteDetail(visible) });
+
+  const route = await store.getRouteBySiteId(updated.id, config.environment);
+  return jsonOk({
+    site: formatSiteDetail({
+      ...updated,
+      route,
+      currentUserId: session.userId,
+      managementRole: null,
+      ownerDisplayName: target.displayName,
+      ownerEmail: target.email || null,
+      ownerTeamType: target.teamType || null,
+    }),
+  });
+}
+
+async function resolveConsoleSiteOwnerTarget(store, config, session, body) {
+  const ownerType = body?.ownerType === 'team' || body?.ownerType === 'user' ? body.ownerType : '';
+  if (!ownerType) {
+    return jsonError('SITE_TRANSFER_INVALID', 'Site transfer target is invalid.', 400, 'Use ownerType user or team.');
+  }
+
+  if (ownerType === 'user') {
+    const ownerId = normalizeRequiredString(body.ownerId || body.userId);
+    if (!ownerId) return jsonError('SITE_TRANSFER_INVALID', 'Site transfer target is invalid.', 400, 'Choose a user.');
+    const user = typeof store.getUser === 'function' ? await store.getUser(ownerId) : null;
+    if (!isActiveConsoleUser(user)) {
+      return jsonError('SITE_TRANSFER_FORBIDDEN', 'Target user is not active.', 403, 'Choose an active user.');
+    }
+    return {
+      ownerType: 'user',
+      ownerId: user.id,
+      ownerUserId: user.id,
+      displayName: user.realname || user.email || user.account || user.id,
+      email: user.email || null,
+    };
+  }
+
+  const teamId = normalizeRequiredString(body.teamId || body.ownerId);
+  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
+  const team = typeof store.getTeam === 'function' ? await store.getTeam(teamId) : null;
+  if (!team || team.environment !== config.environment || team.deletedAt || team.status !== 'active') {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  const member =
+    typeof store.getTeamMember === 'function' ? await store.getTeamMember({ teamId: team.id, userId: session.userId }) : null;
+  if (!member || (member.role !== 'admin' && member.role !== 'publisher')) {
+    return jsonError(
+      'SITE_TRANSFER_FORBIDDEN',
+      'Team publisher role required.',
+      403,
+      'Choose a team where you are publisher or admin.'
+    );
+  }
+  return {
+    ownerType: 'team',
+    ownerId: team.id,
+    ownerUserId: session.userId,
+    displayName: team.name || team.departmentPath || team.id,
+    teamType: team.teamType || null,
+    role: member.role,
+  };
+}
+
+function isActiveConsoleUser(user) {
+  return Boolean(user?.id) && user.employeeStatus !== 'inactive';
 }
 
 async function validateConsoleAuthSession(request, env, config, store) {
@@ -474,20 +603,23 @@ function formatWorkspaceSite(site) {
 function formatSiteDetail(site) {
   return {
     ...formatWorkspaceSite(site),
+    owner: formatOwner(site, { includeDisplayName: true, includeId: true, includeEmail: true }),
     access: {
       visibility: site.route?.visibility || site.defaultVisibility,
     },
     permissions: {
-      role: site.managementRole || (site.ownerUserId ? 'admin' : 'viewer'),
+      role: site.managementRole || (site.ownerUserId === site.currentUserId ? 'admin' : 'viewer'),
       canManage: canManageSite(site.managementRole) || site.ownerUserId === site.currentUserId,
       canManageAccess: canManageSite(site.managementRole) || site.ownerUserId === site.currentUserId,
     },
   };
 }
 
-function formatOwner(site, { includeDisplayName }) {
+function formatOwner(site, { includeDisplayName, includeId = false, includeEmail = false }) {
   const type = site.ownerType || 'user';
   const owner = { type };
+  if (includeId) owner.id = site.ownerId || site.ownerUserId || null;
+  if (includeEmail && type === 'user' && site.ownerEmail) owner.email = site.ownerEmail;
   if (includeDisplayName && site.ownerDisplayName) owner.displayName = site.ownerDisplayName;
   if (type === 'team' && site.ownerTeamType) owner.teamType = site.ownerTeamType;
   return owner;

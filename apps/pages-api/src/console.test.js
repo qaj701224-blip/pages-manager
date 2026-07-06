@@ -523,7 +523,7 @@ test('site detail and subresources are internal-only, permission checked, and re
   const detailBody = await detail.json();
   assert.equal(detailBody.site.slug, 'mine');
   assert.equal(detailBody.site.hostname, 'mine.workers.xd.team');
-  assert.deepEqual(detailBody.site.owner, { type: 'user', displayName: '徐天麒' });
+  assert.deepEqual(detailBody.site.owner, { type: 'user', id: 'usr_me', displayName: '徐天麒' });
   assert.equal(detailBody.site.access.visibility, 'acl');
   assert.deepEqual(await deployments.json(), { deployments: [] });
   assert.deepEqual(await access.json(), { access: { visibility: 'acl', aclEntries: [] } });
@@ -804,6 +804,89 @@ test('site owner can delete a site from console settings', async () => {
     siteId: 'site_mine',
   });
   assert.equal(detail, null);
+});
+
+test('site publisher can transfer site owner from console settings to an active user', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await seedConsoleUser(store, 'usr_target', {
+    email: 'target@example.com',
+    realname: '目标用户',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body.site.owner, {
+    type: 'user',
+    id: 'usr_target',
+    email: 'target@example.com',
+    displayName: '目标用户',
+  });
+  assert.equal(body.site.permissions.canManage, false);
+  const site = await store.getSite('site_mine');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_target');
+  assert.equal(site.ownerUserId, 'usr_target');
+});
+
+test('site publisher can transfer site owner from console settings to a manageable team', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await store.createTeam({
+    id: 'team_console',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    createdByUserId: 'usr_me',
+  });
+  await store.addTeamMember({
+    teamId: 'team_console',
+    userId: 'usr_me',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'team', teamId: 'team_console' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body.site.owner, {
+    type: 'team',
+    id: 'team_console',
+    displayName: 'Console Team',
+    teamType: 'custom',
+  });
+  assert.equal(body.site.permissions.canManage, true);
+  const site = await store.getSite('site_mine');
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, 'team_console');
+  assert.equal(site.ownerUserId, 'usr_me');
 });
 
 test('site publisher can delete a team site from console settings', async () => {

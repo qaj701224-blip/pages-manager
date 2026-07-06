@@ -50,8 +50,11 @@ export function getAdminOps(options = {}) {
   return fetchJson('/api/console/admin/ops', options);
 }
 
-export function listAdminUsers(options = {}) {
-  return fetchJson('/api/console/admin/users', options);
+export function listAdminUsers({ query, ...options } = {}) {
+  const search = new URLSearchParams();
+  if (query) search.set('query', query);
+  const qs = search.toString();
+  return fetchJson(`/api/console/admin/users${qs ? `?${qs}` : ''}`, options);
 }
 
 export function listConsoleUsers({ query, ...options } = {}) {
@@ -203,6 +206,10 @@ export function listAccessKeys(options = {}) {
   return fetchJson('/api/console/access-keys', options);
 }
 
+export function listTeams(options = {}) {
+  return fetchJson('/api/console/teams', options);
+}
+
 export function createTeam(body, options = {}) {
   return fetchJson('/api/console/teams', {
     ...options,
@@ -285,6 +292,22 @@ export function deleteTeam(teamId, options = {}) {
 
 export function updateSiteAccess(siteId, body, options = {}) {
   return fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/access`, {
+    ...options,
+    method: 'PATCH',
+    body,
+  });
+}
+
+export function updateSiteSettings(siteId, body, options = {}) {
+  return fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/settings`, {
+    ...options,
+    method: 'PATCH',
+    body,
+  });
+}
+
+export function updateAdminSiteSettings(siteId, body, options = {}) {
+  return fetchJson(`/api/console/admin/sites/${encodeURIComponent(siteId)}/settings`, {
     ...options,
     method: 'PATCH',
     body,

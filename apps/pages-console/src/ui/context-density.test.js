@@ -34,6 +34,15 @@ test('site settings expose guarded site deletion', () => {
   assert.match(siteDetailSource, /仅站点 owner 或团队 admin 可删除/);
 });
 
+test('site settings expose edit mode for owner transfer without unsupported placeholder', () => {
+  assert.match(siteDetailSource, /className="info-list site-settings-card"/);
+  assert.match(siteDetailSource, /<SiteOwnerEditor/);
+  assert.match(siteDetailSource, /updateSettings: updateSiteSettings/);
+  assert.match(siteDetailSource, /listOwnerUsers: \(\{ query \} = \{\}\) => listAdminUsers\(\{ query \}\)/);
+  assert.match(siteDetailSource, /listOwnerUsers: \(\{ query \} = \{\}\) => listConsoleUsers\(\{ query \}\)/);
+  assert.doesNotMatch(siteDetailSource, /暂不支持控制台修改站点设置/);
+});
+
 test('detail rows use comfortable single-line primary and secondary text', () => {
   assert.match(stylesSource, /\.table-row > div,[\s\S]*?gap:\s*5px;[\s\S]*?align-content:\s*center;/);
   assert.match(stylesSource, /\.table-row strong,[\s\S]*?white-space:\s*nowrap;[\s\S]*?text-overflow:\s*ellipsis;/);

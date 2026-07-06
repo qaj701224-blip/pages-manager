@@ -120,6 +120,28 @@ test('admin API ignores forged admin headers and uses platform admin grants', as
   assert.equal(granted.status, 200, await granted.clone().text());
 });
 
+test('admin users can be searched by persisted profile fields', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_target', { realname: '目标用户', email: 'target@example.com' });
+  await seedConsoleUser(store, 'usr_other', { realname: '其他用户', email: 'other@example.com' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/users?query=%E7%9B%AE%E6%A0%87', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(
+    body.users.map((user) => user.id),
+    ['usr_target']
+  );
+});
+
 test('admin platform grant requires an existing user', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -381,6 +403,12 @@ test('platform admin can edit admin-scope site settings without asset membership
     email: 'owner@example.com',
     employeeStatus: 'active',
   });
+  await store.createUser({
+    userId: 'usr_target',
+    email: 'target@example.com',
+    realname: '目标用户',
+    employeeStatus: 'active',
+  });
   await store.createTeam({
     id: 'team_console',
     environment: 'production',
@@ -412,11 +440,29 @@ test('platform admin can edit admin-scope site settings without asset membership
     }),
     env(store)
   );
+  const settings = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/settings', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
 
   assert.equal(putVar.status, 200, await putVar.clone().text());
   assert.equal((await putVar.json()).var.name, 'API_BASE');
   assert.equal(access.status, 200, await access.clone().text());
   assert.equal((await access.json()).access.visibility, 'acl');
+  assert.equal(settings.status, 200, await settings.clone().text());
+  const settingsBody = await settings.json();
+  assert.equal(settingsBody.site.owner.type, 'user');
+  assert.equal(settingsBody.site.owner.id, 'usr_target');
+  assert.equal(settingsBody.site.owner.displayName, '目标用户');
+  const site = await store.getSite('site_console');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_target');
+  assert.equal(site.ownerUserId, 'usr_target');
 });
 
 test('platform admin can edit admin-scope custom team settings without team membership', async () => {
@@ -513,7 +559,10 @@ test('platform admin can manage admin-scope team members without team membership
   );
 
   assert.equal(members.status, 200, await members.clone().text());
-  assert.equal((await members.json()).members.some((member) => member.userId === 'usr_member'), true);
+  assert.equal(
+    (await members.json()).members.some((member) => member.userId === 'usr_member'),
+    true
+  );
   assert.equal(update.status, 200, await update.clone().text());
   assert.equal((await update.json()).member.role, 'publisher');
   assert.equal(remove.status, 200, await remove.clone().text());

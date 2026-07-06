@@ -343,14 +343,25 @@ class TestPagesStore {
     });
   }
 
-  async listAdminUsers({ environment }) {
+  async listAdminUsers({ environment, query, limit = 50 }) {
+    const normalizedQuery = normalizeNullableString(query)?.toLowerCase() || '';
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
     return cloneRecord(
       [...this.users.values()]
+        .filter((user) => {
+          if (!normalizedQuery) return true;
+          return [user.realname, user.email, user.account, user.id]
+            .filter(Boolean)
+            .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+        })
         .map((user) => ({
           ...user,
-          isPlatformAdmin: Boolean(this.platformAdmins.get(platformAdminKey(environment, user.id))?.revokedAt === null),
+          isPlatformAdmin: Boolean(
+            this.platformAdmins.get(platformAdminKey(environment, user.id))?.revokedAt === null
+          ),
         }))
         .sort((left, right) => left.email.localeCompare(right.email))
+        .slice(0, normalizedQuery ? normalizedLimit : undefined)
     );
   }
 

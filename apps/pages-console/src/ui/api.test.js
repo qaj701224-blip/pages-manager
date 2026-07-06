@@ -29,6 +29,7 @@ import {
   listAdminTeams,
   listAdminUsers,
   listConsoleUsers,
+  listTeams,
   listAdminWebhookDeliveries,
   listAdminWebhooks,
   listTeamAccessKeys,
@@ -44,7 +45,9 @@ import {
   putAdminSiteRuntimeSecret,
   putAdminSiteRuntimeVar,
   updateSiteAccess,
+  updateSiteSettings,
   updateAdminSiteAccess,
+  updateAdminSiteSettings,
   updateAdminWebhook,
   updateAdminTeamMember,
   updateAdminTeamSettings,
@@ -164,7 +167,7 @@ test('admin governance API helpers use console admin endpoints', async () => {
 
   await getAdminDashboard({ fetchImpl });
   await getAdminOps({ fetchImpl });
-  await listAdminUsers({ fetchImpl });
+  await listAdminUsers({ query: '目标用户', fetchImpl });
   await listAdminSites({ fetchImpl });
   await listAdminTeams({ fetchImpl, teamType: 'department', status: 'active' });
   await listAdminAuditEvents({ fetchImpl });
@@ -177,7 +180,7 @@ test('admin governance API helpers use console admin endpoints', async () => {
     [
       ['/api/console/admin/dashboard', 'GET'],
       ['/api/console/admin/ops', 'GET'],
-      ['/api/console/admin/users', 'GET'],
+      ['/api/console/admin/users?query=%E7%9B%AE%E6%A0%87%E7%94%A8%E6%88%B7', 'GET'],
       ['/api/console/admin/sites', 'GET'],
       ['/api/console/admin/teams?teamType=department&status=active', 'GET'],
       ['/api/console/admin/audit', 'GET'],
@@ -317,6 +320,29 @@ test('site management API helpers use site access and runtime config endpoints',
   assert.deepEqual(JSON.parse(calls[0].init.body), { visibility: 'acl', aclEntries: [] });
   assert.deepEqual(JSON.parse(calls[1].init.body), { value: 'https://api.example.test' });
   assert.deepEqual(JSON.parse(calls[3].init.body), { value: 'secret-value' });
+});
+
+test('site settings API helpers update owner under workspace and admin scopes', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ site: { id: 'site_1' } });
+  };
+
+  await listTeams({ fetchImpl });
+  await updateSiteSettings('site_1', { ownerType: 'team', teamId: 'team_1' }, { fetchImpl, csrfToken: 'csrf-1' });
+  await updateAdminSiteSettings('site_1', { ownerType: 'user', ownerId: 'usr_1' }, { fetchImpl, csrfToken: 'csrf-2' });
+
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token'] || '']),
+    [
+      ['/api/console/teams', 'GET', ''],
+      ['/api/console/sites/site_1/settings', 'PATCH', 'csrf-1'],
+      ['/api/console/admin/sites/site_1/settings', 'PATCH', 'csrf-2'],
+    ]
+  );
+  assert.deepEqual(JSON.parse(calls[1].init.body), { ownerType: 'team', teamId: 'team_1' });
+  assert.deepEqual(JSON.parse(calls[2].init.body), { ownerType: 'user', ownerId: 'usr_1' });
 });
 
 test('team settings API helpers use workspace team endpoints', async () => {

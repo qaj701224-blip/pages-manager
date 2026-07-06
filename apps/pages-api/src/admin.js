@@ -12,6 +12,7 @@ import {
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { formatConsoleUser } from './console-users.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
+import { buildSiteOwnerTransferAuditEvent } from './sites.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
@@ -40,7 +41,7 @@ export async function handleConsoleAdminApi(request, env, config, store) {
 
   if (url.pathname === `${CONSOLE_PREFIX}/admin/users`) {
     if (request.method !== 'GET') return methodNotAllowed();
-    return listAdminUsers(config, store);
+    return listAdminUsers(url, config, store);
   }
 
   if (url.pathname === `${CONSOLE_PREFIX}/admin/sites`) {
@@ -103,6 +104,14 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     if (site instanceof Response) return site;
     if (request.method !== 'GET') return methodNotAllowed();
     return jsonOk({ config: await readSiteConfig(store, config.environment, site.id) });
+  }
+
+  const adminSiteSettingsMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)\/settings$/);
+  if (adminSiteSettingsMatch) {
+    const site = await getAdminSite(config, store, decodeURIComponent(adminSiteSettingsMatch[1]));
+    if (site instanceof Response) return site;
+    if (request.method === 'PATCH') return updateAdminSiteSettings(request, env, config, store, session, site);
+    return methodNotAllowed();
   }
 
   const adminSiteMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/sites\/([^/]+)$/);
@@ -210,8 +219,9 @@ function getAdminOps(config) {
   });
 }
 
-async function listAdminUsers(config, store) {
-  const users = await store.listAdminUsers({ environment: config.environment });
+async function listAdminUsers(url, config, store) {
+  const query = normalizeNullableString(url.searchParams.get('query'));
+  const users = await store.listAdminUsers({ environment: config.environment, query });
   return jsonOk({ users: users.map(formatAdminUser) });
 }
 
@@ -225,6 +235,76 @@ async function getAdminSite(config, store, siteId) {
   const site = sites.find((item) => item.id === siteId);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   return site;
+}
+
+async function updateAdminSiteSettings(request, env, config, store, session, site) {
+  if (typeof store.transferSiteOwner !== 'function') {
+    return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const target = await resolveAdminSiteOwnerTarget(store, config, body);
+  if (target instanceof Response) return target;
+
+  const updatedAt = readNow(env);
+  const updated = await store.transferSiteOwner(
+    site.id,
+    {
+      ownerType: target.ownerType,
+      ownerId: target.ownerId,
+      ownerUserId: target.ownerUserId || session.userId,
+      updatedAt,
+      auditEvent: buildSiteOwnerTransferAuditEvent(env, config, { type: 'user', userId: session.userId }, site, target, {
+        source: 'console-admin',
+        createdAt: updatedAt,
+      }),
+    },
+    config.environment
+  );
+  if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+
+  const refreshed = await getAdminSite(config, store, updated.id);
+  if (refreshed instanceof Response) return refreshed;
+  return jsonOk({ site: formatAdminSiteDetail(refreshed) });
+}
+
+async function resolveAdminSiteOwnerTarget(store, config, body) {
+  const ownerType = body?.ownerType === 'team' || body?.ownerType === 'user' ? body.ownerType : '';
+  if (!ownerType) {
+    return jsonError('SITE_TRANSFER_INVALID', 'Site transfer target is invalid.', 400, 'Use ownerType user or team.');
+  }
+
+  if (ownerType === 'user') {
+    const ownerId = normalizeRequiredString(body.ownerId || body.userId);
+    if (!ownerId) return jsonError('SITE_TRANSFER_INVALID', 'Site transfer target is invalid.', 400, 'Choose a user.');
+    const user = typeof store.getUser === 'function' ? await store.getUser(ownerId) : null;
+    if (!user?.id || user.employeeStatus === 'inactive') {
+      return jsonError('SITE_TRANSFER_FORBIDDEN', 'Target user is not active.', 403, 'Choose an active user.');
+    }
+    return {
+      ownerType: 'user',
+      ownerId: user.id,
+      ownerUserId: user.id,
+    };
+  }
+
+  const teamId = normalizeRequiredString(body.teamId || body.ownerId);
+  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
+  const team = typeof store.getTeam === 'function' ? await store.getTeam(teamId) : null;
+  if (!team || team.environment !== config.environment || team.deletedAt || team.status !== 'active') {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  return {
+    ownerType: 'team',
+    ownerId: team.id,
+    ownerUserId: team.createdByUserId || null,
+  };
 }
 
 async function listAdminTeams(url, config, store) {
@@ -604,6 +684,11 @@ function methodNotAllowed() {
 
 function normalizeRequiredString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function readNow(env) {
+  if (typeof env?.now === 'function') return env.now();
+  return new Date().toISOString();
 }
 
 function normalizeNullableString(value) {

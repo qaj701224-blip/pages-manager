@@ -404,10 +404,19 @@ test('site management proxy forwards access and runtime config writes to pages-a
     }),
     apiEnv
   );
+  const settingsResponse = await worker.fetch(
+    request('https://workers.xd.team/api/console/sites/site_1/settings', {
+      method: 'PATCH',
+      headers: writeHeaders,
+      body: JSON.stringify({ ownerType: 'team', teamId: 'team_1' }),
+    }),
+    apiEnv
+  );
 
   assert.equal(accessResponse.status, 200, await accessResponse.clone().text());
   assert.equal(varResponse.status, 200, await varResponse.clone().text());
   assert.equal(secretResponse.status, 200, await secretResponse.clone().text());
+  assert.equal(settingsResponse.status, 200, await settingsResponse.clone().text());
   assert.deepEqual(calls, [
     {
       url: 'https://pages-api.internal/.xd-pages/api/console/sites/site_1/access',
@@ -432,6 +441,14 @@ test('site management proxy forwards access and runtime config writes to pages-a
       bff: 'pages-console',
       contentType: 'application/json',
       body: null,
+    },
+    {
+      url: 'https://pages-api.internal/.xd-pages/api/console/sites/site_1/settings',
+      method: 'PATCH',
+      userId: 'user-1',
+      bff: 'pages-console',
+      contentType: 'application/json',
+      body: { ownerType: 'team', teamId: 'team_1' },
     },
   ]);
 });
@@ -589,9 +606,7 @@ test('auth callback redirects back to login and clears cookies when code exchang
   const response = await worker.fetch(
     request('https://workers.xd.team/api/console/auth/callback?code=expired-code'),
     env({
-      PAGES_AUTH: authBinding(async () =>
-        Response.json({ error: { code: 'CONSOLE_CODE_INVALID' } }, { status: 400 })
-      ),
+      PAGES_AUTH: authBinding(async () => Response.json({ error: { code: 'CONSOLE_CODE_INVALID' } }, { status: 400 })),
     })
   );
 

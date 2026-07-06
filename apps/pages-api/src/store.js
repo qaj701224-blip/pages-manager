@@ -605,18 +605,31 @@ export class D1PagesStore {
     };
   }
 
-  async listAdminUsers({ environment }) {
-    const result = await this.db
-      .prepare(
-        `SELECT users.*, platform_admins.user_id AS platform_admin_user_id
+  async listAdminUsers({ environment, query, limit = 50 }) {
+    const normalizedQuery = normalizeNullableString(query);
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+    const queryCondition = normalizedQuery
+      ? `AND (LOWER(COALESCE(users.realname, '')) LIKE ?
+          OR LOWER(COALESCE(users.email, '')) LIKE ?
+          OR LOWER(COALESCE(users.account, '')) LIKE ?
+          OR LOWER(users.user_id) LIKE ?)`
+      : '';
+    const binds = [environment];
+    if (normalizedQuery) {
+      const like = `%${normalizedQuery.toLowerCase()}%`;
+      binds.push(like, like, like, like, normalizedLimit);
+    }
+    const sql = `SELECT users.*, platform_admins.user_id AS platform_admin_user_id
         FROM users
         LEFT JOIN platform_admins
           ON platform_admins.user_id = users.user_id
           AND platform_admins.environment = ?
           AND platform_admins.revoked_at IS NULL
-        ORDER BY users.email ASC`
-      )
-      .bind(environment)
+        WHERE 1 = 1 ${queryCondition}
+        ORDER BY users.email ASC${normalizedQuery ? '\n        LIMIT ?' : ''}`;
+    const result = await this.db
+      .prepare(sql)
+      .bind(...binds)
       .all();
     return (result.results || []).map((row) => ({
       ...mapUser(row),
