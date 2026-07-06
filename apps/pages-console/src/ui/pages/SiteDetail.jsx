@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, LockKeyhole, Plus, Rocket, Save, Settings, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import {
+  deleteSite,
   deleteSiteRuntimeSecret,
   deleteSiteRuntimeVar,
   fetchJson,
@@ -33,6 +34,7 @@ const ACL_SUBJECT_OPTIONS = [
 
 export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
   const activeTab = SITE_TABS.has(tab) ? tab : 'overview';
+  const navigate = useNavigate();
   const [state, setState] = useState({ status: 'loading', site: null, error: null });
   const [resourceState, setResourceState] = useState({ status: 'idle', data: null, error: null });
 
@@ -108,6 +110,7 @@ export function SiteDetail({ siteId, tab = 'overview', sessionState }) {
               setState((current) => (current.site ? { ...current, site: { ...current.site, ...patch }, error: null } : current))
             }
             onResourceReload={reloadResource}
+            onSiteDeleted={() => navigate('/workspace/published')}
           />
         ) : null}
       </main>
@@ -153,7 +156,7 @@ function ContextLink({ href, active, icon, label }) {
   );
 }
 
-function SiteTabContent({ site, tab, resourceState, onResourceUpdate, onSitePatch, onResourceReload }) {
+function SiteTabContent({ site, tab, resourceState, onResourceUpdate, onSitePatch, onResourceReload, onSiteDeleted }) {
   if (tab === 'deployments') return <DeploymentsPanel state={resourceState} />;
   if (tab === 'access') {
     return (
@@ -169,7 +172,7 @@ function SiteTabContent({ site, tab, resourceState, onResourceUpdate, onSitePatc
   if (tab === 'config') {
     return <ConfigPanel site={site} state={resourceState} onResourceReload={onResourceReload} />;
   }
-  if (tab === 'settings') return <SiteSettingsPanel site={site} />;
+  if (tab === 'settings') return <SiteSettingsPanel site={site} onSiteDeleted={onSiteDeleted} />;
   return <SiteOverview site={site} />;
 }
 
@@ -726,7 +729,23 @@ function RuntimeDeleteDialog({
   );
 }
 
-function SiteSettingsPanel({ site }) {
+function SiteSettingsPanel({ site, onSiteDeleted }) {
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteState, setDeleteState] = useState({ deleting: false, error: null });
+  const canDelete = Boolean(site.permissions?.canManageAccess);
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteState({ deleting: true, error: null });
+    try {
+      await deleteSite(site.id);
+      setDeleteState({ deleting: false, error: null });
+      onSiteDeleted?.();
+    } catch (error) {
+      setDeleteState({ deleting: false, error });
+    }
+  };
+
   return (
     <section className="detail-stack">
       <InfoList
@@ -738,6 +757,36 @@ function SiteSettingsPanel({ site }) {
         ]}
       />
       <div className="placeholder">暂不支持控制台修改站点设置</div>
+      <section className="info-list danger-zone">
+        <h2>删除站点</h2>
+        <div className="danger-zone-body">
+          <p>删除前请确认站点不再需要访问。删除后站点会停止服务，域名会进入短暂保留期。</p>
+          {canDelete ? (
+            <button className="secondary-button danger-button" type="button" onClick={() => setDeleteTarget(site)}>
+              <Trash2 size={15} />
+              <span>删除站点</span>
+            </button>
+          ) : (
+            <button className="secondary-button" type="button" disabled>
+              仅站点 owner 或团队 admin 可删除
+            </button>
+          )}
+        </div>
+      </section>
+      <RuntimeDeleteDialog
+        open={Boolean(deleteTarget)}
+        title="删除站点"
+        targetName={site.slug || site.id}
+        description="此操作会停止站点访问并释放当前路由，删除后不可恢复。"
+        confirmLabel="删除站点"
+        deleting={deleteState.deleting}
+        error={deleteState.error}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setDeleteState({ deleting: false, error: null });
+        }}
+        onConfirm={confirmDelete}
+      />
     </section>
   );
 }

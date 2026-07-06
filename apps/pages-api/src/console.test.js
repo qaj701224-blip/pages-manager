@@ -787,6 +787,77 @@ test('site admin can update access policy and delete runtime config entries', as
   assert.deepEqual(await config.json(), { config: { vars: [], secrets: [] } });
 });
 
+test('site owner can delete a site from console settings', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_mine', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.id, 'site_mine');
+  assert.equal(body.site.status, 'deleted');
+  const detail = await store.getConsoleSiteDetail({
+    environment: 'production',
+    userId: 'usr_me',
+    siteId: 'site_mine',
+  });
+  assert.equal(detail, null);
+});
+
+test('site publisher cannot delete a team site from console settings', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_admin',
+  });
+  await seedSite(store, {
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_admin',
+    ownerType: 'team',
+    ownerId: 'team_1',
+    visibility: 'org',
+  });
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  await store.addTeamMember({
+    teamId: 'team_1',
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/sites/site_team', {
+      userId: 'usr_publisher',
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_DELETE_FORBIDDEN');
+  assert.ok(await store.getConsoleSiteDetail({ environment: 'production', userId: 'usr_admin', siteId: 'site_team' }));
+});
+
 function env(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',

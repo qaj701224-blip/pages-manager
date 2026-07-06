@@ -20,6 +20,7 @@ import {
 } from './sites.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
+const DEFAULT_REUSE_HOLD_SECONDS = 300;
 const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 
 export async function handleConsoleApi(request, env, config, store) {
@@ -98,7 +99,6 @@ export async function handleConsoleApi(request, env, config, store) {
 
   const siteMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/sites\/([^/]+)(?:\/([^/]+))?$/);
   if (siteMatch) {
-    if (request.method !== 'GET') return methodNotAllowed();
     const session = await requireConsoleUserSession(request, env, config, store);
     if (session instanceof Response) return session;
 
@@ -110,6 +110,8 @@ export async function handleConsoleApi(request, env, config, store) {
     });
     if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
+    if (!subresource && request.method === 'DELETE') return deleteConsoleSite(env, config, store, site);
+    if (request.method !== 'GET') return methodNotAllowed();
     if (!subresource) return jsonOk({ site: formatSiteDetail(site) });
     if (subresource === 'deployments') {
       const deployments = await store.listConsoleSiteDeployments({
@@ -206,6 +208,32 @@ async function createConsoleSite(request, env, config, store, session) {
     siteId: site.id,
   });
   return jsonOk({ site: formatWorkspaceSite(detail || site) }, 201);
+}
+
+async function deleteConsoleSite(env, config, store, site) {
+  if (!hasAdminRole(site)) {
+    return jsonError(
+      'SITE_DELETE_FORBIDDEN',
+      'Only site owners or team admins can delete sites.',
+      403,
+      'Use the site owner account or a team admin account.'
+    );
+  }
+
+  const deletedAt = readNow(env);
+  const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
+  const deleted = await store.deleteSite(
+    site.id,
+    {
+      deletedAt,
+      reuseHoldUntil,
+      releaseReason: 'site_deleted',
+    },
+    config.environment
+  );
+  if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  return jsonOk({ site: formatWorkspaceSite({ ...deleted, route }) });
 }
 
 async function validateConsoleAuthSession(request, env, config, store) {
@@ -623,6 +651,16 @@ function nextSiteUuid(env) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
+}
+
+function readReuseHoldSeconds(env) {
+  const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || DEFAULT_REUSE_HOLD_SECONDS);
+  if (!Number.isInteger(value) || value < 0 || value > 86_400) return DEFAULT_REUSE_HOLD_SECONDS;
+  return value;
+}
+
+function addSecondsIso(iso, seconds) {
+  return new Date(Date.parse(iso) + seconds * 1000).toISOString();
 }
 
 function methodNotAllowed() {

@@ -17,6 +17,12 @@ test('team settings expose the stable team id', () => {
   assert.match(teamsSource, /\['ID', team\.id \|\| '-'\]/);
 });
 
+test('site settings expose guarded site deletion', () => {
+  assert.match(siteDetailSource, /deleteSite\(site\.id\)/);
+  assert.match(siteDetailSource, /<h2>删除站点<\/h2>/);
+  assert.match(siteDetailSource, /仅站点 owner 或团队 admin 可删除/);
+});
+
 test('detail rows use comfortable single-line primary and secondary text', () => {
   assert.match(stylesSource, /\.table-row > div,[\s\S]*?gap:\s*5px;[\s\S]*?align-content:\s*center;/);
   assert.match(stylesSource, /\.table-row strong,[\s\S]*?white-space:\s*nowrap;[\s\S]*?text-overflow:\s*ellipsis;/);

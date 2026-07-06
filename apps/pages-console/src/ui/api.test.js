@@ -8,6 +8,7 @@ import {
   createWorkspaceSite,
   createTeamAccessKey,
   deleteTeam,
+  deleteSite,
   deleteSiteRuntimeSecret,
   deleteSiteRuntimeVar,
   disableAdminWebhook,
@@ -232,6 +233,7 @@ test('site management API helpers use site access and runtime config endpoints',
   await deleteSiteRuntimeVar('site_1', 'API_BASE', { fetchImpl, csrfToken: 'csrf-3' });
   await putSiteRuntimeSecret('site_1', 'API_TOKEN', 'secret-value', { fetchImpl, csrfToken: 'csrf-4' });
   await deleteSiteRuntimeSecret('site_1', 'API_TOKEN', { fetchImpl, csrfToken: 'csrf-5' });
+  await deleteSite('site_1', { fetchImpl, csrfToken: 'csrf-6' });
 
   assert.deepEqual(
     calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token']]),
@@ -241,6 +243,7 @@ test('site management API helpers use site access and runtime config endpoints',
       ['/api/console/sites/site_1/config/vars/API_BASE', 'DELETE', 'csrf-3'],
       ['/api/console/sites/site_1/config/secrets/API_TOKEN', 'PUT', 'csrf-4'],
       ['/api/console/sites/site_1/config/secrets/API_TOKEN', 'DELETE', 'csrf-5'],
+      ['/api/console/sites/site_1', 'DELETE', 'csrf-6'],
     ]
   );
   assert.deepEqual(JSON.parse(calls[0].init.body), { visibility: 'acl', aclEntries: [] });

@@ -195,6 +195,13 @@ export function updateSiteAccess(siteId, body, options = {}) {
   });
 }
 
+export function deleteSite(siteId, options = {}) {
+  return fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}`, {
+    ...options,
+    method: 'DELETE',
+  });
+}
+
 export function putSiteRuntimeVar(siteId, name, value, options = {}) {
   return fetchJson(`/api/console/sites/${encodeURIComponent(siteId)}/config/vars/${encodeURIComponent(name)}`, {
     ...options,
