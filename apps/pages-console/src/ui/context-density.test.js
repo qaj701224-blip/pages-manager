@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const siteDetailSource = readFileSync(new URL('./pages/SiteDetail.jsx', import.meta.url), 'utf8');
 const teamsSource = readFileSync(new URL('./pages/Teams.jsx', import.meta.url), 'utf8');
+const adminTeamsSource = readFileSync(new URL('./pages/AdminTeams.jsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
 test('context sidebars keep only navigation and avoid duplicate summary cards', () => {
@@ -14,7 +15,17 @@ test('context sidebars keep only navigation and avoid duplicate summary cards', 
 });
 
 test('team settings expose the stable team id', () => {
-  assert.match(teamsSource, /\['ID', team\.id \|\| '-'\]/);
+  assert.match(teamsSource, /<dt>ID<\/dt>/);
+  assert.match(teamsSource, /<dd title=\{team\.id \|\| '-'\}>\{team\.id \|\| '-'\}<\/dd>/);
+});
+
+test('team settings combine read-only details with edit mode actions', () => {
+  assert.match(teamsSource, /className="info-list team-settings-card"/);
+  assert.match(adminTeamsSource, /className="info-list team-settings-card"/);
+  assert.match(teamsSource, />\s*修改\s*<\/button>/);
+  assert.match(teamsSource, />\s*取消\s*<\/button>/);
+  assert.doesNotMatch(teamsSource, /<p>团队信息<\/p>/);
+  assert.doesNotMatch(adminTeamsSource, /<p>团队信息<\/p>/);
 });
 
 test('site settings expose guarded site deletion', () => {

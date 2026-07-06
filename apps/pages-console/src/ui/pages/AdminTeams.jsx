@@ -1,4 +1,4 @@
-import { GitMerge, RefreshCw, Save, Settings, Trash2, UsersRound } from 'lucide-react';
+import { GitMerge, Pencil, RefreshCw, Save, Settings, Trash2, UsersRound, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -244,23 +244,41 @@ export function AdminTeams({ teamId, subpage = 'settings' }) {
 
 function AdminTeamDetail({ team, subpage, membersState, onMembersReload, onTeamUpdate }) {
   const [form, setForm] = useState({ name: team.name || '', description: team.description || '' });
+  const [editing, setEditing] = useState(false);
   const [status, setStatus] = useState({ saving: false, deleting: false, error: '', notice: '' });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const editable = team.teamType === 'custom';
 
   useEffect(() => {
     setForm({ name: team.name || '', description: team.description || '' });
+  }, [team.id, team.name, team.description]);
+
+  useEffect(() => {
     setStatus({ saving: false, deleting: false, error: '', notice: '' });
     setDeleteDialogOpen(false);
-  }, [team.id, team.name, team.description]);
+    setEditing(false);
+  }, [team.id]);
+
+  const beginEdit = () => {
+    setForm({ name: team.name || '', description: team.description || '' });
+    setStatus({ saving: false, deleting: false, error: '', notice: '' });
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setForm({ name: team.name || '', description: team.description || '' });
+    setStatus({ saving: false, deleting: false, error: '', notice: '' });
+    setEditing(false);
+  };
 
   const save = async (event) => {
     event.preventDefault();
-    if (!editable) return;
+    if (!editable || !editing) return;
     setStatus({ saving: true, deleting: false, error: '', notice: '' });
     try {
       const data = await updateAdminTeamSettings(team.id, normalizeTeamSettingsForm(form));
       if (data?.team) onTeamUpdate?.(data.team);
+      setEditing(false);
       setStatus({ saving: false, deleting: false, error: '', notice: '团队信息已保存' });
     } catch (error) {
       setStatus({
@@ -309,100 +327,126 @@ function AdminTeamDetail({ team, subpage, membersState, onMembersReload, onTeamU
         />
       ) : (
         <>
-      <section className="info-list">
-        <h2>基础信息</h2>
-        <dl>
-          <InfoRow label="团队 ID" value={team.id} />
-          <InfoRow label="名称" value={team.name} />
-          <InfoRow label="描述" value={team.description || '无'} />
-          <InfoRow label="类型" value={team.teamType === 'department' ? '部门团队' : '自建团队'} />
-          <InfoRow label="部门路径" value={team.departmentPath || '无'} />
-          <InfoRow label="状态" value={team.status || '无'} />
-          <InfoRow label="合并到" value={team.mergedIntoTeamId || '无'} />
-          <InfoRow label="创建时间" value={formatDate(team.createdAt)} />
-          <InfoRow label="更新时间" value={formatDate(team.updatedAt)} />
-        </dl>
-      </section>
-      <form className="info-list team-settings-form" onSubmit={save}>
-        <div className="panel-head">
-          <div>
-            <p>团队信息</p>
-            <h2>名称与描述</h2>
-          </div>
-          {editable ? (
-            <button className="primary-button" type="submit" disabled={status.saving || status.deleting}>
-              <Save size={16} />
-              {status.saving ? '保存中' : '保存'}
-            </button>
-          ) : null}
-        </div>
-        <div className="team-settings-form-body">
-          <label className="field">
-            <span>名称</span>
-            <input
-              disabled={!editable || status.saving || status.deleting}
-              value={form.name}
-              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-              required
-            />
-          </label>
-          <label className="field">
-            <span>描述</span>
-            <textarea
-              disabled={!editable || status.saving || status.deleting}
-              value={form.description}
-              onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
-            />
-          </label>
-          {!editable ? <div className="form-note">部门团队信息由 XDS 部门路径同步，不能在控制台直接编辑。</div> : null}
-          {status.notice ? <div className="form-note success">{status.notice}</div> : null}
-          {status.error ? <div className="form-error">{status.error}</div> : null}
-        </div>
-      </form>
-      {team.teamType === 'department' ? (
-        <section className="info-list">
-          <h2>部门团队</h2>
-          <dl>
-            <InfoRow label="信息来源" value="企业 SSO 部门路径同步" />
-            <InfoRow label="可编辑性" value="部门团队信息不可在控制台直接编辑" />
-          </dl>
-        </section>
-      ) : null}
-      {team.teamType === 'custom' ? (
-        <section className="info-list danger-zone">
-          <div className="panel-head">
-            <div>
-              <p>危险操作</p>
-              <h2>删除团队</h2>
+          <form className="info-list team-settings-card" onSubmit={save}>
+            <div className="panel-head">
+              <div>
+                <p>团队设置</p>
+                <h2>{team.name || team.id || '团队'}</h2>
+              </div>
+              <div className="panel-actions">
+                {editable && !editing ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={status.deleting || status.saving}
+                    onClick={beginEdit}
+                  >
+                    <Pencil size={15} />
+                    修改
+                  </button>
+                ) : null}
+                {editable && editing ? (
+                  <>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={status.saving || status.deleting}
+                      onClick={cancelEdit}
+                    >
+                      <X size={15} />
+                      取消
+                    </button>
+                    <button className="primary-button" type="submit" disabled={status.saving || status.deleting}>
+                      <Save size={16} />
+                      {status.saving ? '保存中' : '保存'}
+                    </button>
+                  </>
+                ) : null}
+              </div>
             </div>
-            <button
-              className="secondary-button danger-button"
-              type="button"
-              disabled={status.deleting || status.saving}
-              onClick={() => setDeleteDialogOpen(true)}
-            >
-              <Trash2 size={16} />
-              {status.deleting ? '删除中' : '删除团队'}
-            </button>
-          </div>
-          <div className="danger-zone-body">
-            <p>删除前必须先手动删除或转移团队站点，并撤销团队归属的 Access Keys。</p>
-          </div>
-        </section>
-      ) : null}
-      <ConfirmDialog
-        open={deleteDialogOpen}
-        title="删除团队"
-        target={team.name || team.id}
-        targetMeta={team.id}
-        description="删除前必须先手动删除或转移团队站点，并撤销团队归属的 Access Keys。此操作不可恢复。"
-        confirmLabel={status.deleting ? '删除中' : '删除团队'}
-        confirming={status.deleting}
-        error={status.error}
-        icon={<Trash2 size={16} />}
-        onCancel={() => setDeleteDialogOpen(false)}
-        onConfirm={remove}
-      />
+            <dl className={editing ? 'team-settings-rows editing' : 'team-settings-rows'}>
+              <InfoRow label="团队 ID" value={team.id} />
+              <div>
+                <dt>名称</dt>
+                <dd title={editing ? undefined : team.name || '无'}>
+                  {editing ? (
+                    <input
+                      aria-label="团队名称"
+                      disabled={status.saving || status.deleting}
+                      value={form.name}
+                      onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                      required
+                    />
+                  ) : (
+                    team.name || '无'
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>描述</dt>
+                <dd title={editing ? undefined : team.description || '无'}>
+                  {editing ? (
+                    <textarea
+                      aria-label="团队描述"
+                      disabled={status.saving || status.deleting}
+                      value={form.description}
+                      onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                    />
+                  ) : (
+                    team.description || '无'
+                  )}
+                </dd>
+              </div>
+              <InfoRow label="类型" value={team.teamType === 'department' ? '部门团队' : '自建团队'} />
+              <InfoRow label="部门路径" value={team.departmentPath || '无'} />
+              <InfoRow label="状态" value={team.status || '无'} />
+              <InfoRow label="合并到" value={team.mergedIntoTeamId || '无'} />
+              <InfoRow label="创建时间" value={formatDate(team.createdAt)} />
+              <InfoRow label="更新时间" value={formatDate(team.updatedAt)} />
+            </dl>
+            {!editable || status.notice || status.error ? (
+              <div className="team-settings-card-footer">
+                {!editable ? <div className="form-note">部门团队信息由 XDS 部门路径同步，不能在控制台直接编辑。</div> : null}
+                {status.notice ? <div className="form-note success">{status.notice}</div> : null}
+                {status.error ? <div className="form-error">{status.error}</div> : null}
+              </div>
+            ) : null}
+          </form>
+          {team.teamType === 'custom' ? (
+            <section className="info-list danger-zone">
+              <div className="panel-head">
+                <div>
+                  <p>危险操作</p>
+                  <h2>删除团队</h2>
+                </div>
+                <button
+                  className="secondary-button danger-button"
+                  type="button"
+                  disabled={status.deleting || status.saving}
+                  onClick={() => setDeleteDialogOpen(true)}
+                >
+                  <Trash2 size={16} />
+                  {status.deleting ? '删除中' : '删除团队'}
+                </button>
+              </div>
+              <div className="danger-zone-body">
+                <p>删除前必须先手动删除或转移团队站点，并撤销团队归属的 Access Keys。</p>
+              </div>
+            </section>
+          ) : null}
+          <ConfirmDialog
+            open={deleteDialogOpen}
+            title="删除团队"
+            target={team.name || team.id}
+            targetMeta={team.id}
+            description="删除前必须先手动删除或转移团队站点，并撤销团队归属的 Access Keys。此操作不可恢复。"
+            confirmLabel={status.deleting ? '删除中' : '删除团队'}
+            confirming={status.deleting}
+            error={status.error}
+            icon={<Trash2 size={16} />}
+            onCancel={() => setDeleteDialogOpen(false)}
+            onConfirm={remove}
+          />
         </>
       )}
     </div>

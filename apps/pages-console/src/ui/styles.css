@@ -2682,6 +2682,14 @@ button {
   line-height: 1.4;
 }
 
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .dialog-body {
   display: grid;
   gap: 16px;
@@ -2939,9 +2947,58 @@ button {
   padding: 16px;
 }
 
-.team-settings-form-body .field textarea {
+.team-settings-card .panel-head {
+  align-items: center;
+}
+
+.team-settings-card .team-settings-rows > div {
+  min-height: 56px;
+}
+
+.team-settings-rows.editing > div {
+  align-items: flex-start;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.team-settings-rows.editing dt {
+  padding-top: 10px;
+}
+
+.team-settings-rows.editing dd {
+  overflow: visible;
+  white-space: normal;
+}
+
+.team-settings-rows input,
+.team-settings-rows textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--xd-text);
+  background: var(--xd-surface);
+  font: inherit;
+  outline: none;
+}
+
+.team-settings-rows input:focus,
+.team-settings-rows textarea:focus {
+  border-color: rgba(243, 112, 34, 0.45);
+  box-shadow: 0 0 0 3px rgba(243, 112, 34, 0.12);
+}
+
+.team-settings-rows textarea {
   min-height: 96px;
   font-family: inherit;
+  resize: vertical;
+}
+
+.team-settings-card-footer {
+  display: grid;
+  gap: 10px;
+  padding: 0 16px 16px;
 }
 
 .form-note {

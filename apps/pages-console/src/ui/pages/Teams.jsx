@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, KeyRound, Plus, Save, Search, Settings, Trash2, UserPlus, UsersRound } from 'lucide-react';
+import { ArrowLeft, KeyRound, Pencil, Plus, Save, Search, Settings, Trash2, UserPlus, UsersRound, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { createTeam, deleteTeam, fetchJson, listConsoleUsers, removeTeamMember, updateTeamMember, updateTeamSettings } from '../api.js';
+import {
+  createTeam,
+  deleteTeam,
+  fetchJson,
+  listConsoleUsers,
+  removeTeamMember,
+  updateTeamMember,
+  updateTeamSettings,
+} from '../api.js';
 import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { usePreferences } from '../preferences-context.jsx';
@@ -475,16 +483,19 @@ function AddTeamMemberDialog({ open, team, members, teamApi, onOpenChange, onRel
   useEffect(() => {
     if (!open) return undefined;
     let active = true;
-    const timer = setTimeout(() => {
-      setState((current) => ({ status: 'loading', users: current.users, error: null }));
-      listConsoleUsers({ query })
-        .then((data) => {
-          if (active) setState({ status: 'ready', users: data.users || [], error: null });
-        })
-        .catch((error) => {
-          if (active) setState({ status: 'error', users: [], error });
-        });
-    }, query ? 180 : 0);
+    const timer = setTimeout(
+      () => {
+        setState((current) => ({ status: 'loading', users: current.users, error: null }));
+        listConsoleUsers({ query })
+          .then((data) => {
+            if (active) setState({ status: 'ready', users: data.users || [], error: null });
+          })
+          .catch((error) => {
+            if (active) setState({ status: 'error', users: [], error });
+          });
+      },
+      query ? 180 : 0
+    );
     return () => {
       active = false;
       clearTimeout(timer);
@@ -571,6 +582,7 @@ function TeamAccessKeys({ team }) {
 
 function TeamSettings({ team, onTeamUpdate }) {
   const [form, setForm] = useState({ name: team.name || '', description: team.description || '' });
+  const [editing, setEditing] = useState(false);
   const [status, setStatus] = useState({ saving: false, deleting: false, error: '', notice: '' });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const editable = canEditTeamSettings(team);
@@ -584,26 +596,30 @@ function TeamSettings({ team, onTeamUpdate }) {
   useEffect(() => {
     setStatus({ saving: false, deleting: false, error: '', notice: '' });
     setDeleteDialogOpen(false);
+    setEditing(false);
   }, [team.id]);
 
-  const rows = useMemo(
-    () => [
-      ['ID', team.id || '-'],
-      ['名称', team.name || '-'],
-      ['描述', team.description || '-'],
-      ['类型', team.teamType === 'department' ? '部门团队' : '自建团队'],
-      ['状态', team.status || 'active'],
-    ],
-    [team]
-  );
+  const beginEdit = () => {
+    setForm({ name: team.name || '', description: team.description || '' });
+    setStatus({ saving: false, deleting: false, error: '', notice: '' });
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setForm({ name: team.name || '', description: team.description || '' });
+    setStatus({ saving: false, deleting: false, error: '', notice: '' });
+    setEditing(false);
+  };
 
   const save = async (event) => {
     event.preventDefault();
+    if (!editable || !editing) return;
     setStatus({ saving: true, deleting: false, error: '', notice: '' });
     try {
       const body = normalizeTeamSettingsForm(form);
       const data = await updateTeamSettings(team.id, body);
       if (data?.team) onTeamUpdate(data.team);
+      setEditing(false);
       setStatus({ saving: false, deleting: false, error: '', notice: '团队信息已保存' });
     } catch (error) {
       setStatus({
@@ -632,52 +648,90 @@ function TeamSettings({ team, onTeamUpdate }) {
 
   return (
     <section className="detail-stack">
-      <section className="info-list">
-        <h2>团队设置</h2>
-        <dl>
-          {rows.map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd title={String(value)}>{value}</dd>
-            </div>
-          ))}
-        </dl>
-      </section>
-      <form className="info-list team-settings-form" onSubmit={save}>
+      <form className="info-list team-settings-card" onSubmit={save}>
         <div className="panel-head">
           <div>
-            <p>团队信息</p>
-            <h2>名称与描述</h2>
+            <p>团队设置</p>
+            <h2>{team.name || team.id || '团队'}</h2>
           </div>
-          {editable ? (
-            <button className="primary-button" type="submit" disabled={status.saving || status.deleting}>
-              <Save size={16} />
-              {status.saving ? '保存中' : '保存'}
-            </button>
-          ) : null}
+          <div className="panel-actions">
+            {editable && !editing ? (
+              <button className="secondary-button" type="button" disabled={status.deleting || status.saving} onClick={beginEdit}>
+                <Pencil size={15} />
+                修改
+              </button>
+            ) : null}
+            {editable && editing ? (
+              <>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={status.saving || status.deleting}
+                  onClick={cancelEdit}
+                >
+                  <X size={15} />
+                  取消
+                </button>
+                <button className="primary-button" type="submit" disabled={status.saving || status.deleting}>
+                  <Save size={16} />
+                  {status.saving ? '保存中' : '保存'}
+                </button>
+              </>
+            ) : null}
+          </div>
         </div>
-        <div className="team-settings-form-body">
-          <label className="field">
-            <span>名称</span>
-            <input
-              disabled={!editable || status.saving || status.deleting}
-              value={form.name}
-              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-              required
-            />
-          </label>
-          <label className="field">
-            <span>描述</span>
-            <textarea
-              disabled={!editable || status.saving || status.deleting}
-              value={form.description}
-              onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
-            />
-          </label>
-          {!editable ? <div className="form-note">{readOnlyReason}</div> : null}
-          {status.notice ? <div className="form-note success">{status.notice}</div> : null}
-          {status.error ? <div className="form-error">{status.error}</div> : null}
-        </div>
+        <dl className={editing ? 'team-settings-rows editing' : 'team-settings-rows'}>
+          <div>
+            <dt>ID</dt>
+            <dd title={team.id || '-'}>{team.id || '-'}</dd>
+          </div>
+          <div>
+            <dt>名称</dt>
+            <dd title={editing ? undefined : team.name || '-'}>
+              {editing ? (
+                <input
+                  aria-label="团队名称"
+                  disabled={status.saving || status.deleting}
+                  value={form.name}
+                  onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                  required
+                />
+              ) : (
+                team.name || '-'
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>描述</dt>
+            <dd title={editing ? undefined : team.description || '-'}>
+              {editing ? (
+                <textarea
+                  aria-label="团队描述"
+                  disabled={status.saving || status.deleting}
+                  value={form.description}
+                  onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                />
+              ) : (
+                team.description || '-'
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>类型</dt>
+            <dd>{team.teamType === 'department' ? '部门团队' : '自建团队'}</dd>
+          </div>
+          <div>
+            <dt>状态</dt>
+            <dd>{team.status || 'active'}</dd>
+          </div>
+        </dl>
+        {!editable || status.notice || status.error ? (
+          <div className="team-settings-card-footer">
+            {!editable ? <div className="form-note">{readOnlyReason}</div> : null}
+            {status.notice ? <div className="form-note success">{status.notice}</div> : null}
+            {status.error ? <div className="form-error">{status.error}</div> : null}
+          </div>
+        ) : null}
       </form>
       <section className="info-list danger-zone">
         <div className="panel-head">
