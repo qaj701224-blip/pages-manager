@@ -17,7 +17,7 @@ import {
   buildAccessKeyCreateBody,
   initialAccessKeyForm,
 } from '../access-keys-model.js';
-import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
+import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { usePreferences } from '../preferences-context.jsx';
 import { buildTokenCopyFeedback } from '../token-copy-model.js';
@@ -337,28 +337,19 @@ function filterAccessKeyRows(rows, query) {
 function RevokeAccessKeyDialog({ accessKey, saving, error, onClose, onConfirm }) {
   if (!accessKey) return null;
   return (
-    <AppDialog open title="撤销 Token" eyebrow="高风险操作" onOpenChange={(open) => !open && onClose()}>
-      <div className="dialog-form">
-        <div className="danger-summary">
-          <Trash2 size={18} />
-          <span>
-            <strong>{accessKey.name || accessKey.id}</strong>
-            <small>{accessKey.tokenPreview || accessKey.id}</small>
-          </span>
-        </div>
-        <p className="dialog-description">撤销后，使用该 Token 的 CLI / CI / agent 将无法继续读取或发布站点。</p>
-        {error ? <div className="form-error">{error.code || error.message}</div> : null}
-        <div className="dialog-actions">
-          <button className="secondary-button" type="button" onClick={onClose} disabled={saving}>
-            取消
-          </button>
-          <button className="primary-button danger-primary-button" type="button" onClick={() => onConfirm(accessKey)} disabled={saving}>
-            <Trash2 size={15} />
-            <span>{saving ? '撤销中' : '撤销 Token'}</span>
-          </button>
-        </div>
-      </div>
-    </AppDialog>
+    <ConfirmDialog
+      open
+      title="撤销 Token"
+      target={accessKey.name || accessKey.id}
+      targetMeta={accessKey.tokenPreview || accessKey.id}
+      description="撤销后，使用该 Token 的 CLI / CI / agent 将无法继续读取或发布站点。"
+      confirmLabel={saving ? '撤销中' : '撤销 Token'}
+      confirming={saving}
+      error={error}
+      icon={<Trash2 size={16} />}
+      onCancel={onClose}
+      onConfirm={() => onConfirm(accessKey)}
+    />
   );
 }
 

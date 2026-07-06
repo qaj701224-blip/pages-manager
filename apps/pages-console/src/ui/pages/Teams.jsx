@@ -3,7 +3,7 @@ import { ArrowLeft, KeyRound, Plus, Save, Search, Settings, Trash2, UserPlus, Us
 import { Link } from 'react-router-dom';
 
 import { createTeam, deleteTeam, fetchJson, listConsoleUsers, removeTeamMember, updateTeamMember, updateTeamSettings } from '../api.js';
-import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
+import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import { usePreferences } from '../preferences-context.jsx';
 import { buildTeamMemberView, buildUserPickerRows } from '../team-members-model.js';
@@ -168,7 +168,7 @@ function TeamsContent({ state, onCreate }) {
           </div>
           <p>{team.description}</p>
           <div className="team-card__footer">
-            <span className="tag">{team.typeLabel}</span>
+            {team.typeLabel ? <span className="tag">{team.typeLabel}</span> : null}
             <span className="tag muted">{team.roleLabel}</span>
           </div>
         </Link>
@@ -430,35 +430,19 @@ function TeamMemberActions({ team, member, onReload }) {
           <span>{status.removing ? '移除中' : '移除成员'}</span>
         </button>
       </div>
-      <AppDialog
+      <ConfirmDialog
         open={confirmRemove}
         title="移除成员"
-        eyebrow="高风险操作"
-        onOpenChange={(open) => {
-          if (!open && !status.removing) setConfirmRemove(false);
-        }}
-      >
-        <div className="dialog-form">
-          <div className="danger-summary">
-            <Trash2 size={18} />
-            <span>
-              <strong>{view.displayName}</strong>
-              <small>{view.email || member.userId}</small>
-            </span>
-          </div>
-          <p className="dialog-description">移除后，该用户将失去此团队及团队站点的相关权限。</p>
-          {status.error ? <div className="form-error">{status.error}</div> : null}
-          <div className="dialog-actions">
-            <button className="secondary-button" type="button" onClick={() => setConfirmRemove(false)} disabled={status.removing}>
-              取消
-            </button>
-            <button className="primary-button danger-primary-button" type="button" onClick={remove} disabled={status.removing}>
-              <Trash2 size={15} />
-              <span>{status.removing ? '移除中' : '移除成员'}</span>
-            </button>
-          </div>
-        </div>
-      </AppDialog>
+        target={view.displayName}
+        targetMeta={view.email || member.userId}
+        description="移除后，该用户将失去此团队及团队站点的相关权限。"
+        confirmLabel={status.removing ? '移除中' : '移除成员'}
+        confirming={status.removing}
+        error={status.error}
+        icon={<Trash2 size={16} />}
+        onCancel={() => setConfirmRemove(false)}
+        onConfirm={remove}
+      />
     </>
   );
 }
@@ -577,6 +561,7 @@ function TeamAccessKeys({ team }) {
 function TeamSettings({ team, onTeamUpdate }) {
   const [form, setForm] = useState({ name: team.name || '', description: team.description || '' });
   const [status, setStatus] = useState({ saving: false, deleting: false, error: '', notice: '' });
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const editable = canEditTeamSettings(team);
   const deletable = canDeleteTeam(team);
   const readOnlyReason = getTeamSettingsReadOnlyReason(team);
@@ -587,6 +572,7 @@ function TeamSettings({ team, onTeamUpdate }) {
 
   useEffect(() => {
     setStatus({ saving: false, deleting: false, error: '', notice: '' });
+    setDeleteDialogOpen(false);
   }, [team.id]);
 
   const rows = useMemo(
@@ -619,9 +605,6 @@ function TeamSettings({ team, onTeamUpdate }) {
   };
 
   const remove = async () => {
-    const confirmed = globalThis.confirm?.('删除前请确认团队站点已手动删除或转移、团队 Access Keys 已撤销。此操作不可恢复。');
-    if (!confirmed) return;
-
     setStatus({ saving: false, deleting: true, error: '', notice: '' });
     try {
       await deleteTeam(team.id);
@@ -696,7 +679,7 @@ function TeamSettings({ team, onTeamUpdate }) {
               className="secondary-button danger-button"
               type="button"
               disabled={status.deleting || status.saving}
-              onClick={remove}
+              onClick={() => setDeleteDialogOpen(true)}
             >
               <Trash2 size={16} />
               {status.deleting ? '删除中' : '删除团队'}
@@ -708,13 +691,26 @@ function TeamSettings({ team, onTeamUpdate }) {
           {!deletable ? <p>{readOnlyReason}</p> : null}
         </div>
       </section>
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        title="删除团队"
+        target={team.name || team.id}
+        targetMeta={team.id}
+        description="删除前必须先手动删除或转移团队站点，并撤销团队归属的 Access Keys。此操作不可恢复。"
+        confirmLabel={status.deleting ? '删除中' : '删除团队'}
+        confirming={status.deleting}
+        error={status.error}
+        icon={<Trash2 size={16} />}
+        onCancel={() => setDeleteDialogOpen(false)}
+        onConfirm={remove}
+      />
     </section>
   );
 }
 
 function membershipSourceLabel(value) {
-  if (value === 'department_auto') return '部门自动成员';
-  if (value === 'manual') return '手动成员';
+  if (value === 'department_auto') return '部门成员';
+  if (value === 'manual') return '成员';
   return value || '成员';
 }
 

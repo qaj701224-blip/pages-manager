@@ -29,8 +29,9 @@ export function AccountSettings({ sessionState }) {
           <AppTabs.Content value="basic">
             <section className="settings-card">
               <h2>{t('basicInfo')}</h2>
+              <p className="settings-card-description">{profile.ssoSource}</p>
               <dl className="profile-list">
-                <ProfileRow label={t('name')} value={profile.displayName} note={profile.ssoSource} />
+                <ProfileRow label={t('name')} value={profile.displayName} />
                 <ProfileRow label={t('email')} value={profile.email} />
                 <ProfileRow label={t('department')} value={profile.departmentPath} />
               </dl>
@@ -73,13 +74,12 @@ export function AccountSettings({ sessionState }) {
   );
 }
 
-function ProfileRow({ label, value, note }) {
+function ProfileRow({ label, value }) {
   return (
     <div>
       <dt>{label}</dt>
       <dd>
         <span className="profile-value">{value || '-'}</span>
-        {note ? <span>{note}</span> : null}
       </dd>
     </div>
   );

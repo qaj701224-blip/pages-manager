@@ -11,7 +11,7 @@ import {
   putSiteRuntimeVar,
   updateSiteAccess,
 } from '../api.js';
-import { AppDialog, SelectField } from '../components/RadixPrimitives.jsx';
+import { AppDialog, ConfirmDialog, SelectField } from '../components/RadixPrimitives.jsx';
 import { Sidebar } from '../components/Sidebar.jsx';
 import {
   aclSubjectPlaceholder,
@@ -157,7 +157,7 @@ function ContextLink({ href, active, icon, label }) {
 }
 
 function SiteTabContent({ site, tab, resourceState, onResourceUpdate, onSitePatch, onResourceReload, onSiteDeleted }) {
-  if (tab === 'deployments') return <DeploymentsPanel state={resourceState} />;
+  if (tab === 'deployments') return <DeploymentsPanel state={resourceState} site={site} />;
   if (tab === 'access') {
     return (
       <AccessPanel
@@ -203,7 +203,7 @@ function SiteOverview({ site }) {
   );
 }
 
-function DeploymentsPanel({ state }) {
+function DeploymentsPanel({ state, site }) {
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载部署记录</div>;
   const deployments = state.data?.deployments || [];
@@ -218,6 +218,7 @@ function DeploymentsPanel({ state }) {
       <div className="deployment-table-head">
         <span>Deployment</span>
         <span>来源</span>
+        <span>归属</span>
         <span>状态</span>
         <span>创建时间</span>
         <span>完成时间</span>
@@ -229,6 +230,7 @@ function DeploymentsPanel({ state }) {
             <span>{deployment.operation || '-'}</span>
           </div>
           <span>{deployment.source || 'unknown'}</span>
+          <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
           <span className="tag muted">{deployment.status || 'unknown'}</span>
           <span>{formatDate(deployment.createdAt)}</span>
           <span>{formatDate(deployment.completedAt)}</span>
@@ -247,11 +249,10 @@ function AccessPanel({ site, state, fallbackVisibility, onResourceUpdate, onSite
 
   return (
     <section className="detail-stack">
-      <InfoList title="访问策略" rows={[['Visibility', access.visibility || 'internal']]} />
       {capabilities.canEditAccess ? (
         <AccessPolicyForm site={site} access={access} onResourceUpdate={onResourceUpdate} onSitePatch={onSitePatch} />
       ) : (
-        <ReadOnlyAclList entries={entries} />
+        <ReadOnlyAccessPolicy access={access} entries={entries} />
       )}
     </section>
   );
@@ -261,13 +262,16 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
   const [visibility, setVisibility] = useState(access.visibility || 'internal');
   const [entries, setEntries] = useState(() => normalizeAclEntriesForForm(access.aclEntries || []));
   const [draft, setDraft] = useState({ subjectType: 'email', subjectValue: '' });
+  const [aclDialogOpen, setAclDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const aclEnabled = visibility === 'acl';
 
   useEffect(() => {
     setVisibility(access.visibility || 'internal');
     setEntries(normalizeAclEntriesForForm(access.aclEntries || []));
     setDraft({ subjectType: 'email', subjectValue: '' });
+    setAclDialogOpen(false);
     setError(null);
   }, [access]);
   const initialEntries = useMemo(() => normalizeAclEntriesForForm(access.aclEntries || []), [access.aclEntries]);
@@ -281,6 +285,7 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
     try {
       setEntries((current) => appendAclEntry(current, draft));
       setDraft((current) => ({ ...current, subjectValue: '' }));
+      setAclDialogOpen(false);
     } catch (nextError) {
       setError(nextError);
     }
@@ -312,8 +317,8 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
     <form className="info-list" onSubmit={submit}>
       <div className="panel-head">
         <div>
-          <p>Admin</p>
-          <h2>编辑访问控制</h2>
+          <p>访问策略</p>
+          <h2>访问控制</h2>
         </div>
         <button className="primary-button" type="submit" disabled={saving || !isDirty}>
           <Save size={16} />
@@ -327,44 +332,92 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
           options={VISIBILITY_OPTIONS.map((option) => ({ value: option, label: option }))}
           onChange={setVisibility}
         />
-        <div className="acl-editor">
-          <div className="acl-editor__head">
-            <div>
-              <strong>ACL 条目</strong>
-              <span>仅在 visibility 为 acl 时生效。部门路径包含其下级部门。</span>
+        {aclEnabled ? (
+          <div className="acl-editor">
+            <div className="acl-editor__head">
+              <div>
+                <strong>ACL 条目</strong>
+                <span>允许指定邮箱或部门访问，部门路径包含其下级部门。</span>
+              </div>
+              <button className="secondary-button acl-add-button" type="button" onClick={() => setAclDialogOpen(true)}>
+                <Plus size={16} />
+                <span>添加访问对象</span>
+              </button>
             </div>
+            <AclEntriesTable entries={entries} onRemove={(index) => setEntries((current) => removeAclEntryAt(current, index))} />
           </div>
-          <div className="acl-add-row">
-            <SelectField
-              label="类型"
-              value={draft.subjectType}
-              options={ACL_SUBJECT_OPTIONS}
-              onChange={(subjectType) => setDraft((current) => ({ ...current, subjectType }))}
-            />
-            <label className="field">
-              <span>{aclSubjectTypeLabel(draft.subjectType)}</span>
-              <input
-                value={draft.subjectValue}
-                onChange={(event) => setDraft((current) => ({ ...current, subjectValue: event.target.value }))}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    addEntry();
-                  }
-                }}
-                placeholder={aclSubjectPlaceholder(draft.subjectType)}
-              />
-            </label>
-            <button className="secondary-button acl-add-button" type="button" onClick={addEntry} disabled={!draft.subjectValue.trim()}>
-              <Plus size={16} />
-              <span>添加</span>
-            </button>
-          </div>
-          <AclEntriesTable entries={entries} onRemove={(index) => setEntries((current) => removeAclEntryAt(current, index))} />
-        </div>
+        ) : (
+          <div className="acl-policy-summary">ACL 条目仅在 Visibility 选择 acl 时生效。</div>
+        )}
         {error ? <div className="form-error">{error.code || error.message}</div> : null}
       </div>
+      <AclEntryDialog
+        draft={draft}
+        error={error}
+        open={aclDialogOpen}
+        onDraftChange={setDraft}
+        onOpenChange={setAclDialogOpen}
+        onSubmit={addEntry}
+      />
     </form>
+  );
+}
+
+function AclEntryDialog({ open, draft, error, onDraftChange, onOpenChange, onSubmit }) {
+  return (
+    <AppDialog open={open} title="添加访问对象" eyebrow="ACL" onOpenChange={onOpenChange}>
+      <form
+        className="dialog-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <p className="dialog-description">可以添加公司邮箱或部门路径。部门路径会覆盖该部门及其下级部门。</p>
+        <SelectField
+          label="类型"
+          value={draft.subjectType}
+          options={ACL_SUBJECT_OPTIONS}
+          onChange={(subjectType) => onDraftChange((current) => ({ ...current, subjectType }))}
+        />
+        <label className="field">
+          <span>{aclSubjectTypeLabel(draft.subjectType)}</span>
+          <input
+            value={draft.subjectValue}
+            onChange={(event) => onDraftChange((current) => ({ ...current, subjectValue: event.target.value }))}
+            placeholder={aclSubjectPlaceholder(draft.subjectType)}
+            autoFocus
+          />
+        </label>
+        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={() => onOpenChange(false)}>
+            取消
+          </button>
+          <button className="primary-button" type="submit" disabled={!draft.subjectValue.trim()}>
+            <Plus size={16} />
+            <span>添加访问对象</span>
+          </button>
+        </div>
+      </form>
+    </AppDialog>
+  );
+}
+
+function ReadOnlyAccessPolicy({ access, entries }) {
+  return (
+    <>
+      <section className="info-list">
+        <h2>访问控制</h2>
+        <dl>
+          <div>
+            <dt>Visibility</dt>
+            <dd>{access.visibility || 'internal'}</dd>
+          </div>
+        </dl>
+      </section>
+      {access.visibility === 'acl' ? <ReadOnlyAclList entries={entries} /> : null}
+    </>
   );
 }
 
@@ -410,6 +463,8 @@ function AclEntriesTable({ entries, onRemove }) {
 }
 
 function ConfigPanel({ site, state, onResourceReload }) {
+  const [varDialogOpen, setVarDialogOpen] = useState(false);
+  const [secretDialogOpen, setSecretDialogOpen] = useState(false);
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <div className="placeholder">无法加载运行配置</div>;
   const config = state.data?.config || { vars: [], secrets: [] };
@@ -417,33 +472,49 @@ function ConfigPanel({ site, state, onResourceReload }) {
 
   return (
     <section className="detail-stack">
-      {capabilities.canEditVars ? (
-        <RuntimeVarForm siteId={site.id} onResourceReload={onResourceReload} />
-      ) : (
-        <div className="placeholder">当前角色只能查看运行配置</div>
-      )}
+      {!capabilities.canEditVars ? <div className="placeholder">当前角色只能查看运行配置</div> : null}
       <RuntimeVarList
         vars={config.vars || []}
         canEdit={capabilities.canEditVars}
         siteId={site.id}
+        onAdd={() => setVarDialogOpen(true)}
         onResourceReload={onResourceReload}
       />
-      {capabilities.canEditSecrets ? <RuntimeSecretForm siteId={site.id} onResourceReload={onResourceReload} /> : null}
       <RuntimeSecretList
         secrets={config.secrets || []}
         canEdit={capabilities.canEditSecrets}
         siteId={site.id}
+        onAdd={() => setSecretDialogOpen(true)}
         onResourceReload={onResourceReload}
       />
+      {capabilities.canEditVars ? (
+        <RuntimeVarDialog open={varDialogOpen} siteId={site.id} onOpenChange={setVarDialogOpen} onResourceReload={onResourceReload} />
+      ) : null}
+      {capabilities.canEditSecrets ? (
+        <RuntimeSecretDialog
+          open={secretDialogOpen}
+          siteId={site.id}
+          onOpenChange={setSecretDialogOpen}
+          onResourceReload={onResourceReload}
+        />
+      ) : null}
     </section>
   );
 }
 
-function RuntimeVarForm({ siteId, onResourceReload }) {
+function RuntimeVarDialog({ open, siteId, onOpenChange, onResourceReload }) {
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setName('');
+    setValue('');
+    setSaving(false);
+    setError(null);
+  }, [open]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -454,6 +525,7 @@ function RuntimeVarForm({ siteId, onResourceReload }) {
       setName('');
       setValue('');
       await onResourceReload?.();
+      onOpenChange(false);
     } catch (nextError) {
       setError(nextError);
     } finally {
@@ -462,18 +534,8 @@ function RuntimeVarForm({ siteId, onResourceReload }) {
   };
 
   return (
-    <form className="info-list" onSubmit={submit}>
-      <div className="panel-head">
-        <div>
-          <p>Publisher</p>
-          <h2>环境变量</h2>
-        </div>
-        <button className="primary-button" type="submit" disabled={saving || !name.trim()}>
-          <Plus size={16} />
-          {saving ? '保存中' : '保存'}
-        </button>
-      </div>
-      <div className="form-grid runtime-form-body">
+    <AppDialog open={open} title="添加环境变量" eyebrow="运行配置" onOpenChange={onOpenChange}>
+      <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
           <input value={name} onChange={(event) => setName(event.target.value)} placeholder="API_BASE" />
@@ -483,12 +545,21 @@ function RuntimeVarForm({ siteId, onResourceReload }) {
           <input value={value} onChange={(event) => setValue(event.target.value)} />
         </label>
         {error ? <div className="form-error">{error.code || error.message}</div> : null}
-      </div>
-    </form>
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={() => onOpenChange(false)} disabled={saving}>
+            取消
+          </button>
+          <button className="primary-button" type="submit" disabled={saving || !name.trim()}>
+            <Plus size={16} />
+            <span>{saving ? '保存中' : '保存'}</span>
+          </button>
+        </div>
+      </form>
+    </AppDialog>
   );
 }
 
-function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
+function RuntimeVarList({ vars, canEdit, siteId, onAdd, onResourceReload }) {
   const [error, setError] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -512,7 +583,15 @@ function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
     <section className="table-list" aria-label="环境变量">
       <div className="table-toolbar">
         <strong>环境变量</strong>
-        <span className="tag muted">{vars.length}</span>
+        <div className="runtime-list-actions">
+          <span className="tag muted">{vars.length}</span>
+          {canEdit ? (
+            <button className="secondary-button" type="button" onClick={onAdd}>
+              <Plus size={16} />
+              <span>添加变量</span>
+            </button>
+          ) : null}
+        </div>
       </div>
       {error ? <div className="form-error">{error.code || error.message}</div> : null}
       {vars.length ? (
@@ -522,7 +601,7 @@ function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
               <strong title={item.name}>{item.name}</strong>
               <span title={item.value || '-'}>{item.value || '-'}</span>
             </div>
-            <span className="tag muted">rev {item.revision || 0}</span>
+            <span className="tag muted">版本 {item.revision || 0}</span>
             <div className="row-actions">
               <span>{formatDate(item.updatedAt)}</span>
               {canEdit ? (
@@ -562,11 +641,19 @@ function RuntimeVarList({ vars, canEdit, siteId, onResourceReload }) {
   );
 }
 
-function RuntimeSecretForm({ siteId, onResourceReload }) {
+function RuntimeSecretDialog({ open, siteId, onOpenChange, onResourceReload }) {
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setName('');
+    setValue('');
+    setSaving(false);
+    setError(null);
+  }, [open]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -577,6 +664,7 @@ function RuntimeSecretForm({ siteId, onResourceReload }) {
       setName('');
       setValue('');
       await onResourceReload?.();
+      onOpenChange(false);
     } catch (nextError) {
       setError(nextError);
     } finally {
@@ -585,18 +673,8 @@ function RuntimeSecretForm({ siteId, onResourceReload }) {
   };
 
   return (
-    <form className="info-list" onSubmit={submit}>
-      <div className="panel-head">
-        <div>
-          <p>Admin</p>
-          <h2>Secrets</h2>
-        </div>
-        <button className="primary-button" type="submit" disabled={saving || !name.trim() || !value}>
-          <Save size={16} />
-          {saving ? '保存中' : '保存'}
-        </button>
-      </div>
-      <div className="form-grid runtime-form-body">
+    <AppDialog open={open} title="添加 Secret" eyebrow="运行配置" onOpenChange={onOpenChange}>
+      <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
           <input value={name} onChange={(event) => setName(event.target.value)} placeholder="API_TOKEN" />
@@ -606,12 +684,21 @@ function RuntimeSecretForm({ siteId, onResourceReload }) {
           <input type="password" value={value} onChange={(event) => setValue(event.target.value)} />
         </label>
         {error ? <div className="form-error">{error.code || error.message}</div> : null}
-      </div>
-    </form>
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={() => onOpenChange(false)} disabled={saving}>
+            取消
+          </button>
+          <button className="primary-button" type="submit" disabled={saving || !name.trim() || !value}>
+            <Save size={16} />
+            <span>{saving ? '保存中' : '保存'}</span>
+          </button>
+        </div>
+      </form>
+    </AppDialog>
   );
 }
 
-function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
+function RuntimeSecretList({ secrets, canEdit, siteId, onAdd, onResourceReload }) {
   const [error, setError] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -635,7 +722,15 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
     <section className="table-list" aria-label="Secrets">
       <div className="table-toolbar">
         <strong>Secrets</strong>
-        <span className="tag muted">{secrets.length}</span>
+        <div className="runtime-list-actions">
+          <span className="tag muted">{secrets.length}</span>
+          {canEdit ? (
+            <button className="secondary-button" type="button" onClick={onAdd}>
+              <Plus size={16} />
+              <span>添加 Secret</span>
+            </button>
+          ) : null}
+        </div>
       </div>
       {error ? <div className="form-error">{error.code || error.message}</div> : null}
       {secrets.length ? (
@@ -645,7 +740,7 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onResourceReload }) {
               <strong title={item.name}>{item.name}</strong>
               <span title={formatDate(item.updatedAt)}>{formatDate(item.updatedAt)}</span>
             </div>
-            <span className="tag muted">rev {item.revision || 0}</span>
+            <span className="tag muted">版本 {item.revision || 0}</span>
             <div className="row-actions">
               <span>值已隐藏</span>
               {canEdit ? (
@@ -697,35 +792,19 @@ function RuntimeDeleteDialog({
   onConfirm,
 }) {
   return (
-    <AppDialog
+    <ConfirmDialog
       open={open}
       title={title}
-      eyebrow="高风险操作"
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen && !deleting) onCancel?.();
-      }}
-    >
-      <div className="dialog-form">
-        <div className="danger-summary">
-          <Trash2 size={18} />
-          <span>
-            <strong>{targetName}</strong>
-            <small>{description}</small>
-          </span>
-        </div>
-        <p className="dialog-description">{description}</p>
-        {error ? <div className="form-error">{error.code || error.message}</div> : null}
-        <div className="dialog-actions">
-          <button className="secondary-button" type="button" onClick={onCancel} disabled={deleting}>
-            取消
-          </button>
-          <button className="primary-button danger-primary-button" type="button" onClick={onConfirm} disabled={deleting}>
-            <Trash2 size={15} />
-            <span>{deleting ? '删除中' : confirmLabel}</span>
-          </button>
-        </div>
-      </div>
-    </AppDialog>
+      target={targetName}
+      targetMeta={description}
+      description={description}
+      confirmLabel={deleting ? '删除中' : confirmLabel}
+      confirming={deleting}
+      error={error}
+      icon={<Trash2 size={16} />}
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -811,6 +890,10 @@ function ownerLabel(owner) {
   if (!owner) return '个人';
   if (owner.displayName) return owner.displayName;
   return owner.type === 'team' ? '团队' : '个人';
+}
+
+function deploymentOwnerLabel(deployment, site) {
+  return ownerLabel(deployment.owner || site?.owner);
 }
 
 function roleLabel(role) {

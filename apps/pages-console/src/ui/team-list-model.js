@@ -5,7 +5,7 @@ export function buildTeamCards(teams) {
     avatarText: firstAvatarText(team.name || team.id || 'T'),
     description: team.description || team.departmentPath || '暂无描述',
     roleLabel: team.currentUserRole || 'viewer',
-    typeLabel: team.teamType === 'department' ? '部门团队' : '自建团队',
+    typeLabel: team.teamType === 'department' ? '部门团队' : '',
   }));
 }
 

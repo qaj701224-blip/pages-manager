@@ -1,3 +1,4 @@
+import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Select from '@radix-ui/react-select';
@@ -87,6 +88,83 @@ export function AppDialog({ open, title, eyebrow, children, footer, onOpenChange
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+export function ConfirmDialog({
+  open,
+  title,
+  eyebrow = '高风险操作',
+  description,
+  target,
+  targetMeta,
+  confirmLabel,
+  cancelLabel = '取消',
+  confirming = false,
+  error,
+  icon,
+  onOpenChange,
+  onCancel,
+  onConfirm,
+}) {
+  const close = () => {
+    if (confirming) return;
+    onCancel?.();
+    onOpenChange?.(false);
+  };
+
+  return (
+    <AlertDialog.Root open={open} onOpenChange={(nextOpen) => {
+      if (nextOpen) {
+        onOpenChange?.(true);
+        return;
+      }
+      close();
+    }}>
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="radix-dialog-overlay" />
+        <AlertDialog.Content className="radix-dialog-content alert-dialog-content">
+          <div className="dialog-head">
+            <div>
+              {eyebrow ? <p>{eyebrow}</p> : null}
+              <AlertDialog.Title>{title}</AlertDialog.Title>
+            </div>
+          </div>
+          <div className="dialog-body dialog-form">
+            <div className="danger-summary">
+              {icon}
+              <span>
+                <strong>{target}</strong>
+                {targetMeta ? <small>{targetMeta}</small> : null}
+              </span>
+            </div>
+            {description ? <AlertDialog.Description className="dialog-description">{description}</AlertDialog.Description> : null}
+            {error ? <div className="form-error">{error.code || error.message || error}</div> : null}
+            <div className="dialog-actions">
+              <AlertDialog.Cancel asChild>
+                <button className="secondary-button" type="button" disabled={confirming}>
+                  {cancelLabel}
+                </button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action asChild>
+                <button
+                  className="primary-button danger-primary-button"
+                  type="button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onConfirm?.();
+                  }}
+                  disabled={confirming}
+                >
+                  {icon}
+                  <span>{confirmLabel}</span>
+                </button>
+              </AlertDialog.Action>
+            </div>
+          </div>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
 

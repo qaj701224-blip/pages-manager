@@ -27,7 +27,7 @@ test('team cards expose skill-hub style display fields', () => {
     avatarText: 't',
     description: '测试',
     roleLabel: 'admin',
-    typeLabel: '自建团队',
+    typeLabel: '',
   });
   assert.deepEqual(cards[1], {
     id: 'dept_xd',
