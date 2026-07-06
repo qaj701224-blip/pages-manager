@@ -2426,6 +2426,7 @@ button {
   display: inline-flex;
   align-items: center;
   min-height: 32px;
+  border: 1px solid transparent;
   padding: 0 12px;
   border-radius: 6px;
   color: var(--xd-text-2);
@@ -2437,8 +2438,14 @@ button {
 
 .detail-tabs a:hover,
 .detail-tabs a.active {
-  color: var(--xd-accent-strong);
-  background: var(--xd-accent-soft);
+  color: var(--xd-orange-active);
+  border-color: rgba(243, 112, 34, 0.28);
+  background: var(--xd-orange-soft);
+}
+
+.detail-tabs a.active {
+  font-weight: 720;
+  box-shadow: inset 0 -2px 0 var(--xd-orange);
 }
 
 .admin-toolbar,

@@ -6,6 +6,7 @@ const adminDashboardSource = readFileSync(new URL('./pages/AdminDashboard.jsx', 
 const adminSitesSource = readFileSync(new URL('./pages/AdminSites.jsx', import.meta.url), 'utf8');
 const adminTeamsSource = readFileSync(new URL('./pages/AdminTeams.jsx', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
+const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
 test('admin failed deployments show owner context', () => {
   assert.match(adminDashboardSource, /adminSiteOwnerView\(deployment\.owner\)/);
@@ -40,4 +41,10 @@ test('admin deep routes stay under the admin guard', () => {
   assert.match(appSource, /path="\/admin\/:page\/:resourceId\/:subpage"/);
   assert.match(appSource, /resourceId=\{resourceId\}/);
   assert.match(appSource, /subpage=\{subpage\}/);
+});
+
+test('admin detail tabs expose a clear active state', () => {
+  assert.match(stylesSource, /\.detail-tabs a\s*\{[\s\S]*?border:\s*1px solid transparent;/);
+  assert.match(stylesSource, /\.detail-tabs a:hover,[\s\S]*?\.detail-tabs a.active\s*\{[\s\S]*?border-color:\s*rgba\(243, 112, 34, 0\.28\);/);
+  assert.match(stylesSource, /\.detail-tabs a.active\s*\{[\s\S]*?box-shadow:\s*inset 0 -2px 0 var\(--xd-orange\);/);
 });
