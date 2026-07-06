@@ -246,14 +246,14 @@ async function requireTeamMember(store, config, session, teamId) {
   return { team, member };
 }
 
-async function ensureCanChangeTeamAdminRole(store, teamId, userId, nextRole) {
+export async function ensureCanChangeTeamAdminRole(store, teamId, userId, nextRole) {
   if (nextRole === 'admin') return null;
   const member = typeof store.getTeamMember === 'function' ? await store.getTeamMember({ teamId, userId }) : null;
   if (!member || member.role !== 'admin') return null;
   return ensureTeamHasAnotherAdmin(store, teamId, userId);
 }
 
-async function ensureCanRemoveTeamMember(store, teamId, userId) {
+export async function ensureCanRemoveTeamMember(store, teamId, userId) {
   const member = typeof store.getTeamMember === 'function' ? await store.getTeamMember({ teamId, userId }) : null;
   if (!member || member.role !== 'admin') return null;
   return ensureTeamHasAnotherAdmin(store, teamId, userId);

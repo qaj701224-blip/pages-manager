@@ -626,6 +626,49 @@ test('platform admin can manage admin-scope team members without team membership
   assert.ok((await remove.json()).member.removedAt);
 });
 
+test('platform admin cannot remove or demote the last team admin from admin scope', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createTeam({
+    id: 'team_console',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    createdByUserId: 'usr_owner',
+  });
+
+  const demote = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams/team_console/members/usr_owner', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { role: 'viewer' },
+    }),
+    env(store)
+  );
+  const remove = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams/team_console/members/usr_owner', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+
+  assert.equal(demote.status, 409, await demote.clone().text());
+  assert.equal((await demote.json()).error.code, 'TEAM_LAST_ADMIN');
+  assert.equal(remove.status, 409, await remove.clone().text());
+  assert.equal((await remove.json()).error.code, 'TEAM_LAST_ADMIN');
+  const member = await store.getTeamMember({ teamId: 'team_console', userId: 'usr_owner' });
+  assert.equal(member.role, 'admin');
+  assert.equal(member.removedAt, null);
+});
+
 test('admin audit events include readable actor profile', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);

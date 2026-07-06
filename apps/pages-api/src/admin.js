@@ -13,6 +13,7 @@ import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { formatConsoleUser } from './console-users.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import { buildSiteOwnerTransferAuditEvent } from './sites.js';
+import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
@@ -352,6 +353,9 @@ async function updateAdminTeamMember(request, config, store, session, teamId, us
   const user = await store.getUser(userId);
   if (!user) return jsonError('USER_NOT_FOUND', 'User not found.', 404, 'Pick a user that has signed in to XD Cell.');
 
+  const lastAdminError = await ensureCanChangeTeamAdminRole(store, team.id, userId, role);
+  if (lastAdminError) return lastAdminError;
+
   const member = await store.addTeamMember({
     teamId: team.id,
     userId,
@@ -365,6 +369,9 @@ async function updateAdminTeamMember(request, config, store, session, teamId, us
 async function removeAdminTeamMember(config, store, session, teamId, userId) {
   const team = await getAdminTeamRecord(config, store, teamId);
   if (team instanceof Response) return team;
+
+  const lastAdminError = await ensureCanRemoveTeamMember(store, team.id, userId);
+  if (lastAdminError) return lastAdminError;
 
   const member = await store.removeTeamMember({ teamId: team.id, userId, actorUserId: session.userId });
   if (!member) return jsonError('TEAM_MEMBER_NOT_FOUND', 'Team member not found.', 404, 'Check the user id.');
