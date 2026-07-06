@@ -215,7 +215,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       'Run xd-cell deploy --dry-run and retry.'
     );
   }
-  const site = await resolveDeploySite(store, actor, config, env, {
+  let site = await resolveDeploySite(store, actor, config, env, {
     siteId: requestedSiteId,
     siteSlug: requestedSiteSlug,
     teamId: requestedTeamId,
@@ -223,7 +223,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     requestedVisibility,
   });
   if (site instanceof Response) return site;
-  const ownerTransfer = site.ownerTransfer || null;
+  let ownerTransfer = null;
   const routeSlugError = validateDeployableSiteSlug(site.slug, config.environment);
   if (routeSlugError) return routeSlugError;
   const siteId = site.id;
@@ -240,6 +240,8 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       artifactBundle,
       assetManifest,
       source,
+      teamId: requestedTeamId || null,
+      visibility: requestedVisibility || null,
       vars: workerRuntimeVarsProvided ? await runtimeConfigHashInput(env, requestedRuntimeVars, []) : undefined,
     });
   } catch {
@@ -261,7 +263,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
     operation: 'deploy',
     idempotencyKey,
     requestHash,
-    visibility: site.defaultVisibility,
+    visibility: site.pendingOwnerTransfer?.visibility || site.defaultVisibility,
     status: 'pending',
   });
 
@@ -272,6 +274,30 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   }
 
   const deployment = deploymentResult.deployment;
+  if (site.pendingSiteCreation) {
+    const creationResult = await applyPendingDeploySiteCreation(store, site);
+    if (creationResult instanceof Response) {
+      await markDeploymentFailed(store, deployment.id, env, {
+        errorCode: 'SITE_CREATE_FAILED',
+        errorMessage: 'Site creation failed.',
+      });
+      return creationResult;
+    }
+    site = creationResult.site;
+  }
+  if (site.pendingOwnerTransfer) {
+    const transferResult = await applyPendingDeployOwnerTransfer(store, actor, config, env, site, site.pendingOwnerTransfer);
+    if (transferResult instanceof Response) {
+      await markDeploymentFailed(store, deployment.id, env, {
+        errorCode: 'SITE_TRANSFER_FAILED',
+        errorMessage: 'Site owner transfer failed.',
+      });
+      return transferResult;
+    }
+    site = transferResult.site;
+    ownerTransfer = transferResult.ownerTransfer;
+  }
+
   let runtimeSecrets = [];
   let originalRuntimeVarRecords = [];
   if (decisionRequiresWorker(decision)) {
@@ -775,6 +801,8 @@ async function createDeployment(request, env, config, store, actor, ctx) {
 
 async function emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment }) {
   try {
+    const team =
+      site.ownerType === 'team' && site.ownerId && typeof store.getTeam === 'function' ? await store.getTeam(site.ownerId) : null;
     await deliverWebhookEventToSubscriptions({
       store,
       env,
@@ -799,6 +827,13 @@ async function emitDeploymentSucceededWebhook({ store, env, config, actor, site,
           visibility: route.visibility || site.defaultVisibility,
           status: route.routeStatus,
         },
+        team: team
+          ? {
+              id: team.id,
+              name: team.name || null,
+              teamType: team.teamType || null,
+            }
+          : undefined,
         deployment: {
           id: deployment.id,
           status: deployment.status,
@@ -1665,20 +1700,31 @@ async function transferDeploySiteToTeamIfRequested(store, actor, config, env, si
     return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
   }
 
+  void env;
+  return {
+    ...site,
+    pendingOwnerTransfer: {
+      ownerId: target.ownerId,
+      visibility,
+    },
+  };
+}
+
+async function applyPendingDeployOwnerTransfer(store, actor, config, env, site, transfer) {
   const updatedAt = readNow(env);
   const auditEvent = buildSiteOwnerTransferAuditEvent(
     env,
     config,
     actor,
     site,
-    { ownerType: 'team', ownerId: target.ownerId },
+    { ownerType: 'team', ownerId: transfer.ownerId },
     { source: 'deploy', createdAt: updatedAt }
   );
   const updated = await store.transferSiteOwner(
     site.id,
     {
       ownerType: 'team',
-      ownerId: target.ownerId,
+      ownerId: transfer.ownerId,
       ownerUserId: actor.userId || site.ownerUserId,
       updatedAt,
       auditEvent,
@@ -1688,14 +1734,25 @@ async function transferDeploySiteToTeamIfRequested(store, actor, config, env, si
   if (!updated) return siteNotFound('Check the site id.');
 
   let transferred = updated;
-  if (visibility && updated.defaultVisibility !== visibility && typeof store.updateSiteVisibility === 'function') {
-    await store.updateSiteVisibility(updated.id, { visibility, updatedAt: readNow(env) }, config.environment);
-    transferred = { ...updated, defaultVisibility: visibility };
+  if (
+    transfer.visibility &&
+    updated.defaultVisibility !== transfer.visibility &&
+    typeof store.updateSiteVisibility === 'function'
+  ) {
+    await store.updateSiteVisibility(
+      updated.id,
+      { visibility: transfer.visibility, updatedAt: readNow(env) },
+      config.environment
+    );
+    transferred = { ...updated, defaultVisibility: transfer.visibility };
   }
 
   const visible = await store.getSiteForUser(transferred.id, actor.userId, actor, config.environment);
   if (!visible) return siteNotFound('Check the site slug and access key scope.');
-  return { ...visible, ownerTransfer: auditEvent.metadata };
+  return {
+    site: visible,
+    ownerTransfer: auditEvent.metadata,
+  };
 }
 
 async function resolveDeployTransferTeam(store, actor, teamId, environment) {
@@ -1727,35 +1784,14 @@ async function createSiteFromDeployOwner(store, actor, config, env, { siteSlug, 
 async function createTeamSiteFromUserDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
   const teamOwner = await resolveTeamDeployOwner(store, actor.userId, teamId, config.environment);
   if (teamOwner instanceof Response) return teamOwner;
-  try {
-    const site = await store.createSite({
-      id: nextId(env, 'site'),
-      slug: siteSlug,
-      ownerType: 'team',
-      ownerId: teamOwner.ownerId,
-      ownerUserId: actor.userId,
-      siteUuid: nextSiteUuid(env),
-      defaultVisibility: visibility,
-      environment: config.environment,
-      routeId: nextId(env, 'route'),
-      hostname: hostnameForSlug(siteSlug, config),
-    });
-    return { ...site, managementRole: teamOwner.role };
-  } catch (error) {
-    if (error instanceof Error && /SITE_SLUG_CONFLICT/.test(error.message)) {
-      const existing =
-        typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(config.environment, siteSlug) : null;
-      const teamMismatch = assertRequestedTeamMatchesSite(existing, teamId);
-      if (teamMismatch) return teamMismatch;
-      if (existing) {
-        const visible = await store.getSiteForUser(existing.id, actor.userId, actor, config.environment);
-        if (visible) return visible;
-      }
-    }
-    const response = siteCreateErrorResponse(error);
-    if (response) return response;
-    throw error;
-  }
+  return pendingDeploySiteCreation(config, env, {
+    siteSlug,
+    ownerType: 'team',
+    ownerId: teamOwner.ownerId,
+    ownerUserId: actor.userId,
+    visibility,
+    managementRole: teamOwner.role,
+  });
 }
 
 async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, env, { siteSlug, teamId, visibility }) {
@@ -1788,30 +1824,58 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
     );
   }
 
-  try {
-    return await store.createSite({
-      id: nextId(env, 'site'),
-      slug: siteSlug,
-      ownerType,
-      ownerId,
-      ownerUserId,
-      siteUuid: nextSiteUuid(env),
-      defaultVisibility: visibility,
-      environment: config.environment,
+  return pendingDeploySiteCreation(config, env, {
+    siteSlug,
+    ownerType,
+    ownerId,
+    ownerUserId,
+    visibility,
+  });
+}
+
+function pendingDeploySiteCreation(config, env, { siteSlug, ownerType, ownerId, ownerUserId, visibility, managementRole }) {
+  const site = {
+    id: nextId(env, 'site'),
+    slug: siteSlug,
+    ownerType,
+    ownerId,
+    ownerUserId,
+    siteUuid: nextSiteUuid(env),
+    defaultVisibility: visibility,
+    environment: config.environment,
+    managementRole: managementRole || null,
+  };
+  return {
+    ...site,
+    pendingSiteCreation: {
+      ...site,
       routeId: nextId(env, 'route'),
       hostname: hostnameForSlug(siteSlug, config),
+    },
+  };
+}
+
+async function applyPendingDeploySiteCreation(store, site) {
+  try {
+    const created = await store.createSite({
+      id: site.pendingSiteCreation.id,
+      slug: site.pendingSiteCreation.slug,
+      ownerType: site.pendingSiteCreation.ownerType,
+      ownerId: site.pendingSiteCreation.ownerId,
+      ownerUserId: site.pendingSiteCreation.ownerUserId,
+      siteUuid: site.pendingSiteCreation.siteUuid,
+      defaultVisibility: site.pendingSiteCreation.defaultVisibility,
+      environment: site.pendingSiteCreation.environment,
+      routeId: site.pendingSiteCreation.routeId,
+      hostname: site.pendingSiteCreation.hostname,
     });
+    return {
+      site: {
+        ...created,
+        managementRole: site.managementRole || null,
+      },
+    };
   } catch (error) {
-    if (error instanceof Error && /SITE_SLUG_CONFLICT/.test(error.message)) {
-      const existing =
-        typeof store.findSiteBySlug === 'function' ? await store.findSiteBySlug(config.environment, siteSlug) : null;
-      if (existing) {
-        const teamMismatch = assertRequestedTeamMatchesSite(existing, teamId);
-        if (teamMismatch) return teamMismatch;
-        const visible = await store.getSiteForUser(existing.id, actor.userId, actor, config.environment);
-        if (visible) return visible;
-      }
-    }
     const response = siteCreateErrorResponse(error);
     if (response) return response;
     throw error;
@@ -1835,12 +1899,6 @@ async function resolveTeamDeployOwner(store, userId, teamId, environment) {
     );
   }
   return { ownerId: team.id, role: member.role };
-}
-
-function assertRequestedTeamMatchesSite(site, teamId) {
-  if (!teamId || !site) return null;
-  if (site?.ownerType === 'team' && site.ownerId === teamId) return null;
-  return siteNotFound('Check the site slug and team.');
 }
 
 async function validateRollbackVersion(store, version, environment) {
@@ -2094,6 +2152,19 @@ async function markDeploymentStateWriteFailed(store, deploymentId, { env, versio
     });
   } catch {
     // Best-effort status update after a persistence failure.
+  }
+}
+
+async function markDeploymentFailed(store, deploymentId, env, { errorCode, errorMessage }) {
+  try {
+    await store.updateDeployment(deploymentId, {
+      status: 'failed',
+      errorCode,
+      errorMessage,
+      completedAt: readNow(env || {}),
+    });
+  } catch {
+    // Best-effort status update after a deployment-side failure.
   }
 }
 

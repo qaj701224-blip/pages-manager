@@ -94,6 +94,73 @@ test('successful deployments deliver site.deployed webhooks for matching subscri
   assert.equal(deliveries[0].eventType, 'site.deployed');
 });
 
+test('team-owned deployments include team fields in webhook payloads', async () => {
+  const store = await createSeededStore();
+  await seedPlatformAdmin(store);
+  const team = await store.createTeam({
+    id: 'team_webhook',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Webhook Team',
+    createdByUserId: 'usr_1',
+  });
+  const teamKey = await seedAccessKey(store, 'ak_team_webhook', ['deploy:site'], null, {
+    ownerType: 'team',
+    ownerId: team.id,
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+  });
+  const requests = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WEBHOOK_URL_ENCRYPTION_KEY: 'test-webhook-url-key',
+    resolveWebhookHost: async () => ['8.8.8.8'],
+    WEBHOOK_FETCH: async (request) => {
+      requests.push(request);
+      return new Response('ok', { status: 200 });
+    },
+    nextId: (prefix) => {
+      if (prefix === 'site') return 'site_webhook_team';
+      if (prefix === 'route') return 'route_webhook_team';
+      return `${prefix}_1`;
+    },
+  });
+
+  const created = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/webhooks', {
+      method: 'POST',
+      body: {
+        name: 'Team deploy events',
+        url: 'https://hooks.slack.com/services/T000/B000/token',
+        events: ['site.deployed'],
+        payloadMode: 'standard',
+      },
+    }),
+    env
+  );
+  assert.equal(created.status, 201, await created.clone().text());
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'team-webhook' }),
+      {
+        Authorization: `Bearer ${teamKey}`,
+        'Idempotency-Key': 'deploy_team_webhook',
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(requests.length, 1);
+  const payload = await requests[0].json();
+  assert.deepEqual(payload.team, {
+    id: 'team_webhook',
+    name: 'Webhook Team',
+    teamType: 'custom',
+  });
+});
+
 test('successful deployment schedules webhook delivery with waitUntil without blocking response', async () => {
   const store = await createSeededStore();
   await seedPlatformAdmin(store);
@@ -2077,6 +2144,49 @@ test('user owner-scoped access keys can create a new personal site during deploy
   assert.equal((await store.getRouteBySiteId(site.id)).hostname, 'new-personal.workers.xd.team');
 });
 
+test('new site deploy idempotency conflict does not create an empty site first', async () => {
+  const store = await createSeededStore();
+  const ownerScopedKey = await seedAccessKey(store, 'ak_owner_create', ['deploy:site'], null);
+  await store.createDeploymentForIdempotency({
+    id: 'dep_existing',
+    environment: 'production',
+    actorId: 'ak_owner_create',
+    actorUserId: 'usr_1',
+    actorType: 'access_key',
+    source: 'cli',
+    siteId: 'site_new_personal',
+    operation: 'deploy',
+    idempotencyKey: 'owner_scoped_create_personal',
+    requestHash: 'sha256:existing-request',
+    visibility: 'org',
+    status: 'succeeded',
+  });
+  const env = testEnv(store, createSnapshotStore(), {
+    nextId: (prefix) => {
+      if (prefix === 'site') return 'site_new_personal';
+      if (prefix === 'route') return 'route_new_personal';
+      return `${prefix}_1`;
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({ siteId: undefined, siteSlug: 'new-personal', visibility: 'internal' }),
+      {
+        Authorization: `Bearer ${ownerScopedKey}`,
+        'Idempotency-Key': 'owner_scoped_create_personal',
+      }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'IDEMPOTENCY_CONFLICT');
+  assert.equal(await store.findSiteBySlug('production', 'new-personal'), null);
+  assert.equal(await store.getHostnameClaim('new-personal.workers.xd.team'), null);
+});
+
 test('team owner-scoped access keys can create a new team site during deploy', async () => {
   const store = await createSeededStore();
   const team = await store.createTeam({
@@ -3666,6 +3776,52 @@ test('deployment idempotency replay ignores later site-level runtime config chan
   assert.equal(first.status, 201, await first.clone().text());
   assert.equal(replay.status, 200, await replay.clone().text());
   assert.equal((await replay.json()).deployment.id, 'dep_1');
+});
+
+test('deployment idempotency conflict does not transfer site ownership first', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const env = testEnv(store, createSnapshotStore());
+
+  const first = await worker.fetch(
+    deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+      'Idempotency-Key': 'idem_transfer_conflict',
+    }),
+    env
+  );
+  const conflict = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload({
+        siteId: undefined,
+        siteSlug: 'guide',
+        teamId: team.id,
+        moduleContent: 'export default { fetch() { return new Response("changed"); } };',
+      }),
+      { 'Idempotency-Key': 'idem_transfer_conflict' }
+    ),
+    env
+  );
+
+  assert.equal(first.status, 201, await first.clone().text());
+  assert.equal(conflict.status, 409, await conflict.clone().text());
+  assert.equal((await conflict.json()).error.code, 'IDEMPOTENCY_CONFLICT');
+  const site = await store.getSite('site_1');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_1');
+  assert.equal((await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer').length, 0);
 });
 
 test('rejects hand-written JSON deployment uploads', async () => {

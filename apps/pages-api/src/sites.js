@@ -304,6 +304,8 @@ async function deleteSite(env, config, store, actor, siteId) {
   if (site instanceof Response) return site;
   const deletedAt = readNow(env);
   const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
+  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
+  const shouldWriteDeletedSnapshot = routeWasActive(previousRoute);
   const deleted = await store.deleteSite(
     site.id,
     {
@@ -314,7 +316,12 @@ async function deleteSite(env, config, store, actor, siteId) {
     config.environment
   );
   if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  return jsonOk({ site: formatSite({ ...deleted, route: await store.getRouteBySiteId(site.id, config.environment) }) });
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (shouldWriteDeletedSnapshot) {
+    const snapshotError = await refreshCurrentRouteSnapshot(env, store, deleted, route, config.environment);
+    if (snapshotError) return snapshotError;
+  }
+  return jsonOk({ site: formatSite({ ...deleted, route }) });
 }
 
 async function transferSiteOwner(request, env, config, store, actor, siteId) {
@@ -352,8 +359,11 @@ async function transferSiteOwner(request, env, config, store, actor, siteId) {
   );
   if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
-  const visible = await store.getSiteForUser(updated.id, actor.userId, actor, config.environment);
   const route = await store.getRouteBySiteId(updated.id, config.environment);
+  const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
+  if (snapshotError) return snapshotError;
+
+  const visible = await store.getSiteForUser(updated.id, actor.userId, actor, config.environment);
   return jsonOk({ site: formatSite({ ...(visible || updated), route }) });
 }
 
@@ -931,6 +941,41 @@ export async function refreshActiveRouteSnapshot(env, store, site, route, enviro
     return jsonError('ROUTE_SNAPSHOT_WRITE_FAILED', 'Route snapshot could not be written.', 503, 'Retry the policy update.');
   }
   return null;
+}
+
+export async function refreshCurrentRouteSnapshot(env, store, site, route, environment) {
+  if (!route) return null;
+  const version = route.activeVersionId
+    ? await store.getSiteVersion(route.activeVersionId, environment)
+    : inactiveRouteVersion(route);
+  if (!version && route.routeStatus === 'active') {
+    return jsonError('ROUTE_VERSION_NOT_FOUND', 'Active route version was not found.', 500, 'Check route consistency.');
+  }
+  const aclEntries = await store.listSiteAclEntries(site.id);
+  try {
+    await writeRouteSnapshot(env, buildRouteSnapshot({ site, route, version, aclEntries }));
+  } catch {
+    return jsonError('ROUTE_SNAPSHOT_WRITE_FAILED', 'Route snapshot could not be written.', 503, 'Retry the policy update.');
+  }
+  return null;
+}
+
+function inactiveRouteVersion(route) {
+  return {
+    id: null,
+    executionProvider: route.executionProvider,
+    dispatchType: route.dispatchType,
+    dispatchBindingName: route.dispatchBindingName,
+    slotId: route.slotId,
+    contentHash: null,
+    deploymentShape: 'inactive',
+    resolvedFallback: null,
+    routingMode: null,
+  };
+}
+
+function routeWasActive(route) {
+  return route?.routeStatus === 'active' && Boolean(route.activeVersionId);
 }
 
 export async function restoreSiteVisibilityAfterSnapshotFailure(

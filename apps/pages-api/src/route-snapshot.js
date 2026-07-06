@@ -7,7 +7,7 @@ export function buildRouteSnapshot({ site, route, version, aclEntries = [] }) {
     siteId: site.id,
     siteUuid: site.siteUuid,
     slug: site.slug,
-    ownerUserId: site.ownerUserId,
+    ownerUserId: site.ownerType === 'team' ? null : site.ownerUserId,
     requiredSessionVersion: site.requiredSessionVersion || 1,
     runtime: route.runtime,
     executionProvider: route.executionProvider || version?.executionProvider || executionProviderFromRuntime(route.runtime),

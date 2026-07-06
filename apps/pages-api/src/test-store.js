@@ -144,10 +144,15 @@ class TestPagesStore {
     const existing = this.platformAdmins.get(platformAdminKey(normalizedEnvironment, normalizedUserId));
     if (!existing) return null;
     if (!existing.revokedAt) {
+      const targetUser = this.users.get(normalizedUserId) || null;
+      const targetIsActive = targetUser?.employeeStatus === 'active';
       const activeCount = [...this.platformAdmins.values()].filter(
-        (admin) => admin.environment === normalizedEnvironment && !admin.revokedAt
+        (admin) =>
+          admin.environment === normalizedEnvironment &&
+          !admin.revokedAt &&
+          this.users.get(admin.userId)?.employeeStatus === 'active'
       ).length;
-      if (activeCount <= 1) throw new Error('PLATFORM_ADMIN_LAST_ACTIVE');
+      if (targetIsActive && activeCount <= 1) throw new Error('PLATFORM_ADMIN_LAST_ACTIVE');
     }
     const now = this.now();
     const record = {
@@ -379,7 +384,7 @@ class TestPagesStore {
           ),
         }))
         .sort((left, right) => left.email.localeCompare(right.email))
-        .slice(0, normalizedQuery ? normalizedLimit : undefined)
+        .slice(0, normalizedLimit)
     );
   }
 
@@ -1052,14 +1057,30 @@ class TestPagesStore {
         siteIds.add(site.id);
       }
     } else {
-      for (const [siteId, members] of this.siteMembers.entries()) {
-        if (members.some((member) => member.userId === userId)) siteIds.add(siteId);
+      for (const site of this.sites.values()) {
+        if ((site.ownerType || 'user') === 'user') {
+          const members = this.siteMembers.get(site.id) || [];
+          if (members.some((member) => member.userId === userId)) siteIds.add(site.id);
+          continue;
+        }
+        if (site.ownerType === 'team') {
+          const member = this.teamMembers.get(teamMemberKey(site.ownerId, userId));
+          if (member && !member.removedAt) siteIds.add(site.id);
+        }
       }
     }
 
     return cloneRecord(
       [...siteIds]
-        .map((siteId) => this.siteWithRoute(siteId))
+        .map((siteId) => {
+          const site = this.siteWithRoute(siteId);
+          if (!site || actor.type === 'access_key' || site.ownerType !== 'team') return site;
+          const member = this.teamMembers.get(teamMemberKey(site.ownerId, userId));
+          return {
+            ...site,
+            managementRole: member?.role || null,
+          };
+        })
         .filter(Boolean)
         .filter((site) => !site.deletedAt)
         .filter((site) => !environment || site.environment === environment)

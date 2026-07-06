@@ -10,10 +10,10 @@ export async function hydrateUserDepartmentFromDirectory({ env, store, environme
 
   const checkedAt = new Date(readNow(env) * 1000).toISOString();
   const token = typeof env.XDS_OPENAI_TOKEN === 'string' ? env.XDS_OPENAI_TOKEN.trim() : '';
-  if (!token) return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
+  if (!token) return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
 
   const xdsFetch = resolveXdsFetch(env);
-  if (!xdsFetch) return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
+  if (!xdsFetch) return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
 
   let directoryUsers;
   try {
@@ -23,14 +23,14 @@ export async function hydrateUserDepartmentFromDirectory({ env, store, environme
       fetchImpl: xdsFetch,
     });
   } catch {
-    return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
+    return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
   }
 
   const directoryUser =
     directoryUsers.find((item) => item.email === email && item.departmentPath) ||
     directoryUsers.find((item) => item.departmentPath);
   const departmentPath = normalizeDepartmentPath(directoryUser?.departmentPath);
-  if (!departmentPath) return recordUnavailableDepartmentCheck({ store, user, userId, checkedAt });
+  if (!departmentPath) return recordUnavailableDepartmentCheck({ store, userId, checkedAt });
 
   const updatedUser = await store.updateUserDepartmentFromDirectory({
     userId,
@@ -108,11 +108,11 @@ function readTimestampSeconds(value) {
   return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
 }
 
-async function recordUnavailableDepartmentCheck({ store, user, userId, checkedAt }) {
+async function recordUnavailableDepartmentCheck({ store, userId, checkedAt }) {
   try {
     await store.updateUserDepartmentFromDirectory({
       userId,
-      departmentPath: user?.departmentPath || null,
+      departmentPath: null,
       departmentCheckedAt: checkedAt,
     });
   } catch {

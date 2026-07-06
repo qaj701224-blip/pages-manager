@@ -284,7 +284,7 @@ async function resolveAdminSiteOwnerTarget(store, config, body) {
     const ownerId = normalizeRequiredString(body.ownerId || body.userId);
     if (!ownerId) return jsonError('SITE_TRANSFER_INVALID', 'Site transfer target is invalid.', 400, 'Choose a user.');
     const user = typeof store.getUser === 'function' ? await store.getUser(ownerId) : null;
-    if (!user?.id || user.employeeStatus === 'inactive') {
+    if (!user?.id || user.employeeStatus !== 'active') {
       return jsonError('SITE_TRANSFER_FORBIDDEN', 'Target user is not active.', 403, 'Choose an active user.');
     }
     return {

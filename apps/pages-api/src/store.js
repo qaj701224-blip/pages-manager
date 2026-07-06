@@ -223,14 +223,20 @@ export class D1PagesStore {
     });
     if (!existing) return null;
     if (!existing.revokedAt) {
+      const user = typeof this.getUser === 'function' ? await this.getUser(normalizedUserId) : null;
+      const targetIsActive = user?.employeeStatus === 'active';
       const activeCount = await this.db
         .prepare(
-          `SELECT COUNT(*) AS count FROM platform_admins
-          WHERE environment = ? AND revoked_at IS NULL`
+          `SELECT COUNT(*) AS count
+          FROM platform_admins
+          JOIN users ON users.user_id = platform_admins.user_id
+          WHERE platform_admins.environment = ?
+            AND platform_admins.revoked_at IS NULL
+            AND users.employee_status = 'active'`
         )
         .bind(normalizedEnvironment)
         .first();
-      if (Number(activeCount?.count || 0) <= 1) throw new Error('PLATFORM_ADMIN_LAST_ACTIVE');
+      if (targetIsActive && Number(activeCount?.count || 0) <= 1) throw new Error('PLATFORM_ADMIN_LAST_ACTIVE');
     }
     await this.db.batch([
       this.db
@@ -645,8 +651,9 @@ export class D1PagesStore {
     const binds = [environment];
     if (normalizedQuery) {
       const like = `%${normalizedQuery.toLowerCase()}%`;
-      binds.push(like, like, like, like, normalizedLimit);
+      binds.push(like, like, like, like);
     }
+    binds.push(normalizedLimit);
     const sql = `SELECT users.*, platform_admins.user_id AS platform_admin_user_id
         FROM users
         LEFT JOIN platform_admins
@@ -654,7 +661,8 @@ export class D1PagesStore {
           AND platform_admins.environment = ?
           AND platform_admins.revoked_at IS NULL
         WHERE 1 = 1 ${queryCondition}
-        ORDER BY users.email ASC${normalizedQuery ? '\n        LIMIT ?' : ''}`;
+        ORDER BY users.email ASC
+        LIMIT ?`;
     const result = await this.db
       .prepare(sql)
       .bind(...binds)
@@ -2082,14 +2090,22 @@ export class D1PagesStore {
           site_routes.route_generation AS route_route_generation,
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
-          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at
+          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
+          team_members.role AS management_role
         FROM sites
-        JOIN site_members ON site_members.site_id = sites.id
+        LEFT JOIN site_members ON site_members.site_id = sites.id
+          AND site_members.user_id = ?
+        LEFT JOIN team_members ON team_members.team_id = sites.owner_id
+          AND team_members.user_id = ? AND team_members.removed_at IS NULL
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
-        WHERE site_members.user_id = ? AND sites.deleted_at IS NULL
+        WHERE sites.deleted_at IS NULL
+          AND (
+            (COALESCE(sites.owner_type, 'user') = 'user' AND site_members.user_id IS NOT NULL)
+            OR (sites.owner_type = 'team' AND team_members.user_id IS NOT NULL)
+          )
           ${environment ? 'AND sites.environment = ?' : ''}
         ORDER BY sites.created_at DESC`;
-    const binds = [userId];
+    const binds = [userId, userId];
     if (environment) binds.push(environment);
     const result = await this.db
       .prepare(query)

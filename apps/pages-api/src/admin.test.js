@@ -142,6 +142,29 @@ test('admin users can be searched by persisted profile fields', async () => {
   );
 });
 
+test('admin users list applies the default limit without a search query', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  for (let index = 0; index < 55; index += 1) {
+    const suffix = String(index).padStart(2, '0');
+    await seedConsoleUser(store, `usr_${suffix}`, { email: `user-${suffix}@example.com` });
+  }
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/users', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.users.length, 50);
+  assert.equal(body.users[0].id, 'usr_root');
+  assert.equal(body.users.at(-1).id, 'usr_48');
+});
+
 test('admin platform grant requires an existing user', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -463,6 +486,40 @@ test('platform admin can edit admin-scope site settings without asset membership
   assert.equal(site.ownerType, 'user');
   assert.equal(site.ownerId, 'usr_target');
   assert.equal(site.ownerUserId, 'usr_target');
+});
+
+test('platform admin cannot transfer an admin-scope site to an inactive user', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_owner');
+  await seedConsoleUser(store, 'usr_disabled', { employeeStatus: 'disabled' });
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'personal',
+    ownerUserId: 'usr_owner',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'personal.workers.xd.team',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal/settings', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_disabled' },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_TRANSFER_FORBIDDEN');
+  const site = await store.getSite('site_personal');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_owner');
+  assert.equal(site.ownerUserId, 'usr_owner');
 });
 
 test('platform admin can edit admin-scope custom team settings without team membership', async () => {

@@ -6,6 +6,8 @@ import { createTestPagesStore } from './test-store.js';
 
 test('platform admin store grants, lists, checks, and revokes active admins while preserving one admin', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin');
+  await seedConsoleUser(store, 'usr_root');
 
   const granted = await store.grantPlatformAdmin({
     environment: 'production',
@@ -99,6 +101,52 @@ test('platform admin store grants, lists, checks, and revokes active admins whil
       },
     ]
   );
+});
+
+test('platform admin revoke guard ignores non-active admin grants', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T00:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_root',
+    email: 'root@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createUser({
+    userId: 'usr_disabled',
+    email: 'disabled@example.com',
+    employeeStatus: 'disabled',
+  });
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId: 'usr_root',
+    grantedByUserId: 'usr_bootstrap',
+    grantReason: 'bootstrap',
+  });
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId: 'usr_disabled',
+    grantedByUserId: 'usr_root',
+    grantReason: 'legacy grant',
+  });
+
+  await assert.rejects(
+    () =>
+      store.revokePlatformAdmin({
+        environment: 'production',
+        userId: 'usr_root',
+        revokedByUserId: 'usr_root',
+        revokeReason: 'self revoke',
+      }),
+    /PLATFORM_ADMIN_LAST_ACTIVE/
+  );
+
+  const revoked = await store.revokePlatformAdmin({
+    environment: 'production',
+    userId: 'usr_disabled',
+    revokedByUserId: 'usr_root',
+    revokeReason: 'inactive cleanup',
+  });
+  assert.equal(revoked.revokedAt, '2026-07-01T00:00:00.000Z');
+  assert.equal(await store.isPlatformAdmin({ environment: 'production', userId: 'usr_root' }), true);
 });
 
 test('console admin API requires platform admin identity and manages platform admins', async () => {

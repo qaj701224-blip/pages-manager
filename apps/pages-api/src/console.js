@@ -12,6 +12,7 @@ import {
   normalizeSlug,
   normalizeAclEntries,
   refreshActiveRouteSnapshot,
+  refreshCurrentRouteSnapshot,
   restoreSiteAclAfterSnapshotFailure,
   restoreSiteVisibilityAfterSnapshotFailure,
   buildSiteOwnerTransferAuditEvent,
@@ -231,6 +232,8 @@ export async function deleteConsoleSite(env, config, store, site, options = {}) 
 
   const deletedAt = readNow(env);
   const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
+  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
+  const shouldWriteDeletedSnapshot = routeWasActive(previousRoute);
   const deleted = await store.deleteSite(
     site.id,
     {
@@ -242,6 +245,10 @@ export async function deleteConsoleSite(env, config, store, site, options = {}) 
   );
   if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
   const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (shouldWriteDeletedSnapshot) {
+    const snapshotError = await refreshCurrentRouteSnapshot(env, store, deleted, route, config.environment);
+    if (snapshotError) return snapshotError;
+  }
   return jsonOk({ site: formatWorkspaceSite({ ...deleted, route }) });
 }
 
@@ -292,6 +299,10 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
   );
   if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
+  const route = await store.getRouteBySiteId(updated.id, config.environment);
+  const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
+  if (snapshotError) return snapshotError;
+
   const visible = await store.getConsoleSiteDetail({
     environment: config.environment,
     userId: session.userId,
@@ -299,7 +310,6 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
   });
   if (visible) return jsonOk({ site: formatSiteDetail(visible) });
 
-  const route = await store.getRouteBySiteId(updated.id, config.environment);
   return jsonOk({
     site: formatSiteDetail({
       ...updated,
@@ -462,7 +472,7 @@ export async function putSiteVar(request, env, config, store, session, siteId, n
   if (vars instanceof Response) return vars;
   const records = await replaceSiteVars(store, env, config, session, site.id, vars);
   const record = records.find((item) => item.name === name);
-  return jsonOk({ var: formatSiteVar(record) });
+  return jsonOk({ var: formatSiteVarMutation(record) });
 }
 
 export async function deleteSiteVar(env, config, store, session, siteId, name, options = {}) {
@@ -475,7 +485,7 @@ export async function deleteSiteVar(env, config, store, session, siteId, name, o
   const vars = await nextVarsForDelete(store, config.environment, site.id, name);
   if (vars instanceof Response) return vars;
   await replaceSiteVars(store, env, config, session, site.id, vars);
-  return jsonOk({ var: { name, deleted: true } });
+  return jsonOk({ var: formatDeletedSiteVarMutation(name) });
 }
 
 export async function putSiteSecret(request, env, config, store, session, siteId, name, options = {}) {
@@ -500,26 +510,43 @@ export async function putSiteSecret(request, env, config, store, session, siteId
     return jsonError('SECRET_VALUE_TOO_LARGE', 'Secret value is too large.', 413, 'Use a secret value no larger than 8 KiB.');
   }
 
-  const secret = await store.putSiteSecretWithAudit({
-    id: nextId(env, 'sec'),
-    environment: config.environment,
-    siteId: site.id,
-    siteSlug: site.slug,
-    name: normalizedName,
-    value: body.value,
-    actorId: session.userId,
-    actorType: 'user',
-    routeId: site.route?.id || null,
-    auditId: nextId(env, 'aud'),
-    updatedAt: readNow(env),
-  });
-  const syncError = await syncActiveWfpSecret(store, env, config, site, {
-    operation: 'put',
-    name: normalizedName,
-    value: body.value,
-  });
-  if (syncError) return syncError;
-  return jsonOk({ secret: formatSiteSecret(secret) });
+  try {
+    const secret = await store.putSiteSecretWithAudit({
+      id: nextId(env, 'sec'),
+      environment: config.environment,
+      siteId: site.id,
+      siteSlug: site.slug,
+      name: normalizedName,
+      value: body.value,
+      actorId: session.userId,
+      actorType: 'user',
+      routeId: site.route?.id || null,
+      auditId: nextId(env, 'aud'),
+      updatedAt: readNow(env),
+    });
+    const syncError = await syncActiveWfpSecret(store, env, config, site, {
+      operation: 'put',
+      name: normalizedName,
+      value: body.value,
+    });
+    if (syncError) return syncError;
+    return jsonOk({ secret: formatSiteSecret(secret) });
+  } catch (error) {
+    if (isRuntimeConfigConflict(error)) {
+      return jsonError(
+        'RUNTIME_CONFIG_CHANGED',
+        'Runtime secret changed while it was being updated.',
+        409,
+        'Retry the secret command.'
+      );
+    }
+    return jsonError(
+      'RUNTIME_CONFIG_UNSUPPORTED',
+      'Runtime secret store is unavailable.',
+      503,
+      'Check runtime secret store configuration.'
+    );
+  }
 }
 
 export async function deleteSiteSecret(env, config, store, session, siteId, name, options = {}) {
@@ -531,23 +558,40 @@ export async function deleteSiteSecret(env, config, store, session, siteId, name
   const normalizedName = normalizeSecretNameForResponse(name);
   if (normalizedName instanceof Response) return normalizedName;
 
-  await store.deleteSiteSecretWithAudit({
-    environment: config.environment,
-    siteId: site.id,
-    siteSlug: site.slug,
-    name: normalizedName,
-    actorId: session.userId,
-    actorType: 'user',
-    routeId: site.route?.id || null,
-    auditId: nextId(env, 'aud'),
-    deletedAt: readNow(env),
-  });
-  const syncError = await syncActiveWfpSecret(store, env, config, site, {
-    operation: 'delete',
-    name: normalizedName,
-  });
-  if (syncError) return syncError;
-  return jsonOk({ secret: { name: normalizedName, deleted: true } });
+  try {
+    await store.deleteSiteSecretWithAudit({
+      environment: config.environment,
+      siteId: site.id,
+      siteSlug: site.slug,
+      name: normalizedName,
+      actorId: session.userId,
+      actorType: 'user',
+      routeId: site.route?.id || null,
+      auditId: nextId(env, 'aud'),
+      deletedAt: readNow(env),
+    });
+    const syncError = await syncActiveWfpSecret(store, env, config, site, {
+      operation: 'delete',
+      name: normalizedName,
+    });
+    if (syncError) return syncError;
+    return jsonOk({ secret: { name: normalizedName, deleted: true } });
+  } catch (error) {
+    if (isRuntimeConfigConflict(error)) {
+      return jsonError(
+        'RUNTIME_CONFIG_CHANGED',
+        'Runtime secret changed while it was being deleted.',
+        409,
+        'Retry the secret command.'
+      );
+    }
+    return jsonError(
+      'RUNTIME_CONFIG_UNSUPPORTED',
+      'Runtime secret store is unavailable.',
+      503,
+      'Check runtime secret store configuration.'
+    );
+  }
 }
 
 export async function readSiteConfig(store, environment, siteId) {
@@ -660,6 +704,21 @@ function formatSiteVar(record) {
   };
 }
 
+function formatSiteVarMutation(record) {
+  return {
+    ...formatSiteVar(record),
+    appliesTo: 'next_deployment',
+  };
+}
+
+function formatDeletedSiteVarMutation(name) {
+  return {
+    name,
+    deleted: true,
+    appliesTo: 'next_deployment',
+  };
+}
+
 function formatSiteSecret(record) {
   return {
     name: record.name,
@@ -763,8 +822,16 @@ function hasAdminRole(site) {
   return site.managementRole === 'admin';
 }
 
+function routeWasActive(route) {
+  return route?.routeStatus === 'active' && Boolean(route.activeVersionId);
+}
+
 function byteLength(value) {
   return new globalThis.TextEncoder().encode(String(value)).byteLength;
+}
+
+function isRuntimeConfigConflict(error) {
+  return String(error?.message || error).includes('SITE_SECRET_REVISION_CONFLICT');
 }
 
 function nextId(env, prefix) {
