@@ -5,6 +5,7 @@ import {
   aclSubjectPlaceholder,
   aclSubjectTypeLabel,
   appendAclEntry,
+  formatSiteActionError,
   getSiteCapabilities,
   normalizeAclEntriesForForm,
   parseAclEntriesInput,
@@ -61,6 +62,16 @@ test('site capabilities keep viewer read-only', () => {
     canEditAccess: false,
     canEditSecrets: false,
   });
+});
+
+test('site action errors explain missing publisher permission in Chinese', () => {
+  const message = formatSiteActionError({
+    code: 'SITE_PUBLISHER_REQUIRED',
+    message: 'Site publisher role required.',
+    action: 'Ask a site or team publisher.',
+  });
+
+  assert.equal(message, '当前账号没有发布权限，需要站点归属用户或团队 publisher/admin 操作。');
 });
 
 test('parseAclEntriesInput accepts an ACL array and rejects other JSON shapes', () => {

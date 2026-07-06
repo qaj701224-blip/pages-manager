@@ -55,9 +55,23 @@ test('fetchJson throws API error code', async () => {
   await assert.rejects(
     () =>
       fetchJson('/api/console/directory', {
-        fetchImpl: async () => Response.json({ error: { code: 'CONSOLE_AUTH_REQUIRED' } }, { status: 401 }),
+        fetchImpl: async () =>
+          Response.json(
+            {
+              error: {
+                code: 'CONSOLE_AUTH_REQUIRED',
+                message: 'Console authentication required.',
+                action: 'Sign in and retry.',
+              },
+            },
+            { status: 401 }
+          ),
       }),
-    (error) => error.code === 'CONSOLE_AUTH_REQUIRED' && error.status === 401
+    (error) =>
+      error.code === 'CONSOLE_AUTH_REQUIRED' &&
+      error.status === 401 &&
+      error.message === 'Console authentication required.' &&
+      error.action === 'Sign in and retry.'
   );
 });
 

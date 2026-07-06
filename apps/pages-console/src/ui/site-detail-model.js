@@ -10,6 +10,15 @@ export function getSiteCapabilities(site) {
   };
 }
 
+export function formatSiteActionError(error) {
+  const code = String(error?.code || '');
+  if (code === 'SITE_PUBLISHER_REQUIRED') return '当前账号没有发布权限，需要站点归属用户或团队 publisher/admin 操作。';
+  if (code === 'SITE_ADMIN_REQUIRED') return '当前账号没有管理员权限，需要站点归属用户或团队 admin 操作。';
+  if (code === 'SITE_NOT_FOUND') return '当前账号无权访问该站点，或站点已经不存在。';
+  if (error?.message && error?.action) return `${error.message} ${error.action}`;
+  return error?.message || code || '操作失败，请稍后重试。';
+}
+
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 
 export function parseAclEntriesInput(value) {

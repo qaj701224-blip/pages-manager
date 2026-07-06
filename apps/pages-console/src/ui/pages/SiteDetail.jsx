@@ -17,6 +17,7 @@ import {
   aclSubjectPlaceholder,
   aclSubjectTypeLabel,
   appendAclEntry,
+  formatSiteActionError,
   getSiteCapabilities,
   normalizeAclEntriesForForm,
   removeAclEntryAt,
@@ -381,7 +382,7 @@ function AccessPolicyForm({ site, access, onResourceUpdate, onSitePatch }) {
         ) : (
           <div className="acl-policy-summary">ACL 条目仅在 Visibility 选择 acl 时生效。</div>
         )}
-        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+        {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
       </div>
       <AclEntryDialog
         draft={draft}
@@ -421,7 +422,7 @@ function AclEntryDialog({ open, draft, error, onDraftChange, onOpenChange, onSub
             autoFocus
           />
         </label>
-        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+        {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={() => onOpenChange(false)}>
             取消
@@ -576,7 +577,7 @@ function RuntimeVarDialog({ open, siteId, onOpenChange, onResourceReload }) {
           <span>Value</span>
           <input value={value} onChange={(event) => setValue(event.target.value)} />
         </label>
-        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+        {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={() => onOpenChange(false)} disabled={saving}>
             取消
@@ -625,7 +626,7 @@ function RuntimeVarList({ vars, canEdit, siteId, onAdd, onResourceReload }) {
           ) : null}
         </div>
       </div>
-      {error ? <div className="form-error">{error.code || error.message}</div> : null}
+      {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
       {vars.length ? (
         vars.map((item) => (
           <div className="table-row runtime-row" key={item.name}>
@@ -715,7 +716,7 @@ function RuntimeSecretDialog({ open, siteId, onOpenChange, onResourceReload }) {
           <span>Value</span>
           <input type="password" value={value} onChange={(event) => setValue(event.target.value)} />
         </label>
-        {error ? <div className="form-error">{error.code || error.message}</div> : null}
+        {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={() => onOpenChange(false)} disabled={saving}>
             取消
@@ -764,7 +765,7 @@ function RuntimeSecretList({ secrets, canEdit, siteId, onAdd, onResourceReload }
           ) : null}
         </div>
       </div>
-      {error ? <div className="form-error">{error.code || error.message}</div> : null}
+      {error ? <div className="form-error">{formatSiteActionError(error)}</div> : null}
       {secrets.length ? (
         secrets.map((item) => (
           <div className="table-row runtime-row" key={item.name}>
