@@ -18,6 +18,8 @@ import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
+const NORMAL_WORKER_BULK_DELETE_LIMIT = 100;
+const NORMAL_WORKER_BULK_DELETE_CONCURRENCY = 5;
 
 export async function handleConsoleAdminApi(request, env, config, store) {
   if (!isConsoleBffRequest(request)) return null;
@@ -276,38 +278,68 @@ async function bulkDeleteAdminNormalWorkers(request, env, config, store, session
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
+  if (!Array.isArray(body.ids)) {
+    return jsonError(
+      'NORMAL_WORKER_IDS_INVALID',
+      'Normal Worker ids are invalid.',
+      400,
+      'Send a non-empty ids array.'
+    );
+  }
   const ids = normalizeNormalWorkerIds(body.ids);
   if (!ids) {
-    return jsonError('NORMAL_WORKER_IDS_INVALID', 'Normal Worker ids are invalid.', 400, 'Send a non-empty ids array.');
+    return jsonError(
+      'NORMAL_WORKER_IDS_INVALID',
+      'Normal Worker ids are invalid.',
+      400,
+      'Each id must be a non-empty string.'
+    );
   }
   if (ids.length === 0) {
     return jsonError('NORMAL_WORKER_IDS_REQUIRED', 'Normal Worker ids are required.', 400, 'Select at least one Worker.');
   }
-  if (ids.length > 100) {
-    return jsonError('NORMAL_WORKER_BATCH_TOO_LARGE', 'Too many Normal Workers selected.', 400, 'Select at most 100 Workers.');
+  if (ids.length > NORMAL_WORKER_BULK_DELETE_LIMIT) {
+    return jsonError(
+      'NORMAL_WORKER_BATCH_TOO_LARGE',
+      'Too many Normal Workers selected.',
+      400,
+      'Select at most 100 Workers.'
+    );
   }
 
   const reason = normalizeNullableString(body.reason) || 'legacy normal workers retired by admin';
   const workers = await store.listAdminNormalWorkers({ environment: config.environment });
   const workerById = new Map(workers.map((worker) => [worker.id, worker]));
-  const results = [];
-  for (const id of ids) {
+  const results = await mapNormalWorkerDeleteBatch(ids, async (id) => {
     const worker = workerById.get(id);
     if (!worker) {
-      results.push({
+      return {
         id,
         status: 'failed',
         error: normalWorkerNotFoundError(),
-      });
-      continue;
+      };
     }
-    results.push(await deleteAdminNormalWorkerRecord({ env, config, store, session, worker, reason }));
-  }
+    return deleteAdminNormalWorkerRecord({ env, config, store, session, worker, reason });
+  });
 
   return jsonOk({
     summary: summarizeNormalWorkerDeleteResults(ids.length, results),
     results: results.map(formatNormalWorkerBatchResult),
   });
+}
+
+async function mapNormalWorkerDeleteBatch(ids, mapper) {
+  const results = new Array(ids.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(NORMAL_WORKER_BULK_DELETE_CONCURRENCY, ids.length) }, async () => {
+    while (nextIndex < ids.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(ids[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 async function deleteAdminNormalWorkerRecord({ env, config, store, session, worker, reason }) {

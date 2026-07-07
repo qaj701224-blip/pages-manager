@@ -614,6 +614,79 @@ test('admin can bulk retire idle and orphaned assigned normal workers', async ()
   assert.equal((await store.getWorkerSlot('slot_production_007')).status, 'assigned');
 });
 
+test('admin bulk normal worker delete reports invalid id items clearly', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/bulk-delete', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+      body: { ids: ['slot_production_001', ''] },
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'NORMAL_WORKER_IDS_INVALID');
+  assert.equal(body.error.action, 'Each id must be a non-empty string.');
+});
+
+test('admin bulk normal worker delete processes workers with bounded concurrency', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const ids = [];
+  const deletedWorkers = [];
+  let activeDeletes = 0;
+  let maxActiveDeletes = 0;
+  await seedPlatformAdmin(store);
+
+  for (let index = 1; index <= 6; index += 1) {
+    const suffix = String(index).padStart(3, '0');
+    ids.push(`slot_production_${suffix}`);
+    await store.createWorkerSlot({
+      id: `slot_production_${suffix}`,
+      environment: 'production',
+      slotNumber: index,
+      workerName: `pages-v2-production-slot-${suffix}`,
+      bindingName: `SITE_SLOT_${suffix}`,
+      status: 'available',
+    });
+  }
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/bulk-delete', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+      body: { ids },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          activeDeletes += 1;
+          maxActiveDeletes = Math.max(maxActiveDeletes, activeDeletes);
+          deletedWorkers.push(workerName);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          activeDeletes -= 1;
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual((await response.json()).summary, {
+    requested: 6,
+    retired: 6,
+    pending: 0,
+    failed: 0,
+  });
+  assert.equal(deletedWorkers.length, 6);
+  assert.ok(maxActiveDeletes > 1, `expected concurrent deletes, got ${maxActiveDeletes}`);
+  assert.ok(maxActiveDeletes <= 5, `expected at most 5 concurrent deletes, got ${maxActiveDeletes}`);
+});
+
 test('admin reports inconsistent normal worker state when Cloudflare delete succeeds but D1 retire is blocked', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   const deletedWorkers = [];

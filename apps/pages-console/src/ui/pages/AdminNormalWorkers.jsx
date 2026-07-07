@@ -58,6 +58,7 @@ export function AdminNormalWorkers() {
     }
   }
 
+  // Keep row deletes and bulk deletes mutually exclusive so selection state and row updates cannot race.
   const hasSingleDeleteInFlight = Boolean(busyId);
   const deletableWorkers = state.workers.filter((worker) => worker.canDelete && worker.id !== busyId);
   const selectedDeletableIds = deletableWorkers.filter((worker) => selectedIds.has(worker.id)).map((worker) => worker.id);
