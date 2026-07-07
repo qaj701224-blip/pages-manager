@@ -99,11 +99,21 @@ test('IP allowlist does not replace workspace or admin identity checks', async (
   assert.equal((await admin.json()).error.code, 'SESSION_REQUIRED');
 });
 
-test('staging pages require platform admin session after IP allowlist', async () => {
-  const response = await worker.fetch(request('/', { host: 'staging.workers.xd.team' }), env({ PAGES_ENV: 'staging' }));
+test('staging public directory is reachable after IP allowlist while protected pages still require a session', async () => {
+  const root = await worker.fetch(request('/', { host: 'staging.workers.xd.team' }), env({ PAGES_ENV: 'staging' }));
+  assert.equal(root.status, 200);
+  assert.match(root.headers.get('Content-Type'), /text\/html/);
 
-  assert.equal(response.status, 401);
-  assert.equal((await response.json()).error.code, 'SESSION_REQUIRED');
+  const workspace = await worker.fetch(
+    request('/workspace/published', { host: 'staging.workers.xd.team' }),
+    env({ PAGES_ENV: 'staging' })
+  );
+  assert.equal(workspace.status, 401);
+  assert.equal((await workspace.json()).error.code, 'SESSION_REQUIRED');
+
+  const admin = await worker.fetch(request('/admin', { host: 'staging.workers.xd.team' }), env({ PAGES_ENV: 'staging' }));
+  assert.equal(admin.status, 401);
+  assert.equal((await admin.json()).error.code, 'SESSION_REQUIRED');
 });
 
 test('safe write guard rejects missing same-origin evidence or csrf token', async () => {

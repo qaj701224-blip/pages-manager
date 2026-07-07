@@ -90,8 +90,12 @@ function isAuthBridgePath(pathname) {
   return pathname === '/api/console/auth/login' || pathname === '/api/console/auth/callback';
 }
 
+function isPublicDirectoryPath(pathname) {
+  return pathname === '/' || pathname === '/api/console/directory';
+}
+
 function isPublicConsoleShellPath(pathname) {
-  return pathname === '/login' || pathname.startsWith('/assets/');
+  return pathname === '/' || pathname === '/login' || pathname.startsWith('/assets/');
 }
 
 function requiresWorkspaceSession(pathname) {
@@ -104,7 +108,7 @@ function requiresAdminSession(url) {
 }
 
 function requiresProxyAdminSession(url) {
-  return isStagingHost(url) && !isAuthBridgePath(url.pathname);
+  return isStagingHost(url) && !isAuthBridgePath(url.pathname) && !isPublicDirectoryPath(url.pathname);
 }
 
 function redirect(location, headers = {}) {

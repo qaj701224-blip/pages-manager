@@ -138,6 +138,19 @@ test('production root returns app shell', async () => {
   assert.match(await response.text(), /id="root"/);
 });
 
+test('staging root returns public directory shell without a session', async () => {
+  const response = await worker.fetch(
+    request('https://staging.workers.xd.team/', {
+      headers: { Accept: 'text/html' },
+    }),
+    env({ PAGES_ENV: 'staging' })
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  assert.match(await response.text(), /id="root"/);
+});
+
 test('workspace route with a session falls back to app shell', async () => {
   const calls = [];
   const response = await worker.fetch(
@@ -668,10 +681,38 @@ test('staging auth callback rejects non-platform admins and clears session cooki
   ]);
 });
 
-test('staging API proxy requires a session before pages-api binding', async () => {
+test('staging directory API proxy allows anonymous internal site listing', async () => {
   const calls = [];
   const response = await worker.fetch(
     request('https://staging.workers.xd.team/api/console/directory'),
+    env({
+      PAGES_ENV: 'staging',
+      PAGES_API: apiBinding(async (apiRequest) => {
+        calls.push({
+          path: new URL(apiRequest.url).pathname,
+          userId: apiRequest.headers.get('X-Console-User-Id'),
+          requireAdmin: apiRequest.headers.get('X-Console-Require-Admin'),
+        });
+        return Response.json({ sites: [] });
+      }),
+    })
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { sites: [] });
+  assert.deepEqual(calls, [
+    {
+      path: '/.xd-pages/api/console/directory',
+      userId: null,
+      requireAdmin: null,
+    },
+  ]);
+});
+
+test('staging workspace API proxy still requires a session before pages-api binding', async () => {
+  const calls = [];
+  const response = await worker.fetch(
+    request('https://staging.workers.xd.team/api/console/workspace/sites'),
     env({
       PAGES_ENV: 'staging',
       PAGES_API: apiBinding(async () => {
@@ -686,11 +727,11 @@ test('staging API proxy requires a session before pages-api binding', async () =
   assert.deepEqual(calls, []);
 });
 
-test('staging API proxy marks internal pages-api requests as admin required', async () => {
+test('staging non-directory API proxy marks internal pages-api requests as admin required', async () => {
   const cookie = await sessionCookie({ isPlatformAdmin: true, environment: 'staging' });
   const calls = [];
   const response = await worker.fetch(
-    request('https://staging.workers.xd.team/api/console/directory', { cookie }),
+    request('https://staging.workers.xd.team/api/console/workspace/sites', { cookie }),
     env({
       PAGES_ENV: 'staging',
       PAGES_API: apiBinding(
@@ -720,7 +761,7 @@ test('staging API proxy marks internal pages-api requests as admin required', as
 
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { sites: [] });
-  assert.deepEqual(calls, ['/.xd-pages/api/console/directory']);
+  assert.deepEqual(calls, ['/.xd-pages/api/console/workspace/sites']);
 });
 
 test('admin browser navigation redirects missing session to login', async () => {
