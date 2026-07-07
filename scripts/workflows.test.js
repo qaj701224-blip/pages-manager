@@ -622,23 +622,25 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
         workflow.indexOf('pnpm --dir apps/pages-api exec wrangler deploy'),
       `${name} deploys auth before api because api has a PAGES_AUTH service binding`
     );
-    assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} prepare`));
+    assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} bindings`));
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/pages-router ${environment}`),
-      `${name} renders pages-router ${environment} template after slot binding preparation`
+      `${name} renders pages-router ${environment} template after active legacy binding computation`
     );
     assert.ok(
-      workflow.indexOf(`node scripts/provision-pages-v2-slots.mjs ${environment} prepare`) <
+      workflow.indexOf(`node scripts/provision-pages-v2-slots.mjs ${environment} bindings`) <
         workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`),
-      `${name} prepares slot bindings before rendering router bindings`
+      `${name} computes active legacy bindings before rendering router bindings`
     );
     assert.ok(
       workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-router ${environment}`) <
         workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy'),
       `${name} renders router before deploying router`
     );
-    assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} activate`));
+    assert.doesNotMatch(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} prepare`));
+    assert.doesNotMatch(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} activate`));
+    assert.doesNotMatch(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} cleanup`));
     assert.match(
       workflow,
       new RegExp(`node scripts/render-pages-v2-wrangler\\.mjs apps/kv-gateway ${environment}`),
@@ -790,18 +792,16 @@ test('hostname claims conflict check is manual, read-only by default, and can ap
   assert.doesNotMatch(workflow, /CF_API_TOKEN|X-Pages-Token|PAGES_TOKEN|parsed\.token/);
 });
 
-test('router slot expansion workflow is manual and only touches router slot resources', () => {
+test('legacy normal worker audit workflow is manual and read-only', () => {
   const workflow = readWorkflow('.github/workflows/expand-pages-router-slots.yml');
   const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
 
-  assert.match(workflow, /^name: Expand XD Cell Router Slots$/m);
-  assert.match(triggers, /^ {2}workflow_dispatch:/m, 'router slot expansion is manual');
-  assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'router slot expansion has no push or PR trigger');
+  assert.match(workflow, /^name: Audit XD Cell Legacy Normal Workers$/m);
+  assert.match(triggers, /^ {2}workflow_dispatch:/m, 'legacy normal worker audit is manual');
+  assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, 'legacy normal worker audit has no push or PR trigger');
   assert.match(workflow, /environment:[\s\S]*type: choice[\s\S]*- staging[\s\S]*- production/);
-  assert.match(workflow, /operation:[\s\S]*type: choice[\s\S]*- expand[\s\S]*- cleanup/);
-  assert.match(workflow, /dry_run:[\s\S]*type: boolean[\s\S]*default: true/);
   assert.match(workflow, /environment: \$\{\{ inputs\.environment \}\}/);
-  assert.match(workflow, /concurrency:\n {2}group: pages-router-slots-\$\{\{ inputs\.environment \}\}/);
+  assert.match(workflow, /concurrency:\n {2}group: pages-legacy-normal-workers-\$\{\{ inputs\.environment \}\}/);
   assert.match(
     workflow,
     new RegExp(
@@ -809,28 +809,19 @@ test('router slot expansion workflow is manual and only touches router slot reso
         String.raw`scripts/render-pages-v2-wrangler\.test\.js apps/pages-router/src/\*\.test\.js`
     )
   );
-  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" plan/);
-  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" cleanup-plan/);
-  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" prepare/);
-  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" cleanup/);
+  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" bindings/);
+  assert.doesNotMatch(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" plan/);
+  assert.doesNotMatch(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" cleanup-plan/);
+  assert.doesNotMatch(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" prepare/);
+  assert.doesNotMatch(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" cleanup/);
   assert.match(workflow, /node scripts\/render-pages-v2-wrangler\.mjs apps\/pages-router "\$TARGET_ENV"/);
-  assert.match(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
-  assert.match(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
-  assert.match(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" activate/);
+  assert.doesNotMatch(workflow, /pnpm --dir apps\/pages-router exec wrangler deploy/);
+  assert.doesNotMatch(workflow, /scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
+  assert.doesNotMatch(workflow, /node scripts\/provision-pages-v2-slots\.mjs "\$TARGET_ENV" activate/);
   assert.ok(
-    workflow.indexOf('node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" prepare') <
+    workflow.indexOf('node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" bindings') <
       workflow.indexOf('node scripts/render-pages-v2-wrangler.mjs apps/pages-router "$TARGET_ENV"'),
-    'prepare happens before router config rendering'
-  );
-  assert.ok(
-    workflow.indexOf('node scripts/render-pages-v2-wrangler.mjs apps/pages-router "$TARGET_ENV"') <
-      workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy'),
-    'router config renders before deploy'
-  );
-  assert.ok(
-    workflow.indexOf('pnpm --dir apps/pages-router exec wrangler deploy') <
-      workflow.indexOf('node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" activate'),
-    'slots activate only after router deploy'
+    'active legacy binding audit happens before router config rendering'
   );
   assert.doesNotMatch(workflow, /pnpm --dir apps\/pages-api exec wrangler deploy/);
   assert.doesNotMatch(workflow, /pnpm --dir apps\/pages-auth exec wrangler deploy/);

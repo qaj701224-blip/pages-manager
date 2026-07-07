@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const SUPPORTED_ENVIRONMENTS = new Set(['production', 'staging']);
-const SUPPORTED_PHASES = new Set(['plan', 'prepare', 'activate', 'cleanup-plan', 'cleanup']);
+const SUPPORTED_PHASES = new Set(['plan', 'prepare', 'activate', 'bindings', 'cleanup-plan', 'cleanup']);
 const DEFAULT_CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const PLACEHOLDER_WORKER_MODULE = `export default {
   fetch() {
@@ -117,6 +117,17 @@ export function planNormalWorkerSlotCleanup({ slots, activeRoutes = [], config, 
   };
 }
 
+export function buildLegacyNormalWorkerBindings(rows = []) {
+  const byBinding = new Map();
+  for (const row of rows) {
+    const bindingName = String(row.bindingName || row.binding_name || row.dispatchBindingName || row.dispatch_binding_name || '').trim();
+    const workerName = String(row.workerName || row.worker_name || '').trim();
+    if (!/^SITE_SLOT_\d{3,}$/.test(bindingName) || !workerName) continue;
+    if (!byBinding.has(bindingName)) byBinding.set(bindingName, { bindingName, workerName });
+  }
+  return [...byBinding.values()].sort((left, right) => left.bindingName.localeCompare(right.bindingName));
+}
+
 export async function cleanupNormalWorkerSlots({ config, d1, cloudflare, now = new Date().toISOString(), dryRun = false }) {
   const slots = await d1.listWorkerSlots(config.environment);
   const activeRoutes = typeof d1.listActiveSlotReferences === 'function'
@@ -155,6 +166,24 @@ export async function cleanupNormalWorkerSlots({ config, d1, cloudflare, now = n
 }
 
 export async function provisionNormalWorkerSlots({ phase, config, d1, cloudflare, env = process.env }) {
+  if (phase === 'bindings') {
+    const rows =
+      typeof d1.listActiveLegacyNormalWorkerBindings === 'function'
+        ? await d1.listActiveLegacyNormalWorkerBindings(config.environment)
+        : [];
+    const bindings = buildLegacyNormalWorkerBindings(rows);
+    await writeGithubEnv(env, {
+      PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '',
+      PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON: JSON.stringify(bindings),
+    });
+    return {
+      phase,
+      dryRun: true,
+      bindingCount: bindings.length,
+      bindings,
+    };
+  }
+
   if (phase === 'cleanup-plan' || phase === 'cleanup') {
     return cleanupNormalWorkerSlots({ config, d1, cloudflare, dryRun: phase === 'cleanup-plan' });
   }
@@ -262,6 +291,20 @@ class WranglerD1Client {
         WHERE environment = ${sqlString(environment)}
           AND route_status = 'active'
           AND (slot_id IS NOT NULL OR active_version_id IS NOT NULL)`
+    );
+  }
+
+  async listActiveLegacyNormalWorkerBindings(environment) {
+    return this.execute(
+      `SELECT DISTINCT dispatch_binding_name, worker_name, slot_id, id AS route_id, site_id
+        FROM site_routes
+        WHERE environment = ${sqlString(environment)}
+          AND route_status = 'active'
+          AND execution_provider = 'normal-worker-slot'
+          AND dispatch_type = 'service-binding'
+          AND dispatch_binding_name IS NOT NULL
+          AND worker_name IS NOT NULL
+        ORDER BY dispatch_binding_name ASC`
     );
   }
 
@@ -461,7 +504,7 @@ async function main() {
     env: process.env,
   });
   const cloudflare =
-    phase === 'plan' || phase === 'cleanup-plan'
+    phase === 'plan' || phase === 'bindings' || phase === 'cleanup-plan'
       ? null
       : new CloudflareWorkersClient({
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
@@ -578,7 +621,7 @@ function collectResults(value, results) {
 }
 
 async function writeGithubEnv(env, values) {
-  if (!env.GITHUB_ENV) return;
+  if (!env.GITHUB_ENV || typeof env.GITHUB_ENV !== 'string') return;
   const lines = Object.entries(values)
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
@@ -600,7 +643,9 @@ function readRequired(value, name) {
 }
 
 function usage() {
-  console.error('Usage: node scripts/provision-pages-v2-slots.mjs <production|staging> <plan|prepare|activate|cleanup-plan|cleanup>');
+  console.error(
+    'Usage: node scripts/provision-pages-v2-slots.mjs <production|staging> <plan|prepare|activate|bindings|cleanup-plan|cleanup>'
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

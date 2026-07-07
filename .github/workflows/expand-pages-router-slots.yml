@@ -1,4 +1,4 @@
-name: Expand XD Cell Router Slots
+name: Audit XD Cell Legacy Normal Workers
 
 on:
   workflow_dispatch:
@@ -11,21 +11,8 @@ on:
         options:
           - staging
           - production
-      operation:
-        description: Slot maintenance operation
-        required: true
-        type: choice
-        default: expand
-        options:
-          - expand
-          - cleanup
-      dry_run:
-        description: Plan without writing Cloudflare or D1
-        required: true
-        type: boolean
-        default: true
       reason:
-        description: Optional operation reason
+        description: Optional audit reason
         required: false
         type: string
 
@@ -33,17 +20,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages-router-slots-${{ inputs.environment }}
+  group: pages-legacy-normal-workers-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
-  expand:
+  audit:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     env:
       TARGET_ENV: ${{ inputs.environment }}
-      OPERATION: ${{ inputs.operation }}
-      DRY_RUN: ${{ inputs.dry_run }}
       PAGES_SESSION_JWT_ACTIVE_KID: pages-session-2026-06
       PAGES_SESSION_JWT_KEYS: "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"
       PAGES_CAP_JWT_ACTIVE_KID: pages-cap-2026-06
@@ -68,11 +53,7 @@ jobs:
       - name: Validate target environment
         run: |
           case "$TARGET_ENV" in
-            staging)
-              echo "D1_DATABASE_NAME=pages-v2-metadata-staging" >> "$GITHUB_ENV"
-              ;;
-            production)
-              echo "D1_DATABASE_NAME=pages-v2-metadata" >> "$GITHUB_ENV"
+            staging|production)
               ;;
             *)
               echo "Unsupported TARGET_ENV: $TARGET_ENV" >&2
@@ -80,94 +61,21 @@ jobs:
               ;;
           esac
 
-      - name: Validate Pages Router secrets
-        if: ${{ inputs.operation == 'expand' }}
-        env:
-          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
-          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
-          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
-          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
-        run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-router
-
-      - name: Plan normal worker slots
-        if: ${{ inputs.dry_run && inputs.operation == 'expand' }}
+      - name: Compute active legacy normal worker bindings
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" plan | tee /tmp/pages-router-slot-plan.json
-          node -e '
-            const fs = require("node:fs");
-            const plan = JSON.parse(fs.readFileSync("/tmp/pages-router-slot-plan.json", "utf8"));
-            if (Number(plan.bindingCount) > 0) {
-              fs.appendFileSync(process.env.GITHUB_ENV, `PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=${plan.bindingCount}\n`);
-            }
-          '
-
-      - name: Plan normal worker slot cleanup
-        if: ${{ inputs.dry_run && inputs.operation == 'cleanup' }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" cleanup-plan
-
-      - name: Apply Pages API D1 migrations
-        if: ${{ ! inputs.dry_run }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir apps/pages-api exec wrangler d1 migrations apply "$D1_DATABASE_NAME" --remote
-
-      - name: Provision normal worker slots
-        if: ${{ ! inputs.dry_run && inputs.operation == 'expand' }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" prepare
+        run: node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" bindings
 
       - name: Generate Pages Router Wrangler config
-        if: ${{ inputs.operation == 'expand' }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           ROUTE_SNAPSHOTS_KV_ID: ${{ vars.PAGES_V2_ROUTE_SNAPSHOTS_KV_ID }}
           ROUTER_IP_ALLOWLIST_CIDRS: ${{ vars.ROUTER_IP_ALLOWLIST_CIDRS }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-router "$TARGET_ENV"
 
-      - name: Upload dry-run router config
-        if: ${{ inputs.dry_run && inputs.operation == 'expand' }}
+      - name: Upload audited router config
         uses: actions/upload-artifact@v4
         with:
-          name: pages-router-${{ inputs.environment }}-wrangler
+          name: pages-router-${{ inputs.environment }}-legacy-normal-worker-audit
           path: apps/pages-router/wrangler.toml
-
-      - name: Deploy Pages Router
-        if: ${{ ! inputs.dry_run && inputs.operation == 'expand' }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir apps/pages-router exec wrangler deploy
-
-      - name: Inject Pages Router secrets
-        if: ${{ ! inputs.dry_run && inputs.operation == 'expand' }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
-          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
-          # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
-          PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
-        run: scripts/put-pages-v2-secrets.sh apps/pages-router
-
-      - name: Activate normal worker slots
-        if: ${{ ! inputs.dry_run && inputs.operation == 'expand' }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" activate
-
-      - name: Cleanup retained normal worker slots
-        if: ${{ ! inputs.dry_run && inputs.operation == 'cleanup' }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/provision-pages-v2-slots.mjs "$TARGET_ENV" cleanup

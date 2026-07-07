@@ -15,6 +15,7 @@ const EXECUTION_MODE_APPS = new Set(['apps/pages-api', 'apps/pages-router']);
 
 const DEFAULTS = {
   PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '',
+  PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON: '',
   PAGES_USER_WORKER_VPC_TUNNEL_ID: '',
 };
 
@@ -34,10 +35,11 @@ const REQUIRED_TOKENS_BY_APP = {
 const OPTIONAL_TOKENS_BY_APP = {
   'apps/pages-api': ['PAGES_USER_WORKER_VPC_TUNNEL_ID'],
   'apps/pages-auth': ['PAGES_USER_WORKER_VPC_TUNNEL_ID'],
-  'apps/pages-router': ['PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT'],
+  'apps/pages-router': ['PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT', 'PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON'],
   'apps/kv-gateway': [],
   'apps/pages-console': [],
 };
+const NON_TEMPLATE_TOKENS = new Set(['PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON']);
 
 const TEMPLATE_EXPECTATIONS = {
   production: {
@@ -81,11 +83,15 @@ async function renderWrangler(appName, envName) {
   const replacements = collectReplacements(appName);
   assertCrossTokenPolicy(replacements);
   for (const [token, value] of Object.entries(replacements)) {
+    if (NON_TEMPLATE_TOKENS.has(token)) {
+      assertTokenPolicy(token, value, envName);
+      continue;
+    }
     assertTomlSafe(token, value);
-    assertTokenPolicy(token, value);
+    assertTokenPolicy(token, value, envName);
     rendered = rendered.replaceAll(`__${token}__`, value);
   }
-  const executionMode = readExecutionMode(rendered, appName);
+  const executionMode = readExecutionMode(rendered, appName, envName);
   rendered = rendered.replaceAll(
     '__NORMAL_WORKER_SLOT_SERVICES__',
     renderNormalWorkerSlotServices(appName, envName, replacements, executionMode)
@@ -122,7 +128,7 @@ function assertTomlSafe(name, value) {
   }
 }
 
-function assertTokenPolicy(name, value) {
+function assertTokenPolicy(name, value, envName = 'production') {
   if (name === 'SSO_AUTHORIZATION_URL' || name === 'SSO_TOKEN_URL' || name === 'SSO_PROFILE_URL') {
     assertHttpsUrl(name, value);
   }
@@ -152,6 +158,9 @@ function assertTokenPolicy(name, value) {
   }
   if (name === 'PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT' && value !== '') {
     assertPositiveInteger(name, value);
+  }
+  if (name === 'PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON' && value !== '') {
+    parseNormalWorkerSlotBindingsJson(value, envName);
   }
   if (name === 'IP_ALLOWLIST' || name === 'ROUTER_IP_ALLOWLIST_CIDRS') {
     assertIpAllowlist(name, value);
@@ -192,7 +201,7 @@ function readTomlStringVar(rendered, name) {
   return match[1];
 }
 
-function readExecutionMode(rendered, appName) {
+function readExecutionMode(rendered, appName, envName) {
   const matches = [...rendered.matchAll(/^PAGES_EXECUTION_MODE = "([^"]+)"$/gm)];
   if (!EXECUTION_MODE_APPS.has(appName)) {
     if (matches.length > 0) throw new Error(`${appName} must not define PAGES_EXECUTION_MODE`);
@@ -201,12 +210,15 @@ function readExecutionMode(rendered, appName) {
   if (matches.length !== 1) throw new Error(`${appName} template must define exactly one PAGES_EXECUTION_MODE`);
 
   const mode = matches[0][1];
-  assertTokenPolicy('PAGES_EXECUTION_MODE', mode);
+  assertTokenPolicy('PAGES_EXECUTION_MODE', mode, envName);
   return mode;
 }
 
 function renderNormalWorkerSlotServices(appName, envName, replacements, executionMode) {
   if (appName !== 'apps/pages-router') return '';
+  const explicitBindings = parseNormalWorkerSlotBindingsJson(replacements.PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON || '', envName);
+  if (explicitBindings.length > 0) return renderServiceBindingEntries(explicitBindings);
+
   const rawCount = replacements.PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT;
   if (rawCount === '' && executionMode !== 'normal-worker-slot') {
     return '';
@@ -218,15 +230,62 @@ function renderNormalWorkerSlotServices(appName, envName, replacements, executio
   }
   if (count > 999) throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT must be 999 or less');
 
-  const servicePrefix = envName === 'staging' ? 'pages-v2-staging-slot' : 'pages-v2-production-slot';
   const entries = [];
   for (let index = 1; index <= count; index += 1) {
     const slotNumber = String(index).padStart(3, '0');
-    entries.push(`[[services]]
-binding = "SITE_SLOT_${slotNumber}"
-service = "${servicePrefix}-${slotNumber}"`);
+    entries.push({
+      bindingName: `SITE_SLOT_${slotNumber}`,
+      workerName: `${servicePrefixForEnvironment(envName)}-${slotNumber}`,
+    });
   }
-  return entries.join('\n\n');
+  return renderServiceBindingEntries(entries);
+}
+
+function parseNormalWorkerSlotBindingsJson(value, envName) {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON must be valid JSON');
+  }
+  if (!Array.isArray(parsed)) throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON must be an array');
+
+  const servicePrefix = servicePrefixForEnvironment(envName);
+  const seenBindings = new Set();
+  const seenWorkers = new Set();
+  const bindings = parsed.map((entry) => {
+    const bindingName = String(entry?.bindingName || entry?.binding_name || '').trim();
+    const workerName = String(entry?.workerName || entry?.worker_name || entry?.service || '').trim();
+    if (!/^SITE_SLOT_\d{3,}$/.test(bindingName)) {
+      throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON contains an invalid bindingName');
+    }
+    if (!new RegExp(`^${servicePrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d{3,}$`).test(workerName)) {
+      throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON contains an invalid workerName');
+    }
+    if (seenBindings.has(bindingName)) throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON contains duplicate bindings');
+    if (seenWorkers.has(workerName)) throw new Error('PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON contains duplicate workers');
+    seenBindings.add(bindingName);
+    seenWorkers.add(workerName);
+    return { bindingName, workerName };
+  });
+
+  return bindings.sort((left, right) => left.bindingName.localeCompare(right.bindingName));
+}
+
+function renderServiceBindingEntries(bindings) {
+  return bindings
+    .map(
+      ({ bindingName, workerName }) => `[[services]]
+binding = "${bindingName}"
+service = "${workerName}"`
+    )
+    .join('\n\n');
+}
+
+function servicePrefixForEnvironment(envName) {
+  return envName === 'staging' ? 'pages-v2-staging-slot' : 'pages-v2-production-slot';
 }
 
 function renderPagesApiXdsVpcNetwork(appName, replacements) {

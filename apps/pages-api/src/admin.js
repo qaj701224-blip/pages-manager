@@ -41,6 +41,17 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     return getAdminOps(config);
   }
 
+  if (url.pathname === `${CONSOLE_PREFIX}/admin/normal-workers`) {
+    if (request.method !== 'GET') return methodNotAllowed();
+    return listAdminNormalWorkers(config, store);
+  }
+
+  const adminNormalWorkerMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/normal-workers\/([^/]+)$/);
+  if (adminNormalWorkerMatch) {
+    if (request.method !== 'DELETE') return methodNotAllowed();
+    return deleteAdminNormalWorker(request, env, config, store, session, decodeURIComponent(adminNormalWorkerMatch[1]));
+  }
+
   if (url.pathname === `${CONSOLE_PREFIX}/admin/users`) {
     if (request.method !== 'GET') return methodNotAllowed();
     return listAdminUsers(url, config, store);
@@ -221,10 +232,174 @@ function getAdminOps(config) {
   });
 }
 
+async function listAdminNormalWorkers(config, store) {
+  if (typeof store.listAdminNormalWorkers !== 'function') {
+    return jsonError('NORMAL_WORKERS_UNSUPPORTED', 'Normal Worker management is unavailable.', 503, 'Retry later.');
+  }
+  const workers = await store.listAdminNormalWorkers({ environment: config.environment });
+  return jsonOk({ workers: workers.map(formatAdminNormalWorker) });
+}
+
+async function deleteAdminNormalWorker(request, env, config, store, session, slotId) {
+  if (typeof store.listAdminNormalWorkers !== 'function' || typeof store.retireIdleNormalWorker !== 'function') {
+    return jsonError('NORMAL_WORKERS_UNSUPPORTED', 'Normal Worker management is unavailable.', 503, 'Retry later.');
+  }
+
+  let body = {};
+  try {
+    body = await readJsonBody(request, { maxBytes: 8 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+  const reason = normalizeNullableString(body.reason) || 'legacy normal worker retired by admin';
+  const workers = await store.listAdminNormalWorkers({ environment: config.environment });
+  const worker = workers.find((item) => item.id === slotId);
+  if (!worker) return jsonError('NORMAL_WORKER_NOT_FOUND', 'Normal Worker not found.', 404, 'Check the worker id.');
+  const formatted = formatAdminNormalWorker(worker);
+  if (!formatted.canDelete) {
+    return jsonError(
+      'NORMAL_WORKER_ACTIVE',
+      'Normal Worker is still referenced by an active route.',
+      409,
+      'Migrate or redeploy the site to WFP before deleting this Worker.'
+    );
+  }
+
+  try {
+    await createNormalWorkerAdminClient(env).deleteWorker({ workerName: worker.workerName });
+  } catch (error) {
+    if (isNormalWorkerDeleteBlocked(error)) {
+      const pending =
+        typeof store.markNormalWorkerDeletePending === 'function'
+          ? await store.markNormalWorkerDeletePending({
+              id: slotId,
+              environment: config.environment,
+              actorUserId: session.user.userId,
+              reason,
+              updatedAt: readNow(env),
+            })
+          : null;
+      if (!pending) {
+        return jsonError(
+          'NORMAL_WORKER_ACTIVE',
+          'Normal Worker is still referenced by an active route.',
+          409,
+          'Migrate or redeploy the site to WFP before deleting this Worker.'
+        );
+      }
+      return jsonOk(
+        {
+          worker: formatAdminNormalWorker(pending),
+          warning: {
+            code: 'NORMAL_WORKER_DELETE_PENDING',
+            message: 'Normal Worker is idle, but Cloudflare deletion is waiting for stale router bindings to drain.',
+            action: 'Retry after the next manual router deploy removes stale service bindings.',
+          },
+        },
+        202
+      );
+    }
+    return jsonError(
+      'NORMAL_WORKER_DELETE_FAILED',
+      'Normal Worker could not be deleted from Cloudflare.',
+      502,
+      'Check Cloudflare credentials and retry.'
+    );
+  }
+
+  const retired = await store.retireIdleNormalWorker({
+    id: slotId,
+    environment: config.environment,
+    actorUserId: session.user.userId,
+    reason,
+    updatedAt: readNow(env),
+  });
+  if (!retired) {
+    return jsonError(
+      'NORMAL_WORKER_ACTIVE',
+      'Normal Worker is still referenced by an active route.',
+      409,
+      'Migrate or redeploy the site to WFP before deleting this Worker.'
+    );
+  }
+  return jsonOk({ worker: formatAdminNormalWorker(retired) });
+}
+
 async function listAdminUsers(url, config, store) {
   const query = normalizeNullableString(url.searchParams.get('query'));
   const users = await store.listAdminUsers({ environment: config.environment, query });
   return jsonOk({ users: users.map(formatAdminUser) });
+}
+
+function formatAdminNormalWorker(worker) {
+  const activeRoute = worker.activeRoute || null;
+  const lifecycle = activeRoute
+    ? 'active'
+    : worker.status === 'retired'
+      ? 'retired'
+      : ['available', 'cleanup_pending', 'disabled', 'delete_pending'].includes(worker.status)
+        ? 'idle'
+        : worker.status;
+  return {
+    id: worker.id,
+    environment: worker.environment,
+    slotNumber: worker.slotNumber,
+    workerName: worker.workerName,
+    bindingName: worker.bindingName,
+    status: worker.status,
+    lifecycle,
+    canDelete: lifecycle === 'idle',
+    activeRoute: activeRoute
+      ? {
+          siteId: activeRoute.siteId,
+          routeId: activeRoute.routeId,
+          activeVersionId: activeRoute.activeVersionId,
+          hostname: activeRoute.hostname,
+        }
+      : null,
+    updatedAt: worker.updatedAt,
+  };
+}
+
+function createNormalWorkerAdminClient(env) {
+  if (env.NORMAL_WORKER_ADMIN_CLIENT) return env.NORMAL_WORKER_ADMIN_CLIENT;
+  const accountId = normalizeRequiredString(env.CF_ACCOUNT_ID);
+  const apiToken = normalizeRequiredString(env.CF_API_TOKEN);
+  const fetchImpl = env.fetch || globalThis.fetch;
+  if (!accountId || !apiToken || typeof fetchImpl !== 'function') {
+    throw new Error('NORMAL_WORKER_ADMIN_CLIENT_UNAVAILABLE');
+  }
+  return {
+    async deleteWorker({ workerName }) {
+      const url = new URL(
+        `accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(workerName)}`,
+        'https://api.cloudflare.com/client/v4/'
+      );
+      const response = await fetchImpl(
+        url.toString(),
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${apiToken}` },
+        }
+      );
+      if (response.status === 404) return null;
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.success === false) throw normalWorkerDeleteError(response, payload);
+      return payload?.result || payload;
+    },
+  };
+}
+
+function normalWorkerDeleteError(response, payload) {
+  const error = new Error('NORMAL_WORKER_DELETE_FAILED');
+  error.status = response.status;
+  error.code = response.status === 409 ? 'NORMAL_WORKER_DELETE_BLOCKED' : 'NORMAL_WORKER_DELETE_FAILED';
+  error.cloudflareErrors = Array.isArray(payload?.errors) ? payload.errors : [];
+  return error;
+}
+
+function isNormalWorkerDeleteBlocked(error) {
+  return error?.code === 'NORMAL_WORKER_DELETE_BLOCKED' || error?.status === 409;
 }
 
 async function listAdminSites(config, store) {

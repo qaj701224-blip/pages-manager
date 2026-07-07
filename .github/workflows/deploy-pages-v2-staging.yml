@@ -211,12 +211,12 @@ jobs:
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/kv-gateway
 
-      - name: Prepare normal worker slot bindings
+      - name: Compute legacy normal worker bindings
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/provision-pages-v2-slots.mjs staging prepare
+        run: node scripts/provision-pages-v2-slots.mjs staging bindings
 
       - name: Generate Pages Router Wrangler config
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
@@ -243,13 +243,6 @@ jobs:
           # Add new PAGES_CAP_JWT_SECRET_* mappings here when PAGES_CAP_JWT_KEYS rotates.
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-router
-
-      - name: Activate prepared normal worker slots
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-router'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/provision-pages-v2-slots.mjs staging activate
 
       - name: Build Pages Console assets
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-console'

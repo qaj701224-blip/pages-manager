@@ -24,7 +24,7 @@ const PLACEHOLDER_WORKER_MODULE = `export default {
 export { normalizeWorkerBundle };
 
 export function readExecutionMode(env = {}, site = {}) {
-  const mode = site.executionModeOverride || env.PAGES_EXECUTION_MODE || DEFAULT_EXECUTION_MODE;
+  const mode = site.executionModeOverride === 'wfp' ? 'wfp' : env.PAGES_EXECUTION_MODE || DEFAULT_EXECUTION_MODE;
   if (!EXECUTION_MODES.has(mode)) throw new Error('PAGES_EXECUTION_MODE_INVALID');
   return mode;
 }

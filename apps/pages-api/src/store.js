@@ -3587,6 +3587,92 @@ export class D1PagesStore {
     return (result.results || []).map(mapWorkerSlot);
   }
 
+  async listAdminNormalWorkers({ environment }) {
+    const result = await this.db
+      .prepare(
+        `SELECT worker_slots.*,
+          site_routes.site_id AS active_site_id,
+          site_routes.id AS active_route_id,
+          site_routes.active_version_id AS active_version_id,
+          site_routes.hostname AS active_hostname
+        FROM worker_slots
+        LEFT JOIN site_routes
+          ON site_routes.environment = worker_slots.environment
+          AND site_routes.route_status = 'active'
+          AND (
+            site_routes.slot_id = worker_slots.id
+            OR site_routes.active_version_id = worker_slots.assigned_version_id
+          )
+        WHERE worker_slots.environment = ?
+        ORDER BY worker_slots.slot_number ASC`
+      )
+      .bind(environment)
+      .all();
+    return (result.results || []).map(mapAdminNormalWorkerSlot);
+  }
+
+  async retireIdleNormalWorker({ id, environment, actorUserId, reason, updatedAt }) {
+    const now = updatedAt || this.now();
+    const note = `retired by ${actorUserId || 'unknown'}: ${reason || 'legacy normal worker retired'}`;
+    const result = await this.db
+      .prepare(
+        `UPDATE worker_slots
+        SET status = 'retired',
+          assigned_site_id = NULL,
+          assigned_route_id = NULL,
+          assigned_version_id = NULL,
+          assigned_at = NULL,
+          notes = ?,
+          updated_at = ?
+        WHERE id = ?
+          AND environment = ?
+          AND status IN ('available', 'cleanup_pending', 'disabled', 'delete_pending')
+          AND NOT EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE site_routes.environment = worker_slots.environment
+              AND site_routes.route_status = 'active'
+              AND (
+                site_routes.slot_id = worker_slots.id
+                OR site_routes.active_version_id = worker_slots.assigned_version_id
+              )
+          )`
+      )
+      .bind(note, now, id, environment)
+      .run();
+    if (result?.meta?.changes === 0) return null;
+    const slot = await this.getWorkerSlot(id);
+    return slot ? { ...slot, activeRoute: null } : null;
+  }
+
+  async markNormalWorkerDeletePending({ id, environment, actorUserId, reason, updatedAt }) {
+    const now = updatedAt || this.now();
+    const note = `delete pending by ${actorUserId || 'unknown'}: ${reason || 'legacy normal worker delete pending'}`;
+    const result = await this.db
+      .prepare(
+        `UPDATE worker_slots
+        SET status = 'delete_pending',
+          notes = ?,
+          updated_at = ?
+        WHERE id = ?
+          AND environment = ?
+          AND status IN ('available', 'cleanup_pending', 'disabled', 'delete_pending')
+          AND NOT EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE site_routes.environment = worker_slots.environment
+              AND site_routes.route_status = 'active'
+              AND (
+                site_routes.slot_id = worker_slots.id
+                OR site_routes.active_version_id = worker_slots.assigned_version_id
+              )
+          )`
+      )
+      .bind(note, now, id, environment)
+      .run();
+    if (result?.meta?.changes === 0) return null;
+    const slot = await this.getWorkerSlot(id);
+    return slot ? { ...slot, activeRoute: null } : null;
+  }
+
   async assignAvailableWorkerSlot({ environment, siteId, routeId, versionId, assignedAt }) {
     const slotsResult = await this.db
       .prepare(
@@ -4844,6 +4930,21 @@ function mapWorkerSlot(row) {
     notes: row.notes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapAdminNormalWorkerSlot(row) {
+  const slot = mapWorkerSlot(row);
+  return {
+    ...slot,
+    activeRoute: row.active_route_id
+      ? {
+          siteId: row.active_site_id,
+          routeId: row.active_route_id,
+          activeVersionId: row.active_version_id,
+          hostname: row.active_hostname,
+        }
+      : null,
   };
 }
 

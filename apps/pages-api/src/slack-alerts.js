@@ -1,5 +1,5 @@
 const GITHUB_ACTIONS_URL = 'https://github.com/xindong/pages-manager/actions';
-const ALERT_FALLBACK_TEXT = '静态页面池容量不足，需要扩容';
+const ALERT_FALLBACK_TEXT = 'Legacy Worker 池容量不足，需要迁移到 WFP';
 const DEFAULT_MENTION_USER_ID = 'U06QLFY2XCK';
 
 export async function notifyDeploymentCapacityExhausted(env, config, { store }) {
@@ -8,7 +8,6 @@ export async function notifyDeploymentCapacityExhausted(env, config, { store }) 
     environment: config.environment,
     mentionUserId: env.SLACK_PAGES_ALERT_MENTION_USER_ID || DEFAULT_MENTION_USER_ID,
     currentCapacity: capacity,
-    expandBy: env.PAGES_NORMAL_WORKER_SLOT_EXPAND_BY,
   });
 
   try {
@@ -18,7 +17,7 @@ export async function notifyDeploymentCapacityExhausted(env, config, { store }) 
   }
 }
 
-export function buildCapacityExhaustedPayload({ environment, mentionUserId, currentCapacity, expandBy }) {
+export function buildCapacityExhaustedPayload({ environment, mentionUserId, currentCapacity }) {
   const mention = formatMention(mentionUserId);
   return {
     text: ALERT_FALLBACK_TEXT,
@@ -27,7 +26,7 @@ export function buildCapacityExhaustedPayload({ environment, mentionUserId, curr
         type: 'header',
         text: {
           type: 'plain_text',
-          text: '静态页面池容量不足',
+          text: 'Legacy Worker 池容量不足',
           emoji: true,
         },
       },
@@ -35,7 +34,7 @@ export function buildCapacityExhaustedPayload({ environment, mentionUserId, curr
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${mention}*XD Cell Worker 池数量不足，请检查资源池容量。*`,
+          text: `${mention}*XD Cell legacy Worker 池不可用，请确认新发布走 WFP 并迁移存量站点。*`,
         },
       },
       {
@@ -44,7 +43,7 @@ export function buildCapacityExhaustedPayload({ environment, mentionUserId, curr
           { type: 'mrkdwn', text: `*环境*\n${escapeSlackText(environment)}` },
           { type: 'mrkdwn', text: `*容量*\n${formatWorkerCapacity(currentCapacity)}` },
           { type: 'mrkdwn', text: `*剩余*\n${formatAvailableWorkers(currentCapacity)}` },
-          { type: 'mrkdwn', text: `*扩容*\n${formatExpandBy(expandBy)}` },
+          { type: 'mrkdwn', text: '*建议*\n迁移/重发到 WFP' },
         ],
       },
       {
@@ -54,7 +53,7 @@ export function buildCapacityExhaustedPayload({ environment, mentionUserId, curr
             type: 'button',
             text: {
               type: 'plain_text',
-              text: '打开扩容 workflow',
+              text: '打开运维 Actions',
               emoji: true,
             },
             url: GITHUB_ACTIONS_URL,
@@ -134,12 +133,6 @@ function formatWorkerCapacity(value) {
 function formatAvailableWorkers(value) {
   if (!value || !Number.isFinite(value.available)) return 'unknown';
   return String(value.available);
-}
-
-function formatExpandBy(value) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) return 'unknown';
-  return `+${number}`;
 }
 
 function escapeSlackText(value) {

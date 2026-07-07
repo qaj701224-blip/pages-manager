@@ -180,7 +180,7 @@ worker_slots
   slot_number         -- 1..N
   worker_name         -- pages-v2-production-slot-001
   binding_name        -- SITE_SLOT_001
-  status              -- provisioning / available_pending_router / available / assigned / disabled / cleanup_pending
+  status              -- provisioning / available_pending_router / available / assigned / disabled / cleanup_pending / delete_pending / retired
   assigned_site_id
   assigned_route_id
   assigned_at
@@ -200,7 +200,7 @@ unique(environment, binding_name)
 unique(environment, worker_name)
 ```
 
-`worker_slots` 是普通 Worker slot 池的权威表。`pages-api` 分配 slot 时必须在 D1 transaction / CAS 中把 `available` 改成 `assigned`，并写入目标 `site_id`、`route_id` 和 `version_id`。同一站点后续 deploy 不覆盖当前 active slot，而是分配新的 available slot；新 route 激活并写入 snapshot 后，旧 slot 立即进入 cleanup 流程。删除站点或清理失败后，slot 先进入或保持 `cleanup_pending`；清理完成后才回到 `available`。
+`worker_slots` 是普通 Worker slot 池的历史权威表。normal-worker-slot 已进入 legacy drain，`pages-api` 不再为新发布分配 `available` slot；存量 active slot route 继续通过 router service binding 服务。管理员只能删除没有 active route 引用的 idle Worker；如果 Cloudflare 删除被旧 router binding 暂时阻挡，row 标记为 `delete_pending` 等待下次手动 router deploy 后重试，删除成功后标记为 `retired`。系统保留 `worker_name`、`slot_number` 和 `notes` 作为审计线索。
 
 #### deployments
 

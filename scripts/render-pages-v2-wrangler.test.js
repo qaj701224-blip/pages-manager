@@ -491,6 +491,43 @@ test('pages-router config can keep slot bindings in wfp mode while draining slot
   assert.match(config, /service = "pages-v2-production-slot-002"/);
 });
 
+test('pages-router config renders sparse active legacy normal worker bindings', () => {
+  setRouterTemplateExecutionMode('production', 'wfp');
+  const config = renderPagesRouter('production', {
+    ...baseEnv,
+    PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '',
+    PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON: JSON.stringify([
+      { bindingName: 'SITE_SLOT_007', workerName: 'pages-v2-production-slot-007' },
+      { bindingName: 'SITE_SLOT_042', workerName: 'pages-v2-production-slot-042' },
+    ]),
+  });
+
+  assert.match(config, /binding = "PAGES_DISPATCH"/);
+  assert.match(config, /binding = "SITE_SLOT_007"/);
+  assert.match(config, /service = "pages-v2-production-slot-007"/);
+  assert.match(config, /binding = "SITE_SLOT_042"/);
+  assert.match(config, /service = "pages-v2-production-slot-042"/);
+  assert.doesNotMatch(config, /SITE_SLOT_001/);
+  assert.doesNotMatch(config, /SITE_SLOT_008/);
+});
+
+test('staging pages-router config renders sparse active legacy normal worker bindings', () => {
+  setRouterTemplateExecutionMode('staging', 'wfp');
+  const config = renderPagesRouter('staging', {
+    ...baseEnv,
+    PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '',
+    PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON: JSON.stringify([
+      { bindingName: 'SITE_SLOT_007', workerName: 'pages-v2-staging-slot-007' },
+    ]),
+  });
+
+  assert.match(config, /binding = "PAGES_DISPATCH"/);
+  assert.match(config, /namespace = "xd-cell-workers-staging"/);
+  assert.match(config, /binding = "SITE_SLOT_007"/);
+  assert.match(config, /service = "pages-v2-staging-slot-007"/);
+  assert.doesNotMatch(config, /pages-v2-production-slot-007/);
+});
+
 test('pages-router config requires deploy-computed binding count in normal worker slot mode', () => {
   setRouterTemplateExecutionMode('production', 'normal-worker-slot');
   const env = { ...baseEnv };

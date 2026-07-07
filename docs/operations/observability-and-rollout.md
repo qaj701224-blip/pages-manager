@@ -46,7 +46,7 @@
 - dispatch success rate、dispatch 404/5xx、user Worker CPU/subrequest 超限，按 `execution_provider` 维度拆分。
 - WFP deploy success/failure、slot deploy success/failure、deploy duration、orphan worker count。
 - slot capacity：available / assigned / disabled / available_pending_router 数量、容量水位、扩容失败数、长时间未使用 slot。
-- 普通 Worker slot 容量耗尽时，`pages-api` 通过 `SLACK_PAGES_ALERT_WEBHOOK_URL` 发送 Slack 运维告警；第一版消息只 @ `SLACK_PAGES_ALERT_MENTION_USER_ID` 一次，并展示“环境 / 容量 / 剩余 / 扩容”。其中“容量”是当前已用 Worker / 当前总 Worker，“剩余”是当前可被发布使用的 available Worker 数量。按钮使用 GitHub Actions URL button，打开 `https://github.com/xindong/pages-manager/actions` 让维护者手动运行对应环境的 XD Cell deploy workflow。不要在 `pages-api` 中保存 GitHub token，也不要让 Slack button 直接触发部署。
+- 普通 Worker slot 容量告警只作为 legacy 指标保留；当前新发布不再分配 slot，也不再通过告警引导扩容。不要在 `pages-api` 中保存 GitHub token，也不要让 Slack button 直接触发部署。
 - SSO login start/callback failure、CLI login poll/consume failure。
 - cross-env guard trip、reserved host/path mismatch。
 - audit write backlog、audit dropped/sampled count。
@@ -68,7 +68,7 @@
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | route snapshot              | 对比 D1 `route_generation`、KV pointer 和 immutable snapshot，修复缺失或过期 pointer                                                      |
 | deployment                  | 修正卡在 `activating` / `uploaded` 的状态，补齐 terminal response                                                                         |
-| worker slot                 | 对比 `worker_slots`、router binding 和 Cloudflare ordinary Worker，发现 `available_pending_router` 卡住、assigned 但无 active route、长期未使用等状态；当前由 `expand-pages-router-slots.yml` 的 `operation=cleanup` 手动触发清理 |
+| worker slot                 | 对比 `worker_slots`、router binding 和 Cloudflare ordinary Worker，发现 active legacy route、idle Worker、retired Worker 和 Cloudflare 缺失/孤儿状态；当前由 Admin Console 的 `Legacy Normal Workers` 管理页人工删除 idle Worker，`expand-pages-router-slots.yml` 只做只读审计 |
 | orphan user worker / assets | reconciliation 根据 failed deployment、非 active version、WFP 命名规则、slot 状态和审计引用推导 orphan；后续可升级为显式标记表和 mark-and-sweep 清理 |
 | key registry                | 检查 active/draining/retired key 与最大 token TTL 是否匹配                                                                                |
 
@@ -84,8 +84,8 @@ publish -> activate -> drain -> retire
 
 ### 阶段 0：设计与资源验证
 
-- 确认 Workers for Platforms 可用性、配额、billing 和 staging 资源；如果暂未开通，确认 `normal-worker-slot` 兼容上线范围。
-- 确认普通 Worker slot binding 数量上限、router wrangler template 可读性、扩容 workflow、容量告警和回滚流程。
+- 确认 Workers for Platforms 可用性、配额、billing 和 staging 资源。
+- 确认存量普通 Worker active route、router wrangler template 可读性、只读审计 workflow 和管理员删除流程。
 - 新增并验证 v2 `workers` / `*.workers` 与存量 v2 `pages` / `*.pages` DNS、证书 DCV 和 Cloudflare route；确认 v2 workers wildcard 不影响 v1 exact route。
 - 验证 Cloudflare route：`*-staging.workers.xd.team/*` 和 `*-staging.pages.xd.team/*` 是否稳定进入 `pages-router-staging`，且 API/auth exact route 优先级正确。
 - 如果 route spike 不满足要求，验证 `pages-edge-router-thin` fallback，确认它不持有业务 secret。
@@ -110,7 +110,7 @@ publish -> activate -> drain -> retire
 - 新增 `pages-router-staging`，production/staging router 物理隔离。
 - 按 `PAGES_EXECUTION_MODE` 启用执行面：
   - 默认：`wfp`，使用 dispatch namespace。
-  - 兼容：`normal-worker-slot`，仅用于历史 route 排空和受控回退。
+  - 兼容：`normal-worker-slot`，仅用于历史 route 排空。
 - 用户仍只执行 `xd-cell deploy ./dist foo`，不暴露 execution provider 参数。
 - 支持 `internal` 和 `org` visibility。
 - 支持 router IP allowlist 强限制；未命中公司网络直接 403。
@@ -129,8 +129,8 @@ publish -> activate -> drain -> retire
 ### 阶段 4：执行面治理
 
 - 默认 `PAGES_EXECUTION_MODE` 已切到 `wfp`；`pages-api` 新发布进入 WFP，router 静态持有 `PAGES_DISPATCH`，只继续保留历史 slot bindings 直到旧 route 排空。
-- 根据试点情况决定是否迁移已有 slot 站点；不强制迁移也可以作为短期回滚手段保留。
-- 禁用普通 Worker 新站点分配，只允许已有 slot 站点维护或管理员迁移。
+- 根据试点情况决定是否迁移已有 slot 站点；不强制迁移，但新发布和 rollback 都不再写回 slot。
+- 禁用普通 Worker 新站点分配，只保留 active legacy route 访问和管理员删除 idle Worker。
 - Outbound Worker / 强制 egress policy。
 - 更细的资源限制。
 - 更完善的审计查询。
@@ -150,8 +150,8 @@ publish -> activate -> drain -> retire
 | internal JWT 被当能力凭证   | User Worker 可复制短期 JWT       | 平台能力使用独立 capability，不信 internal JWT                       |
 | 旧版/新架构心智混淆        | 用户可能把 v2 新建 `workers.xd.team` 子站和 v1 `apps/server` 旧链路混为一谈 | 文档、CLI help、错误提示和 skill 明确 v2 控制面是 `api/auth.pages.xd.team`，新建子站默认 `workers.xd.team`，但不调用 v1 `api.workers.xd.team` |
 | assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike；DR 0003 的 R2 artifact store 作为低优先级长期候选，不阻塞当前 MVP |
-| WFP dispatch 部署失败       | 新版本无法进入目标执行面         | fail closed，保留旧 active route；必要时走 PR 临时回退到 `normal-worker-slot` |
-| slot binding 数量上限       | 历史普通 Worker slot 需要 router 静态 binding | WFP 模式停止扩张，只保留历史最大 slot binding count 用于旧 route 排空 |
+| WFP dispatch 部署失败       | 新版本无法进入目标执行面         | fail closed，保留旧 active route；修复 WFP 后重新发布，不回退到 normal slot |
+| slot binding 数量上限       | 历史普通 Worker slot 需要 router 静态 binding | WFP 模式停止扩张，只渲染 active legacy route 的显式 binding |
 | slot 误清理 active 版本      | active slot 被释放会导致当前站点不可访问 | 清理前后都用 D1 条件确认没有 active route 引用该 slot 或 version；失败时保持 `cleanup_pending`，不回到 `available` |
 | 新 wildcard 配置风险        | `*.workers.xd.team` 是 v2 新建站点默认入口，`*.pages.xd.team` 仍承载存量 v2 站点 | staging 验证、DNS/证书/route 静态校验、快速回滚                      |
 | production 自动部署风险     | 当前项目要求生产手动部署         | CI 继续保持 production manual                                        |

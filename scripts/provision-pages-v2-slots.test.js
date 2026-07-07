@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  buildLegacyNormalWorkerBindings,
   buildSlotRecord,
   CloudflareWorkersClient,
   cleanupNormalWorkerSlots,
@@ -102,6 +106,83 @@ test('wfp mode plan reports historical slot binding count without planning expan
   assert.equal(result.dryRun, true);
   assert.equal(result.bindingCount, 4);
   assert.deepEqual(result.createSlotNumbers, []);
+});
+
+test('bindings phase reports only active legacy normal worker route bindings', async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), 'pages-v2-slots-'));
+  const githubEnvPath = join(tempDir, 'github.env');
+  const result = await provisionNormalWorkerSlots({
+    phase: 'bindings',
+    config: { ...baseConfig, executionMode: 'wfp' },
+    d1: {
+      async listActiveLegacyNormalWorkerBindings() {
+        return [
+          {
+            bindingName: 'SITE_SLOT_007',
+            workerName: 'pages-v2-staging-slot-007',
+            slotId: 'slot_staging_007',
+            routeId: 'route_active',
+            siteId: 'site_active',
+          },
+          {
+            bindingName: 'SITE_SLOT_002',
+            workerName: 'pages-v2-staging-slot-002',
+            slotId: 'slot_staging_002',
+            routeId: 'route_other',
+            siteId: 'site_other',
+          },
+        ];
+      },
+    },
+    cloudflare: {
+      async putWorker() {
+        throw new Error('bindings phase must be read-only');
+      },
+    },
+    env: {
+      GITHUB_ENV: githubEnvPath,
+    },
+  });
+
+  try {
+    assert.equal(result.phase, 'bindings');
+    assert.equal(result.bindingCount, 2);
+    assert.deepEqual(result.bindings, [
+      { bindingName: 'SITE_SLOT_002', workerName: 'pages-v2-staging-slot-002' },
+      { bindingName: 'SITE_SLOT_007', workerName: 'pages-v2-staging-slot-007' },
+    ]);
+    const githubEnv = await readFile(githubEnvPath, 'utf8');
+    assert.match(githubEnv, /^PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT=$/m);
+    assert.match(githubEnv, /^PAGES_NORMAL_WORKER_SLOT_BINDINGS_JSON=\[/m);
+    assert.match(githubEnv, /"bindingName":"SITE_SLOT_002"/);
+    assert.match(githubEnv, /"workerName":"pages-v2-staging-slot-007"/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('bindings phase D1 query is scoped to legacy normal worker routes', async () => {
+  const source = await readFile(new URL('./provision-pages-v2-slots.mjs', import.meta.url), 'utf8');
+
+  assert.match(source, /listActiveLegacyNormalWorkerBindings/);
+  assert.match(source, /execution_provider = 'normal-worker-slot'/);
+  assert.match(source, /dispatch_type = 'service-binding'/);
+});
+
+test('legacy normal worker binding builder filters invalid and duplicate route rows', () => {
+  assert.deepEqual(
+    buildLegacyNormalWorkerBindings([
+      { bindingName: 'SITE_SLOT_007', workerName: 'pages-v2-production-slot-007' },
+      { binding_name: 'SITE_SLOT_007', worker_name: 'pages-v2-production-slot-007' },
+      { dispatch_binding_name: 'SITE_SLOT_008', worker_name: 'pages-v2-production-slot-008' },
+      { bindingName: 'SITE_SLOT_BAD', workerName: 'pages-v2-production-slot-bad' },
+      { bindingName: 'SITE_SLOT_009', workerName: '' },
+    ]),
+    [
+      { bindingName: 'SITE_SLOT_007', workerName: 'pages-v2-production-slot-007' },
+      { bindingName: 'SITE_SLOT_008', workerName: 'pages-v2-production-slot-008' },
+    ]
+  );
 });
 
 test('caps expansion at max total and fails closed when capacity cannot be restored', () => {
