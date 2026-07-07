@@ -102,7 +102,9 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /ci_dispatch_url="\$\(gh workflow run ci\.yml/);
   assert.match(workflow, /ci_dispatch_url[\s\S]*\/actions\/runs\/\(\[0-9\]\+\)\$/);
   assert.match(workflow, /gh run list[\s\S]*--workflow ci\.yml[\s\S]*--branch "\$sync_branch"/);
-  assert.match(workflow, /gh run watch "\$ci_run_id"[\s\S]*--exit-status/);
+  assert.match(workflow, /watch_run_with_retry\(\)/);
+  assert.match(workflow, /gh run watch "\$run_id"[\s\S]*--exit-status/);
+  assert.match(workflow, /watch_run_with_retry "\$ci_run_id" "CI run"/);
   assert.match(workflow, /git push origin "HEAD:staging"/);
   assert.match(workflow, /git push origin ":refs\/heads\/\$\{sync_branch\}"/);
   assert.match(workflow, /v1_changed=false/);
@@ -117,8 +119,8 @@ test('master PR sync workflow merges project PR heads to staging and skips user-
   assert.match(workflow, /gh run list[\s\S]*deploy-staging\.yml/);
   assert.match(workflow, /gh workflow run deploy-pages-v2-staging\.yml[\s\S]*--ref staging[\s\S]*component=all/);
   assert.match(workflow, /gh run list[\s\S]*deploy-pages-v2-staging\.yml/);
-  assert.match(workflow, /gh run watch "\$v1_run_id"[\s\S]*--exit-status/);
-  assert.match(workflow, /gh run watch "\$v2_run_id"[\s\S]*--exit-status/);
+  assert.match(workflow, /watch_run_with_retry "\$v1_run_id" "Deploy Staging run"/);
+  assert.match(workflow, /watch_run_with_retry "\$v2_run_id" "Deploy XD Cell Staging run"/);
   assert.doesNotMatch(workflow, /force-with-lease|git push --force/);
   assert.doesNotMatch(workflow, /ALIYUN_ACCESS_KEY|ACR_INSTANCE_ID|KUBE_CONFIG_B64|CLOUDFLARE_API_TOKEN|CF_API_TOKEN/);
 

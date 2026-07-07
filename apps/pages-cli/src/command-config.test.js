@@ -23,6 +23,7 @@ test('reads explicit xd-cell deploy template and resolves paths from config dire
         API_BASE: 'https://api.example.com',
       },
       visibility: 'org',
+      team: 'team_docs',
     })
   );
 
@@ -37,6 +38,7 @@ test('reads explicit xd-cell deploy template and resolves paths from config dire
       API_BASE: 'https://api.example.com',
     },
     visibility: 'org',
+    team: 'team_docs',
     configPath: 'project/xd-cell.config.json',
     configDir: path.join(dir, 'project'),
   });
@@ -78,12 +80,14 @@ test('normalizes worker-only assets-only and worker-with-assets templates', () =
       main: './src/index.js',
       vars: { FEATURE_FLAG: 'true' },
       visibility: 'owner',
+      team: 'team_1',
     }),
     {
       name: 'demo',
       main: './src/index.js',
       vars: { FEATURE_FLAG: 'true' },
       visibility: 'owner',
+      team: 'team_1',
     }
   );
 
@@ -144,6 +148,8 @@ test('rejects unknown fields secret-like fields invalid paths legacy API origins
     /COMMAND_CONFIG_LEGACY_API_UNSUPPORTED/
   );
   assert.throws(() => validateCommandConfig({ visibility: 'public' }), /COMMAND_CONFIG_VISIBILITY_INVALID/);
+  assert.throws(() => validateCommandConfig({ team: '' }), /COMMAND_CONFIG_TEAM_INVALID/);
+  assert.throws(() => validateCommandConfig({ team: '../team' }), /COMMAND_CONFIG_TEAM_INVALID/);
   assert.throws(
     () => validateCommandConfig({ assets: { directory: './dist', not_found_handling: 'spa' } }),
     /COMMAND_CONFIG_NOT_FOUND_HANDLING_INVALID/

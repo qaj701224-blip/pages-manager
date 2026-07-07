@@ -12,13 +12,19 @@ export async function createOAuthState({
   ttlSeconds,
   stateId = createOpaqueToken('ost'),
   stateSecret = createOpaqueToken('sec'),
+  consoleLogin = false,
 }) {
   validateUnixSecond('now', now);
   validateTtlSeconds(ttlSeconds);
   validateEnvironment(environment);
-  const kind = cliLoginId ? 'cli' : 'site';
+  const kind = consoleLogin ? 'console' : cliLoginId ? 'cli' : 'site';
   const normalizedSiteHost = kind === 'site' ? validateSiteHost(siteHost, environment) : null;
-  const normalizedReturnTo = kind === 'site' ? validateReturnTo(returnTo, normalizedSiteHost) : null;
+  const normalizedReturnTo =
+    kind === 'site'
+      ? validateReturnTo(returnTo, normalizedSiteHost)
+      : kind === 'console'
+        ? validateConsoleReturnTo(returnTo)
+        : null;
   const normalizedCliLoginId = kind === 'cli' ? normalizeRequiredString(cliLoginId, 'cliLoginId') : null;
   const normalizedDeviceCode = kind === 'cli' ? normalizeDeviceCode(deviceCode) : null;
 
@@ -201,6 +207,24 @@ function validateReturnTo(returnTo, siteHost) {
   if (url.hash) throw new Error('OAuth state invalid: return_to fragment is not allowed');
   if (url.origin !== `https://${siteHost}`) throw new Error('OAuth state invalid: return_to origin is not allowed');
   return url.toString();
+}
+
+function validateConsoleReturnTo(returnTo) {
+  const value = String(returnTo || '').trim() || '/';
+  if (value.startsWith('//')) throw new Error('OAuth state invalid: return_to must be relative');
+  let url;
+  try {
+    url = new URL(value, 'https://workers.xd.team');
+  } catch {
+    throw new Error('OAuth state invalid: return_to is invalid');
+  }
+  if (url.origin !== 'https://workers.xd.team') throw new Error('OAuth state invalid: return_to must be relative');
+  if (url.username || url.password || url.hash) throw new Error('OAuth state invalid: return_to is invalid');
+
+  const path = `${url.pathname}${url.search}`;
+  if (url.pathname === '/' || url.pathname === '/workspace' || url.pathname.startsWith('/workspace/')) return path;
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return path;
+  throw new Error('OAuth state invalid: return_to is not allowed');
 }
 
 function validateUnixSecond(name, value) {

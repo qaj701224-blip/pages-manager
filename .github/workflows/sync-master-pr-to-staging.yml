@@ -74,7 +74,7 @@ jobs:
                 ;;
             esac
             case "$path" in
-              apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | \
+              apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | apps/pages-console/* | \
               packages/ip-guard/* | packages/pages-runtime-protocol/* | packages/worker-kit/* | packages/wfp-client/* | \
               scripts/render-pages-v2-wrangler.mjs | scripts/provision-pages-v2-slots.mjs | \
               scripts/put-pages-v2-secrets.sh | package.json | pnpm-lock.yaml | \
@@ -152,6 +152,39 @@ jobs:
             return 1
           }
 
+          watch_run_with_retry() {
+            local run_id="$1"
+            local label="$2"
+            local status=""
+            local conclusion=""
+            local state=""
+
+            for attempt in {1..3}; do
+              if gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status; then
+                return 0
+              fi
+
+              state="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json status,conclusion \
+                --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true)"
+              IFS=$'\t' read -r status conclusion <<< "$state"
+              if [[ "$status" == "completed" && "$conclusion" == "success" ]]; then
+                echo "${label} completed successfully after watch retry."
+                return 0
+              fi
+              if [[ "$status" == "completed" && -n "$conclusion" ]]; then
+                echo "${label} completed with ${conclusion}." >&2
+                return 1
+              fi
+
+              echo "${label} watch failed or timed out; retrying (${attempt}/3)." >&2
+              sleep $((attempt * 10))
+            done
+
+            gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json status,conclusion \
+              --jq '"\(.status)\t\(.conclusion // "")"'
+            return 1
+          }
+
           sync_branch=""
           cleanup_sync_branch() {
             if [[ -n "$sync_branch" ]]; then
@@ -220,7 +253,7 @@ jobs:
             fi
 
             echo "Waiting for CI run before updating staging: ${ci_run_url}"
-            gh run watch "$ci_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+            watch_run_with_retry "$ci_run_id" "CI run"
 
             pushed_to_staging=false
             for _ in {1..6}; do
@@ -268,7 +301,7 @@ jobs:
             fi
 
             echo "Waiting for Deploy Staging run: ${v1_run_url}"
-            gh run watch "$v1_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+            watch_run_with_retry "$v1_run_id" "Deploy Staging run"
           fi
 
           if [[ "$V2_CHANGED" == "true" ]]; then
@@ -300,7 +333,7 @@ jobs:
             fi
 
             echo "Waiting for Deploy XD Cell Staging run: ${v2_run_url}"
-            gh run watch "$v2_run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+            watch_run_with_retry "$v2_run_id" "Deploy XD Cell Staging run"
           fi
 
           if [[ "$V1_CHANGED" != "true" && "$V2_CHANGED" != "true" ]]; then

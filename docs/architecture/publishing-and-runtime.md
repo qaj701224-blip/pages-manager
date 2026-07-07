@@ -175,7 +175,7 @@ CLI 使用 XD Cell 平台签发的 token，不直接持有心动 SSO `access_tok
 | `auth_session`  | 浏览器平台登录   | auth host HttpOnly cookie         | 用户登录态，不直接用于 CLI deploy  |
 | `site_session`  | 浏览器访问子站   | 子站 host HttpOnly cookie         | 子站访问，不用于管理 API           |
 | `CLI token`     | 本地 CLI         | OS secret store                   | 用户身份 + scope + env             |
-| `access key`    | CI / agent       | CI secret 或用户显式保存的 secret | 可限定 site/scope/expiry           |
+| `access key`    | CI / agent       | CI secret 或用户显式保存的 secret | PAT / TAT + 权限 + 作用范围 + expiry |
 | `service token` | 未来机器人身份   | 组织级 secret store / CI secret   | 暂不进入 MVP                       |
 | `internal JWT`  | router -> Worker | 请求内短期 header                 | 请求身份 envelope，不是 capability |
 
@@ -223,7 +223,24 @@ xd-cell login --token <token>
 xd-cell deploy ./dist foo --token <token> --json
 ```
 
-本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。access key 不能创建站点；CI / agent 使用 access key 部署时显式传站点名，由 `pages-api` 在当前 environment 内解析到内部 `siteId` 后再做 access key scope 校验。access key 的 scope、site 限制和过期时间仍以 `pages-api` 权威记录为准。
+本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。
+
+access key 创建站点只允许发生在部署事务内。以下为目标模型；当前代码中尚未完全落地的 deploy
+复合归属转移、selected sites 多选范围和独立 transfer API，后续实现时必须同步 API、CLI、Console
+和测试。Access Token 分为 Personal Access Token（PAT）和
+Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是第三种 Token 类型。
+
+- PAT 默认代表用户本人。`xd-cell deploy <entry> <new-site>` 不带 `teamId` 时创建个人站点；显式带
+  `teamId` 时，`pages-api` 必须重新校验 Token 所属用户当前是否为该团队 `publisher` / `admin`，
+  通过后创建团队站点。
+- TAT 代表团队。它创建的新站点归属该团队；如果部署请求显式带 `teamId`，必须与 TAT 归属团队一致。
+- 作用范围为 `selected_sites` 的 Token 只能部署选中的站点，不能创建新站点，也不能隐式转移未选中站点。
+- deploy 可以复合站点归属变更：当已有站点 owner 与请求目标 owner 不一致时，API 必须校验 actor 对
+  源 owner 和目标 owner 都具备站点管理权限，通过后才允许先转移归属再发布，并写审计。
+
+普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受用户 CLI token 或受控 console session，不对
+access key 开放。access key 的权限、作用范围、owner 归属、过期时间和 environment 仍以 `pages-api`
+权威记录为准。
 
 #### Global config
 
@@ -311,6 +328,8 @@ xd-cell logout
 xd-cell deploy ./dist foo --visibility org
 xd-cell deploy --config xd-cell.config.json
 xd-cell deploy ./dist foo --token <token> --json
+xd-cell teams
+xd-cell deploy ./dist foo --team <teamId>
 xd-cell status foo
 xd-cell open foo [--print]
 xd-cell sites list
@@ -344,8 +363,9 @@ API 设计必须保持这些架构约束：
 
 - 用户和 AI agent 通过 `xd-cell` CLI / skill 使用平台，不手写部署 HTTP 请求。
 - 所有部署、回滚和 mutation 类请求必须有强认证、权限校验和幂等保护。
-- access key scope 必须在 API 层强制执行；`deploy:site`、`rollback:site`、`read:site` 不能互相越权。
-- ACL 读取和策略管理首版只允许用户 CLI token / 未来 api_session，不允许 access key。
+- access key 权限和作用范围必须在 API 层强制执行；`read` 和 `publish` 不能互相越权。
+- `publish` 表示站点管理能力，可以覆盖发布、访问控制、运行配置、删除和归属转移；团队成员、团队角色、
+  Team Access Token、团队设置和团队删除等 admin 操作仍只允许 Console 登录态。
 - v2 pages-api 不公开 `/openapi.json`；v1 `apps/server` 的 `/openapi.json` 只属于旧 `workers.xd.team` 链路。
 
 `/.xd-pages/internal/consume-site-code` 和 `/.xd-pages/internal/verify-cli-token` 不是公开 API。它们只能通过 Worker service binding 访问，并要求请求 host 为 `pages-auth.internal`；即使路径相同，公网 `auth.pages.xd.team` / `auth-staging.pages.xd.team` 访问也必须返回 404。`pages-api` 只能通过 `PAGES_AUTH` binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。SSO callback 的用户同步由 `pages-auth` 直接写共享 D1 `users` 表，避免 auth/api 双向 service binding；如后续保留 `pages-api.internal/.xd-pages/internal/users/upsert`，也只能作为内部维护入口，不能暴露公网。

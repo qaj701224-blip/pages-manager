@@ -126,7 +126,7 @@ export async function handleCliLoginConfirm(request, env, config) {
     return jsonError('CLI_LOGIN_CONFIRM_INVALID', 'CLI login confirmation is invalid.', 400);
   }
 
-  const user = await readAuthSessionUser(request, env);
+  const user = await readAuthSessionUser(request, env, config);
   if (!user) {
     return jsonError('AUTH_SESSION_REQUIRED', 'Login required before confirming CLI access.', 401, 'Restart `xd-cell login`.');
   }
@@ -209,6 +209,11 @@ function getCliLoginStub(env, loginId) {
   return env.CLI_LOGINS.get(id);
 }
 
+function getAuthSessionStub(env, sid) {
+  if (!env?.AUTH_SESSIONS) throw new Error('Auth session Durable Object binding is missing');
+  return env.AUTH_SESSIONS.get(env.AUTH_SESSIONS.idFromName(sid));
+}
+
 function jsonDoRequest(url, body) {
   return new Request(url, {
     method: 'POST',
@@ -226,20 +231,43 @@ async function readConfirmationBody(request) {
   return readJsonBody(request);
 }
 
-async function readAuthSessionUser(request, env) {
+async function readAuthSessionUser(request, env, config) {
   const token = readCookie(request.headers.get('Cookie'), AUTH_SESSION_COOKIE);
   if (!token) return null;
 
   try {
+    const now = readNow(env);
     const payload = await verifySessionJwt(token, env, {
       purpose: 'auth_session',
       audience: AUTH_SESSION_AUDIENCE,
-      now: readNow(env),
+      now,
     });
+    const sid = typeof payload.sid === 'string' ? payload.sid : '';
+    if (!sid) return null;
+    const record = await refreshAuthSessionRecord(env, {
+      sid,
+      now,
+      idleTtlSeconds: config.authSessionIdleTtlSeconds,
+    });
+    if (record?.userId !== payload.sub || record?.purpose !== 'auth_session') return null;
     return { userId: payload.sub, sid: payload.sid };
   } catch {
     return null;
   }
+}
+
+async function refreshAuthSessionRecord(env, input) {
+  if (typeof env?.refreshAuthSessionRecord === 'function') {
+    return env.refreshAuthSessionRecord(input.sid, {
+      now: input.now,
+      idleTtlSeconds: input.idleTtlSeconds,
+    });
+  }
+
+  const stub = getAuthSessionStub(env, input.sid);
+  const response = await stub.fetch(jsonDoRequest('https://auth-session-do/refresh', input));
+  if (!response.ok) throw new Error('Auth session refresh failed');
+  return response.json();
 }
 
 async function verifyCliLoginConfirmToken(token, env, { loginId, user }) {

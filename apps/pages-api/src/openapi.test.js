@@ -50,10 +50,18 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'userId',
     'email',
     'name',
+    'ownerType',
+    'ownerId',
     'siteId',
     'scopes',
   ]);
+  assert.equal(
+    body.paths['/.xd-pages/api/access-keys'].post.summary,
+    'Create a personal access key, optionally scoped to one site'
+  );
   assert.ok(body.components.schemas.CliManagedDeploymentRequest);
+  assert.equal(body.components.schemas.Team.properties.siteCount.type, 'integer');
+  assert.equal(body.components.schemas.Team.properties.memberCount.type, 'integer');
   assert.ok(body.components.schemas.DeploymentDecision);
   assert.deepEqual(body.components.schemas.DeploymentDecision.properties.requestedFallback.enum, [
     'auto',
@@ -90,8 +98,16 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'INVALID_MULTIPART',
     'PAYLOAD_TOO_LARGE',
     'SITE_REQUIRED',
+    'SITE_NOT_FOUND',
     'SITE_SLUG_INVALID',
     'SITE_SLUG_RESERVED',
+    'SITE_SLUG_CONFLICT',
+    'SITE_VISIBILITY_INVALID',
+    'HOSTNAME_CLAIM_CONFLICT',
+    'TEAM_REQUIRED',
+    'TEAM_NOT_FOUND',
+    'TEAM_PUBLISHER_REQUIRED',
+    'DEPLOY_FORBIDDEN',
     'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
     'DEPLOYMENT_UPLOAD_FAILED',
     'DEPLOYMENT_VERIFY_FAILED',
@@ -124,6 +140,8 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
   );
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_SITE_FORBIDDEN'));
+  assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_INVALID'));
+  assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_TOO_LONG'));
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.subjectType.enum, ['email', 'department']);
   assert.deepEqual(body.components.schemas.SiteVisibility.enum, ['internal', 'org', 'acl', 'owner', 'disabled']);

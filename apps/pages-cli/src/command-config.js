@@ -3,7 +3,7 @@ import path from 'node:path';
 
 export const DEFAULT_CONFIG_FILE = 'xd-cell.config.json';
 
-const ALLOWED_FIELDS = new Set(['name', 'main', 'assets', 'vars', 'visibility']);
+const ALLOWED_FIELDS = new Set(['name', 'main', 'assets', 'vars', 'visibility', 'team']);
 const LEGACY_FIELDS = new Set(['environment', 'site', 'source', 'dir', 'fallback', 'worker', 'env', 'secrets']);
 const SECRET_FIELD_RE = new RegExp(
   'token|access.?key|cookie|secret|password|credential|private.?key|cloudflare|accountid|zoneid|namespaceid|capability',
@@ -80,8 +80,16 @@ function normalizeField(key, value) {
   if (key === 'assets') return normalizeAssetsConfig(value);
   if (key === 'vars') return normalizeRuntimeVars(value);
   if (key === 'name') return normalizeName(value);
+  if (key === 'team') return normalizeTeam(value);
   if (key === 'main') return normalizeRelativePathField(value, 'COMMAND_CONFIG_MAIN_INVALID');
   throw new Error(`COMMAND_CONFIG_UNKNOWN_FIELD:${key}`);
+}
+
+function normalizeTeam(value) {
+  if (typeof value !== 'string' || value.trim() === '') throw new Error('COMMAND_CONFIG_TEAM_INVALID');
+  const normalized = value.trim();
+  if (/\/|\\|:\/\//.test(normalized)) throw new Error('COMMAND_CONFIG_TEAM_INVALID');
+  return normalized;
 }
 
 function normalizeAssetsConfig(value) {

@@ -73,6 +73,84 @@ test('creates a site with internal visibility', async () => {
   assert.equal(body.site.route.visibility, 'internal');
 });
 
+test('creates a team-owned site when the user is a team publisher', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'team-guide',
+      visibility: 'internal',
+      ownerType: 'team',
+      teamId: team.id,
+    }),
+    testEnv(store, {
+      verifyCliToken: async () => ({
+        sub: 'usr_publisher',
+        purpose: 'cli_token',
+        aud: 'pages-cli',
+        env: 'production',
+        jti: 'cli_publisher',
+      }),
+    })
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  const site = await store.getSite('site_1');
+  assert.equal(site.ownerType, 'team');
+  assert.equal(site.ownerId, team.id);
+  assert.equal(site.ownerUserId, 'usr_publisher');
+  assert.equal(site.defaultVisibility, 'internal');
+});
+
+test('rejects team-owned site creation when the user is only a team viewer', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'viewer',
+    membershipSource: 'manual',
+  });
+
+  const response = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
+      slug: 'team-guide',
+      visibility: 'org',
+      ownerType: 'team',
+      teamId: team.id,
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_PUBLISHER_REQUIRED');
+  assert.equal(await store.getSite('site_1'), null);
+});
+
 test('lists only sites visible to the authenticated actor', async () => {
   const store = await createSeededStore();
   await store.createUser({
@@ -111,6 +189,59 @@ test('lists only sites visible to the authenticated actor', async () => {
     ['mine']
   );
   assert.equal('token' in body.sites[0], false);
+});
+
+test('lists team-owned sites for active team members', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_creator',
+    email: 'creator@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_creator',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_creator',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+
+  const visible = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites'), testEnv(store));
+
+  assert.equal(visible.status, 200, await visible.clone().text());
+  assert.deepEqual(
+    (await visible.json()).sites.map((site) => site.slug),
+    ['team-guide']
+  );
+
+  await store.removeTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    actorUserId: 'usr_creator',
+    removedAt: '2026-06-15T00:01:00.000Z',
+  });
+  const hidden = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/sites'), testEnv(store));
+
+  assert.equal(hidden.status, 200, await hidden.clone().text());
+  assert.deepEqual((await hidden.json()).sites, []);
 });
 
 test('filters sites by the active API environment', async () => {
@@ -202,7 +333,7 @@ test('deletes owned site by soft-deleting site and holding hostname claim for re
   assert.equal(claim.reuseHoldUntil, '2026-06-15T00:05:00.000Z');
 });
 
-test('site delete rejects access keys and non-owner members', async () => {
+test('site delete rejects read-only access keys and non-owner members', async () => {
   const store = await createSeededStore();
   await store.createUser({
     userId: 'usr_2',
@@ -254,6 +385,320 @@ test('site delete rejects access keys and non-owner members', async () => {
   assert.equal((await accessKeyDelete.json()).error.code, 'SITE_POLICY_FORBIDDEN');
   assert.equal((await store.getSite('site_1')).deletedAt, null);
   assert.equal((await store.getHostnameClaim('guide.workers.xd.team')).status, 'active');
+});
+
+test('team site creator cannot manage policy after losing team admin role', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'viewer',
+    membershipSource: 'manual',
+    actorUserId: 'usr_1',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+
+  const update = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', { visibility: 'disabled' }),
+    testEnv(store)
+  );
+  const del = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', {}, { method: 'DELETE' }),
+    testEnv(store)
+  );
+
+  assert.equal(update.status, 403, await update.clone().text());
+  assert.equal((await update.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+  assert.equal(del.status, 403, await del.clone().text());
+  assert.equal((await del.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+  assert.equal((await store.getSite('site_team')).defaultVisibility, 'org');
+  assert.equal((await store.getSite('site_team')).deletedAt, null);
+});
+
+test('team publisher can manage team site policy and delete team sites', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await activateSite(store, 'site_team', { visibility: 'org' });
+
+  const snapshots = createSnapshotStore();
+  const env = testEnv(store, {
+    ROUTE_SNAPSHOTS: snapshots,
+    verifyCliToken: async () => ({
+      sub: 'usr_publisher',
+      purpose: 'cli_token',
+      aud: 'pages-cli',
+      env: 'production',
+      jti: 'cli_publisher',
+    }),
+  });
+  const update = await worker.fetch(
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', { visibility: 'disabled' }),
+    env
+  );
+  const del = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', {}, { method: 'DELETE' }),
+    env
+  );
+
+  assert.equal(update.status, 200, await update.clone().text());
+  assert.equal((await update.json()).site.route.visibility, 'disabled');
+  assert.equal(del.status, 200, await del.clone().text());
+  assert.equal((await store.getSite('site_team')).deletedAt, '2026-06-15T00:00:00.000Z');
+  const pointer = snapshots.read('production:route_pointer:team-guide.pages.xd.team');
+  const snapshot = snapshots.read(pointer.snapshotKey);
+  assert.equal(snapshot.routeStatus, 'deleted');
+  assert.equal(snapshot.runtime, 'disabled');
+  assert.equal(snapshot.ownerUserId, null);
+});
+
+test('personal access token can transfer a managed team site to the token user', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_creator',
+    email: 'creator@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_creator',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  const key = await seedAccessKey(store, 'ak_publish', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_team/transfer', {
+      ownerType: 'user',
+      ownerId: 'usr_1',
+    }, { Authorization: `Bearer ${key}` }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.owner.type, 'user');
+  assert.equal((await store.getSite('site_team')).ownerType, 'user');
+  assert.equal((await store.getSite('site_team')).ownerId, 'usr_1');
+  assert.equal((await store.getSite('site_team')).ownerUserId, 'usr_1');
+  assert.equal(
+    await store.getSiteForUser('site_team', 'usr_creator', { type: 'user', userId: 'usr_creator' }, 'production'),
+    null
+  );
+});
+
+test('personal access token can transfer a personal site to a team when the user is a team publisher', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, 'site_1', { visibility: 'org' });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const key = await seedAccessKey(store, 'ak_publish_team_transfer', ['deploy:site'], null);
+  const snapshots = createSnapshotStore();
+
+  const response = await worker.fetch(
+    jsonMethodRequest(
+      'POST',
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1/transfer',
+      {
+        ownerType: 'team',
+        teamId: team.id,
+      },
+      { Authorization: `Bearer ${key}` }
+    ),
+    testEnv(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.site.owner.type, 'team');
+  assert.equal((await store.getSite('site_1')).ownerType, 'team');
+  assert.equal((await store.getSite('site_1')).ownerId, team.id);
+  assert.equal((await store.getSite('site_1')).ownerUserId, 'usr_1');
+  const pointer = snapshots.read('production:route_pointer:guide.pages.xd.team');
+  const snapshot = snapshots.read(pointer.snapshotKey);
+  assert.equal(snapshot.visibility, 'org');
+  assert.equal(snapshot.ownerUserId, null);
+  const transferEvents = (await store.listAuditEvents()).filter((event) => event.eventType === 'site.owner.transfer');
+  assert.equal(transferEvents.length, 1);
+  assert.deepEqual(transferEvents[0].metadata, {
+    siteSlug: 'guide',
+    fromOwner: { type: 'user', id: 'usr_1' },
+    toOwner: { type: 'team', id: team.id },
+    source: 'api',
+  });
+});
+
+test('personal access token cannot transfer owner-visible sites to teams', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, 'site_1', { visibility: 'owner' });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_1',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const key = await seedAccessKey(store, 'ak_publish_team_transfer', ['deploy:site'], null);
+
+  const response = await worker.fetch(
+    jsonMethodRequest(
+      'POST',
+      'https://api.pages.xd.team/.xd-pages/api/sites/site_1/transfer',
+      {
+        ownerType: 'team',
+        teamId: team.id,
+      },
+      { Authorization: `Bearer ${key}` }
+    ),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 400, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_VISIBILITY_INVALID');
+  assert.equal((await store.getSite('site_1')).ownerType, 'user');
+});
+
+test('team access token cannot transfer a team site to a personal owner', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  const key = await seedAccessKey(store, 'ak_team', ['deploy:site'], null, {
+    ownerType: 'team',
+    ownerId: team.id,
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+  });
+
+  const response = await worker.fetch(
+    jsonMethodRequest('POST', 'https://api.pages.xd.team/.xd-pages/api/sites/site_team/transfer', {
+      ownerType: 'user',
+      ownerId: 'usr_1',
+    }, { Authorization: `Bearer ${key}` }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'SITE_TRANSFER_FORBIDDEN');
+  assert.equal((await store.getSite('site_team')).ownerType, 'team');
 });
 
 test('requires read:site scope for access key site reads', async () => {
@@ -354,6 +799,33 @@ test('rolls back visibility changes when active route snapshot write fails', asy
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 1);
 });
 
+test('rolls back active site deletes when route snapshot write fails', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await store.getSite('site_1')).deletedAt, null);
+  assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'active');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
+  assert.equal((await store.getHostnameClaim('guide.pages.xd.team')).status, 'active');
+});
+
 test('rolls back visibility changes when snapshot write fails after runtime config changes', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
@@ -439,6 +911,148 @@ test('secrets put updates current active WFP worker without changing active rout
   assert.equal(route.workerName, previousRoute.workerName);
   assert.equal(route.routeGeneration, previousRoute.routeGeneration);
   assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
+});
+
+test('team publishers can manage runtime secrets for team-owned sites', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_publisher',
+    email: 'publisher@example.com',
+    employeeStatus: 'active',
+  });
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+  });
+  const site = await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await activateSite(store, site.id, { workerName: 'pages-v2-team-guide-ver-1' });
+  const providerCalls = [];
+  const publisherEnv = testEnv(store, {
+    WFP_PROVIDER: {
+      putSecret: async (input) => providerCalls.push({ operation: 'put', ...input }),
+      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...input }),
+    },
+    verifyCliToken: async () => ({
+      sub: 'usr_publisher',
+      purpose: 'cli_token',
+      aud: 'pages-cli',
+      env: 'production',
+      jti: 'cli_publisher',
+    }),
+  });
+
+  const put = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    }),
+    publisherEnv
+  );
+  const del = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+    }),
+    publisherEnv
+  );
+
+  assert.equal(put.status, 200, await put.clone().text());
+  assert.deepEqual(await put.json(), { secret: { site: 'team-guide', name: 'API_TOKEN', updated: true, deleted: false } });
+  assert.equal(del.status, 200, await del.clone().text());
+  assert.deepEqual(await del.json(), { secret: { site: 'team-guide', name: 'API_TOKEN', updated: false, deleted: true } });
+  assert.deepEqual(providerCalls, [
+    {
+      operation: 'put',
+      workerName: 'pages-v2-team-guide-ver-1',
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    },
+    {
+      operation: 'delete',
+      workerName: 'pages-v2-team-guide-ver-1',
+      name: 'API_TOKEN',
+    },
+  ]);
+});
+
+test('team admins can manage runtime secrets for team-owned sites', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  const site = await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await activateSite(store, site.id, { workerName: 'pages-v2-team-guide-ver-1' });
+  const providerCalls = [];
+  const adminEnv = testEnv(store, {
+    WFP_PROVIDER: {
+      putSecret: async (input) => providerCalls.push({ operation: 'put', ...input }),
+      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...input }),
+    },
+  });
+
+  const put = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    }),
+    adminEnv
+  );
+  const del = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
+      name: 'API_TOKEN',
+    }),
+    adminEnv
+  );
+
+  assert.equal(put.status, 200, await put.clone().text());
+  assert.equal(del.status, 200, await del.clone().text());
+  assert.deepEqual(providerCalls, [
+    {
+      operation: 'put',
+      workerName: 'pages-v2-team-guide-ver-1',
+      name: 'API_TOKEN',
+      value: 'secret-value',
+    },
+    {
+      operation: 'delete',
+      workerName: 'pages-v2-team-guide-ver-1',
+      name: 'API_TOKEN',
+    },
+  ]);
 });
 
 test('secrets put skips active worker sync for assets-only active versions', async () => {
@@ -1024,13 +1638,14 @@ function putJsonRequest(url, body) {
   return jsonMethodRequest('PUT', url, body);
 }
 
-function jsonMethodRequest(method, url, body) {
+function jsonMethodRequest(method, url, body, headers = {}) {
   return new Request(url, {
     method,
     headers: {
       'Content-Type': 'application/json',
       Authorization: 'Bearer cli-token',
       'CF-Connecting-IP': '10.1.2.3',
+      ...headers,
     },
     body: JSON.stringify(body),
   });
@@ -1057,13 +1672,14 @@ async function createSeededStore() {
 }
 
 async function activateSite(store, siteId, overrides = {}) {
+  const workerName = overrides.workerName || 'pages-v2-guide-ver-1';
   await store.createSiteVersion({
     id: 'ver_1',
     siteId,
     deploymentId: 'dep_1',
-    workerName: 'pages-v2-guide-ver-1',
+    workerName,
     runtime: 'wfp',
-    artifactRef: 'wfp://test/pages-v2-guide-ver-1',
+    artifactRef: `wfp://test/${workerName}`,
     contentHash: 'sha256:abc',
     deploymentShape: overrides.deploymentShape || 'worker-only',
     requestedFallback: 'auto',
@@ -1075,7 +1691,7 @@ async function activateSite(store, siteId, overrides = {}) {
     siteId,
     {
       activeVersionId: 'ver_1',
-      workerName: 'pages-v2-guide-ver-1',
+      workerName,
       visibility: overrides.visibility || 'org',
       updatedAt: '2026-06-15T00:00:00.000Z',
     },
@@ -1099,20 +1715,26 @@ function createSnapshotStore() {
   };
 }
 
-async function seedAccessKey(store, keyId, scopes) {
+async function seedAccessKey(store, keyId, scopes, siteId = 'site_1', options = {}) {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',
     keyId,
     bytes: new Uint8Array(24).fill(3),
   });
+  const ownerType = options.ownerType || 'user';
+  const ownerUserId = options.ownerUserId || 'usr_1';
   await store.createAccessKey({
     id: keyId,
-    ownerUserId: 'usr_1',
+    environment: 'production',
+    ownerType,
+    ownerId: options.ownerId || (ownerType === 'user' ? ownerUserId : undefined),
+    ownerUserId,
+    createdByUserId: options.createdByUserId || ownerUserId,
     keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
     pepperId: 'pepper_1',
     name: keyId,
     scopes,
-    siteId: 'site_1',
+    siteId,
     expiresAt: '2026-07-15T00:00:00.000Z',
   });
   return plaintext;

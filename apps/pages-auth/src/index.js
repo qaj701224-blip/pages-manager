@@ -1,11 +1,14 @@
 import { handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
 import { readAuthConfig } from './config.js';
+import { buildClearAuthSessionCookie, buildClearSiteSessionCookie } from './cookies.js';
 import {
   confirmStoredCliLogin,
   consumeStoredCliLogin,
+  consumeStoredConsoleLoginCode,
   consumeStoredOAuthSiteCode,
   consumeStoredOAuthState,
   createStoredCliLogin,
+  createStoredConsoleLoginCode,
   createStoredOAuthSiteCode,
   createStoredOAuthState,
   peekStoredCliLogin,
@@ -18,6 +21,8 @@ import {
 import { isPublicRequestId, jsonError, jsonOk, readJsonBody, withRequestId } from './http.js';
 import {
   handleInternalConsumeSiteCode,
+  handleInternalConsoleExchange,
+  handleInternalConsoleLoginCode,
   handleInternalVerifyCliToken,
   handleOAuthAuthorize,
   handleOAuthCallback,
@@ -55,10 +60,49 @@ async function routeAuthRequest(request, env, context) {
   if (url.pathname === '/.xd-pages/cli/login/confirm') return handleCliLoginConfirm(request, env, config);
   if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config, context);
   if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config, context);
+  if (url.pathname === '/.xd-pages/auth/logout') return handleAuthLogout(request, config);
   if (url.pathname === '/.xd-pages/internal/consume-site-code') return handleInternalConsumeSiteCode(request, env, config);
+  if (url.pathname === '/.xd-pages/internal/console/login-code') {
+    return handleInternalConsoleLoginCode(request, env, config);
+  }
+  if (url.pathname === '/.xd-pages/internal/console/exchange') {
+    return handleInternalConsoleExchange(request, env, config);
+  }
   if (url.pathname === '/.xd-pages/internal/verify-cli-token') return handleInternalVerifyCliToken(request, env, config);
 
   return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
+}
+
+function handleAuthLogout(request, config) {
+  if (request.method !== 'GET' && request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+
+  const url = new URL(request.url);
+  const headers = new Headers({
+    Location: normalizeConsoleLogoutReturnTo(url.searchParams.get('return_to'), config.environment),
+    'Cache-Control': 'no-store',
+  });
+  headers.append('Set-Cookie', buildClearAuthSessionCookie());
+  headers.append('Set-Cookie', buildClearSiteSessionCookie());
+  return new Response(null, { status: 302, headers });
+}
+
+function normalizeConsoleLogoutReturnTo(value, environment) {
+  const fallback = `${consoleBaseForEnvironment(environment)}/login?loggedOut=1`;
+  let url;
+  try {
+    url = new URL(String(value || fallback), fallback);
+  } catch {
+    return fallback;
+  }
+
+  if (url.origin !== new URL(fallback).origin || url.username || url.password || url.hash) return fallback;
+  return url.href;
+}
+
+function consoleBaseForEnvironment(environment) {
+  if (environment === 'staging') return 'https://staging.workers.xd.team';
+  if (environment === 'local') return 'http://127.0.0.1:5174';
+  return 'https://workers.xd.team';
 }
 
 export class OAuthStateDO {
@@ -77,6 +121,12 @@ export class OAuthStateDO {
         consumeStoredOAuthSiteCode(storage, body.siteCode, {
           now: body.now,
           siteHost: body.siteHost,
+          environment: body.environment,
+        }),
+      '/create-console-code': (storage, body) => createStoredConsoleLoginCode(storage, body),
+      '/consume-console-code': (storage, body) =>
+        consumeStoredConsoleLoginCode(storage, body.consoleCode, {
+          now: body.now,
           environment: body.environment,
         }),
     });

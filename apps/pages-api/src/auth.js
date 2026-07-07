@@ -80,7 +80,11 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
     return authError('ACCESS_KEY_INVALID', 'Access key is invalid.', 401, 'Check the configured access key.');
   }
 
-  const user = await store.getUser(accessKey.ownerUserId);
+  const ownerType = accessKey.ownerType || 'user';
+  if (ownerType === 'team') return authenticateTeamAccessKey(accessKey, store, now);
+
+  const ownerUserId = accessKey.ownerId || accessKey.ownerUserId;
+  const user = await store.getUser(ownerUserId);
   if (!user || user.employeeStatus !== 'active') {
     return authError('PAGES_USER_INACTIVE', 'User is not active.', 403, 'Contact the Pages platform owner.');
   }
@@ -92,10 +96,38 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
     actor: {
       type: 'access_key',
       actorId: accessKey.id,
-      userId: accessKey.ownerUserId,
+      userId: ownerUserId,
       email: user.email,
       name: user.realname || null,
       tokenId: accessKey.id,
+      ownerType: 'user',
+      ownerId: ownerUserId,
+      scopes: [...accessKey.scopes],
+      siteId: accessKey.siteId,
+      source: 'access_key',
+    },
+  };
+}
+
+async function authenticateTeamAccessKey(accessKey, store, now) {
+  const team = typeof store.getTeam === 'function' ? await store.getTeam(accessKey.ownerId) : null;
+  if (!team) {
+    return authError('ACCESS_KEY_OWNER_INACTIVE', 'Access key owner is inactive.', 403, 'Ask a team admin to create a new key.');
+  }
+
+  if (typeof store.updateAccessKeyLastUsed === 'function') await store.updateAccessKeyLastUsed(accessKey.id, now);
+
+  return {
+    ok: true,
+    actor: {
+      type: 'access_key',
+      actorId: accessKey.id,
+      userId: accessKey.createdByUserId || accessKey.ownerUserId || null,
+      email: null,
+      name: team.name || null,
+      tokenId: accessKey.id,
+      ownerType: 'team',
+      ownerId: accessKey.ownerId,
       scopes: [...accessKey.scopes],
       siteId: accessKey.siteId,
       source: 'access_key',

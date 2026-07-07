@@ -7,6 +7,7 @@ import {
   deploymentIdempotencyScope,
   hostnameFamilyForHostname,
 } from './store.js';
+import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString(), failAuditWrites = false } = {}) {
   return new TestPagesStore({ now, failAuditWrites });
@@ -17,6 +18,8 @@ class TestPagesStore {
     this.now = now;
     this.failAuditWrites = failAuditWrites;
     this.users = new Map();
+    this.teams = new Map();
+    this.teamMembers = new Map();
     this.sites = new Map();
     this.siteSlugIndex = new Map();
     this.routes = new Map();
@@ -30,6 +33,9 @@ class TestPagesStore {
     this.siteVarHistory = new Map();
     this.workerSlots = new Map();
     this.accessKeys = new Map();
+    this.platformAdmins = new Map();
+    this.webhookSubscriptions = new Map();
+    this.webhookDeliveries = new Map();
     this.deployments = new Map();
     this.deploymentIdempotencyIndex = new Map();
     this.auditEvents = [];
@@ -46,6 +52,8 @@ class TestPagesStore {
       accountId: input.accountId || null,
       employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
+      departmentPath: input.departmentPath || null,
+      departmentCheckedAt: input.departmentCheckedAt || null,
       sessionVersion: input.sessionVersion || 1,
       lastLoginAt: input.lastLoginAt || null,
       createdAt: now,
@@ -73,6 +81,12 @@ class TestPagesStore {
       accountId: staleActiveOrUnknown ? existing.accountId : input.accountId || existing?.accountId || null,
       employeenum: staleActiveOrUnknown ? existing.employeenum : input.employeenum || existing?.employeenum || null,
       employeeStatus,
+      departmentPath: staleActiveOrUnknown
+        ? existing.departmentPath || null
+        : input.departmentPath || existing?.departmentPath || null,
+      departmentCheckedAt: staleActiveOrUnknown
+        ? existing.departmentCheckedAt || null
+        : input.departmentCheckedAt || existing?.departmentCheckedAt || null,
       sessionVersion: staleActiveOrUnknown
         ? existing.sessionVersion
         : Math.max(incomingSessionVersion, existing ? existing.sessionVersion + (statusChanged ? 1 : 0) : 1),
@@ -88,6 +102,860 @@ class TestPagesStore {
     return cloneRecord(this.users.get(id) || null);
   }
 
+  async grantPlatformAdmin({ environment, userId, grantedByUserId, grantReason }) {
+    const normalizedEnvironment = normalizeRequiredString(environment);
+    const normalizedUserId = normalizeRequiredString(userId);
+    const normalizedGrantedBy = normalizeRequiredString(grantedByUserId);
+    if (!normalizedEnvironment || !normalizedUserId || !normalizedGrantedBy) throw new Error('PLATFORM_ADMIN_INVALID');
+
+    const now = this.now();
+    const existing = this.platformAdmins.get(platformAdminKey(normalizedEnvironment, normalizedUserId));
+    const record = {
+      environment: normalizedEnvironment,
+      userId: normalizedUserId,
+      grantedByUserId: normalizedGrantedBy,
+      grantReason: normalizeNullableString(grantReason),
+      revokedAt: null,
+      revokedByUserId: null,
+      revokeReason: null,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    this.platformAdmins.set(platformAdminKey(normalizedEnvironment, normalizedUserId), record);
+    await this.recordAuditEvent(
+      platformAdminAuditEvent(
+        {
+          environment: normalizedEnvironment,
+          targetUserId: normalizedUserId,
+          actorUserId: normalizedGrantedBy,
+        },
+        'admin.platform_admin.grant',
+        now
+      )
+    );
+    return cloneRecord(record);
+  }
+
+  async revokePlatformAdmin({ environment, userId, revokedByUserId, revokeReason }) {
+    const normalizedEnvironment = normalizeRequiredString(environment);
+    const normalizedUserId = normalizeRequiredString(userId);
+    const normalizedRevokedBy = normalizeRequiredString(revokedByUserId);
+    if (!normalizedEnvironment || !normalizedUserId || !normalizedRevokedBy) throw new Error('PLATFORM_ADMIN_INVALID');
+
+    const existing = this.platformAdmins.get(platformAdminKey(normalizedEnvironment, normalizedUserId));
+    if (!existing) return null;
+    if (!existing.revokedAt) {
+      const targetUser = this.users.get(normalizedUserId) || null;
+      const targetIsActive = targetUser?.employeeStatus === 'active';
+      const activeCount = [...this.platformAdmins.values()].filter(
+        (admin) =>
+          admin.environment === normalizedEnvironment &&
+          !admin.revokedAt &&
+          this.users.get(admin.userId)?.employeeStatus === 'active'
+      ).length;
+      if (targetIsActive && activeCount <= 1) throw new Error('PLATFORM_ADMIN_LAST_ACTIVE');
+    }
+    const now = this.now();
+    const record = {
+      ...existing,
+      revokedAt: now,
+      revokedByUserId: normalizedRevokedBy,
+      revokeReason: normalizeNullableString(revokeReason),
+      updatedAt: now,
+    };
+    this.platformAdmins.set(platformAdminKey(normalizedEnvironment, normalizedUserId), record);
+    await this.recordAuditEvent(
+      platformAdminAuditEvent(
+        {
+          environment: normalizedEnvironment,
+          targetUserId: normalizedUserId,
+          actorUserId: normalizedRevokedBy,
+        },
+        'admin.platform_admin.revoke',
+        now
+      )
+    );
+    return cloneRecord(record);
+  }
+
+  async isPlatformAdmin({ environment, userId }) {
+    const admin = this.platformAdmins.get(platformAdminKey(environment, userId));
+    return Boolean(admin && !admin.revokedAt);
+  }
+
+  async listPlatformAdmins({ environment }) {
+    return [...this.platformAdmins.values()]
+      .filter((admin) => admin.environment === environment && !admin.revokedAt)
+      .sort((left, right) => left.userId.localeCompare(right.userId))
+      .map(cloneRecord);
+  }
+
+  async createWebhookSubscription(input) {
+    const now = this.now();
+    const record = {
+      id: input.id || randomStoreId('wh'),
+      environment: normalizeRequiredString(input.environment),
+      name: normalizeRequiredString(input.name),
+      events: normalizeWebhookEvents(input.events),
+      payloadMode: normalizeWebhookPayloadMode(input.payloadMode),
+      restrictedTemplate: input.restrictedTemplate ?? null,
+      encryptedUrlCiphertext: normalizeRequiredString(input.encryptedUrlCiphertext),
+      urlSecretRef: null,
+      urlHost: normalizeRequiredString(input.urlHost),
+      urlMasked: normalizeRequiredString(input.urlMasked),
+      urlFingerprint: normalizeRequiredString(input.urlFingerprint),
+      enabled: input.enabled !== false,
+      lastDeliveryStatus: input.lastDeliveryStatus || null,
+      createdByUserId: normalizeRequiredString(input.createdByUserId),
+      disabledAt: input.disabledAt || null,
+      disabledByUserId: input.disabledByUserId || null,
+      createdAt: input.createdAt || now,
+      updatedAt: input.updatedAt || now,
+    };
+    if (
+      !record.environment ||
+      !record.name ||
+      record.events.length === 0 ||
+      !record.payloadMode ||
+      !record.encryptedUrlCiphertext ||
+      !record.urlHost ||
+      !record.urlMasked ||
+      !record.urlFingerprint ||
+      !record.createdByUserId
+    ) {
+      throw new Error('WEBHOOK_SUBSCRIPTION_INVALID');
+    }
+    this.ensureWebhookUrlFingerprintAvailable(record.environment, record.urlFingerprint);
+    this.webhookSubscriptions.set(record.id, record);
+    return cloneRecord(withoutWebhookSecret(record));
+  }
+
+  async getWebhookSubscription({ environment, id, includeSecret = false }) {
+    const record = this.webhookSubscriptions.get(id) || null;
+    if (!record || (environment && record.environment !== environment)) return null;
+    return cloneRecord(includeSecret ? record : withoutWebhookSecret(record));
+  }
+
+  async listWebhookSubscriptions({ environment }) {
+    return cloneRecord(
+      [...this.webhookSubscriptions.values()]
+        .filter((webhook) => webhook.environment === environment)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.name.localeCompare(right.name))
+        .map(withoutWebhookSecret)
+    );
+  }
+
+  async updateWebhookSubscription({ environment, id, patch }) {
+    const existing = this.webhookSubscriptions.get(id);
+    if (!existing || existing.environment !== environment) return null;
+    const now = this.now();
+    const next = {
+      ...existing,
+      ...normalizeWebhookSubscriptionPatch(patch),
+      updatedAt: now,
+    };
+    if (patch?.enabled === false && existing.enabled) {
+      next.disabledAt = now;
+      next.disabledByUserId = patch.disabledByUserId || existing.disabledByUserId || null;
+    }
+    if (patch?.enabled === true) {
+      next.disabledAt = null;
+      next.disabledByUserId = null;
+    }
+    this.ensureWebhookUrlFingerprintAvailable(environment, next.urlFingerprint, id);
+    this.webhookSubscriptions.set(id, next);
+    return cloneRecord(withoutWebhookSecret(next));
+  }
+
+  ensureWebhookUrlFingerprintAvailable(environment, urlFingerprint, currentId = null) {
+    for (const webhook of this.webhookSubscriptions.values()) {
+      if (webhook.environment !== environment) continue;
+      if (webhook.urlFingerprint !== urlFingerprint) continue;
+      if (currentId && webhook.id === currentId) continue;
+      throw new Error('WEBHOOK_URL_CONFLICT');
+    }
+  }
+
+  async recordWebhookDelivery(input) {
+    const now = input.createdAt || this.now();
+    const record = {
+      id: input.id || randomStoreId('whd'),
+      environment: normalizeRequiredString(input.environment),
+      subscriptionId: normalizeRequiredString(input.subscriptionId),
+      eventType: normalizeRequiredString(input.eventType),
+      deliveryStatus: input.deliveryStatus || 'pending',
+      renderStatus: input.renderStatus || 'pending',
+      payloadMode: normalizeWebhookPayloadMode(input.payloadMode || 'standard'),
+      templateRevision: input.templateRevision ?? null,
+      payloadHash: input.payloadHash || null,
+      targetHost: normalizeRequiredString(input.targetHost),
+      httpStatus: input.httpStatus ?? null,
+      attemptCount: Number(input.attemptCount || 0),
+      nextRetryAt: input.nextRetryAt || null,
+      errorCode: input.errorCode || null,
+      createdAt: now,
+      updatedAt: input.updatedAt || now,
+    };
+    if (!record.environment || !record.subscriptionId || !record.eventType || !record.payloadMode || !record.targetHost) {
+      throw new Error('WEBHOOK_DELIVERY_INVALID');
+    }
+    this.webhookDeliveries.set(record.id, record);
+    const subscription = this.webhookSubscriptions.get(record.subscriptionId);
+    if (subscription && subscription.environment === record.environment) {
+      subscription.lastDeliveryStatus = record.deliveryStatus;
+      subscription.updatedAt = record.updatedAt;
+      this.webhookSubscriptions.set(subscription.id, subscription);
+    }
+    return cloneRecord(record);
+  }
+
+  async updateWebhookDelivery(id, patch) {
+    const existing = this.webhookDeliveries.get(id);
+    if (!existing) return null;
+    const next = {
+      ...existing,
+      deliveryStatus: patch.deliveryStatus || existing.deliveryStatus,
+      renderStatus: patch.renderStatus || existing.renderStatus,
+      payloadHash: patch.payloadHash ?? existing.payloadHash,
+      httpStatus: patch.httpStatus ?? existing.httpStatus,
+      attemptCount: patch.attemptCount ?? existing.attemptCount,
+      nextRetryAt: patch.nextRetryAt ?? existing.nextRetryAt,
+      errorCode: patch.errorCode ?? existing.errorCode,
+      updatedAt: patch.updatedAt || this.now(),
+    };
+    this.webhookDeliveries.set(id, next);
+    const subscription = this.webhookSubscriptions.get(next.subscriptionId);
+    if (subscription && subscription.environment === next.environment) {
+      subscription.lastDeliveryStatus = next.deliveryStatus;
+      subscription.updatedAt = next.updatedAt;
+      this.webhookSubscriptions.set(subscription.id, subscription);
+    }
+    return cloneRecord(next);
+  }
+
+  async listWebhookDeliveries({ environment, subscriptionId }) {
+    return cloneRecord(
+      [...this.webhookDeliveries.values()]
+        .filter(
+          (delivery) => delivery.environment === environment && (!subscriptionId || delivery.subscriptionId === subscriptionId)
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 100)
+    );
+  }
+
+  async getAdminDashboard({ environment }) {
+    const sites = [...this.sites.values()].filter((site) => site.environment === environment && !site.deletedAt);
+    const teams = [...this.teams.values()].filter((team) => team.environment === environment && !team.deletedAt);
+    const deployments = [...this.deployments.values()].filter((deployment) => deployment.environment === environment);
+    const failedDeployments = deployments
+      .filter((deployment) => deployment.status === 'failed')
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, 10)
+      .map((deployment) => this.decorateAdminDeployment(deployment));
+
+    return cloneRecord({
+      environment,
+      counts: {
+        sites: sites.length,
+        users: this.users.size,
+        teams: teams.filter((team) => team.status === 'active').length,
+        deployments: deployments.length,
+        failedDeployments: failedDeployments.length,
+      },
+      failedDeployments,
+    });
+  }
+
+  async listAdminUsers({ environment, query, limit = 50 }) {
+    const normalizedQuery = normalizeNullableString(query)?.toLowerCase() || '';
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+    return cloneRecord(
+      [...this.users.values()]
+        .filter((user) => {
+          if (!normalizedQuery) return true;
+          return [user.realname, user.email, user.account, user.id]
+            .filter(Boolean)
+            .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+        })
+        .map((user) => ({
+          ...user,
+          isPlatformAdmin: Boolean(
+            this.platformAdmins.get(platformAdminKey(environment, user.id))?.revokedAt === null
+          ),
+        }))
+        .sort((left, right) => left.email.localeCompare(right.email))
+        .slice(0, normalizedLimit)
+    );
+  }
+
+  async listConsoleUsers({ query, limit = 20 } = {}) {
+    const normalizedQuery = normalizeNullableString(query)?.toLowerCase() || '';
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
+    return cloneRecord(
+      [...this.users.values()]
+        .filter((user) => ['active', 'unknown'].includes(user.employeeStatus || 'unknown'))
+        .filter((user) => {
+          if (!normalizedQuery) return true;
+          return [user.realname, user.email, user.account, user.id]
+            .filter(Boolean)
+            .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+        })
+        .sort((left, right) => (left.realname || left.email || left.id).localeCompare(right.realname || right.email || right.id))
+        .slice(0, normalizedLimit)
+    );
+  }
+
+  async listAdminSites({ environment, limit = 200 }) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+    return cloneRecord(
+      [...this.sites.values()]
+        .filter((site) => !site.deletedAt)
+        .filter((site) => !environment || site.environment === environment)
+        .map((site) => this.decorateAdminSite(this.siteWithRoute(site.id)))
+        .filter(Boolean)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, normalizedLimit)
+    );
+  }
+
+  async getAdminSiteById(siteId, environment) {
+    const site = this.sites.get(siteId) || null;
+    if (!site || site.deletedAt || (environment && site.environment !== environment)) return null;
+    return cloneRecord(this.decorateAdminSite(this.siteWithRoute(siteId)));
+  }
+
+  async listAdminSiteDeployments({ environment, siteId, limit = 100 }) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
+    return cloneRecord(
+      [...this.deployments.values()]
+        .filter((deployment) => deployment.siteId === siteId)
+        .filter((deployment) => !environment || deployment.environment === environment)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .map((deployment) => this.decorateAdminDeployment(deployment))
+        .slice(0, normalizedLimit)
+    );
+  }
+
+  async listAdminTeams({ environment, teamType, status, limit = 200 } = {}) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+    return cloneRecord(
+      [...this.teams.values()]
+        .filter((team) => !environment || team.environment === environment)
+        .filter((team) => !teamType || team.teamType === teamType)
+        .filter((team) => !status || team.status === status)
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .slice(0, normalizedLimit)
+    );
+  }
+
+  countDepartmentTeamMergeAssets(sourceTeamId) {
+    const now = this.now();
+    return {
+      sites: [...this.sites.values()].filter(
+        (site) => site.ownerType === 'team' && site.ownerId === sourceTeamId && !site.deletedAt
+      ).length,
+      accessKeys: [...this.accessKeys.values()].filter(
+        (key) =>
+          key.ownerType === 'team' && key.ownerId === sourceTeamId && !key.revokedAt && (!key.expiresAt || key.expiresAt > now)
+      ).length,
+      departmentMembers: [...this.teamMembers.values()].filter(
+        (member) => member.teamId === sourceTeamId && member.membershipSource === 'department_auto' && !member.removedAt
+      ).length,
+    };
+  }
+
+  async previewDepartmentTeamMerge({ sourceTeamId, targetTeamId, environment }) {
+    const source = this.getDepartmentMergeTeam(sourceTeamId, environment);
+    const target = this.getDepartmentMergeTeam(targetTeamId, environment);
+    assertDepartmentMergeTeams(source, target);
+    return cloneRecord({
+      sourceTeam: source,
+      targetTeam: target,
+      counts: this.countDepartmentTeamMergeAssets(source.id),
+    });
+  }
+
+  async mergeDepartmentTeams({ sourceTeamId, targetTeamId, actorUserId, reason, environment }) {
+    const source = this.getDepartmentMergeTeam(sourceTeamId, environment);
+    const target = this.getDepartmentMergeTeam(targetTeamId, environment);
+    assertDepartmentMergeTeams(source, target);
+    const now = this.now();
+    const counts = this.countDepartmentTeamMergeAssets(source.id);
+
+    for (const site of this.sites.values()) {
+      if (site.ownerType !== 'team' || site.ownerId !== source.id || site.deletedAt) continue;
+      site.ownerId = target.id;
+      site.updatedAt = now;
+      this.sites.set(site.id, site);
+    }
+
+    for (const accessKey of this.accessKeys.values()) {
+      if (accessKey.ownerType !== 'team' || accessKey.ownerId !== source.id || accessKey.revokedAt) continue;
+      if (accessKey.expiresAt && accessKey.expiresAt <= now) continue;
+      accessKey.ownerId = target.id;
+      this.accessKeys.set(accessKey.id, accessKey);
+    }
+
+    for (const member of [...this.teamMembers.values()]) {
+      if (member.teamId !== source.id || member.membershipSource !== 'department_auto' || member.removedAt) {
+        continue;
+      }
+      const targetKey = teamMemberKey(target.id, member.userId);
+      const existingTargetMember = this.teamMembers.get(targetKey) || null;
+      if (existingTargetMember?.membershipSource === 'department_auto') {
+        this.teamMembers.set(targetKey, {
+          ...existingTargetMember,
+          role: member.role,
+          departmentPath: member.departmentPath || target.departmentPath,
+          roleOverriddenAt: member.roleOverriddenAt || null,
+          removedAt: null,
+          removedByUserId: null,
+          restoredAt: existingTargetMember.removedAt ? now : existingTargetMember.restoredAt,
+          restoredByUserId: existingTargetMember.removedAt ? actorUserId : existingTargetMember.restoredByUserId,
+          updatedAt: now,
+        });
+      } else if (!existingTargetMember) {
+        this.teamMembers.set(targetKey, {
+          ...member,
+          teamId: target.id,
+          departmentPath: member.departmentPath || target.departmentPath,
+          createdAt: member.createdAt,
+          updatedAt: now,
+        });
+      }
+      member.removedAt = now;
+      member.removedByUserId = actorUserId;
+      member.updatedAt = now;
+      this.teamMembers.set(teamMemberKey(source.id, member.userId), member);
+    }
+
+    source.status = 'merged';
+    source.mergedIntoTeamId = target.id;
+    source.mergedAt = now;
+    source.mergedByUserId = actorUserId;
+    source.mergeReason = normalizeNullableString(reason);
+    source.updatedAt = now;
+    this.teams.set(source.id, source);
+
+    await this.recordAuditEvent({
+      id: randomStoreId('audit'),
+      environment: source.environment,
+      eventType: 'admin.department_team.merge',
+      actorUserId,
+      actorType: String(actorUserId || '').startsWith('system:') ? 'system' : 'user',
+      decision: 'allow',
+      statusCode: 200,
+      metadata: {
+        sourceTeamId: source.id,
+        targetTeamId: target.id,
+        counts,
+      },
+      createdAt: now,
+    });
+
+    return cloneRecord({
+      sourceTeam: source,
+      targetTeam: target,
+      counts,
+    });
+  }
+
+  getDepartmentMergeTeam(teamId, environment) {
+    const team = this.teams.get(teamId) || null;
+    if (!team || team.deletedAt) return null;
+    if (environment && team.environment !== environment) return null;
+    return team;
+  }
+
+  async updateUserDepartmentFromDirectory({ userId, departmentPath, departmentCheckedAt }) {
+    const existing = this.users.get(userId);
+    if (!existing) return null;
+    const checkedAt = departmentCheckedAt || this.now();
+    const record = {
+      ...existing,
+      departmentPath: normalizeDepartmentPath(departmentPath) || null,
+      departmentCheckedAt: checkedAt,
+      updatedAt: checkedAt,
+    };
+    this.users.set(userId, record);
+    return cloneRecord(record);
+  }
+
+  async findOrCreateDepartmentTeam({ environment, departmentPath, createdAt }) {
+    const identity = deriveDepartmentTeamIdentity(departmentPath);
+    const normalizedPath = identity.teamPath;
+    if (!normalizedPath) throw new Error('DEPARTMENT_PATH_REQUIRED');
+    for (const team of this.teams.values()) {
+      if (
+        team.environment === environment &&
+        team.teamType === 'department' &&
+        team.departmentPath === normalizedPath &&
+        team.status === 'active' &&
+        !team.deletedAt
+      ) {
+        await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target: team });
+        return cloneRecord(this.teams.get(team.id));
+      }
+    }
+    const deterministicId = departmentTeamId(environment, normalizedPath);
+    const existingById = this.teams.get(deterministicId);
+    if (existingById?.mergedIntoTeamId) {
+      const target = this.teams.get(existingById.mergedIntoTeamId);
+      if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) {
+        await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target });
+        return cloneRecord(target);
+      }
+    }
+    const now = createdAt || this.now();
+    const team = {
+      id: deterministicId,
+      environment,
+      name: identity.teamPath !== identity.fullPath && identity.displayName ? identity.displayName : normalizedPath,
+      description: null,
+      teamType: 'department',
+      departmentPath: normalizedPath,
+      status: 'active',
+      createdByType: 'system',
+      createdByUserId: null,
+      mergedIntoTeamId: null,
+      mergedAt: null,
+      mergedByUserId: null,
+      mergeReason: null,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.teams.set(team.id, team);
+    await this.recordAuditEvent(departmentTeamAuditEvent(team, 'system.department_team.create', now));
+    await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target: team });
+    return cloneRecord(team);
+  }
+
+  async mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath, target }) {
+    const legacyPath = normalizeDepartmentPath(fullPath);
+    if (!legacyPath || legacyPath === target.departmentPath) return;
+    const legacy = [...this.teams.values()].find(
+      (team) =>
+        team.environment === environment &&
+        team.teamType === 'department' &&
+        team.departmentPath === legacyPath &&
+        team.status === 'active' &&
+        !team.deletedAt
+    );
+    if (!legacy || legacy.id === target.id) return;
+    await this.mergeDepartmentTeams({
+      sourceTeamId: legacy.id,
+      targetTeamId: target.id,
+      actorUserId: 'system:xds',
+      reason: 'department canonicalized',
+      environment,
+    });
+  }
+
+  async hydrateDepartmentMembership({ environment, userId, departmentPath }) {
+    const membershipDepartmentPath = normalizeDepartmentPath(departmentPath);
+    if (!membershipDepartmentPath) return { team: null, member: null, restored: false };
+    const now = this.now();
+    const targetTeam = await this.findOrCreateDepartmentTeam({
+      environment,
+      departmentPath: membershipDepartmentPath,
+      createdAt: now,
+    });
+    const migratedFrom = [];
+
+    for (const [key, member] of this.teamMembers.entries()) {
+      const memberTeam = this.teams.get(member.teamId);
+      if (!memberTeam || memberTeam.environment !== environment) continue;
+      if (member.userId !== userId || member.membershipSource !== 'department_auto') continue;
+      if (member.teamId === targetTeam.id) continue;
+      if (member.removedAt) continue;
+      migratedFrom.push({
+        teamId: member.teamId,
+        departmentPath: member.departmentPath,
+      });
+      member.removedAt = now;
+      member.removedByUserId = 'system:xds';
+      member.updatedAt = now;
+      this.teamMembers.set(key, member);
+    }
+
+    const team = targetTeam;
+    const existing = this.teamMembers.get(teamMemberKey(team.id, userId)) || null;
+    if (existing) {
+      const shouldRestore = Boolean(existing.removedAt && existing.removedByUserId === 'system:xds');
+      existing.departmentPath = membershipDepartmentPath;
+      if (shouldRestore) {
+        existing.removedAt = null;
+        existing.removedByUserId = null;
+        existing.restoredAt = now;
+        existing.restoredByUserId = 'system:xds';
+      }
+      existing.updatedAt = now;
+      this.teamMembers.set(teamMemberKey(team.id, userId), existing);
+      await this.recordDepartmentMigrations({
+        environment,
+        userId,
+        migratedFrom,
+        targetTeam: team,
+        departmentPath: membershipDepartmentPath,
+        now,
+      });
+      return { team, member: cloneRecord(existing), restored: shouldRestore };
+    }
+
+    const member = {
+      teamId: team.id,
+      userId,
+      role: 'admin',
+      membershipSource: 'department_auto',
+      departmentPath: membershipDepartmentPath,
+      roleOverriddenAt: null,
+      removedAt: null,
+      removedByUserId: null,
+      restoredAt: null,
+      restoredByUserId: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.teamMembers.set(teamMemberKey(team.id, userId), member);
+    await this.recordAuditEvent(
+      departmentMembershipAuditEvent(
+        { environment, userId, teamId: team.id, departmentPath: membershipDepartmentPath },
+        'system.department_membership.join',
+        now
+      )
+    );
+    await this.recordDepartmentMigrations({
+      environment,
+      userId,
+      migratedFrom,
+      targetTeam: team,
+      departmentPath: membershipDepartmentPath,
+      now,
+    });
+    return { team, member: cloneRecord(member), restored: true };
+  }
+
+  async recordDepartmentMigrations({ environment, userId, migratedFrom, targetTeam, departmentPath, now }) {
+    for (const source of migratedFrom) {
+      await this.recordAuditEvent(
+        departmentMembershipMigrationAuditEvent(
+          {
+            environment,
+            userId,
+            oldTeamId: source.teamId,
+            newTeamId: targetTeam.id,
+            oldDepartmentPath: source.departmentPath,
+            newDepartmentPath: departmentPath,
+          },
+          now
+        )
+      );
+    }
+  }
+
+  async createTeam(input) {
+    const now = this.now();
+    const teamType = input.teamType || 'custom';
+    if (teamType === 'department') {
+      return this.findOrCreateDepartmentTeam({
+        environment: input.environment,
+        departmentPath: input.departmentPath || input.name,
+        createdAt: now,
+      });
+    }
+    const team = {
+      id: input.id || randomStoreId('team'),
+      environment: input.environment,
+      name: normalizeTeamName(input.name),
+      description: normalizeNullableString(input.description),
+      teamType,
+      departmentPath: null,
+      status: 'active',
+      createdByType: input.createdByType || (input.createdByUserId ? 'user' : 'system'),
+      createdByUserId: input.createdByUserId || null,
+      mergedIntoTeamId: null,
+      mergedAt: null,
+      mergedByUserId: null,
+      mergeReason: null,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (!team.name) throw new Error('TEAM_NAME_REQUIRED');
+    this.teams.set(team.id, team);
+    if (input.createdByUserId) {
+      await this.addTeamMember({
+        teamId: team.id,
+        userId: input.createdByUserId,
+        role: 'admin',
+        membershipSource: 'manual',
+        actorUserId: input.createdByUserId,
+        createdAt: now,
+      });
+    }
+    return cloneRecord(team);
+  }
+
+  async getTeam(teamId) {
+    const team = this.teams.get(teamId) || null;
+    if (!team || team.deletedAt || team.status !== 'active') return null;
+    return cloneRecord(team);
+  }
+
+  async addTeamMember(input) {
+    const team = this.teams.get(input.teamId);
+    if (!team || team.deletedAt || team.status !== 'active') throw new Error('TEAM_NOT_FOUND');
+    const now = input.createdAt || this.now();
+    const existing = this.teamMembers.get(teamMemberKey(input.teamId, input.userId));
+    const membershipSource =
+      existing?.membershipSource === 'department_auto' && input.membershipSource === 'manual'
+        ? existing.membershipSource
+        : input.membershipSource || existing?.membershipSource || 'manual';
+    const member = {
+      teamId: input.teamId,
+      userId: input.userId,
+      role: normalizeTeamRole(input.role),
+      membershipSource,
+      departmentPath: input.departmentPath || null,
+      roleOverriddenAt:
+        existing?.membershipSource === 'department_auto' && existing.role !== input.role ? input.roleOverriddenAt || now : null,
+      removedAt: null,
+      removedByUserId: null,
+      restoredAt: existing?.removedAt ? now : existing?.restoredAt || null,
+      restoredByUserId: existing?.removedAt ? input.actorUserId || null : existing?.restoredByUserId || null,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    this.teamMembers.set(teamMemberKey(input.teamId, input.userId), member);
+    return this.decorateTeamMember(member);
+  }
+
+  async removeTeamMember({ teamId, userId, actorUserId }) {
+    const member = this.teamMembers.get(teamMemberKey(teamId, userId));
+    if (!member) return null;
+    const now = this.now();
+    member.removedAt = now;
+    member.removedByUserId = actorUserId || null;
+    member.updatedAt = now;
+    this.teamMembers.set(teamMemberKey(teamId, userId), member);
+    return this.decorateTeamMember(member);
+  }
+
+  async restoreTeamMember({ teamId, userId, actorUserId }) {
+    const member = this.teamMembers.get(teamMemberKey(teamId, userId));
+    if (!member) return null;
+    const now = this.now();
+    member.removedAt = null;
+    member.removedByUserId = null;
+    member.restoredAt = now;
+    member.restoredByUserId = actorUserId || null;
+    member.updatedAt = now;
+    this.teamMembers.set(teamMemberKey(teamId, userId), member);
+    return this.decorateTeamMember(member);
+  }
+
+  async getTeamMember({ teamId, userId, includeRemoved = false }) {
+    const member = this.teamMembers.get(teamMemberKey(teamId, userId)) || null;
+    if (!member) return null;
+    if (member.removedAt && !includeRemoved) return null;
+    return this.decorateTeamMember(member);
+  }
+
+  async listTeamMembers({ teamId, includeRemoved = false } = {}) {
+    return cloneRecord(
+      [...this.teamMembers.values()]
+        .filter((member) => member.teamId === teamId)
+        .filter((member) => includeRemoved || !member.removedAt)
+        .map((member) => this.decorateTeamMember(member))
+        .sort((left, right) => left.userId.localeCompare(right.userId))
+    );
+  }
+
+  decorateTeamMember(member) {
+    const user = this.users.get(member.userId) || null;
+    return cloneRecord({
+      ...member,
+      user: user
+        ? {
+            id: user.id,
+            email: user.email || null,
+            realname: user.realname || null,
+            account: user.account || null,
+            employeeStatus: user.employeeStatus || null,
+            departmentPath: user.departmentPath || null,
+          }
+        : null,
+    });
+  }
+
+  async listTeamsForUser({ environment, userId } = {}) {
+    const teams = [];
+    for (const member of this.teamMembers.values()) {
+      if (member.userId !== userId || member.removedAt) continue;
+      const team = this.teams.get(member.teamId);
+      if (!team || team.deletedAt || team.status !== 'active') continue;
+      if (environment && team.environment !== environment) continue;
+      teams.push({
+        ...team,
+        currentUserRole: member.role,
+        currentUserMembershipSource: member.membershipSource,
+        siteCount: this.countTeamSites(team.id),
+        memberCount: this.countTeamMembers(team.id),
+      });
+    }
+    return cloneRecord(teams.sort((left, right) => left.name.localeCompare(right.name)));
+  }
+
+  countTeamSites(teamId) {
+    return [...this.sites.values()].filter(
+      (site) => site.ownerType === 'team' && site.ownerId === teamId && !site.deletedAt
+    ).length;
+  }
+
+  countTeamMembers(teamId) {
+    return [...this.teamMembers.values()].filter(
+      (member) => member.teamId === teamId && !member.removedAt
+    ).length;
+  }
+
+  async updateTeamSettings({ teamId, name, description }) {
+    const team = this.teams.get(teamId) || null;
+    if (!team || team.deletedAt || team.teamType !== 'custom') return null;
+    const now = this.now();
+    team.name = normalizeTeamName(name) || team.name;
+    team.description = normalizeNullableString(description);
+    team.updatedAt = now;
+    this.teams.set(teamId, team);
+    return cloneRecord(team);
+  }
+
+  async countTeamBlockingAssets({ teamId }) {
+    const blockingSites = [...this.sites.values()].filter(
+      (site) => site.ownerType === 'team' && site.ownerId === teamId && !site.deletedAt
+    ).length;
+    const activeAccessKeys = [...this.accessKeys.values()].filter(
+      (key) =>
+        key.ownerType === 'team' && key.ownerId === teamId && !key.revokedAt && (!key.expiresAt || key.expiresAt > this.now())
+    ).length;
+    return { sites: blockingSites, accessKeys: activeAccessKeys };
+  }
+
+  async deleteCustomTeam({ teamId, actorUserId }) {
+    const team = this.teams.get(teamId);
+    if (!team || team.deletedAt || team.status !== 'active') return null;
+    if (team.teamType !== 'custom') throw new Error('DEPARTMENT_TEAM_DELETE_FORBIDDEN');
+    const blocking = await this.countTeamBlockingAssets({ teamId });
+    if (blocking.sites > 0 || blocking.accessKeys > 0) throw new Error('TEAM_HAS_BLOCKING_ASSETS');
+    this.teams.delete(teamId);
+    for (const key of [...this.teamMembers.keys()]) {
+      if (key.startsWith(`${teamId}:`)) this.teamMembers.delete(key);
+    }
+    await this.recordAuditEvent(teamDeleteAuditEvent(team, blocking, actorUserId, this.now()));
+    return cloneRecord(team);
+  }
+
   async createSite(input) {
     const slugKey = `${input.environment}:${input.slug}`;
     if (this.siteSlugIndex.has(slugKey)) throw new Error('SITE_SLUG_CONFLICT');
@@ -98,6 +966,8 @@ class TestPagesStore {
       id: input.id,
       slug: input.slug,
       environment: input.environment,
+      ownerType: input.ownerType || 'user',
+      ownerId: input.ownerId || input.ownerUserId,
       ownerUserId: input.ownerUserId,
       defaultVisibility: input.defaultVisibility,
       executionModeOverride: input.executionModeOverride || null,
@@ -223,17 +1093,36 @@ class TestPagesStore {
   async listSitesForUser(userId, actor = {}, environment) {
     const siteIds = new Set();
     if (actor.type === 'access_key') {
-      if (!actor.siteId) return [];
-      siteIds.add(actor.siteId);
+      for (const site of this.sites.values()) {
+        if (actor.siteId && actor.siteId !== site.id) continue;
+        if (!this.accessKeyCanSeeSite(actor, site)) continue;
+        siteIds.add(site.id);
+      }
     } else {
-      for (const [siteId, members] of this.siteMembers.entries()) {
-        if (members.some((member) => member.userId === userId)) siteIds.add(siteId);
+      for (const site of this.sites.values()) {
+        if ((site.ownerType || 'user') === 'user') {
+          const members = this.siteMembers.get(site.id) || [];
+          if (members.some((member) => member.userId === userId)) siteIds.add(site.id);
+          continue;
+        }
+        if (site.ownerType === 'team') {
+          const member = this.teamMembers.get(teamMemberKey(site.ownerId, userId));
+          if (member && !member.removedAt) siteIds.add(site.id);
+        }
       }
     }
 
     return cloneRecord(
       [...siteIds]
-        .map((siteId) => this.siteWithRoute(siteId))
+        .map((siteId) => {
+          const site = this.siteWithRoute(siteId);
+          if (!site || actor.type === 'access_key' || site.ownerType !== 'team') return site;
+          const member = this.teamMembers.get(teamMemberKey(site.ownerId, userId));
+          return {
+            ...site,
+            managementRole: member?.role || null,
+          };
+        })
         .filter(Boolean)
         .filter((site) => !site.deletedAt)
         .filter((site) => !environment || site.environment === environment)
@@ -242,13 +1131,139 @@ class TestPagesStore {
   }
 
   async getSiteForUser(siteId, userId, actor = {}, environment) {
-    if (actor.type === 'access_key' && (!actor.siteId || actor.siteId !== siteId)) return null;
-    const members = this.siteMembers.get(siteId) || [];
-    if (actor.type !== 'access_key' && !members.some((member) => member.userId === userId)) return null;
     const site = this.siteWithRoute(siteId);
     if (site?.deletedAt) return null;
     if (environment && site?.environment !== environment) return null;
-    return cloneRecord(site);
+    if (actor.type === 'access_key') {
+      if (actor.siteId && actor.siteId !== siteId) return null;
+      if (!this.accessKeyCanSeeSite(actor, site)) return null;
+      return cloneRecord(this.decorateAccessKeySite(actor, site));
+    }
+    const members = this.siteMembers.get(siteId) || [];
+    if ((site.ownerType || 'user') === 'user' && members.some((member) => member.userId === userId)) {
+      return cloneRecord(site);
+    }
+    if (site.ownerType === 'team') {
+      const member = this.teamMembers.get(teamMemberKey(site.ownerId, userId));
+      if (member && !member.removedAt) {
+        return cloneRecord({
+          ...site,
+          managementRole: member.role,
+        });
+      }
+    }
+    return null;
+  }
+
+  accessKeyCanSeeSite(actor, site) {
+    if (actor.siteId && !actor.ownerType && !actor.ownerId && !actor.userId) return actor.siteId === site.id;
+    const ownerType = actor.ownerType || 'user';
+    if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === actor.ownerId;
+    const ownerUserId = actor.ownerId || actor.userId;
+    if ((site.ownerType || 'user') === 'user') return (site.ownerId || site.ownerUserId) === ownerUserId;
+    if (site.ownerType === 'team') {
+      const member = this.teamMembers.get(teamMemberKey(site.ownerId, ownerUserId));
+      return Boolean(member && !member.removedAt);
+    }
+    return false;
+  }
+
+  decorateAccessKeySite(actor, site) {
+    if ((actor.ownerType || 'user') !== 'user' || site.ownerType !== 'team') return site;
+    const member = this.teamMembers.get(teamMemberKey(site.ownerId, actor.ownerId || actor.userId));
+    return {
+      ...site,
+      managementRole: member?.role || null,
+    };
+  }
+
+  async listConsoleDirectorySites({ environment, viewerUserId } = {}) {
+    const siteIds = new Set();
+    for (const site of this.sites.values()) {
+      if (site.deletedAt) continue;
+      if (environment && site.environment !== environment) continue;
+      const route = this.routes.get(this.routeBySiteId.get(site.id));
+      if ((route?.visibility || site.defaultVisibility) === 'internal') siteIds.add(site.id);
+    }
+    if (viewerUserId) {
+      for (const site of await this.listSitesForUser(viewerUserId, { type: 'user', userId: viewerUserId }, environment)) {
+        if ((site.ownerType || 'user') !== 'user') continue;
+        siteIds.add(site.id);
+      }
+      for (const site of await this.listTeamOwnedSitesForUser({ environment, userId: viewerUserId })) {
+        siteIds.add(site.id);
+      }
+    }
+    return cloneRecord(
+      [...siteIds]
+        .map((siteId) => this.decorateDirectorySite(this.siteWithRoute(siteId)))
+        .filter(Boolean)
+        .sort((left, right) => left.slug.localeCompare(right.slug))
+    );
+  }
+
+  async listWorkspaceSites({ environment, userId, ownerFilter, teamId } = {}) {
+    if (ownerFilter === 'team') return this.listTeamOwnedSitesForUser({ environment, userId, teamId });
+    const sites = await this.listSitesForUser(userId, { type: 'user', userId }, environment);
+    return sites
+      .filter((site) => (site.ownerType || 'user') === 'user' && (site.ownerId || site.ownerUserId) === userId)
+      .map((site) => this.decorateDirectorySite(site));
+  }
+
+  async listTeamOwnedSitesForUser({ environment, userId, teamId } = {}) {
+    const teams = await this.listTeamsForUser({ environment, userId });
+    const teamsById = new Map(teams.map((team) => [team.id, team]));
+    return cloneRecord(
+      [...this.sites.values()]
+        .filter((site) => !site.deletedAt)
+        .filter((site) => !environment || site.environment === environment)
+        .filter((site) => site.ownerType === 'team' && teamsById.has(site.ownerId))
+        .filter((site) => !teamId || site.ownerId === teamId)
+        .map((site) => this.decorateTeamSite(site, teamsById.get(site.ownerId)))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    );
+  }
+
+  async getConsoleSiteDetail({ environment, userId, siteId } = {}) {
+    const rawSite = this.sites.get(siteId) || null;
+    if (!rawSite || rawSite.deletedAt) return null;
+    if (environment && rawSite.environment !== environment) return null;
+    const site = this.siteWithRoute(siteId);
+    if ((site.ownerType || 'user') === 'team') {
+      const member = await this.getTeamMember({ teamId: site.ownerId, userId });
+      if (!member) return null;
+      const team = this.teams.get(site.ownerId);
+      if (!team || team.deletedAt || team.status !== 'active') return null;
+      return {
+        ...site,
+        ownerType: 'team',
+        ownerDisplayName: departmentTeamDisplayName(team),
+        ownerTeamType: team.teamType,
+        ownerTeamId: team.id,
+        currentUserId: userId,
+        managementRole: member.role,
+      };
+    }
+    if ((site.ownerId || site.ownerUserId) !== userId) return null;
+    return {
+      ...site,
+      ownerType: 'user',
+      ownerDisplayName: this.ownerUserDisplayName(site),
+      currentUserId: userId,
+      managementRole: 'admin',
+    };
+  }
+
+  async listConsoleSiteDeployments({ environment, userId, siteId } = {}) {
+    const site = await this.getConsoleSiteDetail({ environment, userId, siteId });
+    if (!site) return [];
+    return cloneRecord(
+      [...this.deployments.values()]
+        .filter((deployment) => deployment.siteId === siteId)
+        .filter((deployment) => !environment || deployment.environment === environment)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, 100)
+    );
   }
 
   async listSiteMembers(siteId) {
@@ -326,6 +1341,34 @@ class TestPagesStore {
       claim.releaseReason = releaseReason;
       claim.updatedAt = now;
     }
+
+    return cloneRecord(site);
+  }
+
+  async transferSiteOwner(siteId, { ownerType, ownerId, ownerUserId, defaultVisibility, updatedAt, auditEvent }, environment) {
+    const site = this.sites.get(siteId);
+    if (!site || site.deletedAt) return null;
+    if (environment && site.environment !== environment) return null;
+    if (auditEvent && this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+
+    const now = updatedAt || this.now();
+    site.ownerType = ownerType || 'user';
+    site.ownerId = ownerId;
+    site.ownerUserId = ownerUserId;
+    if (defaultVisibility) site.defaultVisibility = defaultVisibility;
+    site.updatedAt = now;
+
+    if (site.ownerType === 'user') {
+      const members = (this.siteMembers.get(site.id) || []).filter((member) => member.userId === ownerUserId);
+      const existing = members.find((member) => member.userId === ownerUserId);
+      if (existing) {
+        existing.role = 'owner';
+      } else {
+        members.push(createOwnerMember(site.id, ownerUserId, now));
+      }
+      this.siteMembers.set(site.id, members);
+    }
+    if (auditEvent) await this.recordAuditEvent(auditEvent);
 
     return cloneRecord(site);
   }
@@ -644,6 +1687,7 @@ class TestPagesStore {
     if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
     const record = {
       id: input.id,
+      environment: input.environment || input.metadata?.environment || null,
       traceId: input.traceId || null,
       eventType: input.eventType,
       actorUserId: input.actorUserId || null,
@@ -662,8 +1706,22 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async listAuditEvents() {
-    return cloneRecord(this.auditEvents);
+  async listAuditEvents({ environment } = {}) {
+    const events = environment ? this.auditEvents.filter((event) => event.environment === environment) : this.auditEvents;
+    return cloneRecord(events.map((event) => this.decorateAuditEvent(event)));
+  }
+
+  decorateAuditEvent(event) {
+    const actor = event.actorUserId ? this.users.get(event.actorUserId) : null;
+    return {
+      ...event,
+      actor: {
+        type: event.actorType,
+        userId: event.actorUserId || null,
+        displayName: actor?.realname || null,
+        email: actor?.email || null,
+      },
+    };
   }
 
   async activateSiteVersion(
@@ -717,6 +1775,25 @@ class TestPagesStore {
     if (environment && route.environment !== environment) return null;
     if (!routesMatchExecutionState(route, expectedRoute)) return cloneRecord(route);
     Object.assign(route, routeRestoredAsNewCommit(cloneRecord(previousRoute), route));
+    return cloneRecord(route);
+  }
+
+  async restoreSiteDeleteIfCurrent(siteId, previousSite, previousRoute, previousHostnameClaim, expectedRoute, environment) {
+    const site = this.sites.get(siteId);
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!site || !previousSite || !route || !previousRoute) return null;
+    if (environment && site.environment !== environment) return null;
+    if (!routesMatchExecutionState(route, expectedRoute)) return cloneRecord(route);
+
+    site.deletedAt = previousSite.deletedAt || null;
+    site.updatedAt = previousSite.updatedAt;
+    this.siteSlugIndex.set(`${site.environment}:${site.slug}`, site.id);
+    Object.assign(route, routeRestoredAsNewCommit(cloneRecord(previousRoute), route));
+
+    if (previousHostnameClaim) {
+      this.hostnameClaims.set(previousHostnameClaim.hostname, cloneRecord(previousHostnameClaim));
+    }
+
     return cloneRecord(route);
   }
 
@@ -818,9 +1895,15 @@ class TestPagesStore {
   async createAccessKey(input) {
     if ('plaintext' in input) throw new Error('ACCESS_KEY_PLAINTEXT_FORBIDDEN');
     if (this.accessKeys.has(input.id)) throw new Error('ACCESS_KEY_EXISTS');
+    const ownerType = input.ownerType || 'user';
+    const ownerId = input.ownerId || input.ownerUserId;
     const record = {
       id: input.id,
-      ownerUserId: input.ownerUserId,
+      environment: input.environment || null,
+      ownerType,
+      ownerId,
+      ownerUserId: input.ownerUserId || (ownerType === 'user' ? ownerId : input.createdByUserId),
+      createdByUserId: input.createdByUserId || input.ownerUserId || (ownerType === 'user' ? ownerId : null),
       keyHash: input.keyHash,
       pepperId: input.pepperId,
       name: input.name,
@@ -829,6 +1912,8 @@ class TestPagesStore {
       expiresAt: input.expiresAt || null,
       lastUsedAt: null,
       revokedAt: null,
+      revokedByUserId: null,
+      revokedReason: null,
       createdAt: this.now(),
     };
     this.accessKeys.set(record.id, record);
@@ -837,21 +1922,39 @@ class TestPagesStore {
 
   async getAccessKeyById(id, environment) {
     const key = this.accessKeys.get(id) || null;
-    if (environment && key?.siteId) {
-      const site = this.sites.get(key.siteId);
-      if (site?.environment !== environment) return null;
-    }
+    if (environment && !this.accessKeyMatchesEnvironment(key, environment)) return null;
     return cloneRecord(key);
   }
 
   async listAccessKeysForOwner(ownerUserId, environment) {
     return cloneRecord(
       [...this.accessKeys.values()].filter((key) => {
+        if ((key.ownerType || 'user') !== 'user') return false;
+        if ((key.ownerId || key.ownerUserId) !== ownerUserId) return false;
         if (key.ownerUserId !== ownerUserId) return false;
-        if (!environment || !key.siteId) return true;
-        return this.sites.get(key.siteId)?.environment === environment;
+        return this.accessKeyMatchesEnvironment(key, environment);
       })
     );
+  }
+
+  async listAccessKeys({ ownerType, ownerId, environment } = {}) {
+    return cloneRecord(
+      [...this.accessKeys.values()]
+        .filter((key) => {
+          if (ownerType && (key.ownerType || 'user') !== ownerType) return false;
+          if (ownerId && (key.ownerId || key.ownerUserId) !== ownerId) return false;
+          return this.accessKeyMatchesEnvironment(key, environment);
+        })
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    );
+  }
+
+  accessKeyMatchesEnvironment(key, environment) {
+    if (!environment) return true;
+    if (!key) return false;
+    if (key.environment) return key.environment === environment;
+    if (key.siteId) return this.sites.get(key.siteId)?.environment === environment;
+    return false;
   }
 
   async updateAccessKeyLastUsed(id, lastUsedAt) {
@@ -861,10 +1964,12 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async revokeAccessKey(id, revokedAt) {
+  async revokeAccessKey(id, revokedAt, { revokedByUserId = null, revokedReason = null } = {}) {
     const record = this.accessKeys.get(id);
     if (!record) return null;
     record.revokedAt = revokedAt;
+    record.revokedByUserId = revokedByUserId;
+    record.revokedReason = revokedReason;
     return cloneRecord(record);
   }
 
@@ -927,6 +2032,76 @@ class TestPagesStore {
     };
   }
 
+  decorateTeamSite(site, team) {
+    return {
+      ...this.siteWithRoute(site.id),
+      ownerType: 'team',
+      ownerDisplayName: departmentTeamDisplayName(team),
+      ownerTeamType: team.teamType,
+      ownerTeamId: team.id,
+      managementRole: team.currentUserRole,
+    };
+  }
+
+  decorateDirectorySite(site) {
+    if (!site) return null;
+    if ((site.ownerType || 'user') === 'team') {
+      const team = this.teams.get(site.ownerId);
+      return {
+        ...site,
+        ownerDisplayName: team ? departmentTeamDisplayName(team) : null,
+        ownerTeamType: team?.teamType || null,
+        ownerTeamId: team?.id || null,
+      };
+    }
+    const user = this.users.get(site.ownerId || site.ownerUserId);
+    return {
+      ...site,
+      ownerDisplayName: user?.realname || user?.email || null,
+    };
+  }
+
+  ownerUserDisplayName(site) {
+    const user = this.users.get(site.ownerId || site.ownerUserId);
+    return user?.realname || user?.email || null;
+  }
+
+  decorateAdminSite(site) {
+    if (!site) return null;
+    if ((site.ownerType || 'user') === 'team') {
+      const team = this.teams.get(site.ownerId);
+      return {
+        ...site,
+        ownerDisplayName: team ? departmentTeamDisplayName(team) : null,
+        ownerTeamType: team?.teamType || null,
+        ownerDepartmentPath: team?.departmentPath || null,
+      };
+    }
+    const user = this.users.get(site.ownerId || site.ownerUserId);
+    return {
+      ...site,
+      ownerEmail: user?.email || null,
+      ownerDisplayName: user?.realname || null,
+    };
+  }
+
+  decorateAdminDeployment(deployment) {
+    const site = this.sites.get(deployment.siteId);
+    if (!site) return deployment;
+    const decoratedSite = this.decorateAdminSite(site);
+    return {
+      ...deployment,
+      siteSlug: decoratedSite.slug || null,
+      ownerType: decoratedSite.ownerType || 'user',
+      ownerId: decoratedSite.ownerId || decoratedSite.ownerUserId || null,
+      ownerUserId: decoratedSite.ownerUserId || null,
+      ownerEmail: decoratedSite.ownerEmail || null,
+      ownerDisplayName: decoratedSite.ownerDisplayName || null,
+      ownerDepartmentPath: decoratedSite.ownerDepartmentPath || null,
+      ownerTeamType: decoratedSite.ownerTeamType || null,
+    };
+  }
+
   activeRouteReferencesSlot(slot) {
     for (const route of this.routes.values()) {
       if (route.environment !== slot.environment || route.routeStatus !== 'active') continue;
@@ -960,9 +2135,112 @@ class TestPagesStore {
   }
 }
 
+function teamMemberKey(teamId, userId) {
+  return `${teamId}:${userId}`;
+}
+
+function platformAdminKey(environment, userId) {
+  return `${environment}:${userId}`;
+}
+
+function departmentTeamId(environment, departmentPath) {
+  const normalizedPath = normalizeDepartmentPath(departmentPath);
+  const normalizedEnvironment = normalizeRequiredString(environment).replaceAll(/[^A-Za-z0-9]+/g, '_') || 'unknown';
+  if (!normalizedPath) return 'team_department_unknown';
+  return `team_department_${normalizedEnvironment}_${fnv1a64Hex(normalizedPath)}`;
+}
+
+function normalizeTeamName(value) {
+  return typeof value === 'string' ? value.trim().slice(0, 120) : '';
+}
+
+function normalizeNullableString(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, 500) : null;
+}
+
+function normalizeRequiredString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function normalizeTeamRole(role) {
+  if (role === 'viewer' || role === 'publisher' || role === 'admin') return role;
+  throw new Error('TEAM_ROLE_INVALID');
+}
+
+function normalizeWebhookEvents(events) {
+  if (!Array.isArray(events)) return [];
+  return [...new Set(events.map((event) => (typeof event === 'string' ? event.trim() : '')).filter(Boolean))];
+}
+
+function normalizeWebhookPayloadMode(mode) {
+  if (mode === 'standard' || mode === 'template') return mode;
+  return '';
+}
+
+function normalizeWebhookSubscriptionPatch(patch = {}) {
+  const normalized = {};
+  if ('name' in patch) normalized.name = normalizeRequiredString(patch.name);
+  if ('events' in patch) normalized.events = normalizeWebhookEvents(patch.events);
+  if ('payloadMode' in patch) normalized.payloadMode = normalizeWebhookPayloadMode(patch.payloadMode);
+  if ('restrictedTemplate' in patch) normalized.restrictedTemplate = patch.restrictedTemplate ?? null;
+  if ('encryptedUrlCiphertext' in patch)
+    normalized.encryptedUrlCiphertext = normalizeRequiredString(patch.encryptedUrlCiphertext);
+  if ('urlHost' in patch) normalized.urlHost = normalizeRequiredString(patch.urlHost);
+  if ('urlMasked' in patch) normalized.urlMasked = normalizeRequiredString(patch.urlMasked);
+  if ('urlFingerprint' in patch) normalized.urlFingerprint = normalizeRequiredString(patch.urlFingerprint);
+  if ('enabled' in patch) normalized.enabled = patch.enabled !== false;
+  if ('lastDeliveryStatus' in patch) normalized.lastDeliveryStatus = patch.lastDeliveryStatus || null;
+  if ('disabledAt' in patch) normalized.disabledAt = patch.disabledAt || null;
+  if ('disabledByUserId' in patch) normalized.disabledByUserId = patch.disabledByUserId || null;
+  return normalized;
+}
+
+function withoutWebhookSecret(record) {
+  if (!record) return null;
+  const safeRecord = { ...record };
+  delete safeRecord.encryptedUrlCiphertext;
+  safeRecord.urlSecretRef = null;
+  return safeRecord;
+}
+
+function assertDepartmentMergeTeams(source, target) {
+  if (!source || !target) throw new Error('TEAM_NOT_FOUND');
+  if (source.id === target.id) throw new Error('TEAM_MERGE_TARGET_INVALID');
+  if (source.environment !== target.environment) throw new Error('TEAM_MERGE_ENVIRONMENT_MISMATCH');
+  if (source.teamType !== 'department' || target.teamType !== 'department') {
+    throw new Error('TEAM_MERGE_DEPARTMENT_REQUIRED');
+  }
+  if (source.status !== 'active' || source.deletedAt || source.mergedIntoTeamId) {
+    throw new Error('TEAM_MERGE_SOURCE_INACTIVE');
+  }
+  if (target.status !== 'active' || target.deletedAt) throw new Error('TEAM_MERGE_TARGET_INACTIVE');
+}
+
+function fnv1a64Hex(value) {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  const bytes = new globalThis.TextEncoder().encode(value);
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+function randomStoreId(prefix) {
+  const bytes = new Uint8Array(8);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  if (!bytes.some(Boolean)) return `${prefix}_test`;
+  return `${prefix}_${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
 function secretAuditEvent(input, eventType, secret, createdAt) {
   return {
     id: input.auditId,
+    environment: input.environment,
     traceId: null,
     eventType,
     actorUserId: input.actorId,
@@ -977,6 +2255,131 @@ function secretAuditEvent(input, eventType, secret, createdAt) {
     metadata: {
       siteSlug: input.siteSlug,
       revision: secret.revision ?? null,
+    },
+    createdAt,
+  };
+}
+
+function platformAdminAuditEvent(input, eventType, createdAt) {
+  return {
+    id: randomStoreId('audit'),
+    environment: input.environment,
+    traceId: null,
+    eventType,
+    actorUserId: input.actorUserId,
+    actorType: 'user',
+    siteId: null,
+    routeId: null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      environment: input.environment,
+      targetUserId: input.targetUserId,
+    },
+    createdAt,
+  };
+}
+
+function departmentTeamAuditEvent(team, eventType, createdAt) {
+  return {
+    id: randomStoreId('audit'),
+    environment: team.environment,
+    traceId: null,
+    eventType,
+    actorUserId: 'system:xds',
+    actorType: 'system',
+    siteId: null,
+    routeId: null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      environment: team.environment,
+      teamId: team.id,
+      departmentPath: team.departmentPath,
+    },
+    createdAt,
+  };
+}
+
+function departmentMembershipAuditEvent(input, eventType, createdAt) {
+  return {
+    id: randomStoreId('audit'),
+    environment: input.environment,
+    traceId: null,
+    eventType,
+    actorUserId: 'system:xds',
+    actorType: 'system',
+    siteId: null,
+    routeId: null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      environment: input.environment,
+      userId: input.userId,
+      teamId: input.teamId,
+      departmentPath: input.departmentPath,
+    },
+    createdAt,
+  };
+}
+
+function departmentMembershipMigrationAuditEvent(input, createdAt) {
+  return {
+    id: randomStoreId('audit'),
+    environment: input.environment,
+    traceId: null,
+    eventType: 'system.department_membership.migrate',
+    actorUserId: 'system:xds',
+    actorType: 'system',
+    siteId: null,
+    routeId: null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      environment: input.environment,
+      userId: input.userId,
+      oldTeamId: input.oldTeamId,
+      newTeamId: input.newTeamId,
+      oldDepartmentPath: input.oldDepartmentPath,
+      newDepartmentPath: input.newDepartmentPath,
+    },
+    createdAt,
+  };
+}
+
+function teamDeleteAuditEvent(team, blockingAssets, actorUserId, createdAt) {
+  return {
+    id: randomStoreId('audit'),
+    environment: team.environment,
+    traceId: null,
+    eventType: 'team.delete',
+    actorUserId: actorUserId || null,
+    actorType: 'user',
+    siteId: null,
+    routeId: null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      environment: team.environment,
+      teamId: team.id,
+      teamName: team.name,
+      teamType: team.teamType,
+      blockingAssets,
     },
     createdAt,
   };

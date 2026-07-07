@@ -1,18 +1,22 @@
-import { handleAccessKeysApi } from './access-keys.js';
+import { handleAccessKeysApi, handleConsoleAccessKeysApi } from './access-keys.js';
+import { handleConsoleAdminApi } from './admin.js';
+import { handleConsoleApi } from './console.js';
 import { readApiConfig } from './config.js';
 import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
 import { jsonError, jsonOk } from './http.js';
 import { handleInternalApi } from './internal.js';
+import { handleConsoleUsersApi } from './console-users.js';
 import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
 import { createPagesStore } from './store.js';
+import { handleConsoleTeamsApi, handleTeamsApi } from './teams.js';
 import { handleWhoamiApi } from './whoami.js';
 import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 
 export { RoutePointerDO } from './route-snapshot.js';
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.headers.has('X-Pages-Token')) {
       return jsonError(
         'LEGACY_TOKEN_UNSUPPORTED',
@@ -63,6 +67,23 @@ export default {
       if (response) return response;
     }
 
+    if (url.hostname === 'pages-api.internal' && url.pathname.startsWith('/.xd-pages/api/console/')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+
+      const response =
+        (await handleConsoleAdminApi(request, env, config, store)) ||
+        (await handleConsoleAccessKeysApi(request, env, config, store)) ||
+        (await handleConsoleTeamsApi(request, env, config, store)) ||
+        (await handleConsoleUsersApi(request, env, config, store)) ||
+        (await handleConsoleApi(request, env, config, store));
+      if (response) return response;
+    }
+
     if (url.pathname.startsWith('/.xd-pages/api/auth/')) {
       let store;
       try {
@@ -87,6 +108,18 @@ export default {
       if (response) return response;
     }
 
+    if (url.pathname.startsWith('/.xd-pages/api/teams')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+
+      const response = await handleTeamsApi(request, env, config, store);
+      if (response) return response;
+    }
+
     if (url.pathname.startsWith('/.xd-pages/api/access-keys')) {
       let store;
       try {
@@ -108,7 +141,7 @@ export default {
       }
 
       const response = url.pathname.startsWith('/.xd-pages/api/deployments')
-        ? await handleDeploymentsApi(request, env, config, store)
+        ? await handleDeploymentsApi(request, env, config, store, ctx)
         : await handleVersionsApi(request, env, config, store);
       if (response) return response;
     }

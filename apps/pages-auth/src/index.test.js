@@ -71,13 +71,10 @@ test('worker falls back when the injected requestId is unsafe', async () => {
 });
 
 test('worker adds requestId to routed JSON errors', async () => {
-  const response = await worker.fetch(
-    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/start', { method: 'GET' }),
-    {
-      ...testJwtEnv(),
-      createRequestId: () => 'req_test_routed',
-    }
-  );
+  const response = await worker.fetch(new Request('https://auth.pages.xd.team/.xd-pages/cli/login/start', { method: 'GET' }), {
+    ...testJwtEnv(),
+    createRequestId: () => 'req_test_routed',
+  });
 
   assert.equal(response.status, 405);
   assert.equal(response.headers.get('X-Request-Id'), 'req_test_routed');
@@ -255,6 +252,63 @@ test('routes OAuth authorize and callback public endpoints', async () => {
   assert.match(callbackResponse.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
 });
 
+test('OAuth logout clears auth session cookie and redirects to console login', async () => {
+  const response = await worker.fetch(
+    new Request(
+      'https://auth.pages.xd.team/.xd-pages/auth/logout?return_to=https%3A%2F%2Fworkers.xd.team%2Flogin%3FloggedOut%3D1'
+    ),
+    testJwtEnv()
+  );
+  const unsafe = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/logout?return_to=https%3A%2F%2Fevil.example%2F'),
+    testJwtEnv()
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get('Location'), 'https://workers.xd.team/login?loggedOut=1');
+  assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=;/);
+  assert.equal(unsafe.status, 302);
+  assert.equal(unsafe.headers.get('Location'), 'https://workers.xd.team/login?loggedOut=1');
+});
+
+test('OAuth callback redirects console login code to console worker callback', async () => {
+  const env = {
+    ...testJwtEnv(),
+    now: () => 1_800_000_000,
+    consumeOAuthStateRecord: async () => ({
+      kind: 'console',
+      returnTo: '/workspace',
+      environment: 'production',
+      record: {
+        id: 'ost_console',
+        consumedAt: 1_800_000_000,
+      },
+    }),
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({ id: 'usr_123', email: 'user@example.com', employeeStatus: 'active' }),
+    syncSsoUserProfile: async () => ({ user: { userId: 'usr_123', email: 'user@example.com', employeeStatus: 'active' } }),
+    createAuthSessionRecord: async () => ({}),
+    createConsoleLoginCodeRecord: async (input) => {
+      assert.equal(input.stateId, 'ost_console');
+      assert.equal(input.user.userId, 'usr_123');
+      assert.equal(input.user.email, 'user@example.com');
+      return { consoleCode: 'ost_console.console-secret' };
+    },
+  };
+
+  const callbackResponse = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=ost_console.state-secret'),
+    env
+  );
+
+  assert.equal(callbackResponse.status, 302);
+  assert.equal(
+    callbackResponse.headers.get('Location'),
+    'https://workers.xd.team/api/console/auth/callback?code=ost_console.console-secret'
+  );
+  assert.match(callbackResponse.headers.get('Set-Cookie'), /^__Host-pages_auth_session=/);
+});
+
 test('rejects unsupported methods on OAuth endpoints', async () => {
   const response = await worker.fetch(
     new Request('https://auth.pages.xd.team/.xd-pages/auth/callback', { method: 'POST' }),
@@ -311,6 +365,102 @@ test('internal endpoint consumes site code for router service binding', async ()
   });
 });
 
+test('internal endpoint creates console login authorize URL', async () => {
+  const response = await worker.fetch(
+    jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/login-code', {
+      returnTo: '/workspace',
+    }),
+    {
+      ...testJwtEnv(),
+      SSO_AUTHORIZATION_URL: 'https://sso.example.test/oauth/authorize',
+      SSO_CLIENT_ID: 'xd_pages_test',
+    }
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.authorizeUrl, 'https://auth.pages.xd.team/.xd-pages/auth/authorize?console=1&return_to=%2Fworkspace');
+});
+
+test('internal endpoint exchanges console login code once', async () => {
+  const env = {
+    ...testJwtEnv(),
+    now: () => 1_800_000_000,
+    consumeConsoleLoginCodeRecord: async (code, options) => {
+      assert.equal(code, 'ost_console.console-secret');
+      assert.deepEqual(options, { now: 1_800_000_000, environment: 'production' });
+      return {
+        environment: 'production',
+        returnTo: '/workspace',
+        user: {
+          userId: 'usr_1',
+          email: 'user@example.com',
+          employeeStatus: 'active',
+          sessionVersion: 2,
+        },
+      };
+    },
+    isPlatformAdmin: async () => {
+      throw new Error('console exchange must not query platform admins');
+    },
+  };
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/exchange', {
+      code: 'ost_console.console-secret',
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body, {
+    userId: 'usr_1',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+    sessionVersion: 2,
+    environment: 'production',
+    returnTo: '/workspace',
+  });
+});
+
+test('internal console exchange does not require session JWT signing config', async () => {
+  const response = await worker.fetch(
+    jsonRequest('https://pages-auth.internal/.xd-pages/internal/console/exchange', {
+      code: 'ost_console.console-secret',
+    }),
+    {
+      ...testJwtEnv(),
+      PAGES_SESSION_JWT_KEYS: '',
+      PAGES_SESSION_JWT_ACTIVE_KID: '',
+      now: () => 1_800_000_000,
+      consumeConsoleLoginCodeRecord: async () => ({
+        environment: 'production',
+        returnTo: '/workspace',
+        user: {
+          userId: 'usr_1',
+          email: 'user@example.com',
+          employeeStatus: 'active',
+          sessionVersion: 2,
+        },
+      }),
+      isPlatformAdmin: async () => {
+        throw new Error('console exchange must not query platform admins');
+      },
+    }
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), {
+    userId: 'usr_1',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+    sessionVersion: 2,
+    environment: 'production',
+    returnTo: '/workspace',
+  });
+});
+
 test('public auth host cannot call internal endpoints', async () => {
   const consumeResponse = await worker.fetch(
     jsonRequest('https://auth.pages.xd.team/.xd-pages/internal/consume-site-code', {
@@ -325,11 +475,27 @@ test('public auth host cannot call internal endpoints', async () => {
     }),
     testJwtEnv()
   );
+  const consoleLoginResponse = await worker.fetch(
+    jsonRequest('https://auth.pages.xd.team/.xd-pages/internal/console/login-code', {
+      returnTo: '/workspace',
+    }),
+    testJwtEnv()
+  );
+  const consoleExchangeResponse = await worker.fetch(
+    jsonRequest('https://auth.pages.xd.team/.xd-pages/internal/console/exchange', {
+      code: 'ost_console.console-secret',
+    }),
+    testJwtEnv()
+  );
 
   assert.equal(consumeResponse.status, 404);
   assert.equal((await consumeResponse.json()).error.code, 'NOT_FOUND');
   assert.equal(verifyResponse.status, 404);
   assert.equal((await verifyResponse.json()).error.code, 'NOT_FOUND');
+  assert.equal(consoleLoginResponse.status, 404);
+  assert.equal((await consoleLoginResponse.json()).error.code, 'NOT_FOUND');
+  assert.equal(consoleExchangeResponse.status, 404);
+  assert.equal((await consoleExchangeResponse.json()).error.code, 'NOT_FOUND');
 });
 
 test('internal endpoint verifies CLI token for API service binding', async () => {
@@ -436,6 +602,94 @@ test('OAuthStateDO stores, consumes, and rejects repeated consume without leakin
 
   assert.equal(repeatedResponse.status, 409);
   assert.equal((await repeatedResponse.json()).error.code, 'STATE_INVALID');
+});
+
+test('OAuthStateDO creates and consumes console login code without leaking secretHash', async () => {
+  const durableObject = new OAuthStateDO(createDoState(), {});
+  const createResponse = await durableObject.fetch(
+    jsonRequest('https://oauth-state-do/create', {
+      environment: 'production',
+      consoleLogin: true,
+      returnTo: '/workspace',
+      now: 1_800_000_000,
+      ttlSeconds: 300,
+      stateId: 'ost_console',
+      stateSecret: 'state-secret',
+    })
+  );
+
+  assert.equal(createResponse.status, 200);
+  assert.equal(JSON.parse(await createResponse.text()).publicState, 'ost_console.state-secret');
+
+  const consumeResponse = await durableObject.fetch(
+    jsonRequest('https://oauth-state-do/consume', {
+      publicState: 'ost_console.state-secret',
+      now: 1_800_000_001,
+      environment: 'production',
+    })
+  );
+
+  assert.equal(consumeResponse.status, 200);
+
+  const createConsoleCodeResponse = await durableObject.fetch(
+    jsonRequest('https://oauth-state-do/create-console-code', {
+      stateId: 'ost_console',
+      user: { userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active', sessionVersion: 2 },
+      now: 1_800_000_002,
+      ttlSeconds: 60,
+      codeSecret: 'console-secret',
+    })
+  );
+
+  assert.equal(createConsoleCodeResponse.status, 200);
+  const createText = await createConsoleCodeResponse.text();
+  assert.equal(createText.includes('secretHash'), false);
+  assert.equal(JSON.parse(createText).consoleCode, 'ost_console.console-secret');
+
+  const exchangeResponse = await durableObject.fetch(
+    jsonRequest('https://oauth-state-do/consume-console-code', {
+      consoleCode: 'ost_console.console-secret',
+      now: 1_800_000_003,
+      environment: 'production',
+    })
+  );
+
+  assert.equal(exchangeResponse.status, 200);
+  assert.deepEqual(await exchangeResponse.json(), {
+    ok: true,
+    record: {
+      id: 'ost_console',
+      kind: 'console',
+      environment: 'production',
+      siteHost: null,
+      returnTo: '/workspace',
+      cliLoginId: null,
+      deviceCode: null,
+      recoveryAttempt: false,
+      issuedAt: 1_800_000_000,
+      expiresAt: 1_800_000_300,
+      consumedAt: 1_800_000_001,
+      consoleCode: {
+        user: {
+          userId: 'usr_1',
+          email: 'user@example.com',
+          employeeStatus: 'active',
+          sessionVersion: 2,
+        },
+        issuedAt: 1_800_000_002,
+        expiresAt: 1_800_000_062,
+        consumedAt: 1_800_000_003,
+      },
+    },
+    returnTo: '/workspace',
+    environment: 'production',
+    user: {
+      userId: 'usr_1',
+      email: 'user@example.com',
+      employeeStatus: 'active',
+      sessionVersion: 2,
+    },
+  });
 });
 
 test('CliLoginDO confirms and consumes login transactions without leaking secretHash', async () => {

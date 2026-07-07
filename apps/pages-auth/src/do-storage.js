@@ -1,4 +1,5 @@
 import { confirmCliLogin, consumeCliLogin, createCliLogin } from './cli-login.js';
+import { consumeConsoleLoginCode, createConsoleLoginCode } from './console-session.js';
 import { constantTimeEqualHex, sha256Hex } from './id.js';
 import { consumeOAuthSiteCode, consumeOAuthState, createOAuthSiteCode, createOAuthState } from './oauth-state.js';
 import { createSessionRecord, refreshSessionRecord, revokeSessionRecord } from './session-record.js';
@@ -44,6 +45,31 @@ export async function consumeStoredOAuthSiteCode(storage, siteCode, options) {
   return runStorageTransaction(storage, async (transaction) => {
     const record = await transaction.get(SINGLE_RECORD_KEY);
     const consumed = await consumeOAuthSiteCode(siteCode, record, options);
+    await transaction.put(SINGLE_RECORD_KEY, consumed.record);
+    return {
+      ...consumed,
+      record: stripSecretHash(consumed.record),
+    };
+  });
+}
+
+export async function createStoredConsoleLoginCode(storage, input) {
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    if (!record || record.id !== input.stateId) throw new Error('Console login code invalid: unknown state');
+    const created = await createConsoleLoginCode(record, input);
+    await transaction.put(SINGLE_RECORD_KEY, created.record);
+    return {
+      consoleCode: created.consoleCode,
+      record: stripSecretHash(created.record),
+    };
+  });
+}
+
+export async function consumeStoredConsoleLoginCode(storage, consoleCode, options) {
+  return runStorageTransaction(storage, async (transaction) => {
+    const record = await transaction.get(SINGLE_RECORD_KEY);
+    const consumed = await consumeConsoleLoginCode(consoleCode, record, options);
     await transaction.put(SINGLE_RECORD_KEY, consumed.record);
     return {
       ...consumed,
@@ -177,6 +203,11 @@ function stripSecretHash(record) {
     const { secretHash: siteSecretHash, ...safeSiteCode } = safeRecord.siteCode;
     void siteSecretHash;
     safeRecord.siteCode = safeSiteCode;
+  }
+  if (safeRecord.consoleCode && typeof safeRecord.consoleCode === 'object') {
+    const { secretHash: consoleSecretHash, ...safeConsoleCode } = safeRecord.consoleCode;
+    void consoleSecretHash;
+    safeRecord.consoleCode = safeConsoleCode;
   }
   return safeRecord;
 }

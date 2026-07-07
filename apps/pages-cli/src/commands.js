@@ -18,6 +18,7 @@ const VERSION_FLAGS = new Set(['help', 'token', 'accessKey']);
 const LOGIN_FLAGS = new Set(['env', 'token', 'accessKey', 'noOpen', 'json', 'help']);
 const DEPLOY_FLAGS = new Set([
   'env',
+  'team',
   'visibility',
   'fallback',
   'assets',
@@ -36,6 +37,7 @@ const DETECT_FLAGS = new Set(['config', 'fallback', 'workerEntry', 'json', 'help
 const API_READ_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
 const SECRETS_FLAGS = new Set(['env', 'token', 'accessKey', 'stdin', 'json', 'help']);
 const SITES_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help', 'details']);
+const TEAMS_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
 const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'token', 'accessKey']);
 const STATUS_FLAGS = new Set(['env', 'deployment', 'token', 'accessKey', 'json', 'help']);
 const OPEN_FLAGS = new Set(['env', 'print', 'json', 'help', 'token', 'accessKey']);
@@ -85,6 +87,8 @@ export async function executeCommand(argv = [], options = {}) {
       return runOpen(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'sites':
       return runSites(parsed, { ...options, cwd, env, profileDir, profile, output });
+    case 'teams':
+      return runTeams(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'access':
       return runAccess(parsed, { ...options, cwd, env, profileDir, profile, output });
     case 'env':
@@ -245,6 +249,8 @@ async function runDeploy(parsed, context) {
   if (parsed.positional.length > 2) throw usageError('USAGE_INVALID', 'deploy 参数过多。', '请使用 xd-cell deploy <目录> <站点名>。');
   const deployConfig = await resolveDeployConfig(parsed, commandConfig, context, { requireSite: true });
   const { siteSlug } = deployConfig;
+  const teamOption = Object.hasOwn(parsed.flags, 'team') ? parsed.flags.team : commandConfig?.team;
+  const teamId = normalizeTeamId(teamOption);
   outputProgress(parsed, context, '检查发布目录...');
   const decision = await detectPublishTarget(deployConfig.targetPath, {
     requestedFallback: deployConfig.requestedFallback,
@@ -260,6 +266,7 @@ async function runDeploy(parsed, context) {
     const payload = preflightEnvelope({
       mode: 'dry-run',
       site: siteSlug,
+      ...(teamId ? { teamId } : {}),
       configPath: deployConfig.configPath,
       target: deployTargetEnvelope(deployConfig),
       decision,
@@ -304,7 +311,7 @@ async function runDeploy(parsed, context) {
     outputProgress(parsed, context, '准备站点...');
     const visibility = requestedVisibility || 'org';
     try {
-      await client.requestApi('POST', '/.xd-pages/api/sites', { slug: siteSlug, visibility });
+      await client.requestApi('POST', '/.xd-pages/api/sites', siteCreateRequest({ slug: siteSlug, visibility, teamId }));
       siteCreated = true;
     } catch (error) {
       if (error?.code !== 'SITE_SLUG_CONFLICT') throw error;
@@ -317,7 +324,9 @@ async function runDeploy(parsed, context) {
     '/.xd-pages/api/deployments',
     buildPublishPlanDeploymentForm({
       siteSlug,
+      teamId,
       uploadPlan,
+      visibility: requestedVisibility,
       vars: runtime.varsObject,
       varsProvided: runtime.varsProvided,
     }),
@@ -332,6 +341,7 @@ async function runDeploy(parsed, context) {
       mode: 'deploy',
       environment: config.environment,
       site: siteSlug,
+      ...(teamId ? { teamId } : {}),
       configPath: deployConfig.configPath,
       target: deployTargetEnvelope(deployConfig),
       decision: finalDecision,
@@ -360,6 +370,7 @@ async function runDeploy(parsed, context) {
       deployment: deployed.deployment || null,
       version: deployed.version || null,
       route: deployed.route || null,
+      ...(deployed.ownerTransfer ? { ownerTransfer: deployed.ownerTransfer } : {}),
       url,
     })
   ) {
@@ -421,7 +432,7 @@ async function runEnv(parsed, context) {
   throw usageError('ENV_COMMAND_INVALID', 'env 命令不完整或无效。', '请使用 xd-cell env、xd-cell env list 或 xd-cell env use <环境>。');
 }
 
-function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, vars = {}, varsProvided = false }) {
+function buildPublishPlanDeploymentForm({ siteSlug, teamId = '', uploadPlan, visibility = '', vars = {}, varsProvided = false }) {
   const form = new FormData();
   const metadata = {
     schemaVersion: 1,
@@ -441,6 +452,8 @@ function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, vars = {}, varsP
     })),
     controlSignals: uploadPlan.controlSignals,
   };
+  if (teamId) metadata.teamId = teamId;
+  if (visibility) metadata.visibility = visibility;
   if (varsProvided) metadata.vars = vars;
   form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
   for (const file of uploadPlan.assetFiles) {
@@ -450,6 +463,15 @@ function buildPublishPlanDeploymentForm({ siteSlug, uploadPlan, vars = {}, varsP
     form.set(module.partName, new Blob([module.content], { type: module.contentType }), module.moduleName);
   }
   return form;
+}
+
+function siteCreateRequest({ slug, visibility, teamId }) {
+  const body = { slug, visibility };
+  if (teamId) {
+    body.ownerType = 'team';
+    body.teamId = teamId;
+  }
+  return body;
 }
 
 async function resolveDeployConfig(parsed, commandConfig, context, { requireSite, defaultEntry = null } = {}) {
@@ -507,6 +529,21 @@ async function resolveDeployConfig(parsed, commandConfig, context, { requireSite
   };
 }
 
+function normalizeTeamId(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') {
+    throw usageError('TEAM_INVALID', '团队参数无效。', '请传入团队 ID，例如 --team team_xxx。');
+  }
+  const teamId = value.trim();
+  if (!teamId) {
+    throw usageError('TEAM_INVALID', '团队参数无效。', '请传入团队 ID，例如 --team team_xxx。');
+  }
+  if (/[\s/\\]|:\/\//.test(teamId)) {
+    throw usageError('TEAM_INVALID', '团队参数无效。', '请传入团队 ID，例如 --team team_xxx。');
+  }
+  return teamId;
+}
+
 function deployTargetEnvelope(deployConfig) {
   return {
     source: deployConfig.entry,
@@ -527,13 +564,14 @@ async function readCredentialActor(client, credential) {
   }
 }
 
-function preflightEnvelope({ mode, site, configPath, target, decision, uploadPlan, checks, sideEffects, runtime = null }) {
+function preflightEnvelope({ mode, site, teamId, configPath, target, decision, uploadPlan, checks, sideEffects, runtime = null }) {
   const payload = {
     ok: true,
     schemaVersion: 1,
     type: 'preflight',
     mode,
     ...(site ? { site } : {}),
+    ...(teamId ? { teamId } : {}),
     ...(configPath ? { configPath } : {}),
     target,
     decision: decisionSummary(decision),
@@ -676,6 +714,18 @@ async function runSites(parsed, context) {
   }
 
   throw usageError('SITES_COMMAND_INVALID', 'sites 命令无效。', '请使用 xd-cell sites list 或 xd-cell sites info <站点名>。');
+}
+
+async function runTeams(parsed, context) {
+  assertNoPositionals(parsed, 'TEAMS_USAGE_INVALID', 'xd-cell teams 不接受位置参数。');
+  const config = readConfigForCommand(parsed, context);
+  const credential = await resolveCredential(config.environment, context, parsed);
+  const client = createClient(config, credential, context);
+  const result = await client.requestApi('GET', '/.xd-pages/api/teams');
+  const payload = { environment: config.environment, teams: result.teams || [] };
+  if (outputJsonResult(parsed, context, payload)) return 0;
+  outputTeamsSummary(context.output, payload.teams);
+  return 0;
 }
 
 async function runAccess(parsed, context) {
@@ -877,6 +927,7 @@ function allowedFlagsForCommand(parsed) {
   if (parsed.command === 'status') return STATUS_FLAGS;
   if (parsed.command === 'open') return OPEN_FLAGS;
   if (parsed.command === 'sites') return SITES_FLAGS;
+  if (parsed.command === 'teams') return TEAMS_FLAGS;
   if (parsed.command === 'access') return ACCESS_FLAGS;
   if (parsed.command === 'auth') return allowedAuthFlags(parsed);
   if (parsed.command === 'env') return ENV_FLAGS;
@@ -1188,6 +1239,25 @@ function outputSitesSummary(output, sites) {
   }
 }
 
+function outputTeamsSummary(output, teams) {
+  if (!teams.length) {
+    output('暂无团队。');
+    return;
+  }
+  output(['团队 ID', '名称', '类型', '角色', '来源'].join('\t'));
+  for (const team of teams) {
+    output(
+      [
+        team.id || '-',
+        team.name || team.departmentPath || '-',
+        team.teamType || '-',
+        team.currentUserRole || '-',
+        team.currentUserMembershipSource || '-',
+      ].join('\t')
+    );
+  }
+}
+
 function outputSiteInfo(output, environment, site) {
   output(`站点名：${site.slug}`);
   output(`环境：${site.environment || environment}`);
@@ -1384,6 +1454,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
 
 选项：
   --assets <dir>                            Worker 发布时附带静态资源目录。
+  --team <teamId>                           以有发布权限的团队身份发布；新站点归属该团队。
   --visibility <internal|org|acl|owner|disabled>
                                             创建站点时的初始访问范围；默认 org。
   --dry-run                                 只做本地预演，不创建站点、不上传文件。
@@ -1394,12 +1465,13 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
 
 示例：
   xd-cell deploy ./dist demo --visibility org
+  xd-cell deploy ./dist demo --team team_xxx
   xd-cell deploy ./src/index.js demo --assets ./dist
   XD_CELL_API_TOKEN=<token> xd-cell deploy ./dist demo --json
   xd-cell deploy --config xd-cell.config.json
 
 说明：
-  xd-cell.config.json 只保存非敏感发布模板字段，例如 name、main、assets.directory、vars、visibility。
+  xd-cell.config.json 只保存非敏感发布模板字段，例如 name、team、main、assets.directory、vars、visibility。
   vars 是站点级当前 runtime config；配置省略 vars 会沿用站点当前值，显式 {} 会在下一次 Worker deploy 清空。
   静态资源未命中行为使用 assets.not_found_handling 配置；不提供 --fallback。
   CLI 不暴露底层执行平台细节。`;
@@ -1467,6 +1539,16 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
 选项：
   --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
   --details                                 sites list 输出完整站点详情；默认只显示概要。
+  --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
+  --help                                    显示帮助。`;
+  }
+  if (topic === 'teams') {
+    return `用法：xd-cell teams [选项]
+
+查看当前登录用户所在团队，获取可用于 xd-cell deploy --team <teamId> 的团队 ID。
+
+选项：
+  --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
   --help                                    显示帮助。`;
   }
@@ -1539,6 +1621,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   deploy      发布目录到 XD Cell，自动判断发布方式。
   status      查看登录状态、站点或部署状态。
   sites       查看站点列表或详情。
+  teams       查看当前用户所在团队及团队 ID。
   secrets     管理站点级 Worker secret。
   access      查看或调整站点访问范围。
   open        打开或打印站点地址。
@@ -1556,7 +1639,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
 function helpJson(topic) {
   return {
     topic,
-    commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'secrets', 'access', 'open'],
+    commands: ['login', 'logout', 'whoami', 'detect', 'deploy', 'status', 'sites', 'teams', 'secrets', 'access', 'open'],
     commandHelp: 'xd-cell help <命令>',
     jsonOutput: '使用 --json 输出稳定机器可读结果。CLI 不会输出 secret。',
   };

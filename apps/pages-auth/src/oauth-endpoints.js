@@ -1,14 +1,19 @@
 import { browserPageResponse, wantsHtml } from './browser-pages.js';
 import { AUTH_SESSION_COOKIE, buildAuthSessionCookie } from './cookies.js';
 import { createOpaqueToken } from './id.js';
-import { jsonError, readJsonBody, safeRedirect } from './http.js';
+import { jsonError, jsonOk, readJsonBody, safeRedirect } from './http.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import {
+  hydrateUserDepartmentFromDirectory,
+  shouldHydrateUserDepartment,
+} from '../../pages-api/src/department-hydration.js';
 import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
 const CLI_LOGIN_CONFIRM_AUDIENCE = 'pages-cli-login-confirm';
 const SITE_CODE_TTL_SECONDS = 60;
+const CONSOLE_CODE_TTL_SECONDS = 60;
 const CLI_LOGIN_CONFIRM_TTL_SECONDS = 600;
 const ACTIVE_EMPLOYEE_STATUS = 'active';
 
@@ -36,7 +41,7 @@ export async function handleOAuthAuthorize(request, env, config, context = {}) {
     stateInput.deviceCode = cliLogin.deviceCode;
   }
 
-  const sessionRedirect = await tryAuthorizeSiteFromAuthSession(request, env, config, stateInput, now);
+  const sessionRedirect = await tryAuthorizeFromAuthSession(request, env, config, stateInput, now);
   if (sessionRedirect) return sessionRedirect;
 
   if (!config.ssoAuthorizationUrl || !config.ssoClientId) {
@@ -76,14 +81,7 @@ export async function handleOAuthCallback(request, env, config, context = {}) {
   try {
     consumedState = await consumeOAuthStateRecord(env, publicState, { now, environment: config.environment });
   } catch (error) {
-    return authError(
-      request,
-      config,
-      context,
-      'OAUTH_STATE_INVALID',
-      'OAuth state is invalid.',
-      statusForStateError(error)
-    );
+    return authError(request, config, context, 'OAUTH_STATE_INVALID', 'OAuth state is invalid.', statusForStateError(error));
   }
 
   let profile;
@@ -122,6 +120,11 @@ export async function handleOAuthCallback(request, env, config, context = {}) {
   if (authoritativeProfile.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) {
     return authError(request, config, context, 'SSO_PROFILE_INACTIVE', 'SSO profile is not active.', 403);
   }
+
+  authoritativeProfile = mergeHydratedDepartmentPath(
+    authoritativeProfile,
+    await hydrateDepartmentAfterSso(env, config, authoritativeProfile)
+  );
 
   let authSession;
   try {
@@ -168,6 +171,19 @@ export async function handleOAuthCallback(request, env, config, context = {}) {
     return response;
   }
 
+  if (consumedState.kind === 'console') {
+    try {
+      const response = await createConsoleCodeRedirectResponse(env, config, consumedState, authoritativeProfile, now);
+      response.headers.set(
+        'Set-Cookie',
+        buildAuthSessionCookie(authSession.token, { maxAgeSeconds: config.authSessionIdleTtlSeconds })
+      );
+      return response;
+    } catch {
+      return authError(request, config, context, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
+    }
+  }
+
   try {
     const response = await createSiteCodeRedirectResponse(env, consumedState, authoritativeProfile, now);
     response.headers.set(
@@ -178,6 +194,73 @@ export async function handleOAuthCallback(request, env, config, context = {}) {
   } catch {
     return authError(request, config, context, 'AUTH_SESSION_CREATE_FAILED', 'Auth session could not be created.', 500);
   }
+}
+
+export async function handleInternalConsoleLoginCode(request, env, config) {
+  if (request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  if (!isInternalRequest(request)) return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
+
+  let body;
+  try {
+    body = await readJsonBody(request);
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400);
+  }
+
+  try {
+    const returnTo = validateConsoleReturnTo(body.returnTo);
+    return jsonOk({ authorizeUrl: buildConsoleAuthorizeUrl(config, returnTo) });
+  } catch {
+    return jsonError('CONSOLE_LOGIN_INVALID', 'Console login request is invalid.', 400);
+  }
+}
+
+export async function handleInternalConsoleExchange(request, env, config) {
+  if (request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  if (!isInternalRequest(request)) return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
+
+  let body;
+  try {
+    body = await readJsonBody(request);
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400);
+  }
+
+  const code = typeof body.code === 'string' ? body.code : '';
+  const now = Number.isInteger(body.now) ? body.now : readNow(env);
+  if (!code) return jsonError('CONSOLE_LOGIN_INVALID', 'Console login request is invalid.', 400);
+
+  let consumed;
+  try {
+    consumed = await consumeConsoleLoginCodeRecord(env, code, {
+      now,
+      environment: config.environment,
+    });
+  } catch {
+    return jsonError('CONSOLE_LOGIN_INVALID', 'Console login code is invalid.', 400);
+  }
+
+  const user = consumed.user || {};
+  const userId = user.userId || user.id;
+  if (!userId) return jsonError('CONSOLE_LOGIN_INVALID', 'Console login code is invalid.', 400);
+  const sessionVersion = user.sessionVersion || 1;
+  const employeeStatus = user.employeeStatus || 'unknown';
+  const email = user.email || '';
+  let returnTo;
+  try {
+    returnTo = validateConsoleReturnTo(consumed.returnTo);
+  } catch {
+    return jsonError('CONSOLE_LOGIN_INVALID', 'Console login code is invalid.', 400);
+  }
+
+  return jsonOk({
+    userId,
+    email,
+    employeeStatus,
+    sessionVersion,
+    environment: consumed.environment || config.environment,
+    returnTo,
+  });
 }
 
 export async function handleInternalConsumeSiteCode(request, env) {
@@ -265,6 +348,19 @@ export function buildSsoAuthorizeUrl(config, publicState) {
 }
 
 function buildOAuthStateInput(url, config, now) {
+  if (requiredQuery(url, 'console') === '1') {
+    const returnTo = requiredQuery(url, 'return_to') || '/';
+    return {
+      environment: config.environment,
+      consoleLogin: true,
+      returnTo,
+      now,
+      ttlSeconds: config.oauthStateTtlSeconds,
+      stateId: createOpaqueToken('ost'),
+      stateSecret: createOpaqueToken('sec'),
+    };
+  }
+
   const cliLoginId = requiredQuery(url, 'cli_login_id');
   if (cliLoginId) {
     return {
@@ -347,10 +443,10 @@ async function createOAuthSiteCodeRecord(env, input) {
   return response.json();
 }
 
-async function tryAuthorizeSiteFromAuthSession(request, env, config, stateInput, now) {
+async function tryAuthorizeFromAuthSession(request, env, config, stateInput, now) {
   if (stateInput.cliLoginId) return null;
 
-  const user = await readAuthSessionUserProfile(request, env, now);
+  const user = await readAuthSessionUserProfile(request, env, config, now);
   if (!user || user.employeeStatus !== ACTIVE_EMPLOYEE_STATUS) return null;
 
   let created;
@@ -358,7 +454,8 @@ async function tryAuthorizeSiteFromAuthSession(request, env, config, stateInput,
   try {
     created = await createOAuthStateRecord(env, stateInput);
     consumedState = await consumeOAuthStateRecord(env, created.publicState, { now, environment: config.environment });
-    return createSiteCodeRedirectResponse(env, consumedState, user, now);
+    if (stateInput.consoleLogin) return await createConsoleCodeRedirectResponse(env, config, consumedState, user, now);
+    return await createSiteCodeRedirectResponse(env, consumedState, user, now);
   } catch {
     return null;
   }
@@ -380,6 +477,26 @@ async function createSiteCodeRedirectResponse(env, consumedState, profile, now) 
   );
 }
 
+async function createConsoleCodeRedirectResponse(env, config, consumedState, profile, now) {
+  const created = await createConsoleLoginCodeRecord(env, {
+    stateId: consumedState.record.id,
+    user: consoleCodeUserFromProfile(profile),
+    now,
+    ttlSeconds: CONSOLE_CODE_TTL_SECONDS,
+    codeSecret: createOpaqueToken('sec'),
+  });
+  return safeRedirect(buildConsoleCallbackUrl(config.environment, created.consoleCode), 302);
+}
+
+async function createConsoleLoginCodeRecord(env, input) {
+  if (typeof env?.createConsoleLoginCodeRecord === 'function') return env.createConsoleLoginCodeRecord(input);
+
+  const stub = getOAuthStateStub(env, input.stateId);
+  const response = await stub.fetch(jsonDoRequest('https://oauth-state-do/create-console-code', input));
+  if (!response.ok) throw new Error('Console login code create failed');
+  return response.json();
+}
+
 async function consumeOAuthSiteCodeRecord(env, siteCode, options) {
   if (typeof env?.consumeOAuthSiteCodeRecord === 'function') return env.consumeOAuthSiteCodeRecord(siteCode, options);
 
@@ -393,6 +510,23 @@ async function consumeOAuthSiteCodeRecord(env, siteCode, options) {
     })
   );
   if (!response.ok) throw new Error('OAuth site code consume failed');
+  return response.json();
+}
+
+async function consumeConsoleLoginCodeRecord(env, consoleCode, options) {
+  if (typeof env?.consumeConsoleLoginCodeRecord === 'function') {
+    return env.consumeConsoleLoginCodeRecord(consoleCode, options);
+  }
+
+  const stub = getOAuthStateStub(env, parsePublicStateId(consoleCode));
+  const response = await stub.fetch(
+    jsonDoRequest('https://oauth-state-do/consume-console-code', {
+      consoleCode,
+      now: options.now,
+      environment: options.environment,
+    })
+  );
+  if (!response.ok) throw new Error('Console login code consume failed');
   return response.json();
 }
 
@@ -433,6 +567,20 @@ async function createAuthSessionRecord(env, input) {
   return response.json();
 }
 
+async function refreshAuthSessionRecord(env, input) {
+  if (typeof env?.refreshAuthSessionRecord === 'function') {
+    return env.refreshAuthSessionRecord(input.sid, {
+      now: input.now,
+      idleTtlSeconds: input.idleTtlSeconds,
+    });
+  }
+
+  const stub = getAuthSessionStub(env, input.sid);
+  const response = await stub.fetch(jsonDoRequest('https://auth-session-do/refresh', input));
+  if (!response.ok) throw new Error('Auth session refresh failed');
+  return response.json();
+}
+
 async function syncSsoUserProfile(env, profile, now) {
   if (typeof env?.syncSsoUserProfile === 'function') return env.syncSsoUserProfile(profile, { now });
 
@@ -452,7 +600,31 @@ async function syncSsoUserProfile(env, profile, now) {
   });
 }
 
-async function readAuthSessionUserProfile(request, env, now) {
+async function hydrateDepartmentAfterSso(env, config, profile) {
+  if (typeof env?.hydrateDepartmentAfterSso === 'function') {
+    try {
+      return await env.hydrateDepartmentAfterSso(profile, { environment: config.environment });
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    return await hydrateUserDepartmentFromDirectory({
+      env,
+      store: createPagesStore(env),
+      environment: config.environment,
+      user: {
+        id: profile?.userId,
+        email: profile?.email,
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function readAuthSessionUserProfile(request, env, config, now) {
   const token = readCookie(request.headers.get('Cookie'), AUTH_SESSION_COOKIE);
   if (!token) return null;
 
@@ -468,6 +640,21 @@ async function readAuthSessionUserProfile(request, env, now) {
   }
 
   const userId = payload.sub;
+  const sid = typeof payload.sid === 'string' ? payload.sid : '';
+  if (!sid) return null;
+
+  let authSessionRecord;
+  try {
+    authSessionRecord = await refreshAuthSessionRecord(env, {
+      sid,
+      now,
+      idleTtlSeconds: config.authSessionIdleTtlSeconds,
+    });
+  } catch {
+    return null;
+  }
+  if (authSessionRecord?.userId !== userId || authSessionRecord?.purpose !== 'auth_session') return null;
+
   let user;
   try {
     user =
@@ -479,12 +666,26 @@ async function readAuthSessionUserProfile(request, env, now) {
   }
   if (!user) return null;
 
-  return {
+  let profile = {
     userId: user.userId || user.id || userId,
     email: user.email || '',
     employeeStatus: user.employeeStatus || 'unknown',
-    departments: Array.isArray(user.departments) ? user.departments : [],
+    departments: mergeDepartments(user.departments, user.departmentPath),
     sessionVersion: user.sessionVersion || 1,
+  };
+
+  if (shouldHydrateUserDepartment(user, env)) {
+    profile = mergeHydratedDepartmentPath(profile, await hydrateDepartmentAfterSso(env, config, profile));
+  }
+
+  return profile;
+}
+
+function mergeHydratedDepartmentPath(profile, hydration) {
+  const departmentPath = hydration?.departmentPath || hydration?.user?.departmentPath;
+  return {
+    ...profile,
+    departments: mergeDepartments(profile?.departments, departmentPath),
   };
 }
 
@@ -521,6 +722,20 @@ function buildSiteCallbackUrl(siteHost, siteCode, returnTo, { recoveryAttempt = 
   url.searchParams.set('code', siteCode);
   if (returnTo) url.searchParams.set('return_to', returnTo);
   if (recoveryAttempt) url.searchParams.set('auth_recovery', '1');
+  return url.toString();
+}
+
+function buildConsoleAuthorizeUrl(config, returnTo) {
+  const url = new URL('/.xd-pages/auth/authorize', config.authBase);
+  url.searchParams.set('console', '1');
+  url.searchParams.set('return_to', returnTo);
+  return url.toString();
+}
+
+function buildConsoleCallbackUrl(environment, consoleCode) {
+  const host = environment === 'staging' ? 'staging.workers.xd.team' : 'workers.xd.team';
+  const url = new URL(`https://${host}/api/console/auth/callback`);
+  url.searchParams.set('code', consoleCode);
   return url.toString();
 }
 
@@ -843,12 +1058,25 @@ function normalizeDepartments(value) {
   return [...new Set(value.map((item) => normalizeOptionalString(item)).filter(Boolean))];
 }
 
+function mergeDepartments(value, departmentPath) {
+  return normalizeDepartments([...(Array.isArray(value) ? value : []), departmentPath]);
+}
+
 function siteCodeUserFromProfile(profile) {
   return {
     id: profile.userId,
     email: profile.email,
     employeeStatus: profile.employeeStatus,
     departments: profile.departments,
+    sessionVersion: profile.sessionVersion,
+  };
+}
+
+function consoleCodeUserFromProfile(profile) {
+  return {
+    userId: profile.userId,
+    email: profile.email,
+    employeeStatus: profile.employeeStatus,
     sessionVersion: profile.sessionVersion,
   };
 }
@@ -933,6 +1161,25 @@ async function fetchSsoProfile(env, config, { accessToken }) {
 
 function isInternalRequest(request) {
   return new URL(request.url).hostname === 'pages-auth.internal';
+}
+
+function validateConsoleReturnTo(returnTo) {
+  const value = String(returnTo || '').trim() || '/';
+  if (value.startsWith('//')) throw new Error('Console return_to is invalid');
+  let url;
+  try {
+    url = new URL(value, 'https://workers.xd.team');
+  } catch {
+    throw new Error('Console return_to is invalid');
+  }
+  if (url.origin !== 'https://workers.xd.team' || url.username || url.password || url.hash) {
+    throw new Error('Console return_to is invalid');
+  }
+
+  const path = `${url.pathname}${url.search}`;
+  if (url.pathname === '/' || url.pathname === '/workspace' || url.pathname.startsWith('/workspace/')) return path;
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return path;
+  throw new Error('Console return_to is invalid');
 }
 
 function readEnvironmentForInternal(env) {

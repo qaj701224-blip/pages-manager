@@ -66,6 +66,153 @@ test('deploy requires positional dir and site, then creates and deploys with a C
   assert.equal(Object.prototype.hasOwnProperty.call(metadata, 'vars'), false);
 });
 
+test('deploy supports publishing a site as a team owner', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const calls = [];
+  const output = [];
+
+  await executeCommand(['deploy', '.', 'docs', '--team', 'team_1', '--visibility', 'internal', '--json'], {
+    cwd: dir,
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      { site: { id: 'site_1', slug: 'docs', environment: 'production', url: 'https://docs.pages.xd.team' } },
+      {
+        deployment: { id: 'dep_1', status: 'succeeded' },
+        version: { id: 'ver_1' },
+        route: { hostname: 'docs.pages.xd.team' },
+        ownerTransfer: {
+          siteSlug: 'docs',
+          fromOwner: { type: 'user', id: 'usr_1' },
+          toOwner: { type: 'team', id: 'team_1' },
+          source: 'deploy',
+        },
+      },
+    ]),
+    idempotencyKey: () => 'idem_1',
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/sites');
+  assert.deepEqual(await calls[0].json(), {
+    slug: 'docs',
+    visibility: 'internal',
+    ownerType: 'team',
+    teamId: 'team_1',
+  });
+  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/deployments');
+  const metadata = JSON.parse(await (await calls[1].formData()).get('metadata').text());
+  assert.equal(metadata.siteSlug, 'docs');
+  assert.equal(metadata.teamId, 'team_1');
+  assert.deepEqual(JSON.parse(output[0]).ownerTransfer, {
+    siteSlug: 'docs',
+    fromOwner: { type: 'user', id: 'usr_1' },
+    toOwner: { type: 'team', id: 'team_1' },
+    source: 'deploy',
+  });
+});
+
+test('teams lists current user teams so deploy can use the team id', async () => {
+  const calls = [];
+  const output = [];
+
+  const exitCode = await executeCommand(['teams'], {
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      {
+        teams: [
+          {
+            id: 'team_department_web',
+            name: '心动/平台支撑部/Web',
+            teamType: 'department',
+            departmentPath: '心动/平台支撑部/Web',
+            status: 'active',
+            currentUserRole: 'admin',
+            currentUserMembershipSource: 'department_auto',
+          },
+          {
+            id: 'team_docs',
+            name: 'Docs Team',
+            teamType: 'custom',
+            departmentPath: null,
+            status: 'active',
+            currentUserRole: 'publisher',
+            currentUserMembershipSource: 'manual',
+          },
+        ],
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/teams');
+  assert.equal(calls[0].headers.get('Authorization'), 'Bearer cli_token_secret');
+  assert.deepEqual(output, [
+    '团队 ID\t名称\t类型\t角色\t来源',
+    'team_department_web\t心动/平台支撑部/Web\tdepartment\tadmin\tdepartment_auto',
+    'team_docs\tDocs Team\tcustom\tpublisher\tmanual',
+  ]);
+});
+
+test('teams supports JSON output for agents and scripts', async () => {
+  const calls = [];
+  const output = [];
+
+  const exitCode = await executeCommand(['teams', '--json'], {
+    env: { PAGES_CLI_ENV: 'production' },
+    secretStore: fakeSecretStore({ type: 'cli_token', value: 'cli_token_secret' }),
+    fetch: fakeFetch(calls, [
+      {
+        teams: [
+          {
+            id: 'team_docs',
+            name: 'Docs Team',
+            teamType: 'custom',
+            status: 'active',
+            currentUserRole: 'publisher',
+          },
+        ],
+      },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/teams');
+  assert.deepEqual(JSON.parse(output.join('\n')), {
+    ok: true,
+    schemaVersion: 1,
+    environment: 'production',
+    teams: [
+      {
+        id: 'team_docs',
+        name: 'Docs Team',
+        teamType: 'custom',
+        status: 'active',
+        currentUserRole: 'publisher',
+      },
+    ],
+  });
+});
+
+test('deploy rejects an explicitly empty team flag instead of falling back to config', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  await writeFile(path.join(dir, 'xd-cell.config.json'), JSON.stringify({ name: 'docs', team: 'team_config' }));
+
+  await assert.rejects(
+    () =>
+      executeCommand(['deploy', '.', 'docs', '--team=', '--dry-run'], {
+        cwd: dir,
+        output: () => {},
+      }),
+    { code: 'TEAM_INVALID' }
+  );
+});
+
 test('deploy omits vars metadata when xd-cell.config.json does not declare vars', async () => {
   const dir = await tempProject();
   await mkdir(path.join(dir, 'dist'));
@@ -668,7 +815,7 @@ test('deploy uses explicit token as a one-shot credential without local secret r
   const calls = [];
   const output = [];
 
-  await executeCommand(['deploy', '.', 'docs', '--token', 'xdp_prod_ak_1_secret', '--json'], {
+  await executeCommand(['deploy', '.', 'docs', '--token', 'xdp_prod_ak_1_secret', '--visibility', 'internal', '--json'], {
     cwd: dir,
     env: {},
     profile: productionProfile(),
@@ -698,6 +845,7 @@ test('deploy uses explicit token as a one-shot credential without local secret r
   assert.equal(calls[1].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
   const metadata = JSON.parse(await (await calls[1].formData()).get('metadata').text());
   assert.equal(metadata.siteSlug, 'docs');
+  assert.equal(metadata.visibility, 'internal');
   assert.equal(metadata.publishPlan.deploymentShape, 'assets-only');
   assert.deepEqual(JSON.parse(output.join('\n')), {
     ok: true,
@@ -885,6 +1033,31 @@ test('deploy --dry-run --json packages locally without network side effects', as
   assert.equal(body.sideEffects.willDeploy, false);
   assert.equal(body.uploadPlanSummary.fileCount, 1);
   assert.equal('artifactKind' in body, false);
+});
+
+test('deploy --dry-run --json includes selected team id in preflight output', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const output = [];
+
+  const exitCode = await executeCommand(['deploy', '.', 'docs', '--team', 'team_docs', '--dry-run', '--json'], {
+    cwd: dir,
+    secretStore: {
+      get: async () => {
+        throw new Error('dry-run should not read secrets');
+      },
+    },
+    fetch: async () => {
+      throw new Error('dry-run should not access network');
+    },
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const body = JSON.parse(output.join('\n'));
+  assert.equal(body.mode, 'dry-run');
+  assert.equal(body.site, 'docs');
+  assert.equal(body.teamId, 'team_docs');
 });
 
 test('deploy auto-discovers xd-cell.config.json for dry-run without network side effects', async () => {
@@ -1553,6 +1726,7 @@ test('prints command-specific deploy help with parameters and agent-safe output 
     const text = output.join('\n');
     assert.match(text, /xd-cell deploy <entry> <site>/);
     assert.match(text, /--visibility <internal\|org\|acl\|owner\|disabled>/);
+    assert.match(text, /--team <teamId>/);
     assert.match(text, /--token <token>/);
     assert.match(text, /--config <file>/);
     assert.match(text, /--json/);

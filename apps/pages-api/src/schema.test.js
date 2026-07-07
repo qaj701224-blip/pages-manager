@@ -21,9 +21,14 @@ test('schema defines all v2 authority tables', () => {
     'access_keys',
     'auth_sessions_index',
     'audit_events',
+    'teams',
+    'team_members',
+    'platform_admins',
+    'webhook_subscriptions',
+    'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 10);
+  assert.equal(SCHEMA_VERSION, 11);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -43,6 +48,24 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_access_keys_owner/);
+  assert.match(sql, /department_path TEXT/);
+  assert.match(sql, /department_checked_at TEXT/);
+  assert.match(sql, /owner_type TEXT NOT NULL DEFAULT 'user'/);
+  assert.match(sql, /owner_id TEXT/);
+  assert.match(sql, /team_type TEXT NOT NULL/);
+  assert.match(sql, /membership_source TEXT NOT NULL/);
+  assert.match(sql, /role_overridden_at TEXT/);
+  assert.match(sql, /removed_at TEXT/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_department_active/);
+  assert.match(sql, /WHERE team_type = 'department' AND status = 'active'/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_team_members_team_user/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_team_members_user_active/);
+  assert.match(sql, /encrypted_url_ciphertext TEXT NOT NULL/);
+  assert.match(sql, /url_fingerprint TEXT NOT NULL/);
+  assert.match(sql, /payload_hash TEXT/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_webhook_subscriptions_environment/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_subscription/);
+  assert.doesNotMatch(sql, /\bwebhook_signing_secret\b/);
   assert.match(sql, /execution_provider TEXT/);
   assert.match(sql, /dispatch_binding_name TEXT/);
   assert.match(sql, /deployment_shape TEXT/);

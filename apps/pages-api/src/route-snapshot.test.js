@@ -67,6 +67,38 @@ test('builds immutable route snapshot from authority records', () => {
   });
 });
 
+test('team-owned route snapshots do not publish the creator as owner', () => {
+  const snapshot = buildRouteSnapshot({
+    site: {
+      id: 'site_team',
+      slug: 'team-docs',
+      siteUuid: 'uuid_team',
+      ownerType: 'team',
+      ownerId: 'team_1',
+      ownerUserId: 'usr_creator',
+    },
+    route: {
+      id: 'route_team',
+      hostname: 'team-docs.pages.xd.team',
+      environment: 'production',
+      runtime: 'wfp',
+      activeVersionId: 'ver_team',
+      visibility: 'acl',
+      policyVersion: 1,
+      routeGeneration: 2,
+      routeStatus: 'active',
+      cacheTier: 'sensitive',
+    },
+    version: {
+      id: 'ver_team',
+      contentHash: 'sha256:def',
+      ...workerOnlyDecision(),
+    },
+  });
+
+  assert.equal(snapshot.ownerUserId, null);
+});
+
 test('writes immutable snapshot and pointer records', async () => {
   const writes = new Map();
   const snapshot = buildRouteSnapshot({

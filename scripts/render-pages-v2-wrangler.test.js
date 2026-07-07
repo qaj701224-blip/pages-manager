@@ -11,6 +11,7 @@ const pagesApiWranglerPath = join(repoRoot, 'apps/pages-api/wrangler.toml');
 const pagesAuthWranglerPath = join(repoRoot, 'apps/pages-auth/wrangler.toml');
 const pagesRouterWranglerPath = join(repoRoot, 'apps/pages-router/wrangler.toml');
 const kvGatewayWranglerPath = join(repoRoot, 'apps/kv-gateway/wrangler.toml');
+const pagesConsoleWranglerPath = join(repoRoot, 'apps/pages-console/wrangler.toml');
 const pagesApiStagingTemplatePath = join(repoRoot, 'apps/pages-api/wrangler.staging.template.toml');
 const pagesRouterProductionTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.production.template.toml');
 const pagesRouterStagingTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.staging.template.toml');
@@ -33,6 +34,7 @@ const baseEnv = {
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606',
   PAGES_NORMAL_WORKER_SLOT_BINDING_COUNT: '2',
+  PAGES_USER_WORKER_VPC_TUNNEL_ID: '',
   PAGES_SESSION_JWT_ACTIVE_KID: 'pages-session-2026-06',
   PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606',
   PAGES_CAP_JWT_ACTIVE_KID: 'pages-cap-2026-06',
@@ -50,6 +52,7 @@ afterEach(() => {
   rmSync(pagesAuthWranglerPath, { force: true });
   rmSync(pagesRouterWranglerPath, { force: true });
   rmSync(kvGatewayWranglerPath, { force: true });
+  rmSync(pagesConsoleWranglerPath, { force: true });
   for (const [path, content] of originalTemplates.entries()) {
     writeFileSync(path, content);
   }
@@ -83,6 +86,11 @@ function renderKvGateway(environment, env = baseEnv) {
   return readFileSync(kvGatewayWranglerPath, 'utf8');
 }
 
+function renderPagesConsole(environment, env = baseEnv) {
+  renderApp('apps/pages-console', environment, env);
+  return readFileSync(pagesConsoleWranglerPath, 'utf8');
+}
+
 function runRenderer(args, env = baseEnv) {
   return spawnSync(process.execPath, [scriptPath, ...args], {
     cwd: repoRoot,
@@ -101,24 +109,21 @@ function setRouterTemplateExecutionMode(environment, mode) {
   const path = environment === 'staging' ? pagesRouterStagingTemplatePath : pagesRouterProductionTemplatePath;
   const content = readFileSync(path, 'utf8').replace(
     /PAGES_EXECUTION_MODE = "(?:normal-worker-slot|wfp)"/,
-    `PAGES_EXECUTION_MODE = "${mode}"`,
+    `PAGES_EXECUTION_MODE = "${mode}"`
   );
   writeFileSync(path, content);
 }
 
 function setPagesAuthTemplateSsoTokenUrl(environment, value) {
   const path = environment === 'staging' ? pagesAuthStagingTemplatePath : pagesAuthProductionTemplatePath;
-  const content = readFileSync(path, 'utf8').replace(
-    /^SSO_TOKEN_URL = "[^"]+"$/m,
-    `SSO_TOKEN_URL = "${value}"`,
-  );
+  const content = readFileSync(path, 'utf8').replace(/^SSO_TOKEN_URL = "[^"]+"$/m, `SSO_TOKEN_URL = "${value}"`);
   writeFileSync(path, content);
 }
 
 function setPagesApiStagingTemplateWfpDispatchNamespace(value) {
   const content = readFileSync(pagesApiStagingTemplatePath, 'utf8').replace(
     /^WFP_DISPATCH_NAMESPACE = "[^"]+"$/m,
-    `WFP_DISPATCH_NAMESPACE = "${value}"`,
+    `WFP_DISPATCH_NAMESPACE = "${value}"`
   );
   writeFileSync(pagesApiStagingTemplatePath, content);
 }
@@ -132,11 +137,12 @@ test('generated pages v2 wrangler configs are ignored', () => {
       'apps/pages-auth/wrangler.toml',
       'apps/pages-router/wrangler.toml',
       'apps/kv-gateway/wrangler.toml',
+      'apps/pages-console/wrangler.toml',
     ],
     {
       cwd: repoRoot,
       encoding: 'utf8',
-    },
+    }
   );
 
   assert.equal(result.status, 0);
@@ -144,6 +150,7 @@ test('generated pages v2 wrangler configs are ignored', () => {
   assert.match(result.stdout, /apps\/pages-auth\/wrangler\.toml/);
   assert.match(result.stdout, /apps\/pages-router\/wrangler\.toml/);
   assert.match(result.stdout, /apps\/kv-gateway\/wrangler\.toml/);
+  assert.match(result.stdout, /apps\/pages-console\/wrangler\.toml/);
 });
 
 test('production pages-api config renders explicit production template values only', () => {
@@ -232,13 +239,20 @@ test('pages-api config renders optional user Worker VPC Tunnel ID from deploymen
   assert.match(emptyConfig, /PAGES_USER_WORKER_VPC_TUNNEL_ID = ""/);
 });
 
+test('pages-api config binds XDS outbound requests to the office VPC network', () => {
+  const config = renderPagesApi('production', {
+    ...baseEnv,
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+  });
+
+  assert.match(config, /\[\[vpc_networks\]\]\nbinding = "XD_OFFICE_NET"\ntunnel_id = "test-office-tunnel-id"/);
+
+  const emptyConfig = renderPagesApi('staging', withoutEnv('PAGES_USER_WORKER_VPC_TUNNEL_ID'));
+  assert.doesNotMatch(emptyConfig, /\[\[vpc_networks\]\]/);
+});
+
 test('pages-api config requires resource ids and keeps template execution mode', () => {
-  for (const name of [
-    'CLOUDFLARE_ACCOUNT_ID',
-    'D1_DATABASE_ID',
-    'ROUTE_SNAPSHOTS_KV_ID',
-    'IP_ALLOWLIST',
-  ]) {
+  for (const name of ['CLOUDFLARE_ACCOUNT_ID', 'D1_DATABASE_ID', 'ROUTE_SNAPSHOTS_KV_ID', 'IP_ALLOWLIST']) {
     const result = runRenderer(['apps/pages-api', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);
@@ -268,24 +282,18 @@ test('production pages-auth config renders explicit production auth settings onl
   assert.match(config, /SITE_SESSION_IDLE_TTL_SECONDS = "604800"/);
   assert.match(config, /SITE_SESSION_ABSOLUTE_TTL_SECONDS = "2592000"/);
   assert.match(config, /PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"/);
-  assert.match(
-    config,
-    /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/,
-  );
+  assert.match(config, /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
   assert.match(config, /SSO_AUTHORIZATION_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/authorize"/);
-  assert.match(
-    config,
-    /SSO_REDIRECT_URI = "https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/auth\/callback"/,
-  );
+  assert.match(config, /SSO_REDIRECT_URI = "https:\/\/auth\.pages\.xd\.team\/\.xd-pages\/auth\/callback"/);
   assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
   assert.doesNotMatch(config, /SSO_ALLOWED_USER_SCOPE/);
+  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+  assert.doesNotMatch(config, /service = "pages-api"/);
   assert.match(config, /binding = "PAGES_METADATA"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
-  assert.doesNotMatch(config, /service = "pages-api"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /service = "pages-api-staging"/);
@@ -304,10 +312,7 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.match(config, /PAGES_ENV = "staging"/);
   assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
   assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
-  assert.match(
-    config,
-    /SSO_REDIRECT_URI = "https:\/\/auth-staging\.pages\.xd\.team\/\.xd-pages\/auth\/callback"/,
-  );
+  assert.match(config, /SSO_REDIRECT_URI = "https:\/\/auth-staging\.pages\.xd\.team\/\.xd-pages\/auth\/callback"/);
   assert.match(config, /SSO_AUTHORIZATION_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/authorize"/);
   assert.match(config, /SSO_TOKEN_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/accessToken"/);
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
@@ -315,6 +320,19 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
   assert.doesNotMatch(config, /binding = "PAGES_API"/);
   assert.doesNotMatch(config, /service = "pages-api-staging"/);
+});
+
+test('pages-auth config binds XDS outbound requests to the office VPC network when configured', () => {
+  const config = renderPagesAuth('production', {
+    ...baseEnv,
+    PAGES_USER_WORKER_VPC_TUNNEL_ID: 'test-office-tunnel-id',
+  });
+
+  assert.match(config, /\[\[vpc_networks\]\]\nbinding = "XD_OFFICE_NET"\ntunnel_id = "test-office-tunnel-id"/);
+  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+
+  const emptyConfig = renderPagesAuth('staging', withoutEnv('PAGES_USER_WORKER_VPC_TUNNEL_ID'));
+  assert.doesNotMatch(emptyConfig, /\[\[vpc_networks\]\]/);
 });
 
 test('pages-auth config keeps committed ttl, SSO endpoints, and client id defaults', () => {
@@ -432,10 +450,7 @@ test('staging pages-router config renders explicit staging fast-path settings', 
   assert.match(config, /PAGES_EXECUTION_MODE = "wfp"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_MIN_AVAILABLE = "20"/);
   assert.match(config, /PAGES_NORMAL_WORKER_SLOT_EXPAND_BY = "20"/);
-  assert.match(
-    config,
-    /ROUTER_JWKS_URL = "https:\/\/auth-staging\.pages\.xd\.team\/\.xd-pages\/jwks\.json"/,
-  );
+  assert.match(config, /ROUTER_JWKS_URL = "https:\/\/auth-staging\.pages\.xd\.team\/\.xd-pages\/jwks\.json"/);
   assert.match(config, /service = "pages-auth-staging"/);
   assert.match(config, /binding = "XD_PAGES_KV_GATEWAY"/);
   assert.match(config, /service = "pages-kv-gateway-staging"/);
@@ -500,10 +515,7 @@ test('pages-router config keeps committed cache and JWT ttl defaults', () => {
 });
 
 test('pages-router config requires allowlist and route snapshot store', () => {
-  for (const name of [
-    'ROUTER_IP_ALLOWLIST_CIDRS',
-    'ROUTE_SNAPSHOTS_KV_ID',
-  ]) {
+  for (const name of ['ROUTER_IP_ALLOWLIST_CIDRS', 'ROUTE_SNAPSHOTS_KV_ID']) {
     const result = runRenderer(['apps/pages-router', 'production'], withoutEnv(name));
 
     assert.notEqual(result.status, 0, `${name} should be required`);
@@ -545,6 +557,80 @@ test('kv-gateway config requires site data KV id', () => {
     assert.notEqual(result.status, 0, `${name} should be required`);
     assert.match(`${result.stderr}${result.stdout}`, new RegExp(name));
   }
+});
+
+test('production pages-console config renders exact console host without wildcard route', () => {
+  const config = renderPagesConsole('production');
+
+  assert.match(config, /name = "pages-console"/);
+  assert.match(config, /account_id = "dummy-account"/);
+  assert.match(config, /workers_dev = false/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
+  assert.match(config, /pattern = "workers\.xd\.team\/\*"/);
+  assert.match(config, /zone_name = "xd\.team"/);
+  assert.match(config, /PAGES_ENV = "production"/);
+  assert.match(config, /PUBLIC_API_BASE = "https:\/\/api\.pages\.xd\.team"/);
+  assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth\.pages\.xd\.team"/);
+  assert.match(config, /PUBLIC_CONSOLE_BASE = "https:\/\/workers\.xd\.team"/);
+  assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
+  assert.match(config, /PAGES_SESSION_JWT_ISSUER = "pages-auth"/);
+  assert.match(config, /PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"/);
+  assert.match(config, /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
+  assert.match(config, /binding = "PAGES_API"/);
+  assert.match(config, /service = "pages-api"/);
+  assert.match(config, /binding = "PAGES_AUTH"/);
+  assert.match(config, /service = "pages-auth"/);
+  assert.match(config, /\[assets\]\ndirectory = "\.\/dist\/client"\nbinding = "ASSETS"/);
+  assert.match(config, /run_worker_first = true/);
+  assert.doesNotMatch(config, /pattern = "\*\.workers\.xd\.team\/\*"/);
+  assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
+  assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
+  assert.doesNotMatch(config, /service = "pages-(?:api|auth)-staging"/);
+  assert.doesNotMatch(config, /CF_API_TOKEN|CLOUDFLARE_API_TOKEN|SSO_CLIENT_SECRET|CONSOLE_SESSION_SECRET/);
+  assert.doesNotMatch(config, /__[A-Z0-9_]+__/);
+});
+
+test('staging pages-console config renders staging admin-only console host', () => {
+  const config = renderPagesConsole('staging');
+
+  assert.match(config, /name = "pages-console-staging"/);
+  assert.match(config, /pattern = "staging\.workers\.xd\.team\/\*"/);
+  assert.match(config, /PAGES_ENV = "staging"/);
+  assert.match(config, /PUBLIC_API_BASE = "https:\/\/api-staging\.pages\.xd\.team"/);
+  assert.match(config, /PUBLIC_AUTH_BASE = "https:\/\/auth-staging\.pages\.xd\.team"/);
+  assert.match(config, /PUBLIC_CONSOLE_BASE = "https:\/\/staging\.workers\.xd\.team"/);
+  assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
+  assert.match(config, /PAGES_SESSION_JWT_ISSUER = "pages-auth"/);
+  assert.match(config, /PAGES_SESSION_JWT_ACTIVE_KID = "pages-session-2026-06"/);
+  assert.match(config, /PAGES_SESSION_JWT_KEYS = "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"/);
+  assert.match(config, /service = "pages-api-staging"/);
+  assert.match(config, /service = "pages-auth-staging"/);
+  assert.match(config, /run_worker_first = true/);
+  assert.doesNotMatch(config, /pattern = "\*-staging\.workers\.xd\.team\/\*"/);
+});
+
+test('pages-console config requires account id, IP allowlist, and session signing key registry', () => {
+  for (const name of [
+    'CLOUDFLARE_ACCOUNT_ID',
+    'IP_ALLOWLIST',
+    'PAGES_SESSION_JWT_ACTIVE_KID',
+    'PAGES_SESSION_JWT_KEYS',
+  ]) {
+    const result = runRenderer(['apps/pages-console', 'production'], withoutEnv(name));
+
+    assert.notEqual(result.status, 0, `${name} should be required`);
+    assert.match(`${result.stderr}${result.stdout}`, new RegExp(name));
+  }
+});
+
+test('pages-console config validates IP allowlist and rejects unresolved placeholders', () => {
+  const unsafeAllowlist = runRenderer(['apps/pages-console', 'production'], {
+    ...baseEnv,
+    IP_ALLOWLIST: '10.0.0.0/8;bad',
+  });
+
+  assert.notEqual(unsafeAllowlist.status, 0);
+  assert.match(`${unsafeAllowlist.stderr}${unsafeAllowlist.stdout}`, /IP_ALLOWLIST contains unsupported characters/);
 });
 
 test('renderer rejects unsupported apps and environments', () => {

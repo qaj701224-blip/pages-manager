@@ -266,6 +266,102 @@ test('put and delete user worker secret use dispatch namespace script secrets en
   assert.equal(calls[1].url, `${scriptUrl}/secrets/API_TOKEN`);
 });
 
+test('updateUserWorkerBindings patches script settings and preserves non-plain-text bindings', async () => {
+  const calls = [];
+  const scriptUrl =
+    'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/xd-cell-workers-staging' +
+    '/scripts/pages-v2-staging-docs-ver-1';
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      calls.push(request.clone());
+      if (request.method === 'GET') {
+        return Response.json({
+          success: true,
+          result: {
+            bindings: [
+              { type: 'assets', name: 'ASSETS' },
+              { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway-staging' },
+              { type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'test-office-tunnel-id' },
+              { type: 'secret_text', name: 'API_TOKEN' },
+              { type: 'plain_text', name: 'API_BASE', text: 'https://old.example.com' },
+              { type: 'plain_text', name: 'OLD_FLAG', text: '1' },
+            ],
+          },
+        });
+      }
+      return Response.json({ success: true, result: { id: 'pages-v2-staging-docs-ver-1' } });
+    },
+  });
+
+  await client.updateUserWorkerBindings('pages-v2-staging-docs-ver-1', {
+    bindings: [{ type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' }],
+  });
+
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[0].url, `${scriptUrl}/settings`);
+  assert.equal(calls[1].method, 'PATCH');
+  assert.equal(calls[1].url, `${scriptUrl}/settings`);
+  const form = await calls[1].formData();
+  assert.deepEqual(JSON.parse(await form.get('settings').text()), {
+    bindings: [
+      { type: 'assets', name: 'ASSETS' },
+      { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway-staging' },
+      { type: 'vpc_network', name: 'XD_OFFICE_NET', tunnel_id: 'test-office-tunnel-id' },
+      { type: 'secret_text', name: 'API_TOKEN' },
+      { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
+    ],
+  });
+  assert.deepEqual([...form.keys()], ['settings']);
+});
+
+test('updateUserWorkerBindings removes plain-text bindings on delete without touching assets or secrets', async () => {
+  const calls = [];
+  const scriptUrl =
+    'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/xd-cell-workers-staging' +
+    '/scripts/pages-v2-staging-docs-ver-1';
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      calls.push(request.clone());
+      if (request.method === 'GET') {
+        return Response.json({
+          success: true,
+          result: {
+            bindings: [
+              { type: 'assets', name: 'ASSETS' },
+              { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway-staging' },
+              { type: 'secret_text', name: 'API_TOKEN' },
+              { type: 'plain_text', name: 'API_BASE', text: 'https://old.example.com' },
+            ],
+          },
+        });
+      }
+      return Response.json({ success: true, result: { id: 'pages-v2-staging-docs-ver-1' } });
+    },
+  });
+
+  await client.updateUserWorkerBindings('pages-v2-staging-docs-ver-1', { bindings: [] });
+
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[1].method, 'PATCH');
+  assert.equal(calls[1].url, `${scriptUrl}/settings`);
+  const form = await calls[1].formData();
+  assert.deepEqual(JSON.parse(await form.get('settings').text()), {
+    bindings: [
+      { type: 'assets', name: 'ASSETS' },
+      { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway-staging' },
+      { type: 'secret_text', name: 'API_TOKEN' },
+    ],
+  });
+});
+
 test('normalizeWorkerBindings accepts service plain text secret text and VPC network bindings', () => {
   assert.deepEqual(
     normalizeWorkerBindings([

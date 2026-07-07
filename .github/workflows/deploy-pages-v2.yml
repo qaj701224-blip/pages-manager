@@ -14,6 +14,7 @@ on:
           - pages-auth
           - pages-router
           - pages-kv-gateway
+          - pages-console
 
 permissions:
   contents: read
@@ -29,11 +30,11 @@ jobs:
     env:
       DEPLOY_COMPONENT: ${{ github.event_name == 'workflow_dispatch' && inputs.component || 'all' }}
       ACCESS_KEY_ACTIVE_PEPPER_ID: pepper_2026_06
-      ACCESS_KEY_PEPPERS: "pepper_2026_06:ACCESS_KEY_PEPPER_202606"
+      ACCESS_KEY_PEPPERS: 'pepper_2026_06:ACCESS_KEY_PEPPER_202606'
       PAGES_SESSION_JWT_ACTIVE_KID: pages-session-2026-06
-      PAGES_SESSION_JWT_KEYS: "pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606"
+      PAGES_SESSION_JWT_KEYS: 'pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606'
       PAGES_CAP_JWT_ACTIVE_KID: pages-cap-2026-06
-      PAGES_CAP_JWT_KEYS: "pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606"
+      PAGES_CAP_JWT_KEYS: 'pages-cap-2026-06:HS256:PAGES_CAP_JWT_SECRET_202606'
     steps:
       - uses: actions/checkout@v6
 
@@ -66,6 +67,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_ID: ${{ vars.PAGES_V2_D1_DATABASE_ID }}
+          PAGES_USER_WORKER_VPC_TUNNEL_ID: ${{ vars.PAGES_USER_WORKER_VPC_TUNNEL_ID }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/pages-auth production
 
       - name: Generate Pages KV Gateway Wrangler config
@@ -75,6 +77,15 @@ jobs:
           SITE_DATA_KV_ID: ${{ vars.PAGES_V2_SITE_DATA_KV_ID }}
         run: node scripts/render-pages-v2-wrangler.mjs apps/kv-gateway production
 
+      - name: Generate Pages Console Wrangler config
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-console'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          IP_ALLOWLIST: ${{ vars.IP_ALLOWLIST }}
+          PAGES_SESSION_JWT_ACTIVE_KID: ${{ env.PAGES_SESSION_JWT_ACTIVE_KID }}
+          PAGES_SESSION_JWT_KEYS: ${{ env.PAGES_SESSION_JWT_KEYS }}
+        run: node scripts/render-pages-v2-wrangler.mjs apps/pages-console production
+
       - name: Validate Pages API secrets
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
         env:
@@ -82,6 +93,8 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}
+          WEBHOOK_URL_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_URL_ENCRYPTION_KEY }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
           ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-api
@@ -90,6 +103,7 @@ jobs:
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
         env:
           SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-auth
@@ -110,8 +124,15 @@ jobs:
           PAGES_CAP_JWT_SECRET_202606: ${{ secrets.PAGES_CAP_JWT_SECRET_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/kv-gateway
 
+      - name: Validate Pages Console secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-console'
+        env:
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+        run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-console
+
       - name: Apply Pages API D1 migrations
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-auth' || env.DEPLOY_COMPONENT == 'pages-router'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-auth' || env.DEPLOY_COMPONENT == 'pages-router' || env.DEPLOY_COMPONENT == 'pages-console'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -130,6 +151,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-auth
@@ -150,6 +172,8 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           SLACK_PAGES_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_PAGES_ALERT_WEBHOOK_URL }}
           SITE_SECRET_ENCRYPTION_KEY: ${{ secrets.SITE_SECRET_ENCRYPTION_KEY }}
+          WEBHOOK_URL_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_URL_ENCRYPTION_KEY }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
           # Add new ACCESS_KEY_PEPPER_* mappings here when ACCESS_KEY_PEPPERS rotates.
           ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-api
@@ -209,3 +233,23 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/provision-pages-v2-slots.mjs production activate
+
+      - name: Build Pages Console assets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-console'
+        run: pnpm --filter @xd-cell/pages-console build
+
+      - name: Deploy Pages Console
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-console'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/pages-console exec wrangler deploy
+
+      - name: Inject Pages Console secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-console'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/pages-console

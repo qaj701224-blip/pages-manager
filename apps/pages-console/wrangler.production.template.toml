@@ -1,0 +1,37 @@
+name = "pages-console"
+main = "src/worker/index.js"
+compatibility_date = "2026-06-15"
+account_id = "__CLOUDFLARE_ACCOUNT_ID__"
+workers_dev = false
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+
+[[routes]]
+pattern = "workers.xd.team/*"
+zone_name = "xd.team"
+
+[vars]
+PAGES_ENV = "production"
+PUBLIC_API_BASE = "https://api.pages.xd.team"
+PUBLIC_AUTH_BASE = "https://auth.pages.xd.team"
+PUBLIC_CONSOLE_BASE = "https://workers.xd.team"
+IP_ALLOWLIST = "__IP_ALLOWLIST__"
+PAGES_SESSION_JWT_ISSUER = "pages-auth"
+PAGES_SESSION_JWT_ACTIVE_KID = "__PAGES_SESSION_JWT_ACTIVE_KID__"
+PAGES_SESSION_JWT_KEYS = "__PAGES_SESSION_JWT_KEYS__"
+
+[[services]]
+binding = "PAGES_API"
+service = "pages-api"
+
+[[services]]
+binding = "PAGES_AUTH"
+service = "pages-auth"
+
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true

@@ -213,11 +213,11 @@ SECRET_NAMES=()
 
 case "$APP_DIR" in
   apps/pages-api)
-    SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN SLACK_PAGES_ALERT_WEBHOOK_URL SITE_SECRET_ENCRYPTION_KEY)
+    SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN SLACK_PAGES_ALERT_WEBHOOK_URL SITE_SECRET_ENCRYPTION_KEY WEBHOOK_URL_ENCRYPTION_KEY XDS_OPENAI_TOKEN)
     collect_access_key_pepper_secrets
     ;;
   apps/pages-auth)
-    SECRET_NAMES+=(SSO_CLIENT_SECRET)
+    SECRET_NAMES+=(SSO_CLIENT_SECRET XDS_OPENAI_TOKEN)
     collect_session_jwt_secrets
     ;;
   apps/pages-router)
@@ -226,6 +226,9 @@ case "$APP_DIR" in
     ;;
   apps/kv-gateway)
     collect_capability_jwt_secrets
+    ;;
+  apps/pages-console)
+    collect_session_jwt_secrets
     ;;
   *)
     echo "::error::unsupported app: $APP_DIR" >&2

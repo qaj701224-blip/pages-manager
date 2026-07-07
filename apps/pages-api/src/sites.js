@@ -47,6 +47,12 @@ export async function handleSitesApi(request, env, config, store) {
     return methodNotAllowed();
   }
 
+  const transferSiteId = matchSiteTransfer(url.pathname);
+  if (transferSiteId) {
+    if (request.method === 'POST') return transferSiteOwner(request, env, config, store, auth.actor, transferSiteId);
+    return methodNotAllowed();
+  }
+
   const siteId = matchSiteId(url.pathname);
   if (siteId && request.method === 'GET') return getSite(store, auth.actor, siteId, config.environment);
   if (siteId && request.method === 'PATCH') return updateSite(request, env, config, store, auth.actor, siteId);
@@ -57,7 +63,7 @@ export async function handleSitesApi(request, env, config, store) {
 }
 
 async function putSiteSecret(request, env, config, store, actor, siteSlug) {
-  const site = await getDeployableSiteBySlug(store, actor, siteSlug, config.environment);
+  const site = await getSecretManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
   if (!store.putSiteSecret) {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -75,12 +81,7 @@ async function putSiteSecret(request, env, config, store, actor, siteSlug) {
     return jsonError('SECRET_VALUE_INVALID', 'Secret value is invalid.', 400, 'Send a non-empty string value.');
   }
   if (byteLength(body.value) > MAX_SITE_SECRET_VALUE_BYTES) {
-    return jsonError(
-      'SECRET_VALUE_TOO_LARGE',
-      'Secret value is too large.',
-      413,
-      'Use a secret value no larger than 8 KiB.'
-    );
+    return jsonError('SECRET_VALUE_TOO_LARGE', 'Secret value is too large.', 413, 'Use a secret value no larger than 8 KiB.');
   }
   try {
     const secret = await putSiteSecretWithAudit(store, env, {
@@ -122,7 +123,7 @@ async function putSiteSecret(request, env, config, store, actor, siteSlug) {
 }
 
 async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
-  const site = await getDeployableSiteBySlug(store, actor, siteSlug, config.environment);
+  const site = await getSecretManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
   if (!store.deleteSiteSecret) {
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
@@ -184,7 +185,7 @@ async function deleteSiteSecretWithAudit(store, env, input) {
   throw new Error('RUNTIME_SECRET_STORE_UNAVAILABLE');
 }
 
-async function syncActiveWfpSecret(store, env, config, site, input) {
+export async function syncActiveWfpSecret(store, env, config, site, input) {
   if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') return null;
 
   const route = await store.getRouteBySiteId(site.id, config.environment);
@@ -224,6 +225,46 @@ async function syncActiveWfpSecret(store, env, config, site, input) {
       'Runtime secret was saved but the active Worker could not be updated.',
       502,
       'Retry the secret command before testing the current Worker.'
+    );
+  }
+}
+
+export async function syncActiveWfpPlainTextBindings(store, env, config, site, vars) {
+  if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') {
+    return { appliesTo: 'next_deployment' };
+  }
+
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return { appliesTo: 'next_deployment' };
+
+  const version = await store.getSiteVersion(route.activeVersionId, config.environment);
+  if (!version || (!isWfpRoute(route) && !isWfpVersion(version))) return { appliesTo: 'next_deployment' };
+  if (!versionRequiresWorker(version)) return { appliesTo: 'next_deployment' };
+  const workerName = route.workerName || version.workerName;
+  if (!workerName) return { appliesTo: 'next_deployment' };
+
+  let provider;
+  try {
+    provider = createWfpDeploymentProvider(env, config);
+  } catch {
+    return jsonError(
+      'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+      'Runtime var was saved but the active Worker could not be updated.',
+      502,
+      'Check platform Worker provider configuration and retry the runtime config change.'
+    );
+  }
+  if (typeof provider.replacePlainTextBindings !== 'function') return { appliesTo: 'next_deployment' };
+
+  try {
+    await provider.replacePlainTextBindings({ workerName, vars });
+    return { appliesTo: 'active_worker' };
+  } catch {
+    return jsonError(
+      'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+      'Runtime var was saved but the active Worker could not be updated.',
+      502,
+      'Retry the runtime config change before testing the current Worker.'
     );
   }
 }
@@ -279,6 +320,7 @@ async function updateSite(request, env, config, store, actor, siteId) {
   if (!VISIBILITIES.has(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
   }
+  if (site.ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
   const route = await store.updateSiteVisibility(
     site.id,
@@ -303,13 +345,185 @@ async function deleteSite(env, config, store, actor, siteId) {
   if (site instanceof Response) return site;
   const deletedAt = readNow(env);
   const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
-  const deleted = await store.deleteSite(site.id, {
-    deletedAt,
-    reuseHoldUntil,
-    releaseReason: 'site_deleted',
-  }, config.environment);
+  const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
+  const previousHostnameClaim = previousRoute?.hostname ? await store.getHostnameClaim(previousRoute.hostname) : null;
+  const shouldWriteDeletedSnapshot = routeWasActive(previousRoute);
+  const deleted = await store.deleteSite(
+    site.id,
+    {
+      deletedAt,
+      reuseHoldUntil,
+      releaseReason: 'site_deleted',
+    },
+    config.environment
+  );
   if (!deleted) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  return jsonOk({ site: formatSite({ ...deleted, route: await store.getRouteBySiteId(site.id, config.environment) }) });
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (shouldWriteDeletedSnapshot) {
+    const snapshotError = await refreshCurrentRouteSnapshot(env, store, deleted, route, config.environment);
+    if (snapshotError) {
+      await restoreSiteDeleteAfterSnapshotFailure(
+        store,
+        site.id,
+        site,
+        previousRoute,
+        previousHostnameClaim,
+        route,
+        config.environment
+      );
+      return snapshotError;
+    }
+  }
+  return jsonOk({ site: formatSite({ ...deleted, route }) });
+}
+
+async function transferSiteOwner(request, env, config, store, actor, siteId) {
+  if (typeof store.transferSiteOwner !== 'function') {
+    return jsonError('SITE_TRANSFER_UNSUPPORTED', 'Site transfer is unavailable.', 503, 'Retry later.');
+  }
+
+  const site = await getOwnerSite(store, actor, siteId, config.environment);
+  if (site instanceof Response) return site;
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const target = await resolveSiteTransferTarget(store, actor, site, body, config.environment);
+  if (target instanceof Response) return target;
+  const currentVisibility = site.route?.visibility || site.defaultVisibility;
+  if (target.ownerType === 'team' && currentVisibility === 'owner') return teamOwnerVisibilityUnsupported();
+
+  const updatedAt = readNow(env);
+  const updated = await store.transferSiteOwner(
+    site.id,
+    {
+      ownerType: target.ownerType,
+      ownerId: target.ownerId,
+      ownerUserId: target.ownerUserId,
+      updatedAt,
+      auditEvent: buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, {
+        source: 'api',
+        createdAt: updatedAt,
+      }),
+    },
+    config.environment
+  );
+  if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+
+  const route = await store.getRouteBySiteId(updated.id, config.environment);
+  const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
+  if (snapshotError) return snapshotError;
+
+  const visible = await store.getSiteForUser(updated.id, actor.userId, actor, config.environment);
+  return jsonOk({ site: formatSite({ ...(visible || updated), route }) });
+}
+
+async function resolveSiteTransferTarget(store, actor, site, body, environment) {
+  const ownerType = body?.ownerType === 'team' || body?.ownerType === 'user' ? body.ownerType : '';
+  if (!ownerType) {
+    return jsonError('SITE_TRANSFER_INVALID', 'Site transfer target is invalid.', 400, 'Use ownerType user or team.');
+  }
+
+  if (ownerType === 'user') {
+    if (actor.type === 'access_key' && (actor.ownerType || 'user') === 'team') {
+      return jsonError(
+        'SITE_TRANSFER_FORBIDDEN',
+        'Team access tokens cannot transfer sites to personal owners.',
+        403,
+        'Use a personal access token or user CLI session.'
+      );
+    }
+    const ownerId = normalizeRequiredString(body.ownerId || body.userId);
+    if (!ownerId || ownerId !== actor.userId) {
+      return jsonError(
+        'SITE_TRANSFER_FORBIDDEN',
+        'Actor cannot transfer this site to the requested personal owner.',
+        403,
+        'Transfer sites only to the authenticated user.'
+      );
+    }
+    const user = typeof store.getUser === 'function' ? await store.getUser(ownerId) : null;
+    if (!user || user.employeeStatus !== 'active') {
+      return jsonError('SITE_TRANSFER_FORBIDDEN', 'Target user is not active.', 403, 'Choose an active user.');
+    }
+    return { ownerType: 'user', ownerId, ownerUserId: ownerId };
+  }
+
+  const teamId = normalizeRequiredString(body.teamId || body.ownerId);
+  const teamTarget = await resolveTeamTransferTarget(store, actor, teamId, environment);
+  if (teamTarget instanceof Response) return teamTarget;
+  return {
+    ownerType: 'team',
+    ownerId: teamTarget.team.id,
+    ownerUserId: actor.userId || site.ownerUserId,
+  };
+}
+
+async function resolveTeamTransferTarget(store, actor, teamId, environment) {
+  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
+  const team = typeof store.getTeam === 'function' ? await store.getTeam(teamId) : null;
+  if (!team || team.environment !== environment || team.deletedAt) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+
+  if (actor.type === 'access_key' && (actor.ownerType || 'user') === 'team') {
+    if (actor.ownerId === team.id && actorHasPublishScope(actor)) return { team, role: 'publisher' };
+    return jsonError(
+      'SITE_TRANSFER_FORBIDDEN',
+      'Team access token cannot transfer sites to this team.',
+      403,
+      'Use a token owned by the target team.'
+    );
+  }
+
+  const member =
+    actor.userId && typeof store.getTeamMember === 'function'
+      ? await store.getTeamMember({ teamId, userId: actor.userId })
+      : null;
+  if (!member || (member.role !== 'admin' && member.role !== 'publisher')) {
+    return jsonError(
+      'SITE_TRANSFER_FORBIDDEN',
+      'Team publisher role required.',
+      403,
+      'Choose a team where the actor is publisher or admin.'
+    );
+  }
+  return { team, role: member.role };
+}
+
+export function buildSiteOwnerTransferAuditEvent(env, config, actor, site, target, { source, createdAt } = {}) {
+  return {
+    id: nextId(env, 'aud'),
+    environment: config.environment,
+    traceId: null,
+    eventType: 'site.owner.transfer',
+    actorUserId: actor.userId || null,
+    actorType: actor.type,
+    siteId: site.id,
+    routeId: site.route?.id || null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      siteSlug: site.slug,
+      fromOwner: {
+        type: site.ownerType || 'user',
+        id: site.ownerId || site.ownerUserId,
+      },
+      toOwner: {
+        type: target.ownerType,
+        id: target.ownerId,
+      },
+      source: source || 'api',
+    },
+    createdAt: createdAt || readNow(env),
+  };
 }
 
 async function listSiteAcl(store, actor, siteId, environment) {
@@ -446,10 +660,19 @@ async function createSite(request, env, config, store, actor) {
 
   const slug = normalizeSlug(body.slug);
   const visibility = body.visibility || 'org';
+  const ownerType = body.ownerType === 'team' ? 'team' : 'user';
   const slugError = validateSlug(slug, config.environment);
   if (slugError) return slugError;
   if (!VISIBILITIES.has(visibility)) {
     return jsonError('SITE_VISIBILITY_INVALID', 'Site visibility is invalid.', 400, VISIBILITY_ACTION);
+  }
+  if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
+
+  let ownerId = actor.userId;
+  if (ownerType === 'team') {
+    const teamOwner = await resolveTeamPublishOwner(store, actor.userId, body.teamId, config.environment);
+    if (teamOwner instanceof Response) return teamOwner;
+    ownerId = teamOwner.ownerId;
   }
 
   const siteId = nextId(env, 'site');
@@ -462,6 +685,8 @@ async function createSite(request, env, config, store, actor) {
     site = await store.createSite({
       id: siteId,
       slug,
+      ownerType,
+      ownerId,
       ownerUserId: actor.userId,
       siteUuid,
       defaultVisibility: visibility,
@@ -470,18 +695,8 @@ async function createSite(request, env, config, store, actor) {
       hostname,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    if (/SITE_SLUG_CONFLICT/.test(message)) {
-      return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
-    }
-    if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
-      return jsonError(
-        'HOSTNAME_CLAIM_CONFLICT',
-        'Site hostname is already claimed.',
-        409,
-        '请换一个站点名，或使用原站点 owner 继续部署。'
-      );
-    }
+    const response = siteCreateErrorResponse(error);
+    if (response) return response;
     throw error;
   }
 
@@ -489,7 +704,43 @@ async function createSite(request, env, config, store, actor) {
   return jsonOk({ site: formatSite({ ...site, route }) }, 201);
 }
 
-function validateSlug(slug, environment) {
+async function resolveTeamPublishOwner(store, userId, teamIdValue, environment) {
+  const teamId = normalizeRequiredString(teamIdValue);
+  if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
+  const team = await store.getTeam(teamId);
+  if (!team || team.environment !== environment) {
+    return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  }
+  const member = await store.getTeamMember({ teamId, userId });
+  if (!member) return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
+  if (member.role !== 'admin' && member.role !== 'publisher') {
+    return jsonError(
+      'TEAM_PUBLISHER_REQUIRED',
+      'Team publisher role required.',
+      403,
+      'Ask a team publisher to create the site.'
+    );
+  }
+  return { ownerId: team.id };
+}
+
+export function siteCreateErrorResponse(error) {
+  const message = error instanceof Error ? error.message : '';
+  if (/SITE_SLUG_CONFLICT/.test(message)) {
+    return jsonError('SITE_SLUG_CONFLICT', 'Site slug already exists.', 409, 'Choose a different site slug.');
+  }
+  if (/HOSTNAME_CLAIM_CONFLICT/.test(message)) {
+    return jsonError(
+      'HOSTNAME_CLAIM_CONFLICT',
+      'Site hostname is already claimed.',
+      409,
+      '请换一个站点名，或使用原站点 owner 继续部署。'
+    );
+  }
+  return null;
+}
+
+export function validateSlug(slug, environment) {
   const validation = validateSiteSlug(slug, { environment });
   if (validation.ok) return null;
   if (validation.error.code === 'RESERVED_SLUG') {
@@ -510,6 +761,9 @@ function formatSite(site) {
     slug: site.slug,
     environment: site.environment,
     defaultVisibility: site.defaultVisibility,
+    owner: {
+      type: site.ownerType || 'user',
+    },
     url: route ? `https://${route.hostname}` : null,
     route: route
       ? {
@@ -530,7 +784,7 @@ function formatSite(site) {
   };
 }
 
-function hostnameForSlug(slug, config) {
+export function hostnameForSlug(slug, config) {
   if (config.environment === 'staging') return `${slug}-staging.${config.siteDomainSuffix}`;
   return `${slug}.${config.siteDomainSuffix}`;
 }
@@ -542,18 +796,20 @@ function actorCanReadSite(actor, siteId) {
 }
 
 async function getOwnerSite(store, actor, siteId, environment) {
-  if (actor.type !== 'user') {
-    return jsonError('SITE_POLICY_FORBIDDEN', 'Access keys cannot manage site policy.', 403, 'Use a user CLI token.');
-  }
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
-  if (site.ownerUserId !== actor.userId) {
-    return jsonError('SITE_POLICY_FORBIDDEN', 'Only the site owner can manage site policy.', 403, 'Use the owner account.');
+  if (!actorCanManageSite(actor, site)) {
+    return jsonError(
+      'SITE_POLICY_FORBIDDEN',
+      'Actor cannot manage this site.',
+      403,
+      'Use a publisher or admin role for this site.'
+    );
   }
   return site;
 }
 
-async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
+async function getSecretManageableSiteBySlug(store, actor, siteSlug, environment) {
   const slug = normalizeSlug(siteSlug);
   const slugError = validateSlug(slug, environment);
   if (slugError) return slugError;
@@ -561,22 +817,38 @@ async function getDeployableSiteBySlug(store, actor, siteSlug, environment) {
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug.');
   const visible = await store.getSiteForUser(site.id, actor.userId, actor, environment);
   if (!visible) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site slug and token scope.');
-  if (!actorCanDeploy(actor, site)) {
+  if (!actorCanManageSecrets(actor, visible)) {
     return jsonError(
       'DEPLOY_FORBIDDEN',
       'Actor cannot manage runtime secrets for this site.',
       403,
-      'Use a token scoped to deploy this site.'
+      'Use a publisher or admin role for this site.'
     );
   }
   return visible;
 }
 
-function actorCanDeploy(actor, site) {
+function actorCanManageSecrets(actor, site) {
+  return actorCanManageSite(actor, site);
+}
+
+export function actorCanManageSite(actor, site) {
   if (!site) return false;
-  if (actor.type !== 'access_key') return site.ownerUserId === actor.userId;
-  if (!actor.siteId || actor.siteId !== site.id) return false;
-  return actor.scopes.includes('deploy:site');
+  if (actor.type === 'access_key') {
+    if (actor.siteId && actor.siteId !== site.id) return false;
+    if (!actorHasPublishScope(actor)) return false;
+    const ownerType = actor.ownerType || 'user';
+    const ownerId = actor.ownerId || actor.userId;
+    if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
+    if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+    return (site.ownerId || site.ownerUserId) === ownerId;
+  }
+  if (site.ownerType === 'team') return site.managementRole === 'admin' || site.managementRole === 'publisher';
+  return (site.ownerId || site.ownerUserId) === actor.userId;
+}
+
+function actorHasPublishScope(actor) {
+  return actor.type !== 'access_key' || actor.scopes.includes('deploy:site') || actor.scopes.includes('*');
 }
 
 function normalizeSecretNameForResponse(value) {
@@ -604,7 +876,7 @@ function byteLength(value) {
   return new globalThis.TextEncoder().encode(String(value)).byteLength;
 }
 
-function normalizeAclEntries(value, env) {
+export function normalizeAclEntries(value, env) {
   if (!Array.isArray(value) || value.length > MAX_ACL_ENTRIES) {
     return jsonError('ACL_ENTRIES_INVALID', 'ACL entries are invalid.', 400, 'Send an entries array with at most 200 items.');
   }
@@ -629,12 +901,7 @@ function normalizeAclEntries(value, env) {
       .trim()
       .toLowerCase();
     if (!ACL_SUBJECT_TYPES.has(subjectType)) {
-      return jsonError(
-        'ACL_SUBJECT_TYPE_UNSUPPORTED',
-        'ACL subject type is not supported.',
-        400,
-        'Use email or department.'
-      );
+      return jsonError('ACL_SUBJECT_TYPE_UNSUPPORTED', 'ACL subject type is not supported.', 400, 'Use email or department.');
     }
 
     const subjectValue = normalizeAclSubjectValue(subjectType, entry.subjectValue);
@@ -716,7 +983,7 @@ function aclEntryKey(entry) {
   return `${entry.effect || 'allow'}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole || 'viewer'}`;
 }
 
-async function refreshActiveRouteSnapshot(env, store, site, route, environment) {
+export async function refreshActiveRouteSnapshot(env, store, site, route, environment) {
   if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
 
   const version = await store.getSiteVersion(route.activeVersionId, environment);
@@ -732,14 +999,56 @@ async function refreshActiveRouteSnapshot(env, store, site, route, environment) 
   return null;
 }
 
-async function restoreSiteVisibilityAfterSnapshotFailure(store, siteId, previousSite, previousRoute, expectedRoute, environment) {
+export async function refreshCurrentRouteSnapshot(env, store, site, route, environment) {
+  if (!route) return null;
+  const version = route.activeVersionId
+    ? await store.getSiteVersion(route.activeVersionId, environment)
+    : inactiveRouteVersion(route);
+  if (!version && route.routeStatus === 'active') {
+    return jsonError('ROUTE_VERSION_NOT_FOUND', 'Active route version was not found.', 500, 'Check route consistency.');
+  }
+  const aclEntries = await store.listSiteAclEntries(site.id);
+  try {
+    await writeRouteSnapshot(env, buildRouteSnapshot({ site, route, version, aclEntries }));
+  } catch {
+    return jsonError('ROUTE_SNAPSHOT_WRITE_FAILED', 'Route snapshot could not be written.', 503, 'Retry the policy update.');
+  }
+  return null;
+}
+
+function inactiveRouteVersion(route) {
+  return {
+    id: null,
+    executionProvider: route.executionProvider,
+    dispatchType: route.dispatchType,
+    dispatchBindingName: route.dispatchBindingName,
+    slotId: route.slotId,
+    contentHash: null,
+    deploymentShape: 'inactive',
+    resolvedFallback: null,
+    routingMode: null,
+  };
+}
+
+function routeWasActive(route) {
+  return route?.routeStatus === 'active' && Boolean(route.activeVersionId);
+}
+
+export async function restoreSiteVisibilityAfterSnapshotFailure(
+  store,
+  siteId,
+  previousSite,
+  previousRoute,
+  expectedRoute,
+  environment
+) {
   if (typeof store.restoreSiteVisibilityIfCurrent === 'function') {
     return store.restoreSiteVisibilityIfCurrent(siteId, previousSite, previousRoute, expectedRoute, environment);
   }
   return store.restoreSiteVisibility(siteId, previousSite, previousRoute, environment);
 }
 
-async function restoreSiteAclAfterSnapshotFailure(
+export async function restoreSiteAclAfterSnapshotFailure(
   store,
   siteId,
   previousEntries,
@@ -754,6 +1063,31 @@ async function restoreSiteAclAfterSnapshotFailure(
   return store.restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment);
 }
 
+export async function restoreSiteDeleteAfterSnapshotFailure(
+  store,
+  siteId,
+  previousSite,
+  previousRoute,
+  previousHostnameClaim,
+  expectedRoute,
+  environment
+) {
+  if (typeof store.restoreSiteDeleteIfCurrent === 'function') {
+    return store.restoreSiteDeleteIfCurrent(
+      siteId,
+      previousSite,
+      previousRoute,
+      previousHostnameClaim,
+      expectedRoute,
+      environment
+    );
+  }
+  if (typeof store.restoreSiteRouteIfCurrent === 'function') {
+    return store.restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment);
+  }
+  return store.restoreSiteRoute(siteId, previousRoute, environment);
+}
+
 function formatAclEntry(entry) {
   return {
     id: entry.id,
@@ -766,8 +1100,12 @@ function formatAclEntry(entry) {
   };
 }
 
-function normalizeSlug(value) {
+export function normalizeSlug(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function normalizeRequiredString(value) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function matchSiteAcl(pathname) {
@@ -783,6 +1121,11 @@ function matchSiteAclEntries(pathname) {
 function matchSiteSecrets(pathname) {
   const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/secrets$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function matchSiteTransfer(pathname) {
+  const match = pathname.match(/^\/\.xd-pages\/api\/sites\/([^/]+)\/transfer$/);
+  return match ? match[1] : null;
 }
 
 function matchSiteId(pathname) {
@@ -823,6 +1166,15 @@ function addSecondsIso(iso, seconds) {
 
 function authErrorResponse(error) {
   return jsonError(error.code, error.message, error.status, error.action);
+}
+
+function teamOwnerVisibilityUnsupported() {
+  return jsonError(
+    'SITE_VISIBILITY_INVALID',
+    'Team-owned sites cannot use owner visibility.',
+    400,
+    'Use internal, org, acl, or disabled for team-owned sites.'
+  );
 }
 
 function methodNotAllowed() {

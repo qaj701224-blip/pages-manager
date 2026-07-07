@@ -220,6 +220,48 @@ test('confirm rejects requests without auth_session before touching CLI transact
   assert.equal(confirmed, false);
 });
 
+test('confirm rejects missing auth session record before touching CLI transaction', async () => {
+  let confirmed = false;
+  const env = testEnv({
+    refreshAuthSessionRecord: async () => {
+      throw new Error('Session record is missing');
+    },
+    confirmCliLoginRecord: async () => {
+      confirmed = true;
+    },
+  });
+  const authToken = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'sid_missing' },
+    },
+    env
+  );
+  const confirmToken = await signConfirmToken(env, { loginId: 'cli_test', userId: 'usr_123', sid: 'sid_missing' });
+
+  const response = await handleCliLoginConfirm(
+    new Request('https://auth.pages.xd.team/.xd-pages/cli/login/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://auth.pages.xd.team',
+        Cookie: buildAuthSessionCookie(authToken, { maxAgeSeconds: 600 }).split(';', 1)[0],
+      },
+      body: JSON.stringify({ loginId: 'cli_test', deviceCode: '12345678', confirmToken }),
+    }),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error.code, 'AUTH_SESSION_REQUIRED');
+  assert.equal(confirmed, false);
+});
+
 test('confirm rejects cross-origin form posts before touching CLI transaction', async () => {
   let confirmed = false;
   const env = testEnv({
@@ -432,6 +474,7 @@ test('confirm rejects missing confirmation token before touching CLI transaction
 test('confirm rejects confirmation tokens issued for a different user', async () => {
   let confirmed = false;
   const env = testEnv({
+    refreshAuthSessionRecord: async (sid) => ({ sid, userId: 'usr_current', purpose: 'auth_session' }),
     confirmCliLoginRecord: async () => {
       confirmed = true;
     },
@@ -672,6 +715,7 @@ function testEnv(overrides = {}) {
     PAGES_SESSION_JWT_KEYS: 'test:HS256:JWT_SECRET',
     JWT_SECRET: 'test-secret',
     now: () => now,
+    refreshAuthSessionRecord: async (sid) => ({ sid, userId: 'usr_123', purpose: 'auth_session' }),
     ...overrides,
   };
 }

@@ -170,6 +170,8 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
     email: 'user@example.com',
     name: 'User One',
     tokenId: 'ak_1',
+    ownerType: 'user',
+    ownerId: 'usr_1',
     scopes: ['deploy:site'],
     siteId: 'site_1',
     source: 'access_key',

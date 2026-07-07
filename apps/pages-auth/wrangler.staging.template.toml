@@ -32,6 +32,8 @@ binding = "PAGES_METADATA"
 database_name = "pages-v2-metadata-staging"
 database_id = "__D1_DATABASE_ID__"
 
+__PAGES_AUTH_XDS_VPC_NETWORK__
+
 [[durable_objects.bindings]]
 name = "OAUTH_STATES"
 class_name = "OAuthStateDO"

@@ -46,7 +46,54 @@ test('whoami accepts deploy-only access keys without read:site scope', async () 
       userId: 'usr_1',
       email: 'user@example.com',
       name: 'User One',
+      ownerType: 'user',
+      ownerId: 'usr_1',
       siteId: 'site_1',
+      scopes: ['deploy:site'],
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(accessKey));
+  assert.doesNotMatch(JSON.stringify(body), /pepper|keyHash|ACCESS_KEY_PEPPER_TEST|secret/i);
+});
+
+test('whoami exposes team access key ownership without requiring an email', async () => {
+  const store = await createSeededStore();
+  await store.createTeam({
+    id: 'team_docs',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Docs Team',
+    description: null,
+    createdByUserId: 'usr_1',
+  });
+  const accessKey = await seedAccessKey(store, 'ak_team', ['deploy:site'], {
+    ownerType: 'team',
+    ownerId: 'team_docs',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    siteId: null,
+  });
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/auth/whoami', {
+      Authorization: `Bearer ${accessKey}`,
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body, {
+    environment: 'production',
+    actor: {
+      type: 'access_key',
+      credentialType: 'access_key',
+      accessKeyId: 'ak_team',
+      userId: 'usr_1',
+      email: null,
+      name: 'Docs Team',
+      ownerType: 'team',
+      ownerId: 'team_docs',
+      siteId: null,
       scopes: ['deploy:site'],
     },
   });
@@ -117,7 +164,7 @@ async function createSeededStore() {
   return store;
 }
 
-async function seedAccessKey(store, keyId, scopes) {
+async function seedAccessKey(store, keyId, scopes, overrides = {}) {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',
     keyId,
@@ -125,12 +172,16 @@ async function seedAccessKey(store, keyId, scopes) {
   });
   await store.createAccessKey({
     id: keyId,
-    ownerUserId: 'usr_1',
+    environment: 'production',
+    ownerType: overrides.ownerType || 'user',
+    ownerId: overrides.ownerId || 'usr_1',
+    ownerUserId: overrides.ownerUserId || 'usr_1',
+    createdByUserId: overrides.createdByUserId || 'usr_1',
     keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
     pepperId: 'pepper_1',
     name: keyId,
     scopes,
-    siteId: 'site_1',
+    siteId: overrides.siteId === undefined ? 'site_1' : overrides.siteId,
     expiresAt: '2026-07-15T00:00:00.000Z',
   });
   return plaintext;

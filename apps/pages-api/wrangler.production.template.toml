@@ -29,6 +29,8 @@ IP_ALLOWLIST = "__IP_ALLOWLIST__"
 
 # Required Worker secret:
 # - SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets.
+# - WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs.
+# - XDS_OPENAI_TOKEN: XDS / OA org directory token for department hydration.
 
 [[d1_databases]]
 binding = "PAGES_METADATA"
@@ -46,6 +48,8 @@ class_name = "RoutePointerDO"
 [[services]]
 binding = "PAGES_AUTH"
 service = "pages-auth"
+
+__PAGES_API_XDS_VPC_NETWORK__
 
 [[migrations]]
 tag = "v1"
