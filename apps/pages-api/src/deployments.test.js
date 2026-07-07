@@ -425,6 +425,44 @@ test('accepts v2 publishPlan multipart metadata and passes resolved decision to 
   assertNoPublicExecutionDetails(body);
 });
 
+test('site normal worker override no longer diverts new deployments away from WFP', async () => {
+  const store = await createSeededStore();
+  store.sites.get('site_1').executionModeOverride = 'normal-worker-slot';
+  await store.createWorkerSlot({
+    id: 'slot_production_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'available',
+  });
+  const uploads = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => {
+        uploads.push(workerName);
+        return { artifactRef: `wfp://test/${workerName}` };
+      },
+      verify: async () => ({ ok: true }),
+    },
+  });
+
+  const response = await worker.fetch(
+    deploymentRequest(
+      'https://api.pages.xd.team/.xd-pages/api/deployments',
+      deployPayload(),
+      { 'Idempotency-Key': 'normal_override_uses_wfp' }
+    ),
+    env
+  );
+
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.deepEqual(uploads, ['pages-v2-guide-ver-1']);
+  assert.equal((await store.getSiteVersion('ver_1')).executionProvider, 'wfp');
+  assert.equal((await store.getRouteBySiteId('site_1')).dispatchType, 'dispatch-namespace');
+  assert.equal((await store.getWorkerSlot('slot_production_007')).status, 'available');
+});
+
 test('rejects xd-cell config as a public asset in publishPlan uploads', async () => {
   const store = await createSeededStore();
   const uploads = [];
@@ -3731,13 +3769,13 @@ test('notifies Slack with an actions URL button when normal worker slot capacity
   assert.equal(slackRequests[0].url, webhookUrl);
   const payload = await slackRequests[0].json();
   const serialized = JSON.stringify(payload);
-  assert.equal(payload.text, '静态页面池容量不足，需要扩容');
+  assert.equal(payload.text, 'Legacy Worker 池容量不足，需要迁移到 WFP');
   assert.equal((serialized.match(/<@UTESTMEMBER>/g) || []).length, 1);
   assert.deepEqual(payload.blocks[2].fields, [
     { type: 'mrkdwn', text: '*环境*\nproduction' },
     { type: 'mrkdwn', text: '*容量*\n已用 2 / 总计 2' },
     { type: 'mrkdwn', text: '*剩余*\n0' },
-    { type: 'mrkdwn', text: '*扩容*\n+2' },
+    { type: 'mrkdwn', text: '*建议*\n迁移/重发到 WFP' },
   ]);
   assert.match(serialized, /https:\/\/github\.com\/xindong\/pages-manager\/actions/);
   assert.match(serialized, /button/);

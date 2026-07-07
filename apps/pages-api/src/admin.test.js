@@ -420,6 +420,280 @@ test('admin department team merge cannot mutate teams from another environment',
   );
 });
 
+test('admin normal workers list classifies idle and active legacy workers', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+  await seedActiveNormalWorkerSite(store);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), {
+    workers: [
+      {
+        id: 'slot_production_001',
+        environment: 'production',
+        slotNumber: 1,
+        workerName: 'pages-v2-production-slot-001',
+        bindingName: 'SITE_SLOT_001',
+        status: 'available',
+        lifecycle: 'idle',
+        canDelete: true,
+        activeRoute: null,
+        updatedAt: '2026-07-02T00:00:00.000Z',
+      },
+      {
+        id: 'slot_production_007',
+        environment: 'production',
+        slotNumber: 7,
+        workerName: 'pages-v2-production-slot-007',
+        bindingName: 'SITE_SLOT_007',
+        status: 'assigned',
+        lifecycle: 'active',
+        canDelete: false,
+        activeRoute: {
+          siteId: 'site_normal_active',
+          routeId: 'route_site_normal_active',
+          activeVersionId: 'ver_site_normal_active',
+          hostname: 'normal-active.pages.xd.team',
+        },
+        updatedAt: '2026-07-02T00:00:00.000Z',
+      },
+    ],
+  });
+});
+
+test('admin can retire an idle normal worker but cannot delete an active one', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+  await seedActiveNormalWorkerSite(store);
+
+  const retired = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_001', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain' },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          deletedWorkers.push(workerName);
+        },
+      },
+    })
+  );
+  const active = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_007', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain' },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          deletedWorkers.push(workerName);
+        },
+      },
+    })
+  );
+
+  assert.equal(retired.status, 200, await retired.clone().text());
+  assert.equal((await retired.json()).worker.status, 'retired');
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'retired');
+  assert.deepEqual(deletedWorkers, ['pages-v2-production-slot-001']);
+  assert.equal(active.status, 409, await active.clone().text());
+  assert.equal((await active.json()).error.code, 'NORMAL_WORKER_ACTIVE');
+  assert.equal((await store.getWorkerSlot('slot_production_007')).status, 'assigned');
+});
+
+test('admin reports inconsistent normal worker state when Cloudflare delete succeeds but D1 retire is blocked', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+  store.retireIdleNormalWorker = async () => null;
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_001', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain' },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          deletedWorkers.push(workerName);
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'NORMAL_WORKER_STATE_INCONSISTENT');
+  assert.match(body.error.action, /Retry deletion/);
+  assert.deepEqual(deletedWorkers, ['pages-v2-production-slot-001']);
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'available');
+});
+
+test('admin marks idle normal worker delete pending when Cloudflare deletion is blocked', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+
+  const pending = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_001', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain' },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          deletedWorkers.push(workerName);
+          const error = new Error('stale service binding');
+          error.code = 'NORMAL_WORKER_DELETE_BLOCKED';
+          throw error;
+        },
+      },
+    })
+  );
+  assert.equal(pending.status, 202, await pending.clone().text());
+  const pendingBody = await pending.json();
+  assert.equal(pendingBody.warning.code, 'NORMAL_WORKER_DELETE_PENDING');
+  assert.equal(pendingBody.worker.status, 'delete_pending');
+  assert.equal(pendingBody.worker.canDelete, true);
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'delete_pending');
+
+  const retry = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_001', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain retry' },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          deletedWorkers.push(workerName);
+        },
+      },
+    })
+  );
+
+  assert.equal(retry.status, 200, await retry.clone().text());
+  assert.equal((await retry.json()).worker.status, 'retired');
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'retired');
+  assert.deepEqual(deletedWorkers, ['pages-v2-production-slot-001', 'pages-v2-production-slot-001']);
+});
+
+test('admin does not mark normal worker delete pending for generic Cloudflare failures', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+
+  const failed = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_001', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain' },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async () => {
+          throw new Error('Cloudflare token rejected');
+        },
+      },
+    })
+  );
+
+  assert.equal(failed.status, 502, await failed.clone().text());
+  assert.equal((await failed.json()).error.code, 'NORMAL_WORKER_DELETE_FAILED');
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'available');
+});
+
+test('admin marks idle normal worker delete pending for Cloudflare conflict responses', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+
+  const pending = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_001', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain' },
+    }),
+    env(store, {
+      CF_ACCOUNT_ID: 'dummy-account',
+      CF_API_TOKEN: 'dummy-token',
+      fetch: async () =>
+        new Response(JSON.stringify({ success: false, errors: [{ message: 'script is still bound' }] }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    })
+  );
+
+  assert.equal(pending.status, 202, await pending.clone().text());
+  assert.equal((await pending.json()).warning.code, 'NORMAL_WORKER_DELETE_PENDING');
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'delete_pending');
+});
+
 test('admin sites include readable user and team owner metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -1001,6 +1275,69 @@ async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1',
       activeVersionId: `ver_${siteId}`,
       workerName,
       visibility,
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    },
+    'production'
+  );
+}
+
+async function seedActiveNormalWorkerSite(store) {
+  await store.createUser({
+    userId: 'usr_legacy_owner',
+    email: 'legacy-owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_normal_active',
+    slug: 'normal-active',
+    ownerUserId: 'usr_legacy_owner',
+    siteUuid: 'uuid_site_normal_active',
+    defaultVisibility: 'internal',
+    environment: 'production',
+    routeId: 'route_site_normal_active',
+    hostname: 'normal-active.pages.xd.team',
+  });
+  await store.createWorkerSlot({
+    id: 'slot_production_007',
+    environment: 'production',
+    slotNumber: 7,
+    workerName: 'pages-v2-production-slot-007',
+    bindingName: 'SITE_SLOT_007',
+    status: 'assigned',
+    assignedSiteId: 'site_normal_active',
+    assignedRouteId: 'route_site_normal_active',
+    assignedVersionId: 'ver_site_normal_active',
+    assignedAt: '2026-07-02T00:00:00.000Z',
+  });
+  await store.createSiteVersion({
+    id: 'ver_site_normal_active',
+    siteId: 'site_normal_active',
+    deploymentId: 'dep_site_normal_active',
+    workerName: 'pages-v2-production-slot-007',
+    runtime: 'worker',
+    executionProvider: 'normal-worker-slot',
+    dispatchType: 'service-binding',
+    dispatchBindingName: 'SITE_SLOT_007',
+    slotId: 'slot_production_007',
+    artifactRef: 'slot://production/slot_production_007/pages-v2-production-slot-007/ver_site_normal_active',
+    contentHash: 'sha256:normal-active',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    createdBy: 'usr_legacy_owner',
+  });
+  return store.activateSiteVersion(
+    'site_normal_active',
+    {
+      activeVersionId: 'ver_site_normal_active',
+      workerName: 'pages-v2-production-slot-007',
+      runtime: 'worker',
+      executionProvider: 'normal-worker-slot',
+      dispatchType: 'service-binding',
+      dispatchBindingName: 'SITE_SLOT_007',
+      slotId: 'slot_production_007',
+      visibility: 'internal',
       updatedAt: '2026-07-02T00:00:00.000Z',
     },
     'production'

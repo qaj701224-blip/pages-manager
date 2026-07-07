@@ -1980,21 +1980,12 @@ async function validateRollbackVersion(store, version, environment) {
     );
   }
 
-  if (version.executionProvider !== 'normal-worker-slot') return null;
-  const slot = version.slotId && typeof store.getWorkerSlot === 'function' ? await store.getWorkerSlot(version.slotId) : null;
-  if (
-    !slot ||
-    slot.environment !== environment ||
-    slot.status !== 'assigned' ||
-    slot.assignedVersionId !== version.id ||
-    slot.workerName !== version.workerName ||
-    slot.bindingName !== version.dispatchBindingName
-  ) {
+  if (version.executionProvider === 'normal-worker-slot') {
     return jsonError(
       'ROLLBACK_VERSION_UNAVAILABLE',
       'Version is not available for rollback.',
       409,
-      'The worker slot for this version is no longer active. Deploy a new version instead.'
+      'Normal Worker slot versions are legacy-only. Deploy a new WFP version instead.'
     );
   }
   return null;

@@ -2038,6 +2038,111 @@ test('D1 store retries another available worker slot when CAS loses a race', asy
   assert.equal(slots.get('slot_001').status, 'available');
 });
 
+test('D1 store lists and retires admin normal workers with active route protection', async () => {
+  const slots = new Map([
+    ['slot_production_001', workerSlotRow({ id: 'slot_production_001', slot_number: 1 })],
+    [
+      'slot_production_007',
+      workerSlotRow({
+        id: 'slot_production_007',
+        slot_number: 7,
+        worker_name: 'pages-v2-production-slot-007',
+        binding_name: 'SITE_SLOT_007',
+        status: 'assigned',
+        assigned_site_id: 'site_active',
+        assigned_route_id: 'route_active',
+        assigned_version_id: 'ver_active',
+      }),
+    ],
+  ]);
+  const db = fakeAdminNormalWorkerDb(slots, [
+    {
+      id: 'route_active',
+      environment: 'production',
+      route_status: 'active',
+      site_id: 'site_active',
+      slot_id: 'slot_production_007',
+      active_version_id: 'ver_active',
+      hostname: 'active.pages.xd.team',
+    },
+    {
+      id: 'route_duplicate',
+      environment: 'production',
+      route_status: 'active',
+      site_id: 'site_duplicate',
+      slot_id: null,
+      active_version_id: 'ver_active',
+      hostname: 'duplicate.pages.xd.team',
+    },
+  ]);
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const listed = await store.listAdminNormalWorkers({ environment: 'production' });
+  const retired = await store.retireIdleNormalWorker({
+    id: 'slot_production_001',
+    environment: 'production',
+    actorUserId: 'usr_root',
+    reason: 'legacy drain',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  const activeRetire = await store.retireIdleNormalWorker({
+    id: 'slot_production_007',
+    environment: 'production',
+    actorUserId: 'usr_root',
+    reason: 'legacy drain',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  const activePending = await store.markNormalWorkerDeletePending({
+    id: 'slot_production_007',
+    environment: 'production',
+    actorUserId: 'usr_root',
+    reason: 'legacy drain',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+
+  assert.equal(listed[0].activeRoute, null);
+  assert.equal(listed.length, 2);
+  assert.deepEqual(listed[1].activeRoute, {
+    siteId: 'site_active',
+    routeId: 'route_active',
+    activeVersionId: 'ver_active',
+    hostname: 'active.pages.xd.team',
+  });
+  assert.equal(retired.status, 'retired');
+  assert.equal(slots.get('slot_production_001').status, 'retired');
+  assert.equal(activeRetire, null);
+  assert.equal(activePending, null);
+  assert.equal(slots.get('slot_production_007').status, 'assigned');
+});
+
+test('D1 store can mark idle admin normal workers delete pending before retry', async () => {
+  const slots = new Map([
+    ['slot_production_001', workerSlotRow({ id: 'slot_production_001', slot_number: 1 })],
+  ]);
+  const db = fakeAdminNormalWorkerDb(slots, []);
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const pending = await store.markNormalWorkerDeletePending({
+    id: 'slot_production_001',
+    environment: 'production',
+    actorUserId: 'usr_root',
+    reason: 'stale router binding',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+  const retired = await store.retireIdleNormalWorker({
+    id: 'slot_production_001',
+    environment: 'production',
+    actorUserId: 'usr_root',
+    reason: 'retry after router deploy',
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  });
+
+  assert.equal(pending.status, 'delete_pending');
+  assert.equal(slots.get('slot_production_001').status, 'retired');
+  assert.match(pending.notes, /delete pending by usr_root/);
+  assert.equal(retired.status, 'retired');
+});
+
 test('D1 store upserts SSO users atomically and keeps disabled users disabled', async () => {
   const db = fakeUserDb();
   const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
@@ -3112,6 +3217,84 @@ function fakeSlotDb(slots, { loseFirstUpdate = false } = {}) {
                 assigned_version_id: versionId,
                 assigned_at: assignedAt,
                 last_deployed_version_id: lastDeployedVersionId,
+                updated_at: updatedAt,
+              });
+              return { meta: { changes: 1 } };
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+function fakeAdminNormalWorkerDb(slots, routes = []) {
+  function activeRouteForSlot(slot) {
+    return routes.find(
+      (route) =>
+        route.environment === slot.environment &&
+        route.route_status === 'active' &&
+        (route.slot_id === slot.id || route.active_version_id === slot.assigned_version_id)
+    );
+  }
+
+  return {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async all() {
+              assert.match(sql, /WITH active_slot_routes AS/);
+              assert.match(sql, /GROUP BY worker_slots\.id/);
+              const [environment] = args;
+              return {
+                results: [...slots.values()]
+                  .filter((slot) => slot.environment === environment)
+                  .sort((left, right) => left.slot_number - right.slot_number)
+                  .map((slot) => {
+                    const route = activeRouteForSlot(slot);
+                    return {
+                      ...slot,
+                      active_site_id: route?.site_id || null,
+                      active_route_id: route?.id || null,
+                      active_version_id: route?.active_version_id || null,
+                      active_hostname: route?.hostname || null,
+                    };
+                  }),
+              };
+            },
+            async first() {
+              assert.match(sql, /SELECT \* FROM worker_slots WHERE id = \?/);
+              const [id] = args;
+              return slots.get(id) || null;
+            },
+            async run() {
+              assert.match(sql, /UPDATE worker_slots/);
+              const [notes, updatedAt, id, environment] = args;
+              const slot = slots.get(id);
+              if (
+                !slot ||
+                slot.environment !== environment ||
+                !['available', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status) ||
+                activeRouteForSlot(slot)
+              ) {
+                return { meta: { changes: 0 } };
+              }
+              if (/SET status = 'delete_pending'/.test(sql)) {
+                Object.assign(slot, {
+                  status: 'delete_pending',
+                  notes,
+                  updated_at: updatedAt,
+                });
+                return { meta: { changes: 1 } };
+              }
+              Object.assign(slot, {
+                status: 'retired',
+                assigned_site_id: null,
+                assigned_route_id: null,
+                assigned_version_id: null,
+                assigned_at: null,
+                notes,
                 updated_at: updatedAt,
               });
               return { meta: { changes: 1 } };

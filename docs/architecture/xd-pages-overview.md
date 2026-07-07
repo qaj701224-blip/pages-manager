@@ -30,7 +30,7 @@ legacy / existing: apps/server + 已存在的 *.workers.xd.team exact route
 XD Cell / v2: api/auth.pages.xd.team + 新建 *.workers.xd.team 子站
   - 新建多租户执行平台架构，默认子站域名为 {slug}.workers.xd.team。
   - 已存在的 {slug}.pages.xd.team v2 route 保留，不做隐式迁移。
-  - WFP 是当前默认执行模式；普通 Worker slot 池只作为历史兼容和受控回退执行模式。
+  - WFP 是当前默认执行模式；普通 Worker slot 池只作为历史 route 排空执行面。
   - 新建 API、Auth、Router、D1/KV/DO、执行资源和 SSO redirect URI。
   - 旧 v1 站点不会自动迁移到 v2；v2 创建前必须通过 hostname claim 防止抢占。
 ```
@@ -69,7 +69,7 @@ Runtime Plane: 用户 Worker 执行、能力网关、资源隔离
 - 子站点支持公司统一 SSO 登录和站点级访问策略。
 - 支持用户上传任意 Worker 代码，用户 Worker 默认不可信。
 - 支持上千个 Worker，数据面请求不回管理 API Worker。
-- 使用统一 Execution Mode 承载用户 Worker。目标模式是 Workers for Platforms；WFP 暂不可用时使用普通 Worker slot 池兼容上线。
+- 使用统一 Execution Mode 承载用户 Worker。当前目标模式是 Workers for Platforms；普通 Worker slot 池只维护存量 route。
 - 平台 Gateway/Router 统一处理鉴权、审计、header 清洗和分发。
 - 新架构使用 `pages.xd.team` 控制面和 `workers.xd.team` 子站后缀独立上线，不影响旧版 `apps/server` exact route。
 
@@ -194,7 +194,7 @@ flowchart TD
 
 ### 执行面
 
-用户上传的 Worker 代码默认部署到 Workers for Platforms dispatch namespace。预创建的普通 Worker slot 池只作为历史 route 排空和受控回退执行面。平台通过 `pages-router` 根据 route snapshot 选择实际执行目标。
+用户上传的 Worker 代码默认部署到 Workers for Platforms dispatch namespace。预创建的普通 Worker slot 池只作为历史 route 排空执行面。平台通过 `pages-router` 根据 route snapshot 选择实际执行目标。
 
 用户 Worker 默认不可信：
 

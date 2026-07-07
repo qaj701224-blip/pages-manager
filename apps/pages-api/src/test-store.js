@@ -1841,6 +1841,48 @@ class TestPagesStore {
     );
   }
 
+  async listAdminNormalWorkers({ environment }) {
+    return cloneRecord(
+      [...this.workerSlots.values()]
+        .filter((slot) => slot.environment === environment)
+        .sort((left, right) => left.slotNumber - right.slotNumber)
+        .map((slot) => ({
+          ...slot,
+          activeRoute: this.activeRouteForSlot(slot),
+        }))
+    );
+  }
+
+  async retireIdleNormalWorker({ id, environment, actorUserId, reason, updatedAt } = {}) {
+    const slot = this.workerSlots.get(id);
+    if (!slot || slot.environment !== environment || this.activeRouteReferencesSlot(slot)) return null;
+    if (!['available', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status)) return null;
+    slot.status = 'retired';
+    slot.assignedSiteId = null;
+    slot.assignedRouteId = null;
+    slot.assignedVersionId = null;
+    slot.assignedAt = null;
+    slot.updatedAt = updatedAt || this.now();
+    slot.notes = `retired by ${actorUserId || 'unknown'}: ${reason || 'legacy normal worker retired'}`;
+    return {
+      ...cloneRecord(slot),
+      activeRoute: null,
+    };
+  }
+
+  async markNormalWorkerDeletePending({ id, environment, actorUserId, reason, updatedAt } = {}) {
+    const slot = this.workerSlots.get(id);
+    if (!slot || slot.environment !== environment || this.activeRouteReferencesSlot(slot)) return null;
+    if (!['available', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status)) return null;
+    slot.status = 'delete_pending';
+    slot.updatedAt = updatedAt || this.now();
+    slot.notes = `delete pending by ${actorUserId || 'unknown'}: ${reason || 'legacy normal worker delete pending'}`;
+    return {
+      ...cloneRecord(slot),
+      activeRoute: null,
+    };
+  }
+
   async assignAvailableWorkerSlot({ environment, siteId, routeId, versionId, assignedAt }) {
     const slot = [...this.workerSlots.values()]
       .filter((candidate) => candidate.environment === environment && candidate.status === 'available')
@@ -2103,11 +2145,22 @@ class TestPagesStore {
   }
 
   activeRouteReferencesSlot(slot) {
+    return Boolean(this.activeRouteForSlot(slot));
+  }
+
+  activeRouteForSlot(slot) {
     for (const route of this.routes.values()) {
       if (route.environment !== slot.environment || route.routeStatus !== 'active') continue;
-      if (route.slotId === slot.id || route.activeVersionId === slot.assignedVersionId) return true;
+      if (route.slotId === slot.id || route.activeVersionId === slot.assignedVersionId) {
+        return {
+          siteId: route.siteId,
+          routeId: route.id,
+          activeVersionId: route.activeVersionId,
+          hostname: route.hostname,
+        };
+      }
     }
-    return false;
+    return null;
   }
 
   findConflictingHostnameClaimSync(input) {
