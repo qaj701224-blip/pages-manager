@@ -306,7 +306,10 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
 
   const route = await store.getRouteBySiteId(updated.id, config.environment);
   const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
-  if (snapshotError) return snapshotError;
+  if (snapshotError) {
+    await rollbackConsoleSiteOwnerTransfer(store, site, updatedAt, config.environment);
+    return snapshotError;
+  }
 
   const visible = await store.getConsoleSiteDetail({
     environment: config.environment,
@@ -326,6 +329,24 @@ async function updateConsoleSiteSettings(request, env, config, store, session, s
       ownerTeamType: target.teamType || null,
     }),
   });
+}
+
+async function rollbackConsoleSiteOwnerTransfer(store, previousSite, updatedAt, environment) {
+  const previousOwnerType = previousSite.ownerType || 'user';
+  const previousOwnerId = previousSite.ownerId || previousSite.ownerUserId;
+  const previousOwnerUserId = previousSite.ownerUserId || (previousOwnerType === 'user' ? previousOwnerId : null);
+  if (!previousOwnerId) return null;
+  return store.transferSiteOwner(
+    previousSite.id,
+    {
+      ownerType: previousOwnerType,
+      ownerId: previousOwnerId,
+      ownerUserId: previousOwnerUserId,
+      defaultVisibility: previousSite.defaultVisibility,
+      updatedAt,
+    },
+    environment
+  );
 }
 
 async function resolveConsoleSiteOwnerTarget(store, config, session, body) {

@@ -1189,6 +1189,37 @@ test('site publisher can transfer site owner from console settings to an active 
   assert.equal(site.ownerUserId, 'usr_target');
 });
 
+test('site publisher owner transfer rolls back when route snapshot cannot refresh', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { visibility: 'org' });
+  await seedConsoleUser(store, 'usr_target', {
+    email: 'target@example.com',
+    realname: '目标用户',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/settings', {
+      userId: 'usr_me',
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  const site = await store.getSite('site_mine');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_me');
+  assert.equal(site.ownerUserId, 'usr_me');
+});
+
 test('site publisher cannot transfer site owner from console settings to a disabled user', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_owner');
@@ -1473,6 +1504,14 @@ function createSnapshotStore() {
   return {
     put: async (key, value) => values.set(key, JSON.parse(value)),
     read: (key) => values.get(key),
+  };
+}
+
+function failingSnapshotStore() {
+  return {
+    put: async () => {
+      throw new Error('snapshot write failed');
+    },
   };
 }
 
