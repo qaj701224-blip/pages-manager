@@ -39,6 +39,13 @@ export function createDeploymentProvider(env, config) {
     async deleteSecret(input) {
       return client.deleteUserWorkerSecret(input.workerName, input.name);
     },
+    async replacePlainTextBindings(input) {
+      return client.updateUserWorkerBindings(input.workerName, {
+        bindings: runtimeBindingsForProvider({ vars: input.vars || {} }),
+        keepBindings: ['service', 'secret_text', 'vpc_network', 'assets'],
+        keepAssets: true,
+      });
+    },
   });
 }
 
@@ -93,6 +100,9 @@ function withWfpMetadata(provider) {
     },
     async deleteSecret(input) {
       return provider.deleteSecret?.(input);
+    },
+    async replacePlainTextBindings(input) {
+      return provider.replacePlainTextBindings?.(input);
     },
   };
 }

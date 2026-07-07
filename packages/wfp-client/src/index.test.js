@@ -266,6 +266,39 @@ test('put and delete user worker secret use dispatch namespace script secrets en
   assert.equal(calls[1].url, `${scriptUrl}/secrets/API_TOKEN`);
 });
 
+test('updateUserWorkerBindings sends metadata-only binding update and keeps other binding types', async () => {
+  const calls = [];
+  const scriptUrl =
+    'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/xd-cell-workers-staging' +
+    '/scripts/pages-v2-staging-docs-ver-1';
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      calls.push(request.clone());
+      return Response.json({ success: true, result: { id: 'pages-v2-staging-docs-ver-1' } });
+    },
+  });
+
+  await client.updateUserWorkerBindings('pages-v2-staging-docs-ver-1', {
+    bindings: [{ type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' }],
+    keepBindings: ['service', 'secret_text', 'vpc_network', 'assets'],
+    keepAssets: true,
+  });
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].url, scriptUrl);
+  const form = await calls[0].formData();
+  assert.deepEqual(JSON.parse(await form.get('metadata').text()), {
+    bindings: [{ type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' }],
+    keep_bindings: ['service', 'secret_text', 'vpc_network', 'assets'],
+    keep_assets: true,
+  });
+  assert.deepEqual([...form.keys()], ['metadata']);
+});
+
 test('normalizeWorkerBindings accepts service plain text secret text and VPC network bindings', () => {
   assert.deepEqual(
     normalizeWorkerBindings([

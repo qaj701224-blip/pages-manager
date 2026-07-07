@@ -229,6 +229,46 @@ export async function syncActiveWfpSecret(store, env, config, site, input) {
   }
 }
 
+export async function syncActiveWfpPlainTextBindings(store, env, config, site, vars) {
+  if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') {
+    return { appliesTo: 'next_deployment' };
+  }
+
+  const route = await store.getRouteBySiteId(site.id, config.environment);
+  if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return { appliesTo: 'next_deployment' };
+
+  const version = await store.getSiteVersion(route.activeVersionId, config.environment);
+  if (!version || (!isWfpRoute(route) && !isWfpVersion(version))) return { appliesTo: 'next_deployment' };
+  if (!versionRequiresWorker(version)) return { appliesTo: 'next_deployment' };
+  const workerName = route.workerName || version.workerName;
+  if (!workerName) return { appliesTo: 'next_deployment' };
+
+  let provider;
+  try {
+    provider = createWfpDeploymentProvider(env, config);
+  } catch {
+    return jsonError(
+      'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+      'Runtime var was saved but the active Worker could not be updated.',
+      502,
+      'Check platform Worker provider configuration and retry the runtime config change.'
+    );
+  }
+  if (typeof provider.replacePlainTextBindings !== 'function') return { appliesTo: 'next_deployment' };
+
+  try {
+    await provider.replacePlainTextBindings({ workerName, vars });
+    return { appliesTo: 'active_worker' };
+  } catch {
+    return jsonError(
+      'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+      'Runtime var was saved but the active Worker could not be updated.',
+      502,
+      'Retry the runtime config change before testing the current Worker.'
+    );
+  }
+}
+
 function isNotFoundError(error) {
   return Number(error?.status) === 404 || Number(error?.statusCode) === 404;
 }

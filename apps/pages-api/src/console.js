@@ -18,6 +18,7 @@ import {
   restoreSiteVisibilityAfterSnapshotFailure,
   buildSiteOwnerTransferAuditEvent,
   siteCreateErrorResponse,
+  syncActiveWfpPlainTextBindings,
   syncActiveWfpSecret,
   validateSlug,
 } from './sites.js';
@@ -477,7 +478,9 @@ export async function putSiteVar(request, env, config, store, session, siteId, n
   if (vars instanceof Response) return vars;
   const records = await replaceSiteVars(store, env, config, session, site.id, vars);
   const record = records.find((item) => item.name === name);
-  return jsonOk({ var: formatSiteVarMutation(record) });
+  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, vars);
+  if (syncResult instanceof Response) return syncResult;
+  return jsonOk({ var: formatSiteVarMutation(record, syncResult.appliesTo) });
 }
 
 export async function deleteSiteVar(env, config, store, session, siteId, name, options = {}) {
@@ -490,7 +493,9 @@ export async function deleteSiteVar(env, config, store, session, siteId, name, o
   const vars = await nextVarsForDelete(store, config.environment, site.id, name);
   if (vars instanceof Response) return vars;
   await replaceSiteVars(store, env, config, session, site.id, vars);
-  return jsonOk({ var: formatDeletedSiteVarMutation(name) });
+  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, vars);
+  if (syncResult instanceof Response) return syncResult;
+  return jsonOk({ var: formatDeletedSiteVarMutation(name, syncResult.appliesTo) });
 }
 
 export async function putSiteSecret(request, env, config, store, session, siteId, name, options = {}) {
@@ -709,18 +714,18 @@ function formatSiteVar(record) {
   };
 }
 
-function formatSiteVarMutation(record) {
+function formatSiteVarMutation(record, appliesTo = 'next_deployment') {
   return {
     ...formatSiteVar(record),
-    appliesTo: 'next_deployment',
+    appliesTo,
   };
 }
 
-function formatDeletedSiteVarMutation(name) {
+function formatDeletedSiteVarMutation(name, appliesTo = 'next_deployment') {
   return {
     name,
     deleted: true,
-    appliesTo: 'next_deployment',
+    appliesTo,
   };
 }
 

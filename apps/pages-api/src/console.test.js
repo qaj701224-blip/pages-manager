@@ -907,6 +907,51 @@ test('site admin secret changes sync to active WFP worker', async () => {
   ]);
 });
 
+test('site admin var changes sync to active WFP worker plain text bindings', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_mine', { workerName: 'pages-v2-mine-ver-1' });
+  const synced = [];
+  const testEnvironment = env(store, {
+    WFP_PROVIDER: {
+      replacePlainTextBindings: async (input) => {
+        const vars = Object.fromEntries(Object.entries(input.vars).sort());
+        synced.push(['replacePlainTextBindings', input.workerName, vars]);
+      },
+    },
+  });
+
+  const putVar = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/API_BASE', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'https://api.example.com' },
+    }),
+    testEnvironment
+  );
+  const deleteVar = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/API_BASE', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    testEnvironment
+  );
+
+  assert.equal(putVar.status, 200, await putVar.clone().text());
+  assert.equal(deleteVar.status, 200, await deleteVar.clone().text());
+  assert.deepEqual((await putVar.json()).var.appliesTo, 'active_worker');
+  assert.deepEqual(await deleteVar.json(), { var: { name: 'API_BASE', deleted: true, appliesTo: 'active_worker' } });
+  assert.deepEqual(synced, [
+    ['replacePlainTextBindings', 'pages-v2-mine-ver-1', { API_BASE: 'https://api.example.com' }],
+    ['replacePlainTextBindings', 'pages-v2-mine-ver-1', {}],
+  ]);
+});
+
 test('site admin secret update reports active WFP worker sync failures', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {

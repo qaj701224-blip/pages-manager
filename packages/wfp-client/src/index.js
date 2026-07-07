@@ -141,6 +141,22 @@ export function createWfpClient({
       });
     },
 
+    async updateUserWorkerBindings(scriptName, input = {}) {
+      const safeScriptName = validateScriptName(scriptName);
+      const safeBindings = normalizeWorkerBindings(input.bindings || []);
+      const metadata = {};
+      if (safeBindings.length > 0) metadata.bindings = safeBindings;
+      if (input.keepBindings !== undefined) metadata.keep_bindings = normalizeKeepBindingTypes(input.keepBindings);
+      if (input.keepAssets) metadata.keep_assets = true;
+
+      const form = new FormData();
+      form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      return requestCloudflare(fetch, apiToken, scriptUrl(baseUrl, account, namespace, safeScriptName), {
+        method: 'PUT',
+        body: form,
+      });
+    },
+
     async putUserWorkerSecret(scriptName, secret) {
       const safeScriptName = validateScriptName(scriptName);
       const body = normalizeUserWorkerSecret(secret);
@@ -313,6 +329,15 @@ function normalizeUserWorkerSecret(secret) {
     text: secret.value,
     type: 'secret_text',
   };
+}
+
+function normalizeKeepBindingTypes(value) {
+  if (!Array.isArray(value)) throw new Error('WORKER_KEEP_BINDINGS_INVALID');
+  return value.map((item) => {
+    const type = String(item || '').trim();
+    if (!/^[a-z_]+$/.test(type)) throw new Error('WORKER_KEEP_BINDING_TYPE_INVALID');
+    return type;
+  });
 }
 
 function validateBindingName(value) {
