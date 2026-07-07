@@ -290,7 +290,7 @@ test('admin department team merge transfers assets and writes redacted audit met
   assert.equal(site.ownerId, target.id);
   assert.equal(key.ownerId, target.id);
   assert.equal(movedMember.membershipSource, 'department_auto');
-  assert.equal(movedMember.departmentPath, target.departmentPath);
+  assert.equal(movedMember.departmentPath, source.departmentPath);
   assert.equal(movedMember.removedAt, null);
   assert.equal(movedMember.restoredByUserId, 'usr_root');
   assert.equal(sourceMember.removedAt, '2026-07-02T00:00:00.000Z');

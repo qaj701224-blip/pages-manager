@@ -9,6 +9,7 @@ import {
   readSiteConfig,
   updateSiteAccess,
 } from './console.js';
+import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { formatConsoleUser } from './console-users.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
@@ -625,7 +626,7 @@ function formatAdminSiteDetail(site) {
 function formatAdminTeam(team) {
   return {
     id: team.id,
-    name: team.name,
+    name: departmentTeamDisplayName(team),
     description: team.description || null,
     teamType: team.teamType,
     departmentPath: team.departmentPath || null,

@@ -1,3 +1,5 @@
+import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
+
 export function createPagesStore(env = {}) {
   if (env.PAGES_STORE) return env.PAGES_STORE;
   if (!env.PAGES_METADATA) throw new Error('PAGES_METADATA binding is required');
@@ -846,7 +848,7 @@ export class D1PagesStore {
             target.id,
             member.user_id,
             member.role,
-            target.departmentPath,
+            member.department_path || target.departmentPath,
             member.role_overridden_at || null,
             member.created_at,
             now
@@ -862,7 +864,7 @@ export class D1PagesStore {
           )
           .bind(
             member.role,
-            target.departmentPath,
+            member.department_path || target.departmentPath,
             member.role_overridden_at || null,
             now,
             actorUserId,
@@ -895,7 +897,7 @@ export class D1PagesStore {
         traceId: null,
         eventType: 'admin.department_team.merge',
         actorUserId,
-        actorType: 'user',
+        actorType: String(actorUserId || '').startsWith('system:') ? 'system' : 'user',
         siteId: null,
         routeId: null,
         versionId: null,
@@ -1000,22 +1002,29 @@ export class D1PagesStore {
   }
 
   async findOrCreateDepartmentTeam({ environment, departmentPath, createdAt }) {
-    const normalizedPath = normalizeDepartmentPath(departmentPath);
+    const identity = deriveDepartmentTeamIdentity(departmentPath);
+    const normalizedPath = identity.teamPath;
     if (!normalizedPath) throw new Error('DEPARTMENT_PATH_REQUIRED');
-    const existing = await this.findDepartmentTeam(environment, normalizedPath);
-    if (existing) return existing;
+    let target = await this.findDepartmentTeam(environment, normalizedPath);
+    if (target) {
+      await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target });
+      return this.getTeam(target.id);
+    }
     const deterministicId = departmentTeamId(environment, normalizedPath);
     const existingById = await this.getTeam(deterministicId);
     if (existingById?.mergedIntoTeamId) {
-      const target = await this.getTeam(existingById.mergedIntoTeamId);
-      if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) return target;
+      target = await this.getTeam(existingById.mergedIntoTeamId);
+      if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) {
+        await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target });
+        return target;
+      }
     }
 
     const now = createdAt || this.now();
     const team = {
       id: deterministicId,
       environment,
-      name: normalizedPath,
+      name: identity.teamPath !== identity.fullPath && identity.displayName ? identity.displayName : normalizedPath,
       description: null,
       teamType: 'department',
       departmentPath: normalizedPath,
@@ -1064,7 +1073,10 @@ export class D1PagesStore {
       const target = await this.getTeam(inserted.mergedIntoTeamId);
       if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) return target;
     }
-    return inserted || (await this.findDepartmentTeam(environment, normalizedPath));
+    target = inserted || (await this.findDepartmentTeam(environment, normalizedPath));
+    if (!target) return target;
+    await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target });
+    return this.getTeam(target.id);
   }
 
   async findDepartmentTeam(environment, departmentPath) {
@@ -1080,23 +1092,38 @@ export class D1PagesStore {
     return row ? mapTeam(row) : null;
   }
 
+  async mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath, target }) {
+    const legacyPath = normalizeDepartmentPath(fullPath);
+    if (!legacyPath || legacyPath === target.departmentPath) return;
+    const legacy = await this.findDepartmentTeam(environment, legacyPath);
+    if (!legacy || legacy.id === target.id) return;
+    await this.mergeDepartmentTeams({
+      sourceTeamId: legacy.id,
+      targetTeamId: target.id,
+      actorUserId: 'system:xds',
+      reason: 'department canonicalized',
+      environment,
+    });
+  }
+
   async hydrateDepartmentMembership({ environment, userId, departmentPath }) {
-    const normalizedPath = normalizeDepartmentPath(departmentPath);
-    if (!normalizedPath) return { team: null, member: null, restored: false };
+    const membershipDepartmentPath = normalizeDepartmentPath(departmentPath);
+    if (!membershipDepartmentPath) return { team: null, member: null, restored: false };
     const now = this.now();
+    const team = await this.findOrCreateDepartmentTeam({ environment, departmentPath: membershipDepartmentPath, createdAt: now });
     const migratedFrom = await this.db
       .prepare(
         `SELECT team_id, department_path FROM team_members
         WHERE user_id = ? AND membership_source = 'department_auto'
           AND removed_at IS NULL
-          AND department_path != ?
+          AND team_id != ?
           AND team_id IN (
             SELECT id FROM teams
             WHERE environment = ? AND team_type = 'department' AND status = 'active' AND deleted_at IS NULL
           )
         ORDER BY team_id ASC`
       )
-      .bind(userId, normalizedPath, environment)
+      .bind(userId, team.id, environment)
       .all();
     await this.db
       .prepare(
@@ -1104,17 +1131,15 @@ export class D1PagesStore {
         SET removed_at = ?, removed_by_user_id = 'system:xds', updated_at = ?
         WHERE user_id = ? AND membership_source = 'department_auto'
           AND removed_at IS NULL
-          AND department_path != ?
+          AND team_id != ?
           AND team_id IN (
             SELECT id FROM teams
             WHERE environment = ? AND team_type = 'department' AND status = 'active' AND deleted_at IS NULL
           )`
       )
-      .bind(now, now, userId, normalizedPath, environment)
+      .bind(now, now, userId, team.id, environment)
       .run();
 
-    const team = await this.findOrCreateDepartmentTeam({ environment, departmentPath: normalizedPath, createdAt: now });
-    const membershipDepartmentPath = team.departmentPath || normalizedPath;
     const existing = await this.getTeamMember({ teamId: team.id, userId, includeRemoved: true });
     if (existing) {
       const shouldRestore = Boolean(existing.removedAt && existing.removedByUserId === 'system:xds');
@@ -2195,7 +2220,8 @@ export class D1PagesStore {
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
           owner_users.realname AS owner_user_realname, owner_users.email AS owner_user_email,
-          teams.id AS owner_team_id, teams.name AS owner_team_name, teams.team_type AS owner_team_type
+          teams.id AS owner_team_id, teams.name AS owner_team_name, teams.team_type AS owner_team_type,
+          teams.department_path AS owner_team_department_path
         FROM sites
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
         LEFT JOIN users AS owner_users
@@ -2245,7 +2271,7 @@ export class D1PagesStore {
       const team = await this.getTeam(site.ownerId);
       return {
         ...site,
-        ownerDisplayName: team?.name || null,
+        ownerDisplayName: team ? departmentTeamDisplayName(team) : null,
         ownerTeamType: team?.teamType || null,
         ownerTeamId: team?.id || null,
       };
@@ -2273,6 +2299,7 @@ export class D1PagesStore {
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
           teams.id AS owner_team_id, teams.name AS owner_team_name, teams.team_type AS owner_team_type,
+          teams.department_path AS owner_team_department_path,
           team_members.role AS management_role
         FROM sites
         JOIN teams ON teams.id = sites.owner_id AND sites.owner_type = 'team'
@@ -2300,7 +2327,7 @@ export class D1PagesStore {
       return {
         ...site,
         ownerType: 'team',
-        ownerDisplayName: team.name,
+        ownerDisplayName: departmentTeamDisplayName(team),
         ownerTeamType: team.teamType,
         ownerTeamId: team.id,
         currentUserId: userId,
@@ -4020,7 +4047,11 @@ function mapConsoleTeamSite(row) {
   return {
     ...mapSiteWithJoinedRoute(row),
     ownerType: 'team',
-    ownerDisplayName: row.owner_team_name,
+    ownerDisplayName: departmentTeamDisplayName({
+      teamType: row.owner_team_type,
+      name: row.owner_team_name,
+      departmentPath: row.owner_team_department_path,
+    }),
     ownerTeamType: row.owner_team_type,
     ownerTeamId: row.owner_team_id,
     managementRole: row.management_role,
@@ -4032,7 +4063,12 @@ function mapConsoleDirectorySite(row) {
   if ((site.ownerType || 'user') === 'team') {
     return {
       ...site,
-      ownerDisplayName: row.owner_team_name || null,
+      ownerDisplayName:
+        departmentTeamDisplayName({
+          teamType: row.owner_team_type,
+          name: row.owner_team_name,
+          departmentPath: row.owner_team_department_path,
+        }) || null,
       ownerTeamType: row.owner_team_type || null,
       ownerTeamId: row.owner_team_id || null,
     };
@@ -4048,7 +4084,12 @@ function mapAdminSiteWithOwner(row) {
   if ((site.ownerType || 'user') === 'team') {
     return {
       ...site,
-      ownerDisplayName: row.owner_team_name || null,
+      ownerDisplayName:
+        departmentTeamDisplayName({
+          teamType: row.owner_team_type,
+          name: row.owner_team_name,
+          departmentPath: row.owner_team_department_path,
+        }) || null,
       ownerTeamType: row.owner_team_type || null,
       ownerDepartmentPath: row.owner_team_department_path || null,
     };
@@ -4068,7 +4109,12 @@ function mapAdminDeploymentWithOwner(row) {
       siteSlug: row.site_slug || null,
       ownerType: 'team',
       ownerId: row.site_owner_id || null,
-      ownerDisplayName: row.owner_team_name || null,
+      ownerDisplayName:
+        departmentTeamDisplayName({
+          teamType: row.owner_team_type,
+          name: row.owner_team_name,
+          departmentPath: row.owner_team_department_path,
+        }) || null,
       ownerTeamType: row.owner_team_type || null,
       ownerDepartmentPath: row.owner_team_department_path || null,
     };
@@ -4372,16 +4418,6 @@ function mapSiteVar(row) {
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at || null,
   };
-}
-
-function normalizeDepartmentPath(value) {
-  return typeof value === 'string'
-    ? value
-        .split('/')
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join('/')
-    : '';
 }
 
 function departmentTeamId(environment, departmentPath) {

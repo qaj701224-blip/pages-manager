@@ -1,6 +1,7 @@
 import { authenticateApiRequest } from './auth.js';
 import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
 import { formatConsoleUser } from './console-users.js';
+import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
@@ -276,7 +277,7 @@ async function ensureTeamHasAnotherAdmin(store, teamId, userId) {
 function formatTeam(team, member) {
   return {
     id: team.id,
-    name: team.name,
+    name: departmentTeamDisplayName(team),
     description: team.description || null,
     teamType: team.teamType,
     departmentPath: team.departmentPath || null,

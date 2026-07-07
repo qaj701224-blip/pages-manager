@@ -229,7 +229,7 @@ test('department hydration follows a merged department team to the target team',
   assert.equal(hydrated.team.id, target.id);
   assert.equal(hydrated.team.status, 'active');
   assert.equal(hydrated.member.teamId, target.id);
-  assert.equal(hydrated.member.departmentPath, target.departmentPath);
+  assert.equal(hydrated.member.departmentPath, 'XD/Old/Web');
   assert.equal(hydrated.member.removedAt, null);
   assert.deepEqual(
     (await store.listTeamsForUser({ environment: 'production', userId: 'usr_alice' })).map((team) => team.id),
@@ -237,13 +237,18 @@ test('department hydration follows a merged department team to the target team',
   );
 });
 
-test('department team id remains stable and distinct for Chinese department paths', async () => {
+test('department team id canonicalizes deep XDS paths by business department', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
 
   const web = await store.hydrateDepartmentMembership({
     environment: 'production',
     userId: 'usr_web',
     departmentPath: '心动/发行服务/平台支撑部/技术/Web',
+  });
+  const product = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_product',
+    departmentPath: '心动/发行服务/平台支撑部/产品/PM',
   });
   const ops = await store.hydrateDepartmentMembership({
     environment: 'production',
@@ -253,8 +258,97 @@ test('department team id remains stable and distinct for Chinese department path
 
   assert.notEqual(web.team.id, 'team_department_unknown');
   assert.notEqual(ops.team.id, 'team_department_unknown');
+  assert.equal(web.team.id, product.team.id);
   assert.notEqual(web.team.id, ops.team.id);
-  assert.equal(web.team.departmentPath, '心动/发行服务/平台支撑部/技术/Web');
+  assert.equal(web.team.name, '平台支撑部');
+  assert.equal(web.team.departmentPath, '心动/发行服务/平台支撑部');
+  assert.equal(web.member.departmentPath, '心动/发行服务/平台支撑部/技术/Web');
+  assert.equal(product.member.departmentPath, '心动/发行服务/平台支撑部/产品/PM');
+  assert.equal(ops.team.departmentPath, '心动/研发服务/平台支撑部');
+});
+
+test('department hydration updates full member path without migrating within the same canonical team', async () => {
+  const store = createTestPagesStore({
+    now: (() => {
+      const values = ['2026-06-15T00:00:00.000Z', '2026-06-15T00:01:00.000Z'];
+      return () => values.shift() || '2026-06-15T00:02:00.000Z';
+    })(),
+  });
+
+  const initial = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_member',
+    departmentPath: '心动/发行服务/平台支撑部/技术/Web',
+  });
+  const next = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_member',
+    departmentPath: '心动/发行服务/平台支撑部/产品/PM',
+  });
+
+  assert.equal(next.team.id, initial.team.id);
+  assert.equal(next.team.departmentPath, '心动/发行服务/平台支撑部');
+  assert.equal(next.member.departmentPath, '心动/发行服务/平台支撑部/产品/PM');
+  assert.equal(next.member.removedAt, null);
+  assert.equal(next.restored, false);
+  const hasMigrationAudit = (await store.listAuditEvents()).some(
+    (event) => event.eventType === 'system.department_membership.migrate'
+  );
+  assert.equal(hasMigrationAudit, false);
+});
+
+test('department hydration merges an existing leaf department team into the canonical team', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const legacy = seedLegacyDepartmentTeam(store, {
+    id: 'team_legacy_leaf',
+    departmentPath: '心动/发行服务/平台支撑部/技术/Web',
+  });
+  store.teamMembers.set(`${legacy.id}:usr_member`, {
+    teamId: legacy.id,
+    userId: 'usr_member',
+    role: 'admin',
+    membershipSource: 'department_auto',
+    departmentPath: legacy.departmentPath,
+    roleOverriddenAt: null,
+    removedAt: null,
+    removedByUserId: null,
+    restoredAt: null,
+    restoredByUserId: null,
+    createdAt: '2026-06-14T00:00:00.000Z',
+    updatedAt: '2026-06-14T00:00:00.000Z',
+  });
+  store.teamMembers.set(`${legacy.id}:usr_other`, {
+    teamId: legacy.id,
+    userId: 'usr_other',
+    role: 'publisher',
+    membershipSource: 'department_auto',
+    departmentPath: legacy.departmentPath,
+    roleOverriddenAt: null,
+    removedAt: null,
+    removedByUserId: null,
+    restoredAt: null,
+    restoredByUserId: null,
+    createdAt: '2026-06-14T00:00:00.000Z',
+    updatedAt: '2026-06-14T00:00:00.000Z',
+  });
+  await seedTeamSite(store, { id: 'site_legacy', slug: 'legacy', teamId: legacy.id });
+
+  const hydrated = await store.hydrateDepartmentMembership({
+    environment: 'production',
+    userId: 'usr_member',
+    departmentPath: '心动/发行服务/平台支撑部/技术/Web',
+  });
+
+  assert.equal(hydrated.team.departmentPath, '心动/发行服务/平台支撑部');
+  assert.equal(hydrated.member.teamId, hydrated.team.id);
+  assert.equal(hydrated.member.departmentPath, '心动/发行服务/平台支撑部/技术/Web');
+  const movedOtherMember = await store.getTeamMember({ teamId: hydrated.team.id, userId: 'usr_other' });
+  assert.equal(movedOtherMember.departmentPath, '心动/发行服务/平台支撑部/技术/Web');
+  assert.equal((await store.getSite('site_legacy')).ownerId, hydrated.team.id);
+  assert.equal(store.teams.get(legacy.id).status, 'merged');
+  const mergeAudit = (await store.listAuditEvents()).find((event) => event.eventType === 'admin.department_team.merge');
+  assert.equal(mergeAudit?.actorType, 'system');
+  assert.equal(mergeAudit?.actorUserId, 'system:xds');
 });
 
 test('department team ids are scoped by environment and do not collide on ASCII separators', async () => {
@@ -778,6 +872,30 @@ async function seedAccessKey(store, keyId, ownerUserId) {
     expiresAt: '2026-07-15T00:00:00.000Z',
   });
   return plaintext;
+}
+
+function seedLegacyDepartmentTeam(store, { id, departmentPath }) {
+  const now = '2026-06-14T00:00:00.000Z';
+  const team = {
+    id,
+    environment: 'production',
+    name: departmentPath,
+    description: null,
+    teamType: 'department',
+    departmentPath,
+    status: 'active',
+    createdByType: 'system',
+    createdByUserId: null,
+    mergedIntoTeamId: null,
+    mergedAt: null,
+    mergedByUserId: null,
+    mergeReason: null,
+    deletedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  store.teams.set(team.id, team);
+  return team;
 }
 
 async function seedTeamSite(store, { id, slug, teamId, visibility = 'internal' }) {

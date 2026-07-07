@@ -4,6 +4,7 @@ import {
   readOptionalConsoleUserSession,
   requireConsoleUserSession,
 } from './console-auth.js';
+import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, newId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
@@ -368,7 +369,7 @@ async function resolveConsoleSiteOwnerTarget(store, config, session, body) {
     ownerType: 'team',
     ownerId: team.id,
     ownerUserId: session.userId,
-    displayName: team.name || team.departmentPath || team.id,
+    displayName: departmentTeamDisplayName(team) || team.departmentPath || team.id,
     teamType: team.teamType || null,
     role: member.role,
   };

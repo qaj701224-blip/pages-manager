@@ -7,6 +7,7 @@ import {
   deploymentIdempotencyScope,
   hostnameFamilyForHostname,
 } from './store.js';
+import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString(), failAuditWrites = false } = {}) {
   return new TestPagesStore({ now, failAuditWrites });
@@ -494,7 +495,7 @@ class TestPagesStore {
         this.teamMembers.set(targetKey, {
           ...existingTargetMember,
           role: member.role,
-          departmentPath: target.departmentPath,
+          departmentPath: member.departmentPath || target.departmentPath,
           roleOverriddenAt: member.roleOverriddenAt || null,
           removedAt: null,
           removedByUserId: null,
@@ -506,7 +507,7 @@ class TestPagesStore {
         this.teamMembers.set(targetKey, {
           ...member,
           teamId: target.id,
-          departmentPath: target.departmentPath,
+          departmentPath: member.departmentPath || target.departmentPath,
           createdAt: member.createdAt,
           updatedAt: now,
         });
@@ -530,7 +531,7 @@ class TestPagesStore {
       environment: source.environment,
       eventType: 'admin.department_team.merge',
       actorUserId,
-      actorType: 'user',
+      actorType: String(actorUserId || '').startsWith('system:') ? 'system' : 'user',
       decision: 'allow',
       statusCode: 200,
       metadata: {
@@ -570,7 +571,8 @@ class TestPagesStore {
   }
 
   async findOrCreateDepartmentTeam({ environment, departmentPath, createdAt }) {
-    const normalizedPath = normalizeDepartmentPath(departmentPath);
+    const identity = deriveDepartmentTeamIdentity(departmentPath);
+    const normalizedPath = identity.teamPath;
     if (!normalizedPath) throw new Error('DEPARTMENT_PATH_REQUIRED');
     for (const team of this.teams.values()) {
       if (
@@ -580,7 +582,8 @@ class TestPagesStore {
         team.status === 'active' &&
         !team.deletedAt
       ) {
-        return cloneRecord(team);
+        await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target: team });
+        return cloneRecord(this.teams.get(team.id));
       }
     }
     const deterministicId = departmentTeamId(environment, normalizedPath);
@@ -588,6 +591,7 @@ class TestPagesStore {
     if (existingById?.mergedIntoTeamId) {
       const target = this.teams.get(existingById.mergedIntoTeamId);
       if (target && target.environment === environment && target.status === 'active' && !target.deletedAt) {
+        await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target });
         return cloneRecord(target);
       }
     }
@@ -595,7 +599,7 @@ class TestPagesStore {
     const team = {
       id: deterministicId,
       environment,
-      name: normalizedPath,
+      name: identity.teamPath !== identity.fullPath && identity.displayName ? identity.displayName : normalizedPath,
       description: null,
       teamType: 'department',
       departmentPath: normalizedPath,
@@ -612,20 +616,47 @@ class TestPagesStore {
     };
     this.teams.set(team.id, team);
     await this.recordAuditEvent(departmentTeamAuditEvent(team, 'system.department_team.create', now));
+    await this.mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath: identity.fullPath, target: team });
     return cloneRecord(team);
   }
 
+  async mergeLegacyDepartmentTeamIfNeeded({ environment, fullPath, target }) {
+    const legacyPath = normalizeDepartmentPath(fullPath);
+    if (!legacyPath || legacyPath === target.departmentPath) return;
+    const legacy = [...this.teams.values()].find(
+      (team) =>
+        team.environment === environment &&
+        team.teamType === 'department' &&
+        team.departmentPath === legacyPath &&
+        team.status === 'active' &&
+        !team.deletedAt
+    );
+    if (!legacy || legacy.id === target.id) return;
+    await this.mergeDepartmentTeams({
+      sourceTeamId: legacy.id,
+      targetTeamId: target.id,
+      actorUserId: 'system:xds',
+      reason: 'department canonicalized',
+      environment,
+    });
+  }
+
   async hydrateDepartmentMembership({ environment, userId, departmentPath }) {
-    const normalizedPath = normalizeDepartmentPath(departmentPath);
-    if (!normalizedPath) return { team: null, member: null, restored: false };
+    const membershipDepartmentPath = normalizeDepartmentPath(departmentPath);
+    if (!membershipDepartmentPath) return { team: null, member: null, restored: false };
     const now = this.now();
+    const targetTeam = await this.findOrCreateDepartmentTeam({
+      environment,
+      departmentPath: membershipDepartmentPath,
+      createdAt: now,
+    });
     const migratedFrom = [];
 
     for (const [key, member] of this.teamMembers.entries()) {
-      const team = this.teams.get(member.teamId);
-      if (!team || team.environment !== environment) continue;
+      const memberTeam = this.teams.get(member.teamId);
+      if (!memberTeam || memberTeam.environment !== environment) continue;
       if (member.userId !== userId || member.membershipSource !== 'department_auto') continue;
-      if (member.departmentPath === normalizedPath) continue;
+      if (member.teamId === targetTeam.id) continue;
       if (member.removedAt) continue;
       migratedFrom.push({
         teamId: member.teamId,
@@ -637,8 +668,7 @@ class TestPagesStore {
       this.teamMembers.set(key, member);
     }
 
-    const team = await this.findOrCreateDepartmentTeam({ environment, departmentPath: normalizedPath, createdAt: now });
-    const membershipDepartmentPath = team.departmentPath || normalizedPath;
+    const team = targetTeam;
     const existing = this.teamMembers.get(teamMemberKey(team.id, userId)) || null;
     if (existing) {
       const shouldRestore = Boolean(existing.removedAt && existing.removedByUserId === 'system:xds');
@@ -1195,7 +1225,7 @@ class TestPagesStore {
       return {
         ...site,
         ownerType: 'team',
-        ownerDisplayName: team.name,
+        ownerDisplayName: departmentTeamDisplayName(team),
         ownerTeamType: team.teamType,
         ownerTeamId: team.id,
         currentUserId: userId,
@@ -1975,7 +2005,7 @@ class TestPagesStore {
     return {
       ...this.siteWithRoute(site.id),
       ownerType: 'team',
-      ownerDisplayName: team.name,
+      ownerDisplayName: departmentTeamDisplayName(team),
       ownerTeamType: team.teamType,
       ownerTeamId: team.id,
       managementRole: team.currentUserRole,
@@ -1988,7 +2018,7 @@ class TestPagesStore {
       const team = this.teams.get(site.ownerId);
       return {
         ...site,
-        ownerDisplayName: team?.name || null,
+        ownerDisplayName: team ? departmentTeamDisplayName(team) : null,
         ownerTeamType: team?.teamType || null,
         ownerTeamId: team?.id || null,
       };
@@ -2011,7 +2041,7 @@ class TestPagesStore {
       const team = this.teams.get(site.ownerId);
       return {
         ...site,
-        ownerDisplayName: team?.name || null,
+        ownerDisplayName: team ? departmentTeamDisplayName(team) : null,
         ownerTeamType: team?.teamType || null,
         ownerDepartmentPath: team?.departmentPath || null,
       };
@@ -2080,16 +2110,6 @@ function teamMemberKey(teamId, userId) {
 
 function platformAdminKey(environment, userId) {
   return `${environment}:${userId}`;
-}
-
-function normalizeDepartmentPath(value) {
-  return typeof value === 'string'
-    ? value
-        .split('/')
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join('/')
-    : '';
 }
 
 function departmentTeamId(environment, departmentPath) {
