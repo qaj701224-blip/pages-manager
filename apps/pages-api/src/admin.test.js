@@ -528,6 +528,44 @@ test('admin can retire an idle normal worker but cannot delete an active one', a
   assert.equal((await store.getWorkerSlot('slot_production_007')).status, 'assigned');
 });
 
+test('admin reports inconsistent normal worker state when Cloudflare delete succeeds but D1 retire is blocked', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+  store.retireIdleNormalWorker = async () => null;
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/slot_production_001', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'DELETE',
+      body: { reason: 'legacy drain' },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          deletedWorkers.push(workerName);
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  const body = await response.json();
+  assert.equal(body.error.code, 'NORMAL_WORKER_STATE_INCONSISTENT');
+  assert.match(body.error.action, /Retry deletion/);
+  assert.deepEqual(deletedWorkers, ['pages-v2-production-slot-001']);
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'available');
+});
+
 test('admin marks idle normal worker delete pending when Cloudflare deletion is blocked', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   const deletedWorkers = [];

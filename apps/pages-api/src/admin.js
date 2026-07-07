@@ -307,20 +307,20 @@ async function deleteAdminNormalWorker(request, env, config, store, session, slo
     );
   }
 
-  const retired = await store.retireIdleNormalWorker({
-    id: slotId,
-    environment: config.environment,
-    actorUserId: session.user.userId,
-    reason,
-    updatedAt: readNow(env),
-  });
+  let retired;
+  try {
+    retired = await store.retireIdleNormalWorker({
+      id: slotId,
+      environment: config.environment,
+      actorUserId: session.user.userId,
+      reason,
+      updatedAt: readNow(env),
+    });
+  } catch {
+    return normalWorkerStateInconsistent();
+  }
   if (!retired) {
-    return jsonError(
-      'NORMAL_WORKER_ACTIVE',
-      'Normal Worker is still referenced by an active route.',
-      409,
-      'Migrate or redeploy the site to WFP before deleting this Worker.'
-    );
+    return normalWorkerStateInconsistent();
   }
   return jsonOk({ worker: formatAdminNormalWorker(retired) });
 }
@@ -400,6 +400,15 @@ function normalWorkerDeleteError(response, payload) {
 
 function isNormalWorkerDeleteBlocked(error) {
   return error?.code === 'NORMAL_WORKER_DELETE_BLOCKED' || error?.status === 409;
+}
+
+function normalWorkerStateInconsistent() {
+  return jsonError(
+    'NORMAL_WORKER_STATE_INCONSISTENT',
+    'Normal Worker was deleted from Cloudflare, but D1 state was not retired.',
+    409,
+    'Retry deletion to finish D1 synchronization before the next manual router deploy.'
+  );
 }
 
 async function listAdminSites(config, store) {

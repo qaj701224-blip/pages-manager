@@ -58,6 +58,9 @@ test('admin normal worker management is exposed as a legacy operations surface',
   assert.match(adminNormalWorkersSource, /deleteAdminNormalWorker\(worker\.id/);
   assert.match(adminNormalWorkersSource, /仍被 active route 引用/);
   assert.match(adminNormalWorkersSource, /DELETE \$\{worker\.workerName\}/);
+  assert.match(adminNormalWorkersSource, /state\.notice\.action/);
+  assert.match(adminNormalWorkersSource, /current\.workers\.length > 0 \? 'ready' : 'error'/);
+  assert.match(adminNormalWorkersSource, /NORMAL_WORKER_DELETE_FAILED/);
 });
 
 test('admin deep routes stay under the admin guard', () => {

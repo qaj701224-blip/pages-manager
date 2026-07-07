@@ -2065,6 +2065,15 @@ test('D1 store lists and retires admin normal workers with active route protecti
       active_version_id: 'ver_active',
       hostname: 'active.pages.xd.team',
     },
+    {
+      id: 'route_duplicate',
+      environment: 'production',
+      route_status: 'active',
+      site_id: 'site_duplicate',
+      slot_id: null,
+      active_version_id: 'ver_active',
+      hostname: 'duplicate.pages.xd.team',
+    },
   ]);
   const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
 
@@ -2092,6 +2101,7 @@ test('D1 store lists and retires admin normal workers with active route protecti
   });
 
   assert.equal(listed[0].activeRoute, null);
+  assert.equal(listed.length, 2);
   assert.deepEqual(listed[1].activeRoute, {
     siteId: 'site_active',
     routeId: 'route_active',
@@ -3234,7 +3244,8 @@ function fakeAdminNormalWorkerDb(slots, routes = []) {
         bind(...args) {
           return {
             async all() {
-              assert.match(sql, /FROM worker_slots\s+LEFT JOIN site_routes/);
+              assert.match(sql, /WITH active_slot_routes AS/);
+              assert.match(sql, /GROUP BY worker_slots\.id/);
               const [environment] = args;
               return {
                 results: [...slots.values()]

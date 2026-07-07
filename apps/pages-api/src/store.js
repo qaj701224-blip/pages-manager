@@ -3590,23 +3590,31 @@ export class D1PagesStore {
   async listAdminNormalWorkers({ environment }) {
     const result = await this.db
       .prepare(
-        `SELECT worker_slots.*,
+        `WITH active_slot_routes AS (
+          SELECT worker_slots.id AS worker_slot_id, MIN(site_routes.id) AS active_route_id
+          FROM worker_slots
+          JOIN site_routes
+            ON site_routes.environment = worker_slots.environment
+            AND site_routes.route_status = 'active'
+            AND (
+              site_routes.slot_id = worker_slots.id
+              OR site_routes.active_version_id = worker_slots.assigned_version_id
+            )
+          WHERE worker_slots.environment = ?
+          GROUP BY worker_slots.id
+        )
+        SELECT worker_slots.*,
           site_routes.site_id AS active_site_id,
           site_routes.id AS active_route_id,
           site_routes.active_version_id AS active_version_id,
           site_routes.hostname AS active_hostname
         FROM worker_slots
-        LEFT JOIN site_routes
-          ON site_routes.environment = worker_slots.environment
-          AND site_routes.route_status = 'active'
-          AND (
-            site_routes.slot_id = worker_slots.id
-            OR site_routes.active_version_id = worker_slots.assigned_version_id
-          )
+        LEFT JOIN active_slot_routes ON active_slot_routes.worker_slot_id = worker_slots.id
+        LEFT JOIN site_routes ON site_routes.id = active_slot_routes.active_route_id
         WHERE worker_slots.environment = ?
         ORDER BY worker_slots.slot_number ASC`
       )
-      .bind(environment)
+      .bind(environment, environment)
       .all();
     return (result.results || []).map(mapAdminNormalWorkerSlot);
   }
