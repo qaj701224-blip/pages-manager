@@ -181,7 +181,7 @@ function TeamsContent({ state, onCreate }) {
               <span>你的角色：{team.roleLabel}</span>
             </div>
           </div>
-          <p>{team.description}</p>
+          <p>{team.summary}</p>
           <div className="team-card__stats">
             <span>
               <strong>{team.siteCount}</strong> 站点

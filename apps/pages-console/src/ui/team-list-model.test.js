@@ -29,7 +29,7 @@ test('team cards expose skill-hub style display fields', () => {
     id: 'team_test',
     name: 'test',
     avatarText: 't',
-    description: '测试',
+    summary: '测试',
     roleLabel: 'admin',
     typeLabel: '',
     siteCount: 2,
@@ -39,12 +39,26 @@ test('team cards expose skill-hub style display fields', () => {
     id: 'dept_xd',
     name: 'XD / Web',
     avatarText: 'X',
-    description: 'XD/Platform/Web',
+    summary: '部门路径：XD/Platform/Web',
     roleLabel: 'publisher',
     typeLabel: '部门团队',
     siteCount: 1,
     memberCount: 8,
   });
+});
+
+test('department team cards collapse deep XDS paths to the team-level department', () => {
+  const [card] = buildTeamCards([
+    {
+      id: 'dept_platform_support',
+      name: '平台支撑部',
+      departmentPath: '心动/发行服务/平台支撑部/技术/Web',
+      currentUserRole: 'admin',
+      teamType: 'department',
+    },
+  ]);
+
+  assert.equal(card.summary, '部门路径：心动/发行服务/平台支撑部');
 });
 
 test('team filter options keep the all-teams option visible', () => {
