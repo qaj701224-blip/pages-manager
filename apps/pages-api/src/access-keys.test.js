@@ -385,6 +385,35 @@ test('team-owned access keys require team admin and survive creator leaving the 
   assert.equal(read.status, 200, await read.clone().text());
 });
 
+test('team-owned access key creation rejects deleted teams even when membership still exists', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    createdByUserId: 'usr_1',
+  });
+  const originalGetTeam = store.getTeam.bind(store);
+  store.getTeam = async (teamId) => {
+    const record = await originalGetTeam(teamId);
+    return record ? { ...record, deletedAt: '2026-06-15T00:00:00.000Z' } : null;
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest(`/.xd-pages/api/console/teams/${team.id}/access-keys`, {
+      userId: 'usr_1',
+      body: {
+        name: 'team key',
+        scopes: ['read:site'],
+      },
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_NOT_FOUND');
+});
+
 test('user-owned owner-scoped access keys recalculate current team permissions on use', async () => {
   const store = await createSeededStore();
   const team = await store.createTeam({

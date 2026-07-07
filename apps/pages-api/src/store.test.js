@@ -178,6 +178,42 @@ test('D1 store admin and route lookups avoid unjoined team member aliases', asyn
   assert.equal(capturedSql.some((sql) => /team_members\.role/.test(sql)), false);
 });
 
+test('D1 store admin list queries are bounded and site detail can be fetched by id', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      const call = { sql, args: [] };
+      calls.push(call);
+      return {
+        bind(...args) {
+          call.args = args;
+          return {
+            all: async () => ({ results: [] }),
+            first: async () => null,
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-07-02T00:00:00.000Z' });
+
+  await store.listAdminSites({ environment: 'production' });
+  await store.listAdminSiteDeployments({ environment: 'production', siteId: 'site_1' });
+  await store.listAdminTeams({ environment: 'production' });
+  await store.getAdminSiteById('site_1', 'production');
+
+  const [sites, deployments, teams, siteDetail] = calls;
+  assert.match(sites.sql, /LIMIT \?/);
+  assert.deepEqual(sites.args, ['production', 200]);
+  assert.match(deployments.sql, /LIMIT \?/);
+  assert.deepEqual(deployments.args, ['production', 'site_1', 100]);
+  assert.match(teams.sql, /LIMIT \?/);
+  assert.deepEqual(teams.args, ['production', 200]);
+  assert.match(siteDetail.sql, /WHERE sites\.id = \? AND sites\.environment = \?/);
+  assert.doesNotMatch(siteDetail.sql, /ORDER BY sites\.updated_at DESC/);
+  assert.deepEqual(siteDetail.args, ['site_1', 'production']);
+});
+
 test('createSite writes hostname claim in the same authority operation', async () => {
   const store = createSeededStore();
 

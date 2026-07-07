@@ -13,7 +13,7 @@ import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { formatConsoleUser } from './console-users.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
-import { buildSiteOwnerTransferAuditEvent } from './sites.js';
+import { buildSiteOwnerTransferAuditEvent, refreshActiveRouteSnapshot } from './sites.js';
 import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
@@ -233,6 +233,11 @@ async function listAdminSites(config, store) {
 }
 
 async function getAdminSite(config, store, siteId) {
+  if (typeof store.getAdminSiteById === 'function') {
+    const site = await store.getAdminSiteById(siteId, config.environment);
+    if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+    return site;
+  }
   const sites = await store.listAdminSites({ environment: config.environment });
   const site = sites.find((item) => item.id === siteId);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
@@ -273,9 +278,34 @@ async function updateAdminSiteSettings(request, env, config, store, session, sit
   );
   if (!updated) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
 
+  const route = await store.getRouteBySiteId(updated.id, config.environment);
+  const snapshotError = await refreshActiveRouteSnapshot(env, store, updated, route, config.environment);
+  if (snapshotError) {
+    await rollbackAdminSiteOwnerTransfer(store, site, updatedAt, config.environment);
+    return snapshotError;
+  }
+
   const refreshed = await getAdminSite(config, store, updated.id);
   if (refreshed instanceof Response) return refreshed;
   return jsonOk({ site: formatAdminSiteDetail(refreshed) });
+}
+
+async function rollbackAdminSiteOwnerTransfer(store, previousSite, updatedAt, environment) {
+  const previousOwnerType = previousSite.ownerType || 'user';
+  const previousOwnerId = previousSite.ownerId || previousSite.ownerUserId;
+  const previousOwnerUserId = previousSite.ownerUserId || (previousOwnerType === 'user' ? previousOwnerId : null);
+  if (!previousOwnerId) return null;
+  return store.transferSiteOwner(
+    previousSite.id,
+    {
+      ownerType: previousOwnerType,
+      ownerId: previousOwnerId,
+      ownerUserId: previousOwnerUserId,
+      defaultVisibility: previousSite.defaultVisibility,
+      updatedAt,
+    },
+    environment
+  );
 }
 
 async function resolveAdminSiteOwnerTarget(store, config, body) {

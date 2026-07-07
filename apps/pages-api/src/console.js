@@ -178,7 +178,7 @@ async function createConsoleSite(request, env, config, store, session) {
     const teamId = normalizeRequiredString(body.teamId);
     if (!teamId) return jsonError('TEAM_REQUIRED', 'Team id is required.', 400, 'Choose a team.');
     const team = await store.getTeam(teamId);
-    if (!team || team.environment !== config.environment) {
+    if (!team || team.environment !== config.environment || team.deletedAt || team.status !== 'active') {
       return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
     }
     const member = await store.getTeamMember({ teamId, userId: session.userId });

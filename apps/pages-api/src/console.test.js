@@ -593,6 +593,47 @@ test('console creates personal and team-owned sites without browser upload', asy
   assert.equal((await viewer.json()).error.code, 'TEAM_PUBLISHER_REQUIRED');
 });
 
+test('console rejects creating team-owned sites for deleted teams', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const testEnvironment = envWithSequencedIds(store);
+  await seedConsoleUsers(store, ['usr_admin', 'usr_publisher']);
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: null,
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_publisher',
+    role: 'publisher',
+    membershipSource: 'manual',
+    actorUserId: 'usr_admin',
+  });
+  const originalGetTeam = store.getTeam.bind(store);
+  store.getTeam = async (teamId) => {
+    const record = await originalGetTeam(teamId);
+    return record ? { ...record, deletedAt: '2026-06-15T00:00:00.000Z' } : null;
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/workspace/sites', {
+      userId: 'usr_publisher',
+      body: {
+        slug: 'deleted-team-site',
+        ownerType: 'team',
+        teamId: team.id,
+        visibility: 'org',
+      },
+    }),
+    testEnvironment
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_NOT_FOUND');
+});
+
 test('site detail computes permissions from team role for team-owned site', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUsers(store, ['usr_admin', 'usr_publisher', 'usr_other']);

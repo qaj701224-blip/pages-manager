@@ -702,7 +702,8 @@ export class D1PagesStore {
     return (result.results || []).map(mapUser);
   }
 
-  async listAdminSites({ environment }) {
+  async listAdminSites({ environment, limit = 200 }) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
     const result = await this.db
       .prepare(
         `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
@@ -730,14 +731,50 @@ export class D1PagesStore {
           AND owner_teams.id = sites.owner_id
           AND owner_teams.deleted_at IS NULL
         WHERE sites.environment = ? AND sites.deleted_at IS NULL
-        ORDER BY sites.updated_at DESC`
+        ORDER BY sites.updated_at DESC
+        LIMIT ?`
       )
-      .bind(environment)
+      .bind(environment, normalizedLimit)
       .all();
     return (result.results || []).map(mapAdminSiteWithOwner);
   }
 
-  async listAdminSiteDeployments({ environment, siteId }) {
+  async getAdminSiteById(siteId, environment) {
+    const row = await this.db
+      .prepare(
+        `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
+          site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+          site_routes.execution_provider AS route_execution_provider,
+          site_routes.dispatch_type AS route_dispatch_type,
+          site_routes.dispatch_binding_name AS route_dispatch_binding_name,
+          site_routes.slot_id AS route_slot_id,
+          site_routes.active_version_id AS route_active_version_id,
+          site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+          site_routes.route_generation AS route_route_generation,
+          site_routes.runtime_config_generation AS route_runtime_config_generation,
+          site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
+          site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
+          owner_users.email AS owner_user_email, owner_users.realname AS owner_user_realname,
+          owner_teams.name AS owner_team_name, owner_teams.team_type AS owner_team_type,
+          owner_teams.department_path AS owner_team_department_path
+        FROM sites
+        LEFT JOIN site_routes ON site_routes.site_id = sites.id
+        LEFT JOIN users AS owner_users
+          ON COALESCE(sites.owner_type, 'user') = 'user'
+          AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
+        LEFT JOIN teams AS owner_teams
+          ON sites.owner_type = 'team'
+          AND owner_teams.id = sites.owner_id
+          AND owner_teams.deleted_at IS NULL
+        WHERE sites.id = ? AND sites.environment = ? AND sites.deleted_at IS NULL`
+      )
+      .bind(siteId, environment)
+      .first();
+    return row ? mapAdminSiteWithOwner(row) : null;
+  }
+
+  async listAdminSiteDeployments({ environment, siteId, limit = 100 }) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
     const result = await this.db
       .prepare(
         `SELECT deployments.*,
@@ -763,16 +800,18 @@ export class D1PagesStore {
           AND owner_teams.environment = deployments.environment
           AND owner_teams.deleted_at IS NULL
         WHERE deployments.environment = ? AND deployments.site_id = ?
-        ORDER BY deployments.created_at DESC`
+        ORDER BY deployments.created_at DESC
+        LIMIT ?`
       )
-      .bind(environment, siteId)
+      .bind(environment, siteId, normalizedLimit)
       .all();
     return (result.results || []).map(mapAdminDeploymentWithOwner);
   }
 
-  async listAdminTeams({ environment, teamType, status } = {}) {
+  async listAdminTeams({ environment, teamType, status, limit = 200 } = {}) {
     const conditions = ['environment = ?', 'deleted_at IS NULL'];
     const binds = [environment];
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
     if (teamType) {
       conditions.push('team_type = ?');
       binds.push(teamType);
@@ -785,9 +824,10 @@ export class D1PagesStore {
       .prepare(
         `SELECT * FROM teams
         WHERE ${conditions.join(' AND ')}
-        ORDER BY name ASC`
+        ORDER BY name ASC
+        LIMIT ?`
       )
-      .bind(...binds)
+      .bind(...binds, normalizedLimit)
       .all();
     return (result.results || []).map(mapTeam);
   }

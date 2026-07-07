@@ -406,7 +406,8 @@ class TestPagesStore {
     );
   }
 
-  async listAdminSites({ environment }) {
+  async listAdminSites({ environment, limit = 200 }) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
     return cloneRecord(
       [...this.sites.values()]
         .filter((site) => !site.deletedAt)
@@ -414,26 +415,37 @@ class TestPagesStore {
         .map((site) => this.decorateAdminSite(this.siteWithRoute(site.id)))
         .filter(Boolean)
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, normalizedLimit)
     );
   }
 
-  async listAdminSiteDeployments({ environment, siteId }) {
+  async getAdminSiteById(siteId, environment) {
+    const site = this.sites.get(siteId) || null;
+    if (!site || site.deletedAt || (environment && site.environment !== environment)) return null;
+    return cloneRecord(this.decorateAdminSite(this.siteWithRoute(siteId)));
+  }
+
+  async listAdminSiteDeployments({ environment, siteId, limit = 100 }) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
     return cloneRecord(
       [...this.deployments.values()]
         .filter((deployment) => deployment.siteId === siteId)
         .filter((deployment) => !environment || deployment.environment === environment)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .map((deployment) => this.decorateAdminDeployment(deployment))
+        .slice(0, normalizedLimit)
     );
   }
 
-  async listAdminTeams({ environment, teamType, status } = {}) {
+  async listAdminTeams({ environment, teamType, status, limit = 200 } = {}) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
     return cloneRecord(
       [...this.teams.values()]
         .filter((team) => !environment || team.environment === environment)
         .filter((team) => !teamType || team.teamType === teamType)
         .filter((team) => !status || team.status === status)
         .sort((left, right) => left.name.localeCompare(right.name))
+        .slice(0, normalizedLimit)
     );
   }
 

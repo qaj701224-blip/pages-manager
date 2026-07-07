@@ -239,7 +239,7 @@ async function requireTeamAdmin(store, config, session, teamId) {
 
 async function requireTeamMember(store, config, session, teamId) {
   const team = await store.getTeam(teamId);
-  if (!team || team.environment !== config.environment) {
+  if (!team || team.environment !== config.environment || team.deletedAt || team.status !== 'active') {
     return jsonError('TEAM_NOT_FOUND', 'Team not found.', 404, 'Check the team id.');
   }
   const member = await store.getTeamMember({ teamId, userId: session.userId });
@@ -263,7 +263,11 @@ export async function ensureCanRemoveTeamMember(store, teamId, userId) {
 async function ensureTeamHasAnotherAdmin(store, teamId, userId) {
   const members = typeof store.listTeamMembers === 'function' ? await store.listTeamMembers({ teamId }) : [];
   const hasAnotherAdmin = members.some(
-    (member) => member.userId !== userId && !member.removedAt && member.role === 'admin'
+    (member) =>
+      member.userId !== userId &&
+      !member.removedAt &&
+      member.role === 'admin' &&
+      member.user?.employeeStatus === 'active'
   );
   if (hasAnotherAdmin) return null;
   return jsonError(

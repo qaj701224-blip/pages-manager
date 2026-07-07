@@ -549,6 +549,151 @@ test('platform admin can edit admin-scope site settings without asset membership
   assert.equal(site.ownerUserId, 'usr_target');
 });
 
+test('platform admin site detail and settings avoid full admin site scans', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createUser({
+    userId: 'usr_target',
+    email: 'target@example.com',
+    realname: '目标用户',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'personal',
+    ownerUserId: 'usr_owner',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'internal',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'personal.workers.xd.team',
+  });
+  store.listAdminSites = async () => {
+    throw new Error('unexpected full admin site scan');
+  };
+
+  const detail = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  const settings = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal/settings', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store)
+  );
+
+  assert.equal(detail.status, 200, await detail.clone().text());
+  assert.equal((await detail.json()).site.id, 'site_personal');
+  assert.equal(settings.status, 200, await settings.clone().text());
+  assert.equal((await settings.json()).site.owner.id, 'usr_target');
+});
+
+test('platform admin site owner transfer refreshes active route snapshot', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const snapshots = createSnapshotStore();
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createUser({
+    userId: 'usr_target',
+    email: 'target@example.com',
+    realname: '目标用户',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'personal',
+    ownerUserId: 'usr_owner',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'owner',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'personal.workers.xd.team',
+  });
+  await activateSite(store, 'site_personal', { visibility: 'owner' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal/settings', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store, { ROUTE_SNAPSHOTS: snapshots })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const pointer = snapshots.read('production:route_pointer:personal.workers.xd.team');
+  assert.ok(pointer);
+  const snapshot = snapshots.read(pointer.snapshotKey);
+  assert.equal(snapshot.ownerUserId, 'usr_target');
+});
+
+test('platform admin site owner transfer rolls back when route snapshot cannot refresh', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createUser({
+    userId: 'usr_owner',
+    email: 'owner@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createUser({
+    userId: 'usr_target',
+    email: 'target@example.com',
+    realname: '目标用户',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_personal',
+    slug: 'personal',
+    ownerUserId: 'usr_owner',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    siteUuid: 'uuid_site_personal',
+    defaultVisibility: 'owner',
+    environment: 'production',
+    routeId: 'route_site_personal',
+    hostname: 'personal.workers.xd.team',
+  });
+  await activateSite(store, 'site_personal', { visibility: 'owner' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_personal/settings', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'PATCH',
+      body: { ownerType: 'user', ownerId: 'usr_target' },
+    }),
+    env(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  const site = await store.getSite('site_personal');
+  assert.equal(site.ownerType, 'user');
+  assert.equal(site.ownerId, 'usr_owner');
+  assert.equal(site.ownerUserId, 'usr_owner');
+});
+
 test('platform admin cannot transfer an admin-scope site to an inactive user', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -833,4 +978,48 @@ async function seedTeamSite(store, { id, slug, teamId, visibility = 'internal' }
     routeId: `route_${id}`,
     hostname: `${slug}.workers.xd.team`,
   });
+}
+
+async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1', visibility = 'org' } = {}) {
+  await store.createSiteVersion({
+    id: `ver_${siteId}`,
+    siteId,
+    deploymentId: `dep_${siteId}`,
+    workerName,
+    runtime: 'wfp',
+    artifactRef: `wfp://test/${workerName}`,
+    contentHash: `sha256:${siteId}`,
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    createdBy: 'usr_owner',
+  });
+  return store.activateSiteVersion(
+    siteId,
+    {
+      activeVersionId: `ver_${siteId}`,
+      workerName,
+      visibility,
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    },
+    'production'
+  );
+}
+
+function createSnapshotStore() {
+  const values = new Map();
+  return {
+    put: async (key, value) => values.set(key, JSON.parse(value)),
+    get: async (key) => (values.has(key) ? JSON.stringify(values.get(key)) : null),
+    read: (key) => values.get(key),
+  };
+}
+
+function failingSnapshotStore() {
+  return {
+    put: async () => {
+      throw new Error('snapshot write failed');
+    },
+  };
 }

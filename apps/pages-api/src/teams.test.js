@@ -786,6 +786,73 @@ test('team member APIs preserve the final custom team admin', async () => {
   assert.equal((await store.getTeamMember({ teamId: team.id, userId: 'usr_admin' })).role, 'admin');
 });
 
+test('team member APIs do not count inactive users as another admin', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin');
+  await seedConsoleUser(store, 'usr_inactive', { employeeStatus: 'disabled' });
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: null,
+    createdByUserId: 'usr_admin',
+  });
+  await store.addTeamMember({
+    teamId: team.id,
+    userId: 'usr_inactive',
+    role: 'admin',
+    membershipSource: 'manual',
+    actorUserId: 'usr_admin',
+  });
+
+  const demote = await worker.fetch(
+    internalConsoleJsonRequest(`/.xd-pages/api/console/teams/${team.id}/members/usr_admin`, {
+      userId: 'usr_admin',
+      method: 'PATCH',
+      body: { role: 'publisher' },
+    }),
+    env(store)
+  );
+  const remove = await worker.fetch(
+    internalConsoleRequest(`/.xd-pages/api/console/teams/${team.id}/members/usr_admin`, {
+      userId: 'usr_admin',
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+
+  assert.equal(demote.status, 409, await demote.clone().text());
+  assert.equal((await demote.json()).error.code, 'TEAM_LAST_ADMIN');
+  assert.equal(remove.status, 409, await remove.clone().text());
+  assert.equal((await remove.json()).error.code, 'TEAM_LAST_ADMIN');
+  assert.equal((await store.getTeamMember({ teamId: team.id, userId: 'usr_admin' })).role, 'admin');
+});
+
+test('team member APIs reject deleted teams even when membership still exists', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_admin');
+  const team = await store.createTeam({
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    description: null,
+    createdByUserId: 'usr_admin',
+  });
+  const originalGetTeam = store.getTeam.bind(store);
+  store.getTeam = async (teamId) => {
+    const record = await originalGetTeam(teamId);
+    return record ? { ...record, deletedAt: '2026-06-15T00:00:00.000Z' } : null;
+  };
+
+  const response = await worker.fetch(
+    internalConsoleRequest(`/.xd-pages/api/console/teams/${team.id}/members`, { userId: 'usr_admin' }),
+    env(store)
+  );
+
+  assert.equal(response.status, 404, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'TEAM_NOT_FOUND');
+});
+
 function env(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',
