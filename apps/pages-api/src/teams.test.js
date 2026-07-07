@@ -468,7 +468,7 @@ test('team APIs list teams and block department team deletion', async () => {
   assert.equal((await deleteDepartment.json()).error.code, 'DEPARTMENT_TEAM_DELETE_FORBIDDEN');
 });
 
-test('public teams API lists current user teams for CLI tokens only', async () => {
+test('public teams API lists current user teams for CLI tokens and personal access keys', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_member', { email: 'member@example.com' });
   const customTeam = await store.createTeam({
@@ -540,10 +540,30 @@ test('public teams API lists current user teams for CLI tokens only', async () =
     ],
   });
 
-  const accessKey = await seedAccessKey(store, 'ak_user_team_list', 'usr_member');
+  const personalAccessKey = await seedAccessKey(store, 'ak_user_team_list', 'usr_member', { scopes: ['deploy:site'] });
+  const accessKeyListed = await worker.fetch(
+    apiRequest('/.xd-pages/api/teams', {
+      Authorization: `Bearer ${personalAccessKey}`,
+    }),
+    env(store)
+  );
+  assert.equal(accessKeyListed.status, 200, await accessKeyListed.clone().text());
+  assert.deepEqual(
+    (await accessKeyListed.json()).teams.map((team) => [team.id, team.currentUserRole]),
+    [
+      [customTeam.id, 'publisher'],
+      [department.team.id, 'admin'],
+    ]
+  );
+
+  const teamAccessKey = await seedAccessKey(store, 'ak_team_team_list', 'usr_member', {
+    ownerType: 'team',
+    ownerId: customTeam.id,
+    scopes: ['deploy:site'],
+  });
   const forbidden = await worker.fetch(
     apiRequest('/.xd-pages/api/teams', {
-      Authorization: `Bearer ${accessKey}`,
+      Authorization: `Bearer ${teamAccessKey}`,
     }),
     env(store)
   );
@@ -921,20 +941,23 @@ async function seedConsoleUser(store, userId, overrides = {}) {
   });
 }
 
-async function seedAccessKey(store, keyId, ownerUserId) {
+async function seedAccessKey(store, keyId, ownerUserId, options = {}) {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',
     keyId,
     bytes: new Uint8Array(24).fill(7),
   });
+  const ownerType = options.ownerType || 'user';
   await store.createAccessKey({
     id: keyId,
     environment: 'production',
+    ownerType,
+    ownerId: options.ownerId || (ownerType === 'user' ? ownerUserId : undefined),
     ownerUserId,
     keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
     pepperId: 'pepper_1',
     name: keyId,
-    scopes: ['read:site'],
+    scopes: options.scopes || ['read:site'],
     siteId: null,
     expiresAt: '2026-07-15T00:00:00.000Z',
   });

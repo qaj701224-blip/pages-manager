@@ -14,23 +14,35 @@ export async function handleTeamsApi(request, env, config, store) {
 
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
   if (!auth.ok) return jsonError(auth.error.code, auth.error.message, auth.error.status, auth.error.action);
-  if (auth.actor.type !== 'user') {
+  const userId = teamListUserId(auth.actor);
+  if (!userId) {
     return jsonError(
       'TEAM_LIST_FORBIDDEN',
-      'Team list requires a user CLI token.',
+      'Team list requires a user CLI token or personal access key.',
       403,
-      'Run `xd-cell login` and retry with the CLI user credential.'
+      'Run `xd-cell login` or use a personal access key, then retry.'
     );
   }
 
   const teams = await store.listTeamsForUser({
     environment: config.environment,
-    userId: auth.actor.userId,
+    userId,
   });
   return jsonOk({
     environment: config.environment,
     teams: teams.map(formatTeam),
   });
+}
+
+function teamListUserId(actor) {
+  if (actor.type === 'user') return actor.userId || null;
+  if (actor.type !== 'access_key' || (actor.ownerType || 'user') !== 'user') return null;
+  if (!actorCanDiscoverTeams(actor)) return null;
+  return actor.ownerId || actor.userId || null;
+}
+
+function actorCanDiscoverTeams(actor) {
+  return actor.scopes.includes('*') || actor.scopes.includes('deploy:site') || actor.scopes.includes('read:site');
 }
 
 export async function handleConsoleTeamsApi(request, env, config, store) {

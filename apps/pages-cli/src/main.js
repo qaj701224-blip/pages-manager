@@ -161,7 +161,7 @@ function localizeError(error) {
     },
     TEAM_LIST_FORBIDDEN: {
       message: '当前凭证不能查看用户团队列表。',
-      action: '请运行 xd-cell login 后使用用户 CLI 登录态，再执行 xd-cell teams。',
+      action: '请使用用户 CLI 登录态或个人 Access Key，再执行 xd-cell teams。',
     },
   };
   const translated = known[code];

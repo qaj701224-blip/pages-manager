@@ -97,7 +97,7 @@ test('main localizes teams command access-key errors', async () => {
 
   assert.equal(exitCode, 1);
   assert.match(stderr.text(), /当前凭证不能查看用户团队列表/);
-  assert.match(stderr.text(), /xd-cell login/);
+  assert.match(stderr.text(), /个人 Access Key/);
   assert.equal(stdout.text(), '');
 });
 

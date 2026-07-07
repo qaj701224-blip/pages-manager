@@ -575,10 +575,11 @@ export function buildOpenApi(config) {
       },
       '/.xd-pages/api/teams': {
         get: {
-          summary: 'List teams for the authenticated CLI user',
+          summary: 'List teams for the authenticated CLI user or personal access key owner',
           description:
             'Used by `xd-cell teams` to discover team ids for `xd-cell deploy --team <teamId>`. ' +
-            'Requires a user CLI token; access keys cannot list user team memberships.',
+            'Requires a user CLI token or a personal access key with deploy:site/read:site. Team access keys cannot ' +
+            'list user team memberships.',
           responses: {
             200: {
               description: 'Teams returned',
@@ -589,7 +590,7 @@ export function buildOpenApi(config) {
               },
             },
             401: { description: 'Authentication required or invalid' },
-            403: { description: 'A user CLI token is required' },
+            403: { description: 'A user CLI token or personal access key is required' },
           },
         },
       },
