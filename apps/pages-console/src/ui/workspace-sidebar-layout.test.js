@@ -18,9 +18,9 @@ test('workspace sidebar uses globe icons for personal and team site entries', ()
   );
 });
 
-test('workspace sidebar site labels are short in supported locales', () => {
-  assert.match(i18nSource, /personalSites:\s*'个人'/);
-  assert.match(i18nSource, /teamSites:\s*'团队'/);
-  assert.match(i18nSource, /personalSites:\s*'Personal'/);
-  assert.match(i18nSource, /teamSites:\s*'Team'/);
+test('workspace sidebar site labels include the site noun in supported locales', () => {
+  assert.match(i18nSource, /personalSites:\s*'个人站点'/);
+  assert.match(i18nSource, /teamSites:\s*'团队站点'/);
+  assert.match(i18nSource, /personalSites:\s*'Personal Sites'/);
+  assert.match(i18nSource, /teamSites:\s*'Team Sites'/);
 });
