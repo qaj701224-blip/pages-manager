@@ -799,6 +799,33 @@ test('rolls back visibility changes when active route snapshot write fails', asy
   assert.equal((await store.getRouteBySiteId('site_1')).policyVersion, 1);
 });
 
+test('rolls back active site deletes when route snapshot write fails', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    testEnv(store, { ROUTE_SNAPSHOTS: failingSnapshotStore() })
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
+  assert.equal((await store.getSite('site_1')).deletedAt, null);
+  assert.equal((await store.getRouteBySiteId('site_1')).routeStatus, 'active');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_1');
+  assert.equal((await store.getHostnameClaim('guide.pages.xd.team')).status, 'active');
+});
+
 test('rolls back visibility changes when snapshot write fails after runtime config changes', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({

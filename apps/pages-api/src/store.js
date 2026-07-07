@@ -3405,6 +3405,107 @@ export class D1PagesStore {
     return this.restoreSiteRoute(siteId, routeRestoredAsNewCommit(previousRoute, currentRoute), environment);
   }
 
+  async restoreSiteDeleteIfCurrent(siteId, previousSite, previousRoute, previousHostnameClaim, expectedRoute, environment) {
+    if (!previousSite || !previousRoute) return null;
+    const currentRoute = await this.getRouteBySiteId(siteId, environment);
+    if (!routesMatchExecutionState(currentRoute, expectedRoute)) {
+      return currentRoute;
+    }
+
+    const restoredRoute = routeRestoredAsNewCommit(previousRoute, currentRoute);
+    const statements = [
+      this.db
+        .prepare(`UPDATE sites SET deleted_at = ?, updated_at = ? WHERE id = ?${environment ? ' AND environment = ?' : ''}`)
+        .bind(
+          ...(environment
+            ? [previousSite.deletedAt || null, previousSite.updatedAt, siteId, environment]
+            : [previousSite.deletedAt || null, previousSite.updatedAt, siteId])
+        ),
+      this.db
+        .prepare(
+          `UPDATE site_routes
+          SET active_version_id = ?, worker_name = ?, runtime = ?,
+            execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
+            visibility = ?, policy_version = ?, route_generation = ?,
+            runtime_config_generation = ?, route_status = ?, cache_tier = ?, updated_at = ?
+          WHERE site_id = ?${environment ? ' AND environment = ?' : ''}`
+        )
+        .bind(
+          ...(environment
+            ? [
+                restoredRoute.activeVersionId,
+                restoredRoute.workerName,
+                restoredRoute.runtime,
+                restoredRoute.executionProvider,
+                restoredRoute.dispatchType,
+                restoredRoute.dispatchBindingName,
+                restoredRoute.slotId,
+                restoredRoute.visibility,
+                restoredRoute.policyVersion,
+                restoredRoute.routeGeneration,
+                restoredRoute.runtimeConfigGeneration || 0,
+                restoredRoute.routeStatus,
+                restoredRoute.cacheTier,
+                restoredRoute.updatedAt,
+                siteId,
+                environment,
+              ]
+            : [
+                restoredRoute.activeVersionId,
+                restoredRoute.workerName,
+                restoredRoute.runtime,
+                restoredRoute.executionProvider,
+                restoredRoute.dispatchType,
+                restoredRoute.dispatchBindingName,
+                restoredRoute.slotId,
+                restoredRoute.visibility,
+                restoredRoute.policyVersion,
+                restoredRoute.routeGeneration,
+                restoredRoute.runtimeConfigGeneration || 0,
+                restoredRoute.routeStatus,
+                restoredRoute.cacheTier,
+                restoredRoute.updatedAt,
+                siteId,
+              ])
+        ),
+    ];
+
+    if (previousHostnameClaim) {
+      statements.push(
+        this.db
+          .prepare(
+            `UPDATE hostname_claims
+            SET environment = ?, normalized_slug = ?, hostname_family = ?, owner_system = ?, owner_id = ?,
+              owner_ref = ?, status = ?, source = ?, acquired_at = ?, lease_expires_at = ?,
+              released_at = ?, reuse_hold_until = ?, release_reason = ?, updated_at = ?
+            WHERE hostname = ? AND owner_system = ? AND owner_id = ?`
+          )
+          .bind(
+            previousHostnameClaim.environment,
+            previousHostnameClaim.normalizedSlug,
+            previousHostnameClaim.hostnameFamily,
+            previousHostnameClaim.ownerSystem,
+            previousHostnameClaim.ownerId,
+            previousHostnameClaim.ownerRef,
+            previousHostnameClaim.status,
+            previousHostnameClaim.source,
+            previousHostnameClaim.acquiredAt,
+            previousHostnameClaim.leaseExpiresAt,
+            previousHostnameClaim.releasedAt,
+            previousHostnameClaim.reuseHoldUntil,
+            previousHostnameClaim.releaseReason,
+            previousHostnameClaim.updatedAt,
+            previousHostnameClaim.hostname,
+            previousHostnameClaim.ownerSystem,
+            previousHostnameClaim.ownerId
+          )
+      );
+    }
+
+    await this.db.batch(statements);
+    return this.getRouteBySiteId(siteId, environment);
+  }
+
   async getSiteVersion(id, environment) {
     const row = await this.db
       .prepare(

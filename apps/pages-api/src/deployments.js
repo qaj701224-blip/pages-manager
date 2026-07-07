@@ -1548,13 +1548,24 @@ function normalizeAssetPath(value) {
 async function getDeployment(store, actor, deploymentId, environment, env) {
   let deployment = await store.getDeployment(deploymentId, environment);
   if (!deployment) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
-  if (!actorCanReadSite(actor, deployment.siteId)) {
-    return jsonError('DEPLOYMENT_READ_FORBIDDEN', 'Actor cannot read this deployment.', 403, 'Use a token with read:site scope.');
-  }
   const site = await store.getSiteForUser(deployment.siteId, actor.userId, actor, environment);
+  if (!site && actor.type === 'access_key' && typeof store.getSite === 'function') {
+    const rawSite = await store.getSite(deployment.siteId);
+    const rawSiteMatchesEnvironment = !environment || rawSite?.environment === environment;
+    if (rawSite && !rawSite.deletedAt && rawSiteMatchesEnvironment && !actorCanReadSite(actor, rawSite)) {
+      return deploymentReadForbidden();
+    }
+  }
   if (!site) return jsonError('DEPLOYMENT_NOT_FOUND', 'Deployment not found.', 404, 'Check the deployment id.');
+  if (!actorCanReadSite(actor, site)) {
+    return deploymentReadForbidden();
+  }
   deployment = await reconcileCommittedDeployment(store, deployment, environment, env);
   return jsonOk(await deploymentEnvelope(store, deployment, {}, environment));
+}
+
+function deploymentReadForbidden() {
+  return jsonError('DEPLOYMENT_READ_FORBIDDEN', 'Actor cannot read this deployment.', 403, 'Use a token with read:site scope.');
 }
 
 async function rollbackVersion(request, env, config, store, actor, versionId) {
@@ -2281,10 +2292,19 @@ function actorCanDeploy(actor, site, requiredScope) {
   return (site.ownerId || site.ownerUserId) === ownerId;
 }
 
-function actorCanReadSite(actor, siteId) {
+function actorCanReadSite(actor, site) {
   if (actor.type !== 'access_key') return true;
-  if (actor.siteId && actor.siteId !== siteId) return false;
-  return actor.scopes.includes('read:site');
+  if (!actor.scopes.includes('read:site')) return false;
+  if (!site || typeof site === 'string') return false;
+  if (actor.siteId && actor.siteId !== site.id) return false;
+  if (actor.siteId && !actor.ownerType && !actor.ownerId && !actor.userId) return actor.siteId === site.id;
+
+  const ownerType = actor.ownerType || 'user';
+  const ownerId = actor.ownerId || actor.userId;
+  if (ownerType === 'team') return site.ownerType === 'team' && site.ownerId === ownerId;
+  if ((site.ownerType || 'user') === 'user') return (site.ownerId || site.ownerUserId) === ownerId;
+  if (site.ownerType === 'team') return Boolean(site.managementRole);
+  return false;
 }
 
 function workerNameFor(site, deploymentId, environment) {

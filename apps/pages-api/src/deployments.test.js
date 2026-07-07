@@ -4034,6 +4034,43 @@ test('requires read:site scope for access key deployment reads', async () => {
   assert.equal((await allowed.json()).deployment.id, 'dep_1');
 });
 
+test('personal read access keys cannot read deployments for sites outside their ownership', async () => {
+  const store = await createSeededStore();
+  await store.createUser({
+    userId: 'usr_2',
+    email: 'other@example.com',
+    realname: 'Other User',
+    employeeStatus: 'active',
+  });
+  await store.createDeploymentForIdempotency({
+    id: 'dep_1',
+    environment: 'production',
+    actorId: 'usr_1',
+    actorUserId: 'usr_1',
+    actorType: 'user',
+    source: 'cli',
+    siteId: 'site_1',
+    operation: 'deploy',
+    idempotencyKey: 'idem_1',
+    requestHash: 'hash_1',
+    visibility: 'org',
+    status: 'succeeded',
+  });
+  const otherUserReadKey = await seedAccessKey(store, 'ak_read_other', ['read:site'], null, {
+    ownerUserId: 'usr_2',
+  });
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_1', {
+      Authorization: `Bearer ${otherUserReadKey}`,
+    }),
+    testEnv(store, createSnapshotStore())
+  );
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'DEPLOYMENT_READ_FORBIDDEN');
+});
+
 test('enforces deploy and rollback access key scopes separately', async () => {
   const store = await createSeededStore();
   const snapshots = createSnapshotStore();

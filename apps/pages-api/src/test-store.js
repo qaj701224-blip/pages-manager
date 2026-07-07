@@ -1778,6 +1778,25 @@ class TestPagesStore {
     return cloneRecord(route);
   }
 
+  async restoreSiteDeleteIfCurrent(siteId, previousSite, previousRoute, previousHostnameClaim, expectedRoute, environment) {
+    const site = this.sites.get(siteId);
+    const route = this.routes.get(this.routeBySiteId.get(siteId));
+    if (!site || !previousSite || !route || !previousRoute) return null;
+    if (environment && site.environment !== environment) return null;
+    if (!routesMatchExecutionState(route, expectedRoute)) return cloneRecord(route);
+
+    site.deletedAt = previousSite.deletedAt || null;
+    site.updatedAt = previousSite.updatedAt;
+    this.siteSlugIndex.set(`${site.environment}:${site.slug}`, site.id);
+    Object.assign(route, routeRestoredAsNewCommit(cloneRecord(previousRoute), route));
+
+    if (previousHostnameClaim) {
+      this.hostnameClaims.set(previousHostnameClaim.hostname, cloneRecord(previousHostnameClaim));
+    }
+
+    return cloneRecord(route);
+  }
+
   async getSiteVersion(id, environment) {
     const version = this.siteVersions.get(id) || null;
     const site = version ? this.sites.get(version.siteId) : null;

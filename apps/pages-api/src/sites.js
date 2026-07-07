@@ -346,6 +346,7 @@ async function deleteSite(env, config, store, actor, siteId) {
   const deletedAt = readNow(env);
   const reuseHoldUntil = addSecondsIso(deletedAt, readReuseHoldSeconds(env));
   const previousRoute = site.route || (await store.getRouteBySiteId(site.id, config.environment));
+  const previousHostnameClaim = previousRoute?.hostname ? await store.getHostnameClaim(previousRoute.hostname) : null;
   const shouldWriteDeletedSnapshot = routeWasActive(previousRoute);
   const deleted = await store.deleteSite(
     site.id,
@@ -360,7 +361,18 @@ async function deleteSite(env, config, store, actor, siteId) {
   const route = await store.getRouteBySiteId(site.id, config.environment);
   if (shouldWriteDeletedSnapshot) {
     const snapshotError = await refreshCurrentRouteSnapshot(env, store, deleted, route, config.environment);
-    if (snapshotError) return snapshotError;
+    if (snapshotError) {
+      await restoreSiteDeleteAfterSnapshotFailure(
+        store,
+        site.id,
+        site,
+        previousRoute,
+        previousHostnameClaim,
+        route,
+        config.environment
+      );
+      return snapshotError;
+    }
   }
   return jsonOk({ site: formatSite({ ...deleted, route }) });
 }
@@ -1049,6 +1061,31 @@ export async function restoreSiteAclAfterSnapshotFailure(
     return store.restoreSiteAclEntriesIfCurrent(siteId, previousEntries, previousRoute, previousSite, expectedRoute, environment);
   }
   return store.restoreSiteAclEntries(siteId, previousEntries, previousRoute, previousSite, environment);
+}
+
+export async function restoreSiteDeleteAfterSnapshotFailure(
+  store,
+  siteId,
+  previousSite,
+  previousRoute,
+  previousHostnameClaim,
+  expectedRoute,
+  environment
+) {
+  if (typeof store.restoreSiteDeleteIfCurrent === 'function') {
+    return store.restoreSiteDeleteIfCurrent(
+      siteId,
+      previousSite,
+      previousRoute,
+      previousHostnameClaim,
+      expectedRoute,
+      environment
+    );
+  }
+  if (typeof store.restoreSiteRouteIfCurrent === 'function') {
+    return store.restoreSiteRouteIfCurrent(siteId, previousRoute, expectedRoute, environment);
+  }
+  return store.restoreSiteRoute(siteId, previousRoute, environment);
 }
 
 function formatAclEntry(entry) {
