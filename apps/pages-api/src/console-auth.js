@@ -1,4 +1,5 @@
 import { hydrateUserDepartmentFromDirectory, shouldHydrateUserDepartment } from './department-hydration.js';
+import { deriveDepartmentTeamIdentity } from './department-path.js';
 import { jsonError } from './http.js';
 
 export function isConsoleBffRequest(request) {
@@ -48,6 +49,12 @@ export async function requireConsoleUserSession(request, env, config, store, opt
     } catch {
       // Department hydration is best-effort; session validation remains authoritative.
     }
+  } else if (options.hydrateDepartment && user.departmentPath) {
+    await ensureDepartmentMembershipFromStoredPath({
+      store,
+      environment: config.environment,
+      user,
+    });
   }
 
   const shouldReadAdmin = options.includePlatformAdmin || options.requirePlatformAdmin || consoleRequiresPlatformAdmin(request);
@@ -75,6 +82,32 @@ export async function requireConsoleUserSession(request, env, config, store, opt
     isPlatformAdmin,
     user: currentUser,
   };
+}
+
+async function ensureDepartmentMembershipFromStoredPath({ store, environment, user }) {
+  if (typeof store?.hydrateDepartmentMembership !== 'function') return;
+  const identity = deriveDepartmentTeamIdentity(user.departmentPath);
+  if (!identity.teamPath) return;
+  try {
+    if (typeof store.listTeamsForUser === 'function') {
+      const teams = await store.listTeamsForUser({ environment, userId: user.id });
+      const hasCanonicalDepartmentTeam = teams.some(
+        (team) =>
+          team.teamType === 'department' &&
+          team.status === 'active' &&
+          team.currentUserMembershipSource === 'department_auto' &&
+          team.departmentPath === identity.teamPath
+      );
+      if (hasCanonicalDepartmentTeam) return;
+    }
+    await store.hydrateDepartmentMembership({
+      environment,
+      userId: user.id,
+      departmentPath: user.departmentPath,
+    });
+  } catch {
+    // Best-effort backfill only; session validation remains authoritative.
+  }
 }
 
 export async function readOptionalConsoleUserSession(request, env, config, store, options = {}) {

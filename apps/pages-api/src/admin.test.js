@@ -311,6 +311,67 @@ test('admin department team merge transfers assets and writes redacted audit met
   assert.doesNotMatch(JSON.stringify(auditEvents), /usr_alice|usr_manual|secret-hash|pepper_1|deploy/);
 });
 
+test('admin team list defaults to active teams and keeps merged teams behind an explicit filter', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  const source = {
+    id: 'team_department_legacy_leaf',
+    environment: 'production',
+    name: '平台支撑部',
+    description: null,
+    teamType: 'department',
+    departmentPath: '心动/发行服务/平台支撑部/技术/Web',
+    status: 'active',
+    createdByType: 'system',
+    createdByUserId: null,
+    mergedIntoTeamId: null,
+    mergedAt: null,
+    mergedByUserId: null,
+    mergeReason: null,
+    deletedAt: null,
+    createdAt: '2026-07-02T00:00:00.000Z',
+    updatedAt: '2026-07-02T00:00:00.000Z',
+  };
+  store.teams.set(source.id, source);
+  const target = await store.findOrCreateDepartmentTeam({
+    environment: 'production',
+    departmentPath: '心动/发行服务/平台支撑部',
+  });
+  await store.mergeDepartmentTeams({
+    sourceTeamId: source.id,
+    targetTeamId: target.id,
+    actorUserId: 'usr_root',
+    reason: 'canonicalize department',
+    environment: 'production',
+  });
+
+  const defaultList = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  const mergedList = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/teams?status=merged', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(defaultList.status, 200, await defaultList.clone().text());
+  assert.deepEqual(
+    (await defaultList.json()).teams.map((team) => [team.id, team.status]),
+    [[target.id, 'active']]
+  );
+  assert.equal(mergedList.status, 200, await mergedList.clone().text());
+  assert.deepEqual(
+    (await mergedList.json()).teams.map((team) => [team.id, team.status, team.mergedIntoTeamId]),
+    [[source.id, 'merged', target.id]]
+  );
+});
+
 test('admin department team merge cannot mutate teams from another environment', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);

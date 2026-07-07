@@ -68,7 +68,7 @@ export function AdminUsers() {
       <div className="list-toolbar admin-list-toolbar" aria-label="用户筛选">
         <label className="list-search">
           <span>搜索用户</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索姓名、邮箱、部门" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索姓名、邮箱、SSO 部门" />
         </label>
         <div className="segmented compact-segmented" role="tablist" aria-label="管理员状态">
           {[
@@ -100,7 +100,7 @@ export function AdminUsers() {
             <thead>
               <tr>
                 <th>用户</th>
-                <th>部门</th>
+                <th>SSO 部门</th>
                 <th>状态</th>
                 <th>平台管理员</th>
                 <th>最后登录</th>
@@ -117,7 +117,7 @@ export function AdminUsers() {
                       <strong>{user.realname || user.email}</strong>
                       <span>{user.email}</span>
                     </td>
-                    <td data-label="部门">{user.departmentPath || '无'}</td>
+                    <td data-label="SSO 部门">{user.departmentPath || '无'}</td>
                     <td data-label="状态">{user.employeeStatus}</td>
                     <td data-label="平台管理员">
                       <span className={user.isPlatformAdmin ? 'tag' : 'tag muted'}>{user.isPlatformAdmin ? 'admin' : 'user'}</span>

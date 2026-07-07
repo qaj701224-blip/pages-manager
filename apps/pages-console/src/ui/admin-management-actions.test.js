@@ -5,6 +5,7 @@ import test from 'node:test';
 const adminDashboardSource = readFileSync(new URL('./pages/AdminDashboard.jsx', import.meta.url), 'utf8');
 const adminSitesSource = readFileSync(new URL('./pages/AdminSites.jsx', import.meta.url), 'utf8');
 const adminTeamsSource = readFileSync(new URL('./pages/AdminTeams.jsx', import.meta.url), 'utf8');
+const adminUsersSource = readFileSync(new URL('./pages/AdminUsers.jsx', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
@@ -36,6 +37,12 @@ test('admin team detail exposes member management with admin-scoped helpers', ()
   assert.match(adminTeamsSource, /updateMember: updateAdminTeamMember/);
   assert.match(adminTeamsSource, /removeMember: removeAdminTeamMember/);
   assert.match(adminTeamsSource, /<TeamMembers/);
+});
+
+test('admin user list labels XDS leaf path as SSO department', () => {
+  assert.match(adminUsersSource, /placeholder="搜索姓名、邮箱、SSO 部门"/);
+  assert.match(adminUsersSource, /<th>SSO 部门<\/th>/);
+  assert.match(adminUsersSource, /data-label="SSO 部门"/);
 });
 
 test('admin deep routes stay under the admin guard', () => {

@@ -313,7 +313,8 @@ async function resolveAdminSiteOwnerTarget(store, config, body) {
 
 async function listAdminTeams(url, config, store) {
   const teamType = normalizeNullableString(url.searchParams.get('teamType'));
-  const status = normalizeNullableString(url.searchParams.get('status'));
+  const statusFilter = normalizeNullableString(url.searchParams.get('status'));
+  const status = statusFilter === 'all' ? null : statusFilter || 'active';
   const teams = await store.listAdminTeams({
     environment: config.environment,
     teamType,

@@ -247,6 +247,48 @@ test('console auth session hydrates missing department team through pages-api XD
   );
 });
 
+test('console auth session ensures stored department path has canonical department membership', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_member',
+    email: 'member@xd.com',
+    employeeStatus: 'active',
+    sessionVersion: 1,
+    departmentPath: '心动/发行服务/平台支撑部/技术/Web',
+    departmentCheckedAt: '2026-07-01T09:59:00.000Z',
+  });
+  let xdsCalled = false;
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/auth/session', {
+      userId: 'usr_member',
+      email: 'member@xd.com',
+      sessionVersion: 1,
+    }),
+    env(store, {
+      XDS_OPENAI_TOKEN: 'secret-token',
+      now: () => '2026-07-01T10:00:00.000Z',
+      XD_OFFICE_NET: {
+        fetch: async () => {
+          xdsCalled = true;
+          return Response.json({ code: 0, data: [] });
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(xdsCalled, false);
+
+  const teams = await store.listTeamsForUser({ environment: 'production', userId: 'usr_member' });
+  assert.deepEqual(
+    teams.map((team) => [team.name, team.departmentPath, team.teamType, team.currentUserRole]),
+    [['平台支撑部', '心动/发行服务/平台支撑部', 'department', 'admin']]
+  );
+  const member = await store.getTeamMember({ teamId: teams[0].id, userId: 'usr_member' });
+  assert.equal(member.departmentPath, '心动/发行服务/平台支撑部/技术/Web');
+});
+
 test('console auth session throttles unavailable department hydration attempts', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
   await store.createUser({
