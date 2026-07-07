@@ -55,9 +55,16 @@ test('disabled form actions are guarded in submit handlers too', () => {
   assert.match(accessKeysSource, /disabled=\{saving \|\| !form\.name\.trim\(\) \|\| form\.permissions\.length === 0\}/);
 });
 
-test('notifications expose an empty state popover', () => {
-  assert.match(topNavSource, /className="notification-menu"/);
-  assert.match(topNavSource, /暂无通知/);
+test('top navigation links issue feedback instead of showing notifications', () => {
+  assert.match(topNavSource, /<Tooltip content="Issue 反馈">/);
+  assert.match(topNavSource, /href="https:\/\/github\.com\/xindong\/pages-manager\/issues"/);
+  assert.match(topNavSource, /target="_blank"/);
+  assert.match(topNavSource, /rel="noopener noreferrer"/);
+  assert.match(topNavSource, /aria-label="Issue 反馈"/);
+  assert.match(topNavSource, /<Github size=\{18\} \/>/);
+  assert.doesNotMatch(topNavSource, /Bell/);
+  assert.doesNotMatch(topNavSource, /notification-menu/);
+  assert.doesNotMatch(topNavSource, /暂无通知/);
 });
 
 test('disabled primary buttons are visually downgraded instead of looking active', () => {

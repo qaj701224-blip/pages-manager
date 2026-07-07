@@ -1,9 +1,8 @@
 import { useMemo } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
-  Bell,
   ChevronDown,
-  Inbox,
+  Github,
   KeyRound,
   LogIn,
   LogOut,
@@ -16,7 +15,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { IconDropdown, MenuItem } from './RadixPrimitives.jsx';
+import { IconDropdown, MenuItem, Tooltip } from './RadixPrimitives.jsx';
 import {
   getConsoleEnvironmentBanner,
   getConsoleEnvironmentShortLabel,
@@ -94,22 +93,17 @@ export function TopNav({ activeSection, sessionState }) {
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button className="icon-button" type="button" aria-label={t('notifications')}>
-              <Bell size={18} />
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content className="notification-menu" sideOffset={8} align="end">
-              <div className="notification-empty">
-                <Inbox size={18} />
-                <strong>暂无通知</strong>
-                <span>新的平台提醒会显示在这里。</span>
-              </div>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
+        <Tooltip content="Issue 反馈">
+          <a
+            className="icon-button"
+            href="https://github.com/xindong/pages-manager/issues"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Issue 反馈"
+          >
+            <Github size={18} />
+          </a>
+        </Tooltip>
         {userState.authenticated ? (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>

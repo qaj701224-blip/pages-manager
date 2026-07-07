@@ -3,6 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Select from '@radix-ui/react-select';
 import * as Tabs from '@radix-ui/react-tabs';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { Check, ChevronDown, X } from 'lucide-react';
 
 import { radixValueToSelectValue, selectValueToRadixValue } from '../select-model.js';
@@ -53,6 +54,22 @@ export function IconDropdown({ label, icon, children }) {
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+export function Tooltip({ content, children, side = 'bottom', align = 'center' }) {
+  return (
+    <TooltipPrimitive.Provider delayDuration={180}>
+      <TooltipPrimitive.Root>
+        <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
+        <TooltipPrimitive.Portal>
+          <TooltipPrimitive.Content className="radix-tooltip-content" side={side} align={align} sideOffset={8}>
+            {content}
+            <TooltipPrimitive.Arrow className="radix-tooltip-arrow" />
+          </TooltipPrimitive.Content>
+        </TooltipPrimitive.Portal>
+      </TooltipPrimitive.Root>
+    </TooltipPrimitive.Provider>
   );
 }
 

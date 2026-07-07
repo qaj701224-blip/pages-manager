@@ -487,40 +487,6 @@ button {
   font-weight: 700;
 }
 
-.notification-menu {
-  z-index: 80;
-  width: min(260px, calc(100vw - 24px));
-  padding: 8px;
-  border: 1px solid var(--xd-border-strong);
-  border-radius: 8px;
-  background: var(--xd-panel-strong);
-  box-shadow: 0 16px 42px rgba(24, 24, 27, 0.16);
-}
-
-.notification-empty {
-  display: grid;
-  gap: 4px;
-  min-height: 96px;
-  place-items: center;
-  align-content: center;
-  color: var(--xd-muted);
-  text-align: center;
-}
-
-.notification-empty svg {
-  color: var(--xd-orange-active);
-}
-
-.notification-empty strong {
-  color: var(--xd-text);
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.notification-empty span {
-  font-size: 12px;
-}
-
 .radix-menu-content,
 .radix-select-content {
   z-index: 80;
@@ -535,8 +501,26 @@ button {
   box-shadow: 0 16px 42px rgba(24, 24, 27, 0.16);
 }
 
+.radix-tooltip-content {
+  z-index: 90;
+  padding: 6px 9px;
+  border: 1px solid var(--xd-border-strong);
+  border-radius: 7px;
+  color: var(--xd-text);
+  background: var(--xd-panel-strong);
+  box-shadow: 0 12px 30px rgba(24, 24, 27, 0.16);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.radix-tooltip-arrow {
+  fill: var(--xd-panel-strong);
+}
+
 :root[data-theme='dark'] .radix-menu-content,
 :root[data-theme='dark'] .radix-select-content,
+:root[data-theme='dark'] .radix-tooltip-content,
 :root[data-theme='dark'] .account-menu__popover {
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
 }
