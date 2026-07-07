@@ -54,10 +54,17 @@ test('admin normal worker management is exposed as a legacy operations surface',
   assert.match(adminSource, /<AdminNormalWorkers/);
   assert.match(apiSource, /listAdminNormalWorkers/);
   assert.match(apiSource, /deleteAdminNormalWorker/);
+  assert.match(apiSource, /bulkDeleteAdminNormalWorkers/);
   assert.match(adminNormalWorkersSource, /listAdminNormalWorkers\(\)/);
   assert.match(adminNormalWorkersSource, /deleteAdminNormalWorker\(worker\.id/);
+  assert.match(adminNormalWorkersSource, /bulkDeleteAdminNormalWorkers/);
+  assert.match(adminNormalWorkersSource, /selectedIds/);
+  assert.match(adminNormalWorkersSource, /toggleAllDeletable/);
+  assert.match(adminNormalWorkersSource, /hasSingleDeleteInFlight/);
+  assert.match(adminNormalWorkersSource, /worker\.id !== busyId/);
   assert.match(adminNormalWorkersSource, /仍被 active route 引用/);
   assert.match(adminNormalWorkersSource, /DELETE \$\{worker\.workerName\}/);
+  assert.match(adminNormalWorkersSource, /BULK DELETE/);
   assert.match(adminNormalWorkersSource, /state\.notice\.action/);
   assert.match(adminNormalWorkersSource, /current\.workers\.length > 0 \? 'ready' : 'error'/);
   assert.match(adminNormalWorkersSource, /NORMAL_WORKER_DELETE_FAILED/);

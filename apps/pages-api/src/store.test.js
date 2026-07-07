@@ -2042,6 +2042,19 @@ test('D1 store lists and retires admin normal workers with active route protecti
   const slots = new Map([
     ['slot_production_001', workerSlotRow({ id: 'slot_production_001', slot_number: 1 })],
     [
+      'slot_production_003',
+      workerSlotRow({
+        id: 'slot_production_003',
+        slot_number: 3,
+        worker_name: 'pages-v2-production-slot-003',
+        binding_name: 'SITE_SLOT_003',
+        status: 'assigned',
+        assigned_site_id: 'site_orphaned',
+        assigned_route_id: 'route_orphaned',
+        assigned_version_id: 'ver_orphaned',
+      }),
+    ],
+    [
       'slot_production_007',
       workerSlotRow({
         id: 'slot_production_007',
@@ -2085,6 +2098,13 @@ test('D1 store lists and retires admin normal workers with active route protecti
     reason: 'legacy drain',
     updatedAt: '2026-06-15T00:01:00.000Z',
   });
+  const orphanedAssignedRetire = await store.retireIdleNormalWorker({
+    id: 'slot_production_003',
+    environment: 'production',
+    actorUserId: 'usr_root',
+    reason: 'legacy drain',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
   const activeRetire = await store.retireIdleNormalWorker({
     id: 'slot_production_007',
     environment: 'production',
@@ -2101,8 +2121,9 @@ test('D1 store lists and retires admin normal workers with active route protecti
   });
 
   assert.equal(listed[0].activeRoute, null);
-  assert.equal(listed.length, 2);
-  assert.deepEqual(listed[1].activeRoute, {
+  assert.equal(listed[1].activeRoute, null);
+  assert.equal(listed.length, 3);
+  assert.deepEqual(listed[2].activeRoute, {
     siteId: 'site_active',
     routeId: 'route_active',
     activeVersionId: 'ver_active',
@@ -2110,6 +2131,8 @@ test('D1 store lists and retires admin normal workers with active route protecti
   });
   assert.equal(retired.status, 'retired');
   assert.equal(slots.get('slot_production_001').status, 'retired');
+  assert.equal(orphanedAssignedRetire.status, 'retired');
+  assert.equal(slots.get('slot_production_003').status, 'retired');
   assert.equal(activeRetire, null);
   assert.equal(activePending, null);
   assert.equal(slots.get('slot_production_007').status, 'assigned');
@@ -3270,12 +3293,13 @@ function fakeAdminNormalWorkerDb(slots, routes = []) {
             },
             async run() {
               assert.match(sql, /UPDATE worker_slots/);
+              assert.match(sql, /'assigned'/);
               const [notes, updatedAt, id, environment] = args;
               const slot = slots.get(id);
               if (
                 !slot ||
                 slot.environment !== environment ||
-                !['available', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status) ||
+                !['available', 'assigned', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status) ||
                 activeRouteForSlot(slot)
               ) {
                 return { meta: { changes: 0 } };

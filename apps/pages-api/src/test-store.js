@@ -1856,7 +1856,7 @@ class TestPagesStore {
   async retireIdleNormalWorker({ id, environment, actorUserId, reason, updatedAt } = {}) {
     const slot = this.workerSlots.get(id);
     if (!slot || slot.environment !== environment || this.activeRouteReferencesSlot(slot)) return null;
-    if (!['available', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status)) return null;
+    if (!['available', 'assigned', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status)) return null;
     slot.status = 'retired';
     slot.assignedSiteId = null;
     slot.assignedRouteId = null;
@@ -1873,7 +1873,7 @@ class TestPagesStore {
   async markNormalWorkerDeletePending({ id, environment, actorUserId, reason, updatedAt } = {}) {
     const slot = this.workerSlots.get(id);
     if (!slot || slot.environment !== environment || this.activeRouteReferencesSlot(slot)) return null;
-    if (!['available', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status)) return null;
+    if (!['available', 'assigned', 'cleanup_pending', 'disabled', 'delete_pending'].includes(slot.status)) return null;
     slot.status = 'delete_pending';
     slot.updatedAt = updatedAt || this.now();
     slot.notes = `delete pending by ${actorUserId || 'unknown'}: ${reason || 'legacy normal worker delete pending'}`;

@@ -62,6 +62,17 @@ export function deleteAdminNormalWorker(id, body = {}, options = {}) {
   });
 }
 
+export function bulkDeleteAdminNormalWorkers(ids, body = {}, options = {}) {
+  return fetchJson('/api/console/admin/normal-workers/bulk-delete', {
+    ...options,
+    method: 'POST',
+    body: {
+      ...body,
+      ids,
+    },
+  });
+}
+
 export function listAdminUsers({ query, ...options } = {}) {
   const search = new URLSearchParams();
   if (query) search.set('query', query);

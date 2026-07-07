@@ -431,6 +431,18 @@ test('admin normal workers list classifies idle and active legacy workers', asyn
     bindingName: 'SITE_SLOT_001',
     status: 'available',
   });
+  await store.createWorkerSlot({
+    id: 'slot_production_003',
+    environment: 'production',
+    slotNumber: 3,
+    workerName: 'pages-v2-production-slot-003',
+    bindingName: 'SITE_SLOT_003',
+    status: 'assigned',
+    assignedSiteId: 'site_orphaned',
+    assignedRouteId: 'route_orphaned',
+    assignedVersionId: 'ver_orphaned',
+    assignedAt: '2026-06-17T12:00:00.000Z',
+  });
   await seedActiveNormalWorkerSite(store);
 
   const response = await worker.fetch(
@@ -448,6 +460,18 @@ test('admin normal workers list classifies idle and active legacy workers', asyn
         workerName: 'pages-v2-production-slot-001',
         bindingName: 'SITE_SLOT_001',
         status: 'available',
+        lifecycle: 'idle',
+        canDelete: true,
+        activeRoute: null,
+        updatedAt: '2026-07-02T00:00:00.000Z',
+      },
+      {
+        id: 'slot_production_003',
+        environment: 'production',
+        slotNumber: 3,
+        workerName: 'pages-v2-production-slot-003',
+        bindingName: 'SITE_SLOT_003',
+        status: 'assigned',
         lifecycle: 'idle',
         canDelete: true,
         activeRoute: null,
@@ -525,6 +549,68 @@ test('admin can retire an idle normal worker but cannot delete an active one', a
   assert.deepEqual(deletedWorkers, ['pages-v2-production-slot-001']);
   assert.equal(active.status, 409, await active.clone().text());
   assert.equal((await active.json()).error.code, 'NORMAL_WORKER_ACTIVE');
+  assert.equal((await store.getWorkerSlot('slot_production_007')).status, 'assigned');
+});
+
+test('admin can bulk retire idle and orphaned assigned normal workers', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await store.createWorkerSlot({
+    id: 'slot_production_001',
+    environment: 'production',
+    slotNumber: 1,
+    workerName: 'pages-v2-production-slot-001',
+    bindingName: 'SITE_SLOT_001',
+    status: 'available',
+  });
+  await store.createWorkerSlot({
+    id: 'slot_production_003',
+    environment: 'production',
+    slotNumber: 3,
+    workerName: 'pages-v2-production-slot-003',
+    bindingName: 'SITE_SLOT_003',
+    status: 'assigned',
+    assignedSiteId: 'site_orphaned',
+    assignedRouteId: 'route_orphaned',
+    assignedVersionId: 'ver_orphaned',
+    assignedAt: '2026-06-17T12:00:00.000Z',
+  });
+  await seedActiveNormalWorkerSite(store);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/normal-workers/bulk-delete', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+      body: {
+        ids: ['slot_production_001', 'slot_production_003', 'slot_production_007'],
+        reason: 'legacy drain batch',
+      },
+    }),
+    env(store, {
+      NORMAL_WORKER_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => {
+          deletedWorkers.push(workerName);
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(body.summary, { requested: 3, retired: 2, pending: 0, failed: 1 });
+  assert.deepEqual(
+    body.results.map((result) => [result.id, result.status, result.error?.code || null]),
+    [
+      ['slot_production_001', 'retired', null],
+      ['slot_production_003', 'retired', null],
+      ['slot_production_007', 'failed', 'NORMAL_WORKER_ACTIVE'],
+    ]
+  );
+  assert.deepEqual(deletedWorkers, ['pages-v2-production-slot-001', 'pages-v2-production-slot-003']);
+  assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'retired');
+  assert.equal((await store.getWorkerSlot('slot_production_003')).status, 'retired');
   assert.equal((await store.getWorkerSlot('slot_production_007')).status, 'assigned');
 });
 

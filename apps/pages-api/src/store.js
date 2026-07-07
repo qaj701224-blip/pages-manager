@@ -3634,7 +3634,7 @@ export class D1PagesStore {
           updated_at = ?
         WHERE id = ?
           AND environment = ?
-          AND status IN ('available', 'cleanup_pending', 'disabled', 'delete_pending')
+          AND status IN ('available', 'assigned', 'cleanup_pending', 'disabled', 'delete_pending')
           AND NOT EXISTS (
             SELECT 1 FROM site_routes
             WHERE site_routes.environment = worker_slots.environment
@@ -3663,7 +3663,7 @@ export class D1PagesStore {
           updated_at = ?
         WHERE id = ?
           AND environment = ?
-          AND status IN ('available', 'cleanup_pending', 'disabled', 'delete_pending')
+          AND status IN ('available', 'assigned', 'cleanup_pending', 'disabled', 'delete_pending')
           AND NOT EXISTS (
             SELECT 1 FROM site_routes
             WHERE site_routes.environment = worker_slots.environment
