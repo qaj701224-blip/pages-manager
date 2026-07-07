@@ -144,15 +144,20 @@ export function createWfpClient({
     async updateUserWorkerBindings(scriptName, input = {}) {
       const safeScriptName = validateScriptName(scriptName);
       const safeBindings = normalizeWorkerBindings(input.bindings || []);
-      const metadata = {};
-      if (safeBindings.length > 0) metadata.bindings = safeBindings;
-      if (input.keepBindings !== undefined) metadata.keep_bindings = normalizeKeepBindingTypes(input.keepBindings);
-      if (input.keepAssets) metadata.keep_assets = true;
+      const settingsUrl = `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/settings`;
+      const currentSettings = await requestCloudflare(fetch, apiToken, settingsUrl, {
+        method: 'GET',
+      });
+      const currentBindings = Array.isArray(currentSettings?.bindings) ? currentSettings.bindings : [];
+      const bindings = [
+        ...currentBindings.filter((binding) => binding?.type !== 'plain_text').map(cloneJsonObject),
+        ...safeBindings,
+      ];
 
       const form = new FormData();
-      form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      return requestCloudflare(fetch, apiToken, scriptUrl(baseUrl, account, namespace, safeScriptName), {
-        method: 'PUT',
+      form.set('settings', new Blob([JSON.stringify({ bindings })], { type: 'application/json' }));
+      return requestCloudflare(fetch, apiToken, settingsUrl, {
+        method: 'PATCH',
         body: form,
       });
     },
@@ -331,19 +336,15 @@ function normalizeUserWorkerSecret(secret) {
   };
 }
 
-function normalizeKeepBindingTypes(value) {
-  if (!Array.isArray(value)) throw new Error('WORKER_KEEP_BINDINGS_INVALID');
-  return value.map((item) => {
-    const type = String(item || '').trim();
-    if (!/^[a-z_]+$/.test(type)) throw new Error('WORKER_KEEP_BINDING_TYPE_INVALID');
-    return type;
-  });
-}
-
 function validateBindingName(value) {
   const name = String(value || '').trim();
   if (!BINDING_NAME_RE.test(name)) throw new Error('WORKER_BINDING_NAME_INVALID');
   return name;
+}
+
+function cloneJsonObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('WORKER_BINDING_INVALID');
+  return JSON.parse(JSON.stringify(value));
 }
 
 async function requestCloudflare(fetch, apiToken, url, init) {

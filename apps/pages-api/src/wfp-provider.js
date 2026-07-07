@@ -42,8 +42,6 @@ export function createDeploymentProvider(env, config) {
     async replacePlainTextBindings(input) {
       return client.updateUserWorkerBindings(input.workerName, {
         bindings: runtimeBindingsForProvider({ vars: input.vars || {} }),
-        keepBindings: ['service', 'secret_text', 'vpc_network', 'assets'],
-        keepAssets: true,
       });
     },
   });

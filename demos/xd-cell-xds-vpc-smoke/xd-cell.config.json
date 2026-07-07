@@ -1,0 +1,12 @@
+{
+  "name": "xd-cell-xds-vpc-smoke",
+  "main": "./src/worker.js",
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "XDS_SEARCH_KEYWORD": "platform"
+  },
+  "visibility": "internal"
+}
