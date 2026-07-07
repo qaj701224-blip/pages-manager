@@ -59,6 +59,8 @@ test('runtime config uses add dialogs instead of inline creation forms', () => {
   assert.match(siteDetailSource, /setVarDialogOpen\(true\)/);
   assert.match(siteDetailSource, /setSecretDialogOpen\(true\)/);
   assert.match(siteDetailSource, /版本 \{item\.revision \|\| 0\}/);
+  assert.doesNotMatch(siteDetailSource, /placeholder="API_BASE"/);
+  assert.doesNotMatch(siteDetailSource, /placeholder="API_TOKEN"/);
   assert.doesNotMatch(siteDetailSource, /<RuntimeVarForm siteId=\{site\.id\}/);
   assert.doesNotMatch(siteDetailSource, /<RuntimeSecretForm siteId=\{site\.id\}/);
 });

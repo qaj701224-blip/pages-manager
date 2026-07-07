@@ -728,7 +728,7 @@ function RuntimeVarDialog({ open, siteId, siteApi, onOpenChange, onResourceReloa
       <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="API_BASE" />
+          <input value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <label className="field">
           <span>Value</span>
@@ -867,7 +867,7 @@ function RuntimeSecretDialog({ open, siteId, siteApi, onOpenChange, onResourceRe
       <form className="dialog-form" onSubmit={submit}>
         <label className="field">
           <span>Name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="API_TOKEN" />
+          <input value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <label className="field">
           <span>Value</span>
