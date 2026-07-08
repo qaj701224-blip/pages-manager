@@ -2285,6 +2285,73 @@ export class D1PagesStore {
       })
     );
     if (viewerUserId) {
+      const accessibleResult = await this.db
+        .prepare(
+          `SELECT sites.*, site_routes.id AS route_id, site_routes.hostname AS route_hostname,
+            site_routes.runtime AS route_runtime, site_routes.worker_name AS route_worker_name,
+            site_routes.execution_provider AS route_execution_provider,
+            site_routes.dispatch_type AS route_dispatch_type,
+            site_routes.dispatch_binding_name AS route_dispatch_binding_name,
+            site_routes.slot_id AS route_slot_id,
+            site_routes.active_version_id AS route_active_version_id,
+            site_routes.visibility AS route_visibility, site_routes.policy_version AS route_policy_version,
+            site_routes.route_generation AS route_route_generation,
+            site_routes.runtime_config_generation AS route_runtime_config_generation,
+            site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
+            site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
+            owner_users.realname AS owner_user_realname, owner_users.email AS owner_user_email,
+            teams.id AS owner_team_id, teams.name AS owner_team_name, teams.team_type AS owner_team_type,
+            teams.department_path AS owner_team_department_path
+          FROM sites
+          JOIN users AS viewer_users
+            ON viewer_users.user_id = ?
+            AND viewer_users.employee_status = 'active'
+          LEFT JOIN site_routes ON site_routes.site_id = sites.id
+          LEFT JOIN users AS owner_users
+            ON COALESCE(sites.owner_type, 'user') = 'user'
+            AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
+          LEFT JOIN teams
+            ON sites.owner_type = 'team'
+            AND teams.id = sites.owner_id
+            AND teams.deleted_at IS NULL
+          WHERE sites.deleted_at IS NULL
+            ${environment ? 'AND sites.environment = ?' : ''}
+            AND (
+              COALESCE(site_routes.visibility, sites.default_visibility) = 'org'
+              OR (
+                COALESCE(site_routes.visibility, sites.default_visibility) = 'acl'
+                AND EXISTS (
+                  SELECT 1 FROM site_acl_entries
+                  WHERE site_acl_entries.site_id = sites.id
+                    AND site_acl_entries.effect = 'allow'
+                    AND (
+                      (
+                        site_acl_entries.subject_type = 'email'
+                        AND trim(site_acl_entries.subject_value) <> ''
+                        AND trim(COALESCE(viewer_users.email, '')) <> ''
+                        AND lower(trim(site_acl_entries.subject_value)) = lower(trim(COALESCE(viewer_users.email, '')))
+                      )
+                      OR (
+                        site_acl_entries.subject_type = 'department'
+                        AND viewer_users.department_path IS NOT NULL
+                        AND (
+                          viewer_users.department_path = site_acl_entries.subject_value
+                          OR substr(viewer_users.department_path, 1, length(site_acl_entries.subject_value) + 1) =
+                            site_acl_entries.subject_value || '/'
+                        )
+                      )
+                    )
+                )
+              )
+            )
+          ORDER BY sites.slug ASC`
+        )
+        .bind(...(environment ? [viewerUserId, environment] : [viewerUserId]))
+        .all();
+      for (const row of accessibleResult.results || []) {
+        const site = mapConsoleDirectorySite(row);
+        sitesById.set(site.id, site);
+      }
       for (const site of await this.listSitesForUser(viewerUserId, { type: 'user', userId: viewerUserId }, environment)) {
         if ((site.ownerType || 'user') !== 'user') continue;
         sitesById.set(site.id, await this.decorateConsoleSiteOwner(site));

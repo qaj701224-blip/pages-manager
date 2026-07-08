@@ -740,17 +740,19 @@ button {
 }
 
 .site-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  column-count: 3;
+  column-gap: 16px;
 }
 
 .site-card {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  break-inside: avoid;
+  width: 100%;
   min-width: 0;
   min-height: 154px;
+  margin: 0 0 16px;
   padding: 18px 20px;
   border: 1px solid var(--xd-border);
   border-radius: 16px;
@@ -894,6 +896,10 @@ button {
   color: #f4b483;
   border-color: rgba(233, 120, 56, 0.36);
   background: rgba(233, 120, 56, 0.13);
+}
+
+.site-waterfall-sentinel {
+  height: 1px;
 }
 
 .tag-row {
@@ -3570,11 +3576,15 @@ button {
 
 @media (max-width: 1100px) {
   .site-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-count: 2;
   }
 }
 
 @media (max-width: 900px) {
+  .site-grid {
+    column-count: 2;
+  }
+
   .top-nav {
     padding: 0 16px;
   }
@@ -3778,11 +3788,15 @@ button {
 
 @media (max-width: 700px) {
   .site-grid {
-    grid-template-columns: 1fr;
+    column-count: 1;
   }
 }
 
 @media (max-width: 760px) {
+  .site-grid {
+    column-count: 1;
+  }
+
   .top-nav {
     padding: 0 12px;
   }

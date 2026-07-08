@@ -90,3 +90,18 @@ test('site cards use owner object label and open the site directly', () => {
   assert.doesNotMatch(sitesDirectorySource, /\{ownerType\}/);
   assert.doesNotMatch(sitesDirectorySource, /tag-success' : 'tag tag-disabled'\}>\{status\}/);
 });
+
+test('sites directory uses masonry-style lazy loading', () => {
+  assert.match(sitesDirectorySource, /const WATERFALL_BATCH_SIZE = \d+;/);
+  assert.match(sitesDirectorySource, /IntersectionObserver/);
+  assert.match(sitesDirectorySource, /visibleSites\.slice\(0, renderedCount\)/);
+  assert.match(
+    sitesDirectorySource,
+    /setRenderedCount\(\(current\) => Math\.min\(current \+ WATERFALL_BATCH_SIZE, visibleSites\.length\)\)/
+  );
+  assert.match(sitesDirectorySource, /className="site-waterfall-sentinel"/);
+  assert.match(stylesSource, /\.site-grid\s*\{[\s\S]*?column-count:\s*3;/);
+  assert.match(stylesSource, /\.site-card\s*\{[\s\S]*?break-inside:\s*avoid;/);
+  assert.match(media900Source, /\.site-grid\s*\{[\s\S]*?column-count:\s*2;/);
+  assert.match(media760Source, /\.site-grid\s*\{[\s\S]*?column-count:\s*1;/);
+});

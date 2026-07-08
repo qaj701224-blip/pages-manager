@@ -1186,6 +1186,22 @@ class TestPagesStore {
       if ((route?.visibility || site.defaultVisibility) === 'internal') siteIds.add(site.id);
     }
     if (viewerUserId) {
+      const viewer = this.users.get(viewerUserId) || null;
+      if (viewer?.employeeStatus === 'active') {
+        for (const site of this.sites.values()) {
+          if (site.deletedAt) continue;
+          if (environment && site.environment !== environment) continue;
+          const route = this.routes.get(this.routeBySiteId.get(site.id));
+          const visibility = route?.visibility || site.defaultVisibility;
+          if (visibility === 'org') {
+            siteIds.add(site.id);
+            continue;
+          }
+          if (visibility === 'acl' && directoryAclAllows(this.siteAclEntries.get(site.id) || [], viewer)) {
+            siteIds.add(site.id);
+          }
+        }
+      }
       for (const site of await this.listSitesForUser(viewerUserId, { type: 'user', userId: viewerUserId }, environment)) {
         if ((site.ownerType || 'user') !== 'user') continue;
         siteIds.add(site.id);
@@ -2525,6 +2541,31 @@ function isBlockingHostnameClaim(claim, now) {
 
 function siteAclEntryKey(entry) {
   return `${entry.effect}:${entry.subjectType}:${entry.subjectValue}:${entry.accessRole}`;
+}
+
+function directoryAclAllows(entries, viewer) {
+  return entries.some((entry) => {
+    if (!entry || entry.effect !== 'allow') return false;
+    if (entry.subjectType === 'email') {
+      const aclEmail = normalizeEmail(entry.subjectValue);
+      const viewerEmail = normalizeEmail(viewer.email);
+      return Boolean(aclEmail && viewerEmail && aclEmail === viewerEmail);
+    }
+    if (entry.subjectType === 'department') return directoryDepartmentAllows(entry.subjectValue, viewer.departmentPath);
+    return false;
+  });
+}
+
+function normalizeEmail(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+function directoryDepartmentAllows(subjectValue, viewerDepartmentPath) {
+  const aclPath = normalizeDepartmentPath(subjectValue);
+  const userPath = normalizeDepartmentPath(viewerDepartmentPath);
+  return Boolean(aclPath && userPath && (userPath === aclPath || userPath.startsWith(`${aclPath}/`)));
 }
 
 function siteSecretKey(environment, siteId, name) {

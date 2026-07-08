@@ -48,6 +48,24 @@ test('unauthenticated directory returns only internal sites with minimal metadat
     ownerUserId: 'usr_owner',
     visibility: 'owner',
   });
+  await seedSite(store, {
+    id: 'site_org',
+    slug: 'org-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'org',
+  });
+  await seedSite(store, {
+    id: 'site_acl',
+    slug: 'acl-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'acl',
+  });
+  await store.addSiteAclEntries(
+    'site_acl',
+    [{ id: 'acl_viewer', subjectType: 'email', subjectValue: 'viewer@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_owner', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
 
   const response = await worker.fetch(internalConsoleRequest('/.xd-pages/api/console/directory'), env(store));
 
@@ -64,6 +82,197 @@ test('unauthenticated directory returns only internal sites with minimal metadat
     },
   ]);
   assertNoSensitiveConsoleFields(body);
+});
+
+test('authenticated directory includes org and ACL matched sites without requiring management access', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_viewer', {
+    email: 'viewer@example.com',
+    realname: 'Viewer Name',
+    departmentPath: '心动/平台支撑部/Web',
+    departmentCheckedAt: '2026-06-15T00:00:00.000Z',
+  });
+  await seedConsoleUser(store, 'usr_owner', {
+    email: 'owner@example.com',
+    realname: 'Owner Name',
+  });
+  await seedSite(store, {
+    id: 'site_internal',
+    slug: 'internal-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'internal',
+  });
+  await seedSite(store, {
+    id: 'site_org',
+    slug: 'org-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'org',
+  });
+  await activateSite(store, 'site_org', { visibility: 'org' });
+  await seedSite(store, {
+    id: 'site_acl_email',
+    slug: 'acl-email-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'acl',
+  });
+  await activateSite(store, 'site_acl_email', { visibility: 'acl' });
+  await store.addSiteAclEntries(
+    'site_acl_email',
+    [{ id: 'acl_email', subjectType: 'email', subjectValue: 'viewer@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_owner', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  await seedSite(store, {
+    id: 'site_acl_department',
+    slug: 'acl-dept-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'acl',
+  });
+  await activateSite(store, 'site_acl_department', { visibility: 'acl' });
+  await store.addSiteAclEntries(
+    'site_acl_department',
+    [{ id: 'acl_dept', subjectType: 'department', subjectValue: '心动/平台支撑部', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_owner', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  await seedSite(store, {
+    id: 'site_acl_miss',
+    slug: 'acl-miss-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'acl',
+  });
+  await activateSite(store, 'site_acl_miss', { visibility: 'acl' });
+  await store.addSiteAclEntries(
+    'site_acl_miss',
+    [{ id: 'acl_miss', subjectType: 'email', subjectValue: 'blocked@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_owner', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  await seedSite(store, {
+    id: 'site_owner_only',
+    slug: 'owner-only-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'owner',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/directory', {
+      userId: 'usr_viewer',
+      email: 'viewer@example.com',
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const body = await response.json();
+  assert.deepEqual(
+    body.sites.map((site) => [site.id, site.slug, site.visibility, site.owner.displayName]),
+    [
+      ['site_acl_department', 'acl-dept-demo', 'acl', 'Owner Name'],
+      ['site_acl_email', 'acl-email-demo', 'acl', 'Owner Name'],
+      ['site_internal', 'internal-demo', 'internal', 'Owner Name'],
+      ['site_org', 'org-demo', 'org', 'Owner Name'],
+    ]
+  );
+  assertNoSensitiveConsoleFields(body);
+});
+
+test('authenticated directory does not match blank email ACL entries to viewers without email', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_viewer', {
+    email: '',
+    realname: 'Viewer Name',
+  });
+  await seedConsoleUser(store, 'usr_owner', {
+    email: 'owner@example.com',
+    realname: 'Owner Name',
+  });
+  await seedSite(store, {
+    id: 'site_internal',
+    slug: 'internal-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'internal',
+  });
+  await seedSite(store, {
+    id: 'site_acl_blank_email',
+    slug: 'acl-blank-email-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'acl',
+  });
+  await activateSite(store, 'site_acl_blank_email', { visibility: 'acl' });
+  await store.addSiteAclEntries(
+    'site_acl_blank_email',
+    [{ id: 'acl_blank_email', subjectType: 'email', subjectValue: '   ', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_owner', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/directory', {
+      userId: 'usr_viewer',
+      email: '',
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(
+    (await response.json()).sites.map((site) => [site.id, site.slug, site.visibility]),
+    [['site_internal', 'internal-demo', 'internal']]
+  );
+});
+
+test('authenticated directory hydrates missing department before matching department ACL entries', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-01T10:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_viewer', {
+    email: 'viewer@example.com',
+    departmentPath: null,
+  });
+  await seedConsoleUser(store, 'usr_owner', {
+    email: 'owner@example.com',
+    realname: 'Owner Name',
+  });
+  await seedSite(store, {
+    id: 'site_acl_department',
+    slug: 'acl-dept-demo',
+    ownerUserId: 'usr_owner',
+    visibility: 'acl',
+  });
+  await activateSite(store, 'site_acl_department', { visibility: 'acl' });
+  await store.addSiteAclEntries(
+    'site_acl_department',
+    [{ id: 'acl_dept', subjectType: 'department', subjectValue: '心动/平台支撑部', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_owner', updatedAt: '2026-07-01T10:00:00.000Z' },
+    'production'
+  );
+  let xdsCalled = false;
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/directory', {
+      userId: 'usr_viewer',
+      email: 'viewer@example.com',
+    }),
+    env(store, {
+      XDS_OPENAI_TOKEN: 'secret-token',
+      now: () => '2026-07-01T10:00:00.000Z',
+      XD_OFFICE_NET: {
+        fetch: async () => {
+          xdsCalled = true;
+          return Response.json({
+            code: 0,
+            data: [{ email: 'viewer@example.com', departmentPath: '心动/平台支撑部/Web' }],
+          });
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(xdsCalled, true);
+  assert.deepEqual(
+    (await response.json()).sites.map((site) => [site.id, site.slug, site.visibility]),
+    [['site_acl_department', 'acl-dept-demo', 'acl']]
+  );
 });
 
 test('unauthenticated directory hides sites whose effective route visibility is no longer internal', async () => {

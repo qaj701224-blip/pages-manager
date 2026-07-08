@@ -178,6 +178,38 @@ test('D1 store admin and route lookups avoid unjoined team member aliases', asyn
   assert.equal(capturedSql.some((sql) => /team_members\.role/.test(sql)), false);
 });
 
+test('D1 store console directory merges org and ACL sites for authenticated viewers', async () => {
+  const db = fakeConsoleDirectoryDb({
+    internalRows: [consoleDirectorySiteRow({ id: 'site_internal', slug: 'internal-demo', visibility: 'internal' })],
+    accessibleRows: [
+      consoleDirectorySiteRow({ id: 'site_acl', slug: 'acl-demo', visibility: 'acl' }),
+      consoleDirectorySiteRow({ id: 'site_org', slug: 'org-demo', visibility: 'org' }),
+    ],
+  });
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const sites = await store.listConsoleDirectorySites({
+    environment: 'production',
+    viewerUserId: 'usr_viewer',
+  });
+
+  assert.deepEqual(
+    sites.map((site) => [site.id, site.slug, site.route.visibility, site.ownerDisplayName]),
+    [
+      ['site_acl', 'acl-demo', 'acl', 'Owner Name'],
+      ['site_internal', 'internal-demo', 'internal', 'Owner Name'],
+      ['site_org', 'org-demo', 'org', 'Owner Name'],
+    ]
+  );
+  const accessCall = db.calls.find((call) => call.sql.includes('JOIN users AS viewer_users'));
+  assert.ok(accessCall);
+  assert.deepEqual(accessCall.args, ['usr_viewer', 'production']);
+  assert.match(accessCall.sql, /site_acl_entries\.subject_type = 'email'/);
+  assert.match(accessCall.sql, /trim\(site_acl_entries\.subject_value\) <> ''/);
+  assert.match(accessCall.sql, /trim\(COALESCE\(viewer_users\.email, ''\)\) <> ''/);
+  assert.match(accessCall.sql, /site_acl_entries\.subject_type = 'department'/);
+});
+
 test('D1 store admin list queries are bounded and site detail can be fetched by id', async () => {
   const calls = [];
   const db = {
@@ -3075,6 +3107,59 @@ function siteJoinedRouteRow(site, route) {
     route_cache_tier: route?.cache_tier || null,
     route_created_at: route?.created_at || null,
     route_updated_at: route?.updated_at || null,
+  };
+}
+
+function consoleDirectorySiteRow({ id, slug, visibility }) {
+  return {
+    ...siteJoinedRouteRow(
+      siteRow({
+        id,
+        slug,
+        ownerUserId: 'usr_owner',
+        defaultVisibility: visibility,
+      }),
+      routeRow({
+        id: `route_${id}`,
+        siteId: id,
+        hostname: `${slug}.pages.xd.team`,
+        visibility,
+      })
+    ),
+    owner_user_realname: 'Owner Name',
+    owner_user_email: 'owner@example.com',
+    owner_team_id: null,
+    owner_team_name: null,
+    owner_team_type: null,
+    owner_team_department_path: null,
+  };
+}
+
+function fakeConsoleDirectoryDb({ internalRows, accessibleRows }) {
+  const calls = [];
+  return {
+    calls,
+    prepare(sql) {
+      const call = { sql, args: [] };
+      calls.push(call);
+      return {
+        bind(...args) {
+          call.args = args;
+          return {
+            all: async () => {
+              if (sql.includes("COALESCE(site_routes.visibility, sites.default_visibility) = 'internal'")) {
+                return { results: internalRows };
+              }
+              if (sql.includes('JOIN users AS viewer_users')) {
+                return { results: accessibleRows };
+              }
+              return { results: [] };
+            },
+            first: async () => null,
+          };
+        },
+      };
+    },
   };
 }
 
