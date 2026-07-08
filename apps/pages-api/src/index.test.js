@@ -36,6 +36,237 @@ test('health rejects legacy token headers', async () => {
   assert.equal(body.error.action, 'Run `xd-cell login` or use an XD Cell access key.');
 });
 
+test('scheduled handler runs due WFP cleanup tasks', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  const deletedWorkers = [];
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await store.createSiteVersion({
+    id: 'ver_old',
+    siteId: 'site_1',
+    deploymentId: 'dep_old',
+    workerName: 'pages-v2-docs-ver-old',
+    runtime: 'worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    artifactRef: 'wfp://test/pages-v2-docs-ver-old',
+    contentHash: 'sha256:old',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_1',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-old',
+    siteId: 'site_1',
+    versionId: 'ver_old',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-06-14T23:59:00.000Z',
+  });
+
+  await worker.scheduled(
+    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      now: () => '2026-06-15T00:00:00.000Z',
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    },
+    { waitUntil: (promise) => promise }
+  );
+
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-old']);
+  assert.equal((await store.getDeploymentResourceCleanupTask('cln_1', 'production')).status, 'succeeded');
+  assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'retired');
+});
+
+test('scheduled handler retries failed WFP cleanup tasks', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  const deletedWorkers = [];
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_failed',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-old',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'failed',
+    cleanupAfter: '2026-06-14T23:59:00.000Z',
+    attemptCount: 1,
+    lastErrorCode: 'CLEANUP_DELETE_FAILED',
+    lastErrorMessage: 'Worker could not be deleted from Cloudflare.',
+  });
+
+  await worker.scheduled(
+    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      now: () => '2026-06-15T00:00:00.000Z',
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    },
+    { waitUntil: (promise) => promise }
+  );
+
+  const task = await store.getDeploymentResourceCleanupTask('cln_failed', 'production');
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-old']);
+  assert.equal(task.status, 'succeeded');
+  assert.equal(task.attemptCount, 2);
+});
+
+test('scheduled handler retries expired running WFP cleanup tasks', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  const deletedWorkers = [];
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_running_expired',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-old',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'running',
+    cleanupAfter: '2026-06-14T23:59:00.000Z',
+    attemptCount: 1,
+    lockedUntil: '2026-06-14T23:59:30.000Z',
+  });
+
+  await worker.scheduled(
+    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      now: () => '2026-06-15T00:00:00.000Z',
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    },
+    { waitUntil: (promise) => promise }
+  );
+
+  const task = await store.getDeploymentResourceCleanupTask('cln_running_expired', 'production');
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-old']);
+  assert.equal(task.status, 'succeeded');
+  assert.equal(task.attemptCount, 2);
+});
+
+test('scheduled handler records locked cleanup exceptions and continues the batch', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  const deletedWorkers = [];
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await store.createSiteVersion({
+    id: 'ver_error',
+    siteId: 'site_1',
+    deploymentId: 'dep_old',
+    workerName: 'pages-v2-docs-ver-error',
+    runtime: 'worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    artifactRef: 'wfp://test/pages-v2-docs-ver-error',
+    contentHash: 'sha256:error',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_error',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-error',
+    siteId: 'site_1',
+    versionId: 'ver_error',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-06-14T23:59:00.000Z',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_next',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-next',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-06-14T23:59:01.000Z',
+  });
+
+  const originalFindActiveRoute = store.findActiveRouteByWorkerResource.bind(store);
+  let routeChecks = 0;
+  store.findActiveRouteByWorkerResource = async (input) => {
+    routeChecks += 1;
+    if (routeChecks === 2) throw new Error('route store unavailable');
+    return originalFindActiveRoute(input);
+  };
+
+  await worker.scheduled(
+    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      now: () => '2026-06-15T00:00:00.000Z',
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    }
+  );
+
+  const failedTask = await store.getDeploymentResourceCleanupTask('cln_error', 'production');
+  const nextTask = await store.getDeploymentResourceCleanupTask('cln_next', 'production');
+  assert.equal(failedTask.status, 'failed');
+  assert.equal(failedTask.lastErrorCode, 'CLEANUP_TASK_FAILED');
+  assert.equal(failedTask.lastErrorMessage, 'Cleanup task failed unexpectedly.');
+  assert.equal(failedTask.lockedUntil, null);
+  assert.equal((await store.getSiteVersion('ver_error')).artifactAvailability, 'active');
+  assert.equal(nextTask.status, 'succeeded');
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-next']);
+});
+
 test('invalid environment fails closed', async () => {
   const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/health'), {
     PAGES_ENV: 'preview',
@@ -205,9 +436,13 @@ test('internal hostname claim confirm and release stay on internal service host'
   await store.acquireHostnameClaim(claim);
 
   const publicConfirm = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/internal/hostname-claims/confirm', { claim }, {
-      'CF-Connecting-IP': '10.1.2.3',
-    }),
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/internal/hostname-claims/confirm',
+      { claim },
+      {
+        'CF-Connecting-IP': '10.1.2.3',
+      }
+    ),
     { PAGES_ENV: 'production', PAGES_STORE: store, IP_ALLOWLIST: '10.0.0.0/8' }
   );
   const internalConfirm = await worker.fetch(
@@ -246,6 +481,8 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.match(stagingTemplate, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(productionTemplate, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(stagingTemplate, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
+  assert.match(productionTemplate, /crons = \["\*\/15 \* \* \* \*"\]/);
+  assert.match(stagingTemplate, /crons = \["\*\/15 \* \* \* \*"\]/);
   assert.match(productionTemplate, /PAGES_USER_WORKER_VPC_TUNNEL_ID = "__PAGES_USER_WORKER_VPC_TUNNEL_ID__"/);
   assert.match(stagingTemplate, /PAGES_USER_WORKER_VPC_TUNNEL_ID = "__PAGES_USER_WORKER_VPC_TUNNEL_ID__"/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /PAGES_USER_WORKER_VPC_TUNNEL_ID = "[0-9a-f-]{36}"/);

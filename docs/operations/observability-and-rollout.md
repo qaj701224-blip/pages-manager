@@ -64,13 +64,14 @@
 
 需要一个后台 reconciliation job 或管理员工具，负责修复最终一致性和清理资源：
 
-| 对象                        | 职责                                                                                                                                      |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| route snapshot              | 对比 D1 `route_generation`、KV pointer 和 immutable snapshot，修复缺失或过期 pointer                                                      |
-| deployment                  | 修正卡在 `activating` / `uploaded` 的状态，补齐 terminal response                                                                         |
+| 对象                        | 职责                                                                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| route snapshot              | 对比 D1 `route_generation`、KV pointer 和 immutable snapshot，修复缺失或过期 pointer                                                                                                                                                                                           |
+| deployment                  | 修正卡在 `activating` / `uploaded` 的状态，补齐 terminal response                                                                                                                                                                                                              |
 | worker slot                 | 对比 `worker_slots`、router binding 和 Cloudflare ordinary Worker，发现 active legacy route、idle Worker、retired Worker 和 Cloudflare 缺失/孤儿状态；当前由 Admin Console 的 `Legacy Normal Workers` 管理页人工删除 idle Worker，`expand-pages-router-slots.yml` 只做只读审计 |
-| orphan user worker / assets | reconciliation 根据 failed deployment、非 active version、WFP 命名规则、slot 状态和审计引用推导 orphan；后续可升级为显式标记表和 mark-and-sweep 清理 |
-| key registry                | 检查 active/draining/retired key 与最大 token TTL 是否匹配                                                                                |
+| WFP cleanup task            | `deployment_resource_cleanup_tasks` 是上一版 user Worker 延迟 GC 的真相源；Cron Trigger 小批量处理到期 `pending` / `failed` task，Admin Console 可查看并手动 run；删除前必须确认 active route 不再引用该 `worker_name` 或 `version_id`                                         |
+| orphan user worker / assets | failed deployment 诊断和 cleanup task 记录用于定位 orphan；后续可升级为跨 Cloudflare list 的 mark-and-sweep reconciliation                                                                                                                                                     |
+| key registry                | 检查 active/draining/retired key 与最大 token TTL 是否匹配                                                                                                                                                                                                                     |
 
 key rotation 生命周期：
 
@@ -78,7 +79,7 @@ key rotation 生命周期：
 publish -> activate -> drain -> retire
 ```
 
-重叠窗口至少覆盖最大 token TTL + route/JWKS KV TTL。retire 前必须确认没有仍需验证该 `kid` 的 session、internal JWT、capability 或 rollback window。
+重叠窗口至少覆盖最大 token TTL + route/JWKS KV TTL。retire 前必须确认没有仍需验证该 `kid` 的 session、internal JWT 或 capability。WFP Worker GC 的 drain window 默认 5 分钟，可通过环境变量收紧或放宽；Cron Trigger 默认每 15 分钟小批量处理到期 cleanup task。GC 失败只更新 cleanup task，不影响已成功发布的 active route。
 
 ## 平稳上线阶段
 
@@ -138,23 +139,23 @@ publish -> activate -> drain -> retire
 
 ## 风险和约束
 
-| 风险                        | 说明                             | 缓解                                                                 |
-| --------------------------- | -------------------------------- | -------------------------------------------------------------------- |
-| SSO clientSecret 泄露       | OAuth 换 token 需要 secret       | 只放 Worker secret，不进 CLI/浏览器/日志                             |
-| session 不可吊销            | 纯本地 JWT 验证性能好但吊销慢    | 短 TTL + sid + 高风险操作查状态                                      |
-| staging/prod 串环境         | route 或 binding 选错影响 P0     | 双 router 物理隔离，thin router 不持有 secret                        |
-| 子站公网暴露                | 未来 public exposure 如果混入第一版 visibility 会造成误解 | 第一版只开放 `internal`，router 强制 IP allowlist；公网能力后续以 `exposure + access` 单独设计 |
-| 用户 Worker 伪造身份        | 浏览器可伪造普通 header          | router 清洗入站 header，并注入签名内部 JWT                           |
-| User Worker 覆盖平台 cookie | 不可信代码可返回 Set-Cookie      | router 清洗平台保留 cookie/header                                    |
-| User Worker 设置父域 cookie | 可污染 sibling 子站或平台 host   | 只允许 host-only cookie，拒绝父域 Domain                             |
-| internal JWT 被当能力凭证   | User Worker 可复制短期 JWT       | 平台能力使用独立 capability，不信 internal JWT                       |
-| 旧版/新架构心智混淆        | 用户可能把 v2 新建 `workers.xd.team` 子站和 v1 `apps/server` 旧链路混为一谈 | 文档、CLI help、错误提示和 skill 明确 v2 控制面是 `api/auth.pages.xd.team`，新建子站默认 `workers.xd.team`，但不调用 v1 `api.workers.xd.team` |
-| assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证 | 阶段 0 做 spike；DR 0003 的 R2 artifact store 作为低优先级长期候选，不阻塞当前 MVP |
-| WFP dispatch 部署失败       | 新版本无法进入目标执行面         | fail closed，保留旧 active route；修复 WFP 后重新发布，不回退到 normal slot |
-| slot binding 数量上限       | 历史普通 Worker slot 需要 router 静态 binding | WFP 模式停止扩张，只渲染 active legacy route 的显式 binding |
-| slot 误清理 active 版本      | active slot 被释放会导致当前站点不可访问 | 清理前后都用 D1 条件确认没有 active route 引用该 slot 或 version；失败时保持 `cleanup_pending`，不回到 `available` |
-| 新 wildcard 配置风险        | `*.workers.xd.team` 是 v2 新建站点默认入口，`*.pages.xd.team` 仍承载存量 v2 站点 | staging 验证、DNS/证书/route 静态校验、快速回滚                      |
-| production 自动部署风险     | 当前项目要求生产手动部署         | CI 继续保持 production manual                                        |
+| 风险                        | 说明                                                                             | 缓解                                                                                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| SSO clientSecret 泄露       | OAuth 换 token 需要 secret                                                       | 只放 Worker secret，不进 CLI/浏览器/日志                                                                                                      |
+| session 不可吊销            | 纯本地 JWT 验证性能好但吊销慢                                                    | 短 TTL + sid + 高风险操作查状态                                                                                                               |
+| staging/prod 串环境         | route 或 binding 选错影响 P0                                                     | 双 router 物理隔离，thin router 不持有 secret                                                                                                 |
+| 子站公网暴露                | 未来 public exposure 如果混入第一版 visibility 会造成误解                        | 第一版只开放 `internal`，router 强制 IP allowlist；公网能力后续以 `exposure + access` 单独设计                                                |
+| 用户 Worker 伪造身份        | 浏览器可伪造普通 header                                                          | router 清洗入站 header，并注入签名内部 JWT                                                                                                    |
+| User Worker 覆盖平台 cookie | 不可信代码可返回 Set-Cookie                                                      | router 清洗平台保留 cookie/header                                                                                                             |
+| User Worker 设置父域 cookie | 可污染 sibling 子站或平台 host                                                   | 只允许 host-only cookie，拒绝父域 Domain                                                                                                      |
+| internal JWT 被当能力凭证   | User Worker 可复制短期 JWT                                                       | 平台能力使用独立 capability，不信 internal JWT                                                                                                |
+| 旧版/新架构心智混淆         | 用户可能把 v2 新建 `workers.xd.team` 子站和 v1 `apps/server` 旧链路混为一谈      | 文档、CLI help、错误提示和 skill 明确 v2 控制面是 `api/auth.pages.xd.team`，新建子站默认 `workers.xd.team`，但不调用 v1 `api.workers.xd.team` |
+| assets 承载方式不确定       | WFP、slot 与 Workers Assets 组合需验证                                           | 阶段 0 做 spike；DR 0003 的 R2 artifact store 作为低优先级长期候选，不阻塞当前 MVP                                                            |
+| WFP dispatch 部署失败       | 新版本无法进入目标执行面                                                         | fail closed，保留旧 active route；修复 WFP 后重新发布，不回退到 normal slot                                                                   |
+| slot binding 数量上限       | 历史普通 Worker slot 需要 router 静态 binding                                    | WFP 模式停止扩张，只渲染 active legacy route 的显式 binding                                                                                   |
+| slot 误清理 active 版本     | active slot 被释放会导致当前站点不可访问                                         | 清理前后都用 D1 条件确认没有 active route 引用该 slot 或 version；失败时保持 `cleanup_pending`，不回到 `available`                            |
+| 新 wildcard 配置风险        | `*.workers.xd.team` 是 v2 新建站点默认入口，`*.pages.xd.team` 仍承载存量 v2 站点 | staging 验证、DNS/证书/route 静态校验、快速回滚                                                                                               |
+| production 自动部署风险     | 当前项目要求生产手动部署                                                         | CI 继续保持 production manual                                                                                                                 |
 
 ## 需要进一步确认的问题
 

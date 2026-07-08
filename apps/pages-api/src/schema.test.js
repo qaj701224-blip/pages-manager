@@ -16,6 +16,7 @@ test('schema defines all v2 authority tables', () => {
     'site_vars',
     'worker_slots',
     'deployments',
+    'deployment_resource_cleanup_tasks',
     'site_members',
     'site_acl_entries',
     'access_keys',
@@ -28,7 +29,7 @@ test('schema defines all v2 authority tables', () => {
     'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 11);
+  assert.equal(SCHEMA_VERSION, 13);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -45,6 +46,11 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
   assert.match(sql, /WHERE status IN \('pending', 'active', 'held', 'conflicted'\)/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency/);
+  assert.match(sql, /failure_stage TEXT/);
+  assert.match(sql, /failure_diagnostics_json TEXT/);
+  assert.match(sql, /resource_type TEXT NOT NULL/);
+  assert.match(sql, /cleanup_after TEXT NOT NULL/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_environment_status/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_access_keys_owner/);

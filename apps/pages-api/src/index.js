@@ -1,5 +1,5 @@
 import { handleAccessKeysApi, handleConsoleAccessKeysApi } from './access-keys.js';
-import { handleConsoleAdminApi } from './admin.js';
+import { handleConsoleAdminApi, runDueDeploymentCleanups } from './admin.js';
 import { handleConsoleApi } from './console.js';
 import { readApiConfig } from './config.js';
 import { handleDeploymentsApi, handleVersionsApi } from './deployments.js';
@@ -16,6 +16,28 @@ import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 export { RoutePointerDO } from './route-snapshot.js';
 
 export default {
+  async scheduled(controller, env) {
+    let config;
+    try {
+      config = readApiConfig(env);
+    } catch {
+      return;
+    }
+
+    let store;
+    try {
+      store = createPagesStore(env);
+    } catch {
+      return;
+    }
+
+    const cleanup = runDueDeploymentCleanups(env, config, store, {
+      limit: Number(env.DEPLOYMENT_CLEANUP_CRON_LIMIT || 10),
+    });
+    await cleanup;
+    void controller;
+  },
+
   async fetch(request, env, ctx) {
     if (request.headers.has('X-Pages-Token')) {
       return jsonError(

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 13;
 
 export function createSchemaSql() {
   return [
@@ -175,8 +175,28 @@ export function createSchemaSql() {
       previous_version_id TEXT,
       error_code TEXT,
       error_message TEXT,
+      failure_stage TEXT,
+      failure_diagnostics_json TEXT,
       created_at TEXT NOT NULL,
       completed_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS deployment_resource_cleanup_tasks (
+      id TEXT PRIMARY KEY,
+      environment TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_ref TEXT NOT NULL,
+      site_id TEXT,
+      version_id TEXT,
+      deployment_id TEXT,
+      cleanup_reason TEXT NOT NULL,
+      status TEXT NOT NULL,
+      cleanup_after TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      locked_until TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS site_members (
       site_id TEXT NOT NULL,
@@ -360,6 +380,10 @@ export function createSchemaSql() {
       ON worker_slots(environment, status, slot_number)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_idempotency
       ON deployments(idempotency_scope, idempotency_key)`,
+    `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_environment_status
+      ON deployment_resource_cleanup_tasks(environment, status, cleanup_after)`,
+    `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_resource
+      ON deployment_resource_cleanup_tasks(environment, resource_type, resource_ref)`,
     `CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site
       ON site_acl_entries(site_id, created_at)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject

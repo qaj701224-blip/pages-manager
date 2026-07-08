@@ -68,7 +68,8 @@ export function AdminDashboard() {
                   <th>站点</th>
                   <th>来源</th>
                   <th>归属</th>
-                  <th>操作</th>
+                  <th>阶段</th>
+                  <th>错误</th>
                   <th>时间</th>
                 </tr>
               </thead>
@@ -107,7 +108,12 @@ function FailedDeploymentRow({ deployment }) {
           </div>
         </div>
       </td>
-      <td data-label="操作">{deployment.operation || '无'}</td>
+      <td data-label="阶段">
+        <span className="tag tag-disabled">{deployment.failureStage || deployment.operation || 'unknown'}</span>
+      </td>
+      <td data-label="错误" title={deployment.errorMessage || deployment.errorCode || ''}>
+        {deployment.errorCode || deployment.errorMessage || '无'}
+      </td>
       <td data-label="时间">{formatDate(deployment.createdAt)}</td>
     </tr>
   );

@@ -281,6 +281,95 @@ test('uploads and verifies WFP worker before route activation', async () => {
   assert.equal((await store.getDeployment('dep_1')).status, 'succeeded');
 });
 
+test('successful WFP redeploy queues previous worker cleanup after route cutover', async () => {
+  const store = await createSeededStore();
+  const deletedWorkers = [];
+  const env = testEnv(store, createSnapshotStore(), {
+    WFP_PROVIDER: {
+      upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
+      verify: async () => ({ ok: true }),
+      delete: async ({ workerName }) => deletedWorkers.push(workerName),
+    },
+  });
+
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'blue_green_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("green"); } };' }),
+        { 'Idempotency-Key': 'blue_green_2' }
+      ),
+      env
+    )
+  );
+
+  const route = await store.getRouteBySiteId('site_1', 'production');
+  const tasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
+
+  assert.equal(route.activeVersionId, 'ver_2');
+  assert.deepEqual(deletedWorkers, []);
+  assert.deepEqual(tasks, [
+    {
+      id: 'cln_1',
+      environment: 'production',
+      resourceType: 'wfp_user_worker',
+      resourceRef: 'pages-v2-guide-ver-1',
+      siteId: 'site_1',
+      versionId: 'ver_1',
+      deploymentId: 'dep_2',
+      cleanupReason: 'blue_green_previous_worker',
+      status: 'pending',
+      cleanupAfter: '2026-06-15T00:05:00.000Z',
+      attemptCount: 0,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      lockedUntil: null,
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+  ]);
+  assert.equal((await store.getSiteVersion('ver_1')).artifactAvailability, 'active');
+});
+
+test('successful production redeploy does not queue cleanup for staging-prefixed previous worker', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  await store.activateSiteVersion(
+    'site_1',
+    {
+      activeVersionId: 'ver_staging_prefix',
+      workerName: 'pages-v2-staging-guide-ver-old',
+      runtime: 'worker',
+      executionProvider: 'wfp',
+      dispatchType: 'dispatch-namespace',
+      visibility: 'org',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    'production',
+    await store.getRouteBySiteId('site_1', 'production')
+  );
+
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'staging_prefix_previous_worker',
+      }),
+      env
+    )
+  );
+
+  assert.deepEqual(await store.listDeploymentResourceCleanupTasks({ environment: 'production' }), []);
+});
+
 test('creates static deployment from multipart asset artifact without worker bundle', async () => {
   const store = await createSeededStore();
   const uploads = [];
@@ -1144,8 +1233,13 @@ test('deployment fails closed when site secrets change before provider upload', 
   const body = await response.json();
   assert.equal(body.error.code, 'RUNTIME_CONFIG_CHANGED');
   assert.deepEqual(uploads, []);
-  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
-  assert.equal((await store.getDeployment('dep_1')).errorCode, 'RUNTIME_CONFIG_CHANGED');
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal(failedDeployment.status, 'failed');
+  assert.equal(failedDeployment.errorCode, 'RUNTIME_CONFIG_CHANGED');
+  assert.equal(failedDeployment.failureStage, 'runtime_config_snapshot');
+  assert.equal(failedDeployment.failureDiagnostics.stage, 'runtime_config_snapshot');
+  assert.equal(failedDeployment.failureDiagnostics.uploadCompleted, false);
+  assert.equal(failedDeployment.failureDiagnostics.routePointerCommitted, false);
 });
 
 test('deployment fails closed and cleans uploaded worker when site secrets change after provider upload', async () => {
@@ -4790,9 +4884,34 @@ test('marks deployment failed when WFP upload fails without creating active vers
   const body = await response.json();
   assert.equal(body.error.code, 'DEPLOYMENT_UPLOAD_FAILED');
   assert.equal(body.error.action, 'Retry the deployment with a new Idempotency-Key.');
-  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal(failedDeployment.status, 'failed');
+  assert.equal(failedDeployment.failureStage, 'upload_worker');
+  assert.deepEqual(failedDeployment.failureDiagnostics, {
+    schemaVersion: 1,
+    stage: 'upload_worker',
+    executionProvider: 'wfp',
+    deploymentShape: 'worker-only',
+    plannedVersionId: 'ver_1',
+    plannedWorkerName: 'pages-v2-guide-ver-1',
+    uploadCompleted: false,
+    verifyCompleted: false,
+    routePointerCommitted: false,
+    trafficImpact: 'old_version_retained',
+    retryable: true,
+    operatorAction: 'retry_deploy',
+    cause: {
+      code: 'DEPLOYMENT_UPLOAD_FAILED',
+      class: 'provider_upload_error',
+    },
+  });
   assert.equal(await store.getSiteVersion('ver_1'), null);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+
+  const polled = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/deployments/dep_1'), env);
+  const polledBody = await polled.json();
+  assert.equal(polledBody.deployment.failureStage, 'upload_worker');
+  assert.equal('failureDiagnostics' in polledBody.deployment, false);
 });
 
 test('marks deployment failed when WFP verify fails without creating active version', async () => {
@@ -5013,8 +5132,12 @@ test('fails deployment activation without clobbering a concurrently changed rout
 
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error.code, 'ROUTE_ACTIVATION_CONFLICT');
-  assert.equal((await store.getDeployment('dep_1')).status, 'failed');
-  assert.equal((await store.getDeployment('dep_1')).errorCode, 'ROUTE_ACTIVATION_CONFLICT');
+  const failedDeployment = await store.getDeployment('dep_1');
+  assert.equal(failedDeployment.status, 'failed');
+  assert.equal(failedDeployment.errorCode, 'ROUTE_ACTIVATION_CONFLICT');
+  assert.equal(failedDeployment.failureStage, 'activate_route');
+  assert.equal(failedDeployment.failureDiagnostics.stage, 'activate_route');
+  assert.equal(failedDeployment.failureDiagnostics.routeActivatedInD1, false);
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_concurrent');
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team'), undefined);
   assert.deepEqual(deletedWorkers, ['pages-v2-guide-ver-1']);
@@ -5074,7 +5197,12 @@ test('keeps previous active route when rollback snapshot write fails', async () 
   const body = await rollback.json();
   assert.equal(body.error.code, 'ROUTE_SNAPSHOT_WRITE_FAILED');
   assert.equal(body.error.action, 'Retry the rollback with a new Idempotency-Key.');
-  assert.equal((await store.getDeployment('dep_3')).status, 'failed');
+  const failedDeployment = await store.getDeployment('dep_3');
+  assert.equal(failedDeployment.status, 'failed');
+  assert.equal(failedDeployment.failureStage, 'rollback_write_route_snapshot');
+  assert.equal(failedDeployment.failureDiagnostics.stage, 'rollback_write_route_snapshot');
+  assert.equal(failedDeployment.failureDiagnostics.routeActivatedInD1, true);
+  assert.equal(failedDeployment.failureDiagnostics.previousRouteRestored, true);
   assert.equal(route.activeVersionId, 'ver_2');
   assert.equal(route.workerName, 'pages-v2-guide-ver-2');
   assert.equal(route.routeGeneration, 4);
@@ -5169,6 +5297,89 @@ test('rejects rollback to a version from a failed deployment', async () => {
   assert.equal(rollback.status, 409);
   assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
   assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, null);
+});
+
+test('rejects rollback to a retired WFP version after artifact GC', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'retired_wfp_deploy_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+        { 'Idempotency-Key': 'retired_wfp_deploy_2' }
+      ),
+      env
+    )
+  );
+  await store.markSiteVersionArtifactAvailability({
+    id: 'ver_1',
+    environment: 'production',
+    artifactAvailability: 'retired',
+  });
+
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_retired_wfp' }),
+    env
+  );
+
+  assert.equal(rollback.status, 409);
+  assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
+});
+
+test('rejects rollback when cleanup marks the target WFP version retiring before activation', async () => {
+  const store = await createSeededStore();
+  const env = testEnv(store, createSnapshotStore());
+
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest('https://api.pages.xd.team/.xd-pages/api/deployments', deployPayload(), {
+        'Idempotency-Key': 'retiring_wfp_deploy_1',
+      }),
+      env
+    )
+  );
+  await assertDeployOk(
+    await worker.fetch(
+      deploymentRequest(
+        'https://api.pages.xd.team/.xd-pages/api/deployments',
+        deployPayload({ moduleContent: 'export default { fetch() { return new Response("def"); } };' }),
+        { 'Idempotency-Key': 'retiring_wfp_deploy_2' }
+      ),
+      env
+    )
+  );
+
+  const originalActivate = store.activateSiteVersion.bind(store);
+  store.activateSiteVersion = async (siteId, patch, environment, expectedRoute) => {
+    if (patch.activeVersionId === 'ver_1') {
+      await store.markSiteVersionArtifactAvailability({
+        id: 'ver_1',
+        environment: 'production',
+        artifactAvailability: 'retiring',
+      });
+    }
+    return originalActivate(siteId, patch, environment, expectedRoute);
+  };
+
+  const rollback = await worker.fetch(
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'rb_retiring_wfp' }),
+    env
+  );
+
+  assert.equal(rollback.status, 409);
+  assert.equal((await rollback.json()).error.code, 'ROLLBACK_VERSION_UNAVAILABLE');
+  assert.equal((await store.getRouteBySiteId('site_1')).activeVersionId, 'ver_2');
 });
 
 test('rejects rollback to a released normal worker slot version', async () => {

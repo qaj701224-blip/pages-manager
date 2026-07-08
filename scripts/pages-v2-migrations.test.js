@@ -7,10 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createSchemaSql } from '../apps/pages-api/src/schema.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const migration = readFileSync(
-  join(repoRoot, 'apps/pages-api/migrations/0001_pages_v2_initial.sql'),
-  'utf8'
-);
+const migration = readFileSync(join(repoRoot, 'apps/pages-api/migrations/0001_pages_v2_initial.sql'), 'utf8');
 const slotIdMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0003_environment_scoped_worker_slot_ids.sql'),
   'utf8'
@@ -19,10 +16,7 @@ const resolvedMetadataMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0004_pages_v2_resolved_deployment_metadata.sql'),
   'utf8'
 );
-const hostnameClaimsMigration = readFileSync(
-  join(repoRoot, 'apps/pages-api/migrations/0005_hostname_claims.sql'),
-  'utf8'
-);
+const hostnameClaimsMigration = readFileSync(join(repoRoot, 'apps/pages-api/migrations/0005_hostname_claims.sql'), 'utf8');
 const routeDeletedHostnameReuseMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0006_site_route_deleted_hostname_reuse.sql'),
   'utf8'
@@ -31,20 +25,18 @@ const hostnameClaimSlugCoexistenceMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0007_hostname_claim_slug_coexistence.sql'),
   'utf8'
 );
-const runtimeBindingsMigration = readFileSync(
-  join(repoRoot, 'apps/pages-api/migrations/0008_runtime_bindings.sql'),
-  'utf8'
-);
+const runtimeBindingsMigration = readFileSync(join(repoRoot, 'apps/pages-api/migrations/0008_runtime_bindings.sql'), 'utf8');
 const runtimeConfigGenerationMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0009_runtime_config_generation.sql'),
   'utf8'
 );
-const siteVarsMigration = readFileSync(
-  join(repoRoot, 'apps/pages-api/migrations/0010_site_vars.sql'),
-  'utf8'
-);
+const siteVarsMigration = readFileSync(join(repoRoot, 'apps/pages-api/migrations/0010_site_vars.sql'), 'utf8');
 const auditEventsEnvironmentMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0012_audit_events_environment.sql'),
+  'utf8'
+);
+const deploymentDiagnosticsCleanupMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0013_deployment_diagnostics_cleanup_tasks.sql'),
   'utf8'
 );
 
@@ -177,6 +169,17 @@ test('audit events environment migration adds queryable environment without dele
   assert.match(auditEventsEnvironmentMigration, /ALTER TABLE audit_events ADD COLUMN environment TEXT/);
   assert.match(auditEventsEnvironmentMigration, /CREATE INDEX IF NOT EXISTS idx_audit_events_environment_created/);
   assert.doesNotMatch(auditEventsEnvironmentMigration, /DROP TABLE|DELETE FROM audit_events/i);
+});
+
+test('deployment diagnostics cleanup migration adds review and GC records without deleting history', () => {
+  assert.match(deploymentDiagnosticsCleanupMigration, /ALTER TABLE deployments ADD COLUMN failure_stage TEXT/);
+  assert.match(deploymentDiagnosticsCleanupMigration, /ALTER TABLE deployments ADD COLUMN failure_diagnostics_json TEXT/);
+  assert.match(deploymentDiagnosticsCleanupMigration, /CREATE TABLE IF NOT EXISTS deployment_resource_cleanup_tasks \(/);
+  assert.match(deploymentDiagnosticsCleanupMigration, /\bresource_type TEXT NOT NULL\b/);
+  assert.match(deploymentDiagnosticsCleanupMigration, /\bcleanup_after TEXT NOT NULL\b/);
+  assert.match(deploymentDiagnosticsCleanupMigration, /idx_cleanup_tasks_environment_status/);
+  assert.match(deploymentDiagnosticsCleanupMigration, /idx_cleanup_tasks_resource/);
+  assert.doesNotMatch(deploymentDiagnosticsCleanupMigration, /DROP TABLE|DELETE FROM deployments|DELETE FROM site_versions/i);
 });
 
 function tableDefinition(sql, tableName) {

@@ -3278,6 +3278,7 @@ export class D1PagesStore {
       dispatchBindingName = null,
       slotId = null,
       visibility,
+      requiredArtifactAvailability = null,
       updatedAt,
     },
     environment,
@@ -3286,6 +3287,25 @@ export class D1PagesStore {
     const expectedConditions = expectedRoute
       ? ' AND route_generation = ? AND policy_version = ? AND runtime_config_generation = ? AND active_version_id IS ?'
       : '';
+    const artifactAvailabilityCondition = requiredArtifactAvailability
+      ? ` AND EXISTS (
+          SELECT 1 FROM site_versions
+          WHERE site_versions.id = ?
+            AND site_versions.site_id = site_routes.site_id
+            AND site_versions.artifact_availability = ?
+        )`
+      : '';
+    const conditionBinds = [
+      ...(expectedRoute
+        ? [
+            expectedRoute.routeGeneration,
+            expectedRoute.policyVersion,
+            expectedRoute.runtimeConfigGeneration || 0,
+            expectedRoute.activeVersionId,
+          ]
+        : []),
+      ...(requiredArtifactAvailability ? [activeVersionId, requiredArtifactAvailability] : []),
+    ];
     const result = await this.db
       .prepare(
         `UPDATE site_routes
@@ -3293,7 +3313,7 @@ export class D1PagesStore {
           execution_provider = ?, dispatch_type = ?, dispatch_binding_name = ?, slot_id = ?,
           visibility = ?, route_status = 'active', route_generation = route_generation + 1,
           updated_at = ?
-        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}${expectedConditions}`
+        WHERE site_id = ?${environment ? ' AND environment = ?' : ''}${expectedConditions}${artifactAvailabilityCondition}`
       )
       .bind(
         ...(environment
@@ -3309,14 +3329,7 @@ export class D1PagesStore {
               updatedAt,
               siteId,
               environment,
-              ...(expectedRoute
-                ? [
-                    expectedRoute.routeGeneration,
-                    expectedRoute.policyVersion,
-                    expectedRoute.runtimeConfigGeneration || 0,
-                    expectedRoute.activeVersionId,
-                  ]
-                : []),
+              ...conditionBinds,
             ]
           : [
               activeVersionId,
@@ -3329,18 +3342,11 @@ export class D1PagesStore {
               visibility,
               updatedAt,
               siteId,
-              ...(expectedRoute
-                ? [
-                    expectedRoute.routeGeneration,
-                    expectedRoute.policyVersion,
-                    expectedRoute.runtimeConfigGeneration || 0,
-                    expectedRoute.activeVersionId,
-                  ]
-                : []),
+              ...conditionBinds,
             ])
       )
       .run();
-    if (expectedRoute && result?.meta?.changes === 0) return null;
+    if ((expectedRoute || requiredArtifactAvailability) && result?.meta?.changes === 0) return null;
     return this.getRouteBySiteId(siteId, environment);
   }
 
@@ -3934,7 +3940,7 @@ export class D1PagesStore {
       .prepare(
         `UPDATE deployments SET
           version_id = ?, status = ?, terminal_response_json = ?, previous_version_id = ?,
-          error_code = ?, error_message = ?, completed_at = ?
+          error_code = ?, error_message = ?, failure_stage = ?, failure_diagnostics_json = ?, completed_at = ?
         WHERE id = ?`
       )
       .bind(
@@ -3944,6 +3950,8 @@ export class D1PagesStore {
         next.previousVersionId,
         next.errorCode,
         next.errorMessage,
+        next.failureStage,
+        stringifyJsonColumn(next.failureDiagnostics),
         next.completedAt,
         id
       )
@@ -3983,6 +3991,8 @@ export class D1PagesStore {
       previousVersionId: input.previousVersionId || null,
       errorCode: input.errorCode || null,
       errorMessage: input.errorMessage || null,
+      failureStage: input.failureStage || null,
+      failureDiagnostics: input.failureDiagnostics || null,
       createdAt: now,
       completedAt: input.completedAt || null,
     };
@@ -3992,8 +4002,9 @@ export class D1PagesStore {
           id, environment, site_id, version_id, actor_id, actor_user_id,
           actor_type, source, operation, visibility, status, idempotency_key,
           idempotency_scope, request_hash, terminal_response_json,
-          previous_version_id, error_code, error_message, created_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          previous_version_id, error_code, error_message, failure_stage,
+          failure_diagnostics_json, created_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -4014,11 +4025,164 @@ export class D1PagesStore {
         record.previousVersionId,
         record.errorCode,
         record.errorMessage,
+        record.failureStage,
+        stringifyJsonColumn(record.failureDiagnostics),
         record.createdAt,
         record.completedAt
       )
       .run();
     return { kind: 'created', deployment: cloneRecord(record) };
+  }
+
+  async createDeploymentResourceCleanupTask(input) {
+    const now = input.createdAt || this.now();
+    const record = {
+      id: input.id,
+      environment: normalizeRequiredString(input.environment),
+      resourceType: normalizeRequiredString(input.resourceType),
+      resourceRef: normalizeRequiredString(input.resourceRef),
+      siteId: input.siteId || null,
+      versionId: input.versionId || null,
+      deploymentId: input.deploymentId || null,
+      cleanupReason: normalizeRequiredString(input.cleanupReason),
+      status: input.status || 'pending',
+      cleanupAfter: input.cleanupAfter || now,
+      attemptCount: Number(input.attemptCount || 0),
+      lastErrorCode: input.lastErrorCode || null,
+      lastErrorMessage: input.lastErrorMessage || null,
+      lockedUntil: input.lockedUntil || null,
+      createdAt: now,
+      updatedAt: input.updatedAt || now,
+    };
+    if (!record.id || !record.environment || !record.resourceType || !record.resourceRef || !record.cleanupReason) {
+      throw new Error('CLEANUP_TASK_INVALID');
+    }
+    await this.db
+      .prepare(
+        `INSERT INTO deployment_resource_cleanup_tasks (
+          id, environment, resource_type, resource_ref, site_id, version_id,
+          deployment_id, cleanup_reason, status, cleanup_after, attempt_count,
+          last_error_code, last_error_message, locked_until, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        record.id,
+        record.environment,
+        record.resourceType,
+        record.resourceRef,
+        record.siteId,
+        record.versionId,
+        record.deploymentId,
+        record.cleanupReason,
+        record.status,
+        record.cleanupAfter,
+        record.attemptCount,
+        record.lastErrorCode,
+        record.lastErrorMessage,
+        record.lockedUntil,
+        record.createdAt,
+        record.updatedAt
+      )
+      .run();
+    return cloneRecord(record);
+  }
+
+  async listDeploymentResourceCleanupTasks({ environment, status, limit = 100 } = {}) {
+    const normalizedEnvironment = normalizeRequiredString(environment);
+    if (!normalizedEnvironment) return [];
+    const normalizedStatus = normalizeNullableString(status);
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
+    const result = await this.db
+      .prepare(
+        `SELECT *
+        FROM deployment_resource_cleanup_tasks
+        WHERE environment = ?${normalizedStatus ? ' AND status = ?' : ''}
+        ORDER BY cleanup_after ASC, created_at ASC
+        LIMIT ?`
+      )
+      .bind(
+        ...(normalizedStatus
+          ? [normalizedEnvironment, normalizedStatus, normalizedLimit]
+          : [normalizedEnvironment, normalizedLimit])
+      )
+      .all();
+    return (result.results || []).map(mapDeploymentResourceCleanupTask);
+  }
+
+  async getDeploymentResourceCleanupTask(id, environment) {
+    const row = await this.db
+      .prepare('SELECT * FROM deployment_resource_cleanup_tasks WHERE id = ?' + (environment ? ' AND environment = ?' : ''))
+      .bind(...(environment ? [id, environment] : [id]))
+      .first();
+    return row ? mapDeploymentResourceCleanupTask(row) : null;
+  }
+
+  async markDeploymentResourceCleanupRunning({ id, environment, lockedUntil, updatedAt }) {
+    const now = updatedAt || this.now();
+    const result = await this.db
+      .prepare(
+        `UPDATE deployment_resource_cleanup_tasks
+        SET status = 'running', attempt_count = attempt_count + 1,
+          locked_until = ?, last_error_code = NULL, last_error_message = NULL, updated_at = ?
+        WHERE id = ? AND environment = ?
+          AND (status IN ('pending', 'failed') OR (status = 'running' AND locked_until <= ?))`
+      )
+      .bind(lockedUntil || null, now, id, environment, now)
+      .run();
+    if (result?.meta?.changes === 0) return null;
+    return this.getDeploymentResourceCleanupTask(id, environment);
+  }
+
+  async finishDeploymentResourceCleanupTask({ id, environment, status, errorCode = null, errorMessage = null, updatedAt }) {
+    const now = updatedAt || this.now();
+    await this.db
+      .prepare(
+        `UPDATE deployment_resource_cleanup_tasks
+        SET status = ?, last_error_code = ?, last_error_message = ?, locked_until = NULL, updated_at = ?
+        WHERE id = ? AND environment = ?`
+      )
+      .bind(status, errorCode, errorMessage, now, id, environment)
+      .run();
+    return this.getDeploymentResourceCleanupTask(id, environment);
+  }
+
+  async markSiteVersionArtifactAvailability({ id, environment, artifactAvailability }) {
+    await this.db
+      .prepare(
+        `UPDATE site_versions
+        SET artifact_availability = ?
+        WHERE id = ?
+          AND EXISTS (
+            SELECT 1 FROM sites
+            WHERE sites.id = site_versions.site_id
+              ${environment ? 'AND sites.environment = ?' : ''}
+          )`
+      )
+      .bind(...(environment ? [artifactAvailability, id, environment] : [artifactAvailability, id]))
+      .run();
+    return this.getSiteVersion(id, environment);
+  }
+
+  async findActiveRouteByWorkerResource({ environment, workerName, versionId }) {
+    const conditions = ["route_status = 'active'", 'environment = ?'];
+    const binds = [environment];
+    if (workerName && versionId) {
+      conditions.push('(worker_name = ? OR active_version_id = ?)');
+      binds.push(workerName, versionId);
+    } else if (workerName) {
+      conditions.push('worker_name = ?');
+      binds.push(workerName);
+    } else if (versionId) {
+      conditions.push('active_version_id = ?');
+      binds.push(versionId);
+    } else {
+      return null;
+    }
+    const row = await this.db
+      .prepare(`SELECT * FROM site_routes WHERE ${conditions.join(' AND ')} LIMIT 1`)
+      .bind(...binds)
+      .first();
+    return row ? mapSiteRoute(row) : null;
   }
 }
 
@@ -5009,7 +5173,30 @@ function mapDeployment(row) {
     previousVersionId: row.previous_version_id,
     errorCode: row.error_code,
     errorMessage: row.error_message,
+    failureStage: row.failure_stage || null,
+    failureDiagnostics: parseJsonColumn(row.failure_diagnostics_json),
     createdAt: row.created_at,
     completedAt: row.completed_at,
+  };
+}
+
+function mapDeploymentResourceCleanupTask(row) {
+  return {
+    id: row.id,
+    environment: row.environment,
+    resourceType: row.resource_type,
+    resourceRef: row.resource_ref,
+    siteId: row.site_id || null,
+    versionId: row.version_id || null,
+    deploymentId: row.deployment_id || null,
+    cleanupReason: row.cleanup_reason,
+    status: row.status,
+    cleanupAfter: row.cleanup_after,
+    attemptCount: Number(row.attempt_count || 0),
+    lastErrorCode: row.last_error_code || null,
+    lastErrorMessage: row.last_error_message || null,
+    lockedUntil: row.locked_until || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }

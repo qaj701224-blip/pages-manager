@@ -2016,6 +2016,279 @@ test('deployment idempotency returns existing records and rejects hash conflicts
   assert.equal(await store.getDeployment('dep_3'), null);
 });
 
+test('deployment records persist failure stage and diagnostics', async () => {
+  const store = createSeededStore();
+  await createSite(store);
+
+  const first = await store.createDeploymentForIdempotency({
+    id: 'dep_1',
+    environment: 'production',
+    actorId: 'usr_1',
+    actorUserId: 'usr_1',
+    actorType: 'user',
+    source: 'cli',
+    siteId: 'site_1',
+    operation: 'deploy',
+    idempotencyKey: 'idem_1',
+    requestHash: 'hash_a',
+    visibility: 'org',
+    status: 'pending',
+  });
+  assert.equal(first.kind, 'created');
+
+  await store.updateDeployment('dep_1', {
+    status: 'failed',
+    errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+    errorMessage: 'Deployment upload failed.',
+    failureStage: 'upload_worker',
+    failureDiagnostics: {
+      schemaVersion: 1,
+      stage: 'upload_worker',
+      retryable: true,
+      cause: { code: 'DEPLOYMENT_UPLOAD_FAILED' },
+    },
+    completedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  assert.deepEqual(await store.getDeployment('dep_1'), {
+    id: 'dep_1',
+    environment: 'production',
+    siteId: 'site_1',
+    versionId: null,
+    actorId: 'usr_1',
+    actorUserId: 'usr_1',
+    actorType: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    visibility: 'org',
+    status: 'failed',
+    idempotencyKey: 'idem_1',
+    idempotencyScope: 'production:usr_1:site_1:deploy',
+    requestHash: 'hash_a',
+    terminalResponseJson: null,
+    previousVersionId: null,
+    errorCode: 'DEPLOYMENT_UPLOAD_FAILED',
+    errorMessage: 'Deployment upload failed.',
+    failureStage: 'upload_worker',
+    failureDiagnostics: {
+      schemaVersion: 1,
+      stage: 'upload_worker',
+      retryable: true,
+      cause: { code: 'DEPLOYMENT_UPLOAD_FAILED' },
+    },
+    createdAt: '2026-06-15T00:00:00.000Z',
+    completedAt: '2026-06-15T00:00:00.000Z',
+  });
+});
+
+test('cleanup task lifecycle tracks WFP resource deletion attempts', async () => {
+  const store = createSeededStore();
+  await createSite(store);
+  await store.createSiteVersion({
+    id: 'ver_old',
+    siteId: 'site_1',
+    deploymentId: 'dep_old',
+    workerName: 'pages-v2-docs-ver-old',
+    runtime: 'worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    artifactRef: 'wfp://test/pages-v2-docs-ver-old',
+    contentHash: 'sha256:old',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_1',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-old',
+    siteId: 'site_1',
+    versionId: 'ver_old',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-06-15T00:05:00.000Z',
+  });
+  await store.markDeploymentResourceCleanupRunning({
+    id: 'cln_1',
+    environment: 'production',
+    lockedUntil: '2026-06-15T00:01:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+  await store.finishDeploymentResourceCleanupTask({
+    id: 'cln_1',
+    environment: 'production',
+    status: 'succeeded',
+    updatedAt: '2026-06-15T00:00:10.000Z',
+  });
+  await store.markSiteVersionArtifactAvailability({
+    id: 'ver_old',
+    environment: 'production',
+    artifactAvailability: 'retired',
+  });
+
+  assert.deepEqual(await store.listDeploymentResourceCleanupTasks({ environment: 'production' }), [
+    {
+      id: 'cln_1',
+      environment: 'production',
+      resourceType: 'wfp_user_worker',
+      resourceRef: 'pages-v2-docs-ver-old',
+      siteId: 'site_1',
+      versionId: 'ver_old',
+      deploymentId: 'dep_new',
+      cleanupReason: 'blue_green_previous_worker',
+      status: 'succeeded',
+      cleanupAfter: '2026-06-15T00:05:00.000Z',
+      attemptCount: 1,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      lockedUntil: null,
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:10.000Z',
+    },
+  ]);
+  assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'retired');
+});
+
+test('D1 store cleanup running lock returns null when CAS loses a race', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          calls.push({ sql, args });
+          return {
+            run: async () => ({ meta: { changes: 0 } }),
+            first: async () => ({
+              id: 'cln_1',
+              environment: 'production',
+              resource_type: 'wfp_user_worker',
+              resource_ref: 'pages-v2-docs-ver-old',
+              cleanup_reason: 'blue_green_previous_worker',
+              status: 'running',
+              cleanup_after: '2026-06-15T00:05:00.000Z',
+              attempt_count: 1,
+              created_at: '2026-06-15T00:00:00.000Z',
+              updated_at: '2026-06-15T00:00:00.000Z',
+            }),
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const locked = await store.markDeploymentResourceCleanupRunning({
+    id: 'cln_1',
+    environment: 'production',
+    lockedUntil: '2026-06-15T00:05:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  assert.equal(locked, null);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /UPDATE deployment_resource_cleanup_tasks/);
+});
+
+test('D1 store cleanup running lock can recover an expired running task', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          calls.push({ sql, args });
+          return {
+            run: async () => ({ meta: { changes: 1 } }),
+            first: async () => ({
+              id: 'cln_1',
+              environment: 'production',
+              resource_type: 'wfp_user_worker',
+              resource_ref: 'pages-v2-docs-ver-old',
+              cleanup_reason: 'blue_green_previous_worker',
+              status: 'running',
+              cleanup_after: '2026-06-15T00:05:00.000Z',
+              attempt_count: 2,
+              locked_until: '2026-06-15T00:05:00.000Z',
+              created_at: '2026-06-15T00:00:00.000Z',
+              updated_at: '2026-06-15T00:00:00.000Z',
+            }),
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const locked = await store.markDeploymentResourceCleanupRunning({
+    id: 'cln_1',
+    environment: 'production',
+    lockedUntil: '2026-06-15T00:05:00.000Z',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+  });
+
+  assert.equal(locked.status, 'running');
+  assert.equal(locked.attemptCount, 2);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].sql, /status = 'running' AND locked_until <= \?/);
+  assert.deepEqual(calls[0].args, [
+    '2026-06-15T00:05:00.000Z',
+    '2026-06-15T00:00:00.000Z',
+    'cln_1',
+    'production',
+    '2026-06-15T00:00:00.000Z',
+  ]);
+});
+
+test('D1 store route activation can require an active version artifact in the CAS', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          calls.push({ sql, args });
+          return {
+            run: async () => ({ meta: { changes: 0 } }),
+            first: async () => null,
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
+
+  const route = await store.activateSiteVersion(
+    'site_1',
+    {
+      activeVersionId: 'ver_1',
+      workerName: 'pages-v2-docs-ver-1',
+      runtime: 'worker',
+      executionProvider: 'wfp',
+      dispatchType: 'dispatch-namespace',
+      visibility: 'org',
+      requiredArtifactAvailability: 'active',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+    },
+    'production',
+    {
+      activeVersionId: 'ver_2',
+      routeGeneration: 2,
+      policyVersion: 1,
+      runtimeConfigGeneration: 0,
+    }
+  );
+
+  assert.equal(route, null);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /EXISTS \(\s*SELECT 1 FROM site_versions/s);
+  assert.match(calls[0].sql, /site_versions\.artifact_availability = \?/);
+  assert.deepEqual(calls[0].args.slice(-2), ['ver_1', 'active']);
+});
+
 test('D1 store retries another available worker slot when CAS loses a race', async () => {
   const slots = new Map([
     ['slot_001', workerSlotRow({ id: 'slot_001', slot_number: 1 })],

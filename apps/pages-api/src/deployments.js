@@ -383,6 +383,15 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       status: 'failed',
       errorCode: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID',
       errorMessage: 'Deployment platform configuration is invalid.',
+      failureStage: 'provider_config',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'provider_config',
+        executionProvider: 'unknown',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: versionId,
+        plannedWorkerName,
+        cause: { code: 'DEPLOYMENT_PLATFORM_CONFIG_INVALID', class: 'provider_config_error' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(
@@ -413,6 +422,18 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       status: 'failed',
       errorCode: runtimeSnapshotError.code,
       errorMessage: runtimeSnapshotError.message,
+      failureStage: 'runtime_config_snapshot',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'runtime_config_snapshot',
+        executionProvider: provider.executionProvider || 'wfp',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: versionId,
+        plannedWorkerName,
+        uploadCompleted: false,
+        verifyCompleted: false,
+        routePointerCommitted: false,
+        cause: { code: runtimeSnapshotError.code, class: 'runtime_config_changed' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(
@@ -441,6 +462,18 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       status: 'failed',
       errorCode: code,
       errorMessage: 'Deployment upload failed.',
+      failureStage: 'upload_worker',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'upload_worker',
+        executionProvider: provider.executionProvider || 'wfp',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: versionId,
+        plannedWorkerName,
+        uploadCompleted: false,
+        verifyCompleted: false,
+        routePointerCommitted: false,
+        cause: { code, class: 'provider_upload_error' },
+      }),
       completedAt: readNow(env),
     });
     const status = code === 'DEPLOYMENT_CAPACITY_EXHAUSTED' ? 503 : 502;
@@ -470,6 +503,19 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       status: 'failed',
       errorCode: postUploadRuntimeSnapshotError.code,
       errorMessage: postUploadRuntimeSnapshotError.message,
+      failureStage: 'runtime_config_post_upload',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'runtime_config_post_upload',
+        executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: versionId,
+        plannedWorkerName: workerName,
+        uploadCompleted: true,
+        verifyCompleted: false,
+        routePointerCommitted: false,
+        uploadedWorkerCleanup: 'attempted',
+        cause: { code: postUploadRuntimeSnapshotError.code, class: 'runtime_config_changed' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(
@@ -501,6 +547,19 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       status: 'failed',
       errorCode: code,
       errorMessage: 'Deployment verification failed.',
+      failureStage: 'verify_worker',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'verify_worker',
+        executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: versionId,
+        plannedWorkerName: workerName,
+        uploadCompleted: true,
+        verifyCompleted: false,
+        routePointerCommitted: false,
+        uploadedWorkerCleanup: 'attempted',
+        cause: { code, class: 'provider_verify_error' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(code, 'Deployment verification failed.', 502, 'Retry the deployment with a new Idempotency-Key.');
@@ -525,6 +584,19 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         status: 'failed',
         errorCode: preCommitRuntimeSnapshotError.code,
         errorMessage: preCommitRuntimeSnapshotError.message,
+        failureStage: 'runtime_config_precommit',
+        failureDiagnostics: buildDeploymentFailureDiagnostics({
+          stage: 'runtime_config_precommit',
+          executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+          deploymentShape: decision.deploymentShape,
+          plannedVersionId: versionId,
+          plannedWorkerName: workerName,
+          uploadCompleted: true,
+          verifyCompleted: true,
+          routePointerCommitted: false,
+          uploadedWorkerCleanup: 'attempted',
+          cause: { code: preCommitRuntimeSnapshotError.code, class: 'runtime_config_changed' },
+        }),
         completedAt: readNow(env),
       });
       return jsonError(
@@ -579,6 +651,19 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         status: 'failed',
         errorCode: preActivationRuntimeSnapshotError.code,
         errorMessage: preActivationRuntimeSnapshotError.message,
+        failureStage: 'runtime_config_pre_activation',
+        failureDiagnostics: buildDeploymentFailureDiagnostics({
+          stage: 'runtime_config_pre_activation',
+          executionProvider: uploaded.executionProvider || provider.executionProvider || 'wfp',
+          deploymentShape: decision.deploymentShape,
+          plannedVersionId: versionId,
+          plannedWorkerName: workerName,
+          uploadCompleted: true,
+          verifyCompleted: true,
+          routePointerCommitted: false,
+          uploadedWorkerCleanup: 'attempted',
+          cause: { code: preActivationRuntimeSnapshotError.code, class: 'runtime_config_changed' },
+        }),
         completedAt: readNow(env),
       });
       return jsonError(
@@ -730,6 +815,20 @@ async function createDeployment(request, env, config, store, actor, ctx) {
         versionId: version.id,
         errorCode: 'RUNTIME_CONFIG_CHANGED',
         errorMessage: 'Runtime configuration changed while deployment was activating.',
+        failureStage: 'runtime_config_activation',
+        failureDiagnostics: buildDeploymentFailureDiagnostics({
+          stage: 'runtime_config_activation',
+          executionProvider: version.executionProvider || uploaded.executionProvider || provider.executionProvider || 'wfp',
+          deploymentShape: decision.deploymentShape,
+          plannedVersionId: version.id,
+          plannedWorkerName: version.workerName,
+          uploadCompleted: true,
+          verifyCompleted: true,
+          routeActivatedInD1: false,
+          routePointerCommitted: false,
+          uploadedWorkerCleanup: 'attempted',
+          cause: { code: 'RUNTIME_CONFIG_CHANGED', class: 'runtime_config_changed' },
+        }),
         completedAt: readNow(env),
       });
       return jsonError(
@@ -761,6 +860,20 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       versionId: version.id,
       errorCode: 'ROUTE_ACTIVATION_CONFLICT',
       errorMessage: 'Route changed while deployment was activating.',
+      failureStage: 'activate_route',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'activate_route',
+        executionProvider: version.executionProvider || uploaded.executionProvider || provider.executionProvider || 'wfp',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: version.id,
+        plannedWorkerName: version.workerName,
+        uploadCompleted: true,
+        verifyCompleted: true,
+        routeActivatedInD1: false,
+        routePointerCommitted: false,
+        uploadedWorkerCleanup: 'attempted',
+        cause: { code: 'ROUTE_ACTIVATION_CONFLICT', class: 'route_activation_conflict' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(
@@ -806,6 +919,21 @@ async function createDeployment(request, env, config, store, actor, ctx) {
       versionId: version.id,
       errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
       errorMessage: 'Route snapshot write failed.',
+      failureStage: 'write_route_snapshot',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'write_route_snapshot',
+        executionProvider: version.executionProvider || uploaded.executionProvider || provider.executionProvider || 'wfp',
+        deploymentShape: decision.deploymentShape,
+        plannedVersionId: version.id,
+        plannedWorkerName: version.workerName,
+        uploadCompleted: true,
+        verifyCompleted: true,
+        routeActivatedInD1: true,
+        routePointerCommitted: false,
+        previousRouteRestored: Boolean(restoredRoute),
+        uploadedWorkerCleanup: restoredSnapshotWritten ? 'attempted' : 'skipped',
+        cause: { code: 'ROUTE_SNAPSHOT_WRITE_FAILED', class: 'route_snapshot_store_error' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(
@@ -829,6 +957,7 @@ async function createDeployment(request, env, config, store, actor, ctx) {
   }
 
   await cleanupPreviousNormalWorkerSlot(provider, previousRoute, route, env);
+  await enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute, route, completed);
   const webhookDelivery = emitDeploymentSucceededWebhook({ store, env, config, actor, site, route, deployment: completed });
   if (ctx && typeof ctx.waitUntil === 'function') {
     ctx.waitUntil(webhookDelivery);
@@ -1631,18 +1760,58 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
       dispatchBindingName: version.dispatchBindingName,
       slotId: version.slotId,
       visibility: currentRoute.visibility,
+      requiredArtifactAvailability: 'active',
       updatedAt: readNow(env),
     },
     config.environment,
     currentRoute
   );
   if (!route) {
+    const latestVersion = await store.getSiteVersion(version.id, config.environment);
+    if (latestVersion?.artifactAvailability !== 'active') {
+      await store.updateDeployment(deploymentResult.deployment.id, {
+        status: 'failed',
+        versionId: version.id,
+        previousVersionId: currentRoute.activeVersionId,
+        errorCode: 'ROLLBACK_VERSION_UNAVAILABLE',
+        errorMessage: 'Version is no longer available for rollback.',
+        failureStage: 'rollback_version_availability',
+        failureDiagnostics: buildDeploymentFailureDiagnostics({
+          stage: 'rollback_version_availability',
+          executionProvider: version.executionProvider || 'wfp',
+          deploymentShape: version.deploymentShape,
+          plannedVersionId: version.id,
+          plannedWorkerName: version.workerName,
+          routeActivatedInD1: false,
+          routePointerCommitted: false,
+          cause: { code: 'ROLLBACK_VERSION_UNAVAILABLE', class: 'version_artifact_unavailable' },
+        }),
+        completedAt: readNow(env),
+      });
+      return jsonError(
+        'ROLLBACK_VERSION_UNAVAILABLE',
+        'Version is not available for rollback.',
+        409,
+        'Deploy a new version because this version artifact is no longer active.'
+      );
+    }
     await store.updateDeployment(deploymentResult.deployment.id, {
       status: 'failed',
       versionId: version.id,
       previousVersionId: currentRoute.activeVersionId,
       errorCode: 'ROUTE_ACTIVATION_CONFLICT',
       errorMessage: 'Route changed while rollback was activating.',
+      failureStage: 'rollback_activate_route',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'rollback_activate_route',
+        executionProvider: version.executionProvider || 'wfp',
+        deploymentShape: version.deploymentShape,
+        plannedVersionId: version.id,
+        plannedWorkerName: version.workerName,
+        routeActivatedInD1: false,
+        routePointerCommitted: false,
+        cause: { code: 'ROUTE_ACTIVATION_CONFLICT', class: 'route_activation_conflict' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(
@@ -1663,6 +1832,18 @@ async function rollbackVersion(request, env, config, store, actor, versionId) {
       previousVersionId: currentRoute.activeVersionId,
       errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
       errorMessage: 'Route snapshot write failed.',
+      failureStage: 'rollback_write_route_snapshot',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'rollback_write_route_snapshot',
+        executionProvider: version.executionProvider || 'wfp',
+        deploymentShape: version.deploymentShape,
+        plannedVersionId: version.id,
+        plannedWorkerName: version.workerName,
+        routeActivatedInD1: true,
+        routePointerCommitted: false,
+        previousRouteRestored: Boolean(restoredRoute),
+        cause: { code: 'ROUTE_SNAPSHOT_WRITE_FAILED', class: 'route_snapshot_store_error' },
+      }),
       completedAt: readNow(env),
     });
     return jsonError(
@@ -1874,12 +2055,7 @@ async function createSiteFromOwnerScopedAccessKeyDeploy(store, actor, config, en
     );
   }
   if (!ownerId || !ownerUserId) {
-    return jsonError(
-      'DEPLOY_FORBIDDEN',
-      'Actor cannot deploy this site.',
-      403,
-      'Use an active owner-scoped access key.'
-    );
+    return jsonError('DEPLOY_FORBIDDEN', 'Actor cannot deploy this site.', 403, 'Use an active owner-scoped access key.');
   }
   if (ownerType === 'team' && visibility === 'owner') return teamOwnerVisibilityUnsupported();
 
@@ -1970,6 +2146,15 @@ async function resolveTeamDeployOwner(store, userId, teamId, environment) {
 }
 
 async function validateRollbackVersion(store, version, environment) {
+  if (version.artifactAvailability !== 'active') {
+    return jsonError(
+      'ROLLBACK_VERSION_UNAVAILABLE',
+      'Version is not available for rollback.',
+      409,
+      'Deploy a new version because this version artifact is no longer active.'
+    );
+  }
+
   const deployment = await store.getDeployment(version.deploymentId, environment);
   if (!deployment || deployment.status !== 'succeeded') {
     return jsonError(
@@ -2006,7 +2191,7 @@ async function deploymentEnvelope(store, deployment, preloaded = {}, environment
 }
 
 function formatDeployment(deployment) {
-  return {
+  const formatted = {
     id: deployment.id,
     siteId: deployment.siteId,
     versionId: deployment.versionId,
@@ -2021,6 +2206,8 @@ function formatDeployment(deployment) {
     createdAt: deployment.createdAt,
     completedAt: deployment.completedAt,
   };
+  if (deployment.failureStage) formatted.failureStage = deployment.failureStage;
+  return formatted;
 }
 
 function formatVersion(version) {
@@ -2165,6 +2352,46 @@ async function cleanupPreviousNormalWorkerSlot(provider, previousRoute, activeRo
   }
 }
 
+async function enqueuePreviousWfpWorkerCleanup(store, env, config, previousRoute, activeRoute, deployment) {
+  if (typeof store.createDeploymentResourceCleanupTask !== 'function') return;
+  if (!previousRoute || previousRoute.routeStatus !== 'active') return;
+  if (previousRoute.executionProvider !== 'wfp' && previousRoute.dispatchType !== 'dispatch-namespace') return;
+  if (!previousRoute.workerName || !previousRoute.activeVersionId) return;
+  if (previousRoute.workerName === activeRoute?.workerName || previousRoute.activeVersionId === activeRoute?.activeVersionId)
+    return;
+  if (!isManagedWfpWorkerName(previousRoute.workerName, config.environment)) return;
+
+  try {
+    await store.createDeploymentResourceCleanupTask({
+      id: nextId(env, 'cln'),
+      environment: config.environment,
+      resourceType: 'wfp_user_worker',
+      resourceRef: previousRoute.workerName,
+      siteId: previousRoute.siteId,
+      versionId: previousRoute.activeVersionId,
+      deploymentId: deployment.id,
+      cleanupReason: 'blue_green_previous_worker',
+      status: 'pending',
+      cleanupAfter: cleanupAfterDrainWindow(env),
+    });
+  } catch {
+    // Cleanup is post-commit maintenance. A successful route cutover must stay successful if task enqueueing fails.
+  }
+}
+
+function cleanupAfterDrainWindow(env) {
+  const now = Date.parse(readNow(env));
+  const configured = Number(env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300);
+  const seconds = Number.isFinite(configured) && configured >= 0 ? Math.min(configured, 24 * 60 * 60) : 300;
+  return new Date(now + seconds * 1000).toISOString();
+}
+
+function isManagedWfpWorkerName(workerName, environment) {
+  if (typeof workerName !== 'string') return false;
+  if (environment === 'staging') return workerName.startsWith('pages-v2-staging-');
+  return workerName.startsWith('pages-v2-') && !workerName.startsWith('pages-v2-staging-');
+}
+
 async function reconcileCommittedDeployment(store, deployment, environment, env) {
   if (!deployment || deployment.status === 'succeeded' || deployment.status === 'failed') return deployment;
   if (!deployment.siteId || !deployment.versionId) return deployment;
@@ -2197,7 +2424,50 @@ function synthesizeSucceededDeployment(deployment, patch) {
     status: 'succeeded',
     errorCode: null,
     errorMessage: null,
+    failureStage: null,
+    failureDiagnostics: null,
   };
+}
+
+function buildDeploymentFailureDiagnostics({
+  stage,
+  executionProvider,
+  deploymentShape,
+  plannedVersionId,
+  plannedWorkerName,
+  uploadCompleted = false,
+  verifyCompleted = false,
+  routeActivatedInD1,
+  routePointerCommitted = false,
+  previousRouteRestored,
+  uploadedWorkerCleanup,
+  trafficImpact = 'old_version_retained',
+  retryable = true,
+  operatorAction = 'retry_deploy',
+  cause,
+}) {
+  return omitUndefined({
+    schemaVersion: 1,
+    stage,
+    executionProvider,
+    deploymentShape,
+    plannedVersionId,
+    plannedWorkerName,
+    uploadCompleted,
+    verifyCompleted,
+    routeActivatedInD1,
+    routePointerCommitted,
+    previousRouteRestored,
+    uploadedWorkerCleanup,
+    trafficImpact,
+    retryable,
+    operatorAction,
+    cause,
+  });
+}
+
+function omitUndefined(input) {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 async function markDeploymentStateWriteFailed(store, deploymentId, { env, versionId = null } = {}) {
@@ -2207,6 +2477,14 @@ async function markDeploymentStateWriteFailed(store, deploymentId, { env, versio
       versionId,
       errorCode: 'DEPLOYMENT_STATE_WRITE_FAILED',
       errorMessage: 'Deployment state could not be persisted.',
+      failureStage: 'persist_deployment_state',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'persist_deployment_state',
+        executionProvider: 'unknown',
+        plannedVersionId: versionId,
+        routePointerCommitted: false,
+        cause: { code: 'DEPLOYMENT_STATE_WRITE_FAILED', class: 'deployment_store_error' },
+      }),
       completedAt: readNow(env || {}),
     });
   } catch {
@@ -2220,6 +2498,12 @@ async function markDeploymentFailed(store, deploymentId, env, { errorCode, error
       status: 'failed',
       errorCode,
       errorMessage,
+      failureStage: 'deployment_operation',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'deployment_operation',
+        executionProvider: 'unknown',
+        cause: { code: errorCode, class: 'deployment_operation_error' },
+      }),
       completedAt: readNow(env || {}),
     });
   } catch {
@@ -2238,6 +2522,12 @@ async function markRuntimeConfigDeploymentFailed(
       status: 'failed',
       errorCode,
       errorMessage,
+      failureStage: 'runtime_config',
+      failureDiagnostics: buildDeploymentFailureDiagnostics({
+        stage: 'runtime_config',
+        executionProvider: 'unknown',
+        cause: { code: errorCode, class: 'runtime_config_error' },
+      }),
       completedAt: readNow(env || {}),
     });
   } catch {
