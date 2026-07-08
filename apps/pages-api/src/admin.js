@@ -22,6 +22,8 @@ const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
 const NORMAL_WORKER_BULK_DELETE_LIMIT = 100;
 const NORMAL_WORKER_BULK_DELETE_CONCURRENCY = 5;
 const CLEANUP_TASK_LOCK_SECONDS = 5 * 60;
+const CLEANUP_TASK_FAILED_CODE = 'CLEANUP_TASK_FAILED';
+const CLEANUP_TASK_FAILED_MESSAGE = 'Cleanup task failed unexpectedly.';
 
 export async function handleConsoleAdminApi(request, env, config, store) {
   if (!isConsoleBffRequest(request)) return null;
@@ -301,8 +303,13 @@ export async function runDueDeploymentCleanups(env, config, store, { limit = 10 
   const runnableTasks = await listRunnableDeploymentCleanupTasks(store, config.environment, normalizedLimit);
   const summary = { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
   for (const task of runnableTasks.filter((item) => cleanupTaskCanRun(item, env)).slice(0, normalizedLimit)) {
-    const latest = await store.getDeploymentResourceCleanupTask(task.id, config.environment);
-    const result = await executeDeploymentCleanupTask(env, config, store, latest);
+    let result;
+    try {
+      const latest = await store.getDeploymentResourceCleanupTask(task.id, config.environment);
+      result = await executeDeploymentCleanupTask(env, config, store, latest);
+    } catch {
+      result = unexpectedCleanupTaskError();
+    }
     summary.processed += 1;
     if (result.ok) summary.succeeded += 1;
     else if (result.httpStatus >= 500) summary.failed += 1;
@@ -367,70 +374,92 @@ async function executeDeploymentCleanupTask(env, config, store, task) {
     return cleanupTaskError('CLEANUP_TASK_NOT_RUNNABLE', 'Cleanup task cannot run yet.', 409, 'Refresh and retry.');
   }
 
-  const versionMarkedRetiring = await markCleanupVersionAvailability(store, config, task, 'retiring');
-  const activeRouteAfterLock = await findCleanupActiveRoute(store, config, task);
-  if (activeRouteAfterLock) {
-    if (versionMarkedRetiring) await markCleanupVersionAvailability(store, config, task, 'active');
-    await store.finishDeploymentResourceCleanupTask({
-      id: task.id,
-      environment: config.environment,
-      status: 'failed',
-      errorCode: 'CLEANUP_RESOURCE_ACTIVE',
-      errorMessage: 'Cleanup resource became active before deletion.',
-      updatedAt: readNow(env),
-    });
-    return cleanupTaskError(
-      'CLEANUP_RESOURCE_ACTIVE',
-      'Cleanup resource is still referenced by an active route.',
-      409,
-      'Wait for route caches to drain or redeploy before deleting this Worker.'
-    );
-  }
-
+  let versionMarkedRetiring = null;
+  let workerDeleted = false;
   try {
-    await createWfpCleanupAdminClient(env, config).deleteWorker({ workerName: task.resourceRef });
-  } catch {
-    if (versionMarkedRetiring) await markCleanupVersionAvailability(store, config, task, 'active');
-    await store.finishDeploymentResourceCleanupTask({
-      id: task.id,
-      environment: config.environment,
-      status: 'failed',
-      errorCode: 'CLEANUP_DELETE_FAILED',
-      errorMessage: 'Worker could not be deleted from Cloudflare.',
-      updatedAt: readNow(env),
-    });
-    return cleanupTaskError(
-      'CLEANUP_DELETE_FAILED',
-      'Worker could not be deleted from Cloudflare.',
-      502,
-      'Check Cloudflare credentials and retry the cleanup task.'
-    );
-  }
+    versionMarkedRetiring = await markCleanupVersionAvailability(store, config, task, 'retiring');
+    const activeRouteAfterLock = await findCleanupActiveRoute(store, config, task);
+    if (activeRouteAfterLock) {
+      if (versionMarkedRetiring) await markCleanupVersionAvailability(store, config, task, 'active');
+      await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'failed',
+        errorCode: 'CLEANUP_RESOURCE_ACTIVE',
+        errorMessage: 'Cleanup resource became active before deletion.',
+        updatedAt: readNow(env),
+      });
+      return cleanupTaskError(
+        'CLEANUP_RESOURCE_ACTIVE',
+        'Cleanup resource is still referenced by an active route.',
+        409,
+        'Wait for route caches to drain or redeploy before deleting this Worker.'
+      );
+    }
 
-  try {
-    await markCleanupVersionAvailability(store, config, task, 'retired');
-    const succeeded = await store.finishDeploymentResourceCleanupTask({
-      id: task.id,
-      environment: config.environment,
-      status: 'succeeded',
-      updatedAt: readNow(env),
-    });
-    return { ok: true, task: succeeded };
+    try {
+      await createWfpCleanupAdminClient(env, config).deleteWorker({ workerName: task.resourceRef });
+      workerDeleted = true;
+    } catch {
+      if (versionMarkedRetiring) await markCleanupVersionAvailability(store, config, task, 'active');
+      await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'failed',
+        errorCode: 'CLEANUP_DELETE_FAILED',
+        errorMessage: 'Worker could not be deleted from Cloudflare.',
+        updatedAt: readNow(env),
+      });
+      return cleanupTaskError(
+        'CLEANUP_DELETE_FAILED',
+        'Worker could not be deleted from Cloudflare.',
+        502,
+        'Check Cloudflare credentials and retry the cleanup task.'
+      );
+    }
+
+    try {
+      await markCleanupVersionAvailability(store, config, task, 'retired');
+      const succeeded = await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'succeeded',
+        updatedAt: readNow(env),
+      });
+      return { ok: true, task: succeeded };
+    } catch {
+      await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'failed',
+        errorCode: 'CLEANUP_STATE_UPDATE_FAILED',
+        errorMessage: 'Cleanup state could not be persisted after Worker deletion.',
+        updatedAt: readNow(env),
+      });
+      return cleanupTaskError(
+        'CLEANUP_STATE_UPDATE_FAILED',
+        'Cleanup state could not be persisted after Worker deletion.',
+        502,
+        'Review the cleanup task and retry after checking D1 state.'
+      );
+    }
   } catch {
-    await store.finishDeploymentResourceCleanupTask({
-      id: task.id,
-      environment: config.environment,
-      status: 'failed',
-      errorCode: 'CLEANUP_STATE_UPDATE_FAILED',
-      errorMessage: 'Cleanup state could not be persisted after Worker deletion.',
-      updatedAt: readNow(env),
-    });
-    return cleanupTaskError(
-      'CLEANUP_STATE_UPDATE_FAILED',
-      'Cleanup state could not be persisted after Worker deletion.',
-      502,
-      'Review the cleanup task and retry after checking D1 state.'
-    );
+    if (versionMarkedRetiring && !workerDeleted) {
+      try {
+        await markCleanupVersionAvailability(store, config, task, 'active');
+      } catch {}
+    }
+    try {
+      await store.finishDeploymentResourceCleanupTask({
+        id: task.id,
+        environment: config.environment,
+        status: 'failed',
+        errorCode: CLEANUP_TASK_FAILED_CODE,
+        errorMessage: CLEANUP_TASK_FAILED_MESSAGE,
+        updatedAt: readNow(env),
+      });
+    } catch {}
+    return unexpectedCleanupTaskError();
   }
 }
 
@@ -454,6 +483,15 @@ async function markCleanupVersionAvailability(store, config, task, artifactAvail
 
 function cleanupTaskError(code, message, httpStatus, action) {
   return { ok: false, httpStatus, error: { code, message, action } };
+}
+
+function unexpectedCleanupTaskError() {
+  return cleanupTaskError(
+    CLEANUP_TASK_FAILED_CODE,
+    CLEANUP_TASK_FAILED_MESSAGE,
+    500,
+    'Review the cleanup task diagnostics and retry.'
+  );
 }
 
 function cleanupTaskCanRun(task, env) {

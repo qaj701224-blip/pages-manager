@@ -177,6 +177,96 @@ test('scheduled handler retries expired running WFP cleanup tasks', async () => 
   assert.equal(task.attemptCount, 2);
 });
 
+test('scheduled handler records locked cleanup exceptions and continues the batch', async () => {
+  const store = createTestPagesStore({
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  const deletedWorkers = [];
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    employeeStatus: 'active',
+  });
+  await store.createSite({
+    id: 'site_1',
+    slug: 'docs',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'docs.pages.xd.team',
+  });
+  await store.createSiteVersion({
+    id: 'ver_error',
+    siteId: 'site_1',
+    deploymentId: 'dep_old',
+    workerName: 'pages-v2-docs-ver-error',
+    runtime: 'worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    artifactRef: 'wfp://test/pages-v2-docs-ver-error',
+    contentHash: 'sha256:error',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_error',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-error',
+    siteId: 'site_1',
+    versionId: 'ver_error',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-06-14T23:59:00.000Z',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_next',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-docs-ver-next',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-06-14T23:59:01.000Z',
+  });
+
+  const originalFindActiveRoute = store.findActiveRouteByWorkerResource.bind(store);
+  let routeChecks = 0;
+  store.findActiveRouteByWorkerResource = async (input) => {
+    routeChecks += 1;
+    if (routeChecks === 2) throw new Error('route store unavailable');
+    return originalFindActiveRoute(input);
+  };
+
+  await worker.scheduled(
+    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      now: () => '2026-06-15T00:00:00.000Z',
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    }
+  );
+
+  const failedTask = await store.getDeploymentResourceCleanupTask('cln_error', 'production');
+  const nextTask = await store.getDeploymentResourceCleanupTask('cln_next', 'production');
+  assert.equal(failedTask.status, 'failed');
+  assert.equal(failedTask.lastErrorCode, 'CLEANUP_TASK_FAILED');
+  assert.equal(failedTask.lastErrorMessage, 'Cleanup task failed unexpectedly.');
+  assert.equal(failedTask.lockedUntil, null);
+  assert.equal((await store.getSiteVersion('ver_error')).artifactAvailability, 'active');
+  assert.equal(nextTask.status, 'succeeded');
+  assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-next']);
+});
+
 test('invalid environment fails closed', async () => {
   const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/health'), {
     PAGES_ENV: 'preview',
