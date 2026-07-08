@@ -16,7 +16,7 @@ import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 export { RoutePointerDO } from './route-snapshot.js';
 
 export default {
-  async scheduled(controller, env, ctx) {
+  async scheduled(controller, env) {
     let config;
     try {
       config = readApiConfig(env);
@@ -34,7 +34,6 @@ export default {
     const cleanup = runDueDeploymentCleanups(env, config, store, {
       limit: Number(env.DEPLOYMENT_CLEANUP_CRON_LIMIT || 10),
     });
-    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(cleanup);
     await cleanup;
     void controller;
   },
