@@ -2008,6 +2008,10 @@ button {
   border-top: 1px solid var(--xd-border);
 }
 
+.deployment-entry + .deployment-entry {
+  border-top: 1px solid var(--xd-border);
+}
+
 .deployment-row > span:not(.tag),
 .deployment-row strong {
   min-width: 0;
@@ -2015,6 +2019,34 @@ button {
   overflow-wrap: normal;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.deployment-diagnostics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 18px 12px;
+}
+
+.deployment-diagnostic-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--xd-border);
+  border-radius: 8px;
+  color: var(--xd-muted);
+  background: rgba(255, 250, 244, 0.72);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.deployment-diagnostic-item strong {
+  color: var(--xd-text-2);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .access-policy-body {

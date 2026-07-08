@@ -120,6 +120,101 @@ test('admin API ignores forged admin headers and uses platform admin grants', as
   assert.equal(granted.status, 200, await granted.clone().text());
 });
 
+test('admin site deployment list exposes redacted failure diagnostics for review', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createTeam({
+    id: 'team_console',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Console Team',
+    createdByUserId: 'usr_root',
+  });
+  await seedTeamSite(store, {
+    id: 'site_console',
+    slug: 'console',
+    teamId: 'team_console',
+  });
+  await store.createDeploymentForIdempotency({
+    id: 'dep_failed',
+    environment: 'production',
+    siteId: 'site_console',
+    actorId: 'usr_root',
+    actorUserId: 'usr_root',
+    actorType: 'user',
+    source: 'cli',
+    operation: 'deploy',
+    status: 'failed',
+    idempotencyKey: 'diagnostics-1',
+    requestHash: 'hash-diagnostics-1',
+    errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+    errorMessage: 'Route snapshot write failed.',
+    failureStage: 'write_route_snapshot',
+    failureDiagnostics: {
+      schemaVersion: 1,
+      stage: 'write_route_snapshot',
+      executionProvider: 'wfp',
+      routePointerCommitted: false,
+      previousRouteRestored: true,
+      trafficImpact: 'old_version_retained',
+      retryable: true,
+      operatorAction: 'retry_deploy',
+      cause: {
+        code: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+        class: 'route_snapshot_store_error',
+      },
+    },
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_console/deployments', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), {
+    deployments: [
+      {
+        id: 'dep_failed',
+        siteId: 'site_console',
+        siteSlug: 'console',
+        owner: {
+          type: 'team',
+          id: 'team_console',
+          email: null,
+          displayName: 'Console Team',
+          departmentPath: null,
+          teamType: 'custom',
+        },
+        status: 'failed',
+        source: 'cli',
+        operation: 'deploy',
+        errorCode: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+        errorMessage: 'Route snapshot write failed.',
+        failureStage: 'write_route_snapshot',
+        failureDiagnostics: {
+          schemaVersion: 1,
+          stage: 'write_route_snapshot',
+          executionProvider: 'wfp',
+          routePointerCommitted: false,
+          previousRouteRestored: true,
+          trafficImpact: 'old_version_retained',
+          retryable: true,
+          operatorAction: 'retry_deploy',
+          cause: {
+            code: 'ROUTE_SNAPSHOT_WRITE_FAILED',
+            class: 'route_snapshot_store_error',
+          },
+        },
+        createdAt: '2026-07-02T00:00:00.000Z',
+      },
+    ],
+  });
+});
+
 test('admin users can be searched by persisted profile fields', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -853,6 +948,326 @@ test('admin marks idle normal worker delete pending for Cloudflare conflict resp
   assert.equal((await store.getWorkerSlot('slot_production_001')).status, 'delete_pending');
 });
 
+test('admin can review and run WFP cleanup tasks after the drain window', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, {
+    id: 'site_console',
+    slug: 'console',
+    teamId: 'team_console',
+  });
+  await store.createSiteVersion({
+    id: 'ver_old',
+    siteId: 'site_console',
+    deploymentId: 'dep_old',
+    workerName: 'pages-v2-console-ver-old',
+    runtime: 'worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    artifactRef: 'wfp://test/pages-v2-console-ver-old',
+    contentHash: 'sha256:old',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_root',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_1',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-console-ver-old',
+    siteId: 'site_console',
+    versionId: 'ver_old',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
+  });
+
+  const list = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  const run = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_1/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    })
+  );
+
+  assert.equal(list.status, 200, await list.clone().text());
+  assert.deepEqual(
+    (await list.json()).tasks.map((task) => [task.id, task.status, task.canRun]),
+    [['cln_1', 'pending', true]]
+  );
+  assert.equal(run.status, 200, await run.clone().text());
+  assert.deepEqual(await run.json(), {
+    task: {
+      id: 'cln_1',
+      environment: 'production',
+      resourceType: 'wfp_user_worker',
+      resourceRef: 'pages-v2-console-ver-old',
+      siteId: 'site_console',
+      versionId: 'ver_old',
+      deploymentId: 'dep_new',
+      cleanupReason: 'blue_green_previous_worker',
+      status: 'succeeded',
+      cleanupAfter: '2026-07-01T23:59:00.000Z',
+      attemptCount: 1,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      lockedUntil: null,
+      canRun: false,
+      createdAt: '2026-07-02T00:00:00.000Z',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    },
+  });
+  assert.deepEqual(deletedWorkers, ['pages-v2-console-ver-old']);
+  assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'retired');
+});
+
+test('admin WFP cleanup deletes user worker through dispatch namespace API', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const requests = [];
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, {
+    id: 'site_console',
+    slug: 'console',
+    teamId: 'team_console',
+  });
+  await store.createSiteVersion({
+    id: 'ver_old',
+    siteId: 'site_console',
+    deploymentId: 'dep_old',
+    workerName: 'pages-v2-console-ver-old',
+    runtime: 'worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    artifactRef: 'wfp://test/pages-v2-console-ver-old',
+    contentHash: 'sha256:old',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_root',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_1',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-console-ver-old',
+    siteId: 'site_console',
+    versionId: 'ver_old',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_1/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      CF_ACCOUNT_ID: 'account_1',
+      CF_API_TOKEN: 'token_1',
+      WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
+      fetch: async (request) => {
+        requests.push({
+          url: request.url,
+          method: request.method,
+          authorization: request.headers.get('Authorization'),
+        });
+        return new Response(JSON.stringify({ success: true, result: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    })
+  );
+
+  const expectedUrl =
+    'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/' +
+    'xd-cell-workers-production/scripts/pages-v2-console-ver-old';
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(requests, [
+    {
+      url: expectedUrl,
+      method: 'DELETE',
+      authorization: 'Bearer token_1',
+    },
+  ]);
+});
+
+test('admin WFP cleanup refuses workers still referenced by active routes', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, {
+    id: 'site_console',
+    slug: 'console',
+    teamId: 'team_console',
+  });
+  await activateSite(store, 'site_console', { workerName: 'pages-v2-console-ver-active' });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_active',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-console-ver-active',
+    siteId: 'site_console',
+    versionId: 'ver_site_console',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_active/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_ACTIVE');
+  assert.deepEqual(deletedWorkers, []);
+  assert.equal((await store.getDeploymentResourceCleanupTask('cln_active', 'production')).status, 'pending');
+});
+
+test('admin WFP cleanup rechecks active route after taking the cleanup lock', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, {
+    id: 'site_console',
+    slug: 'console',
+    teamId: 'team_console',
+  });
+  await store.createSiteVersion({
+    id: 'ver_old',
+    siteId: 'site_console',
+    deploymentId: 'dep_old',
+    workerName: 'pages-v2-console-ver-old',
+    runtime: 'worker',
+    executionProvider: 'wfp',
+    dispatchType: 'dispatch-namespace',
+    artifactRef: 'wfp://test/pages-v2-console-ver-old',
+    contentHash: 'sha256:old',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_root',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_race',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-console-ver-old',
+    siteId: 'site_console',
+    versionId: 'ver_old',
+    deploymentId: 'dep_new',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
+  });
+  const originalMarkRunning = store.markDeploymentResourceCleanupRunning.bind(store);
+  store.markDeploymentResourceCleanupRunning = async (...args) => {
+    const task = await originalMarkRunning(...args);
+    await store.activateSiteVersion(
+      'site_console',
+      {
+        activeVersionId: 'ver_old',
+        workerName: 'pages-v2-console-ver-old',
+        runtime: 'worker',
+        executionProvider: 'wfp',
+        dispatchType: 'dispatch-namespace',
+        visibility: 'org',
+        updatedAt: '2026-07-02T00:00:01.000Z',
+      },
+      'production'
+    );
+    return task;
+  };
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_race/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    })
+  );
+
+  const task = await store.getDeploymentResourceCleanupTask('cln_race', 'production');
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_ACTIVE');
+  assert.deepEqual(deletedWorkers, []);
+  assert.equal(task.status, 'failed');
+  assert.equal(task.lastErrorCode, 'CLEANUP_RESOURCE_ACTIVE');
+  assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'active');
+});
+
+test('admin WFP cleanup refuses staging-prefixed workers in production', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  const deletedWorkers = [];
+  await seedPlatformAdmin(store);
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_staging_prefix',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-staging-console-ver-old',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:59:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/deployment-cleanups/cln_staging_prefix/run', {
+      userId: 'usr_root',
+      admin: true,
+      method: 'POST',
+    }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        deleteWorker: async ({ workerName }) => deletedWorkers.push(workerName),
+      },
+    })
+  );
+
+  assert.equal(response.status, 409, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'CLEANUP_RESOURCE_UNSUPPORTED');
+  assert.deepEqual(deletedWorkers, []);
+  assert.equal((await store.getDeploymentResourceCleanupTask('cln_staging_prefix', 'production')).status, 'pending');
+});
+
 test('admin sites include readable user and team owner metadata', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -1352,6 +1767,7 @@ function env(store, overrides = {}) {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
     IP_ALLOWLIST: '10.0.0.0/8',
+    now: () => '2026-07-02T00:00:00.000Z',
     ...overrides,
   };
 }

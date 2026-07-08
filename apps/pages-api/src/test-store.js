@@ -32,6 +32,7 @@ class TestPagesStore {
     this.siteVars = new Map();
     this.siteVarHistory = new Map();
     this.workerSlots = new Map();
+    this.deploymentResourceCleanupTasks = new Map();
     this.accessKeys = new Map();
     this.platformAdmins = new Map();
     this.webhookSubscriptions = new Map();
@@ -380,9 +381,7 @@ class TestPagesStore {
         })
         .map((user) => ({
           ...user,
-          isPlatformAdmin: Boolean(
-            this.platformAdmins.get(platformAdminKey(environment, user.id))?.revokedAt === null
-          ),
+          isPlatformAdmin: Boolean(this.platformAdmins.get(platformAdminKey(environment, user.id))?.revokedAt === null),
         }))
         .sort((left, right) => left.email.localeCompare(right.email))
         .slice(0, normalizedLimit)
@@ -909,15 +908,12 @@ class TestPagesStore {
   }
 
   countTeamSites(teamId) {
-    return [...this.sites.values()].filter(
-      (site) => site.ownerType === 'team' && site.ownerId === teamId && !site.deletedAt
-    ).length;
+    return [...this.sites.values()].filter((site) => site.ownerType === 'team' && site.ownerId === teamId && !site.deletedAt)
+      .length;
   }
 
   countTeamMembers(teamId) {
-    return [...this.teamMembers.values()].filter(
-      (member) => member.teamId === teamId && !member.removedAt
-    ).length;
+    return [...this.teamMembers.values()].filter((member) => member.teamId === teamId && !member.removedAt).length;
   }
 
   async updateTeamSettings({ teamId, name, description }) {
@@ -1751,6 +1747,7 @@ class TestPagesStore {
       dispatchBindingName = null,
       slotId = null,
       visibility,
+      requiredArtifactAvailability = null,
       updatedAt,
     },
     environment,
@@ -1761,6 +1758,10 @@ class TestPagesStore {
     if (!route) return null;
     if (environment && route.environment !== environment) return null;
     if (expectedRoute && !routeActivationMatches(route, expectedRoute)) return null;
+    if (requiredArtifactAvailability) {
+      const version = this.siteVersions.get(activeVersionId);
+      if (!version || version.siteId !== siteId || version.artifactAvailability !== requiredArtifactAvailability) return null;
+    }
     route.activeVersionId = activeVersionId;
     route.workerName = workerName;
     route.visibility = visibility;
@@ -2073,12 +2074,107 @@ class TestPagesStore {
       previousVersionId: input.previousVersionId || null,
       errorCode: input.errorCode || null,
       errorMessage: input.errorMessage || null,
+      failureStage: input.failureStage || null,
+      failureDiagnostics: input.failureDiagnostics || null,
       createdAt: this.now(),
       completedAt: input.completedAt || null,
     };
     this.deployments.set(record.id, record);
     this.deploymentIdempotencyIndex.set(key, record.id);
     return { kind: 'created', deployment: cloneRecord(record) };
+  }
+
+  async createDeploymentResourceCleanupTask(input) {
+    const now = input.createdAt || this.now();
+    const record = {
+      id: input.id,
+      environment: input.environment,
+      resourceType: input.resourceType,
+      resourceRef: input.resourceRef,
+      siteId: input.siteId || null,
+      versionId: input.versionId || null,
+      deploymentId: input.deploymentId || null,
+      cleanupReason: input.cleanupReason,
+      status: input.status || 'pending',
+      cleanupAfter: input.cleanupAfter || now,
+      attemptCount: Number(input.attemptCount || 0),
+      lastErrorCode: input.lastErrorCode || null,
+      lastErrorMessage: input.lastErrorMessage || null,
+      lockedUntil: input.lockedUntil || null,
+      createdAt: now,
+      updatedAt: input.updatedAt || now,
+    };
+    if (!record.id || !record.environment || !record.resourceType || !record.resourceRef || !record.cleanupReason) {
+      throw new Error('CLEANUP_TASK_INVALID');
+    }
+    if (this.deploymentResourceCleanupTasks.has(record.id)) throw new Error('CLEANUP_TASK_EXISTS');
+    this.deploymentResourceCleanupTasks.set(record.id, record);
+    return cloneRecord(record);
+  }
+
+  async listDeploymentResourceCleanupTasks({ environment, status, limit = 100 } = {}) {
+    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
+    return cloneRecord(
+      [...this.deploymentResourceCleanupTasks.values()]
+        .filter((task) => !environment || task.environment === environment)
+        .filter((task) => !status || task.status === status)
+        .sort(
+          (left, right) => left.cleanupAfter.localeCompare(right.cleanupAfter) || left.createdAt.localeCompare(right.createdAt)
+        )
+        .slice(0, normalizedLimit)
+    );
+  }
+
+  async getDeploymentResourceCleanupTask(id, environment) {
+    const task = this.deploymentResourceCleanupTasks.get(id) || null;
+    if (environment && task?.environment !== environment) return null;
+    return cloneRecord(task);
+  }
+
+  async markDeploymentResourceCleanupRunning({ id, environment, lockedUntil, updatedAt }) {
+    const task = this.deploymentResourceCleanupTasks.get(id);
+    const now = updatedAt || this.now();
+    const expiredRunning =
+      task?.status === 'running' && task.lockedUntil && Date.parse(task.lockedUntil) <= Date.parse(now);
+    if (!task || task.environment !== environment || (!['pending', 'failed'].includes(task.status) && !expiredRunning)) {
+      return null;
+    }
+    task.status = 'running';
+    task.attemptCount += 1;
+    task.lockedUntil = lockedUntil || null;
+    task.lastErrorCode = null;
+    task.lastErrorMessage = null;
+    task.updatedAt = now;
+    return cloneRecord(task);
+  }
+
+  async finishDeploymentResourceCleanupTask({ id, environment, status, errorCode = null, errorMessage = null, updatedAt }) {
+    const task = this.deploymentResourceCleanupTasks.get(id);
+    if (!task || task.environment !== environment) return null;
+    task.status = status;
+    task.lastErrorCode = errorCode;
+    task.lastErrorMessage = errorMessage;
+    task.lockedUntil = null;
+    task.updatedAt = updatedAt || this.now();
+    return cloneRecord(task);
+  }
+
+  async markSiteVersionArtifactAvailability({ id, environment, artifactAvailability }) {
+    const version = this.siteVersions.get(id);
+    const site = version ? this.sites.get(version.siteId) : null;
+    if (!version || (environment && site?.environment !== environment)) return null;
+    version.artifactAvailability = artifactAvailability;
+    return cloneRecord(version);
+  }
+
+  async findActiveRouteByWorkerResource({ environment, workerName, versionId }) {
+    for (const route of this.routes.values()) {
+      if (route.environment !== environment || route.routeStatus !== 'active') continue;
+      if ((workerName && route.workerName === workerName) || (versionId && route.activeVersionId === versionId)) {
+        return cloneRecord(route);
+      }
+    }
+    return null;
   }
 
   siteWithRoute(siteId) {

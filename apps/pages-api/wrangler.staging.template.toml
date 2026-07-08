@@ -4,6 +4,9 @@ compatibility_date = "2026-06-15"
 account_id = "__CLOUDFLARE_ACCOUNT_ID__"
 workers_dev = false
 
+[triggers]
+crons = ["*/15 * * * *"]
+
 [[routes]]
 pattern = "api-staging.pages.xd.team/*"
 zone_name = "xd.team"

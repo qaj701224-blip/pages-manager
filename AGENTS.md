@@ -2,6 +2,8 @@
 
 本文件是 Codex、Claude 和其它 coding agent 的共同项目说明。`AGENTS.md` 是唯一正文；`CLAUDE.md` 应作为指向本文件的软链，不维护第二份内容。
 
+通用 agent 行为准则见 [`.agents/agent-behavior-guidelines.md`](.agents/agent-behavior-guidelines.md)。执行本仓库任务时，先遵守本文件的项目规则；代码、文档和 review 工作同时遵守该文档里的先想清楚、保持简单、外科手术式改动和目标驱动验证原则。
+
 ## 项目概览
 
 `pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把静态站点、SPA 或自定义 Worker 发布到 `pages.xd.team` 域名下。
