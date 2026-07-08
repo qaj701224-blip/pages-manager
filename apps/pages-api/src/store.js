@@ -2263,7 +2263,15 @@ export class D1PagesStore {
           teams.id AS owner_team_id, teams.name AS owner_team_name, teams.team_type AS owner_team_type,
           teams.department_path AS owner_team_department_path
         FROM sites
-        LEFT JOIN site_routes ON site_routes.site_id = sites.id
+        JOIN site_routes ON site_routes.id = (
+          SELECT route.id
+          FROM site_routes AS route
+          WHERE route.site_id = sites.id
+            AND route.environment = sites.environment
+            AND route.route_status = 'active'
+          ORDER BY route.updated_at DESC, route.id DESC
+          LIMIT 1
+        )
         LEFT JOIN users AS owner_users
           ON COALESCE(sites.owner_type, 'user') = 'user'
           AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
@@ -2306,7 +2314,15 @@ export class D1PagesStore {
           JOIN users AS viewer_users
             ON viewer_users.user_id = ?
             AND viewer_users.employee_status = 'active'
-          LEFT JOIN site_routes ON site_routes.site_id = sites.id
+          JOIN site_routes ON site_routes.id = (
+            SELECT route.id
+            FROM site_routes AS route
+            WHERE route.site_id = sites.id
+              AND route.environment = sites.environment
+              AND route.route_status = 'active'
+            ORDER BY route.updated_at DESC, route.id DESC
+            LIMIT 1
+          )
           LEFT JOIN users AS owner_users
             ON COALESCE(sites.owner_type, 'user') = 'user'
             AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)

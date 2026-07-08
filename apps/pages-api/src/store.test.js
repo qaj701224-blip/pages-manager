@@ -201,9 +201,15 @@ test('D1 store console directory merges org and ACL sites for authenticated view
       ['site_org', 'org-demo', 'org', 'Owner Name'],
     ]
   );
+  const internalCall = db.calls.find((call) =>
+    call.sql.includes("COALESCE(site_routes.visibility, sites.default_visibility) = 'internal'")
+  );
+  assert.ok(internalCall);
+  assertConsoleDirectoryRouteJoin(internalCall.sql);
   const accessCall = db.calls.find((call) => call.sql.includes('JOIN users AS viewer_users'));
   assert.ok(accessCall);
   assert.deepEqual(accessCall.args, ['usr_viewer', 'production']);
+  assertConsoleDirectoryRouteJoin(accessCall.sql);
   assert.match(accessCall.sql, /site_acl_entries\.subject_type = 'email'/);
   assert.match(accessCall.sql, /trim\(site_acl_entries\.subject_value\) <> ''/);
   assert.match(accessCall.sql, /trim\(COALESCE\(viewer_users\.email, ''\)\) <> ''/);
@@ -3434,6 +3440,20 @@ function fakeConsoleDirectoryDb({ internalRows, accessibleRows }) {
       };
     },
   };
+}
+
+function assertConsoleDirectoryRouteJoin(sql) {
+  assert.match(sql, /JOIN site_routes ON site_routes\.id = \(/);
+  assert.match(sql, /SELECT route\.id/);
+  assert.match(sql, /FROM site_routes AS route/);
+  assert.match(sql, /route\.site_id = sites\.id/);
+  assert.match(sql, /route\.environment = sites\.environment/);
+  assert.match(sql, /route\.route_status = 'active'/);
+  assert.doesNotMatch(sql, /route\.route_status != 'deleted'/);
+  assert.match(sql, /ORDER BY route\.updated_at DESC, route\.id DESC/);
+  assert.match(sql, /LIMIT 1/);
+  assert.doesNotMatch(sql, /LEFT JOIN site_routes ON site_routes\.site_id = sites\.id/);
+  assert.doesNotMatch(sql, /LEFT JOIN site_routes/);
 }
 
 function siteRow({

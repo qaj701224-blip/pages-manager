@@ -9,9 +9,17 @@ const siteDetailSource = readFileSync(new URL('./pages/SiteDetail.jsx', import.m
 const sitesDirectorySource = readFileSync(new URL('./pages/SitesDirectory.jsx', import.meta.url), 'utf8');
 const teamsSource = readFileSync(new URL('./pages/Teams.jsx', import.meta.url), 'utf8');
 const topNavSource = readFileSync(new URL('./components/TopNav.jsx', import.meta.url), 'utf8');
+const media1100Source = stylesSource.slice(
+  stylesSource.indexOf('@media (max-width: 1100px)'),
+  stylesSource.indexOf('@media (max-width: 900px)')
+);
 const media900Source = stylesSource.slice(
   stylesSource.indexOf('@media (max-width: 900px)'),
   stylesSource.indexOf('@media (max-width: 700px)')
+);
+const media700Source = stylesSource.slice(
+  stylesSource.indexOf('@media (max-width: 700px)'),
+  stylesSource.indexOf('@media (max-width: 760px)')
 );
 const media760Source = stylesSource.slice(
   stylesSource.indexOf('@media (max-width: 760px)'),
@@ -102,6 +110,8 @@ test('sites directory uses masonry-style lazy loading', () => {
   assert.match(sitesDirectorySource, /className="site-waterfall-sentinel"/);
   assert.match(stylesSource, /\.site-grid\s*\{[\s\S]*?column-count:\s*3;/);
   assert.match(stylesSource, /\.site-card\s*\{[\s\S]*?break-inside:\s*avoid;/);
-  assert.match(media900Source, /\.site-grid\s*\{[\s\S]*?column-count:\s*2;/);
-  assert.match(media760Source, /\.site-grid\s*\{[\s\S]*?column-count:\s*1;/);
+  assert.match(media1100Source, /\.site-grid\s*\{[\s\S]*?column-count:\s*2;/);
+  assert.match(media700Source, /\.site-grid\s*\{[\s\S]*?column-count:\s*1;/);
+  assert.doesNotMatch(media900Source, /\.site-grid\s*\{/);
+  assert.doesNotMatch(media760Source, /\.site-grid\s*\{/);
 });
