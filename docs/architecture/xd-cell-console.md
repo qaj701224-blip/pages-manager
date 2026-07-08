@@ -106,11 +106,11 @@ Console 鉴权分两层：
 
 ### 与 CLI / Router 的鉴权差异
 
-| 入口 | 调用方 | 凭据 | 鉴权位置 | 适用场景 |
-| ---- | ------ | ---- | -------- | -------- |
-| CLI public API | `xd-cell` CLI、CI、agent | `Authorization: Bearer <cli_token 或 access_key>` | `pages-api.authenticateApiRequest()` 校验 CLI token 或 Access Key，再生成 actor | 发布、创建/管理 access key、读取部署状态 |
-| Console BFF API | 浏览器同源请求 `workers.xd.team/api/console/*` | host-only `xd_cell_session` cookie | `pages-console` 验 cookie 签名和浏览器安全边界，`pages-api` endpoint 回表做用户/session/角色/管理员权威校验 | 站点目录、工作台、团队、admin 后台 |
-| 子站 Router | 访问 `<site>.pages.xd.team` | `__Host-pages_site_session` cookie | `pages-router` 签发并校验 host-bound site session，再校验 freshness、policyVersion、sessionVersion 和 visibility/ACL | 高频子站访问 |
+| 入口            | 调用方                                         | 凭据                                              | 鉴权位置                                                                                                             | 适用场景                                 |
+| --------------- | ---------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| CLI public API  | `xd-cell` CLI、CI、agent                       | `Authorization: Bearer <cli_token 或 access_key>` | `pages-api.authenticateApiRequest()` 校验 CLI token 或 Access Key，再生成 actor                                      | 发布、创建/管理 access key、读取部署状态 |
+| Console BFF API | 浏览器同源请求 `workers.xd.team/api/console/*` | host-only `xd_cell_session` cookie                | `pages-console` 验 cookie 签名和浏览器安全边界，`pages-api` endpoint 回表做用户/session/角色/管理员权威校验          | 站点目录、工作台、团队、admin 后台       |
+| 子站 Router     | 访问 `<site>.pages.xd.team`                    | `__Host-pages_site_session` cookie                | `pages-router` 签发并校验 host-bound site session，再校验 freshness、policyVersion、sessionVersion 和 visibility/ACL | 高频子站访问                             |
 
 `pages-auth` 是 SSO、auth session、CLI token 和一次性 handoff code 服务。子站 Router 和 Console BFF 都把 pages-auth 的一次性 code 视为登录交接材料，然后在各自 host 边界内签发并验证自己的 host-bound session。各 Worker 复用既有 `PAGES_SESSION_JWT_*` key registry，不新增 Console 专属 secret。`pages-api` public lane 和 console internal lane 分离：CLI 不能伪造 `X-Console-*` 进入 internal console API，Console 浏览器也不持有 CLI Bearer token。
 
@@ -192,9 +192,9 @@ site-scoped 不再作为第三种 Token 类型，而是 PAT / TAT 创建时的�
 
 Token 权限第一版只暴露站点级能力，不暴露团队 admin 能力：
 
-| 权限      | 语义                                                                                     |
-| --------- | ---------------------------------------------------------------------------------------- |
-| `read`    | 查看 Token 作用范围内的站点、部署记录和必要 metadata                                      |
+| 权限      | 语义                                                                                   |
+| --------- | -------------------------------------------------------------------------------------- |
+| `read`    | 查看 Token 作用范围内的站点、部署记录和必要 metadata                                   |
 | `publish` | 站点管理能力：发布、创建可管理站点、修改站点访问控制和运行配置、删除站点、转移站点归属 |
 
 有效期创建时设置，默认 3 个月，最大 1 年。plaintext 只在创建成功时返回一次；列表、日志、审计和错误响应都不能展示 plaintext。
@@ -217,11 +217,11 @@ staging key 不能调用 production，production key 不能调用 staging。
 
 菜单：
 
-- 运营：`Dashboard · 平台概览`、`Ops 运维`。
+- 运营：`Dashboard · 平台概览`、`Ops 运维`、`Deployment Cleanups`。
 - 审核 / 管理：`用户`、`站点管理`、`团队管理`。
 - 审计：`Webhook`、`审计日志`。
 
-管理员后台只允许平台管理员访问。平台管理员可授予或撤销其他用户的平台管理员权限；权限变化会通过 session 校验立即影响 Console 管理权限。
+管理员后台只允许平台管理员访问。平台管理员可授予或撤销其他用户的平台管理员权限；权限变化会通过 session 校验立即影响 Console 管理权限。站点部署列表可以展示 `failureStage` 和脱敏 failure diagnostics，用于审核失败原因；`Deployment Cleanups` 只管理 WFP 旧 user Worker 的延迟 GC task，执行前必须确认 active route 不再引用目标 Worker 或 version。
 
 ## 出站 Webhook
 

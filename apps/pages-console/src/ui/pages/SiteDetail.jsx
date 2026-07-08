@@ -397,20 +397,64 @@ function DeploymentsPanel({ state, site }) {
         <span>完成时间</span>
       </div>
       {deployments.map((deployment) => (
-        <div className="table-row deployment-row" key={deployment.id}>
-          <div>
-            <strong title={deployment.id}>{deployment.id}</strong>
-            <span>{deployment.operation || '-'}</span>
+        <div className="deployment-entry" key={deployment.id}>
+          <div className="table-row deployment-row">
+            <div>
+              <strong title={deployment.id}>{deployment.id}</strong>
+              <span>{deployment.operation || '-'}</span>
+            </div>
+            <span>{deployment.source || 'unknown'}</span>
+            <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
+            <span className="tag muted">{deployment.status || 'unknown'}</span>
+            <span>{formatDate(deployment.createdAt)}</span>
+            <span>{formatDate(deployment.completedAt)}</span>
           </div>
-          <span>{deployment.source || 'unknown'}</span>
-          <span title={deploymentOwnerLabel(deployment, site)}>{deploymentOwnerLabel(deployment, site)}</span>
-          <span className="tag muted">{deployment.status || 'unknown'}</span>
-          <span>{formatDate(deployment.createdAt)}</span>
-          <span>{formatDate(deployment.completedAt)}</span>
+          <DeploymentDiagnostics deployment={deployment} />
         </div>
       ))}
     </section>
   );
+}
+
+function DeploymentDiagnostics({ deployment }) {
+  const summary = deploymentFailureSummary(deployment);
+  if (!summary.length) return null;
+
+  return (
+    <div className="deployment-diagnostics" aria-label="部署失败诊断">
+      {summary.map(([label, value]) => (
+        <span className="deployment-diagnostic-item" key={label}>
+          <strong>{label}</strong>
+          {value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function deploymentFailureSummary(deployment) {
+  const diagnostics = deployment.failureDiagnostics || {};
+  const cause = diagnostics.cause || {};
+  return [
+    ['阶段', deployment.failureStage || diagnostics.stage],
+    ['错误', deployment.errorCode || cause.code],
+    ['说明', deployment.errorMessage],
+    ['影响', deploymentTrafficImpactLabel(diagnostics.trafficImpact)],
+    ['建议', deploymentOperatorActionLabel(diagnostics.operatorAction)],
+    ['清理', diagnostics.uploadedWorkerCleanup],
+  ].filter(([, value]) => value);
+}
+
+function deploymentTrafficImpactLabel(value) {
+  if (value === 'old_version_retained') return '旧版本继续服务';
+  return value || '';
+}
+
+function deploymentOperatorActionLabel(value) {
+  if (value === 'retry_deploy') return '重新部署';
+  if (value === 'manual_cleanup') return '人工清理';
+  if (value === 'wait_drain') return '等待 drain';
+  return value || '';
 }
 
 function AccessPanel({ site, siteApi, state, fallbackVisibility, onResourceUpdate, onSitePatch }) {

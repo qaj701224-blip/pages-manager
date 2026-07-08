@@ -4,8 +4,10 @@ import test from 'node:test';
 
 const adminDashboardSource = readFileSync(new URL('./pages/AdminDashboard.jsx', import.meta.url), 'utf8');
 const adminSource = readFileSync(new URL('./pages/Admin.jsx', import.meta.url), 'utf8');
+const adminDeploymentCleanupsSource = readFileSync(new URL('./pages/AdminDeploymentCleanups.jsx', import.meta.url), 'utf8');
 const adminNormalWorkersSource = readFileSync(new URL('./pages/AdminNormalWorkers.jsx', import.meta.url), 'utf8');
 const adminSitesSource = readFileSync(new URL('./pages/AdminSites.jsx', import.meta.url), 'utf8');
+const siteDetailSource = readFileSync(new URL('./pages/SiteDetail.jsx', import.meta.url), 'utf8');
 const adminTeamsSource = readFileSync(new URL('./pages/AdminTeams.jsx', import.meta.url), 'utf8');
 const adminUsersSource = readFileSync(new URL('./pages/AdminUsers.jsx', import.meta.url), 'utf8');
 const apiSource = readFileSync(new URL('./api.js', import.meta.url), 'utf8');
@@ -70,6 +72,28 @@ test('admin normal worker management is exposed as a legacy operations surface',
   assert.match(adminNormalWorkersSource, /NORMAL_WORKER_DELETE_FAILED/);
 });
 
+test('admin deployment cleanup management is exposed as a WFP GC surface', () => {
+  assert.match(adminSource, /id: 'deployment-cleanups'/);
+  assert.match(adminSource, /Deployment Cleanups/);
+  assert.match(adminSource, /<AdminDeploymentCleanups/);
+  assert.match(apiSource, /listAdminDeploymentCleanups/);
+  assert.match(apiSource, /runAdminDeploymentCleanup/);
+  assert.match(adminDeploymentCleanupsSource, /listAdminDeploymentCleanups\(\{ status: filter === 'all' \? '' : filter \}\)/);
+  assert.match(adminDeploymentCleanupsSource, /runAdminDeploymentCleanup\(task\.id/);
+  assert.match(adminDeploymentCleanupsSource, /RUN \$\{task\.id\}/);
+  assert.match(adminDeploymentCleanupsSource, /cleanupAfter/);
+  assert.match(adminDeploymentCleanupsSource, /lastErrorCode/);
+  assert.match(adminDeploymentCleanupsSource, /task\.canRun/);
+});
+
+test('admin deployment failure review exposes diagnostics context', () => {
+  assert.match(adminDashboardSource, /deployment\.failureStage/);
+  assert.match(adminDashboardSource, /deployment\.errorCode/);
+  assert.match(siteDetailSource, /failureDiagnostics/);
+  assert.match(siteDetailSource, /DeploymentDiagnostics/);
+  assert.match(siteDetailSource, /deploymentFailureSummary/);
+});
+
 test('admin deep routes stay under the admin guard', () => {
   assert.match(appSource, /path="\/admin\/:page\/:resourceId"/);
   assert.match(appSource, /path="\/admin\/:page\/:resourceId\/:subpage"/);
@@ -79,6 +103,9 @@ test('admin deep routes stay under the admin guard', () => {
 
 test('admin detail tabs expose a clear active state', () => {
   assert.match(stylesSource, /\.detail-tabs a\s*\{[\s\S]*?border:\s*1px solid transparent;/);
-  assert.match(stylesSource, /\.detail-tabs a:hover,[\s\S]*?\.detail-tabs a.active\s*\{[\s\S]*?border-color:\s*rgba\(243, 112, 34, 0\.28\);/);
+  assert.match(
+    stylesSource,
+    /\.detail-tabs a:hover,[\s\S]*?\.detail-tabs a.active\s*\{[\s\S]*?border-color:\s*rgba\(243, 112, 34, 0\.28\);/
+  );
   assert.match(stylesSource, /\.detail-tabs a.active\s*\{[\s\S]*?box-shadow:\s*inset 0 -2px 0 var\(--xd-orange\);/);
 });

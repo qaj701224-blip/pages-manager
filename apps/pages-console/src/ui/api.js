@@ -54,6 +54,21 @@ export function listAdminNormalWorkers(options = {}) {
   return fetchJson('/api/console/admin/normal-workers', options);
 }
 
+export function listAdminDeploymentCleanups({ status, ...options } = {}) {
+  const search = new URLSearchParams();
+  if (status) search.set('status', status);
+  const query = search.toString();
+  return fetchJson(`/api/console/admin/deployment-cleanups${query ? `?${query}` : ''}`, options);
+}
+
+export function runAdminDeploymentCleanup(id, body = {}, options = {}) {
+  return fetchJson(`/api/console/admin/deployment-cleanups/${encodeURIComponent(id)}/run`, {
+    ...options,
+    method: 'POST',
+    body,
+  });
+}
+
 export function deleteAdminNormalWorker(id, body = {}, options = {}) {
   return fetchJson(`/api/console/admin/normal-workers/${encodeURIComponent(id)}`, {
     ...options,

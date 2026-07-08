@@ -65,22 +65,22 @@ jwks.kid
 
 router 遇到缓存、权威存储或 dispatch 异常时，必须按 cache tier 明确处理，不能由实现者临场决定：
 
-| 场景                         | `fast`                                               | `sensitive`                        | `strict`                 |
-| ---------------------------- | ---------------------------------------------------- | ---------------------------------- | ------------------------ |
-| L1 miss                      | 读 KV / D1                                           | 读 KV / D1                         | 读 D1/DO                 |
-| KV miss                      | 查 D1 并回填 snapshot                                | 查 D1 并回填 snapshot              | 查 D1/DO，不依赖 KV      |
-| snapshot 过期但结构合法      | `internal` 可短暂 max-stale；`org` 需重新检查 session | 强制刷新；刷新失败则拒绝或重新登录 | 不使用 stale             |
-| pointer generation 领先      | 刷新 snapshot；失败则按 D1/DO 可用性决策             | 强制刷新；失败则拒绝或重新登录     | 查 D1/DO                 |
-| tombstone / strictUntil 命中 | 不使用 stale，直接查 D1/DO 或拒绝                    | 不使用 stale，直接查 D1/DO 或拒绝  | 拒绝或查 D1/DO           |
-| snapshot malformed           | fail closed                                          | fail closed                        | fail closed              |
-| hostname 与 environment 不符 | fail closed                                          | fail closed                        | fail closed              |
+| 场景                         | `fast`                                                 | `sensitive`                        | `strict`                 |
+| ---------------------------- | ------------------------------------------------------ | ---------------------------------- | ------------------------ |
+| L1 miss                      | 读 KV / D1                                             | 读 KV / D1                         | 读 D1/DO                 |
+| KV miss                      | 查 D1 并回填 snapshot                                  | 查 D1 并回填 snapshot              | 查 D1/DO，不依赖 KV      |
+| snapshot 过期但结构合法      | `internal` 可短暂 max-stale；`org` 需重新检查 session  | 强制刷新；刷新失败则拒绝或重新登录 | 不使用 stale             |
+| pointer generation 领先      | 刷新 snapshot；失败则按 D1/DO 可用性决策               | 强制刷新；失败则拒绝或重新登录     | 查 D1/DO                 |
+| tombstone / strictUntil 命中 | 不使用 stale，直接查 D1/DO 或拒绝                      | 不使用 stale，直接查 D1/DO 或拒绝  | 拒绝或查 D1/DO           |
+| snapshot malformed           | fail closed                                            | fail closed                        | fail closed              |
+| hostname 与 environment 不符 | fail closed                                            | fail closed                        | fail closed              |
 | D1/DO 超时                   | `internal` 可返回短暂 503 或 max-stale；受保护站点拒绝 | 拒绝或 503，不扩大权限             | 拒绝或 503               |
-| dispatch 404 / worker 缺失   | 返回平台 502/503，写审计                             | 返回平台 502/503，写审计           | 返回平台 502/503，写审计 |
-| disabled / deleted           | 不 dispatch                                          | 不 dispatch                        | 不 dispatch              |
+| dispatch 404 / worker 缺失   | 返回平台 502/503，写审计                               | 返回平台 502/503，写审计           | 返回平台 502/503，写审计 |
+| disabled / deleted           | 不 dispatch                                            | 不 dispatch                        | 不 dispatch              |
 
 `max-stale` 只能用于不扩大访问权限的 `internal` 路径，并且必须同时满足 snapshot 未超过 `staleUntil`、没有 tombstone、没有 `strictUntil` 命中、有审计标记和告警指标。任何 malformed、串环境、保留 host/path mismatch 都必须 fail closed。
 
-### 发布与回滚状态机
+### 发布状态机
 
 v2 发布不能简单理解为“上传 Worker 后写 active version”。发布状态机必须先决定内部 execution mode，再通过对应 provider 完成上传和 verify，最后用同一套 active route / route snapshot 切换流程生效。
 
@@ -95,7 +95,7 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
 5. status=uploading。
 6. 调用 execution provider：
      wfp:
-       custom Worker 上传 user Worker 到目标环境 dispatch namespace。
+       每次发布都使用新 user Worker 名称，custom Worker 上传 user Worker 到目标环境 dispatch namespace。
        static / SPA 先走 Cloudflare Assets upload session 上传文件，再部署一个薄 assets Worker。
        artifact_ref 形如 wfp://{namespace}/{workerName}。
      normal-worker-slot:
@@ -119,15 +119,18 @@ v2 发布不能简单理解为“上传 Worker 后写 active version”。发布
      policy_version 按需更新
 13. 写 route snapshot / route pointer 指向新的 `routeGeneration` + `policyVersion`。
 14. status=succeeded，返回 url、deploymentId、versionId。公开响应不返回 `worker_name`、`execution_provider`、slot id、service binding 或 dispatch namespace；这些只存在于 D1 权威表、route snapshot 和平台审计中。
+15. 如果上一版是 WFP user Worker，写入 `deployment_resource_cleanup_tasks(status=pending)`，等待 route / KV / router L1 cache drain window 后由 Admin Console 或 Cron Trigger 删除旧 Worker。
 ```
 
 失败处理：
 
 - 1-8 失败：保留旧 active version，不创建新 active route。
 - 9 之后、route 激活前失败：保留旧 active version；已创建但未激活的 version 保留为非 active 历史记录或由 reconciliation 标记。
-- route 激活必须用上一版 route 的 `active_version_id`、`route_generation` 和 `policy_version` 做 CAS；如果并发 deploy / rollback / policy change 已更新 route，本次操作返回 `ROUTE_ACTIVATION_CONFLICT`，清理本次上传的执行面资源，保留并发成功的 route。
+- route 激活必须用上一版 route 的 `active_version_id`、`route_generation` 和 `policy_version` 做 CAS；如果并发 deploy / policy change 已更新 route，本次操作返回 `ROUTE_ACTIVATION_CONFLICT`，清理本次上传的执行面资源，保留并发成功的 route。
 - route 激活成功但 snapshot / pointer 写入失败：当前实现立即恢复 previous route，并把 deployment 标记为 `failed`，避免 router 看到 D1 与 KV 指针不一致的半激活状态。route pointer 写入 KV 是 router 可见的提交点；如果 KV pointer 已提交但 DO 自身 pointer state 写入失败，操作仍应视为提交成功，由 reconciliation 修复 DO state，不能回滚 D1。
 - `succeeded` 写入失败：deployment 可由 reconciliation job 修正为 `succeeded` 或 `failed_with_active_route`。
-- 已上传但未激活的 user Worker / assets 第一版可由 failed deployment、非 active version、WFP 命名规则或 slot `last_deployed_version_id` 推导为 orphan；后续 reconciliation 负责延迟 GC，不立即删除，避免误删正在回滚的版本。若需要更强可观测性，再补显式 orphan 标记表。
+- 已上传但未激活的 user Worker / assets：部署失败路径会 best-effort 删除；删除结果和阶段写入 deployment 诊断。删除失败时通过失败诊断和 cleanup task/admin 工具补救，不能反向切换 route。
+- 已成功切走的上一版 WFP user Worker：不在请求路径立即删除。先创建 cleanup task，`cleanup_after` 超过 drain window 且确认 active route 不再引用 `worker_name` / `version_id` 后再删除；GC 失败只更新 cleanup task，不把成功发布改成失败。
+- deployment 失败记录必须写 `failure_stage` 和脱敏 `failure_diagnostics_json`。普通部署查询最多暴露 `failureStage`；Admin Console 可查看完整诊断，用于判断 `retry_deploy`、等待 drain、检查 Cloudflare 凭证或人工处理 orphan。
 
-回滚不是修改历史 version 内容，而是复用同一套 active route 切换流程，并 bump `route_generation`。当前 MVP 回滚是 provider best-effort：如果目标 version 的 provider artifact 或旧执行目标仍可用，可以直接把 `active_version_id`、`worker_name`、`execution_provider` 和 dispatch target 切回目标 version；如果普通 Worker slot 已释放或 provider artifact 不可用，则返回 `ROLLBACK_VERSION_UNAVAILABLE`，且不能覆盖当前 active version。未来若采纳 DR 0003，可升级为从 R2 source artifact 重新 materialize 一个新的执行目标，再激活 route。所有 deploy / rollback 必须写审计。
+新发布流程不把 rollback 作为安全机制：用户可见切换点是 route snapshot pointer，Worker 上传和 D1 route 更新都不是 router 可见提交。历史 rollback API 仍需遵守同一套 active route / snapshot CAS 约束，但后续新设计应优先通过重新发布一个新 WFP Worker 修复问题。
