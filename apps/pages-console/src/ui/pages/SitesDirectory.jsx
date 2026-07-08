@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { fetchJson } from '../api.js';
 import { siteCardOwnerLabel, sitePublicUrl, siteVisibilityLabel } from '../site-display-model.js';
+
+const WATERFALL_BATCH_SIZE = 24;
 
 export function SitesDirectory() {
   const [state, setState] = useState({ status: 'loading', sites: [], error: null });
@@ -33,12 +35,39 @@ export function SitesDirectory() {
 export function SiteWaterfall({ state, cardAction = 'detail', activeOnly = false }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
-  if (state.status === 'loading') return <div className="placeholder">加载中</div>;
-  if (state.status === 'error') return <div className="placeholder">无法加载站点</div>;
-  if (!state.sites.length) return <div className="placeholder">暂无站点</div>;
+  const [renderedCount, setRenderedCount] = useState(WATERFALL_BATCH_SIZE);
+  const loadMoreRef = useRef(null);
   const selectedStatus = activeOnly ? 'active' : status;
   const baseSites = filterSites(state.sites, { query: '', status: selectedStatus });
   const visibleSites = filterSites(state.sites, { query, status: selectedStatus });
+  const renderedSites = visibleSites.slice(0, renderedCount);
+
+  useEffect(() => {
+    setRenderedCount(Math.min(WATERFALL_BATCH_SIZE, visibleSites.length));
+  }, [query, selectedStatus, state.sites, visibleSites.length]);
+
+  useEffect(() => {
+    const node = loadMoreRef.current;
+    if (!node || renderedCount >= visibleSites.length) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      setRenderedCount((current) => Math.min(current + WATERFALL_BATCH_SIZE, visibleSites.length));
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setRenderedCount((current) => Math.min(current + WATERFALL_BATCH_SIZE, visibleSites.length));
+      },
+      { rootMargin: '320px 0px' }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [renderedCount, visibleSites.length]);
+
+  if (state.status === 'loading') return <div className="placeholder">加载中</div>;
+  if (state.status === 'error') return <div className="placeholder">无法加载站点</div>;
+  if (!state.sites.length) return <div className="placeholder">暂无站点</div>;
 
   return (
     <>
@@ -63,11 +92,16 @@ export function SiteWaterfall({ state, cardAction = 'detail', activeOnly = false
         <span className="toolbar-count">{visibleSites.length} / {baseSites.length}</span>
       </div>
       {visibleSites.length ? (
-        <section className="site-grid" aria-label="站点列表">
-          {visibleSites.map((site) => (
-            <SiteCard cardAction={cardAction} key={site.id} site={site} />
-          ))}
-        </section>
+        <>
+          <section className="site-grid" aria-label="站点列表">
+            {renderedSites.map((site) => (
+              <SiteCard cardAction={cardAction} key={site.id} site={site} />
+            ))}
+          </section>
+          {renderedCount < visibleSites.length ? (
+            <div ref={loadMoreRef} className="site-waterfall-sentinel" aria-hidden="true" />
+          ) : null}
+        </>
       ) : (
         <div className="placeholder">没有匹配的站点</div>
       )}

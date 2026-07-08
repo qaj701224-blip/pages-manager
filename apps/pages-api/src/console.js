@@ -41,6 +41,7 @@ export async function handleConsoleApi(request, env, config, store) {
   if (url.pathname === `${CONSOLE_PREFIX}/directory`) {
     if (request.method !== 'GET') return methodNotAllowed();
     const session = await readOptionalConsoleUserSession(request, env, config, store, {
+      hydrateDepartment: true,
       includePlatformAdmin: consoleRequiresPlatformAdmin(request),
       requirePlatformAdmin: consoleRequiresPlatformAdmin(request),
     });
