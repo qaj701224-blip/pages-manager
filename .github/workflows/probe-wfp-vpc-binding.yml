@@ -1,0 +1,40 @@
+name: Probe WFP VPC Binding
+
+# 临时诊断 workflow — 仅手动触发,验证 WFP user worker 带 vpc_network binding 上传时 Cloudflare 的行为。
+# 只运行对照探测脚本(默认对 staging dispatch namespace),不部署任何 Worker、不改任何路由、不碰 production。
+# 定位完成后应删除本 workflow 和 scripts/probe-wfp-vpc-binding.mjs。
+
+on:
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: dispatch namespace (staging only)
+        required: false
+        default: xd-cell-workers-staging
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-wfp-vpc-binding
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+
+      - name: Probe vpc_network binding upload
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_USER_WORKER_VPC_TUNNEL_ID: ${{ vars.PAGES_USER_WORKER_VPC_TUNNEL_ID }}
+          PROBE_NAMESPACE: ${{ inputs.namespace }}
+        run: node scripts/probe-wfp-vpc-binding.mjs "$PROBE_NAMESPACE"
