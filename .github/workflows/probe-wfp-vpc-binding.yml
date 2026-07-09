@@ -1,17 +1,26 @@
 name: Probe WFP VPC Binding
 
 # 临时诊断 workflow — 仅手动触发,验证 WFP user worker 带 vpc_network binding 上传时 Cloudflare 的行为。
-# 只运行对照探测脚本(默认对 staging dispatch namespace),不部署任何 Worker、不改任何路由、不碰 production。
+# 只对选定环境的 dispatch namespace 上传 / 删除临时探测 worker(vpc-probe-*,无路由指向),不部署真实 Worker、不改任何路由。
+# 对 production 必须同时选 environment=production 且勾选 allow_production,双重确认防误触。
 # 定位完成后应删除本 workflow 和 scripts/probe-wfp-vpc-binding.mjs。
 
 on:
   workflow_dispatch:
     inputs:
-      namespace:
-        description: dispatch namespace (staging only)
+      environment:
+        description: 目标环境
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - production
+      allow_production:
+        description: 对 production 跑时必须勾选(environment=staging 时忽略)
         required: false
-        default: xd-cell-workers-staging
-        type: string
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -23,7 +32,7 @@ concurrency:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    environment: staging
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v6
 
@@ -36,5 +45,16 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PAGES_USER_WORKER_VPC_TUNNEL_ID: ${{ vars.PAGES_USER_WORKER_VPC_TUNNEL_ID }}
-          PROBE_NAMESPACE: ${{ inputs.namespace }}
-        run: node scripts/probe-wfp-vpc-binding.mjs "$PROBE_NAMESPACE"
+          TARGET_ENV: ${{ inputs.environment }}
+          ALLOW_PRODUCTION: ${{ inputs.allow_production }}
+        run: |
+          if [ "$TARGET_ENV" = "production" ]; then
+            NS="xd-cell-workers-production"
+          else
+            NS="xd-cell-workers-staging"
+          fi
+          EXTRA=""
+          if [ "$ALLOW_PRODUCTION" = "true" ]; then
+            EXTRA="--allow-production"
+          fi
+          node scripts/probe-wfp-vpc-binding.mjs "$NS" $EXTRA
