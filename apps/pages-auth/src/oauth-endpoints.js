@@ -669,8 +669,10 @@ async function readAuthSessionUserProfile(request, env, config, now) {
   let profile = {
     userId: user.userId || user.id || userId,
     email: user.email || '',
+    ...(user.realname || user.name ? { name: user.realname || user.name } : {}),
+    ...(user.accountId ? { accountId: user.accountId } : {}),
     employeeStatus: user.employeeStatus || 'unknown',
-    departments: mergeDepartments(user.departments, user.departmentPath),
+    departments: mergeDepartmentPaths([], user.departmentPath),
     sessionVersion: user.sessionVersion || 1,
   };
 
@@ -685,7 +687,7 @@ function mergeHydratedDepartmentPath(profile, hydration) {
   const departmentPath = hydration?.departmentPath || hydration?.user?.departmentPath;
   return {
     ...profile,
-    departments: mergeDepartments(profile?.departments, departmentPath),
+    departments: mergeDepartmentPaths(profile?.departments, departmentPath),
   };
 }
 
@@ -695,6 +697,11 @@ function mergeSyncedUserAuthority(profile, syncResult) {
     ...profile,
     userId: user.userId || user.id || profile.userId,
     email: user.email || profile.email,
+    ...(user.realname || user.name || profile.realname || profile.name
+      ? { name: user.realname || user.name || profile.realname || profile.name }
+      : {}),
+    ...(user.accountId || profile.accountId ? { accountId: user.accountId || profile.accountId } : {}),
+    departments: mergeDepartmentPaths(profile.departments, user.departmentPath),
     employeeStatus: user.employeeStatus || profile.employeeStatus,
     sessionVersion: user.sessionVersion || profile.sessionVersion,
   };
@@ -1048,7 +1055,7 @@ function normalizeSsoProfile(profile) {
     accountId: normalizeOptionalString(profile?.accountId ?? profile?.account_id) || null,
     employeenum: normalizeOptionalString(profile?.employeenum ?? profile?.employeeNum ?? profile?.employee_num) || null,
     employeeStatus: normalizeEmployeeStatus(profile?.employeeStatus ?? profile?.employee_status),
-    departments: normalizeDepartments(profile?.departments ?? profile?.departmentIds ?? profile?.department_ids),
+    departments: [],
     sessionVersion: normalizeSessionVersion(profile?.sessionVersion ?? profile?.session_version),
   };
 }
@@ -1058,7 +1065,7 @@ function normalizeDepartments(value) {
   return [...new Set(value.map((item) => normalizeOptionalString(item)).filter(Boolean))];
 }
 
-function mergeDepartments(value, departmentPath) {
+function mergeDepartmentPaths(value, departmentPath) {
   return normalizeDepartments([...(Array.isArray(value) ? value : []), departmentPath]);
 }
 
@@ -1066,6 +1073,8 @@ function siteCodeUserFromProfile(profile) {
   return {
     id: profile.userId,
     email: profile.email,
+    ...(profile.accountId ? { accountId: profile.accountId } : {}),
+    ...(profile.name ? { name: profile.name } : {}),
     employeeStatus: profile.employeeStatus,
     departments: profile.departments,
     sessionVersion: profile.sessionVersion,

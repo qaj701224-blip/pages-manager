@@ -28,11 +28,21 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
     const skill = await readFile(path.join(outDir, 'SKILL.md'), 'utf8');
     assert.match(skill, /^---\nname: xd-cell/m);
     assert.match(skill, new RegExp(`^version: ${await readPackageVersion()}$`, 'm'));
+    assert.match(skill, /^description: 当用户制作网站、内部工具、SPA 或自定义 Worker/m);
+    assert.doesNotMatch(skill, /^description: 围绕 .*内置.*外部 Worker SDK/m);
     assert.match(skill, /tools\/xd-cell-cli\/main\.js/);
     assert.match(skill, /始终使用本 skill 内置 CLI 和内置文档/);
     assert.match(skill, /每个会话首次使用本 skill 时，先读取 `references\/update\.md`/);
-    assert.match(skill, /@xd-cell\/skill/);
     assert.match(skill, /# XD Cell/);
+    assert.match(skill, /## 制作网站时可以获得什么/);
+    assert.match(skill, /不必等到用户明确提出部署/);
+    assert.match(skill, /发布静态站点、SPA 和自定义 Worker/);
+    assert.match(skill, /查看站点、部署和当前身份/);
+    assert.match(skill, /管理团队、访问范围和 Worker secret/);
+    assert.match(skill, /## 何时使用自定义 Worker/);
+    assert.match(skill, /## 自定义 Worker 可获得的平台能力/);
+    assert.match(skill, /只有 status 为 `501` 且响应中的 `error\.code` 为 `OFFICE_NET_UNAVAILABLE`/);
+    assert.doesNotMatch(skill, /## Worker SDK 触发条件/);
 
     await access(path.join(outDir, 'references', 'cli.md'));
     await access(path.join(outDir, 'references', 'sdk.md'));
@@ -72,7 +82,10 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
     });
 
     const breakingChanges = await readFile(path.join(outDir, 'BREAKING_CHANGES.md'), 'utf8');
-    assert.match(breakingChanges, /首次发布/);
+    assert.match(breakingChanges, /无破坏性变更/);
+    assert.match(breakingChanges, /类型级破坏性变更.*@xd-cell\/worker-sdk/);
+    assert.match(breakingChanges, /先发布并验证 `@xd-cell\/worker-sdk@0\.2\.0`/);
+    assert.match(breakingChanges, /再构建并发布 `@xd-cell\/skill@0\.1\.1`/);
     assert.match(breakingChanges, /@xd-cell\/skill/);
     assert.doesNotMatch(breakingChanges, /存在破坏性变更/);
 
@@ -87,11 +100,20 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
     assert.match(docs, /@xd-cell\/worker-sdk/);
     assert.match(docs, /pnpm add @xd-cell\/worker-sdk/);
     assert.match(docs, /Worker SDK 的 AI 文档随 `@xd-cell\/worker-sdk` 包发布/);
-    assert.match(docs, /何时使用 Worker SDK/);
+    assert.match(docs, /安装 Worker SDK 后可使用的能力/);
     assert.match(docs, /自定义 Worker/);
     assert.match(docs, /runtime\.kv/);
     assert.match(docs, /readContext/);
-    assert.match(docs, /何时不要使用 Worker SDK/);
+    assert.match(docs, /getCurrentUser/);
+    assert.match(docs, /runtime\.officeNet\.fetch/);
+    assert.match(docs, /办公网/);
+    assert.match(docs, /完整部门路径/);
+    assert.match(docs, /response\.ok/);
+    assert.match(docs, /501/);
+    assert.match(docs, /error\.code/);
+    assert.match(docs, /OFFICE_NET_UNAVAILABLE/);
+    assert.doesNotMatch(docs, /XD_OFFICE_NET/);
+    assert.match(docs, /何时不需要自定义 Worker 或 Worker SDK/);
     assert.match(docs, /只是发布静态站点/);
     assert.match(docs, /D1\/R2/);
     assert.match(docs, /业务项目运行时依赖/);
@@ -106,6 +128,8 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
     assert.doesNotMatch(docs, /旧包边界/);
     assert.match(docs, /不要绕过 Worker SDK 直连 gateway/);
     assert.match(docs, /不要把 `readContext` 的用户信息当作授权结论/);
+    assert.match(docs, /不要把 departments、employeeStatus 或 accountId 当作平台授权结论/);
+    assert.match(docs, /不要创建通用代理/);
     assert.match(docs, /底层资源能力通过平台注入/);
     assert.match(docs, /@xd-cell\/skill/);
     assert.match(docs, /manifest\.json/);

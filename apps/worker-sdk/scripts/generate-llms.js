@@ -50,6 +50,8 @@ function renderWorkerDoc({ packageJson, readme, breakingChanges }) {
     readSection(readme, '安装与导入'),
     readSection(readme, '核心用法'),
     readSection(readme, '资源模型'),
+    readSection(readme, '当前用户'),
+    readSection(readme, '办公网访问'),
     readSection(readme, 'KV API'),
     readSection(readme, '运行时边界'),
     readSection(readme, '非目标'),

@@ -650,8 +650,14 @@ Claims：
   "iss": "https://router.pages.xd.team",
   "aud": "worker:foo.workers.xd.team",
   "sub": "usr_xxx",
-  "email": null,
-  "profileDisclosure": "minimal",
+  "user": {
+    "id": "usr_xxx",
+    "email": "user@example.test",
+    "accountId": "acct_xxx",
+    "name": "Example User",
+    "departments": ["心动/技术平台部/前端组"],
+    "employeeStatus": "active"
+  },
   "site": "site_123",
   "route": "route_123",
   "version": "ver_42",
@@ -674,4 +680,4 @@ JWT 验证清单：
 
 `auth_session` 由 `pages-auth` 签发，`site_session` 和 `internal_worker_jwt` 由 `pages-router` 签发。三者可以共享 key registry 结构，但必须通过 `iss`、`aud`、`kid` 和环境绑定区分用途，不能让某类 token 被另一类 token 的校验逻辑接受。
 
-`internal_worker_jwt` 默认不包含真实邮箱、姓名、部门名等直接 PII。User Worker 默认只能拿到稳定但不暴露身份细节的 `sub` / scoped user id。只有站点显式启用 profile disclosure scope，且访问策略允许时，router 才能注入邮箱等 profile 字段，并必须在 route snapshot、审计和 SDK contract 中记录该披露级别。
+当前用户站点统一受平台 IP Check 保护。对于通过站点访问策略的已登录请求，`internal_worker_jwt.user` 默认包含稳定用户 ID、email、accountId、name、完整部门路径数组和 employeeStatus；匿名请求的 `user` 为 `null`。这些字段只作为业务上下文，不能替代 router 的 ACL、owner 或员工状态门禁，也不得写入日志。未来开放 public 站点前必须重新评估身份披露边界。

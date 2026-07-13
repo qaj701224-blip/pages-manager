@@ -144,9 +144,13 @@ function parsePublicState(value) {
 function normalizeSiteCodeUser(user) {
   if (!user || typeof user !== 'object') throw new Error('OAuth site code invalid: user is required');
   const id = normalizeRequiredString(user.id, 'user.id');
+  const accountId = normalizeOptionalString(user.accountId);
+  const name = normalizeOptionalString(user.name);
   return {
     id,
     email: normalizeOptionalString(user.email).toLowerCase(),
+    ...(accountId ? { accountId } : {}),
+    ...(name ? { name } : {}),
     employeeStatus: normalizeEmployeeStatus(user.employeeStatus),
     departments: Array.isArray(user.departments)
       ? user.departments.map((value) => normalizeOptionalString(value)).filter(Boolean)

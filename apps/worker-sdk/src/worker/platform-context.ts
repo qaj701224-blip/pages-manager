@@ -1,6 +1,6 @@
 import { ERROR_CODES } from '../protocol.js';
 import { SDKError } from '../errors.js';
-import type { RuntimeContext } from '../types.js';
+import type { EmployeeStatus, RuntimeContext, RuntimeUser } from '../types.js';
 import {
   PLATFORM_AUTH_HEADER,
   PLATFORM_SITE_ID_HEADER,
@@ -27,6 +27,10 @@ export function readContext(request: Request): RuntimeContext | null {
   return context;
 }
 
+export function getCurrentUser(request: Request): RuntimeUser | null {
+  return readContext(request)?.user ?? null;
+}
+
 function decodePlatformJwtPayload(token: string): Record<string, unknown> {
   const parts = token.split('.');
   if (parts.length !== 3 || parts.some((part) => part === '')) {
@@ -49,11 +53,13 @@ function platformContextFromPayload(payload: Record<string, unknown>): RuntimeCo
   const anonymous = readBooleanClaim(payload, 'anonymous');
   const subject = readSafeStringClaim(payload, 'sub');
   if (anonymous && subject !== 'anonymous') throw invalidPlatformContext('Anonymous platform subject is invalid');
+  const user = runtimeUserFromPayload(payload, anonymous, subject);
 
   return {
     authenticated: !anonymous,
     anonymous,
     userId: anonymous ? null : subject,
+    user,
     siteId: readSafeStringClaim(payload, 'siteId'),
     siteUuid: readSiteUuidClaim(payload, 'siteUuid'),
     siteSlug: readSiteSlugClaim(payload, 'slug'),
@@ -62,6 +68,36 @@ function platformContextFromPayload(payload: Record<string, unknown>): RuntimeCo
     policyVersion: readPositiveIntegerClaim(payload, 'policyVersion'),
     traceId: readSafeStringClaim(payload, 'traceId'),
     environment: readSafeStringClaim(payload, 'env'),
+  };
+}
+
+function runtimeUserFromPayload(payload: Record<string, unknown>, anonymous: boolean, subject: string): RuntimeUser | null {
+  const value = payload.user;
+  if (anonymous) {
+    if (value !== undefined && value !== null) throw invalidPlatformContext('Anonymous platform user is invalid');
+    return null;
+  }
+  if (value === undefined) {
+    return {
+      id: subject,
+      email: null,
+      accountId: null,
+      name: null,
+      departments: [],
+      employeeStatus: 'unknown',
+    };
+  }
+  if (!isRecord(value)) throw invalidPlatformContext('Platform user is invalid');
+
+  const id = readSafeStringClaim(value, 'id');
+  if (id !== subject) throw invalidPlatformContext('Platform user does not match token subject');
+  return {
+    id,
+    email: readOptionalTextClaim(value, 'email', 320),
+    accountId: readOptionalTextClaim(value, 'accountId', 256),
+    name: readOptionalTextClaim(value, 'name', 256),
+    departments: readStringArrayClaim(value, 'departments'),
+    employeeStatus: readEmployeeStatusClaim(value, 'employeeStatus'),
   };
 }
 
@@ -107,6 +143,32 @@ function readPositiveIntegerClaim(payload: Record<string, unknown>, name: string
     throw invalidPlatformContext(`Platform claim ${name} is invalid`);
   }
   return value as number;
+}
+
+function readOptionalTextClaim(payload: Record<string, unknown>, name: string, maxLength: number): string | null {
+  const value = payload[name];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  return value;
+}
+
+function readStringArrayClaim(payload: Record<string, unknown>, name: string): string[] {
+  const value = payload[name];
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (item): item is string =>
+        typeof item === 'string' && item.length > 0 && item.length <= 256 && !/[\u0000-\u001f\u007f]/.test(item)
+    )
+    .slice(0, 64);
+}
+
+function readEmployeeStatusClaim(payload: Record<string, unknown>, name: string): EmployeeStatus {
+  const value = payload[name];
+  if (value === undefined) return 'unknown';
+  if (value === 'active' || value === 'disabled' || value === 'left' || value === 'unknown') return value;
+  return 'unknown';
 }
 
 function decodeBase64Url(value: string): string {

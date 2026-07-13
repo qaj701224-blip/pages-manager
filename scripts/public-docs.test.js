@@ -185,7 +185,7 @@ test('Worker SDK AI-readable docs are generated from package truth sources', () 
   assert.match(index, /apps\/worker-sdk\/docs\/llms\/worker-sdk\.md/);
   assert.match(index, /apps\/worker-sdk\/docs\/llms\/worker-sdk-api\.md/);
   assert.match(index, /apps\/worker-sdk\/BREAKING_CHANGES\.md/);
-  assert.match(breakingChanges, /无破坏性变更|存在破坏性变更/);
+  assert.match(breakingChanges, /无破坏性变更|存在(?:类型级)?破坏性变更/);
 });
 
 test('demo README scopes openapi.json references to v1 legacy only', () => {

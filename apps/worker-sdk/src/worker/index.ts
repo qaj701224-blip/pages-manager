@@ -1,7 +1,8 @@
 export { createRuntime } from './runtime.js';
-export { readContext } from './platform-context.js';
+export { getCurrentUser, readContext } from './platform-context.js';
 export { SDKError } from '../errors.js';
 export type {
+  EmployeeStatus,
   KVGetOptions,
   KVGetWithMetadataResult,
   KVListKey,
@@ -10,7 +11,9 @@ export type {
   KVNamespace,
   KVPutOptions,
   KVValueType,
+  OfficeNet,
   Runtime,
   RuntimeContext,
   RuntimeEnv,
+  RuntimeUser,
 } from '../types.js';

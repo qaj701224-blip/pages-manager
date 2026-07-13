@@ -251,6 +251,17 @@ async function runDeploy(parsed, context) {
   const { siteSlug } = deployConfig;
   const teamOption = Object.hasOwn(parsed.flags, 'team') ? parsed.flags.team : commandConfig?.team;
   const teamId = normalizeTeamId(teamOption);
+  const requestedVisibility = parsed.flags.visibility || commandConfig?.visibility;
+  if (requestedVisibility && !VALID_VISIBILITIES.has(requestedVisibility)) {
+    throw usageError('SITE_VISIBILITY_INVALID', '站点可见性无效。', '请使用 internal、org、acl、owner 或 disabled。');
+  }
+  if (teamId && requestedVisibility === 'owner') {
+    throw usageError(
+      'SITE_VISIBILITY_INVALID',
+      '团队站点不支持 owner 访问范围。',
+      '请使用 internal、org、acl 或 disabled。'
+    );
+  }
   outputProgress(parsed, context, '检查发布目录...');
   const decision = await detectPublishTarget(deployConfig.targetPath, {
     requestedFallback: deployConfig.requestedFallback,
@@ -299,11 +310,6 @@ async function runDeploy(parsed, context) {
   outputProgress(parsed, context, '准备凭证...');
   const credential = await resolveCredential(config.environment, context, parsed);
   const client = createClient(config, credential, context);
-
-  const requestedVisibility = parsed.flags.visibility || commandConfig?.visibility;
-  if (requestedVisibility && !VALID_VISIBILITIES.has(requestedVisibility)) {
-    throw usageError('SITE_VISIBILITY_INVALID', '站点可见性无效。', '请使用 internal、org、acl、owner 或 disabled。');
-  }
 
   let siteCreated = false;
   const actorInfo = await readCredentialActor(client, credential);

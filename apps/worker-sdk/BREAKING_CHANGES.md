@@ -2,11 +2,11 @@
 
 ## 状态
 
-首次发布前存在草案级破坏性变更；对已发布 npm 用户无破坏性变更。
+本次新增当前用户和办公网访问 API，存在类型级破坏性变更。
 
 ## 适用版本
 
-- `@xd-cell/worker-sdk`：0.1.1
+- `@xd-cell/worker-sdk`：0.2.0
 
 ## 影响对象
 
@@ -16,22 +16,26 @@
 
 ## 旧用法
 
-旧草案使用 `@xd-pages/worker-sdk` 包名，并以品牌化函数和 scope-specific KV 入口作为主要心智。
+`0.1.x` 的 `Runtime` 只有 `kv`，`RuntimeContext` 没有 `user`。项目中的手写 mock 或对象字面量可能依赖这个类型结构。
 
 ## 新用法
 
 新用法安装 `@xd-cell/worker-sdk`，公开 API 去品牌化，并把默认 KV namespace 对齐 Cloudflare KV binding 心智：
 
 ```ts
-import { createRuntime, readContext } from '@xd-cell/worker-sdk';
+import { createRuntime, getCurrentUser, readContext } from '@xd-cell/worker-sdk';
 
 const runtime = createRuntime({ request, env });
 const context = readContext(request);
+const user = getCurrentUser(request);
 
 await runtime.kv.put('app/config', { enabled: true }, { type: 'json' });
 const config = await runtime.kv.get('app/config', { type: 'json' });
 const message = await runtime.kv.get('app/message');
+const internalResponse = await runtime.officeNet.fetch('https://internal.example.test/health');
 ```
+
+`Runtime.officeNet` 和 `RuntimeContext.user` 在 `0.2.0` 中是必填字段。升级后需要同步更新显式声明为 `Runtime` / `RuntimeContext` 的 mock、fixture 和对象字面量。
 
 ## Agent 处理动作
 
@@ -44,6 +48,10 @@ Agent 应把 `@xd-cell/worker-sdk` 视为用户项目的显式运行时依赖。
 - 当前目标导入路径为 `@xd-cell/worker-sdk`。
 - 推荐 runtime 入口为 `createRuntime`。
 - 推荐 context 入口为 `readContext`。
+- 推荐当前用户入口为 `getCurrentUser`；匿名请求返回 `null`。
+- `RuntimeUser` 提供稳定用户 ID、email、accountId、name、departments 和 employeeStatus；旧登录态缺少可选资料时使用 `null`、`[]` 或 `unknown`。
+- `departments` 只包含完整部门路径，不包含原始 department ID。
+- 推荐办公网入口为 `runtime.officeNet.fetch()`；能力缺失时返回 status `501` 和错误码 `OFFICE_NET_UNAVAILABLE`，调用方需要检查 `response.ok` 并同时匹配 status 与错误码。
 - 推荐 KV 入口为 `runtime.kv.get()`、`runtime.kv.put()` 和 `runtime.kv.delete()`。
 - `runtime.kv.get()` 和 `runtime.kv.put()` 默认使用 text，JSON 必须显式传入 `{ type: 'json' }`。
 - 旧草案中的品牌化函数、`data` 入口、scope-specific KV 入口和 `set()` alias 不进入首发公共面。

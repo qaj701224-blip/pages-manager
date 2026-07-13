@@ -554,6 +554,7 @@ test('dispatches an allowed production site with sanitized request headers', asy
   assert.equal(internalPayload.siteId, 'site_demo');
   assert.equal(internalPayload.versionId, 'ver_demo');
   assert.equal(internalPayload.anonymous, true);
+  assert.equal(internalPayload.user, null);
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-User'), 'anonymous');
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Id'), 'site_demo');
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-Site-Slug'), 'demo');
@@ -803,8 +804,10 @@ test('consumes auth callback site code and sets host-only site_session before re
         user: {
           id: 'usr_1',
           email: 'user@example.com',
+          accountId: 'acct_user_1',
+          name: 'Example User',
           employeeStatus: 'active',
-          departments: ['dept_design'],
+          departments: ['XD/Design'],
           sessionVersion: 5,
         },
       };
@@ -838,7 +841,9 @@ test('consumes auth callback site code and sets host-only site_session before re
   assert.equal(payload.sessionVersion, 5);
   assert.equal(payload.userCheckedAt, 1_700_000_000);
   assert.equal(payload.employeeStatus, 'active');
-  assert.deepEqual(payload.departments, ['dept_design']);
+  assert.equal(payload.accountId, 'acct_user_1');
+  assert.equal(payload.name, 'Example User');
+  assert.deepEqual(payload.departments, ['XD/Design']);
 });
 
 test('recovers an invalid browser site auth callback by restarting auth once', async () => {
@@ -1034,7 +1039,11 @@ test('dispatches org sites for active employees with a valid site_session', asyn
     siteId: 'site_demo',
     policyVersion: 2,
     userId: 'usr_1',
+    email: 'user@example.com',
+    accountId: 'acct_user_1',
+    name: 'Example User',
     employeeStatus: 'active',
+    departments: ['XD/Platform/Web'],
   });
   const response = await worker.fetch(
     new Request('https://demo.pages.xd.team/private', {
@@ -1049,6 +1058,53 @@ test('dispatches org sites for active employees with a valid site_session', asyn
   assert.equal(response.status, 200);
   assert.equal(env.dispatchedRequest.headers.get('CF-Platform-User'), 'usr_1');
   assert.equal(env.dispatchedRequest.headers.get('Cookie'), 'app=ok');
+  const internalPayload = await verifySessionJwt(env.dispatchedRequest.headers.get('CF-Platform-Auth'), env, {
+    purpose: 'internal_worker_jwt',
+    audience: 'pages-v2-demo-worker',
+    now: 1_700_000_000,
+  });
+  assert.deepEqual(internalPayload.user, {
+    id: 'usr_1',
+    email: 'user@example.com',
+    accountId: 'acct_user_1',
+    name: 'Example User',
+    departments: ['XD/Platform/Web'],
+    employeeStatus: 'active',
+  });
+});
+
+test('keeps existing site sessions without accountId valid', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'org', policyVersion: 2 }),
+    },
+  });
+  const session = await siteSession({
+    audience: 'demo.pages.xd.team',
+    siteId: 'site_demo',
+    policyVersion: 2,
+    userId: 'usr_1',
+    employeeStatus: 'active',
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/private', {
+      headers: {
+        'CF-Connecting-IP': '10.1.2.3',
+        Cookie: `__Host-pages_site_session=${session}`,
+      },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 200);
+  const internalPayload = await verifySessionJwt(env.dispatchedRequest.headers.get('CF-Platform-Auth'), env, {
+    purpose: 'internal_worker_jwt',
+    audience: 'pages-v2-demo-worker',
+    now: 1_700_000_000,
+  });
+  assert.equal(internalPayload.user.id, 'usr_1');
+  assert.equal(internalPayload.user.accountId, null);
+  assert.equal(internalPayload.user.name, null);
 });
 
 test('rejects org sites for inactive employees', async () => {
@@ -1653,6 +1709,8 @@ async function siteSession({
   sessionVersion = 1,
   employeeStatus = 'active',
   email = 'user@example.com',
+  accountId,
+  name,
   departments = [],
   userCheckedAt = 1_700_000_000,
 } = {}) {
@@ -1671,6 +1729,8 @@ async function siteSession({
         userCheckedAt,
         employeeStatus,
         email,
+        ...(accountId ? { accountId } : {}),
+        ...(name ? { name } : {}),
         departments,
       },
     },

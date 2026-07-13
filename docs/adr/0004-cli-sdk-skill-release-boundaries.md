@@ -134,7 +134,7 @@ Skill release 已通过 `manifest.json` 记录它绑定的 CLI 版本，以及�
   "schemaVersion": 1,
   "product": {
     "name": "XD Cell",
-    "siteDomainSuffix": "pages.xd.team"
+    "siteDomainSuffix": "workers.xd.team"
   },
   "skill": {
     "name": "xd-cell",
@@ -164,6 +164,8 @@ Skill release 已通过 `manifest.json` 记录它绑定的 CLI 版本，以及�
 ```
 
 `dependencies.workerSdk.packagePath` 和 `docsPath` / `apiDocsPath` / `breakingChangesPath` 用于 agent 在用户项目依赖中定位 Worker SDK 包内文档。业务 Worker 需要 import SDK 时，必须由用户项目自己的 `package.json` 显式依赖 `@xd-cell/worker-sdk` 并锁定版本；skill 不维护全局安装或 skill-managed cache。
+
+当 skill manifest 推荐新的 Worker SDK 版本时，必须先发布并验证该 Worker SDK 版本可以从目标 registry 安装，再构建和发布 skill。skill 不得推荐尚未发布的外部依赖版本。
 
 ## AI 破坏性变更信号
 
