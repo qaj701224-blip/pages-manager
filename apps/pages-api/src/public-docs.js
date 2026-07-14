@@ -34,6 +34,7 @@ xd-cell deploy <entry> <site> --team <teamId>
 xd-cell deploy --config xd-cell.config.json
 xd-cell status <site>
 xd-cell open <site>
+xd-cell sites delete <site> --yes --json
 xd-cell access get <site>
 xd-cell access set <site> --visibility acl --email user@xd.com
 xd-cell access grant <site> --department "心动/技术平台部"
@@ -133,6 +134,7 @@ xd-cell deploy ./dist demo --team <teamId>
 xd-cell deploy --config xd-cell.config.json
 xd-cell status demo
 xd-cell open demo
+xd-cell sites delete demo --yes --json
 xd-cell access get demo
 xd-cell access set demo --visibility acl --email user@xd.com
 xd-cell secrets put demo API_TOKEN

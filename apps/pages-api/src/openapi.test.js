@@ -223,6 +223,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.match(body, /--token <token>/);
   assert.match(body, /xd-cell secrets put <site> API_TOKEN/);
   assert.match(body, /xd-cell secrets delete <site> API_TOKEN/);
+  assert.match(body, /xd-cell sites delete <site> --yes --json/);
   assert.match(body, /assets\.not_found_handling/);
   assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);
@@ -237,6 +238,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.doesNotMatch(body, /--access-key|curl|X-Pages-Token|api\.workers\.xd\.team/);
   assert.doesNotMatch(body, /--fallback <|xd-cell rollback|xd-cell env|--env staging|secrets list/);
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
+  assert.doesNotMatch(body, /DELETE \/\.xd-pages\/api\/sites/);
   assert.doesNotMatch(body, /XD Pages/);
 });
 

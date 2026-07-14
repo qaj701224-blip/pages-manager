@@ -1973,7 +1973,7 @@ test('prints command-specific open help with API token guidance', async () => {
   assert.doesNotMatch(text, /--access-key|--env|environment/);
 });
 
-test('prints command-specific sites help with deletion confirmation', async () => {
+test('sites help documents interactive and non-interactive deletion', async () => {
   const output = [];
 
   assert.equal(await executeCommand(['help', 'sites'], { output: (line) => output.push(line) }), 0);
@@ -1981,6 +1981,7 @@ test('prints command-specific sites help with deletion confirmation', async () =
   const text = output.join('\n');
   assert.match(text, /xd-cell sites delete <站点名>/);
   assert.match(text, /--yes/);
+  assert.match(text, /默认要求交互确认/);
 });
 
 async function tempProject() {

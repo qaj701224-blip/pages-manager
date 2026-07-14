@@ -1591,16 +1591,19 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   if (topic === 'sites') {
     return `用法：xd-cell sites list [选项]
       xd-cell sites info <站点名> [选项]
-      xd-cell sites delete <站点名> [选项]
+      xd-cell sites delete <站点名> [--yes] [选项]
 
 查看站点列表、站点详情或删除站点。
 
 选项：
+  --yes                                     确认删除；JSON 和非交互环境必须显式传入。
   --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
-  --details                                 sites list 输出完整站点详情；默认只显示概要。
-  --yes                                     确认删除站点；JSON 和非交互环境必须使用。
+  --details                                 仅 sites list 输出完整站点详情；默认只显示概要。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
-  --help                                    显示帮助。`;
+  --help                                    显示帮助。
+
+说明：
+  sites delete 默认要求交互确认；取消不发送删除请求。`;
   }
   if (topic === 'teams') {
     return `用法：xd-cell teams [选项]

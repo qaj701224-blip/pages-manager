@@ -334,9 +334,12 @@ xd-cell status foo
 xd-cell open foo [--print]
 xd-cell sites list
 xd-cell sites info foo
+xd-cell sites delete foo --yes
 xd-cell secrets put foo API_TOKEN
 xd-cell secrets delete foo API_TOKEN
 ```
+
+站点删除默认要求交互确认；用户取消时 CLI 不发送删除请求。AI agent、CI 或使用 `--json` 时必须显式传入 `--yes`。CLI 先在当前身份可见的站点中解析 slug，再调用既有的按 ID 删除接口。服务端保持当前 soft delete 语义，同时移除 route snapshot，并保留 hostname reuse hold。当前不提供恢复、永久删除或批量删除。
 
 配置优先级从高到低：
 
