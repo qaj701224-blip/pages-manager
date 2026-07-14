@@ -137,6 +137,9 @@ HMAC canonical input 固定为 UTF-8 文本：
 
 ```text
 xd-cell-s2s-v1
+<environment>
+<client-id>
+<s2s-key-id>
 POST
 /.xd-pages/api/s2s/tokens
 <unix-seconds>
@@ -144,11 +147,11 @@ POST
 <lowercase-hex-sha256-of-raw-body>
 ```
 
-吊销 endpoint 使用自己的原始 pathname。请求不允许 query string。服务端先读取有大小上限的 raw body，计算 SHA-256，再以 `HMAC-SHA256` 校验 base64url signature；比较必须 constant-time。
+吊销 endpoint 使用自己的原始 pathname。请求不允许 query string。environment 取 `PAGES_ENV`，client id 和 S2S key id 取对应 headers；三者都进入签名，避免轮换误配置或跨环境复用签名。服务端先读取有大小上限的 raw body，计算 SHA-256，再以 `HMAC-SHA256` 校验 base64url signature；比较必须 constant-time。
 
 `S2S_CLIENT_KEYS` registry 把 `(client_id, key_id)` 映射到 Worker secret 环境变量名。每个 client 最多同时配置两把有效 key，支持先加新 key、切换 xdt-api、再移除旧 key的轮换窗口。staging 和 production 使用不同 registry、不同 secret 与不同 D1 数据。
 
-`s2s_nonces` 以 `(environment, client_id, nonce)` 为唯一键。签名通过后原子占用 nonce，并保存接收时间与 10 分钟过期时间；重复插入返回 `S2S_REPLAY_DETECTED`。scheduled handler 清理过期 nonce。timestamp 窗口与 nonce 唯一约束共同防止串环境和并发重放。
+`s2s_nonces` 以 `(environment, client_id, nonce)` 为唯一键。签名通过后先原子占用 nonce，并保存 endpoint、接收时间与 10 分钟过期时间；重复插入立即返回 `S2S_REPLAY_DETECTED`，不进入限频计数。首次出现的 nonce 再通过 `s2s_rate_limits` 的原子 upsert 增加当前 10 分钟 bucket 计数；条件更新失败才返回 `S2S_RATE_LIMITED`。因此并发请求不能绕过 client 门限，重放也不能消耗 client 配额。已占用 nonce 即使随后限频或业务处理失败也不会释放。scheduled handler 清理过期 nonce 和 rate bucket。timestamp 窗口与 nonce 唯一约束共同防止串环境和并发重放。
 
 ## 用户模型与身份关联
 
@@ -171,12 +174,15 @@ S2S 用户解析顺序：
 
 1. 规范化邮箱并分别查询邮箱和 `feishu_open_id`。
 2. 两者命中不同用户时 fail closed，返回 `S2S_IDENTITY_CONFLICT`。
-3. 邮箱命中且飞书字段为空时，把 `feishu_open_id` 绑定到该用户；已绑定相同值则复用。
-4. 邮箱命中的用户只有 `employee_status = active` 才能发 key；`disabled`、`left`、`unknown` 都不被 XDMaker 请求重新激活。
-5. 邮箱未命中时，信任 xdt-api 背书的信息，创建新的内部 `usr_*`，状态设为 `active`，`created_source = xdmaker`，不填部门、员工编号或心动 SSO 字段。
-6. 已有心动 SSO 用户保留平台权威姓名；XDMaker 只在新建用户或现有姓名为空时写入 `display_name`。
+3. `feishu_open_id` 已命中但请求邮箱与该用户邮箱不一致时 fail closed；S2S 不修改用户邮箱，也不创建第二个用户。
+4. 邮箱命中且飞书字段为空时，把 `feishu_open_id` 绑定到该用户；已绑定相同值则复用。
+5. 邮箱命中的用户只有 `employee_status = active` 才能发 key；`disabled`、`left`、`unknown` 都不被 XDMaker 请求重新激活。
+6. 邮箱和飞书标识都未命中时，信任 xdt-api 背书的信息，创建新的内部 `usr_*`，状态设为 `active`，`created_source = xdmaker`，不填部门、员工编号或心动 SSO 字段。
+7. 已有心动 SSO 用户保留平台权威姓名；XDMaker 只在新建用户或现有姓名为空时写入 `display_name`。
 
-后续心动 SSO 登录时，`upsertUserFromSso` 先按现有 `user_id` 查找，再按规范化邮箱关联。若邮箱已对应 XDMaker 创建的用户，则在该行补充 `account`、`account_id`、员工状态和组织信息，并返回原内部 `user_id` 供 session/JWT 使用。若心动 SSO 标识和邮箱分别指向不同用户，则拒绝登录同步并进入审计，不迁移站点或 key。
+后续心动 SSO 登录时，`upsertUserFromSso` 先按现有 `user_id` 查找，再按规范化邮箱关联。若邮箱已对应 XDMaker 创建的用户，则在该行补充 `account`、`account_id`、员工状态和组织信息，并返回原内部 `user_id` 供 session/JWT 使用。若心动 SSO `userId` 和邮箱分别指向不同用户，则拒绝登录同步并进入审计，不迁移站点或 key。
+
+跨 IdP 关联唯一依据就是用户已确认的规范化邮箱，不新增 `user_identities` 或额外 SSO subject 字段，也不复用 `account_id` 存放另一种标识。邮箱发生变更时，平台必须先由受控的管理员/组织目录流程更新同一用户记录，再允许新的 S2S 或心动 SSO 登录；两个登录入口都不得根据姓名、飞书标识以外的弱信息自动迁移资产。
 
 ## Access Key 模型与权限
 
@@ -191,7 +197,9 @@ issued_session_version INTEGER NULL
 - S2S key 固定 `issued_source = xdmaker_s2s`。
 - S2S key 固定 24 小时 TTL、`owner_type = user`、`owner_id = user_id`、`site_id = null`。
 - scopes 固定为 `deploy:site`、`read:site`、`rollback:site`。
-- `issued_session_version` 记录发放时的 `users.session_version`。仅该字段非空的 key 在认证时要求版本仍一致；SSO webhook 或管理员 bump version 后，旧 S2S key 立即失效。普通存量 key 的现有语义不变。
+- `issued_session_version` 记录发放时的 `users.session_version`。仅该字段非空的 key 在认证时要求版本仍一致。
+- `session_version` 的提升只表示明确的用户级安全失效事件，例如禁用/离职、强制登出、账号封禁或管理员主动撤销会话；同为 `active` 的日常登录、姓名、部门或其它资料同步不得自行 bump。
+- 发生上述安全事件后，旧 S2S key 立即返回 `ACCESS_KEY_SESSION_STALE`，action 指导 XDMaker 在用户仍有效时重新换取凭证。普通存量 key 的现有语义不变。
 
 现有 deploy API 已支持 `site_id = null` 的个人 owner-scoped access key 在首次部署事务中创建个人站点，也支持该用户以 publisher/admin 身份向团队发布。因此 S2S 不新增建站 endpoint，也不新增特殊权限分支。
 
@@ -203,9 +211,9 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 
 1. 现有 `IP_ALLOWLIST` 门禁。
 2. 限制 raw body 大小，校验 HMAC、timestamp、client/key registry。
-3. 检查 client 频率并原子占用 nonce。
+3. 原子占用 nonce；重复 nonce 直接拒绝且不计入限频，再原子增加 client rate bucket。
 4. 校验请求体，按邮箱/飞书标识解析或创建用户。
-5. 检查用户 10 分钟内的成功发放次数。
+5. 原子增加用户 issuance-attempt rate bucket；超过门限则拒绝，不生成 key。
 6. 在内存生成 access key 明文与 hash。
 7. 用一个 D1 batch 写入用户绑定或新用户、access key、可选旧 key 吊销和审计事件。
 8. batch 完全成功后返回一次明文；任一步失败都不返回 token。
@@ -219,10 +227,10 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 
 ## 限频、异常检测与审计
 
-首版固定门限，避免为单一集成增加动态配置系统：
+`s2s_rate_limits` 使用 `(environment, scope, subject, bucket_start)` 唯一键和带上限条件的原子 upsert，不使用先 count 再 insert 的可竞态实现。首版固定门限，避免为单一集成增加动态配置系统：
 
-- 每个用户最多 5 次成功发放 / 10 分钟。
-- 每个 S2S client 最多 300 个通过 HMAC 的请求 / 10 分钟，发放与吊销合并计数。
+- 每个用户最多 5 次通过身份校验的发放尝试 / 10 分钟；后续数据库失败仍占用本 bucket 配额。
+- 每个 S2S client 最多 300 个首次出现且通过 HMAC 的请求 / 10 分钟，发放与吊销合并计数。
 - 第 3 次用户发放开始记录高频异常；超过第 5 次拒绝。
 - Asia/Shanghai 00:00–06:00 的成功发放记录非常规时段异常，但不单独阻断。
 
@@ -264,7 +272,7 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 ### 鉴权与入口
 
 - 现有 IP allowlist 仍先于 S2S HMAC 生效。
-- canonical request、raw body hash、base64url HMAC 和 constant-time 比较有独立测试。
+- canonical request 对 environment/client/key id/method/path/body 完整绑定，raw body hash、base64url HMAC 和 constant-time 比较有独立测试。
 - 缺 header、未知 client/key、过期 timestamp、错误 signature、query string、重复 nonce 均 fail closed。
 - staging/production registry、nonce 和 access key 不能串环境。
 
@@ -272,7 +280,7 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 
 - 邮箱大小写归一化后复用已有用户。
 - 新邮箱创建 `created_source = xdmaker` 的 active 用户。
-- 飞书标识首次绑定、相同值复用、不同用户冲突均覆盖。
+- 飞书标识首次绑定、相同值复用、命中飞书但邮箱不匹配、不同用户冲突均覆盖。
 - `disabled`、`left`、`unknown` 用户不能被 S2S 重新激活。
 - 后续心动 SSO 按邮箱复用 XDMaker 用户并保留原 `user_id`。
 - migration schema 和重复邮箱 fail-closed 前置检查得到覆盖。
@@ -289,6 +297,7 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 
 ### 限频、审计与泄漏检查
 
+- nonce 重放不消耗 client 配额；并发首次请求不能绕过原子 rate bucket。
 - 用户和 client 门限、`Retry-After`、非常规时段和高频异常均覆盖边界测试。
 - 发放、替换、吊销、拒绝、identity conflict 和异常均写入当前 environment 的审计。
 - 响应、审计、错误与测试 snapshot 不包含 token、hash、secret、signature、raw body、完整 nonce 或飞书 `open_id`。
