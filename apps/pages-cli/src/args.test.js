@@ -31,6 +31,14 @@ test('parses repeated scopes and positional arguments', () => {
   });
 });
 
+test('parses sites delete confirmation as a boolean flag', () => {
+  assert.deepEqual(parseArgs(['sites', 'delete', 'demo', '--yes', '--json']), {
+    command: 'sites',
+    positional: ['delete', 'demo'],
+    flags: { yes: true, json: true },
+  });
+});
+
 test('parses top-level help and version aliases', () => {
   assert.deepEqual(parseArgs(['--help']), { command: 'help', positional: [], flags: {} });
   assert.deepEqual(parseArgs(['-h']), { command: 'help', positional: [], flags: {} });
