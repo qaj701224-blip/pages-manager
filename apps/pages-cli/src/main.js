@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import { readPublicDiagnostics } from './api-client.js';
@@ -14,6 +15,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       ...io,
       env: io.env || process.env,
       stdout,
+      readConfirmation: io.readConfirmation || ((prompt) => readVisibleLine(prompt, {
+        stdin: io.stdin || process.stdin,
+        stdout,
+      })),
       readSecret: io.readSecret || ((prompt) => readHiddenLine(prompt, {
         stdin: io.stdin || process.stdin,
         stdout,
@@ -23,6 +28,23 @@ export async function main(argv = process.argv.slice(2), io = {}) {
   } catch (error) {
     write(stderr, wantsJson(argv) ? `${formatErrorJson(error)}\n` : `${formatError(error)}\n`);
     return 1;
+  }
+}
+
+export async function readVisibleLine(prompt = '', { stdin = process.stdin, stdout = process.stdout } = {}) {
+  if (!stdin?.isTTY) throw codedError('CONFIRMATION_STDIN_REQUIRED');
+
+  const readline = createInterface({
+    input: stdin,
+    output: stdout,
+    terminal: Boolean(stdin.isTTY && stdout?.isTTY),
+  });
+  try {
+    return await readline.question(prompt);
+  } catch {
+    throw codedError('CONFIRMATION_INPUT_CANCELLED');
+  } finally {
+    readline.close();
   }
 }
 

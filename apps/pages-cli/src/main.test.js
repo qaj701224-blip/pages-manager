@@ -4,11 +4,12 @@ import { EventEmitter } from 'node:events';
 import { symlink, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { ApiError } from './api-client.js';
-import { main, readHiddenLine } from './main.js';
+import { main, readHiddenLine, readVisibleLine } from './main.js';
 
 test('main dispatches commands and writes stdout', async () => {
   const stdout = capture();
@@ -292,6 +293,35 @@ test('main keeps command-specific SITE_REQUIRED actions', async () => {
   assert.match(stderr.text(), /SITE_REQUIRED/);
   assert.match(stderr.text(), /xd-cell status <站点名>/);
   assert.doesNotMatch(stderr.text(), /xd-cell deploy \.\/dist demo/);
+});
+
+test('main injects visible confirmation input separately from secret input', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  let readConfirmation;
+  const exitCode = await main(['sites', 'delete', 'demo'], {
+    stdout,
+    stderr,
+    stdin: { isTTY: true },
+    readConfirmation: async () => 'yes',
+    commandRunner: async (_argv, options) => {
+      readConfirmation = options.readConfirmation;
+      assert.equal(await options.readConfirmation('确认? '), 'yes');
+    },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(typeof readConfirmation, 'function');
+  assert.equal(stderr.text(), '');
+});
+
+test('readVisibleLine reads a visible line from an interactive TTY', async () => {
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  const stdout = capture();
+  const answer = readVisibleLine('确认删除? ', { stdin, stdout });
+  stdin.write('yes\n');
+  assert.equal(await answer, 'yes');
+  assert.equal(stdout.text(), '确认删除? ');
 });
 
 test('readHiddenLine reads from a TTY without echoing the secret value', async () => {
