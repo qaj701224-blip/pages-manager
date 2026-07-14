@@ -673,6 +673,11 @@ for (const [storeName, createStore] of userIdentityStoreCases()) {
     assert.equal(user.createdSource, 'xdmaker');
     assert.equal((await store.getUserByEmail('  MAKER@example.COM  ')).id, 'usr_maker');
     assert.equal(await store.getUserByEmail('missing@example.com'), null);
+    assert.equal(await store.getUserByFeishuOpenId(null), null);
+    assert.equal(await store.getUserByFeishuOpenId(''), null);
+    assert.equal(await store.bindUserFeishuOpenId('usr_maker', null), false);
+    assert.equal(await store.bindUserFeishuOpenId('usr_maker', ''), false);
+    assert.equal((await store.getUser('usr_maker')).feishuOpenId, null);
     assert.equal(await store.bindUserFeishuOpenId('usr_maker', 'ou_maker'), true);
     assert.equal((await store.getUserByFeishuOpenId('ou_maker')).id, 'usr_maker');
     assert.equal(await store.bindUserFeishuOpenId('usr_maker', 'ou_maker'), true);
@@ -3857,6 +3862,7 @@ function fakeUserDb() {
                 return [...users.values()].find((user) => user.email.toLowerCase() === args[0]) || null;
               }
               if (/SELECT \* FROM users WHERE feishu_open_id = \?/.test(sql)) {
+                assert.ok(args[0], 'empty Feishu open id should not query D1');
                 return [...users.values()].find((user) => user.feishu_open_id === args[0]) || null;
               }
               assert.fail(`Unexpected user query: ${sql}`);
@@ -3864,6 +3870,7 @@ function fakeUserDb() {
             async run() {
               if (/UPDATE users\s+SET feishu_open_id = \?/.test(sql)) {
                 const [feishuOpenId, updatedAt, id, expectedFeishuOpenId] = args;
+                assert.ok(feishuOpenId, 'empty Feishu open id should not update D1');
                 const user = users.get(id) || null;
                 if (!user || (user.feishu_open_id !== null && user.feishu_open_id !== expectedFeishuOpenId)) {
                   return { meta: { changes: 0 } };

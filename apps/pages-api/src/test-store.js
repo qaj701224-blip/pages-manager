@@ -132,11 +132,13 @@ class TestPagesStore {
   }
 
   async getUserByFeishuOpenId(feishuOpenId) {
+    if (!feishuOpenId) return null;
     const user = [...this.users.values()].find((candidate) => candidate.feishuOpenId === feishuOpenId);
     return cloneRecord(user || null);
   }
 
   async bindUserFeishuOpenId(userId, feishuOpenId) {
+    if (!feishuOpenId) return false;
     const user = this.users.get(userId) || null;
     if (!user || (user.feishuOpenId !== null && user.feishuOpenId !== feishuOpenId)) return false;
     if ([...this.users.values()].some((candidate) => candidate.id !== userId && candidate.feishuOpenId === feishuOpenId)) {

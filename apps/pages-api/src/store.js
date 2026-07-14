@@ -200,11 +200,13 @@ export class D1PagesStore {
   }
 
   async getUserByFeishuOpenId(feishuOpenId) {
+    if (!feishuOpenId) return null;
     const row = await this.db.prepare('SELECT * FROM users WHERE feishu_open_id = ?').bind(feishuOpenId).first();
     return row ? mapUser(row) : null;
   }
 
   async bindUserFeishuOpenId(userId, feishuOpenId) {
+    if (!feishuOpenId) return false;
     const result = await this.db
       .prepare(
         `UPDATE users
