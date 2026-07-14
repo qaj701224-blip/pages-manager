@@ -70,23 +70,26 @@ export async function authenticateS2SRequest(input = {}, maybeOptions) {
   }
   if (!/^nonce_[A-Za-z0-9_-]{8,128}$/.test(headers.nonce)) return failure('S2S_REQUEST_INVALID');
 
+  const registration = resolveClientRegistration(env, headers.clientId, headers.keyId);
+  const authContext = registration ? { clientId: headers.clientId, keyId: headers.keyId } : {};
+
   const now = normalizeNowSeconds(options.nowSeconds);
-  if (!Number.isSafeInteger(now)) return failure('S2S_TIMESTAMP_INVALID');
+  if (!Number.isSafeInteger(now)) return failure('S2S_TIMESTAMP_INVALID', authContext);
   const timestamp = parseTimestamp(headers.timestamp);
   if (timestamp === null || Math.abs(timestamp - now) > TIMESTAMP_SKEW_SECONDS) {
-    return failure('S2S_TIMESTAMP_INVALID');
+    return failure('S2S_TIMESTAMP_INVALID', authContext);
   }
 
-  const key = resolveClientKey(env, headers.clientId, headers.keyId);
-  if (!key) return failure('S2S_CLIENT_INVALID');
+  const key = resolveClientKey(env, registration);
+  if (!key) return failure('S2S_CLIENT_INVALID', authContext);
 
   let bodyBytes;
   try {
     bodyBytes = new Uint8Array(await request.arrayBuffer());
   } catch {
-    return failure('S2S_REQUEST_INVALID');
+    return failure('S2S_REQUEST_INVALID', authContext);
   }
-  if (bodyBytes.byteLength > MAX_BODY_BYTES) return failure('S2S_REQUEST_INVALID');
+  if (bodyBytes.byteLength > MAX_BODY_BYTES) return failure('S2S_REQUEST_INVALID', authContext);
   const rawBody = decoder.decode(bodyBytes);
 
   const canonicalInput = await buildS2SCanonicalInput({
@@ -100,7 +103,7 @@ export async function authenticateS2SRequest(input = {}, maybeOptions) {
     rawBody: bodyBytes,
   });
   const expectedSignature = await createS2SSignature({ secret: key.secret, canonicalInput });
-  if (!constantTimeEqual(expectedSignature, headers.signature)) return failure('S2S_SIGNATURE_INVALID');
+  if (!constantTimeEqual(expectedSignature, headers.signature)) return failure('S2S_SIGNATURE_INVALID', authContext);
 
   const receivedAt = new Date(now * 1000).toISOString();
   const nonceReserved = await store.reserveS2SNonce({
@@ -111,7 +114,7 @@ export async function authenticateS2SRequest(input = {}, maybeOptions) {
     receivedAt,
     expiresAt: new Date((now + NONCE_TTL_SECONDS) * 1000).toISOString(),
   });
-  if (!nonceReserved) return failure('S2S_REPLAY_DETECTED');
+  if (!nonceReserved) return failure('S2S_REPLAY_DETECTED', authContext);
 
   const bucketSeconds = Math.floor(now / RATE_WINDOW_SECONDS) * RATE_WINDOW_SECONDS;
   const rate = await store.consumeS2SRateLimit({
@@ -122,7 +125,7 @@ export async function authenticateS2SRequest(input = {}, maybeOptions) {
     expiresAt: new Date((bucketSeconds + RATE_WINDOW_SECONDS) * 1000).toISOString(),
     limit: RATE_LIMIT,
   });
-  if (!rate?.allowed) return failure('S2S_RATE_LIMITED', { retryAfter: RATE_WINDOW_SECONDS });
+  if (!rate?.allowed) return failure('S2S_RATE_LIMITED', { ...authContext, retryAfter: RATE_WINDOW_SECONDS });
 
   return {
     ok: true,
@@ -174,14 +177,17 @@ function normalizeNowSeconds(value) {
   return Number.isFinite(number) ? Math.floor(number) : NaN;
 }
 
-function resolveClientKey(env, clientId, keyId) {
+function resolveClientRegistration(env, clientId, keyId) {
   const entries = parseClientKeyRegistry(env?.S2S_CLIENT_KEYS);
   if (!entries) return null;
-  const entry = entries.find((candidate) => candidate.clientId === clientId && candidate.keyId === keyId);
-  if (!entry) return null;
-  const secret = env?.[entry.secretEnvName];
+  return entries.find((candidate) => candidate.clientId === clientId && candidate.keyId === keyId) || null;
+}
+
+function resolveClientKey(env, registration) {
+  if (!registration) return null;
+  const secret = env?.[registration.secretEnvName];
   if (typeof secret !== 'string' || secret.length === 0) return null;
-  return { ...entry, secret };
+  return { ...registration, secret };
 }
 
 function parseClientKeyRegistry(value) {

@@ -333,6 +333,81 @@ test('validates authenticated issue and revoke bodies without parsing a second r
   }
 });
 
+test('audits bad signatures and replays with internal signing context without exposing it publicly', async () => {
+  const store = createTestPagesStore({ now: () => BASE_NOW });
+  await store.createUser({
+    userId: 'usr_auth_deny',
+    email: 'auth-deny@example.com',
+    realname: 'Auth Deny',
+    employeeStatus: 'active',
+    feishuOpenId: 'ou_auth_deny',
+  });
+  const env = testEnv({ now: BASE_NOW, accessKeyIds: ['ak_s2s'] });
+  const body = {
+    email: 'auth-deny@example.com',
+    feishu_open_id: 'ou_auth_deny',
+    display_name: 'Auth Deny',
+  };
+
+  const badSignature = await handleS2STokensApi(
+    await signedRequest({ body, now: BASE_NOW, nonce: 'nonce_authdeny01', signature: 'invalid-signature' }),
+    env,
+    { environment: 'staging' },
+    store
+  );
+  assert.equal(badSignature.status, 401);
+  const badSignatureBody = await badSignature.json();
+  assert.equal(badSignatureBody.error.code, 'S2S_SIGNATURE_INVALID');
+  assert.equal(badSignatureBody.clientId, undefined);
+  assert.equal(badSignatureBody.keyId, undefined);
+  assert.equal(badSignatureBody.error.clientId, undefined);
+  assert.equal(badSignatureBody.error.keyId, undefined);
+
+  const replayRequest = { body, now: BASE_NOW, nonce: 'nonce_authdeny02' };
+  const first = await handleS2STokensApi(
+    await signedRequest(replayRequest),
+    env,
+    { environment: 'staging' },
+    store
+  );
+  assert.equal(first.status, 201, await first.clone().text());
+  const replay = await handleS2STokensApi(
+    await signedRequest(replayRequest),
+    env,
+    { environment: 'staging' },
+    store
+  );
+  assert.equal(replay.status, 409);
+  const replayBody = await replay.json();
+  assert.equal(replayBody.error.code, 'S2S_REPLAY_DETECTED');
+  assert.equal(replayBody.clientId, undefined);
+  assert.equal(replayBody.keyId, undefined);
+  assert.equal(replayBody.error.clientId, undefined);
+  assert.equal(replayBody.error.keyId, undefined);
+
+  const denyMetadata = (await store.listAuditEvents({ environment: 'staging' }))
+    .filter((event) => event.eventType === 's2s.request.deny')
+    .map((event) => event.metadata);
+  assert.deepEqual(denyMetadata, [
+    {
+      environment: 'staging',
+      clientId: CLIENT_ID,
+      signingKeyId: CLIENT_KEY_ID,
+      reason: 'S2S_SIGNATURE_INVALID',
+    },
+    {
+      environment: 'staging',
+      clientId: CLIENT_ID,
+      signingKeyId: CLIENT_KEY_ID,
+      reason: 'S2S_REPLAY_DETECTED',
+    },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(denyMetadata),
+    /nonce_authdeny|invalid-signature|auth-deny@example\.com|ou_auth_deny|display_name|token|hash/i
+  );
+});
+
 test('replaces only an active XDMaker key owned by the same user and environment', async () => {
   const store = createTestPagesStore({ now: () => BASE_NOW });
   await store.createUser({
@@ -740,6 +815,7 @@ async function signedRequest({
   now = BASE_NOW,
   nonce = 'nonce_signed0001',
   method = 'POST',
+  signature: signatureOverride,
 } = {}) {
   const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
   const timestamp = Math.floor(new Date(now).getTime() / 1000);
@@ -753,7 +829,7 @@ async function signedRequest({
     nonce,
     rawBody,
   });
-  const signature = await createS2SSignature({ secret: CLIENT_SECRET, canonicalInput });
+  const signature = signatureOverride || (await createS2SSignature({ secret: CLIENT_SECRET, canonicalInput }));
   return new Request(`https://api.example.test${pathname}`, {
     method,
     headers: {

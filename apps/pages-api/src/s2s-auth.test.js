@@ -70,6 +70,8 @@ test('authenticates a valid request and returns the raw body without consuming t
   assert.equal(replay.status, 409);
   assert.equal(replay.message, 'S2S request has already been received.');
   assert.equal(replay.action, 'Generate a new nonce and retry.');
+  assert.equal(replay.clientId, 'client_demo');
+  assert.equal(replay.keyId, 'key_1');
 });
 
 test('validates malformed requests and registry entries with stable failure codes', async (t) => {
@@ -103,6 +105,10 @@ test('validates malformed requests and registry entries with stable failure code
       assert.equal(result.code, code);
       assert.equal(typeof result.message, 'string');
       assert.equal(typeof result.action, 'string');
+      if (['timestamp', 'signature'].includes(name)) {
+        assert.equal(result.clientId, 'client_demo');
+        assert.equal(result.keyId, 'key_1');
+      }
     });
   }
 
@@ -126,6 +132,17 @@ test('validates malformed requests and registry entries with stable failure code
     nowSeconds,
   });
   assert.equal(unsafeSecretRegistry.code, 'S2S_CLIENT_INVALID');
+
+  const knownRegistrationWithoutSecret = await authenticateS2SRequest({
+    request: await signedRequest({ timestamp: nowSeconds - 301 }),
+    env: { S2S_CLIENT_KEYS: 'client_demo:key_1:S2S_SECRET_CLIENT_DEMO' },
+    environment,
+    store: createTestPagesStore(),
+    nowSeconds,
+  });
+  assert.equal(knownRegistrationWithoutSecret.code, 'S2S_TIMESTAMP_INVALID');
+  assert.equal(knownRegistrationWithoutSecret.clientId, 'client_demo');
+  assert.equal(knownRegistrationWithoutSecret.keyId, 'key_1');
 
   const unknownClient = await authenticateS2SRequest({
     request: await signedRequest(),
@@ -216,6 +233,8 @@ test('checks the signature before replay and rate guards', async () => {
     nowSeconds,
   });
   assert.equal(badSignature.code, 'S2S_SIGNATURE_INVALID');
+  assert.equal(badSignature.clientId, 'client_demo');
+  assert.equal(badSignature.keyId, 'key_1');
   assert.deepEqual(calls, []);
 
   const validRequest = await signedRequest();
@@ -230,6 +249,8 @@ test('checks the signature before replay and rate guards', async () => {
     nowSeconds,
   });
   assert.equal(replay.code, 'S2S_REPLAY_DETECTED');
+  assert.equal(replay.clientId, 'client_demo');
+  assert.equal(replay.keyId, 'key_1');
   assert.deepEqual(calls, ['reserve']);
 });
 
@@ -281,6 +302,8 @@ test('limits a client to 300 requests per ten-minute bucket', async () => {
   assert.equal(limited.code, 'S2S_RATE_LIMITED');
   assert.equal(limited.status, 429);
   assert.equal(limited.retryAfter, 600);
+  assert.equal(limited.clientId, 'client_demo');
+  assert.equal(limited.keyId, 'key_1');
 });
 
 async function signedRequest({
