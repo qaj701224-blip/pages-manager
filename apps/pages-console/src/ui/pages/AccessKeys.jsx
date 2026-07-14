@@ -287,6 +287,7 @@ function AccessKeyList({ state, canManage, onRevoke }) {
           <div>
             <strong>{row.name}</strong>
             <span className="token-scope-row">
+              <span className={`tag token-source-tag token-source-tag--${row.sourceKind}`}>{row.sourceLabel}</span>
               {row.scopeLabels.map((scope) => (
                 <span className="tag token-scope-tag" key={scope}>
                   {scope}
@@ -326,7 +327,7 @@ function filterAccessKeyRows(rows, query) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return rows;
   return rows.filter((row) =>
-    [row.name, row.tokenPreview, row.ownerLabel, ...(row.scopeLabels || [])]
+    [row.name, row.tokenPreview, row.ownerLabel, row.sourceLabel, ...(row.scopeLabels || [])]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
