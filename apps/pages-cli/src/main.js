@@ -9,18 +9,20 @@ import { executeCommand } from './commands.js';
 export async function main(argv = process.argv.slice(2), io = {}) {
   const stdout = io.stdout || process.stdout;
   const stderr = io.stderr || process.stderr;
+  const stdin = io.stdin || process.stdin;
   const commandRunner = io.commandRunner || executeCommand;
   try {
     await commandRunner(argv, {
       ...io,
       env: io.env || process.env,
+      stdin,
       stdout,
       readConfirmation: io.readConfirmation || ((prompt) => readVisibleLine(prompt, {
-        stdin: io.stdin || process.stdin,
+        stdin,
         stdout,
       })),
       readSecret: io.readSecret || ((prompt) => readHiddenLine(prompt, {
-        stdin: io.stdin || process.stdin,
+        stdin,
         stdout,
       })),
     });

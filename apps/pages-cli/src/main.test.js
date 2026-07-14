@@ -314,6 +314,43 @@ test('main injects visible confirmation input separately from secret input', asy
   assert.equal(stderr.text(), '');
 });
 
+test('main forwards default stdin for interactive site deletion confirmation', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const prompts = [];
+  const originalIsTty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  let exitCode;
+
+  Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+  try {
+    exitCode = await main(['sites', 'delete', 'demo'], {
+      stdout,
+      stderr,
+      env: { XD_CELL_API_TOKEN: 'token' },
+      profile: { environments: {} },
+      readConfirmation: async (prompt) => {
+        prompts.push(prompt);
+        return 'n';
+      },
+      fetch: async (request) => {
+        calls.push(request.clone());
+        return Response.json({ sites: [{ id: 'site_1', slug: 'demo', environment: 'production' }] });
+      },
+    });
+  } finally {
+    if (originalIsTty) Object.defineProperty(process.stdin, 'isTTY', originalIsTty);
+    else delete process.stdin.isTTY;
+  }
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(prompts, ['确认删除站点 "demo"? (y/N) ']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(stdout.text(), '已取消删除站点：demo\n');
+  assert.equal(stderr.text(), '');
+});
+
 test('readVisibleLine reads a visible line from an interactive TTY', async () => {
   const stdin = new PassThrough();
   stdin.isTTY = true;
