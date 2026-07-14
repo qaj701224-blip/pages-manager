@@ -224,6 +224,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.match(body, /xd-cell secrets put <site> API_TOKEN/);
   assert.match(body, /xd-cell secrets delete <site> API_TOKEN/);
   assert.match(body, /xd-cell sites delete <site> --yes --json/);
+  assert.match(body, /删除站点前确认目标；当前 CLI 不提供恢复。/);
   assert.match(body, /assets\.not_found_handling/);
   assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);
@@ -258,6 +259,7 @@ test('serves staging skill without exposing user-facing environment switches', a
   assert.doesNotMatch(body, /xd-cell detect <entry> --json/);
   assert.doesNotMatch(body, /xd-cell deploy <entry> <site> --dry-run --json/);
   assert.doesNotMatch(body, /xd-cell deploy <entry> <site> --visibility org/);
+  assert.doesNotMatch(body, /xd-cell sites delete/);
   assert.doesNotMatch(body, /^xd-cell access (set|grant|revoke)\b/m);
   assert.doesNotMatch(body, /^xd-cell secrets (put|delete)\b/m);
   assert.doesNotMatch(body, /export XD_CELL_API_TOKEN=<token>/);
@@ -267,6 +269,17 @@ test('serves staging skill without exposing user-facing environment switches', a
   assert.doesNotMatch(body, /api\.pages\.xd\.team(?![\\w.-])/);
   assert.match(body, /pages\.xd\.team/);
   assert.doesNotMatch(body, /api\.workers\.xd\.team/);
+});
+
+test('serves production readme with safe site deletion guidance', async () => {
+  const response = await worker.fetch(new Request('https://api.pages.xd.team/readme.md'), {
+    PAGES_ENV: 'production',
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /xd-cell sites delete demo --yes --json/);
+  assert.match(body, /删除站点前确认目标；当前 CLI 不提供恢复。/);
 });
 
 test('serves readme docs without legacy API addresses', async () => {
@@ -286,6 +299,7 @@ test('serves readme docs without legacy API addresses', async () => {
   assert.doesNotMatch(body, /xd-cell detect \.\/dist --json/);
   assert.doesNotMatch(body, /xd-cell deploy \.\/dist demo --visibility org/);
   assert.doesNotMatch(body, /xd-cell deploy --config xd-cell\.config\.json/);
+  assert.doesNotMatch(body, /xd-cell sites delete/);
   assert.match(body, /XD_CELL_API_TOKEN/);
   assert.doesNotMatch(body, /^xd-cell access (set|grant|revoke)\b/m);
   assert.doesNotMatch(body, /^xd-cell secrets (put|delete)\b/m);

@@ -43,6 +43,8 @@ xd-cell secrets put <site> API_TOKEN
 echo "$API_TOKEN" | xd-cell secrets put <site> API_TOKEN --stdin
 xd-cell secrets delete <site> API_TOKEN
 \`\`\`
+
+删除站点前确认目标；当前 CLI 不提供恢复。
 `;
   const loginGuide =
     config.environment === 'staging'
@@ -140,7 +142,9 @@ xd-cell access set demo --visibility acl --email user@xd.com
 xd-cell secrets put demo API_TOKEN
 echo "$API_TOKEN" | xd-cell secrets put demo API_TOKEN --stdin
 xd-cell secrets delete demo API_TOKEN
-\`\`\``;
+\`\`\`
+
+删除站点前确认目标；当前 CLI 不提供恢复。`;
 
   return `# XD Cell
 

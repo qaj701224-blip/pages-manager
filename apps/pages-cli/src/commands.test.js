@@ -1982,6 +1982,7 @@ test('sites help documents interactive and non-interactive deletion', async () =
   assert.match(text, /xd-cell sites delete <站点名>/);
   assert.match(text, /--yes/);
   assert.match(text, /默认要求交互确认/);
+  assert.match(text, /JSON 和非交互环境必须显式传入/);
 });
 
 async function tempProject() {
