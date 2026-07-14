@@ -153,6 +153,16 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
     siteId: 'site_1',
     expiresAt: '2026-07-15T00:00:00.000Z',
   });
+  const stored = await store.getAccessKeyById('ak_1');
+  assert.equal(stored.issuedSource, 'legacy');
+  assert.equal(stored.issuedSessionVersion, null);
+  await store.upsertUserFromSso({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    realname: 'User One',
+    employeeStatus: 'active',
+    sessionVersion: 2,
+  });
 
   const result = await authenticateApiRequest(
     bearerRequest(plaintext),
@@ -208,6 +218,57 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
   );
   assert.equal(expired.ok, false);
   assert.equal(expired.error.code, 'ACCESS_KEY_EXPIRED');
+});
+
+test('rejects S2S access keys after the user session version changes', async () => {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_s2s',
+    bytes: new Uint8Array(24).fill(7),
+  });
+  const store = await createSeededStore();
+  await store.createAccessKey({
+    id: 'ak_s2s',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'XDMaker key',
+    scopes: ['deploy:site'],
+    siteId: 'site_1',
+    expiresAt: '2026-07-15T00:00:00.000Z',
+    issuedSource: 'xdmaker',
+    issuedSessionVersion: 1,
+  });
+  await store.upsertUserFromSso({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    realname: 'User One',
+    employeeStatus: 'active',
+    sessionVersion: 2,
+  });
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: {
+      code: 'ACCESS_KEY_SESSION_STALE',
+      message: 'Access key session is stale.',
+      status: 401,
+      action: 'Ask XDMaker to exchange a new access key.',
+    },
+  });
+  assert.equal((await store.getAccessKeyById('ak_s2s')).lastUsedAt, null);
 });
 
 function bearerRequest(token) {

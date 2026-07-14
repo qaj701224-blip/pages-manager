@@ -2065,6 +2065,8 @@ class TestPagesStore {
       revokedByUserId: null,
       revokedReason: null,
       createdAt: this.now(),
+      issuedSource: input.issuedSource || 'legacy',
+      issuedSessionVersion: input.issuedSessionVersion ?? null,
     };
     this.accessKeys.set(record.id, record);
     return cloneRecord(record);

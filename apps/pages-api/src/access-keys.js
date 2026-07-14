@@ -43,6 +43,7 @@ export async function handleConsoleAccessKeysApi(request, env, config, store) {
         ownerId: session.userId,
         ownerUserId: session.userId,
         createdByUserId: session.userId,
+        issuedSource: 'console',
         requireSiteId: false,
       });
     }
@@ -64,6 +65,7 @@ export async function handleConsoleAccessKeysApi(request, env, config, store) {
         ownerId: teamId,
         ownerUserId: session.userId,
         createdByUserId: session.userId,
+        issuedSource: 'console',
         requireSiteId: false,
       });
     }
@@ -123,6 +125,7 @@ async function createAccessKey(request, env, config, store, actor) {
     ownerId: actor.userId,
     ownerUserId: actor.userId,
     createdByUserId: actor.userId,
+    issuedSource: 'cli',
     requireSiteId: true,
     actor,
   });
@@ -176,30 +179,50 @@ async function createAccessKeyForOwner(request, env, config, store, owner) {
     }
   }
 
-  const pepper = readActiveAccessKeyPepper(env);
-  const keyId = nextId(env, 'ak');
-  const plaintext = createAccessKeyPlaintext({
-    environment: config.environment,
-    keyId,
-    bytes: randomBytes(env, 24),
-  });
-  const keyHash = await hashAccessKey(plaintext, pepper.secret);
-  const accessKey = await store.createAccessKey({
-    id: keyId,
-    environment: config.environment,
+  const { plaintext, record } = await createAccessKeyMaterial(env, config, {
     ownerType: owner.ownerType,
     ownerId: owner.ownerId,
     ownerUserId: owner.ownerUserId,
     createdByUserId: owner.createdByUserId,
-    keyHash,
-    pepperId: pepper.id,
     name,
     scopes,
-    siteId: siteId || null,
+    siteId,
     expiresAt,
+    issuedSource: owner.issuedSource,
   });
+  const accessKey = await store.createAccessKey(record);
 
   return jsonOk({ accessKey: { ...formatAccessKey(accessKey), plaintext } }, 201);
+}
+
+export async function createAccessKeyMaterial(env, config, input) {
+  const pepper = readActiveAccessKeyPepper(env);
+  const id = nextId(env, 'ak');
+  const plaintext = createAccessKeyPlaintext({
+    environment: config.environment,
+    keyId: id,
+    bytes: randomBytes(env, 24),
+  });
+  const keyHash = await hashAccessKey(plaintext, pepper.secret);
+  return {
+    plaintext,
+    record: {
+      id,
+      environment: config.environment,
+      ownerType: input.ownerType,
+      ownerId: input.ownerId,
+      ownerUserId: input.ownerUserId,
+      createdByUserId: input.createdByUserId,
+      keyHash,
+      pepperId: pepper.id,
+      name: input.name,
+      scopes: [...input.scopes],
+      siteId: input.siteId || null,
+      expiresAt: input.expiresAt || null,
+      issuedSource: input.issuedSource || 'legacy',
+      issuedSessionVersion: input.issuedSessionVersion ?? null,
+    },
+  };
 }
 
 async function revokeAccessKey(env, config, store, actor, accessKeyId) {
@@ -241,6 +264,7 @@ function formatAccessKey(accessKey) {
     revokedReason: accessKey.revokedReason || null,
     createdAt: accessKey.createdAt,
     environment: accessKey.environment || null,
+    issuedSource: accessKey.issuedSource || 'legacy',
   };
 }
 

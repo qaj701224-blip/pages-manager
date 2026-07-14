@@ -3945,14 +3945,17 @@ export class D1PagesStore {
       revokedByUserId: null,
       revokedReason: null,
       createdAt: now,
+      issuedSource: input.issuedSource || 'legacy',
+      issuedSessionVersion: input.issuedSessionVersion ?? null,
     };
     await this.db
       .prepare(
         `INSERT INTO access_keys (
           id, environment, owner_user_id, key_hash, pepper_id, name, scopes_json, site_id,
-          owner_type, owner_id, created_by_user_id, expires_at, last_used_at,
+          owner_type, owner_id, created_by_user_id, issued_source, issued_session_version,
+          expires_at, last_used_at,
           revoked_at, revoked_by_user_id, revoked_reason, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -3966,6 +3969,8 @@ export class D1PagesStore {
         record.ownerType,
         record.ownerId,
         record.createdByUserId,
+        record.issuedSource,
+        record.issuedSessionVersion,
         record.expiresAt,
         record.lastUsedAt,
         record.revokedAt,
@@ -5319,6 +5324,8 @@ function mapAccessKey(row) {
     ownerId: row.owner_id || row.owner_user_id,
     ownerUserId: row.owner_user_id,
     createdByUserId: row.created_by_user_id || row.owner_user_id,
+    issuedSource: row.issued_source || 'legacy',
+    issuedSessionVersion: row.issued_session_version ?? null,
     keyHash: row.key_hash,
     pepperId: row.pepper_id,
     name: row.name,
