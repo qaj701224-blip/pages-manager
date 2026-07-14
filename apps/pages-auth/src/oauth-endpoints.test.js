@@ -510,8 +510,9 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     syncSsoUserProfile: async (profile, options) => {
       assert.equal(profile.userId, 'usr_123');
       assert.equal(options.now, now);
-      return { user: { userId: 'usr_123' } };
+      return { user: { userId: 'usr_123', departmentPath: 'XD/Legacy' } };
     },
+    hydrateDepartmentAfterSso: async () => null,
     fetchSsoToken: async ({ code, redirectUri }) => {
       assert.equal(code, 'oauth-code');
       assert.equal(redirectUri, 'https://auth.pages.xd.team/.xd-pages/auth/callback');
@@ -523,7 +524,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
         id: 'usr_123',
         email: 'user@example.test',
         employeeStatus: 'active',
-        departments: ['dept_design'],
+        departments: ['XD/Design'],
         sessionVersion: 4,
       };
     },
@@ -573,7 +574,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     id: 'usr_123',
     email: 'user@example.test',
     employeeStatus: 'active',
-    departments: [],
+    departments: ['XD/Design'],
     sessionVersion: 4,
   });
 
@@ -724,6 +725,7 @@ test('callback propagates hydrated department path into site login code payload'
       userId: 'usr_123',
       email: 'user@xd.com',
       employeeStatus: 'active',
+      departments: ['XD/Legacy'],
     }),
   });
 

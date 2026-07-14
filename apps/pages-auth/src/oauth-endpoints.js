@@ -685,14 +685,17 @@ async function readAuthSessionUserProfile(request, env, config, now) {
 
 function mergeHydratedDepartmentPath(profile, hydration) {
   const departmentPath = hydration?.departmentPath || hydration?.user?.departmentPath;
+  const departments = normalizeDepartments([departmentPath]);
+  if (departments.length === 0) return profile;
   return {
     ...profile,
-    departments: mergeDepartmentPaths(profile?.departments, departmentPath),
+    departments,
   };
 }
 
 function mergeSyncedUserAuthority(profile, syncResult) {
   const user = syncResult?.user || syncResult || {};
+  const profileDepartments = normalizeDepartments(profile.departments);
   return {
     ...profile,
     userId: user.userId || user.id || profile.userId,
@@ -701,7 +704,7 @@ function mergeSyncedUserAuthority(profile, syncResult) {
       ? { name: user.realname || user.name || profile.realname || profile.name }
       : {}),
     ...(user.accountId || profile.accountId ? { accountId: user.accountId || profile.accountId } : {}),
-    departments: mergeDepartmentPaths(profile.departments, user.departmentPath),
+    departments: profileDepartments.length > 0 ? profileDepartments : mergeDepartmentPaths([], user.departmentPath),
     employeeStatus: user.employeeStatus || profile.employeeStatus,
     sessionVersion: user.sessionVersion || profile.sessionVersion,
   };
@@ -1055,7 +1058,7 @@ function normalizeSsoProfile(profile) {
     accountId: normalizeOptionalString(profile?.accountId ?? profile?.account_id) || null,
     employeenum: normalizeOptionalString(profile?.employeenum ?? profile?.employeeNum ?? profile?.employee_num) || null,
     employeeStatus: normalizeEmployeeStatus(profile?.employeeStatus ?? profile?.employee_status),
-    departments: [],
+    departments: normalizeDepartments(profile?.departments),
     sessionVersion: normalizeSessionVersion(profile?.sessionVersion ?? profile?.session_version),
   };
 }
