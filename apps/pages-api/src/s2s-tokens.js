@@ -3,6 +3,7 @@ import { sha256HexForText } from './crypto.js';
 import { jsonError, jsonOk } from './http.js';
 import { newId } from './id.js';
 import { authenticateS2SRequest } from './s2s-auth.js';
+import { buildS2SAnomalyPayload, notifyS2SAnomaly } from './slack-alerts.js';
 
 const ISSUE_PATH = '/.xd-pages/api/s2s/tokens';
 const REVOKE_PATH = '/.xd-pages/api/s2s/tokens/revoke';
@@ -11,7 +12,7 @@ const USER_RATE_WINDOW_SECONDS = 10 * 60;
 const ACCESS_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 const ACCESS_KEY_SCOPES = ['deploy:site', 'read:site', 'rollback:site'];
 
-export async function handleS2STokensApi(request, env, config, store) {
+export async function handleS2STokensApi(request, env, config, store, ctx = null) {
   const url = safeUrl(request?.url);
   if (!url || ![ISSUE_PATH, REVOKE_PATH].includes(url.pathname)) return null;
 
@@ -50,12 +51,12 @@ export async function handleS2STokensApi(request, env, config, store) {
   }
 
   if (url.pathname === ISSUE_PATH) {
-    return issueToken(body, env, config, store, auth, now);
+    return issueToken(body, env, config, store, auth, now, ctx);
   }
   return revokeTokens(body, env, config, store, auth, now);
 }
 
-async function issueToken(body, env, config, store, auth, now) {
+async function issueToken(body, env, config, store, auth, now, ctx) {
   const input = normalizeIssueInput(body);
   if (!input) return deniedResponse(env, config, store, auth, requestInvalid(), now);
 
@@ -89,6 +90,13 @@ async function issueToken(body, env, config, store, auth, now) {
         now,
       })
     );
+    scheduleS2SAnomaly(ctx, env, {
+      environment: config.environment,
+      clientId: auth.clientId,
+      userId: null,
+      accessKeyId: null,
+      reason: 'user_rate_count_3',
+    });
   }
 
   let identity;
@@ -169,6 +177,13 @@ async function issueToken(body, env, config, store, auth, now) {
         now,
       })
     );
+    scheduleS2SAnomaly(ctx, env, {
+      environment: config.environment,
+      clientId: auth.clientId,
+      userId: identity.id,
+      accessKeyId: record.id,
+      reason: 'off_hours_issue',
+    });
   }
 
   return jsonOk(
@@ -186,6 +201,15 @@ async function issueToken(body, env, config, store, auth, now) {
     },
     201
   );
+}
+
+function scheduleS2SAnomaly(ctx, env, input) {
+  if (typeof ctx?.waitUntil !== 'function') return;
+  try {
+    ctx.waitUntil(notifyS2SAnomaly(env, buildS2SAnomalyPayload(input)));
+  } catch {
+    // Alert delivery is best-effort and must not change the token response.
+  }
 }
 
 async function revokeTokens(body, env, config, store, auth, now) {

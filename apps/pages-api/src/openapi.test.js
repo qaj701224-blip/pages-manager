@@ -27,6 +27,12 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
+  assert.ok(body.paths['/.xd-pages/api/s2s/tokens'].post);
+  assert.ok(body.paths['/.xd-pages/api/s2s/tokens/revoke'].post);
+  assert.equal(body.paths['/.xd-pages/api/s2s/tokens'].post.security[0].s2sHmac.length, 0);
+  assert.equal(body.components.schemas.S2STokenIssueResponse.properties.token.writeOnly, true);
+  assert.match(body.paths['/.xd-pages/api/s2s/tokens'].post['x-error-codes'].join(','), /S2S_REPLAY_DETECTED/);
+  assert.doesNotMatch(JSON.stringify(body), /user@example|ou_|xdp_/i);
   assert.equal(
     body.paths['/.xd-pages/api/auth/whoami'].get.responses[200].content['application/json'].schema.$ref,
     '#/components/schemas/WhoamiResponse'
