@@ -3948,7 +3948,12 @@ export class D1PagesStore {
       issuedSource: input.issuedSource || 'legacy',
       issuedSessionVersion: input.issuedSessionVersion ?? null,
     };
-    await this.db
+    await this.accessKeyInsertStatement(record).run();
+    return cloneRecord(record);
+  }
+
+  accessKeyInsertStatement(record) {
+    return this.db
       .prepare(
         `INSERT INTO access_keys (
           id, environment, owner_user_id, key_hash, pepper_id, name, scopes_json, site_id,
@@ -3977,9 +3982,116 @@ export class D1PagesStore {
         record.revokedByUserId,
         record.revokedReason,
         record.createdAt
-      )
-      .run();
+      );
+  }
+
+  async issueS2SAccessKey({ accessKey: input, replacesKeyId = null, auditEvents = [], now = this.now() }) {
+    if ('plaintext' in input) throw new Error('ACCESS_KEY_PLAINTEXT_FORBIDDEN');
+    const ownerId = input.ownerId || input.ownerUserId;
+    const record = {
+      ...input,
+      ownerType: input.ownerType || 'user',
+      ownerId,
+      ownerUserId: input.ownerUserId || ownerId,
+      createdByUserId: input.createdByUserId || ownerId,
+      scopes: [...input.scopes],
+      siteId: input.siteId || null,
+      expiresAt: input.expiresAt || null,
+      lastUsedAt: null,
+      revokedAt: null,
+      revokedByUserId: null,
+      revokedReason: null,
+      createdAt: now,
+      issuedSource: input.issuedSource || 'legacy',
+      issuedSessionVersion: input.issuedSessionVersion ?? null,
+    };
+
+    let replacement = null;
+    if (replacesKeyId) {
+      replacement = await this.getAccessKeyById(replacesKeyId, record.environment);
+      if (!isValidS2SReplacement(replacement, record, now)) throw s2sReplacementKeyInvalidError();
+    }
+
+    const statements = [];
+    if (replacement) {
+      statements.push(
+        this.db
+          .prepare(
+            `UPDATE access_keys
+            SET revoked_at = ?, revoked_by_user_id = ?, revoked_reason = ?
+            WHERE id = ? AND environment = ?
+              AND COALESCE(owner_type, 'user') = 'user'
+              AND COALESCE(owner_id, owner_user_id) = ?
+              AND owner_user_id = ?
+              AND issued_source = 'xdmaker_s2s'
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > ?)`
+          )
+          .bind(
+            now,
+            record.ownerUserId,
+            'xdmaker_s2s_replace',
+            replacement.id,
+            record.environment,
+            ownerId,
+            record.ownerUserId,
+            now
+          ),
+        this.runtimeChangeGuardStatement('S2S_REPLACEMENT_KEY_INVALID')
+      );
+    }
+    statements.push(this.accessKeyInsertStatement(record));
+    for (const event of auditEvents) statements.push(this.auditEventStatement(event));
+    await this.db.batch(statements);
     return cloneRecord(record);
+  }
+
+  async revokeS2SAccessKeys({ environment, keyId = null, email = null, clientId = null, now = this.now() }) {
+    const normalizedEmail = normalizeUserEmail(email);
+    const selectorSql = keyId ? 'access_keys.id = ?' : 'lower(users.email) = ?';
+    const selectorValue = keyId || normalizedEmail;
+    const result = await this.db
+      .prepare(
+        `SELECT access_keys.*
+        FROM access_keys
+        LEFT JOIN users ON users.user_id = access_keys.owner_user_id
+        WHERE access_keys.environment = ?
+          AND COALESCE(access_keys.owner_type, 'user') = 'user'
+          AND access_keys.owner_user_id = COALESCE(access_keys.owner_id, access_keys.owner_user_id)
+          AND access_keys.issued_source = 'xdmaker_s2s'
+          AND access_keys.revoked_at IS NULL
+          AND (access_keys.expires_at IS NULL OR access_keys.expires_at > ?)
+          AND ${selectorSql}
+        ORDER BY access_keys.id ASC`
+      )
+      .bind(environment, now, selectorValue)
+      .all();
+    const keys = (result.results || []).map(mapAccessKey);
+    if (keys.length === 0) return { revokedCount: 0, keyIds: [] };
+
+    const statements = [];
+    for (const key of keys) {
+      statements.push(
+        this.db
+          .prepare(
+            `UPDATE access_keys
+            SET revoked_at = ?, revoked_by_user_id = ?, revoked_reason = ?
+            WHERE id = ? AND environment = ?
+              AND COALESCE(owner_type, 'user') = 'user'
+              AND COALESCE(owner_id, owner_user_id) = ?
+              AND owner_user_id = ?
+              AND issued_source = 'xdmaker_s2s'
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > ?)`
+          )
+          .bind(now, key.ownerUserId, 'xdmaker_s2s_revoke', key.id, environment, key.ownerId, key.ownerUserId, now),
+        this.runtimeChangeGuardStatement('S2S_ACCESS_KEY_REVOKE_CONFLICT'),
+        this.auditEventStatement(s2sRevokeAuditEvent(key, environment, clientId, now))
+      );
+    }
+    await this.db.batch(statements);
+    const keyIds = keys.map((key) => key.id);
+    return { revokedCount: keyIds.length, keyIds };
   }
 
   async reserveS2SNonce({ environment, clientId, nonce, endpoint, receivedAt, expiresAt }) {
@@ -5337,6 +5449,53 @@ function mapAccessKey(row) {
     revokedByUserId: row.revoked_by_user_id || null,
     revokedReason: row.revoked_reason || null,
     createdAt: row.created_at,
+  };
+}
+
+function isValidS2SReplacement(replacement, accessKey, now) {
+  const ownerId = accessKey.ownerId || accessKey.ownerUserId;
+  return Boolean(
+    replacement &&
+    replacement.id !== accessKey.id &&
+    replacement.environment === accessKey.environment &&
+    replacement.ownerType === 'user' &&
+    replacement.ownerId === ownerId &&
+    replacement.ownerUserId === accessKey.ownerUserId &&
+    replacement.issuedSource === 'xdmaker_s2s' &&
+    !replacement.revokedAt &&
+    (!replacement.expiresAt || replacement.expiresAt > now)
+  );
+}
+
+function s2sReplacementKeyInvalidError() {
+  const error = new Error('S2S_REPLACEMENT_KEY_INVALID');
+  error.code = 'S2S_REPLACEMENT_KEY_INVALID';
+  return error;
+}
+
+function s2sRevokeAuditEvent(accessKey, environment, clientId, now) {
+  return {
+    id: randomStoreId('audit'),
+    environment,
+    traceId: null,
+    eventType: 's2s.access_key.revoke',
+    actorUserId: accessKey.ownerUserId,
+    actorType: 's2s',
+    siteId: null,
+    routeId: null,
+    versionId: null,
+    decision: 'allow',
+    statusCode: 200,
+    ipHash: null,
+    userAgentHash: null,
+    metadata: {
+      environment,
+      ...(clientId ? { clientId } : {}),
+      keyId: accessKey.id,
+      userId: accessKey.ownerUserId,
+      reason: 'xdmaker_s2s_revoke',
+    },
+    createdAt: now,
   };
 }
 
