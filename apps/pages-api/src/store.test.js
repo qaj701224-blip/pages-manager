@@ -47,6 +47,91 @@ test('test store enforces unique site slug per environment', async () => {
   assert.equal(stagingSite.id, 'site_3');
 });
 
+test('S2S guard methods reserve nonces, atomically count rates, and clean expired rows in test store', async () => {
+  const store = createTestPagesStore();
+  const nonceInput = {
+    environment: 'production',
+    clientId: 'client_demo',
+    nonce: 'nonce_ABC12345',
+    endpoint: '/publish',
+    receivedAt: '2026-07-14T00:00:00.000Z',
+    expiresAt: '2026-07-14T00:10:00.000Z',
+  };
+  assert.equal(await store.reserveS2SNonce(nonceInput), true);
+  assert.equal(await store.reserveS2SNonce(nonceInput), false);
+
+  const rateInput = {
+    environment: 'production',
+    scope: 'client',
+    subject: 'client_demo',
+    bucketStart: '2026-07-14T00:00:00.000Z',
+    expiresAt: '2026-07-14T00:10:00.000Z',
+    limit: 2,
+  };
+  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: true, count: 1 });
+  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: true, count: 2 });
+  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: false, count: 2 });
+
+  await store.cleanupExpiredS2SGuards('2026-07-14T00:10:00.000Z');
+  assert.equal(await store.reserveS2SNonce(nonceInput), true);
+  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: true, count: 1 });
+});
+
+test('D1 S2S guard methods use unique nonce insertion, atomic RETURNING rate update, and expiry cleanup', async () => {
+  const calls = [];
+  const db = {
+    prepare(sql) {
+      const call = { sql, args: [] };
+      calls.push(call);
+      return {
+        bind(...args) {
+          call.args = args;
+          return {
+            run: async () => ({ meta: { changes: 1 } }),
+            first: async () => (sql.includes('RETURNING request_count') ? { request_count: 1 } : null),
+          };
+        },
+      };
+    },
+    async batch(statements) {
+      for (const statement of statements) await statement;
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-07-14T00:00:00.000Z' });
+
+  assert.equal(
+    await store.reserveS2SNonce({
+      environment: 'production',
+      clientId: 'client_demo',
+      nonce: 'nonce_ABC12345',
+      endpoint: '/publish',
+      receivedAt: '2026-07-14T00:00:00.000Z',
+      expiresAt: '2026-07-14T00:10:00.000Z',
+    }),
+    true,
+  );
+  assert.deepEqual(
+    await store.consumeS2SRateLimit({
+      environment: 'production',
+      scope: 'client',
+      subject: 'client_demo',
+      bucketStart: '2026-07-14T00:00:00.000Z',
+      expiresAt: '2026-07-14T00:10:00.000Z',
+      limit: 300,
+    }),
+    { allowed: true, count: 1 },
+  );
+  await store.cleanupExpiredS2SGuards('2026-07-14T00:10:00.000Z');
+
+  assert.match(calls[0].sql, /INSERT INTO s2s_nonces/);
+  assert.match(calls[1].sql, /ON CONFLICT\(environment, scope, subject, bucket_start\)/);
+  assert.match(calls[1].sql, /request_count = request_count \+ 1/);
+  assert.match(calls[1].sql, /WHERE request_count < \?/);
+  assert.match(calls[1].sql, /RETURNING request_count/);
+  assert.match(calls[2].sql, /DELETE FROM s2s_nonces WHERE expires_at <= \?/);
+  assert.match(calls[3].sql, /DELETE FROM s2s_rate_limits WHERE expires_at <= \?/);
+});
+
 test('createSite creates owner membership and inactive route authority record', async () => {
   const store = createSeededStore();
 

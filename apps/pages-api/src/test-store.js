@@ -39,7 +39,52 @@ class TestPagesStore {
     this.webhookDeliveries = new Map();
     this.deployments = new Map();
     this.deploymentIdempotencyIndex = new Map();
+    this.s2sNonces = new Map();
+    this.s2sRateLimits = new Map();
     this.auditEvents = [];
+  }
+
+  async reserveS2SNonce({ environment, clientId, nonce, endpoint, receivedAt, expiresAt }) {
+    const key = `${environment}:${clientId}:${nonce}`;
+    if (this.s2sNonces.has(key)) return false;
+    this.s2sNonces.set(key, {
+      environment,
+      clientId,
+      nonce,
+      endpoint,
+      receivedAt,
+      expiresAt,
+    });
+    return true;
+  }
+
+  async consumeS2SRateLimit({ environment, scope, subject, bucketStart, expiresAt, limit }) {
+    const key = `${environment}:${scope}:${subject}:${bucketStart}`;
+    const existing = this.s2sRateLimits.get(key);
+    if (!existing) {
+      this.s2sRateLimits.set(key, {
+        environment,
+        scope,
+        subject,
+        bucketStart,
+        requestCount: 1,
+        expiresAt,
+      });
+      return { allowed: true, count: 1 };
+    }
+    if (existing.requestCount >= Number(limit)) return { allowed: false, count: Number(limit) };
+    existing.requestCount += 1;
+    existing.expiresAt = expiresAt;
+    return { allowed: true, count: existing.requestCount };
+  }
+
+  async cleanupExpiredS2SGuards(now) {
+    for (const [key, row] of this.s2sNonces) {
+      if (row.expiresAt <= now) this.s2sNonces.delete(key);
+    }
+    for (const [key, row] of this.s2sRateLimits) {
+      if (row.expiresAt <= now) this.s2sRateLimits.delete(key);
+    }
   }
 
   async createUser(input) {

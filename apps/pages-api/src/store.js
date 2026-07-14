@@ -3977,6 +3977,46 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
+  async reserveS2SNonce({ environment, clientId, nonce, endpoint, receivedAt, expiresAt }) {
+    try {
+      await this.db
+        .prepare(
+          `INSERT INTO s2s_nonces (
+            environment, client_id, nonce, endpoint, received_at, expires_at
+          ) VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .bind(environment, clientId, nonce, endpoint, receivedAt, expiresAt)
+        .run();
+      return true;
+    } catch (error) {
+      if (/constraint|unique/i.test(String(error?.message || error))) return false;
+      throw error;
+    }
+  }
+
+  async consumeS2SRateLimit({ environment, scope, subject, bucketStart, expiresAt, limit }) {
+    const row = await this.db
+      .prepare(
+        `INSERT INTO s2s_rate_limits (
+          environment, scope, subject, bucket_start, request_count, expires_at
+        ) VALUES (?, ?, ?, ?, 1, ?)
+        ON CONFLICT(environment, scope, subject, bucket_start) DO UPDATE SET
+          request_count = request_count + 1,
+          expires_at = excluded.expires_at
+        WHERE request_count < ?
+        RETURNING request_count`
+      )
+      .bind(environment, scope, subject, bucketStart, expiresAt, limit)
+      .first();
+    if (!row) return { allowed: false, count: Number(limit) };
+    return { allowed: true, count: Number(row.request_count) };
+  }
+
+  async cleanupExpiredS2SGuards(now) {
+    await this.db.prepare('DELETE FROM s2s_nonces WHERE expires_at <= ?').bind(now).run();
+    await this.db.prepare('DELETE FROM s2s_rate_limits WHERE expires_at <= ?').bind(now).run();
+  }
+
   async getAccessKeyById(id, environment) {
     const row = await this.db
       .prepare(
