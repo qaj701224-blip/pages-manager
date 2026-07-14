@@ -209,12 +209,90 @@ collect_access_key_pepper_secrets() {
   fi
 }
 
+collect_s2s_secrets() {
+  require_env S2S_CLIENT_KEYS
+
+  local seen_pairs="|"
+  local seen_secret_names="|"
+  local client_ids=()
+  local client_key_counts=()
+  local entry_count=0
+  IFS=',' read -r -a entries <<<"$S2S_CLIENT_KEYS"
+
+  for raw_entry in "${entries[@]}"; do
+    local entry client_id key_id secret_name extra pair
+    entry="$(trim "$raw_entry")"
+    if [ -z "$entry" ]; then
+      continue
+    fi
+    entry_count=$((entry_count + 1))
+
+    if [[ ! "$entry" =~ ^[^:]+:[^:]+:[^:]+$ ]]; then
+      echo "::error::Malformed S2S_CLIENT_KEYS entry" >&2
+      exit 1
+    fi
+
+    IFS=':' read -r client_id key_id secret_name extra <<<"$entry"
+    client_id="$(trim "${client_id:-}")"
+    key_id="$(trim "${key_id:-}")"
+    secret_name="$(trim "${secret_name:-}")"
+
+    if [ -n "${extra:-}" ] || [ -z "$client_id" ] || [ -z "$key_id" ] || [ -z "$secret_name" ]; then
+      echo "::error::Malformed S2S_CLIENT_KEYS entry" >&2
+      exit 1
+    fi
+    if [[ ! "$client_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || [[ ! "$key_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+      echo "::error::S2S_CLIENT_KEYS contains an unsafe client or key id" >&2
+      exit 1
+    fi
+    pair="$client_id:$key_id"
+    if has_seen "$seen_pairs" "$pair"; then
+      echo "::error::S2S_CLIENT_KEYS contains duplicate client/key" >&2
+      exit 1
+    fi
+    seen_pairs="${seen_pairs}${pair}|"
+    local client_index=-1
+    local index
+    for index in "${!client_ids[@]}"; do
+      if [ "${client_ids[$index]}" = "$client_id" ]; then
+        client_index="$index"
+        break
+      fi
+    done
+    if [ "$client_index" -eq -1 ]; then
+      client_ids+=("$client_id")
+      client_key_counts+=(1)
+      client_index=$((${#client_ids[@]} - 1))
+    else
+      client_key_counts[$client_index]=$((client_key_counts[$client_index] + 1))
+    fi
+    if [ "${client_key_counts[$client_index]:-1}" -gt 2 ]; then
+      echo "::error::S2S_CLIENT_KEYS allows at most two keys per client" >&2
+      exit 1
+    fi
+    if [[ ! "$secret_name" =~ ^S2S_SECRET_[A-Z0-9_]+$ ]]; then
+      echo "::error::S2S_CLIENT_KEYS secret env names must use S2S_SECRET_*" >&2
+      exit 1
+    fi
+    if ! has_seen "$seen_secret_names" "$secret_name"; then
+      seen_secret_names="${seen_secret_names}${secret_name}|"
+      SECRET_NAMES+=("$secret_name")
+    fi
+  done
+
+  if [ "$entry_count" -eq 0 ]; then
+    echo "::error::S2S_CLIENT_KEYS must not be empty" >&2
+    exit 1
+  fi
+}
+
 SECRET_NAMES=()
 
 case "$APP_DIR" in
   apps/pages-api)
     SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN SLACK_PAGES_ALERT_WEBHOOK_URL SITE_SECRET_ENCRYPTION_KEY WEBHOOK_URL_ENCRYPTION_KEY XDS_OPENAI_TOKEN)
     collect_access_key_pepper_secrets
+    collect_s2s_secrets
     ;;
   apps/pages-auth)
     SECRET_NAMES+=(SSO_CLIENT_SECRET XDS_OPENAI_TOKEN)

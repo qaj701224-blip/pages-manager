@@ -12,6 +12,14 @@ function readWorkflow(path) {
   return readFileSync(join(repoRoot, path), 'utf8');
 }
 
+function readWorkflowStep(workflow, name) {
+  const marker = `      - name: ${name}`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `missing workflow step: ${name}`);
+  const next = workflow.indexOf('\n      - name:', start + marker.length);
+  return workflow.slice(start, next === -1 ? workflow.length : next);
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -682,6 +690,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.doesNotMatch(workflow, /PAGES_NORMAL_WORKER_SLOT_COUNT: \$\{\{ vars\.PAGES_NORMAL_WORKER_SLOT_COUNT \}\}/);
     assert.match(workflow, /ACCESS_KEY_ACTIVE_PEPPER_ID: pepper_2026_06/);
     assert.match(workflow, /ACCESS_KEY_PEPPERS: ['"]pepper_2026_06:ACCESS_KEY_PEPPER_202606['"]/);
+    assert.match(workflow, /S2S_CLIENT_KEYS: ['"]xdmaker:key_202607:S2S_SECRET_XDMAKER_202607['"]/);
     assert.match(workflow, /PAGES_SESSION_JWT_ACTIVE_KID: pages-session-2026-06/);
     assert.match(workflow, /PAGES_SESSION_JWT_KEYS: ['"]pages-session-2026-06:HS256:PAGES_SESSION_JWT_SECRET_202606['"]/);
     assert.match(workflow, /PAGES_CAP_JWT_ACTIVE_KID: pages-cap-2026-06/);
@@ -704,6 +713,12 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     assert.match(workflow, /SITE_SECRET_ENCRYPTION_KEY: \$\{\{ secrets\.SITE_SECRET_ENCRYPTION_KEY \}\}/);
     assert.match(workflow, /WEBHOOK_URL_ENCRYPTION_KEY: \$\{\{ secrets\.WEBHOOK_URL_ENCRYPTION_KEY \}\}/);
     assert.match(workflow, /XDS_OPENAI_TOKEN: \$\{\{ secrets\.XDS_OPENAI_TOKEN \}\}/);
+    const validatePagesApi = readWorkflowStep(workflow, 'Validate Pages API secrets');
+    const injectPagesApi = readWorkflowStep(workflow, 'Inject Pages API secrets');
+    assert.match(validatePagesApi, /S2S_SECRET_XDMAKER_202607: \$\{\{ secrets\.S2S_SECRET_XDMAKER_202607 \}\}/);
+    assert.match(injectPagesApi, /S2S_SECRET_XDMAKER_202607: \$\{\{ secrets\.S2S_SECRET_XDMAKER_202607 \}\}/);
+    assert.equal((workflow.match(/S2S_SECRET_XDMAKER_202607:/g) || []).length, 2);
+    assert.doesNotMatch(workflow, /S2S_IP_ALLOWLIST/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-api/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-auth/);
     assert.match(workflow, /DRY_RUN=1 scripts\/put-pages-v2-secrets\.sh apps\/pages-router/);
