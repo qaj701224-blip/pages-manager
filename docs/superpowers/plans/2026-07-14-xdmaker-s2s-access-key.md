@@ -404,7 +404,7 @@ Return `{ allowed: true, count }` when a row is returned, otherwise `{ allowed: 
 
 - [ ] **Step 6: Compose replay-safe authentication ordering**
 
-After HMAC succeeds, `authenticateS2SRequest` must reserve the nonce first. A duplicate returns `S2S_REPLAY_DETECTED` before touching the client rate bucket. A new nonce consumes `scope=client`, `subject=clientId`, limit 300, then returns success. Add `retryAfter: 600` to rate failures.
+After HMAC succeeds, `authenticateS2SRequest` must reserve the nonce first. A duplicate returns `S2S_REPLAY_DETECTED` before touching the client rate bucket. A new nonce consumes `scope=client`, `subject=clientId`, limit 1200, then returns success. Add `retryAfter: 600` to rate failures.
 
 - [ ] **Step 7: Run HMAC and guard tests**
 
@@ -584,7 +584,7 @@ Test revoke bodies `{ key_id }` and `{ email }`; assert repeated revoke returns 
 
 - [ ] **Step 3: Add failing user-rate and anomaly tests**
 
-Use the same normalized email with a forced key-write failure, retry five times, and assert the sixth attempt returns 429. Assert `Retry-After: 600`, the subject is a SHA-256 digest rather than email, count 3 creates `s2s.anomaly.detect`, and an Asia/Shanghai 02:00 issue creates an off-hours anomaly.
+Use the same normalized email with a forced key-write failure, retry twenty times, and assert the twenty-first attempt returns 429. Assert `Retry-After: 600`, the subject is a SHA-256 digest rather than email, count 3 creates `s2s.anomaly.detect`, and an Asia/Shanghai 02:00 issue creates an off-hours anomaly.
 
 - [ ] **Step 4: Run token tests and verify they fail**
 

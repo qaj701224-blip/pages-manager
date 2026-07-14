@@ -649,6 +649,7 @@ staging 首次部署前必须完成：
 3. xdt-api 的 staging 出口 CIDR 追加到现有 staging `IP_ALLOWLIST`；production 同理，不创建专用 S2S allowlist。真实 CIDR 和 shared secret 由双方通过受控渠道人工交换，永不提交到仓库、issue、PR 或日志。
 4. staging smoke 顺序：S2S issue -> 使用返回 key 通过捆绑 CLI 首次 deploy 建站 -> Console 列表显示 `XDMaker` -> Console revoke -> xdt-api 按 key/email revoke（幂等） -> 提升用户 `sessionVersion` 后确认旧 key 返回 `ACCESS_KEY_SESSION_STALE`。
 5. 联调记录只保留脱敏的 client/key id、内部 user/access-key id、状态码和时间；不得记录 token 明文、hash、pepper、HMAC secret、Feishu `open_id` 或完整 nonce。
+6. S2S 限频为每个 `client_id + environment` 每 10 分钟 1200 个通过 HMAC 的新请求、每个规范化邮箱每 10 分钟 20 次发放尝试；发放与吊销共用客户端额度，超限返回 `429 S2S_RATE_LIMITED`。
 
 production 首次部署前必须完成：
 

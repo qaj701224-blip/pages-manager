@@ -2,7 +2,7 @@ const encoder = new globalThis.TextEncoder();
 const decoder = new globalThis.TextDecoder();
 const MAX_BODY_BYTES = 16 * 1024;
 const TIMESTAMP_SKEW_SECONDS = 300;
-const RATE_LIMIT = 300;
+const RATE_LIMIT = 1200;
 const RATE_WINDOW_SECONDS = 10 * 60;
 const NONCE_TTL_SECONDS = 610;
 

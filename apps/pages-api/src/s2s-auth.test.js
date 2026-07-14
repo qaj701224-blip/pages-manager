@@ -279,9 +279,9 @@ test('keeps a future-skewed nonce reserved across the full timestamp acceptance 
   assert.equal(replay.code, 'S2S_REPLAY_DETECTED');
 });
 
-test('limits a client to 300 requests per ten-minute bucket', async () => {
+test('limits a client to 1200 requests per ten-minute bucket', async () => {
   const store = createTestPagesStore();
-  for (let index = 0; index < 300; index += 1) {
+  for (let index = 0; index < 1200; index += 1) {
     const result = await authenticateS2SRequest({
       request: await signedRequest({ nonce: `nonce_${String(index).padStart(8, '0')}` }),
       env,

@@ -566,7 +566,7 @@ test('revokes active non-expired XDMaker keys by email or key id and is idempote
   );
 });
 
-test('limits each normalized email to five issues per ten-minute bucket and records safe anomalies', async () => {
+test('limits each normalized email to twenty issues per ten-minute bucket and records safe anomalies', async () => {
   const store = createTestPagesStore({ now: () => BASE_NOW });
   await store.createUser({
     userId: 'usr_rate',
@@ -577,9 +577,9 @@ test('limits each normalized email to five issues per ten-minute bucket and reco
   });
   const env = testEnv({
     now: BASE_NOW,
-    accessKeyIds: ['ak_s2s', 'ak_s2s_2', 'ak_s2s_3', 'ak_s2s_4', 'ak_s2s_5', 'ak_s2s_6'],
+    accessKeyIds: Array.from({ length: 21 }, (_, index) => `ak_s2s_${index + 1}`),
   });
-  for (let index = 1; index <= 5; index += 1) {
+  for (let index = 1; index <= 20; index += 1) {
     const response = await handleS2STokensApi(
       await signedRequest({
         now: BASE_NOW,
@@ -595,7 +595,7 @@ test('limits each normalized email to five issues per ten-minute bucket and reco
   const limited = await handleS2STokensApi(
     await signedRequest({
       now: BASE_NOW,
-      nonce: 'nonce_rate0006',
+      nonce: 'nonce_rate0021',
       body: { email: 'rate@example.com', feishu_open_id: 'ou_rate', display_name: 'Rate User' },
     }),
     env,
@@ -609,7 +609,7 @@ test('limits each normalized email to five issues per ten-minute bucket and reco
   const subject = await sha256HexForText('xdmaker-s2s:user:rate@example.com');
   const userRate = [...store.s2sRateLimits.values()].find((row) => row.scope === 'user');
   assert.equal(userRate.subject, subject);
-  assert.equal(userRate.requestCount, 5);
+  assert.equal(userRate.requestCount, 20);
 
   const audits = await store.listAuditEvents({ environment: 'staging' });
   assert.ok(

@@ -7,7 +7,7 @@ import { buildS2SAnomalyPayload, notifyS2SAnomaly } from './slack-alerts.js';
 
 const ISSUE_PATH = '/.xd-pages/api/s2s/tokens';
 const REVOKE_PATH = '/.xd-pages/api/s2s/tokens/revoke';
-const USER_RATE_LIMIT = 5;
+const USER_RATE_LIMIT = 20;
 const USER_RATE_WINDOW_SECONDS = 10 * 60;
 const ACCESS_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 const ACCESS_KEY_SCOPES = ['deploy:site', 'read:site', 'rollback:site'];

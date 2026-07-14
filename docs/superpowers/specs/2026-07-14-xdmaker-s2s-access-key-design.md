@@ -229,9 +229,9 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 
 `s2s_rate_limits` 使用 `(environment, scope, subject, bucket_start)` 唯一键和带上限条件的原子 upsert，不使用先 count 再 insert 的可竞态实现。`scope = user` 时，`subject` 固定为 `sha256("xdmaker-s2s:user:" + normalized_email)` 的小写十六进制摘要；已有用户和刚创建用户都使用同一摘要，数据库失败重试不会换桶。`scope = client` 时，`subject` 为 authenticated client id。摘要只用于内部限频，不进入响应、审计或日志。首版固定门限，避免为单一集成增加动态配置系统：
 
-- 每个用户最多 5 次通过身份校验的发放尝试 / 10 分钟；后续数据库失败仍占用本 bucket 配额。
-- 每个 S2S client 最多 300 个首次出现且通过 HMAC 的请求 / 10 分钟，发放与吊销合并计数。
-- 第 3 次用户发放开始记录高频异常；超过第 5 次拒绝。
+- 每个用户最多 20 次通过身份校验的发放尝试 / 10 分钟；后续数据库失败仍占用本 bucket 配额。
+- 每个 S2S client 最多 1200 个首次出现且通过 HMAC 的请求 / 10 分钟，发放与吊销合并计数。
+- 第 3 次用户发放开始记录高频异常；超过第 20 次拒绝。
 - Asia/Shanghai 00:00–06:00 的成功发放记录非常规时段异常，但不单独阻断。
 
 审计事件至少包括：
