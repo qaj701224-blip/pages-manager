@@ -49,7 +49,7 @@ test('schema defines XDMaker identity, access-key source, and S2S guards', () =>
   assert.match(sql, /PRIMARY KEY \(environment, client_id, nonce\)/);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS s2s_rate_limits/);
   assert.match(sql, /PRIMARY KEY \(environment, scope, subject, bucket_start\)/);
-  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized[\s\S]*lower\(email\)/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized[\s\S]*lower\(trim\(email\)\)/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id/);
 });
 ```
@@ -69,7 +69,7 @@ ALTER TABLE users ADD COLUMN feishu_open_id TEXT;
 ALTER TABLE users ADD COLUMN created_source TEXT NOT NULL DEFAULT 'xd_sso';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
-  ON users(lower(email));
+  ON users(lower(trim(email)));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id
   ON users(feishu_open_id)
   WHERE feishu_open_id IS NOT NULL;
@@ -217,7 +217,7 @@ Add the D1 lookups:
 ```js
 async getUserByEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
-  const row = await this.db.prepare('SELECT * FROM users WHERE lower(email) = ?').bind(normalized).first();
+  const row = await this.db.prepare('SELECT * FROM users WHERE lower(trim(email)) = ?').bind(normalized).first();
   return row ? mapUser(row) : null;
 }
 

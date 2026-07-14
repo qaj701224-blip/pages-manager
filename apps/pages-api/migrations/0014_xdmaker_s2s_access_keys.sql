@@ -2,7 +2,7 @@ ALTER TABLE users ADD COLUMN feishu_open_id TEXT;
 ALTER TABLE users ADD COLUMN created_source TEXT NOT NULL DEFAULT 'xd_sso';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
-  ON users(lower(email));
+  ON users(lower(trim(email)));
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id
   ON users(feishu_open_id)

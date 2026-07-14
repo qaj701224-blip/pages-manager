@@ -92,7 +92,7 @@ class TestPagesStore {
     const userId = input.userId || input.id;
     const record = {
       id: userId,
-      email: input.email,
+      email: normalizeUserEmail(input.email),
       realname: input.realname || null,
       account: input.account || null,
       accountId: input.accountId || null,
@@ -140,7 +140,7 @@ class TestPagesStore {
     const statusChanged = existing && existing.employeeStatus !== employeeStatus;
     const record = {
       id: userId,
-      email: staleActiveOrUnknown ? existing.email : input.email,
+      email: staleActiveOrUnknown ? existing.email : normalizeUserEmail(input.email),
       realname: staleActiveOrUnknown ? existing.realname : input.realname || existing?.realname || null,
       account: staleActiveOrUnknown ? existing.account : input.account || existing?.account || null,
       accountId: staleActiveOrUnknown ? existing.accountId : input.accountId || existing?.accountId || null,

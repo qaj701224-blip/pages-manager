@@ -806,6 +806,23 @@ test('test store creates users with identity metadata and enforces identity uniq
   );
 });
 
+test('normalizes user emails before storing them and rejects whitespace duplicates', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+
+  const user = await store.createUser({
+    userId: 'usr_normalized',
+    email: '  User@Example.COM  ',
+  });
+
+  assert.equal(user.email, 'user@example.com');
+  assert.equal((await store.getUser('usr_normalized')).email, 'user@example.com');
+  assert.equal((await store.getUserByEmail('USER@example.com')).id, 'usr_normalized');
+  await assert.rejects(
+    () => store.createUser({ userId: 'usr_whitespace_duplicate', email: 'user@example.com' }),
+    /USER_EMAIL_CONFLICT/
+  );
+});
+
 for (const [storeName, createStore] of userIdentityStoreCases()) {
   test(`${storeName} looks up normalized email and binds Feishu identity without overwriting conflicts`, async () => {
     const store = createStore();
@@ -4004,8 +4021,8 @@ function fakeUserDb() {
           return {
             async first() {
               if (/SELECT \* FROM users WHERE user_id = \?/.test(sql)) return users.get(args[0]) || null;
-              if (/SELECT \* FROM users WHERE lower\(email\) = \?/.test(sql)) {
-                return [...users.values()].find((user) => user.email.toLowerCase() === args[0]) || null;
+              if (/SELECT \* FROM users WHERE lower\(trim\(email\)\) = \?/.test(sql)) {
+                return [...users.values()].find((user) => user.email.trim().toLowerCase() === args[0]) || null;
               }
               if (/SELECT \* FROM users WHERE feishu_open_id = \?/.test(sql)) {
                 assert.ok(args[0], 'empty Feishu open id should not query D1');

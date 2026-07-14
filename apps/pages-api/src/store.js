@@ -20,7 +20,7 @@ export class D1PagesStore {
     const userId = input.userId || input.id;
     const record = {
       id: userId,
-      email: input.email,
+      email: normalizeUserEmail(input.email),
       realname: input.realname || null,
       account: input.account || null,
       accountId: input.accountId || null,
@@ -79,7 +79,7 @@ export class D1PagesStore {
     const incomingSessionVersion = input.sessionVersion || 1;
     const record = {
       id: userId,
-      email: input.email,
+      email: normalizeUserEmail(input.email),
       realname: input.realname || null,
       account: input.account || null,
       accountId: input.accountId || null,
@@ -195,7 +195,10 @@ export class D1PagesStore {
   async getUserByEmail(email) {
     const normalizedEmail = normalizeUserEmail(email);
     if (!normalizedEmail) return null;
-    const row = await this.db.prepare('SELECT * FROM users WHERE lower(email) = ?').bind(normalizedEmail).first();
+    const row = await this.db
+      .prepare('SELECT * FROM users WHERE lower(trim(email)) = ?')
+      .bind(normalizedEmail)
+      .first();
     return row ? mapUser(row) : null;
   }
 
@@ -4099,7 +4102,7 @@ export class D1PagesStore {
     now = this.now(),
   }) {
     const normalizedEmail = normalizeUserEmail(email);
-    const selectorSql = keyId ? 'access_keys.id = ?' : 'lower(users.email) = ?';
+    const selectorSql = keyId ? 'access_keys.id = ?' : 'lower(trim(users.email)) = ?';
     const selectorValue = keyId || normalizedEmail;
     const result = await this.db
       .prepare(

@@ -48,7 +48,7 @@ test('schema defines XDMaker identity, access-key source, and S2S guards', () =>
     sql,
     /CREATE TABLE IF NOT EXISTS s2s_rate_limits\b[\s\S]*PRIMARY KEY \(environment, scope, subject, bucket_start\)/,
   );
-  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized\s+ON users\(lower\(email\)\)/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized\s+ON users\(lower\(trim\(email\)\)\)/);
   assert.match(
     sql,
     /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id\s+ON users\(feishu_open_id\)\s+WHERE feishu_open_id IS NOT NULL/,

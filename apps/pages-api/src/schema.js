@@ -407,7 +407,7 @@ export function createSchemaSql() {
     `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_resource
       ON deployment_resource_cleanup_tasks(environment, resource_type, resource_ref)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
-      ON users(lower(email))`,
+      ON users(lower(trim(email)))`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id
       ON users(feishu_open_id)
       WHERE feishu_open_id IS NOT NULL`,

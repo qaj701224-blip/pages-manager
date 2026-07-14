@@ -164,7 +164,7 @@ created_source TEXT NOT NULL DEFAULT 'xd_sso'
 
 约束：
 
-- `lower(email)` 全局唯一，作为飞书 SSO 与心动 SSO 的关联键。
+- `lower(trim(email))` 全局唯一，作为飞书 SSO 与心动 SSO 的关联键；应用写入和查询使用相同规范化规则。
 - 非空 `feishu_open_id` 全局唯一。
 - `created_source` 取 `xd_sso` 或 `xdmaker`，表示首次建档来源，后续登录不覆盖。
 - 现有用户回填 `created_source = xd_sso`。

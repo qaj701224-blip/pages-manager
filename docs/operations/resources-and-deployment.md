@@ -639,9 +639,9 @@ staging 首次部署前必须完成：
 1. 在 staging D1 migration 前置检查大小写无关的重复邮箱；发现冲突时先人工合并，禁止自动猜测：
 
    ```sql
-   SELECT lower(email), COUNT(*)
+   SELECT lower(trim(email)), COUNT(*)
    FROM users
-   GROUP BY lower(email)
+   GROUP BY lower(trim(email))
    HAVING COUNT(*) > 1;
    ```
 
