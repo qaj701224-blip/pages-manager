@@ -555,6 +555,7 @@ test('pages v2 deploy workflows keep production manual and staging scoped to v2 
   assert.match(staging, /- 'apps\/pages-console\/\*\*'/);
   assert.match(staging, /- 'packages\/pages-runtime-protocol\/\*\*'/);
   assert.match(staging, /- 'packages\/wfp-client\/\*\*'/);
+  assert.match(staging, /- 'scripts\/check-pages-v2-user-email-conflicts\.mjs'/);
   assert.match(staging, /- 'scripts\/provision-pages-v2-slots\.mjs'/);
   assert.doesNotMatch(staging, /sites\/\*\*/);
 });
@@ -613,6 +614,28 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       workflow,
       /name: Apply Pages API D1 migrations\n {8}if: .+pages-auth/,
       `${name} applies D1 migrations for pages-auth deploys`
+    );
+    const emailConflictPreflight = readWorkflowStep(workflow, 'Check normalized user email conflicts');
+    const applyMigrations = readWorkflowStep(workflow, 'Apply Pages API D1 migrations');
+    assert.match(
+      emailConflictPreflight,
+      new RegExp(
+        `node scripts/check-pages-v2-user-email-conflicts\\.mjs ${
+          environment === 'staging' ? 'pages-v2-metadata-staging' : 'pages-v2-metadata'
+        }`
+      ),
+      `${name} checks the correct D1 database`
+    );
+    assert.equal(emailConflictPreflight.match(/CLOUDFLARE_API_TOKEN/g)?.length, 2);
+    assert.equal(emailConflictPreflight.match(/CLOUDFLARE_ACCOUNT_ID/g)?.length, 2);
+    assert.ok(
+      workflow.indexOf('name: Check normalized user email conflicts') < workflow.indexOf('name: Apply Pages API D1 migrations'),
+      `${name} checks normalized email conflicts before applying migrations`
+    );
+    assert.equal(
+      emailConflictPreflight.match(/^ {8}if: (.+)$/m)?.[1],
+      applyMigrations.match(/^ {8}if: (.+)$/m)?.[1],
+      `${name} uses the same component condition for the preflight and migrations`
     );
     assert.ok(
       workflow.indexOf(`node scripts/render-pages-v2-wrangler.mjs apps/pages-auth ${environment}`) <
@@ -869,6 +892,7 @@ test('staging sync explicitly dispatches deploy workflows for deploy-affecting p
     'packages/pages-runtime-protocol/*',
     'packages/worker-kit/*',
     'packages/wfp-client/*',
+    'scripts/check-pages-v2-user-email-conflicts.mjs',
     'scripts/render-pages-v2-wrangler.mjs',
     'scripts/provision-pages-v2-slots.mjs',
     'scripts/put-pages-v2-secrets.sh',

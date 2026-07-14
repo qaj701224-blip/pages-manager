@@ -133,6 +133,13 @@ jobs:
           PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
         run: DRY_RUN=1 scripts/put-pages-v2-secrets.sh apps/pages-console
 
+      - name: Check normalized user email conflicts
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-auth' || env.DEPLOY_COMPONENT == 'pages-router' || env.DEPLOY_COMPONENT == 'pages-console'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/check-pages-v2-user-email-conflicts.mjs pages-v2-metadata
+
       - name: Apply Pages API D1 migrations
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-auth' || env.DEPLOY_COMPONENT == 'pages-router' || env.DEPLOY_COMPONENT == 'pages-console'
         env:

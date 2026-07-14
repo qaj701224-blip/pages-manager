@@ -636,7 +636,7 @@ staging 首次部署前必须完成：
 
 ### XDMaker S2S 联调附加清单
 
-1. 在 staging D1 migration 前置检查大小写无关的重复邮箱；发现冲突时先人工合并，禁止自动猜测：
+1. staging / production 部署 workflow 会在 D1 migration 前强制检查大小写无关的重复邮箱，并且只向日志输出冲突组数量。发现冲突时 workflow 会停止；运维人员通过受控 D1 会话执行以下明细查询，确定保留用户，逐表审计并迁移所有 `users.user_id` 引用，删除重复用户后重新执行部署。禁止 workflow 自动猜测或删除用户：
 
    ```sql
    SELECT lower(trim(email)), COUNT(*)

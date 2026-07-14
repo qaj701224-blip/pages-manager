@@ -76,7 +76,8 @@ jobs:
             case "$path" in
               apps/pages-api/* | apps/pages-auth/* | apps/pages-router/* | apps/kv-gateway/* | apps/pages-console/* | \
               packages/ip-guard/* | packages/pages-runtime-protocol/* | packages/worker-kit/* | packages/wfp-client/* | \
-              scripts/render-pages-v2-wrangler.mjs | scripts/provision-pages-v2-slots.mjs | \
+              scripts/check-pages-v2-user-email-conflicts.mjs | scripts/render-pages-v2-wrangler.mjs | \
+              scripts/provision-pages-v2-slots.mjs | \
               scripts/put-pages-v2-secrets.sh | package.json | pnpm-lock.yaml | \
               .github/workflows/deploy-pages-v2-staging.yml | .github/workflows/expand-pages-router-slots.yml | \
               docs/README.md | docs/api-boundary.md | docs/pages-v2-wfp-architecture.md | \
