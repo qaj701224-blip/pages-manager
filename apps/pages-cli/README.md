@@ -19,14 +19,37 @@ xd-cell help
 ## 常用命令
 
 ```bash
+# 登录与状态
 xd-cell login
+xd-cell logout
+xd-cell whoami --json
+xd-cell status demo --json
+xd-cell --version
+
+# 本地识别与发布
+xd-cell detect ./dist --json
 xd-cell deploy ./dist demo --visibility org
-xd-cell status demo
+
+# 站点
 xd-cell sites list --json
 xd-cell sites info demo --json
 xd-cell sites delete demo --yes --json
-xd-cell access get demo --json
+
+# 团队
+xd-cell teams --json
+
+# 站点级 Worker secret
 xd-cell secrets put demo API_TOKEN
+echo "$API_TOKEN" | xd-cell secrets put demo API_TOKEN --stdin
+xd-cell secrets delete demo API_TOKEN
+
+# 访问范围与 ACL
+xd-cell access get demo --json
+xd-cell access set demo --visibility acl --email user@xd.com
+xd-cell access grant demo --email another@xd.com
+xd-cell access revoke demo --email another@xd.com
+
+# 站点 URL
 xd-cell open demo --print
 ```
 
