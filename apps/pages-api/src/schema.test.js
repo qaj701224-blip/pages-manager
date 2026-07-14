@@ -60,7 +60,10 @@ test('schema defines XDMaker identity, access-key source, and S2S guards', () =>
   );
   assert.match(
     sql,
-    /CREATE INDEX IF NOT EXISTS idx_access_keys_s2s_owner_created\s+ON access_keys\(environment, issued_source, owner_user_id, created_at\)/,
+    new RegExp(
+      String.raw`CREATE INDEX IF NOT EXISTS idx_access_keys_s2s_owner_created\s+` +
+        String.raw`ON access_keys\(environment, issued_source, owner_user_id, created_at\)`
+    ),
   );
 });
 

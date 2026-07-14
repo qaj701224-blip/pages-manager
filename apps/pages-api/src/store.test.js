@@ -4021,7 +4021,10 @@ function fakeUserDb() {
                 if (!user || (user.feishu_open_id !== null && user.feishu_open_id !== expectedFeishuOpenId)) {
                   return { meta: { changes: 0 } };
                 }
-                if ([...users.values()].some((candidate) => candidate.user_id !== id && candidate.feishu_open_id === feishuOpenId)) {
+                const feishuIdConflict = [...users.values()].some(
+                  (candidate) => candidate.user_id !== id && candidate.feishu_open_id === feishuOpenId
+                );
+                if (feishuIdConflict) {
                   return { meta: { changes: 0 } };
                 }
                 user.feishu_open_id = feishuOpenId;

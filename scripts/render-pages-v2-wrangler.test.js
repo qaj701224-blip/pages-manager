@@ -243,7 +243,11 @@ test('pages-api renderer rejects invalid S2S client key registries', () => {
     ],
     [
       'more than two keys for one client',
-      'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607,xdmaker:key_202608:S2S_SECRET_XDMAKER_202608,xdmaker:key_202609:S2S_SECRET_XDMAKER_202609',
+      [
+        'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607',
+        'xdmaker:key_202608:S2S_SECRET_XDMAKER_202608',
+        'xdmaker:key_202609:S2S_SECRET_XDMAKER_202609',
+      ].join(','),
     ],
   ];
 

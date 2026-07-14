@@ -7,6 +7,18 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scriptPath = join(repoRoot, 'scripts/put-pages-v2-secrets.sh');
 const testSlackWebhookUrl = ['https://hooks.slack.com', 'services', 'T000', 'B000', 'PLACEHOLDER'].join('/');
+const fixtureSecretPattern = new RegExp(
+  [
+    'cf-runtime-token',
+    'hooks\\.slack\\.com',
+    'site-secret-encryption-key',
+    'webhook-url-encryption-key',
+    'xds-openai-token',
+    'active-pepper',
+    'old-pepper',
+    'fixture-s2s-shared-secret',
+  ].join('|')
+);
 
 const baseEnv = {
   ...process.env,
@@ -55,10 +67,7 @@ test('pages-api secret injection includes WFP runtime secrets and access key pep
   assert.match(result.stdout, /ACCESS_KEY_PEPPER_OLD/);
   assert.match(result.stdout, /ACCESS_KEY_PEPPER_202606/);
   assert.match(result.stdout, /S2S_SECRET_XDMAKER_202607/);
-  assert.doesNotMatch(
-    result.stdout,
-    /cf-runtime-token|hooks\.slack\.com|site-secret-encryption-key|webhook-url-encryption-key|xds-openai-token|active-pepper|old-pepper|fixture-s2s-shared-secret/
-  );
+  assert.doesNotMatch(result.stdout, fixtureSecretPattern);
 });
 
 test('pages-api secret injection rejects invalid S2S client key registries without printing secrets', () => {
@@ -75,7 +84,11 @@ test('pages-api secret injection rejects invalid S2S client key registries witho
     ],
     [
       'more than two keys for one client',
-      'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607,xdmaker:key_202608:S2S_SECRET_XDMAKER_202608,xdmaker:key_202609:S2S_SECRET_XDMAKER_202609',
+      [
+        'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607',
+        'xdmaker:key_202608:S2S_SECRET_XDMAKER_202608',
+        'xdmaker:key_202609:S2S_SECRET_XDMAKER_202609',
+      ].join(','),
     ],
   ];
 
