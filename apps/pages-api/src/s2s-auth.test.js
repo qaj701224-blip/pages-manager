@@ -67,7 +67,9 @@ test('authenticates a valid request and returns the raw body without consuming t
   });
   assert.equal(replay.ok, false);
   assert.equal(replay.code, 'S2S_REPLAY_DETECTED');
-  assert.equal(replay.status, 401);
+  assert.equal(replay.status, 409);
+  assert.equal(replay.message, 'S2S request has already been received.');
+  assert.equal(replay.action, 'Generate a new nonce and retry.');
 });
 
 test('validates malformed requests and registry entries with stable failure codes', async (t) => {
@@ -115,6 +117,81 @@ test('validates malformed requests and registry entries with stable failure code
     nowSeconds,
   });
   assert.equal(invalidRegistry.code, 'S2S_CLIENT_INVALID');
+
+  const unsafeSecretRegistry = await authenticateS2SRequest({
+    request: await signedRequest(),
+    env: { S2S_CLIENT_KEYS: 'client_demo:key_1:CLIENT_DEMO_SECRET', CLIENT_DEMO_SECRET: 'test-secret' },
+    environment,
+    store: createTestPagesStore(),
+    nowSeconds,
+  });
+  assert.equal(unsafeSecretRegistry.code, 'S2S_CLIENT_INVALID');
+
+  const unknownClient = await authenticateS2SRequest({
+    request: await signedRequest(),
+    env: { S2S_CLIENT_KEYS: 'other_client:key_1:S2S_SECRET_OTHER', S2S_SECRET_OTHER: 'secret' },
+    environment,
+    store: createTestPagesStore(),
+    nowSeconds,
+  });
+  assert.equal(unknownClient.code, 'S2S_CLIENT_INVALID');
+
+  const unknownKey = await authenticateS2SRequest({
+    request: await signedRequest(),
+    env: {
+      S2S_CLIENT_KEYS: 'client_demo:key_2:S2S_SECRET_CLIENT_DEMO',
+      S2S_SECRET_CLIENT_DEMO: 'test-secret',
+    },
+    environment,
+    store: createTestPagesStore(),
+    nowSeconds,
+  });
+  assert.equal(unknownKey.code, 'S2S_CLIENT_INVALID');
+
+  const rotatedEnv = {
+    S2S_CLIENT_KEYS: 'client_demo:key_1:S2S_SECRET_CLIENT_DEMO,client_demo:key_2:S2S_SECRET_CLIENT_DEMO_NEXT',
+    S2S_SECRET_CLIENT_DEMO: 'test-secret',
+    S2S_SECRET_CLIENT_DEMO_NEXT: 'next-test-secret',
+  };
+  const rotatedStore = createTestPagesStore();
+  const currentKeyResult = await authenticateS2SRequest({
+    request: await signedRequest({ nonce: 'nonce_rotate01' }),
+    env: rotatedEnv,
+    environment,
+    store: rotatedStore,
+    nowSeconds,
+  });
+  const nextKeyResult = await authenticateS2SRequest({
+    request: await signedRequest({
+      keyId: 'key_2',
+      secret: rotatedEnv.S2S_SECRET_CLIENT_DEMO_NEXT,
+      nonce: 'nonce_rotate02',
+    }),
+    env: rotatedEnv,
+    environment,
+    store: rotatedStore,
+    nowSeconds,
+  });
+  assert.equal(currentKeyResult.ok, true);
+  assert.equal(nextKeyResult.ok, true);
+
+  const overConfigured = await authenticateS2SRequest({
+    request: await signedRequest(),
+    env: {
+      S2S_CLIENT_KEYS: [
+        'client_demo:key_1:S2S_SECRET_CLIENT_DEMO',
+        'client_demo:key_2:S2S_SECRET_CLIENT_DEMO_NEXT',
+        'client_demo:key_3:S2S_SECRET_CLIENT_DEMO_THIRD',
+      ].join(','),
+      S2S_SECRET_CLIENT_DEMO: 'test-secret',
+      S2S_SECRET_CLIENT_DEMO_NEXT: 'next-test-secret',
+      S2S_SECRET_CLIENT_DEMO_THIRD: 'third-test-secret',
+    },
+    environment,
+    store: createTestPagesStore(),
+    nowSeconds,
+  });
+  assert.equal(overConfigured.code, 'S2S_CLIENT_INVALID');
 });
 
 test('checks the signature before replay and rate guards', async () => {
@@ -156,6 +233,31 @@ test('checks the signature before replay and rate guards', async () => {
   assert.deepEqual(calls, ['reserve']);
 });
 
+test('keeps a future-skewed nonce reserved across the full timestamp acceptance window', async () => {
+  const store = createTestPagesStore();
+  const timestamp = nowSeconds + 300;
+  const nonce = 'nonce_future300';
+  const first = await authenticateS2SRequest({
+    request: await signedRequest({ timestamp, nonce }),
+    env,
+    environment,
+    store,
+    nowSeconds,
+  });
+  assert.equal(first.ok, true);
+
+  const replayNow = nowSeconds + 600;
+  await store.cleanupExpiredS2SGuards(new Date(replayNow * 1000).toISOString());
+  const replay = await authenticateS2SRequest({
+    request: await signedRequest({ timestamp, nonce }),
+    env,
+    environment,
+    store,
+    nowSeconds: replayNow,
+  });
+  assert.equal(replay.code, 'S2S_REPLAY_DETECTED');
+});
+
 test('limits a client to 300 requests per ten-minute bucket', async () => {
   const store = createTestPagesStore();
   for (let index = 0; index < 300; index += 1) {
@@ -189,25 +291,28 @@ async function signedRequest({
   timestamp = nowSeconds,
   contentType = 'application/json',
   signature,
+  clientId = 'client_demo',
+  keyId = 'key_1',
+  secret = env.S2S_SECRET_CLIENT_DEMO,
 } = {}) {
   const pathname = `/publish${query}`;
   const canonical = await buildS2SCanonicalInput({
     environment,
-    clientId: 'client_demo',
-    keyId: 'key_1',
+    clientId,
+    keyId,
     method,
     pathname: '/publish',
     timestamp,
     nonce,
     rawBody,
   });
-  const signed = signature || (await createS2SSignature({ secret: env.S2S_SECRET_CLIENT_DEMO, canonicalInput: canonical }));
+  const signed = signature || (await createS2SSignature({ secret, canonicalInput: canonical }));
   return new Request(`https://api.example.test${pathname}`, {
     method,
     headers: {
       'Content-Type': contentType,
-      'X-XD-Cell-S2S-Client': 'client_demo',
-      'X-XD-Cell-S2S-Key-Id': 'key_1',
+      'X-XD-Cell-S2S-Client': clientId,
+      'X-XD-Cell-S2S-Key-Id': keyId,
       'X-XD-Cell-S2S-Timestamp': String(timestamp),
       'X-XD-Cell-S2S-Nonce': nonce,
       'X-XD-Cell-S2S-Signature': signed,

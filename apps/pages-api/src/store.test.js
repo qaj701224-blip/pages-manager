@@ -132,6 +132,67 @@ test('D1 S2S guard methods use unique nonce insertion, atomic RETURNING rate upd
   assert.match(calls[3].sql, /DELETE FROM s2s_rate_limits WHERE expires_at <= \?/);
 });
 
+test('D1 reserveS2SNonce propagates non-unique database failures', async () => {
+  const db = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            run: async () => {
+              throw new Error('NOT NULL constraint failed: s2s_nonces.endpoint');
+            },
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  await assert.rejects(
+    () =>
+      store.reserveS2SNonce({
+        environment: 'production',
+        clientId: 'client_demo',
+        nonce: 'nonce_ABC12345',
+        endpoint: null,
+        receivedAt: '2026-07-14T00:00:00.000Z',
+        expiresAt: '2026-07-14T00:10:00.000Z',
+      }),
+    /NOT NULL constraint failed/,
+  );
+});
+
+test('D1 reserveS2SNonce returns false only for the nonce primary-key conflict', async () => {
+  const db = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            run: async () => {
+              throw new Error(
+                'D1_ERROR: UNIQUE constraint failed: s2s_nonces.environment, s2s_nonces.client_id, s2s_nonces.nonce',
+              );
+            },
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db);
+
+  assert.equal(
+    await store.reserveS2SNonce({
+      environment: 'production',
+      clientId: 'client_demo',
+      nonce: 'nonce_ABC12345',
+      endpoint: '/publish',
+      receivedAt: '2026-07-14T00:00:00.000Z',
+      expiresAt: '2026-07-14T00:10:10.000Z',
+    }),
+    false,
+  );
+});
+
 test('createSite creates owner membership and inactive route authority record', async () => {
   const store = createSeededStore();
 

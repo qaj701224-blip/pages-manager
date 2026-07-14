@@ -3989,7 +3989,7 @@ export class D1PagesStore {
         .run();
       return true;
     } catch (error) {
-      if (/constraint|unique/i.test(String(error?.message || error))) return false;
+      if (isS2SNonceUniqueConstraintError(error)) return false;
       throw error;
     }
   }
@@ -5379,4 +5379,11 @@ function mapDeploymentResourceCleanupTask(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function isS2SNonceUniqueConstraintError(error) {
+  const message = String(error?.message || error || '');
+  return /UNIQUE constraint failed:\s*s2s_nonces\.environment,\s*s2s_nonces\.client_id,\s*s2s_nonces\.nonce/i.test(
+    message,
+  );
 }

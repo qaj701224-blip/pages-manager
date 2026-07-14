@@ -4,7 +4,7 @@ const MAX_BODY_BYTES = 16 * 1024;
 const TIMESTAMP_SKEW_SECONDS = 300;
 const RATE_LIMIT = 300;
 const RATE_WINDOW_SECONDS = 10 * 60;
-const NONCE_TTL_SECONDS = 10 * 60;
+const NONCE_TTL_SECONDS = 610;
 
 export async function buildS2SCanonicalInput(input = {}) {
   const {
@@ -213,7 +213,7 @@ function failure(code, extra = {}) {
     S2S_TIMESTAMP_INVALID: ['S2S timestamp is invalid.', 'Synchronize the client clock and retry.', 401],
     S2S_SIGNATURE_INVALID: ['S2S signature is invalid.', 'Recompute the S2S signature and retry.', 401],
     S2S_REQUEST_INVALID: ['S2S request is invalid.', 'Send a POST application/json request with a valid nonce and body.', 400],
-    S2S_REPLAY_DETECTED: ['S2S request has already been received.', 'Generate a new nonce and retry.', 401],
+    S2S_REPLAY_DETECTED: ['S2S request has already been received.', 'Generate a new nonce and retry.', 409],
     S2S_RATE_LIMITED: ['S2S rate limit exceeded.', 'Wait before retrying.', 429],
   }[code];
   const [message, action, status] = details || ['S2S request rejected.', 'Check the request and retry.', 400];
