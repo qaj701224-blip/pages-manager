@@ -175,7 +175,7 @@ S2S 用户解析顺序：
 1. 规范化邮箱并分别查询邮箱和 `feishu_open_id`。
 2. 两者命中不同用户时 fail closed，返回 `S2S_IDENTITY_CONFLICT`。
 3. `feishu_open_id` 已命中但请求邮箱与该用户邮箱不一致时 fail closed；S2S 不修改用户邮箱，也不创建第二个用户。
-4. 邮箱命中且飞书字段为空时，把 `feishu_open_id` 绑定到该用户；已绑定相同值则复用。
+4. 邮箱命中且飞书字段为空时，先执行条件更新 `SET feishu_open_id = ? WHERE user_id = ? AND (feishu_open_id IS NULL OR feishu_open_id = ?)`；影响行数为 1 才继续，影响行数为 0 返回 `S2S_IDENTITY_CONFLICT`。已绑定相同值则复用。该绑定步骤独立提交并在生成 key 前完成，避免并发请求以不同飞书标识覆盖绑定。
 5. 邮箱命中的用户只有 `employee_status = active` 才能发 key；`disabled`、`left`、`unknown` 都不被 XDMaker 请求重新激活。
 6. 邮箱和飞书标识都未命中时，信任 xdt-api 背书的信息，创建新的内部 `usr_*`，状态设为 `active`，`created_source = xdmaker`，不填部门、员工编号或心动 SSO 字段。
 7. 已有心动 SSO 用户保留平台权威姓名；XDMaker 只在新建用户或现有姓名为空时写入 `display_name`。
@@ -212,11 +212,11 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 1. 现有 `IP_ALLOWLIST` 门禁。
 2. 限制 raw body 大小，校验 HMAC、timestamp、client/key registry。
 3. 原子占用 nonce；重复 nonce 直接拒绝且不计入限频，再原子增加 client rate bucket。
-4. 校验请求体，按邮箱/飞书标识解析或创建用户。
+4. 校验请求体，按邮箱/飞书标识解析或创建用户；新用户创建与飞书绑定使用条件写入，冲突时不进入 key 发放。
 5. 原子增加用户 issuance-attempt rate bucket；超过门限则拒绝，不生成 key。
 6. 在内存生成 access key 明文与 hash。
-7. 用一个 D1 batch 写入用户绑定或新用户、access key、可选旧 key 吊销和审计事件。
-8. batch 完全成功后返回一次明文；任一步失败都不返回 token。
+7. 用一个 D1 batch 写入 access key、可选旧 key 吊销和发放审计；用户建档/飞书绑定已在前置身份事务中完成。
+8. key batch 完全成功后返回一次明文；任一步失败都不返回 token。前置建档可以保留为下次请求复用，但不会产生半成品 access key。
 
 吊销：
 
@@ -227,7 +227,7 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 
 ## 限频、异常检测与审计
 
-`s2s_rate_limits` 使用 `(environment, scope, subject, bucket_start)` 唯一键和带上限条件的原子 upsert，不使用先 count 再 insert 的可竞态实现。首版固定门限，避免为单一集成增加动态配置系统：
+`s2s_rate_limits` 使用 `(environment, scope, subject, bucket_start)` 唯一键和带上限条件的原子 upsert，不使用先 count 再 insert 的可竞态实现。`scope = user` 时，`subject` 固定为 `sha256("xdmaker-s2s:user:" + normalized_email)` 的小写十六进制摘要；已有用户和刚创建用户都使用同一摘要，数据库失败重试不会换桶。`scope = client` 时，`subject` 为 authenticated client id。摘要只用于内部限频，不进入响应、审计或日志。首版固定门限，避免为单一集成增加动态配置系统：
 
 - 每个用户最多 5 次通过身份校验的发放尝试 / 10 分钟；后续数据库失败仍占用本 bucket 配额。
 - 每个 S2S client 最多 300 个首次出现且通过 HMAC 的请求 / 10 分钟，发放与吊销合并计数。
@@ -284,6 +284,7 @@ Console 的 access key 列表响应增加 `issuedSource`，个人 Access Keys �
 - `disabled`、`left`、`unknown` 用户不能被 S2S 重新激活。
 - 后续心动 SSO 按邮箱复用 XDMaker 用户并保留原 `user_id`。
 - migration schema 和重复邮箱 fail-closed 前置检查得到覆盖。
+- 新建普通 CLI/Console access key 的 `issued_session_version` 保持 `NULL`，不继承 S2S freshness 约束。
 
 ### Key 与权限
 
