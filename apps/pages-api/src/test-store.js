@@ -53,6 +53,8 @@ class TestPagesStore {
       accountId: input.accountId || null,
       employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
+      feishuOpenId: input.feishuOpenId || null,
+      createdSource: input.createdSource || 'xd_sso',
       departmentPath: input.departmentPath || null,
       departmentCheckedAt: input.departmentCheckedAt || null,
       sessionVersion: input.sessionVersion || 1,
@@ -61,13 +63,30 @@ class TestPagesStore {
       updatedAt: now,
     };
     if (this.users.has(record.id)) throw new Error('USER_EXISTS');
+    if ([...this.users.values()].some((user) => normalizeUserEmail(user.email) === normalizeUserEmail(record.email))) {
+      throw new Error('USER_EMAIL_CONFLICT');
+    }
+    if (
+      record.feishuOpenId !== null &&
+      [...this.users.values()].some((user) => user.feishuOpenId === record.feishuOpenId)
+    ) {
+      throw new Error('USER_FEISHU_OPEN_ID_CONFLICT');
+    }
     this.users.set(record.id, record);
     return cloneRecord(record);
   }
 
   async upsertUserFromSso(input) {
-    const userId = input.userId || input.id;
-    const existing = this.users.get(userId) || null;
+    const incomingUserId = input.userId || input.id;
+    const byId = await this.getUser(incomingUserId);
+    const byEmail = await this.getUserByEmail(input.email);
+    if (byId && byEmail && byId.id !== byEmail.id) {
+      const error = new Error('USER_IDENTITY_CONFLICT');
+      error.code = 'USER_IDENTITY_CONFLICT';
+      throw error;
+    }
+    const existing = byId || byEmail;
+    const userId = byId?.id || byEmail?.id || incomingUserId;
     const now = input.updatedAt || this.now();
     const incomingSessionVersion = input.sessionVersion || 1;
     const incomingStatus = input.employeeStatus || 'unknown';
@@ -82,6 +101,8 @@ class TestPagesStore {
       accountId: staleActiveOrUnknown ? existing.accountId : input.accountId || existing?.accountId || null,
       employeenum: staleActiveOrUnknown ? existing.employeenum : input.employeenum || existing?.employeenum || null,
       employeeStatus,
+      feishuOpenId: existing?.feishuOpenId || null,
+      createdSource: existing?.createdSource || 'xd_sso',
       departmentPath: staleActiveOrUnknown
         ? existing.departmentPath || null
         : input.departmentPath || existing?.departmentPath || null,
@@ -101,6 +122,29 @@ class TestPagesStore {
 
   async getUser(id) {
     return cloneRecord(this.users.get(id) || null);
+  }
+
+  async getUserByEmail(email) {
+    const normalizedEmail = normalizeUserEmail(email);
+    if (!normalizedEmail) return null;
+    const user = [...this.users.values()].find((candidate) => normalizeUserEmail(candidate.email) === normalizedEmail);
+    return cloneRecord(user || null);
+  }
+
+  async getUserByFeishuOpenId(feishuOpenId) {
+    const user = [...this.users.values()].find((candidate) => candidate.feishuOpenId === feishuOpenId);
+    return cloneRecord(user || null);
+  }
+
+  async bindUserFeishuOpenId(userId, feishuOpenId) {
+    const user = this.users.get(userId) || null;
+    if (!user || (user.feishuOpenId !== null && user.feishuOpenId !== feishuOpenId)) return false;
+    if ([...this.users.values()].some((candidate) => candidate.id !== userId && candidate.feishuOpenId === feishuOpenId)) {
+      return false;
+    }
+    user.feishuOpenId = feishuOpenId;
+    user.updatedAt = this.now();
+    return true;
   }
 
   async grantPlatformAdmin({ environment, userId, grantedByUserId, grantReason }) {
@@ -2327,6 +2371,10 @@ function normalizeNullableString(value) {
 
 function normalizeRequiredString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function normalizeUserEmail(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
 function normalizeTeamRole(role) {

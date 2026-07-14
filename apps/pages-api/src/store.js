@@ -26,6 +26,8 @@ export class D1PagesStore {
       accountId: input.accountId || null,
       employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
+      feishuOpenId: input.feishuOpenId || null,
+      createdSource: input.createdSource || 'xd_sso',
       departmentPath: input.departmentPath || null,
       departmentCheckedAt: input.departmentCheckedAt || null,
       sessionVersion: input.sessionVersion || 1,
@@ -37,8 +39,9 @@ export class D1PagesStore {
       .prepare(
         `INSERT INTO users (
           user_id, account, account_id, email, realname, employeenum, employee_status,
-          department_path, department_checked_at, session_version, last_login_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          feishu_open_id, created_source, department_path, department_checked_at,
+          session_version, last_login_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -48,6 +51,8 @@ export class D1PagesStore {
         record.realname,
         record.employeenum,
         record.employeeStatus,
+        record.feishuOpenId,
+        record.createdSource,
         record.departmentPath,
         record.departmentCheckedAt,
         record.sessionVersion,
@@ -60,7 +65,16 @@ export class D1PagesStore {
   }
 
   async upsertUserFromSso(input) {
-    const userId = input.userId || input.id;
+    const incomingUserId = input.userId || input.id;
+    const byId = await this.getUser(incomingUserId);
+    const byEmail = await this.getUserByEmail(input.email);
+    if (byId && byEmail && byId.id !== byEmail.id) {
+      const error = new Error('USER_IDENTITY_CONFLICT');
+      error.code = 'USER_IDENTITY_CONFLICT';
+      throw error;
+    }
+    const existing = byId || byEmail;
+    const userId = byId?.id || byEmail?.id || incomingUserId;
     const now = input.updatedAt || this.now();
     const incomingSessionVersion = input.sessionVersion || 1;
     const record = {
@@ -71,6 +85,8 @@ export class D1PagesStore {
       accountId: input.accountId || null,
       employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
+      feishuOpenId: existing?.feishuOpenId || null,
+      createdSource: existing?.createdSource || 'xd_sso',
       departmentPath: input.departmentPath || null,
       departmentCheckedAt: input.departmentCheckedAt || null,
       sessionVersion: incomingSessionVersion,
@@ -82,8 +98,9 @@ export class D1PagesStore {
       .prepare(
         `INSERT INTO users (
           user_id, account, account_id, email, realname, employeenum, employee_status,
-          department_path, department_checked_at, session_version, last_login_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          feishu_open_id, created_source, department_path, department_checked_at,
+          session_version, last_login_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
           account = CASE
             WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.account
@@ -157,6 +174,8 @@ export class D1PagesStore {
         record.realname,
         record.employeenum,
         record.employeeStatus,
+        record.feishuOpenId,
+        record.createdSource,
         record.departmentPath,
         record.departmentCheckedAt,
         record.sessionVersion,
@@ -171,6 +190,36 @@ export class D1PagesStore {
   async getUser(id) {
     const row = await this.db.prepare('SELECT * FROM users WHERE user_id = ?').bind(id).first();
     return row ? mapUser(row) : null;
+  }
+
+  async getUserByEmail(email) {
+    const normalizedEmail = normalizeUserEmail(email);
+    if (!normalizedEmail) return null;
+    const row = await this.db.prepare('SELECT * FROM users WHERE lower(email) = ?').bind(normalizedEmail).first();
+    return row ? mapUser(row) : null;
+  }
+
+  async getUserByFeishuOpenId(feishuOpenId) {
+    const row = await this.db.prepare('SELECT * FROM users WHERE feishu_open_id = ?').bind(feishuOpenId).first();
+    return row ? mapUser(row) : null;
+  }
+
+  async bindUserFeishuOpenId(userId, feishuOpenId) {
+    const result = await this.db
+      .prepare(
+        `UPDATE users
+        SET feishu_open_id = ?, updated_at = ?
+        WHERE user_id = ?
+          AND (feishu_open_id IS NULL OR feishu_open_id = ?)
+          AND NOT EXISTS (
+            SELECT 1 FROM users AS bound_users
+            WHERE bound_users.feishu_open_id = ?
+              AND bound_users.user_id != users.user_id
+          )`
+      )
+      .bind(feishuOpenId, this.now(), userId, feishuOpenId, feishuOpenId)
+      .run();
+    return result?.meta?.changes === 1;
   }
 
   async grantPlatformAdmin({ environment, userId, grantedByUserId, grantReason }) {
@@ -4439,6 +4488,8 @@ function mapUser(row) {
     accountId: row.account_id,
     employeenum: row.employeenum,
     employeeStatus: row.employee_status,
+    feishuOpenId: row.feishu_open_id || null,
+    createdSource: row.created_source || 'xd_sso',
     departmentPath: row.department_path || null,
     departmentCheckedAt: row.department_checked_at || null,
     sessionVersion: row.session_version,
@@ -4921,6 +4972,10 @@ function normalizeNullableString(value) {
 
 function normalizeRequiredString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function normalizeUserEmail(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
 function normalizeTeamRole(role) {

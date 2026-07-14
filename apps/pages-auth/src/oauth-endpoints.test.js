@@ -1137,6 +1137,61 @@ test('callback syncs SSO profile through shared metadata store without pages-api
   assert.equal(syncedUser.lastLoginAt, '2027-01-15T08:00:00.000Z');
 });
 
+test('callback keeps the XDMaker platform user id as the auth session subject when SSO email matches', async () => {
+  const oauthStorage = createFakeStorage();
+  const sessionStorage = createFakeStorage();
+  const pagesStore = createTestPagesStore({ now: () => '2027-01-15T08:00:00.000Z' });
+  await pagesStore.createUser({
+    userId: 'usr_platform',
+    email: 'maker@example.test',
+    employeeStatus: 'active',
+    feishuOpenId: 'ou_maker',
+    createdSource: 'xdmaker',
+  });
+  const created = await createStoredOAuthState(oauthStorage, {
+    environment: 'production',
+    siteHost: 'demo.pages.xd.team',
+    returnTo: 'https://demo.pages.xd.team/app',
+    now,
+    ttlSeconds: 300,
+    stateId: 'ost_xdmaker',
+    stateSecret: 'state-secret',
+  });
+  const env = testEnv({
+    syncSsoUserProfile: undefined,
+    PAGES_STORE: pagesStore,
+    consumeOAuthStateRecord: (publicState, options) => consumeStoredOAuthState(oauthStorage, publicState, options),
+    createOAuthSiteCodeRecord: (input) => createStoredOAuthSiteCode(oauthStorage, input),
+    createAuthSessionRecord: (input) => createStoredSession(sessionStorage, input),
+    hydrateDepartmentAfterSso: async () => null,
+    fetchSsoToken: async () => ({ accessToken: 'sso-access-token' }),
+    fetchSsoProfile: async () => ({
+      userId: 'usr_sso',
+      email: 'MAKER@example.test',
+      employee_status: '1',
+    }),
+  });
+
+  const response = await handleOAuthCallback(
+    new Request(`https://auth.pages.xd.team/.xd-pages/auth/callback?code=oauth-code&state=${created.publicState}`),
+    env,
+    readAuthConfig(env)
+  );
+
+  assert.equal(response.status, 302, await response.clone().text());
+  const cookie = response.headers.get('Set-Cookie');
+  const token = cookie.split(';', 1)[0].split('=', 2)[1];
+  const verified = await verifySessionJwt(token, env, {
+    purpose: 'auth_session',
+    audience: 'pages-auth',
+    now,
+  });
+  assert.equal(verified.sub, 'usr_platform');
+  assert.equal((await sessionStorage.get(`session:${verified.sid}`)).userId, 'usr_platform');
+  assert.equal((await pagesStore.getUser('usr_platform')).createdSource, 'xdmaker');
+  assert.equal(await pagesStore.getUser('usr_sso'), null);
+});
+
 test('callback refuses stale active SSO profiles when the authority store keeps the user disabled', async () => {
   const oauthStorage = createFakeStorage();
   const sessionStorage = createFakeStorage();

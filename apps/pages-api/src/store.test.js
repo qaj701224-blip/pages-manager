@@ -632,8 +632,137 @@ test('hostname claim keeps a slug group locked while another hostname is still i
   assert.equal(blocked.claim.hostname, 'portal.pages.xd.team');
 });
 
+test('test store creates users with identity metadata and enforces identity uniqueness', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+
+  const ssoUser = await store.createUser({
+    userId: 'usr_sso',
+    email: 'sso@example.com',
+  });
+  const xdmakerUser = await store.createUser({
+    userId: 'usr_xdmaker',
+    email: 'maker@example.com',
+    feishuOpenId: 'ou_maker',
+    createdSource: 'xdmaker',
+  });
+
+  assert.equal(ssoUser.feishuOpenId, null);
+  assert.equal(ssoUser.createdSource, 'xd_sso');
+  assert.equal(xdmakerUser.feishuOpenId, 'ou_maker');
+  assert.equal(xdmakerUser.createdSource, 'xdmaker');
+  await assert.rejects(
+    () => store.createUser({ userId: 'usr_duplicate_email', email: 'MAKER@EXAMPLE.COM' }),
+    /USER_EMAIL_CONFLICT/
+  );
+  await assert.rejects(
+    () => store.createUser({ userId: 'usr_duplicate_feishu', email: 'other@example.com', feishuOpenId: 'ou_maker' }),
+    /USER_FEISHU_OPEN_ID_CONFLICT/
+  );
+});
+
+for (const [storeName, createStore] of userIdentityStoreCases()) {
+  test(`${storeName} looks up normalized email and binds Feishu identity without overwriting conflicts`, async () => {
+    const store = createStore();
+    const user = await store.createUser({
+      userId: 'usr_maker',
+      email: 'Maker@Example.com',
+      createdSource: 'xdmaker',
+    });
+    await store.createUser({ userId: 'usr_other', email: 'other@example.com' });
+
+    assert.equal(user.createdSource, 'xdmaker');
+    assert.equal((await store.getUserByEmail('  MAKER@example.COM  ')).id, 'usr_maker');
+    assert.equal(await store.getUserByEmail('missing@example.com'), null);
+    assert.equal(await store.bindUserFeishuOpenId('usr_maker', 'ou_maker'), true);
+    assert.equal((await store.getUserByFeishuOpenId('ou_maker')).id, 'usr_maker');
+    assert.equal(await store.bindUserFeishuOpenId('usr_maker', 'ou_maker'), true);
+    assert.equal(await store.bindUserFeishuOpenId('usr_maker', 'ou_changed'), false);
+    assert.equal(await store.bindUserFeishuOpenId('usr_other', 'ou_maker'), false);
+    assert.equal(await store.bindUserFeishuOpenId('usr_missing', 'ou_missing'), false);
+  });
+
+  test(`${storeName} reuses XDMaker identity by normalized email and preserves its source`, async () => {
+    const store = createStore();
+    await store.createUser({
+      userId: 'usr_platform',
+      email: 'maker@example.com',
+      feishuOpenId: 'ou_maker',
+      createdSource: 'xdmaker',
+    });
+
+    const user = await store.upsertUserFromSso({
+      userId: 'usr_sso',
+      email: 'MAKER@example.com',
+      realname: 'Maker User',
+      account: 'maker.account',
+      accountId: 'acct_maker',
+      employeenum: 'maker',
+      employeeStatus: 'active',
+      sessionVersion: 2,
+      lastLoginAt: '2026-06-15T00:01:00.000Z',
+      updatedAt: '2026-06-15T00:01:00.000Z',
+    });
+
+    assert.equal(user.id, 'usr_platform');
+    assert.equal(user.createdSource, 'xdmaker');
+    assert.equal(user.feishuOpenId, 'ou_maker');
+    assert.equal(user.accountId, 'acct_maker');
+    assert.equal(user.employeeStatus, 'active');
+    assert.equal(await store.getUser('usr_sso'), null);
+  });
+
+  test(`${storeName} rejects conflicting user id and email identities`, async () => {
+    const store = createStore();
+    await store.createUser({ userId: 'usr_sso', email: 'sso@example.com' });
+    await store.createUser({ userId: 'usr_platform', email: 'maker@example.com', createdSource: 'xdmaker' });
+
+    await assert.rejects(
+      () => store.upsertUserFromSso({ userId: 'usr_sso', email: 'MAKER@example.com', employeeStatus: 'active' }),
+      (error) => {
+        assert.equal(error.code, 'USER_IDENTITY_CONFLICT');
+        assert.equal(error.message, 'USER_IDENTITY_CONFLICT');
+        return true;
+      }
+    );
+  });
+
+  test(`${storeName} does not reactivate disabled or left XDMaker users matched by email`, async () => {
+    for (const employeeStatus of ['disabled', 'left']) {
+      const store = createStore();
+      await store.createUser({
+        userId: `usr_platform_${employeeStatus}`,
+        email: `${employeeStatus}@example.com`,
+        realname: 'Current Name',
+        employeeStatus,
+        sessionVersion: 7,
+        lastLoginAt: '2026-06-15T00:00:00.000Z',
+        feishuOpenId: `ou_${employeeStatus}`,
+        createdSource: 'xdmaker',
+      });
+
+      const staleActive = await store.upsertUserFromSso({
+        userId: `usr_sso_${employeeStatus}`,
+        email: `${employeeStatus.toUpperCase()}@example.com`,
+        realname: 'Stale Name',
+        employeeStatus: 'active',
+        sessionVersion: 1,
+        lastLoginAt: '2026-06-15T00:02:00.000Z',
+        updatedAt: '2026-06-15T00:02:00.000Z',
+      });
+
+      assert.equal(staleActive.id, `usr_platform_${employeeStatus}`);
+      assert.equal(staleActive.employeeStatus, employeeStatus);
+      assert.equal(staleActive.realname, 'Current Name');
+      assert.equal(staleActive.sessionVersion, 7);
+      assert.equal(staleActive.lastLoginAt, '2026-06-15T00:00:00.000Z');
+      assert.equal(staleActive.createdSource, 'xdmaker');
+      assert.equal(staleActive.feishuOpenId, `ou_${employeeStatus}`);
+    }
+  });
+}
+
 test('upsertUserFromSso creates users and bumps session version on status changes', async () => {
-  const store = createSeededStore();
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
 
   const created = await store.upsertUserFromSso({
     userId: 'usr_sso',
@@ -667,7 +796,7 @@ test('upsertUserFromSso creates users and bumps session version on status change
 });
 
 test('upsertUserFromSso does not reactivate a disabled user from a stale active profile', async () => {
-  const store = createSeededStore();
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
 
   await store.upsertUserFromSso({
     userId: 'usr_sso',
@@ -2477,7 +2606,7 @@ test('D1 store can mark idle admin normal workers delete pending before retry', 
   assert.equal(retired.status, 'retired');
 });
 
-test('D1 store upserts SSO users atomically and keeps disabled users disabled', async () => {
+test('D1 store upserts SSO users and keeps disabled users disabled', async () => {
   const db = fakeUserDb();
   const store = new D1PagesStore(db, { now: () => '2026-06-15T00:00:00.000Z' });
 
@@ -2512,7 +2641,6 @@ test('D1 store upserts SSO users atomically and keeps disabled users disabled', 
   assert.equal(staleActive.email, 'user@example.com');
   assert.equal(staleActive.realname, null);
   assert.equal(staleActive.sessionVersion, disabled.sessionVersion);
-  assert.equal(db.selectBeforeFirstUpsert, false);
 });
 
 test('D1 store createSite rolls back when a same-slug claim appears during the batch', async () => {
@@ -2755,6 +2883,14 @@ function createSeededStore(options = {}) {
     employeeStatus: 'active',
   });
   return store;
+}
+
+function userIdentityStoreCases() {
+  const now = () => '2026-06-15T00:00:00.000Z';
+  return [
+    ['test store', () => createTestPagesStore({ now })],
+    ['D1 store', () => new D1PagesStore(fakeUserDb(), { now })],
+  ];
 }
 
 function fakeCreateSiteD1Db({ claims = [], beforeBatch, beforeInsertHostnameClaim, beforeUpdateHostnameClaim } = {}) {
@@ -3711,20 +3847,36 @@ function fakeAdminNormalWorkerDb(slots, routes = []) {
 function fakeUserDb() {
   const users = new Map();
   const db = {
-    selectBeforeFirstUpsert: false,
     prepare(sql) {
       return {
         bind(...args) {
           return {
             async first() {
-              assert.match(sql, /SELECT \* FROM users WHERE user_id = \?/);
-              if (users.size === 0) db.selectBeforeFirstUpsert = true;
-              return users.get(args[0]) || null;
+              if (/SELECT \* FROM users WHERE user_id = \?/.test(sql)) return users.get(args[0]) || null;
+              if (/SELECT \* FROM users WHERE lower\(email\) = \?/.test(sql)) {
+                return [...users.values()].find((user) => user.email.toLowerCase() === args[0]) || null;
+              }
+              if (/SELECT \* FROM users WHERE feishu_open_id = \?/.test(sql)) {
+                return [...users.values()].find((user) => user.feishu_open_id === args[0]) || null;
+              }
+              assert.fail(`Unexpected user query: ${sql}`);
             },
             async run() {
+              if (/UPDATE users\s+SET feishu_open_id = \?/.test(sql)) {
+                const [feishuOpenId, updatedAt, id, expectedFeishuOpenId] = args;
+                const user = users.get(id) || null;
+                if (!user || (user.feishu_open_id !== null && user.feishu_open_id !== expectedFeishuOpenId)) {
+                  return { meta: { changes: 0 } };
+                }
+                if ([...users.values()].some((candidate) => candidate.user_id !== id && candidate.feishu_open_id === feishuOpenId)) {
+                  return { meta: { changes: 0 } };
+                }
+                user.feishu_open_id = feishuOpenId;
+                user.updated_at = updatedAt;
+                return { meta: { changes: 1 } };
+              }
+
               assert.match(sql, /INSERT INTO users/);
-              assert.match(sql, /ON CONFLICT\(user_id\) DO UPDATE/);
-              assert.match(sql, /users\.employee_status = 'disabled'/);
               const [
                 id,
                 account,
@@ -3733,11 +3885,51 @@ function fakeUserDb() {
                 realname,
                 employeenum,
                 employeeStatus,
+                feishuOpenId,
+                createdSource,
+                departmentPath,
+                departmentCheckedAt,
                 sessionVersion,
                 lastLoginAt,
                 createdAt,
                 updatedAt,
               ] = args;
+              const isUpsert = /ON CONFLICT\(user_id\) DO UPDATE/.test(sql);
+              if (!isUpsert) {
+                if (users.has(id)) throw new Error('UNIQUE constraint failed: users.user_id');
+                if ([...users.values()].some((user) => user.email.toLowerCase() === email.toLowerCase())) {
+                  throw new Error('UNIQUE constraint failed: index idx_users_email_normalized');
+                }
+                if (
+                  feishuOpenId !== null &&
+                  [...users.values()].some((user) => user.feishu_open_id === feishuOpenId)
+                ) {
+                  throw new Error('UNIQUE constraint failed: users.feishu_open_id');
+                }
+                users.set(
+                  id,
+                  userRow({
+                    id,
+                    account,
+                    accountId,
+                    email,
+                    realname,
+                    employeenum,
+                    employeeStatus,
+                    feishuOpenId,
+                    createdSource,
+                    departmentPath,
+                    departmentCheckedAt,
+                    sessionVersion,
+                    lastLoginAt,
+                    createdAt,
+                    updatedAt,
+                  })
+                );
+                return { meta: { changes: 1 } };
+              }
+
+              assert.match(sql, /users\.employee_status = 'disabled'/);
               const existing = users.get(id) || null;
               if (!existing) {
                 users.set(
@@ -3750,6 +3942,10 @@ function fakeUserDb() {
                     realname,
                     employeenum,
                     employeeStatus,
+                    feishuOpenId,
+                    createdSource,
+                    departmentPath,
+                    departmentCheckedAt,
                     sessionVersion,
                     lastLoginAt,
                     createdAt,
@@ -3770,6 +3966,14 @@ function fakeUserDb() {
                   realname: staleActiveOrUnknown ? existing.realname : realname || existing.realname,
                   employeenum: staleActiveOrUnknown ? existing.employeenum : employeenum || existing.employeenum,
                   employeeStatus: effectiveStatus,
+                  feishuOpenId: existing.feishu_open_id,
+                  createdSource: existing.created_source,
+                  departmentPath: staleActiveOrUnknown
+                    ? existing.department_path
+                    : departmentPath || existing.department_path,
+                  departmentCheckedAt: staleActiveOrUnknown
+                    ? existing.department_checked_at
+                    : departmentCheckedAt || existing.department_checked_at,
                   sessionVersion: staleActiveOrUnknown
                     ? existing.session_version
                     : Math.max(sessionVersion, existing.session_version + (effectiveStatus === existing.employee_status ? 0 : 1)),
@@ -4262,6 +4466,10 @@ function userRow({
   realname,
   employeenum,
   employeeStatus,
+  feishuOpenId = null,
+  createdSource = 'xd_sso',
+  departmentPath = null,
+  departmentCheckedAt = null,
   sessionVersion,
   lastLoginAt,
   createdAt,
@@ -4275,6 +4483,10 @@ function userRow({
     realname,
     employeenum,
     employee_status: employeeStatus,
+    feishu_open_id: feishuOpenId,
+    created_source: createdSource,
+    department_path: departmentPath,
+    department_checked_at: departmentCheckedAt,
     session_version: sessionVersion,
     last_login_at: lastLoginAt,
     created_at: createdAt,
