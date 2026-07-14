@@ -224,6 +224,20 @@ export class D1PagesStore {
     return result?.meta?.changes === 1;
   }
 
+  async updateUserRealnameIfEmpty(userId, realname) {
+    const normalizedRealname = typeof realname === 'string' ? realname.trim() : '';
+    if (!normalizedRealname) return this.getUser(userId);
+    await this.db
+      .prepare(
+        `UPDATE users
+        SET realname = ?, updated_at = ?
+        WHERE user_id = ? AND (realname IS NULL OR trim(realname) = '')`
+      )
+      .bind(normalizedRealname, this.now(), userId)
+      .run();
+    return this.getUser(userId);
+  }
+
   async grantPlatformAdmin({ environment, userId, grantedByUserId, grantReason }) {
     const normalizedEnvironment = normalizeRequiredString(environment);
     const normalizedUserId = normalizeRequiredString(userId);
@@ -3334,6 +3348,36 @@ export class D1PagesStore {
       );
   }
 
+  s2sRevokeAuditEventStatement(record) {
+    const environment = record.environment || record.metadata?.environment || null;
+    return this.db
+      .prepare(
+        `INSERT INTO audit_events (
+          id, environment, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
+          decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE changes() = 1`
+      )
+      .bind(
+        record.id,
+        environment,
+        record.traceId,
+        record.eventType,
+        record.actorUserId,
+        record.actorType,
+        record.siteId,
+        record.routeId,
+        record.versionId,
+        record.decision,
+        record.statusCode,
+        record.ipHash,
+        record.userAgentHash,
+        stringifyJsonColumn(record.metadata),
+        record.createdAt
+      );
+  }
+
   siteSecretPutAuditEventStatement(record, { secretId, revision, encryptedValue, updatedAt }) {
     return this.db
       .prepare(
@@ -4046,7 +4090,14 @@ export class D1PagesStore {
     return cloneRecord(record);
   }
 
-  async revokeS2SAccessKeys({ environment, keyId = null, email = null, clientId = null, now = this.now() }) {
+  async revokeS2SAccessKeys({
+    environment,
+    keyId = null,
+    email = null,
+    clientId = null,
+    signingKeyId = null,
+    now = this.now(),
+  }) {
     const normalizedEmail = normalizeUserEmail(email);
     const selectorSql = keyId ? 'access_keys.id = ?' : 'lower(users.email) = ?';
     const selectorValue = keyId || normalizedEmail;
@@ -4070,7 +4121,9 @@ export class D1PagesStore {
     if (keys.length === 0) return { revokedCount: 0, keyIds: [] };
 
     const statements = [];
+    const updateResultIndexes = [];
     for (const key of keys) {
+      updateResultIndexes.push(statements.length);
       statements.push(
         this.db
           .prepare(
@@ -4085,12 +4138,13 @@ export class D1PagesStore {
               AND (expires_at IS NULL OR expires_at > ?)`
           )
           .bind(now, key.ownerUserId, 'xdmaker_s2s_revoke', key.id, environment, key.ownerId, key.ownerUserId, now),
-        this.runtimeChangeGuardStatement('S2S_ACCESS_KEY_REVOKE_CONFLICT'),
-        this.auditEventStatement(s2sRevokeAuditEvent(key, environment, clientId, now))
+        this.s2sRevokeAuditEventStatement(s2sRevokeAuditEvent(key, environment, clientId, signingKeyId, now))
       );
     }
-    await this.db.batch(statements);
-    const keyIds = keys.map((key) => key.id);
+    const batchResults = await this.db.batch(statements);
+    const keyIds = keys
+      .filter((_, index) => batchResults[updateResultIndexes[index]]?.meta?.changes === 1)
+      .map((key) => key.id);
     return { revokedCount: keyIds.length, keyIds };
   }
 
@@ -5473,7 +5527,7 @@ function s2sReplacementKeyInvalidError() {
   return error;
 }
 
-function s2sRevokeAuditEvent(accessKey, environment, clientId, now) {
+function s2sRevokeAuditEvent(accessKey, environment, clientId, signingKeyId, now) {
   return {
     id: randomStoreId('audit'),
     environment,
@@ -5491,7 +5545,8 @@ function s2sRevokeAuditEvent(accessKey, environment, clientId, now) {
     metadata: {
       environment,
       ...(clientId ? { clientId } : {}),
-      keyId: accessKey.id,
+      ...(signingKeyId ? { signingKeyId } : {}),
+      accessKeyId: accessKey.id,
       userId: accessKey.ownerUserId,
       reason: 'xdmaker_s2s_revoke',
     },

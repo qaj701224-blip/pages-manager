@@ -86,6 +86,19 @@ test('issues a 24-hour staging token for an active user with a safe exact respon
   );
   assert.equal(stored.keyHash, await hashAccessKey(firstBody.token, CLIENT_SECRET + '-pepper'));
   assert.equal('plaintext' in stored, false);
+  assert.equal((await store.getUser('usr_existing')).realname, 'Existing Maker');
+
+  const issueAudit = (await store.listAuditEvents({ environment: 'staging' })).find(
+    (event) => event.eventType === 's2s.access_key.issue' && event.metadata?.accessKeyId === 'ak_s2s'
+  );
+  assert.deepEqual(issueAudit.metadata, {
+    environment: 'staging',
+    clientId: CLIENT_ID,
+    signingKeyId: CLIENT_KEY_ID,
+    accessKeyId: 'ak_s2s',
+    userId: 'usr_existing',
+  });
+  assert.equal('keyId' in issueAudit.metadata, false);
 
   const second = await handleS2STokensApi(
     await signedRequest({
@@ -170,6 +183,24 @@ test('binds an empty Feishu identity and rejects inactive or split identities', 
     assert.equal((await store.getUser('usr_bind')).feishuOpenId, 'ou_bound');
   });
 
+  await t.test('fills an empty realname from display_name for an active email match', async () => {
+    const store = createTestPagesStore({ now: () => BASE_NOW });
+    await store.createUser({
+      userId: 'usr_name_fill',
+      email: 'name-fill@example.com',
+      employeeStatus: 'active',
+      feishuOpenId: 'ou_name_fill',
+    });
+    const response = await issueFor(store, {
+      email: 'name-fill@example.com',
+      feishu_open_id: 'ou_name_fill',
+      display_name: 'Filled Name',
+    });
+    assert.equal(response.status, 201, await response.clone().text());
+    assert.equal((await response.json()).actor.display_name, 'Filled Name');
+    assert.equal((await store.getUser('usr_name_fill')).realname, 'Filled Name');
+  });
+
   for (const employeeStatus of ['disabled', 'left', 'unknown']) {
     await t.test(`rejects ${employeeStatus} users`, async () => {
       const store = createTestPagesStore({ now: () => BASE_NOW });
@@ -245,6 +276,23 @@ test('binds an empty Feishu identity and rejects inactive or split identities', 
   });
 });
 
+test('D1 and test stores update user realname only while it is empty', async () => {
+  const testStore = createTestPagesStore({ now: () => BASE_NOW });
+  await testStore.createUser({
+    userId: 'usr_realname',
+    email: 'realname@example.com',
+    employeeStatus: 'active',
+  });
+  assert.equal((await testStore.updateUserRealnameIfEmpty('usr_realname', 'First Name')).realname, 'First Name');
+  assert.equal((await testStore.updateUserRealnameIfEmpty('usr_realname', 'Second Name')).realname, 'First Name');
+
+  const d1Db = fakeRealnameD1(userRow({ id: 'usr_realname', email: 'realname@example.com', realname: null }));
+  const d1Store = new D1PagesStore(d1Db, { now: () => BASE_NOW });
+  assert.equal((await d1Store.updateUserRealnameIfEmpty('usr_realname', 'First Name')).realname, 'First Name');
+  assert.equal((await d1Store.updateUserRealnameIfEmpty('usr_realname', 'Second Name')).realname, 'First Name');
+  assert.match(d1Db.calls.find((call) => /UPDATE users/.test(call.sql)).sql, /realname IS NULL OR trim\(realname\) = ''/);
+});
+
 test('validates authenticated issue and revoke bodies without parsing a second request body', async (t) => {
   const cases = [
     ['invalid JSON', '{', '/.xd-pages/api/s2s/tokens'],
@@ -275,6 +323,12 @@ test('validates authenticated issue and revoke bodies without parsing a second r
       );
       assert.equal(response.status, 400);
       assert.equal((await response.json()).error.code, 'S2S_REQUEST_INVALID');
+      const denyAudit = (await store.listAuditEvents({ environment: 'staging' })).find(
+        (event) => event.eventType === 's2s.request.deny'
+      );
+      assert.equal(denyAudit.metadata.signingKeyId, CLIENT_KEY_ID);
+      assert.equal('accessKeyId' in denyAudit.metadata, false);
+      assert.equal('keyId' in denyAudit.metadata, false);
     });
   }
 });
@@ -305,6 +359,12 @@ test('replaces only an active XDMaker key owned by the same user and environment
   assert.equal(oldKey.revokedByUserId, 'usr_owner');
   assert.equal(oldKey.revokedReason, 'xdmaker_s2s_replace');
   assert.ok(await store.getAccessKeyById('ak_s2s', 'staging'));
+  const replaceAudit = (await store.listAuditEvents({ environment: 'staging' })).find(
+    (event) => event.eventType === 's2s.access_key.replace'
+  );
+  assert.equal(replaceAudit.metadata.signingKeyId, CLIENT_KEY_ID);
+  assert.equal(replaceAudit.metadata.accessKeyId, 'ak_old');
+  assert.equal('keyId' in replaceAudit.metadata, false);
 
   for (const [name, oldKeyInput] of [
     ['other user', { id: 'ak_other', ownerId: 'usr_other' }],
@@ -333,6 +393,12 @@ test('replaces only an active XDMaker key owned by the same user and environment
     assert.equal(rejected.status, 409);
     assert.equal((await rejected.json()).error.code, 'S2S_REPLACEMENT_KEY_INVALID');
     assert.equal(await isolated.getAccessKeyById('ak_s2s'), null);
+    const denyAudit = (await isolated.listAuditEvents({ environment: 'staging' })).find(
+      (event) => event.eventType === 's2s.request.deny'
+    );
+    assert.equal(denyAudit.metadata.signingKeyId, CLIENT_KEY_ID);
+    assert.equal(denyAudit.metadata.accessKeyId, oldKeyInput.id);
+    assert.equal('keyId' in denyAudit.metadata, false);
   }
 });
 
@@ -412,7 +478,13 @@ test('revokes active non-expired XDMaker keys by email or key id and is idempote
   assert.equal((await store.getAccessKeyById('ak_by_id')).revokedReason, 'xdmaker_s2s_revoke');
 
   const audits = await store.listAuditEvents({ environment: 'staging' });
-  assert.equal(audits.filter((event) => event.eventType === 's2s.access_key.revoke').length, 3);
+  const revokeAudits = audits.filter((event) => event.eventType === 's2s.access_key.revoke');
+  assert.equal(revokeAudits.length, 3);
+  for (const audit of revokeAudits) {
+    assert.equal(audit.metadata.signingKeyId, CLIENT_KEY_ID);
+    assert.ok(['ak_one', 'ak_two', 'ak_by_id'].includes(audit.metadata.accessKeyId));
+    assert.equal('keyId' in audit.metadata, false);
+  }
   assert.doesNotMatch(
     JSON.stringify(audits.map((event) => event.metadata)),
     /revoke@example\.com|ou_revoke|s2s-test-secret|pepper-secret|nonce_revoke|signature/i
@@ -474,6 +546,9 @@ test('limits each normalized email to five issues per ten-minute bucket and reco
     )
   );
   assert.ok(audits.some((event) => event.eventType === 's2s.request.deny'));
+  const denyAudit = audits.find((event) => event.eventType === 's2s.request.deny');
+  assert.equal(denyAudit.metadata.signingKeyId, CLIENT_KEY_ID);
+  assert.equal('accessKeyId' in denyAudit.metadata, false);
   assert.doesNotMatch(
     JSON.stringify(audits.map((event) => event.metadata)),
     /rate@example\.com|ou_rate|nonce_rate|signature|pepper-secret/i
@@ -597,12 +672,51 @@ test('D1 issue validates replacement before one atomic batch and D1 revoke audit
     environment: 'staging',
     email: 'owner@example.com',
     clientId: CLIENT_ID,
+    signingKeyId: CLIENT_KEY_ID,
     now: BASE_NOW,
   });
   assert.deepEqual(revoked, { revokedCount: 2, keyIds: ['ak_one', 'ak_two'] });
   assert.equal(revokeDb.batches.length, 1);
   assert.equal(revokeDb.batches[0].filter((statement) => /UPDATE access_keys/.test(statement.sql)).length, 2);
-  assert.equal(revokeDb.batches[0].filter((statement) => /INSERT INTO audit_events/.test(statement.sql)).length, 2);
+  const revokeAuditStatements = revokeDb.batches[0].filter((statement) => /INSERT INTO audit_events/.test(statement.sql));
+  assert.equal(revokeAuditStatements.length, 2);
+  assert.ok(revokeAuditStatements.every((statement) => /changes\(\) = 1/.test(statement.sql)));
+  assert.deepEqual(
+    revokeAuditStatements.map((statement) => JSON.parse(statement.args[13])),
+    [
+      {
+        environment: 'staging',
+        clientId: CLIENT_ID,
+        signingKeyId: CLIENT_KEY_ID,
+        accessKeyId: 'ak_one',
+        userId: 'usr_owner',
+        reason: 'xdmaker_s2s_revoke',
+      },
+      {
+        environment: 'staging',
+        clientId: CLIENT_ID,
+        signingKeyId: CLIENT_KEY_ID,
+        accessKeyId: 'ak_two',
+        userId: 'usr_owner',
+        reason: 'xdmaker_s2s_revoke',
+      },
+    ]
+  );
+
+  const concurrentDb = fakeS2SD1({
+    revocable: [accessKeyRow({ id: 'ak_raced', ownerId: 'usr_owner' })],
+    batchChanges: [0, 0],
+  });
+  const concurrentStore = new D1PagesStore(concurrentDb, { now: () => BASE_NOW });
+  const concurrent = await concurrentStore.revokeS2SAccessKeys({
+    environment: 'staging',
+    keyId: 'ak_raced',
+    clientId: CLIENT_ID,
+    signingKeyId: CLIENT_KEY_ID,
+    now: BASE_NOW,
+  });
+  assert.deepEqual(concurrent, { revokedCount: 0, keyIds: [] });
+  assert.doesNotMatch(concurrentDb.batches[0].map((statement) => statement.sql).join('\n'), /REVOKE_CONFLICT/);
 });
 
 async function issueFor(store, body, options = {}) {
@@ -731,7 +845,7 @@ function accessKeyRow(input) {
   };
 }
 
-function auditEvent(id, eventType, keyId) {
+function auditEvent(id, eventType, accessKeyId) {
   return {
     id,
     environment: 'staging',
@@ -740,12 +854,18 @@ function auditEvent(id, eventType, keyId) {
     actorType: 's2s',
     decision: 'allow',
     statusCode: 201,
-    metadata: { environment: 'staging', clientId: CLIENT_ID, keyId, userId: 'usr_owner' },
+    metadata: {
+      environment: 'staging',
+      clientId: CLIENT_ID,
+      signingKeyId: CLIENT_KEY_ID,
+      accessKeyId,
+      userId: 'usr_owner',
+    },
     createdAt: BASE_NOW,
   };
 }
 
-function fakeS2SD1({ replacement = null, revocable = [] } = {}) {
+function fakeS2SD1({ replacement = null, revocable = [], batchChanges = null } = {}) {
   const calls = [];
   const batches = [];
   return {
@@ -778,7 +898,59 @@ function fakeS2SD1({ replacement = null, revocable = [] } = {}) {
     },
     async batch(statements) {
       batches.push(statements);
-      return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+      return statements.map((_, index) => ({ success: true, meta: { changes: batchChanges?.[index] ?? 1 } }));
     },
+  };
+}
+
+function fakeRealnameD1(row) {
+  const calls = [];
+  return {
+    calls,
+    prepare(sql) {
+      const call = {
+        sql,
+        args: [],
+        bind(...args) {
+          this.args = args;
+          return this;
+        },
+        async run() {
+          calls.push(this);
+          const [realname, updatedAt, userId] = this.args;
+          if (row.user_id === userId && !row.realname?.trim()) {
+            row.realname = realname;
+            row.updated_at = updatedAt;
+            return { meta: { changes: 1 } };
+          }
+          return { meta: { changes: 0 } };
+        },
+        async first() {
+          calls.push(this);
+          return row.user_id === this.args[0] ? row : null;
+        },
+      };
+      return call;
+    },
+  };
+}
+
+function userRow({ id, email, realname }) {
+  return {
+    user_id: id,
+    email,
+    realname,
+    account: null,
+    account_id: null,
+    employeenum: null,
+    employee_status: 'active',
+    feishu_open_id: 'ou_realname',
+    created_source: 'xd_sso',
+    department_path: null,
+    department_checked_at: null,
+    session_version: 1,
+    last_login_at: null,
+    created_at: BASE_NOW,
+    updated_at: BASE_NOW,
   };
 }

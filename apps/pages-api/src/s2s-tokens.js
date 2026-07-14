@@ -34,6 +34,7 @@ export async function handleS2STokensApi(request, env, config, store) {
       auditEvent(env, config, auth.clientId || null, 's2s.request.deny', {
         decision: 'deny',
         statusCode: auth.status,
+        signingKeyId: auth.keyId,
         reason: auth.code,
         now,
       })
@@ -82,6 +83,7 @@ async function issueToken(body, env, config, store, auth, now) {
       auditEvent(env, config, auth.clientId, 's2s.anomaly.detect', {
         decision: 'alert',
         statusCode: 200,
+        signingKeyId: auth.keyId,
         reason: 'user_rate_count_3',
         bucketCount: rate.count,
         now,
@@ -94,7 +96,7 @@ async function issueToken(body, env, config, store, auth, now) {
     identity = await resolveIdentity(store, env, config, auth, input, now);
   } catch (error) {
     const failure = error instanceof S2STokenError ? error.failure : storeFailure();
-    return deniedResponse(env, config, store, auth, failure, now, error.userId);
+    return deniedResponse(env, config, store, auth, failure, now, { userId: error.userId });
   }
 
   const expiresAt = new Date(new Date(now).getTime() + ACCESS_KEY_TTL_MS).toISOString();
@@ -119,7 +121,8 @@ async function issueToken(body, env, config, store, auth, now) {
         actorUserId: identity.id,
         decision: 'allow',
         statusCode: 201,
-        keyId: record.id,
+        signingKeyId: auth.keyId,
+        accessKeyId: record.id,
         userId: identity.id,
         now,
       }),
@@ -130,7 +133,8 @@ async function issueToken(body, env, config, store, auth, now) {
           actorUserId: identity.id,
           decision: 'allow',
           statusCode: 201,
-          keyId: input.replacesKeyId,
+          signingKeyId: auth.keyId,
+          accessKeyId: input.replacesKeyId,
           userId: identity.id,
           reason: 'xdmaker_s2s_replace',
           now,
@@ -145,7 +149,10 @@ async function issueToken(body, env, config, store, auth, now) {
     });
   } catch (error) {
     const failure = error?.code === 'S2S_REPLACEMENT_KEY_INVALID' ? replacementInvalid() : storeFailure();
-    return deniedResponse(env, config, store, auth, failure, now, identity.id);
+    return deniedResponse(env, config, store, auth, failure, now, {
+      userId: identity.id,
+      accessKeyId: error?.code === 'S2S_REPLACEMENT_KEY_INVALID' ? input.replacesKeyId : record?.id,
+    });
   }
 
   if (isShanghaiOffHours(now)) {
@@ -155,8 +162,9 @@ async function issueToken(body, env, config, store, auth, now) {
         actorUserId: identity.id,
         decision: 'alert',
         statusCode: 201,
+        signingKeyId: auth.keyId,
         userId: identity.id,
-        keyId: record.id,
+        accessKeyId: record.id,
         reason: 'off_hours_issue',
         now,
       })
@@ -190,11 +198,12 @@ async function revokeTokens(body, env, config, store, auth, now) {
       keyId: selector.keyId,
       email: selector.email,
       clientId: auth.clientId,
+      signingKeyId: auth.keyId,
       now,
     });
     return jsonOk({ revoked_count: result.revokedCount, key_ids: result.keyIds });
   } catch {
-    return deniedResponse(env, config, store, auth, storeFailure(), now);
+    return deniedResponse(env, config, store, auth, storeFailure(), now, { accessKeyId: selector.keyId });
   }
 }
 
@@ -234,10 +243,19 @@ async function resolveIdentity(store, env, config, auth, input, now) {
           actorUserId: byEmail.id,
           decision: 'allow',
           statusCode: 200,
+          signingKeyId: auth.keyId,
           userId: byEmail.id,
           now,
         })
       );
+    }
+    if (!byEmail.realname?.trim()) {
+      try {
+        byEmail = await store.updateUserRealnameIfEmpty(byEmail.id, input.displayName);
+      } catch {
+        throw new S2STokenError(storeFailure(), byEmail.id);
+      }
+      if (!byEmail) throw new S2STokenError(storeFailure());
     }
     return byEmail;
   }
@@ -264,6 +282,7 @@ async function resolveIdentity(store, env, config, auth, input, now) {
       actorUserId: created.id,
       decision: 'allow',
       statusCode: 201,
+      signingKeyId: auth.keyId,
       userId: created.id,
       now,
     })
@@ -314,13 +333,15 @@ function parseRawJsonObject(rawBody) {
   return value;
 }
 
-async function deniedResponse(env, config, store, auth, failure, now, userId = null) {
+async function deniedResponse(env, config, store, auth, failure, now, { userId = null, accessKeyId = null } = {}) {
   await recordBestEffortAudit(
     store,
     auditEvent(env, config, auth?.clientId || null, 's2s.request.deny', {
       actorUserId: userId,
       decision: 'deny',
       statusCode: failure.status,
+      signingKeyId: auth?.keyId,
+      accessKeyId,
       userId,
       reason: failure.code,
       now,
@@ -340,7 +361,8 @@ async function recordBestEffortAudit(store, event) {
 function auditEvent(env, config, clientId, eventType, input) {
   const metadata = { environment: config.environment };
   if (clientId) metadata.clientId = clientId;
-  if (input.keyId) metadata.keyId = input.keyId;
+  if (input.signingKeyId) metadata.signingKeyId = input.signingKeyId;
+  if (input.accessKeyId) metadata.accessKeyId = input.accessKeyId;
   if (input.userId) metadata.userId = input.userId;
   if (input.reason) metadata.reason = input.reason;
   if (input.bucketCount !== undefined) metadata.bucketCount = input.bucketCount;

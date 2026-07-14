@@ -194,6 +194,17 @@ class TestPagesStore {
     return true;
   }
 
+  async updateUserRealnameIfEmpty(userId, realname) {
+    const user = this.users.get(userId) || null;
+    const normalizedRealname = typeof realname === 'string' ? realname.trim() : '';
+    if (!user || !normalizedRealname) return cloneRecord(user);
+    if (!user.realname?.trim()) {
+      user.realname = normalizedRealname;
+      user.updatedAt = this.now();
+    }
+    return cloneRecord(user);
+  }
+
   async grantPlatformAdmin({ environment, userId, grantedByUserId, grantReason }) {
     const normalizedEnvironment = normalizeRequiredString(environment);
     const normalizedUserId = normalizeRequiredString(userId);
@@ -2097,7 +2108,14 @@ class TestPagesStore {
     }
   }
 
-  async revokeS2SAccessKeys({ environment, keyId = null, email = null, clientId = null, now = this.now() }) {
+  async revokeS2SAccessKeys({
+    environment,
+    keyId = null,
+    email = null,
+    clientId = null,
+    signingKeyId = null,
+    now = this.now(),
+  }) {
     const normalizedEmail = normalizeUserEmail(email);
     const userId = normalizedEmail
       ? [...this.users.values()].find((user) => normalizeUserEmail(user.email) === normalizedEmail)?.id || null
@@ -2134,7 +2152,8 @@ class TestPagesStore {
               metadata: {
                 environment,
                 ...(clientId ? { clientId } : {}),
-                keyId: key.id,
+                ...(signingKeyId ? { signingKeyId } : {}),
+                accessKeyId: key.id,
                 userId: key.ownerUserId,
                 reason: 'xdmaker_s2s_revoke',
               },
