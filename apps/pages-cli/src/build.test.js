@@ -20,6 +20,7 @@ test('buildPagesCli copies runtime files and package metadata without tests', as
     assert.ok(files.includes('main.js'));
     assert.ok(files.includes('commands.js'));
     assert.ok(files.includes('package.json'));
+    assert.ok(files.includes('README.md'));
     assert.ok(!files.includes('build.js'));
     assert.ok(!files.some((file) => file.endsWith('.test.js')));
 
@@ -29,8 +30,11 @@ test('buildPagesCli copies runtime files and package metadata without tests', as
 
     const packageJson = JSON.parse(await readFile(path.join(outDir, 'package.json'), 'utf8'));
     assert.equal(packageJson.name, '@xd-cell/cli');
+    assert.equal(packageJson.private, false);
     assert.equal(packageJson.type, 'module');
     assert.deepEqual(packageJson.bin, { 'xd-cell': './main.js' });
+    const readme = await readFile(path.join(outDir, 'README.md'), 'utf8');
+    assert.match(readme, /^# @xd-cell\/cli/m);
     assert.equal(existsSync(path.join(outDir, 'src')), false);
   } finally {
     await rm(outDir, { recursive: true, force: true });

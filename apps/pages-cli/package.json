@@ -1,7 +1,7 @@
 {
   "name": "@xd-cell/cli",
   "version": "0.1.1",
-  "private": true,
+  "private": false,
   "type": "module",
   "bin": {
     "xd-cell": "./src/main.js"
