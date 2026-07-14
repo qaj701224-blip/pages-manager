@@ -36,7 +36,7 @@ const DEPLOY_FLAGS = new Set([
 const DETECT_FLAGS = new Set(['config', 'fallback', 'workerEntry', 'json', 'help']);
 const API_READ_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
 const SECRETS_FLAGS = new Set(['env', 'token', 'accessKey', 'stdin', 'json', 'help']);
-const SITES_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help', 'details']);
+const SITES_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help', 'details', 'yes']);
 const TEAMS_FLAGS = new Set(['env', 'token', 'accessKey', 'json', 'help']);
 const AUTH_ENV_FLAGS = new Set(['env', 'json', 'help', 'token', 'accessKey']);
 const STATUS_FLAGS = new Set(['env', 'deployment', 'token', 'accessKey', 'json', 'help']);
@@ -692,12 +692,36 @@ async function runOpen(parsed, context) {
 async function runSites(parsed, context) {
   const subcommand = parsed.positional[0] || 'list';
   const child = { ...parsed, positional: parsed.positional.slice(1) };
+  let siteSlug;
+
+  if (subcommand === 'list') {
+    if (parsed.flags.yes !== undefined) {
+      throw usageError('SITES_LIST_USAGE_INVALID', 'sites list 不接受 --yes。', '请使用 xd-cell sites list [--details]。');
+    }
+    assertNoPositionals(child, 'SITES_LIST_USAGE_INVALID', 'xd-cell sites list 不接受位置参数。');
+  } else if (subcommand === 'info') {
+    if (parsed.flags.yes !== undefined) {
+      throw usageError('SITES_INFO_USAGE_INVALID', 'sites info 不接受 --yes。', '请使用 xd-cell sites info <站点名>。');
+    }
+    siteSlug = readSingleSiteArg(child, 'SITES_INFO_USAGE_INVALID', '请使用 xd-cell sites info <站点名>。');
+  } else if (subcommand === 'delete') {
+    if (parsed.flags.details !== undefined) {
+      throw usageError('SITES_DELETE_USAGE_INVALID', 'sites delete 不接受 --details。', '请使用 xd-cell sites delete <站点名>。');
+    }
+    siteSlug = readSingleSiteArg(child, 'SITES_DELETE_USAGE_INVALID', '请使用 xd-cell sites delete <站点名>。');
+  } else {
+    throw usageError(
+      'SITES_COMMAND_INVALID',
+      'sites 命令无效。',
+      '请使用 xd-cell sites list、xd-cell sites info <站点名> 或 xd-cell sites delete <站点名>。'
+    );
+  }
+
   const config = readConfigForCommand(parsed, context);
   const credential = await resolveCredential(config.environment, context, parsed);
   const client = createClient(config, credential, context);
 
   if (subcommand === 'list') {
-    assertNoPositionals(child, 'SITES_LIST_USAGE_INVALID', 'xd-cell sites list 不接受位置参数。');
     const result = await client.requestApi('GET', '/.xd-pages/api/sites');
     const payload = parsed.flags.details
       ? { environment: config.environment, ...result }
@@ -712,14 +736,42 @@ async function runSites(parsed, context) {
   }
 
   if (subcommand === 'info') {
-    const site = readSingleSiteArg(child, 'SITES_INFO_USAGE_INVALID', '请使用 xd-cell sites info <站点名>。');
-    const result = await readSiteBySlug(client, site);
+    const result = await readSiteBySlug(client, siteSlug);
     if (outputJsonResult(parsed, context, { environment: config.environment, ...result })) return 0;
     outputSiteInfo(context.output, config.environment, result.site);
     return 0;
   }
 
-  throw usageError('SITES_COMMAND_INVALID', 'sites 命令无效。', '请使用 xd-cell sites list 或 xd-cell sites info <站点名>。');
+  const { site } = await readSiteBySlug(client, siteSlug);
+  if (!parsed.flags.yes) {
+    if (parsed.flags.json || !context.stdin?.isTTY || typeof context.readConfirmation !== 'function') {
+      throw usageError(
+        'SITE_DELETE_CONFIRMATION_REQUIRED',
+        '删除站点需要显式确认。',
+        '确认目标后添加 --yes；JSON 和非交互环境必须使用 --yes。'
+      );
+    }
+    const answer = await context.readConfirmation(`确认删除站点 "${site.slug}"? (y/N) `);
+    if (!['y', 'yes'].includes(String(answer ?? '').trim().toLowerCase())) {
+      context.output(`已取消删除站点：${site.slug}`);
+      return 0;
+    }
+  }
+
+  await client.requestApi('DELETE', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}`);
+  if (
+    outputJsonResult(parsed, context, {
+      type: 'site',
+      environment: config.environment,
+      site: site.slug,
+      operation: 'delete',
+      deleted: true,
+    })
+  ) {
+    return 0;
+  }
+  context.output(`已删除站点：${site.slug}`);
+  return 0;
 }
 
 async function runTeams(parsed, context) {
@@ -1539,14 +1591,19 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   if (topic === 'sites') {
     return `用法：xd-cell sites list [选项]
       xd-cell sites info <站点名> [选项]
+      xd-cell sites delete <站点名> [--yes] [选项]
 
-查看站点列表或站点详情。
+查看站点列表、站点详情或删除站点。
 
 选项：
+  --yes                                     确认删除；JSON 和非交互环境必须显式传入。
   --token <token>                           只在本次命令中使用的 API token；也可以设置 XD_CELL_API_TOKEN。
-  --details                                 sites list 输出完整站点详情；默认只显示概要。
+  --details                                 仅 sites list 输出完整站点详情；默认只显示概要。
   --json                                    输出稳定 JSON，适合 AI agent 和 CI 解析。
-  --help                                    显示帮助。`;
+  --help                                    显示帮助。
+
+说明：
+  sites delete 默认要求交互确认；取消不发送删除请求。`;
   }
   if (topic === 'teams') {
     return `用法：xd-cell teams [选项]
@@ -1626,7 +1683,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   detect      本地识别发布入口。
   deploy      发布目录到 XD Cell，自动判断发布方式。
   status      查看登录状态、站点或部署状态。
-  sites       查看站点列表或详情。
+  sites       查看站点列表、详情或删除站点。
   teams       查看当前用户所在团队及团队 ID。
   secrets     管理站点级 Worker secret。
   access      查看或调整站点访问范围。

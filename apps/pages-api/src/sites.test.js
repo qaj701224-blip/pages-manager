@@ -701,7 +701,7 @@ test('team access token cannot transfer a team site to a personal owner', async 
   assert.equal((await store.getSite('site_team')).ownerType, 'team');
 });
 
-test('requires read:site scope for access key site reads', async () => {
+test('allows deploy scope to read sites while keeping unrelated scopes read-only', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_1',
@@ -713,16 +713,23 @@ test('requires read:site scope for access key site reads', async () => {
     routeId: 'route_1',
     hostname: 'guide.pages.xd.team',
   });
+  const rollbackOnlyKey = await seedAccessKey(store, 'ak_rollback', ['rollback:site']);
   const deployOnlyKey = await seedAccessKey(store, 'ak_deploy', ['deploy:site']);
   const readKey = await seedAccessKey(store, 'ak_read', ['read:site']);
 
   const deniedList = await worker.fetch(
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
-      Authorization: `Bearer ${deployOnlyKey}`,
+      Authorization: `Bearer ${rollbackOnlyKey}`,
     }),
     testEnv(store)
   );
   const deniedGet = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
+      Authorization: `Bearer ${rollbackOnlyKey}`,
+    }),
+    testEnv(store)
+  );
+  const allowedDeployGet = await worker.fetch(
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
       Authorization: `Bearer ${deployOnlyKey}`,
     }),
@@ -739,6 +746,7 @@ test('requires read:site scope for access key site reads', async () => {
   assert.equal((await deniedList.json()).error.code, 'SITE_READ_FORBIDDEN');
   assert.equal(deniedGet.status, 403);
   assert.equal((await deniedGet.json()).error.code, 'SITE_READ_FORBIDDEN');
+  assert.equal(allowedDeployGet.status, 200);
   assert.equal(allowedGet.status, 200);
   assert.equal((await allowedGet.json()).site.id, 'site_1');
 });
@@ -1380,7 +1388,7 @@ test('grants and revokes site ACL entries incrementally', async () => {
   assert.equal(snapshots.read('production:route_pointer:guide.pages.xd.team').policyVersion, 4);
 });
 
-test('rejects deploy-only access keys from reading site ACL entries', async () => {
+test('allows deploy-capable access keys to read ACL entries for manageable sites', async () => {
   const store = await createSeededStore();
   await store.createSite({
     id: 'site_1',
@@ -1407,8 +1415,93 @@ test('rejects deploy-only access keys from reading site ACL entries', async () =
     testEnv(store)
   );
 
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(
+    (await response.json()).aclEntries.map(({ id, subjectType, subjectValue, effect, accessRole }) => ({
+      id,
+      subjectType,
+      subjectValue,
+      effect,
+      accessRole,
+    })),
+    [
+      {
+        id: 'acl_1',
+        subjectType: 'email',
+        subjectValue: 'user@example.com',
+        effect: 'allow',
+        accessRole: 'viewer',
+      },
+    ]
+  );
+});
+
+test('rejects read-only access keys from reading site ACL entries', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const accessKey = await seedAccessKey(store, 'ak_read', ['read:site']);
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1/acl', {
+      Authorization: `Bearer ${accessKey}`,
+    }),
+    testEnv(store)
+  );
+
   assert.equal(response.status, 403);
   assert.equal((await response.json()).error.code, 'SITE_POLICY_FORBIDDEN');
+});
+
+test('allows team deploy access keys to read ACL entries for their team sites', async () => {
+  const store = await createSeededStore();
+  const team = await store.createTeam({
+    id: 'team_1',
+    environment: 'production',
+    teamType: 'custom',
+    name: 'Team One',
+    createdByUserId: 'usr_1',
+  });
+  await store.createSite({
+    id: 'site_team',
+    slug: 'team-guide',
+    ownerUserId: 'usr_1',
+    ownerType: 'team',
+    ownerId: team.id,
+    siteUuid: 'uuid_team',
+    defaultVisibility: 'acl',
+    environment: 'production',
+    routeId: 'route_team',
+    hostname: 'team-guide.pages.xd.team',
+  });
+  await store.replaceSiteAclEntries(
+    'site_team',
+    [{ id: 'acl_team', subjectType: 'email', subjectValue: 'team@example.com', accessRole: 'viewer', effect: 'allow' }],
+    { createdBy: 'usr_1', updatedAt: '2026-06-15T00:00:00.000Z' },
+    'production'
+  );
+  const accessKey = await seedAccessKey(store, 'ak_team', ['deploy:site'], null, {
+    ownerType: 'team',
+    ownerId: team.id,
+  });
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team/acl', {
+      Authorization: `Bearer ${accessKey}`,
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).aclEntries[0].subjectValue, 'team@example.com');
 });
 
 test('rolls back ACL changes when active route snapshot write fails', async () => {

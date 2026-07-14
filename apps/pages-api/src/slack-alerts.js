@@ -64,6 +64,34 @@ export function buildCapacityExhaustedPayload({ environment, mentionUserId, curr
   };
 }
 
+export function buildS2SAnomalyPayload({ environment, clientId, userId, accessKeyId, reason }) {
+  const fields = [
+    { type: 'mrkdwn', text: `*环境*\n${escapeSlackText(environment)}` },
+    { type: 'mrkdwn', text: `*客户端*\n${escapeSlackText(clientId || 'unknown')}` },
+    { type: 'mrkdwn', text: `*用户 ID*\n${escapeSlackText(userId || 'unknown')}` },
+    { type: 'mrkdwn', text: `*Access Key ID*\n${escapeSlackText(accessKeyId || 'unknown')}` },
+    { type: 'mrkdwn', text: `*原因*\n${escapeSlackText(reason || 'unknown')}` },
+  ];
+  return {
+    text: `XD Cell S2S anomaly: ${String(reason || 'unknown')}`,
+    blocks: [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: 'XD Cell S2S 异常', emoji: true },
+      },
+      { type: 'section', fields },
+    ],
+  };
+}
+
+export async function notifyS2SAnomaly(env, payload) {
+  try {
+    return await sendSlackAlert(env, payload);
+  } catch {
+    return { sent: false, reason: 'send_failed' };
+  }
+}
+
 export async function sendSlackAlert(env, payload) {
   const webhookUrl = normalizeSlackWebhookUrl(env.SLACK_PAGES_ALERT_WEBHOOK_URL);
   if (!webhookUrl) return { sent: false, reason: 'webhook_not_configured' };

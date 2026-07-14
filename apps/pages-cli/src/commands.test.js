@@ -1372,6 +1372,171 @@ test('sites list defaults to a summary and supports detailed JSON', async () => 
   assert.equal(JSON.parse(detailsJsonOutput.join('\n')).sites[0].route.id, 'route_1');
 });
 
+test('sites delete resolves the slug and deletes the returned site id with --yes', async () => {
+  const calls = [];
+  const output = [];
+
+  await executeCommand(['sites', 'delete', 'demo', '--yes', '--json'], {
+    env: { XD_CELL_API_TOKEN: 'token' },
+    fetch: fakeFetch(calls, [
+      { sites: [{ id: 'site_1', slug: 'demo', environment: 'production' }] },
+      { site: { id: 'site_1', slug: 'demo', deletedAt: '2026-07-14T00:00:00.000Z' } },
+    ]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[1].method, 'DELETE');
+  assert.equal(calls[1].url, 'https://api.pages.xd.team/.xd-pages/api/sites/site_1');
+  assert.deepEqual(JSON.parse(output[0]), {
+    ok: true,
+    schemaVersion: 1,
+    type: 'site',
+    environment: 'production',
+    site: 'demo',
+    operation: 'delete',
+    deleted: true,
+  });
+});
+
+test('sites delete accepts y or yes and cancels other interactive answers', async () => {
+  for (const answer of ['y', 'YES']) {
+    const calls = [];
+    const prompts = [];
+    const output = [];
+
+    await executeCommand(['sites', 'delete', 'demo'], {
+      env: { XD_CELL_API_TOKEN: 'token' },
+      stdin: { isTTY: true },
+      readConfirmation: async (prompt) => {
+        prompts.push(prompt);
+        return answer;
+      },
+      fetch: fakeFetch(calls, [
+        { sites: [{ id: 'site_1', slug: 'demo', environment: 'production' }] },
+        { site: { id: 'site_1', slug: 'demo', deletedAt: '2026-07-14T00:00:00.000Z' } },
+      ]),
+      output: (line) => output.push(line),
+    });
+
+    assert.deepEqual(prompts, ['确认删除站点 "demo"? (y/N) ']);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].method, 'DELETE');
+    assert.deepEqual(output, ['已删除站点：demo']);
+  }
+
+  const calls = [];
+  const prompts = [];
+  const output = [];
+  await executeCommand(['sites', 'delete', 'demo'], {
+    env: { XD_CELL_API_TOKEN: 'token' },
+    stdin: { isTTY: true },
+    readConfirmation: async (prompt) => {
+      prompts.push(prompt);
+      return 'n';
+    },
+    fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'demo', environment: 'production' }] }]),
+    output: (line) => output.push(line),
+  });
+
+  assert.deepEqual(prompts, ['确认删除站点 "demo"? (y/N) ']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'GET');
+  assert.deepEqual(output, ['已取消删除站点：demo']);
+});
+
+test('sites delete requires --yes for JSON and non-interactive use', async () => {
+  const cases = [
+    {
+      argv: ['sites', 'delete', 'demo', '--json'],
+      stdin: { isTTY: true },
+      readConfirmation: async () => 'y',
+    },
+    {
+      argv: ['sites', 'delete', 'demo'],
+      stdin: { isTTY: false },
+      readConfirmation: async () => 'y',
+    },
+    {
+      argv: ['sites', 'delete', 'demo'],
+      stdin: { isTTY: true },
+    },
+  ];
+
+  for (const current of cases) {
+    const calls = [];
+    await assert.rejects(
+      () =>
+        executeCommand(current.argv, {
+          env: { XD_CELL_API_TOKEN: 'token' },
+          stdin: current.stdin,
+          readConfirmation: current.readConfirmation,
+          fetch: fakeFetch(calls, [{ sites: [{ id: 'site_1', slug: 'demo', environment: 'production' }] }]),
+          output: () => {},
+        }),
+      { code: 'SITE_DELETE_CONFIRMATION_REQUIRED' }
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].method, 'GET');
+  }
+});
+
+test('sites subcommands validate their flags before resolving credentials', async () => {
+  const cases = [
+    { argv: ['sites', 'list', '--yes'], code: 'SITES_LIST_USAGE_INVALID' },
+    { argv: ['sites', 'info', 'demo', '--yes'], code: 'SITES_INFO_USAGE_INVALID' },
+    { argv: ['sites', 'delete', 'demo', '--details'], code: 'SITES_DELETE_USAGE_INVALID' },
+  ];
+
+  for (const current of cases) {
+    await assert.rejects(
+      () => executeCommand(current.argv, { env: {}, profile: { environments: {} }, output: () => {} }),
+      { code: current.code }
+    );
+  }
+
+  await assert.rejects(
+    () => executeCommand(['sites', 'remove', 'demo'], { env: {}, profile: { environments: {} }, output: () => {} }),
+    {
+      code: 'SITES_COMMAND_INVALID',
+      action: '请使用 xd-cell sites list、xd-cell sites info <站点名> 或 xd-cell sites delete <站点名>。',
+    }
+  );
+});
+
+test('sites delete does not send DELETE when the slug is missing or deletion is forbidden', async () => {
+  const missingCalls = [];
+  await assert.rejects(
+    () =>
+      executeCommand(['sites', 'delete', 'missing', '--yes'], {
+        env: { XD_CELL_API_TOKEN: 'token' },
+        fetch: fakeFetch(missingCalls, [{ sites: [] }]),
+        output: () => {},
+      }),
+    { code: 'SITE_NOT_FOUND' }
+  );
+  assert.equal(missingCalls.length, 1);
+  assert.equal(missingCalls[0].method, 'GET');
+
+  const forbiddenCalls = [];
+  const output = [];
+  await assert.rejects(
+    () =>
+      executeCommand(['sites', 'delete', 'demo', '--yes'], {
+        env: { XD_CELL_API_TOKEN: 'token' },
+        fetch: fakeFetch(forbiddenCalls, [
+          { sites: [{ id: 'site_1', slug: 'demo', environment: 'production' }] },
+          { status: 403, body: { error: { code: 'SITE_POLICY_FORBIDDEN', message: 'forbidden' } } },
+        ]),
+        output: (line) => output.push(line),
+      }),
+    { code: 'SITE_POLICY_FORBIDDEN' }
+  );
+  assert.equal(forbiddenCalls.length, 2);
+  assert.equal(forbiddenCalls[1].method, 'DELETE');
+  assert.deepEqual(output, []);
+});
+
 test('site lookup suggests the closest slug when a name is mistyped', async () => {
   await assert.rejects(
     () =>
@@ -1728,6 +1893,7 @@ test('prints help and version for top-level CLI aliases', async () => {
   assert.match(help, /^\s+logout\s/m);
   assert.match(help, /^\s+whoami\s/m);
   assert.match(help, /^\s+detect\s/m);
+  assert.match(help, /^\s+sites\s+查看站点列表、详情或删除站点。$/m);
   assert.doesNotMatch(help, /--access-key|--env|xd-cell env|^\s+env\s|^\s+auth\s/m);
   assert.doesNotMatch(
     help,
@@ -1806,6 +1972,18 @@ test('prints command-specific open help with API token guidance', async () => {
   assert.match(text, /--token <token>/);
   assert.match(text, /XD_CELL_API_TOKEN/);
   assert.doesNotMatch(text, /--access-key|--env|environment/);
+});
+
+test('sites help documents interactive and non-interactive deletion', async () => {
+  const output = [];
+
+  assert.equal(await executeCommand(['help', 'sites'], { output: (line) => output.push(line) }), 0);
+
+  const text = output.join('\n');
+  assert.match(text, /xd-cell sites delete <站点名>/);
+  assert.match(text, /--yes/);
+  assert.match(text, /默认要求交互确认/);
+  assert.match(text, /JSON 和非交互环境必须显式传入/);
 });
 
 async function tempProject() {

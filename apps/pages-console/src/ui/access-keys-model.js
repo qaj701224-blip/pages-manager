@@ -28,6 +28,8 @@ export function buildAccessKeyRows(accessKeys) {
       id: accessKey.id,
       name: accessKey.name || accessKey.id,
       ownerLabel: accessKey.ownerType === 'team' ? '团队' : '个人',
+      sourceLabel: formatSourceLabel(accessKey.issuedSource),
+      sourceKind: formatSourceKind(accessKey.issuedSource),
       tokenPreview: accessKey.tokenPreview || previewAccessKeyId(accessKey.id),
       scopeLabels: (accessKey.scopes || []).map(formatScopeLabel),
       createdLabel: formatRelativeTime(accessKey.createdAt),
@@ -75,6 +77,20 @@ function formatScopeLabel(scope) {
   if (scope === 'read:site') return 'read';
   if (scope === 'deploy:site') return 'deploy';
   return scope;
+}
+
+function formatSourceLabel(source) {
+  if (source === 'xdmaker_s2s') return 'XDMaker';
+  if (source === 'console') return 'Console';
+  if (source === 'cli') return 'CLI';
+  if (source === 'legacy') return '历史';
+  return '其它';
+}
+
+function formatSourceKind(source) {
+  if (source === 'xdmaker_s2s') return 'xdmaker';
+  if (source === 'console' || source === 'cli' || source === 'legacy') return source;
+  return 'other';
 }
 
 function formatExpiryLabel(value) {

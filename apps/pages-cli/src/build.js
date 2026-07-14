@@ -16,6 +16,7 @@ export async function buildPagesCli(options = {}) {
     recursive: true,
     filter: (source) => !source.endsWith('.test.js') && path.basename(source) !== 'build.js',
   });
+  await cp(path.join(packageDir, 'README.md'), path.join(outDir, 'README.md'));
   await writeFile(path.join(outDir, 'package.json'), await packageManifest());
   await chmod(path.join(outDir, 'main.js'), 0o755);
   return { outDir };

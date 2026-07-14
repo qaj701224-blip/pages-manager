@@ -4,7 +4,7 @@
 
 已接受，已按当前仓库实现落地。
 
-本文记录 XD Cell v2 面向 AI agent 的初期分发边界。已落地决策是：`xd-cell` skill / `@xd-cell/skill` 内置 `@xd-cell/cli` 构建产物；Worker SDK 作为独立 npm 包 `@xd-cell/worker-sdk` 治理；skill 不复制 Worker SDK 领域产物，只维护安装、兼容和安全边界说明。
+本文记录 XD Cell v2 面向 AI agent 和人类用户的分发边界。已落地决策是：`xd-cell` skill / `@xd-cell/skill` 内置一个锁定版本的 `@xd-cell/cli` 构建产物，同时 `@xd-cell/cli` 作为可独立发布的 npm 包治理；Worker SDK 作为独立 npm 包 `@xd-cell/worker-sdk` 治理；skill 不复制 Worker SDK 领域产物，只维护安装、兼容和安全边界说明。
 
 ## 背景
 
@@ -65,13 +65,13 @@ Worker SDK 的 AI-readable 文档随 `@xd-cell/worker-sdk` 包发布。Skill ref
 
 CLI 是 XD Cell 控制面的 agent 操作工具。它通过 CLI-managed API 与 `pages-api` / `pages-auth` 交互，不要求用户或 agent 手写部署 HTTP 请求或认证 header。
 
-初期 CLI 不要求用户单独安装，作为 `@xd-cell/skill` 的内部依赖随 skill 包发布并暴露给 agent 使用：
+Skill 场景下 CLI 仍不要求用户单独安装，作为 `@xd-cell/skill` 的内部依赖随 skill 包发布并暴露给 agent 使用：
 
 ```bash
 node tools/xd-cell-cli/main.js
 ```
 
-如果未来出现明确的人类用户或 CI 直接使用需求，可以再评估发布 `@xd-cell/cli` npm 包。该演进需要更新本 ADR 或新增 ADR，并说明 skill 是继续内置 CLI 快照，还是改为要求外部安装。
+人类用户和 CI 也可以安装独立的 `@xd-cell/cli` npm 包。包内的 `README.md` 是 npm 使用入口，`apps/pages-cli/src/build.js` 生成的发布产物必须携带该 README；skill 继续使用自身内置的 CLI 快照，不在运行时隐式依赖全局 npm 安装。
 
 ### Worker SDK
 
@@ -273,7 +273,7 @@ Skill reference 不应复刻 SDK 函数签名、CLI 参数清单或示例全集�
 
 - `apps/worker-sdk` 已收敛为独立 Worker SDK 包，当前公开根导出、README、类型声明、AI 文档生成和测试覆盖。
 - `browser` helper、runtime adapter 和 inline runtime source 已从 Worker SDK 公共面移出，暂存到根目录 `pages-sdk-extras/`，后续再决定是恢复为独立产物、skill 生成模板还是平台内部工具。
-- CLI 仍作为 skill 内置工具，不要求用户或 agent 单独安装 `@xd-cell/cli`。
+- CLI 仍作为 skill 内置工具，不要求 agent 单独安装 `@xd-cell/cli`；面向人类用户和 CI 的 `@xd-cell/cli` npm 包同时保持可独立发布。
 - Skill 构建只复制 CLI 构建产物、skill references、skill 自身 `BREAKING_CHANGES.md` 和 release `manifest.json`。
 - Worker SDK 自己生成 `docs/llms/worker-sdk.md` 和 `docs/llms/worker-sdk-api.md`，并通过 `pack:check` 检查 AI 文档是否与包真相源漂移。
 - 根 `llms.txt` 只作为索引，指向 Worker SDK 包内领域文档、skill reference 和本 ADR。
@@ -281,7 +281,7 @@ Skill reference 不应复刻 SDK 函数签名、CLI 参数清单或示例全集�
 
 后续如出现以下需求，应新增 ADR 或更新本文：
 
-- 发布 `@xd-cell/cli` 给人类用户或 CI 独立安装使用，并决定 skill 是继续内置 CLI 快照，还是只引用独立 CLI 包。
+- 让 skill 改为只引用独立 CLI 包，或要求 skill 与 npm 包使用同一运行时版本，而不是继续内置 CLI 快照。
 - 将 D1/R2、browser helper、runtime adapter、inline runtime source 或用户级存储恢复为公开能力。
 - 改变 skill 与 Worker SDK 的版本兼容策略，例如从 `recommendedVersion` 改为 semver range。
 - 改变 Worker SDK 文档读取方式，例如从用户项目依赖改为文档站、公司 registry 索引或其它受控索引。

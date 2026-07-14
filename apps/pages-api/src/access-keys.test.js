@@ -2,8 +2,45 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from './index.js';
+import * as accessKeys from './access-keys.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { createTestPagesStore } from './test-store.js';
+
+test('creates reusable access key material with deterministic id and S2S metadata', async () => {
+  assert.equal(typeof accessKeys.createAccessKeyMaterial, 'function');
+
+  const { plaintext, record } = await accessKeys.createAccessKeyMaterial(testEnv(null), { environment: 'production' }, {
+    id: 'ak_xdmaker',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    name: 'XDMaker key',
+    scopes: ['deploy:site'],
+    siteId: 'site_1',
+    expiresAt: '2026-07-15T00:00:00.000Z',
+    issuedSource: 'xdmaker_s2s',
+    issuedSessionVersion: 3,
+  });
+
+  assert.match(plaintext, /^xdp_prod_ak_xdmaker_[a-f0-9]{48}$/);
+  assert.deepEqual(record, {
+    id: 'ak_xdmaker',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'XDMaker key',
+    scopes: ['deploy:site'],
+    siteId: 'site_1',
+    expiresAt: '2026-07-15T00:00:00.000Z',
+    issuedSource: 'xdmaker_s2s',
+    issuedSessionVersion: 3,
+  });
+});
 
 test('creates a site-scoped access key and returns plaintext only once', async () => {
   const store = await createSeededStore();
@@ -21,15 +58,21 @@ test('creates a site-scoped access key and returns plaintext only once', async (
   const body = await response.json();
   assert.equal(body.accessKey.id, 'ak_1');
   assert.match(body.accessKey.plaintext, /^xdp_prod_ak_1_[a-f0-9]{48}$/);
+  assert.equal(body.accessKey.issuedSource, 'cli');
+  assert.equal(body.accessKey.issuedSessionVersion, undefined);
   assert.equal(body.accessKey.keyHash, undefined);
 
   const stored = await store.getAccessKeyById('ak_1');
   assert.equal(stored.keyHash.length, 64);
+  assert.equal(stored.issuedSource, 'cli');
+  assert.equal(stored.issuedSessionVersion, null);
   assert.equal('plaintext' in stored, false);
 
   const list = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/access-keys'), testEnv(store));
   const listed = (await list.json()).accessKeys[0];
   assert.equal(listed.id, 'ak_1');
+  assert.equal(listed.issuedSource, 'cli');
+  assert.equal(listed.issuedSessionVersion, undefined);
   assert.equal(listed.plaintext, undefined);
   assert.equal(listed.keyHash, undefined);
 });
@@ -186,6 +229,12 @@ test('console creates user-owned access keys with default and maximum expiry', a
   assert.equal(body.accessKey.createdByUserId, 'usr_1');
   assert.equal(body.accessKey.expiresAt, '2026-09-15T00:00:00.000Z');
   assert.match(body.accessKey.plaintext, /^xdp_prod_ak_1_[a-f0-9]{48}$/);
+  assert.equal(body.accessKey.issuedSource, 'console');
+  assert.equal(body.accessKey.issuedSessionVersion, undefined);
+
+  const stored = await store.getAccessKeyById('ak_1');
+  assert.equal(stored.issuedSource, 'console');
+  assert.equal(stored.issuedSessionVersion, null);
 
   const list = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/access-keys', {
@@ -195,6 +244,8 @@ test('console creates user-owned access keys with default and maximum expiry', a
   );
   assert.equal(list.status, 200, await list.clone().text());
   const listed = (await list.json()).accessKeys[0];
+  assert.equal(listed.issuedSource, 'console');
+  assert.equal(listed.issuedSessionVersion, undefined);
   assert.equal(listed.plaintext, undefined);
   assert.equal(listed.keyHash, undefined);
 
@@ -356,6 +407,12 @@ test('team-owned access keys require team admin and survive creator leaving the 
   assert.equal(body.accessKey.createdByUserId, 'usr_1');
   assert.equal(body.accessKey.ownerUserId, 'usr_1');
   assert.match(body.accessKey.plaintext, /^xdp_prod_ak_1_[a-f0-9]{48}$/);
+  assert.equal(body.accessKey.issuedSource, 'console');
+  assert.equal(body.accessKey.issuedSessionVersion, undefined);
+
+  const stored = await store.getAccessKeyById('ak_1');
+  assert.equal(stored.issuedSource, 'console');
+  assert.equal(stored.issuedSessionVersion, null);
 
   await store.removeTeamMember({ teamId: team.id, userId: 'usr_1', actorUserId: 'usr_1' });
   const site = await seedTeamSite(store, { id: 'site_team', slug: 'team-docs', teamId: team.id });

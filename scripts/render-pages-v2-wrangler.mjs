@@ -185,6 +185,10 @@ function assertCrossTokenPolicy(replacements) {
 }
 
 function assertRenderedConfigPolicy(rendered, appName) {
+  if (appName === 'apps/pages-api') {
+    assertS2sClientKeyRegistry(readTomlStringVar(rendered, 'S2S_CLIENT_KEYS'));
+    return;
+  }
   if (appName !== 'apps/pages-auth') return;
 
   for (const name of ['SSO_AUTHORIZATION_URL', 'SSO_TOKEN_URL', 'SSO_PROFILE_URL']) {
@@ -346,6 +350,35 @@ function assertAccessKeyPepperRegistry(value) {
     if (!/^[A-Za-z0-9_-]+$/.test(pepperId)) throw new Error('ACCESS_KEY_PEPPERS contains an unsafe pepper id');
     if (!/^ACCESS_KEY_PEPPER_[A-Z0-9_]+$/.test(secretEnvName)) {
       throw new Error('ACCESS_KEY_PEPPERS secret env names must use ACCESS_KEY_PEPPER_*');
+    }
+  }
+}
+
+function assertS2sClientKeyRegistry(value) {
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (entries.length === 0) throw new Error('S2S_CLIENT_KEYS must not be empty');
+
+  const seenPairs = new Set();
+  const clientKeyCounts = new Map();
+  for (const entry of entries) {
+    const [clientId, keyId, secretEnvName, extra] = entry.split(':').map((part) => part.trim());
+    if (extra !== undefined || !clientId || !keyId || !secretEnvName) {
+      throw new Error('S2S_CLIENT_KEYS entries must be clientId:keyId:secretEnvName');
+    }
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(clientId) || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId)) {
+      throw new Error('S2S_CLIENT_KEYS contains an unsafe client or key id');
+    }
+    const pair = `${clientId}:${keyId}`;
+    if (seenPairs.has(pair)) throw new Error('S2S_CLIENT_KEYS contains duplicate client/key');
+    seenPairs.add(pair);
+    const count = (clientKeyCounts.get(clientId) || 0) + 1;
+    if (count > 2) throw new Error('S2S_CLIENT_KEYS allows at most two keys per client');
+    clientKeyCounts.set(clientId, count);
+    if (!/^S2S_SECRET_[A-Z0-9_]+$/.test(secretEnvName)) {
+      throw new Error('S2S_CLIENT_KEYS secret env names must use S2S_SECRET_*');
     }
   }
 }

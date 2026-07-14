@@ -86,3 +86,28 @@ test('access key rows hide revoked keys and expose only token preview', () => {
   assert.equal(rows[0].ownerLabel, '个人');
   assert.equal(rows[0].expiresLabel, '永久');
 });
+
+test('access key rows expose safe source labels for XDMaker and Console keys', () => {
+  const rows = buildAccessKeyRows([
+    {
+      id: 'ak_00197d61ff057c411c631cde9b67dc04',
+      name: 'XDMaker',
+      scopes: ['read:site', 'deploy:site'],
+      ownerType: 'user',
+      issuedSource: 'xdmaker_s2s',
+    },
+    {
+      id: 'ak_console',
+      name: 'Console',
+      scopes: ['read:site'],
+      ownerType: 'user',
+      issuedSource: 'console',
+    },
+  ]);
+
+  assert.equal(rows[0].sourceLabel, 'XDMaker');
+  assert.equal(rows[0].sourceKind, 'xdmaker');
+  assert.equal(rows[0].raw.id, 'ak_00197d61ff057c411c631cde9b67dc04');
+  assert.equal(rows[1].sourceLabel, 'Console');
+  assert.equal(rows[1].sourceKind, 'console');
+});

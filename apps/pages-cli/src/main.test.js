@@ -4,11 +4,12 @@ import { EventEmitter } from 'node:events';
 import { symlink, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { ApiError } from './api-client.js';
-import { main, readHiddenLine } from './main.js';
+import { main, readHiddenLine, readVisibleLine } from './main.js';
 
 test('main dispatches commands and writes stdout', async () => {
   const stdout = capture();
@@ -292,6 +293,126 @@ test('main keeps command-specific SITE_REQUIRED actions', async () => {
   assert.match(stderr.text(), /SITE_REQUIRED/);
   assert.match(stderr.text(), /xd-cell status <站点名>/);
   assert.doesNotMatch(stderr.text(), /xd-cell deploy \.\/dist demo/);
+});
+
+test('main injects visible confirmation input separately from secret input', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  let readConfirmation;
+  const exitCode = await main(['sites', 'delete', 'demo'], {
+    stdout,
+    stderr,
+    stdin: { isTTY: true },
+    readConfirmation: async () => 'yes',
+    commandRunner: async (_argv, options) => {
+      readConfirmation = options.readConfirmation;
+      assert.equal(await options.readConfirmation('确认? '), 'yes');
+    },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(typeof readConfirmation, 'function');
+  assert.equal(stderr.text(), '');
+});
+
+test('main forwards default stdin for interactive site deletion confirmation', async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const prompts = [];
+  const originalIsTty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  let exitCode;
+
+  Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+  try {
+    exitCode = await main(['sites', 'delete', 'demo'], {
+      stdout,
+      stderr,
+      env: { XD_CELL_API_TOKEN: 'token' },
+      profile: { environments: {} },
+      readConfirmation: async (prompt) => {
+        prompts.push(prompt);
+        return 'n';
+      },
+      fetch: async (request) => {
+        calls.push(request.clone());
+        return Response.json({ sites: [{ id: 'site_1', slug: 'demo', environment: 'production' }] });
+      },
+    });
+  } finally {
+    if (originalIsTty) Object.defineProperty(process.stdin, 'isTTY', originalIsTty);
+    else delete process.stdin.isTTY;
+  }
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(prompts, ['确认删除站点 "demo"? (y/N) ']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(stdout.text(), '已取消删除站点：demo\n');
+  assert.equal(stderr.text(), '');
+});
+
+test('readVisibleLine reads a visible line from an interactive TTY', async () => {
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  const stdout = capture();
+  const answer = readVisibleLine('确认删除? ', { stdin, stdout });
+  stdin.write('yes\n');
+  assert.equal(await answer, 'yes');
+  assert.equal(stdout.text(), '确认删除? ');
+});
+
+test('readVisibleLine requires an interactive TTY', async () => {
+  await assert.rejects(
+    readVisibleLine('确认删除? ', { stdin: new PassThrough(), stdout: capture() }),
+    { code: 'CONFIRMATION_STDIN_REQUIRED' },
+  );
+});
+
+test('readVisibleLine rejects when interactive input closes', async () => {
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  let timeout;
+  const answer = readVisibleLine('确认删除? ', { stdin, stdout: capture() });
+  stdin.end();
+
+  try {
+    await assert.rejects(
+      Promise.race([
+        answer,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('readVisibleLine did not settle')), 100);
+        }),
+      ]),
+      { code: 'CONFIRMATION_INPUT_CANCELLED' },
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+test('readVisibleLine rejects and cleans up when interactive input is destroyed', async () => {
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  let timeout;
+  const answer = readVisibleLine('确认删除? ', { stdin, stdout: capture() });
+  stdin.destroy();
+
+  try {
+    await assert.rejects(
+      Promise.race([
+        answer,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('readVisibleLine did not settle')), 100);
+        }),
+      ]),
+      { code: 'CONFIRMATION_INPUT_CANCELLED' },
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+  assert.equal(stdin.listenerCount('close'), 0);
+  assert.equal(stdin.listenerCount('error'), 0);
+  assert.equal(stdin.listenerCount('data'), 0);
 });
 
 test('readHiddenLine reads from a TTY without echoing the secret value', async () => {

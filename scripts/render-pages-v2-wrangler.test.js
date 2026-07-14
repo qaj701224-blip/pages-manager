@@ -13,12 +13,14 @@ const pagesRouterWranglerPath = join(repoRoot, 'apps/pages-router/wrangler.toml'
 const kvGatewayWranglerPath = join(repoRoot, 'apps/kv-gateway/wrangler.toml');
 const pagesConsoleWranglerPath = join(repoRoot, 'apps/pages-console/wrangler.toml');
 const pagesApiStagingTemplatePath = join(repoRoot, 'apps/pages-api/wrangler.staging.template.toml');
+const pagesApiProductionTemplatePath = join(repoRoot, 'apps/pages-api/wrangler.production.template.toml');
 const pagesRouterProductionTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.production.template.toml');
 const pagesRouterStagingTemplatePath = join(repoRoot, 'apps/pages-router/wrangler.staging.template.toml');
 const pagesAuthProductionTemplatePath = join(repoRoot, 'apps/pages-auth/wrangler.production.template.toml');
 const pagesAuthStagingTemplatePath = join(repoRoot, 'apps/pages-auth/wrangler.staging.template.toml');
 const originalTemplates = new Map([
   [pagesApiStagingTemplatePath, readFileSync(pagesApiStagingTemplatePath, 'utf8')],
+  [pagesApiProductionTemplatePath, readFileSync(pagesApiProductionTemplatePath, 'utf8')],
   [pagesRouterProductionTemplatePath, readFileSync(pagesRouterProductionTemplatePath, 'utf8')],
   [pagesRouterStagingTemplatePath, readFileSync(pagesRouterStagingTemplatePath, 'utf8')],
   [pagesAuthProductionTemplatePath, readFileSync(pagesAuthProductionTemplatePath, 'utf8')],
@@ -128,6 +130,14 @@ function setPagesApiStagingTemplateWfpDispatchNamespace(value) {
   writeFileSync(pagesApiStagingTemplatePath, content);
 }
 
+function setPagesApiStagingTemplateS2sClientKeys(value) {
+  const content = readFileSync(pagesApiStagingTemplatePath, 'utf8').replace(
+    /^S2S_CLIENT_KEYS = "[^"]+"$/m,
+    `S2S_CLIENT_KEYS = "${value}"`
+  );
+  writeFileSync(pagesApiStagingTemplatePath, content);
+}
+
 test('generated pages v2 wrangler configs are ignored', () => {
   const result = spawnSync(
     'git',
@@ -174,6 +184,8 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
+  assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
@@ -204,6 +216,8 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
+  assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
   assert.match(config, /service = "pages-auth-staging"/);
@@ -215,6 +229,44 @@ test('staging pages-api config rejects production WFP namespace', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}${result.stdout}`, /cross-environment value/);
+});
+
+test('pages-api renderer rejects invalid S2S client key registries', () => {
+  const cases = [
+    ['missing field', 'xdmaker:key_202607'],
+    ['unsafe client id', 'xd maker:key_202607:S2S_SECRET_XDMAKER_202607'],
+    ['unsafe key id', 'xdmaker:key!:S2S_SECRET_XDMAKER_202607'],
+    ['unsafe secret env name', 'xdmaker:key_202607:NOT_A_SECRET'],
+    [
+      'duplicate client and key',
+      'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607,xdmaker:key_202607:S2S_SECRET_XDMAKER_202607',
+    ],
+    [
+      'more than two keys for one client',
+      [
+        'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607',
+        'xdmaker:key_202608:S2S_SECRET_XDMAKER_202608',
+        'xdmaker:key_202609:S2S_SECRET_XDMAKER_202609',
+      ].join(','),
+    ],
+  ];
+
+  for (const [label, registry] of cases) {
+    setPagesApiStagingTemplateS2sClientKeys(registry);
+    const result = runRenderer(['apps/pages-api', 'staging']);
+    assert.notEqual(result.status, 0, label);
+    assert.match(`${result.stderr}${result.stdout}`, /S2S_CLIENT_KEYS/, label);
+    setPagesApiStagingTemplateS2sClientKeys('xdmaker:key_202607:S2S_SECRET_XDMAKER_202607');
+  }
+});
+
+test('pages-api renderer accepts two runtime-safe S2S keys for one client', () => {
+  setPagesApiStagingTemplateS2sClientKeys(
+    'xd.maker:key.202607:S2S_SECRET_XDMAKER_202607,xd.maker:key.202608:S2S_SECRET_XDMAKER_202608'
+  );
+
+  const config = renderPagesApi('staging');
+  assert.match(config, /S2S_CLIENT_KEYS = "xd\.maker:key\.202607:[^"]+,xd\.maker:key\.202608:[^"]+"/);
 });
 
 test('pages-api config keeps committed WFP compatibility date', () => {

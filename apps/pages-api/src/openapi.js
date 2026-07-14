@@ -15,6 +15,13 @@ export function buildOpenApi(config) {
           scheme: 'bearer',
           bearerFormat: 'CLI token or access key',
         },
+        s2sHmac: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'X-XD-Cell-S2S-Signature',
+          description:
+            'Controlled S2S HMAC authentication. The client, key id, timestamp, nonce, and signature headers are all required.',
+        },
       },
       schemas: {
         ErrorResponse: {
@@ -160,6 +167,69 @@ export function buildOpenApi(config) {
             },
           },
         },
+        S2STokenIssueRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['email', 'feishu_open_id', 'display_name'],
+          properties: {
+            email: { type: 'string', format: 'email' },
+            feishu_open_id: { type: 'string', minLength: 1, maxLength: 128 },
+            display_name: { type: 'string', minLength: 1, maxLength: 80 },
+            replaces_key_id: { type: 'string' },
+          },
+        },
+        S2STokenActor: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['user_id', 'email', 'display_name', 'created_source'],
+          properties: {
+            user_id: { type: 'string' },
+            email: { type: 'string', format: 'email' },
+            display_name: { type: ['string', 'null'] },
+            created_source: { type: 'string', enum: ['xd_sso', 'xdmaker'] },
+          },
+        },
+        S2STokenIssueResponse: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['token', 'key_id', 'expires_at', 'source', 'actor'],
+          properties: {
+            token: {
+              type: 'string',
+              writeOnly: true,
+              description: 'One-time plaintext access key. Never log or persist outside the approved client secret store.',
+            },
+            key_id: { type: 'string' },
+            expires_at: { type: 'string', format: 'date-time' },
+            source: { type: 'string', const: 'xdmaker_s2s' },
+            actor: { $ref: '#/components/schemas/S2STokenActor' },
+          },
+        },
+        S2STokenRevokeRequest: {
+          oneOf: [
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['key_id'],
+              properties: { key_id: { type: 'string' } },
+            },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['email'],
+              properties: { email: { type: 'string', format: 'email' } },
+            },
+          ],
+        },
+        S2STokenRevokeResponse: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['revoked_count', 'key_ids'],
+          properties: {
+            revoked_count: { type: 'integer', minimum: 0 },
+            key_ids: { type: 'array', items: { type: 'string' } },
+          },
+        },
         SiteVisibility: {
           type: 'string',
           enum: ['internal', 'org', 'acl', 'owner', 'disabled'],
@@ -262,12 +332,67 @@ export function buildOpenApi(config) {
       },
     },
     paths: {
+      '/.xd-pages/api/s2s/tokens': {
+        post: {
+          summary: 'Exchange a trusted XDMaker identity for a short-lived personal access key',
+          description: 'Controlled internal integration. Requests must be HMAC-signed and pass the existing IP allowlist.',
+          security: [{ s2sHmac: [] }],
+          parameters: s2sHeaderParameters(),
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/S2STokenIssueRequest' } },
+            },
+          },
+          'x-error-codes': S2S_ERROR_CODES,
+          responses: {
+            201: {
+              description: 'Access key issued; plaintext is returned once.',
+              headers: noStoreResponseHeaders(),
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/S2STokenIssueResponse' } } },
+            },
+            400: { description: 'Invalid request', headers: noStoreResponseHeaders() },
+            401: { description: 'Invalid S2S authentication', headers: noStoreResponseHeaders() },
+            403: { description: 'User inactive or source IP denied', headers: noStoreResponseHeaders() },
+            409: { description: 'Replay, identity, or replacement conflict', headers: noStoreResponseHeaders() },
+            429: { description: 'Rate limited', headers: noStoreResponseHeaders() },
+            500: { description: 'S2S store unavailable', headers: noStoreResponseHeaders() },
+          },
+        },
+      },
+      '/.xd-pages/api/s2s/tokens/revoke': {
+        post: {
+          summary: 'Idempotently revoke XDMaker-issued access keys',
+          description: 'Controlled internal integration. Only keys issued by the XDMaker S2S channel are affected.',
+          security: [{ s2sHmac: [] }],
+          parameters: s2sHeaderParameters(),
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/S2STokenRevokeRequest' } },
+            },
+          },
+          'x-error-codes': S2S_ERROR_CODES,
+          responses: {
+            200: {
+              description: 'Revocation result',
+              headers: noStoreResponseHeaders(),
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/S2STokenRevokeResponse' } } },
+            },
+            400: { description: 'Invalid request', headers: noStoreResponseHeaders() },
+            401: { description: 'Invalid S2S authentication', headers: noStoreResponseHeaders() },
+            409: { description: 'Replay detected', headers: noStoreResponseHeaders() },
+            429: { description: 'Rate limited', headers: noStoreResponseHeaders() },
+            500: { description: 'S2S store unavailable', headers: noStoreResponseHeaders() },
+          },
+        },
+      },
       '/.xd-pages/api/sites': {
         get: {
-          summary: 'List sites visible to the authenticated actor; access keys require read:site',
+          summary: 'List sites visible to the authenticated actor; access keys require read:site or deploy:site',
           responses: {
             200: { description: 'Sites returned' },
-            403: { description: 'Access key missing read:site scope' },
+            403: { description: 'Access key missing read:site or deploy:site scope' },
             401: { description: 'Authentication required' },
           },
         },
@@ -286,11 +411,11 @@ export function buildOpenApi(config) {
       },
       '/.xd-pages/api/sites/{id}': {
         get: {
-          summary: 'Get a site; access keys require read:site',
+          summary: 'Get a site; access keys require read:site or deploy:site',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           responses: {
             200: { description: 'Site returned' },
-            403: { description: 'Access key missing read:site scope' },
+            403: { description: 'Access key missing read:site or deploy:site scope' },
             404: { description: 'Site not found' },
           },
         },
@@ -362,10 +487,12 @@ export function buildOpenApi(config) {
       },
       '/.xd-pages/api/sites/{id}/acl': {
         get: {
-          summary: 'List site ACL entries',
+          summary: 'List site ACL entries for a user or deploy-capable access key',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          'x-error-codes': ['SITE_POLICY_FORBIDDEN'],
           responses: {
             200: { description: 'ACL entries returned' },
+            403: { description: 'Access key cannot manage the target site' },
             404: { description: 'Site not found' },
           },
         },
@@ -703,6 +830,39 @@ export function buildOpenApi(config) {
           },
         },
       },
+    },
+  };
+}
+
+const S2S_ERROR_CODES = [
+  'S2S_AUTH_REQUIRED',
+  'S2S_CLIENT_INVALID',
+  'S2S_TIMESTAMP_INVALID',
+  'S2S_REQUEST_INVALID',
+  'S2S_SIGNATURE_INVALID',
+  'S2S_REPLAY_DETECTED',
+  'S2S_RATE_LIMITED',
+  'S2S_IDENTITY_CONFLICT',
+  'S2S_USER_INACTIVE',
+  'S2S_REPLACEMENT_KEY_INVALID',
+  'S2S_STORE_UNAVAILABLE',
+];
+
+function s2sHeaderParameters() {
+  return [
+    'X-XD-Cell-S2S-Client',
+    'X-XD-Cell-S2S-Key-Id',
+    'X-XD-Cell-S2S-Timestamp',
+    'X-XD-Cell-S2S-Nonce',
+    'X-XD-Cell-S2S-Signature',
+  ].map((name) => ({ name, in: 'header', required: true, schema: { type: 'string' } }));
+}
+
+function noStoreResponseHeaders() {
+  return {
+    'Cache-Control': {
+      description: 'S2S responses are never cacheable.',
+      schema: { type: 'string', const: 'no-store' },
     },
   };
 }

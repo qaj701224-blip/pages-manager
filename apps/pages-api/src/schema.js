@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 export function createSchemaSql() {
   return [
@@ -15,7 +15,9 @@ export function createSchemaSql() {
       session_version INTEGER NOT NULL DEFAULT 1,
       last_login_at TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      feishu_open_id TEXT,
+      created_source TEXT NOT NULL DEFAULT 'xd_sso'
     )`,
     `CREATE TABLE IF NOT EXISTS sites (
       id TEXT PRIMARY KEY,
@@ -233,7 +235,27 @@ export function createSchemaSql() {
       revoked_at TEXT,
       revoked_by_user_id TEXT,
       revoked_reason TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      issued_source TEXT NOT NULL DEFAULT 'legacy',
+      issued_session_version INTEGER
+    )`,
+    `CREATE TABLE IF NOT EXISTS s2s_nonces (
+      environment TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      PRIMARY KEY (environment, client_id, nonce)
+    )`,
+    `CREATE TABLE IF NOT EXISTS s2s_rate_limits (
+      environment TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      bucket_start TEXT NOT NULL,
+      request_count INTEGER NOT NULL,
+      expires_at TEXT NOT NULL,
+      PRIMARY KEY (environment, scope, subject, bucket_start)
     )`,
     `CREATE TABLE IF NOT EXISTS teams (
       id TEXT PRIMARY KEY,
@@ -384,6 +406,11 @@ export function createSchemaSql() {
       ON deployment_resource_cleanup_tasks(environment, status, cleanup_after)`,
     `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_resource
       ON deployment_resource_cleanup_tasks(environment, resource_type, resource_ref)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
+      ON users(lower(trim(email)))`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id
+      ON users(feishu_open_id)
+      WHERE feishu_open_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site
       ON site_acl_entries(site_id, created_at)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject
@@ -394,6 +421,12 @@ export function createSchemaSql() {
       ON access_keys(owner_type, owner_id)`,
     `CREATE INDEX IF NOT EXISTS idx_access_keys_environment_owner
       ON access_keys(environment, owner_type, owner_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_s2s_nonces_expires_at
+      ON s2s_nonces(expires_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_s2s_rate_limits_expires_at
+      ON s2s_rate_limits(expires_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_access_keys_s2s_owner_created
+      ON access_keys(environment, issued_source, owner_user_id, created_at)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_department_active
       ON teams(environment, team_type, department_path)
       WHERE team_type = 'department' AND status = 'active'`,

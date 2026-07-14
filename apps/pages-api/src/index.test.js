@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import worker from './index.js';
+import { buildS2SCanonicalInput, createS2SSignature } from './s2s-auth.js';
 import { createTestPagesStore } from './test-store.js';
 
 test('health returns pages-api service and environment', async () => {
@@ -102,6 +103,39 @@ test('scheduled handler runs due WFP cleanup tasks', async () => {
   assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-old']);
   assert.equal((await store.getDeploymentResourceCleanupTask('cln_1', 'production')).status, 'succeeded');
   assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'retired');
+});
+
+test('scheduled handler cleans expired S2S guards even when deployment cleanup fails', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.reserveS2SNonce({
+    environment: 'production',
+    clientId: 'xdmaker',
+    nonce: 'nonce_cleanup01',
+    endpoint: '/.xd-pages/api/s2s/tokens',
+    receivedAt: '2026-06-14T23:50:00.000Z',
+    expiresAt: '2026-06-14T23:59:00.000Z',
+  });
+  await store.consumeS2SRateLimit({
+    environment: 'production',
+    scope: 'client',
+    subject: 'xdmaker',
+    bucketStart: '2026-06-14T23:50:00.000Z',
+    expiresAt: '2026-06-15T00:00:00.000Z',
+    limit: 300,
+  });
+  store.listDueDeploymentResourceCleanupTasks = async () => {
+    throw new Error('cleanup unavailable');
+  };
+  await worker.scheduled(
+    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      now: () => '2026-06-15T00:00:00.000Z',
+    }
+  );
+  assert.equal(store.s2sNonces.size, 0);
+  assert.equal(store.s2sRateLimits.size, 0);
 });
 
 test('scheduled handler retries failed WFP cleanup tasks', async () => {
@@ -330,6 +364,42 @@ test('management API rejects requests outside the configured IP allowlist before
   assert.equal((await response.json()).error.code, 'IP_NOT_ALLOWED');
 });
 
+test('S2S endpoint is denied by the existing IP allowlist before nonce or token handling', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const request = await signedS2SRequest({ now: 1_781_481_600, nonce: 'nonce_denied1' });
+  const response = await worker.fetch(request, {
+    PAGES_ENV: 'production',
+    PAGES_STORE: store,
+    IP_ALLOWLIST: '10.0.0.0/8',
+    S2S_CLIENT_KEYS: 'xdmaker:key_1:S2S_SECRET_XDMAKER',
+    S2S_SECRET_XDMAKER: 'secret',
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'IP_NOT_ALLOWED');
+  assert.equal(store.s2sNonces.size, 0);
+});
+
+test('S2S endpoint reaches the handler through the allowlist without bearer auth', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const request = await signedS2SRequest({ now: 1_781_481_600, nonce: 'nonce_allowed1', ip: '10.1.2.3' });
+  const response = await worker.fetch(request, {
+    PAGES_ENV: 'production',
+    PAGES_STORE: store,
+    IP_ALLOWLIST: '10.0.0.0/8',
+    S2S_CLIENT_KEYS: 'xdmaker:key_1:S2S_SECRET_XDMAKER',
+    S2S_SECRET_XDMAKER: 'secret',
+    ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_s2s',
+    ACCESS_KEY_PEPPERS: 'pepper_s2s:S2S_ACCESS_KEY_PEPPER',
+    S2S_ACCESS_KEY_PEPPER: 'secret-pepper',
+    now: () => '2026-06-15T00:00:00.000Z',
+    nextId: (prefix) => `${prefix}_route_test`,
+  });
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal((await response.json()).source, 'xdmaker_s2s');
+  assert.equal(store.s2sNonces.size, 1);
+});
+
 test('internal user upsert is only callable through internal service host', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
@@ -503,5 +573,33 @@ function jsonRequest(url, body, headers = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
+  });
+}
+
+async function signedS2SRequest({ now, nonce, ip = '203.0.113.8' }) {
+  const rawBody = JSON.stringify({ email: 'route@example.com', feishu_open_id: 'ou_route', display_name: 'Route User' });
+  const canonical = await buildS2SCanonicalInput({
+    environment: 'production',
+    clientId: 'xdmaker',
+    keyId: 'key_1',
+    method: 'POST',
+    pathname: '/.xd-pages/api/s2s/tokens',
+    timestamp: String(now),
+    nonce,
+    rawBody,
+  });
+  const signature = await createS2SSignature('secret', canonical);
+  return new Request('https://api.pages.xd.team/.xd-pages/api/s2s/tokens', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'CF-Connecting-IP': ip,
+      'X-XD-Cell-S2S-Client': 'xdmaker',
+      'X-XD-Cell-S2S-Key-Id': 'key_1',
+      'X-XD-Cell-S2S-Timestamp': String(now),
+      'X-XD-Cell-S2S-Nonce': nonce,
+      'X-XD-Cell-S2S-Signature': signature,
+    },
+    body: rawBody,
   });
 }

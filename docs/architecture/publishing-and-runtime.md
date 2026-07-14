@@ -103,6 +103,8 @@ absolute TTL: 30 天
 - 修改 owner、collaborators 或 ACL。
 - 将站点可见性改为 `internal` 或未来公网 exposure。
 
+XDMaker S2S 换证是受控的服务端集成例外：只有 `xdt-api` 能在现有 `IP_ALLOWLIST`、HMAC、timestamp 和 nonce 门禁后为已完成飞书 SSO 的用户换取 24 小时个人 access key。XDMaker 客户端本身仍只把 key 注入捆绑的 CLI 子进程，不直接调用管理 API；Console 创建/查看 key 的 recent-login 语义不因此改变。
+
 ### site_session
 
 ```text
@@ -225,8 +227,8 @@ xd-cell deploy ./dist foo --token <token> --json
 
 本地 CLI 不应自动从环境变量或普通命令持久化 access key。只有用户明确执行 `xd-cell login --token <token>` 这类登录命令时，才允许在 `whoami` 验证后写入 secret store，并且输出不得回显 key 明文。普通 API 命令传 `--token <token>` 时，只用于本次请求，不读取本地 secret store，也不写入 profile。
 
-access key 创建站点只允许发生在部署事务内。以下为目标模型；当前代码中尚未完全落地的 deploy
-复合归属转移、selected sites 多选范围和独立 transfer API，后续实现时必须同步 API、CLI、Console
+access key 创建站点只允许发生在部署事务内。当前 owner-scoped 个人 access key 已支持在首次 deploy 事务中创建个人站点，也支持按现有团队 membership 向团队发布。deploy
+复合归属转移、selected sites 多选范围和独立 transfer API 仍是后续模型，后续实现时必须同步 API、CLI、Console
 和测试。Access Token 分为 Personal Access Token（PAT）和
 Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是第三种 Token 类型。
 
@@ -241,6 +243,12 @@ Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是
 普通 `POST /.xd-pages/api/sites` 建站 API 仍只接受用户 CLI token 或受控 console session，不对
 access key 开放。access key 的权限、作用范围、owner 归属、过期时间和 environment 仍以 `pages-api`
 权威记录为准。
+
+XDMaker S2S key 只是上述个人 owner-scoped key 的受控来源，不是新的 Token 类型：`issuedSource` 为
+`xdmaker_s2s`，scope 固定为 `deploy:site`、`read:site`、`rollback:site`，`site_id` 为空，TTL 为 24 小时。
+发放时保存 `issuedSessionVersion`；用户明确安全失效导致 `sessionVersion` 提升后，认证立即拒绝旧 S2S key。
+Console 列表显示 `XDMaker` 来源并复用现有撤销动作；xdt-api 的 source-scoped revoke 可按 key 或规范化邮箱幂等吊销。
+对所有 access key，`deploy:site` 同时允许读取其可管理站点的基础信息和 ACL；ACL 读取仍按当前 owner/team 管理权限校验，只有 `read:site` 的只读 key 不获得 ACL 内容读取权限。
 
 #### Global config
 
@@ -334,9 +342,12 @@ xd-cell status foo
 xd-cell open foo [--print]
 xd-cell sites list
 xd-cell sites info foo
+xd-cell sites delete foo --yes
 xd-cell secrets put foo API_TOKEN
 xd-cell secrets delete foo API_TOKEN
 ```
+
+站点删除默认要求交互确认；用户取消时 CLI 不发送删除请求。AI agent、CI 或使用 `--json` 时必须显式传入 `--yes`。CLI 先在当前身份可见的站点中解析 slug，再调用既有的按 ID 删除接口。服务端保持当前 soft delete 语义；对于原先 active 的 route，会发布 `routeStatus=deleted` 的 inactive route snapshot 并推进当前指针，旧的 immutable snapshot 仍保留，同时保留 hostname reuse hold。当前不提供恢复、永久删除或批量删除。
 
 配置优先级从高到低：
 
@@ -455,6 +466,7 @@ access key 要求：
 - 明文只显示一次，存储时使用 hash/HMAC + server-side pepper。
 - 校验时使用常量时间比较，并记录 `last_used_at`、来源 env、site/scope 决策。
 - key 格式应带非敏感前缀和环境提示，例如 `xdp_prod_...`、`xdp_stg_...`，但不能仅靠前缀判权。
+- XDMaker S2S key 的明文只在受控换证响应中返回一次；客户端只通过安全存储和 CLI 子进程使用，不写入渲染层或普通会话环境。
 
 ### AI Skill
 

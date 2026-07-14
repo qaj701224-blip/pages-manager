@@ -39,6 +39,10 @@ const deploymentDiagnosticsCleanupMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0013_deployment_diagnostics_cleanup_tasks.sql'),
   'utf8'
 );
+const xdmakerS2SMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0014_xdmaker_s2s_access_keys.sql'),
+  'utf8'
+);
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -180,6 +184,13 @@ test('deployment diagnostics cleanup migration adds review and GC records withou
   assert.match(deploymentDiagnosticsCleanupMigration, /idx_cleanup_tasks_environment_status/);
   assert.match(deploymentDiagnosticsCleanupMigration, /idx_cleanup_tasks_resource/);
   assert.doesNotMatch(deploymentDiagnosticsCleanupMigration, /DROP TABLE|DELETE FROM deployments|DELETE FROM site_versions/i);
+});
+
+test('XDMaker S2S migration keeps email uniqueness aligned with application normalization', () => {
+  assert.match(
+    xdmakerS2SMigration,
+    /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized\s+ON users\(lower\(trim\(email\)\)\)/
+  );
 });
 
 function tableDefinition(sql, tableName) {

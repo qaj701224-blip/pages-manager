@@ -89,6 +89,19 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
     return authError('PAGES_USER_INACTIVE', 'User is not active.', 403, 'Contact the Pages platform owner.');
   }
 
+  if (
+    Number.isInteger(accessKey.issuedSessionVersion) &&
+    accessKey.issuedSessionVersion > 0 &&
+    accessKey.issuedSessionVersion !== user.sessionVersion
+  ) {
+    return authError(
+      'ACCESS_KEY_SESSION_STALE',
+      'Access key session is stale.',
+      401,
+      'Ask XDMaker to exchange a new access key.'
+    );
+  }
+
   if (typeof store.updateAccessKeyLastUsed === 'function') await store.updateAccessKeyLastUsed(accessKey.id, now);
 
   return {

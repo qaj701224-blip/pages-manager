@@ -8,6 +8,7 @@ import { handleInternalApi } from './internal.js';
 import { handleConsoleUsersApi } from './console-users.js';
 import { buildReadme, buildSkill, markdownResponse } from './public-docs.js';
 import { handleSitesApi } from './sites.js';
+import { handleS2STokensApi } from './s2s-tokens.js';
 import { createPagesStore } from './store.js';
 import { handleConsoleTeamsApi, handleTeamsApi } from './teams.js';
 import { handleWhoamiApi } from './whoami.js';
@@ -31,10 +32,14 @@ export default {
       return;
     }
 
-    const cleanup = runDueDeploymentCleanups(env, config, store, {
-      limit: Number(env.DEPLOYMENT_CLEANUP_CRON_LIMIT || 10),
-    });
-    await cleanup;
+    await Promise.allSettled([
+      runDueDeploymentCleanups(env, config, store, {
+        limit: Number(env.DEPLOYMENT_CLEANUP_CRON_LIMIT || 10),
+      }),
+      typeof store.cleanupExpiredS2SGuards === 'function'
+        ? store.cleanupExpiredS2SGuards(typeof env.now === 'function' ? env.now() : new Date().toISOString())
+        : Promise.resolve(),
+    ]);
     void controller;
   },
 
@@ -75,6 +80,17 @@ export default {
     if (requiresIpAllowlist(url)) {
       const ipError = checkIpAllowlist(request, env, config);
       if (ipError) return ipError;
+    }
+
+    if (url.pathname.startsWith('/.xd-pages/api/s2s/')) {
+      let store;
+      try {
+        store = createPagesStore(env);
+      } catch {
+        return jsonError('API_STORE_UNAVAILABLE', 'Pages API store is unavailable.', 500, 'Check the pages-api D1 binding.');
+      }
+      const response = await handleS2STokensApi(request, env, config, store, ctx);
+      if (response) return response;
     }
 
     if (url.pathname.startsWith('/.xd-pages/internal/')) {

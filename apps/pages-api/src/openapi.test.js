@@ -20,6 +20,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/sites']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].delete);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].get);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
@@ -27,6 +28,12 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
+  assert.ok(body.paths['/.xd-pages/api/s2s/tokens'].post);
+  assert.ok(body.paths['/.xd-pages/api/s2s/tokens/revoke'].post);
+  assert.equal(body.paths['/.xd-pages/api/s2s/tokens'].post.security[0].s2sHmac.length, 0);
+  assert.equal(body.components.schemas.S2STokenIssueResponse.properties.token.writeOnly, true);
+  assert.match(body.paths['/.xd-pages/api/s2s/tokens'].post['x-error-codes'].join(','), /S2S_REPLAY_DETECTED/);
+  assert.doesNotMatch(JSON.stringify(body), /user@example|ou_|xdp_/i);
   assert.equal(
     body.paths['/.xd-pages/api/auth/whoami'].get.responses[200].content['application/json'].schema.$ref,
     '#/components/schemas/WhoamiResponse'
@@ -140,6 +147,11 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
   );
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_SITE_FORBIDDEN'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].get['x-error-codes'].includes('SITE_POLICY_FORBIDDEN'));
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{id}/acl'].get.responses[403].description,
+    'Access key cannot manage the target site'
+  );
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_INVALID'));
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_TOO_LONG'));
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
@@ -223,6 +235,8 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.match(body, /--token <token>/);
   assert.match(body, /xd-cell secrets put <site> API_TOKEN/);
   assert.match(body, /xd-cell secrets delete <site> API_TOKEN/);
+  assert.match(body, /xd-cell sites delete <site> --yes --json/);
+  assert.match(body, /删除站点前确认目标；当前 CLI 不提供恢复。/);
   assert.match(body, /assets\.not_found_handling/);
   assert.match(body, /--json/);
   assert.match(body, /api\.pages\.xd\.team/);
@@ -237,6 +251,7 @@ test('serves CLI-only skill without legacy API instructions', async () => {
   assert.doesNotMatch(body, /--access-key|curl|X-Pages-Token|api\.workers\.xd\.team/);
   assert.doesNotMatch(body, /--fallback <|xd-cell rollback|xd-cell env|--env staging|secrets list/);
   assert.doesNotMatch(body, /client_secret|CF_API_TOKEN|CLOUDFLARE/i);
+  assert.doesNotMatch(body, /DELETE \/\.xd-pages\/api\/sites/);
   assert.doesNotMatch(body, /XD Pages/);
 });
 
@@ -256,6 +271,7 @@ test('serves staging skill without exposing user-facing environment switches', a
   assert.doesNotMatch(body, /xd-cell detect <entry> --json/);
   assert.doesNotMatch(body, /xd-cell deploy <entry> <site> --dry-run --json/);
   assert.doesNotMatch(body, /xd-cell deploy <entry> <site> --visibility org/);
+  assert.doesNotMatch(body, /xd-cell sites delete/);
   assert.doesNotMatch(body, /^xd-cell access (set|grant|revoke)\b/m);
   assert.doesNotMatch(body, /^xd-cell secrets (put|delete)\b/m);
   assert.doesNotMatch(body, /export XD_CELL_API_TOKEN=<token>/);
@@ -265,6 +281,17 @@ test('serves staging skill without exposing user-facing environment switches', a
   assert.doesNotMatch(body, /api\.pages\.xd\.team(?![\\w.-])/);
   assert.match(body, /pages\.xd\.team/);
   assert.doesNotMatch(body, /api\.workers\.xd\.team/);
+});
+
+test('serves production readme with safe site deletion guidance', async () => {
+  const response = await worker.fetch(new Request('https://api.pages.xd.team/readme.md'), {
+    PAGES_ENV: 'production',
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /xd-cell sites delete demo --yes --json/);
+  assert.match(body, /删除站点前确认目标；当前 CLI 不提供恢复。/);
 });
 
 test('serves readme docs without legacy API addresses', async () => {
@@ -284,6 +311,7 @@ test('serves readme docs without legacy API addresses', async () => {
   assert.doesNotMatch(body, /xd-cell detect \.\/dist --json/);
   assert.doesNotMatch(body, /xd-cell deploy \.\/dist demo --visibility org/);
   assert.doesNotMatch(body, /xd-cell deploy --config xd-cell\.config\.json/);
+  assert.doesNotMatch(body, /xd-cell sites delete/);
   assert.match(body, /XD_CELL_API_TOKEN/);
   assert.doesNotMatch(body, /^xd-cell access (set|grant|revoke)\b/m);
   assert.doesNotMatch(body, /^xd-cell secrets (put|delete)\b/m);

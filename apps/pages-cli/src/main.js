@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 import { readPublicDiagnostics } from './api-client.js';
@@ -8,14 +9,20 @@ import { executeCommand } from './commands.js';
 export async function main(argv = process.argv.slice(2), io = {}) {
   const stdout = io.stdout || process.stdout;
   const stderr = io.stderr || process.stderr;
+  const stdin = io.stdin || process.stdin;
   const commandRunner = io.commandRunner || executeCommand;
   try {
     await commandRunner(argv, {
       ...io,
       env: io.env || process.env,
+      stdin,
       stdout,
+      readConfirmation: io.readConfirmation || ((prompt) => readVisibleLine(prompt, {
+        stdin,
+        stdout,
+      })),
       readSecret: io.readSecret || ((prompt) => readHiddenLine(prompt, {
-        stdin: io.stdin || process.stdin,
+        stdin,
         stdout,
       })),
     });
@@ -23,6 +30,43 @@ export async function main(argv = process.argv.slice(2), io = {}) {
   } catch (error) {
     write(stderr, wantsJson(argv) ? `${formatErrorJson(error)}\n` : `${formatError(error)}\n`);
     return 1;
+  }
+}
+
+export async function readVisibleLine(prompt = '', { stdin = process.stdin, stdout = process.stdout } = {}) {
+  if (!stdin?.isTTY) throw codedError('CONFIRMATION_STDIN_REQUIRED');
+
+  const readline = createInterface({
+    input: stdin,
+    output: stdout,
+    terminal: Boolean(stdin.isTTY && stdout?.isTTY),
+  });
+  let settled = false;
+  let cancel;
+  const cancellation = new Promise((_, reject) => {
+    cancel = () => {
+      if (settled) return;
+      settled = true;
+      reject(codedError('CONFIRMATION_INPUT_CANCELLED'));
+    };
+    readline.once('close', cancel);
+    readline.once('SIGINT', cancel);
+    readline.once('error', cancel);
+    stdin.once('close', cancel);
+    stdin.once('error', cancel);
+  });
+  try {
+    return await Promise.race([readline.question(prompt), cancellation]);
+  } catch {
+    throw codedError('CONFIRMATION_INPUT_CANCELLED');
+  } finally {
+    settled = true;
+    readline.off('close', cancel);
+    readline.off('SIGINT', cancel);
+    readline.off('error', cancel);
+    stdin.off('close', cancel);
+    stdin.off('error', cancel);
+    readline.close();
   }
 }
 

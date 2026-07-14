@@ -527,12 +527,16 @@ export function buildSiteOwnerTransferAuditEvent(env, config, actor, site, targe
 }
 
 async function listSiteAcl(store, actor, siteId, environment) {
-  if (actor.type !== 'user') {
-    return jsonError('SITE_POLICY_FORBIDDEN', 'Access keys cannot read site ACL.', 403, 'Use a user CLI token.');
-  }
-
   const site = await store.getSiteForUser(siteId, actor.userId, actor, environment);
   if (!site) return jsonError('SITE_NOT_FOUND', 'Site not found.', 404, 'Check the site id.');
+  if (actor.type === 'access_key' && !actorCanManageSite(actor, site)) {
+    return jsonError(
+      'SITE_POLICY_FORBIDDEN',
+      'Access key cannot read ACL for this site.',
+      403,
+      'Use a deploy-capable token for a site you can manage.'
+    );
+  }
 
   const aclEntries = await store.listSiteAclEntries(site.id);
   return jsonOk({ aclEntries: aclEntries.map(formatAclEntry) });
@@ -792,7 +796,7 @@ export function hostnameForSlug(slug, config) {
 function actorCanReadSite(actor, siteId) {
   if (actor.type !== 'access_key') return true;
   if (siteId && actor.siteId && actor.siteId !== siteId) return false;
-  return actor.scopes.includes('read:site');
+  return actor.scopes.includes('read:site') || actor.scopes.includes('deploy:site') || actor.scopes.includes('*');
 }
 
 async function getOwnerSite(store, actor, siteId, environment) {
