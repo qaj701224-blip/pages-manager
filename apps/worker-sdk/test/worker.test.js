@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { SDKError, createRuntime, readContext } from '../dist/worker/index.js';
+import { SDKError, createRuntime, getCurrentUser, readContext } from '../dist/worker/index.js';
 
 const platformPayload = {
   iss: 'pages-router',
@@ -20,6 +20,14 @@ const platformPayload = {
   policyVersion: 3,
   traceId: 'trace_demo',
   anonymous: false,
+  user: {
+    id: 'usr_1',
+    email: 'user@example.com',
+    accountId: 'acct_user_1',
+    name: 'Example User',
+    departments: ['XD/Platform/Web'],
+    employeeStatus: 'active',
+  },
 };
 
 function unsignedJwt(payload = platformPayload) {
@@ -55,6 +63,14 @@ test('readContext reads minimal router-injected identity without exposing the JW
     authenticated: true,
     anonymous: false,
     userId: 'usr_1',
+    user: {
+      id: 'usr_1',
+      email: 'user@example.com',
+      accountId: 'acct_user_1',
+      name: 'Example User',
+      departments: ['XD/Platform/Web'],
+      employeeStatus: 'active',
+    },
     siteId: 'site_demo',
     siteUuid: '4b4c8e8361ef4b47b64f5c20a7db7c47',
     siteSlug: 'demo',
@@ -66,6 +82,67 @@ test('readContext reads minimal router-injected identity without exposing the JW
   });
   assert.equal(Object.hasOwn(context, 'token'), false);
   assert.equal(Object.hasOwn(context, 'capability'), false);
+});
+
+test('getCurrentUser returns the authenticated user from readContext', () => {
+  assert.deepEqual(getCurrentUser(platformRequest()), {
+    id: 'usr_1',
+    email: 'user@example.com',
+    accountId: 'acct_user_1',
+    name: 'Example User',
+    departments: ['XD/Platform/Web'],
+    employeeStatus: 'active',
+  });
+});
+
+test('getCurrentUser keeps legacy platform tokens compatible', () => {
+  const legacyPayload = { ...platformPayload };
+  delete legacyPayload.user;
+
+  assert.deepEqual(getCurrentUser(platformRequest(legacyPayload)), {
+    id: 'usr_1',
+    email: null,
+    accountId: null,
+    name: null,
+    departments: [],
+    employeeStatus: 'unknown',
+  });
+});
+
+test('getCurrentUser returns null for anonymous requests', () => {
+  const anonymousPayload = { ...platformPayload, sub: 'anonymous', anonymous: true, user: null };
+  assert.equal(getCurrentUser(platformRequest(anonymousPayload)), null);
+});
+
+test('readContext rejects user identity that does not match the platform subject', () => {
+  const payload = { ...platformPayload, user: { ...platformPayload.user, id: 'usr_other' } };
+  assert.throws(() => readContext(platformRequest(payload)), { code: 'INVALID_PLATFORM_CONTEXT' });
+});
+
+test('getCurrentUser tolerates invalid optional profile fields without losing the platform context', () => {
+  const payload = {
+    ...platformPayload,
+    user: {
+      id: 'usr_1',
+      email: 'bad\u0000email',
+      accountId: '',
+      name: 'x'.repeat(300),
+      departments: ['XD/Platform/Web', '', 42],
+      employeeStatus: 'unexpected',
+    },
+  };
+
+  const context = readContext(platformRequest(payload));
+
+  assert.equal(context.siteId, 'site_demo');
+  assert.deepEqual(context.user, {
+    id: 'usr_1',
+    email: null,
+    accountId: null,
+    name: null,
+    departments: ['XD/Platform/Web'],
+    employeeStatus: 'unknown',
+  });
 });
 
 test('readContext rejects inconsistent platform headers and token claims', () => {
@@ -102,6 +179,49 @@ test('createRuntime().kv.get uses the site KV namespace with Cloudflare text def
   assert.equal(captured.url, 'https://pages-kv-gateway.local/v1/data/site/get');
   assert.equal(captured.headers.get('Authorization'), 'Bearer site-request-capability');
   assert.deepEqual(await captured.json(), { key: 'app/config', type: 'text' });
+});
+
+test('createRuntime().officeNet.fetch preserves the native binding fetch contract', async () => {
+  const binding = {
+    marker: 'office-net',
+    async fetch(input, init) {
+      assert.equal(this.marker, 'office-net');
+      assert.equal(input, 'https://internal.example.test/users');
+      assert.equal(init.method, 'POST');
+      return new Response('ok', { status: 201 });
+    },
+  };
+  const runtime = createRuntime({
+    env: {
+      XD_PAGES_KV_GATEWAY: { fetch: async () => Response.json({ ok: true }) },
+      XD_OFFICE_NET: binding,
+    },
+  });
+
+  const response = await runtime.officeNet.fetch('https://internal.example.test/users', { method: 'POST' });
+
+  assert.equal(runtime.officeNet, binding);
+  assert.equal(response.status, 201);
+  assert.equal(await response.text(), 'ok');
+});
+
+test('createRuntime().officeNet.fetch returns an unsupported response when the capability is unavailable', async () => {
+  const runtime = createRuntime({
+    env: {
+      XD_PAGES_KV_GATEWAY: { fetch: async () => Response.json({ ok: true }) },
+    },
+  });
+
+  const response = await runtime.officeNet.fetch('https://internal.example.test/users');
+
+  assert.equal(response.status, 501);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    error: {
+      code: 'OFFICE_NET_UNAVAILABLE',
+      message: 'Office network access is not supported for this Worker.',
+    },
+  });
 });
 
 test('createRuntime().kv.get reads JSON only when explicitly requested', async () => {

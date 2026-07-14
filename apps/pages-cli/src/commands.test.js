@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -1060,6 +1060,32 @@ test('deploy --dry-run --json includes selected team id in preflight output', as
   assert.equal(body.teamId, 'team_docs');
 });
 
+test('deploy dry-run validates visibility and team constraints before reporting success', async () => {
+  const dir = await tempProject();
+  await writeFile(path.join(dir, 'index.html'), '<h1>Hello</h1>');
+  const context = {
+    cwd: dir,
+    secretStore: {
+      get: async () => {
+        throw new Error('dry-run should not read secrets');
+      },
+    },
+    fetch: async () => {
+      throw new Error('dry-run should not access network');
+    },
+    output: () => {},
+  };
+
+  await assert.rejects(
+    () => executeCommand(['deploy', '.', 'docs', '--visibility', 'public', '--dry-run'], context),
+    { code: 'SITE_VISIBILITY_INVALID' }
+  );
+  await assert.rejects(
+    () => executeCommand(['deploy', '.', 'docs', '--team', 'team_docs', '--visibility', 'owner', '--dry-run'], context),
+    { code: 'SITE_VISIBILITY_INVALID' }
+  );
+});
+
 test('deploy auto-discovers xd-cell.config.json for dry-run without network side effects', async () => {
   const dir = await tempProject();
   await mkdist(dir);
@@ -1713,7 +1739,8 @@ test('prints help and version for top-level CLI aliases', async () => {
 
   const versionOutput = [];
   assert.equal(await executeCommand(['-v'], { output: (line) => versionOutput.push(line) }), 0);
-  assert.match(versionOutput.join('\n'), /^0\.1\.0$/);
+  const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(versionOutput.join('\n'), packageJson.version);
 });
 
 test('prints command-specific deploy help with parameters and agent-safe output hints', async () => {

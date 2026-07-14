@@ -321,7 +321,7 @@ GET /cas/oauth2.0/profile?access_token=...
 | `account_id` | `accountId` / `account_id` | 当前系统推送帐号对应 ID；用于身份排查和后续目录对齐，不作为权限判断。 |
 | `employeenum` | `employeenum` / `employeeNum` / `employee_num` | 员工账号；用于身份排查和后续组织目录对齐，不作为权限判断。 |
 | `employeeStatus` | `employee_status` / `employeeStatus` | `1` / `active` 映射为 `active`；`0` / `disabled` / `inactive` 映射为 `disabled`；`left` / `leave` / `departed` 映射为 `left`；其它为 `unknown`。 |
-| `departments` | `departments` / `departmentIds` / `department_ids` | 如果 SSO profile 明确返回部门数组则透传到 site code / session；当前联调 profile 通常不返回部门，部门 ACL 需要后续通过组织搜索/目录接口补齐用户部门路径。 |
+| `departments` | `departments` | 仅接受完整部门路径数组，并在目录 hydration 不可用时作为 site code / session 的回退；原始 `departmentIds` / `department_ids` 不作为部门 ACL 路径。 |
 | `sessionVersion` | `sessionVersion` / `session_version` | 缺失时平台默认 `1`。 |
 
 `account`、`account_id`、`employeenum`、`realname` 可以进入 `users` 表，因为它们是常用身份排查字段，且不改变权限判断。`users` 表不再同时保存 `id` 和 `sso_subject` 两个等价字段，避免同一 SSO `userId` 出现两套名字。`fs_id`、`wechat_work`、`ad_account`、`job_number` 暂不进入核心 `users` 表；如果后续要长期使用，应单独设计 `user_identities` 或组织目录同步表。`st`、`tgtId` 是 CAS ticket 类敏感字段，不能持久化到平台业务库，也不能透传给 User Worker。
@@ -370,7 +370,7 @@ secrets:
 
 `PAGES_USER_WORKER_VPC_TUNNEL_ID` 是可选的办公网 Tunnel ID。部署 workflow 从 GitHub Environment Variable `vars.PAGES_USER_WORKER_VPC_TUNNEL_ID` 注入，wrangler template 只保留 `__PAGES_USER_WORKER_VPC_TUNNEL_ID__` 占位符，不在 Git 中提交具体 Cloudflare resource id。为空时不向 WFP User Worker 注入 VPC Network binding；非空时仅 `worker-only` 和 `worker-with-assets` 发布会获得固定 binding `XD_OFFICE_NET`，`assets-only` 发布不绑定。未来开放 `public` 站点时，public 站点必须继续跳过该绑定。
 
-同一个 `PAGES_USER_WORKER_VPC_TUNNEL_ID` 也用于给 `pages-api` 和 `pages-auth` 自身渲染 `XD_OFFICE_NET` VPC Network binding。两个 Worker 调用 XDS / OA `list-by-email` 时都必须使用 `env.XD_OFFICE_NET.fetch(...)`；如果 `XDS_OPENAI_TOKEN` 或 `XD_OFFICE_NET` binding 缺失，部门 hydration 返回 `unavailable`，登录和控制台会话继续完成，但不会更新用户部门路径或部门团队关系。不得 fallback 到全局公网 `fetch` 调用 XDS。
+同一个 `PAGES_USER_WORKER_VPC_TUNNEL_ID` 也用于给 `pages-api` 和 `pages-auth` 自身渲染 `XD_OFFICE_NET` VPC Network binding。两个 Worker 调用 XDS / OA `list-by-email` 时都必须使用 `env.XD_OFFICE_NET.fetch(...)`；如果 `XDS_OPENAI_TOKEN` 或 `XD_OFFICE_NET` binding 缺失，部门 hydration 返回 `unavailable`，登录和控制台会话继续完成，但不会更新用户部门路径或部门团队关系。SSO profile 明确提供的完整 `departments` 路径数组与已落库路径会合并作为当前登录的回退；XDS hydration 成功时以最新目录路径为准。原始部门 ID 不参与 ACL，没有可信完整路径时部门 ACL 继续 fail closed。不得 fallback 到全局公网 `fetch` 调用 XDS。
 
 `XDS_OPENAI_TOKEN` 只作为 GitHub Environment secret 以及 `pages-api` / `pages-auth` Worker secret 存在；真实值不能进入 wrangler template、日志、响应、测试 fixture 输出或文档示例值。SSO 登录成功后，`pages-auth` 会直接按邮箱查询 XDS 部门路径，并通过共享 D1 store 更新 `users.department_path` / `department_checked_at`，同时创建或迁移部门团队成员关系。`pages-api` 也保留 internal hydration endpoint 和 Console session best-effort hydration，用于控制台链路补偿；两条链路复用同一 XDS client、同一 VPC binding 和同一 store 语义。
 

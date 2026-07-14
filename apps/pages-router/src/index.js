@@ -321,6 +321,8 @@ function identityFromSessionPayload(payload) {
     sessionVersion: payload.sessionVersion,
     employeeStatus: payload.employeeStatus || 'unknown',
     email: payload.email || '',
+    accountId: payload.accountId || null,
+    name: payload.name || null,
     departments: Array.isArray(payload.departments) ? payload.departments : [],
     userCheckedAt: Number.isInteger(payload.userCheckedAt) ? payload.userCheckedAt : 0,
   };
@@ -387,6 +389,16 @@ async function signInternalWorkerJwt(route, env, identity, traceId) {
         policyVersion: route.policyVersion,
         traceId,
         anonymous: !identity,
+        user: identity
+          ? {
+              id: identity.userId,
+              email: identity.email || null,
+              accountId: identity.accountId || null,
+              name: identity.name || null,
+              departments: identity.departments,
+              employeeStatus: identity.employeeStatus,
+            }
+          : null,
       },
     },
     env
@@ -629,6 +641,8 @@ async function handleSiteAuthCallback(request, env, route) {
           userCheckedAt: readNowSeconds(env),
           employeeStatus: identity.employeeStatus,
           email: identity.email,
+          accountId: identity.accountId,
+          name: identity.name,
           departments: identity.departments,
         },
       },
@@ -747,6 +761,8 @@ function identityFromSiteCode(route, user = {}) {
     sessionVersion: user.sessionVersion || 1,
     employeeStatus: user.employeeStatus || 'unknown',
     email: user.email || '',
+    accountId: user.accountId || null,
+    name: user.name || null,
     departments: Array.isArray(user.departments) ? user.departments : [],
   };
 }

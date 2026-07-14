@@ -398,7 +398,7 @@ CF-Platform-Version: <version-id>
 CF-Platform-Trace-Id: <trace-id>
 ```
 
-`CF-Platform-Email`、`CF-Platform-Name`、`CF-Platform-Groups` 等 profile header 默认不注入。只有站点显式申请并通过平台策略允许的 profile disclosure scope 后，router 才能注入对应 header；这些字段必须同时出现在 `internal_worker_jwt` 的受控 claims 中，避免 header 与 JWT 不一致。
+`CF-Platform-Email`、`CF-Platform-Name`、`CF-Platform-Groups` 等独立 profile header 不注入。当前用户站点统一受平台 IP Check 保护；对于通过站点访问策略的已登录请求，router 默认在 `internal_worker_jwt.user` 中注入 email、accountId、name、完整部门路径数组和 employeeStatus，匿名请求注入 `user: null`。User Worker 通过 Worker SDK 读取这些业务上下文，不能把它们当作平台授权结论。未来开放 public 站点前必须重新评估身份披露边界。
 
 安全规则：
 

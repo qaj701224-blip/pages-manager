@@ -6,7 +6,7 @@
 
 ## 项目概览
 
-`pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把静态站点、SPA 或自定义 Worker 发布到 `pages.xd.team` 域名下。
+`pages-manager` 是 XD Cell 的 monorepo。当前主线是 v2：基于 Cloudflare Workers for Platforms 的内部站点发布平台，用于把静态站点、SPA 或自定义 Worker 发布到 `workers.xd.team` 域名下。
 
 v2 用户入口是 `xd-cell` CLI。平台负责登录认证、发布 token、上传、访问策略、路由快照、runtime data/KV helper 和执行隔离。
 
@@ -86,8 +86,8 @@ v2 部署隔离要求：
 - staging API：`https://api-staging.pages.xd.team`
 - production auth：`https://auth.pages.xd.team`
 - staging auth：`https://auth-staging.pages.xd.team`
-- production 子站：`<site>.pages.xd.team`
-- staging 子站：`<site>-staging.pages.xd.team`
+- production 子站：`<site>.workers.xd.team`
+- staging 子站：`<site>-staging.workers.xd.team`
 - production Worker 前缀和 D1/KV/route 资源不得与 staging 混用。
 
 v1 legacy 隔离要求：

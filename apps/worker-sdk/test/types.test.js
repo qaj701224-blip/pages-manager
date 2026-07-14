@@ -56,6 +56,7 @@ test('worker entry stays focused on Worker runtime helpers', async () => {
   const workerEntry = readFileSync(join(process.cwd(), 'apps/worker-sdk/dist/worker/index.js'), 'utf8');
 
   assert.equal(typeof worker.createRuntime, 'function');
+  assert.equal(typeof worker.getCurrentUser, 'function');
   assert.equal(typeof worker.readContext, 'function');
   assert.equal(Object.hasOwn(worker, 'createPagesRuntime'), false);
   assert.equal(Object.hasOwn(worker, 'readPlatformContext'), false);
@@ -75,11 +76,12 @@ test('worker source keeps index as a public facade over focused modules', () => 
     'data-store.ts',
     'gateway.ts',
     'index.ts',
+    'office-net.ts',
     'platform-context.ts',
     'runtime.ts',
   ]);
   assert.match(workerIndex, /export \{ createRuntime \} from '\.\/runtime\.js';/);
-  assert.match(workerIndex, /export \{ readContext \} from '\.\/platform-context\.js';/);
+  assert.match(workerIndex, /export \{ getCurrentUser, readContext \} from '\.\/platform-context\.js';/);
   assert.doesNotMatch(workerIndex, /createPagesRuntime|readPlatformContext|Pages|GATEWAY_ORIGIN|CF-Platform-/);
 });
 
@@ -93,6 +95,35 @@ test('published declarations keep platform binding names internal', () => {
   assert.doesNotMatch(declarations, /XD_PAGES_|XD_CELL_|CF-Platform-|createPagesRuntime|readPlatformContext|Pages/);
 });
 
+test('published AI documentation keeps office network binding details internal', () => {
+  const workerDoc = readFileSync(join(process.cwd(), 'apps/worker-sdk/docs/llms/worker-sdk.md'), 'utf8');
+  const publicDocs = [
+    'apps/worker-sdk/README.md',
+    'apps/worker-sdk/docs/llms/worker-sdk.md',
+    'apps/worker-sdk/docs/llms/worker-sdk-api.md',
+  ]
+    .map((file) => readFileSync(join(process.cwd(), file), 'utf8'))
+    .join('\n');
+
+  assert.doesNotMatch(publicDocs, /XD_OFFICE_NET/);
+  assert.match(workerDoc, /## 当前用户/);
+  assert.match(workerDoc, /## 办公网访问/);
+  assert.match(workerDoc, /getCurrentUser/);
+  assert.match(workerDoc, /runtime\.officeNet\.fetch/);
+  assert.match(workerDoc, /501/);
+  assert.match(workerDoc, /response\.ok/);
+  assert.match(workerDoc, /response\.status === 501/);
+  assert.match(workerDoc, /errorBody\?\.error\?\.code === 'OFFICE_NET_UNAVAILABLE'/);
+});
+
+test('breaking changes documents required Runtime and RuntimeContext fields', () => {
+  const breakingChanges = readFileSync(join(process.cwd(), 'apps/worker-sdk/BREAKING_CHANGES.md'), 'utf8');
+
+  assert.match(breakingChanges, /存在类型级破坏性变更/);
+  assert.match(breakingChanges, /RuntimeContext\.user/);
+  assert.match(breakingChanges, /Runtime\.officeNet/);
+});
+
 test('published entry exposes TypeScript declarations to NodeNext consumers', () => {
   const dir = mkdtempSync(join(process.cwd(), 'apps/worker-sdk/test/.tmp-types-'));
   const file = join(dir, 'smoke.ts');
@@ -101,13 +132,17 @@ test('published entry exposes TypeScript declarations to NodeNext consumers', ()
     `
 import {
   createRuntime,
+  getCurrentUser,
   readContext,
+  type EmployeeStatus,
   type KVNamespace,
   type KVGetWithMetadataResult,
   type KVListResult,
+  type OfficeNet,
   type Runtime,
   type RuntimeContext,
   type RuntimeEnv,
+  type RuntimeUser,
 } from '@xd-cell/worker-sdk';
 
 const env: RuntimeEnv = {
@@ -117,7 +152,12 @@ const env: RuntimeEnv = {
 const runtime = createRuntime({ env });
 const typedRuntime: Runtime = runtime;
 const kv: KVNamespace = runtime.kv;
+const officeNet: OfficeNet = runtime.officeNet;
 const context: RuntimeContext | null = readContext(new Request('https://site.example/app'));
+const user: RuntimeUser | null = getCurrentUser(new Request('https://site.example/app'));
+const employeeStatus: EmployeeStatus = user?.employeeStatus ?? 'unknown';
+const userName: string | null = user?.name ?? null;
+const officeResponse: Promise<Response> = runtime.officeNet.fetch('https://internal.example.test/health');
 const runtimeTextValue: Promise<string | null> = runtime.kv.get('app/text');
 const runtimeTextValueWithOption: Promise<string | null> = runtime.kv.get('app/text', { type: 'text' });
 const runtimeJsonValue: Promise<{ enabled: boolean } | null> =
@@ -132,6 +172,8 @@ const runtimeListValue: Promise<KVListResult<{ owner: string }>> =
 
 void typedRuntime;
 void kv;
+void officeNet;
+void officeResponse;
 void runtimeTextValue;
 void runtimeTextValueWithOption;
 void runtimeJsonValue;
@@ -140,6 +182,9 @@ void runtimePutJsonValue;
 void runtimeMetadataValue;
 void runtimeListValue;
 void context;
+void user;
+void employeeStatus;
+void userName;
 `,
     'utf8'
   );
@@ -176,6 +221,7 @@ test('published entry typechecks in Bundler-style Worker consumers', () => {
     `
 import {
   createRuntime,
+  getCurrentUser,
   readContext,
   type RuntimeEnv,
 } from '@xd-cell/worker-sdk';
@@ -184,9 +230,10 @@ export default {
   async fetch(request: Request, env: RuntimeEnv): Promise<Response> {
     const runtime = createRuntime({ request, env });
     const context = readContext(request);
+    const user = getCurrentUser(request);
     const config = await runtime.kv.get('app/config');
 
-    return Response.json({ config, userId: context?.userId ?? null });
+    return Response.json({ config, userId: context?.userId ?? null, accountId: user?.accountId ?? null });
   },
 };
 `,

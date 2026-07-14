@@ -1,4 +1,5 @@
 export type KVValueType = 'json' | 'text';
+export type EmployeeStatus = 'active' | 'disabled' | 'left' | 'unknown';
 
 export interface Fetcher {
   fetch(input: Request | string, init?: RequestInit): Promise<Response>;
@@ -8,10 +9,20 @@ export interface RuntimeEnv {
   [binding: string]: unknown;
 }
 
+export interface RuntimeUser {
+  id: string;
+  email: string | null;
+  accountId: string | null;
+  name: string | null;
+  departments: string[];
+  employeeStatus: EmployeeStatus;
+}
+
 export interface RuntimeContext {
   authenticated: boolean;
   anonymous: boolean;
   userId: string | null;
+  user: RuntimeUser | null;
   siteId: string;
   siteUuid: string;
   siteSlug: string;
@@ -77,6 +88,11 @@ export interface KVNamespace {
   delete(key: string): Promise<void>;
 }
 
+export interface OfficeNet {
+  fetch(input: Request | string, init?: RequestInit): Promise<Response>;
+}
+
 export interface Runtime {
   kv: KVNamespace;
+  officeNet: OfficeNet;
 }

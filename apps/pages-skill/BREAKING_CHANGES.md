@@ -2,11 +2,11 @@
 
 ## 状态
 
-首次发布；对已发布 npm 用户无破坏性变更。
+本次发布内置新版 `@xd-cell/cli`，并同步存在类型级破坏性变更的 `@xd-cell/worker-sdk@0.2.0` 兼容指引；对 skill 自身已发布 npm 用户无破坏性变更。
 
 ## 适用版本
 
-- `@xd-cell/skill`：0.1.0
+- `@xd-cell/skill`：0.1.1
 
 ## 影响对象
 
@@ -15,7 +15,12 @@
 
 ## Agent 处理动作
 
-可按当前 `SKILL.md`、`references/*` 和 `manifest.json` 使用。
+更新当前 `xd-cell` skill 后，按当前 `SKILL.md`、`references/*` 和 `manifest.json` 使用内置 CLI；接入 Worker SDK 时先读取其包内 `BREAKING_CHANGES.md`。
+
+## 发布顺序
+
+1. 先发布并验证 `@xd-cell/worker-sdk@0.2.0` 可以从目标 registry 安装。
+2. 再构建并发布 `@xd-cell/skill@0.1.1`，确认 `manifest.json` 推荐的 Worker SDK 版本为 `0.2.0`，内置 CLI 版本为 `0.1.1`。
 
 ## 首发契约
 

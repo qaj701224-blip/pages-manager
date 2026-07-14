@@ -188,6 +188,8 @@ test('authorize with an existing auth session creates a site code without redire
       return {
         id: userId,
         email: 'user@example.test',
+        realname: 'Example User',
+        accountId: 'acct_user_123',
         employeeStatus: 'active',
         departmentPath: 'XD/Platform/Web',
         sessionVersion: 7,
@@ -237,6 +239,8 @@ test('authorize with an existing auth session creates a site code without redire
   assert.match(location.searchParams.get('code'), /^ost_/);
   assert.equal(location.searchParams.get('return_to'), 'https://demo.pages.xd.team/private');
   assert.equal(location.origin, 'https://demo.pages.xd.team');
+  assert.equal(createdSiteCodeInput.user.name, 'Example User');
+  assert.equal(createdSiteCodeInput.user.accountId, 'acct_user_123');
   assert.deepEqual(createdSiteCodeInput.user.departments, ['XD/Platform/Web']);
   assert.equal((await sessionStorage.get('session:sid_auth')).lastSeenAt, now);
 });
@@ -506,8 +510,9 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     syncSsoUserProfile: async (profile, options) => {
       assert.equal(profile.userId, 'usr_123');
       assert.equal(options.now, now);
-      return { user: { userId: 'usr_123' } };
+      return { user: { userId: 'usr_123', departmentPath: 'XD/Legacy' } };
     },
+    hydrateDepartmentAfterSso: async () => null,
     fetchSsoToken: async ({ code, redirectUri }) => {
       assert.equal(code, 'oauth-code');
       assert.equal(redirectUri, 'https://auth.pages.xd.team/.xd-pages/auth/callback');
@@ -519,7 +524,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
         id: 'usr_123',
         email: 'user@example.test',
         employeeStatus: 'active',
-        departments: ['dept_design'],
+        departments: ['XD/Design'],
         sessionVersion: 4,
       };
     },
@@ -569,7 +574,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     id: 'usr_123',
     email: 'user@example.test',
     employeeStatus: 'active',
-    departments: ['dept_design'],
+    departments: ['XD/Design', 'XD/Legacy'],
     sessionVersion: 4,
   });
 
@@ -720,6 +725,7 @@ test('callback propagates hydrated department path into site login code payload'
       userId: 'usr_123',
       email: 'user@xd.com',
       employeeStatus: 'active',
+      departments: ['XD/Legacy'],
     }),
   });
 
@@ -897,6 +903,7 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
         job_number: '1001',
         loginTime: 1_781_595_126_585,
         permissions: [],
+        departmentIds: ['dept_raw_id'],
         realname: '示例用户',
         roles: [],
         sort: '0',
@@ -943,6 +950,8 @@ test('callback exchanges code with configured SSO HTTP endpoints and canonicaliz
     assert.deepEqual(consumedSiteCode.user, {
       id: 'usr_xindong_123',
       email: 'user@example.test',
+      accountId: 'acct_demo_001',
+      name: '示例用户',
       employeeStatus: 'active',
       departments: [],
       sessionVersion: 1,

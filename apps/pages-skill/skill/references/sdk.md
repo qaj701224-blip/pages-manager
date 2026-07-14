@@ -10,22 +10,37 @@ Worker SDK 是业务自定义 Worker 的运行时依赖，包名为 `@xd-cell/wo
 
 Worker SDK 的 AI 文档随 `@xd-cell/worker-sdk` 包发布。Agent 需要了解 SDK API 时，优先读取已安装 npm 包内的文档，而不是从 skill 目录读取副本。
 
-## 何时使用 Worker SDK
+## 何时需要自定义 Worker
 
-只有业务项目包含或需要编写自定义 Worker，并且该 Worker 运行时需要访问 XD Cell 托管资源时，才接入 Worker SDK：
+静态站点和 SPA 可以直接发布。需要以下请求时逻辑时，才编写或修改自定义 Worker：
+
+- 根据请求路径、方法、header 或业务数据动态生成响应。
+- 提供站点自己的服务端 API、路由、鉴权后业务逻辑或表单处理。
+- 在服务端读写跨请求共享数据，或读取当前请求对应的用户与平台上下文。
+- 从服务端调用平台授予的办公网内部 API。
+- 使用不能放入浏览器代码的 Worker secret 或 runtime vars。
+
+如果项目已有自定义 Worker，但只使用标准 Worker Web API，不需要 XD Cell 平台能力，可以继续使用自定义 Worker 而不安装 Worker SDK。
+
+## 安装 Worker SDK 后可使用的能力
+
+自定义 Worker 需要以下任一平台能力时，才安装 `@xd-cell/worker-sdk`：
 
 - 需要以接近 Cloudflare Worker KV 的心智读写平台托管 KV / runtime data：`runtime.kv.get()`、`runtime.kv.put()`、`runtime.kv.delete()`。
 - 需要读取平台 router 注入的上下文：`readContext(request)`，例如站点、版本、用户、trace 等业务信息。
+- 需要读取当前请求对应的已登录用户：`getCurrentUser(request)`；匿名请求返回 `null`，`departments` 只包含完整部门路径。
+- 需要访问平台已授予的办公网能力：`runtime.officeNet.fetch()`；调用后必须检查 `response.ok`。只有 status 为 `501` 且响应中的 `error.code` 为 `OFFICE_NET_UNAVAILABLE` 时，才提示当前站点不支持办公网访问，不做公网 fallback。
 - 需要把旧草案 SDK/import 迁移到公开包 `@xd-cell/worker-sdk`。
 - 需要避免业务代码直接感知 gateway、capability、内部 header 或底层 binding 名称。
 
-## 何时不要使用 Worker SDK
+## 何时不需要自定义 Worker 或 Worker SDK
 
-以下任务不要因为普通发布任务安装 Worker SDK，也不要要求用户项目新增 SDK 依赖：
+以下任务不需要自定义 Worker，也不要因为普通发布任务安装 Worker SDK：
 
 - 只是发布静态站点、SPA、查看状态、回滚、打开站点或配置访问控制。
-- 项目没有自定义 Worker 入口。
+- 只需要静态资源 fallback、SPA 路由回退或平台已有的静态站点托管功能。
 - 浏览器端代码想直接访问平台 KV；Worker SDK 只用于 Worker 运行时。
+- 浏览器端代码想访问办公网，或任务要求创建通用网络代理、内网探测或任意 URL 转发。
 - 需要登录、发布、OpenAPI client、token 管理、CLI 操作，或当前尚未公开的 D1/R2 能力。
 - 只是想了解 XD Cell CLI 用法；这类任务读取 `references/cli.md` 和 CLI help。
 
@@ -35,7 +50,7 @@ Worker SDK 的 AI 文档随 `@xd-cell/worker-sdk` 包发布。Agent 需要了解
 - Skill 的 `manifest.json` 只记录推荐包名、版本、安装命令和包内文档路径；它不是全局依赖管理器，也不维护本地 SDK cache。
 - Agent 需要了解 SDK API 时，读取用户项目依赖中的 `node_modules/@xd-cell/worker-sdk/docs/llms/*`、README、类型声明和 `BREAKING_CHANGES.md`。
 - 不要只因为 agent 想查文档，就新增用户项目依赖；只有确实要编写、迁移或修改自定义 Worker runtime 代码时才安装。
-- 不要因为普通发布任务安装 Worker SDK；只有命中“何时使用 Worker SDK”才进入后续流程。
+- 不要因为普通发布任务安装 Worker SDK；只有自定义 Worker 需要 XD Cell 平台能力时才进入后续流程。
 
 ## Agent 文档接入流程
 
@@ -49,7 +64,7 @@ console.log(JSON.stringify(manifest.dependencies.workerSdk, null, 2));
 NODE
 ```
 
-2. 如果本次没有命中“何时使用 Worker SDK”，停止在这里；不要因为普通发布任务安装 Worker SDK。
+2. 如果本次不需要自定义 Worker，或自定义 Worker 不使用 XD Cell 平台能力，停止在这里；不要安装 Worker SDK。
 
 3. 检查用户项目是否已经安装匹配的 `@xd-cell/worker-sdk`。下面示例中 `SKILL_ROOT` 是当前 skill 构建产物目录，`PROJECT_ROOT` 是用户项目根目录：
 
@@ -134,5 +149,7 @@ npm install @xd-cell/worker-sdk
 - 凭证边界：Runtime 服务绑定凭证必须放在 Worker bindings 和 secrets 中，不要写入源码文件、配置、日志或文档。
 - 上下文边界：自定义 Worker 代码不能信任浏览器传入的平台相关 header；需要平台上下文时按 Worker SDK 文档读取平台 router 注入的上下文。
 - 授权边界：`readContext` 只能作为业务上下文读取入口，不能作为 data 授权凭证；不要把 `readContext` 的用户信息当作授权结论。
+- 用户边界：`getCurrentUser` 返回当前请求的业务用户上下文；name 来源于 SSO realname，departments 是完整部门路径数组。不要把 departments、employeeStatus 或 accountId 当作平台授权结论，也不要记录用户资料、session 或 cookie。
+- 网络边界：办公网访问只使用 Worker SDK 公开 API；不要猜测底层 binding，不要创建通用代理。只有 status 为 501 且 `error.code` 为 `OFFICE_NET_UNAVAILABLE` 时才表示能力未提供，并且不要 fallback 到全局 `fetch`。
 - 运行时边界：Worker SDK 只用于 Worker 运行时；浏览器端、CLI 脚本或 Node 管理脚本不要 import 它来访问平台资源。
-- 能力边界：只使用当前 Worker SDK 文档明确公开的 KV/runtime context 能力；D1/R2 等未公开能力不要自行设计 import 或 fallback。
+- 能力边界：只使用当前 Worker SDK 文档明确公开的 KV、当前用户、runtime context 和办公网能力；D1/R2 等未公开能力不要自行设计 import 或 fallback。

@@ -9,7 +9,7 @@
 - 保持 Cloudflare Worker 开发者熟悉的资源心智，例如 `env.MY_KV.get()` 对应 `runtime.kv.get()`。
 - 对业务隐藏底层资源绑定、gateway、capability、内部 header、JWT 和 provider 资源 ID。
 - 让 SDK 成为业务 Worker 与 XD Cell runtime 能力之间的稳定边界。
-- 当前先提供 KV 风格资源；D1、R2 等资源在 API 稳定前只作为规划方向，不提前暴露空 API。
+- 当前提供 KV、当前用户和办公网访问能力；D1、R2 等资源在 API 稳定前只作为规划方向，不提前暴露空 API。
 - 只使用 Worker-compatible Web API，不依赖 Node.js、DOM、localStorage 或浏览器全局对象。
 
 ## 当前状态
@@ -27,7 +27,7 @@ pnpm add @xd-cell/worker-sdk
 ```
 
 ```ts
-import { createRuntime, readContext } from '@xd-cell/worker-sdk';
+import { createRuntime, getCurrentUser, readContext } from '@xd-cell/worker-sdk';
 ```
 
 如果 npm 包尚不可安装，不应从 skill 产物中寻找内置 SDK 副本；应暂停接入、使用用户项目已有实现，或在本 monorepo 内继续开发 `apps/worker-sdk`。
@@ -53,19 +53,20 @@ cd apps/worker-sdk && npm pack --dry-run
 自定义 Worker 先创建 runtime，再像使用 Cloudflare 资源一样访问 SDK 暴露的资源对象：
 
 ```ts
-import { createRuntime, readContext } from '@xd-cell/worker-sdk';
+import { createRuntime, getCurrentUser, readContext } from '@xd-cell/worker-sdk';
 
 export default {
   async fetch(request, env) {
     const runtime = createRuntime({ request, env });
     const context = readContext(request);
+    const user = getCurrentUser(request);
 
     const message = await runtime.kv.get('app/message');
     const config = await runtime.kv.get('app/config', { type: 'json' });
 
     await runtime.kv.put('app/last-request', { traceId: context?.traceId ?? null }, { type: 'json' });
 
-    return Response.json({ config, message, userId: context?.userId ?? null });
+    return Response.json({ config, message, user, traceId: context?.traceId ?? null });
   },
 };
 ```
@@ -74,11 +75,16 @@ export default {
 
 `readContext(request)` 读取 router 注入的最小身份上下文，包括用户、站点、版本和 trace 信息。它不会暴露原始内部 JWT，也不是 data/KV 授权凭证。
 
+`getCurrentUser(request)` 返回当前请求对应的已登录用户；匿名请求返回 `null`。用户字段用于业务展示和个性化，不能替代 router 的访问控制结论。
+
+当前用户站点统一受平台 IP Check 保护。对于通过站点访问策略的已登录请求，router 默认提供 email、accountId、name、departments 和 employeeStatus；未来开放 public 站点前需要重新评估身份披露边界。
+
 ## 资源模型
 
 当前公开资源：
 
 - `runtime.kv`：默认 KV namespace，适合配置、站点状态和跨请求共享数据。
+- `runtime.officeNet`：平台授予的办公网访问能力，保留原生 `fetch` 请求和响应心智。
 
 `runtime.kv` 的心智对齐 Cloudflare 的 `env.MY_KV` binding。业务代码不需要理解底层 site/user data scope，也不应该直接处理 capability。
 
@@ -88,6 +94,57 @@ export default {
 - `runtime.r2`：计划面向 R2 类对象存储能力提供薄封装，但当前未公开。
 
 D1/R2 公开前必须先明确资源命名、授权模型、类型声明、错误语义、README 示例、AI 文档和 `BREAKING_CHANGES.md`。
+
+## 当前用户
+
+自定义 Worker 可以读取 router 为当前请求注入的用户信息：
+
+```ts
+const user = getCurrentUser(request);
+
+if (!user) {
+  return Response.json({ authenticated: false });
+}
+
+return Response.json({
+  authenticated: true,
+  user: {
+    id: user.id,
+    email: user.email,
+    accountId: user.accountId,
+    name: user.name,
+    departments: user.departments,
+    employeeStatus: user.employeeStatus,
+  },
+});
+```
+
+- `id` 是平台稳定用户 ID，不等同于可变邮箱或外部帐号 ID。
+- `accountId` 在旧登录态或身份源没有提供时可能为 `null`。
+- `name` 来源于 SSO `realname`；旧登录态或身份源没有提供时可能为 `null`。
+- `departments` 只包含完整部门路径，例如 `心动/技术平台部/前端组`；不包含原始 department ID。
+- `departments` 和 `employeeStatus` 是请求时业务上下文，不能由 Worker 用来替代平台 ACL、owner 或员工状态门禁。
+- 不要把用户资料、原始请求 header、cookie 或 session 写入日志。
+
+## 办公网访问
+
+只有平台已授予办公网能力的自定义 Worker 才能使用：
+
+```ts
+const response = await runtime.officeNet.fetch('https://internal.example.test/health');
+
+if (!response.ok) {
+  const errorBody = response.status === 501 ? await response.clone().json().catch(() => null) : null;
+  if (errorBody?.error?.code === 'OFFICE_NET_UNAVAILABLE') {
+    return Response.json({ error: 'OFFICE_NET_UNAVAILABLE' }, { status: 501 });
+  }
+  return Response.json({ error: 'OFFICE_NET_REQUEST_FAILED' }, { status: response.status });
+}
+```
+
+`runtime.officeNet.fetch()` 原样接受 `Request | string` 和 `RequestInit`。能力存在时，`runtime.officeNet` 直接使用平台提供的原生 fetcher；SDK 不自动添加业务认证 header，不提供公网 fallback，也不把它当作通用代理。
+
+能力未绑定时不会抛出缺少 binding 的异常，而是返回 status 为 `501` 的标准 `Response`，body 中的错误码为 `OFFICE_NET_UNAVAILABLE`。业务代码必须检查 `response.ok`，并且只有 status 和错误码同时匹配时才提示当前站点不支持办公网访问；内部 API 自身返回的其它 `501` 仍按普通请求失败处理。网络请求自身保留原生 fetch 的异常语义。
 
 ## KV API
 
@@ -120,6 +177,7 @@ await runtime.kv.delete('app/message');
 - Runtime 服务绑定和 capability 必须来自 Worker bindings、secrets 或 router 注入的单请求 header。
 - 平台 data/KV API 必须通过 Worker binding 提供的受控 gateway 调用。
 - `runtime.kv` 表示默认 KV namespace；底层 scope 由平台决定，不作为业务 API 心智暴露。
+- 当前受 IP Check 保护的自定义 Worker 由平台部署流程授予 `runtime.officeNet`；未来 public 站点不授予该能力。业务 Worker 不能自行声明或创建能力，并且必须处理 `501` + `OFFICE_NET_UNAVAILABLE` 不支持响应。
 - Worker 代码不能信任浏览器传入的平台相关 header；只读取 router 注入的上下文。
 - 底层基础设施可以从 Cloudflare Workers 演进为其它 Worker-compatible runtime；业务代码应只依赖本包公开 API。
 
@@ -134,6 +192,7 @@ await runtime.kv.delete('app/message');
 - 直接暴露内部 JWT、capability、Cloudflare 资源 ID、namespace ID、bucket 名、database ID 或平台 secret；
 - 未实现的 D1/R2 空壳 API；
 - 用户级存储的独立公开资源模型。
+- 通用网络代理、内网探测或浏览器端办公网访问能力。
 
 Browser helper、runtime adapter、inline runtime source 和 user-scoped storage 不属于当前 Worker SDK 公共面。后续如果恢复为公开能力，应先单独评估包名、导出路径、README、类型声明、测试、兼容承诺和 `BREAKING_CHANGES.md`。
 
@@ -142,6 +201,8 @@ Browser helper、runtime adapter、inline runtime source 和 user-scoped storage
 - 不要把 capability、CLI token、发布 token、cookie、session 或 secret 写入源码、配置、日志、文档、截图或聊天内容。
 - 不要绕过 SDK 直接调用内部 gateway path。
 - 不要把 `readContext(request)` 的结果当作 data/KV 授权凭证。
+- 不要把 `getCurrentUser(request)` 返回的部门或员工状态当作平台授权结论。
+- 不要使用 `runtime.officeNet` 创建通用代理，也不要在收到 `501` + `OFFICE_NET_UNAVAILABLE` 不支持响应时 fallback 到全局 `fetch`。
 - 不要把底层 Cloudflare binding、namespace ID、D1 database ID、R2 bucket 名写入业务代码作为公共契约。
 
 ## 迁移方向
@@ -149,10 +210,10 @@ Browser helper、runtime adapter、inline runtime source 和 user-scoped storage
 新自定义 Worker 使用：
 
 ```ts
-import { createRuntime, readContext } from '@xd-cell/worker-sdk';
+import { createRuntime, getCurrentUser, readContext } from '@xd-cell/worker-sdk';
 ```
 
-首发 public API 只提供 `runtime.kv.get()`、`runtime.kv.put()` 和 `runtime.kv.delete()`。旧草案中的品牌化 runtime 函数、context 函数、`data` 入口、scope-specific KV 入口和 `set()` alias 不进入首发公共面。
+当前 public API 提供 KV、当前用户、请求上下文和办公网访问能力。旧草案中的品牌化 runtime 函数、`data` 入口、scope-specific KV 入口和 `set()` alias 不进入公共面。
 
 每次发布前必须确认：
 

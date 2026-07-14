@@ -1,6 +1,6 @@
 {
   "name": "@xd-cell/skill",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "files": ["dist/xd-cell", "BREAKING_CHANGES.md"],
