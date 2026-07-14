@@ -324,6 +324,35 @@ test('readVisibleLine reads a visible line from an interactive TTY', async () =>
   assert.equal(stdout.text(), '确认删除? ');
 });
 
+test('readVisibleLine requires an interactive TTY', async () => {
+  await assert.rejects(
+    readVisibleLine('确认删除? ', { stdin: new PassThrough(), stdout: capture() }),
+    { code: 'CONFIRMATION_STDIN_REQUIRED' },
+  );
+});
+
+test('readVisibleLine rejects when interactive input closes', async () => {
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  let timeout;
+  const answer = readVisibleLine('确认删除? ', { stdin, stdout: capture() });
+  stdin.end();
+
+  try {
+    await assert.rejects(
+      Promise.race([
+        answer,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('readVisibleLine did not settle')), 100);
+        }),
+      ]),
+      { code: 'CONFIRMATION_INPUT_CANCELLED' },
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
 test('readHiddenLine reads from a TTY without echoing the secret value', async () => {
   const stdin = new FakeTtyInput();
   const stdout = capture();

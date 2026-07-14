@@ -39,11 +39,29 @@ export async function readVisibleLine(prompt = '', { stdin = process.stdin, stdo
     output: stdout,
     terminal: Boolean(stdin.isTTY && stdout?.isTTY),
   });
+  let settled = false;
+  let cancel;
+  const cancellation = new Promise((_, reject) => {
+    cancel = () => {
+      if (settled) return;
+      settled = true;
+      reject(codedError('CONFIRMATION_INPUT_CANCELLED'));
+    };
+    readline.once('close', cancel);
+    readline.once('SIGINT', cancel);
+    readline.once('error', cancel);
+    stdin.once('error', cancel);
+  });
   try {
-    return await readline.question(prompt);
+    return await Promise.race([readline.question(prompt), cancellation]);
   } catch {
     throw codedError('CONFIRMATION_INPUT_CANCELLED');
   } finally {
+    settled = true;
+    readline.off('close', cancel);
+    readline.off('SIGINT', cancel);
+    readline.off('error', cancel);
+    stdin.off('error', cancel);
     readline.close();
   }
 }
