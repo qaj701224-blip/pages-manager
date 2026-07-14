@@ -248,6 +248,7 @@ XDMaker S2S key 只是上述个人 owner-scoped key 的受控来源，不是新�
 `xdmaker_s2s`，scope 固定为 `deploy:site`、`read:site`、`rollback:site`，`site_id` 为空，TTL 为 24 小时。
 发放时保存 `issuedSessionVersion`；用户明确安全失效导致 `sessionVersion` 提升后，认证立即拒绝旧 S2S key。
 Console 列表显示 `XDMaker` 来源并复用现有撤销动作；xdt-api 的 source-scoped revoke 可按 key 或规范化邮箱幂等吊销。
+对所有 access key，`deploy:site` 同时允许读取其可管理站点的基础信息和 ACL；ACL 读取仍按当前 owner/team 管理权限校验，只有 `read:site` 的只读 key 不获得 ACL 内容读取权限。
 
 #### Global config
 

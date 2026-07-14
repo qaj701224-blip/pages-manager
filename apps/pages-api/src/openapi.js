@@ -389,10 +389,10 @@ export function buildOpenApi(config) {
       },
       '/.xd-pages/api/sites': {
         get: {
-          summary: 'List sites visible to the authenticated actor; access keys require read:site',
+          summary: 'List sites visible to the authenticated actor; access keys require read:site or deploy:site',
           responses: {
             200: { description: 'Sites returned' },
-            403: { description: 'Access key missing read:site scope' },
+            403: { description: 'Access key missing read:site or deploy:site scope' },
             401: { description: 'Authentication required' },
           },
         },
@@ -411,11 +411,11 @@ export function buildOpenApi(config) {
       },
       '/.xd-pages/api/sites/{id}': {
         get: {
-          summary: 'Get a site; access keys require read:site',
+          summary: 'Get a site; access keys require read:site or deploy:site',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           responses: {
             200: { description: 'Site returned' },
-            403: { description: 'Access key missing read:site scope' },
+            403: { description: 'Access key missing read:site or deploy:site scope' },
             404: { description: 'Site not found' },
           },
         },
@@ -487,10 +487,12 @@ export function buildOpenApi(config) {
       },
       '/.xd-pages/api/sites/{id}/acl': {
         get: {
-          summary: 'List site ACL entries',
+          summary: 'List site ACL entries for a user or deploy-capable access key',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          'x-error-codes': ['SITE_POLICY_FORBIDDEN'],
           responses: {
             200: { description: 'ACL entries returned' },
+            403: { description: 'Access key cannot manage the target site' },
             404: { description: 'Site not found' },
           },
         },

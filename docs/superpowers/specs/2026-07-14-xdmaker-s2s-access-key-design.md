@@ -197,6 +197,7 @@ issued_session_version INTEGER NULL
 - S2S key 固定 `issued_source = xdmaker_s2s`。
 - S2S key 固定 24 小时 TTL、`owner_type = user`、`owner_id = user_id`、`site_id = null`。
 - scopes 固定为 `deploy:site`、`read:site`、`rollback:site`。
+- `deploy:site` 对 access key 隐含目标站点的基础读取能力；ACL 读取仍要求该 key 通过当前站点的 owner/team 管理权限检查。只含 `read:site` 的只读 key 不得读取 ACL，且不按 `issued_source` 增加特判。
 - `issued_session_version` 记录发放时的 `users.session_version`。仅该字段非空的 key 在认证时要求版本仍一致。
 - `session_version` 的提升只表示明确的用户级安全失效事件，例如禁用/离职、强制登出、账号封禁或管理员主动撤销会话；同为 `active` 的日常登录、姓名、部门或其它资料同步不得自行 bump。
 - 发生上述安全事件后，旧 S2S key 立即返回 `ACCESS_KEY_SESSION_STALE`，action 指导 XDMaker 在用户仍有效时重新换取凭证。普通存量 key 的现有语义不变。

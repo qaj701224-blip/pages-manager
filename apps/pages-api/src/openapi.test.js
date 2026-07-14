@@ -20,6 +20,7 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/sites']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].delete);
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].get);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].post);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
@@ -146,6 +147,11 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
   );
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_SITE_FORBIDDEN'));
+  assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].get['x-error-codes'].includes('SITE_POLICY_FORBIDDEN'));
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{id}/acl'].get.responses[403].description,
+    'Access key cannot manage the target site'
+  );
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_INVALID'));
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_EXPIRY_TOO_LONG'));
   assert.deepEqual(body.components.schemas.SiteAclEntry.properties.effect.enum, ['allow']);
