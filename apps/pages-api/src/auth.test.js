@@ -156,13 +156,6 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
   const stored = await store.getAccessKeyById('ak_1');
   assert.equal(stored.issuedSource, 'legacy');
   assert.equal(stored.issuedSessionVersion, null);
-  await store.upsertUserFromSso({
-    userId: 'usr_1',
-    email: 'user@example.com',
-    realname: 'User One',
-    employeeStatus: 'active',
-    sessionVersion: 2,
-  });
 
   const result = await authenticateApiRequest(
     bearerRequest(plaintext),
@@ -220,6 +213,47 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
   assert.equal(expired.error.code, 'ACCESS_KEY_EXPIRED');
 });
 
+for (const issuedSource of ['legacy', 'cli', 'console']) {
+  test(`accepts ${issuedSource} access keys across user session changes`, async () => {
+    const keyId = `ak_${issuedSource}`;
+    const plaintext = createAccessKeyPlaintext({
+      environment: 'production',
+      keyId,
+      bytes: new Uint8Array(24).fill(6),
+    });
+    const store = await createSeededStore();
+    await store.createAccessKey({
+      id: keyId,
+      environment: 'production',
+      ownerType: 'user',
+      ownerId: 'usr_1',
+      ownerUserId: 'usr_1',
+      createdByUserId: 'usr_1',
+      keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+      pepperId: 'pepper_1',
+      name: `${issuedSource} key`,
+      scopes: ['deploy:site'],
+      siteId: 'site_1',
+      expiresAt: '2026-07-15T00:00:00.000Z',
+      issuedSource,
+      issuedSessionVersion: null,
+    });
+    await bumpUserSessionVersion(store);
+    assert.equal((await store.getUser('usr_1')).sessionVersion, 2);
+
+    const result = await authenticateApiRequest(
+      bearerRequest(plaintext),
+      accessKeyEnv(),
+      store,
+      config,
+      '2026-06-15T00:00:00.000Z'
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.actor.tokenId, keyId);
+  });
+}
+
 test('rejects S2S access keys after the user session version changes', async () => {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',
@@ -240,16 +274,13 @@ test('rejects S2S access keys after the user session version changes', async () 
     scopes: ['deploy:site'],
     siteId: 'site_1',
     expiresAt: '2026-07-15T00:00:00.000Z',
-    issuedSource: 'xdmaker',
+    issuedSource: 'xdmaker_s2s',
     issuedSessionVersion: 1,
   });
-  await store.upsertUserFromSso({
-    userId: 'usr_1',
-    email: 'user@example.com',
-    realname: 'User One',
-    employeeStatus: 'active',
-    sessionVersion: 2,
-  });
+  const stored = await store.getAccessKeyById('ak_s2s');
+  assert.equal(stored.issuedSource, 'xdmaker_s2s');
+  assert.equal(stored.issuedSessionVersion, 1);
+  await bumpUserSessionVersion(store);
 
   const result = await authenticateApiRequest(
     bearerRequest(plaintext),
@@ -270,6 +301,16 @@ test('rejects S2S access keys after the user session version changes', async () 
   });
   assert.equal((await store.getAccessKeyById('ak_s2s')).lastUsedAt, null);
 });
+
+async function bumpUserSessionVersion(store) {
+  await store.upsertUserFromSso({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    realname: 'User One',
+    employeeStatus: 'active',
+    sessionVersion: 2,
+  });
+}
 
 function bearerRequest(token) {
   return new Request('https://api.pages.xd.team/.xd-pages/api/sites', {

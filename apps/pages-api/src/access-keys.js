@@ -197,7 +197,7 @@ async function createAccessKeyForOwner(request, env, config, store, owner) {
 
 export async function createAccessKeyMaterial(env, config, input) {
   const pepper = readActiveAccessKeyPepper(env);
-  const id = nextId(env, 'ak');
+  const id = input.id || nextId(env, 'ak');
   const plaintext = createAccessKeyPlaintext({
     environment: config.environment,
     keyId: id,

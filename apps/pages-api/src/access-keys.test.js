@@ -6,10 +6,11 @@ import * as accessKeys from './access-keys.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { createTestPagesStore } from './test-store.js';
 
-test('creates reusable access key material with source and session metadata', async () => {
+test('creates reusable access key material with deterministic id and S2S metadata', async () => {
   assert.equal(typeof accessKeys.createAccessKeyMaterial, 'function');
 
   const { plaintext, record } = await accessKeys.createAccessKeyMaterial(testEnv(null), { environment: 'production' }, {
+    id: 'ak_xdmaker',
     ownerType: 'user',
     ownerId: 'usr_1',
     ownerUserId: 'usr_1',
@@ -18,13 +19,13 @@ test('creates reusable access key material with source and session metadata', as
     scopes: ['deploy:site'],
     siteId: 'site_1',
     expiresAt: '2026-07-15T00:00:00.000Z',
-    issuedSource: 'xdmaker',
+    issuedSource: 'xdmaker_s2s',
     issuedSessionVersion: 3,
   });
 
-  assert.match(plaintext, /^xdp_prod_ak_1_[a-f0-9]{48}$/);
+  assert.match(plaintext, /^xdp_prod_ak_xdmaker_[a-f0-9]{48}$/);
   assert.deepEqual(record, {
-    id: 'ak_1',
+    id: 'ak_xdmaker',
     environment: 'production',
     ownerType: 'user',
     ownerId: 'usr_1',
@@ -36,7 +37,7 @@ test('creates reusable access key material with source and session metadata', as
     scopes: ['deploy:site'],
     siteId: 'site_1',
     expiresAt: '2026-07-15T00:00:00.000Z',
-    issuedSource: 'xdmaker',
+    issuedSource: 'xdmaker_s2s',
     issuedSessionVersion: 3,
   });
 });
