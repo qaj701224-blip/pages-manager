@@ -50,6 +50,7 @@ export async function readVisibleLine(prompt = '', { stdin = process.stdin, stdo
     readline.once('close', cancel);
     readline.once('SIGINT', cancel);
     readline.once('error', cancel);
+    stdin.once('close', cancel);
     stdin.once('error', cancel);
   });
   try {
@@ -61,6 +62,7 @@ export async function readVisibleLine(prompt = '', { stdin = process.stdin, stdo
     readline.off('close', cancel);
     readline.off('SIGINT', cancel);
     readline.off('error', cancel);
+    stdin.off('close', cancel);
     stdin.off('error', cancel);
     readline.close();
   }

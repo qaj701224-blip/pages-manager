@@ -353,6 +353,31 @@ test('readVisibleLine rejects when interactive input closes', async () => {
   }
 });
 
+test('readVisibleLine rejects and cleans up when interactive input is destroyed', async () => {
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  let timeout;
+  const answer = readVisibleLine('确认删除? ', { stdin, stdout: capture() });
+  stdin.destroy();
+
+  try {
+    await assert.rejects(
+      Promise.race([
+        answer,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('readVisibleLine did not settle')), 100);
+        }),
+      ]),
+      { code: 'CONFIRMATION_INPUT_CANCELLED' },
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+  assert.equal(stdin.listenerCount('close'), 0);
+  assert.equal(stdin.listenerCount('error'), 0);
+  assert.equal(stdin.listenerCount('data'), 0);
+});
+
 test('readHiddenLine reads from a TTY without echoing the secret value', async () => {
   const stdin = new FakeTtyInput();
   const stdout = capture();
