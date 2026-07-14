@@ -574,7 +574,7 @@ test('callback consumes state once, calls SSO hooks, sets auth_session cookie, a
     id: 'usr_123',
     email: 'user@example.test',
     employeeStatus: 'active',
-    departments: ['XD/Design'],
+    departments: ['XD/Design', 'XD/Legacy'],
     sessionVersion: 4,
   });
 

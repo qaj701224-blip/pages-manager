@@ -704,7 +704,7 @@ function mergeSyncedUserAuthority(profile, syncResult) {
       ? { name: user.realname || user.name || profile.realname || profile.name }
       : {}),
     ...(user.accountId || profile.accountId ? { accountId: user.accountId || profile.accountId } : {}),
-    departments: profileDepartments.length > 0 ? profileDepartments : mergeDepartmentPaths([], user.departmentPath),
+    departments: mergeDepartmentPaths(profileDepartments, user.departmentPath),
     employeeStatus: user.employeeStatus || profile.employeeStatus,
     sessionVersion: user.sessionVersion || profile.sessionVersion,
   };
