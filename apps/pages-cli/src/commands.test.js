@@ -1893,6 +1893,7 @@ test('prints help and version for top-level CLI aliases', async () => {
   assert.match(help, /^\s+logout\s/m);
   assert.match(help, /^\s+whoami\s/m);
   assert.match(help, /^\s+detect\s/m);
+  assert.match(help, /^\s+sites\s+查看站点列表、详情或删除站点。$/m);
   assert.doesNotMatch(help, /--access-key|--env|xd-cell env|^\s+env\s|^\s+auth\s/m);
   assert.doesNotMatch(
     help,

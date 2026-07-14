@@ -1683,7 +1683,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   detect      本地识别发布入口。
   deploy      发布目录到 XD Cell，自动判断发布方式。
   status      查看登录状态、站点或部署状态。
-  sites       查看站点列表或详情。
+  sites       查看站点列表、详情或删除站点。
   teams       查看当前用户所在团队及团队 ID。
   secrets     管理站点级 Worker secret。
   access      查看或调整站点访问范围。
