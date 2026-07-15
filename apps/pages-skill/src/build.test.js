@@ -83,9 +83,11 @@ test('buildCellSkill assembles xd-cell skill with bundled CLI and SDK dependency
 
     const breakingChanges = await readFile(path.join(outDir, 'BREAKING_CHANGES.md'), 'utf8');
     assert.match(breakingChanges, /无破坏性变更/);
+    assert.match(breakingChanges, /`@xd-cell\/skill`：0\.1\.2/);
     assert.match(breakingChanges, /类型级破坏性变更.*@xd-cell\/worker-sdk/);
     assert.match(breakingChanges, /先发布并验证 `@xd-cell\/worker-sdk@0\.2\.0`/);
-    assert.match(breakingChanges, /再构建并发布 `@xd-cell\/skill@0\.1\.1`/);
+    assert.match(breakingChanges, /再构建并发布 `@xd-cell\/skill@0\.1\.2`/);
+    assert.match(breakingChanges, /内置 CLI 版本为 `0\.1\.2`/);
     assert.match(breakingChanges, /@xd-cell\/skill/);
     assert.doesNotMatch(breakingChanges, /存在破坏性变更/);
 

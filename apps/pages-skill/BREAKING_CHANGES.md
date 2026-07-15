@@ -6,7 +6,7 @@
 
 ## 适用版本
 
-- `@xd-cell/skill`：0.1.1
+- `@xd-cell/skill`：0.1.2
 
 ## 影响对象
 
@@ -20,7 +20,7 @@
 ## 发布顺序
 
 1. 先发布并验证 `@xd-cell/worker-sdk@0.2.0` 可以从目标 registry 安装。
-2. 再构建并发布 `@xd-cell/skill@0.1.1`，确认 `manifest.json` 推荐的 Worker SDK 版本为 `0.2.0`，内置 CLI 版本为 `0.1.1`。
+2. 再构建并发布 `@xd-cell/skill@0.1.2`，确认 `manifest.json` 推荐的 Worker SDK 版本为 `0.2.0`，内置 CLI 版本为 `0.1.2`。
 
 ## 首发契约
 
