@@ -103,7 +103,7 @@ absolute TTL: 30 天
 - 修改 owner、collaborators 或 ACL。
 - 将站点可见性改为 `internal` 或未来公网 exposure。
 
-XDMaker S2S 换证是受控的服务端集成例外：只有 `xdt-api` 能在现有 `IP_ALLOWLIST`、HMAC、timestamp 和 nonce 门禁后为已完成飞书 SSO 的用户换取 24 小时个人 access key。XDMaker 客户端本身仍只把 key 注入捆绑的 CLI 子进程，不直接调用管理 API；Console 创建/查看 key 的 recent-login 语义不因此改变。
+XDMaker S2S 换证是受控的服务端集成面：只有持有注册 HMAC 凭证的 `xdt-api` 能为已完成飞书 SSO 的用户换取 24 小时个人 access key。S2S lane 可从公网访问，但继续执行 HMAC、timestamp、nonce 和现有限频；XDMaker 客户端本身仍只把 key 注入捆绑的 CLI 子进程，不直接调用管理 API；Console 创建/查看 key 的 recent-login 语义不因此改变。
 
 ### site_session
 

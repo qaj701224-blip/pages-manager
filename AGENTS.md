@@ -139,7 +139,7 @@ v2 以 CLI-managed API 为边界。普通用户和 AI agent 不手写部署 HTTP
 
 - `apps/pages-api/src/openapi.js` 是开发期 API 合约源码，只服务实现、测试和受控内部集成。
 - pages-api 不公开 `/openapi.json`；不要在文档或测试里把它当用户入口。
-- 除 `/skill.md`、`/readme.md` 外，管理 API 需要认证并受公司网络 / VPN / 办公网出口 IP allowlist 约束。
+- 管理 API 需要认证，所有 `pages-api` 对外管理 API 路由都可从公网访问且只接受 HTTPS；子站访问仍由 `pages-router` 执行公司网络 / VPN / 办公网出口 IP allowlist，`pages-console` 也暂时保留独立的公司网络 IP 门禁。
 - 发布 token、CLI token、cookie、SSO code 和 session 不得出现在响应、日志、文档或截图中。
 - 新增公开响应时不得泄露站点 metadata、内部 provider 资源 ID、Cloudflare token 或 runtime capability。
 - 同名站点归属检查不能允许用户覆盖他人站点。
@@ -255,7 +255,7 @@ P1：本 PR 必须修。包括：
 
 - 行为变更缺少测试。
 - `apps/pages-api/src/openapi.js` / skill / README / docs/api-boundary.md 与实现不一致。
-- IP allowlist、SSO、ACL 或 cookie/header 清洗逻辑绕过。
+- 保留 IP 门禁的 `pages-router` / `pages-console` 路径，其 allowlist、SSO、ACL 或 cookie/header 清洗逻辑被绕过；`pages-api` API 本身不以来源 IP 作为访问控制。
 - GitHub Actions secret/var 用错，导致运行时拿不到必要配置。
 - Cloudflare API token 流程混淆：Wrangler token 和 Worker 运行时 `CF_API_TOKEN` 用途混用。
 - 错误处理导致 agent/用户拿不到可操作提示。

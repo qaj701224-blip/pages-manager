@@ -364,7 +364,7 @@ secrets:
 
 `CF_ACCOUNT_ID` 和 `CF_API_TOKEN` 是 `pages-api` 运行时调用 Cloudflare API / Workers for Platforms API 或 ordinary Worker deploy API 的配置，只能注入 `pages-api`。`CF_API_TOKEN` 不得注入 router、auth、user Worker、CLI、`--config` 文件或公开文档。`CLOUDFLARE_API_TOKEN` 只用于 Wrangler / GitHub Actions 部署，不能作为 Worker runtime secret 注入。
 
-`IP_ALLOWLIST` 是 `pages-api` 管理 API 门禁配置，复用 v1 的公司内网 / VPN / 办公出口 CIDR 列表。除 `/skill.md`、`/readme.md` 和 health 外，`pages-api` 在进入站点、access key、部署、回滚等业务 handler 前必须先校验 `CF-Connecting-IP`；未命中时直接 403，不进入 token 校验和业务逻辑。内部 service binding host 不走公网 IP allowlist，由 internal host 校验保护。
+`pages-api` 的 API 路由不按来源 IP 限制，所有 API 请求都必须使用 HTTPS，并由各 handler 执行 token、access key、session、scope 和 owner/team 校验。`IP_ALLOWLIST` 仍由现有模板注入 `pages-api` 作为兼容配置，部署期间继续要求提供，但 Worker 不读取它，也不把它作为请求门禁。子站访问的 IP 门禁仍由 `pages-router` 的 `ROUTER_IP_ALLOWLIST_CIDRS` 执行；`pages-console` 继续读取 `IP_ALLOWLIST`，在 session、管理员权限和 CSRF 校验之外先限制公司网络来源。内部 service binding host 继续由 internal host 校验保护。
 
 `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 强绑定：production 只能是 `xd-cell-workers-production`，staging 只能是 `xd-cell-workers-staging`。`packages/wfp-client` 的 `readWfpConfig` 会在运行时做这层校验，部署脚本也应做静态校验。`WFP_COMPATIBILITY_DATE` 当前在 wrangler template 中固定为 `2026-06-15`，保证 Worker 模块语义可复现；需要升级时走 PR 修改模板。`CF_API_BASE_URL` 默认是 `https://api.cloudflare.com/client/v4`；production / staging 即使配置该值，也必须保持 host 为 `api.cloudflare.com`，避免把 `CF_API_TOKEN` 发往非 Cloudflare API host。local/test 才允许使用其它 HTTPS host 做 mock。
 
@@ -547,7 +547,7 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | 名称                                  | 类型    | 使用方                         | 说明 |
 | ------------------------------------- | ------- | ------------------------------ | ---- |
 | `CLOUDFLARE_ACCOUNT_ID`               | var     | v2 系统 Worker wrangler 渲染和部署 | 用于 `account_id` 与 Wrangler 部署 env；workflow 会把同一个值作为 runtime secret `CF_ACCOUNT_ID` 注入 `pages-api` |
-| `IP_ALLOWLIST`                        | var     | `pages-api` wrangler 渲染       | 管理 API 入口公司网络 allowlist，除公开文档和 health 外先于业务 handler 校验 |
+| `IP_ALLOWLIST`                        | var     | `pages-console` / `pages-api` wrangler 渲染 | Console 公司网络门禁；注入 `pages-api` 时仅为兼容配置，API Worker 不读取 |
 | `PAGES_V2_D1_DATABASE_ID`             | var     | `pages-api` / `pages-auth` wrangler 渲染 | 当前环境的 D1 metadata database id |
 | `PAGES_V2_ROUTE_SNAPSHOTS_KV_ID`      | var     | `pages-api` / `pages-router` wrangler 渲染 | 当前环境的 route snapshot KV namespace id |
 | `PAGES_V2_SITE_DATA_KV_ID`            | var     | `pages-kv-gateway` wrangler 渲染 | 当前环境的 Pages KV site data namespace id；production / staging 必须不同 |
@@ -596,8 +596,9 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - `SLACK_PAGES_ALERT_WEBHOOK_URL` 必须作为 GitHub Environment secret 注入 `pages-api`，不能放 GitHub Vars、wrangler template 或日志；告警发送失败不得影响用户部署响应。
 - `WEBHOOK_URL_ENCRYPTION_KEY` 必须作为 GitHub Environment secret 注入 `pages-api`，只用于平台 Webhook 订阅目标 URL 加密；不得复用 `SITE_SECRET_ENCRYPTION_KEY`。
 - D1、KV、Durable Object binding 必须指向当前环境资源。
-- `IP_ALLOWLIST` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；`pages-api` 管理 API 未命中时必须先于 token / access key 校验返回 403。
-- XDMaker xdt-api 出口 CIDR 只追加到当前环境的 `IP_ALLOWLIST`；禁止新增 `S2S_IP_ALLOWLIST` 或其它专用 allowlist 配置。
+- `pages-api` API 请求必须使用 HTTPS；不得再把 `IP_ALLOWLIST` 作为 API 请求门禁。
+- `pages-console` 仍必须配置有效的 `IP_ALLOWLIST`，并在读取 session、调用 service binding 或返回静态资源前执行公司网络门禁。
+- S2S issue/revoke 依赖现有 HMAC、timestamp、nonce、registry 和限频，不新增 S2S IP allowlist。
 - `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时部署或启动必须 fail closed。
 - `CF_API_TOKEN` 只能注入 `pages-api` runtime；`CLOUDFLARE_API_TOKEN` 只能出现在 GitHub Actions / Wrangler 部署环境。
 - `pages-router` 和 `pages-router-staging` 的 wrangler 配置不能同时出现两套环境 binding 或两套 signing key。
@@ -646,7 +647,7 @@ staging 首次部署前必须完成：
    ```
 
 2. 先应用 `0014_xdmaker_s2s_access_keys.sql` migration，再部署 `pages-api` / Console；两套环境分别配置 `S2S_CLIENT_KEYS` registry 和 `S2S_SECRET_*`。registry 采用 `client_id:key_id:secret_env_name`，轮换顺序是“平台加入第二把 key -> xdt-api 切换 key id -> 观察旧 key 流量 -> 移除旧 key”。
-3. xdt-api 的 staging 出口 CIDR 追加到现有 staging `IP_ALLOWLIST`；production 同理，不创建专用 S2S allowlist。真实 CIDR 和 shared secret 由双方通过受控渠道人工交换，永不提交到仓库、issue、PR 或日志。
+3. S2S issue/revoke 不依赖 xdt-api 出口 CIDR；真实 shared secret 仍由双方通过受控渠道人工交换，永不提交到仓库、issue、PR 或日志。
 4. staging smoke 顺序：S2S issue -> 使用返回 key 通过捆绑 CLI 首次 deploy 建站 -> Console 列表显示 `XDMaker` -> Console revoke -> xdt-api 按 key/email revoke（幂等） -> 提升用户 `sessionVersion` 后确认旧 key 返回 `ACCESS_KEY_SESSION_STALE`。
 5. 联调记录只保留脱敏的 client/key id、内部 user/access-key id、状态码和时间；不得记录 token 明文、hash、pepper、HMAC secret、Feishu `open_id` 或完整 nonce。
 6. S2S 限频为每个 `client_id + environment` 每 10 分钟 1200 个通过 HMAC 的新请求、每个规范化邮箱每 10 分钟 20 次发放尝试；发放与吊销共用客户端额度，超限返回 `429 S2S_RATE_LIMITED`。
@@ -654,7 +655,7 @@ staging 首次部署前必须完成：
 production 首次部署前必须完成：
 
 1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 已覆盖 v2 `workers.xd.team` 新默认后缀和存量 `pages.xd.team` route，且 v1 exact route 优先级不变。
-2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、S2S secret、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY` 和 IP allowlist。production router template 必须固定绑定 `xd-cell-workers-production` dispatch namespace；production template 中的 `PAGES_EXECUTION_MODE` 必须为 `wfp`，router 只保留 active legacy route 仍需要的显式 slot binding。
+2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、S2S secret、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、Console IP allowlist 和 router IP allowlist。production router template 必须固定绑定 `xd-cell-workers-production` dispatch namespace；production template 中的 `PAGES_EXECUTION_MODE` 必须为 `wfp`，router 只保留 active legacy route 仍需要的显式 slot binding。
 3. XD Cell production 部署 workflow（当前 workflow 文件为 `deploy-pages-v2.yml`）只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
 4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker；`0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql` 和 `0010_site_vars.sql` 必须先于 `pages-api` 新版本生效。
 5. 发布后先验证 `api.pages.xd.team/.xd-pages/health`、`auth.pages.xd.team` 登录入口和一个受控试点站点。

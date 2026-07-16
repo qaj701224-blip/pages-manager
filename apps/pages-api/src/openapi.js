@@ -335,7 +335,9 @@ export function buildOpenApi(config) {
       '/.xd-pages/api/s2s/tokens': {
         post: {
           summary: 'Exchange a trusted XDMaker identity for a short-lived personal access key',
-          description: 'Controlled internal integration. Requests must be HMAC-signed and pass the existing IP allowlist.',
+          description:
+            'Controlled integration lane. Requests are public-network reachable but must be HMAC-signed and pass ' +
+            'timestamp, nonce, registry, and rate-limit checks.',
           security: [{ s2sHmac: [] }],
           parameters: s2sHeaderParameters(),
           requestBody: {
@@ -353,7 +355,7 @@ export function buildOpenApi(config) {
             },
             400: { description: 'Invalid request', headers: noStoreResponseHeaders() },
             401: { description: 'Invalid S2S authentication', headers: noStoreResponseHeaders() },
-            403: { description: 'User inactive or source IP denied', headers: noStoreResponseHeaders() },
+            403: { description: 'User inactive', headers: noStoreResponseHeaders() },
             409: { description: 'Replay, identity, or replacement conflict', headers: noStoreResponseHeaders() },
             429: { description: 'Rate limited', headers: noStoreResponseHeaders() },
             500: { description: 'S2S store unavailable', headers: noStoreResponseHeaders() },
@@ -363,7 +365,9 @@ export function buildOpenApi(config) {
       '/.xd-pages/api/s2s/tokens/revoke': {
         post: {
           summary: 'Idempotently revoke XDMaker-issued access keys',
-          description: 'Controlled internal integration. Only keys issued by the XDMaker S2S channel are affected.',
+          description:
+            'Controlled integration lane. Requests are public-network reachable; only keys issued by the XDMaker ' +
+            'S2S channel are affected.',
           security: [{ s2sHmac: [] }],
           parameters: s2sHeaderParameters(),
           requestBody: {

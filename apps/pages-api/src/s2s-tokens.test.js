@@ -12,6 +12,27 @@ const CLIENT_ID = 'xdmaker';
 const CLIENT_KEY_ID = 'key_1';
 const CLIENT_SECRET = 's2s-test-secret';
 
+test('does not persist D1 audit rows for S2S traffic without a known client context', async () => {
+  const store = createTestPagesStore({ now: () => BASE_NOW });
+  const response = await handleS2STokensApi(
+    new Request('https://api.pages.xd.team/.xd-pages/api/s2s/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    }),
+    testEnv({ now: BASE_NOW }),
+    { environment: 'staging' },
+    store
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error.code, 'S2S_AUTH_REQUIRED');
+  assert.equal(
+    (await store.listAuditEvents({ environment: 'staging' })).filter((event) => event.eventType === 's2s.request.deny').length,
+    0
+  );
+});
+
 test('issues a 24-hour staging token for an active user with a safe exact response', async () => {
   const store = createTestPagesStore({ now: () => BASE_NOW });
   await store.createUser({
@@ -333,7 +354,7 @@ test('validates authenticated issue and revoke bodies without parsing a second r
   }
 });
 
-test('audits bad signatures and replays with internal signing context without exposing it publicly', async () => {
+test('skips D1 audit for bad signatures but audits authenticated replays', async () => {
   const store = createTestPagesStore({ now: () => BASE_NOW });
   await store.createUser({
     userId: 'usr_auth_deny',
@@ -389,12 +410,6 @@ test('audits bad signatures and replays with internal signing context without ex
     .filter((event) => event.eventType === 's2s.request.deny')
     .map((event) => event.metadata);
   assert.deepEqual(denyMetadata, [
-    {
-      environment: 'staging',
-      clientId: CLIENT_ID,
-      signingKeyId: CLIENT_KEY_ID,
-      reason: 'S2S_SIGNATURE_INVALID',
-    },
     {
       environment: 'staging',
       clientId: CLIENT_ID,

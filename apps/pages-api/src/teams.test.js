@@ -959,7 +959,7 @@ async function seedAccessKey(store, keyId, ownerUserId, options = {}) {
     name: keyId,
     scopes: options.scopes || ['read:site'],
     siteId: null,
-    expiresAt: '2026-07-15T00:00:00.000Z',
+    expiresAt: '2099-01-01T00:00:00.000Z',
   });
   return plaintext;
 }
