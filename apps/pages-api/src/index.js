@@ -12,7 +12,6 @@ import { handleS2STokensApi } from './s2s-tokens.js';
 import { createPagesStore } from './store.js';
 import { handleConsoleTeamsApi, handleTeamsApi } from './teams.js';
 import { handleWhoamiApi } from './whoami.js';
-import { isAllowedIP } from '../../../packages/ip-guard/src/index.js';
 
 export { RoutePointerDO } from './route-snapshot.js';
 
@@ -44,15 +43,6 @@ export default {
   },
 
   async fetch(request, env, ctx) {
-    if (request.headers.has('X-Pages-Token')) {
-      return jsonError(
-        'LEGACY_TOKEN_UNSUPPORTED',
-        'Legacy Pages tokens are not supported by XD Cell.',
-        400,
-        'Run `xd-cell login` or use an XD Cell access key.'
-      );
-    }
-
     let config;
     try {
       config = readApiConfig(env);
@@ -66,6 +56,18 @@ export default {
     }
 
     const url = new URL(request.url);
+    const transportError = requireHttps(url, config);
+    if (transportError) return transportError;
+
+    if (request.headers.has('X-Pages-Token')) {
+      return jsonError(
+        'LEGACY_TOKEN_UNSUPPORTED',
+        'Legacy Pages tokens are not supported by XD Cell.',
+        400,
+        'Run `xd-cell login` or use an XD Cell access key.'
+      );
+    }
+
     if (url.pathname === '/.xd-pages/health') {
       return jsonOk({
         status: 'ok',
@@ -76,11 +78,6 @@ export default {
 
     if (url.pathname === '/skill.md') return markdownResponse(buildSkill(config));
     if (url.pathname === '/readme.md') return markdownResponse(buildReadme(config));
-
-    if (requiresIpAllowlist(url)) {
-      const ipError = checkIpAllowlist(request, env, config);
-      if (ipError) return ipError;
-    }
 
     if (url.pathname.startsWith('/.xd-pages/api/s2s/')) {
       let store;
@@ -188,18 +185,7 @@ export default {
   },
 };
 
-function requiresIpAllowlist(url) {
-  if (url.hostname.endsWith('.internal')) return false;
-  const pathname = url.pathname;
-  if (pathname === '/.xd-pages/health') return false;
-  if (pathname === '/skill.md' || pathname === '/readme.md') return false;
-  return true;
-}
-
-function checkIpAllowlist(request, env, config) {
-  if (config.environment === 'local') return null;
-  const allowlist = String(env.IP_ALLOWLIST || '').trim();
-  const ip = request.headers.get('CF-Connecting-IP') || '';
-  if (isAllowedIP(ip, allowlist)) return null;
-  return jsonError('IP_NOT_ALLOWED', 'Source IP is not allowed.', 403, 'Connect from the company network or VPN.');
+function requireHttps(url, config) {
+  if (config.environment === 'local' || url.protocol === 'https:') return null;
+  return jsonError('HTTPS_REQUIRED', 'HTTPS is required.', 400, 'Use an https:// API URL.');
 }

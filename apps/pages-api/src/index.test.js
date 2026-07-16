@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import worker from './index.js';
+import { buildOpenApi } from './openapi.js';
 import { buildS2SCanonicalInput, createS2SSignature } from './s2s-auth.js';
 import { createTestPagesStore } from './test-store.js';
 
@@ -330,7 +331,7 @@ test('unknown endpoints return safe JSON errors', async () => {
   assert.match(body.error.action, /Check the endpoint/);
 });
 
-test('management API rejects requests outside the configured IP allowlist before auth handlers', async () => {
+test('public CLI API authenticates requests outside the configured IP allowlist', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',
   });
@@ -360,27 +361,43 @@ test('management API rejects requests outside the configured IP allowlist before
     }
   );
 
-  assert.equal(response.status, 403);
-  assert.equal((await response.json()).error.code, 'IP_NOT_ALLOWED');
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { sites: [] });
 });
 
-test('S2S endpoint is denied by the existing IP allowlist before nonce or token handling', async () => {
+test('public S2S endpoint reaches the existing handler outside the configured IP allowlist', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
-  const request = await signedS2SRequest({ now: 1_781_481_600, nonce: 'nonce_denied1' });
-  const response = await worker.fetch(request, {
+  const env = {
     PAGES_ENV: 'production',
     PAGES_STORE: store,
     IP_ALLOWLIST: '10.0.0.0/8',
     S2S_CLIENT_KEYS: 'xdmaker:key_1:S2S_SECRET_XDMAKER',
     S2S_SECRET_XDMAKER: 'secret',
+    ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_s2s',
+    ACCESS_KEY_PEPPERS: 'pepper_s2s:S2S_ACCESS_KEY_PEPPER',
+    S2S_ACCESS_KEY_PEPPER: 'secret-pepper',
     now: () => '2026-06-15T00:00:00.000Z',
+    nextId: (prefix) => `${prefix}_route_test`,
+  };
+
+  const issueRequest = await signedS2SRequest({ now: 1_781_481_600, nonce: 'nonce_public01' });
+  const issueResponse = await worker.fetch(issueRequest, env);
+  assert.equal(issueResponse.status, 201, await issueResponse.clone().text());
+  assert.equal((await issueResponse.json()).source, 'xdmaker_s2s');
+
+  const revokeRequest = await signedS2SRequest({
+    now: 1_781_481_600,
+    nonce: 'nonce_public02',
+    pathname: '/.xd-pages/api/s2s/tokens/revoke',
+    body: { email: 'route@example.com' },
   });
-  assert.equal(response.status, 403);
-  assert.equal((await response.json()).error.code, 'IP_NOT_ALLOWED');
-  assert.equal(store.s2sNonces.size, 0);
+  const revokeResponse = await worker.fetch(revokeRequest, env);
+  assert.equal(revokeResponse.status, 200, await revokeResponse.clone().text());
+  assert.deepEqual(await revokeResponse.json(), { revoked_count: 1, key_ids: ['ak_route_test'] });
+  assert.equal(store.s2sNonces.size, 2);
 });
 
-test('S2S endpoint reaches the handler through the allowlist without bearer auth', async () => {
+test('S2S endpoint does not depend on source IP and does not require bearer auth', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   const request = await signedS2SRequest({ now: 1_781_481_600, nonce: 'nonce_allowed1', ip: '10.1.2.3' });
   const response = await worker.fetch(request, {
@@ -398,6 +415,132 @@ test('S2S endpoint reaches the handler through the allowlist without bearer auth
   assert.equal(response.status, 201, await response.clone().text());
   assert.equal((await response.json()).source, 'xdmaker_s2s');
   assert.equal(store.s2sNonces.size, 1);
+});
+
+test('every OpenAPI management operation reaches API authentication outside the configured IP allowlist', async (t) => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  const openApi = buildOpenApi({
+    environment: 'production',
+    apiBaseUrl: 'https://api.pages.xd.team',
+    authBaseUrl: 'https://auth.pages.xd.team',
+    siteDomainSuffix: 'workers.xd.team',
+  });
+  const methods = ['get', 'post', 'put', 'patch', 'delete'];
+
+  for (const [pathTemplate, pathItem] of Object.entries(openApi.paths)) {
+    if (pathTemplate.startsWith('/.xd-pages/api/s2s/')) continue;
+    const pathname = pathTemplate.replace('{id}', 'resource_1').replace('{site}', 'guide');
+    for (const method of methods) {
+      if (!pathItem[method]) continue;
+      await t.test(`${method.toUpperCase()} ${pathTemplate}`, async () => {
+        const response = await worker.fetch(
+          new Request(`https://api.pages.xd.team${pathname}`, {
+            method: method.toUpperCase(),
+            headers: { 'CF-Connecting-IP': '203.0.113.8' },
+          }),
+          {
+            PAGES_ENV: 'production',
+            PAGES_STORE: store,
+            IP_ALLOWLIST: '10.0.0.0/8',
+          }
+        );
+
+        assert.equal(response.status, 401, `${method.toUpperCase()} ${pathname}`);
+        assert.equal((await response.json()).error.code, 'PAGES_AUTH_REQUIRED');
+      });
+    }
+  }
+});
+
+test('public route matching rejects unsupported methods and lookalike paths after authentication', async (t) => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_route_matrix',
+    email: 'route-matrix@example.com',
+    employeeStatus: 'active',
+  });
+  const cases = [
+    ['POST', '/.xd-pages/api/auth/whoami', 405, 'METHOD_NOT_ALLOWED'],
+    ['PUT', '/.xd-pages/api/teams', 405, 'METHOD_NOT_ALLOWED'],
+    ['OPTIONS', '/.xd-pages/api/sites', 405, 'METHOD_NOT_ALLOWED'],
+    ['PATCH', '/.xd-pages/api/access-keys', 405, 'METHOD_NOT_ALLOWED'],
+    ['GET', '/.xd-pages/api/deployments', 405, 'METHOD_NOT_ALLOWED'],
+    ['GET', '/.xd-pages/api/versions/ver_1/rollback', 405, 'METHOD_NOT_ALLOWED'],
+    ['GET', '/.xd-pages/api/sites-extra', 404, 'NOT_FOUND'],
+    ['GET', '/.xd-pages/api/sites/site_1/extra', 404, 'NOT_FOUND'],
+    ['POST', '/.xd-pages/api/s2s/tokens-extra', 404, 'NOT_FOUND'],
+    ['POST', '/.xd-pages/api/s2s/tokens/revoke/extra', 404, 'NOT_FOUND'],
+    ['GET', '/axd-pages/api/sites', 404, 'NOT_FOUND'],
+  ];
+  const env = {
+    PAGES_ENV: 'production',
+    PAGES_STORE: store,
+    IP_ALLOWLIST: '10.0.0.0/8',
+    verifyCliToken: async () => ({
+      sub: 'usr_route_matrix',
+      purpose: 'cli_token',
+      aud: 'pages-cli',
+      env: 'production',
+      jti: 'cli_route_matrix',
+    }),
+  };
+
+  for (const [method, pathname, status, code] of cases) {
+    await t.test(`${method} ${pathname}`, async () => {
+      const response = await worker.fetch(
+        new Request(`https://api.pages.xd.team${pathname}`, {
+          method,
+          headers: {
+            Authorization: 'Bearer cli-token',
+            'CF-Connecting-IP': '203.0.113.8',
+          },
+        }),
+        env
+      );
+
+      assert.equal(response.status, status, `${method} ${pathname}`);
+      assert.equal((await response.json()).error.code, code);
+    });
+  }
+});
+
+test('production and staging APIs reject HTTP before authentication or store access', async (t) => {
+  for (const [environment, host] of [
+    ['production', 'api.pages.xd.team'],
+    ['staging', 'api-staging.pages.xd.team'],
+  ]) {
+    await t.test(environment, async () => {
+      const response = await worker.fetch(
+        new Request(`http://${host}/.xd-pages/api/access-keys`, {
+          headers: {
+            Authorization: 'Bearer should-not-be-read',
+            'CF-Connecting-IP': '203.0.113.8',
+          },
+        }),
+        {
+          PAGES_ENV: environment,
+          IP_ALLOWLIST: '10.0.0.0/8',
+        }
+      );
+
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), {
+        error: {
+          code: 'HTTPS_REQUIRED',
+          message: 'HTTPS is required.',
+          action: 'Use an https:// API URL.',
+        },
+      });
+    });
+  }
+});
+
+test('local API keeps HTTP available for development', async () => {
+  const response = await worker.fetch(new Request('http://xd-pages.127.0.0.1.nip.io:8787/.xd-pages/health'), {
+    PAGES_ENV: 'local',
+  });
+
+  assert.equal(response.status, 200);
 });
 
 test('internal user upsert is only callable through internal service host', async () => {
@@ -576,20 +719,26 @@ function jsonRequest(url, body, headers = {}) {
   });
 }
 
-async function signedS2SRequest({ now, nonce, ip = '203.0.113.8' }) {
-  const rawBody = JSON.stringify({ email: 'route@example.com', feishu_open_id: 'ou_route', display_name: 'Route User' });
+async function signedS2SRequest({
+  now,
+  nonce,
+  ip = '203.0.113.8',
+  pathname = '/.xd-pages/api/s2s/tokens',
+  body = { email: 'route@example.com', feishu_open_id: 'ou_route', display_name: 'Route User' },
+}) {
+  const rawBody = JSON.stringify(body);
   const canonical = await buildS2SCanonicalInput({
     environment: 'production',
     clientId: 'xdmaker',
     keyId: 'key_1',
     method: 'POST',
-    pathname: '/.xd-pages/api/s2s/tokens',
+    pathname,
     timestamp: String(now),
     nonce,
     rawBody,
   });
   const signature = await createS2SSignature('secret', canonical);
-  return new Request('https://api.pages.xd.team/.xd-pages/api/s2s/tokens', {
+  return new Request(`https://api.pages.xd.team${pathname}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

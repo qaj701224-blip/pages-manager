@@ -104,6 +104,7 @@ export async function authenticateS2SRequest(input = {}, maybeOptions) {
   });
   const expectedSignature = await createS2SSignature({ secret: key.secret, canonicalInput });
   if (!constantTimeEqual(expectedSignature, headers.signature)) return failure('S2S_SIGNATURE_INVALID', authContext);
+  const verifiedAuthContext = { ...authContext, signatureVerified: true };
 
   const receivedAt = new Date(now * 1000).toISOString();
   const nonceReserved = await store.reserveS2SNonce({
@@ -114,7 +115,7 @@ export async function authenticateS2SRequest(input = {}, maybeOptions) {
     receivedAt,
     expiresAt: new Date((now + NONCE_TTL_SECONDS) * 1000).toISOString(),
   });
-  if (!nonceReserved) return failure('S2S_REPLAY_DETECTED', authContext);
+  if (!nonceReserved) return failure('S2S_REPLAY_DETECTED', verifiedAuthContext);
 
   const bucketSeconds = Math.floor(now / RATE_WINDOW_SECONDS) * RATE_WINDOW_SECONDS;
   const rate = await store.consumeS2SRateLimit({
@@ -125,7 +126,7 @@ export async function authenticateS2SRequest(input = {}, maybeOptions) {
     expiresAt: new Date((bucketSeconds + RATE_WINDOW_SECONDS) * 1000).toISOString(),
     limit: RATE_LIMIT,
   });
-  if (!rate?.allowed) return failure('S2S_RATE_LIMITED', { ...authContext, retryAfter: RATE_WINDOW_SECONDS });
+  if (!rate?.allowed) return failure('S2S_RATE_LIMITED', { ...verifiedAuthContext, retryAfter: RATE_WINDOW_SECONDS });
 
   return {
     ok: true,

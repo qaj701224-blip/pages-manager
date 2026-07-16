@@ -31,6 +31,10 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/s2s/tokens'].post);
   assert.ok(body.paths['/.xd-pages/api/s2s/tokens/revoke'].post);
   assert.equal(body.paths['/.xd-pages/api/s2s/tokens'].post.security[0].s2sHmac.length, 0);
+  for (const path of ['/.xd-pages/api/s2s/tokens', '/.xd-pages/api/s2s/tokens/revoke']) {
+    assert.match(body.paths[path].post.description, /public-network reachable/);
+    assert.doesNotMatch(body.paths[path].post.description, /internal integration|IP allowlist/i);
+  }
   assert.equal(body.components.schemas.S2STokenIssueResponse.properties.token.writeOnly, true);
   assert.match(body.paths['/.xd-pages/api/s2s/tokens'].post['x-error-codes'].join(','), /S2S_REPLAY_DETECTED/);
   assert.doesNotMatch(JSON.stringify(body), /user@example|ou_|xdp_/i);
@@ -179,8 +183,8 @@ test('does not serve OpenAPI as public pages-api routes', async () => {
       IP_ALLOWLIST: '10.0.0.0/8',
     });
 
-    assert.equal(publicResponse.status, 403);
-    assert.equal((await publicResponse.json()).error.code, 'IP_NOT_ALLOWED');
+    assert.equal(publicResponse.status, 404);
+    assert.equal((await publicResponse.json()).error.code, 'NOT_FOUND');
 
     const response = await worker.fetch(new Request(`https://api.pages.xd.team${path}`, {
       headers: { 'CF-Connecting-IP': '10.1.2.3' },

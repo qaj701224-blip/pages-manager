@@ -30,16 +30,18 @@ export async function handleS2STokensApi(request, env, config, store, ctx = null
     return storeUnavailable();
   }
   if (!auth.ok) {
-    await recordBestEffortAudit(
-      store,
-      auditEvent(env, config, auth.clientId || null, 's2s.request.deny', {
-        decision: 'deny',
-        statusCode: auth.status,
-        signingKeyId: auth.keyId,
-        reason: auth.code,
-        now,
-      })
-    );
+    if (auth.signatureVerified && auth.clientId && auth.keyId) {
+      await recordBestEffortAudit(
+        store,
+        auditEvent(env, config, auth.clientId, 's2s.request.deny', {
+          decision: 'deny',
+          statusCode: auth.status,
+          signingKeyId: auth.keyId,
+          reason: auth.code,
+          now,
+        })
+      );
+    }
     return authFailureResponse(auth);
   }
 
