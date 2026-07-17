@@ -2334,7 +2334,7 @@ test('test store serializes audited site secret deletion with other runtime muta
     .then(() => {
       deletionFinished = true;
     });
-  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(deletionFinished, false);
   releaseLock();
