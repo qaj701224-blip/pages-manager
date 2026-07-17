@@ -1641,12 +1641,18 @@ class TestPagesStore {
   }
 
   async putSiteSecretWithAudit(input) {
-    if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
-    const secret = this.buildSiteSecretRecord(input);
-    await this.recordAuditEvent(secretAuditEvent(input, 'site_secret.put', secret, input.updatedAt || this.now()));
-    this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
-    this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.updatedAt || this.now());
-    return cloneRecord(secret);
+    return this.withRuntimeConfigQueue(input.environment, input.siteId, async () => {
+      if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+      const secret = this.buildSiteSecretRecord(input);
+      const liveVars = this.listEnabledSiteVarsSync(input.environment, input.siteId);
+      const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
+      const candidateSecrets = [...liveSecrets.filter((entry) => entry.name !== input.name), secret];
+      validateRuntimeBindingQuotas(runtimeVarsObject(liveVars), candidateSecrets);
+      await this.recordAuditEvent(secretAuditEvent(input, 'site_secret.put', secret, input.updatedAt || this.now()));
+      this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
+      this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.updatedAt || this.now());
+      return cloneRecord(secret);
+    });
   }
 
   putSiteSecretRecord(input) {
@@ -1690,16 +1696,20 @@ class TestPagesStore {
   }
 
   async deleteSiteSecretWithAudit(input) {
-    if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
-    const secret = this.buildDeletedSiteSecretRecord(input.environment, input.siteId, input.name, { deletedAt: input.deletedAt });
-    await this.recordAuditEvent(
-      secretAuditEvent(input, 'site_secret.delete', secret || { name: input.name }, input.deletedAt || this.now())
-    );
-    if (secret) {
-      this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
-      this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.deletedAt || this.now());
-    }
-    return cloneRecord(secret);
+    return this.withRuntimeConfigQueue(input.environment, input.siteId, async () => {
+      if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+      const secret = this.buildDeletedSiteSecretRecord(input.environment, input.siteId, input.name, {
+        deletedAt: input.deletedAt,
+      });
+      await this.recordAuditEvent(
+        secretAuditEvent(input, 'site_secret.delete', secret || { name: input.name }, input.deletedAt || this.now())
+      );
+      if (secret) {
+        this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
+        this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.deletedAt || this.now());
+      }
+      return cloneRecord(secret);
+    });
   }
 
   deleteSiteSecretRecord(environment, siteId, name, { deletedAt } = {}) {
@@ -1746,7 +1756,11 @@ class TestPagesStore {
   }
 
   async mutateSiteVar(input) {
-    const queueKey = `${input.environment}:${input.siteId}`;
+    return this.withRuntimeConfigQueue(input.environment, input.siteId, () => this.mutateSiteVarUnlocked(input));
+  }
+
+  async withRuntimeConfigQueue(environment, siteId, callback) {
+    const queueKey = `${environment}:${siteId}`;
     const previous = this.runtimeConfigQueues.get(queueKey) || Promise.resolve();
     let release;
     const gate = new Promise((resolve) => {
@@ -1756,7 +1770,7 @@ class TestPagesStore {
     this.runtimeConfigQueues.set(queueKey, queued);
     await previous;
     try {
-      return await this.mutateSiteVarUnlocked(input);
+      return await callback();
     } finally {
       release();
       if (this.runtimeConfigQueues.get(queueKey) === queued) this.runtimeConfigQueues.delete(queueKey);

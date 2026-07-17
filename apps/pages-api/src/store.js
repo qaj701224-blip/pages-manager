@@ -2894,59 +2894,84 @@ export class D1PagesStore {
   async putSiteSecretWithAudit(input) {
     const now = input.updatedAt || this.now();
     const encryptedValue = await encryptSiteSecretValue(input.value, this.secretEncryptionKey);
-    const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
-    const revision = (await this.nextSiteSecretRevision(input.environment, input.siteId, input.name)) + 1;
-    const id = existing?.id || input.id;
-    const secretStatement = existing
-      ? this.db
-          .prepare(
-            `UPDATE site_secrets
-            SET encrypted_value = ?, revision = ?, updated_at = ?
-            WHERE id = ? AND revision = ? AND deleted_at IS NULL`
-          )
-          .bind(encryptedValue, revision, now, existing.id, Number(existing.revision || 0))
-      : this.siteSecretInsertStatement({
-          id,
-          environment: input.environment,
-          siteId: input.siteId,
-          name: input.name,
-          encryptedValue,
+    const lockId = input.lockId || randomStoreId('runtime_lock');
+    const lock = await this.acquireRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+    if (lock?.meta?.changes !== 1) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+
+    let released = false;
+    try {
+      const routeState = await this.getRuntimeConfigRouteState(input.environment, input.siteId);
+      if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+      const liveVars = await this.listEnabledSiteVars(input.environment, input.siteId);
+      const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
+      const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
+      const revision = (await this.nextSiteSecretRevision(input.environment, input.siteId, input.name)) + 1;
+      const id = existing?.id || input.id;
+      validateRuntimeBindingQuotas(runtimeVarsObject(liveVars), [
+        ...liveSecrets.filter((secret) => secret.name !== input.name),
+        { name: input.name, value: input.value },
+      ]);
+
+      const secretStatement = existing
+        ? this.db
+            .prepare(
+              `UPDATE site_secrets
+              SET encrypted_value = ?, revision = ?, updated_at = ?
+              WHERE id = ? AND revision = ? AND deleted_at IS NULL`
+            )
+            .bind(encryptedValue, revision, now, existing.id, Number(existing.revision || 0))
+        : this.siteSecretInsertStatement({
+            id,
+            environment: input.environment,
+            siteId: input.siteId,
+            name: input.name,
+            encryptedValue,
+            revision,
+            createdBy: input.actorId || input.createdBy,
+            createdAt: now,
+            updatedAt: now,
+          });
+      const auditRecord = secretAuditEvent(input, 'site_secret.put', { name: input.name, revision }, now);
+      const statements = [];
+      this.pushRuntimeChangeStatement(statements, secretStatement, 'SITE_SECRET_REVISION_CONFLICT');
+      this.pushRuntimeChangeStatement(
+        statements,
+        this.bumpRuntimeConfigGenerationAndReleaseLockStatement(input.environment, input.siteId, now, lockId),
+        'SITE_SECRET_REVISION_CONFLICT'
+      );
+      this.pushRuntimeChangeStatement(
+        statements,
+        this.siteSecretPutAuditEventStatement(auditRecord, {
+          secretId: id,
           revision,
-          createdBy: input.actorId || input.createdBy,
-          createdAt: now,
+          encryptedValue,
           updatedAt: now,
-        });
-    const auditRecord = secretAuditEvent(input, 'site_secret.put', { name: input.name, revision }, now);
-    const auditStatement = this.siteSecretPutAuditEventStatement(auditRecord, {
-      secretId: id,
-      revision,
-      encryptedValue,
-      updatedAt: now,
-    });
-    const results = await this.db.batch([
-      secretStatement,
-      this.bumpRuntimeConfigGenerationForPutStatement(input.environment, input.siteId, now, {
-        secretId: id,
+        }),
+        'SITE_SECRET_REVISION_CONFLICT'
+      );
+      await this.db.batch(statements);
+      released = true;
+      return {
+        id,
+        environment: input.environment,
+        siteId: input.siteId,
+        name: input.name,
+        value: input.value,
         revision,
-        encryptedValue,
-      }),
-      auditStatement,
-    ]);
-    if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1 || results?.[2]?.meta?.changes !== 1) {
-      throw new Error('SITE_SECRET_REVISION_CONFLICT');
+        createdBy: input.actorId || input.createdBy,
+        createdAt: existing?.created_at || now,
+        updatedAt: now,
+        deletedAt: null,
+      };
+    } finally {
+      if (!released) {
+        try {
+          await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+        } catch {
+          // Best effort: the next runtime config operation will fail closed if the lock remains.
+        }
+      }
     }
-    return {
-      id,
-      environment: input.environment,
-      siteId: input.siteId,
-      name: input.name,
-      value: input.value,
-      revision,
-      createdBy: input.actorId || input.createdBy,
-      createdAt: existing?.created_at || now,
-      updatedAt: now,
-      deletedAt: null,
-    };
   }
 
   async getLiveSiteSecretRow(environment, siteId, name) {
@@ -3042,32 +3067,77 @@ export class D1PagesStore {
 
   async deleteSiteSecretWithAudit(input) {
     const now = input.deletedAt || this.now();
-    const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
-    const secret = existing ? mapSiteSecretMetadata({ ...existing, deleted_at: now, updated_at: now }) : null;
-    if (!existing) {
-      await this.auditEventStatement(secretAuditEvent(input, 'site_secret.delete', { name: input.name }, now)).run();
-      return null;
+    const lockId = input.lockId || randomStoreId('runtime_lock');
+    const lock = await this.acquireRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+    if (lock?.meta?.changes !== 1) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+
+    let released = false;
+    try {
+      const routeState = await this.getRuntimeConfigRouteState(input.environment, input.siteId);
+      if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+      const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
+      const secret = existing ? mapSiteSecretMetadata({ ...existing, deleted_at: now, updated_at: now }) : null;
+      const statements = [];
+      if (!existing) {
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.auditEventStatement(secretAuditEvent(input, 'site_secret.delete', { name: input.name }, now)),
+          'SITE_SECRET_REVISION_CONFLICT'
+        );
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now),
+          'SITE_SECRET_REVISION_CONFLICT'
+        );
+        await this.db.batch(statements);
+        released = true;
+        return null;
+      }
+
+      const revision = Number(existing.revision || 0);
+      const auditRecord = secretAuditEvent(input, 'site_secret.delete', secret, now);
+      this.pushRuntimeChangeStatement(
+        statements,
+        this.db
+          .prepare(
+            `UPDATE site_secrets
+            SET deleted_at = ?, updated_at = ?
+            WHERE id = ? AND revision = ? AND deleted_at IS NULL
+              AND EXISTS (
+                SELECT 1 FROM site_routes
+                WHERE environment = ? AND site_id = ?
+                  AND runtime_config_lock_id = ?
+              )`
+          )
+          .bind(now, now, existing.id, revision, input.environment, input.siteId, lockId),
+        'SITE_SECRET_REVISION_CONFLICT'
+      );
+      this.pushRuntimeChangeStatement(
+        statements,
+        this.bumpRuntimeConfigGenerationAndReleaseLockStatement(input.environment, input.siteId, now, lockId),
+        'SITE_SECRET_REVISION_CONFLICT'
+      );
+      this.pushRuntimeChangeStatement(
+        statements,
+        this.siteSecretDeleteAuditEventStatement(auditRecord, {
+          secretId: existing.id,
+          revision,
+          deletedAt: now,
+        }),
+        'SITE_SECRET_REVISION_CONFLICT'
+      );
+      await this.db.batch(statements);
+      released = true;
+      return secret;
+    } finally {
+      if (!released) {
+        try {
+          await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+        } catch {
+          // Best effort: the next runtime config operation will fail closed if the lock remains.
+        }
+      }
     }
-    const auditRecord = secretAuditEvent(input, 'site_secret.delete', secret, now);
-    const results = await this.db.batch([
-      this.db
-        .prepare('UPDATE site_secrets SET deleted_at = ?, updated_at = ? WHERE id = ? AND revision = ? AND deleted_at IS NULL')
-        .bind(now, now, existing.id, Number(existing.revision || 0)),
-      this.bumpRuntimeConfigGenerationForDeleteStatement(input.environment, input.siteId, now, {
-        secretId: existing.id,
-        revision: Number(existing.revision || 0),
-        deletedAt: now,
-      }),
-      this.siteSecretDeleteAuditEventStatement(auditRecord, {
-        secretId: existing.id,
-        revision: Number(existing.revision || 0),
-        deletedAt: now,
-      }),
-    ]);
-    if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1 || results?.[2]?.meta?.changes !== 1) {
-      throw new Error('SITE_SECRET_REVISION_CONFLICT');
-    }
-    return secret;
   }
 
   async listEnabledSiteSecrets(environment, siteId) {
@@ -3399,8 +3469,8 @@ export class D1PagesStore {
       .bind(updatedAt, environment, siteId, lockId);
   }
 
-  pushRuntimeChangeStatement(statements, statement) {
-    statements.push(statement, this.runtimeChangeGuardStatement());
+  pushRuntimeChangeStatement(statements, statement, errorCode = 'SITE_VAR_REVISION_CONFLICT') {
+    statements.push(statement, this.runtimeChangeGuardStatement(errorCode));
   }
 
   runtimeChangeGuardStatement(errorCode = 'SITE_VAR_REVISION_CONFLICT') {

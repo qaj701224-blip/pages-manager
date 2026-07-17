@@ -921,6 +921,83 @@ test('secrets put updates current active WFP worker without changing active rout
   assert.equal(route.runtimeConfigGeneration, previousRoute.runtimeConfigGeneration + 1);
 });
 
+test('secrets put reports a runtime binding name conflict without exposing the secret value', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+  });
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_BASE',
+      value: 'secret-value-conflict',
+    }),
+    testEnv(store)
+  );
+  const text = await response.text();
+
+  assert.equal(response.status, 400);
+  assert.equal(JSON.parse(text).error.code, 'RUNTIME_BINDING_NAME_CONFLICT');
+  assert.doesNotMatch(text, /secret-value-conflict/);
+});
+
+test('secrets put reports the shared runtime binding quota without exposing the secret value', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  for (let index = 0; index < 64; index += 1) {
+    const name = `VAR_${String(index).padStart(2, '0')}`;
+    store.siteVars.set(`production:site_1:${name}`, {
+      id: `var_${index}`,
+      environment: 'production',
+      siteId: 'site_1',
+      name,
+      value: String(index),
+      revision: 1,
+      createdBy: 'usr_1',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+      deletedAt: null,
+    });
+  }
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'DEPLOY_KEY',
+      value: 'secret-value-over-limit',
+    }),
+    testEnv(store)
+  );
+  const text = await response.text();
+
+  assert.equal(response.status, 413);
+  assert.equal(JSON.parse(text).error.code, 'RUNTIME_BINDINGS_LIMIT_EXCEEDED');
+  assert.doesNotMatch(text, /secret-value-over-limit/);
+});
+
 test('team publishers can manage runtime secrets for team-owned sites', async () => {
   const store = await createSeededStore();
   await store.createUser({
