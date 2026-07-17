@@ -8,6 +8,7 @@ import {
   hostnameFamilyForHostname,
 } from './store.js';
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
+import { runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString(), failAuditWrites = false } = {}) {
   return new TestPagesStore({ now, failAuditWrites });
@@ -31,6 +32,7 @@ class TestPagesStore {
     this.siteSecrets = new Map();
     this.siteVars = new Map();
     this.siteVarHistory = new Map();
+    this.runtimeConfigQueues = new Map();
     this.workerSlots = new Map();
     this.deploymentResourceCleanupTasks = new Map();
     this.accessKeys = new Map();
@@ -1741,6 +1743,56 @@ class TestPagesStore {
     return [...this.siteVars.values()]
       .filter((entry) => entry.environment === environment && entry.siteId === siteId && !entry.deletedAt)
       .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async mutateSiteVar(input) {
+    const queueKey = `${input.environment}:${input.siteId}`;
+    const previous = this.runtimeConfigQueues.get(queueKey) || Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => gate);
+    this.runtimeConfigQueues.set(queueKey, queued);
+    await previous;
+    try {
+      return await this.mutateSiteVarUnlocked(input);
+    } finally {
+      release();
+      if (this.runtimeConfigQueues.get(queueKey) === queued) this.runtimeConfigQueues.delete(queueKey);
+    }
+  }
+
+  async mutateSiteVarUnlocked(input) {
+    const liveVars = this.listEnabledSiteVarsSync(input.environment, input.siteId);
+    const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
+    const nextVars = runtimeVarsObject(liveVars);
+    if (input.operation === 'delete') delete nextVars[input.name];
+    else nextVars[input.name] = input.value;
+    validateRuntimeBindingQuotas(nextVars, liveSecrets);
+
+    const existing = liveVars.find((record) => record.name === input.name) || null;
+    const route = this.routes.get(this.routeBySiteId.get(input.siteId));
+    const generation = Number(route?.runtimeConfigGeneration || 0);
+    if (runtimeVarObjectsEqual(runtimeVarsObject(liveVars), nextVars)) {
+      return {
+        record: cloneRecord(existing || { name: input.name }),
+        vars: cloneRecord(liveVars),
+        generation,
+        changed: false,
+      };
+    }
+
+    const vars = await this.replaceSiteVars({
+      ...input,
+      vars: nextVars,
+    });
+    return {
+      record: cloneRecord(input.operation === 'delete' ? existing : vars.find((record) => record.name === input.name)),
+      vars,
+      generation: generation + 1,
+      changed: true,
+    };
   }
 
   async replaceSiteVars(input) {

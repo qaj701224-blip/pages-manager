@@ -1258,6 +1258,253 @@ test('D1 store replaces site vars as site-level runtime config and bumps generat
   assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
 });
 
+test('D1 store atomically puts a single site var and returns the committed snapshot', async () => {
+  const rows = new Map();
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+    createId: () => 'var_api_base',
+  });
+
+  assert.equal(result.record.name, 'API_BASE');
+  assert.equal(result.record.revision, 1);
+  assert.equal(result.generation, 1);
+  assert.equal(result.changed, true);
+  assert.deepEqual(
+    result.vars.map(({ name, value }) => ({ name, value })),
+    [{ name: 'API_BASE', value: 'https://api.example.com' }]
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 store updates one site var without replacing the other vars', async () => {
+  const rows = new Map([
+    [
+      'production:site_1:API_BASE:var_api_base',
+      {
+        id: 'var_api_base',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_BASE',
+        value: 'https://api.example.com/v1',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+    [
+      'production:site_1:FEATURE_FLAG:var_feature_flag',
+      {
+        id: 'var_feature_flag',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'FEATURE_FLAG',
+        value: 'on',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([['production:site_1', { runtime_config_generation: 4, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com/v2',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+    createId: () => 'unused',
+  });
+
+  assert.equal(result.record.id, 'var_api_base');
+  assert.equal(result.record.revision, 2);
+  assert.equal(result.generation, 5);
+  assert.deepEqual(
+    result.vars.map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com/v2' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
+test('D1 store treats an unchanged single site var put as a no-op', async () => {
+  const rows = new Map();
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars: { FEATURE_FLAG: 'on' },
+    actorId: 'usr_1',
+    createId: () => 'var_feature_flag',
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'FEATURE_FLAG',
+    value: 'on',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+    createId: () => 'unused',
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.record.revision, 1);
+  assert.equal(result.generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 store deletes one site var without replacing the other vars', async () => {
+  const rows = new Map();
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars: { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' },
+    actorId: 'usr_1',
+    createId: (name) => `var_${name.toLowerCase()}`,
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'delete',
+    name: 'API_BASE',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.record.name, 'API_BASE');
+  assert.equal(result.record.revision, 1);
+  assert.equal(result.generation, 2);
+  assert.deepEqual(
+    result.vars.map(({ name, value }) => ({ name, value })),
+    [{ name: 'FEATURE_FLAG', value: 'on' }]
+  );
+  assert.equal(varRowById(rows, 'var_api_base').deleted_at, '2026-06-15T00:01:00.000Z');
+});
+
+test('test store implements the atomic single site var mutation contract', async () => {
+  const store = createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+
+  const apiBase = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+    createId: () => 'var_api_base',
+  });
+  const featureFlag = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'FEATURE_FLAG',
+    value: 'on',
+    actorId: 'usr_1',
+    createId: () => 'var_feature_flag',
+  });
+
+  assert.equal(apiBase.generation, 1);
+  assert.equal(featureFlag.generation, 2);
+  assert.deepEqual(
+    featureFlag.vars.map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
+test('test store serializes concurrent single site var mutations without losing updates', async () => {
+  const store = createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+
+  await Promise.all([
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'API_BASE',
+      value: 'https://api.example.com',
+      actorId: 'usr_1',
+      createId: () => 'var_api_base',
+    }),
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'FEATURE_FLAG',
+      value: 'on',
+      actorId: 'usr_1',
+      createId: () => 'var_feature_flag',
+    }),
+  ]);
+
+  assert.deepEqual(
+    (await store.listEnabledSiteVars('production', 'site_1')).map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
 test('D1 store does not reuse site var revisions after delete and recreate', async () => {
   const rows = new Map();
   const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
