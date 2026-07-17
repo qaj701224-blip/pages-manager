@@ -329,6 +329,32 @@ export function buildOpenApi(config) {
             },
           },
         },
+        SiteVarPutRequest: {
+          type: 'object',
+          required: ['name', 'value'],
+          additionalProperties: false,
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Non-sensitive Worker plain-text binding name.',
+            },
+            value: {
+              type: 'string',
+              description: 'Non-sensitive plain-text value. Never returned by this API.',
+            },
+          },
+        },
+        SiteVarDeleteRequest: {
+          type: 'object',
+          required: ['name'],
+          additionalProperties: false,
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Non-sensitive Worker plain-text binding name to delete.',
+            },
+          },
+        },
       },
     },
     paths: {
@@ -604,6 +630,8 @@ export function buildOpenApi(config) {
             'SECRET_NAME_INVALID',
             'SECRET_VALUE_INVALID',
             'SECRET_VALUE_TOO_LARGE',
+            'RUNTIME_BINDING_NAME_CONFLICT',
+            'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
             'SITE_NOT_FOUND',
             'DEPLOY_FORBIDDEN',
             'RUNTIME_CONFIG_CHANGED',
@@ -612,11 +640,11 @@ export function buildOpenApi(config) {
           ],
           responses: {
             200: { description: 'Secret metadata returned without value' },
-            400: { description: 'Invalid secret request' },
+            400: { description: 'Invalid secret request or runtime binding name conflict' },
             403: { description: 'Actor cannot manage runtime secrets for this site' },
             404: { description: 'Site not found' },
             409: { description: 'Runtime secret changed while updating' },
-            413: { description: 'Secret value too large' },
+            413: { description: 'Secret value or runtime binding quota exceeded' },
             502: { description: 'Active Worker secret sync failed after store update' },
             503: { description: 'Secret store or audit store unavailable' },
           },
@@ -649,6 +677,74 @@ export function buildOpenApi(config) {
             409: { description: 'Runtime secret changed while deleting' },
             502: { description: 'Active Worker secret sync failed after store update' },
             503: { description: 'Secret store or audit store unavailable' },
+          },
+        },
+      },
+      '/.xd-pages/api/sites/{site}/vars': {
+        put: {
+          summary: 'Set one non-sensitive site-level runtime var and sync the active Worker when present',
+          parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteVarPutRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'INVALID_JSON',
+            'RUNTIME_VAR_INVALID',
+            'RUNTIME_BINDING_NAME_RESERVED',
+            'RUNTIME_VARS_LIMIT_EXCEEDED',
+            'RUNTIME_BINDING_NAME_CONFLICT',
+            'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+            'SITE_NOT_FOUND',
+            'DEPLOY_FORBIDDEN',
+            'RUNTIME_CONFIG_CHANGED',
+            'RUNTIME_CONFIG_UNSUPPORTED',
+            'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+          ],
+          responses: {
+            200: { description: 'Runtime var mutation metadata returned without the plain-text value' },
+            400: { description: 'Invalid runtime var request or binding name conflict' },
+            403: { description: 'Actor cannot manage runtime config for this site' },
+            404: { description: 'Site not found' },
+            409: { description: 'Runtime config changed while updating or synchronizing' },
+            413: { description: 'Runtime var or shared binding quota exceeded' },
+            502: { description: 'Active Worker runtime var sync failed after store update' },
+            503: { description: 'Runtime config store unavailable' },
+          },
+        },
+        delete: {
+          summary: 'Delete one non-sensitive site-level runtime var and sync the active Worker when present',
+          parameters: [{ name: 'site', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SiteVarDeleteRequest' },
+              },
+            },
+          },
+          'x-error-codes': [
+            'INVALID_JSON',
+            'RUNTIME_VAR_INVALID',
+            'RUNTIME_BINDING_NAME_RESERVED',
+            'SITE_NOT_FOUND',
+            'DEPLOY_FORBIDDEN',
+            'RUNTIME_CONFIG_CHANGED',
+            'RUNTIME_CONFIG_UNSUPPORTED',
+            'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+          ],
+          responses: {
+            200: { description: 'Runtime var deletion metadata returned without the plain-text value' },
+            400: { description: 'Invalid runtime var request' },
+            403: { description: 'Actor cannot manage runtime config for this site' },
+            404: { description: 'Site not found' },
+            409: { description: 'Runtime config changed while deleting or synchronizing' },
+            502: { description: 'Active Worker runtime var sync failed after store update' },
+            503: { description: 'Runtime config store unavailable' },
           },
         },
       },

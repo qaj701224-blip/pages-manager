@@ -26,6 +26,9 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl/entries'].delete);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].put);
   assert.ok(body.paths['/.xd-pages/api/sites/{site}/secrets'].delete);
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].put);
+  assert.ok(body.paths['/.xd-pages/api/sites/{site}/vars'].delete);
+  assert.equal(body.paths['/.xd-pages/api/sites/{site}/vars'].get, undefined);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
   assert.ok(body.paths['/.xd-pages/api/s2s/tokens'].post);
@@ -148,8 +151,62 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
   );
   assert.ok(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_BINDING_NAME_CONFLICT')
+  );
+  assert.ok(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].put['x-error-codes'].includes('RUNTIME_BINDINGS_LIMIT_EXCEEDED')
+  );
+  assert.ok(
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
   );
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_BINDING_NAME_CONFLICT'),
+    false
+  );
+  assert.equal(
+    body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_BINDINGS_LIMIT_EXCEEDED'),
+    false
+  );
+  assert.deepEqual(body.components.schemas.SiteVarPutRequest.required, ['name', 'value']);
+  assert.equal(body.components.schemas.SiteVarPutRequest.additionalProperties, false);
+  assert.deepEqual(body.components.schemas.SiteVarDeleteRequest.required, ['name']);
+  assert.equal(body.components.schemas.SiteVarDeleteRequest.additionalProperties, false);
+  const varsPath = body.paths['/.xd-pages/api/sites/{site}/vars'];
+  assert.equal(
+    varsPath.put.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/SiteVarPutRequest'
+  );
+  assert.equal(
+    varsPath.delete.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/SiteVarDeleteRequest'
+  );
+  assert.deepEqual(varsPath.put['x-error-codes'], [
+    'INVALID_JSON',
+    'RUNTIME_VAR_INVALID',
+    'RUNTIME_BINDING_NAME_RESERVED',
+    'RUNTIME_VARS_LIMIT_EXCEEDED',
+    'RUNTIME_BINDING_NAME_CONFLICT',
+    'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+    'SITE_NOT_FOUND',
+    'DEPLOY_FORBIDDEN',
+    'RUNTIME_CONFIG_CHANGED',
+    'RUNTIME_CONFIG_UNSUPPORTED',
+    'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+  ]);
+  assert.deepEqual(varsPath.delete['x-error-codes'], [
+    'INVALID_JSON',
+    'RUNTIME_VAR_INVALID',
+    'RUNTIME_BINDING_NAME_RESERVED',
+    'SITE_NOT_FOUND',
+    'DEPLOY_FORBIDDEN',
+    'RUNTIME_CONFIG_CHANGED',
+    'RUNTIME_CONFIG_UNSUPPORTED',
+    'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+  ]);
+  assert.deepEqual(Object.keys(varsPath.put.responses).map(Number), [200, 400, 403, 404, 409, 413, 502, 503]);
+  assert.deepEqual(Object.keys(varsPath.delete.responses).map(Number), [200, 400, 403, 404, 409, 502, 503]);
+  assert.doesNotMatch(JSON.stringify(varsPath.put.responses[200]), /"value"/);
+  assert.doesNotMatch(JSON.stringify(varsPath.delete.responses[200]), /"value"/);
   assert.ok(body.paths['/.xd-pages/api/access-keys'].post['x-error-codes'].includes('ACCESS_KEY_SITE_FORBIDDEN'));
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].get['x-error-codes'].includes('SITE_POLICY_FORBIDDEN'));
   assert.equal(
