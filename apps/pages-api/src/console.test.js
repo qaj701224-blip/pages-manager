@@ -1161,6 +1161,117 @@ test('site admin var changes sync to active WFP worker plain text bindings', asy
   ]);
 });
 
+test('site admin concurrent var puts preserve both runtime bindings', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const testEnvironment = env(store);
+
+  const [apiBase, featureFlag] = await Promise.all([
+    worker.fetch(
+      internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/API_BASE', {
+        userId: 'usr_me',
+        method: 'PUT',
+        body: { value: 'https://api.example.com' },
+      }),
+      testEnvironment
+    ),
+    worker.fetch(
+      internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/FEATURE_FLAG', {
+        userId: 'usr_me',
+        method: 'PUT',
+        body: { value: 'on' },
+      }),
+      testEnvironment
+    ),
+  ]);
+
+  assert.equal(apiBase.status, 200, await apiBase.clone().text());
+  assert.equal(featureFlag.status, 200, await featureFlag.clone().text());
+  assert.deepEqual(
+    (await store.listEnabledSiteVars('production', 'site_mine')).map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
+test('site admin var mutations map binding and revision conflicts to stable errors', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await store.putSiteSecret({
+    id: 'sec_api_base',
+    environment: 'production',
+    siteId: 'site_mine',
+    name: 'API_BASE',
+    value: 'existing-secret-private-value',
+    actorId: 'usr_me',
+  });
+
+  const conflict = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/API_BASE', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'new-var-private-value' },
+    }),
+    env(store)
+  );
+  for (let index = 1; index < 64; index += 1) {
+    const name = `SECRET_${String(index).padStart(2, '0')}`;
+    store.siteSecrets.set(`production:site_mine:${name}`, {
+      id: `sec_${index}`,
+      environment: 'production',
+      siteId: 'site_mine',
+      name,
+      value: `secret-${index}`,
+      revision: 1,
+      createdBy: 'usr_me',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+      deletedAt: null,
+    });
+  }
+  const quota = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/FEATURE_FLAG', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'quota-private-value' },
+    }),
+    env(store)
+  );
+  store.mutateSiteVar = async () => {
+    throw new Error('SITE_VAR_REVISION_CONFLICT');
+  };
+  const revision = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/FEATURE_FLAG', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+  const conflictText = await conflict.text();
+  const quotaText = await quota.text();
+
+  assert.equal(conflict.status, 400);
+  assert.equal(JSON.parse(conflictText).error.code, 'RUNTIME_BINDING_NAME_CONFLICT');
+  assert.doesNotMatch(conflictText, /existing-secret-private-value|new-var-private-value/);
+  assert.equal(quota.status, 413);
+  assert.equal(JSON.parse(quotaText).error.code, 'RUNTIME_BINDINGS_LIMIT_EXCEEDED');
+  assert.doesNotMatch(quotaText, /quota-private-value|secret-\d/);
+  assert.equal(revision.status, 409);
+  assert.equal((await revision.json()).error.code, 'RUNTIME_CONFIG_CHANGED');
+});
+
 test('site admin secret update reports active WFP worker sync failures', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
