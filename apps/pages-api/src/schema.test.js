@@ -29,7 +29,7 @@ test('schema defines all v2 authority tables', () => {
     'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 14);
+  assert.equal(SCHEMA_VERSION, 15);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -38,7 +38,7 @@ test('schema defines all v2 authority tables', () => {
 test('schema defines XDMaker identity, access-key source, and S2S guards', () => {
   const sql = createSchemaSql().join('\n');
 
-  assert.equal(SCHEMA_VERSION, 14);
+  assert.equal(SCHEMA_VERSION, 15);
   assert.match(sql, /feishu_open_id TEXT/);
   assert.match(sql, /created_source TEXT NOT NULL DEFAULT 'xd_sso'/);
   assert.match(sql, /issued_source TEXT NOT NULL DEFAULT 'legacy'/);
@@ -114,6 +114,7 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /value TEXT NOT NULL/);
   assert.match(sql, /runtime_config_generation INTEGER NOT NULL DEFAULT 0/);
   assert.match(sql, /runtime_config_lock_id TEXT/);
+  assert.match(sql, /runtime_config_lock_expires_at TEXT/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_secrets_live/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_vars_live/);
   assert.match(sql, /artifact_availability TEXT NOT NULL DEFAULT 'active'/);

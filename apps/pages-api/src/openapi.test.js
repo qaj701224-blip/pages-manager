@@ -159,6 +159,11 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.ok(
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_CONFIG_CHANGED')
   );
+  for (const operation of ['put', 'delete']) {
+    const errorCodes = body.paths['/.xd-pages/api/sites/{site}/secrets'][operation]['x-error-codes'];
+    assert.ok(errorCodes.includes('SITE_SLUG_INVALID'));
+    assert.ok(errorCodes.includes('SITE_SLUG_RESERVED'));
+  }
   assert.equal(
     body.paths['/.xd-pages/api/sites/{site}/secrets'].delete['x-error-codes'].includes('RUNTIME_BINDING_NAME_CONFLICT'),
     false
@@ -187,6 +192,8 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'RUNTIME_VARS_LIMIT_EXCEEDED',
     'RUNTIME_BINDING_NAME_CONFLICT',
     'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+    'SITE_SLUG_INVALID',
+    'SITE_SLUG_RESERVED',
     'SITE_NOT_FOUND',
     'DEPLOY_FORBIDDEN',
     'RUNTIME_CONFIG_CHANGED',
@@ -197,6 +204,8 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
     'INVALID_JSON',
     'RUNTIME_VAR_INVALID',
     'RUNTIME_BINDING_NAME_RESERVED',
+    'SITE_SLUG_INVALID',
+    'SITE_SLUG_RESERVED',
     'SITE_NOT_FOUND',
     'DEPLOY_FORBIDDEN',
     'RUNTIME_CONFIG_CHANGED',

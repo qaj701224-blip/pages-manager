@@ -16,6 +16,7 @@ const VISIBILITIES = new Set(['internal', 'org', 'acl', 'owner', 'disabled']);
 const ACL_SUBJECT_TYPES = new Set(['email', 'department']);
 const ACL_ACCESS_ROLES = new Set(['viewer']);
 const MAX_ACL_ENTRIES = 200;
+const MAX_RUNTIME_VAR_BODY_BYTES = 64 * 1024;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
@@ -83,7 +84,7 @@ async function putSiteVar(request, env, config, store, actor, siteSlug) {
 
   let body;
   try {
-    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+    body = await readJsonBody(request, { maxBytes: MAX_RUNTIME_VAR_BODY_BYTES });
   } catch {
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
@@ -319,15 +320,23 @@ export async function syncActiveWfpSecret(store, env, config, site, input) {
     );
   }
   try {
-    if (input.operation === 'put') {
-      if (typeof provider.putSecret !== 'function') return null;
-      await provider.putSecret({ workerName, name: input.name, value: input.value });
-    } else {
-      if (typeof provider.deleteSecret !== 'function') return null;
-      await provider.deleteSecret({ workerName, name: input.name });
-    }
+    await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
+      const current = await currentSiteSecretMutation(store, config.environment, site.id, input);
+      if (current.operation === 'put') {
+        if (typeof provider.putSecret !== 'function') return;
+        await provider.putSecret({ workerName, name: current.name, value: current.value, signal });
+      } else {
+        if (typeof provider.deleteSecret !== 'function') return;
+        try {
+          await provider.deleteSecret({ workerName, name: current.name, signal });
+        } catch (error) {
+          if (!isNotFoundError(error)) throw error;
+        }
+      }
+    });
     return null;
   } catch (error) {
+    if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing a secret.');
     if (input.operation === 'delete' && isNotFoundError(error)) return null;
     return jsonError(
       'SECRET_ACTIVE_WORKER_SYNC_FAILED',
@@ -359,6 +368,22 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
   }
   if (typeof provider.replacePlainTextBindings !== 'function') return { appliesTo: 'next_deployment' };
 
+  if (typeof store.withRuntimeConfigLock === 'function') {
+    try {
+      return await store.withRuntimeConfigLock(config.environment, site.id, async ({ signal } = {}) => {
+        const vars =
+          typeof store.listEnabledSiteVars === 'function'
+            ? runtimeVarsObject(await store.listEnabledSiteVars(config.environment, site.id))
+            : runtimeVarsObject(snapshot?.vars || []);
+        await provider.replacePlainTextBindings({ workerName: target.workerName, vars, signal });
+        return { appliesTo: 'active_worker' };
+      });
+    } catch (error) {
+      if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing.');
+      return runtimeVarSyncFailed();
+    }
+  }
+
   if (!Array.isArray(snapshot?.vars)) {
     try {
       await provider.replacePlainTextBindings({ workerName: target.workerName, vars: snapshot });
@@ -389,6 +414,28 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
     409,
     'Retry the runtime config change.'
   );
+}
+
+async function withRuntimeConfigSyncLock(store, environment, siteId, callback) {
+  if (typeof store.withRuntimeConfigLock !== 'function') return callback();
+  return store.withRuntimeConfigLock(environment, siteId, callback);
+}
+
+async function currentSiteSecretMutation(store, environment, siteId, input) {
+  if (typeof store.listEnabledSiteSecrets !== 'function') return input;
+  const secrets = await store.listEnabledSiteSecrets(environment, siteId);
+  const current = secrets.find((secret) => secret.name === input.name);
+  return current
+    ? { operation: 'put', name: current.name, value: current.value }
+    : { operation: 'delete', name: input.name };
+}
+
+function isRuntimeConfigLockError(error) {
+  return error instanceof Error && error.message === 'RUNTIME_CONFIG_LOCKED';
+}
+
+function runtimeConfigChanged(message) {
+  return jsonError('RUNTIME_CONFIG_CHANGED', message, 409, 'Retry the runtime config change.');
 }
 
 async function resolveActiveWfpWorker(store, config, site) {
@@ -1055,6 +1102,9 @@ function runtimeVarValidationError(error) {
 }
 
 function runtimeVarMutationError(error) {
+  if (error?.message === 'RUNTIME_VARS_LIMIT_EXCEEDED') {
+    return jsonError('RUNTIME_VARS_LIMIT_EXCEEDED', 'Runtime vars limit exceeded.', 413, 'Use fewer or smaller vars.');
+  }
   if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
     return jsonError(
       'RUNTIME_BINDING_NAME_CONFLICT',

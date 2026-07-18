@@ -43,6 +43,10 @@ const xdmakerS2SMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0014_xdmaker_s2s_access_keys.sql'),
   'utf8'
 );
+const runtimeConfigLockLeaseMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0015_runtime_config_lock_lease.sql'),
+  'utf8'
+);
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -154,6 +158,10 @@ test('runtime config generation migration tracks route-level runtime config chan
   );
   assert.match(runtimeConfigGenerationMigration, /ALTER TABLE site_routes ADD COLUMN runtime_config_lock_id TEXT/);
   assert.doesNotMatch(runtimeConfigGenerationMigration, /DROP TABLE|DELETE FROM site_routes/i);
+});
+
+test('runtime config lock lease migration makes provider sync locks recoverable', () => {
+  assert.match(runtimeConfigLockLeaseMigration, /ALTER TABLE site_routes ADD COLUMN runtime_config_lock_expires_at TEXT/);
 });
 
 test('site vars migration adds site-level runtime var store without secret encryption fields', () => {

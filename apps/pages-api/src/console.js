@@ -589,6 +589,22 @@ export async function putSiteSecret(request, env, config, store, session, siteId
     if (syncError) return syncError;
     return jsonOk({ secret: formatSiteSecret(secret) });
   } catch (error) {
+    if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
+      return jsonError(
+        'RUNTIME_BINDING_NAME_CONFLICT',
+        'Runtime binding names conflict.',
+        400,
+        'Use unique names for vars and site secrets.'
+      );
+    }
+    if (error?.message === 'RUNTIME_BINDINGS_LIMIT_EXCEEDED') {
+      return jsonError(
+        'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+        'Runtime bindings exceed platform limits.',
+        413,
+        'Reduce vars or site secrets and retry.'
+      );
+    }
     if (isRuntimeConfigConflict(error)) {
       return jsonError(
         'RUNTIME_CONFIG_CHANGED',
@@ -822,6 +838,9 @@ function runtimeVarError(error) {
 }
 
 function runtimeVarMutationError(error) {
+  if (error?.message === 'RUNTIME_VARS_LIMIT_EXCEEDED') {
+    return jsonError('RUNTIME_VARS_LIMIT_EXCEEDED', 'Runtime vars limit exceeded.', 413, 'Use fewer or smaller vars.');
+  }
   if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
     return jsonError(
       'RUNTIME_BINDING_NAME_CONFLICT',

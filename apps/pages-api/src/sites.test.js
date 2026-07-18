@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
+import { syncActiveWfpPlainTextBindings, syncActiveWfpSecret } from './sites.js';
 import { createTestPagesStore } from './test-store.js';
 
 test('creates a production site with owner membership and inactive route', async () => {
@@ -901,7 +902,7 @@ test('secrets put updates current active WFP worker without changing active rout
     }),
     testEnv(store, {
       WFP_PROVIDER: {
-        putSecret: async (input) => providerCalls.push(input),
+        putSecret: async (input) => providerCalls.push(withoutSignal(input)),
       },
     })
   );
@@ -998,6 +999,39 @@ test('secrets put reports the shared runtime binding quota without exposing the 
   assert.doesNotMatch(text, /secret-value-over-limit/);
 });
 
+test('secrets put maps a historical over-limit vars state to the shared binding quota error', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars: Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`VAR_${String(index).padStart(2, '0')}`, 'on'])),
+    actorId: 'usr_1',
+  });
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'API_TOKEN',
+      value: 'secret-value-over-limit',
+    }),
+    testEnv(store)
+  );
+  const text = await response.text();
+
+  assert.equal(response.status, 413);
+  assert.equal(JSON.parse(text).error.code, 'RUNTIME_BINDINGS_LIMIT_EXCEEDED');
+  assert.doesNotMatch(text, /secret-value-over-limit/);
+});
+
 test('team publishers can manage runtime secrets for team-owned sites', async () => {
   const store = await createSeededStore();
   await store.createUser({
@@ -1034,8 +1068,8 @@ test('team publishers can manage runtime secrets for team-owned sites', async ()
   const providerCalls = [];
   const publisherEnv = testEnv(store, {
     WFP_PROVIDER: {
-      putSecret: async (input) => providerCalls.push({ operation: 'put', ...input }),
-      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...input }),
+      putSecret: async (input) => providerCalls.push({ operation: 'put', ...withoutSignal(input) }),
+      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...withoutSignal(input) }),
     },
     verifyCliToken: async () => ({
       sub: 'usr_publisher',
@@ -1104,8 +1138,8 @@ test('team admins can manage runtime secrets for team-owned sites', async () => 
   const providerCalls = [];
   const adminEnv = testEnv(store, {
     WFP_PROVIDER: {
-      putSecret: async (input) => providerCalls.push({ operation: 'put', ...input }),
-      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...input }),
+      putSecret: async (input) => providerCalls.push({ operation: 'put', ...withoutSignal(input) }),
+      deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...withoutSignal(input) }),
     },
   });
 
@@ -1206,7 +1240,7 @@ test('secrets delete removes secret from current active WFP worker', async () =>
     }),
     testEnv(store, {
       WFP_PROVIDER: {
-        deleteSecret: async (input) => providerCalls.push(input),
+        deleteSecret: async (input) => providerCalls.push(withoutSignal(input)),
       },
     })
   );
@@ -1246,7 +1280,7 @@ test('secrets delete still cleans active worker when the store secret is already
     }),
     testEnv(store, {
       WFP_PROVIDER: {
-        deleteSecret: async (input) => providerCalls.push(input),
+        deleteSecret: async (input) => providerCalls.push(withoutSignal(input)),
       },
     })
   );
@@ -1343,7 +1377,7 @@ test('runtime vars put updates the active Worker without exposing the value', as
     }),
     testEnv(store, {
       WFP_PROVIDER: {
-        replacePlainTextBindings: async (input) => providerCalls.push(input),
+        replacePlainTextBindings: async (input) => providerCalls.push(withoutSignal(input)),
       },
     })
   );
@@ -1401,7 +1435,7 @@ test('runtime vars delete updates the active Worker without exposing the deleted
     }),
     testEnv(store, {
       WFP_PROVIDER: {
-        replacePlainTextBindings: async (input) => providerCalls.push(input),
+        replacePlainTextBindings: async (input) => providerCalls.push(withoutSignal(input)),
       },
     })
   );
@@ -1494,6 +1528,64 @@ test('runtime vars return stable validation errors for names, values, and limits
   assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), []);
 });
 
+test('runtime vars accept an escaped JSON value at the decoded 8 KiB limit', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const escapedValue = '\\u0041'.repeat(8 * 1024);
+
+  const response = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer cli-token' },
+      body: `{"name":"FEATURE_FLAG","value":"${escapedValue}"}`,
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await store.listEnabledSiteVars('production', 'site_1'))[0].value, 'A'.repeat(8 * 1024));
+});
+
+test('runtime vars return the dedicated var limit error for the 65th var', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars: Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`VAR_${String(index).padStart(2, '0')}`, 'on'])),
+    actorId: 'usr_1',
+  });
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
+      name: 'VAR_64',
+      value: 'on',
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error.code, 'RUNTIME_VARS_LIMIT_EXCEEDED');
+});
+
 test('runtime vars put reports a site secret name conflict without exposing either value', async () => {
   const store = await createSeededStore();
   await store.createSite({
@@ -1530,8 +1622,9 @@ test('runtime vars put reports a site secret name conflict without exposing eith
   assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), []);
 });
 
-test('runtime vars resynchronize the latest generation when provider calls finish in reverse order', async () => {
+test('runtime vars fallback resynchronizes the latest generation when provider calls finish in reverse order', async () => {
   const store = await createSeededStore();
+  store.withRuntimeConfigLock = undefined;
   const site = await store.createSite({
     id: 'site_1',
     slug: 'guide',
@@ -1598,6 +1691,123 @@ test('runtime vars resynchronize the latest generation when provider calls finis
     },
   ]);
   assert.deepEqual(activeBindings, { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' });
+});
+
+test('runtime provider sync serializes a real WFP settings PATCH with secret PUT', async () => {
+  const result = await runRuntimeProviderSecretRace('put');
+
+  assert.equal(result.interleaving, 'secret_queued');
+  assert.deepEqual(result.bindings, [
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+    { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
+    { type: 'secret_text', name: 'API_TOKEN' },
+  ]);
+});
+
+test('runtime provider sync serializes a real WFP settings PATCH with secret DELETE', async () => {
+  const result = await runRuntimeProviderSecretRace('delete');
+
+  assert.equal(result.interleaving, 'secret_queued');
+  assert.deepEqual(result.bindings, [
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+    { type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' },
+  ]);
+});
+
+test('runtime secret sync treats a stale put as the latest idempotent delete', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const calls = [];
+
+  const result = await syncActiveWfpSecret(
+    store,
+    testEnv(store, {
+      WFP_PROVIDER: {
+        putSecret: async () => calls.push('put'),
+        deleteSecret: async () => {
+          calls.push('delete');
+          throw Object.assign(new Error('missing'), { status: 404 });
+        },
+      },
+    }),
+    { environment: 'production' },
+    site,
+    { operation: 'put', name: 'API_TOKEN', value: 'stale-secret-value' }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, ['delete']);
+});
+
+test('runtime provider sync passes the lease abort signal to vars and secret operations', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const mutation = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: site.id,
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+  });
+  await store.putSiteSecretWithAudit({
+    id: 'sec_1',
+    auditId: 'aud_1',
+    environment: 'production',
+    siteId: site.id,
+    siteSlug: site.slug,
+    name: 'API_TOKEN',
+    value: 'secret-value',
+    actorId: 'usr_1',
+    actorType: 'user',
+    routeId: 'route_1',
+  });
+  const controller = new globalThis.AbortController();
+  const signals = [];
+  store.withRuntimeConfigLock = async (_environment, _siteId, callback) => callback({ signal: controller.signal });
+  const environment = testEnv(store, {
+    WFP_PROVIDER: {
+      replacePlainTextBindings: async (input) => signals.push(input.signal),
+      putSecret: async (input) => signals.push(input.signal),
+    },
+  });
+
+  const varsResult = await syncActiveWfpPlainTextBindings(
+    store,
+    environment,
+    { environment: 'production' },
+    site,
+    mutation
+  );
+  const secretResult = await syncActiveWfpSecret(store, environment, { environment: 'production' }, site, {
+    operation: 'put',
+    name: 'API_TOKEN',
+    value: 'secret-value',
+  });
+
+  assert.deepEqual(varsResult, { appliesTo: 'active_worker' });
+  assert.equal(secretResult, null);
+  assert.deepEqual(signals, [controller.signal, controller.signal]);
 });
 
 test('runtime vars mutations are idempotent and apply on the next deployment without an active Worker', async () => {
@@ -1780,6 +1990,7 @@ test('runtime vars report active Worker provider failures after preserving the c
 
 test('runtime vars return a conflict after three unstable active Worker synchronization attempts', async () => {
   const store = await createSeededStore();
+  store.withRuntimeConfigLock = undefined;
   const site = await store.createSite({
     id: 'site_1',
     slug: 'guide',
@@ -2552,6 +2763,154 @@ async function activateSite(store, siteId, overrides = {}) {
     },
     'production'
   );
+}
+
+async function runRuntimeProviderSecretRace(operation) {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const varMutation = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: site.id,
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+  });
+  await store.putSiteSecretWithAudit({
+    id: 'sec_1',
+    auditId: 'aud_secret_put',
+    environment: 'production',
+    siteId: site.id,
+    siteSlug: site.slug,
+    name: 'API_TOKEN',
+    value: 'secret-value',
+    actorId: 'usr_1',
+    actorType: 'user',
+    routeId: 'route_1',
+  });
+  if (operation === 'delete') {
+    await store.deleteSiteSecretWithAudit({
+      auditId: 'aud_secret_delete',
+      environment: 'production',
+      siteId: site.id,
+      siteSlug: site.slug,
+      name: 'API_TOKEN',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    });
+  }
+
+  let runtimeQueue = Promise.resolve();
+  let lockAttempts = 0;
+  let notifySecondLockAttempt;
+  const secondLockAttempt = new Promise((resolve) => {
+    notifySecondLockAttempt = resolve;
+  });
+  store.withRuntimeConfigLock = async (_environment, _siteId, callback) => {
+    lockAttempts += 1;
+    if (lockAttempts === 2) notifySecondLockAttempt();
+    const previous = runtimeQueue;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    runtimeQueue = previous.then(() => gate);
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release();
+    }
+  };
+
+  let bindings = [
+    { type: 'service', name: 'XD_PAGES_KV_GATEWAY', service: 'pages-kv-gateway' },
+    ...(operation === 'delete' ? [{ type: 'secret_text', name: 'API_TOKEN' }] : []),
+  ];
+  let notifyFirstSettingsGet;
+  const firstSettingsGet = new Promise((resolve) => {
+    notifyFirstSettingsGet = resolve;
+  });
+  let releaseFirstSettingsGet;
+  const firstSettingsGetBlocked = new Promise((resolve) => {
+    releaseFirstSettingsGet = resolve;
+  });
+  let settingsGetCount = 0;
+  const environment = testEnv(store, {
+    CF_ACCOUNT_ID: 'test-account',
+    CF_API_TOKEN: 'test-token',
+    WFP_DISPATCH_NAMESPACE: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      if (request.method === 'GET' && url.pathname.endsWith('/settings')) {
+        const snapshot = cloneBindings(bindings);
+        settingsGetCount += 1;
+        if (settingsGetCount === 1) {
+          notifyFirstSettingsGet();
+          await firstSettingsGetBlocked;
+        }
+        return cloudflareResult({ bindings: snapshot });
+      }
+      if (request.method === 'PATCH' && url.pathname.endsWith('/settings')) {
+        const form = await request.formData();
+        const settings = JSON.parse(await form.get('settings').text());
+        bindings = cloneBindings(settings.bindings);
+        return cloudflareResult({ id: 'pages-v2-guide-ver-1' });
+      }
+      if (request.method === 'PUT' && url.pathname.endsWith('/secrets')) {
+        const secret = await request.json();
+        bindings = [...bindings.filter((binding) => binding.name !== secret.name), { type: 'secret_text', name: secret.name }];
+        return cloudflareResult({ id: secret.name });
+      }
+      if (request.method === 'DELETE' && url.pathname.endsWith('/secrets/API_TOKEN')) {
+        bindings = bindings.filter((binding) => binding.name !== 'API_TOKEN');
+        return cloudflareResult({ id: 'API_TOKEN' });
+      }
+      throw new Error(`Unexpected WFP request: ${request.method} ${url.pathname}`);
+    },
+  });
+  const config = { environment: 'production' };
+  const varSync = syncActiveWfpPlainTextBindings(store, environment, config, site, varMutation);
+  await firstSettingsGet;
+  const secretSync = syncActiveWfpSecret(store, environment, config, site, {
+    operation,
+    name: 'API_TOKEN',
+    ...(operation === 'put' ? { value: 'secret-value' } : {}),
+  });
+  const interleaving = await Promise.race([
+    secretSync.then(() => 'secret_completed'),
+    secondLockAttempt.then(() => 'secret_queued'),
+  ]);
+  releaseFirstSettingsGet();
+  const [varResult, secretResult] = await Promise.all([varSync, secretSync]);
+
+  assert.deepEqual(varResult, { appliesTo: 'active_worker' });
+  assert.equal(secretResult, null);
+  return { interleaving, bindings };
+}
+
+function cloudflareResult(result) {
+  return Response.json({ success: true, result });
+}
+
+function cloneBindings(bindings) {
+  return JSON.parse(JSON.stringify(bindings));
+}
+
+function withoutSignal({ signal, ...input }) {
+  void signal;
+  return input;
 }
 
 function failingSnapshotStore() {

@@ -1,5 +1,9 @@
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
-import { runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
+import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
+
+const RUNTIME_CONFIG_LOCK_LEASE_MS = 60 * 1000;
+const RUNTIME_CONFIG_LOCK_RENEW_MS = 20 * 1000;
+const RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS = 15 * 1000;
 
 export function createPagesStore(env = {}) {
   if (env.PAGES_STORE) return env.PAGES_STORE;
@@ -1761,8 +1765,9 @@ export class D1PagesStore {
               id, hostname, site_id, environment, runtime, execution_provider, worker_name,
               dispatch_type, dispatch_binding_name, slot_id,
               active_version_id, visibility, policy_version, route_generation,
-              runtime_config_generation, runtime_config_lock_id, route_status, cache_tier, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at,
+              route_status, cache_tier, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             route.id,
@@ -1780,6 +1785,7 @@ export class D1PagesStore {
             route.policyVersion,
             route.routeGeneration,
             route.runtimeConfigGeneration,
+            null,
             null,
             route.routeStatus,
             route.cacheTier,
@@ -3183,6 +3189,7 @@ export class D1PagesStore {
       const nextVars = runtimeVarsObject(liveVars);
       if (input.operation === 'delete') delete nextVars[input.name];
       else nextVars[input.name] = input.value;
+      if (Object.keys(nextVars).length > MAX_RUNTIME_VARS) throw new Error('RUNTIME_VARS_LIMIT_EXCEEDED');
       validateRuntimeBindingQuotas(nextVars, liveSecrets);
 
       const existing = liveVars.find((record) => record.name === input.name) || null;
@@ -3364,7 +3371,7 @@ export class D1PagesStore {
   async getRuntimeConfigRouteState(environment, siteId) {
     const row = await this.db
       .prepare(
-        `SELECT runtime_config_generation, runtime_config_lock_id
+        `SELECT runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at
         FROM site_routes
         WHERE environment = ? AND site_id = ?`
       )
@@ -3374,8 +3381,62 @@ export class D1PagesStore {
       ? {
           runtimeConfigGeneration: row.runtime_config_generation || 0,
           runtimeConfigLockId: row.runtime_config_lock_id || null,
+          runtimeConfigLockExpiresAt: row.runtime_config_lock_expires_at || null,
         }
       : null;
+  }
+
+  async withRuntimeConfigLock(environment, siteId, callback, options = {}) {
+    const now = options.updatedAt || this.now();
+    const lockId = options.lockId || randomStoreId('runtime_lock');
+    const lock = await this.acquireRuntimeConfigLockStatement(environment, siteId, lockId, now).run();
+    if (lock?.meta?.changes !== 1) throw new Error('RUNTIME_CONFIG_LOCKED');
+
+    let result;
+    let failure;
+    const abortController = new globalThis.AbortController();
+    const providerTimeoutMs = options.providerTimeoutMs || RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS;
+    const providerTimeout = globalThis.setTimeout(() => {
+      abortController.abort(new Error('RUNTIME_CONFIG_PROVIDER_TIMEOUT'));
+    }, providerTimeoutMs);
+    let renewal = Promise.resolve();
+    const renew = () => {
+      renewal = renewal
+        .then(async () => {
+          const renewedAt = this.now();
+          const renewed = await this.renewRuntimeConfigLockStatement(environment, siteId, lockId, renewedAt).run();
+          if (renewed?.meta?.changes !== 1) throw new Error('RUNTIME_CONFIG_LOCKED');
+        })
+        .catch((error) => {
+          abortController.abort(error);
+          throw error;
+        });
+      renewal.catch(() => {});
+    };
+    const renewIntervalMs = options.renewIntervalMs || RUNTIME_CONFIG_LOCK_RENEW_MS;
+    const timer = globalThis.setInterval(renew, renewIntervalMs);
+    try {
+      const routeState = await this.getRuntimeConfigRouteState(environment, siteId);
+      if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('RUNTIME_CONFIG_LOCKED');
+      result = await callback({ ...routeState, signal: abortController.signal });
+    } catch (error) {
+      failure = error;
+    }
+    globalThis.clearInterval(timer);
+    globalThis.clearTimeout(providerTimeout);
+    try {
+      await renewal;
+    } catch (error) {
+      if (!failure) failure = error;
+    }
+    try {
+      const release = await this.releaseRuntimeConfigLockStatement(environment, siteId, lockId, this.now()).run();
+      if (release?.meta?.changes !== 1 && !failure) failure = new Error('RUNTIME_CONFIG_LOCKED');
+    } catch (error) {
+      if (!failure) failure = error;
+    }
+    if (failure) throw failure;
+    return result;
   }
 
   async nextSiteVarRevision(environment, siteId, name) {
@@ -3437,20 +3498,38 @@ export class D1PagesStore {
   }
 
   acquireRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
+    const expiresAt = runtimeConfigLockExpiry(updatedAt);
     return this.db
       .prepare(
         `UPDATE site_routes
-        SET runtime_config_lock_id = ?, updated_at = ?
-        WHERE environment = ? AND site_id = ? AND runtime_config_lock_id IS NULL`
+        SET runtime_config_lock_id = ?, runtime_config_lock_expires_at = ?, updated_at = ?
+        WHERE environment = ? AND site_id = ?
+          AND (
+            runtime_config_lock_id IS NULL
+            OR runtime_config_lock_expires_at IS NULL
+            OR runtime_config_lock_expires_at <= ?
+          )`
       )
-      .bind(lockId, updatedAt, environment, siteId);
+      .bind(lockId, expiresAt, updatedAt, environment, siteId, updatedAt);
+  }
+
+  renewRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_lock_expires_at = ?
+        WHERE environment = ? AND site_id = ?
+          AND runtime_config_lock_id = ?
+          AND runtime_config_lock_expires_at > ?`
+      )
+      .bind(runtimeConfigLockExpiry(updatedAt), environment, siteId, lockId, updatedAt);
   }
 
   releaseRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
     return this.db
       .prepare(
         `UPDATE site_routes
-        SET runtime_config_lock_id = NULL, updated_at = ?
+        SET runtime_config_lock_id = NULL, runtime_config_lock_expires_at = NULL, updated_at = ?
         WHERE environment = ? AND site_id = ? AND runtime_config_lock_id = ?`
       )
       .bind(updatedAt, environment, siteId, lockId);
@@ -3462,6 +3541,7 @@ export class D1PagesStore {
         `UPDATE site_routes
         SET runtime_config_generation = runtime_config_generation + 1,
           runtime_config_lock_id = NULL,
+          runtime_config_lock_expires_at = NULL,
           updated_at = ?
         WHERE environment = ? AND site_id = ?
           AND runtime_config_lock_id = ?`
@@ -5424,6 +5504,12 @@ function fnv1a64Hex(value) {
     hash = (hash * prime) & mask;
   }
   return hash.toString(16).padStart(16, '0');
+}
+
+function runtimeConfigLockExpiry(updatedAt) {
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) throw new Error('RUNTIME_CONFIG_LOCK_TIME_INVALID');
+  return new Date(timestamp + RUNTIME_CONFIG_LOCK_LEASE_MS).toISOString();
 }
 
 function randomStoreId(prefix) {

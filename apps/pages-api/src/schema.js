@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 export function createSchemaSql() {
   return [
@@ -50,6 +50,7 @@ export function createSchemaSql() {
       route_generation INTEGER NOT NULL,
       runtime_config_generation INTEGER NOT NULL DEFAULT 0,
       runtime_config_lock_id TEXT,
+      runtime_config_lock_expires_at TEXT,
       route_status TEXT NOT NULL,
       cache_tier TEXT NOT NULL,
       created_at TEXT NOT NULL,

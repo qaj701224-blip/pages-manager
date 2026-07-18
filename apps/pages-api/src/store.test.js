@@ -1289,6 +1289,333 @@ test('D1 store atomically puts a single site var and returns the committed snaps
   assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
 });
 
+test('D1 store reports the dedicated var limit error for the 65th var', async () => {
+  const siteVars = new Map(
+    Array.from({ length: 64 }, (_, index) => {
+      const name = `VAR_${String(index).padStart(2, '0')}`;
+      const id = `var_${index}`;
+      return [
+        `production:site_1:${name}:${id}`,
+        {
+          id,
+          environment: 'production',
+          site_id: 'site_1',
+          name,
+          value: 'on',
+          revision: 1,
+          created_by: 'usr_1',
+          created_at: '2026-06-15T00:00:00.000Z',
+          updated_at: '2026-06-15T00:00:00.000Z',
+          deleted_at: null,
+        },
+      ];
+    })
+  );
+  const routes = new Map([['production:site_1', { runtime_config_generation: 64 }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'VAR_64',
+      value: 'on',
+      actorId: 'usr_1',
+    }),
+    /RUNTIME_VARS_LIMIT_EXCEEDED/
+  );
+});
+
+test('D1 runtime config lock remains held through a provider callback and releases afterward', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 2, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  const result = await store.withRuntimeConfigLock('production', 'site_1', async (routeState) => {
+    assert.equal(routeState.runtimeConfigGeneration, 2);
+    assert.match(routes.get('production:site_1').runtime_config_lock_id, /^runtime_lock_/);
+    await assert.rejects(
+      store.mutateSiteVar({
+        environment: 'production',
+        siteId: 'site_1',
+        operation: 'put',
+        name: 'API_BASE',
+        value: 'https://api.example.com',
+        actorId: 'usr_1',
+      }),
+      /SITE_VAR_REVISION_CONFLICT/
+    );
+    return 'synced';
+  });
+
+  assert.equal(result, 'synced');
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 runtime config lock reclaims an expired lease and fences the old holder', async () => {
+  const siteVars = new Map();
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 2,
+        runtime_config_lock_id: 'runtime_lock_old',
+        runtime_config_lock_expires_at: '2026-06-15T00:00:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await store.withRuntimeConfigLock(
+    'production',
+    'site_1',
+    async () => {
+      assert.equal(routes.get('production:site_1').runtime_config_lock_id, 'runtime_lock_new');
+      assert.equal(
+        routes.get('production:site_1').runtime_config_lock_expires_at,
+        '2026-06-15T00:02:00.000Z'
+      );
+      const oldRelease = await store
+        .releaseRuntimeConfigLockStatement('production', 'site_1', 'runtime_lock_old', '2026-06-15T00:01:00.000Z')
+        .run();
+      assert.equal(oldRelease.meta.changes, 0);
+      const oldWrite = await store
+        .siteVarInsertStatement({
+          id: 'var_old',
+          environment: 'production',
+          siteId: 'site_1',
+          name: 'OLD_WRITE',
+          value: 'blocked',
+          revision: 1,
+          createdBy: 'usr_1',
+          createdAt: '2026-06-15T00:01:00.000Z',
+          updatedAt: '2026-06-15T00:01:00.000Z',
+          lockId: 'runtime_lock_old',
+        })
+        .run();
+      assert.equal(oldWrite.meta.changes, 0);
+    },
+    { lockId: 'runtime_lock_new' }
+  );
+
+  assert.equal(siteVars.size, 0);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, null);
+});
+
+test('D1 runtime config lock does not reclaim an unexpired lease', async () => {
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 2,
+        runtime_config_lock_id: 'runtime_lock_active',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.withRuntimeConfigLock('production', 'site_1', async () => {}, { lockId: 'runtime_lock_new' }),
+    /RUNTIME_CONFIG_LOCKED/
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, 'runtime_lock_active');
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, '2026-06-15T00:01:30.000Z');
+});
+
+test('D1 runtime config lock aborts provider work before the lease can expire', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 2, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.withRuntimeConfigLock(
+      'production',
+      'site_1',
+      ({ signal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      { providerTimeoutMs: 5 }
+    ),
+    /RUNTIME_CONFIG_PROVIDER_TIMEOUT/
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, null);
+});
+
+test('D1 runtime config lock aborts provider work when lease renewal loses fencing', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 2, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(
+    fakeRuntimeConfigDb({
+      routes,
+      hooks: { beforeRuntimeConfigRenew: () => ({ changes: 0 }) },
+    }),
+    {
+      now: () => '2026-06-15T00:01:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.withRuntimeConfigLock(
+      'production',
+      'site_1',
+      ({ signal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      { providerTimeoutMs: 100, renewIntervalMs: 5 }
+    ),
+    /RUNTIME_CONFIG_LOCKED/
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, null);
+});
+
+test('D1 concurrent different-name var put fails fast and preserves both bindings after retry', async () => {
+  const siteVars = new Map([
+    [
+      'production:site_1:API_BASE:var_api_base',
+      {
+        id: 'var_api_base',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_BASE',
+        value: 'https://api.example.com',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 1,
+        runtime_config_lock_id: 'runtime_lock_first_put',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  const input = {
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'FEATURE_FLAG',
+    value: 'on',
+    actorId: 'usr_1',
+    createId: () => 'var_feature_flag',
+  };
+
+  await assert.rejects(store.mutateSiteVar(input), /SITE_VAR_REVISION_CONFLICT/);
+  assert.equal(siteVars.size, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+
+  routes.get('production:site_1').runtime_config_lock_id = null;
+  const retried = await store.mutateSiteVar(input);
+
+  assert.equal(retried.generation, 2);
+  assert.deepEqual(
+    retried.vars.map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 var and secret race fails fast and preserves both bindings after retry', async () => {
+  const siteVars = new Map([
+    [
+      'production:site_1:API_BASE:var_api_base',
+      {
+        id: 'var_api_base',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_BASE',
+        value: 'https://api.example.com',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const siteSecrets = new Map();
+  const auditRows = [];
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 1,
+        runtime_config_lock_id: 'runtime_lock_var_put',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, siteSecrets, auditRows, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  const input = {
+    id: 'sec_1',
+    auditId: 'aud_1',
+    environment: 'production',
+    siteId: 'site_1',
+    siteSlug: 'guide',
+    name: 'API_TOKEN',
+    value: 'secret-value',
+    actorId: 'usr_1',
+    actorType: 'user',
+    routeId: 'route_1',
+  };
+
+  await assert.rejects(store.putSiteSecretWithAudit(input), /SITE_SECRET_REVISION_CONFLICT/);
+  assert.equal(siteSecrets.size, 0);
+  assert.deepEqual(auditRows, []);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+
+  routes.get('production:site_1').runtime_config_lock_id = null;
+  await store.putSiteSecretWithAudit(input);
+
+  assert.equal(liveVarRow(siteVars, 'production', 'site_1', 'API_BASE').value, 'https://api.example.com');
+  assert.equal(liveSecretRow(siteSecrets, 'production', 'site_1', 'API_TOKEN').revision, 1);
+  assert.equal(auditRows.length, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
 test('D1 store updates one site var without replacing the other vars', async () => {
   const rows = new Map([
     [
@@ -1583,6 +1910,7 @@ test('D1 store fails site var replacement without partial writes when another re
       {
         runtime_config_generation: 0,
         runtime_config_lock_id: 'runtime_lock_active',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
         updated_at: '2026-06-15T00:00:00.000Z',
       },
     ],
@@ -2201,6 +2529,7 @@ test('D1 store refuses audited site secret deletion while another runtime mutati
       {
         runtime_config_generation: 1,
         runtime_config_lock_id: 'runtime_lock_active',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
         updated_at: '2026-06-15T00:00:00.000Z',
       },
     ],
@@ -3954,6 +4283,7 @@ function insertCreateSiteRoute(state, args) {
     routeGeneration,
     runtimeConfigGeneration,
     runtimeConfigLockId,
+    runtimeConfigLockExpiresAt,
     routeStatus,
     cacheTier,
     createdAt,
@@ -3977,6 +4307,7 @@ function insertCreateSiteRoute(state, args) {
     route_generation: routeGeneration,
     runtime_config_generation: runtimeConfigGeneration,
     runtime_config_lock_id: runtimeConfigLockId,
+    runtime_config_lock_expires_at: runtimeConfigLockExpiresAt,
     route_status: routeStatus,
     cache_tier: cacheTier,
     created_at: createdAt,
@@ -4910,6 +5241,7 @@ function fakeSiteVarsFirst(rows, routes, sql, args, hooks = {}) {
       ? {
           runtime_config_generation: route.runtime_config_generation || 0,
           runtime_config_lock_id: route.runtime_config_lock_id || null,
+          runtime_config_lock_expires_at: route.runtime_config_lock_expires_at || null,
         }
       : null;
   }
@@ -4951,19 +5283,41 @@ function fakeSiteVarsAll(rows, sql, args, hooks = {}) {
 }
 
 function fakeSiteVarsRun(rows, routes, sql, args, hooks = {}) {
-  if (/SET runtime_config_lock_id = \?, updated_at = \?/.test(sql)) {
-    const [lockId, updatedAt, environment, siteId] = args;
+  if (/SET runtime_config_lock_id = \?, runtime_config_lock_expires_at = \?, updated_at = \?/.test(sql)) {
+    const [lockId, expiresAt, updatedAt, environment, siteId, acquiredAt] = args;
     const route = routes.get(`${environment}:${siteId}`);
-    if (!route || route.runtime_config_lock_id) return { meta: { changes: 0 } };
+    const available =
+      !route?.runtime_config_lock_id ||
+      !route?.runtime_config_lock_expires_at ||
+      route.runtime_config_lock_expires_at <= acquiredAt;
+    if (!route || !available) return { meta: { changes: 0 } };
     route.runtime_config_lock_id = lockId;
+    route.runtime_config_lock_expires_at = expiresAt;
     route.updated_at = updatedAt;
     return { meta: { changes: 1 } };
   }
-  if (/SET runtime_config_lock_id = NULL, updated_at = \?/.test(sql)) {
+  if (/SET runtime_config_lock_expires_at = \?\s+WHERE/.test(sql)) {
+    const override = hooks.beforeRuntimeConfigRenew?.({ sql, args });
+    if (override) return { meta: { changes: override.changes } };
+    const [expiresAt, environment, siteId, lockId, renewedAt] = args;
+    const route = routes.get(`${environment}:${siteId}`);
+    if (
+      !route ||
+      route.runtime_config_lock_id !== lockId ||
+      !route.runtime_config_lock_expires_at ||
+      route.runtime_config_lock_expires_at <= renewedAt
+    ) {
+      return { meta: { changes: 0 } };
+    }
+    route.runtime_config_lock_expires_at = expiresAt;
+    return { meta: { changes: 1 } };
+  }
+  if (/SET runtime_config_lock_id = NULL, runtime_config_lock_expires_at = NULL, updated_at = \?/.test(sql)) {
     const [updatedAt, environment, siteId, lockId] = args;
     const route = routes.get(`${environment}:${siteId}`);
     if (!route || route.runtime_config_lock_id !== lockId) return { meta: { changes: 0 } };
     route.runtime_config_lock_id = null;
+    route.runtime_config_lock_expires_at = null;
     route.updated_at = updatedAt;
     return { meta: { changes: 1 } };
   }
@@ -4973,6 +5327,7 @@ function fakeSiteVarsRun(rows, routes, sql, args, hooks = {}) {
     if (!route || route.runtime_config_lock_id !== lockId) return { meta: { changes: 0 } };
     route.runtime_config_generation = Number(route.runtime_config_generation || 0) + 1;
     route.runtime_config_lock_id = null;
+    route.runtime_config_lock_expires_at = null;
     route.updated_at = updatedAt;
     return { meta: { changes: 1 } };
   }

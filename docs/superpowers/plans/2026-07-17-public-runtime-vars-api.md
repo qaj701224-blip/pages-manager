@@ -589,3 +589,13 @@ git diff master...HEAD -- apps/pages-api/src docs/api-boundary.md
 ```
 
 Confirm no secret values, credentials, internal provider IDs, production deployment triggers, OpenAPI public route, or GET/list vars capability were added.
+
+### Review 修正：串行化 WFP provider 同步
+
+独立 review 发现 `updateUserWorkerBindings()` 的 settings GET/PATCH 与 secret PUT/DELETE 并发时，陈旧 PATCH 可能删除新 secret 或复活已删除 secret。最终实现因此在 D1/TestStore 增加 provider callback 使用的共享 runtime config lock，并让 vars 与 secrets 的 active Worker 同步都在锁内读取最新 store 状态。生产 D1 锁保持 fail-fast：并发请求返回 `RUNTIME_CONFIG_CHANGED`，重试后收敛。
+
+后续 review 又指出，跨 Cloudflare 网络调用持有的持久锁不能只依赖 `finally` 释放。最终增加 migration `0015_runtime_config_lock_lease.sql`，以 `runtime_config_lock_id` 作为 fencing token，并增加 60 秒可续租的 `runtime_config_lock_expires_at`。provider callback 每 20 秒续租；异常终止后新请求可接管过期租约，旧 token 不能释放或写入。
+
+最终 review 继续收紧 lease 边界：provider 操作设为 15 秒硬超时，续租失败立即 abort，并将 `AbortSignal` 从 store callback 经 pages provider 传递到 WFP client 的 settings GET/PATCH 与 secret PUT/DELETE。客户端 abort 不能替代 provider 侧 CAS；timeout 或续租失败返回错误，后续重试或 deploy 继续以 store 当前状态收敛。
+
+回归测试必须覆盖真实 WFP GET/PATCH 与 secret PUT、DELETE 两种交错，D1 var/var、var/secret 冲突无部分写入且重试后保留全部 binding，过期锁接管、未过期锁拒绝抢占、旧 holder fencing，以及 provider 超时和续租失败 abort。

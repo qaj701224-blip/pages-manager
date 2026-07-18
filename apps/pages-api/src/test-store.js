@@ -8,7 +8,7 @@ import {
   hostnameFamilyForHostname,
 } from './store.js';
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
-import { runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
+import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString(), failAuditWrites = false } = {}) {
   return new TestPagesStore({ now, failAuditWrites });
@@ -1777,12 +1777,25 @@ class TestPagesStore {
     }
   }
 
+  async withRuntimeConfigLock(environment, siteId, callback) {
+    return this.withRuntimeConfigQueue(environment, siteId, async () => {
+      const route = this.routes.get(this.routeBySiteId.get(siteId));
+      if (!route || route.environment !== environment) throw new Error('RUNTIME_CONFIG_LOCKED');
+      return callback({
+        runtimeConfigGeneration: Number(route.runtimeConfigGeneration || 0),
+        runtimeConfigLockId: null,
+        signal: new globalThis.AbortController().signal,
+      });
+    });
+  }
+
   async mutateSiteVarUnlocked(input) {
     const liveVars = this.listEnabledSiteVarsSync(input.environment, input.siteId);
     const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
     const nextVars = runtimeVarsObject(liveVars);
     if (input.operation === 'delete') delete nextVars[input.name];
     else nextVars[input.name] = input.value;
+    if (Object.keys(nextVars).length > MAX_RUNTIME_VARS) throw new Error('RUNTIME_VARS_LIMIT_EXCEEDED');
     validateRuntimeBindingQuotas(nextVars, liveSecrets);
 
     const existing = liveVars.find((record) => record.name === input.name) || null;

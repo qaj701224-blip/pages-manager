@@ -20,7 +20,7 @@
 - 不支持批量 patch、批量 replace 或 compare-and-swap 请求参数。
 - 拒绝具有 token、secret、password、credential、cookie、private key 和 API/access key 等敏感语义的 var name，并要求调用方把敏感值放入 Worker secret。API 不尝试从任意 string value 中识别 secret。
 - 不修改 Console 内部 API 的 URL 或 session 鉴权边界。
-- 不修改数据库 schema、WFP provider 接口、runtime binding 限额或 deploy multipart 协议。
+- 不修改 runtime binding 限额或 deploy multipart 协议；WFP provider 仅增加内部取消信号，不扩大公开 API。
 - 不公开 `/openapi.json` 或 `/.xd-pages/api/openapi.json`。
 
 ## API 契约
@@ -102,11 +102,13 @@ DELETE 请求：
 3. 校验 JSON、binding name、非敏感命名规则、string value 和 8 KiB 单值上限。
 4. 调用新的 store 单项 mutation，在取得站点 runtime config lock 后读取当前 vars、secrets 和 generation，计算 PUT 或 DELETE 后的完整 bindings，并校验 64 个 runtime bindings 总上限及 var/secret 同名冲突。
 5. 在同一个 lock ownership 下写入 vars、增加 generation 并释放 lock，返回已提交的完整 vars snapshot 和 generation。调用方不得在锁外先读完整 vars 再调用 `replaceSiteVars`，避免并发单项修改互相覆盖。
-6. 如果站点存在 active WFP Worker，使用已提交 snapshot 调用 `replacePlainTextBindings`。同步后再次读取 generation；如果 generation 已变化，则读取最新 vars snapshot 并再次同步。最多稳定化三次，仍持续变化时返回 `409 RUNTIME_CONFIG_CHANGED`，要求调用方重试。
+6. 如果站点存在 active WFP Worker，在同一个站点级 runtime config lock 下读取最新 vars，再调用 `replacePlainTextBindings`。secret PUT/DELETE 的 provider 同步也使用这个锁，并在锁内读取 store 最新 secret 状态后决定实际 PUT 或 DELETE，避免 WFP settings 的 GET/PATCH 读改写与 secret API 并发时删除或复活 secret。兼容不提供该锁能力的 store 时，vars 同步继续使用 generation 最多稳定化三次。
 7. 没有 active WFP Worker 时标记为 `next_deployment`；稳定同步完成时标记为 `active_worker`。
 8. 返回不包含 value 的 mutation metadata。
 
-新的 store mutation 必须与 site secret mutation 共用 runtime config lock。secret PUT/DELETE 在 lock 被其它 mutation 持有时 fail closed；secret PUT 在提交时校验当前 vars 的名称和总 binding 数量，vars 和 secrets 的冲突/配额判断因此属于同一个原子 runtime config 决策。secret DELETE 始终允许删除现有 binding，不能因为删除前已经同名冲突或超额而拒绝清理。
+新的 store mutation、site secret mutation 和 active Worker provider 同步必须共用 runtime config lock。`runtime_config_lock_id` 是 fencing token，`runtime_config_lock_expires_at` 提供 60 秒租约；provider callback 持锁期间每 20 秒续租，并以 15 秒硬超时限制单次 Cloudflare 请求。续租失去 fencing 时立即 abort 当前 WFP GET/PATCH 或 secret PUT/DELETE；Worker 异常终止后下一请求可接管过期锁，旧 token 不能释放新锁或提交 D1 runtime binding 写入。未过期 lock 被其它 mutation 或 provider 同步持有时 fail closed，并返回可重试的 `RUNTIME_CONFIG_CHANGED`；secret PUT 在提交时校验当前 vars 的名称和总 binding 数量，vars 和 secrets 的冲突/配额判断因此属于同一个原子 runtime config 决策。secret DELETE 始终允许删除现有 binding，不能因为删除前已经同名冲突或超额而拒绝清理。
+
+`AbortSignal` 只能终止客户端等待，不能证明 Cloudflare 已撤销一个服务端已接收的写；WFP settings/secret API 目前也没有 generation CAS。因此 timeout 或续租失败必须返回失败，调用方通过重试同一 mutation 或下一次 deploy 按 store 当前状态收敛，不能把客户端 abort 描述为 provider 侧 fencing 保证。
 
 该调整不改变 secrets 的公网 URL、请求结构或成功响应结构。secret PUT 新增 `RUNTIME_BINDING_NAME_CONFLICT`（400）和 `RUNTIME_BINDINGS_LIMIT_EXCEEDED`（413）错误，以便在 vars 同名或总配额超限时 fail closed；OpenAPI、handler 映射和回归测试必须同步。secret DELETE 不新增这两个校验错误。
 
@@ -128,20 +130,22 @@ DELETE 请求：
 - `RUNTIME_CONFIG_UNSUPPORTED`：持久层能力不可用。
 - `RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED`：D1 已提交，但 active Worker 同步失败；响应必须明确要求重试，不能返回成功。
 
-持久层更新和 Cloudflare Worker 同步无法组成跨系统事务，沿用 secrets API 的既有语义：store commit 成功后 provider 同步失败返回 502，重试同一个 PUT/DELETE 用于收敛 active Worker。generation 稳定化避免较旧的并发 provider 调用最后完成后永久覆盖较新的 bindings。下一次正常 Worker deploy 始终从站点当前 runtime config 重建 bindings。
+持久层更新和 Cloudflare Worker 同步无法组成跨系统事务，沿用 secrets API 的既有语义：store commit 成功后 provider 同步失败返回 502，重试同一个 PUT/DELETE 用于收敛 active Worker。共享 provider sync lock 避免较旧的 WFP settings PATCH 与 secret PUT/DELETE 交错覆盖；锁内读取最新 store 状态，确保旧请求也向当前配置收敛。下一次正常 Worker deploy 始终从站点当前 runtime config 重建 bindings。
 
 ## 实现边界
 
-- `apps/pages-api/src/sites.js`：增加公网 vars 路由、授权入口、mutation handler、无 value 响应 formatter和 generation 稳定化同步；复用 active Worker 定位逻辑，并映射 secret PUT 新增的冲突/配额错误。
+- `apps/pages-api/src/sites.js`：增加公网 vars 路由、授权入口、mutation handler、无 value 响应 formatter、共享 provider sync lock 和兼容 store 的 generation 稳定化同步；复用 active Worker 定位逻辑，并映射 secret PUT 新增的冲突/配额错误。
 - `apps/pages-api/src/console.js`：复用共同的 vars mutation 和稳定化同步 helper，不改变 Console URL、认证和既有 response contract。
-- `apps/pages-api/src/store.js`：增加持有 runtime config lock 的原子单项 var mutation，并让 vars/secrets mutation 对同一个 lock、generation、名称冲突和总配额 fail closed。
+- `apps/pages-api/src/store.js`：增加持有 runtime config lock 的原子单项 var mutation和 provider callback wrapper，并让 vars/secrets mutation 与 provider 同步对同一个 lock、generation、名称冲突和总配额 fail closed。
+- `apps/pages-api/migrations/0015_runtime_config_lock_lease.sql`：增加 runtime config lock 租约到期时间，允许异常终止后的安全接管。
+- `apps/pages-api/src/wfp-provider.js`、`packages/wfp-client/src/index.js`：把 lock callback 的 `AbortSignal` 传递到 WFP settings 和 secret 请求，使 provider 超时或续租失败能终止网络操作。
 - `apps/pages-api/src/store.test.js`：覆盖不同名称的并发 PUT 不丢更新，以及 vars/secret 并发竞争只允许一个合法结果提交。
 - `apps/pages-api/src/openapi.js`：增加 vars request schema、path、responses 和公开错误码，并给现有 secret PUT 补充冲突/配额错误；secret 成功响应保持不变。
 - `apps/pages-api/src/sites.test.js`：覆盖公网正向行为、权限、校验、并发和 provider 同步失败。
 - `apps/pages-api/src/openapi.test.js`：锁定新增合约和错误码。
 - `docs/api-boundary.md`、受影响的 CLI/skill 文档：只同步能力边界；不把 OpenAPI 变成用户入口，也不指导普通用户手写认证 header。
 
-不修改 D1 schema、`packages/wfp-client` 或 Cloudflare deployment workflow。
+除新增 nullable lock lease 列和 WFP 请求取消能力外，不修改其它 D1 业务 schema 或 Cloudflare deployment workflow。
 
 ## 测试策略
 
@@ -152,7 +156,11 @@ DELETE 请求：
 - active WFP Worker 收到完整 vars replacement；无 active Worker、assets-only route 或不支持同步的 provider 返回 `next_deployment`。
 - 两个不同名称的并发 PUT 不互相丢失；vars 与 secret 的并发同名或超额 mutation 不能同时提交。
 - secret PUT 在当前 vars 同名或总配额已满时返回明确错误；secret DELETE 即使面对历史冲突或超额配置也能成功清理。
-- 两次 provider 同步逆序完成时，generation 稳定化保证 active Worker 最终等于 store；持续竞争返回 409。
+- 真实 WFP settings GET/PATCH 与 secret PUT/DELETE 并发时不会删除新 secret 或复活已删除 secret；旧 secret 请求按 store 最新状态收敛。
+- D1 锁竞争 fail closed，调用方收到 409 后重试可保留两个不同名 binding，且每次提交只增加一次 generation。
+- 过期 D1 lock 可由新 fencing token 接管；旧 holder 不能释放新锁或提交 runtime binding 写入，未过期租约不可抢占。
+- provider 操作在 15 秒超时或续租失去 fencing 时收到 abort 并返回失败；测试不把客户端取消等同于 provider 侧 CAS。
+- 不提供共享锁的兼容 store 中，两次 provider 同步逆序完成时由 generation 稳定化保证 active Worker 最终等于 store；持续竞争返回 409。
 - store 并发冲突返回 409；provider 同步失败返回 502，且响应不包含 var value、secret、token 或 provider detail。
 - `GET /.xd-pages/api/sites/{site}/vars` 返回 405 且不泄露配置或 value；OpenAPI path 不包含 GET operation。
 - 现有 deploy vars、secrets API 和 Console runtime config 测试保持通过。
@@ -160,4 +168,4 @@ DELETE 请求：
 
 ## 发布与回滚
 
-该改动不自动部署。合并后通过现有 GitHub Actions 手动部署 staging，验证 Bearer API 权限、active Worker 即时同步和下一次 deploy 继承，再按既有流程手动部署 production。回滚只需回退 pages-api Worker 版本；已保存的 vars 继续由现有 deploy 和 Console 路径读取，不需要数据迁移。
+该改动不自动部署。合并后通过现有 GitHub Actions 手动对 staging 应用 D1 migration 并部署 Worker，验证 Bearer API 权限、active Worker 即时同步、过期锁恢复和下一次 deploy 继承，再按既有流程手动处理 production。Worker 回滚不会删除新增 nullable lease 列；已保存的 vars 继续由现有 deploy 和 Console 路径读取。

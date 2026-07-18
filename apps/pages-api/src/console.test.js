@@ -1302,6 +1302,54 @@ test('site admin secret update reports active WFP worker sync failures', async (
   assert.equal((await store.listEnabledSiteSecrets('production', 'site_mine'))[0].name, 'API_TOKEN');
 });
 
+test('site admin secret writes map binding conflicts and quotas to stable errors', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_mine',
+    vars: { FEATURE_FLAG: 'on' },
+    actorId: 'usr_me',
+  });
+
+  const conflict = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/FEATURE_FLAG', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'conflicting-secret-value' },
+    }),
+    env(store)
+  );
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_mine',
+    vars: Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`VAR_${String(index).padStart(2, '0')}`, 'on'])),
+    actorId: 'usr_me',
+  });
+  const quota = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'quota-secret-value' },
+    }),
+    env(store)
+  );
+  const conflictText = await conflict.text();
+  const quotaText = await quota.text();
+
+  assert.equal(conflict.status, 400);
+  assert.equal(JSON.parse(conflictText).error.code, 'RUNTIME_BINDING_NAME_CONFLICT');
+  assert.doesNotMatch(conflictText, /conflicting-secret-value/);
+  assert.equal(quota.status, 413);
+  assert.equal(JSON.parse(quotaText).error.code, 'RUNTIME_BINDINGS_LIMIT_EXCEEDED');
+  assert.doesNotMatch(quotaText, /quota-secret-value/);
+});
+
 test('site admin secret writes map store failures to runtime config errors', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z', failAuditWrites: true });
   await seedSite(store, {
