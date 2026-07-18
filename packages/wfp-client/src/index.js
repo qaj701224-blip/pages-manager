@@ -149,7 +149,14 @@ export function createWfpClient({
         method: 'GET',
         signal: input.signal,
       });
-      const currentBindings = Array.isArray(currentSettings?.bindings) ? currentSettings.bindings : [];
+      if (!Array.isArray(currentSettings?.bindings)) {
+        throw new WfpApiError({
+          status: 502,
+          code: 'WFP_API_SETTINGS_INVALID',
+          message: 'Cloudflare WFP settings response did not include bindings.',
+        });
+      }
+      const currentBindings = currentSettings.bindings;
       const bindings = [
         ...currentBindings.filter((binding) => binding?.type !== 'plain_text').map(cloneJsonObject),
         ...safeBindings,

@@ -20,6 +20,7 @@ const MAX_RUNTIME_VAR_BODY_BYTES = 64 * 1024;
 const VISIBILITY_ACTION = '请使用 internal、org、acl、owner 或 disabled。';
 const RESERVED_SITE_SLUG_ACTION = '该站点名是 XD Cell 平台保留项，请换一个业务站点名。';
 const DEFAULT_REUSE_HOLD_SECONDS = 300;
+const RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS = 15 * 1000;
 
 export async function handleSitesApi(request, env, config, store) {
   const auth = await authenticateApiRequest(request, env, store, config, readNow(env));
@@ -386,7 +387,9 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
 
   if (!Array.isArray(snapshot?.vars)) {
     try {
-      await provider.replacePlainTextBindings({ workerName: target.workerName, vars: snapshot });
+      await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
+        await provider.replacePlainTextBindings({ workerName: target.workerName, vars: snapshot, signal });
+      });
       return { appliesTo: 'active_worker' };
     } catch {
       return runtimeVarSyncFailed();
@@ -396,7 +399,13 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
   let current = snapshot;
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await provider.replacePlainTextBindings({ workerName: target.workerName, vars: runtimeVarsObject(current.vars) });
+      await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
+        await provider.replacePlainTextBindings({
+          workerName: target.workerName,
+          vars: runtimeVarsObject(current.vars),
+          signal,
+        });
+      });
       const routeState = await readRuntimeConfigRouteState(store, config.environment, site.id);
       const generation = Number(routeState?.runtimeConfigGeneration || 0);
       if (generation === Number(current.generation || 0)) return { appliesTo: 'active_worker' };
@@ -417,8 +426,20 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
 }
 
 async function withRuntimeConfigSyncLock(store, environment, siteId, callback) {
-  if (typeof store.withRuntimeConfigLock !== 'function') return callback();
+  if (typeof store.withRuntimeConfigLock !== 'function') return withProviderTimeout(callback);
   return store.withRuntimeConfigLock(environment, siteId, callback);
+}
+
+async function withProviderTimeout(callback) {
+  const controller = new globalThis.AbortController();
+  const timer = globalThis.setTimeout(() => {
+    controller.abort(new Error('RUNTIME_CONFIG_PROVIDER_TIMEOUT'));
+  }, RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS);
+  try {
+    return await callback({ signal: controller.signal });
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
 }
 
 async function currentSiteSecretMutation(store, environment, siteId, input) {

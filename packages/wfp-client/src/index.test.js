@@ -366,6 +366,28 @@ test('updateUserWorkerBindings removes plain-text bindings on delete without tou
   });
 });
 
+test('updateUserWorkerBindings rejects a successful settings response without bindings before PATCH', async () => {
+  const methods = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      methods.push(request.method);
+      return new Response(null, { status: 200 });
+    },
+  });
+
+  await assert.rejects(
+    client.updateUserWorkerBindings('pages-v2-staging-docs-ver-1', {
+      bindings: [{ type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' }],
+    }),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_SETTINGS_INVALID'
+  );
+  assert.deepEqual(methods, ['GET']);
+});
+
 test('updateUserWorkerBindings stops before PATCH when its signal aborts after GET', async () => {
   const controller = new globalThis.AbortController();
   const methods = [];

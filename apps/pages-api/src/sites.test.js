@@ -1693,6 +1693,41 @@ test('runtime vars fallback resynchronizes the latest generation when provider c
   assert.deepEqual(activeBindings, { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' });
 });
 
+test('runtime vars legacy provider fallback receives a timeout signal', async () => {
+  const store = await createSeededStore();
+  store.withRuntimeConfigLock = undefined;
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  let receivedSignal;
+  const environment = testEnv(store, {
+    WFP_PROVIDER: {
+      replacePlainTextBindings: async ({ signal }) => {
+        receivedSignal = signal;
+      },
+    },
+  });
+
+  const result = await syncActiveWfpPlainTextBindings(
+    store,
+    environment,
+    { environment: 'production' },
+    site,
+    { API_BASE: 'https://api.example.com' }
+  );
+
+  assert.deepEqual(result, { appliesTo: 'active_worker' });
+  assert.equal(receivedSignal instanceof globalThis.AbortSignal, true);
+});
+
 test('runtime provider sync serializes a real WFP settings PATCH with secret PUT', async () => {
   const result = await runRuntimeProviderSecretRace('put');
 
