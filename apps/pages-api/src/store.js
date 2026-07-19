@@ -1,4 +1,10 @@
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
+import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
+import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
+
+const RUNTIME_CONFIG_LOCK_LEASE_MS = 60 * 1000;
+const RUNTIME_CONFIG_LOCK_RENEW_MS = 20 * 1000;
+const RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS = 15 * 1000;
 
 export function createPagesStore(env = {}) {
   if (env.PAGES_STORE) return env.PAGES_STORE;
@@ -1760,8 +1766,9 @@ export class D1PagesStore {
               id, hostname, site_id, environment, runtime, execution_provider, worker_name,
               dispatch_type, dispatch_binding_name, slot_id,
               active_version_id, visibility, policy_version, route_generation,
-              runtime_config_generation, runtime_config_lock_id, route_status, cache_tier, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at,
+              route_status, cache_tier, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .bind(
             route.id,
@@ -1779,6 +1786,7 @@ export class D1PagesStore {
             route.policyVersion,
             route.routeGeneration,
             route.runtimeConfigGeneration,
+            null,
             null,
             route.routeStatus,
             route.cacheTier,
@@ -2891,61 +2899,97 @@ export class D1PagesStore {
   }
 
   async putSiteSecretWithAudit(input) {
-    const now = input.updatedAt || this.now();
-    const encryptedValue = await encryptSiteSecretValue(input.value, this.secretEncryptionKey);
-    const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
-    const revision = (await this.nextSiteSecretRevision(input.environment, input.siteId, input.name)) + 1;
-    const id = existing?.id || input.id;
-    const secretStatement = existing
-      ? this.db
-          .prepare(
-            `UPDATE site_secrets
-            SET encrypted_value = ?, revision = ?, updated_at = ?
-            WHERE id = ? AND revision = ? AND deleted_at IS NULL`
-          )
-          .bind(encryptedValue, revision, now, existing.id, Number(existing.revision || 0))
-      : this.siteSecretInsertStatement({
+    let diagnosticStage = 'unknown';
+    try {
+      const now = input.updatedAt || this.now();
+      const encryptedValue = await encryptSiteSecretValue(input.value, this.secretEncryptionKey);
+      const lockId = input.lockId || randomStoreId('runtime_lock');
+      diagnosticStage = 'lock_acquire';
+      const lock = await this.acquireRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+      if (lock?.meta?.changes !== 1) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+
+      let released = false;
+      try {
+        diagnosticStage = 'route_state_read';
+        const routeState = await this.getRuntimeConfigRouteState(input.environment, input.siteId);
+        if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+        diagnosticStage = 'bindings_read';
+        const liveVars = await this.listEnabledSiteVars(input.environment, input.siteId);
+        const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
+        const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
+        diagnosticStage = 'revision_read';
+        const revision = (await this.nextSiteSecretRevision(input.environment, input.siteId, input.name)) + 1;
+        const id = existing?.id || input.id;
+        validateRuntimeBindingQuotas(runtimeVarsObject(liveVars), [
+          ...liveSecrets.filter((secret) => secret.name !== input.name),
+          { name: input.name, value: input.value },
+        ]);
+
+        diagnosticStage = 'statement_build';
+        const secretStatement = existing
+          ? this.db
+              .prepare(
+                `UPDATE site_secrets
+                SET encrypted_value = ?, revision = ?, updated_at = ?
+                WHERE id = ? AND revision = ? AND deleted_at IS NULL`
+              )
+              .bind(encryptedValue, revision, now, existing.id, Number(existing.revision || 0))
+          : this.siteSecretInsertStatement({
+              id,
+              environment: input.environment,
+              siteId: input.siteId,
+              name: input.name,
+              encryptedValue,
+              revision,
+              createdBy: input.actorId || input.createdBy,
+              createdAt: now,
+              updatedAt: now,
+            });
+        const auditRecord = secretAuditEvent(input, 'site_secret.put', { name: input.name, revision }, now);
+        const statements = [];
+        this.pushRuntimeChangeStatement(statements, secretStatement, 'SITE_SECRET_REVISION_CONFLICT');
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.bumpRuntimeConfigGenerationAndReleaseLockStatement(input.environment, input.siteId, now, lockId),
+          'SITE_SECRET_REVISION_CONFLICT'
+        );
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.siteSecretPutAuditEventStatement(auditRecord, {
+            secretId: id,
+            revision,
+            encryptedValue,
+            updatedAt: now,
+          }),
+          'SITE_SECRET_REVISION_CONFLICT'
+        );
+        diagnosticStage = 'mutation_batch';
+        await this.db.batch(statements);
+        released = true;
+        return {
           id,
           environment: input.environment,
           siteId: input.siteId,
           name: input.name,
-          encryptedValue,
+          value: input.value,
           revision,
           createdBy: input.actorId || input.createdBy,
-          createdAt: now,
+          createdAt: existing?.created_at || now,
           updatedAt: now,
-        });
-    const auditRecord = secretAuditEvent(input, 'site_secret.put', { name: input.name, revision }, now);
-    const auditStatement = this.siteSecretPutAuditEventStatement(auditRecord, {
-      secretId: id,
-      revision,
-      encryptedValue,
-      updatedAt: now,
-    });
-    const results = await this.db.batch([
-      secretStatement,
-      this.bumpRuntimeConfigGenerationForPutStatement(input.environment, input.siteId, now, {
-        secretId: id,
-        revision,
-        encryptedValue,
-      }),
-      auditStatement,
-    ]);
-    if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1 || results?.[2]?.meta?.changes !== 1) {
-      throw new Error('SITE_SECRET_REVISION_CONFLICT');
+          deletedAt: null,
+        };
+      } finally {
+        if (!released) {
+          try {
+            await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+          } catch {
+            // Best effort: the next runtime config operation will fail closed if the lock remains.
+          }
+        }
+      }
+    } catch (error) {
+      throw markRuntimeConfigError(error, { stage: diagnosticStage });
     }
-    return {
-      id,
-      environment: input.environment,
-      siteId: input.siteId,
-      name: input.name,
-      value: input.value,
-      revision,
-      createdBy: input.actorId || input.createdBy,
-      createdAt: existing?.created_at || now,
-      updatedAt: now,
-      deletedAt: null,
-    };
   }
 
   async getLiveSiteSecretRow(environment, siteId, name) {
@@ -3040,33 +3084,89 @@ export class D1PagesStore {
   }
 
   async deleteSiteSecretWithAudit(input) {
-    const now = input.deletedAt || this.now();
-    const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
-    const secret = existing ? mapSiteSecretMetadata({ ...existing, deleted_at: now, updated_at: now }) : null;
-    if (!existing) {
-      await this.auditEventStatement(secretAuditEvent(input, 'site_secret.delete', { name: input.name }, now)).run();
-      return null;
+    let diagnosticStage = 'lock_acquire';
+    try {
+      const now = input.deletedAt || this.now();
+      const lockId = input.lockId || randomStoreId('runtime_lock');
+      const lock = await this.acquireRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+      if (lock?.meta?.changes !== 1) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+
+      let released = false;
+      try {
+        diagnosticStage = 'route_state_read';
+        const routeState = await this.getRuntimeConfigRouteState(input.environment, input.siteId);
+        if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('SITE_SECRET_REVISION_CONFLICT');
+        diagnosticStage = 'bindings_read';
+        const existing = await this.getLiveSiteSecretRow(input.environment, input.siteId, input.name);
+        const secret = existing ? mapSiteSecretMetadata({ ...existing, deleted_at: now, updated_at: now }) : null;
+        const statements = [];
+        if (!existing) {
+          diagnosticStage = 'statement_build';
+          this.pushRuntimeChangeStatement(
+            statements,
+            this.auditEventStatement(secretAuditEvent(input, 'site_secret.delete', { name: input.name }, now)),
+            'SITE_SECRET_REVISION_CONFLICT'
+          );
+          this.pushRuntimeChangeStatement(
+            statements,
+            this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now),
+            'SITE_SECRET_REVISION_CONFLICT'
+          );
+          diagnosticStage = 'mutation_batch';
+          await this.db.batch(statements);
+          released = true;
+          return null;
+        }
+
+        const revision = Number(existing.revision || 0);
+        diagnosticStage = 'statement_build';
+        const auditRecord = secretAuditEvent(input, 'site_secret.delete', secret, now);
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.db
+            .prepare(
+              `UPDATE site_secrets
+              SET deleted_at = ?, updated_at = ?
+              WHERE id = ? AND revision = ? AND deleted_at IS NULL
+                AND EXISTS (
+                  SELECT 1 FROM site_routes
+                  WHERE environment = ? AND site_id = ?
+                    AND runtime_config_lock_id = ?
+                )`
+            )
+            .bind(now, now, existing.id, revision, input.environment, input.siteId, lockId),
+          'SITE_SECRET_REVISION_CONFLICT'
+        );
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.bumpRuntimeConfigGenerationAndReleaseLockStatement(input.environment, input.siteId, now, lockId),
+          'SITE_SECRET_REVISION_CONFLICT'
+        );
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.siteSecretDeleteAuditEventStatement(auditRecord, {
+            secretId: existing.id,
+            revision,
+            deletedAt: now,
+          }),
+          'SITE_SECRET_REVISION_CONFLICT'
+        );
+        diagnosticStage = 'mutation_batch';
+        await this.db.batch(statements);
+        released = true;
+        return secret;
+      } finally {
+        if (!released) {
+          try {
+            await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+          } catch {
+            // Best effort: the next runtime config operation will fail closed if the lock remains.
+          }
+        }
+      }
+    } catch (error) {
+      throw markRuntimeConfigError(error, { stage: diagnosticStage });
     }
-    const auditRecord = secretAuditEvent(input, 'site_secret.delete', secret, now);
-    const results = await this.db.batch([
-      this.db
-        .prepare('UPDATE site_secrets SET deleted_at = ?, updated_at = ? WHERE id = ? AND revision = ? AND deleted_at IS NULL')
-        .bind(now, now, existing.id, Number(existing.revision || 0)),
-      this.bumpRuntimeConfigGenerationForDeleteStatement(input.environment, input.siteId, now, {
-        secretId: existing.id,
-        revision: Number(existing.revision || 0),
-        deletedAt: now,
-      }),
-      this.siteSecretDeleteAuditEventStatement(auditRecord, {
-        secretId: existing.id,
-        revision: Number(existing.revision || 0),
-        deletedAt: now,
-      }),
-    ]);
-    if (results?.[0]?.meta?.changes !== 1 || results?.[1]?.meta?.changes !== 1 || results?.[2]?.meta?.changes !== 1) {
-      throw new Error('SITE_SECRET_REVISION_CONFLICT');
-    }
-    return secret;
   }
 
   async listEnabledSiteSecrets(environment, siteId) {
@@ -3095,6 +3195,116 @@ export class D1PagesStore {
       .bind(environment, siteId)
       .all();
     return (result.results || []).map(mapSiteVar);
+  }
+
+  async mutateSiteVar(input) {
+    let diagnosticStage = 'lock_acquire';
+    try {
+      const now = input.updatedAt || this.now();
+      const lockId = input.lockId || randomStoreId('runtime_lock');
+      const lock = await this.acquireRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+      if (lock?.meta?.changes !== 1) throw new Error('SITE_VAR_REVISION_CONFLICT');
+
+      let released = false;
+      try {
+        diagnosticStage = 'route_state_read';
+        const routeState = await this.getRuntimeConfigRouteState(input.environment, input.siteId);
+        if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('SITE_VAR_REVISION_CONFLICT');
+        diagnosticStage = 'bindings_read';
+        const liveVars = await this.listEnabledSiteVars(input.environment, input.siteId);
+        const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
+        const nextVars = runtimeVarsObject(liveVars);
+        if (input.operation === 'delete') delete nextVars[input.name];
+        else nextVars[input.name] = input.value;
+        if (Object.keys(nextVars).length > MAX_RUNTIME_VARS) throw new Error('RUNTIME_VARS_LIMIT_EXCEEDED');
+        validateRuntimeBindingQuotas(nextVars, liveSecrets);
+
+        const existing = liveVars.find((record) => record.name === input.name) || null;
+        if (runtimeVarObjectsEqual(runtimeVarsObject(liveVars), nextVars)) {
+          diagnosticStage = 'statement_build';
+          const releaseStatement = this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now);
+          diagnosticStage = 'mutation_batch';
+          const release = await releaseStatement.run();
+          released = release?.meta?.changes === 1;
+          if (!released) throw new Error('SITE_VAR_REVISION_CONFLICT');
+          return {
+            record: existing || { name: input.name },
+            vars: liveVars,
+            generation: routeState.runtimeConfigGeneration,
+            changed: false,
+          };
+        }
+
+        const statements = [];
+        if (input.operation === 'delete') {
+          diagnosticStage = 'statement_build';
+          this.pushRuntimeChangeStatement(
+            statements,
+            this.siteVarDeleteStatement({
+              environment: input.environment,
+              siteId: input.siteId,
+              existing,
+              deletedAt: now,
+              lockId,
+            })
+          );
+        } else {
+          diagnosticStage = 'revision_read';
+          const revision = (await this.nextSiteVarRevision(input.environment, input.siteId, input.name)) + 1;
+          diagnosticStage = 'statement_build';
+          this.pushRuntimeChangeStatement(
+            statements,
+            existing
+              ? this.siteVarUpdateStatement({
+                  environment: input.environment,
+                  siteId: input.siteId,
+                  value: input.value,
+                  revision,
+                  updatedAt: now,
+                  existing,
+                  lockId,
+                })
+              : this.siteVarInsertStatement({
+                  id: input.createId ? input.createId(input.name) : randomStoreId('var'),
+                  environment: input.environment,
+                  siteId: input.siteId,
+                  name: input.name,
+                  value: input.value,
+                  revision,
+                  createdBy: input.actorId || input.createdBy,
+                  createdAt: now,
+                  updatedAt: now,
+                  lockId,
+                })
+          );
+        }
+        this.pushRuntimeChangeStatement(
+          statements,
+          this.bumpRuntimeConfigGenerationAndReleaseLockStatement(input.environment, input.siteId, now, lockId)
+        );
+        diagnosticStage = 'mutation_batch';
+        await this.db.batch(statements);
+        released = true;
+        diagnosticStage = 'post_commit_read';
+        const vars = await this.listEnabledSiteVars(input.environment, input.siteId);
+        return {
+          record: input.operation === 'delete' ? existing : vars.find((record) => record.name === input.name),
+          vars,
+          generation: routeState.runtimeConfigGeneration + 1,
+          changed: true,
+        };
+      } finally {
+        if (!released) {
+          try {
+            await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+          } catch {
+            // Best effort: the next runtime config operation will fail closed if the lock remains.
+          }
+        }
+      }
+    } catch (error) {
+      throw markRuntimeConfigError(error, { stage: diagnosticStage });
+    }
   }
 
   async replaceSiteVars(input) {
@@ -3133,18 +3343,15 @@ export class D1PagesStore {
         if (existing) {
           this.pushRuntimeChangeStatement(
             statements,
-            this.db
-              .prepare(
-                `UPDATE site_vars
-                SET value = ?, revision = ?, updated_at = ?
-                WHERE id = ? AND deleted_at IS NULL
-                  AND EXISTS (
-                    SELECT 1 FROM site_routes
-                    WHERE environment = ? AND site_id = ?
-                      AND runtime_config_lock_id = ?
-                  )`
-              )
-              .bind(vars[name], revision, now, existing.id, input.environment, input.siteId, lockId)
+            this.siteVarUpdateStatement({
+              environment: input.environment,
+              siteId: input.siteId,
+              value: vars[name],
+              revision,
+              updatedAt: now,
+              existing,
+              lockId,
+            })
           );
         } else {
           const id = input.createId ? input.createId(name) : randomStoreId('var');
@@ -3170,18 +3377,13 @@ export class D1PagesStore {
         const existing = liveByName.get(name);
         this.pushRuntimeChangeStatement(
           statements,
-          this.db
-            .prepare(
-              `UPDATE site_vars
-              SET deleted_at = ?, updated_at = ?
-              WHERE id = ? AND deleted_at IS NULL
-                AND EXISTS (
-                  SELECT 1 FROM site_routes
-                  WHERE environment = ? AND site_id = ?
-                    AND runtime_config_lock_id = ?
-                )`
-            )
-            .bind(now, now, existing.id, input.environment, input.siteId, lockId)
+          this.siteVarDeleteStatement({
+            environment: input.environment,
+            siteId: input.siteId,
+            existing,
+            deletedAt: now,
+            lockId,
+          })
         );
       }
       this.pushRuntimeChangeStatement(
@@ -3207,7 +3409,7 @@ export class D1PagesStore {
   async getRuntimeConfigRouteState(environment, siteId) {
     const row = await this.db
       .prepare(
-        `SELECT runtime_config_generation, runtime_config_lock_id
+        `SELECT runtime_config_generation, runtime_config_lock_id, runtime_config_lock_expires_at
         FROM site_routes
         WHERE environment = ? AND site_id = ?`
       )
@@ -3217,8 +3419,62 @@ export class D1PagesStore {
       ? {
           runtimeConfigGeneration: row.runtime_config_generation || 0,
           runtimeConfigLockId: row.runtime_config_lock_id || null,
+          runtimeConfigLockExpiresAt: row.runtime_config_lock_expires_at || null,
         }
       : null;
+  }
+
+  async withRuntimeConfigLock(environment, siteId, callback, options = {}) {
+    const now = options.updatedAt || this.now();
+    const lockId = options.lockId || randomStoreId('runtime_lock');
+    const lock = await this.acquireRuntimeConfigLockStatement(environment, siteId, lockId, now).run();
+    if (lock?.meta?.changes !== 1) throw new Error('RUNTIME_CONFIG_LOCKED');
+
+    let result;
+    let failure;
+    const abortController = new globalThis.AbortController();
+    const providerTimeoutMs = options.providerTimeoutMs || RUNTIME_CONFIG_PROVIDER_TIMEOUT_MS;
+    const providerTimeout = globalThis.setTimeout(() => {
+      abortController.abort(new Error('RUNTIME_CONFIG_PROVIDER_TIMEOUT'));
+    }, providerTimeoutMs);
+    let renewal = Promise.resolve();
+    const renew = () => {
+      renewal = renewal
+        .then(async () => {
+          const renewedAt = this.now();
+          const renewed = await this.renewRuntimeConfigLockStatement(environment, siteId, lockId, renewedAt).run();
+          if (renewed?.meta?.changes !== 1) throw new Error('RUNTIME_CONFIG_LOCKED');
+        })
+        .catch((error) => {
+          abortController.abort(error);
+          throw error;
+        });
+      renewal.catch(() => {});
+    };
+    const renewIntervalMs = options.renewIntervalMs || RUNTIME_CONFIG_LOCK_RENEW_MS;
+    const timer = globalThis.setInterval(renew, renewIntervalMs);
+    try {
+      const routeState = await this.getRuntimeConfigRouteState(environment, siteId);
+      if (!routeState || routeState.runtimeConfigLockId !== lockId) throw new Error('RUNTIME_CONFIG_LOCKED');
+      result = await callback({ ...routeState, signal: abortController.signal });
+    } catch (error) {
+      failure = error;
+    }
+    globalThis.clearInterval(timer);
+    globalThis.clearTimeout(providerTimeout);
+    try {
+      await renewal;
+    } catch (error) {
+      if (!failure) failure = error;
+    }
+    try {
+      const release = await this.releaseRuntimeConfigLockStatement(environment, siteId, lockId, this.now()).run();
+      if (release?.meta?.changes !== 1 && !failure) failure = new Error('RUNTIME_CONFIG_LOCKED');
+    } catch (error) {
+      if (!failure) failure = error;
+    }
+    if (failure) throw failure;
+    return result;
   }
 
   async nextSiteVarRevision(environment, siteId, name) {
@@ -3230,6 +3486,36 @@ export class D1PagesStore {
       .bind(environment, siteId, name)
       .first();
     return Number(row?.max_revision || 0);
+  }
+
+  siteVarUpdateStatement({ environment, siteId, value, revision, updatedAt, existing, lockId }) {
+    return this.db
+      .prepare(
+        `UPDATE site_vars
+        SET value = ?, revision = ?, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE environment = ? AND site_id = ?
+              AND runtime_config_lock_id = ?
+          )`
+      )
+      .bind(value, revision, updatedAt, existing.id, environment, siteId, lockId);
+  }
+
+  siteVarDeleteStatement({ environment, siteId, existing, deletedAt, lockId }) {
+    return this.db
+      .prepare(
+        `UPDATE site_vars
+        SET deleted_at = ?, updated_at = ?
+        WHERE id = ? AND deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM site_routes
+            WHERE environment = ? AND site_id = ?
+              AND runtime_config_lock_id = ?
+          )`
+      )
+      .bind(deletedAt, deletedAt, existing.id, environment, siteId, lockId);
   }
 
   siteVarInsertStatement({ id, environment, siteId, name, value, revision, createdBy, createdAt, updatedAt, lockId }) {
@@ -3250,20 +3536,38 @@ export class D1PagesStore {
   }
 
   acquireRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
+    const expiresAt = runtimeConfigLockExpiry(updatedAt);
     return this.db
       .prepare(
         `UPDATE site_routes
-        SET runtime_config_lock_id = ?, updated_at = ?
-        WHERE environment = ? AND site_id = ? AND runtime_config_lock_id IS NULL`
+        SET runtime_config_lock_id = ?, runtime_config_lock_expires_at = ?, updated_at = ?
+        WHERE environment = ? AND site_id = ?
+          AND (
+            runtime_config_lock_id IS NULL
+            OR runtime_config_lock_expires_at IS NULL
+            OR runtime_config_lock_expires_at <= ?
+          )`
       )
-      .bind(lockId, updatedAt, environment, siteId);
+      .bind(lockId, expiresAt, updatedAt, environment, siteId, updatedAt);
+  }
+
+  renewRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
+    return this.db
+      .prepare(
+        `UPDATE site_routes
+        SET runtime_config_lock_expires_at = ?
+        WHERE environment = ? AND site_id = ?
+          AND runtime_config_lock_id = ?
+          AND runtime_config_lock_expires_at > ?`
+      )
+      .bind(runtimeConfigLockExpiry(updatedAt), environment, siteId, lockId, updatedAt);
   }
 
   releaseRuntimeConfigLockStatement(environment, siteId, lockId, updatedAt) {
     return this.db
       .prepare(
         `UPDATE site_routes
-        SET runtime_config_lock_id = NULL, updated_at = ?
+        SET runtime_config_lock_id = NULL, runtime_config_lock_expires_at = NULL, updated_at = ?
         WHERE environment = ? AND site_id = ? AND runtime_config_lock_id = ?`
       )
       .bind(updatedAt, environment, siteId, lockId);
@@ -3275,6 +3579,7 @@ export class D1PagesStore {
         `UPDATE site_routes
         SET runtime_config_generation = runtime_config_generation + 1,
           runtime_config_lock_id = NULL,
+          runtime_config_lock_expires_at = NULL,
           updated_at = ?
         WHERE environment = ? AND site_id = ?
           AND runtime_config_lock_id = ?`
@@ -3282,8 +3587,8 @@ export class D1PagesStore {
       .bind(updatedAt, environment, siteId, lockId);
   }
 
-  pushRuntimeChangeStatement(statements, statement) {
-    statements.push(statement, this.runtimeChangeGuardStatement());
+  pushRuntimeChangeStatement(statements, statement, errorCode = 'SITE_VAR_REVISION_CONFLICT') {
+    statements.push(statement, this.runtimeChangeGuardStatement(errorCode));
   }
 
   runtimeChangeGuardStatement(errorCode = 'SITE_VAR_REVISION_CONFLICT') {
@@ -5237,6 +5542,12 @@ function fnv1a64Hex(value) {
     hash = (hash * prime) & mask;
   }
   return hash.toString(16).padStart(16, '0');
+}
+
+function runtimeConfigLockExpiry(updatedAt) {
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) throw new Error('RUNTIME_CONFIG_LOCK_TIME_INVALID');
+  return new Date(timestamp + RUNTIME_CONFIG_LOCK_LEASE_MS).toISOString();
 }
 
 function randomStoreId(prefix) {

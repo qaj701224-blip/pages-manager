@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import { D1PagesStore, createHostnameClaim } from './store.js';
 import { createTestPagesStore } from './test-store.js';
 
@@ -1258,6 +1259,906 @@ test('D1 store replaces site vars as site-level runtime config and bumps generat
   assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
 });
 
+test('D1 store atomically puts a single site var and returns the committed snapshot', async () => {
+  const rows = new Map();
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:00:00.000Z',
+    createId: () => 'var_api_base',
+  });
+
+  assert.equal(result.record.name, 'API_BASE');
+  assert.equal(result.record.revision, 1);
+  assert.equal(result.generation, 1);
+  assert.equal(result.changed, true);
+  assert.deepEqual(
+    result.vars.map(({ name, value }) => ({ name, value })),
+    [{ name: 'API_BASE', value: 'https://api.example.com' }]
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 site var mutation marks unexpected batch failures without exposing the error', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const baseDb = fakeRuntimeConfigDb({ routes });
+  const failure = new Error('D1_ERROR: SENSITIVE_SQL SENSITIVE_VALUE');
+  failure.cause = new Error('SENSITIVE_CAUSE');
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      async batch() {
+        throw failure;
+      },
+    },
+    {
+      now: () => '2026-06-15T00:00:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'API_BASE',
+      value: 'https://api.example.com',
+      actorId: 'usr_1',
+      createId: () => 'var_api_base',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 site var mutation classifies lock acquisition schema failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const baseDb = fakeRuntimeConfigDb({ routes });
+  const failure = new Error('D1_ERROR: no such column: runtime_config_lock_expires_at SENSITIVE_VALUE');
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      prepare(sql) {
+        const statement = baseDb.prepare(sql);
+        if (!/SET runtime_config_lock_id = \?, runtime_config_lock_expires_at = \?/.test(sql)) return statement;
+        return {
+          bind(...args) {
+            return {
+              ...statement.bind(...args),
+              async run() {
+                throw failure;
+              },
+            };
+          },
+        };
+      },
+    },
+    {
+      now: () => '2026-06-15T00:00:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'API_BASE',
+      value: 'https://api.example.com',
+      actorId: 'usr_1',
+      createId: () => 'var_api_base',
+    }),
+    (error) => {
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'lock_acquire',
+        reason: 'schema_missing',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 site var put marks synchronous statement construction failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_VAR_VALUE');
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  store.siteVarInsertStatement = () => {
+    throw failure;
+  };
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'FEATURE_FLAG',
+      value: 'on',
+      actorId: 'usr_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 site var delete marks synchronous statement construction failures', async () => {
+  const siteVars = new Map([
+    [
+      'production:site_1:FEATURE_FLAG:var_1',
+      {
+        id: 'var_1',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'FEATURE_FLAG',
+        value: 'on',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([['production:site_1', { runtime_config_generation: 1, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_VAR_VALUE');
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  store.siteVarDeleteStatement = () => {
+    throw failure;
+  };
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'delete',
+      name: 'FEATURE_FLAG',
+      actorId: 'usr_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret mutation marks unexpected batch failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const baseDb = fakeRuntimeConfigDb({ routes });
+  const failure = new Error('D1_ERROR: SENSITIVE_SECRET SENSITIVE_SQL');
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      async batch() {
+        throw failure;
+      },
+    },
+    {
+      now: () => '2026-06-15T00:00:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      value: 'super-secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret put marks synchronous statement construction failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_SECRET_VALUE');
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  store.siteSecretInsertStatement = () => {
+    throw failure;
+  };
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      value: 'super-secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret delete marks synchronous statement construction failures', async () => {
+  const siteSecrets = new Map([
+    [
+      'production:site_1:API_TOKEN',
+      {
+        id: 'sec_1',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_TOKEN',
+        encrypted_value: 'encrypted-value',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([['production:site_1', { runtime_config_generation: 1, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_SECRET_VALUE');
+  const baseDb = fakeRuntimeConfigDb({ siteSecrets, routes });
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      prepare(sql) {
+        if (/UPDATE site_secrets\s+SET deleted_at = \?, updated_at = \?/.test(sql)) throw failure;
+        return baseDb.prepare(sql);
+      },
+    },
+    {
+      now: () => '2026-06-15T00:01:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.deleteSiteSecretWithAudit({
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret mutation marks pre-lock encryption failures as unknown stage', async () => {
+  const store = new D1PagesStore(fakeRuntimeConfigDb(), {
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      value: 'super-secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 store reports the dedicated var limit error for the 65th var', async () => {
+  const siteVars = new Map(
+    Array.from({ length: 64 }, (_, index) => {
+      const name = `VAR_${String(index).padStart(2, '0')}`;
+      const id = `var_${index}`;
+      return [
+        `production:site_1:${name}:${id}`,
+        {
+          id,
+          environment: 'production',
+          site_id: 'site_1',
+          name,
+          value: 'on',
+          revision: 1,
+          created_by: 'usr_1',
+          created_at: '2026-06-15T00:00:00.000Z',
+          updated_at: '2026-06-15T00:00:00.000Z',
+          deleted_at: null,
+        },
+      ];
+    })
+  );
+  const routes = new Map([['production:site_1', { runtime_config_generation: 64 }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'VAR_64',
+      value: 'on',
+      actorId: 'usr_1',
+    }),
+    /RUNTIME_VARS_LIMIT_EXCEEDED/
+  );
+});
+
+test('D1 runtime config lock remains held through a provider callback and releases afterward', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 2, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  const result = await store.withRuntimeConfigLock('production', 'site_1', async (routeState) => {
+    assert.equal(routeState.runtimeConfigGeneration, 2);
+    assert.match(routes.get('production:site_1').runtime_config_lock_id, /^runtime_lock_/);
+    await assert.rejects(
+      store.mutateSiteVar({
+        environment: 'production',
+        siteId: 'site_1',
+        operation: 'put',
+        name: 'API_BASE',
+        value: 'https://api.example.com',
+        actorId: 'usr_1',
+      }),
+      /SITE_VAR_REVISION_CONFLICT/
+    );
+    return 'synced';
+  });
+
+  assert.equal(result, 'synced');
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 runtime config lock reclaims an expired lease and fences the old holder', async () => {
+  const siteVars = new Map();
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 2,
+        runtime_config_lock_id: 'runtime_lock_old',
+        runtime_config_lock_expires_at: '2026-06-15T00:00:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await store.withRuntimeConfigLock(
+    'production',
+    'site_1',
+    async () => {
+      assert.equal(routes.get('production:site_1').runtime_config_lock_id, 'runtime_lock_new');
+      assert.equal(
+        routes.get('production:site_1').runtime_config_lock_expires_at,
+        '2026-06-15T00:02:00.000Z'
+      );
+      const oldRelease = await store
+        .releaseRuntimeConfigLockStatement('production', 'site_1', 'runtime_lock_old', '2026-06-15T00:01:00.000Z')
+        .run();
+      assert.equal(oldRelease.meta.changes, 0);
+      const oldWrite = await store
+        .siteVarInsertStatement({
+          id: 'var_old',
+          environment: 'production',
+          siteId: 'site_1',
+          name: 'OLD_WRITE',
+          value: 'blocked',
+          revision: 1,
+          createdBy: 'usr_1',
+          createdAt: '2026-06-15T00:01:00.000Z',
+          updatedAt: '2026-06-15T00:01:00.000Z',
+          lockId: 'runtime_lock_old',
+        })
+        .run();
+      assert.equal(oldWrite.meta.changes, 0);
+    },
+    { lockId: 'runtime_lock_new' }
+  );
+
+  assert.equal(siteVars.size, 0);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, null);
+});
+
+test('D1 runtime config lock does not reclaim an unexpired lease', async () => {
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 2,
+        runtime_config_lock_id: 'runtime_lock_active',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.withRuntimeConfigLock('production', 'site_1', async () => {}, { lockId: 'runtime_lock_new' }),
+    /RUNTIME_CONFIG_LOCKED/
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, 'runtime_lock_active');
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, '2026-06-15T00:01:30.000Z');
+});
+
+test('D1 runtime config lock aborts provider work before the lease can expire', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 2, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.withRuntimeConfigLock(
+      'production',
+      'site_1',
+      ({ signal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      { providerTimeoutMs: 5 }
+    ),
+    /RUNTIME_CONFIG_PROVIDER_TIMEOUT/
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, null);
+});
+
+test('D1 runtime config lock aborts provider work when lease renewal loses fencing', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 2, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(
+    fakeRuntimeConfigDb({
+      routes,
+      hooks: { beforeRuntimeConfigRenew: () => ({ changes: 0 }) },
+    }),
+    {
+      now: () => '2026-06-15T00:01:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.withRuntimeConfigLock(
+      'production',
+      'site_1',
+      ({ signal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      { providerTimeoutMs: 100, renewIntervalMs: 5 }
+    ),
+    /RUNTIME_CONFIG_LOCKED/
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_expires_at, null);
+});
+
+test('D1 concurrent different-name var put fails fast and preserves both bindings after retry', async () => {
+  const siteVars = new Map([
+    [
+      'production:site_1:API_BASE:var_api_base',
+      {
+        id: 'var_api_base',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_BASE',
+        value: 'https://api.example.com',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 1,
+        runtime_config_lock_id: 'runtime_lock_first_put',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  const input = {
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'FEATURE_FLAG',
+    value: 'on',
+    actorId: 'usr_1',
+    createId: () => 'var_feature_flag',
+  };
+
+  await assert.rejects(store.mutateSiteVar(input), /SITE_VAR_REVISION_CONFLICT/);
+  assert.equal(siteVars.size, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+
+  routes.get('production:site_1').runtime_config_lock_id = null;
+  const retried = await store.mutateSiteVar(input);
+
+  assert.equal(retried.generation, 2);
+  assert.deepEqual(
+    retried.vars.map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 var and secret race fails fast and preserves both bindings after retry', async () => {
+  const siteVars = new Map([
+    [
+      'production:site_1:API_BASE:var_api_base',
+      {
+        id: 'var_api_base',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_BASE',
+        value: 'https://api.example.com',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const siteSecrets = new Map();
+  const auditRows = [];
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 1,
+        runtime_config_lock_id: 'runtime_lock_var_put',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, siteSecrets, auditRows, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  const input = {
+    id: 'sec_1',
+    auditId: 'aud_1',
+    environment: 'production',
+    siteId: 'site_1',
+    siteSlug: 'guide',
+    name: 'API_TOKEN',
+    value: 'secret-value',
+    actorId: 'usr_1',
+    actorType: 'user',
+    routeId: 'route_1',
+  };
+
+  await assert.rejects(store.putSiteSecretWithAudit(input), /SITE_SECRET_REVISION_CONFLICT/);
+  assert.equal(siteSecrets.size, 0);
+  assert.deepEqual(auditRows, []);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+
+  routes.get('production:site_1').runtime_config_lock_id = null;
+  await store.putSiteSecretWithAudit(input);
+
+  assert.equal(liveVarRow(siteVars, 'production', 'site_1', 'API_BASE').value, 'https://api.example.com');
+  assert.equal(liveSecretRow(siteSecrets, 'production', 'site_1', 'API_TOKEN').revision, 1);
+  assert.equal(auditRows.length, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 2);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 store updates one site var without replacing the other vars', async () => {
+  const rows = new Map([
+    [
+      'production:site_1:API_BASE:var_api_base',
+      {
+        id: 'var_api_base',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_BASE',
+        value: 'https://api.example.com/v1',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+    [
+      'production:site_1:FEATURE_FLAG:var_feature_flag',
+      {
+        id: 'var_feature_flag',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'FEATURE_FLAG',
+        value: 'on',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([['production:site_1', { runtime_config_generation: 4, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com/v2',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+    createId: () => 'unused',
+  });
+
+  assert.equal(result.record.id, 'var_api_base');
+  assert.equal(result.record.revision, 2);
+  assert.equal(result.generation, 5);
+  assert.deepEqual(
+    result.vars.map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com/v2' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
+test('D1 store treats an unchanged single site var put as a no-op', async () => {
+  const rows = new Map();
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars: { FEATURE_FLAG: 'on' },
+    actorId: 'usr_1',
+    createId: () => 'var_feature_flag',
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'FEATURE_FLAG',
+    value: 'on',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+    createId: () => 'unused',
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.record.revision, 1);
+  assert.equal(result.generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 store deletes one site var without replacing the other vars', async () => {
+  const rows = new Map();
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars: rows, routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_1',
+    vars: { API_BASE: 'https://api.example.com', FEATURE_FLAG: 'on' },
+    actorId: 'usr_1',
+    createId: (name) => `var_${name.toLowerCase()}`,
+  });
+
+  const result = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'delete',
+    name: 'API_BASE',
+    actorId: 'usr_1',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.record.name, 'API_BASE');
+  assert.equal(result.record.revision, 1);
+  assert.equal(result.generation, 2);
+  assert.deepEqual(
+    result.vars.map(({ name, value }) => ({ name, value })),
+    [{ name: 'FEATURE_FLAG', value: 'on' }]
+  );
+  assert.equal(varRowById(rows, 'var_api_base').deleted_at, '2026-06-15T00:01:00.000Z');
+});
+
+test('test store implements the atomic single site var mutation contract', async () => {
+  const store = createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+
+  const apiBase = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+    createId: () => 'var_api_base',
+  });
+  const featureFlag = await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'FEATURE_FLAG',
+    value: 'on',
+    actorId: 'usr_1',
+    createId: () => 'var_feature_flag',
+  });
+
+  assert.equal(apiBase.generation, 1);
+  assert.equal(featureFlag.generation, 2);
+  assert.deepEqual(
+    featureFlag.vars.map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
+test('test store serializes concurrent single site var mutations without losing updates', async () => {
+  const store = createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+
+  await Promise.all([
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'API_BASE',
+      value: 'https://api.example.com',
+      actorId: 'usr_1',
+      createId: () => 'var_api_base',
+    }),
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'FEATURE_FLAG',
+      value: 'on',
+      actorId: 'usr_1',
+      createId: () => 'var_feature_flag',
+    }),
+  ]);
+
+  assert.deepEqual(
+    (await store.listEnabledSiteVars('production', 'site_1')).map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
 test('D1 store does not reuse site var revisions after delete and recreate', async () => {
   const rows = new Map();
   const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
@@ -1336,6 +2237,7 @@ test('D1 store fails site var replacement without partial writes when another re
       {
         runtime_config_generation: 0,
         runtime_config_lock_id: 'runtime_lock_active',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
         updated_at: '2026-06-15T00:00:00.000Z',
       },
     ],
@@ -1493,6 +2395,189 @@ test('D1 store sends prepared statements to batch when replacing site vars', asy
   );
   assert.equal(hasPreparedStatement, true);
   assert.equal(hasRunOnlyWrapper, false);
+});
+
+test('test store rejects a site secret that conflicts with an existing runtime var', async () => {
+  const store = createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.mutateSiteVar({
+    environment: 'production',
+    siteId: 'site_1',
+    operation: 'put',
+    name: 'API_BASE',
+    value: 'https://api.example.com',
+    actorId: 'usr_1',
+    createId: () => 'var_api_base',
+  });
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_BASE',
+      value: 'secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    /RUNTIME_BINDING_NAME_CONFLICT/
+  );
+  assert.deepEqual(await store.listEnabledSiteSecrets('production', 'site_1'), []);
+  assert.deepEqual(await store.listAuditEvents({ environment: 'production' }), []);
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).runtimeConfigGeneration, 1);
+});
+
+test('D1 store rejects a site secret that conflicts with an existing runtime var without partial writes', async () => {
+  const siteVars = new Map([
+    [
+      'production:site_1:API_BASE:var_api_base',
+      {
+        id: 'var_api_base',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_BASE',
+        value: 'https://api.example.com',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const siteSecrets = new Map();
+  const auditRows = [];
+  const routes = new Map([['production:site_1', { runtime_config_generation: 1, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, siteSecrets, auditRows, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_BASE',
+      value: 'secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    /RUNTIME_BINDING_NAME_CONFLICT/
+  );
+  assert.equal(siteSecrets.size, 0);
+  assert.deepEqual(auditRows, []);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('test store rejects a site secret when vars and secrets would exceed the shared binding quota', async () => {
+  const store = createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  for (let index = 0; index < 64; index += 1) {
+    const name = `VAR_${String(index).padStart(2, '0')}`;
+    store.siteVars.set(`production:site_1:${name}`, {
+      id: `var_${index}`,
+      environment: 'production',
+      siteId: 'site_1',
+      name,
+      value: String(index),
+      revision: 1,
+      createdBy: 'usr_1',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+      deletedAt: null,
+    });
+  }
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'DEPLOY_KEY',
+      value: 'secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    /RUNTIME_BINDINGS_LIMIT_EXCEEDED/
+  );
+  assert.deepEqual(await store.listEnabledSiteSecrets('production', 'site_1'), []);
+  assert.deepEqual(await store.listAuditEvents({ environment: 'production' }), []);
+  assert.equal((await store.getRouteBySiteId('site_1', 'production')).runtimeConfigGeneration, 0);
+});
+
+test('D1 store rejects a site secret when vars and secrets would exceed the shared binding quota', async () => {
+  const siteVars = new Map();
+  for (let index = 0; index < 64; index += 1) {
+    const name = `VAR_${String(index).padStart(2, '0')}`;
+    siteVars.set(`production:site_1:${name}:var_${index}`, {
+      id: `var_${index}`,
+      environment: 'production',
+      site_id: 'site_1',
+      name,
+      value: String(index),
+      revision: 1,
+      created_by: 'usr_1',
+      created_at: '2026-06-15T00:00:00.000Z',
+      updated_at: '2026-06-15T00:00:00.000Z',
+      deleted_at: null,
+    });
+  }
+  const siteSecrets = new Map();
+  const auditRows = [];
+  const routes = new Map([['production:site_1', { runtime_config_generation: 64, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, siteSecrets, auditRows, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'DEPLOY_KEY',
+      value: 'secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    /RUNTIME_BINDINGS_LIMIT_EXCEEDED/
+  );
+  assert.equal(siteSecrets.size, 0);
+  assert.deepEqual(auditRows, []);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 64);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
 });
 
 test('D1 store writes site secrets and audit events in one batch', async () => {
@@ -1744,6 +2829,175 @@ test('D1 store deletes site secrets without decrypting existing ciphertext', asy
   assert.equal(secretRowById(rows, 'sec_1').deleted_at, '2026-06-15T00:01:00.000Z');
   assert.deepEqual(auditRows.map((row) => JSON.parse(row.metadata_json)), [{ siteSlug: 'guide', revision: 3 }]);
   assert.doesNotMatch(JSON.stringify(auditRows), /API_TOKEN|not-a-valid-ciphertext/);
+});
+
+test('D1 store refuses audited site secret deletion while another runtime mutation holds the lock', async () => {
+  const rows = new Map([
+    [
+      'production:site_1:API_TOKEN',
+      {
+        id: 'sec_1',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_TOKEN',
+        encrypted_value: 'encrypted-value',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const auditRows = [];
+  const routes = new Map([
+    [
+      'production:site_1',
+      {
+        runtime_config_generation: 1,
+        runtime_config_lock_id: 'runtime_lock_active',
+        runtime_config_lock_expires_at: '2026-06-15T00:01:30.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+      },
+    ],
+  ]);
+  const store = new D1PagesStore(fakeSiteSecretsDb(rows, auditRows, { routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  await assert.rejects(
+    store.deleteSiteSecretWithAudit({
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+      deletedAt: '2026-06-15T00:01:00.000Z',
+    }),
+    /SITE_SECRET_REVISION_CONFLICT/
+  );
+  assert.equal(secretRowById(rows, 'sec_1').deleted_at, null);
+  assert.deepEqual(auditRows, []);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, 'runtime_lock_active');
+});
+
+test('D1 store can delete a site secret from an over-limit conflicting historical binding state', async () => {
+  const siteVars = new Map();
+  for (let index = 0; index < 64; index += 1) {
+    const name = index === 0 ? 'API_TOKEN' : `VAR_${String(index).padStart(2, '0')}`;
+    siteVars.set(`production:site_1:${name}:var_${index}`, {
+      id: `var_${index}`,
+      environment: 'production',
+      site_id: 'site_1',
+      name,
+      value: String(index),
+      revision: 1,
+      created_by: 'usr_1',
+      created_at: '2026-06-15T00:00:00.000Z',
+      updated_at: '2026-06-15T00:00:00.000Z',
+      deleted_at: null,
+    });
+  }
+  const siteSecrets = new Map([
+    [
+      'production:site_1:API_TOKEN',
+      {
+        id: 'sec_1',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_TOKEN',
+        encrypted_value: 'not-a-valid-ciphertext',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const auditRows = [];
+  const routes = new Map([['production:site_1', { runtime_config_generation: 65, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, siteSecrets, auditRows, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+
+  const deleted = await store.deleteSiteSecretWithAudit({
+    auditId: 'aud_1',
+    environment: 'production',
+    siteId: 'site_1',
+    siteSlug: 'guide',
+    name: 'API_TOKEN',
+    actorId: 'usr_1',
+    actorType: 'user',
+    routeId: 'route_1',
+    deletedAt: '2026-06-15T00:01:00.000Z',
+  });
+
+  assert.equal(deleted.name, 'API_TOKEN');
+  assert.equal(secretRowById(siteSecrets, 'sec_1').deleted_at, '2026-06-15T00:01:00.000Z');
+  assert.deepEqual(auditRows.map((row) => row.id), ['aud_1']);
+  assert.equal(routes.get('production:site_1').runtime_config_generation, 66);
+  assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('test store serializes audited site secret deletion with other runtime mutations', async () => {
+  const store = createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await store.putSiteSecret({
+    id: 'sec_1',
+    environment: 'production',
+    siteId: 'site_1',
+    name: 'API_TOKEN',
+    value: 'secret-value',
+    actorId: 'usr_1',
+  });
+  let releaseLock;
+  const held = store.withRuntimeConfigQueue(
+    'production',
+    'site_1',
+    () => new Promise((resolve) => {
+      releaseLock = resolve;
+    })
+  );
+  await Promise.resolve();
+  let deletionFinished = false;
+  const deletion = store
+    .deleteSiteSecretWithAudit({
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    })
+    .then(() => {
+      deletionFinished = true;
+    });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(deletionFinished, false);
+  releaseLock();
+  await held;
+  await deletion;
+  assert.equal(deletionFinished, true);
+  assert.deepEqual(await store.listEnabledSiteSecrets('production', 'site_1'), []);
 });
 
 test('D1 store deleteSiteSecret fails closed without deleting when revision changed after read', async () => {
@@ -3356,6 +4610,7 @@ function insertCreateSiteRoute(state, args) {
     routeGeneration,
     runtimeConfigGeneration,
     runtimeConfigLockId,
+    runtimeConfigLockExpiresAt,
     routeStatus,
     cacheTier,
     createdAt,
@@ -3379,6 +4634,7 @@ function insertCreateSiteRoute(state, args) {
     route_generation: routeGeneration,
     runtime_config_generation: runtimeConfigGeneration,
     runtime_config_lock_id: runtimeConfigLockId,
+    runtime_config_lock_expires_at: runtimeConfigLockExpiresAt,
     route_status: routeStatus,
     cache_tier: cacheTier,
     created_at: createdAt,
@@ -4166,37 +5422,13 @@ function fakeUserDb() {
 }
 
 function fakeSiteSecretsDb(rows, auditRows = [], hooks = {}) {
-  const routes = hooks.routes || new Map();
-  return {
-    async batch(statements) {
-      const rowSnapshot = new Map([...rows.entries()].map(([key, value]) => [key, { ...value }]));
-      const auditSnapshot = auditRows.map((row) => ({ ...row }));
-      const routeSnapshot = new Map([...routes.entries()].map(([key, value]) => [key, { ...value }]));
-      try {
-        const results = [];
-        for (const statement of statements) results.push(await statement.run());
-        return results;
-      } catch (error) {
-        rows.clear();
-        for (const [key, value] of rowSnapshot) rows.set(key, value);
-        auditRows.splice(0, auditRows.length, ...auditSnapshot);
-        routes.clear();
-        for (const [key, value] of routeSnapshot) routes.set(key, value);
-        throw error;
-      }
-    },
-    prepare(sql) {
-      return {
-        bind(...args) {
-          return {
-            first: async () => fakeSiteSecretsFirst(rows, sql, args, hooks),
-            all: async () => fakeSiteSecretsAll(rows, sql, args),
-            run: async () => fakeSiteSecretsRun(rows, auditRows, routes, sql, args),
-          };
-        },
-      };
-    },
-  };
+  return fakeRuntimeConfigDb({
+    siteSecrets: rows,
+    siteVars: hooks.siteVars || new Map(),
+    auditRows,
+    routes: hooks.routes || new Map(),
+    hooks,
+  });
 }
 
 function fakeRuntimeConfigDb({
@@ -4252,7 +5484,7 @@ function fakeRuntimeConfigDb({
               /json_extract\('\{"ok":true\}'/.test(sql)
                 ? fakeRuntimeChangeGuardRun(context, args)
                 : /site_vars/.test(sql) ||
-                  /runtime_config_lock_id/.test(sql) ||
+                  (/runtime_config_lock_id/.test(sql) && !/site_secrets/.test(sql)) ||
                   (/UPDATE site_routes\s+SET runtime_config_generation = runtime_config_generation \+ 1/.test(sql) &&
                     args.length === 3)
                   ? fakeSiteVarsRun(siteVars, routes, sql, args, hooks)
@@ -4336,6 +5568,7 @@ function fakeSiteVarsFirst(rows, routes, sql, args, hooks = {}) {
       ? {
           runtime_config_generation: route.runtime_config_generation || 0,
           runtime_config_lock_id: route.runtime_config_lock_id || null,
+          runtime_config_lock_expires_at: route.runtime_config_lock_expires_at || null,
         }
       : null;
   }
@@ -4377,19 +5610,41 @@ function fakeSiteVarsAll(rows, sql, args, hooks = {}) {
 }
 
 function fakeSiteVarsRun(rows, routes, sql, args, hooks = {}) {
-  if (/SET runtime_config_lock_id = \?, updated_at = \?/.test(sql)) {
-    const [lockId, updatedAt, environment, siteId] = args;
+  if (/SET runtime_config_lock_id = \?, runtime_config_lock_expires_at = \?, updated_at = \?/.test(sql)) {
+    const [lockId, expiresAt, updatedAt, environment, siteId, acquiredAt] = args;
     const route = routes.get(`${environment}:${siteId}`);
-    if (!route || route.runtime_config_lock_id) return { meta: { changes: 0 } };
+    const available =
+      !route?.runtime_config_lock_id ||
+      !route?.runtime_config_lock_expires_at ||
+      route.runtime_config_lock_expires_at <= acquiredAt;
+    if (!route || !available) return { meta: { changes: 0 } };
     route.runtime_config_lock_id = lockId;
+    route.runtime_config_lock_expires_at = expiresAt;
     route.updated_at = updatedAt;
     return { meta: { changes: 1 } };
   }
-  if (/SET runtime_config_lock_id = NULL, updated_at = \?/.test(sql)) {
+  if (/SET runtime_config_lock_expires_at = \?\s+WHERE/.test(sql)) {
+    const override = hooks.beforeRuntimeConfigRenew?.({ sql, args });
+    if (override) return { meta: { changes: override.changes } };
+    const [expiresAt, environment, siteId, lockId, renewedAt] = args;
+    const route = routes.get(`${environment}:${siteId}`);
+    if (
+      !route ||
+      route.runtime_config_lock_id !== lockId ||
+      !route.runtime_config_lock_expires_at ||
+      route.runtime_config_lock_expires_at <= renewedAt
+    ) {
+      return { meta: { changes: 0 } };
+    }
+    route.runtime_config_lock_expires_at = expiresAt;
+    return { meta: { changes: 1 } };
+  }
+  if (/SET runtime_config_lock_id = NULL, runtime_config_lock_expires_at = NULL, updated_at = \?/.test(sql)) {
     const [updatedAt, environment, siteId, lockId] = args;
     const route = routes.get(`${environment}:${siteId}`);
     if (!route || route.runtime_config_lock_id !== lockId) return { meta: { changes: 0 } };
     route.runtime_config_lock_id = null;
+    route.runtime_config_lock_expires_at = null;
     route.updated_at = updatedAt;
     return { meta: { changes: 1 } };
   }
@@ -4399,6 +5654,7 @@ function fakeSiteVarsRun(rows, routes, sql, args, hooks = {}) {
     if (!route || route.runtime_config_lock_id !== lockId) return { meta: { changes: 0 } };
     route.runtime_config_generation = Number(route.runtime_config_generation || 0) + 1;
     route.runtime_config_lock_id = null;
+    route.runtime_config_lock_expires_at = null;
     route.updated_at = updatedAt;
     return { meta: { changes: 1 } };
   }
@@ -4530,16 +5786,18 @@ function fakeSiteSecretsRun(rows, auditRows, routes, sql, args) {
     }
     return { meta: { changes: row && !row.deleted_at && revisionMatches ? 1 : 0 } };
   }
-  if (/UPDATE site_secrets SET deleted_at/.test(sql)) {
-    const [deletedAt, updatedAt, id, expectedRevision] = args;
+  if (/UPDATE site_secrets\s+SET deleted_at/.test(sql)) {
+    const [deletedAt, updatedAt, id, expectedRevision, environment, siteId, lockId] = args;
     const row = [...rows.values()].find((candidate) => candidate.id === id);
     const revisionMatches =
       !/AND revision = \?/.test(sql) || Number(row?.revision || 0) === Number(expectedRevision);
-    if (row && !row.deleted_at && revisionMatches) {
+    const route = routes.get(`${environment}:${siteId}`);
+    const lockMatches = !/FROM site_routes/.test(sql) || route?.runtime_config_lock_id === lockId;
+    if (row && !row.deleted_at && revisionMatches && lockMatches) {
       row.deleted_at = deletedAt;
       row.updated_at = updatedAt;
     }
-    return { meta: { changes: row && revisionMatches ? 1 : 0 } };
+    return { meta: { changes: row && revisionMatches && lockMatches ? 1 : 0 } };
   }
   if (/INSERT INTO audit_events/.test(sql) && /FROM site_secrets/.test(sql)) {
     const [

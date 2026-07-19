@@ -147,8 +147,16 @@ export function createWfpClient({
       const settingsUrl = `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/settings`;
       const currentSettings = await requestCloudflare(fetch, apiToken, settingsUrl, {
         method: 'GET',
+        signal: input.signal,
       });
-      const currentBindings = Array.isArray(currentSettings?.bindings) ? currentSettings.bindings : [];
+      if (!Array.isArray(currentSettings?.bindings)) {
+        throw new WfpApiError({
+          status: 502,
+          code: 'WFP_API_SETTINGS_INVALID',
+          message: 'Cloudflare WFP settings response did not include bindings.',
+        });
+      }
+      const currentBindings = currentSettings.bindings;
       const bindings = [
         ...currentBindings.filter((binding) => binding?.type !== 'plain_text').map(cloneJsonObject),
         ...safeBindings,
@@ -159,20 +167,22 @@ export function createWfpClient({
       return requestCloudflare(fetch, apiToken, settingsUrl, {
         method: 'PATCH',
         body: form,
+        signal: input.signal,
       });
     },
 
-    async putUserWorkerSecret(scriptName, secret) {
+    async putUserWorkerSecret(scriptName, secret, options = {}) {
       const safeScriptName = validateScriptName(scriptName);
       const body = normalizeUserWorkerSecret(secret);
       return requestCloudflare(fetch, apiToken, `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/secrets`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: options.signal,
       });
     },
 
-    async deleteUserWorkerSecret(scriptName, secretName) {
+    async deleteUserWorkerSecret(scriptName, secretName, options = {}) {
       const safeScriptName = validateScriptName(scriptName);
       const name = validateBindingName(secretName);
       return requestCloudflare(
@@ -181,6 +191,7 @@ export function createWfpClient({
         `${scriptUrl(baseUrl, account, namespace, safeScriptName)}/secrets/${encodeURIComponent(name)}`,
         {
           method: 'DELETE',
+          signal: options.signal,
         }
       );
     },

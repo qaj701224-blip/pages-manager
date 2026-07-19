@@ -8,6 +8,7 @@
 
 - `apps/pages-api` 不公开 `/openapi.json` 或 `/.xd-pages/api/openapi.json`。
 - `apps/pages-api/src/openapi.js` 是开发期 API 合约源码，只服务实现、测试和受控内部集成。
+- 受控集成可使用经过认证的站点级 vars/secrets mutation API；普通用户和 agent 仍通过 `xd-cell` 操作，OpenAPI 不因此成为公开入口。
 - API 文档不复刻不完整 endpoint 清单；需要改 API 行为时，以 handler、`apps/pages-api/src/openapi.js` 和 focused `node:test` 一起更新为准。
 - 用户可见发布、状态、访问控制和回滚流程以 CLI help 与 `apps/pages-skill/skill/SKILL.md` 为准。
 - v1 `apps/server` 属于 legacy；v1 `/openapi.json` 继续服务旧 `workers.xd.team` 链路，不代表 v2 对外承诺公开 OpenAPI。

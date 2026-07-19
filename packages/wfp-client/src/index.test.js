@@ -235,6 +235,7 @@ test('get and delete user worker use dispatch namespace script endpoint', async 
 
 test('put and delete user worker secret use dispatch namespace script secrets endpoint', async () => {
   const calls = [];
+  const controller = new globalThis.AbortController();
   const scriptUrl =
     'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/xd-cell-workers-staging' +
     '/scripts/pages-v2-staging-docs-ver-1';
@@ -252,8 +253,9 @@ test('put and delete user worker secret use dispatch namespace script secrets en
   await client.putUserWorkerSecret('pages-v2-staging-docs-ver-1', {
     name: 'API_TOKEN',
     value: 'secret-value',
-  });
-  await client.deleteUserWorkerSecret('pages-v2-staging-docs-ver-1', 'API_TOKEN');
+  }, { signal: controller.signal });
+  await client.deleteUserWorkerSecret('pages-v2-staging-docs-ver-1', 'API_TOKEN', { signal: controller.signal });
+  controller.abort();
 
   assert.equal(calls[0].method, 'PUT');
   assert.equal(calls[0].url, `${scriptUrl}/secrets`);
@@ -264,6 +266,8 @@ test('put and delete user worker secret use dispatch namespace script secrets en
   });
   assert.equal(calls[1].method, 'DELETE');
   assert.equal(calls[1].url, `${scriptUrl}/secrets/API_TOKEN`);
+  assert.equal(calls[0].signal.aborted, true);
+  assert.equal(calls[1].signal.aborted, true);
 });
 
 test('updateUserWorkerBindings patches script settings and preserves non-plain-text bindings', async () => {
@@ -360,6 +364,54 @@ test('updateUserWorkerBindings removes plain-text bindings on delete without tou
       { type: 'secret_text', name: 'API_TOKEN' },
     ],
   });
+});
+
+test('updateUserWorkerBindings rejects a successful settings response without bindings before PATCH', async () => {
+  const methods = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      methods.push(request.method);
+      return new Response(null, { status: 200 });
+    },
+  });
+
+  await assert.rejects(
+    client.updateUserWorkerBindings('pages-v2-staging-docs-ver-1', {
+      bindings: [{ type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' }],
+    }),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_SETTINGS_INVALID'
+  );
+  assert.deepEqual(methods, ['GET']);
+});
+
+test('updateUserWorkerBindings stops before PATCH when its signal aborts after GET', async () => {
+  const controller = new globalThis.AbortController();
+  const methods = [];
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'token',
+    dispatchNamespace: 'xd-cell-workers-staging',
+    apiBaseUrl: 'https://api.cloudflare.com/client/v4',
+    fetch: async (request) => {
+      methods.push(request.method);
+      if (request.signal.aborted) throw request.signal.reason;
+      controller.abort(new Error('provider timeout'));
+      return Response.json({ success: true, result: { bindings: [] } });
+    },
+  });
+
+  await assert.rejects(
+    client.updateUserWorkerBindings('pages-v2-staging-docs-ver-1', {
+      bindings: [{ type: 'plain_text', name: 'API_BASE', text: 'https://api.example.com' }],
+      signal: controller.signal,
+    }),
+    /provider timeout/
+  );
+  assert.deepEqual(methods, ['GET', 'PATCH']);
 });
 
 test('normalizeWorkerBindings accepts service plain text secret text and VPC network bindings', () => {

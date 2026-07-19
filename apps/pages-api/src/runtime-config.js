@@ -23,6 +23,19 @@ export function normalizeRuntimeVars(value) {
   return output;
 }
 
+export function runtimeVarsObject(records = []) {
+  return Object.fromEntries(records.map((record) => [record.name, record.value]));
+}
+
+export function runtimeVarObjectsEqual(left = {}, right = {}) {
+  const leftNames = Object.keys(left).sort();
+  const rightNames = Object.keys(right).sort();
+  return (
+    leftNames.length === rightNames.length &&
+    leftNames.every((name, index) => name === rightNames[index] && left[name] === right[name])
+  );
+}
+
 export function normalizeRuntimeSecretName(value) {
   const name = typeof value === 'string' ? value.trim() : '';
   validateRuntimeBindingName(name);

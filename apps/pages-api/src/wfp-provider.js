@@ -34,14 +34,15 @@ export function createDeploymentProvider(env, config) {
       return client.putUserWorkerSecret(input.workerName, {
         name: input.name,
         value: input.value,
-      });
+      }, { signal: input.signal });
     },
     async deleteSecret(input) {
-      return client.deleteUserWorkerSecret(input.workerName, input.name);
+      return client.deleteUserWorkerSecret(input.workerName, input.name, { signal: input.signal });
     },
     async replacePlainTextBindings(input) {
       return client.updateUserWorkerBindings(input.workerName, {
         bindings: runtimeBindingsForProvider({ vars: input.vars || {} }),
+        signal: input.signal,
       });
     },
   });

@@ -8,6 +8,7 @@ import {
   hostnameFamilyForHostname,
 } from './store.js';
 import { departmentTeamDisplayName, deriveDepartmentTeamIdentity, normalizeDepartmentPath } from './department-path.js';
+import { MAX_RUNTIME_VARS, runtimeVarObjectsEqual, runtimeVarsObject, validateRuntimeBindingQuotas } from './runtime-config.js';
 
 export function createTestPagesStore({ now = () => new Date().toISOString(), failAuditWrites = false } = {}) {
   return new TestPagesStore({ now, failAuditWrites });
@@ -31,6 +32,7 @@ class TestPagesStore {
     this.siteSecrets = new Map();
     this.siteVars = new Map();
     this.siteVarHistory = new Map();
+    this.runtimeConfigQueues = new Map();
     this.workerSlots = new Map();
     this.deploymentResourceCleanupTasks = new Map();
     this.accessKeys = new Map();
@@ -1639,12 +1641,18 @@ class TestPagesStore {
   }
 
   async putSiteSecretWithAudit(input) {
-    if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
-    const secret = this.buildSiteSecretRecord(input);
-    await this.recordAuditEvent(secretAuditEvent(input, 'site_secret.put', secret, input.updatedAt || this.now()));
-    this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
-    this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.updatedAt || this.now());
-    return cloneRecord(secret);
+    return this.withRuntimeConfigQueue(input.environment, input.siteId, async () => {
+      if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+      const secret = this.buildSiteSecretRecord(input);
+      const liveVars = this.listEnabledSiteVarsSync(input.environment, input.siteId);
+      const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
+      const candidateSecrets = [...liveSecrets.filter((entry) => entry.name !== input.name), secret];
+      validateRuntimeBindingQuotas(runtimeVarsObject(liveVars), candidateSecrets);
+      await this.recordAuditEvent(secretAuditEvent(input, 'site_secret.put', secret, input.updatedAt || this.now()));
+      this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
+      this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.updatedAt || this.now());
+      return cloneRecord(secret);
+    });
   }
 
   putSiteSecretRecord(input) {
@@ -1688,16 +1696,20 @@ class TestPagesStore {
   }
 
   async deleteSiteSecretWithAudit(input) {
-    if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
-    const secret = this.buildDeletedSiteSecretRecord(input.environment, input.siteId, input.name, { deletedAt: input.deletedAt });
-    await this.recordAuditEvent(
-      secretAuditEvent(input, 'site_secret.delete', secret || { name: input.name }, input.deletedAt || this.now())
-    );
-    if (secret) {
-      this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
-      this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.deletedAt || this.now());
-    }
-    return cloneRecord(secret);
+    return this.withRuntimeConfigQueue(input.environment, input.siteId, async () => {
+      if (this.failAuditWrites) throw new Error('AUDIT_WRITE_FAILED');
+      const secret = this.buildDeletedSiteSecretRecord(input.environment, input.siteId, input.name, {
+        deletedAt: input.deletedAt,
+      });
+      await this.recordAuditEvent(
+        secretAuditEvent(input, 'site_secret.delete', secret || { name: input.name }, input.deletedAt || this.now())
+      );
+      if (secret) {
+        this.siteSecrets.set(siteSecretKey(input.environment, input.siteId, input.name), secret);
+        this.bumpRuntimeConfigGeneration(input.environment, input.siteId, input.deletedAt || this.now());
+      }
+      return cloneRecord(secret);
+    });
   }
 
   deleteSiteSecretRecord(environment, siteId, name, { deletedAt } = {}) {
@@ -1741,6 +1753,73 @@ class TestPagesStore {
     return [...this.siteVars.values()]
       .filter((entry) => entry.environment === environment && entry.siteId === siteId && !entry.deletedAt)
       .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async mutateSiteVar(input) {
+    return this.withRuntimeConfigQueue(input.environment, input.siteId, () => this.mutateSiteVarUnlocked(input));
+  }
+
+  async withRuntimeConfigQueue(environment, siteId, callback) {
+    const queueKey = `${environment}:${siteId}`;
+    const previous = this.runtimeConfigQueues.get(queueKey) || Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => gate);
+    this.runtimeConfigQueues.set(queueKey, queued);
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release();
+      if (this.runtimeConfigQueues.get(queueKey) === queued) this.runtimeConfigQueues.delete(queueKey);
+    }
+  }
+
+  async withRuntimeConfigLock(environment, siteId, callback) {
+    return this.withRuntimeConfigQueue(environment, siteId, async () => {
+      const route = this.routes.get(this.routeBySiteId.get(siteId));
+      if (!route || route.environment !== environment) throw new Error('RUNTIME_CONFIG_LOCKED');
+      return callback({
+        runtimeConfigGeneration: Number(route.runtimeConfigGeneration || 0),
+        runtimeConfigLockId: null,
+        signal: new globalThis.AbortController().signal,
+      });
+    });
+  }
+
+  async mutateSiteVarUnlocked(input) {
+    const liveVars = this.listEnabledSiteVarsSync(input.environment, input.siteId);
+    const liveSecrets = await this.listEnabledSiteSecrets(input.environment, input.siteId);
+    const nextVars = runtimeVarsObject(liveVars);
+    if (input.operation === 'delete') delete nextVars[input.name];
+    else nextVars[input.name] = input.value;
+    if (Object.keys(nextVars).length > MAX_RUNTIME_VARS) throw new Error('RUNTIME_VARS_LIMIT_EXCEEDED');
+    validateRuntimeBindingQuotas(nextVars, liveSecrets);
+
+    const existing = liveVars.find((record) => record.name === input.name) || null;
+    const route = this.routes.get(this.routeBySiteId.get(input.siteId));
+    const generation = Number(route?.runtimeConfigGeneration || 0);
+    if (runtimeVarObjectsEqual(runtimeVarsObject(liveVars), nextVars)) {
+      return {
+        record: cloneRecord(existing || { name: input.name }),
+        vars: cloneRecord(liveVars),
+        generation,
+        changed: false,
+      };
+    }
+
+    const vars = await this.replaceSiteVars({
+      ...input,
+      vars: nextVars,
+    });
+    return {
+      record: cloneRecord(input.operation === 'delete' ? existing : vars.find((record) => record.name === input.name)),
+      vars,
+      generation: generation + 1,
+      changed: true,
+    };
   }
 
   async replaceSiteVars(input) {

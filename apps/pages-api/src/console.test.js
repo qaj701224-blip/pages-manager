@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from './index.js';
+import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 import { createTestPagesStore } from './test-store.js';
 
 test('public API host cannot use forged console identity headers', async () => {
@@ -1075,6 +1076,45 @@ test('site config writes allow publisher access policy and runtime config', asyn
   });
 });
 
+test('Console runtime vars accept long runtime var names without deriving record ids from them', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const mutateSiteVar = store.mutateSiteVar.bind(store);
+  store.mutateSiteVar = async (input) => {
+    input.createId?.(input.name);
+    return mutateSiteVar(input);
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/LONG_RUNTIME_CONFIGURATION_NAME', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'enabled' },
+    }),
+    env(store, {
+      nextId: (prefix) => {
+        if (prefix !== 'var') throw new Error('INVALID_RUNTIME_VAR_ID_PREFIX');
+        return 'var_1';
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual((await response.json()).var, {
+    name: 'LONG_RUNTIME_CONFIGURATION_NAME',
+    value: 'enabled',
+    revision: 1,
+    updatedAt: '2026-06-15T00:00:00.000Z',
+    appliesTo: 'next_deployment',
+  });
+});
+
 test('site admin secret changes sync to active WFP worker', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
@@ -1161,6 +1201,197 @@ test('site admin var changes sync to active WFP worker plain text bindings', asy
   ]);
 });
 
+test('site admin concurrent var puts preserve both runtime bindings', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const testEnvironment = env(store);
+
+  const [apiBase, featureFlag] = await Promise.all([
+    worker.fetch(
+      internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/API_BASE', {
+        userId: 'usr_me',
+        method: 'PUT',
+        body: { value: 'https://api.example.com' },
+      }),
+      testEnvironment
+    ),
+    worker.fetch(
+      internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/FEATURE_FLAG', {
+        userId: 'usr_me',
+        method: 'PUT',
+        body: { value: 'on' },
+      }),
+      testEnvironment
+    ),
+  ]);
+
+  assert.equal(apiBase.status, 200, await apiBase.clone().text());
+  assert.equal(featureFlag.status, 200, await featureFlag.clone().text());
+  assert.deepEqual(
+    (await store.listEnabledSiteVars('production', 'site_mine')).map(({ name, value }) => ({ name, value })),
+    [
+      { name: 'API_BASE', value: 'https://api.example.com' },
+      { name: 'FEATURE_FLAG', value: 'on' },
+    ]
+  );
+});
+
+test('site admin var mutations map binding and revision conflicts to stable errors', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await store.putSiteSecret({
+    id: 'sec_api_base',
+    environment: 'production',
+    siteId: 'site_mine',
+    name: 'API_BASE',
+    value: 'existing-secret-private-value',
+    actorId: 'usr_me',
+  });
+
+  const conflict = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/API_BASE', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'new-var-private-value' },
+    }),
+    env(store)
+  );
+  for (let index = 1; index < 64; index += 1) {
+    const name = `SECRET_${String(index).padStart(2, '0')}`;
+    store.siteSecrets.set(`production:site_mine:${name}`, {
+      id: `sec_${index}`,
+      environment: 'production',
+      siteId: 'site_mine',
+      name,
+      value: `secret-${index}`,
+      revision: 1,
+      createdBy: 'usr_me',
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z',
+      deletedAt: null,
+    });
+  }
+  const quota = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/FEATURE_FLAG', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'quota-private-value' },
+    }),
+    env(store)
+  );
+  store.mutateSiteVar = async () => {
+    throw new Error('SITE_VAR_REVISION_CONFLICT');
+  };
+  const revision = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/FEATURE_FLAG', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    env(store)
+  );
+  const conflictText = await conflict.text();
+  const quotaText = await quota.text();
+
+  assert.equal(conflict.status, 400);
+  assert.equal(JSON.parse(conflictText).error.code, 'RUNTIME_BINDING_NAME_CONFLICT');
+  assert.doesNotMatch(conflictText, /existing-secret-private-value|new-var-private-value/);
+  assert.equal(quota.status, 413);
+  assert.equal(JSON.parse(quotaText).error.code, 'RUNTIME_BINDINGS_LIMIT_EXCEEDED');
+  assert.doesNotMatch(quotaText, /quota-private-value|secret-\d/);
+  assert.equal(revision.status, 409);
+  assert.equal((await revision.json()).error.code, 'RUNTIME_CONFIG_CHANGED');
+});
+
+test('site admin var mutations log one safe diagnostic for unexpected store failures', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'sensitive-console-slug',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const error = new Error('SENSITIVE_ERROR_MESSAGE SENSITIVE_SQL');
+  error.name = 'SENSITIVE_ERROR_NAME';
+  error.code = 'SENSITIVE_ERROR_CODE';
+  error.stack = 'SENSITIVE_ERROR_STACK';
+  error.cause = new Error('SENSITIVE_ERROR_CAUSE');
+  store.mutateSiteVar = async () => {
+    throw markRuntimeConfigError(error, { stage: 'mutation_batch', reason: 'store_operation_failed' });
+  };
+  const lines = [];
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/SENSITIVE_VAR_NAME', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'SENSITIVE_VAR_VALUE' },
+    }),
+    env(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
+  );
+  const text = await response.text();
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(text), {
+    error: {
+      code: 'RUNTIME_CONFIG_UNSUPPORTED',
+      message: 'Runtime config store is unavailable.',
+      action: 'Check runtime config store configuration.',
+    },
+  });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: 'pages_runtime_config_failure',
+    operation: 'var_put',
+    environment: 'production',
+    siteId: 'site_mine',
+    stage: 'mutation_batch',
+    reason: 'store_operation_failed',
+    errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+  });
+  assert.doesNotMatch(lines[0], /sensitive|SENSITIVE|Authorization|Bearer|SQL/);
+});
+
+test('site admin var mutations log capability failures', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  store.mutateSiteVar = undefined;
+  const lines = [];
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/FEATURE_FLAG', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    env(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
+  );
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: 'pages_runtime_config_failure',
+    operation: 'var_delete',
+    environment: 'production',
+    siteId: 'site_mine',
+    stage: 'capability_check',
+    reason: 'capability_unavailable',
+    errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+  });
+});
+
 test('site admin secret update reports active WFP worker sync failures', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
@@ -1170,6 +1401,7 @@ test('site admin secret update reports active WFP worker sync failures', async (
     visibility: 'org',
   });
   await activateSite(store, 'site_mine', { workerName: 'pages-v2-mine-ver-1' });
+  const lines = [];
 
   const response = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
@@ -1178,6 +1410,7 @@ test('site admin secret update reports active WFP worker sync failures', async (
       body: { value: 'super-secret-value' },
     }),
     env(store, {
+      logRuntimeConfigFailure: (line) => lines.push(line),
       WFP_PROVIDER: {
         putSecret: async () => {
           throw new Error('cloudflare failed');
@@ -1189,6 +1422,181 @@ test('site admin secret update reports active WFP worker sync failures', async (
   assert.equal(response.status, 502, await response.clone().text());
   assert.equal((await response.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
   assert.equal((await store.listEnabledSiteSecrets('production', 'site_mine'))[0].name, 'API_TOKEN');
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'secret_sync',
+      environment: 'production',
+      siteId: 'site_mine',
+      stage: 'provider_sync',
+      reason: 'provider_request_failed',
+      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+    },
+  ]);
+});
+
+test('site admin secret writes map binding conflicts and quotas to stable errors', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_mine',
+    vars: { FEATURE_FLAG: 'on' },
+    actorId: 'usr_me',
+  });
+
+  const lines = [];
+  const environment = env(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
+  const conflict = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/FEATURE_FLAG', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'conflicting-secret-value' },
+    }),
+    environment
+  );
+  await store.replaceSiteVars({
+    environment: 'production',
+    siteId: 'site_mine',
+    vars: Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`VAR_${String(index).padStart(2, '0')}`, 'on'])),
+    actorId: 'usr_me',
+  });
+  const quota = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'quota-secret-value' },
+    }),
+    environment
+  );
+  store.putSiteSecretWithAudit = async () => {
+    throw new Error('SITE_SECRET_REVISION_CONFLICT');
+  };
+  const revision = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'revision-secret-value' },
+    }),
+    environment
+  );
+  const conflictText = await conflict.text();
+  const quotaText = await quota.text();
+
+  assert.equal(conflict.status, 400);
+  assert.equal(JSON.parse(conflictText).error.code, 'RUNTIME_BINDING_NAME_CONFLICT');
+  assert.doesNotMatch(conflictText, /conflicting-secret-value/);
+  assert.equal(quota.status, 413);
+  assert.equal(JSON.parse(quotaText).error.code, 'RUNTIME_BINDINGS_LIMIT_EXCEEDED');
+  assert.doesNotMatch(quotaText, /quota-secret-value/);
+  assert.equal(revision.status, 409);
+  assert.equal((await revision.json()).error.code, 'RUNTIME_CONFIG_CHANGED');
+  assert.deepEqual(lines, []);
+});
+
+test('site admin secret mutations log safe store and capability diagnostics', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'sensitive-console-secret-slug',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const lines = [];
+  const environment = env(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
+  const storeError = new Error('SENSITIVE_SECRET_VALUE SENSITIVE_SQL');
+  storeError.cause = new Error('SENSITIVE_SECRET_CAUSE');
+  const throwStoreError = async () => {
+    throw markRuntimeConfigError(storeError, { stage: 'mutation_batch', reason: 'store_operation_failed' });
+  };
+  store.putSiteSecretWithAudit = throwStoreError;
+  store.deleteSiteSecretWithAudit = throwStoreError;
+
+  const putFailure = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/SENSITIVE_SECRET_NAME', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'SENSITIVE_SECRET_VALUE' },
+    }),
+    environment
+  );
+  const deleteFailure = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/SENSITIVE_SECRET_NAME', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    environment
+  );
+
+  store.putSiteSecretWithAudit = undefined;
+  store.deleteSiteSecretWithAudit = undefined;
+  const putCapability = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/SENSITIVE_SECRET_NAME', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'SENSITIVE_SECRET_VALUE' },
+    }),
+    environment
+  );
+  const deleteCapability = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/SENSITIVE_SECRET_NAME', {
+      userId: 'usr_me',
+      method: 'DELETE',
+    }),
+    environment
+  );
+
+  assert.deepEqual(
+    [putFailure, deleteFailure, putCapability, deleteCapability].map((response) => response.status),
+    [503, 503, 503, 503]
+  );
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_put',
+        environment: 'production',
+        siteId: 'site_mine',
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_delete',
+        environment: 'production',
+        siteId: 'site_mine',
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_put',
+        environment: 'production',
+        siteId: 'site_mine',
+        stage: 'capability_check',
+        reason: 'capability_unavailable',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_delete',
+        environment: 'production',
+        siteId: 'site_mine',
+        stage: 'capability_check',
+        reason: 'capability_unavailable',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+    ]
+  );
+  assert.doesNotMatch(lines.join('\n'), /sensitive|SENSITIVE|Authorization|Bearer|SQL/);
 });
 
 test('site admin secret writes map store failures to runtime config errors', async () => {
@@ -1199,6 +1607,7 @@ test('site admin secret writes map store failures to runtime config errors', asy
     ownerUserId: 'usr_me',
     visibility: 'org',
   });
+  const lines = [];
 
   const response = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
@@ -1206,12 +1615,23 @@ test('site admin secret writes map store failures to runtime config errors', asy
       method: 'PUT',
       body: { value: 'super-secret-value' },
     }),
-    env(store)
+    env(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
   );
 
   assert.equal(response.status, 503, await response.clone().text());
   assert.equal((await response.json()).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
   assert.deepEqual(await store.listEnabledSiteSecrets('production', 'site_mine'), []);
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'secret_put',
+      environment: 'production',
+      siteId: 'site_mine',
+      stage: 'unknown',
+      reason: 'store_operation_failed',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    },
+  ]);
 });
 
 test('site admin secret deletes map store failures to runtime config errors', async () => {
@@ -1236,18 +1656,30 @@ test('site admin secret deletes map store failures to runtime config errors', as
     updatedAt: '2026-06-15T00:00:00.000Z',
   });
   store.failAuditWrites = true;
+  const lines = [];
 
   const response = await worker.fetch(
     internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/secrets/API_TOKEN', {
       userId: 'usr_me',
       method: 'DELETE',
     }),
-    env(store)
+    env(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
   );
 
   assert.equal(response.status, 503, await response.clone().text());
   assert.equal((await response.json()).error.code, 'RUNTIME_CONFIG_UNSUPPORTED');
   assert.equal((await store.listEnabledSiteSecrets('production', 'site_mine'))[0].name, 'API_TOKEN');
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'secret_delete',
+      environment: 'production',
+      siteId: 'site_mine',
+      stage: 'unknown',
+      reason: 'store_operation_failed',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    },
+  ]);
 });
 
 test('site admin can update access policy and delete runtime config entries', async () => {

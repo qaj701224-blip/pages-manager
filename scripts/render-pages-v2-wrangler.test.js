@@ -203,7 +203,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   const config = renderPagesApi('staging');
 
   assert.match(config, /name = "pages-api-staging"/);
-  assert.doesNotMatch(config, /\[observability/);
+  assert.match(config, /\[observability\.logs\]\nenabled = true\nhead_sampling_rate = 1/);
   assert.match(config, /pattern = "api-staging\.pages\.xd\.team\/\*"/);
   assert.match(config, /zone_name = "xd\.team"/);
   assert.doesNotMatch(config, /custom_domain = true/);

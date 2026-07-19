@@ -8,6 +8,7 @@ import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, newId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
+import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import {
   hostnameForSlug,
   normalizeSlug,
@@ -485,7 +486,15 @@ export async function updateSiteAccess(request, env, config, store, session, sit
 export async function putSiteVar(request, env, config, store, session, siteId, name, options = {}) {
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
-  if (typeof store.replaceSiteVars !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
+  if (typeof store.mutateSiteVar !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'var_put',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
   }
 
@@ -496,34 +505,102 @@ export async function putSiteVar(request, env, config, store, session, siteId, n
     return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
   }
 
-  const vars = await nextVarsForPut(store, config.environment, site.id, name, body.value);
-  if (vars instanceof Response) return vars;
-  const records = await replaceSiteVars(store, env, config, session, site.id, vars);
-  const record = records.find((item) => item.name === name);
-  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, vars);
+  const normalized = normalizeVarPatch(name, body.value);
+  if (normalized instanceof Response) return normalized;
+  let mutation;
+  try {
+    mutation = await store.mutateSiteVar({
+      environment: config.environment,
+      siteId: site.id,
+      operation: 'put',
+      name: normalized.name,
+      value: normalized.value,
+      actorId: session.userId,
+      updatedAt: readNow(env),
+    });
+  } catch (error) {
+    const response = runtimeVarMutationError(error);
+    if (response.status >= 500) {
+      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      logRuntimeConfigFailure(env, {
+        operation: 'var_put',
+        environment: config.environment,
+        siteId: site.id,
+        ...diagnostic,
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      });
+    }
+    return response;
+  }
+  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
   if (syncResult instanceof Response) return syncResult;
-  return jsonOk({ var: formatSiteVarMutation(record, syncResult.appliesTo) });
+  return jsonOk({ var: formatSiteVarMutation(mutation.record, syncResult.appliesTo) });
 }
 
 export async function deleteSiteVar(env, config, store, session, siteId, name, options = {}) {
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
-  if (typeof store.replaceSiteVars !== 'function' || typeof store.listEnabledSiteVars !== 'function') {
+  if (typeof store.mutateSiteVar !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'var_delete',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
   }
 
-  const vars = await nextVarsForDelete(store, config.environment, site.id, name);
-  if (vars instanceof Response) return vars;
-  await replaceSiteVars(store, env, config, session, site.id, vars);
-  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, vars);
+  const normalized = normalizeVarName(name);
+  if (normalized instanceof Response) return normalized;
+  let mutation;
+  try {
+    mutation = await store.mutateSiteVar({
+      environment: config.environment,
+      siteId: site.id,
+      operation: 'delete',
+      name: normalized,
+      actorId: session.userId,
+      updatedAt: readNow(env),
+    });
+  } catch (error) {
+    const response = runtimeVarMutationError(error);
+    if (response.status >= 500) {
+      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      logRuntimeConfigFailure(env, {
+        operation: 'var_delete',
+        environment: config.environment,
+        siteId: site.id,
+        ...diagnostic,
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      });
+    }
+    return response;
+  }
+  const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
   if (syncResult instanceof Response) return syncResult;
-  return jsonOk({ var: formatDeletedSiteVarMutation(name, syncResult.appliesTo) });
+  return jsonOk({ var: formatDeletedSiteVarMutation(normalized, syncResult.appliesTo) });
 }
 
 export async function putSiteSecret(request, env, config, store, session, siteId, name, options = {}) {
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.putSiteSecretWithAudit !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_put',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
   }
 
@@ -564,6 +641,22 @@ export async function putSiteSecret(request, env, config, store, session, siteId
     if (syncError) return syncError;
     return jsonOk({ secret: formatSiteSecret(secret) });
   } catch (error) {
+    if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
+      return jsonError(
+        'RUNTIME_BINDING_NAME_CONFLICT',
+        'Runtime binding names conflict.',
+        400,
+        'Use unique names for vars and site secrets.'
+      );
+    }
+    if (error?.message === 'RUNTIME_BINDINGS_LIMIT_EXCEEDED') {
+      return jsonError(
+        'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+        'Runtime bindings exceed platform limits.',
+        413,
+        'Reduce vars or site secrets and retry.'
+      );
+    }
     if (isRuntimeConfigConflict(error)) {
       return jsonError(
         'RUNTIME_CONFIG_CHANGED',
@@ -572,12 +665,20 @@ export async function putSiteSecret(request, env, config, store, session, siteId
         'Retry the secret command.'
       );
     }
-    return jsonError(
+    const response = jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
       'Runtime secret store is unavailable.',
       503,
       'Check runtime secret store configuration.'
     );
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_put',
+      environment: config.environment,
+      siteId: site.id,
+      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
+    return response;
   }
 }
 
@@ -585,6 +686,14 @@ export async function deleteSiteSecret(env, config, store, session, siteId, name
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.deleteSiteSecretWithAudit !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_delete',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
   }
   const normalizedName = normalizeSecretNameForResponse(name);
@@ -617,12 +726,20 @@ export async function deleteSiteSecret(env, config, store, session, siteId, name
         'Retry the secret command.'
       );
     }
-    return jsonError(
+    const response = jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
       'Runtime secret store is unavailable.',
       503,
       'Check runtime secret store configuration.'
     );
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_delete',
+      environment: config.environment,
+      siteId: site.id,
+      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
+    return response;
   }
 }
 
@@ -759,38 +876,6 @@ function formatSiteSecret(record) {
   };
 }
 
-async function nextVarsForPut(store, environment, siteId, name, value) {
-  const normalized = normalizeVarPatch(name, value);
-  if (normalized instanceof Response) return normalized;
-  const vars = await currentVarsObject(store, environment, siteId);
-  vars[normalized.name] = normalized.value;
-  return vars;
-}
-
-async function nextVarsForDelete(store, environment, siteId, name) {
-  const normalized = normalizeVarName(name);
-  if (normalized instanceof Response) return normalized;
-  const vars = await currentVarsObject(store, environment, siteId);
-  delete vars[normalized];
-  return vars;
-}
-
-async function currentVarsObject(store, environment, siteId) {
-  const records = await store.listEnabledSiteVars(environment, siteId);
-  return Object.fromEntries(records.map((record) => [record.name, record.value]));
-}
-
-async function replaceSiteVars(store, env, config, session, siteId, vars) {
-  return store.replaceSiteVars({
-    environment: config.environment,
-    siteId,
-    vars,
-    actorId: session.userId,
-    updatedAt: readNow(env),
-    createId: (name) => nextId(env, `var${name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'runtime'}`),
-  });
-}
-
 function normalizeVarPatch(name, value) {
   if (typeof value !== 'string') {
     return jsonError('RUNTIME_VAR_VALUE_INVALID', 'Runtime var value is invalid.', 400, 'Send a string value.');
@@ -826,6 +911,42 @@ function runtimeVarError(error) {
     );
   }
   return jsonError('RUNTIME_VAR_INVALID', 'Runtime var is invalid.', 400, 'Use an uppercase non-sensitive binding name.');
+}
+
+function runtimeVarMutationError(error) {
+  if (error?.message === 'RUNTIME_VARS_LIMIT_EXCEEDED') {
+    return jsonError('RUNTIME_VARS_LIMIT_EXCEEDED', 'Runtime vars limit exceeded.', 413, 'Use fewer or smaller vars.');
+  }
+  if (error?.message === 'RUNTIME_BINDING_NAME_CONFLICT') {
+    return jsonError(
+      'RUNTIME_BINDING_NAME_CONFLICT',
+      'Runtime binding names conflict.',
+      400,
+      'Use unique names for vars and site secrets.'
+    );
+  }
+  if (error?.message === 'RUNTIME_BINDINGS_LIMIT_EXCEEDED') {
+    return jsonError(
+      'RUNTIME_BINDINGS_LIMIT_EXCEEDED',
+      'Runtime bindings exceed platform limits.',
+      413,
+      'Reduce vars or site secrets and retry.'
+    );
+  }
+  if (error?.message === 'SITE_VAR_REVISION_CONFLICT') {
+    return jsonError(
+      'RUNTIME_CONFIG_CHANGED',
+      'Runtime config changed while it was being updated.',
+      409,
+      'Retry the runtime config change.'
+    );
+  }
+  return jsonError(
+    'RUNTIME_CONFIG_UNSUPPORTED',
+    'Runtime config store is unavailable.',
+    503,
+    'Check runtime config store configuration.'
+  );
 }
 
 function normalizeSecretNameForResponse(value) {
