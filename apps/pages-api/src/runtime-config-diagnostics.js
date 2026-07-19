@@ -6,6 +6,7 @@ const STAGES = new Set([
   'route_state_read',
   'bindings_read',
   'revision_read',
+  'statement_build',
   'mutation_batch',
   'post_commit_read',
   'provider_setup',

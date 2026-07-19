@@ -113,6 +113,17 @@ test('runtime config errors keep the first safe diagnostic marker', () => {
   });
 });
 
+test('runtime config diagnostics accept the closed statement build stage', () => {
+  const error = markRuntimeConfigError(new Error('D1_TYPE_ERROR: SENSITIVE_VALUE'), {
+    stage: 'statement_build',
+  });
+
+  assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+    stage: 'statement_build',
+    reason: 'store_operation_failed',
+  });
+});
+
 test('runtime config diagnostics preserve primitive thrown values', () => {
   const error = 'SENSITIVE_PRIMITIVE_ERROR';
 

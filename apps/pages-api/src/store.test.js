@@ -1377,6 +1377,84 @@ test('D1 site var mutation classifies lock acquisition schema failures', async (
   );
 });
 
+test('D1 site var put marks synchronous statement construction failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_VAR_VALUE');
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  store.siteVarInsertStatement = () => {
+    throw failure;
+  };
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'FEATURE_FLAG',
+      value: 'on',
+      actorId: 'usr_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 site var delete marks synchronous statement construction failures', async () => {
+  const siteVars = new Map([
+    [
+      'production:site_1:FEATURE_FLAG:var_1',
+      {
+        id: 'var_1',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'FEATURE_FLAG',
+        value: 'on',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([['production:site_1', { runtime_config_generation: 1, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_VAR_VALUE');
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ siteVars, routes }), {
+    now: () => '2026-06-15T00:01:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  store.siteVarDeleteStatement = () => {
+    throw failure;
+  };
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'delete',
+      name: 'FEATURE_FLAG',
+      actorId: 'usr_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
 test('D1 audited site secret mutation marks unexpected batch failures', async () => {
   const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
   const baseDb = fakeRuntimeConfigDb({ routes });
@@ -1411,6 +1489,98 @@ test('D1 audited site secret mutation marks unexpected batch failures', async ()
       assert.equal(error, failure);
       assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
         stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret put marks synchronous statement construction failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_SECRET_VALUE');
+  const store = new D1PagesStore(fakeRuntimeConfigDb({ routes }), {
+    now: () => '2026-06-15T00:00:00.000Z',
+    secretEncryptionKey: 'test-encryption-key',
+  });
+  store.siteSecretInsertStatement = () => {
+    throw failure;
+  };
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      value: 'super-secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret delete marks synchronous statement construction failures', async () => {
+  const siteSecrets = new Map([
+    [
+      'production:site_1:API_TOKEN',
+      {
+        id: 'sec_1',
+        environment: 'production',
+        site_id: 'site_1',
+        name: 'API_TOKEN',
+        encrypted_value: 'encrypted-value',
+        revision: 1,
+        created_by: 'usr_1',
+        created_at: '2026-06-15T00:00:00.000Z',
+        updated_at: '2026-06-15T00:00:00.000Z',
+        deleted_at: null,
+      },
+    ],
+  ]);
+  const routes = new Map([['production:site_1', { runtime_config_generation: 1, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const failure = new Error('D1_TYPE_ERROR: SENSITIVE_SECRET_VALUE');
+  const baseDb = fakeRuntimeConfigDb({ siteSecrets, routes });
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      prepare(sql) {
+        if (/UPDATE site_secrets\s+SET deleted_at = \?, updated_at = \?/.test(sql)) throw failure;
+        return baseDb.prepare(sql);
+      },
+    },
+    {
+      now: () => '2026-06-15T00:01:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.deleteSiteSecretWithAudit({
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'statement_build',
         reason: 'store_operation_failed',
       });
       return true;

@@ -2925,6 +2925,7 @@ export class D1PagesStore {
           { name: input.name, value: input.value },
         ]);
 
+        diagnosticStage = 'statement_build';
         const secretStatement = existing
           ? this.db
               .prepare(
@@ -3100,6 +3101,7 @@ export class D1PagesStore {
         const secret = existing ? mapSiteSecretMetadata({ ...existing, deleted_at: now, updated_at: now }) : null;
         const statements = [];
         if (!existing) {
+          diagnosticStage = 'statement_build';
           this.pushRuntimeChangeStatement(
             statements,
             this.auditEventStatement(secretAuditEvent(input, 'site_secret.delete', { name: input.name }, now)),
@@ -3117,6 +3119,7 @@ export class D1PagesStore {
         }
 
         const revision = Number(existing.revision || 0);
+        diagnosticStage = 'statement_build';
         const auditRecord = secretAuditEvent(input, 'site_secret.delete', secret, now);
         this.pushRuntimeChangeStatement(
           statements,
@@ -3218,8 +3221,10 @@ export class D1PagesStore {
 
         const existing = liveVars.find((record) => record.name === input.name) || null;
         if (runtimeVarObjectsEqual(runtimeVarsObject(liveVars), nextVars)) {
+          diagnosticStage = 'statement_build';
+          const releaseStatement = this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now);
           diagnosticStage = 'mutation_batch';
-          const release = await this.releaseRuntimeConfigLockStatement(input.environment, input.siteId, lockId, now).run();
+          const release = await releaseStatement.run();
           released = release?.meta?.changes === 1;
           if (!released) throw new Error('SITE_VAR_REVISION_CONFLICT');
           return {
@@ -3232,6 +3237,7 @@ export class D1PagesStore {
 
         const statements = [];
         if (input.operation === 'delete') {
+          diagnosticStage = 'statement_build';
           this.pushRuntimeChangeStatement(
             statements,
             this.siteVarDeleteStatement({
@@ -3245,6 +3251,7 @@ export class D1PagesStore {
         } else {
           diagnosticStage = 'revision_read';
           const revision = (await this.nextSiteVarRevision(input.environment, input.siteId, input.name)) + 1;
+          diagnosticStage = 'statement_build';
           this.pushRuntimeChangeStatement(
             statements,
             existing
