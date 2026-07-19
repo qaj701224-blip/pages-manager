@@ -132,11 +132,15 @@ DELETE 请求：
 
 持久层更新和 Cloudflare Worker 同步无法组成跨系统事务，沿用 secrets API 的既有语义：store commit 成功后 provider 同步失败返回 502，重试同一个 PUT/DELETE 用于收敛 active Worker。共享 provider sync lock 避免较旧的 WFP settings PATCH 与 secret PUT/DELETE 交错覆盖；锁内读取最新 store 状态，确保旧请求也向当前配置收敛。下一次正常 Worker deploy 始终从站点当前 runtime config 重建 bindings。
 
+非预期的 store mutation 或 provider sync 异常必须向 Workers `console.error` 写入一条结构化诊断日志。日志 schema 是闭集，只允许 `event=pages_runtime_config_failure`、`operation`、`environment`、`siteId`、`stage`、`reason` 和 `errorCode`；所有动态字段在记录前都按允许值校验，不匹配时写 `unknown`。`environment` 只取 `production`、`staging`、`local`；`siteId` 只接受长度不超过 69 且匹配 `^site_[a-z0-9]{1,64}$` 的值；`operation` 只取 `var_put`、`var_delete`、`secret_put`、`secret_delete`、`plain_text_sync`、`secret_sync`；`stage` 只取 `capability_check`、`lock_acquire`、`route_state_read`、`bindings_read`、`revision_read`、`mutation_batch`、`post_commit_read`、`provider_setup`、`provider_sync`、`unknown`；`reason` 只取 `capability_unavailable`、`schema_missing`、`constraint_failed`、`database_busy`、`store_operation_failed`、`provider_configuration_failed`、`provider_request_failed`、`unknown`；`errorCode` 只取公开的 `RUNTIME_CONFIG_UNSUPPORTED`、`RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED`、`SECRET_ACTIVE_WORKER_SYNC_FAILED` 或 `unknown`。
+
+`apps/pages-api/src/store.js` 只在重新抛出非预期异常前附加上述安全 `stage/reason` 内部标记，不直接写日志；公网 handler、Console handler 和共享 provider sync helper 作为日志归属边界，每次失败最多记录一条。capability 缺失虽然没有原始异常，也必须记录 `capability_check/capability_unavailable`。禁止把原始 `Error`、`cause` 或任意 object 作为额外 `console.error` 参数，也不得包含 constructor/name/code/message/stack、站点 slug、var name/value、secret、Bearer token、请求 header、SQL 或 bind 参数。预期的输入校验、配额、名称冲突和 runtime config 并发冲突不记为异常。日志写入必须由 `try/catch` 隔离；`console.error` 自身失败时，既有 HTTP 状态、错误码和无 value 响应保持不变。
+
 ## 实现边界
 
-- `apps/pages-api/src/sites.js`：增加公网 vars 路由、授权入口、mutation handler、无 value 响应 formatter、共享 provider sync lock 和兼容 store 的 generation 稳定化同步；复用 active Worker 定位逻辑，并映射 secret PUT 新增的冲突/配额错误。
+- `apps/pages-api/src/sites.js`：增加公网 vars 路由、授权入口、mutation handler、无 value 响应 formatter、共享 provider sync lock、兼容 store 的 generation 稳定化同步和脱敏异常诊断；复用 active Worker 定位逻辑，并映射 secret PUT 新增的冲突/配额错误。
 - `apps/pages-api/src/console.js`：复用共同的 vars mutation 和稳定化同步 helper，不改变 Console URL、认证和既有 response contract。
-- `apps/pages-api/src/store.js`：增加持有 runtime config lock 的原子单项 var mutation和 provider callback wrapper，并让 vars/secrets mutation 与 provider 同步对同一个 lock、generation、名称冲突和总配额 fail closed。
+- `apps/pages-api/src/store.js`：增加持有 runtime config lock 的原子单项 var mutation和 provider callback wrapper，并让 vars/secrets mutation 与 provider 同步对同一个 lock、generation、名称冲突和总配额 fail closed；非预期 mutation 异常只附加闭集 `stage/reason` 内部标记。
 - `apps/pages-api/migrations/0015_runtime_config_lock_lease.sql`：增加 runtime config lock 租约到期时间，允许异常终止后的安全接管。
 - `apps/pages-api/src/wfp-provider.js`、`packages/wfp-client/src/index.js`：把 lock callback 的 `AbortSignal` 传递到 WFP settings 和 secret 请求，使 provider 超时或续租失败能终止网络操作。
 - `apps/pages-api/src/store.test.js`：覆盖不同名称的并发 PUT 不丢更新，以及 vars/secret 并发竞争只允许一个合法结果提交。
@@ -162,6 +166,8 @@ DELETE 请求：
 - provider 操作在 15 秒超时或续租失去 fencing 时收到 abort 并返回失败；测试不把客户端取消等同于 provider 侧 CAS。
 - 不提供共享锁的兼容 store 中，两次 provider 同步逆序完成时由 generation 稳定化保证 active Worker 最终等于 store；持续竞争返回 409。
 - store 并发冲突返回 409；provider 同步失败返回 502，且响应不包含 var value、secret、token 或 provider detail。
+- 非预期 store/provider 异常只记录一次结构化安全字段；测试使用 slug、var name/value、secret、header 以及恶意 `Error` name/code/message/stack/cause 哨兵，断言日志字段和值都属于允许集合且不包含任何哨兵、原始错误、SQL 或 bind 参数。
+- capability 缺失和各 store/provider 异常阶段产生对应安全分类；输入校验、配额、名称冲突和 runtime config 并发冲突不产生日志；`console.error` 抛错时公开状态码和响应体完全不变。
 - `GET /.xd-pages/api/sites/{site}/vars` 返回 405 且不泄露配置或 value；OpenAPI path 不包含 GET operation。
 - 现有 deploy vars、secrets API 和 Console runtime config 测试保持通过。
 - 运行 pages-api focused tests、`pnpm lint` 和完整 `pnpm test`。
