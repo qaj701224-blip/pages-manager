@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import { D1PagesStore, createHostnameClaim } from './store.js';
 import { createTestPagesStore } from './test-store.js';
 
@@ -1287,6 +1288,162 @@ test('D1 store atomically puts a single site var and returns the committed snaps
   );
   assert.equal(routes.get('production:site_1').runtime_config_generation, 1);
   assert.equal(routes.get('production:site_1').runtime_config_lock_id, null);
+});
+
+test('D1 site var mutation marks unexpected batch failures without exposing the error', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const baseDb = fakeRuntimeConfigDb({ routes });
+  const failure = new Error('D1_ERROR: SENSITIVE_SQL SENSITIVE_VALUE');
+  failure.cause = new Error('SENSITIVE_CAUSE');
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      async batch() {
+        throw failure;
+      },
+    },
+    {
+      now: () => '2026-06-15T00:00:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'API_BASE',
+      value: 'https://api.example.com',
+      actorId: 'usr_1',
+      createId: () => 'var_api_base',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 site var mutation classifies lock acquisition schema failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const baseDb = fakeRuntimeConfigDb({ routes });
+  const failure = new Error('D1_ERROR: no such column: runtime_config_lock_expires_at SENSITIVE_VALUE');
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      prepare(sql) {
+        const statement = baseDb.prepare(sql);
+        if (!/SET runtime_config_lock_id = \?, runtime_config_lock_expires_at = \?/.test(sql)) return statement;
+        return {
+          bind(...args) {
+            return {
+              ...statement.bind(...args),
+              async run() {
+                throw failure;
+              },
+            };
+          },
+        };
+      },
+    },
+    {
+      now: () => '2026-06-15T00:00:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.mutateSiteVar({
+      environment: 'production',
+      siteId: 'site_1',
+      operation: 'put',
+      name: 'API_BASE',
+      value: 'https://api.example.com',
+      actorId: 'usr_1',
+      createId: () => 'var_api_base',
+    }),
+    (error) => {
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'lock_acquire',
+        reason: 'schema_missing',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret mutation marks unexpected batch failures', async () => {
+  const routes = new Map([['production:site_1', { runtime_config_generation: 0, updated_at: '2026-06-15T00:00:00.000Z' }]]);
+  const baseDb = fakeRuntimeConfigDb({ routes });
+  const failure = new Error('D1_ERROR: SENSITIVE_SECRET SENSITIVE_SQL');
+  const store = new D1PagesStore(
+    {
+      ...baseDb,
+      async batch() {
+        throw failure;
+      },
+    },
+    {
+      now: () => '2026-06-15T00:00:00.000Z',
+      secretEncryptionKey: 'test-encryption-key',
+    }
+  );
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      value: 'super-secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
+});
+
+test('D1 audited site secret mutation marks pre-lock encryption failures as unknown stage', async () => {
+  const store = new D1PagesStore(fakeRuntimeConfigDb(), {
+    now: () => '2026-06-15T00:00:00.000Z',
+  });
+
+  await assert.rejects(
+    store.putSiteSecretWithAudit({
+      id: 'sec_1',
+      auditId: 'aud_1',
+      environment: 'production',
+      siteId: 'site_1',
+      siteSlug: 'guide',
+      name: 'API_TOKEN',
+      value: 'super-secret-value',
+      actorId: 'usr_1',
+      actorType: 'user',
+      routeId: 'route_1',
+    }),
+    (error) => {
+      assert.deepEqual(readRuntimeConfigErrorDiagnostic(error), {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      return true;
+    }
+  );
 });
 
 test('D1 store reports the dedicated var limit error for the 65th var', async () => {

@@ -8,6 +8,7 @@ import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { newHexId, newId } from './id.js';
 import { MAX_SITE_SECRET_VALUE_BYTES, normalizeRuntimeSecretName, normalizeRuntimeVars } from './runtime-config.js';
+import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import {
   hostnameForSlug,
   normalizeSlug,
@@ -486,6 +487,14 @@ export async function putSiteVar(request, env, config, store, session, siteId, n
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.mutateSiteVar !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'var_put',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
   }
 
@@ -511,7 +520,21 @@ export async function putSiteVar(request, env, config, store, session, siteId, n
       createId: (bindingName) => nextId(env, `var${bindingName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'runtime'}`),
     });
   } catch (error) {
-    return runtimeVarMutationError(error);
+    const response = runtimeVarMutationError(error);
+    if (response.status >= 500) {
+      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      logRuntimeConfigFailure(env, {
+        operation: 'var_put',
+        environment: config.environment,
+        siteId: site.id,
+        ...diagnostic,
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      });
+    }
+    return response;
   }
   const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
   if (syncResult instanceof Response) return syncResult;
@@ -522,6 +545,14 @@ export async function deleteSiteVar(env, config, store, session, siteId, name, o
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.mutateSiteVar !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'var_delete',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
   }
 
@@ -538,7 +569,21 @@ export async function deleteSiteVar(env, config, store, session, siteId, name, o
       updatedAt: readNow(env),
     });
   } catch (error) {
-    return runtimeVarMutationError(error);
+    const response = runtimeVarMutationError(error);
+    if (response.status >= 500) {
+      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      logRuntimeConfigFailure(env, {
+        operation: 'var_delete',
+        environment: config.environment,
+        siteId: site.id,
+        ...diagnostic,
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      });
+    }
+    return response;
   }
   const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
   if (syncResult instanceof Response) return syncResult;
@@ -549,6 +594,14 @@ export async function putSiteSecret(request, env, config, store, session, siteId
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.putSiteSecretWithAudit !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_put',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
   }
 
@@ -613,12 +666,20 @@ export async function putSiteSecret(request, env, config, store, session, siteId
         'Retry the secret command.'
       );
     }
-    return jsonError(
+    const response = jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
       'Runtime secret store is unavailable.',
       503,
       'Check runtime secret store configuration.'
     );
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_put',
+      environment: config.environment,
+      siteId: site.id,
+      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
+    return response;
   }
 }
 
@@ -626,6 +687,14 @@ export async function deleteSiteSecret(env, config, store, session, siteId, name
   const site = options.site || (await requireConsoleSiteRole(store, config, session, siteId, 'publisher'));
   if (site instanceof Response) return site;
   if (typeof store.deleteSiteSecretWithAudit !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_delete',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
   }
   const normalizedName = normalizeSecretNameForResponse(name);
@@ -658,12 +727,20 @@ export async function deleteSiteSecret(env, config, store, session, siteId, name
         'Retry the secret command.'
       );
     }
-    return jsonError(
+    const response = jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
       'Runtime secret store is unavailable.',
       503,
       'Check runtime secret store configuration.'
     );
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_delete',
+      environment: config.environment,
+      siteId: site.id,
+      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
+    return response;
   }
 }
 

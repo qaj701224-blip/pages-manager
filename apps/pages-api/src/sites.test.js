@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
+import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 import { syncActiveWfpPlainTextBindings, syncActiveWfpSecret } from './sites.js';
 import { createTestPagesStore } from './test-store.js';
 
@@ -943,18 +944,20 @@ test('secrets put reports a runtime binding name conflict without exposing the s
     actorId: 'usr_1',
   });
 
+  const lines = [];
   const response = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
       name: 'API_BASE',
       value: 'secret-value-conflict',
     }),
-    testEnv(store)
+    testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
   );
   const text = await response.text();
 
   assert.equal(response.status, 400);
   assert.equal(JSON.parse(text).error.code, 'RUNTIME_BINDING_NAME_CONFLICT');
   assert.doesNotMatch(text, /secret-value-conflict/);
+  assert.deepEqual(lines, []);
 });
 
 test('secrets put reports the shared runtime binding quota without exposing the secret value', async () => {
@@ -985,18 +988,33 @@ test('secrets put reports the shared runtime binding quota without exposing the 
     });
   }
 
+  const lines = [];
+  const environment = testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
   const response = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
       name: 'DEPLOY_KEY',
       value: 'secret-value-over-limit',
     }),
-    testEnv(store)
+    environment
+  );
+  store.putSiteSecretWithAudit = async () => {
+    throw new Error('SITE_SECRET_REVISION_CONFLICT');
+  };
+  const conflict = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
+      name: 'DEPLOY_KEY',
+      value: 'secret-value-conflict',
+    }),
+    environment
   );
   const text = await response.text();
 
   assert.equal(response.status, 413);
   assert.equal(JSON.parse(text).error.code, 'RUNTIME_BINDINGS_LIMIT_EXCEEDED');
   assert.doesNotMatch(text, /secret-value-over-limit/);
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).error.code, 'RUNTIME_CONFIG_CHANGED');
+  assert.deepEqual(lines, []);
 });
 
 test('secrets put maps a historical over-limit vars state to the shared binding quota error', async () => {
@@ -1334,16 +1352,18 @@ test('secrets put reports when active WFP worker sync fails after saving secret'
     hostname: 'guide.pages.xd.team',
   });
   await activateSite(store, site.id);
+  const lines = [];
 
   const response = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
       name: 'API_TOKEN',
-      value: 'secret-value',
+      value: 'provider-secret-private-value',
     }),
     testEnv(store, {
+      logRuntimeConfigFailure: (line) => lines.push(line),
       WFP_PROVIDER: {
         putSecret: async () => {
-          throw new Error('cloudflare failed');
+          throw new Error('SENSITIVE_PROVIDER_SECRET_ERROR');
         },
       },
     })
@@ -1353,6 +1373,261 @@ test('secrets put reports when active WFP worker sync fails after saving secret'
   assert.equal(response.status, 502);
   assert.equal(body.error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
   assert.equal((await store.listEnabledSiteSecrets('production', 'site_1'))[0].name, 'API_TOKEN');
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'secret_sync',
+      environment: 'production',
+      siteId: 'site_1',
+      stage: 'provider_sync',
+      reason: 'provider_request_failed',
+      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+    },
+  ]);
+  assert.doesNotMatch(lines[0], /private|SENSITIVE|API_TOKEN|guide/);
+});
+
+test('runtime provider setup failures log safe vars and secret diagnostics', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'sensitive-provider-slug',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'sensitive-provider-slug.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  const lines = [];
+  const environment = testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
+
+  const varsResult = await syncActiveWfpPlainTextBindings(store, environment, { environment: 'production' }, site, {
+    vars: [{ name: 'SENSITIVE_VAR_NAME', value: 'SENSITIVE_VAR_VALUE' }],
+    generation: 1,
+  });
+  const secretResult = await syncActiveWfpSecret(store, environment, { environment: 'production' }, site, {
+    operation: 'put',
+    name: 'SENSITIVE_SECRET_NAME',
+    value: 'SENSITIVE_SECRET_VALUE',
+  });
+
+  assert.equal(varsResult.status, 502);
+  assert.equal((await varsResult.json()).error.code, 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED');
+  assert.equal(secretResult.status, 502);
+  assert.equal((await secretResult.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'plain_text_sync',
+      environment: 'production',
+      siteId: 'site_1',
+      stage: 'provider_setup',
+      reason: 'provider_configuration_failed',
+      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+    },
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'secret_sync',
+      environment: 'production',
+      siteId: 'site_1',
+      stage: 'provider_setup',
+      reason: 'provider_configuration_failed',
+      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+    },
+  ]);
+  assert.doesNotMatch(lines.join('\n'), /sensitive|SENSITIVE|VAR_NAME|SECRET_NAME|VALUE/);
+});
+
+test('runtime provider target read failures log safe vars and secret diagnostics', async () => {
+  const store = await createSeededStore();
+  store.getRouteBySiteId = async () => {
+    throw new Error('SENSITIVE_ROUTE_READ_ERROR');
+  };
+  const site = { id: 'site_1' };
+  const lines = [];
+  const environment = testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
+
+  const varsResult = await syncActiveWfpPlainTextBindings(store, environment, { environment: 'production' }, site, {
+    vars: [{ name: 'SENSITIVE_VAR_NAME', value: 'SENSITIVE_VAR_VALUE' }],
+    generation: 1,
+  });
+  const secretResult = await syncActiveWfpSecret(store, environment, { environment: 'production' }, site, {
+    operation: 'put',
+    name: 'SENSITIVE_SECRET_NAME',
+    value: 'SENSITIVE_SECRET_VALUE',
+  });
+
+  assert.equal(varsResult.status, 502);
+  assert.equal((await varsResult.json()).error.code, 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED');
+  assert.equal(secretResult.status, 502);
+  assert.equal((await secretResult.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'plain_text_sync',
+      environment: 'production',
+      siteId: 'site_1',
+      stage: 'route_state_read',
+      reason: 'store_operation_failed',
+      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+    },
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'secret_sync',
+      environment: 'production',
+      siteId: 'site_1',
+      stage: 'route_state_read',
+      reason: 'store_operation_failed',
+      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+    },
+  ]);
+  assert.doesNotMatch(lines.join('\n'), /sensitive|SENSITIVE|VAR_NAME|SECRET_NAME|VALUE|ROUTE_READ/);
+});
+
+test('runtime provider lock conflicts remain unlogged', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  store.withRuntimeConfigLock = async () => {
+    throw new Error('RUNTIME_CONFIG_LOCKED');
+  };
+  const lines = [];
+  const environment = testEnv(store, {
+    logRuntimeConfigFailure: (line) => lines.push(line),
+    WFP_PROVIDER: {
+      replacePlainTextBindings: async () => {},
+      putSecret: async () => {},
+    },
+  });
+
+  const varsResult = await syncActiveWfpPlainTextBindings(store, environment, { environment: 'production' }, site, {
+    vars: [],
+    generation: 1,
+  });
+  const secretResult = await syncActiveWfpSecret(store, environment, { environment: 'production' }, site, {
+    operation: 'put',
+    name: 'API_TOKEN',
+    value: 'secret-value',
+  });
+
+  assert.equal(varsResult.status, 409);
+  assert.equal((await varsResult.json()).error.code, 'RUNTIME_CONFIG_CHANGED');
+  assert.equal(secretResult.status, 409);
+  assert.equal((await secretResult.json()).error.code, 'RUNTIME_CONFIG_CHANGED');
+  assert.deepEqual(lines, []);
+});
+
+test('secret mutations log safe store and capability diagnostics', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'sensitive-secret-slug',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'sensitive-secret-slug.pages.xd.team',
+  });
+  const lines = [];
+  const environment = testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
+  const storeError = new Error('SENSITIVE_SECRET_VALUE SENSITIVE_SQL');
+  storeError.cause = new Error('SENSITIVE_SECRET_CAUSE');
+  const throwStoreError = async () => {
+    throw markRuntimeConfigError(storeError, { stage: 'mutation_batch', reason: 'store_operation_failed' });
+  };
+  store.putSiteSecretWithAudit = throwStoreError;
+  store.deleteSiteSecretWithAudit = throwStoreError;
+
+  const putFailure = await worker.fetch(
+    jsonMethodRequest(
+      'PUT',
+      'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-secret-slug/secrets',
+      { name: 'SENSITIVE_SECRET_NAME', value: 'SENSITIVE_SECRET_VALUE' },
+      { Authorization: 'Bearer SENSITIVE_BEARER_TOKEN' }
+    ),
+    environment
+  );
+  const deleteFailure = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-secret-slug/secrets', {
+      name: 'SENSITIVE_SECRET_NAME',
+    }),
+    environment
+  );
+
+  store.putSiteSecretWithAudit = undefined;
+  store.deleteSiteSecretWithAudit = undefined;
+  const putCapability = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/sensitive-secret-slug/secrets', {
+      name: 'SENSITIVE_SECRET_NAME',
+      value: 'SENSITIVE_SECRET_VALUE',
+    }),
+    environment
+  );
+  const deleteCapability = await worker.fetch(
+    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-secret-slug/secrets', {
+      name: 'SENSITIVE_SECRET_NAME',
+    }),
+    environment
+  );
+
+  assert.deepEqual(
+    [putFailure, deleteFailure, putCapability, deleteCapability].map((response) => response.status),
+    [503, 503, 503, 503]
+  );
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line)),
+    [
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_put',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_delete',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'mutation_batch',
+        reason: 'store_operation_failed',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_put',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'capability_check',
+        reason: 'capability_unavailable',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+      {
+        event: 'pages_runtime_config_failure',
+        operation: 'secret_delete',
+        environment: 'production',
+        siteId: 'site_1',
+        stage: 'capability_check',
+        reason: 'capability_unavailable',
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      },
+    ]
+  );
+  assert.doesNotMatch(lines.join('\n'), /sensitive|SENSITIVE|Authorization|Bearer|SQL/);
 });
 
 test('runtime vars put updates the active Worker without exposing the value', async () => {
@@ -1784,6 +2059,64 @@ test('runtime secret sync treats a stale put as the latest idempotent delete', a
   assert.deepEqual(calls, ['delete']);
 });
 
+test('runtime secret sync does not hide a put failure when a stale delete converges to the latest secret', async () => {
+  const store = await createSeededStore();
+  const site = await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  await activateSite(store, site.id);
+  await store.putSiteSecretWithAudit({
+    id: 'sec_1',
+    auditId: 'aud_1',
+    environment: 'production',
+    siteId: site.id,
+    siteSlug: site.slug,
+    name: 'API_TOKEN',
+    value: 'latest-secret-value',
+    actorId: 'usr_1',
+    actorType: 'user',
+    routeId: 'route_1',
+  });
+  const lines = [];
+
+  const result = await syncActiveWfpSecret(
+    store,
+    testEnv(store, {
+      logRuntimeConfigFailure: (line) => lines.push(line),
+      WFP_PROVIDER: {
+        putSecret: async () => {
+          throw Object.assign(new Error('SENSITIVE_PUT_NOT_FOUND'), { status: 404 });
+        },
+      },
+    }),
+    { environment: 'production' },
+    site,
+    { operation: 'delete', name: 'API_TOKEN' }
+  );
+
+  assert.equal(result.status, 502);
+  assert.equal((await result.json()).error.code, 'SECRET_ACTIVE_WORKER_SYNC_FAILED');
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'secret_sync',
+      environment: 'production',
+      siteId: 'site_1',
+      stage: 'provider_sync',
+      reason: 'provider_request_failed',
+      errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+    },
+  ]);
+  assert.doesNotMatch(lines[0], /SENSITIVE|API_TOKEN|latest-secret-value/);
+});
+
 test('runtime provider sync passes the lease abort signal to vars and secret operations', async () => {
   const store = await createSeededStore();
   const site = await store.createSite({
@@ -2001,6 +2334,7 @@ test('runtime vars report active Worker provider failures after preserving the c
     hostname: 'guide.pages.xd.team',
   });
   await activateSite(store, site.id);
+  const lines = [];
 
   const response = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
@@ -2008,9 +2342,10 @@ test('runtime vars report active Worker provider failures after preserving the c
       value: 'provider-failure-private-value',
     }),
     testEnv(store, {
+      logRuntimeConfigFailure: (line) => lines.push(line),
       WFP_PROVIDER: {
         replacePlainTextBindings: async () => {
-          throw new Error('provider failed');
+          throw new Error('SENSITIVE_PROVIDER_VAR_ERROR');
         },
       },
     })
@@ -2019,8 +2354,20 @@ test('runtime vars report active Worker provider failures after preserving the c
 
   assert.equal(response.status, 502);
   assert.equal(JSON.parse(text).error.code, 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED');
-  assert.doesNotMatch(text, /provider-failure-private-value|provider failed/);
+  assert.doesNotMatch(text, /provider-failure-private-value|SENSITIVE_PROVIDER_VAR_ERROR/);
   assert.equal((await store.listEnabledSiteVars('production', 'site_1'))[0].value, 'provider-failure-private-value');
+  assert.deepEqual(lines.map((line) => JSON.parse(line)), [
+    {
+      event: 'pages_runtime_config_failure',
+      operation: 'plain_text_sync',
+      environment: 'production',
+      siteId: 'site_1',
+      stage: 'provider_sync',
+      reason: 'provider_request_failed',
+      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+    },
+  ]);
+  assert.doesNotMatch(lines[0], /private|SENSITIVE|API_BASE|guide/);
 });
 
 test('runtime vars return a conflict after three unstable active Worker synchronization attempts', async () => {
@@ -2199,6 +2546,108 @@ test('runtime vars enforce deploy scope and access key owner and site boundaries
   assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), []);
 });
 
+test('runtime vars log one safe diagnostic for unexpected store failures', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'sensitive-slug',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'sensitive-slug.pages.xd.team',
+  });
+  const error = new Error('SENSITIVE_ERROR_MESSAGE SENSITIVE_SQL');
+  error.name = 'SENSITIVE_ERROR_NAME';
+  error.code = 'SENSITIVE_ERROR_CODE';
+  error.stack = 'SENSITIVE_ERROR_STACK';
+  error.cause = new Error('SENSITIVE_ERROR_CAUSE');
+  store.mutateSiteVar = async () => {
+    throw markRuntimeConfigError(error, { stage: 'mutation_batch', reason: 'store_operation_failed' });
+  };
+  const lines = [];
+
+  const response = await worker.fetch(
+    jsonMethodRequest(
+      'PUT',
+      'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-slug/vars',
+      { name: 'SENSITIVE_VAR_NAME', value: 'SENSITIVE_VAR_VALUE' },
+      { Authorization: 'Bearer SENSITIVE_BEARER_TOKEN' }
+    ),
+    testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
+  );
+  const text = await response.text();
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(text), {
+    error: {
+      code: 'RUNTIME_CONFIG_UNSUPPORTED',
+      message: 'Runtime config store is unavailable.',
+      action: 'Check runtime config store configuration.',
+    },
+  });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: 'pages_runtime_config_failure',
+    operation: 'var_put',
+    environment: 'production',
+    siteId: 'site_1',
+    stage: 'mutation_batch',
+    reason: 'store_operation_failed',
+    errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+  });
+  assert.doesNotMatch(lines[0], /sensitive|SENSITIVE|Authorization|Bearer|SQL/);
+});
+
+test('runtime vars log capability failures and isolate logger exceptions', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  store.mutateSiteVar = undefined;
+  const lines = [];
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
+      name: 'FEATURE_FLAG',
+      value: 'on',
+    }),
+    testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
+  );
+  const responseWithBrokenLogger = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
+      name: 'FEATURE_FLAG',
+      value: 'on',
+    }),
+    testEnv(store, {
+      logRuntimeConfigFailure() {
+        throw new Error('LOGGER_FAILED');
+      },
+    })
+  );
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: 'pages_runtime_config_failure',
+    operation: 'var_put',
+    environment: 'production',
+    siteId: 'site_1',
+    stage: 'capability_check',
+    reason: 'capability_unavailable',
+    errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+  });
+  assert.equal(responseWithBrokenLogger.status, 503);
+  assert.deepEqual(await response.clone().json(), await responseWithBrokenLogger.json());
+});
+
 test('runtime vars map shared binding quotas and store revision conflicts to stable public errors', async () => {
   const store = await createSeededStore();
   await store.createSite({
@@ -2227,12 +2676,14 @@ test('runtime vars map shared binding quotas and store revision conflicts to sta
     });
   }
 
+  const lines = [];
+  const environment = testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) });
   const quota = await worker.fetch(
     putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
       name: 'FEATURE_FLAG',
       value: 'quota-private-value',
     }),
-    testEnv(store)
+    environment
   );
   store.mutateSiteVar = async () => {
     throw new Error('SITE_VAR_REVISION_CONFLICT');
@@ -2241,7 +2692,7 @@ test('runtime vars map shared binding quotas and store revision conflicts to sta
     jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
       name: 'FEATURE_FLAG',
     }),
-    testEnv(store)
+    environment
   );
   const quotaText = await quota.text();
 
@@ -2250,6 +2701,7 @@ test('runtime vars map shared binding quotas and store revision conflicts to sta
   assert.doesNotMatch(quotaText, /quota-private-value|value-\d/);
   assert.equal(conflict.status, 409);
   assert.equal((await conflict.json()).error.code, 'RUNTIME_CONFIG_CHANGED');
+  assert.deepEqual(lines, []);
 });
 
 test('replaces site ACL with allow-only OR entries and rejects unsupported policy features', async () => {

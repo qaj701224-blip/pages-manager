@@ -9,6 +9,7 @@ import {
   normalizeRuntimeVars,
   runtimeVarsObject,
 } from './runtime-config.js';
+import { logRuntimeConfigFailure, readRuntimeConfigErrorDiagnostic } from './runtime-config-diagnostics.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createDeploymentProvider as createWfpDeploymentProvider } from './wfp-provider.js';
 
@@ -80,6 +81,14 @@ async function putSiteVar(request, env, config, store, actor, siteSlug) {
   const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
   if (typeof store.mutateSiteVar !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'var_put',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
   }
 
@@ -111,7 +120,21 @@ async function putSiteVar(request, env, config, store, actor, siteSlug) {
       createId: (bindingName) => nextId(env, `var${bindingName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'runtime'}`),
     });
   } catch (error) {
-    return runtimeVarMutationError(error);
+    const response = runtimeVarMutationError(error);
+    if (response.status >= 500) {
+      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      logRuntimeConfigFailure(env, {
+        operation: 'var_put',
+        environment: config.environment,
+        siteId: site.id,
+        ...diagnostic,
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      });
+    }
+    return response;
   }
   const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
   if (syncResult instanceof Response) return syncResult;
@@ -122,6 +145,14 @@ async function deleteSiteVar(request, env, config, store, actor, siteSlug) {
   const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
   if (typeof store.mutateSiteVar !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'var_delete',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime config store is unavailable.', 503, 'Retry later.');
   }
 
@@ -150,7 +181,21 @@ async function deleteSiteVar(request, env, config, store, actor, siteSlug) {
       updatedAt: readNow(env),
     });
   } catch (error) {
-    return runtimeVarMutationError(error);
+    const response = runtimeVarMutationError(error);
+    if (response.status >= 500) {
+      const diagnostic = readRuntimeConfigErrorDiagnostic(error, {
+        stage: 'unknown',
+        reason: 'store_operation_failed',
+      });
+      logRuntimeConfigFailure(env, {
+        operation: 'var_delete',
+        environment: config.environment,
+        siteId: site.id,
+        ...diagnostic,
+        errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+      });
+    }
+    return response;
   }
   const syncResult = await syncActiveWfpPlainTextBindings(store, env, config, site, mutation);
   if (syncResult instanceof Response) return syncResult;
@@ -160,7 +205,15 @@ async function deleteSiteVar(request, env, config, store, actor, siteSlug) {
 async function putSiteSecret(request, env, config, store, actor, siteSlug) {
   const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
-  if (!store.putSiteSecret) {
+  if (typeof store.putSiteSecretWithAudit !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_put',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
   }
 
@@ -224,19 +277,35 @@ async function putSiteSecret(request, env, config, store, actor, siteSlug) {
         'Retry the secret command.'
       );
     }
-    return jsonError(
+    const response = jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
       'Runtime secret store is unavailable.',
       503,
       'Check runtime secret store configuration.'
     );
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_put',
+      environment: config.environment,
+      siteId: site.id,
+      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
+    return response;
   }
 }
 
 async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
   const site = await getRuntimeManageableSiteBySlug(store, actor, siteSlug, config.environment);
   if (site instanceof Response) return site;
-  if (!store.deleteSiteSecret) {
+  if (typeof store.deleteSiteSecretWithAudit !== 'function') {
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_delete',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'capability_check',
+      reason: 'capability_unavailable',
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
     return jsonError('RUNTIME_CONFIG_UNSUPPORTED', 'Runtime secret store is unavailable.', 503, 'Retry later.');
   }
 
@@ -275,12 +344,20 @@ async function deleteSiteSecret(request, env, config, store, actor, siteSlug) {
         'Retry the secret command.'
       );
     }
-    return jsonError(
+    const response = jsonError(
       'RUNTIME_CONFIG_UNSUPPORTED',
       'Runtime secret store is unavailable.',
       503,
       'Check runtime secret store configuration.'
     );
+    logRuntimeConfigFailure(env, {
+      operation: 'secret_delete',
+      environment: config.environment,
+      siteId: site.id,
+      ...readRuntimeConfigErrorDiagnostic(error, { stage: 'unknown', reason: 'store_operation_failed' }),
+      errorCode: 'RUNTIME_CONFIG_UNSUPPORTED',
+    });
+    return response;
   }
 }
 
@@ -299,10 +376,18 @@ async function deleteSiteSecretWithAudit(store, env, input) {
 export async function syncActiveWfpSecret(store, env, config, site, input) {
   if (typeof store.getRouteBySiteId !== 'function' || typeof store.getSiteVersion !== 'function') return null;
 
-  const route = await store.getRouteBySiteId(site.id, config.environment);
-  if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
-
-  const version = await store.getSiteVersion(route.activeVersionId, config.environment);
+  let route;
+  let version;
+  try {
+    route = await store.getRouteBySiteId(site.id, config.environment);
+    if (!route || route.routeStatus !== 'active' || !route.activeVersionId) return null;
+    version = await store.getSiteVersion(route.activeVersionId, config.environment);
+  } catch {
+    return runtimeSecretSyncFailed(env, config, site, {
+      stage: 'route_state_read',
+      reason: 'store_operation_failed',
+    });
+  }
   if (!version || (!isWfpRoute(route) && !isWfpVersion(version))) return null;
   if (!versionRequiresWorker(version)) return null;
   const workerName = route.workerName || version.workerName;
@@ -311,14 +396,12 @@ export async function syncActiveWfpSecret(store, env, config, site, input) {
   let provider;
   try {
     provider = createWfpDeploymentProvider(env, config);
-  } catch (error) {
-    if (input.operation === 'delete' && isNotFoundError(error)) return null;
-    return jsonError(
-      'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-      'Runtime secret was saved but the active Worker could not be updated.',
-      502,
-      'Check platform Worker provider configuration and retry the secret command.'
-    );
+  } catch {
+    return runtimeSecretSyncFailed(env, config, site, {
+      stage: 'provider_setup',
+      reason: 'provider_configuration_failed',
+      action: 'Check platform Worker provider configuration and retry the secret command.',
+    });
   }
   try {
     await withRuntimeConfigSyncLock(store, config.environment, site.id, async ({ signal } = {}) => {
@@ -338,13 +421,7 @@ export async function syncActiveWfpSecret(store, env, config, site, input) {
     return null;
   } catch (error) {
     if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing a secret.');
-    if (input.operation === 'delete' && isNotFoundError(error)) return null;
-    return jsonError(
-      'SECRET_ACTIVE_WORKER_SYNC_FAILED',
-      'Runtime secret was saved but the active Worker could not be updated.',
-      502,
-      'Retry the secret command before testing the current Worker.'
-    );
+    return runtimeSecretSyncFailed(env, config, site);
   }
 }
 
@@ -353,13 +430,29 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
     return { appliesTo: 'next_deployment' };
   }
 
-  const target = await resolveActiveWfpWorker(store, config, site);
+  let target;
+  try {
+    target = await resolveActiveWfpWorker(store, config, site);
+  } catch {
+    return runtimeVarSyncFailed(env, config, site, {
+      stage: 'route_state_read',
+      reason: 'store_operation_failed',
+    });
+  }
   if (!target) return { appliesTo: 'next_deployment' };
 
   let provider;
   try {
     provider = createWfpDeploymentProvider(env, config);
   } catch {
+    logRuntimeConfigFailure(env, {
+      operation: 'plain_text_sync',
+      environment: config.environment,
+      siteId: site.id,
+      stage: 'provider_setup',
+      reason: 'provider_configuration_failed',
+      errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+    });
     return jsonError(
       'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
       'Runtime var was saved but the active Worker could not be updated.',
@@ -381,7 +474,7 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
       });
     } catch (error) {
       if (isRuntimeConfigLockError(error)) return runtimeConfigChanged('Runtime config changed while syncing.');
-      return runtimeVarSyncFailed();
+      return runtimeVarSyncFailed(env, config, site);
     }
   }
 
@@ -392,7 +485,7 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
       });
       return { appliesTo: 'active_worker' };
     } catch {
-      return runtimeVarSyncFailed();
+      return runtimeVarSyncFailed(env, config, site);
     }
   }
 
@@ -415,7 +508,7 @@ export async function syncActiveWfpPlainTextBindings(store, env, config, site, s
       };
     }
   } catch {
-    return runtimeVarSyncFailed();
+    return runtimeVarSyncFailed(env, config, site);
   }
   return jsonError(
     'RUNTIME_CONFIG_CHANGED',
@@ -476,7 +569,46 @@ async function readRuntimeConfigRouteState(store, environment, siteId) {
   return store.getRouteBySiteId(siteId, environment);
 }
 
-function runtimeVarSyncFailed() {
+function runtimeSecretSyncFailed(
+  env,
+  config,
+  site,
+  {
+    stage = 'provider_sync',
+    reason = 'provider_request_failed',
+    action = 'Retry the secret command before testing the current Worker.',
+  } = {}
+) {
+  logRuntimeConfigFailure(env, {
+    operation: 'secret_sync',
+    environment: config.environment,
+    siteId: site.id,
+    stage,
+    reason,
+    errorCode: 'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+  });
+  return jsonError(
+    'SECRET_ACTIVE_WORKER_SYNC_FAILED',
+    'Runtime secret was saved but the active Worker could not be updated.',
+    502,
+    action
+  );
+}
+
+function runtimeVarSyncFailed(
+  env,
+  config,
+  site,
+  { stage = 'provider_sync', reason = 'provider_request_failed' } = {}
+) {
+  logRuntimeConfigFailure(env, {
+    operation: 'plain_text_sync',
+    environment: config.environment,
+    siteId: site.id,
+    stage,
+    reason,
+    errorCode: 'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
+  });
   return jsonError(
     'RUNTIME_VAR_ACTIVE_WORKER_SYNC_FAILED',
     'Runtime var was saved but the active Worker could not be updated.',
