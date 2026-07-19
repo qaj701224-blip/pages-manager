@@ -2546,6 +2546,42 @@ test('runtime vars enforce deploy scope and access key owner and site boundaries
   assert.deepEqual(await store.listEnabledSiteVars('production', 'site_1'), []);
 });
 
+test('public runtime vars accept long runtime var names without deriving record ids from them', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'guide',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_1',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_1',
+    hostname: 'guide.pages.xd.team',
+  });
+  const mutateSiteVar = store.mutateSiteVar.bind(store);
+  store.mutateSiteVar = async (input) => {
+    input.createId?.(input.name);
+    return mutateSiteVar(input);
+  };
+
+  const response = await worker.fetch(
+    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
+      name: 'CODEX_STAGING_VARS_DIAG_20260719_02',
+      value: 'runtime-vars-diagnostic',
+    }),
+    testEnv(store)
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual((await response.json()).var, {
+    site: 'guide',
+    name: 'CODEX_STAGING_VARS_DIAG_20260719_02',
+    revision: 1,
+    updated: true,
+    appliesTo: 'next_deployment',
+  });
+});
+
 test('runtime vars log one safe diagnostic for unexpected store failures', async () => {
   const store = await createSeededStore();
   await store.createSite({

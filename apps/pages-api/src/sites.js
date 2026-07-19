@@ -117,7 +117,6 @@ async function putSiteVar(request, env, config, store, actor, siteSlug) {
       value: normalized[name],
       actorId: actor.userId,
       updatedAt: readNow(env),
-      createId: (bindingName) => nextId(env, `var${bindingName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'runtime'}`),
     });
   } catch (error) {
     const response = runtimeVarMutationError(error);

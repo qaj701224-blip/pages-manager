@@ -1076,6 +1076,45 @@ test('site config writes allow publisher access policy and runtime config', asyn
   });
 });
 
+test('Console runtime vars accept long runtime var names without deriving record ids from them', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await seedConsoleUser(store, 'usr_me');
+  await seedSite(store, {
+    id: 'site_mine',
+    slug: 'mine',
+    ownerUserId: 'usr_me',
+    visibility: 'org',
+  });
+  const mutateSiteVar = store.mutateSiteVar.bind(store);
+  store.mutateSiteVar = async (input) => {
+    input.createId?.(input.name);
+    return mutateSiteVar(input);
+  };
+
+  const response = await worker.fetch(
+    internalConsoleJsonRequest('/.xd-pages/api/console/sites/site_mine/config/vars/LONG_RUNTIME_CONFIGURATION_NAME', {
+      userId: 'usr_me',
+      method: 'PUT',
+      body: { value: 'enabled' },
+    }),
+    env(store, {
+      nextId: (prefix) => {
+        if (prefix !== 'var') throw new Error('INVALID_RUNTIME_VAR_ID_PREFIX');
+        return 'var_1';
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual((await response.json()).var, {
+    name: 'LONG_RUNTIME_CONFIGURATION_NAME',
+    value: 'enabled',
+    revision: 1,
+    updatedAt: '2026-06-15T00:00:00.000Z',
+    appliesTo: 'next_deployment',
+  });
+});
+
 test('site admin secret changes sync to active WFP worker', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedSite(store, {
