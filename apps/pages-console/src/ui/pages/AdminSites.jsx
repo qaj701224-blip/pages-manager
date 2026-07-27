@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { listAdminSites } from '../api.js';
-import { adminSiteOwnerView, sitePublicUrl } from '../site-display-model.js';
+import { adminSiteOwnerView, filterAdminSites, siteDeploymentShapeLabel, sitePublicUrl } from '../site-display-model.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 import { SiteDetail } from './SiteDetail.jsx';
 
@@ -11,6 +11,7 @@ export function AdminSites({ siteId, subpage }) {
   const [query, setQuery] = useState('');
   const [ownerType, setOwnerType] = useState('all');
   const [status, setStatus] = useState('all');
+  const [deploymentShape, setDeploymentShape] = useState('all');
 
   useEffect(() => {
     let active = true;
@@ -26,8 +27,8 @@ export function AdminSites({ siteId, subpage }) {
     };
   }, []);
   const visibleSites = useMemo(
-    () => filterAdminSites(state.sites, { query, ownerType, status }),
-    [state.sites, query, ownerType, status]
+    () => filterAdminSites(state.sites, { query, ownerType, status, deploymentShape }),
+    [state.sites, query, ownerType, status, deploymentShape]
   );
   const selectedSite = useMemo(() => {
     if (!siteId) return null;
@@ -83,6 +84,18 @@ export function AdminSites({ siteId, subpage }) {
             </button>
           ))}
         </div>
+        <select
+          aria-label="站点类型"
+          className="list-search"
+          value={deploymentShape}
+          onChange={(event) => setDeploymentShape(event.target.value)}
+        >
+          <option value="all">全部类型</option>
+          <option value="assets-only">静态资源</option>
+          <option value="worker-only">Worker</option>
+          <option value="worker-with-assets">Worker + 静态资源</option>
+          <option value="un-deployed">未部署</option>
+        </select>
         <span className="toolbar-count">{visibleSites.length} / {state.sites.length}</span>
       </div>
       {visibleSites.length ? (
@@ -92,6 +105,7 @@ export function AdminSites({ siteId, subpage }) {
               <tr>
                 <th>站点</th>
                 <th>Owner</th>
+                <th>站点类型</th>
                 <th>可见性</th>
                 <th>状态</th>
                 <th>更新时间</th>
@@ -130,6 +144,9 @@ function AdminSiteRow({ site }) {
           </div>
         </div>
       </td>
+      <td data-label="站点类型">
+        <span className="tag muted">{siteDeploymentShapeLabel(site.deploymentShape)}</span>
+      </td>
       <td data-label="可见性">
         <span className={site.visibility === 'disabled' ? 'tag tag-disabled' : 'tag'}>{site.visibility}</span>
       </td>
@@ -156,19 +173,4 @@ function AdminNotFound({ backTo, label, title }) {
       </Link>
     </div>
   );
-}
-
-function filterAdminSites(sites, { query, ownerType, status }) {
-  const normalizedQuery = query.trim().toLowerCase();
-  return sites.filter((site) => {
-    const owner = adminSiteOwnerView(site.owner);
-    if (ownerType !== 'all' && owner.type !== ownerType) return false;
-    if (status !== 'all' && site.status !== status) return false;
-    if (!normalizedQuery) return true;
-    return [site.slug, site.hostname, sitePublicUrl(site.hostname), site.visibility, site.status, owner.primary, owner.secondary, owner.type]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(normalizedQuery);
-  });
 }

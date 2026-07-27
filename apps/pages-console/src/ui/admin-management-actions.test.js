@@ -29,6 +29,13 @@ test('admin site management exposes a safe detail action', () => {
   assert.match(adminSitesSource, />\s*查看详情\s*<\/Link>/);
 });
 
+test('admin site management displays and filters the active deployment shape', () => {
+  assert.match(adminSitesSource, /<th>站点类型<\/th>/);
+  assert.match(adminSitesSource, /aria-label="站点类型"/);
+  assert.match(adminSitesSource, /siteDeploymentShapeLabel\(site\.deploymentShape\)/);
+  assert.match(adminSitesSource, /filterAdminSites\(state\.sites, \{ query, ownerType, status, deploymentShape \}\)/);
+});
+
 test('admin team management exposes a safe team detail action', () => {
   assert.match(adminTeamsSource, /<th>操作<\/th>/);
   assert.match(adminTeamsSource, /to=\{`\/admin\/teams\/\$\{encodeURIComponent\(team\.id\)\}\/settings`\}/);

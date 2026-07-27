@@ -1327,6 +1327,49 @@ test('admin sites include readable user and team owner metadata', async () => {
   });
 });
 
+test('admin sites expose the active deployment shape without crossing site versions', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_owner');
+  await seedAdminShapeSite(store, { id: 'site_assets', deploymentShape: 'assets-only' });
+  await seedAdminShapeSite(store, { id: 'site_worker', deploymentShape: 'worker-only' });
+  await seedAdminShapeSite(store, { id: 'site_worker_assets', deploymentShape: 'worker-with-assets' });
+  await seedAdminShapeSite(store, { id: 'site_future', deploymentShape: 'future-shape' });
+  await seedAdminShapeSite(store, { id: 'site_empty' });
+  await seedAdminShapeSite(store, { id: 'site_cross' });
+  await store.activateSiteVersion(
+    'site_cross',
+    {
+      activeVersionId: 'ver_site_worker',
+      workerName: 'pages-v2-site-cross',
+      visibility: 'internal',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    },
+    'production'
+  );
+
+  const list = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+  const detail = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/sites/site_worker', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(list.status, 200, await list.clone().text());
+  const body = await list.json();
+  const listedById = new Map(body.sites.map((site) => [site.id, site]));
+  assert.equal(listedById.get('site_assets').deploymentShape, 'assets-only');
+  assert.equal(listedById.get('site_worker').deploymentShape, 'worker-only');
+  assert.equal(listedById.get('site_worker_assets').deploymentShape, 'worker-with-assets');
+  assert.equal(listedById.get('site_future').deploymentShape, 'future-shape');
+  assert.equal(listedById.get('site_empty').deploymentShape, null);
+  assert.equal(listedById.get('site_cross').deploymentShape, null);
+  assert.equal(detail.status, 200, await detail.clone().text());
+  assert.equal((await detail.json()).site.deploymentShape, 'worker-only');
+});
+
 test('platform admin can edit admin-scope site settings without asset membership', async () => {
   const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
   await seedPlatformAdmin(store);
@@ -1827,6 +1870,48 @@ async function seedTeamSite(store, { id, slug, teamId, visibility = 'internal' }
     routeId: `route_${id}`,
     hostname: `${slug}.workers.xd.team`,
   });
+}
+
+async function seedAdminShapeSite(store, { id, deploymentShape = null }) {
+  await store.createSite({
+    id,
+    slug: id.replaceAll('_', '-'),
+    ownerUserId: 'usr_owner',
+    ownerType: 'user',
+    ownerId: 'usr_owner',
+    siteUuid: `uuid_${id}`,
+    defaultVisibility: 'internal',
+    environment: 'production',
+    routeId: `route_${id}`,
+    hostname: `${id.replaceAll('_', '-')}.workers.xd.team`,
+  });
+  if (!deploymentShape) return;
+
+  const hasAssets = deploymentShape === 'assets-only' || deploymentShape === 'worker-with-assets';
+  await store.createSiteVersion({
+    id: `ver_${id}`,
+    siteId: id,
+    deploymentId: `dep_${id}`,
+    workerName: `pages-v2-${id}`,
+    runtime: 'wfp',
+    artifactRef: `wfp://test/pages-v2-${id}`,
+    contentHash: `sha256:${id}`,
+    deploymentShape,
+    requestedFallback: 'auto',
+    resolvedFallback: hasAssets ? 'not-found' : null,
+    routingMode: deploymentShape === 'worker-with-assets' ? 'worker-first' : deploymentShape,
+    createdBy: 'usr_owner',
+  });
+  await store.activateSiteVersion(
+    id,
+    {
+      activeVersionId: `ver_${id}`,
+      workerName: `pages-v2-${id}`,
+      visibility: 'internal',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    },
+    'production'
+  );
 }
 
 async function activateSite(store, siteId, { workerName = 'pages-v2-site-ver-1', visibility = 'org' } = {}) {

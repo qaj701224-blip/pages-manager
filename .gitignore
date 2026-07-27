@@ -16,6 +16,7 @@ apps/pages-skill/.xd-skill/
 ### xd-skill local installs
 .agents/skills/xd-cell/
 .xdt-worktrees/
+.worktrees/
 .xd-skill-hub/
 
 ### Secrets & local env
