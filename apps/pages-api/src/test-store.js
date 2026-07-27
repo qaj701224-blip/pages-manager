@@ -2373,9 +2373,12 @@ class TestPagesStore {
   siteWithRoute(siteId) {
     const site = this.sites.get(siteId);
     if (!site) return null;
+    const route = this.routes.get(this.routeBySiteId.get(siteId)) || null;
+    const version = route?.activeVersionId ? this.siteVersions.get(route.activeVersionId) : null;
     return {
       ...site,
-      route: this.routes.get(this.routeBySiteId.get(siteId)) || null,
+      deploymentShape: version?.siteId === site.id ? version.deploymentShape ?? null : null,
+      route,
     };
   }
 

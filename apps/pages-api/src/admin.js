@@ -1289,6 +1289,7 @@ function formatAdminSite(site) {
       departmentPath: site.ownerDepartmentPath || null,
       teamType: site.ownerTeamType || null,
     },
+    deploymentShape: site.deploymentShape ?? null,
     visibility: site.route?.visibility || site.defaultVisibility,
     status: site.route?.routeStatus || 'active',
     createdAt: site.createdAt,

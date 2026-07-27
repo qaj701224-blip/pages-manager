@@ -388,14 +388,75 @@ test('D1 store admin list queries are bounded and site detail can be fetched by 
 
   const [sites, deployments, teams, siteDetail] = calls;
   assert.match(sites.sql, /LIMIT \?/);
+  assert.match(
+    sites.sql,
+    /LEFT JOIN site_versions\s+ON site_versions\.id = site_routes\.active_version_id\s+AND site_versions\.site_id = sites\.id/
+  );
+  assert.match(sites.sql, /site_versions\.deployment_shape AS active_version_deployment_shape/);
   assert.deepEqual(sites.args, ['production', 200]);
   assert.match(deployments.sql, /LIMIT \?/);
   assert.deepEqual(deployments.args, ['production', 'site_1', 100]);
   assert.match(teams.sql, /LIMIT \?/);
   assert.deepEqual(teams.args, ['production', 200]);
   assert.match(siteDetail.sql, /WHERE sites\.id = \? AND sites\.environment = \?/);
+  assert.match(
+    siteDetail.sql,
+    /LEFT JOIN site_versions\s+ON site_versions\.id = site_routes\.active_version_id\s+AND site_versions\.site_id = sites\.id/
+  );
+  assert.match(siteDetail.sql, /site_versions\.deployment_shape AS active_version_deployment_shape/);
   assert.doesNotMatch(siteDetail.sql, /ORDER BY sites\.updated_at DESC/);
   assert.deepEqual(siteDetail.args, ['site_1', 'production']);
+});
+
+test('D1 admin site list and detail map the active deployment shape', async () => {
+  const row = {
+    id: 'site_1',
+    slug: 'site-1',
+    environment: 'production',
+    owner_type: 'user',
+    owner_id: 'usr_1',
+    owner_user_id: 'usr_1',
+    default_visibility: 'internal',
+    site_uuid: 'uuid_site_1',
+    created_at: '2026-07-02T00:00:00.000Z',
+    updated_at: '2026-07-02T00:00:00.000Z',
+    route_id: 'route_1',
+    route_hostname: 'site-1.workers.xd.team',
+    route_runtime: 'wfp',
+    route_execution_provider: 'wfp',
+    route_dispatch_type: 'dispatch-namespace',
+    route_active_version_id: 'ver_1',
+    route_visibility: 'internal',
+    route_policy_version: 1,
+    route_route_generation: 1,
+    route_runtime_config_generation: 0,
+    route_route_status: 'active',
+    route_cache_tier: 'fast',
+    route_created_at: '2026-07-02T00:00:00.000Z',
+    route_updated_at: '2026-07-02T00:00:00.000Z',
+    active_version_deployment_shape: 'worker-with-assets',
+    owner_user_email: 'alice@example.com',
+    owner_user_realname: 'Alice',
+  };
+  const db = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            all: async () => ({ results: [row] }),
+            first: async () => row,
+          };
+        },
+      };
+    },
+  };
+  const store = new D1PagesStore(db, { now: () => '2026-07-02T00:00:00.000Z' });
+
+  const sites = await store.listAdminSites({ environment: 'production' });
+  const detail = await store.getAdminSiteById('site_1', 'production');
+
+  assert.equal(sites[0].deploymentShape, 'worker-with-assets');
+  assert.equal(detail.deploymentShape, 'worker-with-assets');
 });
 
 test('createSite writes hostname claim in the same authority operation', async () => {

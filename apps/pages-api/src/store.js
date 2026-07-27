@@ -786,11 +786,15 @@ export class D1PagesStore {
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
+          site_versions.deployment_shape AS active_version_deployment_shape,
           owner_users.email AS owner_user_email, owner_users.realname AS owner_user_realname,
           owner_teams.name AS owner_team_name, owner_teams.team_type AS owner_team_type,
           owner_teams.department_path AS owner_team_department_path
         FROM sites
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
+        LEFT JOIN site_versions
+          ON site_versions.id = site_routes.active_version_id
+          AND site_versions.site_id = sites.id
         LEFT JOIN users AS owner_users
           ON COALESCE(sites.owner_type, 'user') = 'user'
           AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
@@ -822,11 +826,15 @@ export class D1PagesStore {
           site_routes.runtime_config_generation AS route_runtime_config_generation,
           site_routes.route_status AS route_route_status, site_routes.cache_tier AS route_cache_tier,
           site_routes.created_at AS route_created_at, site_routes.updated_at AS route_updated_at,
+          site_versions.deployment_shape AS active_version_deployment_shape,
           owner_users.email AS owner_user_email, owner_users.realname AS owner_user_realname,
           owner_teams.name AS owner_team_name, owner_teams.team_type AS owner_team_type,
           owner_teams.department_path AS owner_team_department_path
         FROM sites
         LEFT JOIN site_routes ON site_routes.site_id = sites.id
+        LEFT JOIN site_versions
+          ON site_versions.id = site_routes.active_version_id
+          AND site_versions.site_id = sites.id
         LEFT JOIN users AS owner_users
           ON COALESCE(sites.owner_type, 'user') = 'user'
           AND owner_users.user_id = COALESCE(sites.owner_id, sites.owner_user_id)
@@ -4882,6 +4890,7 @@ function mapAdminDeploymentWithOwner(row) {
 
 function mapSiteWithJoinedRoute(row) {
   const site = mapSite(row);
+  site.deploymentShape = row.active_version_deployment_shape ?? null;
   if (row.management_role !== undefined) site.managementRole = row.management_role || null;
   site.route = row.route_id
     ? {

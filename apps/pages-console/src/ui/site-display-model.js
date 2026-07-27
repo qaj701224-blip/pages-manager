@@ -23,6 +23,50 @@ export function siteVisibilityLabel(visibility) {
   return labels[value] || value;
 }
 
+export function siteDeploymentShapeLabel(deploymentShape) {
+  const value = String(deploymentShape || '').trim();
+  if (!value) return '未部署';
+  const labels = {
+    'assets-only': '静态资源',
+    'worker-only': 'Worker',
+    'worker-with-assets': 'Worker + 静态资源',
+  };
+  return labels[value] || '未知类型';
+}
+
+export function filterAdminSites(
+  sites,
+  { query = '', ownerType = 'all', status = 'all', deploymentShape = 'all' } = {}
+) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const knownDeploymentShapes = new Set(['assets-only', 'worker-only', 'worker-with-assets']);
+  return sites.filter((site) => {
+    const owner = adminSiteOwnerView(site.owner);
+    if (ownerType !== 'all' && owner.type !== ownerType) return false;
+    if (status !== 'all' && site.status !== status) return false;
+    if (deploymentShape === 'un-deployed') {
+      if (site.deploymentShape) return false;
+    } else if (deploymentShape !== 'all') {
+      if (!knownDeploymentShapes.has(deploymentShape) || site.deploymentShape !== deploymentShape) return false;
+    }
+    if (!normalizedQuery) return true;
+    return [
+      site.slug,
+      site.hostname,
+      sitePublicUrl(site.hostname),
+      site.visibility,
+      site.status,
+      owner.primary,
+      owner.secondary,
+      owner.type,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
+}
+
 export function adminSiteOwnerView(owner = {}) {
   const type = owner.type === 'team' ? 'team' : 'user';
   if (type === 'team') {
