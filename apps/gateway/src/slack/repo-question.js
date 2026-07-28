@@ -263,12 +263,17 @@ function relatedPathsForEvidencePath(relativePath = '') {
     related.add('apps/gateway/src/db/repositories/index.js');
   }
   if (/apps\/gateway\/src\/control-plane\/handlers\.js$/.test(pathValue)) {
+    related.add('apps/gateway/src/control-plane/slack-event-handlers.js');
+    related.add('apps/gateway/src/control-plane/slack-interaction-handlers.js');
+    related.add('apps/gateway/src/control-plane/shared.js');
     related.add('apps/gateway/src/slack/agent-tool-call.js');
     related.add('apps/gateway/src/slack/repo-question.js');
     related.add('tests/apps/gateway/index.test.js');
   }
   if (/apps\/gateway\/src\/slack\/repo-question\.js$/.test(pathValue)) {
-    related.add('apps/gateway/src/control-plane/handlers.js');
+    related.add('apps/gateway/src/control-plane/slack-event-handlers.js');
+    related.add('apps/gateway/src/control-plane/slack-interaction-handlers.js');
+    related.add('apps/gateway/src/control-plane/shared.js');
     related.add('apps/slack-agent/src/model-provider.js');
     related.add('tests/apps/gateway/index.test.js');
   }
