@@ -1778,6 +1778,8 @@ class TestPagesStore {
   }
 
   async withRuntimeConfigLock(environment, siteId, callback) {
+    const queueKey = `${environment}:${siteId}`;
+    if (this.runtimeConfigQueues.has(queueKey)) throw new Error('RUNTIME_CONFIG_LOCKED');
     return this.withRuntimeConfigQueue(environment, siteId, async () => {
       const route = this.routes.get(this.routeBySiteId.get(siteId));
       if (!route || route.environment !== environment) throw new Error('RUNTIME_CONFIG_LOCKED');

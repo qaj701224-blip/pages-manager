@@ -430,6 +430,70 @@ for (const backend of storeBackends) {
       fixture.dispose();
     }
   });
+
+  test(`${backend.name} contract: overlapping runtime config locks fail fast and allow retry after release`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      const order = [];
+      let releaseFirst;
+      let markFirstStarted;
+      const firstStarted = new Promise((resolve) => {
+        markFirstStarted = resolve;
+      });
+      const firstCanFinish = new Promise((resolve) => {
+        releaseFirst = resolve;
+      });
+
+      const first = fixture.store.withRuntimeConfigLock('production', 'site_1', async () => {
+        order.push('first:start');
+        markFirstStarted();
+        await firstCanFinish;
+        order.push('first:end');
+      });
+      await firstStarted;
+
+      let overlappingCallbackRan = false;
+      await assert.rejects(
+        fixture.store.withRuntimeConfigLock('production', 'site_1', async () => {
+          overlappingCallbackRan = true;
+        }),
+        /RUNTIME_CONFIG_LOCKED/,
+      );
+      assert.equal(overlappingCallbackRan, false);
+      assert.deepEqual(order, ['first:start']);
+
+      releaseFirst();
+      await first;
+      await fixture.store.withRuntimeConfigLock('production', 'site_1', async () => {
+        order.push('retry');
+      });
+      assert.deepEqual(order, ['first:start', 'first:end', 'retry']);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  test(`${backend.name} contract: runtime config lock releases after callback failure`, async () => {
+    const fixture = await backend.create();
+    try {
+      await createSite(fixture.store);
+      await assert.rejects(
+        fixture.store.withRuntimeConfigLock('production', 'site_1', async () => {
+          throw new Error('provider failed');
+        }),
+        /provider failed/,
+      );
+
+      let acquiredAfterFailure = false;
+      await fixture.store.withRuntimeConfigLock('production', 'site_1', async () => {
+        acquiredAfterFailure = true;
+      });
+      assert.equal(acquiredAfterFailure, true);
+    } finally {
+      fixture.dispose();
+    }
+  });
 }
 
 async function createSite(store) {
