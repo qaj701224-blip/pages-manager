@@ -12,6 +12,7 @@
     "@xd/worker-kit": "workspace:*"
   },
   "devDependencies": {
+    "better-sqlite3": "^12.4.1",
     "wrangler": "catalog:"
   }
 }
