@@ -206,6 +206,7 @@ function collectContextFiles() {
     'package.json',
     'apps/slack-agent/src/analysis.js',
     'apps/gateway/src/control-plane/executor-callback-handlers.js',
+    'apps/gateway/src/control-plane/github-webhook-handlers.js',
     'apps/gateway/src/control-plane/shared.js',
     'apps/gateway/src/control-plane/slack-event-handlers.js',
     'apps/gateway/src/control-plane/slack-interaction-handlers.js',
