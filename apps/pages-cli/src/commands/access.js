@@ -46,7 +46,6 @@ export async function runAccess(parsed, context) {
     }
 
     const { site } = await readSiteBySlug(client, siteSlug);
-    let updated = { site };
     let summary = { emails: [], departments: [], aclEntries: [] };
     if (visibility === 'acl') {
       const result = await client.requestApi('PUT', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}/acl`, {
@@ -54,7 +53,7 @@ export async function runAccess(parsed, context) {
       });
       summary = summarizeAccessEntries(result.aclEntries || []);
     }
-    updated = await client.requestApi('PATCH', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}`, { visibility });
+    const updated = await client.requestApi('PATCH', `/.xd-pages/api/sites/${encodeURIComponent(site.id)}`, { visibility });
     return outputAccessResult(parsed, context, {
       environment: config.environment,
       site: updated.site?.slug || site.slug,
