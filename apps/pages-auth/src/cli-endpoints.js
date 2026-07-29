@@ -1,8 +1,8 @@
+import { browserPageResponse } from '@xd/browser-pages';
+import { AUTH_SESSION_COOKIE, readCookie, signSessionJwt, verifySessionJwt } from '@xd/session-kit';
+
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
-import { AUTH_SESSION_COOKIE } from './cookies.js';
-import { signSessionJwt, verifySessionJwt } from './jwt.js';
-import { browserPageResponse } from '@xd/browser-pages';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';
@@ -306,17 +306,6 @@ function readOrigin(value) {
   } catch {
     return null;
   }
-}
-
-function readCookie(cookieHeader, name) {
-  for (const part of String(cookieHeader || '').split(';')) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const separator = trimmed.indexOf('=');
-    if (separator < 0) continue;
-    if (trimmed.slice(0, separator) === name) return trimmed.slice(separator + 1);
-  }
-  return '';
 }
 
 function handleCliPollError(error) {

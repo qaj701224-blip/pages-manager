@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import kvGatewayWorker from '../../kv-gateway/src/index.js';
-import { verifyCapability } from '../../kv-gateway/src/auth.js';
-import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
+import kvGatewayWorker from '@xd/kv-gateway';
+import { verifyCapability } from '@xd/kv-gateway/auth';
+import { signSessionJwt, verifySessionJwt } from '@xd/session-kit';
 import worker from './index.js';
 
 const coolToneFragments = [

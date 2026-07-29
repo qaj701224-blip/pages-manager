@@ -15,7 +15,7 @@ import { formatConsoleUser } from './console-users.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import { buildSiteOwnerTransferAuditEvent, refreshActiveRouteSnapshot } from './sites.js';
 import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
-import { createWfpClient, readWfpConfig } from '../../../packages/wfp-client/src/index.js';
+import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);

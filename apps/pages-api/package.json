@@ -3,15 +3,21 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
+  "exports": {
+    "./test-store": "./src/test-store.js"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
     "@xd/pages-runtime-protocol": "workspace:*",
+    "@xd/wfp-client": "workspace:*",
     "@xd/worker-kit": "workspace:*"
   },
   "devDependencies": {
+    "@xd/kv-gateway": "workspace:*",
+    "@xd/pages-router": "workspace:*",
     "better-sqlite3": "^12.4.1",
     "wrangler": "catalog:"
   }

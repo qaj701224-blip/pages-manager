@@ -1,5 +1,5 @@
-import { createWfpClient, readWfpConfig } from '../../../packages/wfp-client/src/index.js';
-import { BINDINGS } from '../../../packages/pages-runtime-protocol/src/index.js';
+import { BINDINGS } from '@xd/pages-runtime-protocol';
+import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
 import { runtimeBindingsForProvider } from './runtime-config.js';
 
 export function createDeploymentProvider(env, config) {

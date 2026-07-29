@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { signSessionJwt, verifySessionJwt } from '../../../pages-auth/src/jwt.js';
+import { signSessionJwt, verifySessionJwt } from '@xd/session-kit';
 import worker from './index.js';
 import { serializeConsoleSessionCookie } from './session.js';
 

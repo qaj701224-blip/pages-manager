@@ -1,4 +1,4 @@
-import { classifyHost } from '../../pages-router/src/host.js';
+import { classifyHost } from '@xd/pages-runtime-protocol';
 import { constantTimeEqualHex, createOpaqueToken, sha256Hex } from './id.js';
 
 export async function createOAuthState({

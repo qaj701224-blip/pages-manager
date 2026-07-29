@@ -1,17 +1,20 @@
 import { siteErrorResponse, wantsHtml } from '@xd/browser-pages';
 import { isAllowedIP } from '@xd/ip-guard';
-import { GATEWAY, HEADERS, RUNTIME, scopeForDataOperation } from '@xd/pages-runtime-protocol';
+import { GATEWAY, HEADERS, RUNTIME, classifyHost, scopeForDataOperation } from '@xd/pages-runtime-protocol';
+import {
+  SITE_SESSION_COOKIE,
+  buildSiteSessionCookie,
+  readCookie,
+  signSessionJwt,
+  verifySessionJwt,
+} from '@xd/session-kit';
 import { jsonResponse } from '@xd/worker-kit';
 
-import { buildSiteSessionCookie } from '../../pages-auth/src/cookies.js';
-import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
 import { evaluateAccessPolicy } from './access-policy.js';
-import { classifyHost } from './host.js';
 import { isPlatformPath } from './platform-path.js';
 import { sanitizeRequestForUserWorker, sanitizeUserWorkerResponse } from './sanitize.js';
 
 const VALID_ROUTER_ENVIRONMENTS = new Set(['production', 'staging']);
-const SITE_SESSION_COOKIE = '__Host-pages_site_session';
 const SITE_AUTH_CALLBACK_PATH = '/.xd-pages/auth/callback';
 const DEFAULT_SITE_SESSION_TTL_SECONDS = 604_800;
 const MAX_SITE_SESSION_FRESHNESS_TTL_SECONDS = 900;
@@ -252,17 +255,6 @@ function identityFromSessionPayload(payload) {
     departments: Array.isArray(payload.departments) ? payload.departments : [],
     userCheckedAt: Number.isInteger(payload.userCheckedAt) ? payload.userCheckedAt : 0,
   };
-}
-
-function readCookie(cookieHeader, name) {
-  for (const part of String(cookieHeader || '').split(';')) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const separator = trimmed.indexOf('=');
-    if (separator < 0) continue;
-    if (trimmed.slice(0, separator) === name) return trimmed.slice(separator + 1);
-  }
-  return '';
 }
 
 function readNowSeconds(env) {
