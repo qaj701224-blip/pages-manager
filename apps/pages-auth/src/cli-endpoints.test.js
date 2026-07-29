@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { buildAuthSessionCookie, signSessionJwt, verifySessionJwt } from '@xd/session-kit';
+
 import { readAuthConfig } from './config.js';
-import { buildAuthSessionCookie } from './cookies.js';
 import { buildCliLoginBrowserUrl, handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
-import { signSessionJwt, verifySessionJwt } from './jwt.js';
 
 const now = 1_800_000_000;
 const coolToneFragments = [

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { signSessionJwt } from '@xd/session-kit';
+
 import worker, { AuthSessionDO, CliLoginDO, OAuthStateDO } from './index.js';
-import { signSessionJwt } from './jwt.js';
 
 test('health endpoint returns non-sensitive environment status without cache', async () => {
   const response = await worker.fetch(new Request('https://auth.pages.xd.team/.xd-pages/health'), {

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
-import kvGatewayWorker from '../../kv-gateway/src/index.js';
-import routerWorker from '../../pages-router/src/index.js';
+import kvGatewayWorker from '@xd/kv-gateway';
+import routerWorker from '@xd/pages-router';
 import apiWorker from './index.js';
 import { createTestPagesStore } from './test-store.js';
 

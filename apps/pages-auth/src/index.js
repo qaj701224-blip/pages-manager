@@ -1,6 +1,7 @@
+import { buildClearAuthSessionCookie, buildClearSiteSessionCookie } from '@xd/session-kit';
+
 import { handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
 import { readAuthConfig } from './config.js';
-import { buildClearAuthSessionCookie, buildClearSiteSessionCookie } from './cookies.js';
 import {
   confirmStoredCliLogin,
   consumeStoredCliLogin,

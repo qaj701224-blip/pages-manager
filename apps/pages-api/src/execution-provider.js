@@ -1,4 +1,4 @@
-import { normalizeWorkerBindings } from '../../../packages/wfp-client/src/index.js';
+import { normalizeWorkerBindings } from '@xd/wfp-client';
 import {
   createDeploymentProvider as createWfpDeploymentProvider,
   kvGatewayServiceBinding,

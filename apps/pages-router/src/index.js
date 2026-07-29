@@ -1,17 +1,20 @@
+import { siteErrorResponse, wantsHtml } from '@xd/browser-pages';
 import { isAllowedIP } from '@xd/ip-guard';
-import { GATEWAY, HEADERS, RUNTIME, scopeForDataOperation } from '@xd/pages-runtime-protocol';
+import { GATEWAY, HEADERS, RUNTIME, classifyHost, scopeForDataOperation } from '@xd/pages-runtime-protocol';
+import {
+  SITE_SESSION_COOKIE,
+  buildSiteSessionCookie,
+  readCookie,
+  signSessionJwt,
+  verifySessionJwt,
+} from '@xd/session-kit';
 import { jsonResponse } from '@xd/worker-kit';
 
-import { browserPageResponse, wantsHtml } from '../../pages-auth/src/browser-pages.js';
-import { buildSiteSessionCookie } from '../../pages-auth/src/cookies.js';
-import { signSessionJwt, verifySessionJwt } from '../../pages-auth/src/jwt.js';
 import { evaluateAccessPolicy } from './access-policy.js';
-import { classifyHost } from './host.js';
 import { isPlatformPath } from './platform-path.js';
 import { sanitizeRequestForUserWorker, sanitizeUserWorkerResponse } from './sanitize.js';
 
 const VALID_ROUTER_ENVIRONMENTS = new Set(['production', 'staging']);
-const SITE_SESSION_COOKIE = '__Host-pages_site_session';
 const SITE_AUTH_CALLBACK_PATH = '/.xd-pages/auth/callback';
 const DEFAULT_SITE_SESSION_TTL_SECONDS = 604_800;
 const MAX_SITE_SESSION_FRESHNESS_TTL_SECONDS = 900;
@@ -44,16 +47,23 @@ const RUNTIME_GATEWAY_PATHS = new Map([
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    const runtimeGatewayPath = runtimeGatewayPathFor(url.pathname);
+    // runtime API 路径的错误响应固定为 JSON 契约,包括 IP/host/route/policy 前置错误,不做 HTML 协商。
+    if (runtimeGatewayPath) request = withJsonOnlyAccept(request);
+
     const ipDecision = enforceIPAllowlist(request, env);
     if (ipDecision) return ipDecision;
 
-    const url = new URL(request.url);
     const environment = readRouterEnvironment(env);
-    if (!environment) return errorResponse('ROUTER_ENV_INVALID', 'Router environment is invalid.', 500);
+    if (!environment) return siteErrorResponse(request, 'ROUTER_ENV_INVALID');
 
     const host = classifyHost(url.hostname, { environment });
-    if (!host.ok) return errorResponse(host.code, `Host ${url.hostname} is not a routable XD Cell site.`, 404);
-    const runtimeGatewayPath = runtimeGatewayPathFor(url.pathname);
+    if (!host.ok) {
+      return siteErrorResponse(request, host.code, {
+        message: `Host ${url.hostname} is not a routable XD Cell site.`,
+      });
+    }
 
     if (url.pathname === SITE_AUTH_CALLBACK_PATH) {
       const routeResult = await readUsableRoute(request, env, host.hostname, environment);
@@ -62,7 +72,7 @@ export default {
     }
 
     if (isPlatformPath(url.pathname) && !runtimeGatewayPath) {
-      return errorResponse('PLATFORM_PATH_RESERVED', 'This platform path is not dispatched to user workers.', 404);
+      return siteErrorResponse(request, 'PLATFORM_PATH_RESERVED');
     }
 
     const routeResult = await readUsableRoute(request, env, host.hostname, environment);
@@ -76,20 +86,19 @@ export default {
     const policy = evaluateAccessPolicy(route, identity);
     if (!policy.ok) {
       if (policy.status === 302) return redirectToAuth(request, env, route, policy.code);
-      if (wantsHtml(request)) return siteAccessDeniedPage(request, route, policy.code, policy.status);
-      return errorResponse(policy.code, 'Site access denied.', policy.status);
+      return siteErrorResponse(request, policy.code, { hostname: route.hostname });
     }
 
     if (runtimeGatewayPath) return handleRuntimeGatewayRequest(request, env, route, policy.user, runtimeGatewayPath);
 
     const dispatchTarget = resolveDispatchTarget(env, route);
-    if (!dispatchTarget) return errorResponse('DISPATCH_UNAVAILABLE', 'Route dispatch target is not available.', 503);
+    if (!dispatchTarget) return siteErrorResponse(request, 'DISPATCH_UNAVAILABLE', { hostname: route.hostname });
 
     let platformHeaders;
     try {
       platformHeaders = await buildPlatformHeaders(route, env, policy.user);
     } catch {
-      return errorResponse('INTERNAL_JWT_CREATE_FAILED', 'Internal worker token could not be created.', 500);
+      return siteErrorResponse(request, 'INTERNAL_JWT_CREATE_FAILED', { hostname: route.hostname });
     }
     const sanitizedRequest = sanitizeRequestForUserWorker(request, platformHeaders);
     const userResponse = await dispatchTarget.fetch(sanitizedRequest);
@@ -102,99 +111,22 @@ async function readUsableRoute(request, env, hostname, environment) {
   try {
     route = await readRouteSnapshot(env, hostname, environment);
   } catch {
-    return {
-      ok: false,
-      response: routeErrorResponse(request, {
-        code: 'ROUTE_SNAPSHOT_INVALID',
-        message: 'Route snapshot is invalid.',
-        status: 503,
-        hostname,
-      }),
-    };
+    return { ok: false, response: siteErrorResponse(request, 'ROUTE_SNAPSHOT_INVALID', { hostname }) };
   }
   if (!route) {
-    return {
-      ok: false,
-      response: routeErrorResponse(request, {
-        code: 'ROUTE_NOT_FOUND',
-        message: 'Site route not found.',
-        status: 404,
-        hostname,
-      }),
-    };
+    return { ok: false, response: siteErrorResponse(request, 'ROUTE_NOT_FOUND', { hostname }) };
   }
   if (route.environment !== environment || route.hostname !== hostname) {
-    return {
-      ok: false,
-      response: routeErrorResponse(request, {
-        code: 'ROUTE_ENV_MISMATCH',
-        message: 'Route environment does not match router environment.',
-        status: 403,
-        hostname,
-      }),
-    };
+    return { ok: false, response: siteErrorResponse(request, 'ROUTE_ENV_MISMATCH', { hostname }) };
   }
   if (route.routeStatus !== 'active' || !routeRuntimeIsActive(route.runtime)) {
-    return {
-      ok: false,
-      response: routeErrorResponse(request, {
-        code: 'ROUTE_INACTIVE',
-        message: 'Site route is not active.',
-        status: 404,
-        hostname,
-      }),
-    };
+    return { ok: false, response: siteErrorResponse(request, 'ROUTE_INACTIVE', { hostname }) };
   }
   if (!isValidRouteWorkerName(route.workerName, environment)) {
-    return {
-      ok: false,
-      response: routeErrorResponse(request, {
-        code: 'ROUTE_WORKER_INVALID',
-        message: 'Route worker target is invalid.',
-        status: 403,
-        hostname,
-      }),
-    };
+    return { ok: false, response: siteErrorResponse(request, 'ROUTE_WORKER_INVALID', { hostname }) };
   }
 
   return { ok: true, route };
-}
-
-function routeErrorResponse(request, { code, message, status, hostname }) {
-  if (!wantsHtml(request)) return errorResponse(code, message, status);
-  const page = routeErrorCopy(code);
-  return browserPageResponse({
-    title: page.title,
-    message: page.message,
-    detail: `状态详情：${code}`,
-    status,
-    actionHref: `https://${hostname}/`,
-    actionLabel: '重新打开站点',
-    statusLabel: page.statusLabel,
-    tone: 'danger',
-  });
-}
-
-function routeErrorCopy(code) {
-  if (code === 'ROUTE_NOT_FOUND') {
-    return {
-      title: '站点没有找到',
-      message: '这个站点还没有发布，或者路由已经被移除。请确认访问地址是否正确。',
-      statusLabel: '站点不存在',
-    };
-  }
-  if (code === 'ROUTE_INACTIVE') {
-    return {
-      title: '站点暂时不可访问',
-      message: '这个站点当前没有可用的发布版本。请稍后再试，或联系站点管理员确认发布状态。',
-      statusLabel: '站点未启用',
-    };
-  }
-  return {
-    title: '站点暂时无法打开',
-    message: '站点路由暂时无法确认。请稍后再试，或联系站点管理员检查发布状态。',
-    statusLabel: '路由异常',
-  };
 }
 
 function routeRuntimeIsActive(runtime) {
@@ -232,7 +164,7 @@ function enforceIPAllowlist(request, env) {
   const allowlist = env.ROUTER_IP_ALLOWLIST_CIDRS;
   const ip = request.headers.get('CF-Connecting-IP');
   if (!isAllowedIP(ip, allowlist)) {
-    return errorResponse('IP_DENIED', 'Client IP is not allowed.', 403);
+    return siteErrorResponse(request, 'IP_DENIED');
   }
   return null;
 }
@@ -326,17 +258,6 @@ function identityFromSessionPayload(payload) {
     departments: Array.isArray(payload.departments) ? payload.departments : [],
     userCheckedAt: Number.isInteger(payload.userCheckedAt) ? payload.userCheckedAt : 0,
   };
-}
-
-function readCookie(cookieHeader, name) {
-  for (const part of String(cookieHeader || '').split(';')) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const separator = trimmed.indexOf('=');
-    if (separator < 0) continue;
-    if (trimmed.slice(0, separator) === name) return trimmed.slice(separator + 1);
-  }
-  return '';
 }
 
 function readNowSeconds(env) {
@@ -441,6 +362,12 @@ async function handleRuntimeGatewayRequest(request, env, route, identity, runtim
 
 function runtimeGatewayPathFor(pathname) {
   return RUNTIME_GATEWAY_PATHS.get(pathname) || null;
+}
+
+function withJsonOnlyAccept(request) {
+  const headers = new Headers(request.headers);
+  headers.set('Accept', 'application/json');
+  return new Request(request, { headers });
 }
 
 function legacyRuntimeRoute(gatewayPath) {
@@ -611,7 +538,7 @@ function readRequired(value, name) {
 async function handleSiteAuthCallback(request, env, route) {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
-  if (!code) return errorResponse('SITE_AUTH_CALLBACK_INVALID', 'Site auth callback is invalid.', 400);
+  if (!code) return siteErrorResponse(request, 'SITE_AUTH_CALLBACK_INVALID', { hostname: route.hostname });
 
   let consumed;
   try {
@@ -622,7 +549,9 @@ async function handleSiteAuthCallback(request, env, route) {
 
   const identity = identityFromSiteCode(route, consumed.user);
   const policy = evaluateAccessPolicy(route, identity);
-  if (!policy.ok) return errorResponse(policy.code, 'Site access denied.', policy.status === 302 ? 403 : policy.status);
+  if (!policy.ok) {
+    return siteErrorResponse(request, policy.code, { hostname: route.hostname });
+  }
 
   let token;
   try {
@@ -649,14 +578,14 @@ async function handleSiteAuthCallback(request, env, route) {
       env
     );
   } catch {
-    return errorResponse('SITE_SESSION_CREATE_FAILED', 'Site session could not be created.', 500);
+    return siteErrorResponse(request, 'SITE_SESSION_CREATE_FAILED', { hostname: route.hostname });
   }
 
   let returnTo;
   try {
     returnTo = validateSiteReturnTo(consumed.returnTo, route.hostname);
   } catch {
-    return errorResponse('SITE_AUTH_RETURN_INVALID', 'Site auth return URL is invalid.', 400);
+    return siteErrorResponse(request, 'SITE_AUTH_RETURN_INVALID', { hostname: route.hostname });
   }
 
   const response = new Response(null, {
@@ -687,70 +616,15 @@ async function consumeSiteCode(env, { code, siteHost }) {
 }
 
 function handleSiteAuthCodeInvalid(request, env, route) {
-  if (wantsHtml(request)) {
-    const url = new URL(request.url);
-    if (url.searchParams.get('auth_recovery') !== '1') {
-      return redirectToAuth(request, env, route, 'SITE_AUTH_CODE_INVALID', {
-        returnTo: recoveryReturnTo(url, route.hostname),
-        authRecovery: true,
-      });
-    }
-
-    return browserPageResponse({
-      title: '访问验证没有完成',
-      message: '这次验证凭证已经失效或已经使用过。重新打开站点会自动再次发起验证。',
-      detail: '如果你刚刚调整过访问权限，请等待几秒后再试。',
-      status: 400,
-      actionHref: `https://${route.hostname}/`,
-      actionLabel: '重新打开站点',
-      statusLabel: '需要重新验证',
-      tone: 'danger',
+  const url = new URL(request.url);
+  if (wantsHtml(request) && url.searchParams.get('auth_recovery') !== '1') {
+    return redirectToAuth(request, env, route, 'SITE_AUTH_CODE_INVALID', {
+      returnTo: recoveryReturnTo(url, route.hostname),
+      authRecovery: true,
     });
   }
 
-  return errorResponse('SITE_AUTH_CODE_INVALID', 'Site auth code is invalid.', 400);
-}
-
-function siteAccessDeniedPage(request, route, code, status) {
-  const href = `https://${route.hostname}/`;
-  const page = siteAccessDeniedCopy(code);
-  return browserPageResponse({
-    title: page.title,
-    message: page.message,
-    detail: page.detail,
-    status,
-    actionHref: href,
-    actionLabel: page.actionLabel || '重新打开站点',
-    statusLabel: page.statusLabel,
-    tone: page.tone || 'danger',
-  });
-}
-
-function siteAccessDeniedCopy(code) {
-  if (code === 'SITE_DISABLED') {
-    return {
-      title: '站点暂时不可访问',
-      message: '这个站点当前没有开放访问。你可以稍后再试，或联系站点管理员确认是否已经启用。',
-      detail: '',
-      statusLabel: '暂停访问',
-      actionLabel: '刷新页面',
-      tone: 'default',
-    };
-  }
-  if (code === 'SITE_POLICY_INVALID') {
-    return {
-      title: '站点访问配置需要确认',
-      message: '这个站点的访问策略暂时无法确认。请联系站点管理员检查访问范围配置。',
-      detail: '状态详情：SITE_POLICY_INVALID',
-      statusLabel: '访问策略异常',
-    };
-  }
-  return {
-    title: '你暂时没有访问权限',
-    message: '当前账号还没有被加入这个站点的访问名单。如果你认为应该可以访问，请联系站点管理员开通权限。',
-    detail: '状态详情：SITE_ACCESS_FORBIDDEN',
-    statusLabel: '没有访问权限',
-  };
+  return siteErrorResponse(request, 'SITE_AUTH_CODE_INVALID', { hostname: route.hostname });
 }
 
 function identityFromSiteCode(route, user = {}) {
@@ -820,10 +694,10 @@ function redirectToAuth(request, env, route, reason, options = {}) {
   try {
     authBase = new URL(env.PUBLIC_AUTH_BASE);
   } catch {
-    return errorResponse('AUTH_BASE_INVALID', 'Auth base URL is invalid.', 500);
+    return siteErrorResponse(request, 'AUTH_BASE_INVALID');
   }
   if (authBase.protocol !== 'https:' || authBase.username || authBase.password || authBase.search || authBase.hash) {
-    return errorResponse('AUTH_BASE_INVALID', 'Auth base URL is invalid.', 500);
+    return siteErrorResponse(request, 'AUTH_BASE_INVALID');
   }
 
   const redirect = new URL('/.xd-pages/auth/authorize', authBase);

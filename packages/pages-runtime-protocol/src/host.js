@@ -1,4 +1,4 @@
-import { validateSiteSlug } from '@xd/pages-runtime-protocol';
+import { validateSiteSlug } from './slug.js';
 
 const PROD_SUFFIXES = ['.pages.xd.team', '.workers.xd.team'];
 const STAGING_SUFFIXES = ['-staging.pages.xd.team', '-staging.workers.xd.team'];

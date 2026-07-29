@@ -1,12 +1,21 @@
-import { browserPageResponse, wantsHtml } from './browser-pages.js';
-import { AUTH_SESSION_COOKIE, buildAuthSessionCookie } from './cookies.js';
+import { browserPageResponse, wantsHtml } from '@xd/browser-pages';
+import {
+  AUTH_SESSION_COOKIE,
+  buildAuthSessionCookie,
+  readCookie,
+  signSessionJwt,
+  verifySessionJwt,
+} from '@xd/session-kit';
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody, safeRedirect } from './http.js';
-import { signSessionJwt, verifySessionJwt } from './jwt.js';
+// 已知跨 app 依赖：pages-auth 与 pages-api 共享同一 D1 数据层，解除需 service binding 或抽出共享 store 包，另行处理。
+// eslint-disable-next-line no-restricted-imports
 import {
   hydrateUserDepartmentFromDirectory,
   shouldHydrateUserDepartment,
 } from '../../pages-api/src/department-hydration.js';
+// 已知跨 app 依赖：pages-auth 与 pages-api 共享同一 D1 数据层，解除需 service binding 或抽出共享 store 包，另行处理。
+// eslint-disable-next-line no-restricted-imports
 import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
@@ -781,17 +790,6 @@ function authError(request, config, context, code, message, status, actionOrOpti
     statusLabel: '需要重新验证',
     tone: 'danger',
   });
-}
-
-function readCookie(cookieHeader, name) {
-  for (const part of String(cookieHeader || '').split(';')) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const separator = trimmed.indexOf('=');
-    if (separator < 0) continue;
-    if (trimmed.slice(0, separator) === name) return trimmed.slice(separator + 1);
-  }
-  return '';
 }
 
 function buildCliLoginConfirmationHtml(loginId, deviceCode, config, confirmToken) {
