@@ -915,6 +915,40 @@ test('keeps runtime gateway errors as JSON for HTML requests', async () => {
   });
 });
 
+test('keeps runtime gateway pre-dispatch IP errors as JSON for HTML requests', async () => {
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/kv/get', {
+      method: 'POST',
+      headers: { Accept: 'text/html' },
+    }),
+    routeEnv()
+  );
+
+  assert.equal(response.status, 403);
+  assert.match(response.headers.get('Content-Type'), /application\/json/);
+  assert.deepEqual((await response.json()).error, {
+    code: 'IP_DENIED',
+    message: 'Client IP is not allowed.',
+  });
+});
+
+test('keeps runtime gateway pre-dispatch route errors as JSON for HTML requests', async () => {
+  const response = await worker.fetch(
+    new Request('https://missing.pages.xd.team/.xd-pages/runtime/v1/kv/get', {
+      method: 'POST',
+      headers: { 'CF-Connecting-IP': '10.1.2.3', Accept: 'text/html' },
+    }),
+    routeEnv()
+  );
+
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get('Content-Type'), /application\/json/);
+  assert.deepEqual((await response.json()).error, {
+    code: 'ROUTE_NOT_FOUND',
+    message: 'Site route not found.',
+  });
+});
+
 test('recovers an invalid browser site auth callback by restarting auth once', async () => {
   const env = routeEnv({
     routes: {

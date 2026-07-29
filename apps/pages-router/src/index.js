@@ -47,10 +47,14 @@ const RUNTIME_GATEWAY_PATHS = new Map([
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    const runtimeGatewayPath = runtimeGatewayPathFor(url.pathname);
+    // runtime API 路径的错误响应固定为 JSON 契约,包括 IP/host/route/policy 前置错误,不做 HTML 协商。
+    if (runtimeGatewayPath) request = withJsonOnlyAccept(request);
+
     const ipDecision = enforceIPAllowlist(request, env);
     if (ipDecision) return ipDecision;
 
-    const url = new URL(request.url);
     const environment = readRouterEnvironment(env);
     if (!environment) return siteErrorResponse(request, 'ROUTER_ENV_INVALID');
 
@@ -60,7 +64,6 @@ export default {
         message: `Host ${url.hostname} is not a routable XD Cell site.`,
       });
     }
-    const runtimeGatewayPath = runtimeGatewayPathFor(url.pathname);
 
     if (url.pathname === SITE_AUTH_CALLBACK_PATH) {
       const routeResult = await readUsableRoute(request, env, host.hostname, environment);
@@ -359,6 +362,12 @@ async function handleRuntimeGatewayRequest(request, env, route, identity, runtim
 
 function runtimeGatewayPathFor(pathname) {
   return RUNTIME_GATEWAY_PATHS.get(pathname) || null;
+}
+
+function withJsonOnlyAccept(request) {
+  const headers = new Headers(request.headers);
+  headers.set('Accept', 'application/json');
+  return new Request(request, { headers });
 }
 
 function legacyRuntimeRoute(gatewayPath) {
