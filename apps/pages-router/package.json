@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@xd/browser-pages": "workspace:*",
     "@xd/ip-guard": "workspace:*",
     "@xd/pages-runtime-protocol": "workspace:*",
     "@xd/worker-kit": "workspace:*"

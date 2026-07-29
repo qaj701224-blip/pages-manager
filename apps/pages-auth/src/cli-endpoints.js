@@ -2,7 +2,7 @@ import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { AUTH_SESSION_COOKIE } from './cookies.js';
 import { signSessionJwt, verifySessionJwt } from './jwt.js';
-import { browserPageResponse } from './browser-pages.js';
+import { browserPageResponse } from '@xd/browser-pages';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
 const CLI_TOKEN_AUDIENCE = 'pages-cli';

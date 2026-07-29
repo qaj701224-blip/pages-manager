@@ -256,6 +256,7 @@ P1：本 PR 必须修。包括：
 - 行为变更缺少测试。
 - `apps/pages-api/src/openapi.js` / skill / README / docs/api-boundary.md 与实现不一致。
 - 保留 IP 门禁的 `pages-router` / `pages-console` 路径，其 allowlist、SSO、ACL 或 cookie/header 清洗逻辑被绕过；`pages-api` API 本身不以来源 IP 作为访问控制。
+- `pages-router` 浏览器可达路径的 4xx/5xx 返回裸 JSON 而未走共享协商错误页（runtime gateway API 路径除外）。
 - GitHub Actions secret/var 用错，导致运行时拿不到必要配置。
 - Cloudflare API token 流程混淆：Wrangler token 和 Worker 运行时 `CF_API_TOKEN` 用途混用。
 - 错误处理导致 agent/用户拿不到可操作提示。

@@ -1,0 +1,12 @@
+{
+  "name": "@xd/browser-pages",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "@xd/worker-kit": "workspace:*"
+  }
+}

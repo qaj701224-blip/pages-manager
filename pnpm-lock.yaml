@@ -89,6 +89,9 @@ importers:
 
   apps/pages-auth:
     dependencies:
+      '@xd/browser-pages':
+        specifier: workspace:*
+        version: link:../../packages/browser-pages
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
@@ -156,6 +159,9 @@ importers:
 
   apps/pages-router:
     dependencies:
+      '@xd/browser-pages':
+        specifier: workspace:*
+        version: link:../../packages/browser-pages
       '@xd/ip-guard':
         specifier: workspace:*
         version: link:../../packages/ip-guard
@@ -229,6 +235,12 @@ importers:
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
+
+  packages/browser-pages:
+    dependencies:
+      '@xd/worker-kit':
+        specifier: workspace:*
+        version: link:../worker-kit
 
   packages/git-client: {}
 

@@ -1,4 +1,4 @@
-import { browserPageResponse, wantsHtml } from './browser-pages.js';
+import { browserPageResponse, wantsHtml } from '@xd/browser-pages';
 import { AUTH_SESSION_COOKIE, buildAuthSessionCookie } from './cookies.js';
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody, safeRedirect } from './http.js';

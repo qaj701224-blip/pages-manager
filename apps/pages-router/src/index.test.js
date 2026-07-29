@@ -846,6 +846,75 @@ test('consumes auth callback site code and sets host-only site_session before re
   assert.deepEqual(payload.departments, ['XD/Design']);
 });
 
+test('renders a negotiated HTML page when the signed-in callback user has no access', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ visibility: 'owner', ownerUserId: 'owner_1' }),
+    },
+    consumeSiteCode: async () => ({
+      returnTo: 'https://demo.pages.xd.team/private',
+      user: { id: 'usr_2', employeeStatus: 'active' },
+    }),
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/auth/callback?code=ost_test.site-secret', {
+      headers: { 'CF-Connecting-IP': '10.1.2.3', Accept: 'text/html' },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 403);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  assert.match(await response.text(), /状态详情：SITE_ACCESS_FORBIDDEN/);
+});
+
+test('renders a negotiated HTML page for denied client IPs', async () => {
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/', {
+      headers: { Accept: 'text/html' },
+    }),
+    routeEnv()
+  );
+
+  assert.equal(response.status, 403);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  assert.match(await response.text(), /当前网络不在允许范围，请连接公司网络或 VPN 后重试/);
+});
+
+test('renders a negotiated HTML page for invalid site hosts', async () => {
+  const response = await worker.fetch(
+    new Request('https://not-a-site.example.com/', {
+      headers: { 'CF-Connecting-IP': '10.1.2.3', Accept: 'text/html' },
+    }),
+    routeEnv()
+  );
+
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get('Content-Type'), /text\/html/);
+  assert.match(await response.text(), /站点地址无效/);
+});
+
+test('keeps runtime gateway errors as JSON for HTML requests', async () => {
+  const env = routeEnv({
+    routes: {
+      'demo.pages.xd.team': routeSnapshot({ kv: { enabled: true, scopes: ['kv:get'] } }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://demo.pages.xd.team/.xd-pages/runtime/v1/kv/get', {
+      headers: { 'CF-Connecting-IP': '10.1.2.3', Accept: 'text/html' },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 405);
+  assert.match(response.headers.get('Content-Type'), /application\/json/);
+  assert.deepEqual((await response.json()).error, {
+    code: 'METHOD_NOT_ALLOWED',
+    message: 'Method not allowed.',
+  });
+});
+
 test('recovers an invalid browser site auth callback by restarting auth once', async () => {
   const env = routeEnv({
     routes: {
