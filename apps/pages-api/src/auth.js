@@ -45,6 +45,12 @@ async function authenticateCliToken(token, env, store, config) {
     return authError('PAGES_USER_INACTIVE', 'User is not active.', 403, 'Contact the Pages platform owner.');
   }
 
+  markLegacyCliTokenUsage(config);
+
+  return cliUserActorResult(userId, user, payload.jti || null);
+}
+
+function cliUserActorResult(userId, user, tokenId) {
   return {
     ok: true,
     actor: {
@@ -53,7 +59,7 @@ async function authenticateCliToken(token, env, store, config) {
       userId,
       email: user.email,
       name: user.realname || null,
-      tokenId: payload.jti || null,
+      tokenId,
       scopes: ['*'],
       source: 'cli',
     },
@@ -104,6 +110,8 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
 
   if (typeof store.updateAccessKeyLastUsed === 'function') await store.updateAccessKeyLastUsed(accessKey.id, now);
 
+  if (accessKey.issuedSource === 'cli_login') return cliUserActorResult(ownerUserId, user, accessKey.id);
+
   return {
     ok: true,
     actor: {
@@ -120,6 +128,15 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
       source: 'access_key',
     },
   };
+}
+
+function markLegacyCliTokenUsage(config) {
+  console.info(
+    JSON.stringify({
+      eventType: 'auth.legacy_cli_token.accepted',
+      environment: config.environment,
+    })
+  );
 }
 
 async function authenticateTeamAccessKey(accessKey, store, now) {

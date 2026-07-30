@@ -791,6 +791,16 @@ export function buildOpenApi(config) {
           },
         },
       },
+      '/.xd-pages/api/access-keys/current': {
+        delete: {
+          summary: 'Revoke the current CLI access key',
+          description: 'Revokes a cli_login access key. Legacy CLI JWTs return success without revoking an entity.',
+          responses: {
+            200: { description: 'Current CLI credential revocation handled idempotently' },
+            403: { description: 'Credential is not a CLI credential' },
+          },
+        },
+      },
       '/.xd-pages/api/auth/whoami': {
         get: {
           summary: 'Return the authenticated actor for CLI token or access key validation',

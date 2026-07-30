@@ -213,6 +213,85 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
   assert.equal(expired.error.code, 'ACCESS_KEY_EXPIRED');
 });
 
+test('maps cli_login access keys to the legacy user CLI actor shape', async () => {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_cli_login',
+    bytes: new Uint8Array(24).fill(5),
+  });
+  const store = await createSeededStore();
+  await store.createAccessKey({
+    id: 'ak_cli_login',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'cli login cli_1',
+    scopes: ['*'],
+    siteId: null,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.deepEqual(result.actor, {
+    type: 'user',
+    actorId: 'usr_1',
+    userId: 'usr_1',
+    email: 'user@example.com',
+    name: 'User One',
+    tokenId: 'ak_cli_login',
+    scopes: ['*'],
+    source: 'cli',
+  });
+});
+
+test('rejects cli_login access keys after the user session version changes', async () => {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_cli_stale',
+    bytes: new Uint8Array(24).fill(6),
+  });
+  const store = await createSeededStore();
+  await store.createAccessKey({
+    id: 'ak_cli_stale',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'cli login cli_stale',
+    scopes: ['*'],
+    siteId: null,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+  await bumpUserSessionVersion(store);
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'ACCESS_KEY_SESSION_STALE');
+});
+
 for (const issuedSource of ['legacy', 'cli', 'console']) {
   test(`accepts ${issuedSource} access keys across user session changes`, async () => {
     const keyId = `ak_${issuedSource}`;

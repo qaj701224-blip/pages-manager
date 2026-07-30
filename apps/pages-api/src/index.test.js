@@ -586,6 +586,81 @@ test('internal user upsert is only callable through internal service host', asyn
   assert.equal((await store.getUser('usr_1')).sessionVersion, 2);
 });
 
+test('internal CLI access-key exchange enforces environment and TTL policy', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    realname: 'User One',
+    employeeStatus: 'active',
+    sessionVersion: 4,
+  });
+
+  const mismatch = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_1',
+      environment: 'staging',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      now: () => 1_800_000_000,
+    }
+  );
+  assert.equal(mismatch.status, 403);
+  assert.equal((await mismatch.json()).error.code, 'CLI_ACCESS_KEY_ENV_MISMATCH');
+
+  const defaultTtl = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_default_ttl',
+      environment: 'production',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      now: () => 1_800_000_000,
+    }
+  );
+  assert.equal(defaultTtl.status, 201);
+  assert.equal(
+    (await defaultTtl.json()).accessKey.expiresAt,
+    new Date((1_800_000_000 + 31_536_000) * 1000).toISOString()
+  );
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_1',
+      environment: 'production',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      CLI_ACCESS_KEY_TTL_SECONDS: '0',
+      now: () => 1_800_000_000,
+    }
+  );
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.match(body.accessKey.plaintext, /^xdp_prod_/);
+  assert.equal(body.accessKey.expiresAt, null);
+  const stored = await store.getAccessKeyById(body.accessKey.id);
+  assert.equal(stored.issuedSource, 'cli_login');
+  assert.equal(stored.issuedSessionVersion, 4);
+  assert.deepEqual(stored.scopes, ['*']);
+});
+
 test('internal hostname claim acquire is only callable through internal service host', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',

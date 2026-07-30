@@ -184,6 +184,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /CLI_ACCESS_KEY_TTL_SECONDS = "31536000"/);
   assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
   assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
@@ -216,6 +217,7 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /CLI_ACCESS_KEY_TTL_SECONDS = "31536000"/);
   assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
   assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);

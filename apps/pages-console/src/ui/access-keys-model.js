@@ -82,13 +82,14 @@ function formatScopeLabel(scope) {
 function formatSourceLabel(source) {
   if (source === 'xdmaker_s2s') return 'XDMaker';
   if (source === 'console') return 'Console';
-  if (source === 'cli') return 'CLI';
+  if (source === 'cli' || source === 'cli_login') return 'CLI';
   if (source === 'legacy') return '历史';
   return '其它';
 }
 
 function formatSourceKind(source) {
   if (source === 'xdmaker_s2s') return 'xdmaker';
+  if (source === 'cli_login') return 'cli';
   if (source === 'console' || source === 'cli' || source === 'legacy') return source;
   return 'other';
 }

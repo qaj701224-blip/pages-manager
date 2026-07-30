@@ -106,6 +106,57 @@ test('revokes access keys without returning plaintext or hash', async () => {
   assert.equal(body.accessKey.keyHash, undefined);
 });
 
+test('revokes current cli_login key and keeps legacy JWT logout idempotent', async () => {
+  const store = await createSeededStore();
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_cli_login',
+    bytes: new Uint8Array(24).fill(3),
+  });
+  await store.createAccessKey({
+    id: 'ak_cli_login',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'cli login cli_1',
+    scopes: ['*'],
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+
+  const revoked = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/current', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${plaintext}` },
+    }),
+    testEnv(store)
+  );
+  assert.equal(revoked.status, 200);
+  assert.deepEqual(await revoked.json(), { revoked: true });
+  assert.equal((await store.getAccessKeyById('ak_cli_login')).revokedReason, 'cli_logout');
+
+  const legacy = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/current', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer cli-token' },
+    }),
+    testEnv(store, {
+      verifyCliToken: async () => ({
+        sub: 'usr_1',
+        purpose: 'cli_token',
+        aud: 'pages-cli',
+        env: 'production',
+        jti: 'legacy_jti',
+      }),
+    })
+  );
+  assert.equal(legacy.status, 200);
+  assert.deepEqual(await legacy.json(), { revoked: false });
+});
+
 test('rejects access key actors from listing or revoking access keys', async () => {
   const store = await createSeededStore();
   const plaintext = createAccessKeyPlaintext({
@@ -137,11 +188,20 @@ test('rejects access key actors from listing or revoking access keys', async () 
     }),
     testEnv(store)
   );
+  const revokeCurrent = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/current', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${plaintext}`, 'CF-Connecting-IP': '10.1.2.3' },
+    }),
+    testEnv(store)
+  );
 
   assert.equal(list.status, 403);
   assert.equal((await list.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
   assert.equal(revoke.status, 403);
   assert.equal((await revoke.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
+  assert.equal(revokeCurrent.status, 403);
+  assert.equal((await revokeCurrent.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
 });
 
 test('rejects access key creation for inaccessible sites and invalid scopes', async () => {
