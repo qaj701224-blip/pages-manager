@@ -159,6 +159,7 @@ test('routes CLI login start and poll public endpoints', async () => {
         consumedAt: 1_800_000_001,
       },
     }),
+    createCliAccessKey: async () => ({ plaintext: 'xdp_prod_ak_cli_test_secret', expiresAt: '2027-06-15T00:00:00.000Z' }),
   };
 
   const startResponse = await worker.fetch(
@@ -269,6 +270,38 @@ test('OAuth logout clears auth session cookie and redirects to console login', a
   assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=;/);
   assert.equal(unsafe.status, 302);
   assert.equal(unsafe.headers.get('Location'), 'https://workers.xd.team/login?loggedOut=1');
+});
+
+test('OAuth logout revokes the durable auth session before clearing cookies', async () => {
+  const now = 1_800_000_000;
+  const revoked = [];
+  const env = {
+    ...testJwtEnv(),
+    now: () => now,
+    revokeAuthSession: async (sid) => revoked.push(sid),
+  };
+  const token = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'ses_logout_test' },
+    },
+    env
+  );
+
+  const response = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/logout', {
+      headers: { Cookie: `__Host-pages_auth_session=${token}` },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.deepEqual(revoked, ['ses_logout_test']);
+  assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=;/);
 });
 
 test('OAuth callback redirects console login code to console worker callback', async () => {

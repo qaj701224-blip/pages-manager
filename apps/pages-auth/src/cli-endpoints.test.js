@@ -4,7 +4,7 @@ import test from 'node:test';
 import { readAuthConfig } from './config.js';
 import { buildAuthSessionCookie } from './cookies.js';
 import { buildCliLoginBrowserUrl, handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
-import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import { signSessionJwt } from './jwt.js';
 
 const now = 1_800_000_000;
 const coolToneFragments = [
@@ -572,7 +572,7 @@ test('poll rejects non-object JSON bodies with safe error envelope', async () =>
   assert.equal((await response.json()).error.code, 'CLI_LOGIN_INVALID');
 });
 
-test('poll does not consume confirmed login when CLI token signing fails', async () => {
+test('poll consumes confirmed login before a failed access-key exchange', async () => {
   let consumed = false;
   const env = {
     PAGES_ENV: 'production',
@@ -587,15 +587,18 @@ test('poll does not consume confirmed login when CLI token signing fails', async
       consumed = true;
       return confirmedLogin();
     },
+    createCliAccessKey: async () => {
+      throw new Error('exchange failed');
+    },
   };
   const response = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, readAuthConfig(env));
 
-  assert.equal(response.status, 500);
-  assert.equal((await response.json()).error.code, 'CLI_TOKEN_SIGN_FAILED');
-  assert.equal(consumed, false);
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.code, 'CLI_LOGIN_EXCHANGE_FAILED');
+  assert.equal(consumed, true);
 });
 
-test('poll after confirmation returns signed CLI token once', async () => {
+test('poll after confirmation returns access key plaintext once', async () => {
   let consumed = false;
   const env = testEnv({
     peekCliLoginRecord: async () => {
@@ -618,15 +621,8 @@ test('poll after confirmation returns signed CLI token once', async () => {
   assert.equal(typeof body.cliToken, 'string');
   assert.equal(JSON.stringify(body).includes('secretHash'), false);
 
-  const verified = await verifySessionJwt(body.cliToken, env, {
-    purpose: 'cli_token',
-    audience: 'pages-cli',
-    now,
-  });
-
-  assert.equal(verified.sub, 'usr_123');
-  assert.equal(verified.env, 'production');
-  assert.equal(verified.jti, 'cli_test');
+  assert.match(body.cliToken, /^xdp_prod_/);
+  assert.equal(body.expiresAt, 1_813_017_600);
 
   const repeatedResponse = await handleCliLoginPoll(pollRequest('cli_test', 'login-secret'), env, config);
 
@@ -716,6 +712,7 @@ function testEnv(overrides = {}) {
     JWT_SECRET: 'test-secret',
     now: () => now,
     refreshAuthSessionRecord: async (sid) => ({ sid, userId: 'usr_123', purpose: 'auth_session' }),
+    createCliAccessKey: async () => ({ plaintext: 'xdp_prod_ak_cli_test_secret', expiresAt: '2027-06-15T00:00:00.000Z' }),
     ...overrides,
   };
 }

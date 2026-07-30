@@ -1,4 +1,4 @@
-import { handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart } from './cli-endpoints.js';
+import { handleCliLoginConfirm, handleCliLoginPoll, handleCliLoginStart, revokeAuthSessionForLogout } from './cli-endpoints.js';
 import { readAuthConfig } from './config.js';
 import { buildClearAuthSessionCookie, buildClearSiteSessionCookie } from './cookies.js';
 import {
@@ -60,7 +60,7 @@ async function routeAuthRequest(request, env, context) {
   if (url.pathname === '/.xd-pages/cli/login/confirm') return handleCliLoginConfirm(request, env, config);
   if (url.pathname === '/.xd-pages/auth/authorize') return handleOAuthAuthorize(request, env, config, context);
   if (url.pathname === '/.xd-pages/auth/callback') return handleOAuthCallback(request, env, config, context);
-  if (url.pathname === '/.xd-pages/auth/logout') return handleAuthLogout(request, config);
+  if (url.pathname === '/.xd-pages/auth/logout') return handleAuthLogout(request, env, config);
   if (url.pathname === '/.xd-pages/internal/consume-site-code') return handleInternalConsumeSiteCode(request, env, config);
   if (url.pathname === '/.xd-pages/internal/console/login-code') {
     return handleInternalConsoleLoginCode(request, env, config);
@@ -73,7 +73,7 @@ async function routeAuthRequest(request, env, context) {
   return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
 }
 
-function handleAuthLogout(request, config) {
+async function handleAuthLogout(request, env, config) {
   if (request.method !== 'GET' && request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
 
   const url = new URL(request.url);
@@ -81,6 +81,7 @@ function handleAuthLogout(request, config) {
     Location: normalizeConsoleLogoutReturnTo(url.searchParams.get('return_to'), config.environment),
     'Cache-Control': 'no-store',
   });
+  await revokeAuthSessionForLogout(request, env);
   headers.append('Set-Cookie', buildClearAuthSessionCookie());
   headers.append('Set-Cookie', buildClearSiteSessionCookie());
   return new Response(null, { status: 302, headers });

@@ -1,11 +1,10 @@
 import { createOpaqueToken } from './id.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { AUTH_SESSION_COOKIE } from './cookies.js';
-import { signSessionJwt, verifySessionJwt } from './jwt.js';
+import { verifySessionJwt } from './jwt.js';
 import { browserPageResponse } from './browser-pages.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
-const CLI_TOKEN_AUDIENCE = 'pages-cli';
 const CLI_LOGIN_CONFIRM_AUDIENCE = 'pages-cli-login-confirm';
 const DEVICE_CODE_RE = /^[0-9]{8}$/;
 
@@ -69,25 +68,6 @@ export async function handleCliLoginPoll(request, env, config) {
     return jsonError('CLI_LOGIN_ENV_MISMATCH', 'CLI login environment does not match.', 403);
   }
 
-  let cliToken;
-  try {
-    cliToken = await signSessionJwt(
-      {
-        purpose: 'cli_token',
-        audience: CLI_TOKEN_AUDIENCE,
-        subject: loginStatus.userId,
-        now,
-        ttlSeconds: config.authSessionAbsoluteTtlSeconds,
-        claims: {
-          jti: loginStatus.record?.id || loginId,
-        },
-      },
-      env
-    );
-  } catch {
-    return jsonError('CLI_TOKEN_SIGN_FAILED', 'CLI token could not be signed.', 500);
-  }
-
   let consumed;
   try {
     consumed = await consumeCliLoginRecord(env, { loginId, loginSecret }, { now });
@@ -98,11 +78,31 @@ export async function handleCliLoginPoll(request, env, config) {
     return jsonError('CLI_LOGIN_ENV_MISMATCH', 'CLI login environment does not match.', 403);
   }
 
+  let cliToken;
+  let expiresAt;
+  try {
+    const accessKey = await createCliAccessKey(env, {
+      userId: consumed.userId,
+      cliLoginId: loginId,
+      environment: consumed.environment,
+    });
+    cliToken = accessKey?.plaintext;
+    if (typeof cliToken !== 'string' || cliToken === '') throw new Error('CLI access key plaintext is missing');
+    expiresAt = toEpochSeconds(accessKey.expiresAt);
+  } catch {
+    return jsonError(
+      'CLI_LOGIN_EXCHANGE_FAILED',
+      'CLI access key could not be created.',
+      502,
+      'Run `xd-cell login` again.'
+    );
+  }
+
   return jsonOk({
     status: 'confirmed',
     tokenType: 'Bearer',
     cliToken,
-    expiresAt: now + config.authSessionAbsoluteTtlSeconds,
+    expiresAt,
   });
 }
 
@@ -188,6 +188,24 @@ async function consumeCliLoginRecord(env, input, options) {
   return response.json();
 }
 
+async function createCliAccessKey(env, input) {
+  if (typeof env?.createCliAccessKey === 'function') return env.createCliAccessKey(input);
+  if (!env?.PAGES_API) throw new Error('Pages API binding is required');
+
+  const response = await env.PAGES_API.fetch(
+    jsonDoRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', input)
+  );
+  if (!response.ok) throw new Error('CLI access key exchange failed');
+  const payload = await response.json();
+  return payload?.accessKey;
+}
+
+function toEpochSeconds(value) {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
+}
+
 async function confirmCliLoginRecord(env, input, options) {
   if (typeof env?.confirmCliLoginRecord === 'function') return env.confirmCliLoginRecord(input, options);
 
@@ -220,6 +238,36 @@ function jsonDoRequest(url, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+export async function revokeAuthSessionForLogout(request, env) {
+  const token = readCookie(request.headers.get('Cookie'), AUTH_SESSION_COOKIE);
+  if (!token) return;
+
+  const now = readNow(env);
+  let sid;
+  try {
+    const payload = await verifySessionJwt(token, env, {
+      purpose: 'auth_session',
+      audience: AUTH_SESSION_AUDIENCE,
+      now,
+    });
+    sid = typeof payload.sid === 'string' ? payload.sid : '';
+  } catch {
+    return;
+  }
+  if (!sid) return;
+
+  try {
+    if (typeof env?.revokeAuthSession === 'function') {
+      await env.revokeAuthSession(sid, { now });
+      return;
+    }
+    if (!env?.AUTH_SESSIONS) return;
+    await getAuthSessionStub(env, sid).fetch(jsonDoRequest('https://auth-session-do/revoke', { sid, now }));
+  } catch {
+    // Logout must still clear browser cookies when durable-session revocation is unavailable.
+  }
 }
 
 async function readConfirmationBody(request) {

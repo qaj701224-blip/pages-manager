@@ -1003,7 +1003,7 @@ function buildCliLoginConfirmationHtml(loginId, deviceCode, config, confirmToken
         <dt>认证服务</dt>
         <dd>${safeAuthBase}</dd>
         <dt>授权范围</dt>
-        <dd>cli_token</dd>
+        <dd>个人 access key</dd>
       </dl>
       <form method="post" action="/.xd-pages/cli/login/confirm" autocomplete="off">
         <input type="hidden" name="loginId" value="${safeLoginId}">

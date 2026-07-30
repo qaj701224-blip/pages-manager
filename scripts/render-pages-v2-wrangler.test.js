@@ -343,8 +343,9 @@ test('production pages-auth config renders explicit production auth settings onl
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
   assert.doesNotMatch(config, /SSO_ALLOWED_USER_SCOPE/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
-  assert.doesNotMatch(config, /service = "pages-api"/);
+  assert.match(config, /binding = "PAGES_API"/);
+  assert.match(config, /service = "pages-api"/);
+  assert.doesNotMatch(config, /service = "pages-api-staging"/);
   assert.match(config, /binding = "PAGES_METADATA"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
@@ -372,8 +373,9 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages_staging"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
-  assert.doesNotMatch(config, /service = "pages-api-staging"/);
+  assert.match(config, /binding = "PAGES_API"/);
+  assert.match(config, /service = "pages-api-staging"/);
+  assert.doesNotMatch(config, /service = "pages-api"\n/);
 });
 
 test('pages-auth config binds XDS outbound requests to the office VPC network when configured', () => {
@@ -383,7 +385,7 @@ test('pages-auth config binds XDS outbound requests to the office VPC network wh
   });
 
   assert.match(config, /\[\[vpc_networks\]\]\nbinding = "XD_OFFICE_NET"\ntunnel_id = "test-office-tunnel-id"/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+  assert.match(config, /binding = "PAGES_API"/);
 
   const emptyConfig = renderPagesAuth('staging', withoutEnv('PAGES_USER_WORKER_VPC_TUNNEL_ID'));
   assert.doesNotMatch(emptyConfig, /\[\[vpc_networks\]\]/);
