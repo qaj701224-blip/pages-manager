@@ -374,7 +374,7 @@ entry 是静态资源目录或 Worker 入口；site 是业务站点名，可由�
   if (topic === 'logout') {
     return `用法：xd-cell logout [选项]
 
-退出本地登录，并尽力撤销当前 CLI access key。
+退出本地登录。
 
 选项：
   --json                                    输出稳定 JSON，不输出 secret。
