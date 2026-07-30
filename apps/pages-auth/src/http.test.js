@@ -18,6 +18,16 @@ test('jsonError returns no-store JSON error envelope', async () => {
   });
 });
 
+test('jsonError projects a public reason and step for CLI_LOGIN_EXCHANGE_FAILED', async () => {
+  const response = jsonError('CLI_LOGIN_EXCHANGE_FAILED', 'CLI access key could not be created.', 502, 'Retry login.');
+
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.equal(body.error.code, 'CLI_LOGIN_EXCHANGE_FAILED');
+  assert.equal(body.error.reason, 'cli_login_unavailable');
+  assert.equal(body.error.step, 'cli.poll');
+});
+
 test('jsonError only emits public diagnostic fields', async () => {
   const response = jsonError('OAUTH_STATE_INVALID', 'OAuth state is invalid.', 400, {
     action: 'Restart login.',

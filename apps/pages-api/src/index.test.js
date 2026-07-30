@@ -661,6 +661,56 @@ test('internal CLI access-key exchange enforces environment and TTL policy', asy
   assert.deepEqual(stored.scopes, ['*']);
 });
 
+test('internal CLI access-key exchange is not reachable from the public host', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createUser({ userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active', sessionVersion: 1 });
+
+  const publicResponse = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/internal/cli-access-keys',
+      { userId: 'usr_1', cliLoginId: 'cli_1', environment: 'production' },
+      { 'CF-Connecting-IP': '10.1.2.3' }
+    ),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      IP_ALLOWLIST: '10.0.0.0/8',
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      now: () => 1_800_000_000,
+    }
+  );
+
+  assert.equal(publicResponse.status, 404);
+  assert.equal((await publicResponse.json()).error.code, 'NOT_FOUND');
+});
+
+test('internal CLI access-key exchange treats a whitespace TTL as the default, not never-expires', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createUser({ userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active', sessionVersion: 1 });
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_ws',
+      environment: 'production',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      CLI_ACCESS_KEY_TTL_SECONDS: '  ',
+      now: () => 1_800_000_000,
+    }
+  );
+
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).accessKey.expiresAt, new Date((1_800_000_000 + 31_536_000) * 1000).toISOString());
+});
+
 test('internal hostname claim acquire is only callable through internal service host', async () => {
   const store = createTestPagesStore({
     now: () => '2026-06-15T00:00:00.000Z',

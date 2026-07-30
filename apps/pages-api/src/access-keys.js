@@ -266,7 +266,8 @@ export async function issueCliLoginAccessKey(env, environment, store, { userId, 
 }
 
 function readCliAccessKeyTtlSeconds(env) {
-  const raw = env?.CLI_ACCESS_KEY_TTL_SECONDS;
+  const configured = env?.CLI_ACCESS_KEY_TTL_SECONDS;
+  const raw = typeof configured === 'string' ? configured.trim() : configured;
   if (raw === undefined || raw === '') return DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS;
