@@ -91,7 +91,7 @@ test('browser login opens authorize URL, polls, and stores CLI token once confir
   assert.deepEqual(writes[0], {
     environment: 'production',
     credential: {
-      type: 'cli_token',
+      type: 'access_key',
       value: 'cli_token_secret',
       savedAt: '2026-06-15T00:00:00.000Z',
       expiresAt: 3_000,
@@ -103,7 +103,7 @@ test('browser login opens authorize URL, polls, and stores CLI token once confir
   assert.match(output.join('\n'), /production/);
   assert.match(output.join('\n'), /auth\.pages\.xd\.team/);
   assert.match(output.join('\n'), /api\.pages\.xd\.team/);
-  assert.match(output.join('\n'), /cli_token/);
+  assert.match(output.join('\n'), /access key/);
 });
 
 test('browser login respects --no-open and fails on expiry', async () => {

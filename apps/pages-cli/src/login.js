@@ -60,7 +60,7 @@ export async function loginWithBrowser({
   output(`环境：${config.environment}`);
   output(`API: ${config.apiBaseUrl}`);
   output(`认证服务：${config.authBaseUrl}`);
-  output('权限：cli_token');
+  output('权限：个人 access key');
   const start = await client.requestAuth('POST', '/.xd-pages/cli/login/start');
   assertLoginStart(start);
   output(`设备码：${start.deviceCode}`);
@@ -68,7 +68,7 @@ export async function loginWithBrowser({
   if (typeof onChallenge === 'function') {
     await onChallenge({
       environment: config.environment,
-      credentialType: 'cli_token',
+      credentialType: 'access_key',
       deviceCode: start.deviceCode,
       browserUrl: start.browserUrl,
       expiresAt: start.expiresAt,
@@ -89,12 +89,12 @@ export async function loginWithBrowser({
       if (typeof status.cliToken !== 'string' || status.cliToken === '') throw new Error('CLI_TOKEN_MISSING');
       const savedAt = nowIso();
       await secretStore.set(config.environment, {
-        type: 'cli_token',
+        type: 'access_key',
         value: status.cliToken,
         savedAt,
         expiresAt: status.expiresAt,
       });
-      await saveLoginProfile({ config, profile, saveProfile, credentialType: 'cli_token', savedAt });
+      await saveLoginProfile({ config, profile, saveProfile, credentialType: 'access_key', savedAt });
       output(`已登录 ${config.environment} 环境。`);
       return;
     }

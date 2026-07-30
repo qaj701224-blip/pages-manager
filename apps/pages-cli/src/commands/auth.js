@@ -69,7 +69,7 @@ export async function runLogin(parsed, context) {
     noOpen: Boolean(parsed.flags.noOpen),
     pollIntervalMs: context.pollIntervalMs,
   });
-  outputJsonResult(parsed, context, { environment: config.environment, credentialType: 'cli_token' });
+  outputJsonResult(parsed, context, { environment: config.environment, credentialType: 'access_key' });
   return 0;
 }
 
@@ -104,6 +104,16 @@ export async function runAuthLogout(parsed, context) {
   assertNoPositionals(parsed, 'AUTH_LOGOUT_USAGE_INVALID', 'xd-cell auth logout 不接受位置参数。');
   const config = readConfigForCommand(parsed, context);
   const secretStore = context.secretStore || createSecretStore({ profileDir: context.profileDir, platform: context.platform });
+  const credential = await secretStore.get(config.environment);
+  let serverRevoked = null;
+  if (credential?.value) {
+    try {
+      const result = await createClient(config, credential, context).requestApi('DELETE', '/.xd-pages/api/access-keys/current');
+      serverRevoked = result?.revoked === true;
+    } catch {
+      serverRevoked = false;
+    }
+  }
   if (typeof secretStore.delete === 'function') await secretStore.delete(config.environment);
   await saveProfileFile(context.profileDir, {
     ...context.profile,
@@ -116,7 +126,9 @@ export async function runAuthLogout(parsed, context) {
       },
     },
   });
-  if (outputJsonResult(parsed, context, { environment: config.environment, loggedOut: true })) return 0;
-  context.output(`已退出 ${config.environment}`);
+  if (outputJsonResult(parsed, context, { environment: config.environment, loggedOut: true, serverRevoked })) return 0;
+  const revokeSuffix =
+    serverRevoked === true ? '，服务端凭证已撤销' : serverRevoked === false ? '，本地凭证已删除，服务端撤销未确认' : '';
+  context.output(`已退出 ${config.environment}${revokeSuffix}`);
   return 0;
 }

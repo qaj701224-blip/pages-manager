@@ -1561,7 +1561,7 @@ test('status and logout can target an environment without switching profile', as
   await executeCommand(['status', '--env', 'staging', '--json'], {
     env: {},
     profile: productionProfile(),
-    secretStore: fakeSecretStore({ type: 'cli_token', value: 'staging_cli_token' }),
+    secretStore: fakeSecretStore({ type: 'access_key', value: 'xdp_stg_ak_1_secret' }),
     output: (line) => statusOutput.push(line),
   });
   await executeCommand(['logout', '--env', 'staging'], {
@@ -1581,9 +1581,50 @@ test('status and logout can target an environment without switching profile', as
     schemaVersion: 1,
     environment: 'staging',
     authenticated: true,
-    credentialType: 'cli_token',
+    credentialType: 'access_key',
   });
   assert.deepEqual(deleted, ['staging']);
+});
+
+test('logout best-effort revokes the current CLI access key before deleting local credentials', async () => {
+  const calls = [];
+  const deleted = [];
+  const output = [];
+
+  await executeCommand(['logout'], {
+    env: {},
+    profile: productionProfile(),
+    profileDir: await tempProject(),
+    secretStore: {
+      get: async () => ({ type: 'access_key', value: 'xdp_prod_ak_1_secret' }),
+      delete: async (environment) => deleted.push(environment),
+    },
+    fetch: fakeFetch(calls, [{ revoked: true }]),
+    output: (line) => output.push(line),
+  });
+
+  assert.equal(calls[0].method, 'DELETE');
+  assert.equal(calls[0].url, 'https://api.pages.xd.team/.xd-pages/api/access-keys/current');
+  assert.equal(calls[0].headers.get('Authorization'), 'Bearer xdp_prod_ak_1_secret');
+  assert.deepEqual(deleted, ['production']);
+  assert.match(output.join('\n'), /服务端凭证已撤销/);
+
+  const failedDeleted = [];
+  const failedOutput = [];
+  await executeCommand(['logout'], {
+    env: {},
+    profile: productionProfile(),
+    profileDir: await tempProject(),
+    secretStore: {
+      get: async () => ({ type: 'access_key', value: 'xdp_prod_ak_2_secret' }),
+      delete: async (environment) => failedDeleted.push(environment),
+    },
+    fetch: fakeFetch([], [{ status: 503, body: { error: { code: 'UNAVAILABLE' } } }]),
+    output: (line) => failedOutput.push(line),
+  });
+
+  assert.deepEqual(failedDeleted, ['production']);
+  assert.match(failedOutput.join('\n'), /服务端撤销未确认/);
 });
 
 test('whoami uses API validation and env command is not user-facing', async () => {
@@ -1709,7 +1750,7 @@ test('login --json emits browser challenge before polling', async () => {
     schemaVersion: 1,
     type: 'login_challenge',
     environment: 'production',
-    credentialType: 'cli_token',
+    credentialType: 'access_key',
     deviceCode: '12345678',
     browserUrl: 'https://auth.pages.xd.team/.xd-pages/auth/authorize?cli_login_id=cli_1',
     expiresAt: 2_000,
@@ -1718,7 +1759,7 @@ test('login --json emits browser challenge before polling', async () => {
     ok: true,
     schemaVersion: 1,
     environment: 'production',
-    credentialType: 'cli_token',
+    credentialType: 'access_key',
   });
   assert.equal(output.join('\n').includes('sec_1'), false);
   assert.equal(output.join('\n').includes('cli_token_secret'), false);

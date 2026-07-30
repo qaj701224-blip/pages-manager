@@ -41,7 +41,7 @@ node tools/xd-cell-cli/main.js help login
 - 优先使用 CLI help 中的登录命令完成交互登录。
 - agent 或 CI 场景可以通过 `XD_CELL_API_TOKEN` 或 CLI help 中支持的一次性 token 参数传入凭证。
 - 除非用户明确要求通过 CLI 登录命令保存凭证，否则不要把 API token 写入本地状态。
-- 不要打印、持久化、提交、截图或引用 API token、CLI token、cookie、SSO code 或 secret。
+- 不要打印、持久化、提交、截图或引用 API token、CLI access key、CLI token（legacy）、cookie、SSO code 或 secret。
 - 不要把凭证发送到用户未确认的自定义 endpoint。
 
 ## 配置
