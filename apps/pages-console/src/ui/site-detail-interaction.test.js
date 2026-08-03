@@ -17,6 +17,15 @@ test('high-risk actions use Radix AlertDialog through shared ConfirmDialog', () 
   assert.doesNotMatch(teamsSource, /globalThis\.confirm/);
 });
 
+test('shared app dialogs ignore pointer interactions outside the dialog', () => {
+  const appDialogSource = radixSource.slice(
+    radixSource.indexOf('export function AppDialog'),
+    radixSource.indexOf('export function ConfirmDialog')
+  );
+
+  assert.match(appDialogSource, /onPointerDownOutside=\{\(event\) => event\.preventDefault\(\)\}/);
+});
+
 test('account basic section shows SSO sync as secondary description', () => {
   const ssoDescriptionPattern =
     /<h2>\{t\('basicInfo'\)\}<\/h2>[\s\S]*?<p className="settings-card-description">\{profile\.ssoSource\}<\/p>/;
