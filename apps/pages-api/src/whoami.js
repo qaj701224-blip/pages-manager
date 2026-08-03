@@ -33,7 +33,7 @@ function publicActor(actor) {
 
   return {
     type: 'user',
-    credentialType: 'cli_token',
+    credentialType: 'access_key',
     userId: actor.userId,
     email: actor.email,
     name: actor.name,

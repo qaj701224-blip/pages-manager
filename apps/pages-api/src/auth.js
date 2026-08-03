@@ -1,7 +1,5 @@
 import { constantTimeEqualHex, hashAccessKey, parseAccessKeyPlaintext } from './crypto.js';
 
-const CLI_TOKEN_AUDIENCE = 'pages-cli';
-
 export async function authenticateApiRequest(request, env, store, config, now = new Date().toISOString()) {
   if (request.headers.has('X-Pages-Token')) {
     return authError(
@@ -19,35 +17,14 @@ export async function authenticateApiRequest(request, env, store, config, now = 
 
   const accessKeyParts = parseAccessKeyPlaintext(token);
   if (accessKeyParts) return authenticateAccessKey(token, accessKeyParts, env, store, config, now);
-  return authenticateCliToken(token, env, store, config);
+
+  // Non-access-key bearer tokens are legacy CLI token JWTs, no longer honored. Prompt a one-time re-login.
+  return authError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401, 'Run `xd-cell login` and retry.');
 }
 
 export function errorResponseForAuth(result) {
   if (result.ok) throw new Error('Cannot create an error response for successful auth');
   return result.error;
-}
-
-async function authenticateCliToken(token, env, store, config) {
-  let payload;
-  try {
-    payload = await verifyCliToken(token, env, config);
-  } catch {
-    return authError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401, 'Run `xd-cell login` and retry.');
-  }
-
-  if (payload?.purpose !== 'cli_token' || payload?.aud !== CLI_TOKEN_AUDIENCE || payload?.env !== config.environment) {
-    return authError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401, 'Run `xd-cell login` and retry.');
-  }
-
-  const userId = payload.sub;
-  const user = await store.getUser(userId);
-  if (!user || user.employeeStatus !== 'active') {
-    return authError('PAGES_USER_INACTIVE', 'User is not active.', 403, 'Contact the Pages platform owner.');
-  }
-
-  markLegacyCliTokenUsage(config);
-
-  return cliUserActorResult(userId, user, payload.jti || null);
 }
 
 function cliUserActorResult(userId, user, tokenId) {
@@ -130,15 +107,6 @@ async function authenticateAccessKey(plaintext, parts, env, store, config, now) 
   };
 }
 
-function markLegacyCliTokenUsage(config) {
-  console.info(
-    JSON.stringify({
-      eventType: 'auth.legacy_cli_token.accepted',
-      environment: config.environment,
-    })
-  );
-}
-
 async function authenticateTeamAccessKey(accessKey, store, now) {
   const team = typeof store.getTeam === 'function' ? await store.getTeam(accessKey.ownerId) : null;
   if (!team) {
@@ -163,21 +131,6 @@ async function authenticateTeamAccessKey(accessKey, store, now) {
       source: 'access_key',
     },
   };
-}
-
-async function verifyCliToken(token, env, config) {
-  if (typeof env?.verifyCliToken === 'function') return env.verifyCliToken(token, { audience: CLI_TOKEN_AUDIENCE, config });
-
-  if (!env?.PAGES_AUTH) throw new Error('PAGES_AUTH binding is required');
-  const response = await env.PAGES_AUTH.fetch(
-    new Request('https://pages-auth.internal/.xd-pages/internal/verify-cli-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, audience: CLI_TOKEN_AUDIENCE }),
-    })
-  );
-  if (!response.ok) throw new Error('CLI token verify failed');
-  return response.json();
 }
 
 function readBearerToken(request) {

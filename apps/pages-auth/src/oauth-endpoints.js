@@ -10,7 +10,6 @@ import {
 import { createPagesStore } from '../../pages-api/src/store.js';
 
 const AUTH_SESSION_AUDIENCE = 'pages-auth';
-const CLI_TOKEN_AUDIENCE = 'pages-cli';
 const CLI_LOGIN_CONFIRM_AUDIENCE = 'pages-cli-login-confirm';
 const SITE_CODE_TTL_SECONDS = 60;
 const CONSOLE_CODE_TTL_SECONDS = 60;
@@ -300,39 +299,6 @@ export async function handleInternalConsumeSiteCode(request, env) {
     );
   } catch {
     return jsonError('SITE_CODE_INVALID', 'Site code is invalid.', 400);
-  }
-}
-
-export async function handleInternalVerifyCliToken(request, env) {
-  if (request.method !== 'POST') return jsonError('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
-  if (!isInternalRequest(request)) return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
-
-  let body;
-  try {
-    body = await readJsonBody(request);
-  } catch {
-    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400);
-  }
-
-  const token = typeof body.token === 'string' ? body.token : '';
-  const audience = typeof body.audience === 'string' && body.audience !== '' ? body.audience : CLI_TOKEN_AUDIENCE;
-  if (!token) return jsonError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401);
-
-  try {
-    const payload = await verifySessionJwt(token, env, {
-      purpose: 'cli_token',
-      audience,
-      now: readNow(env),
-    });
-    return new Response(JSON.stringify(payload), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-store',
-      },
-    });
-  } catch {
-    return jsonError('CLI_TOKEN_INVALID', 'CLI token is invalid.', 401);
   }
 }
 

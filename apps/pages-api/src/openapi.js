@@ -69,7 +69,7 @@ export function buildOpenApi(config) {
               required: ['type', 'credentialType', 'userId', 'email', 'name', 'scopes'],
               properties: {
                 type: { type: 'string', const: 'user' },
-                credentialType: { type: 'string', const: 'cli_token' },
+                credentialType: { type: 'string', const: 'access_key' },
                 userId: { type: 'string' },
                 email: { type: 'string', format: 'email' },
                 name: { type: ['string', 'null'] },

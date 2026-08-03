@@ -51,10 +51,6 @@ id = "__ROUTE_SNAPSHOTS_KV_ID__"
 name = "ROUTE_POINTER_LOCKS"
 class_name = "RoutePointerDO"
 
-[[services]]
-binding = "PAGES_AUTH"
-service = "pages-auth-staging"
-
 __PAGES_API_XDS_VPC_NETWORK__
 
 [[migrations]]

@@ -23,7 +23,6 @@ import {
   handleInternalConsumeSiteCode,
   handleInternalConsoleExchange,
   handleInternalConsoleLoginCode,
-  handleInternalVerifyCliToken,
   handleOAuthAuthorize,
   handleOAuthCallback,
 } from './oauth-endpoints.js';
@@ -68,7 +67,6 @@ async function routeAuthRequest(request, env, context) {
   if (url.pathname === '/.xd-pages/internal/console/exchange') {
     return handleInternalConsoleExchange(request, env, config);
   }
-  if (url.pathname === '/.xd-pages/internal/verify-cli-token') return handleInternalVerifyCliToken(request, env, config);
 
   return jsonError('NOT_FOUND', 'Endpoint not found.', 404);
 }
