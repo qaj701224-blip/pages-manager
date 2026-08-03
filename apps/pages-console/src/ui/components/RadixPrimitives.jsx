@@ -88,7 +88,7 @@ export function AppDialog({ open, title, eyebrow, children, footer, onOpenChange
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="radix-dialog-overlay" />
-        <Dialog.Content className="radix-dialog-content">
+        <Dialog.Content className="radix-dialog-content" onPointerDownOutside={(event) => event.preventDefault()}>
           <div className="dialog-head">
             <div>
               {eyebrow ? <p>{eyebrow}</p> : null}
