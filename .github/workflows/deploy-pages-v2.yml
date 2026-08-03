@@ -54,7 +54,7 @@ jobs:
       - run: pnpm test
 
       - name: Generate Pages API Wrangler config
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-auth' || env.DEPLOY_COMPONENT == 'pages-router' || env.DEPLOY_COMPONENT == 'pages-console'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_ID: ${{ vars.PAGES_V2_D1_DATABASE_ID }}

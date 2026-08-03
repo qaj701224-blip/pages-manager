@@ -1,3 +1,5 @@
+import { isValidSiteSlug } from './slug.js';
+
 export const RUNTIME = {
   VERSION: 'v1',
   BASE_PATH: '/.xd-pages/runtime/v1',
@@ -70,90 +72,8 @@ export const ERROR_CODES = {
   USER_REQUIRED: 'USER_REQUIRED',
 };
 
-const SITE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$/;
 const SITE_UUID_RE = /^[0-9a-f]{32}$/;
 const USER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-const RESERVED_SITE_SLUGS = new Set([
-  'api',
-  'api-staging',
-  'auth',
-  'auth-staging',
-  'admin',
-  'admin-staging',
-  'manager',
-  'manager-staging',
-  'router',
-  'router-staging',
-  'kv-gateway',
-  'kv-gateway-staging',
-  'pages',
-  'www',
-  'mail',
-  'static',
-  'assets',
-  'login',
-  'logout',
-  'callback',
-  'oauth',
-  'sso',
-  'internal',
-  'status',
-  'health',
-  'docs',
-  'readme',
-  'skill',
-  'openapi',
-  'help',
-  'support',
-  'console',
-  'dashboard',
-  'portal',
-  'site',
-  'sites',
-  'deploy',
-  'deployments',
-  'version',
-  'versions',
-  'rollback',
-  'access',
-  'access-keys',
-  'token',
-  'tokens',
-  'env',
-  'environments',
-  'runtime',
-  'data',
-  'kv',
-  'storage',
-  'worker',
-  'workers',
-  'dispatch',
-  'gateway',
-  'metrics',
-  'logs',
-  'audit',
-  'events',
-  'webhook',
-  'webhooks',
-  'monitor',
-  'monitoring',
-  'pages-api',
-  'pages-api-staging',
-  'pages-auth',
-  'pages-auth-staging',
-  'pages-router',
-  'pages-router-staging',
-  'pages-kv-gateway',
-  'pages-kv-gateway-staging',
-]);
-const RESERVED_SITE_SLUG_PREFIXES = [
-  'production-slot-',
-  'staging-slot-',
-  'v2-production-slot-',
-  'v2-staging-slot-',
-  'pages-v2-production-slot-',
-  'pages-v2-staging-slot-',
-];
 const MAX_USER_KEY_BYTES = 256;
 const MAX_STORAGE_KEY_BYTES = 512;
 const MAX_METADATA_BYTES = 1024;
@@ -177,30 +97,6 @@ export function parseKvEnabled(value) {
     enabled: false,
     error: { code: ERROR_CODES.INVALID_KV_OPTION, message: 'kv must be true or false' },
   };
-}
-
-export function isValidSiteSlug(siteSlug) {
-  return typeof siteSlug === 'string' && SITE_SLUG_RE.test(siteSlug);
-}
-
-export function isReservedSiteSlug(siteSlug, { environment } = {}) {
-  const value = String(siteSlug || '').trim();
-  return (
-    RESERVED_SITE_SLUGS.has(value) ||
-    RESERVED_SITE_SLUG_PREFIXES.some((prefix) => value.startsWith(prefix)) ||
-    (environment === 'production' && (value === 'staging' || value.startsWith('staging-'))) ||
-    (environment === 'production' && value.endsWith('-staging'))
-  );
-}
-
-export function validateSiteSlug(siteSlug, options = {}) {
-  if (!isValidSiteSlug(siteSlug)) {
-    return { ok: false, error: { code: 'INVALID_SLUG', message: 'Invalid site slug' } };
-  }
-  if (isReservedSiteSlug(siteSlug, options)) {
-    return { ok: false, error: { code: 'RESERVED_SLUG', message: 'Reserved site slug' } };
-  }
-  return { ok: true, value: siteSlug };
 }
 
 export function isValidSiteUuid(siteUuid) {
@@ -398,3 +294,6 @@ function hasUnpairedSurrogate(value) {
 function utf8ByteLength(value) {
   return new globalThis.TextEncoder().encode(value).byteLength;
 }
+
+export * from './host.js';
+export * from './slug.js';

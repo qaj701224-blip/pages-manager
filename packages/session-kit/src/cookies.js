@@ -1,4 +1,4 @@
-import { classifyHost } from '../../pages-router/src/host.js';
+import { classifyHost } from '@xd/pages-runtime-protocol';
 
 export const AUTH_SESSION_COOKIE = '__Host-pages_auth_session';
 export const SITE_SESSION_COOKIE = '__Host-pages_site_session';
@@ -37,4 +37,15 @@ function buildSessionCookie(name, value, maxAgeSeconds) {
   if (!Number.isInteger(maxAgeSeconds) || maxAgeSeconds < 0) throw new Error('Cookie Max-Age must be a non-negative integer');
   if (value !== '' && !SAFE_SESSION_COOKIE_VALUE.test(value)) throw new Error('Cookie value contains unsafe characters');
   return `${name}=${value}; Path=/; Max-Age=${maxAgeSeconds}; Secure; HttpOnly; SameSite=Lax`;
+}
+
+export function readCookie(cookieHeader, name) {
+  for (const part of String(cookieHeader || '').split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator < 0) continue;
+    if (trimmed.slice(0, separator) === name) return trimmed.slice(separator + 1);
+  }
+  return '';
 }

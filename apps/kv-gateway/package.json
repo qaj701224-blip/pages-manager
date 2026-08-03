@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
+  "exports": {
+    ".": "./src/index.js",
+    "./auth": "./src/auth.js"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { signSessionJwt } from '../../../pages-auth/src/jwt.js';
+import { signSessionJwt } from '@xd/session-kit';
 import { clearConsoleSessionCookie, readConsoleSession, serializeConsoleSessionCookie } from './session.js';
 
 const now = 1_800_000_000;

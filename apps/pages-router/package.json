@@ -3,16 +3,22 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
+  "exports": {
+    ".": "./src/index.js"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@xd/browser-pages": "workspace:*",
     "@xd/ip-guard": "workspace:*",
     "@xd/pages-runtime-protocol": "workspace:*",
+    "@xd/session-kit": "workspace:*",
     "@xd/worker-kit": "workspace:*"
   },
   "devDependencies": {
+    "@xd/kv-gateway": "workspace:*",
     "wrangler": "catalog:"
   }
 }

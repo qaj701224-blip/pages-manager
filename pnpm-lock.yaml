@@ -76,10 +76,19 @@ importers:
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
+      '@xd/wfp-client':
+        specifier: workspace:*
+        version: link:../../packages/wfp-client
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
     devDependencies:
+      '@xd/kv-gateway':
+        specifier: workspace:*
+        version: link:../kv-gateway
+      '@xd/pages-router':
+        specifier: workspace:*
+        version: link:../pages-router
       better-sqlite3:
         specifier: ^12.4.1
         version: 12.4.1
@@ -89,13 +98,22 @@ importers:
 
   apps/pages-auth:
     dependencies:
+      '@xd/browser-pages':
+        specifier: workspace:*
+        version: link:../../packages/browser-pages
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
+      '@xd/session-kit':
+        specifier: workspace:*
+        version: link:../../packages/session-kit
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
     devDependencies:
+      '@xd/pages-api':
+        specifier: workspace:*
+        version: link:../pages-api
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
@@ -128,6 +146,9 @@ importers:
       '@xd/ip-guard':
         specifier: workspace:*
         version: link:../../packages/ip-guard
+      '@xd/session-kit':
+        specifier: workspace:*
+        version: link:../../packages/session-kit
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.7)
@@ -156,16 +177,25 @@ importers:
 
   apps/pages-router:
     dependencies:
+      '@xd/browser-pages':
+        specifier: workspace:*
+        version: link:../../packages/browser-pages
       '@xd/ip-guard':
         specifier: workspace:*
         version: link:../../packages/ip-guard
       '@xd/pages-runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/pages-runtime-protocol
+      '@xd/session-kit':
+        specifier: workspace:*
+        version: link:../../packages/session-kit
       '@xd/worker-kit':
         specifier: workspace:*
         version: link:../../packages/worker-kit
     devDependencies:
+      '@xd/kv-gateway':
+        specifier: workspace:*
+        version: link:../kv-gateway
       wrangler:
         specifier: 'catalog:'
         version: 4.91.0
@@ -230,11 +260,23 @@ importers:
         specifier: 'catalog:'
         version: 4.91.0
 
+  packages/browser-pages:
+    dependencies:
+      '@xd/worker-kit':
+        specifier: workspace:*
+        version: link:../worker-kit
+
   packages/git-client: {}
 
   packages/ip-guard: {}
 
   packages/pages-runtime-protocol: {}
+
+  packages/session-kit:
+    dependencies:
+      '@xd/pages-runtime-protocol':
+        specifier: workspace:*
+        version: link:../pages-runtime-protocol
 
   packages/slack-notifier: {}
 

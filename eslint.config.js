@@ -1,6 +1,20 @@
 import js from '@eslint/js';
 import prettier from 'eslint-config-prettier';
 
+// minimatch 不用 ** 匹配 .. 段，跨 app / 跨包相对路径必须按 src 下最大嵌套深度逐级列出字面前缀（各留一级余量）。
+const crossAppSrcImports = {
+  group: ['../../*/src/**', '../../../*/src/**', '../../../../*/src/**', '../../../../../*/src/**'],
+  message: 'apps 之间不得直接 import 其它 app 的 src；共享代码放 packages/ 并用 @xd/* workspace 别名引用。',
+};
+const relativePackagesImports = {
+  group: ['../../../packages/**', '../../../../packages/**', '../../../../../packages/**', '../../../../../../packages/**'],
+  message: '共享包必须用 @xd/* workspace 别名引用，不要用相对路径。',
+};
+const appAliasImports = {
+  group: ['@xd/pages-api', '@xd/pages-api/*', '@xd/pages-router', '@xd/pages-router/*', '@xd/kv-gateway', '@xd/kv-gateway/*'],
+  message: 'app 的包别名仅供跨 app 集成测试使用；生产代码不得 import 其它 app。',
+};
+
 export default [
   {
     ignores: [
@@ -69,6 +83,32 @@ export default [
         setInterval: 'readonly',
         clearInterval: 'readonly',
       },
+    },
+  },
+
+  {
+    files: ['apps/*/src/**/*.js', 'packages/*/src/**/*.js'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [crossAppSrcImports, relativePackagesImports, appAliasImports] }],
+    },
+  },
+
+  {
+    files: ['apps/*/src/**/*.test.js', 'packages/*/src/**/*.test.js'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [crossAppSrcImports, relativePackagesImports] }],
+    },
+  },
+
+  {
+    files: ['apps/*/src/**/*.jsx'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [crossAppSrcImports, relativePackagesImports, appAliasImports] }],
     },
   },
 

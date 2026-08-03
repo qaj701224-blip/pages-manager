@@ -17,8 +17,10 @@ pages-manager/
 │   └── slack-notifier/    # Slack Web API 输出服务
 ├── packages/
 │   ├── git-client/        # GitHub API helper
+│   ├── browser-pages/     # 浏览器错误页和内容协商 helper
 │   ├── ip-guard/          # IP allowlist 逻辑
 │   ├── pages-runtime-protocol/
+│   ├── session-kit/       # session JWT / cookie helper
 │   ├── slack-intent-policy/
 │   ├── slack-notifier/    # Block Kit / Slack API core
 │   ├── worker-kit/        # HTTP / worker helper

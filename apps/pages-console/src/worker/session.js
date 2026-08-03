@@ -1,4 +1,4 @@
-import { signSessionJwt, verifySessionJwt } from '../../../pages-auth/src/jwt.js';
+import { signSessionJwt, verifySessionJwt } from '@xd/session-kit';
 
 const SESSION_COOKIE = '__Host-xd_cell_session';
 const CSRF_COOKIE = '__Host-xd_cell_csrf';

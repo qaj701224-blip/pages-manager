@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createTestPagesStore } from '@xd/pages-api/test-store';
+import { buildAuthSessionCookie, signSessionJwt, verifySessionJwt } from '@xd/session-kit';
+
 import { readAuthConfig } from './config.js';
-import { buildAuthSessionCookie } from './cookies.js';
 import {
   consumeStoredOAuthSiteCode,
   consumeStoredOAuthState,
@@ -14,8 +16,6 @@ import {
   refreshStoredSession,
 } from './do-storage.js';
 import { handleOAuthAuthorize, handleOAuthCallback } from './oauth-endpoints.js';
-import { signSessionJwt, verifySessionJwt } from './jwt.js';
-import { createTestPagesStore } from '../../pages-api/src/test-store.js';
 
 const now = 1_800_000_000;
 const coolToneFragments = [

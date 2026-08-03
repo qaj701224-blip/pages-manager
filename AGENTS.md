@@ -165,6 +165,7 @@ v1 legacy 里 `X-Pages-Token` / `PAGES_TOKEN` 只是旧站点归属标记，不�
 - 修改 `apps/pages-api/src/openapi.js` 或 CLI/skill 公开行为时，要同步测试和文档边界。
 - 修改 `apps/pages-router` 访问控制时，要确认 `internal`、`org`、`acl`、`owner`、`disabled` 的 fail-closed 行为。
 - 修改 `packages/wfp-client` 或子 Worker 生成逻辑时，要确认 static assets、Worker-only、Worker with Assets 的路由语义。
+- apps 之间禁止直接 import 其它 app 的 src（eslint `no-restricted-imports` 强制，含 `@xd/pages-api`、`@xd/pages-router`、`@xd/kv-gateway` 这类 app 包别名，别名仅放行 `*.test.js` 跨 app 集成测试）；共享代码放 `packages/` 并用 `@xd/*` 别名；当前唯一豁免是 pages-auth 对 pages-api store/department-hydration 的共享 D1 数据层依赖。
 - 不要在代码、测试、文档里写真实敏感域外资源或 secret。
 
 ## PR 提交规范
@@ -256,6 +257,7 @@ P1：本 PR 必须修。包括：
 - 行为变更缺少测试。
 - `apps/pages-api/src/openapi.js` / skill / README / docs/api-boundary.md 与实现不一致。
 - 保留 IP 门禁的 `pages-router` / `pages-console` 路径，其 allowlist、SSO、ACL 或 cookie/header 清洗逻辑被绕过；`pages-api` API 本身不以来源 IP 作为访问控制。
+- `pages-router` 浏览器可达路径的 4xx/5xx 返回裸 JSON 而未走共享协商错误页（runtime gateway API 路径除外）。
 - GitHub Actions secret/var 用错，导致运行时拿不到必要配置。
 - Cloudflare API token 流程混淆：Wrangler token 和 Worker 运行时 `CF_API_TOKEN` 用途混用。
 - 错误处理导致 agent/用户拿不到可操作提示。

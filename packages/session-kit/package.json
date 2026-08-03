@@ -1,10 +1,13 @@
 {
-  "name": "@xd/pages-runtime-protocol",
+  "name": "@xd/session-kit",
   "version": "1.0.0",
   "type": "module",
   "private": true,
   "sideEffects": false,
   "exports": {
     ".": "./src/index.js"
+  },
+  "dependencies": {
+    "@xd/pages-runtime-protocol": "workspace:*"
   }
 }

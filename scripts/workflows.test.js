@@ -580,6 +580,7 @@ test('pages v2 deploy workflows expose only v2 component choices', () => {
 test('pages v2 deploy workflows use explicit v2 templates and secret injection', () => {
   for (const [name, path, environment] of pagesV2DeployWorkflows) {
     const workflow = readWorkflow(path);
+    const generatePagesApiConfig = readWorkflowStep(workflow, 'Generate Pages API Wrangler config');
 
     assert.match(
       workflow,
@@ -609,6 +610,11 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
           String.raw`node scripts/render-pages-v2-wrangler\.mjs apps/pages-auth`
       ),
       `${name} gives pages-auth the shared metadata D1 id and XDS VPC tunnel id`
+    );
+    assert.equal(
+      generatePagesApiConfig.match(/^ {8}if: (.+)$/m)?.[1],
+      'env.DEPLOY_COMPONENT == \'all\' || env.DEPLOY_COMPONENT == \'pages-api\' || env.DEPLOY_COMPONENT == \'pages-auth\' || env.DEPLOY_COMPONENT == \'pages-router\' || env.DEPLOY_COMPONENT == \'pages-console\'',
+      `${name} renders the Pages API config for every component that runs D1 migrations`
     );
     assert.match(
       workflow,
