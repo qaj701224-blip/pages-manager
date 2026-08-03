@@ -794,9 +794,12 @@ export function buildOpenApi(config) {
       '/.xd-pages/api/access-keys/current': {
         delete: {
           summary: 'Revoke the current CLI access key',
-          description: 'Revokes a cli_login access key. Legacy CLI JWTs return success without revoking an entity.',
+          description:
+            'Revokes the cli_login access key used to authenticate this request. Non-CLI credentials receive 403; ' +
+            'missing, invalid, or legacy tokens are rejected by authentication with 401.',
           responses: {
-            200: { description: 'Current CLI credential revocation handled idempotently' },
+            200: { description: 'Current CLI access key revocation handled idempotently' },
+            401: { description: 'Missing, invalid, or legacy credential' },
             403: { description: 'Credential is not a CLI credential' },
           },
         },
