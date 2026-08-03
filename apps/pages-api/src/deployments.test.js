@@ -8,6 +8,39 @@ import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { buildRouteSnapshot, writeRouteSnapshot } from './route-snapshot.js';
 import { createTestPagesStore } from './test-store.js';
 
+const BEARER_USR_1 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_1',
+  bytes: new Uint8Array(24).fill(11),
+});
+const BEARER_USR_PUBLISHER = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_publisher',
+  bytes: new Uint8Array(24).fill(12),
+});
+const BEARER_USR_2 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_2',
+  bytes: new Uint8Array(24).fill(13),
+});
+
+async function seedCliLoginKey(store, userId, plaintext, environment = 'production') {
+  await store.createAccessKey({
+    id: `ak_cli_${userId}`,
+    environment,
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: `cli login ${userId}`,
+    scopes: ['*'],
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+}
+
 test('creates deployment, immutable version, active route, and route snapshot', async () => {
   const store = await createSeededStore();
   await store.replaceSiteAclEntries(
@@ -1109,7 +1142,11 @@ test('deployment fails closed when runtime config hash pepper is unavailable', a
   const store = await createSeededStore();
   const uploads = [];
   const env = testEnv(store, createSnapshotStore(), {
-    ACCESS_KEY_PEPPERS: '',
+    // Auth still needs the access-key pepper to verify the bearer; the runtime config hash
+    // pepper is made unavailable via a non-matching active pepper id so the deploy fails closed.
+    ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+    ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+    ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_missing',
     RUNTIME_CONFIG_HASH_PEPPER: '',
     REQUEST_HASH_PEPPER: '',
     WFP_PROVIDER: {
@@ -1149,9 +1186,11 @@ test('deployment runtime snapshot hashes use the active access-key pepper when e
   });
   const env = testEnv(store, createSnapshotStore(), {
     ACCESS_KEY_ACTIVE_PEPPER_ID: 'active',
-    ACCESS_KEY_PEPPERS: 'old:ACCESS_KEY_PEPPER_OLD,active:ACCESS_KEY_PEPPER_ACTIVE',
+    // pepper_1 entry keeps bearer auth working; the hash still resolves to the active pepper.
+    ACCESS_KEY_PEPPERS: 'old:ACCESS_KEY_PEPPER_OLD,active:ACCESS_KEY_PEPPER_ACTIVE,pepper_1:ACCESS_KEY_PEPPER_TEST',
     ACCESS_KEY_PEPPER_OLD: 'old-pepper',
     ACCESS_KEY_PEPPER_ACTIVE: 'active-pepper',
+    ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     RUNTIME_CONFIG_HASH_PEPPER: '',
     WFP_PROVIDER: {
       upload: async (input) => ({ artifactRef: `wfp://test/${input.workerName}` }),
@@ -2592,26 +2631,20 @@ test('team publishers can create a new team-owned site during deploy with a CLI 
     role: 'publisher',
     membershipSource: 'manual',
   });
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
   const env = testEnv(store, createSnapshotStore(), {
     nextId: (prefix) => {
       if (prefix === 'site') return 'site_cli_team';
       if (prefix === 'route') return 'route_cli_team';
       return `${prefix}_1`;
     },
-    verifyCliToken: async () => ({
-      sub: 'usr_publisher',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_publisher',
-    }),
   });
 
   const response = await worker.fetch(
     deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       deployPayload({ siteId: undefined, siteSlug: 'new-team-cli', teamId: team.id, visibility: 'internal' }),
-      { 'Idempotency-Key': 'cli_team_create' }
+      { 'Idempotency-Key': 'cli_team_create', Authorization: `Bearer ${BEARER_USR_PUBLISHER}` }
     ),
     env
   );
@@ -2739,6 +2772,7 @@ test('viewer members cannot deploy rollback or manage site secrets', async () =>
     createdBy: 'usr_1',
     createdAt: '2026-06-15T00:00:00.000Z',
   });
+  await seedCliLoginKey(store, 'usr_2', BEARER_USR_2);
   const ownerEnv = testEnv(store, createSnapshotStore());
   await assertDeployOk(
     await worker.fetch(
@@ -2750,21 +2784,13 @@ test('viewer members cannot deploy rollback or manage site secrets', async () =>
       ownerEnv
     )
   );
-  const viewerEnv = testEnv(store, createSnapshotStore(), {
-    verifyCliToken: async () => ({
-      sub: 'usr_2',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_viewer',
-    }),
-  });
+  const viewerEnv = testEnv(store, createSnapshotStore());
 
   const deploy = await worker.fetch(
     deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       deployPayload({ moduleContent: 'export default { fetch() { return new Response("viewer"); } };' }),
-      { 'Idempotency-Key': 'viewer_deploy' }
+      { 'Idempotency-Key': 'viewer_deploy', Authorization: `Bearer ${BEARER_USR_2}` }
     ),
     viewerEnv
   );
@@ -2772,11 +2798,14 @@ test('viewer members cannot deploy rollback or manage site secrets', async () =>
     jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/guide/secrets', {
       name: 'API_TOKEN',
       value: 'super-secret-value',
-    }, { method: 'PUT' }),
+    }, { method: 'PUT', Authorization: `Bearer ${BEARER_USR_2}` }),
     viewerEnv
   );
   const rollback = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, { 'Idempotency-Key': 'viewer_rollback' }),
+    jsonRequest('https://api.pages.xd.team/.xd-pages/api/versions/ver_1/rollback', {}, {
+      'Idempotency-Key': 'viewer_rollback',
+      Authorization: `Bearer ${BEARER_USR_2}`,
+    }),
     viewerEnv
   );
 
@@ -2822,22 +2851,15 @@ test('team publishers can deploy team-owned sites with their CLI token', async (
     routeId: 'route_team',
     hostname: 'team-guide.pages.xd.team',
   });
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
 
   const response = await worker.fetch(
     deploymentRequest(
       'https://api.pages.xd.team/.xd-pages/api/deployments',
       deployPayload({ siteId: undefined, siteSlug: 'team-guide', teamId: team.id }),
-      { 'Idempotency-Key': 'team_publisher_deploy' }
+      { 'Idempotency-Key': 'team_publisher_deploy', Authorization: `Bearer ${BEARER_USR_PUBLISHER}` }
     ),
-    testEnv(store, createSnapshotStore(), {
-      verifyCliToken: async () => ({
-        sub: 'usr_publisher',
-        purpose: 'cli_token',
-        aud: 'pages-cli',
-        env: 'production',
-        jti: 'cli_publisher',
-      }),
-    })
+    testEnv(store, createSnapshotStore())
   );
 
   assert.equal(response.status, 201, await response.clone().text());
@@ -2950,6 +2972,7 @@ test('uses bounded WFP worker names for valid long slugs', async () => {
     realname: 'User One',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, 'usr_1', BEARER_USR_1);
   await store.createSite({
     id: 'site_long',
     slug: 'very-long-pages-site-slug-that-is-still-valid',
@@ -4088,7 +4111,7 @@ test('returns payload-too-large when publish metadata exceeds upload limit', asy
     new Request('https://api.pages.xd.team/.xd-pages/api/deployments', {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer cli-token',
+        Authorization: `Bearer ${BEARER_USR_1}`,
         'CF-Connecting-IP': '10.1.2.3',
         'Idempotency-Key': 'metadata_too_large',
       },
@@ -5448,6 +5471,7 @@ async function createSeededStore(options = {}) {
     realname: 'User One',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, 'usr_1', BEARER_USR_1);
   await store.createSite({
     id: 'site_1',
     slug: 'guide',
@@ -5476,13 +5500,6 @@ function testEnv(store, snapshots, overrides = {}) {
       counters.set(prefix, next);
       return `${prefix}_${next}`;
     },
-    verifyCliToken: async () => ({
-      sub: 'usr_1',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_1',
-    }),
     WFP_PROVIDER: {
       upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
       verify: async () => ({ ok: true }),
@@ -5600,7 +5617,7 @@ function jsonRequest(url, body, headers = {}) {
   return new Request(url, {
     method,
     headers: {
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${BEARER_USR_1}`,
       'CF-Connecting-IP': '10.1.2.3',
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...safeHeaders,
@@ -5647,7 +5664,7 @@ function publishPlanMultipartRequest(url, fields, headers = {}) {
   return new Request(url, {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${BEARER_USR_1}`,
       'CF-Connecting-IP': '10.1.2.3',
       ...headers,
     },
@@ -5821,7 +5838,7 @@ function normalizePublishPlanFields(fields) {
 
 function authRequest(url, headers = {}) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
+    headers: { Authorization: `Bearer ${BEARER_USR_1}`, 'CF-Connecting-IP': '10.1.2.3', ...headers },
   });
 }
 

@@ -192,8 +192,8 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /database_id = "dummy-pages-d1"/);
   assert.match(config, /binding = "ROUTE_SNAPSHOTS"/);
   assert.match(config, /id = "dummy-route-snapshots-kv"/);
-  assert.match(config, /binding = "PAGES_AUTH"/);
-  assert.match(config, /service = "pages-auth"/);
+  assert.doesNotMatch(config, /binding = "PAGES_AUTH"/);
+  assert.doesNotMatch(config, /service = "pages-auth"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /xd-cell-workers-staging/);
@@ -222,7 +222,8 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
-  assert.match(config, /service = "pages-auth-staging"/);
+  assert.doesNotMatch(config, /service = "pages-auth-staging"/);
+  assert.doesNotMatch(config, /binding = "PAGES_AUTH"/);
 });
 
 test('staging pages-api config rejects production WFP namespace', () => {
