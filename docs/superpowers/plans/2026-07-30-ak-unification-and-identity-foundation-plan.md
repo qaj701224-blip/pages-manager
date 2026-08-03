@@ -8,6 +8,14 @@
 - CLI 签发的 key:scope 为 `['*']`,TTL 默认 1 年,支持配置为永不过期;除主动撤销或 sessionVersion 失效外持续有效。
 - 用户/团队/部门多来源身份模型(P1-P3)与 AK 统一解耦,先做 AK;唯一前置承诺是 `users.user_id` 永不重键。
 
+## 过渡期与依赖决策(方案 C,已定)
+
+- **不再验证 legacy `cli_token` JWT**:pages-api 对非 access-key 的 Bearer 统一返回 401 `CLI_TOKEN_INVALID` + `Run \`xd-cell login\``。老用户需重新登录一次(CLI 二进制无需升级)。已删除 `authenticateCliToken`/`verifyCliToken`、pages-auth 的 `verify-cli-token` 端点、以及 pages-api 的 `PAGES_AUTH` service binding。
+- **依赖方向**:稳态单向 `pages-auth -> pages-api`(CLI login poll 换发 access key),不再有 `pages-api <-> pages-auth` 循环 binding。部署顺序先 `pages-api` 后 `pages-auth`。
+- **CLI 零改动**:`xd-cell login` 经不变的 poll 契约透明拿到 access key 明文并以 Bearer 发送。
+- **凭证撤销路径**:浏览器 logout 撤销 `AuthSessionDO` 会话;控制台"我的凭证"列出并可撤销 cli_login access key(来源标签 "CLI")。`DELETE /.xd-pages/api/access-keys/current` 端点保留:**未来 CLI 若恢复 logout 撤销能力,应在 logout 时调用该端点撤销当前 CLI access key**(legacy 调用幂等返回 `revoked:false`)。
+- **cli_login key 的 Console 展示**:新形态 cli_login access key 已在控制台凭证列表中以 "CLI" 来源显示并可撤销;老版本 legacy JWT 孤儿 token 无需处理(已被拒绝且自然过期,服务端无残留记录)。
+
 ## P0:AK 统一(本期实施)
 
 ### 目标
