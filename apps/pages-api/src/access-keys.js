@@ -13,6 +13,10 @@ export async function handleAccessKeysApi(request, env, config, store) {
   if (!auth.ok) return authErrorResponse(auth.error);
 
   const url = new URL(request.url);
+  if (url.pathname === '/.xd-pages/api/access-keys/current') {
+    if (request.method === 'DELETE') return revokeCurrentCliAccessKey(env, config, store, auth.actor);
+    return methodNotAllowed();
+  }
   if (url.pathname === '/.xd-pages/api/access-keys') {
     if (request.method === 'GET') return listAccessKeys(store, auth.actor, config.environment);
     if (request.method === 'POST') return createAccessKey(request, env, config, store, auth.actor);
@@ -24,6 +28,21 @@ export async function handleAccessKeysApi(request, env, config, store) {
   if (accessKeyId) return methodNotAllowed();
 
   return null;
+}
+
+async function revokeCurrentCliAccessKey(env, config, store, actor) {
+  if (actor.source !== 'cli') return accessKeyManagementForbidden();
+
+  const existing = actor.tokenId ? await store.getAccessKeyById(actor.tokenId, config.environment) : null;
+  if (!existing || existing.issuedSource !== 'cli_login' || !isUserOwnedAccessKey(existing, actor.userId)) {
+    return jsonOk({ revoked: false });
+  }
+
+  await store.revokeAccessKey(existing.id, readNow(env), {
+    revokedByUserId: actor.userId,
+    revokedReason: 'cli_logout',
+  });
+  return jsonOk({ revoked: true });
 }
 
 export async function handleConsoleAccessKeysApi(request, env, config, store) {
@@ -225,11 +244,45 @@ export async function createAccessKeyMaterial(env, config, input) {
   };
 }
 
+const DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS = 31_536_000;
+
+export async function issueCliLoginAccessKey(env, environment, store, { userId, cliLoginId, sessionVersion, now }) {
+  const ttlSeconds = readCliAccessKeyTtlSeconds(env);
+  const expiresAt = ttlSeconds === 0 ? null : new Date((now + ttlSeconds) * 1000).toISOString();
+  const { plaintext, record } = await createAccessKeyMaterial(env, { environment }, {
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    name: `cli login ${cliLoginId}`,
+    scopes: ['*'],
+    siteId: null,
+    expiresAt,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: sessionVersion,
+  });
+  const accessKey = await store.createAccessKey(record);
+  return { plaintext, accessKey };
+}
+
+function readCliAccessKeyTtlSeconds(env) {
+  const configured = env?.CLI_ACCESS_KEY_TTL_SECONDS;
+  const raw = typeof configured === 'string' ? configured.trim() : configured;
+  if (raw === undefined || raw === '') return DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_CLI_ACCESS_KEY_TTL_SECONDS;
+  return parsed;
+}
+
+function isUserOwnedAccessKey(accessKey, userId) {
+  return (accessKey.ownerType || 'user') === 'user' && (accessKey.ownerId || accessKey.ownerUserId) === userId;
+}
+
 async function revokeAccessKey(env, config, store, actor, accessKeyId) {
   if (actor.type !== 'user') return accessKeyManagementForbidden();
 
   const existing = await store.getAccessKeyById(accessKeyId, config.environment);
-  if (!existing || (existing.ownerType || 'user') !== 'user' || (existing.ownerId || existing.ownerUserId) !== actor.userId) {
+  if (!existing || !isUserOwnedAccessKey(existing, actor.userId)) {
     return jsonError('ACCESS_KEY_NOT_FOUND', 'Access key not found.', 404, 'Check the access key id.');
   }
 

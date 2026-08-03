@@ -5,7 +5,31 @@ import test from 'node:test';
 import kvGatewayWorker from '@xd/kv-gateway';
 import routerWorker from '@xd/pages-router';
 import apiWorker from './index.js';
+import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { createTestPagesStore } from './test-store.js';
+
+const BEARER_USR_1 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_1',
+  bytes: new Uint8Array(24).fill(17),
+});
+
+async function seedCliLoginKey(store) {
+  await store.createAccessKey({
+    id: 'ak_cli_usr_1',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(BEARER_USR_1, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'cli login usr_1',
+    scopes: ['*'],
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+}
 
 test('site created by API can deploy and use router-proxied Pages KV', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
@@ -15,6 +39,7 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
     realname: 'User One',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store);
   const snapshots = new MemoryRouteSnapshots();
   const siteData = new MemoryKv();
   const apiEnv = {
@@ -27,13 +52,6 @@ test('site created by API can deploy and use router-proxied Pages KV', async () 
     now: () => '2026-06-15T00:00:00.000Z',
     nextId: deterministicId(),
     nextSiteUuid: () => '4b4c8e8361ef4b47b64f5c20a7db7c47',
-    verifyCliToken: async () => ({
-      sub: 'usr_1',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_1',
-    }),
     WFP_PROVIDER: {
       upload: async ({ workerName }) => ({ artifactRef: `wfp://test/${workerName}` }),
       verify: async () => ({ ok: true }),
@@ -124,7 +142,7 @@ function jsonRequest(url, body, headers = {}) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${BEARER_USR_1}`,
       'CF-Connecting-IP': '10.1.2.3',
       ...headers,
     },
@@ -173,7 +191,7 @@ function deploymentRequest(url, { siteId, workerContent }, headers = {}) {
   return new Request(url, {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${BEARER_USR_1}`,
       'CF-Connecting-IP': '10.1.2.3',
       ...headers,
     },

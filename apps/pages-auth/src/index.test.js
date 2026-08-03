@@ -160,6 +160,7 @@ test('routes CLI login start and poll public endpoints', async () => {
         consumedAt: 1_800_000_001,
       },
     }),
+    createCliAccessKey: async () => ({ plaintext: 'xdp_prod_ak_cli_test_secret', expiresAt: '2027-06-15T00:00:00.000Z' }),
   };
 
   const startResponse = await worker.fetch(
@@ -270,6 +271,38 @@ test('OAuth logout clears auth session cookie and redirects to console login', a
   assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=;/);
   assert.equal(unsafe.status, 302);
   assert.equal(unsafe.headers.get('Location'), 'https://workers.xd.team/login?loggedOut=1');
+});
+
+test('OAuth logout revokes the durable auth session before clearing cookies', async () => {
+  const now = 1_800_000_000;
+  const revoked = [];
+  const env = {
+    ...testJwtEnv(),
+    now: () => now,
+    revokeAuthSession: async (sid) => revoked.push(sid),
+  };
+  const token = await signSessionJwt(
+    {
+      purpose: 'auth_session',
+      audience: 'pages-auth',
+      subject: 'usr_123',
+      now,
+      ttlSeconds: 600,
+      claims: { sid: 'ses_logout_test' },
+    },
+    env
+  );
+
+  const response = await worker.fetch(
+    new Request('https://auth.pages.xd.team/.xd-pages/auth/logout', {
+      headers: { Cookie: `__Host-pages_auth_session=${token}` },
+    }),
+    env
+  );
+
+  assert.equal(response.status, 302);
+  assert.deepEqual(revoked, ['ses_logout_test']);
+  assert.match(response.headers.get('Set-Cookie'), /^__Host-pages_auth_session=;/);
 });
 
 test('OAuth callback redirects console login code to console worker callback', async () => {
@@ -470,12 +503,6 @@ test('public auth host cannot call internal endpoints', async () => {
     }),
     testJwtEnv()
   );
-  const verifyResponse = await worker.fetch(
-    jsonRequest('https://auth.pages.xd.team/.xd-pages/internal/verify-cli-token', {
-      token: 'cli-token',
-    }),
-    testJwtEnv()
-  );
   const consoleLoginResponse = await worker.fetch(
     jsonRequest('https://auth.pages.xd.team/.xd-pages/internal/console/login-code', {
       returnTo: '/workspace',
@@ -491,43 +518,10 @@ test('public auth host cannot call internal endpoints', async () => {
 
   assert.equal(consumeResponse.status, 404);
   assert.equal((await consumeResponse.json()).error.code, 'NOT_FOUND');
-  assert.equal(verifyResponse.status, 404);
-  assert.equal((await verifyResponse.json()).error.code, 'NOT_FOUND');
   assert.equal(consoleLoginResponse.status, 404);
   assert.equal((await consoleLoginResponse.json()).error.code, 'NOT_FOUND');
   assert.equal(consoleExchangeResponse.status, 404);
   assert.equal((await consoleExchangeResponse.json()).error.code, 'NOT_FOUND');
-});
-
-test('internal endpoint verifies CLI token for API service binding', async () => {
-  const env = { ...testJwtEnv(), now: () => 1_800_000_000 };
-  const token = await signSessionJwt(
-    {
-      purpose: 'cli_token',
-      audience: 'pages-cli',
-      subject: 'usr_123',
-      now: 1_800_000_000,
-      ttlSeconds: 600,
-      claims: { jti: 'cli_123' },
-    },
-    env
-  );
-
-  const response = await worker.fetch(
-    jsonRequest('https://pages-auth.internal/.xd-pages/internal/verify-cli-token', {
-      token,
-      audience: 'pages-cli',
-    }),
-    env
-  );
-
-  assert.equal(response.status, 200, await response.clone().text());
-  const payload = await response.json();
-  assert.equal(payload.sub, 'usr_123');
-  assert.equal(payload.purpose, 'cli_token');
-  assert.equal(payload.aud, 'pages-cli');
-  assert.equal(payload.env, 'production');
-  assert.equal(payload.jti, 'cli_123');
 });
 
 test('exports Durable Object shell classes', () => {

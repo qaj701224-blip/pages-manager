@@ -165,24 +165,8 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm --dir apps/pages-api exec wrangler d1 migrations apply pages-v2-metadata-staging --remote
 
-      - name: Deploy Pages Auth
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm --dir apps/pages-auth exec wrangler deploy
-
-      - name: Inject Pages Auth secrets
-        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
-          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
-          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
-          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
-        run: scripts/put-pages-v2-secrets.sh apps/pages-auth
-
+      # Deploy Pages API before Pages Auth: the CLI login poll in pages-auth calls
+      # pages-api 的 /.xd-pages/internal/cli-access-keys 端点，必须先在线，否则 all 部署窗口期内 login 会 502。
       - name: Deploy Pages API
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api'
         env:
@@ -205,6 +189,24 @@ jobs:
           ACCESS_KEY_PEPPER_202606: ${{ secrets.ACCESS_KEY_PEPPER_202606 }}
           S2S_SECRET_XDMAKER_202607: ${{ secrets.S2S_SECRET_XDMAKER_202607 }}
         run: scripts/put-pages-v2-secrets.sh apps/pages-api
+
+      - name: Deploy Pages Auth
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir apps/pages-auth exec wrangler deploy
+
+      - name: Inject Pages Auth secrets
+        if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-auth'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          SSO_CLIENT_SECRET: ${{ secrets.SSO_CLIENT_SECRET }}
+          XDS_OPENAI_TOKEN: ${{ secrets.XDS_OPENAI_TOKEN }}
+          # Add new PAGES_SESSION_JWT_SECRET_* mappings here when PAGES_SESSION_JWT_KEYS rotates.
+          PAGES_SESSION_JWT_SECRET_202606: ${{ secrets.PAGES_SESSION_JWT_SECRET_202606 }}
+        run: scripts/put-pages-v2-secrets.sh apps/pages-auth
 
       - name: Deploy Pages KV Gateway
         if: env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-kv-gateway'

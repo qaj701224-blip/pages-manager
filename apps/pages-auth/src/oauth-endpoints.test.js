@@ -1409,7 +1409,7 @@ test('CLI OAuth callback shows manual device confirmation and does not create a 
   assertNoCoolToneFragments(text);
   assert.match(text, /production/);
   assert.match(text, /https:\/\/auth\.pages\.xd\.team/);
-  assert.match(text, /cli_token/);
+  assert.match(text, /个人 access key/);
   assert.match(text, /name="loginId" value="cli_test"/);
   assert.match(text, /name="confirmToken" value="[^"]+"/);
   assert.match(text, /设备码/);

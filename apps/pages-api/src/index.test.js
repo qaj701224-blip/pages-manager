@@ -3,9 +3,38 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import worker from './index.js';
+import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { buildOpenApi } from './openapi.js';
 import { buildS2SCanonicalInput, createS2SSignature } from './s2s-auth.js';
 import { createTestPagesStore } from './test-store.js';
+
+const BEARER_USR_1 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_1',
+  bytes: new Uint8Array(24).fill(15),
+});
+const BEARER_USR_ROUTE_MATRIX = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_route_matrix',
+  bytes: new Uint8Array(24).fill(16),
+});
+
+async function seedCliLoginKey(store, { userId, keyId, plaintext, environment = 'production', sessionVersion = 1 }) {
+  await store.createAccessKey({
+    id: keyId,
+    environment,
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: `cli login ${userId}`,
+    scopes: ['*'],
+    issuedSource: 'cli_login',
+    issuedSessionVersion: sessionVersion,
+  });
+}
 
 test('health returns pages-api service and environment', async () => {
   const response = await worker.fetch(new Request('https://api.pages.xd.team/.xd-pages/health'), {
@@ -48,6 +77,7 @@ test('scheduled handler runs due WFP cleanup tasks', async () => {
     email: 'user@example.com',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, { userId: 'usr_1', keyId: 'ak_cli_usr_1', plaintext: BEARER_USR_1 });
   await store.createSite({
     id: 'site_1',
     slug: 'docs',
@@ -340,10 +370,11 @@ test('public CLI API authenticates requests outside the configured IP allowlist'
     email: 'user@example.com',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, { userId: 'usr_1', keyId: 'ak_cli_usr_1', plaintext: BEARER_USR_1 });
   const response = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
       headers: {
-        Authorization: 'Bearer cli-token',
+        Authorization: `Bearer ${BEARER_USR_1}`,
         'CF-Connecting-IP': '203.0.113.8',
       },
     }),
@@ -351,13 +382,8 @@ test('public CLI API authenticates requests outside the configured IP allowlist'
       PAGES_ENV: 'production',
       PAGES_STORE: store,
       IP_ALLOWLIST: '10.0.0.0/8',
-      verifyCliToken: async () => ({
-        sub: 'usr_1',
-        purpose: 'cli_token',
-        aud: 'pages-cli',
-        env: 'production',
-        jti: 'cli_1',
-      }),
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     }
   );
 
@@ -459,6 +485,11 @@ test('public route matching rejects unsupported methods and lookalike paths afte
     email: 'route-matrix@example.com',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, {
+    userId: 'usr_route_matrix',
+    keyId: 'ak_cli_route_matrix',
+    plaintext: BEARER_USR_ROUTE_MATRIX,
+  });
   const cases = [
     ['POST', '/.xd-pages/api/auth/whoami', 405, 'METHOD_NOT_ALLOWED'],
     ['PUT', '/.xd-pages/api/teams', 405, 'METHOD_NOT_ALLOWED'],
@@ -476,13 +507,8 @@ test('public route matching rejects unsupported methods and lookalike paths afte
     PAGES_ENV: 'production',
     PAGES_STORE: store,
     IP_ALLOWLIST: '10.0.0.0/8',
-    verifyCliToken: async () => ({
-      sub: 'usr_route_matrix',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_route_matrix',
-    }),
+    ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+    ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
   };
 
   for (const [method, pathname, status, code] of cases) {
@@ -491,7 +517,7 @@ test('public route matching rejects unsupported methods and lookalike paths afte
         new Request(`https://api.pages.xd.team${pathname}`, {
           method,
           headers: {
-            Authorization: 'Bearer cli-token',
+            Authorization: `Bearer ${BEARER_USR_ROUTE_MATRIX}`,
             'CF-Connecting-IP': '203.0.113.8',
           },
         }),
@@ -584,6 +610,131 @@ test('internal user upsert is only callable through internal service host', asyn
   assert.equal((await store.getUser('usr_1')).accountId, 'acct_1');
   assert.equal((await store.getUser('usr_1')).employeenum, 'user');
   assert.equal((await store.getUser('usr_1')).sessionVersion, 2);
+});
+
+test('internal CLI access-key exchange enforces environment and TTL policy', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createUser({
+    userId: 'usr_1',
+    email: 'user@example.com',
+    realname: 'User One',
+    employeeStatus: 'active',
+    sessionVersion: 4,
+  });
+
+  const mismatch = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_1',
+      environment: 'staging',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      now: () => 1_800_000_000,
+    }
+  );
+  assert.equal(mismatch.status, 403);
+  assert.equal((await mismatch.json()).error.code, 'CLI_ACCESS_KEY_ENV_MISMATCH');
+
+  const defaultTtl = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_default_ttl',
+      environment: 'production',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      now: () => 1_800_000_000,
+    }
+  );
+  assert.equal(defaultTtl.status, 201);
+  assert.equal(
+    (await defaultTtl.json()).accessKey.expiresAt,
+    new Date((1_800_000_000 + 31_536_000) * 1000).toISOString()
+  );
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_1',
+      environment: 'production',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      CLI_ACCESS_KEY_TTL_SECONDS: '0',
+      now: () => 1_800_000_000,
+    }
+  );
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.match(body.accessKey.plaintext, /^xdp_prod_/);
+  assert.equal(body.accessKey.expiresAt, null);
+  const stored = await store.getAccessKeyById(body.accessKey.id);
+  assert.equal(stored.issuedSource, 'cli_login');
+  assert.equal(stored.issuedSessionVersion, 4);
+  assert.deepEqual(stored.scopes, ['*']);
+});
+
+test('internal CLI access-key exchange is not reachable from the public host', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createUser({ userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active', sessionVersion: 1 });
+
+  const publicResponse = await worker.fetch(
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/internal/cli-access-keys',
+      { userId: 'usr_1', cliLoginId: 'cli_1', environment: 'production' },
+      { 'CF-Connecting-IP': '10.1.2.3' }
+    ),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      IP_ALLOWLIST: '10.0.0.0/8',
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      now: () => 1_800_000_000,
+    }
+  );
+
+  assert.equal(publicResponse.status, 404);
+  assert.equal((await publicResponse.json()).error.code, 'NOT_FOUND');
+});
+
+test('internal CLI access-key exchange treats a whitespace TTL as the default, not never-expires', async () => {
+  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
+  await store.createUser({ userId: 'usr_1', email: 'user@example.com', employeeStatus: 'active', sessionVersion: 1 });
+
+  const response = await worker.fetch(
+    jsonRequest('https://pages-api.internal/.xd-pages/internal/cli-access-keys', {
+      userId: 'usr_1',
+      cliLoginId: 'cli_ws',
+      environment: 'production',
+    }),
+    {
+      PAGES_ENV: 'production',
+      PAGES_STORE: store,
+      ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_1',
+      ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
+      ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
+      CLI_ACCESS_KEY_TTL_SECONDS: '  ',
+      now: () => 1_800_000_000,
+    }
+  );
+
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).accessKey.expiresAt, new Date((1_800_000_000 + 31_536_000) * 1000).toISOString());
 });
 
 test('internal hostname claim acquire is only callable through internal service host', async () => {

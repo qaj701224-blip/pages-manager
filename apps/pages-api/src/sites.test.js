@@ -7,6 +7,44 @@ import { markRuntimeConfigError } from './runtime-config-diagnostics.js';
 import { syncActiveWfpPlainTextBindings, syncActiveWfpSecret } from './sites.js';
 import { createTestPagesStore } from './test-store.js';
 
+const BEARER_USR_1 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_1',
+  bytes: new Uint8Array(24).fill(11),
+});
+const BEARER_USR_PUBLISHER = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_publisher',
+  bytes: new Uint8Array(24).fill(12),
+});
+const BEARER_USR_2 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_2',
+  bytes: new Uint8Array(24).fill(13),
+});
+const BEARER_USR_VIEWER = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_viewer',
+  bytes: new Uint8Array(24).fill(14),
+});
+
+async function seedCliLoginKey(store, userId, plaintext, environment = 'production') {
+  await store.createAccessKey({
+    id: `ak_cli_${userId}`,
+    environment,
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: `cli login ${userId}`,
+    scopes: ['*'],
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+}
+
 test('creates a production site with owner membership and inactive route', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(
@@ -95,23 +133,20 @@ test('creates a team-owned site when the user is a team publisher', async () => 
     role: 'publisher',
     membershipSource: 'manual',
   });
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
 
   const response = await worker.fetch(
-    jsonRequest('https://api.pages.xd.team/.xd-pages/api/sites', {
-      slug: 'team-guide',
-      visibility: 'internal',
-      ownerType: 'team',
-      teamId: team.id,
-    }),
-    testEnv(store, {
-      verifyCliToken: async () => ({
-        sub: 'usr_publisher',
-        purpose: 'cli_token',
-        aud: 'pages-cli',
-        env: 'production',
-        jti: 'cli_publisher',
-      }),
-    })
+    jsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites',
+      {
+        slug: 'team-guide',
+        visibility: 'internal',
+        ownerType: 'team',
+        teamId: team.id,
+      },
+      BEARER_USR_PUBLISHER
+    ),
+    testEnv(store)
   );
 
   assert.equal(response.status, 201, await response.clone().text());
@@ -361,18 +396,11 @@ test('site delete rejects read-only access keys and non-owner members', async ()
     createdAt: '2026-06-15T00:00:00.000Z',
   });
   const readKey = await seedAccessKey(store, 'ak_read', ['read:site'], 'site_1');
+  await seedCliLoginKey(store, 'usr_2', BEARER_USR_2);
 
   const memberDelete = await worker.fetch(
-    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
-    testEnv(store, {
-      verifyCliToken: async () => ({
-        sub: 'usr_2',
-        purpose: 'cli_token',
-        aud: 'pages-cli',
-        env: 'production',
-        jti: 'cli_2',
-      }),
-    })
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }, BEARER_USR_2),
+    testEnv(store)
   );
   const accessKeyDelete = await worker.fetch(
     authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {
@@ -468,24 +496,18 @@ test('team publisher can manage team site policy and delete team sites', async (
     hostname: 'team-guide.pages.xd.team',
   });
   await activateSite(store, 'site_team', { visibility: 'org' });
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
 
   const snapshots = createSnapshotStore();
   const env = testEnv(store, {
     ROUTE_SNAPSHOTS: snapshots,
-    verifyCliToken: async () => ({
-      sub: 'usr_publisher',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_publisher',
-    }),
   });
   const update = await worker.fetch(
-    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', { visibility: 'disabled' }),
+    patchJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', { visibility: 'disabled' }, BEARER_USR_PUBLISHER),
     env
   );
   const del = await worker.fetch(
-    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', {}, { method: 'DELETE' }),
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_team', {}, { method: 'DELETE' }, BEARER_USR_PUBLISHER),
     env
   );
 
@@ -1084,31 +1106,35 @@ test('team publishers can manage runtime secrets for team-owned sites', async ()
   });
   await activateSite(store, site.id, { workerName: 'pages-v2-team-guide-ver-1' });
   const providerCalls = [];
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
   const publisherEnv = testEnv(store, {
     WFP_PROVIDER: {
       putSecret: async (input) => providerCalls.push({ operation: 'put', ...withoutSignal(input) }),
       deleteSecret: async (input) => providerCalls.push({ operation: 'delete', ...withoutSignal(input) }),
     },
-    verifyCliToken: async () => ({
-      sub: 'usr_publisher',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_publisher',
-    }),
   });
 
   const put = await worker.fetch(
-    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
-      name: 'API_TOKEN',
-      value: 'secret-value',
-    }),
+    putJsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets',
+      {
+        name: 'API_TOKEN',
+        value: 'secret-value',
+      },
+      BEARER_USR_PUBLISHER
+    ),
     publisherEnv
   );
   const del = await worker.fetch(
-    jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets', {
-      name: 'API_TOKEN',
-    }),
+    jsonMethodRequest(
+      'DELETE',
+      'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/secrets',
+      {
+        name: 'API_TOKEN',
+      },
+      {},
+      BEARER_USR_PUBLISHER
+    ),
     publisherEnv
   );
 
@@ -1551,12 +1577,10 @@ test('secret mutations log safe store and capability diagnostics', async () => {
   store.deleteSiteSecretWithAudit = throwStoreError;
 
   const putFailure = await worker.fetch(
-    jsonMethodRequest(
-      'PUT',
-      'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-secret-slug/secrets',
-      { name: 'SENSITIVE_SECRET_NAME', value: 'SENSITIVE_SECRET_VALUE' },
-      { Authorization: 'Bearer SENSITIVE_BEARER_TOKEN' }
-    ),
+    jsonMethodRequest('PUT', 'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-secret-slug/secrets', {
+      name: 'SENSITIVE_SECRET_NAME',
+      value: 'SENSITIVE_SECRET_VALUE',
+    }),
     environment
   );
   const deleteFailure = await worker.fetch(
@@ -1820,7 +1844,7 @@ test('runtime vars accept an escaped JSON value at the decoded 8 KiB limit', asy
   const response = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer cli-token' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${BEARER_USR_1}` },
       body: `{"name":"FEATURE_FLAG","value":"${escapedValue}"}`,
     }),
     testEnv(store)
@@ -2289,7 +2313,7 @@ test('runtime vars reject malformed bodies and do not expose stored values throu
   const malformed = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/sites/guide/vars', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer cli-token' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${BEARER_USR_1}` },
       body: '{',
     }),
     env
@@ -2419,6 +2443,8 @@ test('team publishers and admins can manage runtime vars while viewers are forbi
   const store = await createSeededStore();
   await store.createUser({ userId: 'usr_publisher', email: 'publisher@example.com', employeeStatus: 'active' });
   await store.createUser({ userId: 'usr_viewer', email: 'viewer@example.com', employeeStatus: 'active' });
+  await seedCliLoginKey(store, 'usr_publisher', BEARER_USR_PUBLISHER);
+  await seedCliLoginKey(store, 'usr_viewer', BEARER_USR_VIEWER);
   const team = await store.createTeam({
     id: 'team_1',
     environment: 'production',
@@ -2450,36 +2476,33 @@ test('team publishers and admins can manage runtime vars while viewers are forbi
     routeId: 'route_team',
     hostname: 'team-guide.pages.xd.team',
   });
-  const actorEnv = (userId) =>
-    testEnv(store, {
-      verifyCliToken: async () => ({
-        sub: userId,
-        purpose: 'cli_token',
-        aud: 'pages-cli',
-        env: 'production',
-        jti: `cli_${userId}`,
-      }),
-    });
-
   const publisher = await worker.fetch(
-    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/vars', {
-      name: 'FEATURE_FLAG',
-      value: 'on',
-    }),
-    actorEnv('usr_publisher')
+    putJsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/vars',
+      {
+        name: 'FEATURE_FLAG',
+        value: 'on',
+      },
+      BEARER_USR_PUBLISHER
+    ),
+    testEnv(store)
   );
   const viewer = await worker.fetch(
-    putJsonRequest('https://api.pages.xd.team/.xd-pages/api/sites/team-guide/vars', {
-      name: 'VIEWER_ATTEMPT',
-      value: 'blocked',
-    }),
-    actorEnv('usr_viewer')
+    putJsonRequest(
+      'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/vars',
+      {
+        name: 'VIEWER_ATTEMPT',
+        value: 'blocked',
+      },
+      BEARER_USR_VIEWER
+    ),
+    testEnv(store)
   );
   const admin = await worker.fetch(
     jsonMethodRequest('DELETE', 'https://api.pages.xd.team/.xd-pages/api/sites/team-guide/vars', {
       name: 'FEATURE_FLAG',
     }),
-    actorEnv('usr_1')
+    testEnv(store)
   );
 
   assert.equal(publisher.status, 200, await publisher.clone().text());
@@ -2605,12 +2628,10 @@ test('runtime vars log one safe diagnostic for unexpected store failures', async
   const lines = [];
 
   const response = await worker.fetch(
-    jsonMethodRequest(
-      'PUT',
-      'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-slug/vars',
-      { name: 'SENSITIVE_VAR_NAME', value: 'SENSITIVE_VAR_VALUE' },
-      { Authorization: 'Bearer SENSITIVE_BEARER_TOKEN' }
-    ),
+    jsonMethodRequest('PUT', 'https://api.pages.xd.team/.xd-pages/api/sites/sensitive-slug/vars', {
+      name: 'SENSITIVE_VAR_NAME',
+      value: 'SENSITIVE_VAR_VALUE',
+    }),
     testEnv(store, { logRuntimeConfigFailure: (line) => lines.push(line) })
   );
   const text = await response.text();
@@ -3207,32 +3228,32 @@ test('sites API rejects legacy X-Pages-Token', async () => {
   assert.equal((await response.json()).error.code, 'LEGACY_TOKEN_UNSUPPORTED');
 });
 
-function jsonRequest(url, body) {
+function jsonRequest(url, body, token = BEARER_USR_1) {
   return new Request(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${token}`,
       'CF-Connecting-IP': '10.1.2.3',
     },
     body: JSON.stringify(body),
   });
 }
 
-function patchJsonRequest(url, body) {
-  return jsonMethodRequest('PATCH', url, body);
+function patchJsonRequest(url, body, token = BEARER_USR_1) {
+  return jsonMethodRequest('PATCH', url, body, {}, token);
 }
 
-function putJsonRequest(url, body) {
-  return jsonMethodRequest('PUT', url, body);
+function putJsonRequest(url, body, token = BEARER_USR_1) {
+  return jsonMethodRequest('PUT', url, body, {}, token);
 }
 
-function jsonMethodRequest(method, url, body, headers = {}) {
+function jsonMethodRequest(method, url, body, headers = {}, token = BEARER_USR_1) {
   return new Request(url, {
     method,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${token}`,
       'CF-Connecting-IP': '10.1.2.3',
       ...headers,
     },
@@ -3240,10 +3261,10 @@ function jsonMethodRequest(method, url, body, headers = {}) {
   });
 }
 
-function authRequest(url, headers = {}, init = {}) {
+function authRequest(url, headers = {}, init = {}, token = BEARER_USR_1) {
   return new Request(url, {
     ...init,
-    headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
+    headers: { Authorization: `Bearer ${token}`, 'CF-Connecting-IP': '10.1.2.3', ...headers },
   });
 }
 
@@ -3257,6 +3278,7 @@ async function createSeededStore() {
     realname: 'User One',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, 'usr_1', BEARER_USR_1);
   return store;
 }
 
@@ -3491,13 +3513,6 @@ function testEnv(store, overrides = {}) {
         route: 'route_1',
       })[prefix],
     nextSiteUuid: () => '4b4c8e8361ef4b47b64f5c20a7db7c47',
-    verifyCliToken: async () => ({
-      sub: 'usr_1',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_1',
-    }),
     ...overrides,
   };
 }

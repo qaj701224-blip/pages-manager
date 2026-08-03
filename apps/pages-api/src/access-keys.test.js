@@ -6,6 +6,12 @@ import * as accessKeys from './access-keys.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { createTestPagesStore } from './test-store.js';
 
+const BEARER_USR_1 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_1',
+  bytes: new Uint8Array(24).fill(13),
+});
+
 test('creates reusable access key material with deterministic id and S2S metadata', async () => {
   assert.equal(typeof accessKeys.createAccessKeyMaterial, 'function');
 
@@ -69,7 +75,7 @@ test('creates a site-scoped access key and returns plaintext only once', async (
   assert.equal('plaintext' in stored, false);
 
   const list = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/access-keys'), testEnv(store));
-  const listed = (await list.json()).accessKeys[0];
+  const listed = (await list.json()).accessKeys.find((accessKey) => accessKey.id === 'ak_1');
   assert.equal(listed.id, 'ak_1');
   assert.equal(listed.issuedSource, 'cli');
   assert.equal(listed.issuedSessionVersion, undefined);
@@ -93,7 +99,7 @@ test('revokes access keys without returning plaintext or hash', async () => {
   const response = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/ak_1', {
       method: 'DELETE',
-      headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3' },
+      headers: { Authorization: `Bearer ${BEARER_USR_1}`, 'CF-Connecting-IP': '10.1.2.3' },
     }),
     testEnv(store)
   );
@@ -104,6 +110,49 @@ test('revokes access keys without returning plaintext or hash', async () => {
   assert.equal(body.accessKey.revokedAt, '2026-06-15T00:00:00.000Z');
   assert.equal(body.accessKey.plaintext, undefined);
   assert.equal(body.accessKey.keyHash, undefined);
+});
+
+test('revokes current cli_login key and rejects legacy JWT logout after JWT verification removal', async () => {
+  const store = await createSeededStore();
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_cli_login',
+    bytes: new Uint8Array(24).fill(3),
+  });
+  await store.createAccessKey({
+    id: 'ak_cli_login',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'cli login cli_1',
+    scopes: ['*'],
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+
+  const revoked = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/current', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${plaintext}` },
+    }),
+    testEnv(store)
+  );
+  assert.equal(revoked.status, 200);
+  assert.deepEqual(await revoked.json(), { revoked: true });
+  assert.equal((await store.getAccessKeyById('ak_cli_login')).revokedReason, 'cli_logout');
+
+  const legacy = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/current', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer legacy.jwt.token' },
+    }),
+    testEnv(store)
+  );
+  assert.equal(legacy.status, 401);
+  assert.equal((await legacy.json()).error.code, 'CLI_TOKEN_INVALID');
 });
 
 test('rejects access key actors from listing or revoking access keys', async () => {
@@ -137,11 +186,20 @@ test('rejects access key actors from listing or revoking access keys', async () 
     }),
     testEnv(store)
   );
+  const revokeCurrent = await worker.fetch(
+    new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/current', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${plaintext}`, 'CF-Connecting-IP': '10.1.2.3' },
+    }),
+    testEnv(store)
+  );
 
   assert.equal(list.status, 403);
   assert.equal((await list.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
   assert.equal(revoke.status, 403);
   assert.equal((await revoke.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
+  assert.equal(revokeCurrent.status, 403);
+  assert.equal((await revokeCurrent.json()).error.code, 'ACCESS_KEY_MANAGEMENT_FORBIDDEN');
 });
 
 test('rejects access key creation for inaccessible sites and invalid scopes', async () => {
@@ -178,6 +236,12 @@ test('rejects deploy-capable access key creation for non-owner site members', as
     email: 'viewer@example.com',
     employeeStatus: 'active',
   });
+  const viewerBearer = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_cli_viewer',
+    bytes: new Uint8Array(24).fill(14),
+  });
+  await seedCliLoginKey(store, { userId: 'usr_viewer', keyId: 'ak_cli_viewer', plaintext: viewerBearer });
   await store.addSiteMember({
     siteId: 'site_1',
     userId: 'usr_viewer',
@@ -191,16 +255,8 @@ test('rejects deploy-capable access key creation for non-owner site members', as
       siteId: 'site_1',
       scopes: ['deploy:site'],
       expiresAt: '2026-07-15T00:00:00.000Z',
-    }),
-    testEnv(store, {
-      verifyCliToken: async () => ({
-        sub: 'usr_viewer',
-        purpose: 'cli_token',
-        aud: 'pages-cli',
-        env: 'production',
-        jti: 'cli_viewer',
-      }),
-    })
+    }, viewerBearer),
+    testEnv(store)
   );
 
   assert.equal(response.status, 403);
@@ -243,7 +299,7 @@ test('console creates user-owned access keys with default and maximum expiry', a
     testEnv(store)
   );
   assert.equal(list.status, 200, await list.clone().text());
-  const listed = (await list.json()).accessKeys[0];
+  const listed = (await list.json()).accessKeys.find((key) => key.id === 'ak_1');
   assert.equal(listed.issuedSource, 'console');
   assert.equal(listed.issuedSessionVersion, undefined);
   assert.equal(listed.plaintext, undefined);
@@ -287,7 +343,7 @@ test('console owner-scoped access keys are isolated by environment', async () =>
     testEnv(store)
   );
   assert.equal(productionList.status, 200, await productionList.clone().text());
-  assert.deepEqual((await productionList.json()).accessKeys, []);
+  assert.deepEqual((await productionList.json()).accessKeys.map((key) => key.id), ['ak_cli_usr_1']);
 
   const productionRevoke = await worker.fetch(
     internalConsoleRequest('/.xd-pages/api/console/access-keys/ak_1', {
@@ -351,7 +407,7 @@ test('console access key lists hide revoked keys', async () => {
   const body = await response.json();
   assert.deepEqual(
     body.accessKeys.map((accessKey) => accessKey.id),
-    ['ak_active']
+    ['ak_cli_usr_1', 'ak_active']
   );
 });
 
@@ -419,12 +475,12 @@ test('team-owned access keys require team admin and survive creator leaving the 
 
   const personalList = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/access-keys'), testEnv(store));
   assert.equal(personalList.status, 200, await personalList.clone().text());
-  assert.deepEqual((await personalList.json()).accessKeys, []);
+  assert.deepEqual((await personalList.json()).accessKeys.map((key) => key.id), ['ak_cli_usr_1']);
 
   const personalRevoke = await worker.fetch(
     new Request('https://api.pages.xd.team/.xd-pages/api/access-keys/ak_1', {
       method: 'DELETE',
-      headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3' },
+      headers: { Authorization: `Bearer ${BEARER_USR_1}`, 'CF-Connecting-IP': '10.1.2.3' },
     }),
     testEnv(store)
   );
@@ -529,6 +585,7 @@ async function createSeededStore() {
     realname: 'User One',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, { userId: 'usr_1', keyId: 'ak_cli_usr_1', plaintext: BEARER_USR_1 });
   await store.createSite({
     id: 'site_1',
     slug: 'docs',
@@ -569,32 +626,44 @@ function testEnv(store, overrides = {}) {
     now: () => '2026-06-15T00:00:00.000Z',
     nextId: (prefix) => (prefix === 'ak' ? 'ak_1' : `${prefix}_1`),
     randomBytes: (length) => new Uint8Array(length).fill(5),
-    verifyCliToken: async () => ({
-      sub: 'usr_1',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_1',
-    }),
     ...overrides,
   };
 }
 
-function jsonRequest(url, body) {
+function jsonRequest(url, body, token = BEARER_USR_1) {
   return new Request(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${token}`,
       'CF-Connecting-IP': '10.1.2.3',
     },
     body: JSON.stringify(body),
   });
 }
 
-function authRequest(url) {
+function authRequest(url, token = BEARER_USR_1) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3' },
+    headers: { Authorization: `Bearer ${token}`, 'CF-Connecting-IP': '10.1.2.3' },
+  });
+}
+
+async function seedCliLoginKey(store, { userId, keyId, plaintext, environment = 'production', sessionVersion = 1 }) {
+  await store.createAccessKey({
+    id: keyId,
+    environment,
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: `cli login ${userId}`,
+    scopes: ['*'],
+    siteId: null,
+    expiresAt: null,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: sessionVersion,
   });
 }
 

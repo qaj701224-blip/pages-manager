@@ -184,6 +184,7 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /WFP_COMPATIBILITY_DATE = "2026-06-15"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /CLI_ACCESS_KEY_TTL_SECONDS = "31536000"/);
   assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
   assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
@@ -191,8 +192,8 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /database_id = "dummy-pages-d1"/);
   assert.match(config, /binding = "ROUTE_SNAPSHOTS"/);
   assert.match(config, /id = "dummy-route-snapshots-kv"/);
-  assert.match(config, /binding = "PAGES_AUTH"/);
-  assert.match(config, /service = "pages-auth"/);
+  assert.doesNotMatch(config, /binding = "PAGES_AUTH"/);
+  assert.doesNotMatch(config, /service = "pages-auth"/);
   assert.doesNotMatch(config, /api-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /auth-staging\.pages\.xd\.team/);
   assert.doesNotMatch(config, /xd-cell-workers-staging/);
@@ -216,11 +217,13 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"/);
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
+  assert.match(config, /CLI_ACCESS_KEY_TTL_SECONDS = "31536000"/);
   assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
   assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
-  assert.match(config, /service = "pages-auth-staging"/);
+  assert.doesNotMatch(config, /service = "pages-auth-staging"/);
+  assert.doesNotMatch(config, /binding = "PAGES_AUTH"/);
 });
 
 test('staging pages-api config rejects production WFP namespace', () => {
@@ -341,8 +344,9 @@ test('production pages-auth config renders explicit production auth settings onl
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages"/);
   assert.doesNotMatch(config, /SSO_ALLOWED_USER_SCOPE/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
-  assert.doesNotMatch(config, /service = "pages-api"/);
+  assert.match(config, /binding = "PAGES_API"/);
+  assert.match(config, /service = "pages-api"/);
+  assert.doesNotMatch(config, /service = "pages-api-staging"/);
   assert.match(config, /binding = "PAGES_METADATA"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
@@ -370,8 +374,9 @@ test('staging pages-auth config renders explicit staging auth settings', () => {
   assert.match(config, /SSO_PROFILE_URL = "https:\/\/sso\.security\.xindong\.com\/cas\/oauth2\.0\/profile"/);
   assert.match(config, /SSO_CLIENT_ID = "xd_pages_staging"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
-  assert.doesNotMatch(config, /service = "pages-api-staging"/);
+  assert.match(config, /binding = "PAGES_API"/);
+  assert.match(config, /service = "pages-api-staging"/);
+  assert.doesNotMatch(config, /service = "pages-api"\n/);
 });
 
 test('pages-auth config binds XDS outbound requests to the office VPC network when configured', () => {
@@ -381,7 +386,7 @@ test('pages-auth config binds XDS outbound requests to the office VPC network wh
   });
 
   assert.match(config, /\[\[vpc_networks\]\]\nbinding = "XD_OFFICE_NET"\ntunnel_id = "test-office-tunnel-id"/);
-  assert.doesNotMatch(config, /binding = "PAGES_API"/);
+  assert.match(config, /binding = "PAGES_API"/);
 
   const emptyConfig = renderPagesAuth('staging', withoutEnv('PAGES_USER_WORKER_VPC_TUNNEL_ID'));
   assert.doesNotMatch(emptyConfig, /\[\[vpc_networks\]\]/);

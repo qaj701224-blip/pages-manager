@@ -5,6 +5,12 @@ import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
 import { createTestPagesStore } from './test-store.js';
 
+const BEARER_USR_1 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_1',
+  bytes: new Uint8Array(24).fill(12),
+});
+
 test('whoami returns the active CLI user without token material', async () => {
   const store = await createSeededStore();
   const response = await worker.fetch(authRequest('https://api.pages.xd.team/.xd-pages/api/auth/whoami'), testEnv(store));
@@ -15,7 +21,7 @@ test('whoami returns the active CLI user without token material', async () => {
     environment: 'production',
     actor: {
       type: 'user',
-      credentialType: 'cli_token',
+      credentialType: 'access_key',
       userId: 'usr_1',
       email: 'user@example.com',
       name: 'User One',
@@ -107,11 +113,7 @@ test('whoami returns existing auth errors for invalid tokens', async () => {
     authRequest('https://api.pages.xd.team/.xd-pages/api/auth/whoami', {
       Authorization: 'Bearer invalid-token',
     }),
-    testEnv(store, {
-      verifyCliToken: async () => {
-        throw new Error('bad token');
-      },
-    })
+    testEnv(store)
   );
 
   assert.equal(response.status, 401);
@@ -124,7 +126,7 @@ test('whoami rejects unsupported methods', async () => {
     new Request('https://api.pages.xd.team/.xd-pages/api/auth/whoami', {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer cli-token',
+        Authorization: `Bearer ${BEARER_USR_1}`,
         'CF-Connecting-IP': '10.1.2.3',
       },
     }),
@@ -137,7 +139,7 @@ test('whoami rejects unsupported methods', async () => {
 
 function authRequest(url, headers = {}) {
   return new Request(url, {
-    headers: { Authorization: 'Bearer cli-token', 'CF-Connecting-IP': '10.1.2.3', ...headers },
+    headers: { Authorization: `Bearer ${BEARER_USR_1}`, 'CF-Connecting-IP': '10.1.2.3', ...headers },
   });
 }
 
@@ -150,6 +152,11 @@ async function createSeededStore() {
     email: 'user@example.com',
     realname: 'User One',
     employeeStatus: 'active',
+  });
+  await seedCliLoginKey(store, {
+    userId: 'usr_1',
+    keyId: 'ak_cli_usr_1',
+    plaintext: BEARER_USR_1,
   });
   await store.createSite({
     id: 'site_1',
@@ -187,6 +194,25 @@ async function seedAccessKey(store, keyId, scopes, overrides = {}) {
   return plaintext;
 }
 
+async function seedCliLoginKey(store, { userId, keyId, plaintext, environment = 'production', sessionVersion = 1 }) {
+  await store.createAccessKey({
+    id: keyId,
+    environment,
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: `cli login ${userId}`,
+    scopes: ['*'],
+    siteId: null,
+    expiresAt: null,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: sessionVersion,
+  });
+}
+
 function testEnv(store, overrides = {}) {
   return {
     PAGES_ENV: 'production',
@@ -195,13 +221,6 @@ function testEnv(store, overrides = {}) {
     ACCESS_KEY_PEPPERS: 'pepper_1:ACCESS_KEY_PEPPER_TEST',
     ACCESS_KEY_PEPPER_TEST: 'pepper-secret',
     now: () => '2026-06-15T00:00:00.000Z',
-    verifyCliToken: async () => ({
-      sub: 'usr_1',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_1',
-    }),
     ...overrides,
   };
 }

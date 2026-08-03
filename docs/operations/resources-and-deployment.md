@@ -406,7 +406,14 @@ secrets:
 
 production / staging 的 `SSO_AUTHORIZATION_URL`、`SSO_TOKEN_URL`、`SSO_PROFILE_URL` 和 `SSO_CLIENT_ID` 是稳定、非 secret 的 SSO 应用拓扑配置，当前直接写在 `pages-auth` wrangler template 中并通过 PR 审查：production client id 为 `xd_pages`，staging client id 为 `xd_pages_staging`。`SSO_CLIENT_SECRET` 必须通过 secret 注入，不能写入 template、GitHub Vars、文档示例、CLI config 或 `--config` 文件。`PAGES_SESSION_JWT_KEYS` 是 `kid:alg:secretEnvName` registry，真实密钥值只存在于对应 secret env。
 
-SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先成功换取 SSO profile，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。SSO profile 成功返回代表用户已通过 `xd_pages` / `xd_pages_staging` 应用授权；XD Cell 不再用本地邮箱域或 `xindong` 字符串二次缩窄允许人群。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `xd-cell login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，旧 CLI token / access key 也会被 API 层的用户状态校验拒绝。`pages-auth` 不绑定 `PAGES_API`，避免全新环境首次部署时 `pages-api <-> pages-auth` service binding 形成循环依赖；`pages-api` 仍只能通过 `PAGES_AUTH` service binding 校验 CLI token，不能持有签发或验签用的私密 signing secret。
+SSO callback 在签发 `auth_session`、`site_session` code 或 CLI token 之前，必须先成功换取 SSO profile，再写入共享 D1 `PAGES_METADATA` 中的 `users` 权威记录，并以写入后的权威用户状态决定是否签发 session。SSO profile 成功返回代表用户已通过 `xd_pages` / `xd_pages_staging` 应用授权；XD Cell 不再用本地邮箱域或 `xindong` 字符串二次缩窄允许人群。即使 SSO profile 显示用户已 disabled / left，也要先同步并 bump `sessionVersion`，再返回 403。若 D1 中用户已经是 `disabled` / `left`，一次并发或滞后的 `active` / `unknown` profile 不能把用户恢复为 active；恢复 active 需要后续明确的组织目录同步或管理员流程。这样 `xd-cell login` 成功后，控制面 `users` 表已经有 active 用户状态；用户离职或禁用后，CLI access key 也会被 API 层的用户状态与 `sessionVersion` 校验拒绝。
+
+`xd-cell login` 的凭证由 pages-auth 在 CLI login poll 确认后，经 `PAGES_API` service binding 调 pages-api 内部端点 `/.xd-pages/internal/cli-access-keys` 换发一把 `issued_source='cli_login'` 的个人 access key（scope `*`、默认 TTL 1 年、`CLI_ACCESS_KEY_TTL_SECONDS=0` 表示永不过期），poll 响应契约保持不变，旧版 CLI 无感。因此 v2 的 service binding 依赖关系如下：
+
+- 稳态方向是单向 `pages-auth -> pages-api`（换发 access key）。
+- 过渡期内 `pages-api -> pages-auth` 仍保留一条反向 binding，仅用于校验尚未过期的 legacy CLI token JWT（`authenticateCliToken`）；`pages-api` 不能持有 session 签发或验签用的私密 signing secret。等 legacy JWT 全部过期、删除 `authenticateCliToken` 分支后，必须一并移除 `pages-api` 的 `PAGES_AUTH` binding，使拓扑回到无环。
+- 部署顺序：`pages-api` 必须先于 `pages-auth` 部署，保证 `/.xd-pages/internal/cli-access-keys` 端点先在线，否则 `DEPLOY_COMPONENT=all` 的窗口期内 `xd-cell login` 会返回 502。`deploy-pages-v2.yml` / `deploy-pages-v2-staging.yml` 已按此顺序编排。
+- 全新环境首次 bootstrap：由于过渡期 `pages-api <-> pages-auth` 互相持有 binding 形成环，无法一次拉起。首次部署需分两遍——先部署去掉互相 binding 的最小版本建立两个 service，再补齐 binding 重新部署；或先部署 `pages-api`（此时其 `PAGES_AUTH` binding 目标已存在于历史环境）。既有环境增量部署不受影响，因为两个 service 都已存在。
 
 #### pages-router
 

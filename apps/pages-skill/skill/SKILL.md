@@ -58,7 +58,7 @@ description: 当用户制作网站、内部工具、SPA 或自定义 Worker，�
 - 不要引导用户把内置 CLI 全局安装；全局副本可能滞后于当前 skill。
 - 不主动切换目标环境；普通发布让 CLI 使用默认目标，内部测试环境按维护流程处理。
 - 凭证只通过 CLI 支持的登录流程或 `--token <token>` 传入。
-- 不要把 API token、CLI token、cookie、SSO code 或 secret 写入源码、配置、日志、文档、截图或聊天内容。
+- 不要把 API token、CLI access key、CLI token（legacy）、cookie、SSO code 或 secret 写入源码、配置、日志、文档、截图或聊天内容。
 - agent 或 CI 场景可以使用 `XD_CELL_API_TOKEN` 或 CLI help 中支持的一次性 token 参数；需要解析输出时使用 CLI help 中支持的 JSON 输出参数。
 - Worker 访问当前用户或办公网时只使用 Worker SDK 公开 API，不猜测平台内部 header、binding 或 capability。
 - 调用 `runtime.officeNet.fetch()` 后检查 `response.ok`；只有 status 为 `501` 且响应中的 `error.code` 为 `OFFICE_NET_UNAVAILABLE` 时，才提示当前站点不支持办公网访问。不要 fallback 到全局 `fetch`。

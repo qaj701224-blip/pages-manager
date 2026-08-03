@@ -1,5 +1,6 @@
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { hydrateUserDepartmentFromDirectory } from './department-hydration.js';
+import { issueCliLoginAccessKey } from './access-keys.js';
 
 const EMPLOYEE_STATUSES = new Set(['active', 'disabled', 'left', 'unknown']);
 const ENVIRONMENTS = new Set(['production', 'staging', 'local']);
@@ -16,6 +17,10 @@ export async function handleInternalApi(request, env, store) {
     if (request.method !== 'POST') return methodNotAllowed();
     return hydrateUserDepartment(request, env, store);
   }
+  if (url.pathname === '/.xd-pages/internal/cli-access-keys') {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return createCliAccessKey(request, env, store);
+  }
   if (url.pathname === '/.xd-pages/internal/hostname-claims/acquire') {
     if (request.method !== 'POST') return methodNotAllowed();
     return acquireHostnameClaim(request, env, store);
@@ -30,6 +35,50 @@ export async function handleInternalApi(request, env, store) {
   }
 
   return null;
+}
+
+async function createCliAccessKey(request, env, store) {
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+
+  const userId = normalizeRequiredString(body.userId);
+  const cliLoginId = normalizeRequiredString(body.cliLoginId);
+  const environment = normalizeEnvironment(body.environment);
+  const workerEnvironment = normalizeEnvironment(env.PAGES_ENV);
+  if (!userId || !cliLoginId || !environment) {
+    return jsonError('CLI_ACCESS_KEY_INVALID', 'CLI access key request is invalid.', 400);
+  }
+  if (workerEnvironment && environment !== workerEnvironment) {
+    return jsonError('CLI_ACCESS_KEY_ENV_MISMATCH', 'CLI access key environment does not match.', 403);
+  }
+
+  const user = await store.getUser(userId);
+  if (!user || user.employeeStatus !== 'active') {
+    return jsonError('PAGES_USER_INACTIVE', 'User is not active.', 403, 'Contact the Pages platform owner.');
+  }
+
+  try {
+    const { plaintext, accessKey } = await issueCliLoginAccessKey(env, environment, store, {
+      userId,
+      cliLoginId,
+      sessionVersion: user.sessionVersion ?? null,
+      now: readNow(env),
+    });
+    return jsonOk({
+      accessKey: {
+        id: accessKey.id,
+        plaintext,
+        expiresAt: accessKey.expiresAt,
+        issuedSource: accessKey.issuedSource,
+      },
+    }, 201);
+  } catch {
+    return jsonError('CLI_ACCESS_KEY_CREATE_FAILED', 'CLI access key could not be created.', 500, 'Run `xd-cell login` again.');
+  }
 }
 
 async function hydrateUserDepartment(request, env, store) {

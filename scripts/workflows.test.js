@@ -655,9 +655,9 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
       `${name} applies D1 migrations before deploying auth`
     );
     assert.ok(
-      workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy') <
-        workflow.indexOf('pnpm --dir apps/pages-api exec wrangler deploy'),
-      `${name} deploys auth before api because api has a PAGES_AUTH service binding`
+      workflow.indexOf('pnpm --dir apps/pages-api exec wrangler deploy') <
+        workflow.indexOf('pnpm --dir apps/pages-auth exec wrangler deploy'),
+      `${name} deploys api before auth so the cli-access-keys internal endpoint is online before auth calls it`
     );
     assert.match(workflow, new RegExp(`node scripts/provision-pages-v2-slots\\.mjs ${environment} bindings`));
     assert.match(

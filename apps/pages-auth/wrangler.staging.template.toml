@@ -27,6 +27,10 @@ SSO_TOKEN_URL = "https://sso.security.xindong.com/cas/oauth2.0/accessToken"
 SSO_PROFILE_URL = "https://sso.security.xindong.com/cas/oauth2.0/profile"
 SSO_CLIENT_ID = "xd_pages_staging"
 
+[[services]]
+binding = "PAGES_API"
+service = "pages-api-staging"
+
 [[d1_databases]]
 binding = "PAGES_METADATA"
 database_name = "pages-v2-metadata-staging"

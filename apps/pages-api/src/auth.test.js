@@ -12,17 +12,21 @@ const config = {
   siteDomainSuffix: 'pages.xd.team',
 };
 
+const BEARER_USR_1 = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_1',
+  bytes: new Uint8Array(24).fill(11),
+});
+
 test('rejects legacy X-Pages-Token before bearer auth', async () => {
   const result = await authenticateApiRequest(
     new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
       headers: {
         'X-Pages-Token': 'legacy',
-        Authorization: 'Bearer cli-token',
+        Authorization: `Bearer ${BEARER_USR_1}`,
       },
     }),
-    {
-      verifyCliToken: async () => ({ sub: 'usr_1', purpose: 'cli_token', aud: 'pages-cli', env: 'production' }),
-    },
+    {},
     await createSeededStore(),
     config
   );
@@ -47,93 +51,19 @@ test('requires bearer auth', async () => {
   assert.equal(result.error.status, 401);
 });
 
-test('accepts verified CLI tokens with cli purpose and environment binding', async () => {
+test('rejects non-access-key bearer tokens after legacy CLI JWT verification is removed', async () => {
   const result = await authenticateApiRequest(
     new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
-      headers: { Authorization: 'Bearer cli-token' },
+      headers: { Authorization: 'Bearer legacy.jwt.token' },
     }),
-    {
-      verifyCliToken: async (token) => ({
-        token,
-        sub: 'usr_1',
-        purpose: 'cli_token',
-        aud: 'pages-cli',
-        env: 'production',
-        jti: 'cli_1',
-      }),
-    },
+    {},
     await createSeededStore(),
     config
   );
 
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.actor, {
-    type: 'user',
-    actorId: 'usr_1',
-    userId: 'usr_1',
-    email: 'user@example.com',
-    name: 'User One',
-    tokenId: 'cli_1',
-    scopes: ['*'],
-    source: 'cli',
-  });
-});
-
-test('accepts CLI tokens verified through pages-auth service binding', async () => {
-  const result = await authenticateApiRequest(
-    new Request('https://api.pages.xd.team/.xd-pages/api/sites', {
-      headers: { Authorization: 'Bearer cli-token' },
-    }),
-    {
-      PAGES_AUTH: {
-        fetch: async (request) => {
-          assert.equal(request.url, 'https://pages-auth.internal/.xd-pages/internal/verify-cli-token');
-          assert.equal(request.method, 'POST');
-          assert.deepEqual(await request.json(), {
-            token: 'cli-token',
-            audience: 'pages-cli',
-          });
-          return Response.json({
-            sub: 'usr_1',
-            purpose: 'cli_token',
-            aud: 'pages-cli',
-            env: 'production',
-            jti: 'cli_binding',
-          });
-        },
-      },
-    },
-    await createSeededStore(),
-    config
-  );
-
-  assert.equal(result.ok, true);
-  assert.equal(result.actor.tokenId, 'cli_binding');
-  assert.equal(result.actor.source, 'cli');
-});
-
-test('rejects CLI tokens with wrong purpose or environment', async () => {
-  const wrongPurpose = await authenticateApiRequest(
-    bearerRequest('cli-token'),
-    {
-      verifyCliToken: async () => ({ sub: 'usr_1', purpose: 'site_session', aud: 'pages-cli', env: 'production' }),
-    },
-    await createSeededStore(),
-    config
-  );
-  const wrongEnv = await authenticateApiRequest(
-    bearerRequest('cli-token'),
-    {
-      verifyCliToken: async () => ({ sub: 'usr_1', purpose: 'cli_token', aud: 'pages-cli', env: 'staging' }),
-    },
-    await createSeededStore(),
-    config
-  );
-
-  assert.equal(wrongPurpose.ok, false);
-  assert.equal(wrongPurpose.error.code, 'CLI_TOKEN_INVALID');
-  assert.equal(wrongEnv.ok, false);
-  assert.equal(wrongEnv.error.code, 'CLI_TOKEN_INVALID');
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'CLI_TOKEN_INVALID');
+  assert.match(result.error.action, /xd-cell login/);
 });
 
 test('accepts access keys by HMAC hash and rejects revoked or expired keys', async () => {
@@ -211,6 +141,85 @@ test('accepts access keys by HMAC hash and rejects revoked or expired keys', asy
   );
   assert.equal(expired.ok, false);
   assert.equal(expired.error.code, 'ACCESS_KEY_EXPIRED');
+});
+
+test('maps cli_login access keys to the legacy user CLI actor shape', async () => {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_cli_login',
+    bytes: new Uint8Array(24).fill(5),
+  });
+  const store = await createSeededStore();
+  await store.createAccessKey({
+    id: 'ak_cli_login',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'cli login cli_1',
+    scopes: ['*'],
+    siteId: null,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.deepEqual(result.actor, {
+    type: 'user',
+    actorId: 'usr_1',
+    userId: 'usr_1',
+    email: 'user@example.com',
+    name: 'User One',
+    tokenId: 'ak_cli_login',
+    scopes: ['*'],
+    source: 'cli',
+  });
+});
+
+test('rejects cli_login access keys after the user session version changes', async () => {
+  const plaintext = createAccessKeyPlaintext({
+    environment: 'production',
+    keyId: 'ak_cli_stale',
+    bytes: new Uint8Array(24).fill(6),
+  });
+  const store = await createSeededStore();
+  await store.createAccessKey({
+    id: 'ak_cli_stale',
+    environment: 'production',
+    ownerType: 'user',
+    ownerId: 'usr_1',
+    ownerUserId: 'usr_1',
+    createdByUserId: 'usr_1',
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: 'cli login cli_stale',
+    scopes: ['*'],
+    siteId: null,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+  await bumpUserSessionVersion(store);
+
+  const result = await authenticateApiRequest(
+    bearerRequest(plaintext),
+    accessKeyEnv(),
+    store,
+    config,
+    '2026-06-15T00:00:00.000Z'
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'ACCESS_KEY_SESSION_STALE');
 });
 
 for (const issuedSource of ['legacy', 'cli', 'console']) {
@@ -335,6 +344,11 @@ async function createSeededStore() {
     realname: 'User One',
     employeeStatus: 'active',
   });
+  await seedCliLoginKey(store, {
+    userId: 'usr_1',
+    keyId: 'ak_cli_usr_1',
+    plaintext: BEARER_USR_1,
+  });
   await store.createSite({
     id: 'site_1',
     slug: 'docs',
@@ -346,4 +360,23 @@ async function createSeededStore() {
     hostname: 'docs.pages.xd.team',
   });
   return store;
+}
+
+async function seedCliLoginKey(store, { userId, keyId, plaintext, environment = 'production', sessionVersion = 1 }) {
+  await store.createAccessKey({
+    id: keyId,
+    environment,
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: `cli login ${userId}`,
+    scopes: ['*'],
+    siteId: null,
+    expiresAt: null,
+    issuedSource: 'cli_login',
+    issuedSessionVersion: sessionVersion,
+  });
 }

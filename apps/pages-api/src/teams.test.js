@@ -5,6 +5,29 @@ import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import worker from './index.js';
 import { createTestPagesStore } from './test-store.js';
 
+const BEARER_USR_MEMBER = createAccessKeyPlaintext({
+  environment: 'production',
+  keyId: 'ak_cli_usr_member',
+  bytes: new Uint8Array(24).fill(18),
+});
+
+async function seedCliLoginKey(store, userId, plaintext, environment = 'production') {
+  await store.createAccessKey({
+    id: `ak_cli_${userId}`,
+    environment,
+    ownerType: 'user',
+    ownerId: userId,
+    ownerUserId: userId,
+    createdByUserId: userId,
+    keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
+    pepperId: 'pepper_1',
+    name: `cli login ${userId}`,
+    scopes: ['*'],
+    issuedSource: 'cli_login',
+    issuedSessionVersion: 1,
+  });
+}
+
 test('department hydration creates department team and default admin member', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
 
@@ -471,6 +494,7 @@ test('team APIs list teams and block department team deletion', async () => {
 test('public teams API lists current user teams for CLI tokens and personal access keys', async () => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   await seedConsoleUser(store, 'usr_member', { email: 'member@example.com' });
+  await seedCliLoginKey(store, 'usr_member', BEARER_USR_MEMBER);
   const customTeam = await store.createTeam({
     id: 'team_docs',
     environment: 'production',
@@ -496,15 +520,7 @@ test('public teams API lists current user teams for CLI tokens and personal acce
     departmentPath: '心动/平台支撑部/Web',
   });
 
-  const listed = await worker.fetch(apiRequest('/.xd-pages/api/teams'), env(store, {
-    verifyCliToken: async () => ({
-      sub: 'usr_member',
-      purpose: 'cli_token',
-      aud: 'pages-cli',
-      env: 'production',
-      jti: 'cli_member',
-    }),
-  }));
+  const listed = await worker.fetch(apiRequest('/.xd-pages/api/teams'), env(store));
   assert.equal(listed.status, 200, await listed.clone().text());
   assert.deepEqual(await listed.json(), {
     environment: 'production',
@@ -887,7 +903,7 @@ function env(store, overrides = {}) {
 function apiRequest(path, headers = {}) {
   return new Request(`https://api.pages.xd.team${path}`, {
     headers: {
-      Authorization: 'Bearer cli-token',
+      Authorization: `Bearer ${BEARER_USR_MEMBER}`,
       'CF-Connecting-IP': '10.1.2.3',
       ...headers,
     },

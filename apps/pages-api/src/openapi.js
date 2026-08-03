@@ -69,7 +69,7 @@ export function buildOpenApi(config) {
               required: ['type', 'credentialType', 'userId', 'email', 'name', 'scopes'],
               properties: {
                 type: { type: 'string', const: 'user' },
-                credentialType: { type: 'string', const: 'cli_token' },
+                credentialType: { type: 'string', const: 'access_key' },
                 userId: { type: 'string' },
                 email: { type: 'string', format: 'email' },
                 name: { type: ['string', 'null'] },
@@ -788,6 +788,19 @@ export function buildOpenApi(config) {
           responses: {
             200: { description: 'Access key revoked' },
             404: { description: 'Access key not found' },
+          },
+        },
+      },
+      '/.xd-pages/api/access-keys/current': {
+        delete: {
+          summary: 'Revoke the current CLI access key',
+          description:
+            'Revokes the cli_login access key used to authenticate this request. Non-CLI credentials receive 403; ' +
+            'missing, invalid, or legacy tokens are rejected by authentication with 401.',
+          responses: {
+            200: { description: 'Current CLI access key revocation handled idempotently' },
+            401: { description: 'Missing, invalid, or legacy credential' },
+            403: { description: 'Credential is not a CLI credential' },
           },
         },
       },
