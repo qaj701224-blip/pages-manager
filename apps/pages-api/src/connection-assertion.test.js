@@ -311,6 +311,105 @@ test('keeps reporting a retryable outage within the cooldown after a failed JWKS
   assert.equal(calls.length, 2);
 });
 
+test('refetches after the positive-cache max age and rejects kids removed from the JWKS', async () => {
+  const { privateKey, jwk } = await createSigningKey('kid_1');
+  let published = [jwk];
+  const fetchStub = jwksFetchStub(() => published);
+  const cache = createConnectionJwksCache();
+  const sixteenMinutes = 16 * 60;
+
+  const first = await verifyConnectionAssertion(
+    await signAssertion(privateKey, buildPayload()),
+    CONFIG,
+    verifyOptions(fetchStub, { cache })
+  );
+  assert.equal(first.ok, true);
+  assert.equal(fetchStub.calls.length, 1);
+
+  // Still published after the max age: refresh happens and the kid keeps working.
+  const refreshed = await verifyConnectionAssertion(
+    await signAssertion(
+      privateKey,
+      buildPayload({ iat: NOW_SECONDS + sixteenMinutes - 60, exp: NOW_SECONDS + sixteenMinutes + 1740 })
+    ),
+    CONFIG,
+    verifyOptions(fetchStub, { cache, nowSeconds: NOW_SECONDS + sixteenMinutes })
+  );
+  assert.equal(refreshed.ok, true);
+  assert.equal(fetchStub.calls.length, 2);
+
+  // Emergency revocation: the kid disappears from the JWKS and is rejected at most
+  // one max-age later, even though the warm cache still holds its key.
+  published = [];
+  const revoked = await verifyConnectionAssertion(
+    await signAssertion(
+      privateKey,
+      buildPayload({ iat: NOW_SECONDS + 2 * sixteenMinutes - 60, exp: NOW_SECONDS + 2 * sixteenMinutes + 1740 })
+    ),
+    CONFIG,
+    verifyOptions(fetchStub, { cache, nowSeconds: NOW_SECONDS + 2 * sixteenMinutes })
+  );
+  assert.equal(revoked.ok, false);
+  assert.equal(revoked.reason, 'kid_unknown');
+  assert.equal(fetchStub.calls.length, 3);
+});
+
+test('serves the stale cache within the 24h grace when a refresh fails, then fails closed', async () => {
+  const { privateKey, jwk } = await createSigningKey('kid_1');
+  let broken = false;
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(url);
+    if (broken) throw new Error('jwks down');
+    return { ok: true, json: async () => ({ keys: [jwk] }) };
+  };
+  const cache = createConnectionJwksCache();
+  const sixteenMinutes = 16 * 60;
+
+  const first = await verifyConnectionAssertion(await signAssertion(privateKey, buildPayload()), CONFIG, {
+    nowSeconds: NOW_SECONDS,
+    fetchFn,
+    cache,
+  });
+  assert.equal(first.ok, true);
+  assert.equal(calls.length, 1);
+
+  // Refresh fails after the max age: the known key keeps serving within the grace window.
+  broken = true;
+  const staleServed = await verifyConnectionAssertion(
+    await signAssertion(
+      privateKey,
+      buildPayload({ iat: NOW_SECONDS + sixteenMinutes - 60, exp: NOW_SECONDS + sixteenMinutes + 1740 })
+    ),
+    CONFIG,
+    { nowSeconds: NOW_SECONDS + sixteenMinutes, fetchFn, cache }
+  );
+  assert.equal(staleServed.ok, true);
+  assert.equal(calls.length, 2);
+
+  // Within the retry cooldown the stale key is served without another fetch.
+  const throttled = await verifyConnectionAssertion(
+    await signAssertion(
+      privateKey,
+      buildPayload({ iat: NOW_SECONDS + sixteenMinutes - 50, exp: NOW_SECONDS + sixteenMinutes + 1750 })
+    ),
+    CONFIG,
+    { nowSeconds: NOW_SECONDS + sixteenMinutes + 10, fetchFn, cache }
+  );
+  assert.equal(throttled.ok, true);
+  assert.equal(calls.length, 2);
+
+  // Beyond the grace window a still-failing refresh fails closed as an outage.
+  const dayLater = NOW_SECONDS + 25 * 60 * 60;
+  const graceExpired = await verifyConnectionAssertion(
+    await signAssertion(privateKey, buildPayload({ iat: dayLater - 60, exp: dayLater + 1740 })),
+    CONFIG,
+    { nowSeconds: dayLater, fetchFn, cache }
+  );
+  assert.equal(graceExpired.ok, false);
+  assert.equal(graceExpired.unavailable, true);
+});
+
 test('reports the JWKS as unavailable when the fetch fails', async () => {
   const { privateKey } = await createSigningKey('kid_1');
   const token = await signAssertion(privateKey, buildPayload());

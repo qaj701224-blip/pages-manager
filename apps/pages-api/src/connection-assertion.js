@@ -7,6 +7,13 @@ const CLOCK_SKEW_SECONDS = 60;
 // Contract TTL is 30 minutes; the cap is a fail-closed bound against issuer misconfiguration.
 const MAX_ASSERTION_LIFETIME_SECONDS = 60 * 60;
 const JWKS_REFETCH_COOLDOWN_MS = 30 * 1000;
+// Positive-cache freshness bounds emergency revocation propagation: a kid removed from
+// the JWKS stops being trusted at most one max-age later, without waiting for new-kid
+// traffic or an isolate recycle.
+const JWKS_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
+// When a stale-cache refresh fails, cached keys stay usable up to the retiring-key
+// retention window of the rotation contract, then verification fails closed.
+const JWKS_STALE_GRACE_MS = 24 * 60 * 60 * 1000;
 const JWKS_UNAVAILABLE = Symbol('connection-jwks-unavailable');
 
 const defaultJwksCache = new Map();
@@ -126,16 +133,19 @@ export async function verifyConnectionAssertion(token, config, options = {}) {
 async function resolveSigningKey({ issuer, kid, cache, fetchFn, nowMs }) {
   let bucket = cache.get(issuer);
   if (!bucket) {
-    bucket = { keys: new Map(), lastFetchAtMs: null, lastFetchFailed: false };
+    bucket = { keys: new Map(), fetchedAtMs: null, lastFetchAtMs: null, lastFetchFailed: false };
     cache.set(issuer, bucket);
   }
 
   const cached = bucket.keys.get(kid);
-  if (cached) return cached;
+  if (cached && nowMs - bucket.fetchedAtMs < JWKS_CACHE_MAX_AGE_MS) return cached;
+  const staleCached = cached && nowMs - bucket.fetchedAtMs < JWKS_STALE_GRACE_MS ? cached : null;
 
   if (bucket.lastFetchAtMs !== null && nowMs - bucket.lastFetchAtMs < JWKS_REFETCH_COOLDOWN_MS) {
-    // During the cooldown a prior fetch failure must keep surfacing as a retryable
-    // outage, not as an invalid assertion.
+    // Refresh is throttled: a known-but-stale key stays usable within the grace window,
+    // and a prior fetch failure must keep surfacing as a retryable outage, not as an
+    // invalid assertion.
+    if (staleCached) return staleCached;
     return bucket.lastFetchFailed ? JWKS_UNAVAILABLE : null;
   }
   bucket.lastFetchAtMs = nowMs;
@@ -144,10 +154,10 @@ async function resolveSigningKey({ issuer, kid, cache, fetchFn, nowMs }) {
   let jwks;
   try {
     const response = await fetchFn(`${issuer}/.well-known/jwks.json`, { headers: { Accept: 'application/json' } });
-    if (!response?.ok) return JWKS_UNAVAILABLE;
+    if (!response?.ok) return staleCached || JWKS_UNAVAILABLE;
     jwks = await response.json();
   } catch {
-    return JWKS_UNAVAILABLE;
+    return staleCached || JWKS_UNAVAILABLE;
   }
 
   const keys = new Map();
@@ -172,6 +182,7 @@ async function resolveSigningKey({ issuer, kid, cache, fetchFn, nowMs }) {
   }
   // The fetched document is the whole truth: retired kids drop out here.
   bucket.keys = keys;
+  bucket.fetchedAtMs = nowMs;
   bucket.lastFetchFailed = false;
   return keys.get(kid) || null;
 }

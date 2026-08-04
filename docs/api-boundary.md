@@ -37,7 +37,7 @@ Cindy(原 XDMaker)的 v2 客户端形态是 Cindy 插件 `xd-sites`:对 `/.xd-pa
 验签纪律(实现见 `apps/pages-api/src/connection-assertion.js`):
 
 - 受信 issuer 白名单先于取键:token 的 `iss` 必须命中 `CINDY_CONNECTION_ISSUERS` 配置,才会去 `iss + /.well-known/jwks.json` 拉公钥;staging 同时信 dev 与两个生产 issuer(便于真实登录态联调),production 只信国内 + 海外两个生产 issuer,生产永远不信 dev(renderer 层强制拒绝)。
-- JWKS 按 issuer 分桶缓存,按 `kid` 选键;未知 `kid` 重拉带 ≥30 秒冷却,禁止 pin 公钥。
+- JWKS 按 issuer 分桶缓存,按 `kid` 选键;正向缓存 15 分钟 max-age,过期即重拉,保证紧急撤销(kid 从 JWKS 摘除)最多 15 分钟内传播到暖实例;未知 `kid` 重拉带 ≥30 秒冷却,禁止 pin 公钥;重拉失败时旧缓存最多陈旧续用 24 小时(对齐退役键保留期),超限对外表现为可重试的 503。
 - 只收 RS256,显式拒绝 HS256/none;校验 `iss` / `aud`(`CINDY_CONNECTION_AUDIENCE`,当前为 `xd:xd-sites`)/ `typ` / `ctx=org` / `orgSlug` / `exp`、`iat`(±60 秒);断言总有效期(`exp - iat`)上限 1 小时,是契约 TTL 30 分钟的 fail-closed 上界,防 issuer 误配签出长命票。
 - 验签失败一律 401 `CONNECTION_ASSERTION_INVALID`(客户端据此重签重试一次);JWKS 拉取故障返回 503;403 留给身份有效但无权限(如 `PAGES_USER_INACTIVE`)。
 - 只信契约内 claims:`sub` / `ctx` / `orgSlug` / `email` / `iss` / `aud` / `typ` / `exp` / `iat` / `jti`;payload 里其它字段(role、identities 等)一律不读,尤其不得用于授权判断。
