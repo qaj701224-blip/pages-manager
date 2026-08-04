@@ -41,52 +41,7 @@ class TestPagesStore {
     this.webhookDeliveries = new Map();
     this.deployments = new Map();
     this.deploymentIdempotencyIndex = new Map();
-    this.s2sNonces = new Map();
-    this.s2sRateLimits = new Map();
     this.auditEvents = [];
-  }
-
-  async reserveS2SNonce({ environment, clientId, nonce, endpoint, receivedAt, expiresAt }) {
-    const key = `${environment}:${clientId}:${nonce}`;
-    if (this.s2sNonces.has(key)) return false;
-    this.s2sNonces.set(key, {
-      environment,
-      clientId,
-      nonce,
-      endpoint,
-      receivedAt,
-      expiresAt,
-    });
-    return true;
-  }
-
-  async consumeS2SRateLimit({ environment, scope, subject, bucketStart, expiresAt, limit }) {
-    const key = `${environment}:${scope}:${subject}:${bucketStart}`;
-    const existing = this.s2sRateLimits.get(key);
-    if (!existing) {
-      this.s2sRateLimits.set(key, {
-        environment,
-        scope,
-        subject,
-        bucketStart,
-        requestCount: 1,
-        expiresAt,
-      });
-      return { allowed: true, count: 1 };
-    }
-    if (existing.requestCount >= Number(limit)) return { allowed: false, count: Number(limit) };
-    existing.requestCount += 1;
-    existing.expiresAt = expiresAt;
-    return { allowed: true, count: existing.requestCount };
-  }
-
-  async cleanupExpiredS2SGuards(now) {
-    for (const [key, row] of this.s2sNonces) {
-      if (row.expiresAt <= now) this.s2sNonces.delete(key);
-    }
-    for (const [key, row] of this.s2sRateLimits) {
-      if (row.expiresAt <= now) this.s2sRateLimits.delete(key);
-    }
   }
 
   async createUser(input) {
@@ -101,6 +56,7 @@ class TestPagesStore {
       employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
       feishuOpenId: input.feishuOpenId || null,
+      cindyMembershipId: input.cindyMembershipId || null,
       createdSource: input.createdSource || 'xd_sso',
       departmentPath: input.departmentPath || null,
       departmentCheckedAt: input.departmentCheckedAt || null,
@@ -118,6 +74,12 @@ class TestPagesStore {
       [...this.users.values()].some((user) => user.feishuOpenId === record.feishuOpenId)
     ) {
       throw new Error('USER_FEISHU_OPEN_ID_CONFLICT');
+    }
+    if (
+      record.cindyMembershipId !== null &&
+      [...this.users.values()].some((user) => user.cindyMembershipId === record.cindyMembershipId)
+    ) {
+      throw new Error('USER_CINDY_MEMBERSHIP_CONFLICT');
     }
     this.users.set(record.id, record);
     return cloneRecord(record);
@@ -149,6 +111,7 @@ class TestPagesStore {
       employeenum: staleActiveOrUnknown ? existing.employeenum : input.employeenum || existing?.employeenum || null,
       employeeStatus,
       feishuOpenId: existing?.feishuOpenId || null,
+      cindyMembershipId: existing?.cindyMembershipId || null,
       createdSource: existing?.createdSource || 'xd_sso',
       departmentPath: staleActiveOrUnknown
         ? existing.departmentPath || null
@@ -192,6 +155,24 @@ class TestPagesStore {
       return false;
     }
     user.feishuOpenId = feishuOpenId;
+    user.updatedAt = this.now();
+    return true;
+  }
+
+  async getUserByCindyMembershipId(membershipId) {
+    if (!membershipId) return null;
+    const user = [...this.users.values()].find((candidate) => candidate.cindyMembershipId === membershipId);
+    return cloneRecord(user || null);
+  }
+
+  async bindUserCindyMembershipId(userId, membershipId) {
+    if (!membershipId) return false;
+    const user = this.users.get(userId) || null;
+    if (!user || (user.cindyMembershipId !== null && user.cindyMembershipId !== membershipId)) return false;
+    if ([...this.users.values()].some((candidate) => candidate.id !== userId && candidate.cindyMembershipId === membershipId)) {
+      return false;
+    }
+    user.cindyMembershipId = membershipId;
     user.updatedAt = this.now();
     return true;
   }
@@ -2164,95 +2145,6 @@ class TestPagesStore {
     return cloneRecord(record);
   }
 
-  async issueS2SAccessKey({ accessKey, replacesKeyId = null, auditEvents = [], now = this.now() }) {
-    const ownerId = accessKey.ownerId || accessKey.ownerUserId;
-    const replacement = replacesKeyId ? this.accessKeys.get(replacesKeyId) || null : null;
-    if (replacesKeyId && !isValidTestS2SReplacement(replacement, accessKey, now)) {
-      throw testS2SReplacementKeyInvalidError();
-    }
-
-    const accessKeySnapshot = new Map([...this.accessKeys].map(([id, record]) => [id, cloneRecord(record)]));
-    const auditLength = this.auditEvents.length;
-    try {
-      if (replacement) {
-        replacement.revokedAt = now;
-        replacement.revokedByUserId = accessKey.ownerUserId;
-        replacement.revokedReason = 'xdmaker_s2s_replace';
-      }
-      const created = await this.createAccessKey({ ...accessKey, ownerType: accessKey.ownerType || 'user', ownerId });
-      for (const event of auditEvents) this.auditEvents.push(testAuditRecord(event, event.createdAt || this.now()));
-      return created;
-    } catch (error) {
-      this.accessKeys = accessKeySnapshot;
-      this.auditEvents.length = auditLength;
-      throw error;
-    }
-  }
-
-  async revokeS2SAccessKeys({
-    environment,
-    keyId = null,
-    email = null,
-    clientId = null,
-    signingKeyId = null,
-    now = this.now(),
-  }) {
-    const normalizedEmail = normalizeUserEmail(email);
-    const userId = normalizedEmail
-      ? [...this.users.values()].find((user) => normalizeUserEmail(user.email) === normalizedEmail)?.id || null
-      : null;
-    const keys = [...this.accessKeys.values()]
-      .filter((key) => {
-        if (key.environment !== environment) return false;
-        if ((key.ownerType || 'user') !== 'user') return false;
-        if ((key.ownerId || key.ownerUserId) !== key.ownerUserId) return false;
-        if (key.issuedSource !== 'xdmaker_s2s' || key.revokedAt) return false;
-        if (key.expiresAt && key.expiresAt <= now) return false;
-        return keyId ? key.id === keyId : Boolean(userId && key.ownerUserId === userId);
-      })
-      .sort((left, right) => left.id.localeCompare(right.id));
-    if (keys.length === 0) return { revokedCount: 0, keyIds: [] };
-
-    const accessKeySnapshot = new Map([...this.accessKeys].map(([id, record]) => [id, cloneRecord(record)]));
-    const auditLength = this.auditEvents.length;
-    try {
-      for (const key of keys) {
-        key.revokedAt = now;
-        key.revokedByUserId = key.ownerUserId;
-        key.revokedReason = 'xdmaker_s2s_revoke';
-        this.auditEvents.push(
-          testAuditRecord(
-            {
-              id: randomStoreId('audit'),
-              environment,
-              eventType: 's2s.access_key.revoke',
-              actorUserId: key.ownerUserId,
-              actorType: 's2s',
-              decision: 'allow',
-              statusCode: 200,
-              metadata: {
-                environment,
-                ...(clientId ? { clientId } : {}),
-                ...(signingKeyId ? { signingKeyId } : {}),
-                accessKeyId: key.id,
-                userId: key.ownerUserId,
-                reason: 'xdmaker_s2s_revoke',
-              },
-              createdAt: now,
-            },
-            now
-          )
-        );
-      }
-    } catch (error) {
-      this.accessKeys = accessKeySnapshot;
-      this.auditEvents.length = auditLength;
-      throw error;
-    }
-    const keyIds = keys.map((key) => key.id);
-    return { revokedCount: keyIds.length, keyIds };
-  }
-
   async getAccessKeyById(id, environment) {
     const key = this.accessKeys.get(id) || null;
     if (environment && !this.accessKeyMatchesEnvironment(key, environment)) return null;
@@ -2674,47 +2566,6 @@ function fnv1a64Hex(value) {
     hash = (hash * prime) & mask;
   }
   return hash.toString(16).padStart(16, '0');
-}
-
-function isValidTestS2SReplacement(replacement, accessKey, now) {
-  const ownerId = accessKey.ownerId || accessKey.ownerUserId;
-  return Boolean(
-    replacement &&
-    replacement.id !== accessKey.id &&
-    replacement.environment === accessKey.environment &&
-    (replacement.ownerType || 'user') === 'user' &&
-    (replacement.ownerId || replacement.ownerUserId) === ownerId &&
-    replacement.ownerUserId === accessKey.ownerUserId &&
-    replacement.issuedSource === 'xdmaker_s2s' &&
-    !replacement.revokedAt &&
-    (!replacement.expiresAt || replacement.expiresAt > now)
-  );
-}
-
-function testS2SReplacementKeyInvalidError() {
-  const error = new Error('S2S_REPLACEMENT_KEY_INVALID');
-  error.code = 'S2S_REPLACEMENT_KEY_INVALID';
-  return error;
-}
-
-function testAuditRecord(input, fallbackNow) {
-  return {
-    id: input.id,
-    environment: input.environment || input.metadata?.environment || null,
-    traceId: input.traceId || null,
-    eventType: input.eventType,
-    actorUserId: input.actorUserId || null,
-    actorType: input.actorType,
-    siteId: input.siteId || null,
-    routeId: input.routeId || null,
-    versionId: input.versionId || null,
-    decision: input.decision,
-    statusCode: input.statusCode ?? null,
-    ipHash: input.ipHash || null,
-    userAgentHash: input.userAgentHash || null,
-    metadata: cloneRecord(input.metadata || null),
-    createdAt: input.createdAt || fallbackNow,
-  };
 }
 
 function randomStoreId(prefix) {

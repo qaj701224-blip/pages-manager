@@ -87,15 +87,8 @@ test('access key rows hide revoked keys and expose only token preview', () => {
   assert.equal(rows[0].expiresLabel, '永久');
 });
 
-test('access key rows expose safe source labels for XDMaker, Console, and CLI login keys', () => {
+test('access key rows expose safe source labels for Console, CLI login, and unknown-source keys', () => {
   const rows = buildAccessKeyRows([
-    {
-      id: 'ak_00197d61ff057c411c631cde9b67dc04',
-      name: 'XDMaker',
-      scopes: ['read:site', 'deploy:site'],
-      ownerType: 'user',
-      issuedSource: 'xdmaker_s2s',
-    },
     {
       id: 'ak_console',
       name: 'Console',
@@ -110,13 +103,20 @@ test('access key rows expose safe source labels for XDMaker, Console, and CLI lo
       ownerType: 'user',
       issuedSource: 'cli_login',
     },
+    {
+      id: 'ak_00197d61ff057c411c631cde9b67dc04',
+      name: 'Unknown source',
+      scopes: ['read:site', 'deploy:site'],
+      ownerType: 'user',
+      issuedSource: 'xdmaker_s2s',
+    },
   ]);
 
-  assert.equal(rows[0].sourceLabel, 'XDMaker');
-  assert.equal(rows[0].sourceKind, 'xdmaker');
-  assert.equal(rows[0].raw.id, 'ak_00197d61ff057c411c631cde9b67dc04');
-  assert.equal(rows[1].sourceLabel, 'Console');
-  assert.equal(rows[1].sourceKind, 'console');
-  assert.equal(rows[2].sourceLabel, 'CLI');
-  assert.equal(rows[2].sourceKind, 'cli');
+  assert.equal(rows[0].sourceLabel, 'Console');
+  assert.equal(rows[0].sourceKind, 'console');
+  assert.equal(rows[1].sourceLabel, 'CLI');
+  assert.equal(rows[1].sourceKind, 'cli');
+  assert.equal(rows[2].sourceLabel, '其它');
+  assert.equal(rows[2].sourceKind, 'other');
+  assert.equal(rows[2].raw.id, 'ak_00197d61ff057c411c631cde9b67dc04');
 });

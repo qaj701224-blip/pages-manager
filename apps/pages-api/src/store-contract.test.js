@@ -494,6 +494,51 @@ for (const backend of storeBackends) {
       fixture.dispose();
     }
   });
+
+  test(`${backend.name} contract: cindy membership id lookup, bind, and uniqueness`, async () => {
+    const fixture = await backend.create();
+    try {
+      const { store } = fixture;
+      await store.createUser({
+        userId: 'usr_bound',
+        email: 'bound@example.com',
+        employeeStatus: 'active',
+        cindyMembershipId: 'mem_bound',
+      });
+      await store.createUser({ userId: 'usr_plain', email: 'plain@example.com', employeeStatus: 'active' });
+
+      assert.equal((await store.getUserByCindyMembershipId('mem_bound'))?.id, 'usr_bound');
+      assert.equal(await store.getUserByCindyMembershipId('mem_missing'), null);
+      assert.equal(await store.getUserByCindyMembershipId(''), null);
+
+      assert.equal(await store.bindUserCindyMembershipId('usr_plain', 'mem_bound'), false);
+      assert.equal(await store.bindUserCindyMembershipId('usr_plain', 'mem_plain'), true);
+      assert.equal(await store.bindUserCindyMembershipId('usr_plain', 'mem_plain'), true);
+      assert.equal(await store.bindUserCindyMembershipId('usr_plain', 'mem_other'), false);
+      assert.equal((await store.getUserByCindyMembershipId('mem_plain'))?.id, 'usr_plain');
+
+      await assert.rejects(
+        () =>
+          store.createUser({
+            userId: 'usr_dup',
+            email: 'dup@example.com',
+            employeeStatus: 'active',
+            cindyMembershipId: 'mem_bound',
+          }),
+        (error) => /USER_CINDY_MEMBERSHIP_CONFLICT|UNIQUE constraint failed/.test(String(error?.message || '')),
+      );
+
+      const upserted = await store.upsertUserFromSso({
+        userId: 'usr_plain',
+        email: 'plain@example.com',
+        employeeStatus: 'active',
+        sessionVersion: 1,
+      });
+      assert.equal(upserted.cindyMembershipId, 'mem_plain');
+    } finally {
+      fixture.dispose();
+    }
+  });
 }
 
 async function createSite(store) {

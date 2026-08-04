@@ -16,6 +16,17 @@ export async function handleWhoamiApi(request, env, config, store) {
 }
 
 function publicActor(actor) {
+  if (actor.source === 'cindy_connection') {
+    return {
+      type: 'user',
+      credentialType: 'connection',
+      userId: actor.userId,
+      email: actor.email,
+      name: actor.name,
+      scopes: actor.scopes,
+    };
+  }
+
   if (actor.type === 'access_key') {
     return {
       type: 'access_key',

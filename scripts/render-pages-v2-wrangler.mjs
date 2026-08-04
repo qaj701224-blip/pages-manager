@@ -99,7 +99,7 @@ async function renderWrangler(appName, envName) {
   rendered = rendered.replaceAll('__PAGES_API_XDS_VPC_NETWORK__', renderPagesApiXdsVpcNetwork(appName, replacements));
   rendered = rendered.replaceAll('__PAGES_AUTH_XDS_VPC_NETWORK__', renderPagesAuthXdsVpcNetwork(appName, replacements));
 
-  assertRenderedConfigPolicy(rendered, appName);
+  assertRenderedConfigPolicy(rendered, appName, envName);
   assertNoUnresolvedPlaceholders(rendered, templatePath);
   assertNoRuntimeSecrets(rendered, appName);
   assertEnvironmentBoundary(rendered, envName, appName);
@@ -184,9 +184,9 @@ function assertCrossTokenPolicy(replacements) {
   );
 }
 
-function assertRenderedConfigPolicy(rendered, appName) {
+function assertRenderedConfigPolicy(rendered, appName, envName) {
   if (appName === 'apps/pages-api') {
-    assertS2sClientKeyRegistry(readTomlStringVar(rendered, 'S2S_CLIENT_KEYS'));
+    assertCindyConnectionConfig(rendered, envName);
     return;
   }
   if (appName !== 'apps/pages-auth') return;
@@ -354,32 +354,30 @@ function assertAccessKeyPepperRegistry(value) {
   }
 }
 
-function assertS2sClientKeyRegistry(value) {
-  const entries = value
+function assertCindyConnectionConfig(rendered, envName) {
+  const audience = readTomlStringVar(rendered, 'CINDY_CONNECTION_AUDIENCE');
+  if (audience.length > 64 || !/^[a-z0-9][a-z0-9-]{0,30}:[a-z0-9][a-z0-9-]{0,30}$/.test(audience)) {
+    throw new Error('CINDY_CONNECTION_AUDIENCE must use the <orgSlug>:<plugin-slug> format');
+  }
+
+  const issuers = readTomlStringVar(rendered, 'CINDY_CONNECTION_ISSUERS')
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
-  if (entries.length === 0) throw new Error('S2S_CLIENT_KEYS must not be empty');
-
-  const seenPairs = new Set();
-  const clientKeyCounts = new Map();
-  for (const entry of entries) {
-    const [clientId, keyId, secretEnvName, extra] = entry.split(':').map((part) => part.trim());
-    if (extra !== undefined || !clientId || !keyId || !secretEnvName) {
-      throw new Error('S2S_CLIENT_KEYS entries must be clientId:keyId:secretEnvName');
+  if (issuers.length === 0) throw new Error('CINDY_CONNECTION_ISSUERS must not be empty');
+  for (const issuer of issuers) {
+    let url;
+    try {
+      url = new URL(issuer);
+    } catch {
+      throw new Error('CINDY_CONNECTION_ISSUERS entries must be https origins');
     }
-    if (!/^[A-Za-z0-9._-]{1,128}$/.test(clientId) || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId)) {
-      throw new Error('S2S_CLIENT_KEYS contains an unsafe client or key id');
+    if (url.protocol !== 'https:' || url.origin !== issuer) {
+      throw new Error('CINDY_CONNECTION_ISSUERS entries must be https origins');
     }
-    const pair = `${clientId}:${keyId}`;
-    if (seenPairs.has(pair)) throw new Error('S2S_CLIENT_KEYS contains duplicate client/key');
-    seenPairs.add(pair);
-    const count = (clientKeyCounts.get(clientId) || 0) + 1;
-    if (count > 2) throw new Error('S2S_CLIENT_KEYS allows at most two keys per client');
-    clientKeyCounts.set(clientId, count);
-    if (!/^S2S_SECRET_[A-Z0-9_]+$/.test(secretEnvName)) {
-      throw new Error('S2S_CLIENT_KEYS secret env names must use S2S_SECRET_*');
-    }
+  }
+  if (envName === 'production' && issuers.some((issuer) => new URL(issuer).hostname.startsWith('auth-dev.'))) {
+    throw new Error('Production CINDY_CONNECTION_ISSUERS must not trust a dev issuer');
   }
 }
 

@@ -5,7 +5,6 @@ import test from 'node:test';
 import worker from './index.js';
 import { createAccessKeyPlaintext, hashAccessKey } from './crypto.js';
 import { buildOpenApi } from './openapi.js';
-import { buildS2SCanonicalInput, createS2SSignature } from './s2s-auth.js';
 import { createTestPagesStore } from './test-store.js';
 
 const BEARER_USR_1 = createAccessKeyPlaintext({
@@ -134,39 +133,6 @@ test('scheduled handler runs due WFP cleanup tasks', async () => {
   assert.deepEqual(deletedWorkers, ['pages-v2-docs-ver-old']);
   assert.equal((await store.getDeploymentResourceCleanupTask('cln_1', 'production')).status, 'succeeded');
   assert.equal((await store.getSiteVersion('ver_old')).artifactAvailability, 'retired');
-});
-
-test('scheduled handler cleans expired S2S guards even when deployment cleanup fails', async () => {
-  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
-  await store.reserveS2SNonce({
-    environment: 'production',
-    clientId: 'xdmaker',
-    nonce: 'nonce_cleanup01',
-    endpoint: '/.xd-pages/api/s2s/tokens',
-    receivedAt: '2026-06-14T23:50:00.000Z',
-    expiresAt: '2026-06-14T23:59:00.000Z',
-  });
-  await store.consumeS2SRateLimit({
-    environment: 'production',
-    scope: 'client',
-    subject: 'xdmaker',
-    bucketStart: '2026-06-14T23:50:00.000Z',
-    expiresAt: '2026-06-15T00:00:00.000Z',
-    limit: 300,
-  });
-  store.listDueDeploymentResourceCleanupTasks = async () => {
-    throw new Error('cleanup unavailable');
-  };
-  await worker.scheduled(
-    { scheduledTime: Date.parse('2026-06-15T00:00:00.000Z'), cron: '*/15 * * * *' },
-    {
-      PAGES_ENV: 'production',
-      PAGES_STORE: store,
-      now: () => '2026-06-15T00:00:00.000Z',
-    }
-  );
-  assert.equal(store.s2sNonces.size, 0);
-  assert.equal(store.s2sRateLimits.size, 0);
 });
 
 test('scheduled handler retries failed WFP cleanup tasks', async () => {
@@ -391,58 +357,6 @@ test('public CLI API authenticates requests outside the configured IP allowlist'
   assert.deepEqual(await response.json(), { sites: [] });
 });
 
-test('public S2S endpoint reaches the existing handler outside the configured IP allowlist', async () => {
-  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
-  const env = {
-    PAGES_ENV: 'production',
-    PAGES_STORE: store,
-    IP_ALLOWLIST: '10.0.0.0/8',
-    S2S_CLIENT_KEYS: 'xdmaker:key_1:S2S_SECRET_XDMAKER',
-    S2S_SECRET_XDMAKER: 'secret',
-    ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_s2s',
-    ACCESS_KEY_PEPPERS: 'pepper_s2s:S2S_ACCESS_KEY_PEPPER',
-    S2S_ACCESS_KEY_PEPPER: 'secret-pepper',
-    now: () => '2026-06-15T00:00:00.000Z',
-    nextId: (prefix) => `${prefix}_route_test`,
-  };
-
-  const issueRequest = await signedS2SRequest({ now: 1_781_481_600, nonce: 'nonce_public01' });
-  const issueResponse = await worker.fetch(issueRequest, env);
-  assert.equal(issueResponse.status, 201, await issueResponse.clone().text());
-  assert.equal((await issueResponse.json()).source, 'xdmaker_s2s');
-
-  const revokeRequest = await signedS2SRequest({
-    now: 1_781_481_600,
-    nonce: 'nonce_public02',
-    pathname: '/.xd-pages/api/s2s/tokens/revoke',
-    body: { email: 'route@example.com' },
-  });
-  const revokeResponse = await worker.fetch(revokeRequest, env);
-  assert.equal(revokeResponse.status, 200, await revokeResponse.clone().text());
-  assert.deepEqual(await revokeResponse.json(), { revoked_count: 1, key_ids: ['ak_route_test'] });
-  assert.equal(store.s2sNonces.size, 2);
-});
-
-test('S2S endpoint does not depend on source IP and does not require bearer auth', async () => {
-  const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
-  const request = await signedS2SRequest({ now: 1_781_481_600, nonce: 'nonce_allowed1', ip: '10.1.2.3' });
-  const response = await worker.fetch(request, {
-    PAGES_ENV: 'production',
-    PAGES_STORE: store,
-    IP_ALLOWLIST: '10.0.0.0/8',
-    S2S_CLIENT_KEYS: 'xdmaker:key_1:S2S_SECRET_XDMAKER',
-    S2S_SECRET_XDMAKER: 'secret',
-    ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_s2s',
-    ACCESS_KEY_PEPPERS: 'pepper_s2s:S2S_ACCESS_KEY_PEPPER',
-    S2S_ACCESS_KEY_PEPPER: 'secret-pepper',
-    now: () => '2026-06-15T00:00:00.000Z',
-    nextId: (prefix) => `${prefix}_route_test`,
-  });
-  assert.equal(response.status, 201, await response.clone().text());
-  assert.equal((await response.json()).source, 'xdmaker_s2s');
-  assert.equal(store.s2sNonces.size, 1);
-});
-
 test('every OpenAPI management operation reaches API authentication outside the configured IP allowlist', async (t) => {
   const store = createTestPagesStore({ now: () => '2026-06-15T00:00:00.000Z' });
   const openApi = buildOpenApi({
@@ -454,7 +368,6 @@ test('every OpenAPI management operation reaches API authentication outside the 
   const methods = ['get', 'post', 'put', 'patch', 'delete'];
 
   for (const [pathTemplate, pathItem] of Object.entries(openApi.paths)) {
-    if (pathTemplate.startsWith('/.xd-pages/api/s2s/')) continue;
     const pathname = pathTemplate.replace('{id}', 'resource_1').replace('{site}', 'guide');
     for (const method of methods) {
       if (!pathItem[method]) continue;
@@ -499,8 +412,8 @@ test('public route matching rejects unsupported methods and lookalike paths afte
     ['GET', '/.xd-pages/api/versions/ver_1/rollback', 405, 'METHOD_NOT_ALLOWED'],
     ['GET', '/.xd-pages/api/sites-extra', 404, 'NOT_FOUND'],
     ['GET', '/.xd-pages/api/sites/site_1/extra', 404, 'NOT_FOUND'],
-    ['POST', '/.xd-pages/api/s2s/tokens-extra', 404, 'NOT_FOUND'],
-    ['POST', '/.xd-pages/api/s2s/tokens/revoke/extra', 404, 'NOT_FOUND'],
+    ['POST', '/.xd-pages/api/s2s/tokens', 404, 'NOT_FOUND'],
+    ['POST', '/.xd-pages/api/s2s/tokens/revoke', 404, 'NOT_FOUND'],
     ['GET', '/axd-pages/api/sites', 404, 'NOT_FOUND'],
   ];
   const env = {
@@ -867,39 +780,5 @@ function jsonRequest(url, body, headers = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
-  });
-}
-
-async function signedS2SRequest({
-  now,
-  nonce,
-  ip = '203.0.113.8',
-  pathname = '/.xd-pages/api/s2s/tokens',
-  body = { email: 'route@example.com', feishu_open_id: 'ou_route', display_name: 'Route User' },
-}) {
-  const rawBody = JSON.stringify(body);
-  const canonical = await buildS2SCanonicalInput({
-    environment: 'production',
-    clientId: 'xdmaker',
-    keyId: 'key_1',
-    method: 'POST',
-    pathname,
-    timestamp: String(now),
-    nonce,
-    rawBody,
-  });
-  const signature = await createS2SSignature('secret', canonical);
-  return new Request(`https://api.pages.xd.team${pathname}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'CF-Connecting-IP': ip,
-      'X-XD-Cell-S2S-Client': 'xdmaker',
-      'X-XD-Cell-S2S-Key-Id': 'key_1',
-      'X-XD-Cell-S2S-Timestamp': String(now),
-      'X-XD-Cell-S2S-Nonce': nonce,
-      'X-XD-Cell-S2S-Signature': signature,
-    },
-    body: rawBody,
   });
 }

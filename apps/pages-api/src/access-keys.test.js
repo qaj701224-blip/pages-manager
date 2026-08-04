@@ -12,26 +12,26 @@ const BEARER_USR_1 = createAccessKeyPlaintext({
   bytes: new Uint8Array(24).fill(13),
 });
 
-test('creates reusable access key material with deterministic id and S2S metadata', async () => {
+test('creates reusable access key material with deterministic id and issued-source metadata', async () => {
   assert.equal(typeof accessKeys.createAccessKeyMaterial, 'function');
 
   const { plaintext, record } = await accessKeys.createAccessKeyMaterial(testEnv(null), { environment: 'production' }, {
-    id: 'ak_xdmaker',
+    id: 'ak_material',
     ownerType: 'user',
     ownerId: 'usr_1',
     ownerUserId: 'usr_1',
     createdByUserId: 'usr_1',
-    name: 'XDMaker key',
+    name: 'Material key',
     scopes: ['deploy:site'],
     siteId: 'site_1',
     expiresAt: '2026-07-15T00:00:00.000Z',
-    issuedSource: 'xdmaker_s2s',
+    issuedSource: 'cli',
     issuedSessionVersion: 3,
   });
 
-  assert.match(plaintext, /^xdp_prod_ak_xdmaker_[a-f0-9]{48}$/);
+  assert.match(plaintext, /^xdp_prod_ak_material_[a-f0-9]{48}$/);
   assert.deepEqual(record, {
-    id: 'ak_xdmaker',
+    id: 'ak_material',
     environment: 'production',
     ownerType: 'user',
     ownerId: 'usr_1',
@@ -39,11 +39,11 @@ test('creates reusable access key material with deterministic id and S2S metadat
     createdByUserId: 'usr_1',
     keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
     pepperId: 'pepper_1',
-    name: 'XDMaker key',
+    name: 'Material key',
     scopes: ['deploy:site'],
     siteId: 'site_1',
     expiresAt: '2026-07-15T00:00:00.000Z',
-    issuedSource: 'xdmaker_s2s',
+    issuedSource: 'cli',
     issuedSessionVersion: 3,
   });
 });

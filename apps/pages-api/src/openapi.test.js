@@ -31,15 +31,10 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.equal(body.paths['/.xd-pages/api/sites/{site}/vars'].get, undefined);
   assert.ok(body.paths['/.xd-pages/api/access-keys']);
   assert.ok(body.paths['/.xd-pages/api/auth/whoami']);
-  assert.ok(body.paths['/.xd-pages/api/s2s/tokens'].post);
-  assert.ok(body.paths['/.xd-pages/api/s2s/tokens/revoke'].post);
-  assert.equal(body.paths['/.xd-pages/api/s2s/tokens'].post.security[0].s2sHmac.length, 0);
-  for (const path of ['/.xd-pages/api/s2s/tokens', '/.xd-pages/api/s2s/tokens/revoke']) {
-    assert.match(body.paths[path].post.description, /public-network reachable/);
-    assert.doesNotMatch(body.paths[path].post.description, /internal integration|IP allowlist/i);
-  }
-  assert.equal(body.components.schemas.S2STokenIssueResponse.properties.token.writeOnly, true);
-  assert.match(body.paths['/.xd-pages/api/s2s/tokens'].post['x-error-codes'].join(','), /S2S_REPLAY_DETECTED/);
+  assert.equal(body.paths['/.xd-pages/api/s2s/tokens'], undefined);
+  assert.equal(body.paths['/.xd-pages/api/s2s/tokens/revoke'], undefined);
+  assert.doesNotMatch(JSON.stringify(body), /s2sHmac|S2SToken|X-XD-Cell-S2S/);
+  assert.match(body.components.securitySchemes.bearerAuth.description, /connection assertion/);
   assert.doesNotMatch(JSON.stringify(body), /user@example|ou_|xdp_/i);
   assert.equal(
     body.paths['/.xd-pages/api/auth/whoami'].get.responses[200].content['application/json'].schema.$ref,

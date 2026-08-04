@@ -103,7 +103,7 @@ absolute TTL: 30 天
 - 修改 owner、collaborators 或 ACL。
 - 将站点可见性改为 `internal` 或未来公网 exposure。
 
-XDMaker S2S 换证是受控的服务端集成面：只有持有注册 HMAC 凭证的 `xdt-api` 能为已完成飞书 SSO 的用户换取 24 小时个人 access key。S2S lane 可从公网访问，但继续执行 HMAC、timestamp、nonce 和现有限频；XDMaker 客户端本身仍只把 key 注入捆绑的 CLI 子进程，不直接调用管理 API；Console 创建/查看 key 的 recent-login 语义不因此改变。
+Cindy(原 XDMaker)插件 `xd-sites` 的请求不走换证：Cindy Desktop 宿主为每个 `/.xd-pages/api/*` 请求携带短时效 connection 断言(RS256 JWT,`typ=connection`,TTL 30 分钟),`pages-api` 逐请求经 Cindy JWKS 验签并按 `sub`(membershipId)映射/落库用户。断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope,不能创建或查看 access key;Console 创建/查看 key 的 recent-login 语义不因此改变。详见 `docs/api-boundary.md` 的「Cindy Connections 断言鉴权」。
 
 ### site_session
 
@@ -244,10 +244,10 @@ Team Access Token（TAT）；`site-scoped` 只是 Token 的作用范围，不是
 access key 开放。access key 的权限、作用范围、owner 归属、过期时间和 environment 仍以 `pages-api`
 权威记录为准。
 
-XDMaker S2S key 只是上述个人 owner-scoped key 的受控来源，不是新的 Token 类型：`issuedSource` 为
-`xdmaker_s2s`，scope 固定为 `deploy:site`、`read:site`、`rollback:site`，`site_id` 为空，TTL 为 24 小时。
-发放时保存 `issuedSessionVersion`；用户明确安全失效导致 `sessionVersion` 提升后，认证立即拒绝旧 S2S key。
-Console 列表显示 `XDMaker` 来源并复用现有撤销动作；xdt-api 的 source-scoped revoke 可按 key 或规范化邮箱幂等吊销。
+Cindy connection 断言不产生任何持久化 key:它按请求验签,权限形态等同一把 scope 为 `deploy:site`、
+`read:site`、`rollback:site`、`site_id` 为空的个人 owner-scoped key,但没有可撤销实体——止损手段是
+Cindy 侧停发新断言(30 分钟内自然失效)或平台侧将用户 `employee_status` 置为非 active(下一个请求即 403)。
+带 `issuedSessionVersion` 的 access key 在用户 `sessionVersion` 提升后仍会立即失效,该 freshness 机制保留。
 对所有 access key，`deploy:site` 同时允许读取其可管理站点的基础信息和 ACL；ACL 读取仍按当前 owner/team 管理权限校验，只有 `read:site` 的只读 key 不获得 ACL 内容读取权限。
 
 #### Global config
@@ -466,7 +466,7 @@ access key 要求：
 - 明文只显示一次，存储时使用 hash/HMAC + server-side pepper。
 - 校验时使用常量时间比较，并记录 `last_used_at`、来源 env、site/scope 决策。
 - key 格式应带非敏感前缀和环境提示，例如 `xdp_prod_...`、`xdp_stg_...`，但不能仅靠前缀判权。
-- XDMaker S2S key 的明文只在受控换证响应中返回一次；客户端只通过安全存储和 CLI 子进程使用，不写入渲染层或普通会话环境。
+- Cindy connection 断言由 Cindy Desktop 宿主按需签发并内存缓存,插件代码接触不到断言原文;`pages-api` 不落盘断言,只在审计事件里记录 `jti` / membershipId。
 
 ### AI Skill
 

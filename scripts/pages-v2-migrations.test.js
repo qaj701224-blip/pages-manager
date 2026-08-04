@@ -47,6 +47,14 @@ const runtimeConfigLockLeaseMigration = readFileSync(
   join(repoRoot, 'apps/pages-api/migrations/0015_runtime_config_lock_lease.sql'),
   'utf8'
 );
+const cindyConnectionUsersMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0016_cindy_connection_users.sql'),
+  'utf8'
+);
+const dropS2sGuardsMigration = readFileSync(
+  join(repoRoot, 'apps/pages-api/migrations/0017_drop_s2s_guards.sql'),
+  'utf8'
+);
 
 test('pages v2 D1 migration covers authority schema tables and indexes', () => {
   const schema = createSchemaSql().join('\n');
@@ -199,6 +207,23 @@ test('XDMaker S2S migration keeps email uniqueness aligned with application norm
     xdmakerS2SMigration,
     /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized\s+ON users\(lower\(trim\(email\)\)\)/
   );
+});
+
+test('Cindy connection migrations add the membership identity and drop the S2S guard tables', () => {
+  const schema = createSchemaSql().join('\n');
+
+  assert.match(cindyConnectionUsersMigration, /ALTER TABLE users ADD COLUMN cindy_membership_id TEXT;/);
+  const membershipIndex = new RegExp(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_cindy_membership_id\\s+' +
+      'ON users\\(cindy_membership_id\\)\\s+WHERE cindy_membership_id IS NOT NULL'
+  );
+  assert.match(cindyConnectionUsersMigration, membershipIndex);
+  assert.match(schema, /cindy_membership_id TEXT/);
+
+  assert.match(dropS2sGuardsMigration, /DROP TABLE IF EXISTS s2s_nonces;/);
+  assert.match(dropS2sGuardsMigration, /DROP TABLE IF EXISTS s2s_rate_limits;/);
+  assert.match(dropS2sGuardsMigration, /DROP INDEX IF EXISTS idx_access_keys_s2s_owner_created;/);
+  assert.doesNotMatch(schema, /s2s_nonces|s2s_rate_limits/);
 });
 
 function tableDefinition(sql, tableName) {

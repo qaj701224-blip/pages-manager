@@ -263,15 +263,15 @@ for (const issuedSource of ['legacy', 'cli', 'console']) {
   });
 }
 
-test('rejects S2S access keys after the user session version changes', async () => {
+test('rejects session-bound access keys after the user session version changes', async () => {
   const plaintext = createAccessKeyPlaintext({
     environment: 'production',
-    keyId: 'ak_s2s',
+    keyId: 'ak_session',
     bytes: new Uint8Array(24).fill(7),
   });
   const store = await createSeededStore();
   await store.createAccessKey({
-    id: 'ak_s2s',
+    id: 'ak_session',
     environment: 'production',
     ownerType: 'user',
     ownerId: 'usr_1',
@@ -279,15 +279,14 @@ test('rejects S2S access keys after the user session version changes', async () 
     createdByUserId: 'usr_1',
     keyHash: await hashAccessKey(plaintext, 'pepper-secret'),
     pepperId: 'pepper_1',
-    name: 'XDMaker key',
+    name: 'Session-bound key',
     scopes: ['deploy:site'],
     siteId: 'site_1',
     expiresAt: '2026-07-15T00:00:00.000Z',
-    issuedSource: 'xdmaker_s2s',
+    issuedSource: 'cli',
     issuedSessionVersion: 1,
   });
-  const stored = await store.getAccessKeyById('ak_s2s');
-  assert.equal(stored.issuedSource, 'xdmaker_s2s');
+  const stored = await store.getAccessKeyById('ak_session');
   assert.equal(stored.issuedSessionVersion, 1);
   await bumpUserSessionVersion(store);
 
@@ -305,10 +304,10 @@ test('rejects S2S access keys after the user session version changes', async () 
       code: 'ACCESS_KEY_SESSION_STALE',
       message: 'Access key session is stale.',
       status: 401,
-      action: 'Ask XDMaker to exchange a new access key.',
+      action: 'Create a new access key.',
     },
   });
-  assert.equal((await store.getAccessKeyById('ak_s2s')).lastUsedAt, null);
+  assert.equal((await store.getAccessKeyById('ak_session')).lastUsedAt, null);
 });
 
 async function bumpUserSessionVersion(store) {
