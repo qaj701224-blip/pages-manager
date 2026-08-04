@@ -277,6 +277,14 @@ test('rejects assertions whose total lifetime exceeds the fail-closed cap', asyn
   assert.equal(inverted.ok, false);
   assert.equal(inverted.reason, 'lifetime_invalid');
 
+  const justOverCap = await verifyConnectionAssertion(
+    await signAssertion(privateKey, buildPayload({ iat: NOW_SECONDS - 60, exp: NOW_SECONDS - 60 + 1861 })),
+    CONFIG,
+    verifyOptions(fetchStub)
+  );
+  assert.equal(justOverCap.ok, false);
+  assert.equal(justOverCap.reason, 'lifetime_invalid');
+
   const contractTtl = await verifyConnectionAssertion(
     await signAssertion(privateKey, buildPayload({ iat: NOW_SECONDS - 60, exp: NOW_SECONDS + 1740 })),
     CONFIG,
@@ -354,7 +362,7 @@ test('refetches after the positive-cache max age and rejects kids removed from t
   assert.equal(fetchStub.calls.length, 3);
 });
 
-test('serves the stale cache within the 24h grace when a refresh fails, then fails closed', async () => {
+test('serves the stale cache within the 60-minute grace when a refresh fails, then fails closed', async () => {
   const { privateKey, jwk } = await createSigningKey('kid_1');
   let broken = false;
   const calls = [];
@@ -400,11 +408,11 @@ test('serves the stale cache within the 24h grace when a refresh fails, then fai
   assert.equal(calls.length, 2);
 
   // Beyond the grace window a still-failing refresh fails closed as an outage.
-  const dayLater = NOW_SECONDS + 25 * 60 * 60;
+  const beyondGrace = NOW_SECONDS + 70 * 60;
   const graceExpired = await verifyConnectionAssertion(
-    await signAssertion(privateKey, buildPayload({ iat: dayLater - 60, exp: dayLater + 1740 })),
+    await signAssertion(privateKey, buildPayload({ iat: beyondGrace - 60, exp: beyondGrace + 1740 })),
     CONFIG,
-    { nowSeconds: dayLater, fetchFn, cache }
+    { nowSeconds: beyondGrace, fetchFn, cache }
   );
   assert.equal(graceExpired.ok, false);
   assert.equal(graceExpired.unavailable, true);

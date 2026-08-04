@@ -4,16 +4,20 @@ const decoder = new globalThis.TextDecoder();
 const MAX_ASSERTION_LENGTH = 8192;
 const MAX_JWKS_KEYS = 32;
 const CLOCK_SKEW_SECONDS = 60;
-// Contract TTL is 30 minutes; the cap is a fail-closed bound against issuer misconfiguration.
-const MAX_ASSERTION_LIFETIME_SECONDS = 60 * 60;
+// Contract TTL is 30 minutes; exp - iat is pure issuer arithmetic, so only a small
+// rounding buffer is allowed before failing closed against issuer misconfiguration.
+// A legitimate TTL change on the Cindy side is a coordinated contract change.
+const MAX_ASSERTION_LIFETIME_SECONDS = 30 * 60 + 60;
 const JWKS_REFETCH_COOLDOWN_MS = 30 * 1000;
 // Positive-cache freshness bounds emergency revocation propagation: a kid removed from
 // the JWKS stops being trusted at most one max-age later, without waiting for new-kid
 // traffic or an isolate recycle.
 const JWKS_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
-// When a stale-cache refresh fails, cached keys stay usable up to the retiring-key
-// retention window of the rotation contract, then verification fails closed.
-const JWKS_STALE_GRACE_MS = 24 * 60 * 60 * 1000;
+// When a stale-cache refresh fails, cached keys stay usable for at most one hour, then
+// verification fails closed. This only covers a JWKS-only partial outage: a full
+// auth-server outage stops assertion signing too, so traffic self-terminates within the
+// 30-minute assertion TTL regardless.
+const JWKS_STALE_GRACE_MS = 60 * 60 * 1000;
 const JWKS_UNAVAILABLE = Symbol('connection-jwks-unavailable');
 
 const defaultJwksCache = new Map();
