@@ -257,6 +257,60 @@ test('does not refetch the JWKS for an unknown kid within the 30-second cooldown
   assert.equal(fetchStub.calls.length, 1);
 });
 
+test('rejects assertions whose total lifetime exceeds the fail-closed cap', async () => {
+  const { privateKey, jwk } = await createSigningKey('kid_1');
+  const fetchStub = jwksFetchStub([jwk]);
+
+  const longLived = await verifyConnectionAssertion(
+    await signAssertion(privateKey, buildPayload({ iat: NOW_SECONDS - 60, exp: NOW_SECONDS + 7200 })),
+    CONFIG,
+    verifyOptions(fetchStub)
+  );
+  assert.equal(longLived.ok, false);
+  assert.equal(longLived.reason, 'lifetime_invalid');
+
+  const inverted = await verifyConnectionAssertion(
+    await signAssertion(privateKey, buildPayload({ iat: NOW_SECONDS - 60, exp: NOW_SECONDS - 60 })),
+    CONFIG,
+    verifyOptions(fetchStub)
+  );
+  assert.equal(inverted.ok, false);
+  assert.equal(inverted.reason, 'lifetime_invalid');
+
+  const contractTtl = await verifyConnectionAssertion(
+    await signAssertion(privateKey, buildPayload({ iat: NOW_SECONDS - 60, exp: NOW_SECONDS + 1740 })),
+    CONFIG,
+    verifyOptions(fetchStub)
+  );
+  assert.equal(contractTtl.ok, true);
+});
+
+test('keeps reporting a retryable outage within the cooldown after a failed JWKS fetch', async () => {
+  const { privateKey, jwk } = await createSigningKey('kid_1');
+  let broken = true;
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(url);
+    if (broken) throw new Error('network down');
+    return { ok: true, json: async () => ({ keys: [jwk] }) };
+  };
+  const cache = createConnectionJwksCache();
+  const token = await signAssertion(privateKey, buildPayload());
+
+  const first = await verifyConnectionAssertion(token, CONFIG, { nowSeconds: NOW_SECONDS, fetchFn, cache });
+  assert.equal(first.unavailable, true);
+
+  // Within the cooldown the outage must stay a 503-style outcome, not degrade to kid_unknown.
+  const second = await verifyConnectionAssertion(token, CONFIG, { nowSeconds: NOW_SECONDS + 10, fetchFn, cache });
+  assert.equal(second.unavailable, true);
+  assert.equal(calls.length, 1);
+
+  broken = false;
+  const recovered = await verifyConnectionAssertion(token, CONFIG, { nowSeconds: NOW_SECONDS + 40, fetchFn, cache });
+  assert.equal(recovered.ok, true);
+  assert.equal(calls.length, 2);
+});
+
 test('reports the JWKS as unavailable when the fetch fails', async () => {
   const { privateKey } = await createSigningKey('kid_1');
   const token = await signAssertion(privateKey, buildPayload());

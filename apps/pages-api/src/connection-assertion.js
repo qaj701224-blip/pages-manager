@@ -4,6 +4,8 @@ const decoder = new globalThis.TextDecoder();
 const MAX_ASSERTION_LENGTH = 8192;
 const MAX_JWKS_KEYS = 32;
 const CLOCK_SKEW_SECONDS = 60;
+// Contract TTL is 30 minutes; the cap is a fail-closed bound against issuer misconfiguration.
+const MAX_ASSERTION_LIFETIME_SECONDS = 60 * 60;
 const JWKS_REFETCH_COOLDOWN_MS = 30 * 1000;
 const JWKS_UNAVAILABLE = Symbol('connection-jwks-unavailable');
 
@@ -74,6 +76,9 @@ export async function verifyConnectionAssertion(token, config, options = {}) {
   if (payload.nbf !== undefined && (!Number.isSafeInteger(payload.nbf) || payload.nbf > nowSeconds + CLOCK_SKEW_SECONDS)) {
     return failure('nbf_invalid');
   }
+  if (payload.exp - payload.iat <= 0 || payload.exp - payload.iat > MAX_ASSERTION_LIFETIME_SECONDS) {
+    return failure('lifetime_invalid');
+  }
 
   const membershipId = normalizeIdentifierClaim(payload.sub);
   const jti = normalizeIdentifierClaim(payload.jti);
@@ -121,15 +126,20 @@ export async function verifyConnectionAssertion(token, config, options = {}) {
 async function resolveSigningKey({ issuer, kid, cache, fetchFn, nowMs }) {
   let bucket = cache.get(issuer);
   if (!bucket) {
-    bucket = { keys: new Map(), lastFetchAtMs: null };
+    bucket = { keys: new Map(), lastFetchAtMs: null, lastFetchFailed: false };
     cache.set(issuer, bucket);
   }
 
   const cached = bucket.keys.get(kid);
   if (cached) return cached;
 
-  if (bucket.lastFetchAtMs !== null && nowMs - bucket.lastFetchAtMs < JWKS_REFETCH_COOLDOWN_MS) return null;
+  if (bucket.lastFetchAtMs !== null && nowMs - bucket.lastFetchAtMs < JWKS_REFETCH_COOLDOWN_MS) {
+    // During the cooldown a prior fetch failure must keep surfacing as a retryable
+    // outage, not as an invalid assertion.
+    return bucket.lastFetchFailed ? JWKS_UNAVAILABLE : null;
+  }
   bucket.lastFetchAtMs = nowMs;
+  bucket.lastFetchFailed = true;
 
   let jwks;
   try {
@@ -162,6 +172,7 @@ async function resolveSigningKey({ issuer, kid, cache, fetchFn, nowMs }) {
   }
   // The fetched document is the whole truth: retired kids drop out here.
   bucket.keys = keys;
+  bucket.lastFetchFailed = false;
   return keys.get(kid) || null;
 }
 
