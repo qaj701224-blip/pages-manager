@@ -130,10 +130,18 @@ function setPagesApiStagingTemplateWfpDispatchNamespace(value) {
   writeFileSync(pagesApiStagingTemplatePath, content);
 }
 
-function setPagesApiStagingTemplateS2sClientKeys(value) {
+function setPagesApiStagingTemplateConnectionIssuers(value) {
   const content = readFileSync(pagesApiStagingTemplatePath, 'utf8').replace(
-    /^S2S_CLIENT_KEYS = "[^"]+"$/m,
-    `S2S_CLIENT_KEYS = "${value}"`
+    /^CINDY_CONNECTION_ISSUERS = "[^"]+"$/m,
+    `CINDY_CONNECTION_ISSUERS = "${value}"`
+  );
+  writeFileSync(pagesApiStagingTemplatePath, content);
+}
+
+function setPagesApiStagingTemplateConnectionAudience(value) {
+  const content = readFileSync(pagesApiStagingTemplatePath, 'utf8').replace(
+    /^CINDY_CONNECTION_AUDIENCE = "[^"]+"$/m,
+    `CINDY_CONNECTION_AUDIENCE = "${value}"`
   );
   writeFileSync(pagesApiStagingTemplatePath, content);
 }
@@ -185,8 +193,9 @@ test('production pages-api config renders explicit production template values on
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
   assert.match(config, /CLI_ACCESS_KEY_TTL_SECONDS = "31536000"/);
-  assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
-  assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
+  assert.match(config, /CINDY_CONNECTION_ISSUERS = "https:\/\/auth\.cindy\.com\.cn,https:\/\/auth\.cindy\.app"/);
+  assert.match(config, /CINDY_CONNECTION_AUDIENCE = "xd:xd-sites"/);
+  assert.doesNotMatch(config, /S2S_CLIENT_KEYS|auth-dev\.cindy/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata"/);
   assert.match(config, /database_id = "dummy-pages-d1"/);
@@ -218,8 +227,12 @@ test('staging pages-api config renders explicit staging template values', () => 
   assert.match(config, /ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"/);
   assert.match(config, /ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"/);
   assert.match(config, /CLI_ACCESS_KEY_TTL_SECONDS = "31536000"/);
-  assert.match(config, /S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"/);
-  assert.doesNotMatch(config, /fixture-s2s-shared-secret/);
+  assert.match(
+    config,
+    /CINDY_CONNECTION_ISSUERS = "https:\/\/auth-dev\.cindy\.com\.cn,https:\/\/auth\.cindy\.com\.cn,https:\/\/auth\.cindy\.app"/
+  );
+  assert.match(config, /CINDY_CONNECTION_AUDIENCE = "xd:xd-sites"/);
+  assert.doesNotMatch(config, /S2S_CLIENT_KEYS/);
   assert.match(config, /IP_ALLOWLIST = "10\.0\.0\.0\/8,192\.168\.0\.0\/16"/);
   assert.match(config, /database_name = "pages-v2-metadata-staging"/);
   assert.doesNotMatch(config, /service = "pages-auth-staging"/);
@@ -234,42 +247,39 @@ test('staging pages-api config rejects production WFP namespace', () => {
   assert.match(`${result.stderr}${result.stdout}`, /cross-environment value/);
 });
 
-test('pages-api renderer rejects invalid S2S client key registries', () => {
-  const cases = [
-    ['missing field', 'xdmaker:key_202607'],
-    ['unsafe client id', 'xd maker:key_202607:S2S_SECRET_XDMAKER_202607'],
-    ['unsafe key id', 'xdmaker:key!:S2S_SECRET_XDMAKER_202607'],
-    ['unsafe secret env name', 'xdmaker:key_202607:NOT_A_SECRET'],
-    [
-      'duplicate client and key',
-      'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607,xdmaker:key_202607:S2S_SECRET_XDMAKER_202607',
-    ],
-    [
-      'more than two keys for one client',
-      [
-        'xdmaker:key_202607:S2S_SECRET_XDMAKER_202607',
-        'xdmaker:key_202608:S2S_SECRET_XDMAKER_202608',
-        'xdmaker:key_202609:S2S_SECRET_XDMAKER_202609',
-      ].join(','),
-    ],
+test('pages-api renderer rejects invalid Cindy connection configuration', () => {
+  const issuerCases = [
+    ['http issuer', 'http://auth-dev.cindy.com.cn'],
+    ['issuer with path', 'https://auth-dev.cindy.com.cn/path'],
+    ['empty issuer list', ' , '],
   ];
-
-  for (const [label, registry] of cases) {
-    setPagesApiStagingTemplateS2sClientKeys(registry);
+  for (const [label, issuers] of issuerCases) {
+    setPagesApiStagingTemplateConnectionIssuers(issuers);
     const result = runRenderer(['apps/pages-api', 'staging']);
     assert.notEqual(result.status, 0, label);
-    assert.match(`${result.stderr}${result.stdout}`, /S2S_CLIENT_KEYS/, label);
-    setPagesApiStagingTemplateS2sClientKeys('xdmaker:key_202607:S2S_SECRET_XDMAKER_202607');
+    assert.match(`${result.stderr}${result.stdout}`, /CINDY_CONNECTION_ISSUERS/, label);
+    setPagesApiStagingTemplateConnectionIssuers(
+      'https://auth-dev.cindy.com.cn,https://auth.cindy.com.cn,https://auth.cindy.app'
+    );
   }
+
+  setPagesApiStagingTemplateConnectionAudience('xd-sites');
+  const audienceResult = runRenderer(['apps/pages-api', 'staging']);
+  assert.notEqual(audienceResult.status, 0);
+  assert.match(`${audienceResult.stderr}${audienceResult.stdout}`, /CINDY_CONNECTION_AUDIENCE/);
+  setPagesApiStagingTemplateConnectionAudience('xd:xd-sites');
 });
 
-test('pages-api renderer accepts two runtime-safe S2S keys for one client', () => {
-  setPagesApiStagingTemplateS2sClientKeys(
-    'xd.maker:key.202607:S2S_SECRET_XDMAKER_202607,xd.maker:key.202608:S2S_SECRET_XDMAKER_202608'
+test('production pages-api renderer refuses to trust the Cindy dev issuer', () => {
+  const content = readFileSync(pagesApiProductionTemplatePath, 'utf8').replace(
+    /^CINDY_CONNECTION_ISSUERS = "[^"]+"$/m,
+    'CINDY_CONNECTION_ISSUERS = "https://auth-dev.cindy.com.cn,https://auth.cindy.com.cn"'
   );
+  writeFileSync(pagesApiProductionTemplatePath, content);
 
-  const config = renderPagesApi('staging');
-  assert.match(config, /S2S_CLIENT_KEYS = "xd\.maker:key\.202607:[^"]+,xd\.maker:key\.202608:[^"]+"/);
+  const result = runRenderer(['apps/pages-api', 'production']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /must not trust a dev issuer/);
 });
 
 test('pages-api config keeps committed WFP compatibility date', () => {

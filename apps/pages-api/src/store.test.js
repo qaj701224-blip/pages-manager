@@ -48,152 +48,6 @@ test('test store enforces unique site slug per environment', async () => {
   assert.equal(stagingSite.id, 'site_3');
 });
 
-test('S2S guard methods reserve nonces, atomically count rates, and clean expired rows in test store', async () => {
-  const store = createTestPagesStore();
-  const nonceInput = {
-    environment: 'production',
-    clientId: 'client_demo',
-    nonce: 'nonce_ABC12345',
-    endpoint: '/publish',
-    receivedAt: '2026-07-14T00:00:00.000Z',
-    expiresAt: '2026-07-14T00:10:00.000Z',
-  };
-  assert.equal(await store.reserveS2SNonce(nonceInput), true);
-  assert.equal(await store.reserveS2SNonce(nonceInput), false);
-
-  const rateInput = {
-    environment: 'production',
-    scope: 'client',
-    subject: 'client_demo',
-    bucketStart: '2026-07-14T00:00:00.000Z',
-    expiresAt: '2026-07-14T00:10:00.000Z',
-    limit: 2,
-  };
-  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: true, count: 1 });
-  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: true, count: 2 });
-  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: false, count: 2 });
-
-  await store.cleanupExpiredS2SGuards('2026-07-14T00:10:00.000Z');
-  assert.equal(await store.reserveS2SNonce(nonceInput), true);
-  assert.deepEqual(await store.consumeS2SRateLimit(rateInput), { allowed: true, count: 1 });
-});
-
-test('D1 S2S guard methods use unique nonce insertion, atomic RETURNING rate update, and expiry cleanup', async () => {
-  const calls = [];
-  const db = {
-    prepare(sql) {
-      const call = { sql, args: [] };
-      calls.push(call);
-      return {
-        bind(...args) {
-          call.args = args;
-          return {
-            run: async () => ({ meta: { changes: 1 } }),
-            first: async () => (sql.includes('RETURNING request_count') ? { request_count: 1 } : null),
-          };
-        },
-      };
-    },
-    async batch(statements) {
-      for (const statement of statements) await statement;
-    },
-  };
-  const store = new D1PagesStore(db, { now: () => '2026-07-14T00:00:00.000Z' });
-
-  assert.equal(
-    await store.reserveS2SNonce({
-      environment: 'production',
-      clientId: 'client_demo',
-      nonce: 'nonce_ABC12345',
-      endpoint: '/publish',
-      receivedAt: '2026-07-14T00:00:00.000Z',
-      expiresAt: '2026-07-14T00:10:00.000Z',
-    }),
-    true,
-  );
-  assert.deepEqual(
-    await store.consumeS2SRateLimit({
-      environment: 'production',
-      scope: 'client',
-      subject: 'client_demo',
-      bucketStart: '2026-07-14T00:00:00.000Z',
-      expiresAt: '2026-07-14T00:10:00.000Z',
-      limit: 300,
-    }),
-    { allowed: true, count: 1 },
-  );
-  await store.cleanupExpiredS2SGuards('2026-07-14T00:10:00.000Z');
-
-  assert.match(calls[0].sql, /INSERT INTO s2s_nonces/);
-  assert.match(calls[1].sql, /ON CONFLICT\(environment, scope, subject, bucket_start\)/);
-  assert.match(calls[1].sql, /request_count = request_count \+ 1/);
-  assert.match(calls[1].sql, /WHERE request_count < \?/);
-  assert.match(calls[1].sql, /RETURNING request_count/);
-  assert.match(calls[2].sql, /DELETE FROM s2s_nonces WHERE expires_at <= \?/);
-  assert.match(calls[3].sql, /DELETE FROM s2s_rate_limits WHERE expires_at <= \?/);
-});
-
-test('D1 reserveS2SNonce propagates non-unique database failures', async () => {
-  const db = {
-    prepare() {
-      return {
-        bind() {
-          return {
-            run: async () => {
-              throw new Error('NOT NULL constraint failed: s2s_nonces.endpoint');
-            },
-          };
-        },
-      };
-    },
-  };
-  const store = new D1PagesStore(db);
-
-  await assert.rejects(
-    () =>
-      store.reserveS2SNonce({
-        environment: 'production',
-        clientId: 'client_demo',
-        nonce: 'nonce_ABC12345',
-        endpoint: null,
-        receivedAt: '2026-07-14T00:00:00.000Z',
-        expiresAt: '2026-07-14T00:10:00.000Z',
-      }),
-    /NOT NULL constraint failed/,
-  );
-});
-
-test('D1 reserveS2SNonce returns false only for the nonce primary-key conflict', async () => {
-  const db = {
-    prepare() {
-      return {
-        bind() {
-          return {
-            run: async () => {
-              throw new Error(
-                'D1_ERROR: UNIQUE constraint failed: s2s_nonces.environment, s2s_nonces.client_id, s2s_nonces.nonce',
-              );
-            },
-          };
-        },
-      };
-    },
-  };
-  const store = new D1PagesStore(db);
-
-  assert.equal(
-    await store.reserveS2SNonce({
-      environment: 'production',
-      clientId: 'client_demo',
-      nonce: 'nonce_ABC12345',
-      endpoint: '/publish',
-      receivedAt: '2026-07-14T00:00:00.000Z',
-      expiresAt: '2026-07-14T00:10:10.000Z',
-    }),
-    false,
-  );
-});
-
 test('createSite creates owner membership and inactive route authority record', async () => {
   const store = createSeededStore();
 
@@ -5345,6 +5199,10 @@ function fakeUserDb() {
                 assert.ok(args[0], 'empty Feishu open id should not query D1');
                 return [...users.values()].find((user) => user.feishu_open_id === args[0]) || null;
               }
+              if (/SELECT \* FROM users WHERE cindy_membership_id = \?/.test(sql)) {
+                assert.ok(args[0], 'empty Cindy membership id should not query D1');
+                return [...users.values()].find((user) => user.cindy_membership_id === args[0]) || null;
+              }
               assert.fail(`Unexpected user query: ${sql}`);
             },
             async run() {
@@ -5365,6 +5223,23 @@ function fakeUserDb() {
                 user.updated_at = updatedAt;
                 return { meta: { changes: 1 } };
               }
+              if (/UPDATE users\s+SET cindy_membership_id = \?/.test(sql)) {
+                const [membershipId, updatedAt, id, expectedMembershipId] = args;
+                assert.ok(membershipId, 'empty Cindy membership id should not update D1');
+                const user = users.get(id) || null;
+                if (!user || (user.cindy_membership_id !== null && user.cindy_membership_id !== expectedMembershipId)) {
+                  return { meta: { changes: 0 } };
+                }
+                const membershipConflict = [...users.values()].some(
+                  (candidate) => candidate.user_id !== id && candidate.cindy_membership_id === membershipId
+                );
+                if (membershipConflict) {
+                  return { meta: { changes: 0 } };
+                }
+                user.cindy_membership_id = membershipId;
+                user.updated_at = updatedAt;
+                return { meta: { changes: 1 } };
+              }
 
               assert.match(sql, /INSERT INTO users/);
               const [
@@ -5376,6 +5251,7 @@ function fakeUserDb() {
                 employeenum,
                 employeeStatus,
                 feishuOpenId,
+                cindyMembershipId,
                 createdSource,
                 departmentPath,
                 departmentCheckedAt,
@@ -5396,6 +5272,12 @@ function fakeUserDb() {
                 ) {
                   throw new Error('UNIQUE constraint failed: users.feishu_open_id');
                 }
+                if (
+                  cindyMembershipId !== null &&
+                  [...users.values()].some((user) => user.cindy_membership_id === cindyMembershipId)
+                ) {
+                  throw new Error('UNIQUE constraint failed: users.cindy_membership_id');
+                }
                 users.set(
                   id,
                   userRow({
@@ -5407,6 +5289,7 @@ function fakeUserDb() {
                     employeenum,
                     employeeStatus,
                     feishuOpenId,
+                    cindyMembershipId,
                     createdSource,
                     departmentPath,
                     departmentCheckedAt,
@@ -5433,6 +5316,7 @@ function fakeUserDb() {
                     employeenum,
                     employeeStatus,
                     feishuOpenId,
+                    cindyMembershipId,
                     createdSource,
                     departmentPath,
                     departmentCheckedAt,
@@ -5457,6 +5341,7 @@ function fakeUserDb() {
                   employeenum: staleActiveOrUnknown ? existing.employeenum : employeenum || existing.employeenum,
                   employeeStatus: effectiveStatus,
                   feishuOpenId: existing.feishu_open_id,
+                  cindyMembershipId: existing.cindy_membership_id,
                   createdSource: existing.created_source,
                   departmentPath: staleActiveOrUnknown
                     ? existing.department_path
@@ -5959,6 +5844,7 @@ function userRow({
   employeenum,
   employeeStatus,
   feishuOpenId = null,
+  cindyMembershipId = null,
   createdSource = 'xd_sso',
   departmentPath = null,
   departmentCheckedAt = null,
@@ -5976,6 +5862,7 @@ function userRow({
     employeenum,
     employee_status: employeeStatus,
     feishu_open_id: feishuOpenId,
+    cindy_membership_id: cindyMembershipId,
     created_source: createdSource,
     department_path: departmentPath,
     department_checked_at: departmentCheckedAt,

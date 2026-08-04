@@ -503,7 +503,8 @@ WFP_COMPATIBILITY_DATE
 PAGES_USER_WORKER_VPC_TUNNEL_ID
 ACCESS_KEY_ACTIVE_PEPPER_ID
 ACCESS_KEY_PEPPERS
-S2S_CLIENT_KEYS
+CINDY_CONNECTION_ISSUERS
+CINDY_CONNECTION_AUDIENCE
 PAGES_SESSION_JWT_ISSUER
 PAGES_SESSION_JWT_ACTIVE_KID
 PAGES_SESSION_JWT_KEYS
@@ -544,10 +545,9 @@ SSO_CLIENT_SECRET
 PAGES_SESSION_JWT_SECRET_*
 PAGES_CAP_JWT_SECRET_*
 ACCESS_KEY_PEPPER_*
-S2S_SECRET_*
 ```
 
-Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars` 读取；它们仍然不应写进 public repo。`PAGES_EXECUTION_MODE`、`WFP_DISPATCH_NAMESPACE` 和 `S2S_CLIENT_KEYS` 名称本身不是凭证，但它们是强架构/环境边界，必须按 environment 固定在 template / workflow 并通过 PR 评审；`S2S_CLIENT_KEYS` 只保存 `client_id:key_id:secret_env_name` 映射，不保存 secret value。
+Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars` 读取；它们仍然不应写进 public repo。`PAGES_EXECUTION_MODE`、`WFP_DISPATCH_NAMESPACE`、`CINDY_CONNECTION_ISSUERS` 和 `CINDY_CONNECTION_AUDIENCE` 名称与取值本身不是凭证，但它们是强架构/环境边界，必须按 environment 固定在 template 并通过 PR 评审；issuer 白名单只保存受信 https origin,不保存任何密钥(验签用的是 Cindy 公开 JWKS)。
 
 当前 `deploy-pages-v2.yml` / `deploy-pages-v2-staging.yml` 的 GitHub Environment 配置应按 workflow 实际名称填写：
 
@@ -567,13 +567,12 @@ Cloudflare account id、D1/KV namespace id 不是凭证，v2 workflow 按 `vars`
 | `XDS_OPENAI_TOKEN`                    | secret  | `pages-api` / `pages-auth` runtime | XDS / OA `list-by-email` 签名 token，只注入需要部门 hydration 的系统 Worker；请求必须通过 `XD_OFFICE_NET` VPC Network binding |
 | `SSO_CLIENT_SECRET`                   | secret  | `pages-auth` runtime           | OAuth token exchange secret，只注入 auth Worker |
 | `ACCESS_KEY_PEPPER_*`                 | secret  | `pages-api` runtime            | 必须覆盖 `ACCESS_KEY_PEPPERS` registry 中每个 `secretEnvName` |
-| `S2S_SECRET_*`                        | secret  | `pages-api` runtime            | 必须覆盖 `S2S_CLIENT_KEYS` registry 中每个 `secretEnvName`；staging / production 分开管理 |
 | `PAGES_SESSION_JWT_SECRET_*`          | secret  | `pages-auth` / `pages-router` runtime | 必须覆盖 `PAGES_SESSION_JWT_KEYS` registry 中每个 `secretEnvName` |
 | `PAGES_CAP_JWT_SECRET_*`              | secret  | `pages-router` / `pages-kv-gateway` runtime | 必须覆盖 `PAGES_CAP_JWT_KEYS` registry 中每个 `secretEnvName` |
 
 v2 平台部署使用独立 workflow：`deploy-pages-v2.yml` 在 GitHub Actions 中显示为 `Deploy XD Cell Production`，只允许 `workflow_dispatch` 手动部署 production；`deploy-pages-v2-staging.yml` 显示为 `Deploy XD Cell Staging`，支持手动部署，也可以在 `staging` 分支的 v2 app / package / render script 相关文件变更时自动部署。它们只处理 v2 系统 Worker：`pages-api`、`pages-auth`、`pages-router`、`pages-kv-gateway`、`pages-console`，不部署 v1 `apps/server`、ACK、用户站点或发布执行器。首次 `component=all` 部署的依赖顺序必须是：先执行 D1 migrations，再部署 `pages-auth`，再部署带 `PAGES_AUTH` service binding 的 `pages-api`，随后部署 `pages-kv-gateway`，最后 provision slot 并部署 `pages-router`，并在系统 Worker 可用后构建部署 `pages-console`。
 
-v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL`、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、`XDS_OPENAI_TOKEN`、`ACCESS_KEY_PEPPER_*` 和 `S2S_SECRET_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET`、`XDS_OPENAI_TOKEN` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`；`pages-console` 注入 `PAGES_SESSION_JWT_SECRET_*`。
+v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会在部署前用 `DRY_RUN=1` 校验 registry 和必需 secret 是否齐全，部署后再写入 Worker secret。`pages-api` 只注入 `CF_ACCOUNT_ID`、`CF_API_TOKEN`、`SLACK_PAGES_ALERT_WEBHOOK_URL`、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、`XDS_OPENAI_TOKEN`、和 `ACCESS_KEY_PEPPER_*`；`pages-auth` 注入 `SSO_CLIENT_SECRET`、`XDS_OPENAI_TOKEN` 和 `PAGES_SESSION_JWT_SECRET_*`；`pages-router` 注入 `PAGES_SESSION_JWT_SECRET_*` 和 `PAGES_CAP_JWT_SECRET_*`；`pages-kv-gateway` 只注入 `PAGES_CAP_JWT_SECRET_*`；`pages-console` 注入 `PAGES_SESSION_JWT_SECRET_*`。
 
 `SLACK_PAGES_ALERT_MENTION_USER_ID` 是 `pages-api` wrangler template 中固定的非敏感告警接收人 id，用于 legacy slot 容量告警正文里的单次 Slack mention。`PAGES_NORMAL_WORKER_SLOT_EXPAND_BY` 只作为历史兼容配置和测试输入保留，当前 router 部署不再用它新增 slot。
 
@@ -590,7 +589,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - `PAGES_ENV=production` 时，API/auth/site suffix 必须是 production 域名。
 - `PAGES_ENV=staging` 时，API/auth/site suffix 必须是 staging 域名。
 - signing key registry 中的 active kid 必须能找到对应 secret。
-- `S2S_CLIENT_KEYS` 必须使用 `client_id:key_id:secret_env_name` 格式；client/key id 只能使用安全字符，每个 client 最多两把并行 key，不能出现重复 pair，secret 名称必须匹配 `S2S_SECRET_[A-Z0-9_]+`。renderer 与 secret 注入脚本都必须 fail closed。
+- `CINDY_CONNECTION_ISSUERS` 必须是逗号分隔的 https origin 列表；`CINDY_CONNECTION_AUDIENCE` 必须是 `<orgSlug>:<plugin-slug>` 格式；production 的 issuer 列表不得包含 dev issuer(`auth-dev.*`)。renderer 必须 fail closed。
 - `PAGES_EXECUTION_MODE` 必须在 `pages-api` 和 `pages-router` 对应环境 template 中各出现一次，只能是 `normal-worker-slot` 或 `wfp`；不得从 GitHub Environment Vars 注入。
 - `WFP_DISPATCH_NAMESPACE` 必须与 `PAGES_ENV` 匹配，不能 staging/prod 串用。
 - `PAGES_USER_WORKER_VPC_TUNNEL_ID` 是 `pages-api` / `pages-auth` 的可选渲染 token，必须从 GitHub Environment Variable 注入；未配置时渲染为空字符串，且不会渲染 `XD_OFFICE_NET` VPC Network binding。
@@ -605,7 +604,7 @@ v2 runtime secret 注入使用 `scripts/put-pages-v2-secrets.sh <app>`。它会�
 - D1、KV、Durable Object binding 必须指向当前环境资源。
 - `pages-api` API 请求必须使用 HTTPS；不得再把 `IP_ALLOWLIST` 作为 API 请求门禁。
 - `pages-console` 仍必须配置有效的 `IP_ALLOWLIST`，并在读取 session、调用 service binding 或返回静态资源前执行公司网络门禁。
-- S2S issue/revoke 依赖现有 HMAC、timestamp、nonce、registry 和限频，不新增 S2S IP allowlist。
+- Cindy connection 断言按请求经 JWKS 验签,不新增专用 IP allowlist;受信 issuer 白名单先于取键。
 - `ROUTER_IP_ALLOWLIST_CIDRS` 必须存在、可解析、只包含公司批准的内网/VPN/办公出口 CIDR；缺失时部署或启动必须 fail closed。
 - `CF_API_TOKEN` 只能注入 `pages-api` runtime；`CLOUDFLARE_API_TOKEN` 只能出现在 GitHub Actions / Wrangler 部署环境。
 - `pages-router` 和 `pages-router-staging` 的 wrangler 配置不能同时出现两套环境 binding 或两套 signing key。
@@ -642,7 +641,7 @@ staging 首次部署前必须完成：
 12. staging 子站访问验证 IP allowlist、`internal`、`org`、`acl`、`owner`、`disabled`、header/cookie 清洗、`site_session` freshness 和 rollback。
 13. v1 `api.workers.xd.team`、旧 exact route、旧 skill 和旧发布 workflow 不受 staging v2 部署影响；v2 `*.workers.xd.team/*` wildcard 不抢占 v1 exact route。
 
-### XDMaker S2S 联调附加清单
+### Cindy Connections 断言鉴权联调附加清单
 
 1. staging / production 部署 workflow 会在 D1 migration 前强制检查大小写无关的重复邮箱，并且只向日志输出冲突组数量。发现冲突时 workflow 会停止；运维人员通过受控 D1 会话执行以下明细查询，确定保留用户，逐表审计并迁移所有 `users.user_id` 引用，删除重复用户后重新执行部署。禁止 workflow 自动猜测或删除用户：
 
@@ -653,16 +652,15 @@ staging 首次部署前必须完成：
    HAVING COUNT(*) > 1;
    ```
 
-2. 先应用 `0014_xdmaker_s2s_access_keys.sql` migration，再部署 `pages-api` / Console；两套环境分别配置 `S2S_CLIENT_KEYS` registry 和 `S2S_SECRET_*`。registry 采用 `client_id:key_id:secret_env_name`，轮换顺序是“平台加入第二把 key -> xdt-api 切换 key id -> 观察旧 key 流量 -> 移除旧 key”。
-3. S2S issue/revoke 不依赖 xdt-api 出口 CIDR；真实 shared secret 仍由双方通过受控渠道人工交换，永不提交到仓库、issue、PR 或日志。
-4. staging smoke 顺序：S2S issue -> 使用返回 key 通过捆绑 CLI 首次 deploy 建站 -> Console 列表显示 `XDMaker` -> Console revoke -> xdt-api 按 key/email revoke（幂等） -> 提升用户 `sessionVersion` 后确认旧 key 返回 `ACCESS_KEY_SESSION_STALE`。
-5. 联调记录只保留脱敏的 client/key id、内部 user/access-key id、状态码和时间；不得记录 token 明文、hash、pepper、HMAC secret、Feishu `open_id` 或完整 nonce。
-6. S2S 限频为每个 `client_id + environment` 每 10 分钟 1200 个通过 HMAC 的新请求、每个规范化邮箱每 10 分钟 20 次发放尝试；发放与吊销共用客户端额度，超限返回 `429 S2S_RATE_LIMITED`。
+2. 先应用 `0016_cindy_connection_users.sql` 与 `0017_drop_s2s_guards.sql` migration，再部署 `pages-api`；staging 模板信 dev + 两个生产 issuer，production 模板只信两个生产 issuer。dev 与生产是两套独立签名密钥（kid 不同）。
+3. 验收反例（staging 联调必须全过）：过期断言拒、错 `aud` 拒、坏签名拒、`alg` 降级为 HS256/none 拒、轮换出新 kid 后重拉 JWKS 能通过；另验 `typ` / `iss` / `ctx` / `orgSlug` 不匹配拒。
+4. staging smoke 顺序：Cindy dev 实例（或手工签发的断言）直接携带 Bearer JWT 调 whoami / sites / deployments -> 首次断言自动落库（`created_source=cindy`，`cindy_membership_id` 绑定） -> 尝试用断言创建 access key 必须 403 -> 用户 `employee_status` 置非 active 后断言返回 403。
+5. 联调记录只保留脱敏的 membershipId、`jti`、内部 user id、状态码和时间；不得记录断言原文或 JWKS 之外的 payload 字段。
 
 production 首次部署前必须完成：
 
 1. staging smoke checklist 全部通过，并确认 Cloudflare route / DNS / certificate 已覆盖 v2 `workers.xd.team` 新默认后缀和存量 `pages.xd.team` route，且 v1 exact route 优先级不变。
-2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、S2S secret、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、Console IP allowlist 和 router IP allowlist。production router template 必须固定绑定 `xd-cell-workers-production` dispatch namespace；production template 中的 `PAGES_EXECUTION_MODE` 必须为 `wfp`，router 只保留 active legacy route 仍需要的显式 slot binding。
+2. GitHub `production` Environment 已配置独立 production D1/KV、执行面资源、SSO app、JWT secret、access key pepper、`SITE_SECRET_ENCRYPTION_KEY`、`WEBHOOK_URL_ENCRYPTION_KEY`、Console IP allowlist 和 router IP allowlist。production router template 必须固定绑定 `xd-cell-workers-production` dispatch namespace；production template 中的 `PAGES_EXECUTION_MODE` 必须为 `wfp`，router 只保留 active legacy route 仍需要的显式 slot binding。
 3. XD Cell production 部署 workflow（当前 workflow 文件为 `deploy-pages-v2.yml`）只能通过 `workflow_dispatch` 触发；push/PR 不得触发 production。
 4. 生产首次发布使用 `component=all`，由 workflow 按 D1 migration -> auth -> api -> kv-gateway -> router 的顺序创建依赖，避免 service binding 指向缺失 Worker；`0008_runtime_bindings.sql`、`0009_runtime_config_generation.sql` 和 `0010_site_vars.sql` 必须先于 `pages-api` 新版本生效。
 5. 发布后先验证 `api.pages.xd.team/.xd-pages/health`、`auth.pages.xd.team` 登录入口和一个受控试点站点。

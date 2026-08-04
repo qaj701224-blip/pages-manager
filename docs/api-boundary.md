@@ -30,16 +30,24 @@
 - 不在公开文档中暴露发布 token、CLI access key、CLI token（仅作 legacy 兼容说明）、cookie、SSO code、session、provider、WFP、slot、dispatch namespace、Cloudflare resource id 或 runtime capability。
 - 不为了方便调试把 v2 `/openapi.json` 重新作为 public route 暴露。
 
-## XDMaker 受控凭证交换
+## Cindy Connections 断言鉴权
 
-XDMaker 的桌面端仍只通过捆绑的 `@xd-cell/cli` 发布，不直接调用部署 HTTP API。为免除一次重复浏览器登录，`xdt-api` 可在服务端以自身 JWT 已背书的飞书登录态调用 `pages-api` 的受控 S2S lane，换取一个用户归属的短期 access key，再原路交给 XDMaker 客户端；客户端不持有 HMAC shared secret，也不能自行调用该 lane。
+Cindy(原 XDMaker)的 v2 客户端形态是 Cindy 插件 `xd-sites`:对 `/.xd-pages/api/*` 的请求由 Cindy Desktop 宿主代发,每个请求直接携带 `Authorization: Bearer <connection JWT>`(Cindy auth-server 签发的短时效断言,`typ=connection`,TTL 30 分钟)。`pages-api` 在现有 access key 鉴权之外并行接受这种断言,按凭证形态区分(connection 是标准三段 JWT,access key 是既有 `xdp_` 格式),逐请求验签,不提供换票端点,插件侧不持有任何长效凭证。
 
-- S2S 发放与吊销接口属于受控集成面，可从公网访问；鉴权继续使用 HMAC、timestamp、nonce 和 registry，保持现有接入方协议，不新增 XDMaker 专用 IP allowlist。
-- `pages-api` 的其它管理 API 同样不按来源 IP 限制，统一依赖各 handler 的 token、access key、session、scope 和 owner/team 校验，并只接受 HTTPS。
-- IP allowlist 不作为 `pages-api` 管理 API 的访问控制；`pages-router` 继续用独立 allowlist 保护已部署子站，`pages-console` 也暂时保留公司网络门禁。
-- key 使用现有个人 owner-scoped access-key 权限，固定 24 小时 TTL，可在 deploy 事务内首次建个人站点；XDMaker 不获得团队管理或平台 admin 权限。
-- `issuedSource=xdmaker_s2s` 的 key 会显示在 Console 的个人 Access Keys 列表中，现有 owner revoke 操作可直接撤销；xdt-api 按 key 或邮箱吊销只影响该来源的 key，并保持幂等。
-- 发放时记录 `issuedSessionVersion`。用户发生禁用、离职、封禁或其它明确安全失效事件后，版本变化会立即使旧 S2S key 失效；普通 CLI/Console key 不继承这条 freshness 约束。
-- `users` 仍是唯一用户表，飞书 `open_id` 只存 `feishu_open_id`，跨飞书 SSO 与心动 SSO 的关联键是规范化邮箱；新用户标记 `created_source=xdmaker`。
+验签纪律(实现见 `apps/pages-api/src/connection-assertion.js`):
 
-真实 shared secret 和轮换操作通过双方受控渠道人工交换，不写入仓库、公开文档、issue、PR、日志或响应。
+- 受信 issuer 白名单先于取键:token 的 `iss` 必须命中 `CINDY_CONNECTION_ISSUERS` 配置,才会去 `iss + /.well-known/jwks.json` 拉公钥;staging 同时信 dev 与两个生产 issuer(便于真实登录态联调),production 只信国内 + 海外两个生产 issuer,生产永远不信 dev(renderer 层强制拒绝)。
+- JWKS 按 issuer 分桶缓存,按 `kid` 选键;未知 `kid` 重拉带 ≥30 秒冷却,禁止 pin 公钥。
+- 只收 RS256,显式拒绝 HS256/none;校验 `iss` / `aud`(`CINDY_CONNECTION_AUDIENCE`,当前为 `xd:xd-sites`)/ `typ` / `ctx=org` / `orgSlug` / `exp`、`iat`(±60 秒)。
+- 验签失败一律 401 `CONNECTION_ASSERTION_INVALID`(客户端据此重签重试一次);JWKS 拉取故障返回 503;403 留给身份有效但无权限(如 `PAGES_USER_INACTIVE`)。
+- 只信契约内 claims:`sub` / `ctx` / `orgSlug` / `email` / `iss` / `aud` / `typ` / `exp` / `iat` / `jti`;payload 里其它字段(role、identities 等)一律不读,尤其不得用于授权判断。
+
+用户落库与权限:
+
+- 账号映射以 `sub`(membershipId)为长期主键,存 `users.cindy_membership_id`;查找顺序是 membershipId 命中 → 规范化邮箱首次对账并绑定 → 新建用户(`created_source=cindy`),绑定与新建都会写审计事件(含 `jti`)。
+- 断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope;不能创建或管理 access key,服务端据此保证 30 分钟断言换不出长效凭证。
+- CLI 与 CI 场景继续使用既有 access key 体系,不受影响。
+- `pages-api` 的管理 API 不按来源 IP 限制,统一依赖各 handler 的凭证、scope 和 owner/team 校验,并只接受 HTTPS;`pages-router` 继续用独立 allowlist 保护已部署子站,`pages-console` 也暂时保留公司网络门禁。
+- `users` 仍是唯一用户表;历史 `created_source=xdmaker` 用户按规范化邮箱在首次断言时补绑 `cindy_membership_id`,不改变 `user_id`。
+
+早期的 XDMaker HMAC S2S 换票通道(`/.xd-pages/api/s2s/*`)从未正式投产,已随本方案落地整体移除;`pages-api` 不再持有任何 S2S shared secret。

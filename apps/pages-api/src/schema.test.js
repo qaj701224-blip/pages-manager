@@ -29,42 +29,37 @@ test('schema defines all v2 authority tables', () => {
     'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 15);
+  assert.equal(SCHEMA_VERSION, 17);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
 });
 
-test('schema defines XDMaker identity, access-key source, and S2S guards', () => {
+test('schema defines the Cindy connection membership identity column', () => {
   const sql = createSchemaSql().join('\n');
 
-  assert.equal(SCHEMA_VERSION, 15);
+  assert.match(sql, /cindy_membership_id TEXT/);
+  const membershipIndex = new RegExp(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_cindy_membership_id\\s+' +
+      'ON users\\(cindy_membership_id\\)\\s+WHERE cindy_membership_id IS NOT NULL'
+  );
+  assert.match(sql, membershipIndex);
+});
+
+test('schema defines XDMaker identity and access-key source columns without S2S guard tables', () => {
+  const sql = createSchemaSql().join('\n');
+
+  assert.equal(SCHEMA_VERSION, 17);
   assert.match(sql, /feishu_open_id TEXT/);
   assert.match(sql, /created_source TEXT NOT NULL DEFAULT 'xd_sso'/);
   assert.match(sql, /issued_source TEXT NOT NULL DEFAULT 'legacy'/);
   assert.match(sql, /issued_session_version INTEGER/);
-  assert.match(sql, /CREATE TABLE IF NOT EXISTS s2s_nonces\b[\s\S]*PRIMARY KEY \(environment, client_id, nonce\)/);
-  assert.match(
-    sql,
-    /CREATE TABLE IF NOT EXISTS s2s_rate_limits\b[\s\S]*PRIMARY KEY \(environment, scope, subject, bucket_start\)/,
-  );
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized\s+ON users\(lower\(trim\(email\)\)\)/);
   assert.match(
     sql,
     /CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id\s+ON users\(feishu_open_id\)\s+WHERE feishu_open_id IS NOT NULL/,
   );
-  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_s2s_nonces_expires_at\s+ON s2s_nonces\(expires_at\)/);
-  assert.match(
-    sql,
-    /CREATE INDEX IF NOT EXISTS idx_s2s_rate_limits_expires_at\s+ON s2s_rate_limits\(expires_at\)/,
-  );
-  assert.match(
-    sql,
-    new RegExp(
-      String.raw`CREATE INDEX IF NOT EXISTS idx_access_keys_s2s_owner_created\s+` +
-        String.raw`ON access_keys\(environment, issued_source, owner_user_id, created_at\)`
-    ),
-  );
+  assert.doesNotMatch(sql, /s2s_nonces|s2s_rate_limits|idx_access_keys_s2s_owner_created/);
 });
 
 test('schema includes authority indexes for routing, idempotency, and access keys', () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildCapacityExhaustedPayload, buildS2SAnomalyPayload } from './slack-alerts.js';
+import { buildCapacityExhaustedPayload } from './slack-alerts.js';
 
 test('capacity alert mentions owner once and points legacy slots back to WFP', () => {
   const payload = buildCapacityExhaustedPayload({
@@ -27,18 +27,4 @@ test('capacity alert mentions owner once and points legacy slots back to WFP', (
   ]);
   assert.match(serialized, /https:\/\/github\.com\/xindong\/pages-manager\/actions/);
   assert.doesNotMatch(serialized, /Deployment|Site|dep_|site_/);
-});
-
-test('S2S anomaly alert contains identifiers but no user identity or credentials', () => {
-  const payload = buildS2SAnomalyPayload({
-    environment: 'staging',
-    clientId: 'xdmaker',
-    userId: 'usr_1',
-    accessKeyId: 'ak_1',
-    reason: 'rate_threshold',
-  });
-  const serialized = JSON.stringify(payload);
-  assert.match(serialized, /staging/);
-  assert.match(serialized, /rate_threshold/);
-  assert.doesNotMatch(serialized, /user@example|ou_|xdp_|signature|nonce/i);
 });

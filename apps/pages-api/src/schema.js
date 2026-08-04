@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 17;
 
 export function createSchemaSql() {
   return [
@@ -17,6 +17,7 @@ export function createSchemaSql() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       feishu_open_id TEXT,
+      cindy_membership_id TEXT,
       created_source TEXT NOT NULL DEFAULT 'xd_sso'
     )`,
     `CREATE TABLE IF NOT EXISTS sites (
@@ -240,24 +241,6 @@ export function createSchemaSql() {
       issued_source TEXT NOT NULL DEFAULT 'legacy',
       issued_session_version INTEGER
     )`,
-    `CREATE TABLE IF NOT EXISTS s2s_nonces (
-      environment TEXT NOT NULL,
-      client_id TEXT NOT NULL,
-      nonce TEXT NOT NULL,
-      endpoint TEXT NOT NULL,
-      received_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      PRIMARY KEY (environment, client_id, nonce)
-    )`,
-    `CREATE TABLE IF NOT EXISTS s2s_rate_limits (
-      environment TEXT NOT NULL,
-      scope TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      bucket_start TEXT NOT NULL,
-      request_count INTEGER NOT NULL,
-      expires_at TEXT NOT NULL,
-      PRIMARY KEY (environment, scope, subject, bucket_start)
-    )`,
     `CREATE TABLE IF NOT EXISTS teams (
       id TEXT PRIMARY KEY,
       environment TEXT NOT NULL,
@@ -412,6 +395,9 @@ export function createSchemaSql() {
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id
       ON users(feishu_open_id)
       WHERE feishu_open_id IS NOT NULL`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_cindy_membership_id
+      ON users(cindy_membership_id)
+      WHERE cindy_membership_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site
       ON site_acl_entries(site_id, created_at)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject
@@ -422,12 +408,6 @@ export function createSchemaSql() {
       ON access_keys(owner_type, owner_id)`,
     `CREATE INDEX IF NOT EXISTS idx_access_keys_environment_owner
       ON access_keys(environment, owner_type, owner_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_s2s_nonces_expires_at
-      ON s2s_nonces(expires_at)`,
-    `CREATE INDEX IF NOT EXISTS idx_s2s_rate_limits_expires_at
-      ON s2s_rate_limits(expires_at)`,
-    `CREATE INDEX IF NOT EXISTS idx_access_keys_s2s_owner_created
-      ON access_keys(environment, issued_source, owner_user_id, created_at)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_department_active
       ON teams(environment, team_type, department_path)
       WHERE team_type = 'department' AND status = 'active'`,

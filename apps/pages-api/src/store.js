@@ -33,6 +33,7 @@ export class D1PagesStore {
       employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
       feishuOpenId: input.feishuOpenId || null,
+      cindyMembershipId: input.cindyMembershipId || null,
       createdSource: input.createdSource || 'xd_sso',
       departmentPath: input.departmentPath || null,
       departmentCheckedAt: input.departmentCheckedAt || null,
@@ -45,9 +46,9 @@ export class D1PagesStore {
       .prepare(
         `INSERT INTO users (
           user_id, account, account_id, email, realname, employeenum, employee_status,
-          feishu_open_id, created_source, department_path, department_checked_at,
+          feishu_open_id, cindy_membership_id, created_source, department_path, department_checked_at,
           session_version, last_login_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         record.id,
@@ -58,6 +59,7 @@ export class D1PagesStore {
         record.employeenum,
         record.employeeStatus,
         record.feishuOpenId,
+        record.cindyMembershipId,
         record.createdSource,
         record.departmentPath,
         record.departmentCheckedAt,
@@ -92,6 +94,7 @@ export class D1PagesStore {
       employeenum: input.employeenum || null,
       employeeStatus: input.employeeStatus || 'unknown',
       feishuOpenId: existing?.feishuOpenId || null,
+      cindyMembershipId: existing?.cindyMembershipId || null,
       createdSource: existing?.createdSource || 'xd_sso',
       departmentPath: input.departmentPath || null,
       departmentCheckedAt: input.departmentCheckedAt || null,
@@ -104,9 +107,9 @@ export class D1PagesStore {
       .prepare(
         `INSERT INTO users (
           user_id, account, account_id, email, realname, employeenum, employee_status,
-          feishu_open_id, created_source, department_path, department_checked_at,
+          feishu_open_id, cindy_membership_id, created_source, department_path, department_checked_at,
           session_version, last_login_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
           account = CASE
             WHEN users.employee_status = 'left' AND excluded.employee_status != 'left' THEN users.account
@@ -181,6 +184,7 @@ export class D1PagesStore {
         record.employeenum,
         record.employeeStatus,
         record.feishuOpenId,
+        record.cindyMembershipId,
         record.createdSource,
         record.departmentPath,
         record.departmentCheckedAt,
@@ -229,6 +233,31 @@ export class D1PagesStore {
           )`
       )
       .bind(feishuOpenId, this.now(), userId, feishuOpenId, feishuOpenId)
+      .run();
+    return result?.meta?.changes === 1;
+  }
+
+  async getUserByCindyMembershipId(membershipId) {
+    if (!membershipId) return null;
+    const row = await this.db.prepare('SELECT * FROM users WHERE cindy_membership_id = ?').bind(membershipId).first();
+    return row ? mapUser(row) : null;
+  }
+
+  async bindUserCindyMembershipId(userId, membershipId) {
+    if (!membershipId) return false;
+    const result = await this.db
+      .prepare(
+        `UPDATE users
+        SET cindy_membership_id = ?, updated_at = ?
+        WHERE user_id = ?
+          AND (cindy_membership_id IS NULL OR cindy_membership_id = ?)
+          AND NOT EXISTS (
+            SELECT 1 FROM users AS bound_users
+            WHERE bound_users.cindy_membership_id = ?
+              AND bound_users.user_id != users.user_id
+          )`
+      )
+      .bind(membershipId, this.now(), userId, membershipId, membershipId)
       .run();
     return result?.meta?.changes === 1;
   }
@@ -3664,36 +3693,6 @@ export class D1PagesStore {
       );
   }
 
-  s2sRevokeAuditEventStatement(record) {
-    const environment = record.environment || record.metadata?.environment || null;
-    return this.db
-      .prepare(
-        `INSERT INTO audit_events (
-          id, environment, trace_id, event_type, actor_user_id, actor_type, site_id, route_id, version_id,
-          decision, status_code, ip_hash, user_agent_hash, metadata_json, created_at
-        )
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-        WHERE changes() = 1`
-      )
-      .bind(
-        record.id,
-        environment,
-        record.traceId,
-        record.eventType,
-        record.actorUserId,
-        record.actorType,
-        record.siteId,
-        record.routeId,
-        record.versionId,
-        record.decision,
-        record.statusCode,
-        record.ipHash,
-        record.userAgentHash,
-        stringifyJsonColumn(record.metadata),
-        record.createdAt
-      );
-  }
-
   siteSecretPutAuditEventStatement(record, { secretId, revision, encryptedValue, updatedAt }) {
     return this.db
       .prepare(
@@ -4345,165 +4344,6 @@ export class D1PagesStore {
       );
   }
 
-  async issueS2SAccessKey({ accessKey: input, replacesKeyId = null, auditEvents = [], now = this.now() }) {
-    if ('plaintext' in input) throw new Error('ACCESS_KEY_PLAINTEXT_FORBIDDEN');
-    const ownerId = input.ownerId || input.ownerUserId;
-    const record = {
-      ...input,
-      ownerType: input.ownerType || 'user',
-      ownerId,
-      ownerUserId: input.ownerUserId || ownerId,
-      createdByUserId: input.createdByUserId || ownerId,
-      scopes: [...input.scopes],
-      siteId: input.siteId || null,
-      expiresAt: input.expiresAt || null,
-      lastUsedAt: null,
-      revokedAt: null,
-      revokedByUserId: null,
-      revokedReason: null,
-      createdAt: now,
-      issuedSource: input.issuedSource || 'legacy',
-      issuedSessionVersion: input.issuedSessionVersion ?? null,
-    };
-
-    let replacement = null;
-    if (replacesKeyId) {
-      replacement = await this.getAccessKeyById(replacesKeyId, record.environment);
-      if (!isValidS2SReplacement(replacement, record, now)) throw s2sReplacementKeyInvalidError();
-    }
-
-    const statements = [];
-    if (replacement) {
-      statements.push(
-        this.db
-          .prepare(
-            `UPDATE access_keys
-            SET revoked_at = ?, revoked_by_user_id = ?, revoked_reason = ?
-            WHERE id = ? AND environment = ?
-              AND COALESCE(owner_type, 'user') = 'user'
-              AND COALESCE(owner_id, owner_user_id) = ?
-              AND owner_user_id = ?
-              AND issued_source = 'xdmaker_s2s'
-              AND revoked_at IS NULL
-              AND (expires_at IS NULL OR expires_at > ?)`
-          )
-          .bind(
-            now,
-            record.ownerUserId,
-            'xdmaker_s2s_replace',
-            replacement.id,
-            record.environment,
-            ownerId,
-            record.ownerUserId,
-            now
-          ),
-        this.runtimeChangeGuardStatement('S2S_REPLACEMENT_KEY_INVALID')
-      );
-    }
-    statements.push(this.accessKeyInsertStatement(record));
-    for (const event of auditEvents) statements.push(this.auditEventStatement(event));
-    await this.db.batch(statements);
-    return cloneRecord(record);
-  }
-
-  async revokeS2SAccessKeys({
-    environment,
-    keyId = null,
-    email = null,
-    clientId = null,
-    signingKeyId = null,
-    now = this.now(),
-  }) {
-    const normalizedEmail = normalizeUserEmail(email);
-    const selectorSql = keyId ? 'access_keys.id = ?' : 'lower(trim(users.email)) = ?';
-    const selectorValue = keyId || normalizedEmail;
-    const result = await this.db
-      .prepare(
-        `SELECT access_keys.*
-        FROM access_keys
-        LEFT JOIN users ON users.user_id = access_keys.owner_user_id
-        WHERE access_keys.environment = ?
-          AND COALESCE(access_keys.owner_type, 'user') = 'user'
-          AND access_keys.owner_user_id = COALESCE(access_keys.owner_id, access_keys.owner_user_id)
-          AND access_keys.issued_source = 'xdmaker_s2s'
-          AND access_keys.revoked_at IS NULL
-          AND (access_keys.expires_at IS NULL OR access_keys.expires_at > ?)
-          AND ${selectorSql}
-        ORDER BY access_keys.id ASC`
-      )
-      .bind(environment, now, selectorValue)
-      .all();
-    const keys = (result.results || []).map(mapAccessKey);
-    if (keys.length === 0) return { revokedCount: 0, keyIds: [] };
-
-    const statements = [];
-    const updateResultIndexes = [];
-    for (const key of keys) {
-      updateResultIndexes.push(statements.length);
-      statements.push(
-        this.db
-          .prepare(
-            `UPDATE access_keys
-            SET revoked_at = ?, revoked_by_user_id = ?, revoked_reason = ?
-            WHERE id = ? AND environment = ?
-              AND COALESCE(owner_type, 'user') = 'user'
-              AND COALESCE(owner_id, owner_user_id) = ?
-              AND owner_user_id = ?
-              AND issued_source = 'xdmaker_s2s'
-              AND revoked_at IS NULL
-              AND (expires_at IS NULL OR expires_at > ?)`
-          )
-          .bind(now, key.ownerUserId, 'xdmaker_s2s_revoke', key.id, environment, key.ownerId, key.ownerUserId, now),
-        this.s2sRevokeAuditEventStatement(s2sRevokeAuditEvent(key, environment, clientId, signingKeyId, now))
-      );
-    }
-    const batchResults = await this.db.batch(statements);
-    const keyIds = keys
-      .filter((_, index) => batchResults[updateResultIndexes[index]]?.meta?.changes === 1)
-      .map((key) => key.id);
-    return { revokedCount: keyIds.length, keyIds };
-  }
-
-  async reserveS2SNonce({ environment, clientId, nonce, endpoint, receivedAt, expiresAt }) {
-    try {
-      await this.db
-        .prepare(
-          `INSERT INTO s2s_nonces (
-            environment, client_id, nonce, endpoint, received_at, expires_at
-          ) VALUES (?, ?, ?, ?, ?, ?)`
-        )
-        .bind(environment, clientId, nonce, endpoint, receivedAt, expiresAt)
-        .run();
-      return true;
-    } catch (error) {
-      if (isS2SNonceUniqueConstraintError(error)) return false;
-      throw error;
-    }
-  }
-
-  async consumeS2SRateLimit({ environment, scope, subject, bucketStart, expiresAt, limit }) {
-    const row = await this.db
-      .prepare(
-        `INSERT INTO s2s_rate_limits (
-          environment, scope, subject, bucket_start, request_count, expires_at
-        ) VALUES (?, ?, ?, ?, 1, ?)
-        ON CONFLICT(environment, scope, subject, bucket_start) DO UPDATE SET
-          request_count = request_count + 1,
-          expires_at = excluded.expires_at
-        WHERE request_count < ?
-        RETURNING request_count`
-      )
-      .bind(environment, scope, subject, bucketStart, expiresAt, limit)
-      .first();
-    if (!row) return { allowed: false, count: Number(limit) };
-    return { allowed: true, count: Number(row.request_count) };
-  }
-
-  async cleanupExpiredS2SGuards(now) {
-    await this.db.prepare('DELETE FROM s2s_nonces WHERE expires_at <= ?').bind(now).run();
-    await this.db.prepare('DELETE FROM s2s_rate_limits WHERE expires_at <= ?').bind(now).run();
-  }
-
   async getAccessKeyById(id, environment) {
     const row = await this.db
       .prepare(
@@ -5018,6 +4858,7 @@ function mapUser(row) {
     employeenum: row.employeenum,
     employeeStatus: row.employee_status,
     feishuOpenId: row.feishu_open_id || null,
+    cindyMembershipId: row.cindy_membership_id || null,
     createdSource: row.created_source || 'xd_sso',
     departmentPath: row.department_path || null,
     departmentCheckedAt: row.department_checked_at || null,
@@ -5829,54 +5670,6 @@ function mapAccessKey(row) {
   };
 }
 
-function isValidS2SReplacement(replacement, accessKey, now) {
-  const ownerId = accessKey.ownerId || accessKey.ownerUserId;
-  return Boolean(
-    replacement &&
-    replacement.id !== accessKey.id &&
-    replacement.environment === accessKey.environment &&
-    replacement.ownerType === 'user' &&
-    replacement.ownerId === ownerId &&
-    replacement.ownerUserId === accessKey.ownerUserId &&
-    replacement.issuedSource === 'xdmaker_s2s' &&
-    !replacement.revokedAt &&
-    (!replacement.expiresAt || replacement.expiresAt > now)
-  );
-}
-
-function s2sReplacementKeyInvalidError() {
-  const error = new Error('S2S_REPLACEMENT_KEY_INVALID');
-  error.code = 'S2S_REPLACEMENT_KEY_INVALID';
-  return error;
-}
-
-function s2sRevokeAuditEvent(accessKey, environment, clientId, signingKeyId, now) {
-  return {
-    id: randomStoreId('audit'),
-    environment,
-    traceId: null,
-    eventType: 's2s.access_key.revoke',
-    actorUserId: accessKey.ownerUserId,
-    actorType: 's2s',
-    siteId: null,
-    routeId: null,
-    versionId: null,
-    decision: 'allow',
-    statusCode: 200,
-    ipHash: null,
-    userAgentHash: null,
-    metadata: {
-      environment,
-      ...(clientId ? { clientId } : {}),
-      ...(signingKeyId ? { signingKeyId } : {}),
-      accessKeyId: accessKey.id,
-      userId: accessKey.ownerUserId,
-      reason: 'xdmaker_s2s_revoke',
-    },
-    createdAt: now,
-  };
-}
-
 function mapDeployment(row) {
   return {
     id: row.id,
@@ -5925,9 +5718,3 @@ function mapDeploymentResourceCleanupTask(row) {
   };
 }
 
-function isS2SNonceUniqueConstraintError(error) {
-  const message = String(error?.message || error || '');
-  return /UNIQUE constraint failed:\s*s2s_nonces\.environment,\s*s2s_nonces\.client_id,\s*s2s_nonces\.nonce/i.test(
-    message,
-  );
-}

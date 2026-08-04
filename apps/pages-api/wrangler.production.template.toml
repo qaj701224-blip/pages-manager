@@ -29,14 +29,14 @@ SLACK_PAGES_ALERT_MENTION_USER_ID = "U06QLFY2XCK"
 ACCESS_KEY_ACTIVE_PEPPER_ID = "pepper_2026_06"
 ACCESS_KEY_PEPPERS = "pepper_2026_06:ACCESS_KEY_PEPPER_202606"
 CLI_ACCESS_KEY_TTL_SECONDS = "31536000"
-S2S_CLIENT_KEYS = "xdmaker:key_202607:S2S_SECRET_XDMAKER_202607"
+CINDY_CONNECTION_ISSUERS = "https://auth.cindy.com.cn,https://auth.cindy.app"
+CINDY_CONNECTION_AUDIENCE = "xd:xd-sites"
 IP_ALLOWLIST = "__IP_ALLOWLIST__"
 
 # Required Worker secret:
 # - SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets.
 # - WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs.
 # - XDS_OPENAI_TOKEN: XDS / OA org directory token for department hydration.
-# - S2S_SECRET_XDMAKER_202607: shared secret for the controlled XDMaker S2S exchange.
 
 [[d1_databases]]
 binding = "PAGES_METADATA"
