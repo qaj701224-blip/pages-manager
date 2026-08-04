@@ -145,6 +145,11 @@ test('binds the membership id to an existing user by email on first contact', as
   assert.equal(linkEvents[0].metadata.membershipId, 'mem_1');
   assert.equal(linkEvents[0].metadata.jti, 'jti_1');
   assert.equal(linkEvents[0].metadata.issuer, ISSUER);
+  assert.equal(linkEvents[0].metadata.email, 'someone@xd.com');
+  assert.equal(linkEvents[0].metadata.orgSlug, 'xd');
+  assert.equal(linkEvents[0].metadata.audience, AUDIENCE);
+  assert.equal(linkEvents[0].metadata.assertionIssuedAt, new Date((NOW_SECONDS - 60) * 1000).toISOString());
+  assert.equal(linkEvents[0].metadata.assertionExpiresAt, new Date((NOW_SECONDS + 1740) * 1000).toISOString());
 });
 
 test('creates a new user keyed on the membership id and reuses it on the next request', async () => {
@@ -192,6 +197,17 @@ test('rejects an email already bound to a different membership id', async () => 
   assert.equal(auth.ok, false);
   assert.equal(auth.error.code, 'CONNECTION_IDENTITY_CONFLICT');
   assert.equal(auth.error.status, 409);
+
+  const denyEvents = (await store.listAuditEvents({ environment: 'staging' })).filter(
+    (event) => event.eventType === 'connection.request.deny'
+  );
+  assert.equal(denyEvents.length, 1);
+  assert.equal(denyEvents[0].decision, 'deny');
+  assert.equal(denyEvents[0].statusCode, 409);
+  assert.equal(denyEvents[0].metadata.reason, 'CONNECTION_IDENTITY_CONFLICT');
+  assert.equal(denyEvents[0].metadata.membershipId, 'mem_1');
+  assert.equal(denyEvents[0].metadata.email, 'someone@xd.com');
+  assert.equal(denyEvents[0].metadata.jti, 'jti_1');
 });
 
 test('rejects inactive users without binding the membership id', async () => {
@@ -213,6 +229,12 @@ test('rejects inactive users without binding the membership id', async () => {
   assert.equal(byEmail.error.code, 'PAGES_USER_INACTIVE');
   assert.equal(byEmail.error.status, 403);
   assert.equal((await store.getUser('usr_left')).cindyMembershipId, null);
+
+  const inactiveDenies = (await store.listAuditEvents({ environment: 'staging' })).filter(
+    (event) => event.eventType === 'connection.request.deny' && event.metadata.reason === 'PAGES_USER_INACTIVE'
+  );
+  assert.equal(inactiveDenies.length, 1);
+  assert.equal(inactiveDenies[0].statusCode, 403);
 
   await store.createUser({
     userId: 'usr_disabled',
@@ -271,6 +293,9 @@ test('maps verification failures to 401 and JWKS outages to 503', async () => {
   assert.equal(outage.error.code, 'CONNECTION_KEYS_UNAVAILABLE');
   assert.equal(outage.error.status, 503);
   assert.equal(await store.getUserByCindyMembershipId('mem_1'), null);
+
+  // Verification failures never write to the store: no users and no audit rows.
+  assert.equal((await store.listAuditEvents({ environment: 'staging' })).length, 0);
 });
 
 test('connection actors cannot list or create access keys', async () => {

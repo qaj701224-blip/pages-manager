@@ -165,10 +165,22 @@ async function authenticateConnectionAssertion(token, connectionConfig, env, sto
   }
 
   const identity = await resolveConnectionUser(env, store, config, verified.claims, now);
-  if (!identity.ok) return identity;
+  if (!identity.ok) {
+    await recordConnectionAudit(env, store, config, 'connection.request.deny', null, verified.claims, now, {
+      decision: 'deny',
+      statusCode: identity.error.status,
+      reason: identity.error.code,
+    });
+    return identity;
+  }
   const user = identity.user;
 
   if (user.employeeStatus !== 'active') {
+    await recordConnectionAudit(env, store, config, 'connection.request.deny', user.id, verified.claims, now, {
+      decision: 'deny',
+      statusCode: 403,
+      reason: 'PAGES_USER_INACTIVE',
+    });
     return authError('PAGES_USER_INACTIVE', 'User is not active.', 403, 'Contact the Pages platform owner.');
   }
 
@@ -236,7 +248,8 @@ async function resolveConnectionUser(env, store, config, claims, now) {
   return { ok: true, user: created };
 }
 
-async function recordConnectionAudit(env, store, config, eventType, userId, claims, now) {
+async function recordConnectionAudit(env, store, config, eventType, userId, claims, now, options = {}) {
+  const { decision = 'allow', statusCode = 200, reason = null } = options;
   try {
     await store.recordAuditEvent({
       id: nextId(env, 'aud'),
@@ -248,21 +261,30 @@ async function recordConnectionAudit(env, store, config, eventType, userId, clai
       siteId: null,
       routeId: null,
       versionId: null,
-      decision: 'allow',
-      statusCode: 200,
+      decision,
+      statusCode,
       ipHash: null,
       userAgentHash: null,
+      // Every contract claim of the verified assertion is preserved as binding/denial
+      // evidence (typ and ctx are invariants of a passing verification). Contract-external
+      // payload fields are never read, so they can never land here.
       metadata: {
         environment: config.environment,
         userId,
         membershipId: claims.membershipId,
+        email: claims.email,
+        orgSlug: claims.orgSlug,
         issuer: claims.issuer,
+        audience: claims.audience,
         jti: claims.jti,
+        assertionIssuedAt: claims.issuedAt,
+        assertionExpiresAt: claims.expiresAt,
+        ...(reason ? { reason } : {}),
       },
       createdAt: now,
     });
   } catch {
-    // Provisioning audit records are best-effort and must not fail the request.
+    // Connection audit records are best-effort and must not change the request result.
   }
 }
 

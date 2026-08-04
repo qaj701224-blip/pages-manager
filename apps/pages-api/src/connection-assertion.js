@@ -128,7 +128,9 @@ export async function verifyConnectionAssertion(token, config, options = {}) {
       email,
       orgSlug: payload.orgSlug,
       issuer,
+      audience: config.audience,
       jti,
+      issuedAt: new Date(payload.iat * 1000).toISOString(),
       expiresAt: new Date(payload.exp * 1000).toISOString(),
     },
   };

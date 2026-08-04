@@ -44,7 +44,7 @@ Cindy(原 XDMaker)的 v2 客户端形态是 Cindy 插件 `xd-sites`:对 `/.xd-pa
 
 用户落库与权限:
 
-- 账号映射以 `sub`(membershipId)为长期主键,存 `users.cindy_membership_id`;查找顺序是 membershipId 命中 → 规范化邮箱首次对账并绑定 → 新建用户(`created_source=cindy`),绑定与新建都会写审计事件(含 `jti`)。
+- 账号映射以 `sub`(membershipId)为长期主键,存 `users.cindy_membership_id`;查找顺序是 membershipId 命中 → 规范化邮箱首次对账并绑定 → 新建用户(`created_source=cindy`)。绑定、新建以及验签通过后的身份拒绝(冲突/非 active)都写 `audit_events`,metadata 完整保留契约内 claims(sub/email/orgSlug/iss/aud/jti/iat/exp)作为绑定与拒绝的证据;契约外字段不读也不落。验签失败不产生任何库写入。
 - 断言 actor 只持有 `deploy:site`、`read:site`、`rollback:site` scope;不能创建或管理 access key,服务端据此保证 30 分钟断言换不出长效凭证。
 - CLI 与 CI 场景继续使用既有 access key 体系,不受影响。
 - `pages-api` 的管理 API 不按来源 IP 限制,统一依赖各 handler 的凭证、scope 和 owner/team 校验,并只接受 HTTPS;`pages-router` 继续用独立 allowlist 保护已部署子站,`pages-console` 也暂时保留公司网络门禁。

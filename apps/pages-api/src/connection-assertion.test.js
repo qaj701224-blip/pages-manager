@@ -91,7 +91,9 @@ test('verifies a valid connection assertion and returns only contract claims', a
     email: 'someone@xd.com',
     orgSlug: 'xd',
     issuer: ISSUER,
+    audience: AUDIENCE,
     jti: 'jti_1',
+    issuedAt: new Date((NOW_SECONDS - 60) * 1000).toISOString(),
     expiresAt: new Date((NOW_SECONDS + 1740) * 1000).toISOString(),
   });
   assert.deepEqual(fetchStub.calls, [`${ISSUER}/.well-known/jwks.json`]);
