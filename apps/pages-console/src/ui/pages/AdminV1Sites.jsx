@@ -53,13 +53,13 @@ export function AdminV1Sites() {
     () => filterV1Sites(state.sites, { query, filter, now: referenceNow }),
     [state.sites, query, filter, referenceNow]
   );
-  const deletableSites = visibleSites.filter((site) => site.canRetire !== false);
+  const deletableSites = visibleSites.filter((site) => site.canRetire === true);
   const selectedDeletableSites = deletableSites.filter((site) => selectedNames.has(site.name));
   const allDeletableSelected = deletableSites.length > 0 && selectedDeletableSites.length === deletableSites.length;
   const hasCurrentFilter = Boolean(query.trim()) || filter !== 'all';
 
   function toggleSite(site) {
-    if (site.canRetire === false || busyName || bulkBusy) return;
+    if (site.canRetire !== true || busyName || bulkBusy) return;
     setSelectedNames((current) => {
       const next = new Set(current);
       if (next.has(site.name)) next.delete(site.name);
@@ -83,7 +83,7 @@ export function AdminV1Sites() {
 
   async function retireSite(site) {
     const confirmation = globalThis.prompt?.(`输入站点名 ${site.name} 确认退役该 v1 站点`);
-    if (confirmation !== site.name || site.canRetire === false) return;
+    if (confirmation !== site.name || site.canRetire !== true) return;
     setBusyName(site.name);
     setState((current) => ({ ...current, error: null, notice: null }));
     try {
@@ -222,7 +222,8 @@ export function AdminV1Sites() {
 
 function V1SiteRow({ site, now, selected, onToggle, onRetire, busy, disabled }) {
   const stale = isV1SiteStale(site.updatedAt, now);
-  const canRetire = site.canRetire !== false;
+  const canRetire = site.canRetire === true;
+  const blockedReason = v1RetireBlockedLabel(site.retireBlockedReason);
   const url = safeExternalUrl(site.url);
   return (
     <tr>
@@ -232,13 +233,13 @@ function V1SiteRow({ site, now, selected, onToggle, onRetire, busy, disabled }) 
           checked={selected}
           disabled={!canRetire || disabled}
           aria-label={`选择 ${site.name}`}
-          title={canRetire ? '选择后可批量退役' : site.retireBlockedReason || '该站点不可退役'}
+          title={canRetire ? '选择后可批量退役' : blockedReason}
           onChange={() => onToggle(site)}
         />
       </td>
       <td data-label="站点">
         <strong>{site.name}</strong>
-        {!canRetire ? <span className="tag muted">{site.retireBlockedReason || '不可退役'}</span> : null}
+        {!canRetire ? <span className="tag muted">{blockedReason}</span> : null}
         {url ? (
           <a href={url} target="_blank" rel="noopener noreferrer">
             {site.url}
@@ -269,13 +270,26 @@ function V1SiteRow({ site, now, selected, onToggle, onRetire, busy, disabled }) 
           className="table-action danger"
           type="button"
           disabled={!canRetire || disabled || busy}
-          title={canRetire ? `输入 ${site.name} 确认退役` : site.retireBlockedReason || '该站点不可退役'}
+          title={canRetire ? `输入 ${site.name} 确认退役` : blockedReason}
           onClick={() => onRetire(site)}
         >
           <Trash2 size={16} />
         </button>
       </td>
     </tr>
+  );
+}
+
+function v1RetireBlockedLabel(reason) {
+  return (
+    {
+      platform_reserved: '平台保留 Worker',
+      script_name_missing: '缺少 Worker metadata',
+      script_name_invalid: 'Worker 名称非法',
+      script_name_mismatch: 'Worker 与站点名不匹配',
+      worker_missing: '对应 Worker 不存在',
+      unknown_worker: '未注册 Worker 不可退役',
+    }[reason] || '该站点不可退役'
   );
 }
 

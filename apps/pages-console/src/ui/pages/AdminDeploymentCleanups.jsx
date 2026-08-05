@@ -202,6 +202,7 @@ function OrphanScanPanel() {
   const completeScan = state.scan ? state.scan.completeness === 'complete' : false;
   const deletableWorkers = visibleWorkers.filter((worker) => worker.orphanCandidate);
   const selectedWorkers = deletableWorkers.filter((worker) => selectedNames.has(worker.name));
+  const selectedRollbackEligibleCount = selectedWorkers.filter((worker) => worker.rollbackEligibleVersion).length;
   const allDeletableSelected = deletableWorkers.length > 0 && selectedWorkers.length === deletableWorkers.length;
   const hasCurrentFilter = filter !== 'all';
 
@@ -243,7 +244,10 @@ function OrphanScanPanel() {
   async function backfillSelectedWorkers() {
     const names = selectedWorkers.map((worker) => worker.name);
     if (!completeScan || names.length === 0 || backfillBusy) return;
-    const confirmation = globalThis.prompt?.(`输入 BULK BACKFILL ${names.length} 确认创建 cleanup task：${names.join(', ')}`);
+    const rollbackWarning = selectedRollbackEligibleCount > 0 ? '；其中包含删除后不可回滚的版本' : '';
+    const confirmation = globalThis.prompt?.(
+      `输入 BULK BACKFILL ${names.length} 确认创建 cleanup task${rollbackWarning}：${names.join(', ')}`
+    );
     if (confirmation !== `BULK BACKFILL ${names.length}`) return;
     setBackfillBusy(true);
     setState((current) => ({ ...current, error: null }));
@@ -307,7 +311,13 @@ function OrphanScanPanel() {
             <GovernanceStat label="Cleanup task" value={summary?.hasPendingCleanupTask} />
             <GovernanceStat label="Orphan candidate" value={summary?.orphanCandidates} />
           </div>
-            <div className="admin-toolbar governance-filter-toolbar">
+          {selectedRollbackEligibleCount > 0 ? (
+            <div className="governance-incomplete-warning" role="alert">
+              <strong>包含可回滚版本</strong>
+              <span>已选择 {selectedRollbackEligibleCount} 个 rollback eligible Worker；删除后该版本不可回滚。</span>
+            </div>
+          ) : null}
+          <div className="admin-toolbar governance-filter-toolbar">
             <div className="segmented compact-segmented" role="tablist" aria-label="Worker 分类">
               {ORPHAN_FILTERS.map(([value, label]) => (
                 <button className={filter === value ? 'active' : ''} key={value} type="button" onClick={() => setFilter(value)}>

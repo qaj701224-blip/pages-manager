@@ -114,12 +114,18 @@ test('resource governance actions require complete scans and expose safe domain 
   assert.match(adminDeploymentCleanupsSource, /state\.scan\.completeness === 'complete'/);
   assert.match(adminDeploymentCleanupsSource, /backfillAdminWorkerOrphans/);
   assert.match(adminDeploymentCleanupsSource, /incomplete/);
+  assert.match(adminDeploymentCleanupsSource, /selectedRollbackEligibleCount/);
+  assert.match(adminDeploymentCleanupsSource, /删除后该版本不可回滚/);
   assert.match(adminDeploymentCleanupsSource, /target="_blank"/);
   assert.match(adminDeploymentCleanupsSource, /rel="noopener noreferrer"/);
   assert.match(adminV1SitesSource, /bulkRetireAdminV1Sites/);
   assert.match(adminV1SitesSource, /deleteAdminV1Site/);
   assert.match(adminV1SitesSource, /platform_reserved/);
   assert.match(adminV1SitesSource, /unknown/);
+  assert.match(adminV1SitesSource, /site\.canRetire === true/);
+  assert.match(adminV1SitesSource, /v1RetireBlockedLabel/);
+  assert.match(adminV1SitesSource, /script_name_mismatch/);
+  assert.match(adminV1SitesSource, /worker_missing/);
   assert.match(adminV1SitesSource, /target="_blank"/);
   assert.match(adminV1SitesSource, /rel="noopener noreferrer"/);
   assert.match(adminSitesSource, /target="_blank"/);
