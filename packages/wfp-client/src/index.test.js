@@ -144,7 +144,7 @@ test('uploadUserWorker sends multipart metadata and module to dispatch namespace
   assert.equal(form.get('worker.mjs').type, 'application/javascript+module');
 });
 
-test('listUserWorkers reads every dispatch namespace scripts page and returns safe metadata', async () => {
+test('listUserWorkers accepts an undocumented single-page list and verifies namespace script count', async () => {
   const requests = [];
   const client = createWfpClient({
     accountId: 'account_1',
@@ -153,72 +153,114 @@ test('listUserWorkers reads every dispatch namespace scripts page and returns sa
     apiBaseUrl: 'https://api.cloudflare.com/client/v4',
     fetch: async (request) => {
       requests.push(request);
-      const page = new URL(request.url).searchParams.get('page');
-      if (page === '1') {
-        return Response.json({
-          success: true,
-          result: [
-            {
-              script: { id: 'pages-v2-docs-ver-1' },
-              created_on: '2026-06-01T00:00:00.000Z',
-              modified_on: '2026-06-02T00:00:00.000Z',
-              dispatch_namespace: 'xd-cell-workers-production',
-            },
-          ],
-          result_info: { page: 1, total_pages: 2 },
-        });
-      }
+      if (!request.url.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 1 } });
       return Response.json({
         success: true,
         result: [
           {
-            id: 'pages-v2-blog-ver-2',
-            created_on: '2026-06-03T00:00:00.000Z',
-            modified_on: '2026-06-04T00:00:00.000Z',
+            script: { id: 'pages-v2-docs-ver-1' },
+            created_on: '2026-06-01T00:00:00.000Z',
+            modified_on: '2026-06-02T00:00:00.000Z',
           },
         ],
-        result_info: { page: 2, total_pages: 2 },
       });
     },
   });
 
-  assert.deepEqual(await client.listUserWorkers(), [
-    {
-      name: 'pages-v2-docs-ver-1',
-      created_on: '2026-06-01T00:00:00.000Z',
-      modified_on: '2026-06-02T00:00:00.000Z',
-    },
-    {
-      name: 'pages-v2-blog-ver-2',
-      created_on: '2026-06-03T00:00:00.000Z',
-      modified_on: '2026-06-04T00:00:00.000Z',
-    },
-  ]);
+  assert.deepEqual(await client.listUserWorkers(), {
+    workers: [
+      {
+        name: 'pages-v2-docs-ver-1',
+        created_on: '2026-06-01T00:00:00.000Z',
+        modified_on: '2026-06-02T00:00:00.000Z',
+      },
+    ],
+    completeness: 'complete',
+    scannedCount: 1,
+    namespaceScriptCount: 1,
+  });
   const scriptsEndpoint =
     'https://api.cloudflare.com/client/v4/accounts/account_1/workers/dispatch/namespaces/xd-cell-workers-production/scripts';
-  assert.deepEqual(
-    requests.map((request) => request.url),
-    [`${scriptsEndpoint}?page=1&per_page=100`, `${scriptsEndpoint}?page=2&per_page=100`]
-  );
+  assert.deepEqual(requests.map((request) => request.url), [scriptsEndpoint, scriptsEndpoint.replace(/\/scripts$/, '')]);
   assert.equal(requests.every((request) => request.headers.get('Authorization') === 'Bearer cf_secret_token'), true);
 });
 
-test('listUserWorkers rejects a malformed list result instead of reporting an empty inventory', async () => {
+test('listUserWorkers follows usable result_info pagination before checking script count', async () => {
+  const requests = [];
   const client = createWfpClient({
     accountId: 'account_1',
     apiToken: 'cf_secret_token',
     dispatchNamespace: 'xd-cell-workers-production',
-    fetch: async () => Response.json({ success: true, result: {}, result_info: { page: 1, total_pages: 1 } }),
+    fetch: async (request) => {
+      requests.push(request.url);
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 2 } });
+      if (url.searchParams.get('page') === '2') {
+        return Response.json({
+          success: true,
+          result: [{ id: 'pages-v2-blog-ver-2', modified_on: '2026-06-04T00:00:00.000Z' }],
+          result_info: { page: 2, total_pages: 2 },
+        });
+      }
+      return Response.json({
+        success: true,
+        result: [{ script: { id: 'pages-v2-docs-ver-1' }, modified_on: '2026-06-02T00:00:00.000Z' }],
+        result_info: { page: 1, total_pages: 2 },
+      });
+    },
+  });
+
+  const inventory = await client.listUserWorkers();
+  assert.deepEqual(inventory.workers.map((worker) => worker.name), ['pages-v2-docs-ver-1', 'pages-v2-blog-ver-2']);
+  assert.equal(inventory.completeness, 'complete');
+  assert.deepEqual(requests.map((url) => new URL(url).search), ['', '?page=2', '']);
+});
+
+test('listUserWorkers rejects repeated Worker names that could fake a complete paginated count', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 2 } });
+      return Response.json({
+        success: true,
+        result: [{ id: 'pages-v2-docs-ver-1' }],
+        result_info: { page: url.searchParams.get('page') === '2' ? 2 : 1, total_pages: 2 },
+      });
+    },
   });
 
   await assert.rejects(
     () => client.listUserWorkers(),
-    (error) =>
-      error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID' && !error.message.includes('cf_secret_token')
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
   );
 });
 
-test('listUserWorkers rejects invalid pagination metadata instead of looping indefinitely', async () => {
+test('listUserWorkers rejects a paginated response for the wrong page', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      if (!url.pathname.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 2 } });
+      return Response.json({
+        success: true,
+        result: [{ id: url.searchParams.has('page') ? 'pages-v2-blog-ver-2' : 'pages-v2-docs-ver-1' }],
+        result_info: { page: 1, total_pages: 2 },
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+});
+
+test('listUserWorkers rejects first-page pagination metadata that starts after page one', async () => {
   let requests = 0;
   const client = createWfpClient({
     accountId: 'account_1',
@@ -226,8 +268,11 @@ test('listUserWorkers rejects invalid pagination metadata instead of looping ind
     dispatchNamespace: 'xd-cell-workers-production',
     fetch: async () => {
       requests += 1;
-      if (requests > 3) throw new Error('TEST_REQUEST_LIMIT_EXCEEDED');
-      return Response.json({ success: true, result: [], result_info: { page: 1, total_pages: 'invalid' } });
+      return Response.json({
+        success: true,
+        result: [{ id: 'pages-v2-blog-ver-2' }],
+        result_info: { page: 2, total_pages: 2 },
+      });
     },
   });
 
@@ -238,12 +283,85 @@ test('listUserWorkers rejects invalid pagination metadata instead of looping ind
   assert.equal(requests, 1);
 });
 
-test('listUserWorkers rejects a short page without pagination metadata', async () => {
+test('listUserWorkers retries the list once when script_count initially disagrees', async () => {
+  let listRequests = 0;
   const client = createWfpClient({
     accountId: 'account_1',
     apiToken: 'cf_secret_token',
     dispatchNamespace: 'xd-cell-workers-production',
-    fetch: async () => Response.json({ success: true, result: [] }),
+    fetch: async (request) => {
+      if (!request.url.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 2 } });
+      listRequests += 1;
+      return Response.json({
+        success: true,
+        result: Array.from({ length: listRequests }, (_, index) => ({ id: `pages-v2-site-${index + 1}` })),
+      });
+    },
+  });
+
+  const inventory = await client.listUserWorkers();
+  assert.equal(listRequests, 2);
+  assert.equal(inventory.completeness, 'complete');
+  assert.equal(inventory.scannedCount, 2);
+  assert.equal(inventory.namespaceScriptCount, 2);
+});
+
+test('listUserWorkers reports incomplete after one retry still disagrees with script_count', async () => {
+  let listRequests = 0;
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      if (!request.url.endsWith('/scripts')) return Response.json({ success: true, result: { script_count: 3 } });
+      listRequests += 1;
+      return Response.json({
+        success: true,
+        result: Array.from({ length: listRequests }, (_, index) => ({ id: `pages-v2-site-${index + 1}` })),
+      });
+    },
+  });
+
+  assert.deepEqual(await client.listUserWorkers(), {
+    workers: [
+      { name: 'pages-v2-site-1', created_on: null, modified_on: null },
+      { name: 'pages-v2-site-2', created_on: null, modified_on: null },
+    ],
+    completeness: 'incomplete',
+    scannedCount: 2,
+    namespaceScriptCount: 3,
+  });
+  assert.equal(listRequests, 2);
+});
+
+test('listUserWorkers reports a complete empty namespace', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) =>
+      request.url.endsWith('/scripts')
+        ? Response.json({ success: true, result: [] })
+        : Response.json({ success: true, result: { script_count: 0 } }),
+  });
+
+  assert.deepEqual(await client.listUserWorkers(), {
+    workers: [],
+    completeness: 'complete',
+    scannedCount: 0,
+    namespaceScriptCount: 0,
+  });
+});
+
+test('listUserWorkers rejects a malformed namespace script_count instead of reporting a complete empty list', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) =>
+      request.url.endsWith('/scripts')
+        ? Response.json({ success: true, result: [] })
+        : Response.json({ success: true, result: { script_count: null } }),
   });
 
   await assert.rejects(
@@ -252,18 +370,24 @@ test('listUserWorkers rejects a short page without pagination metadata', async (
   );
 });
 
-test('listUserWorkers rejects pagination metadata for a different page', async () => {
+test('listUserWorkers rejects a malformed list result without checking namespace details', async () => {
+  let requests = 0;
   const client = createWfpClient({
     accountId: 'account_1',
     apiToken: 'cf_secret_token',
     dispatchNamespace: 'xd-cell-workers-production',
-    fetch: async () => Response.json({ success: true, result: [], result_info: { page: 2, total_pages: 2 } }),
+    fetch: async () => {
+      requests += 1;
+      return Response.json({ success: true, result: {} });
+    },
   });
 
   await assert.rejects(
     () => client.listUserWorkers(),
-    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+    (error) =>
+      error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID' && !error.message.includes('cf_secret_token')
   );
+  assert.equal(requests, 1);
 });
 
 test('uploadUserWorker can upload static assets before deploying thin assets worker', async () => {

@@ -136,26 +136,45 @@ export function createWfpClient({
     },
 
     async listUserWorkers() {
-      const workers = [];
-      const perPage = 100;
-      for (let page = 1; ; page += 1) {
-        const url = new URL(scriptsUrl(baseUrl, account, namespace));
-        url.searchParams.set('page', String(page));
-        url.searchParams.set('per_page', String(perPage));
-        const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
-        const pageWorkers = readCloudflareListResult(payload);
-        workers.push(
-          ...pageWorkers
-            .map((worker) => ({
-              name: worker?.script?.id || worker?.id || worker?.name,
-              created_on: worker?.created_on || null,
-              modified_on: worker?.modified_on || null,
-            }))
-            .filter((worker) => typeof worker.name === 'string' && worker.name !== '')
-        );
-        if (!cloudflareListHasNextPage(payload, page)) break;
-      }
-      return workers;
+      const readList = async () => {
+        const workers = [];
+        const workerNames = new Set();
+        const firstUrl = scriptsUrl(baseUrl, account, namespace);
+        const firstPayload = await requestCloudflarePayload(fetch, apiToken, firstUrl, { method: 'GET' });
+        appendUniqueWorkers(workers, workerNames, normalizeListedWorkers(readCloudflareListResult(firstPayload)));
+        const firstPage = readCloudflarePagination(firstPayload);
+        if (!firstPage) return workers;
+        if (firstPage.page !== 1) throw invalidCloudflareListResponse();
+        if (firstPage.totalPages <= 1) return workers;
+
+        for (let page = 2; page <= firstPage.totalPages; page += 1) {
+          const url = new URL(firstUrl);
+          url.searchParams.set('page', String(page));
+          const payload = await requestCloudflarePayload(fetch, apiToken, url.toString(), { method: 'GET' });
+          const pagination = readCloudflarePagination(payload);
+          if (!pagination || pagination.page !== page || pagination.totalPages !== firstPage.totalPages) {
+            throw invalidCloudflareListResponse();
+          }
+          appendUniqueWorkers(workers, workerNames, normalizeListedWorkers(readCloudflareListResult(payload)));
+        }
+        return workers;
+      };
+
+      let workers = await readList();
+      const namespaceScriptCount = await readNamespaceScriptCount({
+        fetch,
+        apiToken,
+        baseUrl,
+        account,
+        namespace,
+      });
+      if (workers.length !== namespaceScriptCount) workers = await readList();
+      return {
+        workers,
+        completeness: workers.length === namespaceScriptCount ? 'complete' : 'incomplete',
+        scannedCount: workers.length,
+        namespaceScriptCount,
+      };
     },
 
     async deleteUserWorker(scriptName) {
@@ -410,13 +429,45 @@ function readCloudflareListResult(payload) {
   throw invalidCloudflareListResponse();
 }
 
-function cloudflareListHasNextPage(payload, page) {
+function readCloudflarePagination(payload) {
   const responsePage = Number(payload?.result_info?.page);
   const totalPages = Number(payload?.result_info?.total_pages);
-  if (!Number.isInteger(responsePage) || responsePage !== page || !Number.isInteger(totalPages) || totalPages < page) {
-    throw invalidCloudflareListResponse();
+  if (
+    !Number.isInteger(responsePage) ||
+    responsePage < 1 ||
+    !Number.isInteger(totalPages) ||
+    totalPages < responsePage
+  ) {
+    return null;
   }
-  return page < totalPages;
+  return { page: responsePage, totalPages };
+}
+
+function normalizeListedWorkers(workers) {
+  return workers
+    .map((worker) => ({
+      name: worker?.script?.id || worker?.id || worker?.name,
+      created_on: worker?.created_on || null,
+      modified_on: worker?.modified_on || null,
+    }))
+    .filter((worker) => typeof worker.name === 'string' && worker.name !== '');
+}
+
+function appendUniqueWorkers(target, names, workers) {
+  for (const worker of workers) {
+    if (names.has(worker.name)) throw invalidCloudflareListResponse();
+    names.add(worker.name);
+    target.push(worker);
+  }
+}
+
+async function readNamespaceScriptCount({ fetch, apiToken, baseUrl, account, namespace }) {
+  const payload = await requestCloudflarePayload(fetch, apiToken, namespaceUrl(baseUrl, account, namespace), {
+    method: 'GET',
+  });
+  const scriptCount = payload?.result?.script_count;
+  if (!Number.isInteger(scriptCount) || scriptCount < 0) throw invalidCloudflareListResponse();
+  return scriptCount;
 }
 
 function invalidCloudflareListResponse() {
@@ -489,6 +540,10 @@ function scriptUrl(baseUrl, accountId, namespace, scriptName) {
 
 function scriptsUrl(baseUrl, accountId, namespace) {
   return `${baseUrl}/accounts/${accountId}/workers/dispatch/namespaces/${namespace}/scripts`;
+}
+
+function namespaceUrl(baseUrl, accountId, namespace) {
+  return `${baseUrl}/accounts/${accountId}/workers/dispatch/namespaces/${namespace}`;
 }
 
 function normalizeApiBase(value) {
