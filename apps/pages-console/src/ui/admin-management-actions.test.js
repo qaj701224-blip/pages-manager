@@ -103,6 +103,10 @@ test('admin resource governance exposes a manual read-only orphan scan', () => {
   assert.match(adminDeploymentCleanupsSource, /<AppTabs\.Content forceMount value="orphan-scan">/);
   assert.match(adminDeploymentCleanupsSource, /filterWorkerOrphanScanWorkers/);
   assert.match(adminDeploymentCleanupsSource, /orphanReason/);
+  assert.match(adminDeploymentCleanupsSource, /state\.scan\.completeness === 'incomplete'/);
+  assert.match(adminDeploymentCleanupsSource, /state\.scan\.scannedCount/);
+  assert.match(adminDeploymentCleanupsSource, /state\.scan\.namespaceScriptCount/);
+  assert.match(adminDeploymentCleanupsSource, /扫描结果可能不完整/);
   assert.doesNotMatch(adminDeploymentCleanupsSource, /deleteAdminWorkerOrphan|cleanupOrphanWorker/);
 });
 

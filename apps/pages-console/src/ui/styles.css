@@ -2611,6 +2611,20 @@ button {
   font-size: 13px;
 }
 
+.governance-incomplete-warning {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.governance-incomplete-warning span {
+  font-size: 13px;
+}
+
 .governance-filter-toolbar {
   justify-content: flex-start;
 }

@@ -197,6 +197,15 @@ function OrphanScanPanel() {
       {state.status === 'error' && !state.scan ? <AdminError title="Orphan Scan 失败" error={state.error} /> : null}
       {state.scan ? (
         <>
+          {state.scan.completeness === 'incomplete' ? (
+            <div className="governance-incomplete-warning" role="alert">
+              <strong>扫描结果可能不完整</strong>
+              <span>
+                namespace 清单与扫描条数不一致：已扫描 {state.scan.scannedCount ?? 0} 个，
+                namespace 报告 {state.scan.namespaceScriptCount ?? 0} 个。请重新扫描后再作判断。
+              </span>
+            </div>
+          ) : null}
           <div className="stats-strip">
             <GovernanceStat label="Worker 总数" value={summary?.total} />
             <GovernanceStat label="Active route" value={summary?.referencedByActiveRoute} />
