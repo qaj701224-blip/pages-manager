@@ -110,6 +110,22 @@ test('admin resource governance exposes a manual read-only orphan scan', () => {
   assert.doesNotMatch(adminDeploymentCleanupsSource, /deleteAdminWorkerOrphan|cleanupOrphanWorker/);
 });
 
+test('resource governance actions require complete scans and expose safe domain links', () => {
+  assert.match(adminDeploymentCleanupsSource, /state\.scan\.completeness === 'complete'/);
+  assert.match(adminDeploymentCleanupsSource, /backfillAdminWorkerOrphans/);
+  assert.match(adminDeploymentCleanupsSource, /incomplete/);
+  assert.match(adminDeploymentCleanupsSource, /target="_blank"/);
+  assert.match(adminDeploymentCleanupsSource, /rel="noopener noreferrer"/);
+  assert.match(adminV1SitesSource, /bulkRetireAdminV1Sites/);
+  assert.match(adminV1SitesSource, /deleteAdminV1Site/);
+  assert.match(adminV1SitesSource, /platform_reserved/);
+  assert.match(adminV1SitesSource, /unknown/);
+  assert.match(adminV1SitesSource, /target="_blank"/);
+  assert.match(adminV1SitesSource, /rel="noopener noreferrer"/);
+  assert.match(adminSitesSource, /target="_blank"/);
+  assert.match(adminSitesSource, /rel="noopener noreferrer"/);
+});
+
 test('admin v1 site inventory is registered as a read-only operations page', () => {
   assert.match(adminSource, /id: 'v1-sites'/);
   assert.match(adminSource, /Legacy v1 Sites/);
@@ -120,7 +136,7 @@ test('admin v1 site inventory is registered as a read-only operations page', () 
   assert.match(adminV1SitesSource, /疑似废弃/);
   assert.match(adminV1SitesSource, /migratedCandidate/);
   assert.match(adminV1SitesSource, /onRetry=\{reload\}/);
-  assert.doesNotMatch(adminV1SitesSource, /\.metadata|token|delete/i);
+  assert.doesNotMatch(adminV1SitesSource, /\.metadata|token/i);
 });
 
 test('admin errors preserve actionable API guidance and support an optional retry', () => {

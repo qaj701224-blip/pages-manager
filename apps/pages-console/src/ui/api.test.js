@@ -6,6 +6,9 @@ import {
   createAccessKey,
   createTeam,
   createWorkspaceSite,
+  backfillAdminWorkerOrphans,
+  bulkRetireAdminV1Sites,
+  deleteAdminV1Site,
   createTeamAccessKey,
   deleteAdminSite,
   deleteAdminSiteRuntimeSecret,
@@ -43,6 +46,7 @@ import {
   revokePlatformAdmin,
   revokeTeamAccessKey,
   runAdminDeploymentCleanup,
+  runAdminDeploymentCleanupsDue,
   scanAdminWorkerOrphans,
   putSiteRuntimeSecret,
   putSiteRuntimeVar,
@@ -208,6 +212,32 @@ test('admin governance API helpers use console admin endpoints', async () => {
   assert.deepEqual(JSON.parse(calls[5].init.body), { reason: 'manual' });
   assert.deepEqual(JSON.parse(calls[11].init.body), { userId: 'usr_admin', reason: 'ops owner' });
   assert.deepEqual(JSON.parse(calls[12].init.body), { reason: 'rotation' });
+});
+
+test('resource governance write helpers use bounded admin endpoints and csrf', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ summary: {}, results: [] });
+  };
+
+  await backfillAdminWorkerOrphans(['pages-v2-demo'], { reason: 'backfill' }, { fetchImpl, csrfToken: 'csrf-1' });
+  await runAdminDeploymentCleanupsDue(50, { reason: 'retry' }, { fetchImpl, csrfToken: 'csrf-2' });
+  await deleteAdminV1Site('legacy demo', { reason: 'retire' }, { fetchImpl, csrfToken: 'csrf-3' });
+  await bulkRetireAdminV1Sites(['legacy demo'], { reason: 'bulk retire' }, { fetchImpl, csrfToken: 'csrf-4' });
+
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.init.method, call.init.headers['X-CSRF-Token']]),
+    [
+      ['/api/console/admin/worker-orphan-scan/backfill', 'POST', 'csrf-1'],
+      ['/api/console/admin/deployment-cleanups/run-due', 'POST', 'csrf-2'],
+      ['/api/console/admin/v1-sites/legacy%20demo', 'DELETE', 'csrf-3'],
+      ['/api/console/admin/v1-sites/bulk-retire', 'POST', 'csrf-4'],
+    ]
+  );
+  assert.deepEqual(JSON.parse(calls[0].init.body), { reason: 'backfill', workerNames: ['pages-v2-demo'] });
+  assert.deepEqual(JSON.parse(calls[1].init.body), { reason: 'retry', limit: 50 });
+  assert.deepEqual(JSON.parse(calls[3].init.body), { reason: 'bulk retire', names: ['legacy demo'] });
 });
 
 test('admin site and team edit helpers stay under admin endpoints', async () => {

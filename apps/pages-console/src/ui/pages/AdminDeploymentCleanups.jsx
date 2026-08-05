@@ -1,7 +1,13 @@
-import { RefreshCw, RotateCw, Search } from 'lucide-react';
+import { Archive, RefreshCw, RotateCw, Search } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
-import { listAdminDeploymentCleanups, runAdminDeploymentCleanup, scanAdminWorkerOrphans } from '../api.js';
+import {
+  backfillAdminWorkerOrphans,
+  listAdminDeploymentCleanups,
+  runAdminDeploymentCleanup,
+  runAdminDeploymentCleanupsDue,
+  scanAdminWorkerOrphans,
+} from '../api.js';
 import { filterWorkerOrphanScanWorkers } from '../admin-resource-governance-model.js';
 import { AppTabs } from '../components/RadixPrimitives.jsx';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
@@ -52,6 +58,7 @@ function CleanupTasksPanel() {
   const [filter, setFilter] = useState('pending');
   const [state, setState] = useState({ status: 'loading', tasks: [], error: null, notice: null });
   const [busyId, setBusyId] = useState('');
+  const [runDueBusy, setRunDueBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -108,6 +115,26 @@ function CleanupTasksPanel() {
     }
   }
 
+  async function runDueCleanups() {
+    if (runDueBusy) return;
+    setRunDueBusy(true);
+    setState((current) => ({ ...current, error: null, notice: null }));
+    try {
+      const data = await runAdminDeploymentCleanupsDue(50, { reason: 'retry failed cleanup tasks from admin console' });
+      const tasks = await loadCleanups(filter);
+      setState({
+        status: 'ready',
+        tasks,
+        error: data.summary?.failed ? new Error(`有 ${data.summary.failed} 个 cleanup task 仍然失败。`) : null,
+        notice: { message: `已触发 ${data.summary?.processed ?? data.summary?.attempted ?? 0} 个到期 cleanup task。` },
+      });
+    } catch (error) {
+      setState((current) => ({ ...current, error, notice: null }));
+    } finally {
+      setRunDueBusy(false);
+    }
+  }
+
   if (state.status === 'loading') return <div className="placeholder">加载中</div>;
   if (state.status === 'error' && state.tasks.length === 0) {
     return <AdminError title="Deployment Cleanups 加载失败" error={state.error} />;
@@ -127,6 +154,12 @@ function CleanupTasksPanel() {
           <RefreshCw size={15} />
           <span>刷新</span>
         </button>
+        {filter === 'failed' ? (
+          <button className="table-action" type="button" disabled={runDueBusy || Boolean(busyId)} onClick={runDueCleanups}>
+            <RotateCw size={15} />
+            重试全部 failed
+          </button>
+        ) : null}
       </div>
       {state.notice ? <div className="form-note success">{state.notice.message}</div> : null}
       {state.error ? (
@@ -162,8 +195,15 @@ function CleanupTasksPanel() {
 function OrphanScanPanel() {
   const [filter, setFilter] = useState('all');
   const [state, setState] = useState({ status: 'idle', scan: null, error: null });
+  const [selectedNames, setSelectedNames] = useState(() => new Set());
+  const [backfillBusy, setBackfillBusy] = useState(false);
   const workers = state.scan?.workers || [];
   const visibleWorkers = useMemo(() => filterWorkerOrphanScanWorkers(workers, filter), [workers, filter]);
+  const completeScan = state.scan ? state.scan.completeness === 'complete' : false;
+  const deletableWorkers = visibleWorkers.filter((worker) => worker.orphanCandidate);
+  const selectedWorkers = deletableWorkers.filter((worker) => selectedNames.has(worker.name));
+  const allDeletableSelected = deletableWorkers.length > 0 && selectedWorkers.length === deletableWorkers.length;
+  const hasCurrentFilter = filter !== 'all';
 
   async function runOrphanScan() {
     setState((current) => ({ ...current, status: 'scanning', error: null }));
@@ -171,8 +211,62 @@ function OrphanScanPanel() {
       const data = await scanAdminWorkerOrphans();
       setState({ status: 'ready', scan: data.scan || null, error: null });
       setFilter('all');
+      setSelectedNames(new Set());
     } catch (error) {
       setState((current) => ({ ...current, status: current.scan ? 'ready' : 'error', error }));
+    }
+  }
+
+  function toggleWorkerSelection(worker) {
+    if (!completeScan || !worker.orphanCandidate || backfillBusy) return;
+    setSelectedNames((current) => {
+      const next = new Set(current);
+      if (next.has(worker.name)) next.delete(worker.name);
+      else next.add(worker.name);
+      return next;
+    });
+  }
+
+  function toggleAllFilteredWorkers() {
+    if (!completeScan || !hasCurrentFilter || deletableWorkers.length === 0 || backfillBusy) return;
+    setSelectedNames((current) => {
+      const next = new Set(current);
+      if (allDeletableSelected) {
+        for (const worker of deletableWorkers) next.delete(worker.name);
+      } else {
+        for (const worker of deletableWorkers) next.add(worker.name);
+      }
+      return next;
+    });
+  }
+
+  async function backfillSelectedWorkers() {
+    const names = selectedWorkers.map((worker) => worker.name);
+    if (!completeScan || names.length === 0 || backfillBusy) return;
+    const confirmation = globalThis.prompt?.(`输入 BULK BACKFILL ${names.length} 确认创建 cleanup task：${names.join(', ')}`);
+    if (confirmation !== `BULK BACKFILL ${names.length}`) return;
+    setBackfillBusy(true);
+    setState((current) => ({ ...current, error: null }));
+    try {
+      const data = await backfillAdminWorkerOrphans(names, { reason: 'orphan backfill from admin console' });
+      setState((current) => ({
+        ...current,
+        scan: current.scan
+          ? {
+              ...current.scan,
+              workers: current.scan.workers.map((worker) => {
+                const result = (data.results || []).find((item) => item.workerName === worker.name);
+                return result?.status === 'created' ? { ...worker, hasPendingCleanupTask: true } : worker;
+              }),
+            }
+          : current.scan,
+        error: data.summary?.skipped ? new Error(`有 ${data.summary.skipped} 个 Worker 被跳过。`) : null,
+      }));
+      setSelectedNames(new Set());
+    } catch (error) {
+      setState((current) => ({ ...current, error }));
+    } finally {
+      setBackfillBusy(false);
     }
   }
 
@@ -213,7 +307,7 @@ function OrphanScanPanel() {
             <GovernanceStat label="Cleanup task" value={summary?.hasPendingCleanupTask} />
             <GovernanceStat label="Orphan candidate" value={summary?.orphanCandidates} />
           </div>
-          <div className="admin-toolbar governance-filter-toolbar">
+            <div className="admin-toolbar governance-filter-toolbar">
             <div className="segmented compact-segmented" role="tablist" aria-label="Worker 分类">
               {ORPHAN_FILTERS.map(([value, label]) => (
                 <button className={filter === value ? 'active' : ''} key={value} type="button" onClick={() => setFilter(value)}>
@@ -231,6 +325,22 @@ function OrphanScanPanel() {
             <span className="toolbar-count">
               {visibleWorkers.length} / {workers.length}
             </span>
+            {hasCurrentFilter ? (
+              <button className="table-action" type="button" disabled={!completeScan || deletableWorkers.length === 0 || backfillBusy} onClick={toggleAllFilteredWorkers}>
+                {allDeletableSelected ? '取消全选筛选结果' : '全选当前筛选结果'}
+              </button>
+            ) : null}
+            <span className="toolbar-count">{selectedWorkers.length} 个候选已选择</span>
+            <button
+              className="table-action danger"
+              type="button"
+              disabled={!completeScan || selectedWorkers.length === 0 || backfillBusy}
+              title={completeScan ? '仅完整扫描结果允许 backfill' : '扫描不完整，禁止 backfill'}
+              onClick={backfillSelectedWorkers}
+            >
+              <Archive size={16} />
+              Backfill cleanup
+            </button>
           </div>
           <div className="governance-scan-meta">扫描时间：{formatDate(state.scan.scannedAt)}</div>
           {visibleWorkers.length > 0 ? (
@@ -238,6 +348,7 @@ function OrphanScanPanel() {
               <table className="admin-table">
                 <thead>
                   <tr>
+                    <th>选择</th>
                     <th>Worker</th>
                     <th>分类</th>
                     <th>候选原因</th>
@@ -247,7 +358,13 @@ function OrphanScanPanel() {
                 </thead>
                 <tbody>
                   {visibleWorkers.map((worker) => (
-                    <OrphanScanRow key={worker.name} worker={worker} />
+                    <OrphanScanRow
+                      key={worker.name}
+                      worker={worker}
+                      selected={selectedNames.has(worker.name)}
+                      onToggle={toggleWorkerSelection}
+                      disabled={!completeScan || backfillBusy}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -323,7 +440,7 @@ function CleanupRow({ task, busy, onRun }) {
   );
 }
 
-function OrphanScanRow({ worker }) {
+function OrphanScanRow({ worker, selected, onToggle, disabled }) {
   const classifications = [];
   if (worker.referencedByActiveRoute) classifications.push('active route');
   if (worker.rollbackEligibleVersion) classifications.push('rollback eligible');
@@ -332,8 +449,27 @@ function OrphanScanRow({ worker }) {
 
   return (
     <tr>
+      <td data-label="选择">
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={disabled || !worker.orphanCandidate}
+          aria-label={`选择 ${worker.name}`}
+          title={worker.orphanCandidate ? '选择后可 backfill cleanup' : '只有 orphan candidate 可 backfill'}
+          onChange={() => onToggle(worker)}
+        />
+      </td>
       <td data-label="Worker">
         <strong>{worker.name}</strong>
+        {safeExternalUrl(worker.hostname || worker.url || worker.activeRouteHostname) ? (
+          <a
+            href={safeExternalUrl(worker.hostname || worker.url || worker.activeRouteHostname)}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {worker.hostname || worker.url || worker.activeRouteHostname}
+          </a>
+        ) : null}
       </td>
       <td data-label="分类">
         <div className="chip-row">
@@ -349,6 +485,18 @@ function OrphanScanRow({ worker }) {
       <td data-label="更新时间">{formatDate(worker.modifiedOn)}</td>
     </tr>
   );
+}
+
+function safeExternalUrl(value) {
+  const raw = String(value || '').trim();
+  if (!/^https?:\/\//i.test(raw)) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
 }
 
 function orphanReasonLabel(reason) {
