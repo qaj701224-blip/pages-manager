@@ -430,27 +430,33 @@ function readCloudflareListResult(payload) {
 }
 
 function readCloudflarePagination(payload) {
-  const responsePage = Number(payload?.result_info?.page);
-  const totalPages = Number(payload?.result_info?.total_pages);
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, 'result_info')) return null;
+  const resultInfo = payload.result_info;
+  if (!isPlainObject(resultInfo)) throw invalidCloudflareListResponse();
+  const responsePage = resultInfo.page;
+  const totalPages = resultInfo.total_pages;
   if (
     !Number.isInteger(responsePage) ||
     responsePage < 1 ||
     !Number.isInteger(totalPages) ||
+    totalPages < 1 ||
     totalPages < responsePage
   ) {
-    return null;
+    throw invalidCloudflareListResponse();
   }
   return { page: responsePage, totalPages };
 }
 
 function normalizeListedWorkers(workers) {
-  return workers
-    .map((worker) => ({
-      name: worker?.script?.id || worker?.id || worker?.name,
+  return workers.map((worker) => {
+    const name = worker?.script?.id || worker?.id || worker?.name;
+    if (typeof name !== 'string' || !name.trim()) throw invalidCloudflareListResponse();
+    return {
+      name: name.trim(),
       created_on: worker?.created_on || null,
       modified_on: worker?.modified_on || null,
-    }))
-    .filter((worker) => typeof worker.name === 'string' && worker.name !== '');
+    };
+  });
 }
 
 function appendUniqueWorkers(target, names, workers) {
@@ -476,6 +482,10 @@ function invalidCloudflareListResponse() {
     code: 'WFP_API_RESPONSE_INVALID',
     message: 'Cloudflare WFP list response was invalid.',
   });
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function requestCloudflareOk(fetch, apiToken, url, init) {

@@ -185,6 +185,66 @@ test('listUserWorkers accepts an undocumented single-page list and verifies name
   assert.equal(requests.every((request) => request.headers.get('Authorization') === 'Bearer cf_secret_token'), true);
 });
 
+test('listUserWorkers rejects partial result_info metadata instead of treating it as a complete single page', async () => {
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) =>
+      request.url.endsWith('/scripts')
+        ? Response.json({ success: true, result: [{ id: 'pages-v2-docs-ver-1' }], result_info: { page: 1 } })
+        : Response.json({ success: true, result: { script_count: 1 } }),
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+});
+
+test('listUserWorkers rejects malformed result_info values and malformed worker items', async () => {
+  const malformedPagination = [
+    { page: '1', total_pages: 1 },
+    { page: 0, total_pages: 1 },
+    { page: 1, total_pages: 0 },
+    { page: 2, total_pages: 1 },
+    'invalid',
+    null,
+  ];
+
+  for (const resultInfo of malformedPagination) {
+    const client = createWfpClient({
+      accountId: 'account_1',
+      apiToken: 'cf_secret_token',
+      dispatchNamespace: 'xd-cell-workers-production',
+      fetch: async (request) =>
+        request.url.endsWith('/scripts')
+          ? Response.json({ success: true, result: [{ id: 'pages-v2-docs-ver-1' }], result_info: resultInfo })
+          : Response.json({ success: true, result: { script_count: 1 } }),
+    });
+
+    await assert.rejects(
+      () => client.listUserWorkers(),
+      (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+    );
+  }
+
+  const malformedWorker = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) =>
+      request.url.endsWith('/scripts')
+        ? Response.json({ success: true, result: [{ created_on: '2026-06-01T00:00:00.000Z' }] })
+        : Response.json({ success: true, result: { script_count: 1 } }),
+  });
+
+  await assert.rejects(
+    () => malformedWorker.listUserWorkers(),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+});
+
 test('listUserWorkers follows usable result_info pagination before checking script count', async () => {
   const requests = [];
   const client = createWfpClient({

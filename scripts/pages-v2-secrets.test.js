@@ -69,6 +69,8 @@ if [[ "$*" == *"secret list"* ]]; then
     list-present) printf '[{"name":"PAGES_V1_SITES_KV_NAMESPACE_ID"}]\\n' ;;
     list-absent) printf '[{"name":"CF_API_TOKEN"}]\\n' ;;
     list-invalid-json) printf '{invalid-json\\n' ;;
+    list-wrong-shape) printf '{"unexpected":"object"}\\n' ;;
+    delete-failed) printf '[{"name":"PAGES_V1_SITES_KV_NAMESPACE_ID"}]\\n' ;;
     list-failed) printf 'secret not found\\n' >&2; exit 1 ;;
   esac
 fi
@@ -153,6 +155,27 @@ test('pages-api secret injection fails closed when optional secret listing fails
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /secret list failed|not found/i);
+});
+
+test('pages-api secret injection fails closed when optional secret listing JSON is invalid', () => {
+  const { result } = runScriptWithMockPnpm('apps/pages-api', { PAGES_V1_SITES_KV_NAMESPACE_ID: '' }, 'list-invalid-json');
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /optional secret list returned invalid JSON/i);
+});
+
+test('pages-api secret injection fails closed when optional secret listing has the wrong JSON shape', () => {
+  const { result } = runScriptWithMockPnpm('apps/pages-api', { PAGES_V1_SITES_KV_NAMESPACE_ID: '' }, 'list-wrong-shape');
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /optional secret list returned invalid JSON/i);
+});
+
+test('pages-api secret injection fails closed when optional secret deletion fails', () => {
+  const { result } = runScriptWithMockPnpm('apps/pages-api', { PAGES_V1_SITES_KV_NAMESPACE_ID: '' }, 'delete-failed');
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /delete failed/i);
 });
 
 test('pages-auth secret injection includes SSO secret and session signing secrets', () => {

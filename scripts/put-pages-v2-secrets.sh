@@ -62,7 +62,14 @@ delete_optional_secret_if_unset() {
       try {
         const secrets = JSON.parse(input);
         const name = process.argv[1];
-        const present = Array.isArray(secrets) && secrets.some((item) => item && item.name === name);
+        const valid = Array.isArray(secrets) && secrets.every(
+          (item) => item && typeof item === "object" && !Array.isArray(item) && typeof item.name === "string"
+        );
+        if (!valid) {
+          process.exitCode = 1;
+          return;
+        }
+        const present = secrets.some((item) => item.name === name);
         process.stdout.write(present ? "1" : "0");
       } catch {
         process.exitCode = 1;
