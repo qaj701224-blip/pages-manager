@@ -214,6 +214,9 @@ SECRET_NAMES=()
 case "$APP_DIR" in
   apps/pages-api)
     SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN SLACK_PAGES_ALERT_WEBHOOK_URL SITE_SECRET_ENCRYPTION_KEY WEBHOOK_URL_ENCRYPTION_KEY XDS_OPENAI_TOKEN)
+    if [ -n "${PAGES_V1_SITES_KV_NAMESPACE_ID:-}" ]; then
+      SECRET_NAMES+=(PAGES_V1_SITES_KV_NAMESPACE_ID)
+    fi
     collect_access_key_pepper_secrets
     ;;
   apps/pages-auth)

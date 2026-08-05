@@ -684,7 +684,17 @@ export class D1PagesStore {
   }
 
   async getAdminDashboard({ environment }) {
-    const [siteRow, userRow, teamRow, deploymentRow, failedDeploymentCountRow, failedDeploymentsResult] = await Promise.all([
+    const [
+      siteRow,
+      userRow,
+      teamRow,
+      deploymentRow,
+      failedDeploymentCountRow,
+      pendingCleanupRow,
+      failedCleanupRow,
+      oldestPendingCleanupRow,
+      failedDeploymentsResult,
+    ] = await Promise.all([
       this.db
         .prepare('SELECT COUNT(*) AS count FROM sites WHERE environment = ? AND deleted_at IS NULL')
         .bind(environment)
@@ -697,6 +707,22 @@ export class D1PagesStore {
       this.db.prepare('SELECT COUNT(*) AS count FROM deployments WHERE environment = ?').bind(environment).first(),
       this.db
         .prepare("SELECT COUNT(*) AS count FROM deployments WHERE environment = ? AND status = 'failed'")
+        .bind(environment)
+        .first(),
+      this.db
+        .prepare("SELECT COUNT(*) AS count FROM deployment_resource_cleanup_tasks WHERE environment = ? AND status = 'pending'")
+        .bind(environment)
+        .first(),
+      this.db
+        .prepare("SELECT COUNT(*) AS count FROM deployment_resource_cleanup_tasks WHERE environment = ? AND status = 'failed'")
+        .bind(environment)
+        .first(),
+      this.db
+        .prepare(
+          `SELECT MIN(cleanup_after) AS oldest_pending_at
+          FROM deployment_resource_cleanup_tasks
+          WHERE environment = ? AND status = 'pending'`
+        )
         .bind(environment)
         .first(),
       this.db
@@ -740,8 +766,74 @@ export class D1PagesStore {
         deployments: Number(deploymentRow?.count || 0),
         failedDeployments: Number(failedDeploymentCountRow?.count || 0),
       },
+      resourceCleanup: {
+        pendingTasks: Number(pendingCleanupRow?.count || 0),
+        failedTasks: Number(failedCleanupRow?.count || 0),
+        oldestPendingAt: oldestPendingCleanupRow?.oldest_pending_at || null,
+      },
       failedDeployments: (failedDeploymentsResult.results || []).map(mapAdminDeploymentWithOwner),
     };
+  }
+
+  async listWorkerOrphanScanReferences({ environment }) {
+    const [activeRoutesResult, versionsResult, cleanupTasksResult] = await Promise.all([
+      this.db
+        .prepare(
+          `SELECT worker_name, site_id, active_version_id
+          FROM site_routes
+          WHERE environment = ? AND route_status = 'active' AND worker_name IS NOT NULL`
+        )
+        .bind(environment)
+        .all(),
+      this.db
+        .prepare(
+          `SELECT site_versions.id, site_versions.worker_name, site_versions.site_id,
+            site_versions.artifact_availability, sites.slug AS site_slug,
+            sites.deleted_at AS site_deleted_at
+          FROM site_versions
+          LEFT JOIN sites ON sites.id = site_versions.site_id
+          WHERE sites.environment = ? AND site_versions.worker_name IS NOT NULL`
+        )
+        .bind(environment)
+        .all(),
+      this.db
+        .prepare(
+          `SELECT id, resource_ref, status
+          FROM deployment_resource_cleanup_tasks
+          WHERE environment = ? AND resource_type = 'wfp_user_worker'
+            AND status IN ('pending', 'failed', 'running')`
+        )
+        .bind(environment)
+        .all(),
+    ]);
+    return {
+      activeRoutes: (activeRoutesResult.results || []).map((row) => ({
+        workerName: row.worker_name,
+        siteId: row.site_id,
+        versionId: row.active_version_id || null,
+      })),
+      versions: (versionsResult.results || []).map((row) => ({
+        id: row.id,
+        workerName: row.worker_name,
+        siteId: row.site_id,
+        siteSlug: row.site_slug || null,
+        siteDeletedAt: row.site_deleted_at || null,
+        artifactAvailability: row.artifact_availability || 'active',
+      })),
+      cleanupTasks: (cleanupTasksResult.results || []).map((row) => ({
+        id: row.id,
+        resourceRef: row.resource_ref,
+        status: row.status,
+      })),
+    };
+  }
+
+  async listActiveSiteSlugs({ environment }) {
+    const result = await this.db
+      .prepare('SELECT id, slug FROM sites WHERE environment = ? AND deleted_at IS NULL ORDER BY slug ASC')
+      .bind(environment)
+      .all();
+    return (result.results || []).map((row) => ({ id: row.id, slug: row.slug }));
   }
 
   async listAdminUsers({ environment, query, limit = 50 }) {
@@ -4869,6 +4961,7 @@ function mapUser(row) {
   };
 }
 
+
 function mapSite(row) {
   return {
     id: row.id,
@@ -5717,4 +5810,3 @@ function mapDeploymentResourceCleanupTask(row) {
     updatedAt: row.updated_at,
   };
 }
-

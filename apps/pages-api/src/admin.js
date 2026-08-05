@@ -16,6 +16,12 @@ import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import { buildSiteOwnerTransferAuditEvent, refreshActiveRouteSnapshot } from './sites.js';
 import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
 import { createWfpClient, readWfpConfig } from '@xd/wfp-client';
+import {
+  buildWorkerOrphanScan,
+  createV1SitesAdminClient,
+  formatV1SitesInventory,
+  isManagedWfpWorkerName,
+} from './admin-resource-governance.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
@@ -39,7 +45,7 @@ export async function handleConsoleAdminApi(request, env, config, store) {
 
   if (url.pathname === `${CONSOLE_PREFIX}/admin/dashboard`) {
     if (request.method !== 'GET') return methodNotAllowed();
-    return getAdminDashboard(config, store);
+    return getAdminDashboard(env, config, store);
   }
 
   if (url.pathname === `${CONSOLE_PREFIX}/admin/ops`) {
@@ -50,6 +56,16 @@ export async function handleConsoleAdminApi(request, env, config, store) {
   if (url.pathname === `${CONSOLE_PREFIX}/admin/deployment-cleanups`) {
     if (request.method !== 'GET') return methodNotAllowed();
     return listDeploymentCleanups(url, env, config, store);
+  }
+
+  if (url.pathname === `${CONSOLE_PREFIX}/admin/worker-orphan-scan`) {
+    if (request.method !== 'GET') return methodNotAllowed();
+    return scanAdminWorkerOrphans(env, config, store);
+  }
+
+  if (url.pathname === `${CONSOLE_PREFIX}/admin/v1-sites`) {
+    if (request.method !== 'GET') return methodNotAllowed();
+    return listAdminV1Sites(env, config, store);
   }
 
   const cleanupRunMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/deployment-cleanups\/([^/]+)\/run$/);
@@ -221,15 +237,84 @@ export async function handleConsoleAdminApi(request, env, config, store) {
   return null;
 }
 
-async function getAdminDashboard(config, store) {
+async function getAdminDashboard(env, config, store) {
   const dashboard = await store.getAdminDashboard({ environment: config.environment });
+  const oldestPendingAt = dashboard.resourceCleanup?.oldestPendingAt || null;
   return jsonOk({
     dashboard: {
       environment: dashboard.environment,
       counts: dashboard.counts,
+      resourceCleanup: {
+        pendingTasks: dashboard.resourceCleanup?.pendingTasks || 0,
+        failedTasks: dashboard.resourceCleanup?.failedTasks || 0,
+        oldestPendingAt,
+        oldestPendingAgeSeconds: cleanupBacklogAgeSeconds(oldestPendingAt, readNow(env)),
+        orphanCandidates: null,
+        v1Sites: null,
+      },
       failedDeployments: dashboard.failedDeployments.map(formatAdminDeployment),
     },
   });
+}
+
+async function scanAdminWorkerOrphans(env, config, store) {
+  if (typeof store.listWorkerOrphanScanReferences !== 'function') {
+    return jsonError('WORKER_ORPHAN_SCAN_UNSUPPORTED', 'Worker orphan scan is unavailable.', 503, 'Retry later.');
+  }
+  const client = createWfpScanAdminClient(env, config);
+  if (!client) {
+    return jsonError(
+      'WORKER_ORPHAN_SCAN_UNSUPPORTED',
+      'Worker orphan scan is unavailable.',
+      503,
+      'Configure Cloudflare WFP inventory access.'
+    );
+  }
+  try {
+    const [workers, references] = await Promise.all([
+      client.listWorkers(),
+      store.listWorkerOrphanScanReferences({ environment: config.environment }),
+    ]);
+    return jsonOk({
+      scan: buildWorkerOrphanScan({
+        workers,
+        references,
+        environment: config.environment,
+        scannedAt: readNow(env),
+      }),
+    });
+  } catch {
+    return jsonError('WORKER_ORPHAN_SCAN_FAILED', 'Worker orphan scan failed.', 502, 'Check Cloudflare credentials and retry.');
+  }
+}
+
+async function listAdminV1Sites(env, config, store) {
+  const client = createV1SitesAdminClient(env);
+  if (!client || typeof store.listActiveSiteSlugs !== 'function') {
+    return jsonError('V1_SITES_UNSUPPORTED', 'Legacy v1 site inventory is unavailable.', 503, 'Configure v1 inventory access.');
+  }
+  try {
+    const [siteKeys, workers, activeV2Sites] = await Promise.all([
+      client.listSites(),
+      client.listWorkers(),
+      store.listActiveSiteSlugs({ environment: config.environment }),
+    ]);
+    return jsonOk({
+      sites: formatV1SitesInventory({
+        siteKeys,
+        workers,
+        activeV2Sites,
+        environment: config.environment,
+      }),
+    });
+  } catch {
+    return jsonError(
+      'V1_SITES_READ_FAILED',
+      'Legacy v1 site inventory could not be read.',
+      502,
+      'Check Cloudflare credentials and retry.'
+    );
+  }
 }
 
 function getAdminOps(config) {
@@ -344,7 +429,7 @@ async function executeDeploymentCleanupTask(env, config, store, task) {
       'Wait for the drain window or refresh.'
     );
   }
-  if (task.resourceType !== 'wfp_user_worker' || !isManagedWfpCleanupResource(task.resourceRef, config.environment)) {
+  if (task.resourceType !== 'wfp_user_worker' || !isManagedWfpWorkerName(task.resourceRef, config.environment)) {
     return cleanupTaskError(
       'CLEANUP_RESOURCE_UNSUPPORTED',
       'Cleanup resource is unsupported.',
@@ -541,10 +626,20 @@ function createWfpCleanupAdminClient(env, config) {
   };
 }
 
-function isManagedWfpCleanupResource(workerName, environment) {
-  if (typeof workerName !== 'string') return false;
-  if (environment === 'staging') return workerName.startsWith('pages-v2-staging-');
-  return workerName.startsWith('pages-v2-') && !workerName.startsWith('pages-v2-staging-');
+function createWfpScanAdminClient(env, config) {
+  if (env.WFP_RESOURCE_ADMIN_CLIENT) {
+    return typeof env.WFP_RESOURCE_ADMIN_CLIENT.listWorkers === 'function' ? env.WFP_RESOURCE_ADMIN_CLIENT : null;
+  }
+  if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN || !env.WFP_DISPATCH_NAMESPACE) return null;
+  try {
+    const wfpConfig = readWfpConfig(env, { environment: config.environment });
+    const client = createWfpClient({ ...wfpConfig, fetch: env.fetch || globalThis.fetch });
+    return {
+      listWorkers: () => client.listUserWorkers(),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function deleteAdminNormalWorker(request, env, config, store, session, slotId) {
@@ -1409,6 +1504,13 @@ function normalizeRequiredString(value) {
 function readNow(env) {
   if (typeof env?.now === 'function') return env.now();
   return new Date().toISOString();
+}
+
+function cleanupBacklogAgeSeconds(oldestPendingAt, now) {
+  if (!oldestPendingAt) return null;
+  const ageMs = Date.parse(now) - Date.parse(oldestPendingAt);
+  if (!Number.isFinite(ageMs)) return null;
+  return Math.max(0, Math.floor(ageMs / 1000));
 }
 
 function normalizeNullableString(value) {

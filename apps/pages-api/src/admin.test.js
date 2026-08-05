@@ -61,6 +61,14 @@ test('admin dashboard requires platform admin and returns governance counts', as
         deployments: 1,
         failedDeployments: 1,
       },
+      resourceCleanup: {
+        pendingTasks: 0,
+        failedTasks: 0,
+        oldestPendingAt: null,
+        oldestPendingAgeSeconds: null,
+        orphanCandidates: null,
+        v1Sites: null,
+      },
       failedDeployments: [
         {
           id: 'dep_failed',
@@ -82,6 +90,262 @@ test('admin dashboard requires platform admin and returns governance counts', as
       ],
     },
   });
+});
+
+test('admin dashboard exposes lightweight cleanup backlog counts without scanning external resources', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_pending',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-pending',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'pending',
+    cleanupAfter: '2026-07-01T23:00:00.000Z',
+  });
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_failed',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-failed',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'failed',
+    cleanupAfter: '2026-07-01T22:00:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/dashboard', { userId: 'usr_root', admin: true }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        listWorkers: async () => {
+          throw new Error('dashboard must not scan WFP');
+        },
+      },
+      V1_SITES_ADMIN_CLIENT: {
+        listSites: async () => {
+          throw new Error('dashboard must not scan v1 KV');
+        },
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual((await response.json()).dashboard.resourceCleanup, {
+    pendingTasks: 1,
+    failedTasks: 1,
+    oldestPendingAt: '2026-07-01T23:00:00.000Z',
+    oldestPendingAgeSeconds: 3600,
+    orphanCandidates: null,
+    v1Sites: null,
+  });
+});
+
+test('admin worker orphan scan classifies managed WFP scripts without deciding deletion', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_active', slug: 'active', teamId: 'team_console' });
+  await activateSite(store, 'site_active', { workerName: 'pages-v2-active' });
+  await seedTeamSite(store, { id: 'site_rollback', slug: 'rollback', teamId: 'team_console' });
+  await store.createSiteVersion({
+    id: 'ver_rollback',
+    siteId: 'site_rollback',
+    deploymentId: 'dep_rollback',
+    workerName: 'pages-v2-rollback',
+    runtime: 'wfp',
+    artifactRef: 'wfp://test/pages-v2-rollback',
+    contentHash: 'sha256:rollback',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_root',
+  });
+  await seedTeamSite(store, { id: 'site_stale', slug: 'stale', teamId: 'team_console' });
+  await store.createSiteVersion({
+    id: 'ver_stale',
+    siteId: 'site_stale',
+    deploymentId: 'dep_stale',
+    workerName: 'pages-v2-stale',
+    runtime: 'wfp',
+    artifactRef: 'wfp://test/pages-v2-stale',
+    contentHash: 'sha256:stale',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'retired',
+    createdBy: 'usr_root',
+  });
+  await seedTeamSite(store, { id: 'site_deleted', slug: 'deleted', teamId: 'team_console' });
+  await store.createSiteVersion({
+    id: 'ver_deleted',
+    siteId: 'site_deleted',
+    deploymentId: 'dep_deleted',
+    workerName: 'pages-v2-deleted',
+    runtime: 'wfp',
+    artifactRef: 'wfp://test/pages-v2-deleted',
+    contentHash: 'sha256:deleted',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_root',
+  });
+  await store.deleteSite(
+    'site_deleted',
+    { deletedAt: '2026-07-01T00:00:00.000Z', reuseHoldUntil: '2026-07-01T00:05:00.000Z' },
+    'production'
+  );
+  await store.createDeploymentResourceCleanupTask({
+    id: 'cln_pending',
+    environment: 'production',
+    resourceType: 'wfp_user_worker',
+    resourceRef: 'pages-v2-pending',
+    cleanupReason: 'blue_green_previous_worker',
+    status: 'failed',
+    cleanupAfter: '2026-07-01T00:00:00.000Z',
+  });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/worker-orphan-scan', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store, {
+      WFP_RESOURCE_ADMIN_CLIENT: {
+        listWorkers: async () =>
+          [
+            'pages-v2-active',
+            'pages-v2-rollback',
+            'pages-v2-pending',
+            'pages-v2-unknown',
+            'pages-v2-deleted',
+            'pages-v2-stale',
+            'pages-v2-staging-ignore',
+          ].map((name) => ({
+            name,
+            created_on: '2026-06-01T00:00:00.000Z',
+            modified_on: '2026-06-02T00:00:00.000Z',
+          })),
+      },
+    })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const scan = (await response.json()).scan;
+  assert.deepEqual(scan.summary, {
+    total: 6,
+    referencedByActiveRoute: 1,
+    rollbackEligibleVersion: 2,
+    hasPendingCleanupTask: 1,
+    orphanCandidates: 3,
+    orphanReasons: {
+      noD1Reference: 1,
+      deletedSite: 1,
+      stalePreviousVersion: 1,
+    },
+  });
+  assert.deepEqual(
+    scan.workers.map((item) => [
+      item.name,
+      item.referencedByActiveRoute,
+      item.rollbackEligibleVersion,
+      item.hasPendingCleanupTask,
+      item.orphanCandidate,
+      item.orphanReason,
+    ]),
+    [
+      ['pages-v2-active', true, true, false, false, null],
+      ['pages-v2-rollback', false, true, false, false, null],
+      ['pages-v2-pending', false, false, true, false, null],
+      ['pages-v2-unknown', false, false, false, true, 'no_d1_reference'],
+      ['pages-v2-deleted', false, false, false, true, 'deleted_site'],
+      ['pages-v2-stale', false, false, false, true, 'stale_previous_version'],
+    ]
+  );
+});
+
+test('admin v1 sites inventory strips token metadata and joins workers plus v2 migration candidates', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedTeamSite(store, { id: 'site_docs_v2', slug: 'docs', teamId: 'team_console' });
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/v1-sites', { userId: 'usr_root', admin: true }),
+    env(store, {
+      V1_SITES_ADMIN_CLIENT: {
+        listSites: async () => [
+          {
+            name: 'docs',
+            metadata: {
+              url: 'https://docs.workers.xd.team',
+              preset: 'spa',
+              ipRestrict: true,
+              updatedAt: '2025-12-01T00:00:00.000Z',
+              siteUuid: 'internal-site-uuid',
+            },
+          },
+          {
+            name: 'legacy',
+            metadata: {
+              url: 'https://legacy.workers.xd.team',
+              preset: 'worker',
+              updatedAt: '2026-06-01T00:00:00.000Z',
+            },
+          },
+        ],
+        listWorkers: async () => [
+          { name: 'pages-docs', modified_on: '2026-01-02T00:00:00.000Z' },
+          { name: 'pages-staging-docs', modified_on: '2026-01-03T00:00:00.000Z' },
+          { name: 'pages-v2-docs-ver-1', modified_on: '2026-01-04T00:00:00.000Z' },
+        ],
+      },
+    })
+  );
+
+  const text = await response.clone().text();
+  assert.equal(response.status, 200, text);
+  assert.doesNotMatch(text, /internal-site-uuid|siteUuid/i);
+  assert.deepEqual(await response.json(), {
+    sites: [
+      {
+        name: 'docs',
+        url: 'https://docs.workers.xd.team',
+        preset: 'spa',
+        ipRestrict: true,
+        updatedAt: '2025-12-01T00:00:00.000Z',
+        workerName: 'pages-docs',
+        workerModifiedOn: '2026-01-02T00:00:00.000Z',
+        migratedCandidate: true,
+      },
+      {
+        name: 'legacy',
+        url: 'https://legacy.workers.xd.team',
+        preset: 'worker',
+        ipRestrict: null,
+        updatedAt: '2026-06-01T00:00:00.000Z',
+        workerName: null,
+        workerModifiedOn: null,
+        migratedCandidate: false,
+      },
+    ],
+  });
+});
+
+test('admin v1 sites inventory degrades when Cloudflare configuration is missing', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+
+  const response = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/v1-sites', { userId: 'usr_root', admin: true }),
+    env(store)
+  );
+
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).error.code, 'V1_SITES_UNSUPPORTED');
 });
 
 test('admin API ignores forged admin headers and uses platform admin grants', async () => {

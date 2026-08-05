@@ -14,6 +14,7 @@ const fixtureSecretPattern = new RegExp(
     'site-secret-encryption-key',
     'webhook-url-encryption-key',
     'xds-openai-token',
+    'v1-sites-kv-namespace-id',
     'active-pepper',
     'old-pepper',
   ].join('|')
@@ -28,6 +29,7 @@ const baseEnv = {
   SITE_SECRET_ENCRYPTION_KEY: 'site-secret-encryption-key',
   WEBHOOK_URL_ENCRYPTION_KEY: 'webhook-url-encryption-key',
   XDS_OPENAI_TOKEN: 'xds-openai-token',
+  PAGES_V1_SITES_KV_NAMESPACE_ID: 'v1-sites-kv-namespace-id',
   ACCESS_KEY_ACTIVE_PEPPER_ID: 'pepper_2026_06',
   ACCESS_KEY_PEPPERS: 'old:ACCESS_KEY_PEPPER_OLD,pepper_2026_06:ACCESS_KEY_PEPPER_202606',
   ACCESS_KEY_PEPPER_OLD: 'old-pepper',
@@ -61,9 +63,20 @@ test('pages-api secret injection includes WFP runtime secrets and access key pep
   assert.match(result.stdout, /SITE_SECRET_ENCRYPTION_KEY/);
   assert.match(result.stdout, /WEBHOOK_URL_ENCRYPTION_KEY/);
   assert.match(result.stdout, /XDS_OPENAI_TOKEN/);
+  assert.match(result.stdout, /PAGES_V1_SITES_KV_NAMESPACE_ID/);
   assert.match(result.stdout, /ACCESS_KEY_PEPPER_OLD/);
   assert.match(result.stdout, /ACCESS_KEY_PEPPER_202606/);
   assert.doesNotMatch(result.stdout, fixtureSecretPattern);
+});
+
+test('pages-api secret injection skips optional v1 inventory config when it is missing', () => {
+  const result = runScript('apps/pages-api', {
+    PAGES_V1_SITES_KV_NAMESPACE_ID: '',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /PAGES_V1_SITES_KV_NAMESPACE_ID/);
+  assert.match(result.stdout, /CF_API_TOKEN/);
 });
 
 test('pages-auth secret injection includes SSO secret and session signing secrets', () => {
