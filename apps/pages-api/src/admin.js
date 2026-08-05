@@ -715,9 +715,22 @@ async function deleteAdminNormalWorkerRecord({ env, config, store, session, work
 }
 
 async function listAdminUsers(url, config, store) {
-  const query = normalizeNullableString(url.searchParams.get('query'));
-  const users = await store.listAdminUsers({ environment: config.environment, query });
-  return jsonOk({ users: users.map(formatAdminUser) });
+  const result = await store.listAdminUsers({
+    environment: config.environment,
+    query: normalizeNullableString(url.searchParams.get('query')),
+    limit: url.searchParams.get('limit'),
+    offset: url.searchParams.get('offset'),
+    admin: url.searchParams.get('admin'),
+    status: url.searchParams.get('status'),
+  });
+  return jsonOk({
+    users: result.users.map(formatAdminUser),
+    pagination: {
+      total: result.total,
+      limit: result.limit,
+      offset: result.offset,
+    },
+  });
 }
 
 function formatAdminNormalWorker(worker) {

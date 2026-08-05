@@ -289,6 +289,40 @@ export function buildOpenApi(config) {
             },
           },
         },
+        AdminUser: {
+          type: 'object',
+          required: ['id', 'email', 'employeeStatus', 'isPlatformAdmin'],
+          properties: {
+            id: { type: 'string' },
+            email: { type: 'string', format: 'email' },
+            realname: { type: ['string', 'null'] },
+            employeeStatus: { type: 'string' },
+            departmentPath: { type: ['string', 'null'] },
+            isPlatformAdmin: { type: 'boolean' },
+            lastLoginAt: { type: ['string', 'null'] },
+            createdAt: { type: 'string' },
+            updatedAt: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        AdminUsersResponse: {
+          type: 'object',
+          required: ['users', 'pagination'],
+          properties: {
+            users: { type: 'array', items: { $ref: '#/components/schemas/AdminUser' } },
+            pagination: {
+              type: 'object',
+              required: ['total', 'limit', 'offset'],
+              properties: {
+                total: { type: 'integer', minimum: 0 },
+                limit: { type: 'integer', minimum: 1, maximum: 100 },
+                offset: { type: 'integer', minimum: 0 },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+        },
       },
     },
     paths: {

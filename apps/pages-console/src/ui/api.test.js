@@ -172,6 +172,7 @@ test('admin governance API helpers use console admin endpoints', async () => {
   await listAdminDeploymentCleanups({ status: 'failed', fetchImpl });
   await runAdminDeploymentCleanup('cln_1', { reason: 'manual' }, { fetchImpl, csrfToken: 'csrf-cleanup' });
   await listAdminUsers({ query: '目标用户', fetchImpl });
+  await listAdminUsers({ query: '目标用户', limit: 10, offset: 20, admin: 'admin', status: 'active', fetchImpl });
   await listAdminSites({ fetchImpl });
   await listAdminTeams({ fetchImpl, teamType: 'department', status: 'active' });
   await listAdminAuditEvents({ fetchImpl });
@@ -187,6 +188,7 @@ test('admin governance API helpers use console admin endpoints', async () => {
       ['/api/console/admin/deployment-cleanups?status=failed', 'GET'],
       ['/api/console/admin/deployment-cleanups/cln_1/run', 'POST'],
       ['/api/console/admin/users?query=%E7%9B%AE%E6%A0%87%E7%94%A8%E6%88%B7', 'GET'],
+      ['/api/console/admin/users?query=%E7%9B%AE%E6%A0%87%E7%94%A8%E6%88%B7&limit=10&offset=20&admin=admin&status=active', 'GET'],
       ['/api/console/admin/sites', 'GET'],
       ['/api/console/admin/teams?teamType=department&status=active', 'GET'],
       ['/api/console/admin/audit', 'GET'],
@@ -196,12 +198,12 @@ test('admin governance API helpers use console admin endpoints', async () => {
     ]
   );
   assert.equal(calls[3].init.headers['X-CSRF-Token'], 'csrf-cleanup');
-  assert.equal(calls[8].init.headers['X-CSRF-Token'], 'csrf-1');
-  assert.equal(calls[9].init.headers['X-CSRF-Token'], 'csrf-2');
-  assert.equal(calls[10].init.headers['X-CSRF-Token'], 'csrf-3');
+  assert.equal(calls[9].init.headers['X-CSRF-Token'], 'csrf-1');
+  assert.equal(calls[10].init.headers['X-CSRF-Token'], 'csrf-2');
+  assert.equal(calls[11].init.headers['X-CSRF-Token'], 'csrf-3');
   assert.deepEqual(JSON.parse(calls[3].init.body), { reason: 'manual' });
-  assert.deepEqual(JSON.parse(calls[9].init.body), { userId: 'usr_admin', reason: 'ops owner' });
-  assert.deepEqual(JSON.parse(calls[10].init.body), { reason: 'rotation' });
+  assert.deepEqual(JSON.parse(calls[10].init.body), { userId: 'usr_admin', reason: 'ops owner' });
+  assert.deepEqual(JSON.parse(calls[11].init.body), { reason: 'rotation' });
 });
 
 test('admin site and team edit helpers stay under admin endpoints', async () => {

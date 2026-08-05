@@ -14,6 +14,7 @@ export function createPagesStore(env = {}) {
   });
 }
 
+
 export class D1PagesStore {
   constructor(db, { now = () => new Date().toISOString(), secretEncryptionKey = null } = {}) {
     this.db = db;
@@ -744,38 +745,61 @@ export class D1PagesStore {
     };
   }
 
-  async listAdminUsers({ environment, query, limit = 50 }) {
+  async listAdminUsers({ environment, query, limit = 50, offset = 0, admin, status }) {
     const normalizedQuery = normalizeNullableString(query);
-    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+    const parsedLimit = Number(limit);
+    const normalizedLimit = Number.isInteger(parsedLimit) && parsedLimit >= 1 ? Math.min(parsedLimit, 100) : 50;
+    const parsedOffset = Number(offset);
+    const normalizedOffset = Number.isInteger(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
+    const normalizedAdmin = admin === 'admin' || admin === 'user' ? admin : null;
+    const normalizedStatus = status === 'active' || status === 'inactive' ? status : null;
+    const conditions = [];
     const queryCondition = normalizedQuery
-      ? `AND (LOWER(COALESCE(users.realname, '')) LIKE ?
+      ? `(LOWER(COALESCE(users.realname, '')) LIKE ?
           OR LOWER(COALESCE(users.email, '')) LIKE ?
           OR LOWER(COALESCE(users.account, '')) LIKE ?
-          OR LOWER(users.user_id) LIKE ?)`
+          OR LOWER(users.user_id) LIKE ?
+          OR LOWER(COALESCE(users.department_path, '')) LIKE ?)`
       : '';
-    const binds = [environment];
+    if (queryCondition) conditions.push(queryCondition);
+    if (normalizedAdmin === 'admin') conditions.push('platform_admins.user_id IS NOT NULL');
+    if (normalizedAdmin === 'user') conditions.push('platform_admins.user_id IS NULL');
+    if (normalizedStatus === 'active') conditions.push("users.employee_status = 'active'");
+    if (normalizedStatus === 'inactive') conditions.push("COALESCE(users.employee_status, 'unknown') != 'active'");
+    const whereClause = conditions.length ? `AND ${conditions.join(' AND ')}` : '';
+    const queryBinds = [environment];
     if (normalizedQuery) {
       const like = `%${normalizedQuery.toLowerCase()}%`;
-      binds.push(like, like, like, like);
+      queryBinds.push(like, like, like, like, like);
     }
-    binds.push(normalizedLimit);
-    const sql = `SELECT users.*, platform_admins.user_id AS platform_admin_user_id
-        FROM users
+    const join = `
         LEFT JOIN platform_admins
           ON platform_admins.user_id = users.user_id
           AND platform_admins.environment = ?
-          AND platform_admins.revoked_at IS NULL
-        WHERE 1 = 1 ${queryCondition}
+          AND platform_admins.revoked_at IS NULL`;
+    const countResultPromise = this.db
+      .prepare(`SELECT COUNT(*) AS count FROM users${join} WHERE 1 = 1 ${whereClause}`)
+      .bind(...queryBinds)
+      .first();
+    const rowsResultPromise = this.db
+      .prepare(`SELECT users.*, platform_admins.user_id AS platform_admin_user_id
+        FROM users
+        ${join}
+        WHERE 1 = 1 ${whereClause}
         ORDER BY users.email ASC
-        LIMIT ?`;
-    const result = await this.db
-      .prepare(sql)
-      .bind(...binds)
+        LIMIT ? OFFSET ?`)
+      .bind(...queryBinds, normalizedLimit, normalizedOffset)
       .all();
-    return (result.results || []).map((row) => ({
-      ...mapUser(row),
-      isPlatformAdmin: Boolean(row.platform_admin_user_id),
-    }));
+    const [countResult, rowsResult] = await Promise.all([countResultPromise, rowsResultPromise]);
+    return {
+      users: (rowsResult.results || []).map((row) => ({
+        ...mapUser(row),
+        isPlatformAdmin: Boolean(row.platform_admin_user_id),
+      })),
+      total: Number(countResult?.count || 0),
+      limit: normalizedLimit,
+      offset: normalizedOffset,
+    };
   }
 
   async listConsoleUsers({ query, limit = 20 } = {}) {
@@ -5717,4 +5741,3 @@ function mapDeploymentResourceCleanupTask(row) {
     updatedAt: row.updated_at,
   };
 }
-
