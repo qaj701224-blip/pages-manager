@@ -57,6 +57,17 @@ test('admin user list labels XDS leaf path as SSO department', () => {
   assert.match(adminUsersSource, /data-label="SSO 部门"/);
 });
 
+test('admin user list uses server pagination and filters', () => {
+  assert.match(adminUsersSource, /debouncedQuery/);
+  assert.match(adminUsersSource, /offset: page \* limit/);
+  assert.match(adminUsersSource, /admin: adminFilter === 'all' \? undefined : adminFilter/);
+  assert.match(adminUsersSource, /status: statusFilter === 'all' \? undefined : statusFilter/);
+  assert.match(adminUsersSource, /用户分页/);
+  assert.match(adminUsersSource, /上一页/);
+  assert.match(adminUsersSource, /下一页/);
+  assert.match(adminUsersSource, /state\.status === 'loading' && !state\.loaded/);
+});
+
 test('admin normal worker management is exposed as a legacy operations surface', () => {
   assert.match(adminSource, /id: 'normal-workers'/);
   assert.match(adminSource, /Legacy Normal Workers/);

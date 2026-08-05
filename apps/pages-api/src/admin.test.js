@@ -231,6 +231,7 @@ test('admin users can be searched by persisted profile fields', async () => {
 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
+  assert.deepEqual(body.pagination, { total: 1, limit: 50, offset: 0 });
   assert.deepEqual(
     body.users.map((user) => user.id),
     ['usr_target']
@@ -256,8 +257,47 @@ test('admin users list applies the default limit without a search query', async 
   assert.equal(response.status, 200, await response.clone().text());
   const body = await response.json();
   assert.equal(body.users.length, 50);
+  assert.deepEqual(body.pagination, { total: 56, limit: 50, offset: 0 });
   assert.equal(body.users[0].id, 'usr_root');
   assert.equal(body.users.at(-1).id, 'usr_48');
+});
+
+test('admin users list supports sanitized pagination and server-side filters', async () => {
+  const store = createTestPagesStore({ now: () => '2026-07-02T00:00:00.000Z' });
+  await seedPlatformAdmin(store);
+  await seedConsoleUser(store, 'usr_admin_1', { email: 'admin-1@example.com' });
+  await store.grantPlatformAdmin({
+    environment: 'production',
+    userId: 'usr_admin_1',
+    grantedByUserId: 'usr_root',
+    grantReason: 'test',
+  });
+  await seedConsoleUser(store, 'usr_disabled', { email: 'disabled@example.com', employeeStatus: 'disabled' });
+  await seedConsoleUser(store, 'usr_active_2', { email: 'active-2@example.com' });
+
+  const page = await worker.fetch(
+    internalConsoleRequest(
+      '/.xd-pages/api/console/admin/users?limit=bogus&offset=-4&admin=admin&status=active',
+      { userId: 'usr_root', admin: true }
+    ),
+    env(store)
+  );
+  assert.equal(page.status, 200, await page.clone().text());
+  const pageBody = await page.json();
+  assert.deepEqual(pageBody.users.map((user) => user.id), ['usr_admin_1', 'usr_root']);
+  assert.deepEqual(pageBody.pagination, { total: 2, limit: 50, offset: 0 });
+
+  const outOfRange = await worker.fetch(
+    internalConsoleRequest('/.xd-pages/api/console/admin/users?limit=1&offset=99', {
+      userId: 'usr_root',
+      admin: true,
+    }),
+    env(store)
+  );
+  assert.equal(outOfRange.status, 200, await outOfRange.clone().text());
+  const outOfRangeBody = await outOfRange.json();
+  assert.deepEqual(outOfRangeBody.users, []);
+  assert.deepEqual(outOfRangeBody.pagination, { total: 4, limit: 1, offset: 99 });
 });
 
 test('admin platform grant requires an existing user', async () => {

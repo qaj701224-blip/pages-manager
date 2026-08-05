@@ -453,14 +453,23 @@ class TestPagesStore {
     });
   }
 
-  async listAdminUsers({ environment, query, limit = 50 }) {
+  async listAdminUsers({ environment, query, limit = 50, offset = 0, admin, status }) {
     const normalizedQuery = normalizeNullableString(query)?.toLowerCase() || '';
-    const normalizedLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
-    return cloneRecord(
-      [...this.users.values()]
+    const parsedLimit = Number(limit);
+    const normalizedLimit = Number.isInteger(parsedLimit) && parsedLimit >= 1 ? Math.min(parsedLimit, 100) : 50;
+    const parsedOffset = Number(offset);
+    const normalizedOffset = Number.isInteger(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
+    const normalizedAdmin = admin === 'admin' || admin === 'user' ? admin : null;
+    const normalizedStatus = status === 'active' || status === 'inactive' ? status : null;
+    const users = [...this.users.values()]
         .filter((user) => {
+          const isPlatformAdmin = this.platformAdmins.get(platformAdminKey(environment, user.id))?.revokedAt === null;
+          if (normalizedAdmin === 'admin' && !isPlatformAdmin) return false;
+          if (normalizedAdmin === 'user' && isPlatformAdmin) return false;
+          if (normalizedStatus === 'active' && user.employeeStatus !== 'active') return false;
+          if (normalizedStatus === 'inactive' && user.employeeStatus === 'active') return false;
           if (!normalizedQuery) return true;
-          return [user.realname, user.email, user.account, user.id]
+          return [user.realname, user.email, user.account, user.id, user.departmentPath]
             .filter(Boolean)
             .some((value) => String(value).toLowerCase().includes(normalizedQuery));
         })
@@ -469,8 +478,12 @@ class TestPagesStore {
           isPlatformAdmin: Boolean(this.platformAdmins.get(platformAdminKey(environment, user.id))?.revokedAt === null),
         }))
         .sort((left, right) => left.email.localeCompare(right.email))
-        .slice(0, normalizedLimit)
-    );
+    return cloneRecord({
+      users: users.slice(normalizedOffset, normalizedOffset + normalizedLimit),
+      total: users.length,
+      limit: normalizedLimit,
+      offset: normalizedOffset,
+    });
   }
 
   async listConsoleUsers({ query, limit = 20 } = {}) {
