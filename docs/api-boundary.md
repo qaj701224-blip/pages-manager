@@ -11,16 +11,17 @@
 - 受控集成可使用经过认证的站点级 vars/secrets mutation API；普通用户和 agent 仍通过 `xd-cell` 操作，OpenAPI 不因此成为公开入口。
 - API 文档不复刻不完整 endpoint 清单；需要改 API 行为时，以 handler、`apps/pages-api/src/openapi.js` 和 focused `node:test` 一起更新为准。
 - 用户可见发布、状态、访问控制和回滚流程以 CLI help 与 `apps/pages-skill/skill/SKILL.md` 为准。
-- v1 `apps/server` 属于 legacy；v1 `/openapi.json` 继续服务旧 `workers.xd.team` 链路，不代表 v2 对外承诺公开 OpenAPI。
+- v1 `apps/server` 已进入墓碑模式；除精确的 `GET/HEAD /health` 外，`/deploy`、`/list`、`/site/:name`、`/openapi.json`、Markdown 路由和未知路径都返回 `410 LEGACY_API_RETIRED`，不再提供旧 OpenAPI 或管理能力。
+- Cindy 客户端使用 `xd-sites` 插件；若找不到插件，先更新 Cindy 客户端。非 Cindy 客户端使用 `https://skills.xindong.com/skills/xd-cell` 的 skill。
 
 ## 真相源
 
-| 领域 | 真相源 | 说明 |
-| --- | --- | --- |
-| 用户和 agent 操作 | `xd-cell` CLI help、`apps/pages-skill/skill/SKILL.md` | 发布、状态、访问控制、回滚和错误处理 |
-| API 开发合约 | `apps/pages-api/src/openapi.js`、对应 handler、`node:test` | 开发、测试和受控内部集成，不作为 public route |
-| 项目架构入口 | `README.md`、`docs/README.md` | monorepo 架构、文档索引和真相源矩阵 |
-| v1 legacy API | `apps/server/README.md`、`apps/server/src/**` | 旧 `workers.xd.team` 行为和 v1 `/openapi.json` |
+| 领域               | 真相源                                                                                                                   | 说明                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| 用户和 agent 操作  | `xd-cell` CLI help、`apps/pages-skill/skill/SKILL.md`                                                                    | 发布、状态、访问控制、回滚和错误处理          |
+| API 开发合约       | `apps/pages-api/src/openapi.js`、对应 handler、`node:test`                                                               | 开发、测试和受控内部集成，不作为 public route |
+| 项目架构入口       | `README.md`、`docs/README.md`                                                                                            | monorepo 架构、文档索引和真相源矩阵           |
+| v1 legacy API 退休 | `apps/server/README.md`、`apps/server/src/retirement.js`、`docs/operations/legacy-api-and-site-publishing-retirement.md` | 410 协议、资源保留和人工上线顺序              |
 
 ## 开发规则
 

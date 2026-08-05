@@ -8,7 +8,7 @@
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | [platform-overview.md](./platform-overview.md)                       | 平台分层、当前运行形态、Cloudflare / Slack / GitHub 的边界                                                        |
 | [xd-cell-console.md](./xd-cell-console.md)                           | XD Cell Console 的站点目录、工作台、团队、Admin、Webhook、BFF/session 和部署边界                                  |
-| [end-to-end-flow.md](./end-to-end-flow.md)                           | Slack 到 issue、Coding Agent、PR、Review、Preview、Slack 回写的完整链路                                           |
+| [end-to-end-flow.md](./end-to-end-flow.md)                           | Platform Dev 当前链路，以及 Site Publishing 冻结后的历史数据和入口行为                                            |
 | [platform-dev-lane.md](./platform-dev-lane.md)                       | Slack 创建 / 分流 pages-manager 自身 issue，并驱动平台代码 PR 的产品和权限边界                                    |
 | [repository-structure.md](./repository-structure.md)                 | 当前 monorepo 目录、gateway 内部结构、站点 PR 和平台 PR 边界                                                      |
 | [slack-platform-runtime.md](./slack-platform-runtime.md)             | Slack HTTP Events / Interactivity、常驻 Agent、语义分块准流式回复、notifier、session 和进度消息 / message binding |
@@ -30,15 +30,15 @@
 ## 当前代码事实
 
 - 实现主体是 `pages-manager`，`xdclaw` 只作为架构参考。
-- 除现有 Cloudflare 发布底座、KV SDK 和公开站点 API 外，Slack / gateway / agent / DB 这条 pages-manager 新平台线尚未正式上线；这部分可以按目标态直接调整，不需要兼容临时测试版本或旧的本地运行形态。
+- XD Cell v2 和 Platform Dev Lane 是当前活跃主线。v1 `apps/server` 已墓碑化，Site Publishing Lane 已静态冻结；存量站点、Cloudflare 资源、PublishingJob 和相关历史数据保留。
 - 常驻服务是 `apps/gateway`、`apps/worker`、`apps/slack-agent`、`apps/slack-notifier`。
 - Gateway 运行态只使用 MySQL-backed store；文件 store、内存 store、单 pod PVC 不是运行时选项。
 - Redis 只承载 lease、queue、短期幂等和 rate limit，不是最终状态真相源。
-- Site Publishing Lane 的 Coding Agent 跑在 GitHub Actions `pages-agent.yml`；Platform Dev Lane 使用独立 `platform-agent.yml`。二者都不跑在 gateway / worker / Slack bot 里。
+- Site Publishing 的 `pages-agent.yml`、`project-index.yml`、`pages-preview.yml` 只保留 dormant historical code，job 静态跳过；Platform Dev Lane 继续使用 `platform-agent.yml`。
 - Slack 正式入口是 HTTP Events / Interactivity，不使用 Socket Mode fallback。
 - Slack token 只应进入 `slack-notifier`；gateway 持有 signing secret 和内部 shared secret，只有本地 fallback 可临时持有 bot token。
 - 员工是归属主体，站点是发布主体，一个员工可以有多个 `sites/<employeeSlug>/<siteSlug>/`。
-- 自动生成的站点 PR 只能修改目标 `sites/<employeeSlug>/<siteSlug>/`，任何 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`、Dockerfile 或部署文档改动都必须走人工平台 PR。
+- 已有或人工创建的站点 PR 只能修改目标 `sites/<employeeSlug>/<siteSlug>/`，并由 `pr-site.yml` 被动校验；Site Publishing 不再自动生成站点 PR。
 - Platform Dev Lane 是单独路径：Slack 可以创建 / 分流 `pages-manager` 自身 issue，并在风险、手动“自动开发”触发、CI 和 review 约束下驱动平台代码 PR。该路径不使用 `sites/<employeeSlug>/<siteSlug>/` 目录白名单作为主约束；详细产品边界见 [platform-dev-lane.md](./platform-dev-lane.md)。
 
 ## 文档收敛规则

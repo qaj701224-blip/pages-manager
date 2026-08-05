@@ -126,7 +126,8 @@ function reasonForWorkItem(item = {}, events = []) {
   const [, hint] = stageDetails(item);
   const eventText = latestEventText(events);
   if (item.status === 'issue_created' && !prNumber(item)) return 'Issue 已创建，但还没有看到 PR。可以检查自动处理是否已启动。';
-  if (item.status === 'agent_running' && !prNumber(item)) return '自动开发已开始，但还没有看到 PR。可以检查对应 workflow 是否仍在运行。';
+  if (item.status === 'agent_running' && !prNumber(item))
+    return '自动开发已开始，但还没有看到 PR。可以检查对应 workflow 是否仍在运行。';
   if (item.status === 'branch_committed' && !prNumber(item)) return '分支已提交，但还没有看到 PR。可以检查 PR 创建步骤。';
   if (item.status === 'pr_created' && !item.previewUrl && workItemKind(item) !== 'platform_dev') {
     return 'PR 已创建，但 Preview 还没有生成。可以检查 Review、site-check 或 Preview workflow。';
@@ -150,9 +151,7 @@ function nextActionForWorkItem(item = {}) {
 
 function workflowLabel(item = {}) {
   if (workItemKind(item) === 'platform_dev') {
-    if (
-      ['agent_queued', 'agent_running', 'branch_committed', 'pr_created', 'ci_running', 'ci_failed'].includes(item.status)
-    ) {
+    if (['agent_queued', 'agent_running', 'branch_committed', 'pr_created', 'ci_running', 'ci_failed'].includes(item.status)) {
       return '平台自动开发 / CI';
     }
     return null;
@@ -223,10 +222,7 @@ export function buildSlackWorkItemDiagnosis(item = {}, options = {}) {
   const githubActions = options.githubActions || null;
   const statusLabel = slackStatusLabel(item.status, item);
   const [stageSummary] = stageDetails(item);
-  const lines = [
-    `这个任务当前在「${statusLabel}」。`,
-    `当前状态：${statusLabel}`,
-  ];
+  const lines = [`这个任务当前在「${statusLabel}」。`, `当前状态：${statusLabel}`];
   const issue = issueNumber(item);
   const pr = prNumber(item);
   const issueLink = issueUrl(item);
@@ -281,6 +277,7 @@ function canRetryWorkItem(item = {}) {
 
 export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, options = {}) {
   const kind = workItemKind(item);
+  const sitePublishingReadOnly = options.retireSitePublishing === true && kind !== 'platform_dev';
   const analysis = options.slackAgentAnalysis || {};
   const text = buildSlackWorkItemDiagnosis(item, options);
   const fields = [
@@ -345,7 +342,7 @@ export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, optio
       agent_action_id: 'open_workflow',
     });
   }
-  if (slackSession?.id && canRetryWorkItem(item)) {
+  if (!sitePublishingReadOnly && slackSession?.id && canRetryWorkItem(item)) {
     actions.push({
       type: 'button',
       text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'retry_work_item', '重试') },
@@ -354,7 +351,7 @@ export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, optio
       value: slackButtonValue({ sessionId: slackSession.id, workItemKind: kind, workItemId: item.id }),
     });
   }
-  if (slackSession?.id && issueNumber(item)) {
+  if (!sitePublishingReadOnly && slackSession?.id && issueNumber(item)) {
     actions.push({
       type: 'button',
       text: {
@@ -366,7 +363,7 @@ export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, optio
       value: slackButtonValue({ sessionId: slackSession.id, workItemKind: kind, workItemId: item.id }),
     });
   }
-  if (slackSession?.id) {
+  if (!sitePublishingReadOnly && slackSession?.id) {
     actions.push({
       type: 'button',
       text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'diagnosis', 'human_triage', '转人工排查') },
@@ -378,9 +375,7 @@ export function buildSlackWorkItemDiagnosisBlocks(slackSession, item = {}, optio
   if (actions.length) {
     blocks.push({
       type: 'actions',
-      elements: orderSlackActionsByAgentIntent(actions, analysis, 'diagnosis')
-        .slice(0, 5)
-        .map(slackActionElement),
+      elements: orderSlackActionsByAgentIntent(actions, analysis, 'diagnosis').slice(0, 5).map(slackActionElement),
     });
   }
   return blocks;

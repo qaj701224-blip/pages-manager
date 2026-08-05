@@ -5,6 +5,7 @@ import { notifySlackPlainProgress } from '../slack/delivery.js';
 import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/notifier.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { dispatchPreviewFromStoredReviewIfReady, previewGateForPr } from './review-gate.js';
+import { sitePublishingRetiredIgnoredResponse } from '../publishing/retirement.js';
 
 const TERMINAL_PLATFORM_STATUSES = new Set(['merged', 'closed_unmerged', 'failed', 'cancelled']);
 
@@ -39,9 +40,7 @@ async function platformCheckStatusForRun(platformItem = {}, siteCheckRun = {}, s
     if (platformItem.status === 'ready_to_merge') return 'ready_to_merge';
     const prNumber = siteCheckRun.prNumber || platformItem.githubPrNumber;
     const headSha = siteCheckRun.headSha || platformItem.headSha;
-    const gate = prNumber
-      ? await previewGateForPr(store, siteCheckRun.repoFullName, prNumber, headSha ? { headSha } : {})
-      : null;
+    const gate = prNumber ? await previewGateForPr(store, siteCheckRun.repoFullName, prNumber, headSha ? { headSha } : {}) : null;
     const passedReviewCount = Number(gate?.reviewGate?.noteCount || 0) + Number(gate?.reviewGate?.suggestionCount || 0);
     if (gate?.reviewGate?.blockingCount > 0 || gate?.reviewGate?.unknownCount > 0) return 'review_blocked';
     return gate?.reviewGate?.canPreview && passedReviewCount > 0 ? 'ready_to_merge' : 'review_waiting';
@@ -57,7 +56,7 @@ function shouldIgnoreStalePlatformCheck(platformItem = {}, nextStatus = '') {
   return ['agent_queued', 'agent_running', 'branch_committed'].includes(platformItem.status) && nextStatus !== 'ready_to_merge';
 }
 
-export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result }) {
+export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, result, retireSitePublishing = true }) {
   const fullHeadSha = siteCheckRun.headSha && siteCheckRun.headSha.length === 40 ? siteCheckRun.headSha : null;
   let platformItem = store.findPlatformDevItemByPrNumber
     ? await store.findPlatformDevItemByPrNumber(siteCheckRun.prNumber, fullHeadSha ? { headSha: fullHeadSha } : {})
@@ -153,6 +152,14 @@ export async function handleGithubSiteCheckWebhook({ siteCheckRun, store, env, r
           }
         : {}),
       ...(slackStatusNotification ? { slackStatusNotification } : {}),
+    });
+  }
+
+  if (retireSitePublishing) {
+    return sitePublishingRetiredIgnoredResponse({
+      delivery: result.delivery,
+      siteCheckRun: storedRun.run,
+      siteCheckRunCreated: storedRun.created,
     });
   }
 

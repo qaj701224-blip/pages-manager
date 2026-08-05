@@ -1,5 +1,7 @@
 # Agent Policy And Prompts
 
+> 当前状态：Site Publishing Lane 已静态冻结。本文保留的 Site Publishing issue、Coding Agent、allowedPath 和 review-fix 合同是历史策略，不再触发实际写操作；Slack Agent 命中站点发布意图时只能返回退休提示。Platform Dev 和 repo 只读问答策略继续生效。
+
 ## 原则
 
 公司规则、issue 规范、权限边界和 secret 处理规则必须进入 Agent 的运行上下文，但不能把 token 明文放进 prompt。prompt 只描述规则和工具合同，真正 token 只注入给对应工具或组件。
@@ -46,12 +48,12 @@ apps/worker 使用平台 GitHub App / token 创建或复用 issue
 
 公司 Agent Gateway 可以参与“起草 issue 标题、正文、验收标准、上下文摘要”，但不能直接持有 GitHub write token 去创建 issue。真正的 GitHub API 写操作必须由平台 worker / controlled committer 这类受控组件执行。
 
-当前 Slack Agent 需要区分两条 lane：
+当前 Slack Agent 仍需识别两类意图，但只有 Platform Dev 可创建和推进工作项：
 
 ```text
 site-publishing
-  目标：员工个人站点
-  约束：只能修改 sites/<employeeSlug>/<siteSlug>/
+  状态：已退休
+  动作：返回统一退休提示，不创建 PublishingJob、不启动 Coding Agent
 
 platform-dev
   目标：pages-manager 自身研发 issue / PR
@@ -87,12 +89,12 @@ Slack Agent 负责“人和需求”：
 - 支持完全自然语言输入；`issue:`、`page:`、`site:` 这类前缀只能作为测试便捷入口，不能作为正式产品的必要入口。
 - 判断是否建议新建 issue。
 - 判断是否续接已有 issue / PR / preview。
-- 判断用户诉求属于 Site Publishing Lane 还是 Platform Dev Lane。
+- 识别用户诉求属于已退休的 Site Publishing Lane 还是仍运行的 Platform Dev Lane。
 - Platform Dev Lane 下输出 issue type、area、risk 和是否建议自动开发。
 - 整理 Slack thread 成结构化需求。
 - 识别权限、owner scope、站点管理关系。
 - 需要时反问澄清。
-- 输出结构化意图；由 gateway / worker 创建 `PublishingJob`、创建 issue 或追加 issue comment。
+- 输出结构化意图；站点发布意图由 gateway 返回退休提示，Platform Dev 意图才可创建 issue 或追加受控 comment。
 - 作为 XD Cell 的任务管家和问题诊断入口，解释当前任务状态、关联 issue / PR / preview、失败阶段、GitHub Actions 状态和下一步建议。
 
 Slack Agent 对外文案必须使用产品语义。用户不需要知道 gateway、worker、MySQL、Redis、callback、status card、message binding、ECS 服务名或内部 job/session 字段；这些只能进入受控诊断数据、日志、审计或内部链接。Slack 可见回复应围绕“任务、阶段、Issue、PR、Preview、Workflow、失败原因、建议操作”组织。
@@ -251,9 +253,9 @@ test/build notes
 
 ## Issue 规范
 
-### Site Publishing Lane
+### Site Publishing Lane（历史冻结合同）
 
-平台生成 issue body 使用稳定结构，方便 Slack Agent 续接、Coding Agent 读取、review/debug 追踪：
+以下 issue body 结构只用于理解历史记录；平台不再生成新的 Site Publishing issue：
 
 ````md
 <!-- pages-manager:job_id=job_xxx -->
@@ -434,13 +436,11 @@ ReviewAgentComment
 classification = blocking | suggestion | note | unknown
 ```
 
-处理规则：
+当前处理规则：
 
-- Site Publishing Lane 的 `blocking`：触发 `pages-agent.yml(mode=fix)`，修同一个 PR branch。
+- Site Publishing Lane 的评论只记录和分类，不触发 `pages-agent.yml(mode=fix)`，不推进 preview。
 - Platform Dev Lane 的 `blocking`：触发 `platform-agent.yml(mode=fix)` 或转人工，取决于 issue type、risk 和 gate 状态。
-- `suggestion`：可记录，可选择是否修复，但不默认阻塞 preview。
-- `note`：无 blocking 时允许 preview。
-- `unknown`：不自动放行，转人工或等待更明确 review。
+- Platform Dev 的 `suggestion` / `note` 可记录并参与同一 head 的 review 状态；`unknown` 不自动放行。
 
 fix loop 必须有：
 
@@ -460,6 +460,6 @@ Agent policy / prompt 不按最小实现降级。即使当前 executor 仍跑在
 - prompt versioning。
 - DB 持久化 `PolicyVersion` / `PromptVersion` / `AgentRun`，每次 Slack Agent 和 Coding Agent 调用都记录 prompt version/hash、policy version/hash。
 - 每轮 `AgentRun` 记录输入摘要 hash、结构化输出 hash；Coding Agent 额外记录输出 patch hash、lane、Site Publishing `allowedPath` 或 Platform Dev risk summary，以及使用的 review comments。
-- Site Publishing Lane 的 `site-check` 失败报告可以进入 Coding Agent fix 输入，但 Coding Agent 不能修改 `.github/workflows/site-check.yml`、gateway、worker 或其它平台代码来绕过规则。
+- Site Publishing 的历史 check 结果只保留审计，不再进入 Coding Agent fix；任何 Agent 都不能修改 `.github/workflows/pr-site.yml`、gateway、worker 或其它平台代码来恢复该 lane。
 - Platform Dev Lane 的 Agent 输入必须包含 issue type、area、risk、gate 状态、PR head SHA、review 摘要和允许动作；不能只靠自然语言 prompt 约束修改范围。
 - GitHub Actions 可以继续作为当前 Coding Agent executor 载体，但必须通过 gateway callback、DB 状态机、policy / prompt 版本和审计记录形成完整闭环。

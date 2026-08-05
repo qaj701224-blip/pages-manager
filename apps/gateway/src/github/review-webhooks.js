@@ -6,6 +6,7 @@ import { notifySlackPlainProgress } from '../slack/delivery.js';
 import { notificationTextForReviewAction, notifySlackJobStatus } from '../slack/notifier.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { previewGateForPr, shouldDispatchPreviewForReview, shouldReportSiteCheckWaiting } from './review-gate.js';
+import { sitePublishingRetiredIgnoredResponse } from '../publishing/retirement.js';
 
 function assertWorkerStarted(workerStart, context) {
   if (workerStart?.started !== false) return;
@@ -125,7 +126,14 @@ function platformStatusContext(platformItem = {}, nextStatus = '') {
     .join('\n');
 }
 
-export async function handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result }) {
+export async function handleGithubReviewAgentWebhook({
+  normalized,
+  repoFullName,
+  store,
+  env,
+  result,
+  retireSitePublishing = true,
+}) {
   let reviewComment = await store.recordReviewAgentComment(normalized);
   const commentIsOpen = reviewComment.comment?.status === 'open';
   let platformItem = store.findPlatformDevItemByPrNumber
@@ -152,9 +160,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
       });
     }
 
-    const effectiveNormalized = headlessBlockingPlatformReview
-      ? { ...normalized, headSha: platformItem.headSha }
-      : normalized;
+    const effectiveNormalized = headlessBlockingPlatformReview ? { ...normalized, headSha: platformItem.headSha } : normalized;
     if (headlessBlockingPlatformReview) {
       const rebound = await store.recordReviewAgentComment({
         ...reviewComment.comment,
@@ -171,8 +177,7 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     const patch = fullHeadSha ? { headSha: fullHeadSha } : {};
     const reviewIsBlocking =
       commentIsOpen && (effectiveNormalized.classification === 'blocking' || effectiveNormalized.classification === 'unknown');
-    const reviewIsNonblocking =
-      commentIsOpen && ['note', 'suggestion'].includes(effectiveNormalized.classification || 'unknown');
+    const reviewIsNonblocking = commentIsOpen && ['note', 'suggestion'].includes(effectiveNormalized.classification || 'unknown');
     const ciPassed = reviewIsNonblocking
       ? await platformCiPassedForItem(store, repoFullName, platformItem, effectiveNormalized)
       : false;
@@ -246,14 +251,13 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
         reviewCommentCreated: reviewComment.created,
       });
     }
-    const autoFix =
-      reviewIsBlocking
-        ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, {
-            trigger: 'review_blocked',
-            reviewSummary: contextPatch.reviewSummary,
-            memorySummary: memory?.summary || null,
-          })
-        : await dispatchQueuedPlatformDevFollowupIfNeeded(store, platformItem, env);
+    const autoFix = reviewIsBlocking
+      ? await dispatchPlatformDevFixIfNeeded(store, platformItem, env, {
+          trigger: 'review_blocked',
+          reviewSummary: contextPatch.reviewSummary,
+          memorySummary: memory?.summary || null,
+        })
+      : await dispatchQueuedPlatformDevFollowupIfNeeded(store, platformItem, env);
     if (autoFix?.item) platformItem = autoFix.item;
     const slackStatusNotification = autoFix?.slackStatusNotification
       ? autoFix.slackStatusNotification
@@ -285,6 +289,14 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
     });
   }
 
+  if (retireSitePublishing) {
+    return sitePublishingRetiredIgnoredResponse({
+      delivery: result.delivery,
+      reviewComment: reviewComment.comment,
+      reviewCommentCreated: reviewComment.created,
+    });
+  }
+
   const job = await store.findJobByPrNumber(normalized.prNumber, { headSha: normalized.headSha });
   let updatedJob = job;
   let workerStart = null;
@@ -305,10 +317,8 @@ export async function handleGithubReviewAgentWebhook({ normalized, repoFullName,
   const headlessReviewForHeadBoundJob = Boolean(
     updatedJob?.headSha && normalized.sourceType === 'issue_comment' && !reviewedHeadSha
   );
-  const headlessBlockingReview =
-    headlessReviewForHeadBoundJob && ['blocking', 'unknown'].includes(normalized.classification);
-  const headlessNonblockingReview =
-    headlessReviewForHeadBoundJob && ['note', 'suggestion'].includes(normalized.classification);
+  const headlessBlockingReview = headlessReviewForHeadBoundJob && ['blocking', 'unknown'].includes(normalized.classification);
+  const headlessNonblockingReview = headlessReviewForHeadBoundJob && ['note', 'suggestion'].includes(normalized.classification);
 
   if (headlessBlockingReview) {
     const rebound = await store.recordReviewAgentComment({

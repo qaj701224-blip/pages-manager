@@ -402,13 +402,14 @@ test('staging sync classifies files before generated site branch skip', () => {
   );
 });
 
-test('user-triggered publishing executor workflows stay separate from platform deploys', () => {
+test('retired publishing executor workflows stay dormant and separate from platform deploys', () => {
   for (const [name, path] of publishingExecutorWorkflows) {
     const workflow = readWorkflow(path);
     const triggers = workflow.match(/^on:\n([\s\S]*?)^permissions:/m)?.[1] || '';
 
-    assert.match(triggers, /^ {2}workflow_dispatch:/m, `${name} is dispatched by pages-worker`);
-    assert.doesNotMatch(triggers, /^ {2}(?!workflow_dispatch:)\S/m, `${name} has no push or PR trigger`);
+    assert.match(triggers, /^\s{2}workflow_call:/m, `${name} keeps only reusable-call schema`);
+    assert.doesNotMatch(triggers, /^\s{2}workflow_dispatch:/m, `${name} has no manual/API trigger`);
+    assert.match(workflow, /^\s+if: \$\{\{ false \}\}$/m, `${name} keeps a static job guard`);
     assert.match(workflow, /publishingJobId:/, `${name} is tied to a PublishingJob`);
     assert.doesNotMatch(workflow, /docker buildx?|kubectl|wrangler|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY|CLOUDFLARE_API_TOKEN/);
   }
@@ -431,7 +432,7 @@ test('pages preview serializes deploys per pull request', () => {
   const workflow = readWorkflow('.github/workflows/pages-preview.yml');
 
   assert.match(workflow, /concurrency:\n {6}group: pages-preview-pr-\$\{\{ inputs\.prNumber \}\}\n {6}cancel-in-progress: true/);
-  assert.match(workflow, /headSha:\n(?: {8}.+\n)* {8}required: true/);
+  assert.match(workflow, /HEAD_SHA: \$\{\{ inputs\.headSha \}\}/);
   assert.match(workflow, /headSha: report\.headSha/);
 });
 
@@ -613,7 +614,7 @@ test('pages v2 deploy workflows use explicit v2 templates and secret injection',
     );
     assert.equal(
       generatePagesApiConfig.match(/^ {8}if: (.+)$/m)?.[1],
-      'env.DEPLOY_COMPONENT == \'all\' || env.DEPLOY_COMPONENT == \'pages-api\' || env.DEPLOY_COMPONENT == \'pages-auth\' || env.DEPLOY_COMPONENT == \'pages-router\' || env.DEPLOY_COMPONENT == \'pages-console\'',
+      "env.DEPLOY_COMPONENT == 'all' || env.DEPLOY_COMPONENT == 'pages-api' || env.DEPLOY_COMPONENT == 'pages-auth' || env.DEPLOY_COMPONENT == 'pages-router' || env.DEPLOY_COMPONENT == 'pages-console'",
       `${name} renders the Pages API config for every component that runs D1 migrations`
     );
     assert.match(
@@ -929,7 +930,7 @@ test('ack preview deploy is manual and isolated from Cloudflare production deplo
 
   assert.match(workflow, /^name: Deploy Pages Manager Platform ACK Preview$/m);
   assert.match(workflow, /Platform CI\/CD only: builds and deploys the pages-manager control plane to ACK/);
-  assert.match(workflow, /User-triggered publishing stays on project-index\.yml, pages-agent\.yml, and pages-preview\.yml/);
+  assert.match(workflow, /Retired Site Publishing workflows have no manual\/API trigger and are not part of this deployment/);
   assert.match(triggers, /^ {2}workflow_dispatch:/m, 'ACK preview deploy is manually dispatchable');
   assert.match(
     triggers,

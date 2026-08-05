@@ -15,6 +15,11 @@ import { appendAssistantConversationTurn, buildConversationContext } from './con
 import { slackThreadForSession } from './job-binding.js';
 import { compactUserFacingText, redactSecretLikeText } from './text.js';
 import { inactiveSlackWorkItemReply, isActionableSlackWorkItem } from './work-items.js';
+import {
+  isSitePublishingWorkItem,
+  SITE_PUBLISHING_RETIRED_CODE,
+  SITE_PUBLISHING_RETIRED_MESSAGE,
+} from '../publishing/retirement.js';
 
 const AGENT_EVENT_CODING_FIX_DISPATCHED = 'coding_fix_dispatched';
 const AGENT_EVENT_SLACK_FOLLOWUP_QUEUED = 'slack_followup_queued';
@@ -377,15 +382,7 @@ function platformFollowupReplyText(issueSync, fixDispatch) {
   return '收到，补充已记录。';
 }
 
-async function updateFollowupSessionMemory({
-  store,
-  slackSession,
-  sessionMemory,
-  intake,
-  patch,
-  replyText,
-  conversationKind,
-}) {
+async function updateFollowupSessionMemory({ store, slackSession, sessionMemory, intake, patch, replyText, conversationKind }) {
   if (!slackSession?.id || !store?.updateSessionMemory) return null;
   const baseContext = buildConversationContext({ slackSession, sessionMemory, intake });
   return store.updateSessionMemory(slackSession.id, {
@@ -617,7 +614,16 @@ async function handleSlackPlatformDevFollowup({
   };
 }
 
-export async function handleSlackFollowup({ store, env, intake, slackSession, sessionMemory, agentRun, slackAgentAnalysis }) {
+export async function handleSlackFollowup({
+  store,
+  env,
+  intake,
+  slackSession,
+  sessionMemory,
+  agentRun,
+  slackAgentAnalysis,
+  retireSitePublishing = true,
+}) {
   const redactedSlackAgentAnalysis = redactSlackAnalysis(slackAgentAnalysis);
   const feedback = redactSecretLikeText(redactedSlackAgentAnalysis?.summary || intake.text);
   const activeWorkItem = await activeWorkItemForSlackSession(store, slackSession);
@@ -634,6 +640,27 @@ export async function handleSlackFollowup({ store, env, intake, slackSession, se
       feedback,
       redactedSlackAgentAnalysis,
     });
+  }
+
+  if (retireSitePublishing && isSitePublishingWorkItem(activeWorkItem)) {
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: activeWorkItem.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'site_publishing_retired',
+        accepted: false,
+        reason: SITE_PUBLISHING_RETIRED_CODE,
+        status: activeWorkItem.status,
+      },
+    });
+    return {
+      ok: true,
+      action: 'site_publishing_retired',
+      accepted: false,
+      replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+    };
   }
 
   const activeJob = activeWorkItem || (await activeJobForSlackSession(store, slackSession));

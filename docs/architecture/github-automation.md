@@ -4,24 +4,24 @@
 
 ## 当前定位
 
-`pages-manager` 的 issue、PR、review、site-check、workflow dispatch、preview gate 和平台自身开发 PR 都在 `xindong/pages-manager` 仓库内闭环。
+当前活跃 GitHub 自动化主线是 Platform Dev、平台 PR CI / review / merge 和 merge announcement。Site Publishing Lane 已静态冻结：历史 issue、PR、review、check、workflow body 和数据库记录保留，但 webhook、callback、worker 和 workflow 不再推进 `PublishingJob`。
 
-用户不需要拥有这个 repo 的 GitHub 写权限才能通过 Slack 发起站点发布或平台开发 issue。GitHub 写操作由平台身份完成，Slack 用户身份只用于 gateway 内部权限判断、审计、站点归属派生和平台 issue 请求人记录。
+用户不需要拥有这个 repo 的 GitHub 写权限即可通过 Slack 发起 Platform Dev issue。GitHub 写操作由平台身份完成，Slack 用户身份只用于 gateway 内部权限判断、审计和平台 issue 请求人记录。Site Publishing 的 Slack / API 创建和续接入口只返回退休提示，不再产生 GitHub 写操作。
 
 当前代码路径：
 
-| 能力                                       | 代码位置                                                                                                    |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| GitHub webhook HTTP 入口                   | `apps/gateway/src/routes/github-routes.js`、`apps/gateway/src/control-plane/handlers.js`                     |
-| GitHub webhook 事件解析                    | `apps/gateway/src/github/webhook.js`                                                                        |
-| Review Agent allowlist / 分类              | `apps/gateway/src/github/review.js`                                                                         |
-| GitHub delivery / review / site-check 入库 | `apps/gateway/src/db/repositories/github-deliveries.js`、`apps/gateway/src/db/repositories/review-gates.js` |
+| 能力                                       | 代码位置                                                                                                      |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| GitHub webhook HTTP 入口                   | `apps/gateway/src/routes/github-routes.js`、`apps/gateway/src/control-plane/github-webhook-handlers.js`       |
+| GitHub webhook 事件解析                    | `apps/gateway/src/github/webhook.js`                                                                          |
+| Review Agent allowlist / 分类              | `apps/gateway/src/github/review.js`                                                                           |
+| GitHub delivery / review / site-check 入库 | `apps/gateway/src/db/repositories/github-deliveries.js`、`apps/gateway/src/db/repositories/review-gates.js`   |
 | GitHub issue / workflow dispatch           | `apps/worker/src/jobs/issue-and-index.js`、`apps/worker/src/jobs/coding-agent.js`、`packages/git-client/src/` |
-| Coding Agent workflow                      | `.github/workflows/pages-agent.yml`                                                                         |
-| Platform Dev Coding Agent workflow         | `.github/workflows/platform-agent.yml`                                                                      |
-| Project index workflow                     | `.github/workflows/project-index.yml`                                                                       |
-| 站点 required check                        | `.github/workflows/site-check.yml`                                                                          |
-| Preview workflow 兼容路径                  | `.github/workflows/pages-preview.yml`                                                                       |
+| Site Publishing Coding Agent（冻结）       | `.github/workflows/pages-agent.yml`，job 静态 `if: false`                                                     |
+| Platform Dev Coding Agent workflow         | `.github/workflows/platform-agent.yml`                                                                        |
+| Project index（冻结）                      | `.github/workflows/project-index.yml`，job 静态 `if: false`                                                   |
+| 站点 PR 被动校验                           | `.github/workflows/pr-site.yml`，仅响应 `sites/**` pull request                                               |
+| Site Publishing Preview（冻结）            | `.github/workflows/pages-preview.yml`，job 静态 `if: false`                                                   |
 
 ## 身份和权限
 
@@ -61,16 +61,17 @@
 
 这些 workflow 处理平台代码、v1 `apps/server` Cloudflare Worker、v2 `apps/pages-api` / `apps/pages-auth` / `apps/pages-router` / `apps/kv-gateway` Cloudflare Worker、ACK 镜像和 K8s Deployment。它们可以在受控环境读取平台部署 secret。
 
-用户站点发布执行器 workflow：
+冻结保留的 Site Publishing workflow：
 
 ```text
 .github/workflows/project-index.yml
 .github/workflows/pages-agent.yml
-.github/workflows/site-check.yml
 .github/workflows/pages-preview.yml
 ```
 
-这些 workflow 只处理 `PublishingJob` 和 `sites/<employeeSlug>/<siteSlug>/`。它们不能读取 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、Slack bot token 或 production Cloudflare token。
+这三个 workflow 的主体代码作为历史资产保留，仅保留未被生产调用的 `workflow_call` 输入 schema，并额外保留主 job 的静态 `if: false`。默认分支不接受手工或 API dispatch，避免通过历史 branch/tag ref 执行旧 workflow 定义。它们不能读取 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、Slack bot token 或 production Cloudflare token。
+
+仓库仍保留 `.github/workflows/pr-site.yml`，仅被动校验已有或人工创建的 `sites/**` pull request。它不接受 `workflow_dispatch`，不创建 `PublishingJob`，不回调 gateway，也不触发 preview。
 
 平台研发执行器 workflow：
 
@@ -80,21 +81,24 @@
 
 这条 workflow 只处理 `lane:platform-dev` issue。它可以在受控分支上修改 `pages-manager` repo 全目录，但不能读取 Slack bot token、生产部署 secret、Aliyun AK、ACR、`KUBE_CONFIG_B64` 或自动 merge token。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关变更必须标记 `risk:high`，并且只能在发起人手动点击“自动开发”后 dispatch；PR 仍需要人工 review。
 
-当前执行边界：
+Site Publishing 静态冻结边界：
 
 ```text
-Slack / API
-  -> apps/gateway 创建或更新 PublishingJob
-  -> apps/worker 创建 issue
-  -> GitHub issues webhook 回到 gateway
-  -> apps/worker dispatch project-index.yml / pages-agent.yml
-  -> pages-agent.yml 生成站点代码并创建 / 更新 PR
-  -> site-check.yml 和 GitHub Review Agent 产生结果
-  -> GitHub webhook 回到 gateway
-  -> Review gate 通过后由 worker 触发 preview
+Slack / API 创建、确认、follow-up、retry、reopen
+  -> 返回 PUBLISHING_LANE_RETIRED
+GitHub issue / PR / review / check webhook
+  -> 保留必要 delivery / review / check 历史
+  -> 返回 200 ignored
+executor callback / review reconcile
+  -> 返回 200 ignored
+  -> 不更新 PublishingJob，不发推进通知，不 dispatch worker
+pages-worker PublishingJob start
+  -> 返回 410 PUBLISHING_LANE_RETIRED
+project-index.yml / pages-agent.yml / pages-preview.yml
+  -> job 静态 skipped
 ```
 
-`apps/worker` 直接创建 issue 的路径必须先成功 dispatch `project-index.yml`，再向 gateway 回调 `issue_created`。如果 project-index dispatch 失败，任务不能提前进入 issue_created，避免用户看到“issue 已进入下一阶段”但索引和后续 agent 没有启动。
+历史实现中，`apps/worker` 需要先成功 dispatch `project-index.yml` 再回调 `issue_created`。该约束仍保留在 dormant code 和测试中，但生产 Site Publishing 入口已在此之前被拒绝。
 
 GitHub webhook、Review gate、site-check 和 Slack gate 回调里的 `patch/update` 都要按可能返回 `null` 处理。并发删除或状态被其它流程收口时，入口应返回 ignored / ephemeral 提示，不能继续读取 `.status` 或启动 worker；worker dispatcher 也必须把缺失 work item 当作 no-op。
 
@@ -112,11 +116,11 @@ Slack / API
   -> gateway / slack-notifier 回写 PR、CI、review、merge / close 状态
 ```
 
-ECS worker 可以使用 `PAGES_PREVIEW_MODE=local_deploy`：`pages-worker` 从 PR head 读取目标站点文件，并用固定 ECS 出口调用 Cloudflare staging `/deploy`。这样避免 GitHub-hosted runner 的动态出口 IP 进入 Cloudflare staging 白名单。这里的 preview 指 Site Publishing Lane 的站点预览交付物，不表示 ECS 是 preview 环境。
+`PAGES_PREVIEW_MODE=local_deploy` 和 `PAGES_API` 是冻结遗留配置。历史上 pages-worker 会从 PR head 读取站点文件，并用固定 ECS 出口调用 Cloudflare staging `/deploy`；当前 worker 已拒绝 Site Publishing start，`pages-preview.yml` 也已休眠，因此生产路径不会再调用 v1 `/deploy`。
 
 ## 分支和部署策略
 
-平台代码以 `master` 为生产真相源，`staging` 是共享 preview 分支，用来提前部署和验证指向 `master` 的项目类 PR：
+平台代码以 `master` 为生产真相源，`staging` 是共享 preview 分支，用来提前部署和验证指向 `master` 的项目类 PR。这里的 preview 是平台环境预览，不是已冻结的 Site Publishing Preview：
 
 ```text
 feature branch
@@ -133,8 +137,8 @@ feature branch
 - `staging` 只作为 preview 分支，不是晋级来源，不能从 `staging` 反向晋级到 `master`。
 - production 只允许人工触发 `Deploy Production` / `workflow_dispatch`，不能在 push 或 PR 上自动部署。
 - 项目类 PR 指向 `master` 后，由 `Sync Master PR To Staging` 把 PR head merge 到 `staging` 做预览验证。
-- 纯 `sites/**` 用户站点 PR 跳过 master PR -> staging 同步，继续走 `site-check` 和 Review gate。
-- `staging` 被废弃 PR 污染时，由维护者确认没有活跃 preview 后重新对齐 `master`，再重新触发需要验证的 PR。
+- 纯 `sites/**` PR 跳过 master PR -> staging 同步；`pr-site.yml` 仍可作为被动仓库安全检查运行，但 check / review 结果不得推进历史 PublishingJob 或触发 preview。
+- `staging` 被废弃 PR 污染时，由维护者确认没有活跃的平台 staging preview 后重新对齐 `master`，再重新触发需要验证的平台 PR。
 
 ### Master PR 同步 Staging 预览
 
@@ -161,36 +165,36 @@ base: master
 
 ### Executor Callback 幂等
 
-executor callback 只能推进仍可转换的当前任务。已取消、已合并、已部署或已失败的终态 job 收到迟到 callback 时，gateway 返回 200 并标记 ignored，不能让 workflow 因有意取消而失败。`pages-preview.yml` 的成功和失败 callback 必须携带 `prNumber` 与 `headSha`；已绑定 `headSha` 的 job 收到 `preview_deployed` 时，如果 callback 缺少 `headSha` 或不匹配当前 job head，只保留当前 DB 状态，不触发 Slack 成功卡片、plain progress、reaction settlement 或新的 worker dispatch。已绑定 PR 但没有持久化 `headSha` 的 job 也必须匹配 `prNumber`；只有没有 PR/head 元数据的 legacy / manual job 才接受无 `headSha` callback。
+当前所有 Site Publishing executor callback，包括成功、失败、`pr_created`、`reviewing`、`previewing` 和 `preview_deployed`，统一返回 HTTP 200 ignored。它们不修改 PublishingJob 状态，不发 Slack 成功或失败推进消息，不结算 reaction，也不重新启动 worker。
 
-`pages-preview.yml` 和 ECS `local_deploy` 在部署前必须重新读取当前 PR head，并在 head 已移动时跳过 deploy、artifact 和 callback，避免旧 worker / workflow run 覆盖同一个 preview site。该 workflow 还必须按 `prNumber` 设置 `concurrency` 且 `cancel-in-progress: true`，让同一 PR 的旧 preview run 在发布前被取消。预览内容只从 `sites/<employeeSlug>/<siteSlug>/src` 发布；没有 `src/` 时 workflow 失败，而不是回退发布整个站点根目录。
+原 `prNumber`、`headSha`、concurrency 和 stale-head 校验作为休眠代码的历史安全约束保留。Platform Dev callback 继续按 `workItemKind=platform_dev` 正常推进，不受 Site Publishing 冻结影响。
 
 ## Worker 配置
 
 `apps/worker/src/config.js` 当前读取这些关键配置：
 
-| 变量                                                     | 用途                                               |
-| -------------------------------------------------------- | -------------------------------------------------- |
-| `GITHUB_REPO`                                            | 目标 repo，例如 `xindong/pages-manager`            |
-| `GITHUB_ENTERPRISE_API_BASE_URL` / `GITHUB_API_BASE_URL` | GitHub API base URL，默认 `https://api.github.com` |
-| `GITHUB_APP_INSTALLATION_TOKEN` / `GITHUB_TOKEN`         | 平台 GitHub 写入身份                               |
-| `PAGES_EXECUTOR_MODE`                                    | `actions`、`github_issue_webhook` 或 `issue_only`  |
-| `PAGES_WORKFLOW_REF`                                     | workflow 文件读取分支                              |
-| `PAGES_BASE_REF` / `PAGES_PR_BASE_REF`                   | index、agent checkout 和 PR base                   |
-| `PAGES_PLATFORM_WORKFLOW_REF`                            | Platform Agent workflow 文件读取分支               |
-| `PAGES_PLATFORM_BASE_REF` / `PAGES_PLATFORM_PR_BASE_REF` | Platform Agent checkout 和 PR base                 |
-| `PAGES_GATEWAY_CALLBACK_URL`                             | GitHub Actions runner 回调公网 gateway             |
-| `PAGES_WORKER_CALLBACK_URL` / `PAGES_GATEWAY_URL`        | worker 到 gateway 的内部 callback                  |
-| `INTERNAL_CALLBACK_TOKEN`                                | executor callback shared token                     |
-| `PAGES_PREVIEW_MODE`                                     | `actions` 或 `local_deploy`                        |
-| `PAGES_API`                                              | Cloudflare staging / production API                |
+| 变量                                                     | 用途                                                           |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| `GITHUB_REPO`                                            | 目标 repo，例如 `xindong/pages-manager`                        |
+| `GITHUB_ENTERPRISE_API_BASE_URL` / `GITHUB_API_BASE_URL` | GitHub API base URL，默认 `https://api.github.com`             |
+| `GITHUB_APP_INSTALLATION_TOKEN` / `GITHUB_TOKEN`         | 平台 GitHub 写入身份                                           |
+| `PAGES_EXECUTOR_MODE`                                    | `actions`、`github_issue_webhook` 或 `issue_only`              |
+| `PAGES_WORKFLOW_REF`                                     | workflow 文件读取分支                                          |
+| `PAGES_BASE_REF` / `PAGES_PR_BASE_REF`                   | index、agent checkout 和 PR base                               |
+| `PAGES_PLATFORM_WORKFLOW_REF`                            | Platform Agent workflow 文件读取分支                           |
+| `PAGES_PLATFORM_BASE_REF` / `PAGES_PLATFORM_PR_BASE_REF` | Platform Agent checkout 和 PR base                             |
+| `PAGES_GATEWAY_CALLBACK_URL`                             | GitHub Actions runner 回调公网 gateway                         |
+| `PAGES_WORKER_CALLBACK_URL` / `PAGES_GATEWAY_URL`        | worker 到 gateway 的内部 callback                              |
+| `INTERNAL_CALLBACK_TOKEN`                                | executor callback shared token                                 |
+| `PAGES_PREVIEW_MODE`                                     | 冻结遗留：历史 Site Publishing `actions` / `local_deploy` 选择 |
+| `PAGES_API` / `PAGES_TOKEN`                              | 冻结遗留：历史 v1 `/deploy` 调用配置                           |
 
 `workflowRef` 和 `baseRef` 必须分开理解：
 
 - `PAGES_WORKFLOW_REF` 决定从哪个分支读取 workflow。
 - `PAGES_BASE_REF` 决定生成站点 PR 的 base。
 - Platform Dev Lane 使用独立的 `PAGES_PLATFORM_WORKFLOW_REF` 和 `PAGES_PLATFORM_BASE_REF`。手动测试某个特性分支时，两者必须指向同一个已 push 到远端的 ref，避免 workflow 代码和 Agent checkout / PR base 混用。
-- 当前预览验证通常使用 `staging`，生产合入仍以 `master` 为真相源。
+- 当前平台代码预览验证通常使用 `staging`，生产合入仍以 `master` 为真相源；这不重新开启 Site Publishing Preview。
 
 ## Repository Webhook
 
@@ -210,16 +214,16 @@ gateway 必须校验：
 
 当前需要关注的事件：
 
-| Event                         | 用途                                               |
-| ----------------------------- | -------------------------------------------------- |
-| `issues`                      | issue 创建 / 编辑后触发后续 workflow               |
+| Event                         | 用途                                                         |
+| ----------------------------- | ------------------------------------------------------------ |
+| `issues`                      | issue 创建 / 编辑后触发后续 workflow                         |
 | `pull_request`                | PR opened / synchronize / closed / merged 状态推进和合并公告 |
-| `issue_comment`               | Review Agent summary、人工状态指令、issue 追加需求 |
-| `pull_request_review`         | Review Agent 或人工 review 总结                    |
-| `pull_request_review_comment` | Review Agent inline comment                        |
-| `check_run`                   | site-check / CI 结果和 Review gate                 |
+| `issue_comment`               | Review Agent summary、人工状态指令、issue 追加需求           |
+| `pull_request_review`         | Review Agent 或人工 review 总结                              |
+| `pull_request_review_comment` | Review Agent inline comment                                  |
+| `check_run`                   | site-check / CI 结果和 Review gate                           |
 
-delivery 写入 `github_webhook_deliveries`，Review Agent comment 写入 `review_agent_comments`，site-check 写入 `site_check_runs`。这些都是 MySQL 真相源。
+delivery 写入 `github_webhook_deliveries`，Review Agent comment 写入 `review_agent_comments`，站点 PR check 写入 `site_check_runs`。这些都是 MySQL 真相源。命中 PlatformDevItem 的 issue、PR、review 和 check 继续正常推进；命中历史 PublishingJob 的事件只做必要入库和幂等记录并返回 200 ignored，不触发 fix round、worker 或 preview。
 
 Platform Dev Lane 中，平台 CI 成功只表示构建检查通过；若当前 head 还没有非阻塞 Review Agent 结果，状态保持 `review_waiting`。只有同一 head 的平台 CI 成功和非阻塞 Review 结果都到齐，gateway 才能把 PlatformDevItem 推进到 `ready_to_merge`；若先 `ci_failed` 后 Review 通过，后续同 head CI rerun 成功也必须立即提升到 `ready_to_merge`。
 
@@ -265,12 +269,12 @@ GitHub pull_request.closed + merged=true
 
 职责分工：
 
-| 组件 | 职责 |
-| --- | --- |
-| `pages-gateway` | 接收 GitHub webhook、判断是否需要公告、先登记 pending / 幂等键并快速返回、后台创建系统 `AgentRun`、校验 Agent 输出、调用 notifier |
-| `apps/slack-agent` | 根据受控上下文生成中文摘要 JSON，不读取 Slack token，不访问 GitHub 写权限 |
-| `apps/slack-notifier` | 持有 `SLACK_BOT_TOKEN`，执行 `chat.postMessage`，处理 Slack API 错误 |
-| MySQL | 保存 webhook delivery、AgentRun、AgentRunEvent、Slack message binding / notification attempt |
+| 组件                  | 职责                                                                                                                              |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `pages-gateway`       | 接收 GitHub webhook、判断是否需要公告、先登记 pending / 幂等键并快速返回、后台创建系统 `AgentRun`、校验 Agent 输出、调用 notifier |
+| `apps/slack-agent`    | 根据受控上下文生成中文摘要 JSON，不读取 Slack token，不访问 GitHub 写权限                                                         |
+| `apps/slack-notifier` | 持有 `SLACK_BOT_TOKEN`，执行 `chat.postMessage`，处理 Slack API 错误                                                              |
+| MySQL                 | 保存 webhook delivery、AgentRun、AgentRunEvent、Slack message binding / notification attempt                                      |
 
 Agent 只做摘要，不做这些事：
 
@@ -299,17 +303,11 @@ gateway 给 `slack-agent` 的输入必须是已经裁剪和脱敏后的结构化
   "mergedByLogin": "bob",
   "mergeCommitSha": "abc123...",
   "labels": ["fix", "desktop"],
-  "changedFiles": [
-    "apps/desktop/src/update-notes.js",
-    "tests/update-notes.test.js"
-  ],
+  "changedFiles": ["apps/desktop/src/update-notes.js", "tests/update-notes.test.js"],
   "additions": 120,
   "deletions": 24,
   "prBodyExcerpt": "用户反馈 0.0.122 更新公告中文乱码...",
-  "commitSubjects": [
-    "fix(desktop): stream decode release notes as utf8",
-    "test(desktop): cover split utf8 chunks"
-  ],
+  "commitSubjects": ["fix(desktop): stream decode release notes as utf8", "test(desktop): cover split utf8 chunks"],
   "reviewSummary": "CI passed; review resolved.",
   "knownRisk": "影响 release note 拉取与展示，不改变发布流程。"
 }
@@ -394,9 +392,7 @@ Slack 消息使用 Block Kit，而不是只发纯文本。`text` 字段仍要有
   },
   {
     "type": "context",
-    "elements": [
-      { "type": "mrkdwn", "text": "作者 alice · 合并 bob · master · abc1234" }
-    ]
+    "elements": [{ "type": "mrkdwn", "text": "作者 alice · 合并 bob · master · abc1234" }]
   },
   {
     "type": "actions",
@@ -454,22 +450,22 @@ merge-announcement:<repo_full_name>:<pr_number>:<merge_commit_sha>
 
 gateway：
 
-| 变量 | 用途 |
-| --- | --- |
-| `MERGE_ANNOUNCEMENT_ENABLED` | 是否启用 merge 频道公告，默认 `false` |
-| `MERGE_ANNOUNCEMENT_CHANNEL_ID` | 固定 Slack 频道 ID，例如 `C0123` |
-| `MERGE_ANNOUNCEMENT_BASE_REFS` | 允许公告的 base refs，默认 `master` |
-| `MERGE_ANNOUNCEMENT_AGENT_ENABLED` | 是否调用 Agent 生成摘要，默认跟随 enabled；关闭时只用 fallback |
-| `SLACK_AGENT_MERGE_SUMMARY_URL` | 可选，merge 摘要专用 Slack Agent endpoint；不配时从 `SLACK_AGENT_TURN_URL` / `SLACK_AGENT_ANALYZE_URL` 推导 `/merge-summary` |
-| `MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS` | 是否包含 `sites/**` 用户站点 PR，默认 `false`，避免个人站点变更刷公共频道 |
-| `MERGE_ANNOUNCEMENT_MENTION_USER_IDS` | 可选固定 mention 列表，默认空 |
+| 变量                                  | 用途                                                                                                                         |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `MERGE_ANNOUNCEMENT_ENABLED`          | 是否启用 merge 频道公告，默认 `false`                                                                                        |
+| `MERGE_ANNOUNCEMENT_CHANNEL_ID`       | 固定 Slack 频道 ID，例如 `C0123`                                                                                             |
+| `MERGE_ANNOUNCEMENT_BASE_REFS`        | 允许公告的 base refs，默认 `master`                                                                                          |
+| `MERGE_ANNOUNCEMENT_AGENT_ENABLED`    | 是否调用 Agent 生成摘要，默认跟随 enabled；关闭时只用 fallback                                                               |
+| `SLACK_AGENT_MERGE_SUMMARY_URL`       | 可选，merge 摘要专用 Slack Agent endpoint；不配时从 `SLACK_AGENT_TURN_URL` / `SLACK_AGENT_ANALYZE_URL` 推导 `/merge-summary` |
+| `MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS` | 是否包含 `sites/**` 用户站点 PR，默认 `false`，避免个人站点变更刷公共频道                                                    |
+| `MERGE_ANNOUNCEMENT_MENTION_USER_IDS` | 可选固定 mention 列表，默认空                                                                                                |
 
 `slack-agent`：
 
-| 变量 | 用途 |
-| --- | --- |
-| `SLACK_AGENT_MERGE_SUMMARY_MODEL` | 可选，merge 摘要专用模型；不配则使用 Slack Agent 默认模型 |
-| `SLACK_AGENT_MERGE_SUMMARY_TIMEOUT_SECONDS` | 摘要超时，建议 20-30 秒 |
+| 变量                                        | 用途                                                      |
+| ------------------------------------------- | --------------------------------------------------------- |
+| `SLACK_AGENT_MERGE_SUMMARY_MODEL`           | 可选，merge 摘要专用模型；不配则使用 Slack Agent 默认模型 |
+| `SLACK_AGENT_MERGE_SUMMARY_TIMEOUT_SECONDS` | 摘要超时，建议 20-30 秒                                   |
 
 配置原则：
 
@@ -514,12 +510,12 @@ Slack 中把已入库 Review Agent 评论整理成 blocker / suggestion / note �
 
 - 只有 allowlist 命中的 bot login / app / check name 才能作为 Review Agent。
 - comment 先入库，再分类为 `blocking`、`suggestion`、`note` 或 `unknown`。
-- blocking / unknown 不放行 preview。
-- suggestion / note 可以放行 preview，但需要在 Slack 进度消息中提示。
+- Platform Dev Lane 中，blocking / unknown 进入 `review_blocked` 或 fix round；同一 head 的 suggestion / note 与平台 CI 通过后可以推进 `ready_to_merge`。
+- Site Publishing Lane 中，评论可以继续记录和分类，但不会放行 preview、推进 PublishingJob 或启动 worker。
 - 通过摘要里的 `0 failed`、`failed: 0`、`0 errors`、`errors: 0`、`no security issues` 或 `no critical issues` 不视为 blocking；真实非零 failed / error 计数和明确 security / critical 风险仍视为 blocking，且后续段落出现真实风险时不能被前面的 no-risk 语句抵消。
 - Platform Dev Lane 中，没有 `Reviewed commit` 标记的 issue comment 如果是 note / suggestion，只入库不推进当前 head 的 review 状态；blocking / unknown 会保守绑定当前 head 并进入 fix round。
-- 如果 Review Agent 超时没有返回最终评论，gateway 的 review gate watchdog 可以记录一条兜底结果，避免任务永久卡住。
-- 同一个 PR / job 同一时间只允许一个 Coding Agent fix round；Slack follow-up 和 Review Agent comment 都进入同一条修复队列。
+- Platform Dev 的 Review Agent 超时没有返回最终评论时，gateway review gate watchdog 可以记录一条兜底结果，避免任务永久卡住。
+- 同一个 PlatformDevItem / PR 同一时间只允许一个 Coding Agent fix round；Slack follow-up 和 Review Agent comment 都进入同一条修复队列。
 
 Review gate 当前实现在 gateway 内，后续可以拆成独立 worker，但不能退化成本机 `gh pr view` 轮询。
 
@@ -535,9 +531,9 @@ Platform Dev PR 的 `blocking` / `unknown` review comment、CI 失败和 Slack f
 - 同一 PR / work item 同一时间只允许一个 fix round；新 follow-up 在当前轮未结束时排队，并在可安全推进的 callback 后继续启动下一轮。
 - 非 open 的 review comment 事件，例如 deleted、dismissed 或 outdated，只记录状态，不触发自动修复。
 
-## 站点 PR 边界
+## 站点 PR 边界（被动校验）
 
-自动站点 PR 只能改一个目录：
+Site Publishing 不再自动创建站点 PR。仓库中已有或人工创建的站点 PR 只能改一个目录：
 
 ```text
 sites/<employeeSlug>/<siteSlug>/
@@ -555,9 +551,9 @@ Dockerfile*
 docs/** 中的平台部署文档
 ```
 
-如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，不能走 Site Publishing Lane；应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk、手动“自动开发”触发、CI 和 review 控制。
+如果用户需求需要改平台代码、workflow、模板、K8s 或部署逻辑，应转入 Platform Dev Lane 或人工平台 PR，并按 issue type、risk、手动“自动开发”触发、CI 和 review 控制。
 
-`pages-agent.yml` 在提交自动生成站点 PR 前必须清空 index，使用 `git diff HEAD` 同时覆盖 staged 与 unstaged 改动，并只把 `ALLOWED_PATH` 加回提交。secret scan 只扫描本轮新增 diff 行，覆盖 Slack token、`sk-*`、`CF_API_TOKEN`、`SLACK_AGENT_API_KEY`、`AGENT_CODE_API_KEY`、`github_pat_*`、GitHub `gh[pousr]_` token 家族，以及 `AWS_SECRET_ACCESS_KEY=`、`DATABASE_PASSWORD=`、`private_key=` 这类通用敏感字段赋值。扫描必须匹配真实 token 形态或敏感变量赋值，不能因为站点目录历史正文或示例文档里已有短前缀 `ghp_` / `gho_` 就阻断新的 PR 创建和 callback。
+`pages-agent.yml` 中的 index 清理、allowed path 和 secret scan 是休眠历史实现。当前自动执行的是 `pr-site.yml` 对 `sites/**` pull request 的被动校验；不得通过手工 dispatch 冻结 workflow 恢复 Site Publishing。
 
 ## Platform Dev PR 边界
 
@@ -617,8 +613,8 @@ Platform Dev Lane 的设计细节见 [platform-dev-lane.md](./platform-dev-lane.
 `gh` CLI 只能用于排障：
 
 - 查看 issue / PR / workflow run
-- 手动补跑 workflow
+- 手动补跑允许执行的平台 workflow；不得补跑或恢复 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml`
 - 查看 webhook delivery
 - 对比 ruleset / check 状态
 
-`gh` CLI 不能作为产品运行时状态来源，不能靠本机 watch 推进 Review gate、preview 或 Slack 回写。
+`gh` CLI 不能作为产品运行时状态来源，不能靠本机 watch 推进 Platform Dev review 或 Slack 回写，也不能用本机操作重新推进 Site Publishing。
