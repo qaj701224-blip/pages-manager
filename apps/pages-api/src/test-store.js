@@ -459,7 +459,7 @@ class TestPagesStore {
     });
   }
 
-  async listWorkerOrphanScanReferences({ environment }) {
+  async listWorkerOrphanScanReferences({ environment, limit } = {}) {
     const activeRoutes = [...this.routes.values()]
       .filter((route) => route.environment === environment && route.routeStatus === 'active' && route.workerName)
       .map((route) => ({
@@ -486,7 +486,13 @@ class TestPagesStore {
           ['pending', 'failed', 'running'].includes(task.status)
       )
       .map((task) => ({ id: task.id, resourceRef: task.resourceRef, status: task.status }));
-    return cloneRecord({ activeRoutes, versions, cleanupTasks });
+    if (!Number.isInteger(limit) || limit < 1) return cloneRecord({ activeRoutes, versions, cleanupTasks });
+    return cloneRecord({
+      activeRoutes: activeRoutes.slice(0, limit),
+      versions: versions.slice(0, limit),
+      cleanupTasks: cleanupTasks.slice(0, limit),
+      scanLimitExceeded: activeRoutes.length > limit || versions.length > limit || cleanupTasks.length > limit,
+    });
   }
 
   async listActiveSiteSlugs({ environment }) {

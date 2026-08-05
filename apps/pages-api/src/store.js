@@ -775,15 +775,17 @@ export class D1PagesStore {
     };
   }
 
-  async listWorkerOrphanScanReferences({ environment }) {
+  async listWorkerOrphanScanReferences({ environment, limit } = {}) {
+    const normalizedLimit = Number.isInteger(limit) && limit > 0 ? limit : null;
+    const queryLimit = normalizedLimit ? normalizedLimit + 1 : null;
     const [activeRoutesResult, versionsResult, cleanupTasksResult] = await Promise.all([
       this.db
         .prepare(
           `SELECT worker_name, site_id, active_version_id
           FROM site_routes
-          WHERE environment = ? AND route_status = 'active' AND worker_name IS NOT NULL`
+          WHERE environment = ? AND route_status = 'active' AND worker_name IS NOT NULL${queryLimit ? ' LIMIT ?' : ''}`
         )
-        .bind(environment)
+        .bind(...(queryLimit ? [environment, queryLimit] : [environment]))
         .all(),
       this.db
         .prepare(
@@ -792,39 +794,45 @@ export class D1PagesStore {
             sites.deleted_at AS site_deleted_at
           FROM site_versions
           LEFT JOIN sites ON sites.id = site_versions.site_id
-          WHERE sites.environment = ? AND site_versions.worker_name IS NOT NULL`
+          WHERE sites.environment = ? AND site_versions.worker_name IS NOT NULL${queryLimit ? ' LIMIT ?' : ''}`
         )
-        .bind(environment)
+        .bind(...(queryLimit ? [environment, queryLimit] : [environment]))
         .all(),
       this.db
         .prepare(
           `SELECT id, resource_ref, status
           FROM deployment_resource_cleanup_tasks
           WHERE environment = ? AND resource_type = 'wfp_user_worker'
-            AND status IN ('pending', 'failed', 'running')`
+            AND status IN ('pending', 'failed', 'running')${queryLimit ? ' LIMIT ?' : ''}`
         )
-        .bind(environment)
+        .bind(...(queryLimit ? [environment, queryLimit] : [environment]))
         .all(),
     ]);
-    return {
-      activeRoutes: (activeRoutesResult.results || []).map((row) => ({
+    const activeRoutes = (activeRoutesResult.results || []).map((row) => ({
         workerName: row.worker_name,
         siteId: row.site_id,
         versionId: row.active_version_id || null,
-      })),
-      versions: (versionsResult.results || []).map((row) => ({
+      }));
+    const versions = (versionsResult.results || []).map((row) => ({
         id: row.id,
         workerName: row.worker_name,
         siteId: row.site_id,
         siteSlug: row.site_slug || null,
         siteDeletedAt: row.site_deleted_at || null,
         artifactAvailability: row.artifact_availability || 'active',
-      })),
-      cleanupTasks: (cleanupTasksResult.results || []).map((row) => ({
+      }));
+    const cleanupTasks = (cleanupTasksResult.results || []).map((row) => ({
         id: row.id,
         resourceRef: row.resource_ref,
         status: row.status,
-      })),
+      }));
+    if (!normalizedLimit) return { activeRoutes, versions, cleanupTasks };
+    return {
+      activeRoutes: activeRoutes.slice(0, normalizedLimit),
+      versions: versions.slice(0, normalizedLimit),
+      cleanupTasks: cleanupTasks.slice(0, normalizedLimit),
+      scanLimitExceeded:
+        activeRoutes.length > normalizedLimit || versions.length > normalizedLimit || cleanupTasks.length > normalizedLimit,
     };
   }
 

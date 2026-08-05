@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 export function createSchemaSql() {
   return [
@@ -363,6 +363,10 @@ export function createSchemaSql() {
       WHERE route_status != 'deleted'`,
     `CREATE INDEX IF NOT EXISTS idx_site_routes_site_id
       ON site_routes(site_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_site_routes_environment_status_worker
+      ON site_routes(environment, route_status, worker_name)`,
+    `CREATE INDEX IF NOT EXISTS idx_site_versions_site_worker_artifact
+      ON site_versions(site_id, worker_name, artifact_availability)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_site_secrets_live
       ON site_secrets(environment, site_id, name)
       WHERE deleted_at IS NULL`,
@@ -390,6 +394,8 @@ export function createSchemaSql() {
       ON deployment_resource_cleanup_tasks(environment, status, cleanup_after)`,
     `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_resource
       ON deployment_resource_cleanup_tasks(environment, resource_type, resource_ref)`,
+    `CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_environment_type_status_ref
+      ON deployment_resource_cleanup_tasks(environment, resource_type, status, resource_ref)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
       ON users(lower(trim(email)))`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_feishu_open_id

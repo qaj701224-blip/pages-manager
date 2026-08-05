@@ -370,6 +370,85 @@ test('deletes owned site by soft-deleting site and holding hostname claim for re
   assert.equal(claim.reuseHoldUntil, '2026-06-15T00:05:00.000Z');
 });
 
+test('site deletion enqueues managed route and active-version Workers for cleanup without blocking deletion', async () => {
+  const store = await createSeededStore();
+  await store.createSite({
+    id: 'site_1',
+    slug: 'governed',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_governed',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_governed',
+    hostname: 'governed.workers.xd.team',
+  });
+  await activateSite(store, 'site_1', { workerName: 'pages-v2-route-worker' });
+  await store.createSiteVersion({
+    id: 'ver_previous',
+    siteId: 'site_1',
+    deploymentId: 'dep_previous',
+    workerName: 'pages-v2-previous-worker',
+    runtime: 'wfp',
+    artifactRef: 'wfp://test/pages-v2-previous-worker',
+    contentHash: 'sha256:previous',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+  await store.createSiteVersion({
+    id: 'ver_unmanaged',
+    siteId: 'site_1',
+    deploymentId: 'dep_unmanaged',
+    workerName: 'normal-worker',
+    runtime: 'wfp',
+    artifactRef: 'wfp://test/normal-worker',
+    contentHash: 'sha256:unmanaged',
+    deploymentShape: 'worker-only',
+    requestedFallback: 'auto',
+    resolvedFallback: null,
+    routingMode: 'worker-only',
+    artifactAvailability: 'active',
+    createdBy: 'usr_1',
+  });
+
+  const response = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_1', {}, { method: 'DELETE' }),
+    testEnv(store, { WFP_WORKER_CLEANUP_DRAIN_SECONDS: 300, ROUTE_SNAPSHOTS: createSnapshotStore() })
+  );
+
+  assert.equal(response.status, 200, await response.clone().text());
+  const tasks = await store.listDeploymentResourceCleanupTasks({ environment: 'production' });
+  assert.deepEqual(tasks.map((task) => [task.resourceRef, task.cleanupReason, task.cleanupAfter]), [
+    ['pages-v2-route-worker', 'site_deleted', '2026-06-15T00:05:00.000Z'],
+    ['pages-v2-previous-worker', 'site_deleted', '2026-06-15T00:05:00.000Z'],
+  ]);
+
+  const failingStore = await createSeededStore();
+  await failingStore.createSite({
+    id: 'site_fail',
+    slug: 'enqueue-failure',
+    ownerUserId: 'usr_1',
+    siteUuid: 'uuid_enqueue_failure',
+    defaultVisibility: 'org',
+    environment: 'production',
+    routeId: 'route_enqueue_failure',
+    hostname: 'enqueue-failure.workers.xd.team',
+  });
+  await activateSite(failingStore, 'site_fail', { workerName: 'pages-v2-failure-worker' });
+  failingStore.createDeploymentResourceCleanupTask = async () => {
+    throw new Error('CLEANUP_ENQUEUE_FAILED');
+  };
+  const failureResponse = await worker.fetch(
+    authRequest('https://api.pages.xd.team/.xd-pages/api/sites/site_fail', {}, { method: 'DELETE' }),
+    testEnv(failingStore, { ROUTE_SNAPSHOTS: createSnapshotStore() })
+  );
+  assert.equal(failureResponse.status, 200, await failureResponse.clone().text());
+  assert.equal((await failingStore.getSite('site_fail')).deletedAt, '2026-06-15T00:00:00.000Z');
+});
+
 test('site delete rejects read-only access keys and non-owner members', async () => {
   const store = await createSeededStore();
   await store.createUser({

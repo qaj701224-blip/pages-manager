@@ -29,7 +29,7 @@ test('schema defines all v2 authority tables', () => {
     'webhook_deliveries',
   ];
 
-  assert.equal(SCHEMA_VERSION, 17);
+  assert.equal(SCHEMA_VERSION, 18);
   for (const table of tables) {
     assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
   }
@@ -49,7 +49,7 @@ test('schema defines the Cindy connection membership identity column', () => {
 test('schema defines XDMaker identity and access-key source columns without S2S guard tables', () => {
   const sql = createSchemaSql().join('\n');
 
-  assert.equal(SCHEMA_VERSION, 17);
+  assert.equal(SCHEMA_VERSION, 18);
   assert.match(sql, /feishu_open_id TEXT/);
   assert.match(sql, /created_source TEXT NOT NULL DEFAULT 'xd_sso'/);
   assert.match(sql, /issued_source TEXT NOT NULL DEFAULT 'legacy'/);
@@ -68,6 +68,14 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_environment_slug/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_routes_hostname_live/);
   assert.match(sql, /WHERE route_status != 'deleted'/);
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_site_routes_environment_status_worker\s+ON site_routes\(environment, route_status, worker_name\)/
+  );
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_site_versions_site_worker_artifact\s+ON site_versions\(site_id, worker_name, artifact_availability\)/
+  );
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_hostname/);
   assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_hostname_claims_environment_slug_live/);
@@ -78,6 +86,10 @@ test('schema includes authority indexes for routing, idempotency, and access key
   assert.match(sql, /resource_type TEXT NOT NULL/);
   assert.match(sql, /cleanup_after TEXT NOT NULL/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_environment_status/);
+  assert.match(
+    sql,
+    /CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_environment_type_status_ref\s+ON deployment_resource_cleanup_tasks\(environment, resource_type, status, resource_ref\)/
+  );
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_site_acl_entries_site/);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_site_acl_entries_unique_subject/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_access_keys_owner/);

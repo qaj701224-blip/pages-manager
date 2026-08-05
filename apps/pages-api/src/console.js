@@ -18,6 +18,7 @@ import {
   restoreSiteAclAfterSnapshotFailure,
   restoreSiteVisibilityAfterSnapshotFailure,
   buildSiteOwnerTransferAuditEvent,
+  enqueueDeletedSiteWfpCleanup,
   siteCreateErrorResponse,
   syncActiveWfpPlainTextBindings,
   syncActiveWfpSecret,
@@ -254,6 +255,7 @@ export async function deleteConsoleSite(env, config, store, site, options = {}) 
     const snapshotError = await refreshCurrentRouteSnapshot(env, store, deleted, route, config.environment);
     if (snapshotError) return snapshotError;
   }
+  await enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, reuseHoldUntil);
   return jsonOk({ site: formatWorkspaceSite({ ...deleted, route }) });
 }
 

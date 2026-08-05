@@ -1,5 +1,19 @@
 const CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const ACTIVE_CLEANUP_STATUSES = new Set(['pending', 'failed', 'running']);
+const DEFAULT_V1_RESERVED_WORKER_NAMES = Object.freeze([
+  'pages-api',
+  'pages-api-staging',
+  'pages-auth',
+  'pages-auth-staging',
+  'pages-router',
+  'pages-router-staging',
+  'pages-console',
+  'pages-console-staging',
+  'pages-kv-gateway',
+  'pages-kv-gateway-staging',
+  'pages-manager',
+  'pages-manager-staging',
+]);
 
 export function buildWorkerOrphanScan({
   workers,
@@ -70,7 +84,7 @@ export function buildWorkerOrphanScan({
   };
 }
 
-export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, environment }) {
+export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, environment, reservedWorkerNames = new Set() }) {
   const managedWorkers = new Map(
     (workers || []).filter((worker) => isManagedV1WorkerName(worker?.name, environment)).map((worker) => [worker.name, worker])
   );
@@ -80,8 +94,10 @@ export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, envir
     .map((site) => {
       const metadata = isPlainObject(site.metadata) ? site.metadata : {};
       const expectedWorkerName = v1WorkerName(site.name, environment);
-      const worker = managedWorkers.get(expectedWorkerName) || null;
-      return {
+      const metadataWorkerName = nullableString(metadata.scriptName);
+      const worker = managedWorkers.get(metadataWorkerName || expectedWorkerName) || managedWorkers.get(expectedWorkerName) || null;
+      const platformReserved = reservedWorkerNames.has(metadataWorkerName || expectedWorkerName);
+      const formatted = {
         name: site.name,
         url: nullableString(metadata.url),
         preset: nullableString(metadata.preset),
@@ -91,8 +107,59 @@ export function formatV1SitesInventory({ siteKeys, workers, activeV2Sites, envir
         workerModifiedOn: worker?.modified_on || null,
         migratedCandidate: activeV2Slugs.has(site.name),
       };
+      if (platformReserved) {
+        formatted.platformReserved = true;
+        formatted.canRetire = false;
+        formatted.classification = 'platform_reserved';
+      }
+      return formatted;
     })
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function formatV1UnregisteredWorkers({ siteKeys, workers, environment, reservedWorkerNames }) {
+  const registeredWorkerNames = new Set(
+    (siteKeys || [])
+      .flatMap((site) => {
+        if (typeof site?.name !== 'string' || site.name === '') return [];
+        const metadata = isPlainObject(site.metadata) ? site.metadata : {};
+        return [v1WorkerName(site.name, environment), nullableString(metadata.scriptName)].filter(Boolean);
+      })
+  );
+  const reserved = reservedWorkerNames || new Set();
+  return (workers || [])
+    .filter((worker) => isManagedV1WorkerName(worker?.name, environment))
+    .filter((worker) => !registeredWorkerNames.has(worker.name))
+    .map((worker) => {
+      const platformReserved = reserved.has(worker.name);
+      return {
+        workerName: worker.name,
+        modifiedOn: worker.modified_on || null,
+        classification: platformReserved ? 'platform_reserved' : 'unknown',
+        platformReserved,
+        canRetire: false,
+      };
+    })
+    .sort((left, right) => left.workerName.localeCompare(right.workerName));
+}
+
+export function readV1ReservedWorkerNames(env = {}) {
+  const names = new Set(DEFAULT_V1_RESERVED_WORKER_NAMES);
+  for (const value of String(env.PAGES_V1_RESERVED_WORKER_NAMES || '').split(',')) {
+    const normalized = nullableString(value);
+    if (normalized) names.add(normalized);
+  }
+  return names;
+}
+
+export function readV1SiteRecord(site) {
+  if (!site || typeof site !== 'object' || Array.isArray(site)) return null;
+  const metadata = isPlainObject(site.metadata) ? site.metadata : {};
+  const name = nullableString(site.name);
+  const scriptName = nullableString(metadata.scriptName);
+  const url = nullableString(metadata.url);
+  if (!name) return null;
+  return { name, metadata, scriptName, url };
 }
 
 export function createV1SitesAdminClient(env = {}) {
@@ -137,6 +204,48 @@ export function createV1SitesAdminClient(env = {}) {
         }))
         .filter((worker) => typeof worker.name === 'string' && worker.name !== '');
     },
+
+    async deleteWorker({ workerName }) {
+      return requestCloudflare(fetchImpl, apiToken, workerScriptUrl(accountId, workerName), {
+        method: 'DELETE',
+      });
+    },
+
+    async unbindRoute({
+      hostname,
+      expectedScriptName,
+      environment = env.PUBLIC_ENVIRONMENT || env.PAGES_ENV || 'production',
+      zoneId = env.CF_ZONE_ID_NEW || env.CF_ZONE_ID,
+    }) {
+      const normalizedHostname = nullableString(hostname)?.toLowerCase();
+      if (!isExactV1Hostname(normalizedHostname)) throw invalidV1Route();
+      if (!isManagedV1WorkerName(expectedScriptName, environment)) {
+        throw invalidV1Route();
+      }
+      if (!nullableString(zoneId)) throw new Error('V1_SITE_RETIRE_UNSUPPORTED');
+      const routesPayload = await requestCloudflare(
+        fetchImpl,
+        apiToken,
+        `${CF_API_BASE_URL}/zones/${encodeURIComponent(zoneId)}/workers/routes`
+      );
+      const exact = (routesPayload.result || []).find((route) => route?.pattern === `${normalizedHostname}/*`);
+      if (!exact || exact.script !== expectedScriptName) throw invalidV1Route();
+      return requestCloudflare(
+        fetchImpl,
+        apiToken,
+        `${CF_API_BASE_URL}/zones/${encodeURIComponent(zoneId)}/workers/routes/${encodeURIComponent(exact.id)}`,
+        { method: 'DELETE' }
+      );
+    },
+
+    async deleteSite(name) {
+      return requestCloudflare(
+        fetchImpl,
+        apiToken,
+        `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(name)}`,
+        { method: 'DELETE' }
+      );
+    },
   };
 }
 
@@ -163,18 +272,35 @@ function v1WorkerName(siteName, environment) {
   return environment === 'staging' ? `pages-staging-${siteName}` : `pages-${siteName}`;
 }
 
-async function requestCloudflare(fetchImpl, apiToken, url) {
+async function requestCloudflare(fetchImpl, apiToken, url, options = {}) {
   const response = await fetchImpl(url, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiToken}` },
+    ...options,
+    headers: { Authorization: `Bearer ${apiToken}`, ...(options.headers || {}) },
   });
   const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.success === false || !payload) {
+  if (response.status === 204) return { success: true, result: null };
+  if (!response.ok || payload?.success === false || !payload || typeof payload !== 'object') {
     const error = new Error('CLOUDFLARE_RESOURCE_INVENTORY_FAILED');
     error.status = response.status;
     throw error;
   }
   return payload;
+}
+
+function workerScriptUrl(accountId, workerName) {
+  const normalized = nullableString(workerName);
+  if (!normalized) throw new Error('V1_SITE_SCRIPT_INVALID');
+  return `${CF_API_BASE_URL}/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(normalized)}?force=true`;
+}
+
+function isExactV1Hostname(hostname) {
+  if (typeof hostname !== 'string' || !hostname.endsWith('.workers.xd.team')) return false;
+  const label = hostname.slice(0, -'.workers.xd.team'.length);
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
+}
+
+function invalidV1Route() {
+  return new Error('V1_SITE_ROUTE_UNSAFE');
 }
 
 function readInventoryListResult(payload) {

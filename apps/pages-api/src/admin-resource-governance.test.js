@@ -174,3 +174,86 @@ test('resource inventory filters v1 and WFP names by the current environment', (
   assert.equal(isManagedV1WorkerName('pages-staging-docs', 'staging'), true);
   assert.equal(isManagedV1WorkerName('pages-v2-staging-docs-ver-1', 'staging'), false);
 });
+
+test('v1 sites admin client retires a Worker through exact route and KV endpoints', async () => {
+  const requests = [];
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    CF_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), method: init.method || 'GET' });
+      if ((init.method || 'GET') === 'GET') {
+        return Response.json({
+          success: true,
+          result: [{ id: 'route_1', pattern: 'legacy.workers.xd.team/*', script: 'pages-legacy' }],
+        });
+      }
+      return Response.json({ success: true, result: null });
+    },
+  });
+
+  await client.deleteWorker({ workerName: 'pages-legacy' });
+  await client.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' });
+  await client.deleteSite('legacy');
+  assert.deepEqual(requests, [
+    {
+      url: 'https://api.cloudflare.com/client/v4/accounts/account_1/workers/scripts/pages-legacy?force=true',
+      method: 'DELETE',
+    },
+    {
+      url: 'https://api.cloudflare.com/client/v4/zones/zone_1/workers/routes',
+      method: 'GET',
+    },
+    {
+      url: 'https://api.cloudflare.com/client/v4/zones/zone_1/workers/routes/route_1',
+      method: 'DELETE',
+    },
+    {
+      url: 'https://api.cloudflare.com/client/v4/accounts/account_1/storage/kv/namespaces/namespace_1/values/legacy',
+      method: 'DELETE',
+    },
+  ]);
+});
+
+test('v1 sites admin client refuses unsafe route patterns and mismatched scripts', async () => {
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    CF_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    PAGES_ENV: 'production',
+    fetch: async () =>
+      Response.json({
+        success: true,
+        result: [{ id: 'route_1', pattern: '*.workers.xd.team/*', script: 'pages-other' }],
+      }),
+  });
+
+  await assert.rejects(
+    () => client.unbindRoute({ hostname: 'legacy.workers.xd.team', expectedScriptName: 'pages-legacy' }),
+    /V1_SITE_ROUTE_UNSAFE/
+  );
+});
+
+test('v1 sites admin client validates staging Worker names against the requested environment', async () => {
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'runtime-secret-placeholder',
+    CF_ZONE_ID: 'zone_1',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    fetch: async () =>
+      Response.json({
+        success: true,
+        result: [{ id: 'route_1', pattern: 'legacy-staging.workers.xd.team/*', script: 'pages-staging-legacy' }],
+      }),
+  });
+
+  await client.unbindRoute({
+    hostname: 'legacy-staging.workers.xd.team',
+    expectedScriptName: 'pages-staging-legacy',
+    environment: 'staging',
+  });
+});

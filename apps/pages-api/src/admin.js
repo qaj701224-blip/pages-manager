@@ -1,4 +1,5 @@
 import { isConsoleBffRequest, requireConsoleUserSession } from './console-auth.js';
+import { jsonResponse } from '@xd/worker-kit';
 import {
   deleteConsoleSite,
   deleteSiteSecret,
@@ -12,6 +13,7 @@ import {
 import { departmentTeamDisplayName } from './department-path.js';
 import { jsonError, jsonOk, readJsonBody } from './http.js';
 import { formatConsoleUser } from './console-users.js';
+import { newId } from './id.js';
 import { handleConsoleAdminWebhooksApi } from './webhooks.js';
 import { buildSiteOwnerTransferAuditEvent, refreshActiveRouteSnapshot } from './sites.js';
 import { ensureCanChangeTeamAdminRole, ensureCanRemoveTeamMember } from './teams.js';
@@ -20,13 +22,21 @@ import {
   buildWorkerOrphanScan,
   createV1SitesAdminClient,
   formatV1SitesInventory,
+  formatV1UnregisteredWorkers,
   isManagedWfpWorkerName,
+  isManagedV1WorkerName,
+  readV1ReservedWorkerNames,
+  readV1SiteRecord,
 } from './admin-resource-governance.js';
 
 const CONSOLE_PREFIX = '/.xd-pages/api/console';
 const TEAM_ROLES = new Set(['viewer', 'publisher', 'admin']);
 const NORMAL_WORKER_BULK_DELETE_LIMIT = 100;
 const NORMAL_WORKER_BULK_DELETE_CONCURRENCY = 5;
+const WFP_ORPHAN_BACKFILL_LIMIT = 100;
+const V1_SITE_BULK_RETIRE_LIMIT = 100;
+const DEFAULT_WFP_ORPHAN_SCAN_MAX_WORKERS = 10_000;
+const ACTIVE_CLEANUP_STATUSES = new Set(['pending', 'failed', 'running']);
 const CLEANUP_TASK_LOCK_SECONDS = 5 * 60;
 const CLEANUP_TASK_FAILED_CODE = 'CLEANUP_TASK_FAILED';
 const CLEANUP_TASK_FAILED_MESSAGE = 'Cleanup task failed unexpectedly.';
@@ -58,14 +68,35 @@ export async function handleConsoleAdminApi(request, env, config, store) {
     return listDeploymentCleanups(url, env, config, store);
   }
 
+  if (url.pathname === `${CONSOLE_PREFIX}/admin/deployment-cleanups/run-due`) {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return runDueDeploymentCleanupsAdmin(request, env, config, store, session);
+  }
+
   if (url.pathname === `${CONSOLE_PREFIX}/admin/worker-orphan-scan`) {
     if (request.method !== 'GET') return methodNotAllowed();
     return scanAdminWorkerOrphans(env, config, store);
   }
 
+  if (url.pathname === `${CONSOLE_PREFIX}/admin/worker-orphan-scan/backfill`) {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return backfillAdminWorkerOrphans(request, env, config, store, session);
+  }
+
   if (url.pathname === `${CONSOLE_PREFIX}/admin/v1-sites`) {
     if (request.method !== 'GET') return methodNotAllowed();
     return listAdminV1Sites(env, config, store);
+  }
+
+  if (url.pathname === `${CONSOLE_PREFIX}/admin/v1-sites/bulk-retire`) {
+    if (request.method !== 'POST') return methodNotAllowed();
+    return bulkRetireAdminV1Sites(request, env, config, store, session);
+  }
+
+  const adminV1SiteMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/v1-sites\/([^/]+)$/);
+  if (adminV1SiteMatch) {
+    if (request.method !== 'DELETE') return methodNotAllowed();
+    return retireAdminV1Site(env, config, store, session, decodeURIComponent(adminV1SiteMatch[1]));
   }
 
   const cleanupRunMatch = url.pathname.match(/^\/\.xd-pages\/api\/console\/admin\/deployment-cleanups\/([^/]+)\/run$/);
@@ -271,14 +302,28 @@ async function scanAdminWorkerOrphans(env, config, store) {
     );
   }
   try {
+    const configuredLimit = readWorkerOrphanScanLimit(env);
     const [inventory, references] = await Promise.all([
       client.listWorkers(),
-      store.listWorkerOrphanScanReferences({ environment: config.environment }),
+      store.listWorkerOrphanScanReferences({ environment: config.environment, limit: configuredLimit }),
     ]);
     const workers = Array.isArray(inventory) ? inventory : inventory?.workers;
     const completeness = Array.isArray(inventory) ? null : inventory?.completeness;
     const scannedCount = Array.isArray(inventory) ? null : inventory?.scannedCount;
     const namespaceScriptCount = Array.isArray(inventory) ? null : inventory?.namespaceScriptCount;
+    const observedCount = Math.max(
+      Array.isArray(workers) ? workers.length : 0,
+      Number.isInteger(scannedCount) ? scannedCount : 0,
+      Number.isInteger(namespaceScriptCount) ? namespaceScriptCount : 0
+    );
+    if (observedCount > configuredLimit || references?.scanLimitExceeded) {
+      return jsonError(
+        'WORKER_ORPHAN_SCAN_LIMIT_EXCEEDED',
+        'Worker orphan scan exceeds the configured inventory limit.',
+        413,
+        'Increase PAGES_WFP_ORPHAN_SCAN_MAX_WORKERS or narrow the upstream inventory before retrying.'
+      );
+    }
     return jsonOk({
       scan: buildWorkerOrphanScan({
         workers,
@@ -295,6 +340,12 @@ async function scanAdminWorkerOrphans(env, config, store) {
   }
 }
 
+function readWorkerOrphanScanLimit(env) {
+  const configured = Number(env?.PAGES_WFP_ORPHAN_SCAN_MAX_WORKERS);
+  if (!Number.isInteger(configured) || configured < 1) return DEFAULT_WFP_ORPHAN_SCAN_MAX_WORKERS;
+  return configured;
+}
+
 async function listAdminV1Sites(env, config, store) {
   const client = createV1SitesAdminClient(env);
   if (!client || typeof store.listActiveSiteSlugs !== 'function') {
@@ -306,12 +357,20 @@ async function listAdminV1Sites(env, config, store) {
       client.listWorkers(),
       store.listActiveSiteSlugs({ environment: config.environment }),
     ]);
+    const reservedWorkerNames = readV1ReservedWorkerNames(env);
     return jsonOk({
       sites: formatV1SitesInventory({
         siteKeys,
         workers,
         activeV2Sites,
         environment: config.environment,
+        reservedWorkerNames,
+      }),
+      unregisteredWorkers: formatV1UnregisteredWorkers({
+        siteKeys,
+        workers,
+        environment: config.environment,
+        reservedWorkerNames,
       }),
     });
   } catch {
@@ -322,6 +381,267 @@ async function listAdminV1Sites(env, config, store) {
       'Check Cloudflare credentials and retry.'
     );
   }
+}
+
+async function retireAdminV1Site(env, config, store, session, siteName) {
+  const client = createV1SitesAdminClient(env);
+  if (!client || typeof client.listSites !== 'function' || typeof store.releaseHostnameClaim !== 'function') {
+    return jsonError('V1_SITES_UNSUPPORTED', 'Legacy v1 site retirement is unavailable.', 503, 'Configure v1 inventory access.');
+  }
+
+  let siteKeys;
+  try {
+    siteKeys = await client.listSites();
+  } catch {
+    return jsonError('V1_SITES_READ_FAILED', 'Legacy v1 site inventory could not be read.', 502, 'Check Cloudflare credentials and retry.');
+  }
+  const record = findV1SiteRecord(siteKeys, siteName);
+  if (!record) return v1RetireError('metadata_read', 'V1_SITE_NOT_FOUND', 'Legacy v1 site was not found.', 404, 'Refresh the v1 site inventory.');
+  const result = await retireV1SiteRecord({ env, config, store, session, record, client });
+  if (result.status === 'retired') return jsonOk({ result });
+  return v1RetireError(result.stage, result.error.code, result.error.message, result.httpStatus, result.error.action, result);
+}
+
+async function bulkRetireAdminV1Sites(request, env, config, store, session) {
+  const client = createV1SitesAdminClient(env);
+  if (!client || typeof client.listSites !== 'function' || typeof store.releaseHostnameClaim !== 'function') {
+    return jsonError('V1_SITES_UNSUPPORTED', 'Legacy v1 site retirement is unavailable.', 503, 'Configure v1 inventory access.');
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 16 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object.');
+  }
+  const names = normalizeV1SiteNames(body.names);
+  if (!names) return jsonError('V1_SITE_NAMES_INVALID', 'Legacy v1 site names are invalid.', 400, 'Send a non-empty names array.');
+  if (names.length === 0) return jsonError('V1_SITE_NAMES_REQUIRED', 'Legacy v1 site names are required.', 400, 'Select at least one site.');
+  if (names.length > V1_SITE_BULK_RETIRE_LIMIT) {
+    return jsonError('V1_SITE_BATCH_TOO_LARGE', 'Too many legacy v1 sites selected.', 400, 'Select at most 100 sites.');
+  }
+
+  let siteKeys;
+  try {
+    siteKeys = await client.listSites();
+  } catch {
+    return jsonError('V1_SITES_READ_FAILED', 'Legacy v1 site inventory could not be read.', 502, 'Check Cloudflare credentials and retry.');
+  }
+  const records = new Map(
+    (siteKeys || [])
+      .map((site) => readV1SiteRecord(site))
+      .filter(Boolean)
+      .map((record) => [record.name, record])
+  );
+  const results = await mapNormalWorkerDeleteBatch(names, async (name) => {
+    const record = records.get(name);
+    if (!record) {
+      return {
+        name,
+        status: 'failed',
+        stage: 'metadata_read',
+        httpStatus: 404,
+        error: {
+          code: 'V1_SITE_NOT_FOUND',
+          message: 'Legacy v1 site was not found.',
+          action: 'Refresh the v1 site inventory.',
+        },
+      };
+    }
+    return retireV1SiteRecord({ env, config, store, session, record, client });
+  });
+
+  return jsonOk({
+    summary: {
+      requested: names.length,
+      retired: results.filter((result) => result.status === 'retired').length,
+      failed: results.filter((result) => result.status === 'failed').length,
+    },
+    results: results.map(formatV1RetireResult),
+  });
+}
+
+async function retireV1SiteRecord({ env, config, store, session, record, client }) {
+  const reservedWorkerNames = readV1ReservedWorkerNames(env);
+  const workerName = record.scriptName;
+  if (!workerName || !isManagedV1WorkerName(workerName, config.environment)) {
+    return v1RetireFailure(record.name, 'metadata_read', 'V1_SITE_SCRIPT_INVALID', 'Legacy v1 site script metadata is invalid.', 409, 'Refresh the v1 site inventory.');
+  }
+  if (reservedWorkerNames.has(workerName)) {
+    return v1RetireFailure(record.name, 'platform_reserved', 'V1_SITE_PLATFORM_RESERVED', 'Platform-reserved Worker cannot be retired.', 409, 'Choose a user-owned v1 site.');
+  }
+  const hostname = readV1Hostname(record.url);
+  if (!hostname) {
+    return v1RetireFailure(record.name, 'route_unbind', 'V1_SITE_ROUTE_UNSAFE', 'Legacy v1 hostname is missing or unsafe.', 409, 'Refresh the v1 site inventory and verify the hostname.');
+  }
+  if (
+    typeof client.deleteWorker !== 'function' ||
+    typeof client.unbindRoute !== 'function' ||
+    typeof client.deleteSite !== 'function'
+  ) {
+    return v1RetireFailure(record.name, 'capability_check', 'V1_SITES_UNSUPPORTED', 'Legacy v1 site retirement is unavailable.', 503, 'Configure Cloudflare account, zone, and KV access.');
+  }
+
+  const base = { name: record.name, workerName, hostname };
+  try {
+    await recordV1RetireAudit(store, env, config, session, base, 'validation', 'allow', 200);
+  } catch {
+    return v1RetireFailure(record.name, 'audit', 'V1_SITE_AUDIT_FAILED', 'V1 site retirement audit could not be written.', 500, 'Retry after checking the audit store.');
+  }
+
+  try {
+    await client.deleteWorker({ workerName });
+    await recordV1RetireAudit(store, env, config, session, base, 'worker_delete', 'allow', 200);
+  } catch {
+    await recordV1RetireAuditSafe(store, env, config, session, base, 'worker_delete', 'deny', 502);
+    return v1RetireFailure(record.name, 'worker_delete', 'V1_SITE_WORKER_DELETE_FAILED', 'Legacy v1 Worker could not be deleted.', 502, 'Check Cloudflare credentials and retry.');
+  }
+
+  try {
+    await client.unbindRoute({ hostname, expectedScriptName: workerName, environment: config.environment });
+    await recordV1RetireAudit(store, env, config, session, base, 'route_unbind', 'allow', 200);
+  } catch {
+    await recordV1RetireAuditSafe(store, env, config, session, base, 'route_unbind', 'deny', 502);
+    return v1RetireFailure(record.name, 'route_unbind', 'V1_SITE_ROUTE_UNBIND_FAILED', 'Legacy v1 hostname route could not be unbound.', 502, 'Verify the exact route and retry.');
+  }
+
+  try {
+    await client.deleteSite(record.name);
+    await recordV1RetireAudit(store, env, config, session, base, 'kv_delete', 'allow', 200);
+  } catch {
+    await recordV1RetireAuditSafe(store, env, config, session, base, 'kv_delete', 'deny', 502);
+    return v1RetireFailure(record.name, 'kv_delete', 'V1_SITE_KV_DELETE_FAILED', 'Legacy v1 site metadata could not be deleted.', 502, 'Check Cloudflare KV credentials and retry.');
+  }
+
+  let released;
+  try {
+    released = await store.releaseHostnameClaim({
+      environment: config.environment,
+      hostname,
+      normalizedSlug: record.name,
+      hostnameFamily: 'workers',
+      ownerSystem: 'v1',
+      ownerId: `v1:${config.environment}:${record.name}`,
+      ownerRef: workerName,
+      source: 'v1_delete',
+      status: 'active',
+      releaseReason: 'site_retired',
+      reuseHoldUntil: addSecondsIso(readNow(env), readReuseHoldSeconds(env)),
+      releasedAt: readNow(env),
+    });
+  } catch {
+    released = null;
+  }
+  if (!released?.ok) {
+    await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'deny', 502);
+    return v1RetireFailure(record.name, 'hostname_claim_release', 'V1_SITE_HOSTNAME_CLAIM_RELEASE_FAILED', 'Legacy v1 hostname claim could not be released.', 502, 'Check hostname claims and retry.');
+  }
+  await recordV1RetireAuditSafe(store, env, config, session, base, 'hostname_claim_release', 'allow', 200);
+  return { ...base, status: 'retired' };
+}
+
+async function recordV1RetireAudit(store, env, config, session, site, stage, decision, statusCode) {
+  if (typeof store.recordAuditEvent !== 'function') throw new Error('V1_SITE_AUDIT_UNSUPPORTED');
+  return store.recordAuditEvent({
+    id: nextId(env, 'audit'),
+    environment: config.environment,
+    eventType: 'admin.v1_site_retire',
+    actorUserId: session.user?.userId || session.userId || null,
+    actorType: 'platform_admin',
+    decision,
+    statusCode,
+    metadata: {
+      siteName: site.name,
+      workerName: site.workerName,
+      hostname: site.hostname,
+      stage,
+    },
+    createdAt: readNow(env),
+  });
+}
+
+async function recordV1RetireAuditSafe(store, env, config, session, site, stage, decision, statusCode) {
+  try {
+    await recordV1RetireAudit(store, env, config, session, site, stage, decision, statusCode);
+  } catch {}
+}
+
+function findV1SiteRecord(siteKeys, name) {
+  const normalizedName = normalizeRequiredString(name);
+  if (!normalizedName) return null;
+  return (siteKeys || []).map((site) => readV1SiteRecord(site)).find((record) => record?.name === normalizedName) || null;
+}
+
+function normalizeV1SiteNames(value) {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set();
+  const names = [];
+  for (const item of value) {
+    const name = normalizeRequiredString(item);
+    if (!name) return null;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+function formatV1RetireResult(result) {
+  return {
+    name: result.name,
+    status: result.status,
+    ...(result.workerName ? { workerName: result.workerName } : {}),
+    ...(result.hostname ? { hostname: result.hostname } : {}),
+    ...(result.stage ? { stage: result.stage } : {}),
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
+function v1RetireFailure(name, stage, code, message, httpStatus, action) {
+  return {
+    name,
+    status: 'failed',
+    stage,
+    httpStatus,
+    error: { code, message, action },
+  };
+}
+
+function v1RetireError(stage, code, message, status, action, result = null) {
+  return jsonResponse(
+    { error: { code, message, stage, ...(action ? { action } : {}) }, ...(result ? { result: formatV1RetireResult(result) } : {}) },
+    status,
+    { 'Cache-Control': 'no-store' }
+  );
+}
+
+function readV1Hostname(url) {
+  if (typeof url !== 'string' || !url.trim()) return null;
+  try {
+    const parsed = new URL(url);
+    if (!['', '/'].includes(parsed.pathname) || parsed.search || parsed.hash) return null;
+    const hostname = parsed.hostname.toLowerCase();
+    if (!hostname.endsWith('.workers.xd.team')) return null;
+    const label = hostname.slice(0, -'.workers.xd.team'.length);
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) return null;
+    return hostname;
+  } catch {
+    return null;
+  }
+}
+
+function readReuseHoldSeconds(env) {
+  const value = Number(env?.HOSTNAME_REUSE_HOLD_SECONDS || 300);
+  return Number.isInteger(value) && value >= 0 && value <= 86_400 ? value : 300;
+}
+
+function addSecondsIso(iso, seconds) {
+  return new Date(Date.parse(iso) + seconds * 1000).toISOString();
+}
+
+function nextId(env, prefix) {
+  if (typeof env?.nextId === 'function') return env.nextId(prefix);
+  return newId(prefix);
 }
 
 function getAdminOps(config) {
@@ -361,6 +681,195 @@ async function listDeploymentCleanups(url, env, config, store) {
   const status = normalizeNullableString(url.searchParams.get('status'));
   const tasks = await store.listDeploymentResourceCleanupTasks({ environment: config.environment, status });
   return jsonOk({ tasks: tasks.map((task) => formatDeploymentCleanupTask(task, env)) });
+}
+
+async function runDueDeploymentCleanupsAdmin(request, env, config, store, session) {
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 8 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a JSON object with a limit.');
+  }
+  const limit = normalizeCleanupRunDueLimit(body?.limit);
+  if (limit === null) {
+    return jsonError('CLEANUP_RUN_LIMIT_INVALID', 'Cleanup run limit is invalid.', 400, 'Send an integer limit from 1 to 50.');
+  }
+  const summary = await runDueDeploymentCleanups(env, config, store, { limit });
+  await recordResourceGovernanceAuditSafe(store, env, config, session, {
+    eventType: 'admin.cleanup_run_due',
+    stage: 'run_due',
+    decision: 'allow',
+    statusCode: 200,
+    metadata: { limit, processed: summary.processed, succeeded: summary.succeeded, failed: summary.failed, skipped: summary.skipped },
+  });
+  return jsonOk({ summary });
+}
+
+async function backfillAdminWorkerOrphans(request, env, config, store, session) {
+  if (typeof store.listWorkerOrphanScanReferences !== 'function' || typeof store.createDeploymentResourceCleanupTask !== 'function') {
+    return jsonError('WORKER_ORPHAN_BACKFILL_UNSUPPORTED', 'Worker orphan backfill is unavailable.', 503, 'Retry later.');
+  }
+  let body;
+  try {
+    body = await readJsonBody(request, { maxBytes: 32 * 1024 });
+  } catch {
+    return jsonError('INVALID_JSON', 'Invalid JSON body.', 400, 'Send a workerNames array.');
+  }
+  if (!Array.isArray(body?.workerNames)) {
+    return jsonError('WORKER_ORPHAN_NAMES_INVALID', 'Worker names are invalid.', 400, 'Send a workerNames array.');
+  }
+  const workerNames = normalizeBackfillWorkerNames(body.workerNames);
+  if (!workerNames) {
+    return jsonError('WORKER_ORPHAN_NAMES_INVALID', 'Worker names are invalid.', 400, 'Each Worker name must be a non-empty string.');
+  }
+  if (workerNames.length === 0) {
+    return jsonError('WORKER_ORPHAN_NAMES_REQUIRED', 'Worker names are required.', 400, 'Select at least one Worker.');
+  }
+  if (workerNames.length > WFP_ORPHAN_BACKFILL_LIMIT) {
+    return jsonError('WORKER_ORPHAN_BATCH_TOO_LARGE', 'Too many Workers selected.', 400, 'Select at most 100 Workers.');
+  }
+
+  let references;
+  try {
+    references = await store.listWorkerOrphanScanReferences({ environment: config.environment });
+  } catch {
+    return jsonError('WORKER_ORPHAN_BACKFILL_FAILED', 'Worker orphan backfill could not read D1 references.', 502, 'Retry later.');
+  }
+
+  const activeRoutesByWorker = groupAdminReferences(references?.activeRoutes, (item) => item.workerName);
+  const versionsByWorker = groupAdminReferences(references?.versions, (item) => item.workerName);
+  const cleanupTasksByWorker = groupAdminReferences(
+    (references?.cleanupTasks || []).filter((item) => ACTIVE_CLEANUP_STATUSES.has(item.status)),
+    (item) => item.resourceRef
+  );
+  const results = [];
+  for (const workerName of workerNames) {
+    const skipReason = backfillSkipReason({
+      workerName,
+      environment: config.environment,
+      activeRoutes: activeRoutesByWorker.get(workerName) || [],
+      cleanupTasks: cleanupTasksByWorker.get(workerName) || [],
+    });
+    if (skipReason) {
+      const result = { workerName, status: 'skipped', reason: skipReason };
+      results.push(result);
+      await recordResourceGovernanceAuditSafe(store, env, config, session, {
+        eventType: 'admin.worker_orphan_backfill',
+        stage: 'backfill',
+        decision: 'skip',
+        statusCode: 409,
+        metadata: { workerName, result: result.status, reason: skipReason },
+      });
+      continue;
+    }
+    const versions = versionsByWorker.get(workerName) || [];
+    const cleanupReason = versions.length > 0 && versions.every((version) => Boolean(version.siteDeletedAt))
+      ? 'site_deleted_backfill'
+      : 'orphan_backfill';
+    try {
+      await store.createDeploymentResourceCleanupTask({
+        id: newId('cln'),
+        environment: config.environment,
+        resourceType: 'wfp_user_worker',
+        resourceRef: workerName,
+        siteId: versions[0]?.siteId || null,
+        versionId: null,
+        deploymentId: null,
+        cleanupReason,
+        status: 'pending',
+        cleanupAfter: cleanupAfterWfpDrainWindow(env),
+        createdAt: readNow(env),
+        updatedAt: readNow(env),
+      });
+      const result = { workerName, status: 'created' };
+      results.push(result);
+      await recordResourceGovernanceAuditSafe(store, env, config, session, {
+        eventType: 'admin.worker_orphan_backfill',
+        stage: 'backfill',
+        decision: 'allow',
+        statusCode: 201,
+        metadata: { workerName, result: result.status, cleanupReason },
+      });
+    } catch {
+      const result = { workerName, status: 'skipped', reason: 'cleanup_task_create_failed' };
+      results.push(result);
+      await recordResourceGovernanceAuditSafe(store, env, config, session, {
+        eventType: 'admin.worker_orphan_backfill',
+        stage: 'backfill',
+        decision: 'deny',
+        statusCode: 502,
+        metadata: { workerName, result: result.status, reason: result.reason },
+      });
+    }
+  }
+  return jsonOk({
+    summary: {
+      requested: workerNames.length,
+      created: results.filter((item) => item.status === 'created').length,
+      skipped: results.filter((item) => item.status === 'skipped').length,
+    },
+    results,
+  });
+}
+
+async function recordResourceGovernanceAuditSafe(store, env, config, session, input) {
+  if (typeof store.recordAuditEvent !== 'function') return;
+  try {
+    await store.recordAuditEvent({
+      id: nextId(env, 'audit'),
+      environment: config.environment,
+      eventType: input.eventType,
+      actorUserId: session?.user?.userId || session?.userId || null,
+      actorType: 'platform_admin',
+      decision: input.decision,
+      statusCode: input.statusCode,
+      metadata: { ...input.metadata, stage: input.stage },
+      createdAt: readNow(env),
+    });
+  } catch {}
+}
+
+function normalizeCleanupRunDueLimit(value) {
+  if (value === undefined || value === null || value === '') return 10;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 50) return null;
+  return value;
+}
+
+function normalizeBackfillWorkerNames(values) {
+  const names = [];
+  for (const value of values) {
+    if (typeof value !== 'string') return null;
+    const name = value.trim();
+    if (!name || names.includes(name)) return null;
+    names.push(name);
+  }
+  return names;
+}
+
+function groupAdminReferences(items, keyOf) {
+  const grouped = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const key = keyOf(item);
+    if (typeof key !== 'string' || key === '') continue;
+    const values = grouped.get(key) || [];
+    values.push(item);
+    grouped.set(key, values);
+  }
+  return grouped;
+}
+
+function backfillSkipReason({ workerName, environment, activeRoutes, cleanupTasks }) {
+  if (!isManagedWfpWorkerName(workerName, environment)) return 'worker_not_managed';
+  if (activeRoutes.length > 0) return 'active_route_reference';
+  if (cleanupTasks.length > 0) return 'cleanup_task_exists';
+  return null;
+}
+
+function cleanupAfterWfpDrainWindow(env) {
+  const now = Date.parse(readNow(env));
+  const configured = Number(env?.WFP_WORKER_CLEANUP_DRAIN_SECONDS || env?.WFP_CLEANUP_DRAIN_SECONDS || 300);
+  const seconds = Number.isFinite(configured) && configured >= 0 ? Math.min(configured, 24 * 60 * 60) : 300;
+  return new Date(now + seconds * 1000).toISOString();
 }
 
 async function runDeploymentCleanupTask(env, config, store, taskId) {

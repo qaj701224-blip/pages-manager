@@ -721,7 +721,49 @@ async function deleteSite(env, config, store, actor, siteId) {
       return snapshotError;
     }
   }
+  await enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, reuseHoldUntil);
   return jsonOk({ site: formatSite({ ...deleted, route }) });
+}
+
+export async function enqueueDeletedSiteWfpCleanup(store, env, config, site, previousRoute, cleanupAfter) {
+  if (typeof store.createDeploymentResourceCleanupTask !== 'function') return;
+  const workerNames = new Set();
+  if (isManagedWfpWorkerName(previousRoute?.workerName, config.environment)) {
+    workerNames.add(previousRoute.workerName);
+  }
+
+  if (typeof store.listWorkerOrphanScanReferences === 'function') {
+    try {
+      const references = await store.listWorkerOrphanScanReferences({ environment: config.environment });
+      for (const version of references?.versions || []) {
+        if (version.siteId !== site.id || version.artifactAvailability !== 'active') continue;
+        if (isManagedWfpWorkerName(version.workerName, config.environment)) workerNames.add(version.workerName);
+      }
+    } catch {
+      // The site deletion is already committed; cleanup remains best-effort post-commit maintenance.
+    }
+  }
+
+  for (const workerName of workerNames) {
+    try {
+      await store.createDeploymentResourceCleanupTask({
+        id: nextId(env, 'cln'),
+        environment: config.environment,
+        resourceType: 'wfp_user_worker',
+        resourceRef: workerName,
+        siteId: site.id,
+        versionId: null,
+        deploymentId: null,
+        cleanupReason: 'site_deleted',
+        status: 'pending',
+        cleanupAfter,
+        createdAt: readNow(env),
+        updatedAt: readNow(env),
+      });
+    } catch {
+      // Cleanup is post-commit maintenance. A successful site delete must stay successful.
+    }
+  }
 }
 
 async function transferSiteOwner(request, env, config, store, actor, siteId) {
@@ -1588,6 +1630,12 @@ function readReuseHoldSeconds(env) {
 
 function addSecondsIso(iso, seconds) {
   return new Date(Date.parse(iso) + seconds * 1000).toISOString();
+}
+
+function isManagedWfpWorkerName(workerName, environment) {
+  if (typeof workerName !== 'string') return false;
+  if (environment === 'staging') return workerName.startsWith('pages-v2-staging-');
+  return workerName.startsWith('pages-v2-') && !workerName.startsWith('pages-v2-staging-');
 }
 
 function authErrorResponse(error) {
