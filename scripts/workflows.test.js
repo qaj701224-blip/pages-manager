@@ -792,10 +792,14 @@ test('pages v2 deploy workflows stay isolated from v1 and non-Cloudflare deploy 
     .split('\n')
     .filter((line) => /CF_ZONE_ID_NEW|secrets\.SITES_KV_NAMESPACE_ID/.test(line));
   assert.ok(v1SecretLines.length > 0, 'v1 governance secrets must be injected into pages-api');
+  const v1SecretLinePatterns = [
+    /^\s*PAGES_V1_ZONE_ID: \$\{\{ secrets\.CF_ZONE_ID_NEW \}\}\s*$/,
+    /^\s*PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.SITES_KV_NAMESPACE_ID \}\}\s*$/,
+  ];
   for (const line of v1SecretLines) {
-    assert.match(
-      line,
-      /^\s*(?:PAGES_V1_ZONE_ID: \$\{\{ secrets\.CF_ZONE_ID_NEW \}\}|PAGES_V1_SITES_KV_NAMESPACE_ID: \$\{\{ secrets\.SITES_KV_NAMESPACE_ID \}\})\s*$/
+    assert.ok(
+      v1SecretLinePatterns.some((pattern) => pattern.test(line)),
+      `unexpected v1 secret reference: ${line}`
     );
   }
   assert.doesNotMatch(combined, /docker buildx?|kubectl|ACR_|KUBE_CONFIG_B64|ALIYUN_ACCESS_KEY/);
