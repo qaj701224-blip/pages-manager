@@ -73,6 +73,18 @@
 | orphan user worker / assets | failed deployment 诊断和 cleanup task 记录用于定位 orphan；后续可升级为跨 Cloudflare list 的 mark-and-sweep reconciliation                                                                                                                                                     |
 | key registry                | 检查 active/draining/retired key 与最大 token TTL 是否匹配                                                                                                                                                                                                                     |
 
+#### 资源治理 P0 盘点
+
+Admin Console 的资源治理 P0 只提供可见性，不执行回收：
+
+- `Deployment Cleanups > Orphan Scan` 由管理员手动触发，只扫描当前环境 WFP dispatch namespace 的受管脚本，并与 active route、`artifact_availability='active'` 的版本和未完成 cleanup task 对账。响应字段为 `referencedByActiveRoute`、`rollbackEligibleVersion`、`hasPendingCleanupTask` 和 `orphanCandidate`；`orphanReason` 限定为 `no_d1_reference`、`deleted_site`、`stale_previous_version`。这些分类不等同于“可以删除”，也不固化版本保留策略。
+- `Legacy v1 Sites` 通过 `pages-api` 直接读取当前环境的 v1 SITES KV 和 account-level Workers，再与未删除的 v2 同名站点对账。页面只展示站点名称、URL、preset、网络限制、更新时间、对应 v1 Worker 和迁移候选标记；KV metadata 中的站点凭证和其它内部字段不会进入响应或页面。
+- Dashboard 只查询 D1 中 cleanup task 的 pending / failed 数量与最老 pending 积压时长，不扫描 WFP namespace 或 v1 KV。Orphan candidate 和 v1 站点总数保持按需盘点，不得把未知值显示为零。
+
+P0 不提供 orphan 或 v1 Worker 删除端点、删除按钮，也不会从盘点请求写入 cleanup task。未来 v2 资源回收统一进入现有 `deployment_resource_cleanup_tasks` 管道，并继续执行 active route 复核、drain window 和失败重试；不要另建旁路删除流程。
+
+v1 盘点依赖 pages-api Worker secret `PAGES_V1_SITES_KV_NAMESPACE_ID`，并复用 Cloudflare account 与 API credential secret。缺少配置时，接口按 `V1_SITES_UNSUPPORTED` 返回 503，Console 应保留其它管理能力可用。production 与 staging 必须分别配置对应 namespace，且盘点只接受本环境的 v1 Worker 前缀并显式排除 v2 前缀。
+
 key rotation 生命周期：
 
 ```text
