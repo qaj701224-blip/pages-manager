@@ -15,7 +15,11 @@ import { appendAssistantConversationTurn, buildConversationContext } from './con
 import { slackThreadForSession } from './job-binding.js';
 import { compactUserFacingText, redactSecretLikeText } from './text.js';
 import { inactiveSlackWorkItemReply, isActionableSlackWorkItem } from './work-items.js';
-import { isSitePublishingWorkItem, SITE_PUBLISHING_RETIRED_MESSAGE } from '../publishing/retirement.js';
+import {
+  isSitePublishingWorkItem,
+  SITE_PUBLISHING_RETIRED_CODE,
+  SITE_PUBLISHING_RETIRED_MESSAGE,
+} from '../publishing/retirement.js';
 
 const AGENT_EVENT_CODING_FIX_DISPATCHED = 'coding_fix_dispatched';
 const AGENT_EVENT_SLACK_FOLLOWUP_QUEUED = 'slack_followup_queued';
@@ -639,6 +643,16 @@ export async function handleSlackFollowup({
   }
 
   if (retireSitePublishing && isSitePublishingWorkItem(activeWorkItem)) {
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: activeWorkItem.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'site_publishing_retired',
+        accepted: false,
+        reason: SITE_PUBLISHING_RETIRED_CODE,
+        status: activeWorkItem.status,
+      },
+    });
     return {
       ok: true,
       action: 'site_publishing_retired',

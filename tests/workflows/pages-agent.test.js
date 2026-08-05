@@ -9,11 +9,11 @@ test('pages-agent workflow is retained but statically frozen', async () => {
   const workflow = await readFile(path.join(root, '.github/workflows/pages-agent.yml'), 'utf8');
 
   assert.doesNotMatch(workflow, /^\s*issues:\n\s+types:/m);
-  assert.match(workflow, /^\s*workflow_dispatch:/m);
+  assert.doesNotMatch(workflow, /^\s*workflow_dispatch:/m);
+  assert.match(workflow, /^\s{2}workflow_call:/m);
   assert.match(workflow, /^\s+if: \$\{\{ false \}\}$/m);
   assert.match(workflow, /pages-agent-context\.mjs/);
   assert.match(workflow, /pages-agent-coding\.mjs/);
-  assert.match(workflow, /^\s+- fix$/m);
   assert.match(workflow, /stageResult: process\.env\.AGENT_MODE === 'fix' \? 'reviewing' : 'pr_created'/);
   assert.match(workflow, /Pipeline: user-site publishing/);
   assert.match(workflow, /Platform deployment: out of scope/);
@@ -143,6 +143,8 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
 test('pages-preview workflow keeps deploy API ip restriction compatible', async () => {
   const workflow = await readFile(path.join(root, '.github/workflows/pages-preview.yml'), 'utf8');
 
+  assert.doesNotMatch(workflow, /^\s*workflow_dispatch:/m);
+  assert.match(workflow, /^\s{2}workflow_call:/m);
   assert.match(workflow, /^\s+if: \$\{\{ false \}\}$/m);
   assert.match(workflow, /Verify current PR head[\s\S]*gh pr view "\$PR_NUMBER"/);
   assert.match(workflow, /current_head.*!= "\$HEAD_SHA"/);
@@ -203,6 +205,7 @@ test('ci keeps dispatch support while site-check only runs for site pull request
 test('project-index workflow is retained but statically frozen', async () => {
   const workflow = await readFile(path.join(root, '.github/workflows/project-index.yml'), 'utf8');
 
-  assert.match(workflow, /^\s*workflow_dispatch:/m);
+  assert.doesNotMatch(workflow, /^\s*workflow_dispatch:/m);
+  assert.match(workflow, /^\s{2}workflow_call:/m);
   assert.match(workflow, /^\s+if: \$\{\{ false \}\}$/m);
 });

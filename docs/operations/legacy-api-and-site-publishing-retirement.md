@@ -43,7 +43,7 @@ HTTP status 为 `410 Gone`，`Content-Type` 为 JSON，并带 `Cache-Control: no
 - GitHub Review Agent、site-check、Issue/PR resource webhook 保留 delivery/comment/run 历史记录，但对 Site Publishing 返回 `200` ignored，不推进状态。
 - executor callback 和 review-gate reconcile 对 Site Publishing 返回 `200` ignored，不启动 worker。
 - pages-worker 的 `/internal/publishing-jobs/start` 对 Site Publishing 返回 `410`，只继续接受 `workItemKind=platform_dev`。
-- `project-index.yml`、`pages-agent.yml` 和 `pages-preview.yml` 保留历史 workflow body，但 job 使用静态 `if: ${{ false }}` 冻结。
+- `project-index.yml`、`pages-agent.yml` 和 `pages-preview.yml` 保留历史 workflow body，仅保留未被生产调用的 `workflow_call` 输入 schema，并额外使用静态 `if: ${{ false }}` 冻结 job。
 - `pr-site.yml` 不再提供 `workflow_dispatch`，仍保留 `pull_request` 触发，用于校验已有或人工提交的 `sites/**` PR。
 
 代码没有环境变量或运行时 feature flag 可以重新开启 Site Publishing。旧实现仅作为 dormant historical code 和回归测试参考保留。
@@ -74,7 +74,7 @@ HTTP status 为 `410 Gone`，`Content-Type` 为 JSON，并带 `Cache-Control: no
 
 必须按以下顺序人工执行，不能先部署 `apps/server` 410：
 
-1. 合入静态 workflow 冻结，确认默认分支上的 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml` job 已不可执行，`pr-site.yml` 已无手工 dispatch。
+1. 合入静态 workflow 冻结，确认默认分支上的 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml` 仅保留未被生产调用的 `workflow_call` schema、无手工/API dispatch 且 job 不可执行，`pr-site.yml` 已无手工 dispatch。
 2. 手动部署 ECS runtime 的 `pages-gateway` 和 `pages-worker`，让创建、续接、webhook、callback 和 worker 直调入口全部冻结；同时验证 Platform Dev 创建、callback 和 `platform-agent.yml` dispatch 不受影响。
 3. 取消或等待排空仍在运行的 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml` 和由其触发的 Site Publishing run。旧 ref 上的 workflow 也要检查，不能只看默认分支。
 4. 将仍处于可推进状态的 Site PublishingJob 标记为 `cancelled`，原因使用 `PUBLISHING_LANE_RETIRED`；保留原记录和事件，不做物理删除。该数据操作需由维护者在 production 数据库中单独审核执行，本仓库不自动运行 destructive migration。

@@ -395,6 +395,34 @@ test('production Slack follow-up, retry, and reopen do not continue site publish
   const app = createGatewayApp({ store });
   const workerStarts = [];
   const githubWrites = [];
+  const followupEnv = {
+    SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
+    async SLACK_AGENT_FETCH(_url, request) {
+      const payload = JSON.parse(request.body);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          turn: {
+            agentRunId: payload.agentRunId,
+            slackSessionId: payload.slackSessionId,
+            analysis: {
+              intent: 'append_requirement',
+              summary: '继续修改标题。',
+              toolCall: { name: 'record_followup', args: {} },
+              needsClarification: false,
+            },
+            events: [],
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    },
+    PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
+    async WORKER_FETCH(url, request) {
+      workerStarts.push({ url: String(url), body: JSON.parse(request.body) });
+      return new Response(JSON.stringify({ ok: true }));
+    },
+  };
 
   const followupResponse = await app.fetch(
     new Request('http://gateway.test/integrations/slack/events', {
@@ -414,34 +442,28 @@ test('production Slack follow-up, retry, and reopen do not continue site publish
         },
       }),
     }),
-    {
-      SLACK_AGENT_TURN_URL: 'http://slack-agent.test/internal/slack-agent/turn',
-      async SLACK_AGENT_FETCH(_url, request) {
-        const payload = JSON.parse(request.body);
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            turn: {
-              agentRunId: payload.agentRunId,
-              slackSessionId: payload.slackSessionId,
-              analysis: {
-                intent: 'append_requirement',
-                summary: '继续修改标题。',
-                toolCall: { name: 'record_followup', args: {} },
-                needsClarification: false,
-              },
-              events: [],
-            },
-          }),
-          { headers: { 'Content-Type': 'application/json' } }
-        );
-      },
-      PAGES_WORKER_START_URL: 'http://worker.test/internal/publishing-jobs/start',
-      async WORKER_FETCH(url, request) {
-        workerStarts.push({ url: String(url), body: JSON.parse(request.body) });
-        return new Response(JSON.stringify({ ok: true }));
-      },
-    }
+    followupEnv
+  );
+
+  const repeatedFollowupResponse = await app.fetch(
+    new Request('http://gateway.test/integrations/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_id: 'T1',
+        event_id: 'Ev-retired-followup-repeat',
+        event: {
+          type: 'message',
+          user: 'U1',
+          channel: 'D2',
+          channel_type: 'im',
+          ts: '1710000011.000171',
+          thread_ts: activeSession.threadTs,
+          text: '继续修改：再调整一下副标题',
+        },
+      }),
+    }),
+    followupEnv
   );
 
   const retrySession = bindSiteJobToSlackSession(store, store.getJob(activeJob.id), '000173', 'D4');
@@ -515,12 +537,18 @@ test('production Slack follow-up, retry, and reopen do not continue site publish
   );
 
   const followup = await json(followupResponse);
+  const repeatedFollowup = await json(repeatedFollowupResponse);
   const retry = await json(retryResponse);
   const reopen = await json(reopenResponse);
 
   assert.equal(followupResponse.status, 200);
   assert.equal(followup.action, 'site_publishing_retired');
   assert.equal(followup.replyText, SITE_PUBLISHING_RETIRED_MESSAGE);
+  assert.equal(store.getAgentRun(followup.agentRunId).status, 'completed');
+  assert.equal(repeatedFollowupResponse.status, 200);
+  assert.equal(repeatedFollowup.action, 'site_publishing_retired');
+  assert.equal(repeatedFollowup.replyText, SITE_PUBLISHING_RETIRED_MESSAGE);
+  assert.equal(store.getAgentRun(repeatedFollowup.agentRunId).status, 'completed');
   assert.equal(retryResponse.status, 200);
   assert.equal(retry.accepted, false);
   assert.equal(retry.replyText, SITE_PUBLISHING_RETIRED_MESSAGE);

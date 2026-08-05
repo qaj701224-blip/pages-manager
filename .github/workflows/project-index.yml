@@ -1,7 +1,8 @@
 name: Project Index
 
+# Site Publishing is retired. Keep the historical workflow body without a manual/API trigger.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       publishingJobId:
         description: PublishingJob id

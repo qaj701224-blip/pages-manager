@@ -69,7 +69,7 @@
 .github/workflows/pages-preview.yml
 ```
 
-这三个 workflow 的主体代码作为历史资产保留，但主 job 使用静态 `if: false`。即使收到旧 ref 或人工 `workflow_dispatch`，默认分支上的 job 也不会执行。它们不能读取 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、Slack bot token 或 production Cloudflare token。
+这三个 workflow 的主体代码作为历史资产保留，仅保留未被生产调用的 `workflow_call` 输入 schema，并额外保留主 job 的静态 `if: false`。默认分支不接受手工或 API dispatch，避免通过历史 branch/tag ref 执行旧 workflow 定义。它们不能读取 Aliyun AK、ACR、`KUBE_CONFIG_B64`、`kubectl`、Slack bot token 或 production Cloudflare token。
 
 仓库仍保留 `.github/workflows/pr-site.yml`，仅被动校验已有或人工创建的 `sites/**` pull request。它不接受 `workflow_dispatch`，不创建 `PublishingJob`，不回调 gateway，也不触发 preview。
 
