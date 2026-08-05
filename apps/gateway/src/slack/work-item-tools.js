@@ -27,6 +27,7 @@ import {
   slackWorkItemListText,
   slackWorkItemTargetLabel,
 } from './work-items.js';
+import { isSitePublishingWorkItem, SITE_PUBLISHING_RETIRED_MESSAGE } from '../publishing/retirement.js';
 
 function slackWorkItemJobResponse(job = {}) {
   return {
@@ -75,6 +76,7 @@ export async function handleSlackListWorkItemsTool({
   sessionMemory,
   agentRun,
   slackAgentAnalysis,
+  retireSitePublishing = true,
   toolArgs = {},
 }) {
   const workItemState = slackWorkItemStateFromTool(intake, slackAgentAnalysis, toolArgs);
@@ -83,6 +85,7 @@ export async function handleSlackListWorkItemsTool({
     limit: 5,
     workItemState,
     includeInactive,
+    retireSitePublishing,
   });
   const jobs = result.jobs || [];
   const replyText = slackWorkItemListText(jobs, { workItemState, includeInactive });
@@ -122,7 +125,12 @@ export async function handleSlackListWorkItemsTool({
     action: 'list_work_items',
     accepted: false,
     replyText,
-    blocks: slackWorkItemListBlocks(slackSession, jobs, { workItemState, includeInactive, slackAgentAnalysis }),
+    blocks: slackWorkItemListBlocks(slackSession, jobs, {
+      workItemState,
+      includeInactive,
+      slackAgentAnalysis,
+      retireSitePublishing,
+    }),
     slackSessionId: slackSession.id,
     agentRunId: agentRun?.id,
     workItemState,
@@ -175,10 +183,34 @@ export async function handleSlackSwitchWorkItemTool({
   slackSession,
   agentRun,
   slackAgentAnalysis,
+  retireSitePublishing = true,
   toolArgs = {},
 }) {
   const reference = slackWorkItemReferenceFromTool(intake, slackAgentAnalysis, toolArgs);
   let job = reference ? await findVisibleSlackJobByReference(store, body, reference) : null;
+  if (retireSitePublishing && isSitePublishingWorkItem(job)) {
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: job.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'switch_work_item',
+        accepted: false,
+        reason: 'PUBLISHING_LANE_RETIRED',
+        reference,
+        status: job.status,
+      },
+    });
+    return {
+      ok: true,
+      action: 'site_publishing_retired',
+      accepted: false,
+      jobId: job.id,
+      replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
   if (job?.workItemKind !== 'platform_dev') {
     job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
   }
@@ -306,10 +338,33 @@ export async function handleSlackReopenWorkItemTool({
   slackSession,
   agentRun,
   slackAgentAnalysis,
+  retireSitePublishing = true,
   toolArgs = {},
 }) {
   const reference = slackWorkItemReferenceFromTool(intake, slackAgentAnalysis, toolArgs);
   let job = reference ? await findVisibleSlackJobByReference(store, body, reference) : null;
+  if (retireSitePublishing && isSitePublishingWorkItem(job)) {
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: job.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'reopen_work_item',
+        accepted: false,
+        reason: 'PUBLISHING_LANE_RETIRED',
+        status: job.status,
+      },
+    });
+    return {
+      ok: true,
+      action: 'site_publishing_retired',
+      accepted: false,
+      jobId: job.id,
+      replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
+      slackSessionId: slackSession.id,
+      agentRunId: agentRun?.id,
+      ...(slackAgentAnalysis ? { slackAgentAnalysis: redactSlackAnalysis(slackAgentAnalysis) } : {}),
+    };
+  }
   if (job?.workItemKind !== 'platform_dev') {
     job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
   }

@@ -16,7 +16,7 @@ import {
 } from '../../../apps/gateway/src/slack/repo-question.js';
 import { activeJobForSlackSession } from '../../../apps/gateway/src/slack/followup.js';
 import { redactSecretLikeText } from '../../../apps/gateway/src/slack/text.js';
-import { createGatewayApp } from '../../helpers/gateway-app.js';
+import { createLegacyGatewayAppForTests as createGatewayApp } from '../../helpers/legacy-gateway-app.js';
 
 async function json(response) {
   return response.json();

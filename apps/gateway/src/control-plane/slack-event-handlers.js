@@ -6,25 +6,83 @@ import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigure
 import { readSlackRequest, slackAckResponse, slackChallengeResponse } from '../slack/http.js';
 import { classifySlackIntake } from '../slack/intake.js';
 import { notifySlackJobStatus } from '../slack/notifier.js';
-import { addWorkingReactionForSlackEvent, fetchSlackRequesterProfile, ignoredSlackEventReason, postSlackResultReply, runSlackBackground, settleImmediateSlackReaction, shouldProcessSlackEventsAsync, slackDeliveryContextFromBody, slackDeliveryPatchForResult, slackEventId, slackReactionPayloadFromResult, updateSlackDeliveryReactionState } from '../slack/delivery.js';
-import { runSlackAgentTurnIfConfigured, slackAgentEndpointConfigured, updateSlackAgentReplyMessage } from '../slack/agent-turn.js';
+import {
+  addWorkingReactionForSlackEvent,
+  fetchSlackRequesterProfile,
+  ignoredSlackEventReason,
+  postSlackResultReply,
+  runSlackBackground,
+  settleImmediateSlackReaction,
+  shouldProcessSlackEventsAsync,
+  slackDeliveryContextFromBody,
+  slackDeliveryPatchForResult,
+  slackEventId,
+  slackReactionPayloadFromResult,
+  updateSlackDeliveryReactionState,
+} from '../slack/delivery.js';
+import {
+  runSlackAgentTurnIfConfigured,
+  slackAgentEndpointConfigured,
+  updateSlackAgentReplyMessage,
+} from '../slack/agent-turn.js';
 import { buildConversationContext, repeatPreviousMessageFromContext } from '../slack/conversation-context.js';
-import { slackAgentCapability, slackAgentExplicitToolName, slackAgentToolArgs, slackAgentWorkItemState } from '../slack/agent-tool-call.js';
-import { completeSlackAgentRun, failRunningSlackAgentRunsForClosedSession, redactSlackAnalysis, slackAgentRunModelPatch } from '../slack/agent-run-records.js';
+import {
+  slackAgentCapability,
+  slackAgentExplicitToolName,
+  slackAgentToolArgs,
+  slackAgentWorkItemState,
+} from '../slack/agent-tool-call.js';
+import {
+  completeSlackAgentRun,
+  failRunningSlackAgentRunsForClosedSession,
+  redactSlackAnalysis,
+  slackAgentRunModelPatch,
+} from '../slack/agent-run-records.js';
 import { selectSlackSession, slackActorFromBody, surfaceForSlackBody } from '../slack/session.js';
 import { redactSecretLikeText } from '../slack/text.js';
 import { buildSlackWorkItemDiagnosis, buildSlackWorkItemDiagnosisBlocks } from '../slack/diagnostics.js';
 import { slackJobInput } from '../slack/job-input.js';
-import { slackIssueConfirmationBlocks, slackIssueConfirmationText, slackPlatformIssueConfirmationBlocks, slackPlatformIssueConfirmationText } from '../slack/issue-confirmation.js';
-import { CREATE_PLATFORM_INTENTS, CREATE_JOB_INTENTS, FOLLOWUP_INTENTS, LIST_WORK_ITEM_INTENTS, NON_FOLLOWUP_ACTIONS, SWITCH_WORK_ITEM_INTENTS, UNSUPPORTED_DESTRUCTIVE_INTENTS } from '../slack/intents.js';
+import {
+  slackIssueConfirmationBlocks,
+  slackIssueConfirmationText,
+  slackPlatformIssueConfirmationBlocks,
+  slackPlatformIssueConfirmationText,
+} from '../slack/issue-confirmation.js';
+import {
+  CREATE_PLATFORM_INTENTS,
+  CREATE_JOB_INTENTS,
+  FOLLOWUP_INTENTS,
+  LIST_WORK_ITEM_INTENTS,
+  NON_FOLLOWUP_ACTIONS,
+  SWITCH_WORK_ITEM_INTENTS,
+  UNSUPPORTED_DESTRUCTIVE_INTENTS,
+} from '../slack/intents.js';
 import { platformDevInput } from '../slack/platform-input.js';
 import { notifySlackPlatformDevStatus } from '../slack/platform-notifier.js';
 import { unsupportedDestructiveRequestReply } from '../slack/work-items.js';
 import { activeWorkItemForSlackSession, handleSlackFollowup } from '../slack/followup.js';
-import { buildReviewResultsSummary, buildSlackReviewResultsBlocks, formatSlackReviewResultsText, resolveReviewResultsTarget, reviewResultsMemory } from '../slack/review-results.js';
-import { handleSlackListWorkItemsTool, handleSlackReopenWorkItemTool, handleSlackSwitchWorkItemTool } from '../slack/work-item-tools.js';
+import {
+  buildReviewResultsSummary,
+  buildSlackReviewResultsBlocks,
+  formatSlackReviewResultsText,
+  resolveReviewResultsTarget,
+  reviewResultsMemory,
+} from '../slack/review-results.js';
+import {
+  handleSlackListWorkItemsTool,
+  handleSlackReopenWorkItemTool,
+  handleSlackSwitchWorkItemTool,
+} from '../slack/work-item-tools.js';
 import { answerRepoQuestion, nextRepoQuestionContext, repoQuestionActionBlocks } from '../slack/repo-question.js';
-import { eventsForWorkItem, failQueuedSlackWorkerStart, notifyQueuedWorkerStartFailure, queueSlackWorkerStart, updateSessionMemoryWithAssistantTurn, workItemForDiagnosis } from './shared.js';
+import {
+  eventsForWorkItem,
+  failQueuedSlackWorkerStart,
+  notifyQueuedWorkerStartFailure,
+  queueSlackWorkerStart,
+  updateSessionMemoryWithAssistantTurn,
+  workItemForDiagnosis,
+} from './shared.js';
+import { SITE_PUBLISHING_RETIRED_MESSAGE } from '../publishing/retirement.js';
 
 const LOCAL_FOLLOWUP_CUE_RE =
   /(?:这个|那个|刚才|当前|接着|继续|续上|改为|改成|换成|不再|不要再|补充|追加|调整|修改|修复|再加|再补|再改)/i;
@@ -202,10 +260,7 @@ function reviewResultsToolArgsFromIntake(intake = {}) {
   const number = Number(explicitReference?.number || intake.targetNumber || intake.prNumber || intake.issueNumber);
   if (!Number.isFinite(number) || number <= 0) return { kind: 'current', maxItems: 5 };
   return {
-    kind:
-      explicitReference?.kind ||
-      intake.targetKind ||
-      (intake.prNumber ? 'pr' : intake.issueNumber ? 'issue' : 'unknown'),
+    kind: explicitReference?.kind || intake.targetKind || (intake.prNumber ? 'pr' : intake.issueNumber ? 'issue' : 'unknown'),
     number,
     maxItems: 5,
     explicitUserTarget: true,
@@ -220,9 +275,7 @@ function workItemToolArgsFromIntake(intake = {}) {
     ...(Number.isFinite(number) && number > 0
       ? {
           kind:
-            explicitReference?.kind ||
-            intake.targetKind ||
-            (intake.prNumber ? 'pr' : intake.issueNumber ? 'issue' : 'unknown'),
+            explicitReference?.kind || intake.targetKind || (intake.prNumber ? 'pr' : intake.issueNumber ? 'issue' : 'unknown'),
           number,
           explicitUserTarget: true,
         }
@@ -240,11 +293,11 @@ function reviewResultsToolArgsForTurn(intake = {}, slackAgentAnalysis = {}) {
 function hasActiveSlackTarget(slackSession) {
   return Boolean(
     slackSession?.activeJobId ||
-      slackSession?.activeWorkItemId ||
-      slackSession?.activeWorkItemKind ||
-      slackSession?.activeIssueNumber ||
-      slackSession?.activePrNumber ||
-      slackSession?.activePreviewUrl
+    slackSession?.activeWorkItemId ||
+    slackSession?.activeWorkItemKind ||
+    slackSession?.activeIssueNumber ||
+    slackSession?.activePrNumber ||
+    slackSession?.activePreviewUrl
   );
 }
 
@@ -278,6 +331,22 @@ function isPlatformDevAnalysis(slackAgentAnalysis = {}) {
   return lane === 'platform-dev' || CREATE_PLATFORM_INTENTS.has(slackAgentAnalysis?.intent);
 }
 
+function isSitePublishingAnalysis(slackAgentAnalysis = {}) {
+  const lane = String(slackAgentAnalysis?.lane || '').replace('_', '-');
+  return (
+    lane === 'site-publishing' ||
+    (!isPlatformDevAnalysis(slackAgentAnalysis) && CREATE_JOB_INTENTS.has(slackAgentAnalysis?.intent))
+  );
+}
+
+function hasRetiredSitePublishingContext(slackSession, slackAgentAnalysis) {
+  return Boolean(
+    isSitePublishingAnalysis(slackAgentAnalysis) ||
+    slackSession?.activeWorkItemKind === 'site_publishing' ||
+    (slackSession?.activeJobId && slackSession?.activeWorkItemKind !== 'platform_dev')
+  );
+}
+
 function shouldCreatePlatformDevItem(intake, slackAgentAnalysis) {
   if (!slackAgentAnalysis) return false;
   if (slackAgentAnalysis.needsClarification) return false;
@@ -307,8 +376,7 @@ async function handleSlackAgentToolCall(context) {
     slackSession?.id && store && intake?.action === 'agent_turn'
       ? await activeWorkItemForSlackSession(store, slackSession)
       : null;
-  const toolCall =
-    context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, { activeWorkItem });
+  const toolCall = context.toolCall || slackAgentToolCallForTurn(intake, slackAgentAnalysis, slackSession, { activeWorkItem });
   if (!toolCall?.name) return null;
   if (
     slackAgentAnalysis?.needsClarification &&
@@ -367,11 +435,19 @@ async function handleSlackAgentToolCall(context) {
     case 'record_followup':
       return handleSlackFollowup(context);
     case 'confirm_create_issue':
+      if (!context.retireSitePublishing) {
+        return handleSlackAgentNonPublishingTurn({
+          ...context,
+          action: 'confirm_before_issue',
+          replyText: slackIssueConfirmationText(slackAgentAnalysis),
+          blocks: slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis),
+          preferReplyText: true,
+        });
+      }
       return handleSlackAgentNonPublishingTurn({
         ...context,
-        action: 'confirm_before_issue',
-        replyText: slackIssueConfirmationText(slackAgentAnalysis),
-        blocks: slackIssueConfirmationBlocks(slackSession, slackAgentAnalysis),
+        action: 'site_publishing_retired',
+        replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
         preferReplyText: true,
       });
     case 'confirm_platform_issue':
@@ -449,6 +525,7 @@ async function handleSlackRepeatPreviousMessageTool({
 
 async function processSlackEventBody(body, env, options = {}) {
   const store = getStore(env);
+  const retireSitePublishing = options.retireSitePublishing !== false;
 
   if (body.type === 'url_verification' && body.challenge) {
     return { ok: true, action: 'url_verification', challenge: body.challenge };
@@ -596,6 +673,7 @@ async function processSlackEventBody(body, env, options = {}) {
         sessionMemory,
         agentRun,
         slackAgentAnalysis: null,
+        retireSitePublishing,
         toolArgs: { state: intake.workItemState },
       })
     );
@@ -612,6 +690,7 @@ async function processSlackEventBody(body, env, options = {}) {
         sessionMemory,
         agentRun,
         slackAgentAnalysis: null,
+        retireSitePublishing,
       })
     );
   }
@@ -627,6 +706,7 @@ async function processSlackEventBody(body, env, options = {}) {
         sessionMemory,
         agentRun,
         slackAgentAnalysis: null,
+        retireSitePublishing,
         toolArgs: workItemToolArgsFromIntake(intake),
       })
     );
@@ -694,9 +774,29 @@ async function processSlackEventBody(body, env, options = {}) {
         sessionMemory,
         agentRun,
         slackAgentAnalysis,
+        retireSitePublishing,
       });
       if (toolResult) return respond(toolResult);
+    }
 
+    if (
+      retireSitePublishing &&
+      slackAgentAnalysis?.needsClarification &&
+      hasRetiredSitePublishingContext(slackSession, slackAgentAnalysis)
+    ) {
+      return respond(
+        handleSlackAgentNonPublishingTurn({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+          action: 'site_publishing_retired',
+          replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
+          preferReplyText: true,
+        })
+      );
     }
 
     if (slackAgentAnalysis?.needsClarification) {
@@ -713,7 +813,7 @@ async function processSlackEventBody(body, env, options = {}) {
       );
     }
 
-    if (shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis)) {
+    if (shouldAskBeforeCreatingIssue(intake, slackAgentAnalysis) && !retireSitePublishing) {
       return respond(
         handleSlackAgentNonPublishingTurn({
           store,
@@ -835,6 +935,22 @@ async function processSlackEventBody(body, env, options = {}) {
           agentRun,
           slackAgentAnalysis,
           action: slackAgentAnalysis ? 'agent_turn_recorded' : intake.action,
+        })
+      );
+    }
+
+    if (retireSitePublishing) {
+      return respond(
+        handleSlackAgentNonPublishingTurn({
+          store,
+          intake,
+          slackSession,
+          sessionMemory,
+          agentRun,
+          slackAgentAnalysis,
+          action: 'site_publishing_retired',
+          replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
+          preferReplyText: true,
         })
       );
     }
@@ -1150,6 +1266,7 @@ async function handleSlackWorkItemDiagnosisTool({
   sessionMemory,
   agentRun,
   slackAgentAnalysis,
+  retireSitePublishing = true,
   toolArgs = {},
 }) {
   const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
@@ -1168,7 +1285,7 @@ async function handleSlackWorkItemDiagnosisTool({
   }
 
   let item = resolved.item;
-  if (item && item.workItemKind !== 'platform_dev') {
+  if (item && item.workItemKind !== 'platform_dev' && !retireSitePublishing) {
     item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
   }
   if (!item) {
@@ -1189,7 +1306,7 @@ async function handleSlackWorkItemDiagnosisTool({
 
   const events = await eventsForWorkItem(store, item);
   const githubActions = await diagnoseGithubActionsForWorkItem(env, item, { events });
-  const diagnosisOptions = { events, githubActions };
+  const diagnosisOptions = { events, githubActions, retireSitePublishing };
   const replyText = buildSlackWorkItemDiagnosis(item, diagnosisOptions);
   const blocks = buildSlackWorkItemDiagnosisBlocks(slackSession, item, { ...diagnosisOptions, slackAgentAnalysis });
   if (slackSession?.id && store.updateSessionMemory) {
@@ -1303,7 +1420,7 @@ async function handleSlackAgentNonPublishingTurn({
   };
 }
 
-export async function handleSlackEvents(request, env) {
+export async function handleSlackEvents(request, env, options = {}) {
   const { body } = await readSlackRequest(request, env);
 
   if (body.type === 'url_verification' && body.challenge) {
@@ -1314,7 +1431,10 @@ export async function handleSlackEvents(request, env) {
   const process = async () => {
     const workingReaction = await addWorkingReactionForSlackEvent(env, body);
     try {
-      const result = await processSlackEventBody(body, env, { workingReaction });
+      const result = await processSlackEventBody(body, env, {
+        workingReaction,
+        retireSitePublishing: options.retireSitePublishing,
+      });
       await postSlackResultReply(env, body, result);
       const settledReaction = await settleImmediateSlackReaction(env, workingReaction, result);
       if (settledReaction) {

@@ -1,5 +1,7 @@
 # Workers And Runtime Executors
 
+> 当前状态：pages-worker 只继续接受 `workItemKind=platform_dev`。Site Publishing start 返回 `410 PUBLISHING_LANE_RETIRED`；`project-index.yml`、`pages-agent.yml`、`pages-preview.yml` 静态冻结，`pr-site.yml` 仅做被动 PR 校验。下文中的 Site Publishing executor 细节是 dormant historical design。
+
 ## Worker 定位
 
 worker 是自动化助手，不是 K8s worker node，也不是最终运行员工网站的容器。
@@ -15,7 +17,7 @@ slack-notifier
 
 其中：
 
-- `pages-worker` 推进 issue、workflow dispatch、preview deploy。
+- `pages-worker` 只推进 Platform Dev issue 和 `platform-agent.yml` dispatch；不再执行 Site Publishing preview deploy。
 - `slack-agent` 负责 Slack 多轮对话和需求理解。
 - `slack-notifier` 负责 Slack Web API 输出。
 - Review gate 当前合在 `pages-gateway` 的 GitHub webhook 处理里。
@@ -24,13 +26,13 @@ slack-notifier
 
 ## Executor 跑在哪
 
-当前一次性 executor 跑在 GitHub Actions：
+Site Publishing 的历史一次性 executor 保留在 GitHub Actions，但已冻结：
 
 ```text
-project-index.yml
-pages-agent.yml
-site-check.yml
-pages-preview.yml
+project-index.yml  # job if: false
+pages-agent.yml    # job if: false
+pages-preview.yml  # job if: false
+pr-site.yml        # 仅 sites/** pull_request 被动校验
 ```
 
 Platform Dev Lane 使用独立 executor：
@@ -39,7 +41,7 @@ Platform Dev Lane 使用独立 executor：
 platform-agent.yml
 ```
 
-Coding Agent 不跑在 gateway、worker、Slack bot、GitHub Review Agent 或员工最终网站里。Site Publishing Lane 跑在 `.github/workflows/pages-agent.yml` 的 GitHub Actions runner 中；Platform Dev Lane 使用独立 `.github/workflows/platform-agent.yml`。
+Coding Agent 不跑在 gateway、worker、Slack bot、GitHub Review Agent 或员工最终网站里。Site Publishing Coding Agent 当前不会启动；Platform Dev Lane 继续使用 `.github/workflows/platform-agent.yml`。
 
 后续如果要更强隔离，可以把 executor adapter 换成 K8s Job，但上层状态机不变。
 
@@ -61,21 +63,17 @@ Site Publishing Coding Agent 不能做：
 - 修改 `.github/**`、`apps/**`、`packages/**`、`k8s/**`、`scripts/**`。
 - 直接 production deploy。
 
-当前 `pages-agent.yml` 会在创建 / 更新 PR 前执行 allowed path 校验。PR 创建后仍必须跑 `site-check.yml`。
+休眠的 `pages-agent.yml` 保留创建 / 更新 PR 前的 allowed path 校验。当前已有或人工站点 PR 由 `pr-site.yml` 被动校验，但 check 结果不会推进 PublishingJob 或 preview。
 
 Platform Dev Coding Agent 能修改 `pages-manager` repo 全目录内与 issue 直接相关的文件，但必须通过 `lane:platform-dev` issue、risk、发起人手动“自动开发”触发、CI 和 review 约束。`.github/**`、`k8s/**`、Dockerfile、部署脚本、secret、production deploy 相关改动默认 high risk，不能绕过 PR review 和人工 merge。
 
 ## Code 更新和编译跑在哪
 
-当前 Actions executor 形态：
+当前 Platform Dev executor 与历史 Site Publishing executor 形态：
 
 ```text
 pages-agent.yml
-  -> 运行 Coding Agent
-  -> 生成站点文件
-  -> allowed path / secret / build 校验
-  -> 创建或更新受控 PR
-  -> callback gateway pr_created
+  -> job 静态 skipped，以下历史步骤不执行
 
 platform-agent.yml
   -> 运行 Platform Dev Coding Agent
@@ -84,13 +82,13 @@ platform-agent.yml
   -> 创建或更新受控 PR
   -> callback gateway pr_created
 
-site-check.yml
-  -> PR required check
-  -> GitHub check_run webhook 回到 gateway
+pr-site.yml
+  -> 已有或人工 sites/** PR 的被动 required check
+  -> check_run 可入库，但不推进历史 PublishingJob
 
 pages-worker
-  -> Review gate 通过后触发 preview
-  -> 当前 ECS 路径可用 local_deploy 调 Cloudflare staging /deploy
+  -> Site Publishing start 返回 410
+  -> 只继续调度 Platform Dev
 ```
 
 最终网站不跑在 GitHub Actions 或 K8s，最终网站跑在 Cloudflare Workers / assets。
@@ -147,14 +145,14 @@ namespace: page-job-<jobId>
 
 ## Secret 边界
 
-| 组件 / 任务       | 允许的凭据                                                            | 禁止的凭据                                                    |
-| ----------------- | --------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `pages-gateway`   | Slack signing secret、GitHub webhook secret、callback token、DB/Redis | Slack bot token（正式路径）、Cloudflare production token      |
-| `pages-worker`    | GitHub platform token、callback token、preview deploy token、DB/Redis | Slack bot token                                               |
-| `slack-agent`     | Slack Agent model API key                                             | GitHub write token、Cloudflare token、Slack bot token         |
-| `slack-notifier`  | Slack bot token                                                       | GitHub write token、Cloudflare token                          |
-| `pages-agent.yml` | Coding Agent API key、受控 GitHub token、callback token               | Slack bot token、ACR/ACK/kubectl、production Cloudflare token |
-| `site-check.yml`  | 无敏感 secret                                                         | Slack bot token、Cloudflare token、GitHub App private key     |
+| 组件 / 任务               | 允许的凭据                                                            | 禁止的凭据                                                    |
+| ------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `pages-gateway`           | Slack signing secret、GitHub webhook secret、callback token、DB/Redis | Slack bot token（正式路径）、Cloudflare production token      |
+| `pages-worker`            | GitHub platform token、callback token、DB/Redis                       | Slack bot token；历史 preview deploy token 不再是活跃依赖     |
+| `slack-agent`             | Slack Agent model API key                                             | GitHub write token、Cloudflare token、Slack bot token         |
+| `slack-notifier`          | Slack bot token                                                       | GitHub write token、Cloudflare token                          |
+| `pages-agent.yml`（冻结） | 历史上使用 Coding Agent API key、受控 GitHub token、callback token    | Slack bot token、ACR/ACK/kubectl、production Cloudflare token |
+| `pr-site.yml`             | 无敏感 secret                                                         | Slack bot token、Cloudflare token、GitHub App private key     |
 
 ## Retry 和回调
 

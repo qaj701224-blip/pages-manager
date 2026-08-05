@@ -1,7 +1,7 @@
 name: Deploy Pages Manager Platform ACK Preview
 
 # Platform CI/CD only: builds and deploys the pages-manager control plane to ACK.
-# User-triggered publishing stays on project-index.yml, pages-agent.yml, and pages-preview.yml.
+# Retired Site Publishing workflows have no manual/API trigger and are not part of this deployment.
 
 on:
   workflow_dispatch:

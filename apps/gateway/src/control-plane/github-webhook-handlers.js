@@ -1,6 +1,12 @@
 import { jsonResponse } from '@xd/worker-kit';
 import { parseGithubWebhookBody, verifyGithubWebhookSignature } from '../github/webhook.js';
-import { isAllowedPlatformCiRun, isAllowedReviewAgent, isAllowedSiteCheckRun, normalizeReviewAgentWebhook, normalizeSiteCheckRunWebhook } from '../github/review.js';
+import {
+  isAllowedPlatformCiRun,
+  isAllowedReviewAgent,
+  isAllowedSiteCheckRun,
+  normalizeReviewAgentWebhook,
+  normalizeSiteCheckRunWebhook,
+} from '../github/review.js';
 import { handleGithubReviewAgentWebhook } from '../github/review-webhooks.js';
 import { handleGithubIssueWebhook, handleGithubPullRequestWebhook } from '../github/resource-webhooks.js';
 import { handleGithubSiteCheckWebhook } from '../github/site-check-webhooks.js';
@@ -46,7 +52,7 @@ function githubWebhookRepoAllowed(repoFullName, env = {}) {
   return String(repoFullName || '').toLowerCase() === String(configured).toLowerCase();
 }
 
-export async function handleGithubWebhook(request, env) {
+export async function handleGithubWebhook(request, env, options = {}) {
   const rawBody = await request.text();
   await verifyGithubWebhookSignature(request, env, rawBody);
   const body = parseGithubWebhookBody(rawBody);
@@ -84,14 +90,32 @@ export async function handleGithubWebhook(request, env) {
 
   try {
     if (eventName === 'issues') {
-      return await completeGithubDelivery(store, result, await handleGithubIssueWebhook({ body, action, store, env, result }));
+      return await completeGithubDelivery(
+        store,
+        result,
+        await handleGithubIssueWebhook({
+          body,
+          action,
+          store,
+          env,
+          result,
+          retireSitePublishing: options.retireSitePublishing !== false,
+        })
+      );
     }
 
     if (eventName === 'pull_request') {
       return await completeGithubDelivery(
         store,
         result,
-        await handleGithubPullRequestWebhook({ body, action, store, env, result })
+        await handleGithubPullRequestWebhook({
+          body,
+          action,
+          store,
+          env,
+          result,
+          retireSitePublishing: options.retireSitePublishing !== false,
+        })
       );
     }
 
@@ -108,6 +132,7 @@ export async function handleGithubWebhook(request, env) {
             store,
             env,
             result,
+            retireSitePublishing: options.retireSitePublishing !== false,
           })
         );
       }
@@ -139,7 +164,14 @@ export async function handleGithubWebhook(request, env) {
     return await completeGithubDelivery(
       store,
       result,
-      await handleGithubReviewAgentWebhook({ normalized, repoFullName, store, env, result })
+      await handleGithubReviewAgentWebhook({
+        normalized,
+        repoFullName,
+        store,
+        env,
+        result,
+        retireSitePublishing: options.retireSitePublishing !== false,
+      })
     );
   } catch (err) {
     await markGithubDelivery(store, result, {

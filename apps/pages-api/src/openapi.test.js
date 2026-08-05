@@ -18,6 +18,9 @@ test('builds production XD Cell OpenAPI skeleton for development checks', () => 
   assert.equal(body.info.description, 'Control plane API for XD Cell.');
   assert.deepEqual(body.servers, [{ url: 'https://api.pages.xd.team' }]);
   assert.ok(body.paths['/.xd-pages/api/sites']);
+  assert.ok(body.components.schemas.AdminUser);
+  assert.deepEqual(body.components.schemas.AdminUsersResponse.required, ['users', 'pagination']);
+  assert.deepEqual(body.components.schemas.AdminUsersResponse.properties.pagination.required, ['total', 'limit', 'offset']);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].patch);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}'].delete);
   assert.ok(body.paths['/.xd-pages/api/sites/{id}/acl'].get);

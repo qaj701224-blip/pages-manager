@@ -137,9 +137,13 @@ export function bulkDeleteAdminNormalWorkers(ids, body = {}, options = {}) {
   });
 }
 
-export function listAdminUsers({ query, ...options } = {}) {
+export function listAdminUsers({ query, limit, offset, admin, status, ...options } = {}) {
   const search = new URLSearchParams();
   if (query) search.set('query', query);
+  if (limit !== undefined) search.set('limit', String(limit));
+  if (offset !== undefined) search.set('offset', String(offset));
+  if (admin) search.set('admin', admin);
+  if (status) search.set('status', status);
   const qs = search.toString();
   return fetchJson(`/api/console/admin/users${qs ? `?${qs}` : ''}`, options);
 }

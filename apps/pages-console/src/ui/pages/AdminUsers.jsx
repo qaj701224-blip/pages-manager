@@ -1,47 +1,59 @@
 import { ShieldCheck, ShieldOff, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { grantPlatformAdmin, listAdminUsers, revokePlatformAdmin } from '../api.js';
 import { readCachedConsoleSession } from '../session-cache.js';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 
 export function AdminUsers() {
-  const [state, setState] = useState({ status: 'loading', users: [], error: null });
+  const [state, setState] = useState({ status: 'loading', loaded: false, users: [], pagination: { total: 0, limit: 50, offset: 0 }, error: null });
   const [actionState, setActionState] = useState({ userId: '', status: 'idle', error: null });
   const [actionDialog, setActionDialog] = useState(null);
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [adminFilter, setAdminFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [page, setPage] = useState(0);
+  const [reloadVersion, setReloadVersion] = useState(0);
   const currentUser = readCachedConsoleSession()?.session?.user || null;
 
-  const loadUsers = () => {
-    setState((current) => ({ ...current, status: 'loading', error: null }));
-    return listAdminUsers()
-      .then((data) => {
-        setState({ status: 'ready', users: data.users || [], error: null });
-      })
-      .catch((error) => {
-        setState({ status: 'error', users: [], error });
-      });
-  };
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(query.trim());
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query]);
 
   useEffect(() => {
     let active = true;
-    listAdminUsers()
+    const limit = 50;
+    setState((current) => ({ ...current, status: 'loading', error: null }));
+    listAdminUsers({
+      query: debouncedQuery,
+      limit,
+      offset: page * limit,
+      admin: adminFilter === 'all' ? undefined : adminFilter,
+      status: statusFilter === 'all' ? undefined : statusFilter,
+    })
       .then((data) => {
-        if (active) setState({ status: 'ready', users: data.users || [], error: null });
+        if (active) {
+          setState({
+            status: 'ready',
+            loaded: true,
+            users: data.users || [],
+            pagination: data.pagination || { total: 0, limit, offset: page * limit },
+            error: null,
+          });
+        }
       })
       .catch((error) => {
-        if (active) setState({ status: 'error', users: [], error });
+        if (active) setState((current) => ({ ...current, status: 'error', error }));
       });
     return () => {
       active = false;
     };
-  }, []);
-  const visibleUsers = useMemo(
-    () => filterAdminUsers(state.users, { query, adminFilter, statusFilter }),
-    [state.users, query, adminFilter, statusFilter]
-  );
+  }, [adminFilter, debouncedQuery, page, reloadVersion, statusFilter]);
 
   const updatePlatformAdmin = async ({ user, shouldGrant, reason }) => {
     setActionState({ userId: user.id, status: 'saving', error: null });
@@ -52,16 +64,19 @@ export function AdminUsers() {
         await revokePlatformAdmin(user.id, { reason });
       }
       setActionDialog(null);
-      await loadUsers();
+      setReloadVersion((current) => current + 1);
       setActionState({ userId: '', status: 'idle', error: null });
     } catch (error) {
       setActionState({ userId: user.id, status: 'error', error });
     }
   };
 
-  if (state.status === 'loading') return <div className="placeholder">加载中</div>;
+  if (state.status === 'loading' && !state.loaded) return <div className="placeholder">加载中</div>;
   if (state.status === 'error') return <AdminError title="用户列表加载失败" error={state.error} />;
-  if (state.users.length === 0) return <div className="placeholder">暂无用户数据</div>;
+  const total = state.pagination.total || 0;
+  const offset = state.pagination.offset || 0;
+  const hasPreviousPage = offset > 0;
+  const hasNextPage = offset + state.users.length < total;
 
   return (
     <>
@@ -76,7 +91,7 @@ export function AdminUsers() {
             ['admin', 'Admin'],
             ['user', 'User'],
           ].map(([value, label]) => (
-            <button className={adminFilter === value ? 'active' : ''} key={value} type="button" onClick={() => setAdminFilter(value)}>
+            <button className={adminFilter === value ? 'active' : ''} key={value} type="button" onClick={() => { setAdminFilter(value); setPage(0); }}>
               {label}
             </button>
           ))}
@@ -87,14 +102,14 @@ export function AdminUsers() {
             ['active', 'Active'],
             ['inactive', 'Inactive'],
           ].map(([value, label]) => (
-            <button className={statusFilter === value ? 'active' : ''} key={value} type="button" onClick={() => setStatusFilter(value)}>
+            <button className={statusFilter === value ? 'active' : ''} key={value} type="button" onClick={() => { setStatusFilter(value); setPage(0); }}>
               {label}
             </button>
           ))}
         </div>
-        <span className="toolbar-count">{visibleUsers.length} / {state.users.length}</span>
+        <span className="toolbar-count">共 {total} 人</span>
       </div>
-      {visibleUsers.length ? (
+      {state.users.length ? (
         <div className="table-shell">
           <table className="admin-table">
             <thead>
@@ -108,7 +123,7 @@ export function AdminUsers() {
               </tr>
             </thead>
             <tbody>
-              {visibleUsers.map((user) => {
+              {state.users.map((user) => {
                 const isCurrentUser = user.id === currentUser?.userId || user.email === currentUser?.email;
                 const disableRevokeSelf = isCurrentUser && user.isPlatformAdmin;
                 return (
@@ -153,6 +168,17 @@ export function AdminUsers() {
       ) : (
         <div className="placeholder">没有匹配的用户</div>
       )}
+      <div className="list-pagination" aria-label="用户分页">
+        <button className="secondary-button" type="button" onClick={() => setPage((current) => current - 1)} disabled={!hasPreviousPage || state.status === 'loading'}>
+          上一页
+        </button>
+        <span className="toolbar-count">
+          {total ? `${offset + 1}-${Math.min(offset + state.users.length, total)} / ${total}` : '0 / 0'}
+        </span>
+        <button className="secondary-button" type="button" onClick={() => setPage((current) => current + 1)} disabled={!hasNextPage || state.status === 'loading'}>
+          下一页
+        </button>
+      </div>
       {actionDialog ? (
         <AdminUserActionDialog
           action={actionDialog}
@@ -165,22 +191,6 @@ export function AdminUsers() {
       ) : null}
     </>
   );
-}
-
-function filterAdminUsers(users, { query, adminFilter, statusFilter }) {
-  const normalizedQuery = query.trim().toLowerCase();
-  return users.filter((user) => {
-    if (adminFilter === 'admin' && !user.isPlatformAdmin) return false;
-    if (adminFilter === 'user' && user.isPlatformAdmin) return false;
-    if (statusFilter === 'active' && user.employeeStatus !== 'active') return false;
-    if (statusFilter === 'inactive' && user.employeeStatus === 'active') return false;
-    if (!normalizedQuery) return true;
-    return [user.realname, user.email, user.departmentPath, user.employeeStatus, user.isPlatformAdmin ? 'admin' : 'user']
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(normalizedQuery);
-  });
 }
 
 function AdminUserActionDialog({ action, error, saving, onChange, onClose, onConfirm }) {

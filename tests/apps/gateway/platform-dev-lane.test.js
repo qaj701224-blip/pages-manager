@@ -10,7 +10,7 @@ import { platformDevInput } from '../../../apps/gateway/src/slack/platform-input
 import { notifySlackPlatformDevStatus } from '../../../apps/gateway/src/slack/platform-notifier.js';
 import { slackWorkItemListBlocks } from '../../../apps/gateway/src/slack/work-items.js';
 import { platformDevItemMarker } from '../../../packages/git-client/src/index.js';
-import { createGatewayApp } from '../../helpers/gateway-app.js';
+import { createLegacyGatewayAppForTests as createGatewayApp } from '../../helpers/legacy-gateway-app.js';
 
 async function json(response) {
   return response.json();

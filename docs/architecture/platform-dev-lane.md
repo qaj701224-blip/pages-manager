@@ -1,12 +1,12 @@
 # Platform Dev Lane
 
-Platform Dev Lane 让 Slack 可以创建和跟踪 `pages-manager` 自身的开发需求。它和 Site Publishing Lane 完全分离：前者处理平台代码、文档、CI、GitHub 自动化和运行时改造；后者处理员工个人站点内容发布。
+Platform Dev Lane 让 Slack 可以创建和跟踪 `pages-manager` 自身的开发需求。它与已冻结的 Site Publishing Lane 完全分离：Platform Dev 继续处理平台代码、文档、CI、GitHub 自动化和运行时改造；站点发布意图只返回退休提示。
 
 ## 产品目标
 
 用户在 Slack 里描述平台改造需求后，系统负责：
 
-1. 判断需求属于个人站点发布还是平台自身开发。
+1. 判断需求属于已退休的个人站点发布还是仍运行的平台自身开发。
 2. 整理标题、摘要、类型、范围和风险。
 3. 在用户确认后创建 GitHub issue。
 4. GitHub issue 创建后，在 Slack 进度卡展示“自动开发”按钮；只有发起人点击后才启动平台开发执行器。
@@ -20,10 +20,8 @@ Platform Dev Lane 的长期产品定位不是命令式表单，而是平台研�
 
 Site Publishing Lane：
 
-- 目标是员工个人站点。
-- 数据模型是 `PublishingJob`。
-- 自动 PR 只能改 `sites/<employeeSlug>/<siteSlug>/`。
-- 后续会生成 preview。
+- 已静态冻结，命中该 lane 时返回统一退休提示。
+- `PublishingJob`、站点 PR 和 preview 只作为历史数据保留，不再创建或推进。
 
 Platform Dev Lane：
 

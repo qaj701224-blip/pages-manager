@@ -12,6 +12,11 @@ import { buildSlackWorkItemDiagnosisIssueComment, buildSlackWorkItemHumanTriageI
 import { notifySlackPlatformDevStatus } from '../slack/platform-notifier.js';
 import { findVisibleSlackJobByReference, slackJobVisibleToActor } from '../slack/work-items.js';
 import { activeWorkItemForSlackSession } from '../slack/followup.js';
+import {
+  isSitePublishingWorkItem,
+  SITE_PUBLISHING_RETIRED_CODE,
+  SITE_PUBLISHING_RETIRED_MESSAGE,
+} from '../publishing/retirement.js';
 
 export async function failQueuedSlackWorkerStart(store, context = {}, errorMessage = 'Worker start failed') {
   if (context.workItemKind === 'site_publishing' && context.publishingJobId) {
@@ -208,12 +213,7 @@ export async function createSlackWorkItemIssueComment(env, item, body, logMessag
   if (!config) return { skipped: true, reason: 'github_not_configured' };
 
   try {
-    const comment = await createIssueComment(
-      env.GITHUB_FETCH || env.GITHUB_STATUS_FETCH || fetch,
-      config,
-      issueNumber,
-      body
-    );
+    const comment = await createIssueComment(env.GITHUB_FETCH || env.GITHUB_STATUS_FETCH || fetch, config, issueNumber, body);
     return { ok: true, issueNumber, comment };
   } catch (err) {
     console.log(
@@ -251,7 +251,8 @@ export async function appendSlackHumanTriageIssueComment(env, item, events = [],
 export function appendDiagnosisReplyText(result = {}) {
   if (result.ok) return `已把诊断摘要追加到 Issue #${result.issueNumber}。`;
   if (result.skipped && result.reason === 'missing_issue') return '当前任务还没有关联 Issue，暂时不能追加诊断。';
-  if (result.skipped && result.reason === 'github_not_configured') return '诊断摘要已生成，但 GitHub 写入暂未配置，不能追加到 Issue。';
+  if (result.skipped && result.reason === 'github_not_configured')
+    return '诊断摘要已生成，但 GitHub 写入暂未配置，不能追加到 Issue。';
   if (result.ok === false) return `追加诊断失败：${result.error}`;
   return '诊断摘要暂时不能追加到 Issue。';
 }
@@ -366,7 +367,7 @@ export async function retrySitePublishingWorkItem(store, env, item = {}, slackSe
   };
 }
 
-export async function retrySlackWorkItem(store, env, item = {}, slackSession = null) {
+export async function retrySlackWorkItem(store, env, item = {}, slackSession = null, options = {}) {
   if (item.workItemKind === 'platform_dev') {
     const result = await dispatchPlatformDevFixIfNeeded(store, item, env, {
       trigger: 'manual_retry',
@@ -382,10 +383,20 @@ export async function retrySlackWorkItem(store, env, item = {}, slackSession = n
       slackStatusNotification: result.slackStatusNotification || null,
     };
   }
+  if (options.retireSitePublishing !== false && isSitePublishingWorkItem(item)) {
+    return {
+      retried: false,
+      retired: true,
+      reason: SITE_PUBLISHING_RETIRED_CODE,
+      message: SITE_PUBLISHING_RETIRED_MESSAGE,
+      item,
+    };
+  }
   return retrySitePublishingWorkItem(store, env, item, slackSession);
 }
 
 export function retryWorkItemReplyText(result = {}) {
+  if (result.retired) return result.message || SITE_PUBLISHING_RETIRED_MESSAGE;
   if (result.retried) return '已重新触发处理流程。我会继续在当前对话更新进度。';
   if (result.reason === 'not_dispatchable' || result.reason === 'not_retryable') {
     return '当前阶段不能直接重试。可以查看 Issue / PR 后补充修复要求，或转人工排查。';
@@ -404,6 +415,7 @@ export async function handleSlackAppendDiagnosisCommentTool({
   sessionMemory,
   agentRun,
   slackAgentAnalysis,
+  retireSitePublishing = true,
   toolArgs = {},
 }) {
   const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
@@ -422,6 +434,28 @@ export async function handleSlackAppendDiagnosisCommentTool({
   }
 
   let item = resolved.item;
+  if (retireSitePublishing && isSitePublishingWorkItem(item)) {
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: item.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'append_diagnosis_comment',
+        accepted: false,
+        reason: SITE_PUBLISHING_RETIRED_CODE,
+        status: item.status,
+      },
+    });
+    return {
+      ok: true,
+      action: 'site_publishing_retired',
+      accepted: false,
+      jobId: item.id,
+      replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      workItem: item,
+    };
+  }
   if (item && item.workItemKind !== 'platform_dev') {
     item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
   }
@@ -498,6 +532,7 @@ export async function handleSlackHumanTriageTool({
   sessionMemory,
   agentRun,
   slackAgentAnalysis,
+  retireSitePublishing = true,
   toolArgs = {},
 }) {
   const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
@@ -516,6 +551,28 @@ export async function handleSlackHumanTriageTool({
   }
 
   let item = resolved.item;
+  if (retireSitePublishing && isSitePublishingWorkItem(item)) {
+    await completeSlackAgentRun(store, agentRun, {
+      publishingJobId: item.id,
+      ...slackAgentRunModelPatch(slackAgentAnalysis),
+      report: {
+        action: 'human_triage',
+        accepted: false,
+        reason: SITE_PUBLISHING_RETIRED_CODE,
+        status: item.status,
+      },
+    });
+    return {
+      ok: true,
+      action: 'site_publishing_retired',
+      accepted: false,
+      jobId: item.id,
+      replyText: SITE_PUBLISHING_RETIRED_MESSAGE,
+      ...(slackSession ? { slackSessionId: slackSession.id } : {}),
+      ...(agentRun ? { agentRunId: agentRun.id } : {}),
+      workItem: item,
+    };
+  }
   if (item && item.workItemKind !== 'platform_dev') {
     item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
   }
@@ -594,6 +651,7 @@ export async function handleSlackRetryWorkItemTool({
   sessionMemory,
   agentRun,
   slackAgentAnalysis,
+  retireSitePublishing = true,
   toolArgs = {},
 }) {
   const resolved = await workItemForDiagnosis(store, body, slackSession, toolArgs);
@@ -612,7 +670,7 @@ export async function handleSlackRetryWorkItemTool({
   }
 
   let item = resolved.item;
-  if (item && item.workItemKind !== 'platform_dev') {
+  if (item && item.workItemKind !== 'platform_dev' && !retireSitePublishing) {
     item = await reconcileClosedGithubIssueForJob(store, env, item, { notifySlack: true });
   }
   if (!item) {
@@ -631,7 +689,7 @@ export async function handleSlackRetryWorkItemTool({
     };
   }
 
-  const retryResult = await retrySlackWorkItem(store, env, item, slackSession);
+  const retryResult = await retrySlackWorkItem(store, env, item, slackSession, { retireSitePublishing });
   const replyText = retryWorkItemReplyText(retryResult);
   if (slackSession?.id && store.updateSessionMemory) {
     await updateSessionMemoryWithAssistantTurn(

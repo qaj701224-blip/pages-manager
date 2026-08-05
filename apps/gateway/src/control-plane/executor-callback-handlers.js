@@ -1,14 +1,28 @@
 import { jsonResponse } from '@xd/worker-kit';
-import { dispatchPreviewFromStoredReviewIfReady, listReviewReconcileCandidateJobs, reconcileReviewGateForJob } from '../github/review-gate.js';
+import {
+  dispatchPreviewFromStoredReviewIfReady,
+  listReviewReconcileCandidateJobs,
+  reconcileReviewGateForJob,
+} from '../github/review-gate.js';
 import { readJson } from '../http/body.js';
 import { getStore, required, verifyInternalCallbackToken } from './context.js';
 import { dispatchQueuedPlatformDevFollowupIfNeeded } from '../platform-dev/automation.js';
 import { applyExecutorCallback, CALLBACK_STAGE_RESULTS } from '../publishing/callback-rules.js';
 import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
-import { notificationTextForCallback, notificationTextForReviewAction, notifySlackJob, notifySlackJobStatus } from '../slack/notifier.js';
+import {
+  notificationTextForCallback,
+  notificationTextForReviewAction,
+  notifySlackJob,
+  notifySlackJobStatus,
+} from '../slack/notifier.js';
 import { notifySlackPlainProgress, settleJobSlackReactions } from '../slack/delivery.js';
 import { notifySlackPlatformDevStatus, platformNotificationText } from '../slack/platform-notifier.js';
 import { dispatchQueuedFollowupFixIfNeeded } from '../slack/followup.js';
+import {
+  isSitePublishingWorkItem,
+  SITE_PUBLISHING_RETIRED_CODE,
+  sitePublishingRetiredIgnoredResponse,
+} from '../publishing/retirement.js';
 
 const TERMINAL_FAILED_CALLBACK_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
 
@@ -60,7 +74,7 @@ function shouldIgnoreStaleFailedPlatformCallback(existingItem = {}, body = {}) {
   return false;
 }
 
-export async function handleReviewGateReconcile(request, env) {
+export async function handleReviewGateReconcile(request, env, options = {}) {
   const authError = verifyInternalCallbackToken(request, env);
   if (authError) return authError;
 
@@ -73,18 +87,24 @@ export async function handleReviewGateReconcile(request, env) {
 
   const results = [];
   for (const job of jobs) {
-    results.push(await reconcileReviewGateForJob(store, job, env, nowMs));
+    results.push(
+      options.retireSitePublishing !== false && isSitePublishingWorkItem(job)
+        ? { jobId: job.id, ignored: SITE_PUBLISHING_RETIRED_CODE }
+        : await reconcileReviewGateForJob(store, job, env, nowMs)
+    );
   }
 
+  const allIgnored = results.length > 0 && results.every((result) => result.ignored === SITE_PUBLISHING_RETIRED_CODE);
   return jsonResponse({
     ok: true,
+    ...(allIgnored ? { ignored: SITE_PUBLISHING_RETIRED_CODE } : {}),
     checked: jobs.length,
     reconciled: results.filter((result) => result.reviewAction).length,
     results,
   });
 }
 
-export async function handleExecutorCallback(request, env) {
+export async function handleExecutorCallback(request, env, options = {}) {
   const authError = verifyInternalCallbackToken(request, env);
   if (authError) return authError;
 
@@ -99,6 +119,9 @@ export async function handleExecutorCallback(request, env) {
     const store = getStore(env);
     const existingJob = await store.getJob(jobId);
     if (!existingJob) return jsonResponse({ error: 'PublishingJob not found' }, 404);
+    if (options.retireSitePublishing !== false && isSitePublishingWorkItem(existingJob)) {
+      return sitePublishingRetiredIgnoredResponse({ job: existingJob, ignoredCallbackStatus: 'failed' });
+    }
     if (TERMINAL_FAILED_CALLBACK_JOB_STATUSES.has(existingJob.status)) {
       await store.linkJobToSlackSession(existingJob);
       return jsonResponse({
@@ -144,13 +167,19 @@ export async function handleExecutorCallback(request, env) {
     });
   }
 
+  const store = getStore(env);
+  const previousJob = await store.getJob(jobId);
+  if (options.retireSitePublishing !== false && isSitePublishingWorkItem(previousJob)) {
+    return sitePublishingRetiredIgnoredResponse({
+      job: previousJob,
+      stageResult: body.stageResult || body.stage_result || null,
+    });
+  }
   const stageResult = required(body.stageResult || body.stage_result, 'stageResult');
   const rule = CALLBACK_STAGE_RESULTS[stageResult];
   if (!rule) return jsonResponse({ error: 'Unsupported stageResult', stageResult }, 400);
 
   const patch = rule.patch ? rule.patch(body) : {};
-  const store = getStore(env);
-  const previousJob = await store.getJob(jobId);
   const callbackResult = await applyExecutorCallback(store, jobId, stageResult, rule.status, patch);
   let job = callbackResult.job;
   if (!job) return jsonResponse({ error: 'PublishingJob not found' }, 404);
@@ -233,9 +262,10 @@ export async function handleExecutorCallback(request, env) {
     });
   }
   const slackText = notificationTextForCallback(stageResult, job);
-  const slackNotification = callbackResult.ignored || queuedFollowupRerun
-    ? null
-    : await notifySlackPlainProgress(env, store, job, slackText, `callback:${stageResult}`);
+  const slackNotification =
+    callbackResult.ignored || queuedFollowupRerun
+      ? null
+      : await notifySlackPlainProgress(env, store, job, slackText, `callback:${stageResult}`);
   const slackReactionSettlement =
     !callbackResult.ignored && (stageResult === 'preview_deployed' || job.status === 'preview_deployed')
       ? await settleJobSlackReactions(env, store, job, 'done')
@@ -409,10 +439,9 @@ async function handlePlatformDevExecutorCallback(body, env) {
     }
   }
   await store.linkPlatformDevItemToSlackSession(item);
-  const queuedFollowupRerun =
-    ['pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge'].includes(status)
-      ? await dispatchQueuedPlatformDevFollowupIfNeeded(store, item, env)
-      : null;
+  const queuedFollowupRerun = ['pr_created', 'ci_failed', 'review_blocked', 'ready_to_merge'].includes(status)
+    ? await dispatchQueuedPlatformDevFollowupIfNeeded(store, item, env)
+    : null;
   if (queuedFollowupRerun?.item) item = queuedFollowupRerun.item;
   const notificationStage = stageResult === 'auto_dev_pending' && item.status !== stageResult ? item.status : stageResult;
   const slackStatusNotification = queuedFollowupRerun?.slackStatusNotification
