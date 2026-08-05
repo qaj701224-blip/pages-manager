@@ -61,6 +61,14 @@ export function listAdminDeploymentCleanups({ status, ...options } = {}) {
   return fetchJson(`/api/console/admin/deployment-cleanups${query ? `?${query}` : ''}`, options);
 }
 
+export function scanAdminWorkerOrphans(options = {}) {
+  return fetchJson('/api/console/admin/worker-orphan-scan', options);
+}
+
+export function listAdminV1Sites(options = {}) {
+  return fetchJson('/api/console/admin/v1-sites', options);
+}
+
 export function runAdminDeploymentCleanup(id, body = {}, options = {}) {
   return fetchJson(`/api/console/admin/deployment-cleanups/${encodeURIComponent(id)}/run`, {
     ...options,

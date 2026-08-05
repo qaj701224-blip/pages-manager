@@ -5,6 +5,7 @@ import test from 'node:test';
 const adminDashboardSource = readFileSync(new URL('./pages/AdminDashboard.jsx', import.meta.url), 'utf8');
 const adminSource = readFileSync(new URL('./pages/Admin.jsx', import.meta.url), 'utf8');
 const adminDeploymentCleanupsSource = readFileSync(new URL('./pages/AdminDeploymentCleanups.jsx', import.meta.url), 'utf8');
+const adminV1SitesSource = readFileSync(new URL('./pages/AdminV1Sites.jsx', import.meta.url), 'utf8');
 const adminNormalWorkersSource = readFileSync(new URL('./pages/AdminNormalWorkers.jsx', import.meta.url), 'utf8');
 const adminSitesSource = readFileSync(new URL('./pages/AdminSites.jsx', import.meta.url), 'utf8');
 const siteDetailSource = readFileSync(new URL('./pages/SiteDetail.jsx', import.meta.url), 'utf8');
@@ -91,6 +92,46 @@ test('admin deployment cleanup management is exposed as a WFP GC surface', () =>
   assert.match(adminDeploymentCleanupsSource, /cleanupAfter/);
   assert.match(adminDeploymentCleanupsSource, /lastErrorCode/);
   assert.match(adminDeploymentCleanupsSource, /task\.canRun/);
+});
+
+test('admin resource governance exposes a manual read-only orphan scan', () => {
+  assert.match(apiSource, /scanAdminWorkerOrphans/);
+  assert.match(adminDeploymentCleanupsSource, /AppTabs\.Trigger[\s\S]*?Orphan Scan/);
+  assert.match(adminDeploymentCleanupsSource, /async function runOrphanScan/);
+  assert.match(adminDeploymentCleanupsSource, /scanAdminWorkerOrphans\(\)/);
+  assert.match(adminDeploymentCleanupsSource, /onClick=\{runOrphanScan\}/);
+  assert.match(adminDeploymentCleanupsSource, /<AppTabs\.Content forceMount value="orphan-scan">/);
+  assert.match(adminDeploymentCleanupsSource, /filterWorkerOrphanScanWorkers/);
+  assert.match(adminDeploymentCleanupsSource, /orphanReason/);
+  assert.doesNotMatch(adminDeploymentCleanupsSource, /deleteAdminWorkerOrphan|cleanupOrphanWorker/);
+});
+
+test('admin v1 site inventory is registered as a read-only operations page', () => {
+  assert.match(adminSource, /id: 'v1-sites'/);
+  assert.match(adminSource, /Legacy v1 Sites/);
+  assert.match(adminSource, /<AdminV1Sites/);
+  assert.match(apiSource, /listAdminV1Sites/);
+  assert.match(adminV1SitesSource, /listAdminV1Sites\(\)/);
+  assert.match(adminV1SitesSource, /filterV1Sites/);
+  assert.match(adminV1SitesSource, /疑似废弃/);
+  assert.match(adminV1SitesSource, /migratedCandidate/);
+  assert.match(adminV1SitesSource, /onRetry=\{reload\}/);
+  assert.doesNotMatch(adminV1SitesSource, /\.metadata|token|delete/i);
+});
+
+test('admin errors preserve actionable API guidance and support an optional retry', () => {
+  assert.match(adminDashboardSource, /error\?\.message/);
+  assert.match(adminDashboardSource, /error\?\.action/);
+  assert.match(adminDashboardSource, /onRetry \? \(/);
+  assert.match(adminDashboardSource, />\s*重试\s*</);
+});
+
+test('admin dashboard shows lightweight cleanup counts and keeps on-demand totals unknown', () => {
+  assert.match(adminDashboardSource, /resourceCleanup/);
+  assert.match(adminDashboardSource, /formatCleanupBacklogAge/);
+  assert.match(adminDashboardSource, /按需扫描/);
+  assert.match(adminDashboardSource, /resourceCleanup\.orphanCandidates === null/);
+  assert.match(adminDashboardSource, /resourceCleanup\.v1Sites === null/);
 });
 
 test('admin deployment failure review exposes diagnostics context', () => {

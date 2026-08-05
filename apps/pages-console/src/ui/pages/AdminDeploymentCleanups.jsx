@@ -1,7 +1,9 @@
-import { RefreshCw, RotateCw } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { RefreshCw, RotateCw, Search } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { listAdminDeploymentCleanups, runAdminDeploymentCleanup } from '../api.js';
+import { listAdminDeploymentCleanups, runAdminDeploymentCleanup, scanAdminWorkerOrphans } from '../api.js';
+import { filterWorkerOrphanScanWorkers } from '../admin-resource-governance-model.js';
+import { AppTabs } from '../components/RadixPrimitives.jsx';
 import { AdminError, formatDate } from './AdminDashboard.jsx';
 
 const CLEANUP_FILTERS = [
@@ -11,7 +13,42 @@ const CLEANUP_FILTERS = [
   ['all', '全部'],
 ];
 
+const ORPHAN_FILTERS = [
+  ['all', '全部'],
+  ['active_route', 'Active route'],
+  ['rollback', 'Rollback eligible'],
+  ['cleanup', 'Cleanup task'],
+  ['orphan', 'Orphan candidate'],
+];
+
+const ORPHAN_REASON_FILTERS = [
+  ['no_d1_reference', '无 D1 引用'],
+  ['deleted_site', '站点已删除'],
+  ['stale_previous_version', '历史旧版本'],
+];
+
 export function AdminDeploymentCleanups() {
+  return (
+    <AppTabs.Root className="admin-governance-tabs" defaultValue="cleanup-tasks">
+      <AppTabs.List className="tabs-list" aria-label="资源回收视图">
+        <AppTabs.Trigger className="tabs-trigger" value="cleanup-tasks">
+          Cleanup Tasks
+        </AppTabs.Trigger>
+        <AppTabs.Trigger className="tabs-trigger" value="orphan-scan">
+          Orphan Scan
+        </AppTabs.Trigger>
+      </AppTabs.List>
+      <AppTabs.Content value="cleanup-tasks">
+        <CleanupTasksPanel />
+      </AppTabs.Content>
+      <AppTabs.Content forceMount value="orphan-scan">
+        <OrphanScanPanel />
+      </AppTabs.Content>
+    </AppTabs.Root>
+  );
+}
+
+function CleanupTasksPanel() {
   const [filter, setFilter] = useState('pending');
   const [state, setState] = useState({ status: 'loading', tasks: [], error: null, notice: null });
   const [busyId, setBusyId] = useState('');
@@ -122,6 +159,108 @@ export function AdminDeploymentCleanups() {
   );
 }
 
+function OrphanScanPanel() {
+  const [filter, setFilter] = useState('all');
+  const [state, setState] = useState({ status: 'idle', scan: null, error: null });
+  const workers = state.scan?.workers || [];
+  const visibleWorkers = useMemo(() => filterWorkerOrphanScanWorkers(workers, filter), [workers, filter]);
+
+  async function runOrphanScan() {
+    setState((current) => ({ ...current, status: 'scanning', error: null }));
+    try {
+      const data = await scanAdminWorkerOrphans();
+      setState({ status: 'ready', scan: data.scan || null, error: null });
+      setFilter('all');
+    } catch (error) {
+      setState((current) => ({ ...current, status: current.scan ? 'ready' : 'error', error }));
+    }
+  }
+
+  const summary = state.scan?.summary;
+  return (
+    <div className="admin-stack">
+      <div className="governance-intro">
+        <div>
+          <strong>只读盘点 WFP dispatch namespace</strong>
+          <span>扫描只做引用分类，不代表资源可以删除。</span>
+        </div>
+        <button className="secondary-button" type="button" disabled={state.status === 'scanning'} onClick={runOrphanScan}>
+          <Search size={15} />
+          <span>{state.status === 'scanning' ? '扫描中…' : state.scan ? '重新扫描' : '开始扫描'}</span>
+        </button>
+      </div>
+      {state.error && state.scan ? (
+        <div className="form-error">{state.error.message || state.error.code || 'WORKER_ORPHAN_SCAN_FAILED'}</div>
+      ) : null}
+      {state.status === 'idle' ? <div className="placeholder">点击“开始扫描”后读取本环境 Worker 清单。</div> : null}
+      {state.status === 'scanning' && !state.scan ? <div className="placeholder">正在扫描 namespace…</div> : null}
+      {state.status === 'error' && !state.scan ? <AdminError title="Orphan Scan 失败" error={state.error} /> : null}
+      {state.scan ? (
+        <>
+          <div className="stats-strip">
+            <GovernanceStat label="Worker 总数" value={summary?.total} />
+            <GovernanceStat label="Active route" value={summary?.referencedByActiveRoute} />
+            <GovernanceStat label="Rollback eligible" value={summary?.rollbackEligibleVersion} />
+            <GovernanceStat label="Cleanup task" value={summary?.hasPendingCleanupTask} />
+            <GovernanceStat label="Orphan candidate" value={summary?.orphanCandidates} />
+          </div>
+          <div className="admin-toolbar governance-filter-toolbar">
+            <div className="segmented compact-segmented" role="tablist" aria-label="Worker 分类">
+              {ORPHAN_FILTERS.map(([value, label]) => (
+                <button className={filter === value ? 'active' : ''} key={value} type="button" onClick={() => setFilter(value)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="segmented compact-segmented" role="tablist" aria-label="Orphan 原因">
+              {ORPHAN_REASON_FILTERS.map(([value, label]) => (
+                <button className={filter === value ? 'active' : ''} key={value} type="button" onClick={() => setFilter(value)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="toolbar-count">
+              {visibleWorkers.length} / {workers.length}
+            </span>
+          </div>
+          <div className="governance-scan-meta">扫描时间：{formatDate(state.scan.scannedAt)}</div>
+          {visibleWorkers.length > 0 ? (
+            <div className="table-shell">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Worker</th>
+                    <th>分类</th>
+                    <th>候选原因</th>
+                    <th>创建时间</th>
+                    <th>更新时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleWorkers.map((worker) => (
+                    <OrphanScanRow key={worker.name} worker={worker} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="placeholder">没有匹配的 Worker</div>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function GovernanceStat({ label, value }) {
+  return (
+    <div className="stat-cell">
+      <span>{label}</span>
+      <strong>{value ?? 0}</strong>
+    </div>
+  );
+}
+
 async function loadCleanups(filter) {
   const data = await listAdminDeploymentCleanups({ status: filter === 'all' ? '' : filter });
   return data.tasks || [];
@@ -173,4 +312,39 @@ function CleanupRow({ task, busy, onRun }) {
       </td>
     </tr>
   );
+}
+
+function OrphanScanRow({ worker }) {
+  const classifications = [];
+  if (worker.referencedByActiveRoute) classifications.push('active route');
+  if (worker.rollbackEligibleVersion) classifications.push('rollback eligible');
+  if (worker.hasPendingCleanupTask) classifications.push('cleanup task');
+  if (worker.orphanCandidate) classifications.push('orphan candidate');
+
+  return (
+    <tr>
+      <td data-label="Worker">
+        <strong>{worker.name}</strong>
+      </td>
+      <td data-label="分类">
+        <div className="chip-row">
+          {(classifications.length > 0 ? classifications : ['无已知引用']).map((label) => (
+            <span className={worker.orphanCandidate ? 'tag tag-disabled' : 'tag'} key={label}>
+              {label}
+            </span>
+          ))}
+        </div>
+      </td>
+      <td data-label="候选原因">{orphanReasonLabel(worker.orphanReason)}</td>
+      <td data-label="创建时间">{formatDate(worker.createdOn)}</td>
+      <td data-label="更新时间">{formatDate(worker.modifiedOn)}</td>
+    </tr>
+  );
+}
+
+function orphanReasonLabel(reason) {
+  if (reason === 'no_d1_reference') return '无 D1 引用';
+  if (reason === 'deleted_site') return '站点已删除';
+  if (reason === 'stale_previous_version') return '历史旧版本';
+  return '—';
 }
