@@ -8,6 +8,7 @@ import {
   SITE_PUBLISHING_RETIRED_MESSAGE,
 } from '../../../apps/gateway/src/publishing/retirement.js';
 import { registerGatewayRoutes } from '../../../apps/gateway/src/routes/register.js';
+import { createGatewayApp as createGatewayTestApp } from '../../helpers/gateway-app.js';
 import { GatewayStoreFixture } from '../../helpers/gateway-store-fixture.js';
 
 const { createGatewayApp } = gatewayModule;
@@ -67,6 +68,20 @@ function sitePublishingInteractionRequest(actionId, session, job) {
     }).toString(),
   });
 }
+
+test('generic Gateway test helper uses production retirement wiring', async () => {
+  const app = createGatewayTestApp({ store: new GatewayStoreFixture() });
+  const response = await app.fetch(
+    new Request('http://gateway.test/api/publishing-jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+  );
+
+  assert.equal(response.status, 410);
+  assert.equal((await json(response)).error, SITE_PUBLISHING_RETIRED_CODE);
+});
 
 test('production Gateway retires PublishingJob creation before parsing or dispatch', async () => {
   const store = new GatewayStoreFixture();
@@ -196,14 +211,7 @@ test('production Gateway entry does not export a legacy Site Publishing re-enabl
 
 test('production Gateway route registrar ignores legacy handler and retirement overrides', async () => {
   const router = new Router();
-  registerGatewayRoutes(router, {
-    createPublishingJobHandler: async () =>
-      new Response(JSON.stringify({ ok: true }), {
-        status: 201,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    retireSitePublishing: false,
-  });
+  registerGatewayRoutes(router);
   const request = new Request('http://gateway.test/api/publishing-jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

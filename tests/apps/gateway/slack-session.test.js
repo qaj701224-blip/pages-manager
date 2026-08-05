@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { classifySlackIntake } from '../../../apps/gateway/src/slack/intake.js';
 import { readSlackSessionConfig, slackUserIdFromBody } from '../../../apps/gateway/src/slack/session.js';
-import { createGatewayApp } from '../../helpers/gateway-app.js';
+import { createLegacyGatewayAppForTests as createGatewayApp } from '../../helpers/legacy-gateway-app.js';
 import { GatewayStoreFixture } from '../../helpers/gateway-store-fixture.js';
 
 async function json(response) {
