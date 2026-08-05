@@ -255,7 +255,7 @@ collect_access_key_pepper_secrets() {
 }
 
 SECRET_NAMES=()
-OPTIONAL_SECRET_NAME=''
+OPTIONAL_SECRET_NAMES=()
 
 case "$APP_DIR" in
   apps/pages-api)
@@ -263,7 +263,12 @@ case "$APP_DIR" in
     if [ -n "${PAGES_V1_SITES_KV_NAMESPACE_ID:-}" ]; then
       SECRET_NAMES+=(PAGES_V1_SITES_KV_NAMESPACE_ID)
     else
-      OPTIONAL_SECRET_NAME='PAGES_V1_SITES_KV_NAMESPACE_ID'
+      OPTIONAL_SECRET_NAMES+=(PAGES_V1_SITES_KV_NAMESPACE_ID)
+    fi
+    if [ -n "${PAGES_V1_ZONE_ID:-}" ]; then
+      SECRET_NAMES+=(PAGES_V1_ZONE_ID)
+    else
+      OPTIONAL_SECRET_NAMES+=(PAGES_V1_ZONE_ID)
     fi
     collect_access_key_pepper_secrets
     ;;
@@ -296,6 +301,8 @@ for secret_name in "${SECRET_NAMES[@]}"; do
   put_secret "$secret_name"
 done
 
-if [ -n "$OPTIONAL_SECRET_NAME" ]; then
-  delete_optional_secret_if_unset "$OPTIONAL_SECRET_NAME"
+if [ "${#OPTIONAL_SECRET_NAMES[@]}" -gt 0 ]; then
+  for optional_secret_name in "${OPTIONAL_SECRET_NAMES[@]}"; do
+    delete_optional_secret_if_unset "$optional_secret_name"
+  done
 fi

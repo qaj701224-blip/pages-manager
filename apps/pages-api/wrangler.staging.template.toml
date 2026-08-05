@@ -40,6 +40,7 @@ IP_ALLOWLIST = "__IP_ALLOWLIST__"
 
 # Optional Worker secret:
 # - PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id for read-only inventory.
+# - PAGES_V1_ZONE_ID: v1 workers.xd.team zone id required only for v1 retirement route unbinding.
 
 [[d1_databases]]
 binding = "PAGES_METADATA"
