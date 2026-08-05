@@ -16,7 +16,9 @@
 
 在完整扫描结果中选择 `orphan candidate` 或具体原因筛选结果，点击“Backfill cleanup”。无筛选时不提供全库全选；每批最多 100 个 Worker。页面会展示名称预览，并要求输入 `BULK BACKFILL <数量>` 确认。
 
-服务端会逐名重新校验环境前缀、active route 引用和现有 pending/failed/running cleanup task。通过校验的 Worker 写入 `deployment_resource_cleanup_tasks`，站点已删除的版本使用 `site_deleted_backfill`，其余使用 `orphan_backfill`。客户端提交的 Worker 名称不作为归属证明。
+服务端会重新读取 namespace 清单，并要求该次读取为 `completeness: "complete"`；随后逐名校验清单存在性、环境前缀、WFP D1 归属、active route 引用和现有 pending/failed/running cleanup task。通过校验的 Worker 写入 `deployment_resource_cleanup_tasks`，站点已删除的版本使用 `site_deleted_backfill`，其余使用 `orphan_backfill`。客户端提交的 Worker 名称和完整性字段都不作为归属证明。
+
+保留口径只有 active route。`artifact_availability='active'` 但没有 active route 的 Worker 允许 backfill，响应会标记 `rollbackEligible: true`，页面在勾选后提示“删除后该版本不可回滚”；操作人员必须把这条提示纳入确认判断。
 
 Cron 默认每 15 分钟小批量执行到期任务。排空速度可按以下顺序调优：
 
@@ -46,15 +48,17 @@ Cron 默认每 15 分钟小批量执行到期任务。排空速度可按以下�
 单站点退役：
 
 1. 在列表行点击退役，输入站点名称确认。
-2. pages-api 只从 KV metadata 解析 account Worker 名称，不接受请求中的 Worker 名称。
+2. pages-api 只从 KV metadata 解析 account Worker 名称，不接受请求中的 Worker 名称；脚本名必须严格等于当前环境按站点名派生的 `pages-<name>` 或 `pages-staging-<name>`。
 3. 服务端依次校验保留清单和环境前缀、删除 account Worker、解绑精确 hostname route、删除 KV key、释放 hostname claim。
-4. 任一步失败都 fail-closed，响应会标明失败阶段；不要继续手工执行后续步骤，先处理该阶段的不一致。
+4. 任一步失败都 fail-closed，响应会标明失败阶段；Worker、精确 route、KV key 或 hostname claim 已处于完成态时允许幂等重试，脚本/route/claim 归属不匹配仍会拒绝。
 
 批量退役：
 
 - 只对当前筛选结果执行“全选当前筛选结果”；没有筛选时不提供全库全选。
 - 每批最多 100 个，服务端并发上限为 5。
 - 确认弹窗显示数量和名称预览；执行后逐项显示成功或失败，失败项可单独重试。
+
+退役 route 解绑还依赖 pages-api Worker secret `PAGES_V1_ZONE_ID`。未配置时 v1 清单仍可只读展示，但单个和批量退役会在读取清单或执行任何 Cloudflare 删除前返回 `V1_SITES_UNSUPPORTED`；production 与 staging 必须分别注入目标环境对应的 zone id。
 
 route 解绑必须满足：hostname 是完整的 `.workers.xd.team` 域名、route pattern 精确为 `${hostname}/*`、当前绑定脚本与 KV metadata 中解析出的脚本完全一致。wildcard route、其它 zone、平台 Worker 或脚本不匹配时必须拒绝。
 
@@ -73,4 +77,4 @@ route 解绑必须满足：hostname 是完整的 `.workers.xd.team` 域名、rou
 
 Dashboard 只执行轻量 D1 查询：Pending、Failed 和最老 Pending 积压时长。Orphan 数与 v1 站点数按需扫描，Dashboard 对应卡片显示占位符，不得把未知值显示为零。
 
-每次 backfill、WFP cleanup run-due 和 v1 退役都必须保留管理员审计事件。审计 metadata 只写 actor、站点名、Worker 名称和阶段结果等非敏感定位字段，不写入上游原始 metadata 或任何凭据。
+每次 backfill、单任务 WFP cleanup run、WFP cleanup run-due 和 v1 退役都必须保留管理员审计事件。审计 metadata 只写 actor、task id、站点名、Worker 名称和阶段结果等非敏感定位字段，不写入上游原始 metadata 或任何凭据。
