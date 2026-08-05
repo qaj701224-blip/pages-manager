@@ -37,6 +37,8 @@ IP_ALLOWLIST = "__IP_ALLOWLIST__"
 # - SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets.
 # - WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs.
 # - XDS_OPENAI_TOKEN: XDS / OA org directory token for department hydration.
+
+# Optional Worker secret:
 # - PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id for read-only inventory.
 
 [[d1_databases]]

@@ -1,7 +1,15 @@
 const CF_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const ACTIVE_CLEANUP_STATUSES = new Set(['pending', 'failed', 'running']);
 
-export function buildWorkerOrphanScan({ workers, references, environment, scannedAt }) {
+export function buildWorkerOrphanScan({
+  workers,
+  references,
+  environment,
+  scannedAt,
+  completeness = null,
+  scannedCount = null,
+  namespaceScriptCount = null,
+}) {
   const activeRoutesByWorker = groupBy(references?.activeRoutes || [], (item) => item.workerName);
   const versionsByWorker = groupBy(references?.versions || [], (item) => item.workerName);
   const cleanupTasksByWorker = groupBy(
@@ -43,6 +51,9 @@ export function buildWorkerOrphanScan({ workers, references, environment, scanne
   return {
     environment,
     scannedAt,
+    completeness,
+    scannedCount,
+    namespaceScriptCount,
     summary: {
       total: items.length,
       referencedByActiveRoute: countWhere(items, (item) => item.referencedByActiveRoute),
@@ -107,7 +118,7 @@ export function createV1SitesAdminClient(env = {}) {
         const payload = await requestCloudflare(fetchImpl, apiToken, url.toString());
         const pageSites = readInventoryListResult(payload);
         sites.push(...pageSites);
-        const nextCursor = readInventoryCursor(payload, pageSites.length);
+        const nextCursor = readInventoryCursor(payload);
         if (nextCursor && seenCursors.has(nextCursor)) throw invalidInventoryResponse();
         if (nextCursor) seenCursors.add(nextCursor);
         cursor = nextCursor;
@@ -171,12 +182,9 @@ function readInventoryListResult(payload) {
   throw invalidInventoryResponse();
 }
 
-function readInventoryCursor(payload, resultLength) {
+function readInventoryCursor(payload) {
   const rawCursor = payload?.result_info?.cursor;
-  if (rawCursor === undefined || rawCursor === null || rawCursor === '') {
-    if (resultLength < 1000) return '';
-    throw invalidInventoryResponse();
-  }
+  if (rawCursor === undefined || rawCursor === null || rawCursor === '') return '';
   if (typeof rawCursor !== 'string' || !rawCursor.trim()) throw invalidInventoryResponse();
   return rawCursor.trim();
 }

@@ -769,8 +769,8 @@ test('wrangler templates include required WFP vars without runtime token placeho
   assert.match(stagingTemplate, /SITE_SECRET_ENCRYPTION_KEY: encryption key for site-level runtime secrets/);
   assert.match(productionTemplate, /WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs/);
   assert.match(stagingTemplate, /WEBHOOK_URL_ENCRYPTION_KEY: encryption key for platform webhook target URLs/);
-  assert.match(productionTemplate, /PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id/);
-  assert.match(stagingTemplate, /PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id/);
+  assert.match(productionTemplate, /# Optional Worker secret:\n# - PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id/);
+  assert.match(stagingTemplate, /# Optional Worker secret:\n# - PAGES_V1_SITES_KV_NAMESPACE_ID: v1 SITES KV namespace id/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /__PAGES_EXECUTION_MODE__/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /SITE_SECRET_ENCRYPTION_KEY\s*=/);
   assert.doesNotMatch(`${productionTemplate}\n${stagingTemplate}`, /WEBHOOK_URL_ENCRYPTION_KEY\s*=/);

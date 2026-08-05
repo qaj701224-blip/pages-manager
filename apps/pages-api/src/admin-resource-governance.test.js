@@ -73,6 +73,59 @@ test('v1 sites admin client accepts a large single-page Worker inventory without
   assert.equal((await client.listWorkers()).length, 150);
 });
 
+test('v1 sites admin client accepts a full KV page without a next cursor as the terminal page', async () => {
+  let requests = 0;
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'secret_token',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    fetch: async () => {
+      requests += 1;
+      return Response.json({
+        success: true,
+        result: Array.from({ length: 1000 }, (_, index) => ({ name: `legacy-${index + 1}` })),
+        result_info: {},
+      });
+    },
+  });
+
+  assert.equal((await client.listSites()).length, 1000);
+  assert.equal(requests, 1);
+});
+
+test('v1 sites admin client continues after a full KV page with a next cursor', async () => {
+  let requests = 0;
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'secret_token',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    fetch: async (url) => {
+      requests += 1;
+      const cursor = new URL(url).searchParams.get('cursor');
+      if (cursor) return Response.json({ success: true, result: [{ name: 'legacy-final' }], result_info: {} });
+      return Response.json({
+        success: true,
+        result: Array.from({ length: 1000 }, (_, index) => ({ name: `legacy-${index + 1}` })),
+        result_info: { cursor: 'next-page' },
+      });
+    },
+  });
+
+  assert.equal((await client.listSites()).length, 1001);
+  assert.equal(requests, 2);
+});
+
+test('v1 sites admin client rejects a non-string KV cursor', async () => {
+  const client = createV1SitesAdminClient({
+    CF_ACCOUNT_ID: 'account_1',
+    CF_API_TOKEN: 'secret_token',
+    PAGES_V1_SITES_KV_NAMESPACE_ID: 'namespace_1',
+    fetch: async () => Response.json({ success: true, result: [], result_info: { cursor: 42 } }),
+  });
+
+  await assert.rejects(() => client.listSites(), /CLOUDFLARE_RESOURCE_INVENTORY_INVALID/);
+});
+
 test('v1 sites admin client rejects malformed list responses instead of reporting empty inventory', async () => {
   let workerRequests = 0;
   const client = createV1SitesAdminClient({

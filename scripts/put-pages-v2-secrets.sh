@@ -40,6 +40,44 @@ put_secret() {
   printf '%s' "$secret_value" | pnpm --dir "$APP_DIR" exec wrangler secret put "$secret_name"
 }
 
+delete_optional_secret_if_unset() {
+  local secret_name="$1"
+
+  if [ "${DRY_RUN:-}" = "1" ]; then
+    printf 'would delete %s if present\n' "$secret_name"
+    return 0
+  fi
+
+  local listed_secrets
+  if ! listed_secrets="$(pnpm --dir "$APP_DIR" exec wrangler secret list --format json 2>/dev/null)"; then
+    echo "::error::optional secret list failed" >&2
+    return 1
+  fi
+
+  local secret_present
+  if ! secret_present="$(printf '%s' "$listed_secrets" | node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const secrets = JSON.parse(input);
+        const name = process.argv[1];
+        const present = Array.isArray(secrets) && secrets.some((item) => item && item.name === name);
+        process.stdout.write(present ? "1" : "0");
+      } catch {
+        process.exitCode = 1;
+      }
+    });
+  ' "$secret_name")"; then
+    echo "::error::optional secret list returned invalid JSON" >&2
+    return 1
+  fi
+
+  if [ "$secret_present" = "1" ]; then
+    pnpm --dir "$APP_DIR" exec wrangler secret delete "$secret_name"
+  fi
+}
+
 has_seen() {
   local haystack="$1"
   local needle="$2"
@@ -210,12 +248,15 @@ collect_access_key_pepper_secrets() {
 }
 
 SECRET_NAMES=()
+OPTIONAL_SECRET_NAME=''
 
 case "$APP_DIR" in
   apps/pages-api)
     SECRET_NAMES+=(CF_ACCOUNT_ID CF_API_TOKEN SLACK_PAGES_ALERT_WEBHOOK_URL SITE_SECRET_ENCRYPTION_KEY WEBHOOK_URL_ENCRYPTION_KEY XDS_OPENAI_TOKEN)
     if [ -n "${PAGES_V1_SITES_KV_NAMESPACE_ID:-}" ]; then
       SECRET_NAMES+=(PAGES_V1_SITES_KV_NAMESPACE_ID)
+    else
+      OPTIONAL_SECRET_NAME='PAGES_V1_SITES_KV_NAMESPACE_ID'
     fi
     collect_access_key_pepper_secrets
     ;;
@@ -247,3 +288,7 @@ fi
 for secret_name in "${SECRET_NAMES[@]}"; do
   put_secret "$secret_name"
 done
+
+if [ -n "$OPTIONAL_SECRET_NAME" ]; then
+  delete_optional_secret_if_unset "$OPTIONAL_SECRET_NAME"
+fi

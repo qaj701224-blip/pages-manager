@@ -216,8 +216,8 @@ test('admin worker orphan scan classifies managed WFP scripts without deciding d
     }),
     env(store, {
       WFP_RESOURCE_ADMIN_CLIENT: {
-        listWorkers: async () =>
-          [
+        listWorkers: async () => ({
+          workers: [
             'pages-v2-active',
             'pages-v2-rollback',
             'pages-v2-pending',
@@ -230,12 +230,19 @@ test('admin worker orphan scan classifies managed WFP scripts without deciding d
             created_on: '2026-06-01T00:00:00.000Z',
             modified_on: '2026-06-02T00:00:00.000Z',
           })),
+          completeness: 'complete',
+          scannedCount: 7,
+          namespaceScriptCount: 7,
+        }),
       },
     })
   );
 
   assert.equal(response.status, 200, await response.clone().text());
   const scan = (await response.json()).scan;
+  assert.equal(scan.completeness, 'complete');
+  assert.equal(scan.scannedCount, 7);
+  assert.equal(scan.namespaceScriptCount, 7);
   assert.deepEqual(scan.summary, {
     total: 6,
     referencedByActiveRoute: 1,
@@ -285,6 +292,7 @@ test('admin v1 sites inventory strips token metadata and joins workers plus v2 m
               preset: 'spa',
               ipRestrict: true,
               updatedAt: '2025-12-01T00:00:00.000Z',
+              token: 'v1-owner-token-placeholder',
               siteUuid: 'internal-site-uuid',
             },
           },
@@ -308,6 +316,8 @@ test('admin v1 sites inventory strips token metadata and joins workers plus v2 m
 
   const text = await response.clone().text();
   assert.equal(response.status, 200, text);
+  assert.doesNotMatch(text, /v1-owner-token-placeholder/);
+  assert.doesNotMatch(text, /token/i);
   assert.doesNotMatch(text, /internal-site-uuid|siteUuid/i);
   assert.deepEqual(await response.json(), {
     sites: [

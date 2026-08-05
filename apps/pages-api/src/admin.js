@@ -271,16 +271,23 @@ async function scanAdminWorkerOrphans(env, config, store) {
     );
   }
   try {
-    const [workers, references] = await Promise.all([
+    const [inventory, references] = await Promise.all([
       client.listWorkers(),
       store.listWorkerOrphanScanReferences({ environment: config.environment }),
     ]);
+    const workers = Array.isArray(inventory) ? inventory : inventory?.workers;
+    const completeness = Array.isArray(inventory) ? null : inventory?.completeness;
+    const scannedCount = Array.isArray(inventory) ? null : inventory?.scannedCount;
+    const namespaceScriptCount = Array.isArray(inventory) ? null : inventory?.namespaceScriptCount;
     return jsonOk({
       scan: buildWorkerOrphanScan({
         workers,
         references,
         environment: config.environment,
         scannedAt: readNow(env),
+        completeness,
+        scannedCount,
+        namespaceScriptCount,
       }),
     });
   } catch {

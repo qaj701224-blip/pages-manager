@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -53,6 +55,49 @@ function runScript(app, env = {}) {
   });
 }
 
+function runScriptWithMockPnpm(app, env = {}, mode = 'list-present') {
+  const tempDir = mkdtempSync(join(tmpdir(), 'pages-v2-secrets-test-'));
+  const mockPnpmPath = join(tempDir, 'pnpm');
+  const logPath = join(tempDir, 'pnpm.log');
+  writeFileSync(
+    mockPnpmPath,
+    `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$MOCK_PNPM_LOG"
+if [[ "$*" == *"secret list"* ]]; then
+  case "$MOCK_PNPM_MODE" in
+    list-present) printf '[{"name":"PAGES_V1_SITES_KV_NAMESPACE_ID"}]\\n' ;;
+    list-absent) printf '[{"name":"CF_API_TOKEN"}]\\n' ;;
+    list-invalid-json) printf '{invalid-json\\n' ;;
+    list-failed) printf 'secret not found\\n' >&2; exit 1 ;;
+  esac
+fi
+if [[ "$*" == *"secret delete"* && "$MOCK_PNPM_MODE" == "delete-failed" ]]; then
+  printf 'delete failed\\n' >&2
+  exit 1
+fi
+`
+  );
+  chmodSync(mockPnpmPath, 0o755);
+  try {
+    const result = spawnSync(scriptPath, [app], {
+      cwd: repoRoot,
+      env: {
+        ...baseEnv,
+        ...env,
+        DRY_RUN: '',
+        PATH: `${tempDir}:${process.env.PATH || ''}`,
+        MOCK_PNPM_LOG: logPath,
+        MOCK_PNPM_MODE: mode,
+      },
+      encoding: 'utf8',
+    });
+    return { result, log: readFileSync(logPath, 'utf8') };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 test('pages-api secret injection includes WFP runtime secrets and access key peppers', () => {
   const result = runScript('apps/pages-api');
 
@@ -69,14 +114,45 @@ test('pages-api secret injection includes WFP runtime secrets and access key pep
   assert.doesNotMatch(result.stdout, fixtureSecretPattern);
 });
 
-test('pages-api secret injection skips optional v1 inventory config when it is missing', () => {
+test('pages-api secret injection previews deletion of optional v1 inventory config when it is missing', () => {
   const result = runScript('apps/pages-api', {
     PAGES_V1_SITES_KV_NAMESPACE_ID: '',
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.doesNotMatch(result.stdout, /PAGES_V1_SITES_KV_NAMESPACE_ID/);
+  assert.match(result.stdout, /would delete PAGES_V1_SITES_KV_NAMESPACE_ID if present/);
   assert.match(result.stdout, /CF_API_TOKEN/);
+});
+
+test('pages-api secret injection deletes a stale optional v1 inventory config', () => {
+  const { result, log } = runScriptWithMockPnpm(
+    'apps/pages-api',
+    { PAGES_V1_SITES_KV_NAMESPACE_ID: '' },
+    'list-present'
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(log, /secret list --format json/);
+  assert.match(log, /secret delete PAGES_V1_SITES_KV_NAMESPACE_ID/);
+});
+
+test('pages-api secret injection treats an already absent optional v1 inventory config as success', () => {
+  const { result, log } = runScriptWithMockPnpm(
+    'apps/pages-api',
+    { PAGES_V1_SITES_KV_NAMESPACE_ID: '' },
+    'list-absent'
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(log, /secret list --format json/);
+  assert.doesNotMatch(log, /secret delete PAGES_V1_SITES_KV_NAMESPACE_ID/);
+});
+
+test('pages-api secret injection fails closed when optional secret listing fails', () => {
+  const { result } = runScriptWithMockPnpm('apps/pages-api', { PAGES_V1_SITES_KV_NAMESPACE_ID: '' }, 'list-failed');
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /secret list failed|not found/i);
 });
 
 test('pages-auth secret injection includes SSO secret and session signing secrets', () => {
