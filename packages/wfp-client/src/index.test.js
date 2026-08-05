@@ -343,6 +343,62 @@ test('listUserWorkers rejects first-page pagination metadata that starts after p
   assert.equal(requests, 1);
 });
 
+test('listUserWorkers rejects pagination totals above the strictest configured bound', async () => {
+  let listRequests = 0;
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      if (!request.url.includes('/scripts')) return Response.json({ success: true, result: { script_count: 2 } });
+      listRequests += 1;
+      const page = new URL(request.url).searchParams.get('page');
+      if (page === '2') {
+        return Response.json({
+          success: true,
+          result: [{ id: 'pages-v2-site-2' }],
+          result_info: { page: 2, total_pages: 2 },
+        });
+      }
+      return Response.json({
+        success: true,
+        result: [{ id: 'pages-v2-site-1' }],
+        result_info: { page: 1, total_pages: 2 },
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers({ maxWorkers: 1, maxPages: 10 }),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+  assert.equal(listRequests, 1);
+});
+
+test('listUserWorkers rejects an empty first page that claims more pages', async () => {
+  let listRequests = 0;
+  const client = createWfpClient({
+    accountId: 'account_1',
+    apiToken: 'cf_secret_token',
+    dispatchNamespace: 'xd-cell-workers-production',
+    fetch: async (request) => {
+      if (!request.url.includes('/scripts')) return Response.json({ success: true, result: { script_count: 1 } });
+      listRequests += 1;
+      return Response.json({
+        success: true,
+        result: [],
+        result_info: { page: 1, total_pages: 10000 },
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => client.listUserWorkers({ maxWorkers: 10000 }),
+    (error) => error instanceof WfpApiError && error.code === 'WFP_API_RESPONSE_INVALID'
+  );
+  assert.equal(listRequests, 1);
+});
+
 test('listUserWorkers retries the list once when script_count initially disagrees', async () => {
   let listRequests = 0;
   const client = createWfpClient({

@@ -135,17 +135,29 @@ export function createWfpClient({
       });
     },
 
-    async listUserWorkers() {
+    async listUserWorkers(options = {}) {
+      const maxWorkers = normalizePositiveBound(options.maxWorkers);
+      const explicitMaxPages = normalizePositiveBound(options.maxPages);
       const readList = async () => {
         const workers = [];
         const workerNames = new Set();
         const firstUrl = scriptsUrl(baseUrl, account, namespace);
         const firstPayload = await requestCloudflarePayload(fetch, apiToken, firstUrl, { method: 'GET' });
-        appendUniqueWorkers(workers, workerNames, normalizeListedWorkers(readCloudflareListResult(firstPayload)));
+        const firstPageWorkers = normalizeListedWorkers(readCloudflareListResult(firstPayload));
+        if (maxWorkers && firstPageWorkers.length > maxWorkers) throw invalidCloudflareListResponse();
+        appendUniqueWorkers(workers, workerNames, firstPageWorkers);
         const firstPage = readCloudflarePagination(firstPayload);
         if (!firstPage) return workers;
         if (firstPage.page !== 1) throw invalidCloudflareListResponse();
         if (firstPage.totalPages <= 1) return workers;
+        if (firstPageWorkers.length === 0) throw invalidCloudflareListResponse();
+
+        const inferredMaxPages = maxWorkers
+          ? Math.max(1, Math.ceil(maxWorkers / firstPageWorkers.length))
+          : null;
+        const pageBounds = [explicitMaxPages, inferredMaxPages].filter(Boolean);
+        const maxPages = pageBounds.length > 0 ? Math.min(...pageBounds) : null;
+        if (maxPages && firstPage.totalPages > maxPages) throw invalidCloudflareListResponse();
 
         for (let page = 2; page <= firstPage.totalPages; page += 1) {
           const url = new URL(firstUrl);
@@ -155,7 +167,9 @@ export function createWfpClient({
           if (!pagination || pagination.page !== page || pagination.totalPages !== firstPage.totalPages) {
             throw invalidCloudflareListResponse();
           }
-          appendUniqueWorkers(workers, workerNames, normalizeListedWorkers(readCloudflareListResult(payload)));
+          const pageWorkers = normalizeListedWorkers(readCloudflareListResult(payload));
+          appendUniqueWorkers(workers, workerNames, pageWorkers);
+          if (maxWorkers && workers.length > maxWorkers) throw invalidCloudflareListResponse();
         }
         return workers;
       };
@@ -482,6 +496,11 @@ function invalidCloudflareListResponse() {
     code: 'WFP_API_RESPONSE_INVALID',
     message: 'Cloudflare WFP list response was invalid.',
   });
+}
+
+function normalizePositiveBound(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function isPlainObject(value) {
