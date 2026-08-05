@@ -2,6 +2,8 @@
 
 本文件是 [slack-platform-runtime.md](./slack-platform-runtime.md) 的运行细节拆分页。Slack 外部入口、身份权限、session 和数据模型仍以主文档为准。
 
+> 当前状态：Site Publishing Lane 已静态冻结。本文保留的 PublishingJob、preview、截图和站点续接说明只用于理解历史数据与 dormant code；Slack Agent 命中站点发布意图时只能返回退休提示，不得创建、恢复或推进 Site Publishing。Platform Dev、诊断和只读查询能力继续运行。
+
 ## Slack Agent Runtime
 
 `apps/slack-agent` 是常驻服务，但 Agent 的每轮模型调用是短 `AgentRun`：
@@ -29,8 +31,8 @@ Slack Agent 负责：
 - 整理 Slack thread 成结构化需求。
 - 判断是否需要澄清。
 - 判断是否建议创建新任务。
-- 判断是否续接已有 issue / PR / preview。
-- 判断请求属于 Site Publishing Lane 还是 Platform Dev Lane。
+- 判断是否续接已有 Platform Dev issue / PR，或识别历史 Site Publishing 上下文并返回退休提示。
+- 判断请求属于已冻结的 Site Publishing Lane 还是仍运行的 Platform Dev Lane。
 - 为 Platform Dev Lane 输出 issue type、area、risk 和自动化建议。
 - 识别权限、owner scope、站点管理关系。
 - 输出结构化 intent。
@@ -325,16 +327,16 @@ failed
 
 按钮 `action_id` 建议使用 `pages_` 前缀，`value` 使用 JSON 或短 id；敏感信息不能放在 `value` 里。
 
-| Action                      | 产品行为                          | 后台事件                   |
-| --------------------------- | --------------------------------- | -------------------------- |
-| `pages_confirm_requirement` | 确认摘要并创建 job                | `job.confirm_requested`    |
-| `pages_confirm_platform_issue` | 确认摘要并创建 Platform Dev issue | `platform_issue.confirm_requested` |
+| Action                            | 产品行为                             | 后台事件                           |
+| --------------------------------- | ------------------------------------ | ---------------------------------- |
+| `pages_confirm_requirement`       | 确认摘要并创建 job                   | `job.confirm_requested`            |
+| `pages_confirm_platform_issue`    | 确认摘要并创建 Platform Dev issue    | `platform_issue.confirm_requested` |
 | `pages_trigger_platform_auto_dev` | 发起人手动触发 Platform Dev 自动开发 | `platform_item.auto_dev_requested` |
-| `pages_close_session`       | 关闭当前用户拥有的 session        | `session.close_requested`  |
-| `pages_cancel_job`          | 请求取消或转人工确认              | `job.cancel_requested`     |
-| `pages_cancel_platform_item` | 请求取消平台研发 item             | `platform_item.cancel_requested` |
-| `pages_regenerate`          | 对同一 PR branch 启动新 fix round | `job.regenerate_requested` |
-| `pages_open_admin`          | 打开内部控制台链接                | 只生成 URL，不推进状态     |
+| `pages_close_session`             | 关闭当前用户拥有的 session           | `session.close_requested`          |
+| `pages_cancel_job`                | 请求取消或转人工确认                 | `job.cancel_requested`             |
+| `pages_cancel_platform_item`      | 请求取消平台研发 item                | `platform_item.cancel_requested`   |
+| `pages_regenerate`                | 对同一 PR branch 启动新 fix round    | `job.regenerate_requested`         |
+| `pages_open_admin`                | 打开内部控制台链接                   | 只生成 URL，不推进状态             |
 
 交互规则：
 
@@ -549,7 +551,7 @@ PAGES_SMOKE_PR_BRANCH=sites/smoke-local-slack-smoke-profile
 
 这些只用于本地或 staging smoke，不能作为 production 默认行为。
 
-GitHub Review Agent 结果监听必须走 GitHub webhook：
+Site Publishing 的 GitHub Review Agent 历史监听链路如下，但当前 webhook 只记录后返回 `200` ignored：
 
 ```text
 GitHub Review Agent comment
@@ -558,16 +560,16 @@ GitHub webhook
   ↓
 pages-gateway /integrations/github/webhook
   ↓
-ReviewAgentComment / PublishingJob state
+ReviewAgentComment / PublishingJob history
   ↓
-preview gate / Slack notification
+200 ignored，不推进 preview 或 Slack 成功状态
 ```
 
 本地可以用 `gh pr view`、`gh api`、`gh run view` 辅助观察，但不能把 `gh` CLI 轮询写进 gateway、worker 或 workflow runtime。
 
-## Preview 截图
+## Preview 截图（历史冻结能力）
 
-Preview 截图是 Site Publishing Lane 的富展示能力，不阻塞 preview 主状态：
+Preview 截图曾是 Site Publishing Lane 的富展示能力。当前不会产生新的 `preview_deployed` 或截图任务；以下流程只解释已保留的历史事件：
 
 ```text
 preview_deployed

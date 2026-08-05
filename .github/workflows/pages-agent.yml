@@ -69,6 +69,8 @@ concurrency:
 
 jobs:
   pages-agent:
+    # Site Publishing is retired. Keep the historical workflow body dormant.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

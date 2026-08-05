@@ -1,30 +1,89 @@
-import { reconcileClosedGithubIssueForJob, reopenGithubResourceForJob, restoreJobForReopenedGithubResource, restorePlatformDevItemForReopenedGithubResource } from '../github/resource-reconciler.js';
+import {
+  reconcileClosedGithubIssueForJob,
+  reopenGithubResourceForJob,
+  restoreJobForReopenedGithubResource,
+  restorePlatformDevItemForReopenedGithubResource,
+} from '../github/resource-reconciler.js';
 import { getStore } from './context.js';
 import { startWorkerForJobIfConfigured, startWorkerForPlatformDevItemIfConfigured } from '../publishing/worker-dispatcher.js';
 import { readSlackRequest, slackAckResponse } from '../slack/http.js';
 import { notifySlackJobStatus } from '../slack/notifier.js';
-import { fetchSlackRequesterProfile, postSlackInteractionThreadReply, runSlackBackground, updateSlackInteractionMessage } from '../slack/delivery.js';
+import {
+  fetchSlackRequesterProfile,
+  postSlackInteractionThreadReply,
+  runSlackBackground,
+  updateSlackInteractionMessage,
+} from '../slack/delivery.js';
 import { failRunningSlackAgentRunsForClosedSession, redactSlackAnalysis } from '../slack/agent-run-records.js';
 import { activateJobForSlackSession } from '../slack/job-binding.js';
 import { slackUserIdFromBody } from '../slack/session.js';
 import { redactSecretLikeText } from '../slack/text.js';
 import { slackJobInput } from '../slack/job-input.js';
-import { confirmedSlackJobBodyFromInteraction, draftAnalysisFromMemory, hasConfirmableDraft, slackIssueConfirmedBlocks, slackIssueConfirmedText, confirmedSlackPlatformBodyFromInteraction, slackIssueWaitingMoreBlocks, slackIssueWaitingMoreText, hasConfirmablePlatformDraft, slackPlatformIssueConfirmationBlocks, slackPlatformIssueConfirmationText, slackPlatformIssueConfirmedBlocks, slackPlatformIssueConfirmedText } from '../slack/issue-confirmation.js';
+import {
+  confirmedSlackJobBodyFromInteraction,
+  draftAnalysisFromMemory,
+  hasConfirmableDraft,
+  slackIssueConfirmedBlocks,
+  slackIssueConfirmedText,
+  slackIssueWaitingMoreBlocks,
+  slackIssueWaitingMoreText,
+  confirmedSlackPlatformBodyFromInteraction,
+  hasConfirmablePlatformDraft,
+  slackPlatformIssueConfirmationBlocks,
+  slackPlatformIssueConfirmationText,
+  slackPlatformIssueConfirmedBlocks,
+  slackPlatformIssueConfirmedText,
+} from '../slack/issue-confirmation.js';
 import { platformDevInput } from '../slack/platform-input.js';
 import { notifySlackPlatformDevStatus } from '../slack/platform-notifier.js';
 import { listReconciledSlackWorkItemsForSession } from '../slack/work-item-reconciler.js';
-import { inactiveSlackWorkItemReply, isActionableSlackWorkItem, isReopenableSlackWorkItem, parseSlackButtonValue, reopenTargetForSlackWorkItem, slackJobVisibleToActor, slackWorkItemTargetLabel, slackWorkItemListBlocks, slackWorkItemListText } from '../slack/work-items.js';
+import {
+  inactiveSlackWorkItemReply,
+  isActionableSlackWorkItem,
+  isReopenableSlackWorkItem,
+  parseSlackButtonValue,
+  reopenTargetForSlackWorkItem,
+  slackJobVisibleToActor,
+  slackWorkItemTargetLabel,
+  slackWorkItemListBlocks,
+  slackWorkItemListText,
+} from '../slack/work-items.js';
 import { activeWorkItemForSlackSession } from '../slack/followup.js';
-import { answerRepoQuestion, nextRepoQuestionContext, platformDraftFromRepoQuestionContext, repoQuestionActionBlocks, repoEvidenceDetailsFromContext } from '../slack/repo-question.js';
-import { failQueuedSlackWorkerStart, handleSlackAppendDiagnosisCommentTool, handleSlackHumanTriageTool, handleSlackRetryWorkItemTool, linksForWorkItem, notifyQueuedWorkerStartFailure, queueSlackWorkerStart, updateInteractionAsHandled, updateSessionMemoryWithAssistantTurn } from './shared.js';
+import {
+  answerRepoQuestion,
+  nextRepoQuestionContext,
+  platformDraftFromRepoQuestionContext,
+  repoQuestionActionBlocks,
+  repoEvidenceDetailsFromContext,
+} from '../slack/repo-question.js';
+import {
+  failQueuedSlackWorkerStart,
+  handleSlackAppendDiagnosisCommentTool,
+  handleSlackHumanTriageTool,
+  handleSlackRetryWorkItemTool,
+  linksForWorkItem,
+  notifyQueuedWorkerStartFailure,
+  queueSlackWorkerStart,
+  updateInteractionAsHandled,
+  updateSessionMemoryWithAssistantTurn,
+} from './shared.js';
+import { SITE_PUBLISHING_RETIRED_MESSAGE } from '../publishing/retirement.js';
 
-export async function handleSlackInteractions(request, env) {
+export async function handleSlackInteractions(request, env, options = {}) {
   const { body } = await readSlackRequest(request, env);
-  const store = getStore(env);
   const action = body.actions?.[0] || {};
   const actionId = action.action_id || '';
   const teamId = body.team?.id || body.team_id || 'unknown-team';
   const slackUserId = slackUserIdFromBody(body);
+
+  if (actionId === 'pages_confirm_issue' && options.retireSitePublishing !== false) {
+    return slackAckResponse({
+      response_type: 'ephemeral',
+      text: SITE_PUBLISHING_RETIRED_MESSAGE,
+    });
+  }
+
+  const store = getStore(env);
 
   if (actionId === 'pages_confirm_issue') {
     const sessionId = action.value || '';
@@ -464,6 +523,12 @@ export async function handleSlackInteractions(request, env) {
         text: '这个发布任务不存在，或不属于当前 Slack 用户。',
       });
     }
+    if (options.retireSitePublishing !== false) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: SITE_PUBLISHING_RETIRED_MESSAGE,
+      });
+    }
     job = await reconcileClosedGithubIssueForJob(store, env, job, { notifySlack: true });
     if (!isActionableSlackWorkItem(job)) {
       return slackAckResponse({
@@ -649,7 +714,17 @@ export async function handleSlackInteractions(request, env) {
     if (!job || !slackJobVisibleToActor(job, body)) {
       return slackAckResponse({
         response_type: 'ephemeral',
-        text: value.workItemKind === 'platform_dev' ? '这个平台需求不存在，或不属于当前 Slack 用户。' : '这个发布任务不存在，或不属于当前 Slack 用户。',
+        text:
+          value.workItemKind === 'platform_dev'
+            ? '这个平台需求不存在，或不属于当前 Slack 用户。'
+            : '这个发布任务不存在，或不属于当前 Slack 用户。',
+      });
+    }
+
+    if (options.retireSitePublishing !== false && job.workItemKind !== 'platform_dev') {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: SITE_PUBLISHING_RETIRED_MESSAGE,
       });
     }
 
@@ -828,6 +903,7 @@ export async function handleSlackInteractions(request, env) {
       sessionMemory: (await store.getSessionMemory?.(session.id)) || {},
       agentRun: null,
       slackAgentAnalysis: null,
+      retireSitePublishing: options.retireSitePublishing !== false,
       toolArgs: value,
     });
     const cardUpdate =
@@ -870,6 +946,7 @@ export async function handleSlackInteractions(request, env) {
       sessionMemory: (await store.getSessionMemory?.(session.id)) || {},
       agentRun: null,
       slackAgentAnalysis: null,
+      retireSitePublishing: options.retireSitePublishing !== false,
       toolArgs: value,
     });
     const cardUpdate =
@@ -912,6 +989,7 @@ export async function handleSlackInteractions(request, env) {
       sessionMemory: (await store.getSessionMemory?.(session.id)) || {},
       agentRun: null,
       slackAgentAnalysis: null,
+      retireSitePublishing: options.retireSitePublishing !== false,
       toolArgs: value,
     });
     const cardUpdate =
@@ -970,6 +1048,16 @@ export async function handleSlackInteractions(request, env) {
 
     const sessionMemory = await store.getSessionMemory(session.id);
     const slackAgentAnalysis = draftAnalysisFromMemory(sessionMemory);
+    const platformDraft = hasConfirmablePlatformDraft(slackAgentAnalysis);
+    const platformSession =
+      session.activeWorkItemKind === 'platform_dev' ||
+      (!session.activeWorkItemKind && Boolean(session.activeWorkItemId && !session.activeJobId));
+    if (options.retireSitePublishing !== false && !platformDraft && !platformSession) {
+      return slackAckResponse({
+        response_type: 'ephemeral',
+        text: SITE_PUBLISHING_RETIRED_MESSAGE,
+      });
+    }
     const cardUpdate = await updateSlackInteractionMessage(env, body, session, {
       text: slackIssueWaitingMoreText(slackAgentAnalysis),
       blocks: slackIssueWaitingMoreBlocks(session, slackAgentAnalysis),

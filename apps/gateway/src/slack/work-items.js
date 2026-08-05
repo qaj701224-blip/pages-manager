@@ -1,10 +1,5 @@
 import { slackActorFromBody } from './session.js';
-import {
-  platformAreaLabel,
-  platformIssueTypeLabel,
-  platformRiskLabel,
-  userFacingPlatformTitle,
-} from './issue-confirmation.js';
+import { platformAreaLabel, platformIssueTypeLabel, platformRiskLabel, userFacingPlatformTitle } from './issue-confirmation.js';
 import { compactUserFacingText } from './text.js';
 import { normalizeSlackWorkItemQueryState } from './work-item-query.js';
 import {
@@ -184,8 +179,10 @@ export function slackWorkItemListText(jobs = [], options = {}) {
     if (state === 'closed') return '我还没有找到你已关闭、已取消或失败的任务。';
     return '我还没有找到你的任务。可以先描述一个个人网站或平台改造需求，我会整理后等你确认创建。';
   }
-  if (state === 'closed') return `找到你最近的 ${visibleJobs.length} 个已关闭、已取消或失败的${target}。可恢复的任务会显示「重新打开」。`;
-  if (state === 'all') return `找到你最近的 ${visibleJobs.length} 个${target}。已关闭或已取消的任务只展示状态；失败的平台任务可继续补充或重试。`;
+  if (state === 'closed')
+    return `找到你最近的 ${visibleJobs.length} 个已关闭、已取消或失败的${target}。可恢复的任务会显示「重新打开」。`;
+  if (state === 'all')
+    return `找到你最近的 ${visibleJobs.length} 个${target}。已关闭或已取消的任务只展示状态；失败的平台任务可继续补充或重试。`;
   return `找到你最近的 ${visibleJobs.length} 个${target}。选择一个后，这个对话会继续围绕它修改。`;
 }
 
@@ -214,7 +211,10 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: slackAgentCardTitle(analysis, 'task_list', hasPlatformDev ? '你的任务' : '你的发布任务') },
+      text: {
+        type: 'plain_text',
+        text: slackAgentCardTitle(analysis, 'task_list', hasPlatformDev ? '你的任务' : '你的发布任务'),
+      },
     },
     {
       type: 'section',
@@ -233,7 +233,8 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
 
   for (const job of visibleJobs.slice(0, 6)) {
     const elements = [];
-    if (isActionableSlackWorkItem(job)) {
+    const sitePublishingReadOnly = options.retireSitePublishing === true && workItemKind(job) !== 'platform_dev';
+    if (!sitePublishingReadOnly && isActionableSlackWorkItem(job)) {
       elements.push({
         type: 'button',
         text: { type: 'plain_text', text: slackAgentActionLabel(analysis, 'task_list', 'continue_work_item', '继续修改') },
@@ -242,13 +243,18 @@ export function slackWorkItemListBlocks(slackSession, jobs = [], options = {}) {
         agent_action_id: 'continue_work_item',
         value: slackButtonValue({ sessionId: slackSession.id, jobId: job.id, workItemKind: workItemKind(job) }),
       });
-    } else if (options.includeInactive && isReopenableSlackWorkItem(job)) {
+    } else if (!sitePublishingReadOnly && options.includeInactive && isReopenableSlackWorkItem(job)) {
       const target = reopenTargetForSlackWorkItem(job);
       elements.push({
         type: 'button',
         text: {
           type: 'plain_text',
-          text: slackAgentActionLabel(analysis, 'task_list', 'reopen_work_item', target === 'pr' ? '重新打开 PR' : '重新打开 Issue'),
+          text: slackAgentActionLabel(
+            analysis,
+            'task_list',
+            'reopen_work_item',
+            target === 'pr' ? '重新打开 PR' : '重新打开 Issue'
+          ),
         },
         style: 'primary',
         action_id: 'pages_reopen_work_item',

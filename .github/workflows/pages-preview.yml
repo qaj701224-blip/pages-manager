@@ -50,6 +50,8 @@ permissions:
 
 jobs:
   pages-preview:
+    # Site Publishing is retired. Keep the historical workflow body dormant.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     concurrency:
       group: pages-preview-pr-${{ inputs.prNumber }}

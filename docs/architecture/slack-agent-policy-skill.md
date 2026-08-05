@@ -4,6 +4,8 @@
 
 Slack 中查看 Review Agent 具体评论、blocker 和建议的只读能力单独见 [slack-review-results-summary.md](./slack-review-results-summary.md)。本文只维护通用 policy package、tool contract 和 prompt 组织规则。
 
+> 当前状态：Site Publishing Lane 已静态冻结。`site-publishing` lane 和相关 toolCall 名称只为兼容已有 prompt、历史 session 与审计记录；Gateway 命中个人站点新建、确认、续接、切换、retry、reopen、追加诊断或转人工写入时统一返回退休提示。历史 Site Publishing 列表、诊断、Review 和 timeline 只读；Platform Dev Lane 的同名通用工具继续按原合同运行。
+
 目标不是写一段更长的 prompt，而是把 Slack Agent 的产品语义、权限边界、工具合同、反例样本和测试矩阵变成可版本化、可 review、可测试的 prompt package。Slack Agent 可以决定“下一步请求 gateway 做什么”，但不能因为 skill 存在而获得任何执行权限。
 
 ## 现状与问题
@@ -219,9 +221,7 @@ Policy skill 只能在已有上下文上做语义判断；如果 runtime 没有�
   "lastAssistantMessage": {
     "text": "上一条 bot 可见文本或卡片摘要",
     "kind": "work_item_card",
-    "referents": [
-      { "kind": "issue", "number": 88, "label": "Issue #88" }
-    ]
+    "referents": [{ "kind": "issue", "number": 88, "label": "Issue #88" }]
   },
   "focus": {
     "kind": "issue | pr | work_item | preview | message | none",
@@ -300,18 +300,18 @@ Agent：就当前会话记录来看，只有 Issue #88。要不要我再查 GitH
 - Slack Agent 是 pages-manager 的需求理解和任务管家。
 - 负责自然语言理解、澄清、session 续接、任务摘要、repo 咨询入口、诊断入口和 toolCall 请求。
 - 不生成 patch，不改仓库文件，不创建 branch，不创建 PR，不 merge，不部署，不读取或索要 token。
-- 真正写 GitHub issue、写 comment、重试 workflow、恢复 issue / PR、创建发布任务，都由 gateway / worker 在确认和权限收口后执行。
+- Platform Dev 的 GitHub issue、comment、workflow 重试和 issue / PR 恢复由 gateway / worker 在确认和权限收口后执行；Site Publishing 写路径已冻结，不再创建或推进发布任务。
 
 ### lanes.md
 
 必须定义 lane：
 
-- `site-publishing`：员工个人站点创建、修改、preview followup。最终只允许站点执行器改 `sites/<employeeSlug>/<siteSlug>/`。
+- `site-publishing`：识别员工个人站点创建、修改和 preview followup，并让 Gateway 返回统一退休提示；不再派发站点执行器。
 - `platform-dev`：pages-manager 自身研发需求、bug、CI/CD、gateway、worker、Slack、GitHub、数据库、架构文档、部署脚本。
 - `repo-question`：询问当前实现、代码位置、数据保存、workflow 触发、架构边界、影响分析、实现方案咨询。
 - `unknown`：信息不足或无法安全分类。
 
-Lane 不是权限授权。它只影响 gateway 展示哪类确认卡、保存哪类 draft、后续派发哪类 worker。
+Lane 不是权限授权。`platform-dev` 仍影响 Gateway 展示确认卡、保存 draft 和派发 worker；`site-publishing` 只用于稳定识别退休请求和历史上下文。
 
 ### intent-priority.md
 
@@ -339,23 +339,23 @@ Lane 不是权限授权。它只影响 gateway 展示哪类确认卡、保存哪
 
 允许的 toolCall 名称：
 
-| toolCall | 用途 | 直接 side effect | 确认要求 |
-| --- | --- | --- | --- |
-| `list_my_work_items` | 查询当前用户任务 | 只读 | 不需要 |
-| `switch_work_item` | 切换当前会话 active item | 更新 session 绑定 | 需要明确编号 |
-| `reopen_work_item` | 恢复已关闭 issue / PR | 写 GitHub | 需要明确编号，gateway 校验可恢复 |
-| `diagnose_current_work_item` | 当前任务诊断 | 只读摘要 | 不需要 |
-| `request_retry_work_item` | 请求重试 | 写状态 / workflow | 必须按钮确认 |
-| `request_append_diagnosis_comment` | 追加诊断 comment | 写 GitHub comment | 必须按钮确认 |
-| `request_human_triage` | 转人工排查 | 写状态 / comment | 必须按钮确认 |
-| `answer_repo_question` | 只读 repo 问答 | 只读 | 不需要 |
-| `repeat_previous_message` | 复读上一条可见消息 | 只读 | 不需要 |
-| `record_followup` | 记录当前任务修改意见 | 写 session / issue comment / dispatch fix | gateway 判定 |
-| `confirm_create_issue` | 展示个人站点任务确认卡 | 展示确认卡 | 用户点击后才创建 |
-| `confirm_platform_issue` | 展示平台需求确认卡 | 展示确认卡 | 用户点击后才创建 |
-| `close_session` | 关闭当前 Slack 会话 | 更新 session | 仅当前会话 |
-| `cancel_request` | 记录取消意图 | 通常不取消既有任务 | 不需要 |
-| `unsupported_destructive_request` | 拒绝危险请求 | 无 | 不需要 |
+| toolCall                           | 用途                     | 直接 side effect                                                                     | 确认要求                         |
+| ---------------------------------- | ------------------------ | ------------------------------------------------------------------------------------ | -------------------------------- |
+| `list_my_work_items`               | 查询当前用户任务         | 只读                                                                                 | 不需要                           |
+| `switch_work_item`                 | 切换当前会话 active item | Platform Dev 更新 session；Site Publishing 返回退休提示                              | 需要明确编号                     |
+| `reopen_work_item`                 | 恢复已关闭 issue / PR    | Platform Dev 写 GitHub；Site Publishing 返回退休提示                                 | 需要明确编号，gateway 校验可恢复 |
+| `diagnose_current_work_item`       | 当前任务诊断             | 只读摘要                                                                             | 不需要                           |
+| `request_retry_work_item`          | 请求重试                 | Platform Dev 写状态 / workflow；Site Publishing 返回退休提示                         | 必须按钮确认                     |
+| `request_append_diagnosis_comment` | 追加诊断 comment         | Platform Dev 写 GitHub comment；Site Publishing 返回退休提示                         | 必须按钮确认                     |
+| `request_human_triage`             | 转人工排查               | Platform Dev 写状态 / comment；Site Publishing 返回退休提示                          | 必须按钮确认                     |
+| `answer_repo_question`             | 只读 repo 问答           | 只读                                                                                 | 不需要                           |
+| `repeat_previous_message`          | 复读上一条可见消息       | 只读                                                                                 | 不需要                           |
+| `record_followup`                  | 记录当前任务修改意见     | Platform Dev 写 session / issue comment / dispatch fix；Site Publishing 返回退休提示 | gateway 判定                     |
+| `confirm_create_issue`             | 兼容个人站点创建意图     | 固定返回 Site Publishing 退休提示                                                    | 不再展示可执行确认卡             |
+| `confirm_platform_issue`           | 展示平台需求确认卡       | 展示确认卡                                                                           | 用户点击后才创建                 |
+| `close_session`                    | 关闭当前 Slack 会话      | 更新 session                                                                         | 仅当前会话                       |
+| `cancel_request`                   | 记录取消意图             | 通常不取消既有任务                                                                   | 不需要                           |
+| `unsupported_destructive_request`  | 拒绝危险请求             | 无                                                                                   | 不需要                           |
 
 Tool args：
 
@@ -373,6 +373,7 @@ Gateway 必须继续：
 - 对写操作重新读取 DB / GitHub 状态并判断权限。
 - 对确认类操作只展示卡片，不直接创建 issue。
 - 对按钮交互重新读取 draft 和 work item，不信任 Slack button value 里的 risk、area 或 owner。
+- 对 Site Publishing 的新建、确认、follow-up、切换、retry、reopen、追加诊断和转人工请求，在任何 DB / GitHub 写入或 worker dispatch 前返回统一退休提示；历史列表和诊断不得执行 reconciliation。
 
 ### safety.md
 
@@ -466,7 +467,8 @@ Normalization 规则：
 
 - 缺失 `toolCall` 时可以按 `intent` 推导。
 - `repo_question`、`architecture_question`、`platform_question` 必须强制 `answer_repo_question`。
-- `needsClarification=true` 时，gateway 不执行 `confirm_create_issue`、`confirm_platform_issue`、`record_followup`、`switch_work_item`、`reopen_work_item`。
+- 明确 `lane=site-publishing` 或绑定历史 Site Publishing session 时，即使 `needsClarification=true`，Gateway 也直接返回退休提示，不继续追问。
+- 其它 lane 在 `needsClarification=true` 时，gateway 不执行 `confirm_platform_issue`、`record_followup`、`switch_work_item`、`reopen_work_item`。
 - 所有 Platform Dev issue 默认只创建 GitHub issue，不自动开发；必须由发起人在进度卡点击“自动开发”后才启动。
 - `issueType=type:ci | type:ops | type:security` 默认 `risk=risk:high`。
 - `contextResolution` 是可选审计字段，进入 `AgentRun.reportJson`，不直接展示给用户。
@@ -487,6 +489,7 @@ Normalization 规则：
 
 - “为什么失败 / 卡在哪 / issue 创建了 PR 没出来 / 查日志 / workflow 怎么样 / 能不能重试”优先诊断当前 work item。
 - 自然语言里提到“重试 / 追加诊断 / 转人工”时，先返回诊断摘要和受控按钮，不直接执行写操作。
+- 历史 Site Publishing 诊断只展示状态和 Issue / PR / Preview / Workflow 链接，不做 GitHub reconciliation，也不展示重试、追加诊断或转人工写按钮。
 - 默认时间窗 30 分钟。
 - 只返回摘要、关键错误、request id、内部日志链接和建议动作，不贴原始日志。
 
@@ -503,11 +506,11 @@ Normalization 规则：
 
 必须包含：
 
-- 新建个人站点时，信息足够才 `confirm_create_issue`，否则澄清。
-- 员工可以有多个网站；`siteSlug` 表示该员工名下具体站点。
-- 模型给出的 employeeSlug 只是 hint，最终目录由 gateway 根据 Slack 身份派生。
-- 已有 active preview 时，设计调整应续接当前任务，不新建。
-- 站点 PR 的后续执行只能改目标 `sites/<employeeSlug>/<siteSlug>/`，但这个执行约束由 site-check / workflow 保证，不由 Slack Agent 保证。
+- 新建、修改、preview followup、确认、retry、reopen 和恢复个人站点任务都属于已冻结的 Site Publishing Lane。
+- Agent 应保留 `lane=site-publishing` 分类和必要的站点摘要，Gateway 统一返回“站点自动发布能力已停止服务，新的发布任务不会再创建或继续执行。”，不展示可执行确认卡。
+- 如果 session 绑定历史 PublishingJob，只允许列表、状态、Review 和 timeline 查询；不得切换为 active、reconcile GitHub 状态、写 comment 或 dispatch worker。
+- 员工多站点、`employeeSlug`、`siteSlug` 和 `sites/<employeeSlug>/<siteSlug>/` 规则只用于解释历史数据与 dormant workflow，不代表入口仍可执行。
+- Platform Dev 需求必须继续分类到 `platform-dev`，不能因 Site Publishing 退休而一并拒绝。
 
 ### product-design.md
 
@@ -541,13 +544,13 @@ Normalization 规则：
 
 必须覆盖：
 
-- 个人站点新建：`创建一个个人网站，突出项目经历` -> `create_or_update_site` / `confirm_create_issue`。
-- 已有 preview 修改：`这个 preview 不满意，把标题改成中文` + active job -> `record_followup`。
+- 个人站点新建：`创建一个个人网站，突出项目经历` -> `lane=site-publishing`，Gateway 返回 `site_publishing_retired`，不展示确认卡。
+- 已有 preview 修改：`这个 preview 不满意，把标题改成中文` + 历史 Site job -> Gateway 返回 `site_publishing_retired`，不记录 follow-up。
 - 我的任务：`我的 PR` -> `list_my_work_items(state=active)`，可见回复说明查询范围。
 - 历史任务：`查看我已关闭的发布任务` -> `list_my_work_items(state=closed)`。
-- 切换 PR：`继续 PR #68` -> `switch_work_item(kind=pr, number=68)`。
-- 切换 issue：`继续 issue #60` -> `switch_work_item(kind=issue, number=60)`。
-- 恢复 PR：`reopen PR #68` -> `reopen_work_item(kind=pr, number=68)`。
+- 切换历史 Site PR / Issue：`继续 PR #68` 或 `继续 issue #60` -> Gateway 返回 `site_publishing_retired`，不更新 session 绑定。
+- 恢复历史 Site PR：`reopen PR #68` -> Gateway 返回 `site_publishing_retired`，不读取或写入 GitHub 状态。
+- Platform Dev 的切换与恢复继续使用 `switch_work_item` / `reopen_work_item` 原合同。
 - 上一轮列表追问：上一条 bot 展示 `Issue #88`，用户问 `只有这一个么？` -> 沿用 `lastWorkItemList.scope=current_session` 回答，不反问。
 - 范围扩大建议：用户问 `只有这一个么？` 且上一轮是当前会话列表 -> 回复“当前会话只有 #88”，并建议继续查 GitHub open issues。
 - 上一条消息：用户说 `复读上一条消息` -> 直接复读 `lastAssistantMessage.text`，不输出 intent 摘要。
@@ -649,7 +652,7 @@ Golden case 测试应同时跑：
 - `/internal/slack-agent/analyze` 如果仍保留测试入口，也要带同样的 `policyVersion`。
 - 现有 deterministic provider 继续可用，便于本地测试和模型不可用兜底。
 - `policyVersion` 缺失时，gateway 不应失败；只在 `AgentRun` 记录里留空。
-- 不在本次迁移中改变确认卡文案和按钮行为，除非对应 golden case 同步更新。
+- Platform Dev 确认卡和按钮行为保持不变；Site Publishing 确认卡与写按钮统一替换为退休提示，并由对应 golden / Gateway 回归用例覆盖。
 - `conversationContext` 缺失时，Slack Agent 可以退回原行为，但指代类输入应说明上下文不足和可见范围。
 
 ## 回滚策略
@@ -671,7 +674,7 @@ Golden case 测试应同时跑：
 - 上一条 bot 消息、最近 work item list 和当前 focus 能进入 prompt。
 - “只有这一个么”“复读上一条消息”“继续这个”有端到端或近端集成测试。
 - `pnpm test -- tests/apps/slack-agent/index.test.js` 通过。
-- Gateway tool routing 测试覆盖 repo question、confirmation、dangerous bulk、diagnosis、switch、reopen。
+- Gateway tool routing 测试覆盖 repo question、Platform Dev confirmation、dangerous bulk、diagnosis、switch、reopen，以及 Site Publishing 全部写入口的退休 guard。
 - `AgentRun.policy_version` 能记录 policy package version。
 - 没有任何 prompt、日志、测试 fixture 输出真实 secret、token、cookie 或内部凭据。
 

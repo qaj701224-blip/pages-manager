@@ -117,7 +117,9 @@ KUBE_CONFIG_B64
 .github/workflows/pages-preview.yml
 ```
 
-职责：
+其中 `project-index.yml`、`pages-agent.yml`、`pages-preview.yml` 已静态冻结，job 为 `if: false`；`pr-site.yml` 仅被动校验已有或人工 `sites/**` PR，不接受 Site Publishing 手工 dispatch。以下职责是保留的历史边界，不代表当前仍会执行：
+
+历史职责：
 
 - 处理一次 `PublishingJob`。
 - 生成或修复 `sites/<employee>/<site>/`。

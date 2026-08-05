@@ -12,6 +12,7 @@ import {
   restorePlatformDevItemForReopenedGithubResource,
 } from './resource-reconciler.js';
 import { issueUrl, platformDevItemIdFromIssueBody, publishingJobIdFromIssueBody } from './webhook.js';
+import { sitePublishingRetiredIgnoredResponse } from '../publishing/retirement.js';
 
 const TERMINAL_JOB_STATUSES = new Set(['failed', 'cancelled', 'merged', 'deployed']);
 const TERMINAL_PLATFORM_STATUSES = new Set(['merged', 'closed_unmerged', 'failed', 'cancelled']);
@@ -128,8 +129,8 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
       item.status === 'merged'
         ? await store.patchPlatformDevItem(item.id, patch)
         : item.status === 'closed_unmerged'
-        ? await store.patchPlatformDevItem(item.id, patch)
-        : await store.updatePlatformDevItem(item.id, 'closed_unmerged', patch);
+          ? await store.patchPlatformDevItem(item.id, patch)
+          : await store.updatePlatformDevItem(item.id, 'closed_unmerged', patch);
   } else if (action === 'reopened') {
     item = ['closed_unmerged', 'cancelled', 'failed'].includes(item.status)
       ? await restorePlatformDevItemForReopenedGithubResource(store, item, 'issue', issue)
@@ -137,7 +138,11 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
   } else if (['opened', 'edited'].includes(action)) {
     item =
       item.status === 'received' || item.status === 'issue_creating'
-        ? await store.updatePlatformDevItem(item.id, item.autoDevStatus === 'triggered' ? 'issue_created' : 'auto_dev_pending', patch)
+        ? await store.updatePlatformDevItem(
+            item.id,
+            item.autoDevStatus === 'triggered' ? 'issue_created' : 'auto_dev_pending',
+            patch
+          )
         : await store.patchPlatformDevItem(item.id, patch);
   }
   if (!item) return workItemGoneResponse(result, 'platform_dev', itemId);
@@ -179,7 +184,7 @@ async function handlePlatformDevIssueWebhook({ issue, action, store, env, result
   });
 }
 
-export async function handleGithubIssueWebhook({ body, action, store, env, result }) {
+export async function handleGithubIssueWebhook({ body, action, store, env, result, retireSitePublishing = true }) {
   const issue = body.issue || {};
   if (issue.pull_request) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'pull_request_issue' });
@@ -200,6 +205,10 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
   let job = await store.getJob(jobId);
   if (!job) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'job_not_found', jobId });
+  }
+
+  if (retireSitePublishing) {
+    return sitePublishingRetiredIgnoredResponse({ delivery: result.delivery, jobId: job.id });
   }
 
   const issueNumber = issue.number || null;
@@ -335,7 +344,7 @@ export async function handleGithubIssueWebhook({ body, action, store, env, resul
   });
 }
 
-export async function handleGithubPullRequestWebhook({ body, action, store, env, result }) {
+export async function handleGithubPullRequestWebhook({ body, action, store, env, result, retireSitePublishing = true }) {
   if (!['opened', 'synchronize', 'closed', 'reopened', 'ready_for_review'].includes(action)) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'unsupported_pull_request_action' });
   }
@@ -417,11 +426,19 @@ export async function handleGithubPullRequestWebhook({ body, action, store, env,
     });
   }
 
+  let job = await store.findJobByPrNumber(prNumber, retireSitePublishing ? {} : { headSha: pullRequest.head?.sha || null });
+  if (retireSitePublishing && job) {
+    return sitePublishingRetiredIgnoredResponse({
+      delivery: result.delivery,
+      prNumber,
+      jobId: job.id,
+    });
+  }
+
   if (!['closed', 'reopened'].includes(action)) {
     return jsonResponse({ ok: true, created: true, delivery: result.delivery, ignored: 'unsupported_site_pull_request_action' });
   }
 
-  let job = await store.findJobByPrNumber(prNumber, { headSha: pullRequest.head?.sha || null });
   const allowSiteMergeAnnouncement = envFlag(env.MERGE_ANNOUNCEMENT_INCLUDE_SITE_PRS, false);
   const mergeAnnouncement =
     action === 'closed' && pullRequest.merged && (!job || allowSiteMergeAnnouncement)

@@ -4,23 +4,25 @@
 
 本文是 `pages-manager` Slack 运行态的主文档。Slack 相关的运行拓扑、HTTP 入口、会话模型、Slack Agent、语义分块准流式回复、进度消息 / message binding、`slack-notifier`、DB / Redis、K8s 部署和 review checklist 都以本文为准。
 
+> 当前状态：Site Publishing Lane 已静态冻结。本文中的 PublishingJob、站点确认卡、PR / preview 和 fix round 说明均为历史模型；相关入口只返回退休提示，历史 session / link / event 保留。Platform Dev Lane、Slack 诊断和只读查询继续运行。
+
 目标产品形态一句话概括：
 
 ```text
 员工在 Slack 里用自然语言描述需求
   -> Slack Agent 负责对话、澄清、分类和需求整理
-  -> 用户确认后创建 PublishingJob 或 pages-manager issue
-  -> Site Publishing Lane 生成站点 PR / preview
+  -> 站点发布意图返回退休提示，不创建 PublishingJob
+  -> Platform Dev 确认后创建 pages-manager issue
   -> Platform Dev Lane 生成平台 issue / PR / merge 通知
-  -> Slack thread 回写状态、链接和后续修改入口
+  -> Slack thread 回写状态、链接和后续动作
 ```
 
 Slack 体验分成两层：
 
-| 层级       | 用户感知                 | 技术形态                                                                                                |
-| ---------- | ------------------------ | ------------------------------------------------------------------------------------------------------- |
-| 需求对话层 | 像 Agent 对话，有实时感  | Slack Agent 内部可 token streaming；Slack 外显按短句、语义片段或 500ms-1000ms 节流更新同一条 Agent 回复 |
-| 任务执行层 | 像进度面板，稳定可追踪 | 用户看到进度消息、链接和下一步动作；内部用 message binding / render state 承载更新 |
+| 层级       | 用户感知                | 技术形态                                                                                                |
+| ---------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| 需求对话层 | 像 Agent 对话，有实时感 | Slack Agent 内部可 token streaming；Slack 外显按短句、语义片段或 500ms-1000ms 节流更新同一条 Agent 回复 |
+| 任务执行层 | 像进度面板，稳定可追踪  | 用户看到进度消息、链接和下一步动作；内部用 message binding / render state 承载更新                      |
 
 目标不是把全链路都做成 token-by-token 输出。对话阶段追求接近实时的语义分块准流式：Agent 内部可以 token streaming，但 Slack 对外不能按裸 token 刷屏。执行阶段追求确定感，必须保持阶段化、可审计、可恢复。
 
@@ -30,22 +32,22 @@ Slack 体验分成两层：
 
 当前 Slack 运行态已具备这些基础：
 
-| 能力                     | 当前位置                                 | 说明                                                                                                    |
-| ------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Slack HTTP Events        | `apps/gateway/src/index.js`              | `POST /integrations/slack/events`                                                                       |
-| Slack Interactivity      | `apps/gateway/src/index.js`              | `POST /integrations/slack/interactions`                                                                 |
-| Slack signature 校验     | `apps/gateway/src/slack/http.js`         | 基于 raw body、timestamp、signing secret 校验                                                           |
-| URL verification         | `apps/gateway/src/control-plane/handlers.js` | 返回 Slack challenge                                                                               |
-| DM / channel thread 会话 | `apps/gateway/src/slack/session.js`      | `SlackSession` 按 Slack user、thread 和 active context 隔离                                             |
-| Slack intake 分类        | `apps/gateway/src/slack/intake.js`       | help、ping、status、自然语言需求、续接修改等前置分类                                                    |
-| 基础进度消息             | `packages/slack-notifier/src/index.js`   | Block Kit 展示用户可理解的阶段、issue、PR、preview 和下一步；内部仍绑定 job / work item                  |
-| 原地更新卡片             | `packages/slack-notifier/src/index.js`   | 首次 `chat.postMessage`，后续 `chat.update`                                                             |
-| 独立 notifier app        | `apps/slack-notifier/src/index.js`       | 内部 HTTP endpoint，正式 K8s 路径持有 bot token                                                         |
-| gateway notifier adapter | `apps/gateway/src/slack/notifier.js`     | 调独立 notifier；本地无 URL 时走 fallback                                                               |
-| 基础按钮                 | `apps/gateway/src/control-plane/handlers.js` | 确认创建、继续修改、查看链接、选择旧任务、关闭会话                                                 |
-| Agent turn               | `apps/slack-agent/src/index.js`          | `/internal/slack-agent/turn` 已有基础合同；NDJSON 路径可流式输出事件；`analyze` 仅作为旧测试 / 兼容路径 |
-| Gateway turn adapter     | `apps/gateway/src/control-plane/handlers.js` | 优先请求 NDJSON，能消费 `reply_delta` 并节流更新同一条 Agent 回复                                  |
-| Provider 语义分块        | `apps/slack-agent/src/model-provider.js` | 公司 OpenAI-compatible streaming 响应中只抽取 `visibleReply`，聚合成短句 / 语义片段                     |
+| 能力                     | 当前位置                                     | 说明                                                                                                    |
+| ------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Slack HTTP Events        | `apps/gateway/src/index.js`                  | `POST /integrations/slack/events`                                                                       |
+| Slack Interactivity      | `apps/gateway/src/index.js`                  | `POST /integrations/slack/interactions`                                                                 |
+| Slack signature 校验     | `apps/gateway/src/slack/http.js`             | 基于 raw body、timestamp、signing secret 校验                                                           |
+| URL verification         | `apps/gateway/src/control-plane/handlers.js` | 返回 Slack challenge                                                                                    |
+| DM / channel thread 会话 | `apps/gateway/src/slack/session.js`          | `SlackSession` 按 Slack user、thread 和 active context 隔离                                             |
+| Slack intake 分类        | `apps/gateway/src/slack/intake.js`           | help、ping、status、自然语言需求、续接修改等前置分类                                                    |
+| 基础进度消息             | `packages/slack-notifier/src/index.js`       | Block Kit 展示用户可理解的阶段、issue、PR、preview 和下一步；内部仍绑定 job / work item                 |
+| 原地更新卡片             | `packages/slack-notifier/src/index.js`       | 首次 `chat.postMessage`，后续 `chat.update`                                                             |
+| 独立 notifier app        | `apps/slack-notifier/src/index.js`           | 内部 HTTP endpoint，正式 K8s 路径持有 bot token                                                         |
+| gateway notifier adapter | `apps/gateway/src/slack/notifier.js`         | 调独立 notifier；本地无 URL 时走 fallback                                                               |
+| 基础按钮                 | `apps/gateway/src/control-plane/handlers.js` | 确认创建、继续修改、查看链接、选择旧任务、关闭会话                                                      |
+| Agent turn               | `apps/slack-agent/src/index.js`              | `/internal/slack-agent/turn` 已有基础合同；NDJSON 路径可流式输出事件；`analyze` 仅作为旧测试 / 兼容路径 |
+| Gateway turn adapter     | `apps/gateway/src/control-plane/handlers.js` | 优先请求 NDJSON，能消费 `reply_delta` 并节流更新同一条 Agent 回复                                       |
+| Provider 语义分块        | `apps/slack-agent/src/model-provider.js`     | 公司 OpenAI-compatible streaming 响应中只抽取 `visibleReply`，聚合成短句 / 语义片段                     |
 
 当前仍需生产化增强：
 
@@ -430,24 +432,24 @@ Session 选择：
 
 正式版至少需要这些持久对象：
 
-| 对象                                                 | 用途                                                   |
-| ---------------------------------------------------- | ------------------------------------------------------ |
-| `SlackEvent`                                         | Slack HTTP event 幂等、审计和重放                      |
-| `SlackInteractionEvent`                              | Interactivity / command 幂等和审计                     |
-| `SlackMessageBatch`                                  | 同一 thread / turn 的用户消息聚合和上下文来源          |
-| `SlackSession`                                       | `(team_id, slack_user_id, session_key)` 维度的会话状态 |
-| `SessionMemory`                                      | 需求摘要、待澄清问题、偏好、最近 preview feedback      |
-| `WorkItemLink`                                       | session 与 work item / issue / PR / preview 的关联     |
-| `PublishingJob`                                      | Site Publishing Lane 发布任务状态机                    |
-| `PlatformDevItem`                                    | Platform Dev Lane issue / PR 状态机                    |
-| `WorkItemFollowup`                                   | Agent running 时排队的 Slack 补充                      |
-| `AgentRun`                                           | Slack Agent 或 Coding Agent 的单轮运行                 |
-| `AgentRunEvent`                                      | Agent 对用户可见的进度、摘要、澄清、错误               |
-| `JobEvent`                                           | job 阶段变化、callback、review、preview、失败          |
-| `SlackAgentReplyMessage`                             | 确认创建前的 Agent 对话回复 `channel + ts + offset`    |
-| `slack_work_item_status_messages` 或 `SlackMessageBinding` | work item/session 到 Slack card/message 的绑定          |
-| `SlackNotificationAttempt`                           | Slack API 调用尝试、错误、重试、rate limit             |
-| `ExternalApiCallLog`                                 | Slack/GitHub/Cloudflare/model provider 调用摘要        |
+| 对象                                                       | 用途                                                   |
+| ---------------------------------------------------------- | ------------------------------------------------------ |
+| `SlackEvent`                                               | Slack HTTP event 幂等、审计和重放                      |
+| `SlackInteractionEvent`                                    | Interactivity / command 幂等和审计                     |
+| `SlackMessageBatch`                                        | 同一 thread / turn 的用户消息聚合和上下文来源          |
+| `SlackSession`                                             | `(team_id, slack_user_id, session_key)` 维度的会话状态 |
+| `SessionMemory`                                            | 需求摘要、待澄清问题、偏好、最近 preview feedback      |
+| `WorkItemLink`                                             | session 与 work item / issue / PR / preview 的关联     |
+| `PublishingJob`                                            | Site Publishing Lane 发布任务状态机                    |
+| `PlatformDevItem`                                          | Platform Dev Lane issue / PR 状态机                    |
+| `WorkItemFollowup`                                         | Agent running 时排队的 Slack 补充                      |
+| `AgentRun`                                                 | Slack Agent 或 Coding Agent 的单轮运行                 |
+| `AgentRunEvent`                                            | Agent 对用户可见的进度、摘要、澄清、错误               |
+| `JobEvent`                                                 | job 阶段变化、callback、review、preview、失败          |
+| `SlackAgentReplyMessage`                                   | 确认创建前的 Agent 对话回复 `channel + ts + offset`    |
+| `slack_work_item_status_messages` 或 `SlackMessageBinding` | work item/session 到 Slack card/message 的绑定         |
+| `SlackNotificationAttempt`                                 | Slack API 调用尝试、错误、重试、rate limit             |
+| `ExternalApiCallLog`                                       | Slack/GitHub/Cloudflare/model provider 调用摘要        |
 
 `SlackSession` 建议字段：
 
@@ -560,14 +562,9 @@ flowchart TD
   F --> G["notifier 节流更新同一条 Agent 回复"]
   G --> H{"analysis_final"}
   H -->|"信息不足"| I["最终回复澄清问题"]
-  H -->|"Site Publishing Lane"| J["展示站点发布确认卡片"]
+  H -->|"Site Publishing Lane"| J["返回统一退休提示"]
   H -->|"Platform Dev Lane"| Q["展示平台 issue 确认卡片"]
-  J --> K["用户点击确认"]
-  K --> L["gateway 创建 PublishingJob / issue"]
-  L --> M["pages-worker / workflow 生成 PR"]
-  M --> N["Review / fix / preview"]
-  N --> O["进度消息 + 关键节点消息回写 Slack"]
-  O --> P["用户在同一 thread 继续反馈"]
+  J --> P["用户可在同一 thread 转为 Platform Dev 或其它问题"]
   Q --> R["用户点击确认"]
   R --> S["gateway 创建 pages-manager issue"]
   S --> T["等待发起人点击自动开发"]
@@ -578,25 +575,25 @@ flowchart TD
 
 自然语言是主入口。`issue:`、`page:`、`site:` 这类前缀可以在测试阶段保留为开发便捷入口，但不是正式产品承诺。
 
-| Slack 输入                            | 行为                                                                        |
-| ------------------------------------- | --------------------------------------------------------------------------- |
+| Slack 输入                            | 行为                                                                                     |
+| ------------------------------------- | ---------------------------------------------------------------------------------------- |
 | 任意自然语言需求                      | 进入 Slack Agent；识别 Site Publishing Lane 或 Platform Dev Lane；信息足够时展示确认卡片 |
-| 模糊闲聊 / 信息不足                   | 进入 Slack Agent；回复澄清问题，不创建 job / issue                          |
-| pages-manager 开发需求 / bug / 文档   | 创建 `lane:platform-dev` issue；等待进度卡“自动开发”触发后进入 Agent 开发   |
-| 产品意见 / 反馈                       | 创建或更新 `type:feedback` issue；同样等待手动“自动开发”触发                |
-| repo 实现 / 架构咨询                  | 进入只读 repo 问答；检索当前仓库代码和文档后直接回答，不创建 issue           |
-| CI/CD / K8s / secret 相关诉求         | 创建高风险 issue；等待发起人手动点击“自动开发”                              |
-| 查询我的任务 / PR                     | Slack Agent 请求 `list_my_work_items`；gateway 只返回当前用户可见任务       |
-| 查询历史 / 全部任务                   | `state=all`，返回当前用户 active + inactive 任务                            |
-| 查询已关闭 issue / PR                 | `state=closed`，只返回当前用户已关闭、已取消或失败任务；可恢复项展示 reopen |
-| 继续 issue #数字 / PR #数字           | Slack Agent 请求 `switch_work_item`；gateway 校验归属后切换当前 session     |
-| 重新打开 issue #数字 / PR #数字       | Slack Agent 请求 `reopen_work_item`；gateway 只恢复当前用户可恢复的关闭任务 |
-| `status: job_xxx`                     | 查询当前用户有权限访问的 job 状态                                           |
-| `help`                                | 返回帮助                                                                    |
-| `ping`                                | 连通性回复                                                                  |
-| `cancel`                              | 返回取消提示或转人工确认                                                    |
-| `关闭会话` / `结束对话`               | 关闭当前选中的 session                                                      |
-| `这个任务不用了` / `归档这个 preview` | 关闭当前 active WorkItemLink 或转人工确认                                   |
+| 模糊闲聊 / 信息不足                   | 进入 Slack Agent；回复澄清问题，不创建 job / issue                                       |
+| pages-manager 开发需求 / bug / 文档   | 创建 `lane:platform-dev` issue；等待进度卡“自动开发”触发后进入 Agent 开发                |
+| 产品意见 / 反馈                       | 创建或更新 `type:feedback` issue；同样等待手动“自动开发”触发                             |
+| repo 实现 / 架构咨询                  | 进入只读 repo 问答；检索当前仓库代码和文档后直接回答，不创建 issue                       |
+| CI/CD / K8s / secret 相关诉求         | 创建高风险 issue；等待发起人手动点击“自动开发”                                           |
+| 查询我的任务 / PR                     | Slack Agent 请求 `list_my_work_items`；gateway 只返回当前用户可见任务                    |
+| 查询历史 / 全部任务                   | `state=all`，返回当前用户 active + inactive 任务                                         |
+| 查询已关闭 issue / PR                 | `state=closed`，只返回当前用户已关闭、已取消或失败任务；可恢复项展示 reopen              |
+| 继续 issue #数字 / PR #数字           | Slack Agent 请求 `switch_work_item`；gateway 校验归属后切换当前 session                  |
+| 重新打开 issue #数字 / PR #数字       | Slack Agent 请求 `reopen_work_item`；gateway 只恢复当前用户可恢复的关闭任务              |
+| `status: job_xxx`                     | 查询当前用户有权限访问的 job 状态                                                        |
+| `help`                                | 返回帮助                                                                                 |
+| `ping`                                | 连通性回复                                                                               |
+| `cancel`                              | 返回取消提示或转人工确认                                                                 |
+| `关闭会话` / `结束对话`               | 关闭当前选中的 session                                                                   |
+| `这个任务不用了` / `归档这个 preview` | 关闭当前 active WorkItemLink 或转人工确认                                                |
 
 只有 Slack Agent 明确返回创建类 intent / `confirm_create_issue`，且 `needsClarification=false`，并且用户点击确认后，gateway 才能创建 `PublishingJob` 或 `lane:platform-dev` issue。咨询类 `repo_question` / `architecture_question` 不能展示创建确认卡；如果答案暴露出可改进点，只能给出“创建修复需求”的后续动作，由用户再次确认后才进入 Platform Dev Lane。
 

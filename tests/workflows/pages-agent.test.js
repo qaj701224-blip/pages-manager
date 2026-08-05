@@ -5,11 +5,12 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
-test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', async () => {
+test('pages-agent workflow is retained but statically frozen', async () => {
   const workflow = await readFile(path.join(root, '.github/workflows/pages-agent.yml'), 'utf8');
 
   assert.doesNotMatch(workflow, /^\s*issues:\n\s+types:/m);
   assert.match(workflow, /^\s*workflow_dispatch:/m);
+  assert.match(workflow, /^\s+if: \$\{\{ false \}\}$/m);
   assert.match(workflow, /pages-agent-context\.mjs/);
   assert.match(workflow, /pages-agent-coding\.mjs/);
   assert.match(workflow, /^\s+- fix$/m);
@@ -17,10 +18,7 @@ test('pages-agent workflow is gateway-dispatched and uses Coding Agent secret', 
   assert.match(workflow, /Pipeline: user-site publishing/);
   assert.match(workflow, /Platform deployment: out of scope/);
   assert.match(workflow, /Boundary: only %s\/\*\*/);
-  assert.match(
-    workflow,
-    /Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets/
-  );
+  assert.match(workflow, /Do not modify platform code, GitHub Actions, Kubernetes manifests, Dockerfiles, or deployment secrets/);
   assert.match(workflow, /AGENT_GATEWAY_URL: \$\{\{ vars\.AGENT_GATEWAY_URL \}\}/);
   assert.match(workflow, /AGENT_MODEL_NAME: \$\{\{ vars\.AGENT_MODEL_NAME \}\}/);
   assert.match(workflow, /AGENT_CODE_API_KEY: \$\{\{ secrets\.AGENT_CODE_API_KEY \}\}/);
@@ -145,6 +143,7 @@ test('platform-agent workflow excludes runtime artifacts from repository scans',
 test('pages-preview workflow keeps deploy API ip restriction compatible', async () => {
   const workflow = await readFile(path.join(root, '.github/workflows/pages-preview.yml'), 'utf8');
 
+  assert.match(workflow, /^\s+if: \$\{\{ false \}\}$/m);
   assert.match(workflow, /Verify current PR head[\s\S]*gh pr view "\$PR_NUMBER"/);
   assert.match(workflow, /current_head.*!= "\$HEAD_SHA"/);
   assert.match(workflow, /echo "stale=true" >> "\$GITHUB_OUTPUT"/);
@@ -164,7 +163,7 @@ test('pages-preview workflow keeps deploy API ip restriction compatible', async 
   assert.doesNotMatch(workflow, /-F "ip_restrict=false"/);
 });
 
-test('ci and site-check support gateway-dispatched generated PR checks', async () => {
+test('ci keeps dispatch support while site-check only runs for site pull requests', async () => {
   const classify = await readFile(path.join(root, '.github/workflows/pr-classify.yml'), 'utf8');
   const ci = await readFile(path.join(root, '.github/workflows/pr-platform.yml'), 'utf8');
   const siteCheck = await readFile(path.join(root, '.github/workflows/pr-site.yml'), 'utf8');
@@ -181,11 +180,7 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   assert.match(ci, /baseSha:/);
   assert.match(ci, /headSha:/);
   assert.match(ci, /allowedPath:/);
-  assert.match(siteCheck, /^\s*workflow_dispatch:/m);
-  assert.match(siteCheck, /baseRef:/);
-  assert.match(siteCheck, /baseSha:/);
-  assert.match(siteCheck, /headSha:/);
-  assert.match(siteCheck, /allowedPath:/);
+  assert.doesNotMatch(siteCheck, /^\s*workflow_dispatch:/m);
   assert.match(ci, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
   assert.match(ci, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
   assert.match(ci, /INPUT_HEAD_SHA: \$\{\{ inputs\.headSha \}\}/);
@@ -193,14 +188,21 @@ test('ci and site-check support gateway-dispatched generated PR checks', async (
   assert.match(ci, /site_only=true/);
   assert.match(ci, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
   assert.match(ci, /Mixed PRs are not supported/);
-  assert.match(siteCheck, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
-  assert.match(siteCheck, /INPUT_BASE_SHA: \$\{\{ inputs\.baseSha \}\}/);
-  assert.match(siteCheck, /baseSha must be a full commit SHA/);
+  assert.doesNotMatch(siteCheck, /EVENT_NAME:/);
+  assert.doesNotMatch(siteCheck, /inputs\./);
+  assert.doesNotMatch(siteCheck, /INPUT_(?:BASE_REF|BASE_SHA|HEAD_SHA|ALLOWED_PATH)/);
+  assert.doesNotMatch(siteCheck, /workflow_dispatch/);
+  assert.doesNotMatch(siteCheck, /baseSha must be a full commit SHA/);
   assert.match(siteCheck, /base="\$\(git merge-base "\$PR_BASE_SHA" "\$PR_HEAD_SHA"\)"/);
-  assert.match(siteCheck, /git fetch origin "\+refs\/heads\/\$base_ref:refs\/remotes\/origin\/\$base_ref"/);
-  assert.match(siteCheck, /PR must only modify expected site root/);
   assert.match(siteCheck, /manifest="\$SITE_ROOT\/site\.json"/);
   assert.match(siteCheck, /Site Check requires \$manifest/);
   assert.match(siteCheck, /while IFS= read -r file/);
   assert.match(siteCheck, /done < <\(find "\$SITE_ROOT"/);
+});
+
+test('project-index workflow is retained but statically frozen', async () => {
+  const workflow = await readFile(path.join(root, '.github/workflows/project-index.yml'), 'utf8');
+
+  assert.match(workflow, /^\s*workflow_dispatch:/m);
+  assert.match(workflow, /^\s+if: \$\{\{ false \}\}$/m);
 });

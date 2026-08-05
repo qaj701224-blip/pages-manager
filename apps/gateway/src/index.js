@@ -22,7 +22,24 @@ function logSlackHttpFailure(request, url, err) {
   );
 }
 
-export function createGatewayApp(options = {}) {
+async function isStorelessRetirementRoute(request, url) {
+  if (request.method !== 'POST') return false;
+  if (url.pathname === '/api/publishing-jobs') return true;
+  if (url.pathname !== '/integrations/slack/interactions') return false;
+
+  try {
+    const rawBody = await request.clone().text();
+    const contentType = request.headers.get('Content-Type') || '';
+    const body = contentType.includes('application/x-www-form-urlencoded')
+      ? JSON.parse(new URLSearchParams(rawBody).get('payload') || '{}')
+      : JSON.parse(rawBody);
+    return body.actions?.[0]?.action_id === 'pages_confirm_issue';
+  } catch {
+    return false;
+  }
+}
+
+function createGatewayAppWithRouteOptions(options = {}) {
   const router = new Router();
   let store = options.store || null;
   let storePromise = store ? Promise.resolve(store) : null;
@@ -54,7 +71,8 @@ export function createGatewayApp(options = {}) {
       }
 
       try {
-        if (request.method === 'GET' && url.pathname === '/health') {
+        const storelessRetirementRoute = await isStorelessRetirementRoute(request, url);
+        if ((request.method === 'GET' && url.pathname === '/health') || storelessRetirementRoute) {
           return await match.handler(
             request,
             { ...env, waitUntil: ctx.waitUntil?.bind(ctx), ...(store ? { store } : {}) },
@@ -69,6 +87,10 @@ export function createGatewayApp(options = {}) {
       }
     },
   };
+}
+
+export function createGatewayApp(options = {}) {
+  return createGatewayAppWithRouteOptions(options);
 }
 
 const defaultApp = createGatewayApp();

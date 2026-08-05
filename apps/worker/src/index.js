@@ -1,7 +1,8 @@
 import { jsonResponse, timingSafeEqualString } from '@xd/worker-kit';
 
 import { readWorkerConfig } from './config.js';
-import { runWorkerForJob, runWorkerForWorkItem } from './orchestrator.js';
+import { runWorkerForWorkItem } from './orchestrator.js';
+import { sitePublishingRetiredResponse } from './retirement.js';
 
 async function readJson(request) {
   const text = await request.text();
@@ -46,10 +47,10 @@ export function createWorkerApp(options = {}) {
         if (request.method === 'POST' && url.pathname === '/internal/publishing-jobs/start') {
           requireWorkerAuth(request, config);
           const body = await readJson(request);
-          const result =
-            body.workItemKind || body.work_item_kind
-              ? await runWorkerForWorkItem(body, config, adapters)
-              : await runWorkerForJob(body.job, config, adapters);
+          if ((body.workItemKind || body.work_item_kind) !== 'platform_dev') {
+            return sitePublishingRetiredResponse();
+          }
+          const result = await runWorkerForWorkItem(body, config, adapters);
           return jsonResponse({ ok: true, result });
         }
 

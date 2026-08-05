@@ -2,18 +2,20 @@
 
 本文定义 Slack Agent 在 Slack 里回答“review 说了什么 / 需要改哪里 / 有哪些 blocker”的产品和代码规格。它补齐现有 `create issue -> create PR -> @codex review -> Review gate -> Slack status` 链路中的“Review 结果可读化”能力。
 
+> 当前状态：该只读摘要能力继续保留。Platform Dev review 仍可推进 fix / ready-to-merge；Site Publishing review 只保留历史查询和分类，不再放行 preview、推进 PublishingJob 或触发修复。
+
 本文只描述 Slack 侧查看 Review 结果的只读能力。Review gate、Review Agent allowlist、site-check 和 preview 放行规则仍以 [github-automation.md](./github-automation.md#review-agent-gate) 为准。
 
 ## 背景
 
-当前主链路已经具备：
+当前与历史链路已具备：
 
-- Slack 创建个人站点或平台需求 issue。
+- Slack 创建 Platform Dev issue；个人站点 PublishingJob / issue 只保留历史记录。
 - worker / GitHub Actions 创建 PR。
-- `pages-agent.yml` 和 `platform-agent.yml` 在 PR 创建后通过 `@codex review` 触发 Review Agent。
+- 冻结的 `pages-agent.yml` 和仍运行的 `platform-agent.yml` 都保留 Review Agent 历史/当前记录。
 - gateway 通过 GitHub webhook 记录 Review Agent comment / review / check output。
-- Review gate 根据 `blocking`、`suggestion`、`note`、`unknown` 和 site-check 决定是否放行 preview 或进入修复。
-- Slack 状态卡能表达“等待 Review”“Review 要求修复”“site-check waiting”“可合并”“Preview 已触发”等阶段。
+- Platform Dev Review gate 根据 `blocking`、`suggestion`、`note`、`unknown` 和 CI 决定是否进入修复或 ready-to-merge；Site Publishing 只读不推进。
+- Slack 状态卡可以表达 Platform Dev 的等待 Review、要求修复和可合并；历史 Site Publishing 状态仍可查询。
 
 但 Slack 用户还不能自然地问：
 
@@ -290,7 +292,7 @@ gateway 内部可以构造标准结构，供文本和 Block Kit 共用：
 
 `unknown` 处理：
 
-- Review gate 中 `unknown` 不放行 preview。
+- Platform Dev Review gate 中 `unknown` 不自动放行；Site Publishing 不论分类都不会推进 preview。
 - Slack 摘要里应把 `unknown` 表达为“我无法判断是否阻塞，需要人工确认”，不要说成通过。
 - 如果只有 `unknown`，结论为 `unknown`，建议打开 PR 或转人工。
 
@@ -319,13 +321,13 @@ Review 目前有 {blockingCount} 条需要先处理的问题，PR 还不能继�
 
 结论映射：
 
-| conclusion | Slack 文案 |
-| --- | --- |
-| `blocked` | `Review 目前有 N 条需要先处理的问题，PR 还不能继续放行。` |
-| `passed` | `Review Agent 没有发现阻塞问题。` |
+| conclusion           | Slack 文案                                                |
+| -------------------- | --------------------------------------------------------- |
+| `blocked`            | `Review 目前有 N 条需要先处理的问题，PR 还不能继续放行。` |
+| `passed`             | `Review Agent 没有发现阻塞问题。`                         |
 | `waiting_site_check` | `Review Agent 没有发现阻塞问题，但 site-check 还没通过。` |
-| `waiting_review` | `我还没有看到这个 PR 的 Review Agent 结果。` |
-| `unknown` | `Review 结果里有无法判断是否阻塞的内容，需要人工确认。` |
+| `waiting_review`     | `我还没有看到这个 PR 的 Review Agent 结果。`              |
+| `unknown`            | `Review 结果里有无法判断是否阻塞的内容，需要人工确认。`   |
 
 按钮：
 

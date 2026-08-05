@@ -4,6 +4,8 @@
 
 员工不是网站。一个员工可以有多个 `SiteProject`。本文定义站点 slug、repo path、hostname 和生命周期规则，避免 Slack Agent、Coding Agent、gateway、deploy 和 review 各自猜。
 
+> 当前状态：Site Publishing Lane 已静态冻结。本文保留的 `PublishingJob` 创建、PR、preview 和自动 update 流程只用于解释存量站点、历史数据与 dormant code；当前入口不再创建或推进 PublishingJob，也不做 v1 到 v2 自动迁移。存量站点、hostname 和 Cloudflare 资源继续保留。
+
 ## Slug
 
 `employeeSlug`：
@@ -31,7 +33,7 @@
 - Slack Agent 可以给 `siteSlug` hint，但 `employeeSlug` 最终由 gateway 根据 Slack 身份派生。
 - 修改 `siteSlug` 是 rename 操作，不是普通 update。
 
-Gateway API 创建 `PublishingJob` 时还必须先做 repo path segment guard：`employeeSlug` 和 `siteSlug` 只允许小写字母、数字和连字符，且首尾必须是字母或数字；不能接受 `/`、`.`、路径穿越片段或首尾连字符。API 层 guard 的长度上限跟 `publishing_jobs.employee_slug` / `site_slug` 字段保持一致，最终 SiteProject slug 规则仍以本节产品规则为准。
+历史 Gateway API 创建 `PublishingJob` 时必须先做 repo path segment guard：`employeeSlug` 和 `siteSlug` 只允许小写字母、数字和连字符，且首尾必须是字母或数字；不能接受 `/`、`.`、路径穿越片段或首尾连字符。该 guard 作为 dormant 实现继续保留；当前创建入口在请求体解析前返回退休响应。
 
 保留词：
 
@@ -119,18 +121,18 @@ archived
 deleted
 ```
 
-当前支持重点：
+历史 Site Publishing 生命周期（当前不再推进）：
 
-| Action         | 规则                                                      |
-| -------------- | --------------------------------------------------------- |
-| create         | Slack / API 创建发布任务，确认后进入 issue / PR / preview |
-| update         | 默认修改同一个站点目录和同一个 active PR                  |
-| archive        | 管理员 / owner 操作，保留历史 deploy                      |
-| restore        | 管理员 / owner 操作                                       |
-| delete         | 软删除，不立即释放 hostname                               |
-| rename         | 显式操作，不能由普通内容修改隐式触发                      |
+| Action         | 规则                                                                |
+| -------------- | ------------------------------------------------------------------- |
+| create         | 已冻结；历史流程为 Slack / API 创建任务后进入 issue / PR / preview  |
+| update         | 自动入口已冻结；历史规则为修改同一个站点目录和同一个 active PR      |
+| archive        | 管理员 / owner 操作，保留历史 deploy                                |
+| restore        | 管理员 / owner 操作                                                 |
+| delete         | 软删除，不立即释放 hostname                                         |
+| rename         | 显式操作，不能由普通内容修改隐式触发                                |
 | transfer owner | 站点管理操作；要求 actor 对源 owner 和目标 owner 都具备站点管理权限 |
-| rollback       | 后续通过 `DeployRecord` 实现                              |
+| rollback       | 后续通过 `DeployRecord` 实现                                        |
 
 ## Quota
 

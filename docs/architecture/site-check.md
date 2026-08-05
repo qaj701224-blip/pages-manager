@@ -1,5 +1,7 @@
 # Site Check
 
+> 当前状态：Site Publishing Lane 已冻结。`pr-site.yml` 只对仓库中已有或人工创建的 `sites/**` pull request 做被动安全校验；结果可以保留入库，但不会推进 PublishingJob、Review gate 或 preview。本文的 Preview Gate 小节只记录历史约束。
+
 ## 定位
 
 `site-check` 是员工站点 PR 的确定性门禁。它不是 Slack Agent、Coding Agent 或 GitHub Review Agent。
@@ -15,10 +17,10 @@
 当前 workflow：
 
 ```text
-.github/workflows/site-check.yml
+.github/workflows/pr-site.yml
 ```
 
-gateway 通过 GitHub `check_run` webhook 记录 `site_check_runs`，再和 Review Agent gate 一起决定是否可以 preview。
+gateway 可以通过 GitHub `check_run` webhook记录 `site_check_runs`，但对历史 PublishingJob 返回 `200` ignored，不再据此决定 preview。
 
 `Platform CI` 是 Platform Dev Lane 的平台 PR 检查，不属于 Site Publishing Lane 的 site-check。gateway 可以消费 `Platform CI` 来推进平台任务，但不能把它写成站点 PR 的 site-check 通过记录，也不能用它放行站点 preview。二者的 check name 和 GitHub App allowlist 也必须分开配置，避免收紧 site-check app 后误伤平台 PR CI。
 
@@ -36,11 +38,11 @@ gateway 通过 GitHub `check_run` webhook 记录 `site_check_runs`，再和 Revi
 | file policy          | 禁止构建产物、大文件、`node_modules/**`、缓存和越界 symlink                         |
 | build / validation   | 站点 schema、lint、test、build 或等价校验                                           |
 
-`pages-agent.yml` 在创建 PR 前可以做 precheck，但 PR 上仍必须由 `site-check.yml` 在 PR head SHA 上重新跑。
+休眠的 `pages-agent.yml` 保留 precheck 实现；当前 PR 上由 `pr-site.yml` 在 PR head SHA 上重新跑被动校验。
 
-## Preview Gate
+## Preview Gate（历史冻结约束）
 
-Preview 前必须满足：
+历史上 Preview 前必须满足：
 
 ```text
 site-check passed
@@ -51,11 +53,11 @@ no open unknown ReviewAgentComment
 no active pages-agent fix round
 ```
 
-site-check 失败时不发布 preview。Review Agent suggestion / note 可以放行，但需要在 Slack 状态里提示。`issue_comment` 类型的 Review Agent 汇总如果没有 `Reviewed commit` 标记，且 job 已绑定 `headSha`，note / suggestion 只记录评论，不据此触发 Preview；blocking / unknown 必须保守阻塞当前 head。带 7-40 位 commit 前缀的评论才会按对应 head 参与 gate。
+当前无论 check 或 Review Agent 结果如何，都不会发布 preview。原 head SHA、blocking comment 和 fix round 规则只用于解释保留数据与 dormant code。
 
 ## Secret 边界
 
-`site-check.yml` 不能读取：
+`pr-site.yml` 不能读取：
 
 - Slack bot token
 - Cloudflare production token
@@ -63,4 +65,4 @@ site-check 失败时不发布 preview。Review Agent suggestion / note 可以放
 - ACR / ACK / kubectl 权限
 - auto-merge token
 
-Coding Agent 也不能通过修改 `site-check.yml` 或平台代码来绕过规则。
+任何 Agent 也不能通过修改 `pr-site.yml` 或平台代码来绕过规则，更不能借此恢复 Site Publishing。
