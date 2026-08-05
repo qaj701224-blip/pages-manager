@@ -38,9 +38,10 @@
 
 1. [XD Cell v2 架构索引](./pages-v2-wfp-architecture.md)
 2. [资源与部署](./operations/resources-and-deployment.md)
-3. [数据模型](./architecture/data-model.md)
-4. [路由与访问边界](./security/routing-and-access.md)
-5. [发布与运行时模型](./architecture/publishing-and-runtime.md)
+3. [资源治理运行手册](./operations/resource-governance-runbook.md)
+4. [数据模型](./architecture/data-model.md)
+5. [路由与访问边界](./security/routing-and-access.md)
+6. [发布与运行时模型](./architecture/publishing-and-runtime.md)
 
 ## 前端控制台规范
 

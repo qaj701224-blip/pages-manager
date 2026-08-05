@@ -75,14 +75,14 @@
 
 #### 资源治理 P0 盘点
 
-Admin Console 的资源治理 P0 只提供可见性，不执行回收：
+资源治理 P0 的盘点阶段只提供可见性；phase 2 在完整扫描门禁和管理员人工确认下增加回收动作。所有回收仍统一进入既有 cleanup task 管道，不提供旁路删除：
 
-- `Deployment Cleanups > Orphan Scan` 由管理员手动触发，只扫描当前环境 WFP dispatch namespace 的受管脚本，并与 active route、`artifact_availability='active'` 的版本和未完成 cleanup task 对账。响应字段为 `referencedByActiveRoute`、`rollbackEligibleVersion`、`hasPendingCleanupTask` 和 `orphanCandidate`；`orphanReason` 限定为 `no_d1_reference`、`deleted_site`、`stale_previous_version`。这些分类不等同于“可以删除”，也不固化版本保留策略。
+- `Deployment Cleanups > Orphan Scan` 由管理员手动触发，只扫描当前环境 WFP dispatch namespace 的受管脚本，并与 active route、`artifact_availability='active'` 的版本和未完成 cleanup task 对账。响应字段为 `referencedByActiveRoute`、`rollbackEligibleVersion`、`hasPendingCleanupTask` 和 `orphanCandidate`；`orphanReason` 限定为 `no_d1_reference`、`deleted_site`、`stale_previous_version`。这些分类不等同于“可以删除”，也不固化版本保留策略。扫描会先用 namespace `script_count` 校验上游清单完整性；只有 `completeness=complete` 的结果才允许进入回收 backfill，`incomplete` 只能查看并重试。
   上游 dispatch scripts 清单端点目前没有正式 API reference / SDK 分页契约：客户端仅在 `result_info` 完全缺失时把本页视为 undocumented single-page 候选；只要 `result_info` 存在，就必须是包含原生正整数 `page` / `total_pages` 的合法对象，否则 fail-closed。随后读取 namespace 详情中的 `script_count` 做完整性校验；每条清单记录也必须解析出非空 Worker name。首次数量不一致会重试一次，仍不一致时返回 `completeness: 'incomplete'`，同时保留 `scannedCount` 和 `namespaceScriptCount`，Console 必须显示警告。未来删除阶段只能基于 `completeness: 'complete'` 的扫描结果做删除决策；不完整扫描不得触发回收。
 - `Legacy v1 Sites` 通过 `pages-api` 直接读取当前环境的 v1 SITES KV 和 account-level Workers，再与未删除的 v2 同名站点对账。页面只展示站点名称、URL、preset、网络限制、更新时间、对应 v1 Worker 和迁移候选标记；KV metadata 中的站点凭证和其它内部字段不会进入响应或页面。
 - Dashboard 只查询 D1 中 cleanup task 的 pending / failed 数量与最老 pending 积压时长，不扫描 WFP namespace 或 v1 KV。Orphan candidate 和 v1 站点总数保持按需盘点，不得把未知值显示为零。
 
-P0 不提供 orphan 或 v1 Worker 删除端点、删除按钮，也不会从盘点请求写入 cleanup task。未来 v2 资源回收统一进入现有 `deployment_resource_cleanup_tasks` 管道，并继续执行 active route 复核、drain window 和失败重试；不要另建旁路删除流程。
+Orphan backfill 与 v1 退役均为平台管理员显式操作。v2 回收统一进入现有 `deployment_resource_cleanup_tasks` 管道，并继续执行 active route 复核、drain window 和失败重试；不要另建旁路删除流程。v1 退役仅处理人工确认不再使用的 KV 站点，unknown 与 platform_reserved Worker 永远只展示、不可选。站点删除成功后的 v2 Worker 也只入 cleanup task，不在删除请求内直接删除脚本。
 
 v1 盘点依赖 pages-api Worker secret `PAGES_V1_SITES_KV_NAMESPACE_ID`，并复用 Cloudflare account 与 API credential secret。缺少配置时，接口按 `V1_SITES_UNSUPPORTED` 返回 503，Console 应保留其它管理能力可用。production 与 staging 必须分别配置对应 namespace，且盘点只接受本环境的 v1 Worker 前缀并显式排除 v2 前缀。
 
